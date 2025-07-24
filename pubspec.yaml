@@ -1,0 +1,48 @@
+name: libspiffy
+description: An actor-based Bitcoin SPV Wallet Library
+version: 1.0.0
+# repository: https://github.com/twostack/libspiffy
+
+environment:
+  sdk: ^3.5.1
+
+# Add regular dependencies here.
+dependencies:
+  # Core dependencies
+  isar: ^3.1.0+1
+  cbor: ^6.0.0
+  meta: ^1.16.0  # Compatible with Flutter SDK version
+  uuid: ^4.5.1
+  logging: ^1.2.0
+  convert: ^3.1.1
+  cryptography: ^2.7.0
+
+  # Actor system foundation
+  dactor:
+    path: /Users/stephanfeb/IdeaProjects/bsv_apps/dactor  # Actor model foundation
+
+  duraq:
+    path: /Users/stephanfeb/IdeaProjects/bsv_apps/duraq  # Operational workflows
+
+  eventador:
+    path: /Users/stephanfeb/IdeaProjects/bsv_apps/eventador  # Event sourcing
+
+  # SPV and P2P networking
+  spiffynode:
+    path: /Users/stephanfeb/IdeaProjects/bsv_apps/spiffynode  # SPV chain tracking
+
+  # Bitcoin SV operations
+  dartsv:
+    path: /Users/stephanfeb/IdeaProjects/dartsv
+
+  # Token operations
+  tstokenlib:
+    path: /Users/stephanfeb/IdeaProjects/tstokenlib
+
+
+dev_dependencies:
+  isar_generator: ^3.1.0+1
+  build_runner: ^2.4.7
+  test: ^1.24.0
+  mockito: ^5.4.2
+  lints: ^5.0.0

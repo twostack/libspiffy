@@ -1,0 +1,325 @@
+import 'package:uuid/uuid.dart';
+
+/// Base class for all wallet commands
+abstract class WalletCommand {
+  final String commandId;
+  final String walletId;
+  final DateTime timestamp;
+
+  const WalletCommand({
+    required this.commandId,
+    required this.walletId,
+    required this.timestamp,
+  });
+
+  factory WalletCommand.create({
+    required String walletId,
+    required WalletCommand Function(String commandId, String walletId, DateTime timestamp) builder,
+  }) {
+    return builder(
+      const Uuid().v4(),
+      walletId,
+      DateTime.now(),
+    );
+  }
+
+  /// Command type identifier for logging and debugging
+  String get commandType;
+
+  @override
+  String toString() {
+    return '$commandType(commandId: $commandId, walletId: $walletId, timestamp: $timestamp)';
+  }
+}
+
+// =============================================================================
+// WALLET LIFECYCLE COMMANDS
+// =============================================================================
+
+/// Command to create a new wallet
+class CreateWalletCommand extends WalletCommand {
+  final String walletName;
+  final String? mnemonic; // Optional - will generate if null
+  final String? passphrase; // Optional passphrase for mnemonic
+  final Map<String, dynamic>? metadata; // Additional wallet metadata
+
+  const CreateWalletCommand({
+    required super.commandId,
+    required super.walletId,
+    required super.timestamp,
+    required this.walletName,
+    this.mnemonic,
+    this.passphrase,
+    this.metadata,
+  });
+
+  @override
+  String get commandType => 'CreateWalletCommand';
+}
+
+/// Command to update wallet configuration
+class UpdateWalletConfigurationCommand extends WalletCommand {
+  final String? newName;
+  final Map<String, dynamic>? newMetadata;
+
+  const UpdateWalletConfigurationCommand({
+    required super.commandId,
+    required super.walletId,
+    required super.timestamp,
+    this.newName,
+    this.newMetadata,
+  });
+
+  @override
+  String get commandType => 'UpdateWalletConfigurationCommand';
+}
+
+// =============================================================================
+// ADDRESS MANAGEMENT COMMANDS
+// =============================================================================
+
+/// Command to generate a new address
+class GenerateAddressCommand extends WalletCommand {
+  final String? label; // Optional address label
+  final String? purpose; // Optional purpose (receiving, change, etc.)
+  final int? derivationIndex; // Optional specific index (null = next available)
+
+  const GenerateAddressCommand({
+    required super.commandId,
+    required super.walletId,
+    required super.timestamp,
+    this.label,
+    this.purpose,
+    this.derivationIndex,
+  });
+
+  @override
+  String get commandType => 'GenerateAddressCommand';
+}
+
+/// Command to update address label
+class UpdateAddressLabelCommand extends WalletCommand {
+  final String address;
+  final String? newLabel;
+
+  const UpdateAddressLabelCommand({
+    required super.commandId,
+    required super.walletId,
+    required super.timestamp,
+    required this.address,
+    this.newLabel,
+  });
+
+  @override
+  String get commandType => 'UpdateAddressLabelCommand';
+}
+
+// =============================================================================
+// UTXO LIFECYCLE COMMANDS
+// =============================================================================
+
+/// Command to record a received UTXO
+class ReceiveUTXOCommand extends WalletCommand {
+  final String txid;
+  final int vout;
+  final BigInt satoshis;
+  final String scriptPubKey;
+  final String address;
+  final int? blockHeight; // null for unconfirmed
+  final int? confirmations;
+
+  const ReceiveUTXOCommand({
+    required super.commandId,
+    required super.walletId,
+    required super.timestamp,
+    required this.txid,
+    required this.vout,
+    required this.satoshis,
+    required this.scriptPubKey,
+    required this.address,
+    this.blockHeight,
+    this.confirmations,
+  });
+
+  @override
+  String get commandType => 'ReceiveUTXOCommand';
+}
+
+/// Command to spend a UTXO
+class SpendUTXOCommand extends WalletCommand {
+  final String utxoKey; // Format: "txid:vout"
+  final String spendingTxId;
+  final BigInt fee; // Fee portion allocated to this input
+  final int? blockHeight; // Block height when spending was confirmed
+
+  const SpendUTXOCommand({
+    required super.commandId,
+    required super.walletId,
+    required super.timestamp,
+    required this.utxoKey,
+    required this.spendingTxId,
+    required this.fee,
+    this.blockHeight,
+  });
+
+  @override
+  String get commandType => 'SpendUTXOCommand';
+}
+
+/// Command to update UTXO confirmations
+class UpdateUTXOConfirmationsCommand extends WalletCommand {
+  final String utxoKey; // Format: "txid:vout"
+  final int confirmations;
+  final int? blockHeight;
+
+  const UpdateUTXOConfirmationsCommand({
+    required super.commandId,
+    required super.walletId,
+    required super.timestamp,
+    required this.utxoKey,
+    required this.confirmations,
+    this.blockHeight,
+  });
+
+  @override
+  String get commandType => 'UpdateUTXOConfirmationsCommand';
+}
+
+// =============================================================================
+// TRANSACTION MANAGEMENT COMMANDS
+// =============================================================================
+
+/// Command to create a new transaction
+class CreateTransactionCommand extends WalletCommand {
+  final String transactionId;
+  final List<TransactionOutput> outputs;
+  final BigInt? feeRate; // Satoshis per KB
+  final String? changeAddress; // null = auto-generate
+  final bool allowDust; // Allow dust outputs
+  final Map<String, dynamic>? metadata; // Additional transaction metadata
+
+  const CreateTransactionCommand({
+    required super.commandId,
+    required super.walletId,
+    required super.timestamp,
+    required this.transactionId,
+    required this.outputs,
+    this.feeRate,
+    this.changeAddress,
+    this.allowDust = false,
+    this.metadata,
+  });
+
+  @override
+  String get commandType => 'CreateTransactionCommand';
+}
+
+/// Command to sign a transaction
+class SignTransactionCommand extends WalletCommand {
+  final String transactionId;
+  final String rawTransaction; // Unsigned transaction hex
+  final List<String> utxoKeys; // UTXOs being spent
+
+  const SignTransactionCommand({
+    required super.commandId,
+    required super.walletId,
+    required super.timestamp,
+    required this.transactionId,
+    required this.rawTransaction,
+    required this.utxoKeys,
+  });
+
+  @override
+  String get commandType => 'SignTransactionCommand';
+}
+
+/// Command to broadcast a transaction
+class BroadcastTransactionCommand extends WalletCommand {
+  final String transactionId;
+  final String signedTransaction; // Signed transaction hex
+
+  const BroadcastTransactionCommand({
+    required super.commandId,
+    required super.walletId,
+    required super.timestamp,
+    required this.transactionId,
+    required this.signedTransaction,
+  });
+
+  @override
+  String get commandType => 'BroadcastTransactionCommand';
+}
+
+// =============================================================================
+// UTXO RESERVATION COMMANDS
+// =============================================================================
+
+/// Command to reserve UTXOs for a transaction
+class ReserveUTXOsCommand extends WalletCommand {
+  final List<String> utxoKeys; // UTXOs to reserve
+  final String reservationId; // Transaction or operation ID
+  final Duration? reservationDuration; // Auto-expiry time (null = manual release)
+
+  const ReserveUTXOsCommand({
+    required super.commandId,
+    required super.walletId,
+    required super.timestamp,
+    required this.utxoKeys,
+    required this.reservationId,
+    this.reservationDuration,
+  });
+
+  @override
+  String get commandType => 'ReserveUTXOsCommand';
+}
+
+/// Command to release UTXO reservations
+class ReleaseUTXOsCommand extends WalletCommand {
+  final String reservationId; // Transaction or operation ID to release
+
+  const ReleaseUTXOsCommand({
+    required super.commandId,
+    required super.walletId,
+    required super.timestamp,
+    required this.reservationId,
+  });
+
+  @override
+  String get commandType => 'ReleaseUTXOsCommand';
+}
+
+// =============================================================================
+// SUPPORTING CLASSES
+// =============================================================================
+
+/// Represents a transaction output for CreateTransactionCommand
+class TransactionOutput {
+  final String address;
+  final BigInt satoshis;
+  final String? script; // Optional custom script (null = P2PKH)
+
+  const TransactionOutput({
+    required this.address,
+    required this.satoshis,
+    this.script,
+  });
+
+  @override
+  String toString() {
+    return 'TransactionOutput(address: $address, satoshis: $satoshis, script: $script)';
+  }
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    return other is TransactionOutput &&
+        other.address == address &&
+        other.satoshis == satoshis &&
+        other.script == script;
+  }
+
+  @override
+  int get hashCode {
+    return address.hashCode ^ satoshis.hashCode ^ script.hashCode;
+  }
+} 

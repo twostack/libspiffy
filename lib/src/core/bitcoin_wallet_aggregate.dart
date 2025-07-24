@@ -133,7 +133,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       walletId: command.walletId,
       walletName: command.walletName,
       rootAddress: rootAddress,
-      walletMetadata: command.metadata,
+      walletMetadata: command.walletMetadata,
       version: currentState.version + 1,
       timestamp: DateTime.now(),
     );
@@ -174,8 +174,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       throw StateError('Cannot generate address for non-existent wallet');
     }
 
-    // Determine derivation index
-    final derivationIndex = command.derivationIndex ?? currentState.nextDerivationIndex;
+    // Use next available derivation index
+    final derivationIndex = currentState.nextDerivationIndex;
 
     // TODO: In Phase 1D, integrate with crypto service to generate actual address
     // For now, use placeholder
@@ -469,7 +469,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       isCreated: true,
       name: event.walletName,
       rootAddress: event.rootAddress,
-      metadata: event.metadata ?? {},
+      metadata: event.walletMetadata ?? {},
       version: event.version,
       lastModified: event.timestamp,
     );

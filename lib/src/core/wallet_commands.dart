@@ -1,27 +1,20 @@
 import 'package:uuid/uuid.dart';
+import 'package:eventador/eventador.dart';
 
 /// Base class for all wallet commands
-abstract class WalletCommand {
-  final String commandId;
+abstract class WalletCommand extends Command {
   final String walletId;
-  final DateTime timestamp;
 
-  const WalletCommand({
-    required this.commandId,
+  WalletCommand({
     required this.walletId,
-    required this.timestamp,
-  });
-
-  factory WalletCommand.create({
-    required String walletId,
-    required WalletCommand Function(String commandId, String walletId, DateTime timestamp) builder,
-  }) {
-    return builder(
-      const Uuid().v4(),
-      walletId,
-      DateTime.now(),
-    );
-  }
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          commandId: commandId,
+          timestamp: timestamp,
+          metadata: metadata,
+        );
 
   /// Command type identifier for logging and debugging
   String get commandType;
@@ -41,17 +34,23 @@ class CreateWalletCommand extends WalletCommand {
   final String walletName;
   final String? mnemonic; // Optional - will generate if null
   final String? passphrase; // Optional passphrase for mnemonic
-  final Map<String, dynamic>? metadata; // Additional wallet metadata
+  final Map<String, dynamic>? walletMetadata; // Additional wallet metadata
 
-  const CreateWalletCommand({
-    required super.commandId,
-    required super.walletId,
-    required super.timestamp,
+  CreateWalletCommand({
+    required String walletId,
     required this.walletName,
     this.mnemonic,
     this.passphrase,
-    this.metadata,
-  });
+    this.walletMetadata,
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          commandId: commandId,
+          timestamp: timestamp,
+          metadata: metadata,
+        );
 
   @override
   String get commandType => 'CreateWalletCommand';
@@ -62,13 +61,19 @@ class UpdateWalletConfigurationCommand extends WalletCommand {
   final String? newName;
   final Map<String, dynamic>? newMetadata;
 
-  const UpdateWalletConfigurationCommand({
-    required super.commandId,
-    required super.walletId,
-    required super.timestamp,
+  UpdateWalletConfigurationCommand({
+    required String walletId,
     this.newName,
     this.newMetadata,
-  });
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          commandId: commandId,
+          timestamp: timestamp,
+          metadata: metadata,
+        );
 
   @override
   String get commandType => 'UpdateWalletConfigurationCommand';
@@ -80,42 +85,52 @@ class UpdateWalletConfigurationCommand extends WalletCommand {
 
 /// Command to generate a new address
 class GenerateAddressCommand extends WalletCommand {
-  final String? label; // Optional address label
-  final String? purpose; // Optional purpose (receiving, change, etc.)
-  final int? derivationIndex; // Optional specific index (null = next available)
+  final String? label; // Optional label for the address
+  final String? purpose; // Purpose: 'receive', 'change', etc.
 
-  const GenerateAddressCommand({
-    required super.commandId,
-    required super.walletId,
-    required super.timestamp,
+  GenerateAddressCommand({
+    required String walletId,
     this.label,
     this.purpose,
-    this.derivationIndex,
-  });
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          commandId: commandId,
+          timestamp: timestamp,
+          metadata: metadata,
+        );
 
   @override
   String get commandType => 'GenerateAddressCommand';
 }
 
-/// Command to update address label
+/// Command to update an address label
 class UpdateAddressLabelCommand extends WalletCommand {
   final String address;
   final String? newLabel;
 
-  const UpdateAddressLabelCommand({
-    required super.commandId,
-    required super.walletId,
-    required super.timestamp,
+  UpdateAddressLabelCommand({
+    required String walletId,
     required this.address,
     this.newLabel,
-  });
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,   
+  }) : super(
+          walletId: walletId,
+          commandId: commandId,
+          timestamp: timestamp,
+          metadata: metadata,
+        );
 
   @override
   String get commandType => 'UpdateAddressLabelCommand';
 }
 
 // =============================================================================
-// UTXO LIFECYCLE COMMANDS
+// UTXO MANAGEMENT COMMANDS
 // =============================================================================
 
 /// Command to record a received UTXO
@@ -128,10 +143,8 @@ class ReceiveUTXOCommand extends WalletCommand {
   final int? blockHeight; // null for unconfirmed
   final int? confirmations;
 
-  const ReceiveUTXOCommand({
-    required super.commandId,
-    required super.walletId,
-    required super.timestamp,
+  ReceiveUTXOCommand({
+    required String walletId,
     required this.txid,
     required this.vout,
     required this.satoshis,
@@ -139,7 +152,15 @@ class ReceiveUTXOCommand extends WalletCommand {
     required this.address,
     this.blockHeight,
     this.confirmations,
-  });
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          commandId: commandId,
+          timestamp: timestamp,
+          metadata: metadata,
+        );
 
   @override
   String get commandType => 'ReceiveUTXOCommand';
@@ -152,15 +173,21 @@ class SpendUTXOCommand extends WalletCommand {
   final BigInt fee; // Fee portion allocated to this input
   final int? blockHeight; // Block height when spending was confirmed
 
-  const SpendUTXOCommand({
-    required super.commandId,
-    required super.walletId,
-    required super.timestamp,
+  SpendUTXOCommand({
+    required String walletId,
     required this.utxoKey,
     required this.spendingTxId,
     required this.fee,
     this.blockHeight,
-  });
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          commandId: commandId,
+          timestamp: timestamp,
+          metadata: metadata,
+        );
 
   @override
   String get commandType => 'SpendUTXOCommand';
@@ -172,14 +199,20 @@ class UpdateUTXOConfirmationsCommand extends WalletCommand {
   final int confirmations;
   final int? blockHeight;
 
-  const UpdateUTXOConfirmationsCommand({
-    required super.commandId,
-    required super.walletId,
-    required super.timestamp,
+  UpdateUTXOConfirmationsCommand({
+    required String walletId,
     required this.utxoKey,
     required this.confirmations,
     this.blockHeight,
-  });
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          commandId: commandId,
+          timestamp: timestamp,
+          metadata: metadata,
+        );
 
   @override
   String get commandType => 'UpdateUTXOConfirmationsCommand';
@@ -196,19 +229,25 @@ class CreateTransactionCommand extends WalletCommand {
   final BigInt? feeRate; // Satoshis per KB
   final String? changeAddress; // null = auto-generate
   final bool allowDust; // Allow dust outputs
-  final Map<String, dynamic>? metadata; // Additional transaction metadata
+  final Map<String, dynamic>? transactionMetadata; // Additional transaction metadata
 
-  const CreateTransactionCommand({
-    required super.commandId,
-    required super.walletId,
-    required super.timestamp,
+  CreateTransactionCommand({
+    required String walletId,
     required this.transactionId,
     required this.outputs,
     this.feeRate,
     this.changeAddress,
     this.allowDust = false,
-    this.metadata,
-  });
+    this.transactionMetadata,
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          commandId: commandId,
+          timestamp: timestamp,
+          metadata: metadata,
+        );
 
   @override
   String get commandType => 'CreateTransactionCommand';
@@ -220,14 +259,20 @@ class SignTransactionCommand extends WalletCommand {
   final String rawTransaction; // Unsigned transaction hex
   final List<String> utxoKeys; // UTXOs being spent
 
-  const SignTransactionCommand({
-    required super.commandId,
-    required super.walletId,
-    required super.timestamp,
+  SignTransactionCommand({
+    required String walletId,
     required this.transactionId,
     required this.rawTransaction,
     required this.utxoKeys,
-  });
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          commandId: commandId,
+          timestamp: timestamp,
+          metadata: metadata,
+        );
 
   @override
   String get commandType => 'SignTransactionCommand';
@@ -238,13 +283,19 @@ class BroadcastTransactionCommand extends WalletCommand {
   final String transactionId;
   final String signedTransaction; // Signed transaction hex
 
-  const BroadcastTransactionCommand({
-    required super.commandId,
-    required super.walletId,
-    required super.timestamp,
+  BroadcastTransactionCommand({
+    required String walletId,
     required this.transactionId,
     required this.signedTransaction,
-  });
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          commandId: commandId,
+          timestamp: timestamp,
+          metadata: metadata,
+        );
 
   @override
   String get commandType => 'BroadcastTransactionCommand';
@@ -260,14 +311,20 @@ class ReserveUTXOsCommand extends WalletCommand {
   final String reservationId; // Transaction or operation ID
   final Duration? reservationDuration; // Auto-expiry time (null = manual release)
 
-  const ReserveUTXOsCommand({
-    required super.commandId,
-    required super.walletId,
-    required super.timestamp,
+  ReserveUTXOsCommand({
+    required String walletId,
     required this.utxoKeys,
     required this.reservationId,
     this.reservationDuration,
-  });
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          commandId: commandId,
+          timestamp: timestamp,
+          metadata: metadata,
+        );
 
   @override
   String get commandType => 'ReserveUTXOsCommand';
@@ -277,12 +334,18 @@ class ReserveUTXOsCommand extends WalletCommand {
 class ReleaseUTXOsCommand extends WalletCommand {
   final String reservationId; // Transaction or operation ID to release
 
-  const ReleaseUTXOsCommand({
-    required super.commandId,
-    required super.walletId,
-    required super.timestamp,
+  ReleaseUTXOsCommand({
+    required String walletId,
     required this.reservationId,
-  });
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          commandId: commandId,
+          timestamp: timestamp,
+          metadata: metadata,
+        );
 
   @override
   String get commandType => 'ReleaseUTXOsCommand';

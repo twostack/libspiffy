@@ -44,7 +44,9 @@ class WalletCreatedEvent extends WalletEvent {
       walletMetadata: map['walletMetadata'] as Map<String, dynamic>?,
       eventId: map['eventId'] as String?,
       timestamp: map['timestamp'] != null
-          ? DateTime.parse(map['timestamp'] as String)
+          ? (map['timestamp'] is String 
+              ? DateTime.parse(map['timestamp'] as String)
+              : map['timestamp'] as DateTime)
           : null,
       version: map['version'] as int?,
       metadata: map['metadata'] as Map<String, dynamic>?,
@@ -88,7 +90,9 @@ class WalletConfigurationUpdatedEvent extends WalletEvent {
       newMetadata: map['newMetadata'] as Map<String, dynamic>?,
       eventId: map['eventId'] as String?,
       timestamp: map['timestamp'] != null
-          ? DateTime.parse(map['timestamp'] as String)
+          ? (map['timestamp'] is String 
+              ? DateTime.parse(map['timestamp'] as String)
+              : map['timestamp'] as DateTime)
           : null,
       version: map['version'] as int?,
       metadata: map['metadata'] as Map<String, dynamic>?,
@@ -144,7 +148,9 @@ class AddressGeneratedEvent extends WalletEvent {
       purpose: map['purpose'] as String?,
       eventId: map['eventId'] as String?,
       timestamp: map['timestamp'] != null
-          ? DateTime.parse(map['timestamp'] as String)
+          ? (map['timestamp'] is String 
+              ? DateTime.parse(map['timestamp'] as String)
+              : map['timestamp'] as DateTime)
           : null,
       version: map['version'] as int?,
       metadata: map['metadata'] as Map<String, dynamic>?,
@@ -192,7 +198,9 @@ class AddressLabelUpdatedEvent extends WalletEvent {
       oldLabel: map['oldLabel'] as String?,
       eventId: map['eventId'] as String?,
       timestamp: map['timestamp'] != null
-          ? DateTime.parse(map['timestamp'] as String)
+          ? (map['timestamp'] is String 
+              ? DateTime.parse(map['timestamp'] as String)
+              : map['timestamp'] as DateTime)
           : null,
       version: map['version'] as int?,
       metadata: map['metadata'] as Map<String, dynamic>?,
@@ -260,7 +268,9 @@ class UTXOReceivedEvent extends WalletEvent {
       confirmations: map['confirmations'] as int?,
       eventId: map['eventId'] as String?,
       timestamp: map['timestamp'] != null
-          ? DateTime.parse(map['timestamp'] as String)
+          ? (map['timestamp'] is String 
+              ? DateTime.parse(map['timestamp'] as String)
+              : map['timestamp'] as DateTime)
           : null,
       version: map['version'] as int?,
       metadata: map['metadata'] as Map<String, dynamic>?,
@@ -308,7 +318,9 @@ class UTXOSpentEvent extends WalletEvent {
       spentInTxId: map['spentInTxId'] as String,
       eventId: map['eventId'] as String?,
       timestamp: map['timestamp'] != null
-          ? DateTime.parse(map['timestamp'] as String)
+          ? (map['timestamp'] is String 
+              ? DateTime.parse(map['timestamp'] as String)
+              : map['timestamp'] as DateTime)
           : null,
       version: map['version'] as int?,
       metadata: map['metadata'] as Map<String, dynamic>?,
@@ -360,7 +372,9 @@ class UTXOConfirmationUpdatedEvent extends WalletEvent {
       blockHeight: map['blockHeight'] as int,
       eventId: map['eventId'] as String?,
       timestamp: map['timestamp'] != null
-          ? DateTime.parse(map['timestamp'] as String)
+          ? (map['timestamp'] is String 
+              ? DateTime.parse(map['timestamp'] as String)
+              : map['timestamp'] as DateTime)
           : null,
       version: map['version'] as int?,
       metadata: map['metadata'] as Map<String, dynamic>?,
@@ -432,7 +446,9 @@ class TransactionCreatedEvent extends WalletEvent {
       transactionMetadata: map['transactionMetadata'] as Map<String, dynamic>?,
       eventId: map['eventId'] as String?,
       timestamp: map['timestamp'] != null
-          ? DateTime.parse(map['timestamp'] as String)
+          ? (map['timestamp'] is String 
+              ? DateTime.parse(map['timestamp'] as String)
+              : map['timestamp'] as DateTime)
           : null,
       version: map['version'] as int?,
       metadata: map['metadata'] as Map<String, dynamic>?,
@@ -476,7 +492,9 @@ class TransactionSignedEvent extends WalletEvent {
       signedRawHex: map['signedRawHex'] as String,
       eventId: map['eventId'] as String?,
       timestamp: map['timestamp'] != null
-          ? DateTime.parse(map['timestamp'] as String)
+          ? (map['timestamp'] is String 
+              ? DateTime.parse(map['timestamp'] as String)
+              : map['timestamp'] as DateTime)
           : null,
       version: map['version'] as int?,
       metadata: map['metadata'] as Map<String, dynamic>?,
@@ -520,7 +538,9 @@ class TransactionBroadcastEvent extends WalletEvent {
       broadcastResponse: map['broadcastResponse'] as String,
       eventId: map['eventId'] as String?,
       timestamp: map['timestamp'] != null
-          ? DateTime.parse(map['timestamp'] as String)
+          ? (map['timestamp'] is String 
+              ? DateTime.parse(map['timestamp'] as String)
+              : map['timestamp'] as DateTime)
           : null,
       version: map['version'] as int?,
       metadata: map['metadata'] as Map<String, dynamic>?,
@@ -569,10 +589,14 @@ class UTXOReservationPlacedEvent extends WalletEvent {
       walletId: map['walletId'] as String,
       utxoIdentifiers: List<Map<String, dynamic>>.from(map['utxoIdentifiers']),
       reservationId: map['reservationId'] as String,
-      expiresAt: DateTime.parse(map['expiresAt'] as String),
+      expiresAt: map['expiresAt'] is String 
+          ? DateTime.parse(map['expiresAt'] as String)
+          : map['expiresAt'] as DateTime,
       eventId: map['eventId'] as String?,
       timestamp: map['timestamp'] != null
-          ? DateTime.parse(map['timestamp'] as String)
+          ? (map['timestamp'] is String 
+              ? DateTime.parse(map['timestamp'] as String)
+              : map['timestamp'] as DateTime)
           : null,
       version: map['version'] as int?,
       metadata: map['metadata'] as Map<String, dynamic>?,
@@ -616,7 +640,9 @@ class UTXOReservationReleasedEvent extends WalletEvent {
       utxoIdentifiers: List<Map<String, dynamic>>.from(map['utxoIdentifiers']),
       eventId: map['eventId'] as String?,
       timestamp: map['timestamp'] != null
-          ? DateTime.parse(map['timestamp'] as String)
+          ? (map['timestamp'] is String 
+              ? DateTime.parse(map['timestamp'] as String)
+              : map['timestamp'] as DateTime)
           : null,
       version: map['version'] as int?,
       metadata: map['metadata'] as Map<String, dynamic>?,
@@ -660,7 +686,9 @@ class UTXOReservationExpiredEvent extends WalletEvent {
       utxoIdentifiers: List<Map<String, dynamic>>.from(map['utxoIdentifiers']),
       eventId: map['eventId'] as String?,
       timestamp: map['timestamp'] != null
-          ? DateTime.parse(map['timestamp'] as String)
+          ? (map['timestamp'] is String 
+              ? DateTime.parse(map['timestamp'] as String)
+              : map['timestamp'] as DateTime)
           : null,
       version: map['version'] as int?,
       metadata: map['metadata'] as Map<String, dynamic>?,

@@ -11,7 +11,13 @@ const int beefMagicAndVersion = 0x0100BEEF;
 
 
 
-class BEEFException implements Exception{
+class BEEFException implements Exception {
+  final String message;
+  
+  BEEFException(this.message);
+  
+  @override
+  String toString() => 'BEEFException: $message';
 }
 
 /// Represents a Background Evaluation Extended Format transaction
@@ -43,7 +49,7 @@ class BEEF {
   /// Parse a BEEF format byte array
   static BEEF parse(Uint8List data) {
     if (data.length < 4) {
-      throw Exception('Invalid BEEF format: data too short');
+      throw BEEFException('Invalid BEEF format: data too short');
     }
 
     final reader = ByteDataReader();
@@ -60,7 +66,7 @@ class BEEF {
     final version = (b0 << 24) | (b1 << 16) | (b2 << 8) | b3;
     
     if (version != beefMagicAndVersion) {
-      throw Exception('Invalid BEEF version: expected ${beefMagicAndVersion.toRadixString(16)}, got ${version.toRadixString(16)}');
+      throw BEEFException('Invalid BEEF version: expected ${beefMagicAndVersion.toRadixString(16)}, got ${version.toRadixString(16)}');
     }
 
     // Read number of BUMPs

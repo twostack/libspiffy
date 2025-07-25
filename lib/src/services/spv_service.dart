@@ -309,6 +309,12 @@ class SPVService {
   /// Verify that a transaction is included in a specific block
   Future<bool> verifyTransactionInclusion(String txidHex, int blockHeight) async {
     try {
+      // First check if we have the block header
+      final blockHeaderMerkleRoot = await _getBlockHeaderMerkleRoot(blockHeight);
+      if (blockHeaderMerkleRoot == null) {
+        return false;
+      }
+      
       // Get merkle proof from ARC
       final proof = await arcService.getMerkleProof(txidHex);
       
@@ -316,14 +322,15 @@ class SPVService {
         return false;
       }
       
-      // Create BUMP from proof
-      final bump = await _createBUMPFromArcProof(proof);
+      // Verify merkle root matches block header
+      if (proof.merkleRoot != blockHeaderMerkleRoot) {
+        return false;
+      }
       
-      // Validate against block header
-      return await validateTransaction(txidHex, bump);
+      return true;
     } catch (e) {
       print('SPVService: Error verifying transaction inclusion: $e');
-      return false;
+      throw SPVException('Failed to verify transaction inclusion: $e');
     }
   }
 

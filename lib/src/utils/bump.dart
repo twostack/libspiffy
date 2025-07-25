@@ -5,7 +5,13 @@ import 'package:crypto/crypto.dart' hide sha256;
 import 'package:dartsv/dartsv.dart';
 
 
-class BUMPException implements Exception{
+class BUMPException implements Exception {
+  final String message;
+  
+  BUMPException(this.message);
+  
+  @override
+  String toString() => 'BUMPException: $message';
 }
 
 /// Represents a BSV Universal Merkle Path
@@ -24,56 +30,60 @@ class BUMP {
 
   /// Parse a BUMP from a list of bytes
   static BUMP fromBytes(Uint8List bytes) {
-    final reader = ByteDataReader();
-    reader.add(bytes);
-    
-    // Read block height
-    final blockHeight = readVarIntNum(reader);
-    
-    // Read tree height
-    final treeHeight = reader.readUint8();
-    
-    // Initialize path array
-    final path = <Level>[];
-    
-    // Parse each level
-    for (var h = 0; h < treeHeight; h++) {
-      final nLeaves = readVarIntNum(reader);
-      final leaves = <Leaf>[];
+    try {
+      final reader = ByteDataReader();
+      reader.add(bytes);
       
-      // Parse each leaf in this level
-      for (var j = 0; j < nLeaves; j++) {
-        // Read offset
-        final offset = readVarIntNum(reader);
+      // Read block height
+      final blockHeight = readVarIntNum(reader);
+      
+      // Read tree height
+      final treeHeight = reader.readUint8();
+      
+      // Initialize path array
+      final path = <Level>[];
+      
+      // Parse each level
+      for (var h = 0; h < treeHeight; h++) {
+        final nLeaves = readVarIntNum(reader);
+        final leaves = <Leaf>[];
         
-        // Read flags
-        final flags = reader.readUint8();
-        
-        // Parse flags
-        final duplicate = (flags & 0x01) != 0;
-        final isTxid = (flags & 0x02) != 0;
-        
-        // Read hash if not duplicate
-        Uint8List? hash;
-        if (!duplicate) {
-          hash = reader.read(32);
+        // Parse each leaf in this level
+        for (var j = 0; j < nLeaves; j++) {
+          // Read offset
+          final offset = readVarIntNum(reader);
+          
+          // Read flags
+          final flags = reader.readUint8();
+          
+          // Parse flags
+          final duplicate = (flags & 0x01) != 0;
+          final isTxid = (flags & 0x02) != 0;
+          
+          // Read hash if not duplicate
+          Uint8List? hash;
+          if (!duplicate) {
+            hash = reader.read(32);
+          }
+          
+          leaves.add(Leaf(
+            offset: offset,
+            duplicate: duplicate,
+            isTxid: isTxid,
+            hash: hash,
+          ));
         }
         
-        leaves.add(Leaf(
-          offset: offset,
-          duplicate: duplicate,
-          isTxid: isTxid,
-          hash: hash,
-        ));
+        path.add(Level(leaves: leaves));
       }
       
-      path.add(Level(leaves: leaves));
+      return BUMP(
+        blockHeight: blockHeight,
+        path: path,
+      );
+    } catch (e) {
+      throw BUMPException('Failed to parse BUMP: $e');
     }
-    
-    return BUMP(
-      blockHeight: blockHeight,
-      path: path,
-    );
   }
 
   /// Parse a BUMP from a reader

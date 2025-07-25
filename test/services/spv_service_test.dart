@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:convert/convert.dart';
 import 'package:test/test.dart';
 import 'package:mockito/mockito.dart';
@@ -29,6 +30,9 @@ void main() {
           .thenAnswer((_) => Stream<ChainTipEvent>.empty());
       when(mockChainTipTracker.networkHeight).thenReturn(750000);
       when(mockChainTipTracker.isLikelySynced).thenReturn(true);
+      when(mockChainTipTracker.activePeerCount).thenReturn(0);
+      when(mockChainTipTracker.isPotentialReorg).thenReturn(false);
+      when(mockChainTipTracker.statistics).thenReturn(<String, dynamic>{});
       
       // Setup default mock stubs for ArcService
       when(mockArcService.getMerkleProof(any)).thenAnswer((_) async => 
@@ -40,41 +44,29 @@ void main() {
           blockHash: 'test_block_hash',
         ));
       
+      // DO NOT create service here - let each test create it after setting up their specific mocks
+    });
+
+    // Helper method to create service with current mocks
+    void createService() {
       service = SPVService(
         arcService: mockArcService,
         chainTipTracker: mockChainTipTracker,
         blockHeaderService: mockBlockHeaderService,
       );
-    });
+    }
 
     group('Confirmation Tracking', () {
       test('should track transaction confirmations correctly', () async {
         // Arrange
         const txId = 'test_tx_id';
-        final mockStream = Stream<ChainTipEvent>.fromIterable([
-          ChainTipEvent(
-            newTip: ChainTip(
-              blockHash: Hash.fromHex('000000000000000000000000000000000000000000000000000000000000000a'),
-              height: 101,
-              lastUpdated: DateTime.now(),
-              peerCount: 1,
-              confidence: 1.0,
-              reportingPeers: ['peer1'],
-            ),
-            oldTip: ChainTip(
-              blockHash: Hash.fromHex('0000000000000000000000000000000000000000000000000000000000000009'),
-              height: 100,
-              lastUpdated: DateTime.now().subtract(Duration(minutes: 1)),
-              peerCount: 1,
-              confidence: 1.0,
-              reportingPeers: ['peer1'],
-            ),
-            type: ChainTipEventType.heightIncrease,
-            description: 'Height increased from 100 to 101',
-          ),
-        ]);
         
-        when(mockChainTipTracker.tipEvents).thenAnswer((_) => mockStream);
+        // Use StreamController to control when events are emitted
+        final tipEventsController = StreamController<ChainTipEvent>();
+        
+        // Set up mock BEFORE creating service
+        when(mockChainTipTracker.tipEvents).thenAnswer((_) => tipEventsController.stream);
+        when(mockChainTipTracker.networkHeight).thenReturn(102); // Current height
         when(mockChainTipTracker.bestTip).thenReturn(ChainTip(
           blockHash: Hash.fromHex('000000000000000000000000000000000000000000000000000000000000000b'),
           height: 102,
@@ -84,23 +76,112 @@ void main() {
           reportingPeers: ['peer1'],
         ));
         
+        // Mock getMerkleProof to return a transaction in block 100
+        when(mockArcService.getMerkleProof(txId)).thenAnswer((_) async => 
+          ArcMerkleProofResponse(
+            txid: txId,
+            merklePath: ['path1', 'path2'],
+            merkleRoot: '4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b',
+            blockHeight: 100,
+            blockHash: 'test_block_hash',
+          ));
+        
+        // Create service AFTER setting up specific mocks
+        service = SPVService(
+          arcService: mockArcService,
+          chainTipTracker: mockChainTipTracker,
+          blockHeaderService: mockBlockHeaderService,
+        );
+        
         // Start tracking
         await service.trackConfirmations(txId);
         
-        // Act & Assert
+        // Set up expectation for confirmation updates
         final confirmationStream = service.confirmationUpdates
             .where((update) => update.txid == txId);
-        await expectLater(
+        
+        // Create expectation that will complete when we get the update
+        final expectation = expectLater(
           confirmationStream.take(1),
           emits(predicate<TransactionConfirmationUpdate>((update) =>
             update.txid == txId && update.confirmations >= 1)),
         );
+        
+        // Now emit the chain tip event AFTER everything is set up
+        tipEventsController.add(ChainTipEvent(
+          newTip: ChainTip(
+            blockHash: Hash.fromHex('000000000000000000000000000000000000000000000000000000000000000c'),
+            height: 103, // Height increases to 103
+            lastUpdated: DateTime.now(),
+            peerCount: 1,
+            confidence: 1.0,
+            reportingPeers: ['peer1'],
+          ),
+          oldTip: ChainTip(
+            blockHash: Hash.fromHex('000000000000000000000000000000000000000000000000000000000000000b'),
+            height: 102,
+            lastUpdated: DateTime.now().subtract(Duration(minutes: 1)),
+            peerCount: 1,
+            confidence: 1.0,
+            reportingPeers: ['peer1'],
+          ),
+          type: ChainTipEventType.heightIncrease,
+          description: 'Height increased from 102 to 103',
+        ));
+        
+        // Wait for the expectation to complete
+        await expectation;
+        
+        // Clean up
+        await tipEventsController.close();
       });
 
       test('should handle chain reorganizations', () async {
         // Arrange
         const txId = 'reorg_tx_id';
-        final reorgEvent = ChainTipEvent(
+        
+        // Use StreamController to control when events are emitted
+        final tipEventsController = StreamController<ChainTipEvent>();
+        
+        when(mockChainTipTracker.tipEvents)
+            .thenAnswer((_) => tipEventsController.stream);
+        when(mockChainTipTracker.networkHeight).thenReturn(101);
+            
+        // Mock initial getMerkleProof to return transaction in block 100
+        when(mockArcService.getMerkleProof(txId))
+            .thenAnswer((_) async => ArcMerkleProofResponse(
+              txid: txId,
+              merklePath: ['path1', 'path2'],
+              merkleRoot: '4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b',
+              blockHeight: 100, // Initially in block 100
+              blockHash: 'original_block_hash',
+            ));
+        
+        createService();
+        await service.trackConfirmations(txId);
+        
+        // Now mock re-validation after reorg to return transaction in different block
+        when(mockArcService.getMerkleProof(txId))
+            .thenAnswer((_) async => ArcMerkleProofResponse(
+              txid: txId,
+              merklePath: ['path1', 'path2'],
+              merkleRoot: '4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b',
+              blockHeight: 99, // Moved to block 99 after reorg
+              blockHash: 'reorg_block_hash',
+            ));
+        
+        // Set up expectation for confirmation updates
+        final confirmationStream = service.confirmationUpdates
+            .where((update) => update.txid == txId);
+        
+        final expectation = expectLater(
+          confirmationStream.take(1),
+          emits(predicate<TransactionConfirmationUpdate>((update) =>
+            update.reorgDetected == true)),
+        );
+        
+        // Now emit the reorg event AFTER everything is set up
+        tipEventsController.add(ChainTipEvent(
           newTip: ChainTip(
             blockHash: Hash.fromHex('000000000000000000000000000000000000000000000000000000000000000c'),
             height: 100,
@@ -119,31 +200,13 @@ void main() {
           ),
           type: ChainTipEventType.reorganization,
           description: 'Chain reorganization detected',
-        );
+        ));
         
-        when(mockChainTipTracker.tipEvents)
-            .thenAnswer((_) => Stream.fromIterable([reorgEvent]));
-            
-        // Mock re-validation after reorg
-        when(mockArcService.getMerkleProof(txId))
-            .thenAnswer((_) async => ArcMerkleProofResponse(
-              txid: txId,
-              merklePath: ['path1', 'path2'],
-              merkleRoot: '4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b',
-              blockHeight: 99,
-              blockHash: 'reorg_block_hash',
-            ));
+        // Wait for the expectation to complete
+        await expectation;
         
-        await service.trackConfirmations(txId);
-        
-        // Act & Assert
-        final confirmationStream = service.confirmationUpdates
-            .where((update) => update.txid == txId);
-        await expectLater(
-          confirmationStream.take(1),
-          emits(predicate<TransactionConfirmationUpdate>((update) =>
-            update.reorgDetected == true)),
-        );
+        // Clean up
+        await tipEventsController.close();
       });
     });
 
@@ -159,6 +222,9 @@ void main() {
           reportingPeers: ['peer1', 'peer2', 'peer3'],
         ));
         when(mockChainTipTracker.isLikelySynced).thenReturn(true);
+        when(mockChainTipTracker.activePeerCount).thenReturn(3);
+        
+        createService();
         
         // Act
         final stats = service.getNetworkStatistics();
@@ -173,6 +239,10 @@ void main() {
         // Arrange
         when(mockChainTipTracker.bestTip).thenReturn(null);
         when(mockChainTipTracker.isLikelySynced).thenReturn(false);
+        when(mockChainTipTracker.networkHeight).thenReturn(0); // Override default
+        when(mockChainTipTracker.activePeerCount).thenReturn(0); // Override default
+        
+        createService();
         
         // Act
         final stats = service.getNetworkStatistics();
@@ -202,6 +272,8 @@ void main() {
               blockHash: 'block_hash',
             ));
         
+        createService();
+        
         // Act
         final isIncluded = await service.verifyTransactionInclusion(txId, blockHeight);
         
@@ -219,6 +291,8 @@ void main() {
         when(mockBlockHeaderService.getMerkleRoot(blockHeight))
             .thenReturn(null);
         
+        createService();
+        
         // Act
         final isIncluded = await service.verifyTransactionInclusion(txId, blockHeight);
         
@@ -234,6 +308,8 @@ void main() {
         const txId = 'failing_tx';
         when(mockArcService.getMerkleProof(txId))
             .thenThrow(ArcException('Service unavailable'));
+        
+        createService();
         
         // Act & Assert
         expect(

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:convert/convert.dart';
 import 'package:http/http.dart' as http;
 
 import 'arc_service_config.dart';
@@ -313,34 +314,25 @@ class ArcService {
   /// [rawTx] - The raw transaction in hex format
   /// [callbackUrl] - Optional callback URL to receive transaction status updates
   Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl}) async {
-    final httpClient = HttpClient();
-    final request = await httpClient.postUrl(Uri.parse('$baseUrl/tx'));
-
-    // Set headers
-    for (var entry in _headers.entries) {
-      request.headers.set(entry.key, entry.value);
-    }
+    final url = '$baseUrl/tx';
+    
+    final headers = Map<String, String>.from(_headers);
     if (callbackUrl != null) {
-      request.headers.set('X-CallbackUrl', callbackUrl);
+      headers['X-CallbackUrl'] = callbackUrl;
     }
-    request.headers.set('Content-Type', 'application/json');
-
-    // Add body data
-    final jsonBody = jsonEncode({
-      'rawTx': rawTx,
-    });
-    request.add(utf8.encode(jsonBody));
-
-    // Send the request and process response
-    final response = await request.close();
-    final responseBody = await response.transform(utf8.decoder).join();
-
-    httpClient.close();
+    
+    final response = await _client.post(
+      Uri.parse(url),
+      headers: headers,
+      body: jsonEncode({
+        'rawTx': rawTx,
+      }),
+    );
 
     if (response.statusCode == 200 || response.statusCode == 201) {
-      return ArcSubmitResponse.fromJson(jsonDecode(responseBody));
+      return ArcSubmitResponse.fromJson(jsonDecode(response.body));
     } else {
-      throw ArcException('Failed to submit transaction: $responseBody');
+      throw ArcException('Failed to submit transaction: ${response.body}');
     }
   }
 
@@ -349,33 +341,26 @@ class ArcService {
   /// [beefHex] - The BEEF package in hex format
   /// [callbackUrl] - Optional callback URL to receive transaction status updates
   Future<ArcSubmitResponse> submitBEEF(String beefHex, {String? callbackUrl}) async {
-    final httpClient = HttpClient();
-    final request = await httpClient.postUrl(Uri.parse('$baseUrl/beef'));
-
-    // Set headers
-    for (var entry in _headers.entries) {
-      request.headers.set(entry.key, entry.value);
-    }
+    final url = '$baseUrl/beef';
+    
+    final headers = Map<String, String>.from(_headers);
     if (callbackUrl != null) {
-      request.headers.set('X-CallbackUrl', callbackUrl);
+      headers['X-CallbackUrl'] = callbackUrl;
     }
-    request.headers.set('Content-Type', 'application/octet-stream');
+    headers['Content-Type'] = 'application/octet-stream';
 
-    // Add BEEF data as binary
-    final beefBytes = List<int>.generate(beefHex.length ~/ 2, 
-        (i) => int.parse(beefHex.substring(i * 2, i * 2 + 2), radix: 16));
-    request.add(beefBytes);
-
-    // Send the request and process response
-    final response = await request.close();
-    final responseBody = await response.transform(utf8.decoder).join();
-
-    httpClient.close();
+    // Convert BEEF hex to bytes
+    final beefBytes = hex.decode(beefHex);     
+    final response = await _client.post(
+      Uri.parse(url),
+      headers: headers,
+      body: beefBytes,
+    );
 
     if (response.statusCode == 200 || response.statusCode == 201) {
-      return ArcSubmitResponse.fromJson(jsonDecode(responseBody));
+      return ArcSubmitResponse.fromJson(jsonDecode(response.body));
     } else {
-      throw ArcException('Failed to submit BEEF: $responseBody');
+      throw ArcException('Failed to submit BEEF: ${response.body}');
     }
   }
 

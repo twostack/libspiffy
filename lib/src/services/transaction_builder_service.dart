@@ -47,7 +47,7 @@ class TransactionBuildConfig {
   final Set<dartsv.TransactionOption> options;
   
   /// Whether to skip transaction sanity checks (proven pattern)
-  final bool skipSanityChecks;
+  final bool performSanityChecks;
 
   const TransactionBuildConfig({
     this.feePerKb = 1, // Proven low fee rate from speculative code
@@ -56,7 +56,7 @@ class TransactionBuildConfig {
     this.forceChange = false,
     this.enableRBF = false,
     this.options = const {dartsv.TransactionOption.DISABLE_DUST_OUTPUTS},
-    this.skipSanityChecks = false,
+    this.performSanityChecks = true,
   });
 
   /// Default configuration for standard transactions (proven patterns)
@@ -64,7 +64,11 @@ class TransactionBuildConfig {
   
   /// Configuration for partial transactions (invoice system)
   static const TransactionBuildConfig partial = TransactionBuildConfig(
-    skipSanityChecks: true,
+    performSanityChecks: false,
+    options: {
+      dartsv.TransactionOption.DISABLE_DUST_OUTPUTS,
+      dartsv.TransactionOption.DISABLE_MORE_OUTPUT_THAN_INPUT,
+    },
   );
 }
 
@@ -198,8 +202,8 @@ class TransactionBuilderService {
         builder.withOption(option);
       }
       
-      // Build with skip sanity checks (proven pattern for partial transactions)
-      final signedTx = builder.build(config.skipSanityChecks);
+      // Build with performSanityChecks setting (proven pattern for partial transactions)
+      final signedTx = builder.build(config.performSanityChecks);
       final transactionHex = signedTx.serialize();
       
       return TransactionBuildResult(
@@ -373,8 +377,8 @@ class TransactionBuilderService {
       txBuilder.withOption(option);
     }
     
-    // Build transaction (proven pattern: skip sanity checks for flexibility)
-    final signedTx = txBuilder.build(!config.skipSanityChecks);
+          // Build transaction (proven pattern: skip sanity checks for flexibility)
+      final signedTx = txBuilder.build(config.performSanityChecks);
     final signedTxHex = signedTx.serialize();
     
     // Add the newly signed transaction to BEEF (proven pattern)
@@ -396,10 +400,13 @@ class TransactionBuilderService {
     // Calculate results
     final totalOutput = signedTx.outputs.fold<BigInt>(
       BigInt.zero,
-      (sum, output) => sum + BigInt.from(output.satoshis is int ? output.satoshis as int : (output.satoshis as double).toInt()),
+      (sum, output) => sum + output.satoshis,
     );
     final fee = totalInput - totalOutput;
-    final changeAmount = totalOutput - amount;
+    
+    // Calculate change amount correctly - if there's only one output, change is 0
+    // If there are two outputs, the second one is change (recipient first, change second)
+    final changeAmount = signedTx.outputs.length > 1 ? signedTx.outputs[1].satoshis : BigInt.zero;
     
     return TransactionBuildResult(
       transaction: signedTx,
@@ -577,8 +584,20 @@ class TransactionBuilderService {
   /// Convert BRC-71 merkle path to BUMP (proven utility pattern)
   BUMP _convertBrc71PathToBump(Map<String, dynamic> merkleProofJson, int blockHeight, String txid) {
     // This is a simplified conversion - real implementation would need full BRC-71 parsing
-    // For now, return a basic BUMP structure
-    return BUMP.fromBytes(Uint8List(0)); // Placeholder
+    // For now, create a minimal valid BUMP structure
+    try {
+      // Create a minimal BUMP with block height and empty path
+      return BUMP(
+        blockHeight: blockHeight,
+        path: [],
+      );
+    } catch (e) {
+      // If BUMP construction fails, throw a more descriptive error
+      throw TransactionBuildException(
+        'Failed to convert BRC-71 merkle proof to BUMP: $e',
+        code: 'BUMP_CONVERSION_FAILED',
+      );
+    }
   }
 
   /// Estimate transaction fee (proven calculation)

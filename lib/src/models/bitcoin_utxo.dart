@@ -1,5 +1,8 @@
 import 'package:dartsv/dartsv.dart' as dartsv;
 
+/// Sentinel value for copyWith to distinguish between null and not provided
+const _sentinel = Object();
+
 /// Enumeration of UTXO statuses
 enum UTXOStatus {
   /// UTXO is available for spending
@@ -123,7 +126,7 @@ class BitcoinUtxo {
     int? confirmations,
     DateTime? createdAt,
     DateTime? updatedAt,
-    String? reservedByTxId,
+    Object? reservedByTxId = _sentinel,
     int? derivationIndex,
   }) {
     return BitcoinUtxo(
@@ -137,7 +140,7 @@ class BitcoinUtxo {
       confirmations: confirmations ?? this.confirmations,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
-      reservedByTxId: reservedByTxId ?? this.reservedByTxId,
+      reservedByTxId: reservedByTxId == _sentinel ? this.reservedByTxId : reservedByTxId as String?,
       derivationIndex: derivationIndex ?? this.derivationIndex,
     );
   }
@@ -232,7 +235,7 @@ class BitcoinUtxo {
   
   @override
   String toString() {
-    return 'BitcoinUtxo(key: $key, value: ${satoshis} sats, status: ${status.name}, '
+    return 'BitcoinUtxo(key: $key, value: $satoshis sats, status: ${status.name}, '
         'address: $address, confirmations: $confirmations)';
   }
 } 

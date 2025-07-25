@@ -35,15 +35,17 @@ export 'src/services/script_type_registry.dart'; // Script type identification a
 // 🚀 SPV VALIDATION - BEEF/BUMP utilities for SPV transaction validation
 export 'src/utils/bump.dart';                   // BSV Universal Merkle Path (BUMP) implementation
 export 'src/utils/beef.dart';                   // Background Evaluation Extended Format (BEEF) implementation
-export 'src/services/spv_service.dart';         // SPV validation service with ARC integration
+export 'src/services/block_header_service.dart'; // Block header management with reorganization handling
+export 'src/services/spv_service.dart';         // Enhanced SPV validation with ChainTipTracker integration
+export 'src/services/wallet_balance_service.dart'; // BEEF-based multi-tier balance tracking with reorganization handling
 
 // 🛠️ TRANSACTION BUILDING - Production-ready transaction construction
 export 'src/services/transaction_builder_service.dart'; // Comprehensive transaction building with UTXO selection
 
-// 🔑 CRYPTOGRAPHIC SERVICES - Interface complete, DartSV implementation pending
+// 🔑 CRYPTOGRAPHIC SERVICES - Full Bitcoin cryptographic operations
 export 'src/services/crypto_service.dart';              // Cryptographic service interface
-export 'src/services/dartsv_crypto_service.dart';  // Stub implementation (needs DartSV API integration)
+export 'src/services/dartsv_crypto_service.dart';       // Production DartSV implementation ✅
 
-// 🎉 PHASE 1D COMPLETE - Ready for Phase 2!
-// All core wallet services implemented and integrated
+// 🎉 PHASE 1 COMPLETE - Ready for Phase 2!
+// Production-ready SPV Bitcoin wallet library with comprehensive test coverage
 

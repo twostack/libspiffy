@@ -1,14 +1,20 @@
 import 'dart:typed_data';
+import 'package:buffer/buffer.dart';
 import 'package:convert/convert.dart';
-import 'package:crypto/crypto.dart';
-
+import 'package:dartsv/dartsv.dart' as dartsv hide BlockHeader;
+import 'package:spiffynode/spiffy_node.dart';
+import '../services/block_header_service.dart';
 import 'bump.dart';
 
 /// BeefMagicAndVersion is the magic bytes and version for BEEF format (0100BEEF)
 const int beefMagicAndVersion = 0x0100BEEF;
 
-/// Represents a Background Evaluation Extended Format transaction package
-/// Used for SPV validation of Bitcoin SV transactions with merkle proofs
+
+
+class BEEFException implements Exception{
+}
+
+/// Represents a Background Evaluation Extended Format transaction
 class BEEF {
   /// The version of the BEEF format
   final int version;
@@ -37,12 +43,14 @@ class BEEF {
   /// Parse a BEEF format byte array
   static BEEF parse(Uint8List data) {
     if (data.length < 4) {
-      throw BEEFException('Invalid BEEF format: data too short');
+      throw Exception('Invalid BEEF format: data too short');
     }
 
-    final reader = ByteDataReader(data);
+    final reader = ByteDataReader();
+    reader.add(data);
 
     // Read and validate magic and version
+    // We need to handle endianness manually since ByteDataReader doesn't support it
     final b0 = reader.readUint8();
     final b1 = reader.readUint8();
     final b2 = reader.readUint8();
@@ -52,11 +60,11 @@ class BEEF {
     final version = (b0 << 24) | (b1 << 16) | (b2 << 8) | b3;
     
     if (version != beefMagicAndVersion) {
-      throw BEEFException('Invalid BEEF version: expected ${beefMagicAndVersion.toRadixString(16)}, got ${version.toRadixString(16)}');
+      throw Exception('Invalid BEEF version: expected ${beefMagicAndVersion.toRadixString(16)}, got ${version.toRadixString(16)}');
     }
 
     // Read number of BUMPs
-    final nBumps = reader.readVarInt();
+    final nBumps = dartsv.readVarIntNum(reader);
 
     // Read BUMPs
     final bumps = <BUMP>[];
@@ -66,7 +74,7 @@ class BEEF {
     }
 
     // Read number of transactions
-    final nTxs = reader.readVarInt();
+    final nTxs = dartsv.readVarIntNum(reader);
 
     // Read transactions and their merkle flags
     final txs = <Uint8List>[];
@@ -74,10 +82,13 @@ class BEEF {
     final bumpIndex = <int>[];
 
     for (var i = 0; i < nTxs; i++) {
-      // Read transaction size and data
-      final txSize = reader.readVarInt();
-      final tx = reader.readBytes(txSize);
-      txs.add(tx);
+      // Read transaction
+      // For simplicity, we'll read the transaction as a raw byte array
+      // In a real implementation, you would parse this into a Transaction object
+      final tx = dartsv.Transaction.fromBufferReader(reader);
+      // final txSize = readVarIntNum(reader);
+      // final tx = reader.readBytes(txSize);
+      txs.add(Uint8List.fromList(hex.decode(tx.serialize())));
 
       // Read Has BUMP flag
       final hasBump = reader.readUint8() == 1;
@@ -85,9 +96,9 @@ class BEEF {
 
       // If has merkle proof, read BUMP index
       if (hasBump) {
-        final idx = reader.readVarInt();
+        final idx = dartsv.readVarIntNum(reader);
         if (idx >= nBumps) {
-          throw BEEFException('Invalid BUMP index $idx for tx $i: exceeds number of BUMPs');
+          throw Exception('Invalid BUMP index $idx for tx $i: exceeds number of BUMPs');
         }
         bumpIndex.add(idx);
       }
@@ -113,23 +124,26 @@ class BEEF {
     buffer.writeUint8(version & 0xFF);
 
     // Write number of BUMPs
-    buffer.writeVarInt(bumps.length);
+    final nBumps = dartsv.VarInt.fromInt(bumps.length).encode();
+    buffer.write(nBumps);
 
     // Write BUMPs
     for (var i = 0; i < bumps.length; i++) {
       final bumpBytes = bumps[i].serialize();
-      buffer.writeBytes(bumpBytes);
+      buffer.write(bumpBytes);
     }
 
     // Write number of transactions
-    buffer.writeVarInt(txs.length);
+    final nTxs = dartsv.VarInt.fromInt(txs.length);
+    buffer.write(nTxs.encode());
 
     // Write transactions and their merkle flags
     var bumpIndexCount = 0;
     for (var i = 0; i < txs.length; i++) {
       // Write transaction
-      buffer.writeVarInt(txs[i].length);
-      buffer.writeBytes(txs[i]);
+      // final txLength = dartsv.VarInt.fromInt(txs[i].length);
+      // buffer.write(txLength.encode());
+      buffer.write(txs[i]);
 
       // Write Has BUMP flag
       buffer.writeUint8(hasMerkle[i] ? 1 : 0);
@@ -137,9 +151,10 @@ class BEEF {
       // If has merkle proof, write BUMP index
       if (hasMerkle[i]) {
         if (bumpIndexCount >= bumpIndex.length) {
-          throw BEEFException('Missing BUMP index for tx $i');
+          throw Exception('Missing BUMP index for tx $i');
         }
-        buffer.writeVarInt(bumpIndex[bumpIndexCount]);
+        final bumpNdx = dartsv.VarInt.fromInt(bumpIndex[bumpIndexCount]);
+        buffer.write(bumpNdx.encode());
         bumpIndexCount++;
       }
     }
@@ -184,11 +199,11 @@ class BEEF {
   /// Calculate the transaction ID (TXID) for a transaction
   /// TXID is the double SHA-256 hash of the transaction
   Uint8List calculateTxid(Uint8List txData) {
-    final firstHash = sha256.convert(txData);
-    final secondHash = sha256.convert(firstHash.bytes);
+    final firstHash = dartsv.sha256(txData);
+    final secondHash = dartsv.sha256(firstHash);
     
     // Bitcoin uses little-endian for TXIDs, so we need to reverse the bytes
-    final txid = Uint8List.fromList(secondHash.bytes.reversed.toList());
+    final txid = Uint8List.fromList(secondHash.reversed.toList());
     return txid;
   }
   
@@ -197,7 +212,7 @@ class BEEF {
   Map<String, dynamic>? findTransactionByTxid(Uint8List txid) {
     for (int i = 0; i < txs.length; i++) {
       final calculatedTxid = calculateTxid(txs[i]);
-      if (_listEquals(calculatedTxid, txid)) {
+      if (listEquals(calculatedTxid, txid)) {
         return {
           'txData': txs[i],
           'index': i,
@@ -207,19 +222,6 @@ class BEEF {
       }
     }
     return null;
-  }
-  
-  /// Find a transaction by its TXID (hex string)
-  /// Returns the transaction data and its index, or null if not found
-  Map<String, dynamic>? findTransactionByTxidHex(String txidHex) {
-    try {
-      final txidBytes = Uint8List.fromList(hex.decode(txidHex));
-      // Bitcoin TXIDs are displayed in reverse byte order
-      final reversedTxid = Uint8List.fromList(txidBytes.reversed.toList());
-      return findTransactionByTxid(reversedTxid);
-    } catch (e) {
-      return null;
-    }
   }
   
   /// Validate that a transaction with the given TXID is included in this BEEF
@@ -242,17 +244,6 @@ class BEEF {
     // Validate the merkle path for this transaction
     return bumps[bumpIdx].validateMerklePath(txid);
   }
-
-  /// Validate a transaction by TXID hex string
-  bool validateTransactionHex(String txidHex) {
-    try {
-      final txidBytes = Uint8List.fromList(hex.decode(txidHex));
-      final reversedTxid = Uint8List.fromList(txidBytes.reversed.toList());
-      return validateTransaction(reversedTxid);
-    } catch (e) {
-      return false;
-    }
-  }
   
   /// Get all transactions that have merkle proofs
   List<Map<String, dynamic>> getVerifiedTransactions() {
@@ -264,7 +255,6 @@ class BEEF {
         final txid = calculateTxid(txs[i]);
         result.add({
           'txid': txid,
-          'txidHex': hex.encode(txid.reversed.toList()), // Display format
           'txData': txs[i],
           'index': i,
           'bumpIndex': bumpIndex[bumpIndexCounter],
@@ -277,100 +267,126 @@ class BEEF {
     return result;
   }
 
-  /// Get all transactions (verified and unverified)
-  List<Map<String, dynamic>> getAllTransactions() {
+
+  Future<bool> validateTransactionWithBlockHeader( Uint8List txid, BlockHeader blockHeader ) async {
+
+    // First, check if the transaction is included in this BEEF
+    final txInfo = findTransactionByTxid(txid);
+    if (txInfo == null || !txInfo['hasMerkleProof']) {
+      return false; // Transaction not found or doesn't have a merkle proof
+    }
+
+    // Get the BUMP index and the corresponding BUMP
+    final bumpIdx = txInfo['bumpIndex'] as int;
+    if (bumpIdx >= bumps.length) {
+      return false; // Invalid BUMP index
+    }
+
+    final bump = bumps[bumpIdx];
+
+    // Validate the merkle path for this transaction
+    if (!bump.validateMerklePath(txid)) {
+      return false; // Invalid merkle path
+    }
+
+
+    // Compute the merkle root from the transaction and its merkle path
+    final computedMerkleRoot = bump.computeMerkleRoot(txid);
+
+    // Convert the computed merkle root to a hex string for comparison
+    final computedMerkleRootHex = hex.encode(computedMerkleRoot);
+
+    // Compare with the merkle root in the block header
+    return computedMerkleRootHex == hex.encode(blockHeader.merkleRoot.bytes.reversed.toList());
+
+  }
+
+  /// Validate a transaction against the block header database
+  /// Returns a Future that resolves to true if the transaction is valid, false otherwise
+  Future<bool> validateTransactionWithBlockHeaderService(
+    Uint8List txid, 
+    BlockHeaderService blockHeaderService
+  ) async {
+    // First, check if the transaction is included in this BEEF
+    final txInfo = findTransactionByTxid(txid);
+    if (txInfo == null || !txInfo['hasMerkleProof']) {
+      return false; // Transaction not found or doesn't have a merkle proof
+    }
+
+    // Get the BUMP index and the corresponding BUMP
+    final bumpIdx = txInfo['bumpIndex'] as int;
+    if (bumpIdx >= bumps.length) {
+      return false; // Invalid BUMP index
+    }
+
+    final bump = bumps[bumpIdx];
+
+    // Validate the merkle path for this transaction
+    if (!bump.validateMerklePath(txid)) {
+      return false; // Invalid merkle path
+    }
+
+    // Get the block header for the block height
+    final blockHeight = bump.blockHeight;
+
+    try {
+      // Get the header at this specific height
+      final blockHeader = await blockHeaderService.getHeader(blockHeight);
+      
+      if (blockHeader == null) {
+        return false; // No header found at this height
+      }
+      
+      // Compute the merkle root from the transaction and its merkle path
+      final computedMerkleRoot = bump.computeMerkleRoot(txid);
+      
+      // Convert the computed merkle root to a hex string for comparison
+      final computedMerkleRootHex = bytesToHex(computedMerkleRoot);
+      
+      // Compare with the merkle root in the block header
+      if (computedMerkleRootHex != hex.encode(blockHeader.merkleRoot.bytes)) {
+          return false; // No matching merkle root found in any header at this height
+      }
+      
+      // All checks passed, the transaction is valid
+      return true;
+    } catch (e) {
+      print('Error validating transaction with block header: $e');
+      return false;
+    }
+  }
+  
+  /// Helper method to convert bytes to hex string
+  /// This is made public for testing purposes
+  String bytesToHex(Uint8List bytes) {
+    return bytes.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join('');
+  }
+  
+  /// Get all transactions that have been validated against the block header database
+  /// Returns a Future that resolves to a list of validated transactions
+  Future<List<Map<String, dynamic>>> getBlockHeaderValidatedTransactions(
+    BlockHeaderService blockHeaderService
+  ) async {
     final result = <Map<String, dynamic>>[];
-    int bumpIndexCounter = 0;
+    final verifiedTxs = getVerifiedTransactions();
     
-    for (int i = 0; i < txs.length; i++) {
-      final txid = calculateTxid(txs[i]);
-      final hasProof = hasMerkle[i];
+    for (final tx in verifiedTxs) {
+      final txid = tx['txid'] as Uint8List;
+      final isValid = await validateTransactionWithBlockHeaderService(txid, blockHeaderService);
       
-      result.add({
-        'txid': txid,
-        'txidHex': hex.encode(txid.reversed.toList()), // Display format
-        'txData': txs[i],
-        'index': i,
-        'hasMerkleProof': hasProof,
-        'bumpIndex': hasProof ? bumpIndex[bumpIndexCounter] : null,
-        'blockHeight': hasProof ? bumps[bumpIndex[bumpIndexCounter]].blockHeight : null,
-      });
-      
-      if (hasProof) {
-        bumpIndexCounter++;
+      if (isValid) {
+        result.add({
+          ...tx,
+          'validatedWithBlockHeader': true,
+        });
       }
     }
     
     return result;
   }
-
-  /// Validate transactions against block headers using SpiffyNode integration
-  /// Returns true if all transactions with merkle proofs are valid
-  Future<bool> validateWithBlockHeaders(Future<String?> Function(int blockHeight) getMerkleRoot) async {
-    final verifiedTxs = getVerifiedTransactions();
-    
-    for (final tx in verifiedTxs) {
-      final txid = tx['txid'] as Uint8List;
-      final blockHeight = tx['blockHeight'] as int;
-      final bumpIdx = tx['bumpIndex'] as int;
-      
-      // Get the merkle root from block header
-      final blockMerkleRoot = await getMerkleRoot(blockHeight);
-      if (blockMerkleRoot == null) {
-        return false; // Block header not found
-      }
-      
-      // Compute merkle root from BUMP
-      final computedMerkleRoot = bumps[bumpIdx].computeMerkleRoot(txid);
-      final computedMerkleRootHex = hex.encode(computedMerkleRoot.reversed.toList());
-      
-      // Compare merkle roots
-      if (computedMerkleRootHex != blockMerkleRoot) {
-        return false; // Merkle root mismatch
-      }
-    }
-    
-    return true;
-  }
-
-  /// Get BEEF statistics for debugging
-  Map<String, dynamic> getStatistics() {
-    final verifiedTxs = getVerifiedTransactions();
-    final allTxs = getAllTransactions();
-    
-    return {
-      'version': version.toRadixString(16),
-      'totalTransactions': txs.length,
-      'verifiedTransactions': verifiedTxs.length,
-      'unverifiedTransactions': allTxs.length - verifiedTxs.length,
-      'totalBumps': bumps.length,
-      'blockHeights': bumps.map((bump) => bump.blockHeight).toSet().toList()..sort(),
-      'beefSizeBytes': serialize().length,
-    };
-  }
-
-  /// Convert BEEF to hex string for transmission
-  String toHex() {
-    return hex.encode(serialize());
-  }
-
-  /// Create BEEF from hex string
-  static BEEF fromHex(String hexString) {
-    try {
-      final bytes = Uint8List.fromList(hex.decode(hexString));
-      return BEEF.parse(bytes);
-    } catch (e) {
-      throw BEEFException('Failed to parse BEEF from hex: $e');
-    }
-  }
-
-  /// Helper method to convert bytes to hex string
-  String bytesToHex(Uint8List bytes) {
-    return bytes.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join('');
-  }
-
+  
   /// Compare two Uint8List for equality
-  bool _listEquals(Uint8List a, Uint8List b) {
+  bool listEquals(Uint8List a, Uint8List b) {
     if (a.length != b.length) {
       return false;
     }
@@ -384,13 +400,3 @@ class BEEF {
     return true;
   }
 }
-
-/// Exception thrown by BEEF operations
-class BEEFException implements Exception {
-  final String message;
-  
-  BEEFException(this.message);
-  
-  @override
-  String toString() => 'BEEFException: $message';
-} 

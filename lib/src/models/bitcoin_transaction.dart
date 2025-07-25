@@ -1,5 +1,43 @@
 import 'package:dartsv/dartsv.dart' as dartsv;
 
+
+enum BitcoinScriptType {
+  /// Pay to Public Key Hash (standard address)
+  p2pkh,
+
+  /// Pay to Public Key
+  p2pk,
+
+  /// Pay to Multi-Signature
+  p2ms,
+
+  /// OP_RETURN (data carrier)
+  opReturn,
+
+  /// Pay to Script Hash
+  p2sh,
+
+  /// Custom script type
+  custom,
+
+  /// Unknown script type
+  unknown
+}
+
+/// Represents the direction of a Bitcoin transaction
+enum BitcoinTransactionDirection {
+  incoming,
+  outgoing,
+  self,
+  unknown;
+
+  String toJson(){
+    return name;
+  }
+}
+
+
+
 /// Enumeration of transaction statuses
 enum TransactionStatus {
   /// Transaction has been created but not yet signed

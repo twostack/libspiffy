@@ -324,7 +324,7 @@ void main() {
         final sig1 = await cryptoService.signTransactionHash(privateKey, txHash, 0x01); // SIGHASH_ALL
         final sig2 = await cryptoService.signTransactionHash(privateKey, txHash, 0x02); // SIGHASH_NONE
         
-        expect(sig1.toString(), isNot(equals(sig2.toString())));
+        expect(sig1.toTxFormat(), isNot(equals(sig2.toTxFormat())));
       });
 
       test('should produce different signatures for different transaction hashes', () async {

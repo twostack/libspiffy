@@ -143,14 +143,15 @@ void main() {
             eventTypeName: 'TestEvent$i',
             data: {'index': i},
             timestamp: now.add(Duration(minutes: i)),
+            version: i + 1, // Set versions 1, 2, 3, 4, 5
           )
         );
 
         await storage.saveEvents(walletId, events);
 
-        // Load events from version 3 onwards
+        // Load events from version 3 onwards (version > 3 = versions 4, 5)
         final recentEvents = await storage.loadEvents(walletId, fromVersion: 3);
-        expect(recentEvents.length, equals(2)); // Events 4, 5 (0-indexed)
+        expect(recentEvents.length, equals(2)); // Events with versions 4, 5
       });
 
       test('should handle empty event list', () async {

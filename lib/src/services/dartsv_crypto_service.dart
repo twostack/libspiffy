@@ -192,7 +192,7 @@ class DartSVCryptoService implements CryptoService {
     int addressIndex, {
     dartsv.NetworkType network = dartsv.NetworkType.TEST,
   }) {
-    final childKey = hdPublicKey.deriveChildNumber(addressIndex);
+    final childKey= hdPublicKey.deriveChildKey("m/0/${addressIndex}");
     final address = Address.fromPublicKey(childKey.publicKey, network);
     return address.toBase58();
   }
@@ -203,7 +203,8 @@ class DartSVCryptoService implements CryptoService {
     int addressIndex, {
     dartsv.NetworkType network = dartsv.NetworkType.TEST,
   }) {
-    final childKey = hdPublicKey.deriveChildNumber(addressIndex);
+    // final childKey = hdPublicKey.deriveChildNumber(addressIndex);
+    final childKey= hdPublicKey.deriveChildKey("m/1/${addressIndex}");
     final address = Address.fromPublicKey(childKey.publicKey, network);
     return address.toBase58();
 

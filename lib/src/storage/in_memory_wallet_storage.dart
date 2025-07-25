@@ -54,30 +54,34 @@ class InMemoryWalletStorage implements WalletStorage {
   
   @override
   Future<void> saveEvents(String walletId, List<WalletEvent> events) async {
-    if (events.isEmpty) return;
-    
     await _withLock(walletId, () async {
-      // Initialize wallet if it doesn't exist
+      // Initialize wallet if it doesn't exist (even for empty event lists)
       _walletIds.add(walletId);
       _events.putIfAbsent(walletId, () => <WalletEvent>[]);
       
-      // Add events in order
-      final walletEvents = _events[walletId]!;
-      walletEvents.addAll(events);
-      
-      // Sort by version to maintain order
-      walletEvents.sort((a, b) => a.version.compareTo(b.version));
-      
-      _totalEvents += events.length;
-      
-      // Invalidate balance cache since wallet state changed
-      _balanceCache.remove(walletId);
+      if (events.isNotEmpty) {
+        // Add events in order
+        final walletEvents = _events[walletId]!;
+        walletEvents.addAll(events);
+        
+        // Sort by version to maintain order
+        walletEvents.sort((a, b) => a.version.compareTo(b.version));
+        
+        _totalEvents += events.length;
+        
+        // Invalidate balance cache since wallet state changed
+        _balanceCache.remove(walletId);
+      }
     });
   }
   
   @override
   Future<List<WalletEvent>> loadEvents(String walletId, {int? fromVersion}) async {
     return await _withLock(walletId, () async {
+      if (!_walletIds.contains(walletId)) {
+        throw StorageException('Wallet not found: $walletId');
+      }
+      
       final walletEvents = _events[walletId] ?? <WalletEvent>[];
       
       if (fromVersion == null) {
@@ -93,6 +97,10 @@ class InMemoryWalletStorage implements WalletStorage {
   @override
   Future<List<BitcoinUtxo>> getUTXOs(String walletId, {bool includeSpent = false}) async {
     return await _withLock(walletId, () async {
+      if (!_walletIds.contains(walletId)) {
+        throw StorageException('Wallet not found: $walletId');
+      }
+      
       final walletUtxos = _utxos[walletId] ?? <String, BitcoinUtxo>{};
       
       return walletUtxos.values
@@ -104,6 +112,10 @@ class InMemoryWalletStorage implements WalletStorage {
   @override
   Future<List<BitcoinUtxo>> getAvailableUTXOs(String walletId) async {
     return await _withLock(walletId, () async {
+      if (!_walletIds.contains(walletId)) {
+        throw StorageException('Wallet not found: $walletId');
+      }
+      
       final walletUtxos = _utxos[walletId] ?? <String, BitcoinUtxo>{};
       
       return walletUtxos.values
@@ -115,13 +127,21 @@ class InMemoryWalletStorage implements WalletStorage {
   @override
   Future<BigInt> getBalance(String walletId) async {
     return await _withLock(walletId, () async {
+      if (!_walletIds.contains(walletId)) {
+        throw StorageException('Wallet not found: $walletId');
+      }
+      
       // Check cache first  
       if (_balanceCache.containsKey(walletId)) {
         return _balanceCache[walletId]!;
       }
       
-      // Calculate balance from available UTXOs
-      final availableUtxos = await getAvailableUTXOs(walletId);
+      // Calculate balance from available UTXOs (avoid nested locking)
+      final walletUtxos = _utxos[walletId] ?? <String, BitcoinUtxo>{};
+      final availableUtxos = walletUtxos.values
+          .where((utxo) => utxo.isAvailable)
+          .toList();
+      
       final balance = availableUtxos.fold<BigInt>(
         BigInt.zero,
         (sum, utxo) => sum + utxo.satoshis,

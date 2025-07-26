@@ -3,6 +3,7 @@ import 'dart:collection';
 
 import 'package:spiffynode/src/spv/chain_tip_tracker.dart';
 
+import '../actors/wallet_messages.dart';
 import '../models/bitcoin_utxo.dart';
 import '../models/bitcoin_transaction.dart';
 import '../utils/beef.dart';
@@ -147,7 +148,7 @@ class WalletBalanceService {
     
     // Get BEEF proof and validation status
     final beef = await _getBEEFForTransaction(transaction.txid);
-    final validationResult = beef != null ? await spvService.validateBEEF(beef) : null;
+    final validationResult = beef != null ? await spvService.validateBEEF(beef, txKey) : null;
     
     final tracked = TrackedSpendingTransaction(
       transaction: transaction,
@@ -282,7 +283,7 @@ class WalletBalanceService {
       tracked.beef = newBeef;
       
       // Revalidate BEEF
-      tracked.validationResult = newBeef != null ? await spvService.validateBEEF(newBeef) : null;
+      tracked.validationResult = newBeef != null ? await spvService.validateBEEF(newBeef, tracked.transaction.txid) : null;
       tracked.lastValidated = DateTime.now();
       
       print('WalletBalanceService: Revalidated transaction ${tracked.transaction.txid}');

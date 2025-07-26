@@ -21,6 +21,9 @@ export 'src/core/wallet_commands.dart';         // 13 wallet commands extending 
 export 'src/core/wallet_events.dart';           // 13 wallet events extending AggregateEventBase  
 export 'src/core/bitcoin_wallet_aggregate.dart'; // Complete aggregate root with business logic
 
+// 🎭 ACTOR COORDINATION LAYER - Dactor-based multi-wallet coordination
+export 'src/actors/actors.dart';                // Complete actor system: WalletManager, SPV, ARC actors
+
 // 🚀 CRYPTO SERVICES - Real Bitcoin cryptographic operations
 export 'src/services/crypto_service.dart';      // Comprehensive crypto service interface
 export 'src/services/dartsv_crypto_service.dart'; // DartSV-based implementation with HD wallets
@@ -39,13 +42,11 @@ export 'src/services/block_header_service.dart'; // Block header management with
 export 'src/services/spv_service.dart';         // Enhanced SPV validation with ChainTipTracker integration
 export 'src/services/wallet_balance_service.dart'; // BEEF-based multi-tier balance tracking with reorganization handling
 
-// 🛠️ TRANSACTION BUILDING - Production-ready transaction construction
+// TRANSACTION BUILDING - Production-ready transaction construction
 export 'src/services/transaction_builder_service.dart'; // Comprehensive transaction building with UTXO selection
 
-// 🔑 CRYPTOGRAPHIC SERVICES - Full Bitcoin cryptographic operations
+// CRYPTOGRAPHIC SERVICES - Full Bitcoin cryptographic operations
 export 'src/services/crypto_service.dart';              // Cryptographic service interface
 export 'src/services/dartsv_crypto_service.dart';       // Production DartSV implementation ✅
 
-// 🎉 PHASE 1 COMPLETE - Ready for Phase 2!
-// Production-ready SPV Bitcoin wallet library with comprehensive test coverage
 

@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:spiffynode/src/spv/chain_tip_tracker.dart';
 
+import '../actors/wallet_messages.dart';
 import '../utils/beef.dart';
 import '../utils/bump.dart';
 import 'arc_service.dart';
@@ -176,19 +177,20 @@ class SPVService {
   }
 
   /// Validate a BEEF package against current blockchain state
-  Future<SPVValidationResult> validateBEEF(BEEF beef) async {
+  Future<SPVValidationResult> validateBEEF(BEEF beef, String txId) async {
     if (!beef.validate()) {
       return SPVValidationResult(
+        txid: txId,
         isValid: false,
-        reason: 'Invalid BEEF structure',
+        validationError: 'Invalid BEEF structure',
       );
     }
 
     final verifiedTxs = beef.getVerifiedTransactions();
     if (verifiedTxs.isEmpty) {
       return SPVValidationResult(
+        txid: txId,
         isValid: true,
-        reason: 'No transactions with merkle proofs to validate',
       );
     }
 
@@ -228,11 +230,11 @@ class SPVService {
     }
 
     return SPVValidationResult(
-      isValid: failedTxids.isEmpty,
-      reason: failedTxids.isEmpty ? null : 'Failed to validate ${failedTxids.length} transactions',
-      validatedTxids: validatedTxids,
-      failedTxids: failedTxids,
+      txid: txId,
+      isValid: false,
+      validationError: failedTxids.isEmpty ? null : 'Failed to validate ${failedTxids.length} transactions'
     );
+
   }
 
   /// Validate a single transaction using its merkle proof
@@ -552,20 +554,6 @@ class TransactionVerificationStatus {
   });
 }
 
-/// SPV validation result with detailed information
-class SPVValidationResult {
-  final bool isValid;
-  final String? reason;
-  final List<String> validatedTxids;
-  final List<String> failedTxids;
-
-  SPVValidationResult({
-    required this.isValid,
-    this.reason,
-    this.validatedTxids = const [],
-    this.failedTxids = const [],
-  });
-}
 
 /// Exception thrown by SPV service operations
 class SPVException implements Exception {

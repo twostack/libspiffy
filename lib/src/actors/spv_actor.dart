@@ -23,9 +23,6 @@ import 'wallet_messages.dart';
 class SPVActor extends Actor {
   final ActorRef _walletManager;
   
-  // Block header chain management
-  final Map<int, dynamic> _blockHeadersByHeight = {}; // height -> BlockHeader
-  final Map<String, dynamic> _blockHeadersByHash = {}; // hash -> BlockHeader
   int _currentHeight = 0;
   dynamic _currentTip;
   
@@ -368,16 +365,14 @@ class SPVActor extends Actor {
   /// Handle block header updates from SpiffyNode
   Future<void> _handleBlockHeaderUpdate(BlockHeaderUpdateMessage msg) async {
     print('Updating block header chain: height ${msg.height}, reorg: ${msg.isReorganization}');
-    
+
+    //NOTE: BlockHeader-specific work is done by SpiffyNode. We handle
+    //Transaction-related and wallet-related mitigations
+
     try {
       if (msg.isReorganization) {
         await _handleBlockchainReorganization(msg.orphanedHeaders ?? []);
       }
-      
-      // Add new header to chain
-      _blockHeadersByHeight[msg.height] = msg.blockHeader;
-      // TODO: Extract hash from blockHeader
-      // _blockHeadersByHash[msg.blockHeader.hash] = msg.blockHeader;
       
       // Update chain tip
       if (msg.height > _currentHeight) {
@@ -395,12 +390,13 @@ class SPVActor extends Actor {
   /// Handle blockchain reorganization
   Future<void> _handleBlockchainReorganization(List<dynamic> orphanedHeaders) async {
     print('Handling blockchain reorganization: ${orphanedHeaders.length} orphaned headers');
-    
+
+    //NOTE: BlockHeader-specific work is done by SpiffyNode. We handle
+    //Transaction-related and wallet-related mitigations
     // TODO: Implement reorganization handling:
-    // 1. Remove orphaned headers from chain
-    // 2. Invalidate merkle proofs for transactions in orphaned blocks
-    // 3. Notify WalletManager of affected transactions
-    // 4. Request re-validation of affected transactions
+    // 1. Invalidate merkle proofs for transactions in orphaned blocks
+    // 2. Notify WalletManager of affected transactions
+    // 3. Request re-validation of affected transactions
     
     print('Blockchain reorganization handled (placeholder)');
   }
@@ -490,25 +486,10 @@ class SPVActor extends Actor {
     _headerSyncSubscription?.cancel();
   }
 
-  // ==========================================================================
-  // HELPER METHODS FOR SPV
-  // ==========================================================================
-
-  /// Get block header by height
-  dynamic getBlockHeaderByHeight(int height) => _blockHeadersByHeight[height];
-
-  /// Get block header by hash
-  dynamic getBlockHeaderByHash(String hash) => _blockHeadersByHash[hash];
-
   /// Get current chain tip
   dynamic get currentTip => _currentTip;
 
   /// Get current chain height
   int get currentHeight => _currentHeight;
 
-  /// Check if we have block header for given height
-  bool hasBlockHeader(int height) => _blockHeadersByHeight.containsKey(height);
-
-  /// Get chain length (number of headers we have)
-  int get chainLength => _blockHeadersByHeight.length;
-} 
+}

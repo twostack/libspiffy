@@ -284,21 +284,84 @@ class SPVActor extends Actor {
   }
 
   /// Extract UTXOs we can spend from this transaction
-  Future<List<Map<String, dynamic>>> _extractSpendableUTXOs(dynamic transaction, String? walletId) async {
-    // TODO: Implement UTXO extraction:
-    // 1. Check each output to see if we can spend it
-    // 2. Use script analysis to determine spendability
-    // 3. Create UTXO records with merkle proof requirements
-    
+  Future<List<Map<String, dynamic>>> _extractSpendableUTXOs(dartsv.Transaction transaction, String? walletId) async {
+
+    //FIXME: check script spendability against our wallets by
+    //1. Identifying type of output script
+    //2. Extracting identifying information
+    //3. Matching identifying information against one of our wallets
+
+    final templateRegistry = dartsv.ScriptTemplateRegistry();
+    for (final output in transaction.outputs){
+      final script = output.script;
+      final scriptInfo = templateRegistry.extractScriptInfo(script);
+      if (scriptInfo == null){
+        return []; //FIXME: No identifiable information found. What do we do?
+      }
+
+      final scriptType = templateRegistry.identifyScriptType(script);
+      if (scriptType == null) {
+        return []; //FIXME: No identifiable script type. What do we do ?
+      }
+
+      var pubkeyHash = "";
+
+      switch (scriptType) {
+        case 'p2ms':
+        //handle pubkey values
+          break;
+        case 'p2pkh':
+        case 'p2pk':
+        case 'p2sh':
+          pubkeyHash = scriptInfo['pubKeyHash'];
+        default:
+          break;
+      }
+
+      //decide what to do about pkh vs p2ms here
+
+    }
     return []; // Placeholder
   }
 
   /// Extract UTXOs that were spent in this transaction
-  Future<List<Map<String, dynamic>>> _extractSpentUTXOs(dynamic transaction, String? walletId) async {
-    // TODO: Implement spent UTXO detection:
-    // 1. Check each input to see if it spends our UTXOs
-    // 2. Match against known wallet UTXOs
-    
+  Future<List<Map<String, dynamic>>> _extractSpentUTXOs(dartsv.Transaction transaction, String? walletId) async {
+
+    //FIXME: check script spendability against our wallets by
+    //1. Identifying type of output script
+    //2. Extracting identifying information
+    //3. Matching identifying information against one of our wallets
+
+    final templateRegistry = dartsv.ScriptTemplateRegistry();
+    for (final output in transaction.outputs) {
+      final script = output.script;
+      final scriptInfo = templateRegistry.extractScriptInfo(script);
+      if (scriptInfo == null) {
+        return []; //FIXME: No identifiable information found. What do we do?
+      }
+
+      final scriptType = templateRegistry.identifyScriptType(script);
+      if (scriptType == null) {
+        return []; //FIXME: No identifiable script type. What do we do ?
+      }
+
+      var pubkeyHash = "";
+
+      switch (scriptType) {
+        case 'p2ms':
+        //handle pubkey values
+          break;
+        case 'p2pkh':
+        case 'p2pk':
+        case 'p2sh':
+          pubkeyHash = scriptInfo['pubKeyHash'];
+        default:
+          break;
+      }
+    }
+
+      //decide what to do about pkh vs p2ms here
+
     return []; // Placeholder
   }
 

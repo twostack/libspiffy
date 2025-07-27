@@ -1,12 +1,13 @@
 import 'dart:async';
-import 'dart:js_interop';
 import 'dart:typed_data';
 import 'package:convert/convert.dart';
+import 'package:crypto/crypto.dart';
 import 'package:dactor/dactor.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:spiffynode/spiffy_node.dart';
 
 import '../core/wallet_commands.dart';
+import '../storage/wallet_storage.dart';
 import '../utils/beef.dart';
 import '../utils/bump.dart';
 import 'wallet_messages.dart';
@@ -15,29 +16,30 @@ import 'wallet_messages.dart';
 /// and validates them using merkle proofs against the block header chain
 /// 
 /// This actor is responsible for:
-/// - Block header synchronization with SpiffyNode
 /// - Direct transaction validation (NOT discovery)
-/// - Merkle proof validation against block headers
-/// - BEEF/BUMP transaction processing
+/// - Merkle proof validation against stored block headers
+/// - BEEF/BUMP transaction processing  
 /// - Coordinating with WalletManagerActor for validated transactions
+/// 
+/// Note: Block header synchronization is handled by SpiffyNode, which stores
+/// headers in WalletStorage. This actor consumes those stored headers for validation.
 class SPVActor extends Actor {
   final ActorRef _walletManager;
+  final WalletStorage _storage;
   
   int _currentHeight = 0;
   dynamic _currentTip;
-  
-  // SpiffyNode integration for block header sync
-  dynamic _chainTipTracker;
-  StreamSubscription? _headerSyncSubscription;
 
   SPVActor({
     required ActorRef walletManager,
-  }) : _walletManager = walletManager;
+    required WalletStorage storage,
+  }) : _walletManager = walletManager,
+       _storage = storage;
 
   @override
   void preStart() {
     print('SPVActor started - True SPV Mode');
-    _initializeBlockHeaderSync();
+    _loadInitialState();
   }
 
   @override
@@ -69,15 +71,35 @@ class SPVActor extends Actor {
     }
   }
 
-  /// Initialize block header synchronization with SpiffyNode
-  void _initializeBlockHeaderSync() {
-    print('Initializing block header synchronization...');
+  /// Load initial SPV state from storage
+  /// 
+  /// Note: Block header synchronization is handled by SpiffyNode, not the SPV actor.
+  /// The SPV actor only consumes headers that SpiffyNode has already stored.
+  void _loadInitialState() {
+    print('Loading initial SPV state from storage...');
     
-    // TODO: Initialize actual SpiffyNode ChainTipTracker
-    // _chainTipTracker = ChainTipTracker();
-    // _headerSyncSubscription = _chainTipTracker.events.listen(_onHeaderUpdate);
-    
-    print('Block header sync initialized (placeholder)');
+    // Load current chain state from storage (async)
+    _loadCurrentChainState().then((_) {
+      print('SPV Actor ready - current height: $_currentHeight');
+      print('Ready to validate transactions using stored block headers');
+    }).catchError((e) {
+      print('Failed to load initial SPV state: $e');
+      print('SPV Actor will start with empty state');
+    });
+  }
+  
+  /// Load current chain state from storage
+  Future<void> _loadCurrentChainState() async {
+    try {
+      _currentHeight = await _storage.getBestHeight();
+      final tip = await _storage.getChainTip();
+      _currentTip = tip;
+      print('Loaded chain state: height $_currentHeight');
+    } catch (e) {
+      print('Failed to load chain state: $e');
+      _currentHeight = 0;
+      _currentTip = null;
+    }
   }
 
   /// Handle transaction received directly from counterparty (CORE SPV)
@@ -117,12 +139,19 @@ class SPVActor extends Actor {
     }
   }
 
-  //Retrieve Block header from SpiffyNode
-  Future<BlockHeader> _getBlockHeader(int blockHeight){
-
-    //we probably need to send a message to a coordinating actor that knows
-    //how to get hold of the spiffyNode
-    throw UnimplementedError();
+  /// Retrieve Block header from storage (populated by SpiffyNode)
+  Future<BlockHeader> _getBlockHeader(int blockHeight) async {
+    try {
+      final header = await _storage.getBlockHeaderByHeight(blockHeight);
+      
+      if (header == null) {
+        throw Exception('Block header not found at height $blockHeight');
+      }
+      
+      return header;
+    } catch (e) {
+      throw Exception('Failed to retrieve block header at height $blockHeight: $e');
+    }
   }
 
   /// Validate received transaction using SPV principles
@@ -281,85 +310,160 @@ class SPVActor extends Actor {
   }
 
   /// Extract UTXOs we can spend from this transaction
+  /// 
+  /// This method analyzes transaction outputs to identify those that belong
+  /// to the specified wallet and can be spent by it.
   Future<List<Map<String, dynamic>>> _extractSpendableUTXOs(dartsv.Transaction transaction, String? walletId) async {
-
-    //FIXME: check script spendability against our wallets by
-    //1. Identifying type of output script
-    //2. Extracting identifying information
-    //3. Matching identifying information against one of our wallets
-
-    final templateRegistry = dartsv.ScriptTemplateRegistry();
-    for (final output in transaction.outputs){
-      final script = output.script;
-      final scriptInfo = templateRegistry.extractScriptInfo(script);
-      if (scriptInfo == null){
-        return []; //FIXME: No identifiable information found. What do we do?
-      }
-
-      final scriptType = templateRegistry.identifyScriptType(script);
-      if (scriptType == null) {
-        return []; //FIXME: No identifiable script type. What do we do ?
-      }
-
-      var pubkeyHash = "";
-
-      switch (scriptType) {
-        case 'p2ms':
-        //handle pubkey values
-          break;
-        case 'p2pkh':
-        case 'p2pk':
-        case 'p2sh':
-          pubkeyHash = scriptInfo['pubKeyHash'];
-        default:
-          break;
-      }
-
-      //decide what to do about pkh vs p2ms here
-
+    final spendableUTXOs = <Map<String, dynamic>>[];
+    
+    if (walletId == null) {
+      return spendableUTXOs;
     }
-    return []; // Placeholder
+
+    try {
+      final templateRegistry = dartsv.ScriptTemplateRegistry();
+      
+      for (int outputIndex = 0; outputIndex < transaction.outputs.length; outputIndex++) {
+        final output = transaction.outputs[outputIndex];
+        final script = output.script;
+        
+        // Analyze script to determine if it belongs to our wallet
+        final scriptInfo = templateRegistry.extractScriptInfo(script);
+        final scriptType = templateRegistry.identifyScriptType(script);
+        
+        if (scriptInfo == null || scriptType == null) {
+          // Skip unrecognized script types
+          continue;
+        }
+
+        String? pubkeyHash;
+
+        switch (scriptType) {
+          case 'p2pkh':
+          case 'p2pk': 
+          case 'p2sh':
+            pubkeyHash = scriptInfo['pubKeyHash'];
+            break;
+          case 'p2ms':
+            // Multi-sig handling would require more complex logic
+            // TODO: Implement multi-sig UTXO recognition
+            continue;
+          default:
+            // Skip unknown script types
+            continue;
+        }
+
+        if (pubkeyHash != null) {
+          // TODO: Check if pubkeyHash belongs to walletId
+          // This requires wallet key management integration
+          final belongsToWallet = await _checkPubkeyHashOwnership(pubkeyHash, walletId);
+          
+          if (belongsToWallet) {
+            spendableUTXOs.add({
+              'txid': transaction.id,
+              'outputIndex': outputIndex,
+              'satoshis': output.satoshis.toInt(),
+              'script': output.script?.toString(),
+              'scriptType': scriptType,
+              'pubkeyHash': pubkeyHash,
+            });
+          }
+        }
+      }
+    } catch (e) {
+      print('Error extracting spendable UTXOs: $e');
+    }
+
+    return spendableUTXOs;
+  }
+  
+  /// Check if a pubkey hash belongs to the specified wallet
+  /// TODO: This needs integration with wallet key management
+  Future<bool> _checkPubkeyHashOwnership(String pubkeyHash, String walletId) async {
+    // Placeholder implementation
+    // In a real implementation, this would query the wallet's keys/addresses
+    return false;
   }
 
   /// Extract UTXOs that were spent in this transaction
+  /// 
+  /// This method analyzes transaction inputs to identify UTXOs that belonged
+  /// to the specified wallet and are being spent by this transaction.
   Future<List<Map<String, dynamic>>> _extractSpentUTXOs(dartsv.Transaction transaction, String? walletId) async {
-
-    //FIXME: check script spendability against our wallets by
-    //1. Identifying type of output script
-    //2. Extracting identifying information
-    //3. Matching identifying information against one of our wallets
-
-    final templateRegistry = dartsv.ScriptTemplateRegistry();
-    for (final output in transaction.outputs) {
-      final script = output.script;
-      final scriptInfo = templateRegistry.extractScriptInfo(script);
-      if (scriptInfo == null) {
-        return []; //FIXME: No identifiable information found. What do we do?
-      }
-
-      final scriptType = templateRegistry.identifyScriptType(script);
-      if (scriptType == null) {
-        return []; //FIXME: No identifiable script type. What do we do ?
-      }
-
-      var pubkeyHash = "";
-
-      switch (scriptType) {
-        case 'p2ms':
-        //handle pubkey values
-          break;
-        case 'p2pkh':
-        case 'p2pk':
-        case 'p2sh':
-          pubkeyHash = scriptInfo['pubKeyHash'];
-        default:
-          break;
-      }
+    final spentUTXOs = <Map<String, dynamic>>[];
+    
+    if (walletId == null) {
+      return spentUTXOs;
     }
 
-      //decide what to do about pkh vs p2ms here
+    try {
+      // For each input, we need to:
+      // 1. Get the previous transaction output being spent
+      // 2. Check if that output belongs to our wallet
+      for (int inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex++) {
+        final input = transaction.inputs[inputIndex];
+        final prevTxId = input.prevTxnId;
+        final prevOutputIndex = input.prevTxnOutputIndex;
 
-    return []; // Placeholder
+        try {
+          // TODO: Retrieve the previous transaction to analyze the spent output
+          // This requires either:
+          // 1. Access to the BEEF data containing the funding transaction
+          // 2. A transaction cache/storage lookup
+          // 3. Network query (not recommended for SPV)
+          
+          final belongsToWallet = await _checkSpentUTXOOwnership(
+            prevTxId, 
+            prevOutputIndex, 
+            walletId
+          );
+          
+          if (belongsToWallet) {
+            spentUTXOs.add({
+              'prevTxId': prevTxId,
+              'prevOutputIndex': prevOutputIndex,
+              'inputIndex': inputIndex,
+              'sequence': input.sequenceNumber,
+            });
+          }
+        } catch (e) {
+          print('Error analyzing input $inputIndex: $e');
+          continue;
+        }
+      }
+    } catch (e) {
+      print('Error extracting spent UTXOs: $e');
+    }
+
+    return spentUTXOs;
+  }
+  
+  /// Check if a spent UTXO belongs to the specified wallet
+  /// TODO: This needs integration with UTXO storage and wallet management
+  Future<bool> _checkSpentUTXOOwnership(String prevTxId, int prevOutputIndex, String walletId) async {
+    // Placeholder implementation
+    // In a real implementation, this would:
+    // 1. Look up the UTXO in wallet storage
+    // 2. Check if it belongs to the specified wallet
+    return false;
+  }
+
+  /// Calculate transaction ID (TXID) from raw transaction data
+  /// 
+  /// Bitcoin transaction IDs are calculated as the double SHA256 hash
+  /// of the raw transaction data, with bytes reversed (little-endian).
+  String _calculateTransactionId(Uint8List transactionData) {
+    // First SHA256
+    final firstHash = sha256.convert(transactionData);
+    
+    // Second SHA256 (double hash)
+    final secondHash = sha256.convert(firstHash.bytes);
+    
+    // Reverse bytes for little-endian representation
+    final reversedBytes = secondHash.bytes.reversed.toList();
+
+    // Convert to hex string
+    return hex.encode(reversedBytes);
   }
 
   /// Handle block header updates from SpiffyNode
@@ -406,24 +510,41 @@ class SPVActor extends Actor {
     print('Validating BEEF data: ${msg.beefData.length} bytes');
     
     try {
-
       final beef = BEEF.parse(Uint8List.fromList(hex.decode(msg.beefData)));
       final isValid = beef.validate();
 
-      if (!isValid){
+      if (!isValid) {
         context.sender?.tell(BEEFValidationResult(
           isValid: false,
           error: 'BEEF data failed validation check',
           targetWalletId: msg.targetWalletId,
         ));
+        return; // Early return for invalid BEEF
       }
 
+      // Extract transaction metadata from valid BEEF
       final extractedTransactions = <Map<String, dynamic>>[];
       
+      // Parse BEEF structure to extract transaction information
+      for (int i = 0; i < beef.txs.length; i++) {
+        final txData = beef.txs[i];
+        final txHex = hex.encode(txData);
+        
+        // Calculate transaction ID (double SHA256 of raw transaction data)
+        final txid = _calculateTransactionId(txData);
+        
+        extractedTransactions.add({
+          'transactionId': txid,           // The TXID for ReceiveTransactionMessage
+          'transactionHex': txHex,         // The full transaction data
+          'transactionIndex': i,           // Index in BEEF structure
+          'dataSize': txData.length,       // Size in bytes
+        });
+      }
+      
       final result = BEEFValidationResult(
-        isValid: isValid,
-        merkleRoot: isValid ? 'placeholder_merkle_root' : null,
-        error: isValid ? null : 'Invalid BEEF data',
+        isValid: true,
+        merkleRoot: 'placeholder_merkle_root', // TODO: Extract actual merkle root
+        error: null,
         targetWalletId: msg.targetWalletId,
         extractedTransactions: extractedTransactions,
       );
@@ -431,13 +552,13 @@ class SPVActor extends Actor {
       context.sender?.tell(result);
       
       // If valid, process extracted transactions
-      if (isValid && extractedTransactions.isNotEmpty) {
+      if (extractedTransactions.isNotEmpty) {
         for (final txData in extractedTransactions) {
           // Convert to ReceiveTransactionMessage and process
           final receiveMsg = ReceiveTransactionMessage(
-            transactionId: txData['transaction'],
+            transactionId: txData['transactionId'], // Now correctly uses transactionId
             beef: beef,
-            fromCounterparty: 'beef_bundle', //FIXME: beef_bundle should be updated to PeerId of sending side
+            fromCounterparty: 'beef_bundle', // TODO: Update to actual peer ID
             targetWalletId: msg.targetWalletId,
           );
           
@@ -445,7 +566,7 @@ class SPVActor extends Actor {
         }
       }
       
-      print('BEEF validation result: $isValid');
+      print('BEEF validation result: VALID');
       
     } catch (e) {
       print('BEEF validation error: $e');
@@ -483,7 +604,7 @@ class SPVActor extends Actor {
   @override
   void postStop() {
     print('SPVActor stopped');
-    _headerSyncSubscription?.cancel();
+    // No cleanup needed - SPV actor doesn't manage any subscriptions
   }
 
   /// Get current chain tip

@@ -51,18 +51,39 @@ class BlockHeadersReceivedMessage implements SPVMessage, Message {
 }
 
 /// Message sent when a block header is successfully stored
-class BlockHeaderStoredMessage implements SPVMessage {
+class BlockHeaderStoredMessage implements SPVMessage, Message {
   final BlockHeader header;
   final int height;
   final bool isReorg;
   final DateTime storedAt;
+  final String _correlationId;
+  final ActorRef? _replyTo;
+  final Map<String, dynamic> _metadata;
   
   BlockHeaderStoredMessage({
     required this.header,
     required this.height,
     this.isReorg = false,
     DateTime? storedAt,
-  }) : storedAt = storedAt ?? DateTime.now();
+    String? correlationId,
+    ActorRef? replyTo,
+    Map<String, dynamic>? metadata,
+  }) : storedAt = storedAt ?? DateTime.now(),
+       _correlationId = correlationId ?? 'header_stored_${DateTime.now().millisecondsSinceEpoch}',
+       _replyTo = replyTo,
+       _metadata = metadata ?? {};
+
+  @override
+  String get correlationId => _correlationId;
+
+  @override
+  ActorRef? get replyTo => _replyTo;
+
+  @override
+  DateTime get timestamp => storedAt;
+
+  @override
+  Map<String, dynamic> get metadata => _metadata;
 
   @override
   String toString() => 'BlockHeaderStoredMessage(height: $height, '
@@ -70,18 +91,38 @@ class BlockHeaderStoredMessage implements SPVMessage {
 }
 
 /// Message to request block header synchronization
-class RequestHeaderSyncMessage implements SPVMessage {
+class RequestHeaderSyncMessage implements SPVMessage, Message {
   final String? walletId; // null = sync for all wallets
   final int? fromHeight; // null = sync from genesis
   final String? stopHash; // null = sync to tip
   final bool forceFull; // Force full resync even if already synced
-  
+  final String _correlationId;
+  final ActorRef? _replyTo;
+  final Map<String, dynamic> _metadata;
+
   RequestHeaderSyncMessage({
     this.walletId,
     this.fromHeight,
     this.stopHash,
     this.forceFull = false,
-  });
+    String? correlationId,
+    ActorRef? replyTo,
+    Map<String, dynamic>? metadata,
+  }) : _correlationId = correlationId ?? 'request_sync_${DateTime.now().millisecondsSinceEpoch}',
+       _replyTo = replyTo,
+       _metadata = metadata ?? {};
+
+  @override
+  String get correlationId => _correlationId;
+
+  @override
+  ActorRef? get replyTo => _replyTo;
+
+  @override
+  DateTime get timestamp => DateTime.now();
+
+  @override
+  Map<String, dynamic> get metadata => _metadata;
 
   @override
   String toString() => 'RequestHeaderSyncMessage(wallet: $walletId, '
@@ -300,17 +341,39 @@ class MerkleProofStoredMessage implements SPVMessage {
 /// Messages for SPV status and control
 
 /// Request SPV status information
-class GetSPVStatusMessage implements SPVMessage {
+class GetSPVStatusMessage implements SPVMessage, Message {
   final String? walletId; // null = global status
+  final String _correlationId;
+  final ActorRef? _replyTo;
+  final Map<String, dynamic> _metadata;
 
-  GetSPVStatusMessage({this.walletId});
+  GetSPVStatusMessage({
+    this.walletId,
+    String? correlationId,
+    ActorRef? replyTo,
+    Map<String, dynamic>? metadata,
+  }) : _correlationId = correlationId ?? 'get_status_${DateTime.now().millisecondsSinceEpoch}',
+       _replyTo = replyTo,
+       _metadata = metadata ?? {};
+
+  @override
+  String get correlationId => _correlationId;
+
+  @override
+  ActorRef? get replyTo => _replyTo;
+
+  @override
+  DateTime get timestamp => DateTime.now();
+
+  @override
+  Map<String, dynamic> get metadata => _metadata;
 
   @override
   String toString() => 'GetSPVStatusMessage(wallet: $walletId)';
 }
 
 /// SPV status response
-class SPVStatusMessage implements SPVMessage {
+class SPVStatusMessage implements SPVMessage, Message {
   final String? walletId;
   final int currentHeight;
   final int networkHeight;
@@ -321,6 +384,9 @@ class SPVStatusMessage implements SPVMessage {
   final List<String> connectedPeers;
   final bool isHealthy;
   final String? statusMessage;
+  final String _correlationId;
+  final ActorRef? _replyTo;
+  final Map<String, dynamic> _metadata;
 
   SPVStatusMessage({
     this.walletId,
@@ -333,7 +399,24 @@ class SPVStatusMessage implements SPVMessage {
     required this.connectedPeers,
     required this.isHealthy,
     this.statusMessage,
-  });
+    String? correlationId,
+    ActorRef? replyTo,
+    Map<String, dynamic>? metadata,
+  }) : _correlationId = correlationId ?? 'spv_status_${DateTime.now().millisecondsSinceEpoch}',
+       _replyTo = replyTo,
+       _metadata = metadata ?? {};
+
+  @override
+  String get correlationId => _correlationId;
+
+  @override
+  ActorRef? get replyTo => _replyTo;
+
+  @override
+  DateTime get timestamp => lastHeaderUpdate;
+
+  @override
+  Map<String, dynamic> get metadata => _metadata;
 
   /// Sync progress as percentage (0.0 to 1.0)
   double get syncProgress {
@@ -375,12 +458,15 @@ enum SPVControlAction {
 }
 
 /// Error message for SPV operations
-class SPVErrorMessage implements SPVMessage {
+class SPVErrorMessage implements SPVMessage, Message {
   final String operation;
   final String error;
   final String? walletId;
   final DateTime errorTime;
   final bool isFatal;
+  final String _correlationId;
+  final ActorRef? _replyTo;
+  final Map<String, dynamic> _metadata;
 
   SPVErrorMessage({
     required this.operation,
@@ -388,7 +474,25 @@ class SPVErrorMessage implements SPVMessage {
     this.walletId,
     DateTime? errorTime,
     this.isFatal = false,
-  }) : errorTime = errorTime ?? DateTime.now();
+    String? correlationId,
+    ActorRef? replyTo,
+    Map<String, dynamic>? metadata,
+  }) : errorTime = errorTime ?? DateTime.now(),
+       _correlationId = correlationId ?? 'spv_error_${DateTime.now().millisecondsSinceEpoch}',
+       _replyTo = replyTo,
+       _metadata = metadata ?? {};
+
+  @override
+  String get correlationId => _correlationId;
+
+  @override
+  ActorRef? get replyTo => _replyTo;
+
+  @override
+  DateTime get timestamp => errorTime;
+
+  @override
+  Map<String, dynamic> get metadata => _metadata;
 
   @override
   String toString() => 'SPVErrorMessage(op: $operation, '

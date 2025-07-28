@@ -44,25 +44,16 @@ class HeaderSyncActor extends Actor {
   @override
   Future<void> onMessage(dynamic message) async {
     try {
-      switch (message.runtimeType) {
-        case BlockHeadersReceivedMessage _:
-          await _handleBlockHeadersReceived(message as BlockHeadersReceivedMessage);
-          break;
-          
-        case ChainTipEventMessage _:
-          await _handleChainTipEvent(message as ChainTipEventMessage);
-          break;
-          
-        case RequestHeaderSyncMessage _:
-          await _handleHeaderSyncRequest(message as RequestHeaderSyncMessage);
-          break;
-        
-        case GetSPVStatusMessage _:
-          await _handleGetSPVStatus(message as GetSPVStatusMessage);
-          break;
-          
-        default:
-          _logger.warning('HeaderSyncActor received unknown message: ${message.runtimeType}');
+      if (message is BlockHeadersReceivedMessage) {
+        await _handleBlockHeadersReceived(message);
+      } else if (message is ChainTipEventMessage) {
+        await _handleChainTipEvent(message);
+      } else if (message is RequestHeaderSyncMessage) {
+        await _handleHeaderSyncRequest(message);
+      } else if (message is GetSPVStatusMessage) {
+        await _handleGetSPVStatus(message);
+      } else {
+        _logger.warning('HeaderSyncActor received unknown message: ${message.runtimeType}');
       }
     } catch (e, stackTrace) {
       _logger.severe('Error in HeaderSyncActor: $e\n$stackTrace');
@@ -320,16 +311,36 @@ class HeaderSyncActor extends Actor {
 }
 
 /// Message for headers processed response
-class BlockHeadersProcessedMessage implements SPVMessage {
+class BlockHeadersProcessedMessage implements SPVMessage, Message {
   final int processed;
   final int failed;
   final int currentHeight;
+  final String _correlationId;
+  final ActorRef? _replyTo;
+  final Map<String, dynamic> _metadata;
 
   BlockHeadersProcessedMessage({
     required this.processed,
     required this.failed,
     required this.currentHeight,
-  });
+    String? correlationId,
+    ActorRef? replyTo,
+    Map<String, dynamic>? metadata,
+  }) : _correlationId = correlationId ?? 'headers_processed_${DateTime.now().millisecondsSinceEpoch}',
+       _replyTo = replyTo,
+       _metadata = metadata ?? {};
+
+  @override
+  String get correlationId => _correlationId;
+
+  @override
+  ActorRef? get replyTo => _replyTo;
+
+  @override
+  DateTime get timestamp => DateTime.now();
+
+  @override
+  Map<String, dynamic> get metadata => _metadata;
 
   @override
   String toString() => 'BlockHeadersProcessedMessage(processed: $processed, '
@@ -337,18 +348,38 @@ class BlockHeadersProcessedMessage implements SPVMessage {
 }
 
 /// Message for header sync status
-class HeaderSyncStatusMessage implements SPVMessage {
+class HeaderSyncStatusMessage implements SPVMessage, Message {
   final int requestedHeight;
   final int currentHeight;
   final bool isUpToDate;
   final String message;
+  final String _correlationId;
+  final ActorRef? _replyTo;
+  final Map<String, dynamic> _metadata;
 
   HeaderSyncStatusMessage({
     required this.requestedHeight,
     required this.currentHeight,
     required this.isUpToDate,
     required this.message,
-  });
+    String? correlationId,
+    ActorRef? replyTo,
+    Map<String, dynamic>? metadata,
+  }) : _correlationId = correlationId ?? 'sync_status_${DateTime.now().millisecondsSinceEpoch}',
+       _replyTo = replyTo,
+       _metadata = metadata ?? {};
+
+  @override
+  String get correlationId => _correlationId;
+
+  @override
+  ActorRef? get replyTo => _replyTo;
+
+  @override
+  DateTime get timestamp => DateTime.now();
+
+  @override
+  Map<String, dynamic> get metadata => _metadata;
 
   @override
   String toString() => 'HeaderSyncStatusMessage(requested: $requestedHeight, '

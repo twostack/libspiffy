@@ -46,18 +46,28 @@ LibSpiffy uses a **layered architecture** combining **Dactor actors** (coordinat
 │  ┌─────────────────────┐  ┌─────────────────────────────────────┐ │
 │  │ WalletManagerActor  │  │           SPVActor                  │ │
 │  │                     │  │                                     │ │
-│  │ • Multi-wallet mgmt │  │ • SpiffyNode integration            │ │
-│  │ • Command routing   │  │ • Block/tx monitoring               │ │
-│  │ • Wallet lifecycle  │  │ • BEEF/BUMP validation              │ │
+│  │ • Multi-wallet mgmt │  │ • BEEF/BUMP validation              │ │
+│  │ • Command routing   │  │ • Transaction validation            │ │
+│  │ • Wallet lifecycle  │  │ • Merkle proof verification        │ │
 │  │ • Cross-wallet ops  │  │ • Chain reorganization              │ │
 │  └─────────────────────┘  └─────────────────────────────────────┘ │
 │                                                                 │
+│  ┌─────────────────────┐  ┌─────────────────────────────────────┐ │
+│  │  HeaderSyncActor    │  │            ARCActor                 │ │
+│  │                     │  │                                     │ │
+│  │ • Block header mgmt │  │ • ARC service integration           │ │
+│  │ • Chain tip events  │  │ • Transaction broadcasting          │ │
+│  │ • Header storage    │  │ • Fee estimation                    │ │
+│  │ • SPV validation    │  │ • Merkle proof retrieval            │ │
+│  └─────────────────────┘  └─────────────────────────────────────┘ │
+│                                                                 │
 │  ┌─────────────────────────────────────────────────────────────┐ │
-│  │                    ARCActor                                 │ │
+│  │                 SpiffyNodeBridge                            │ │
 │  │                                                             │ │
-│  │ • ARC service integration   • Transaction broadcasting      │ │
-│  │ • Status monitoring         • Fee estimation               │ │
-│  │ • Confirmation tracking     • Merkle proof retrieval       │ │
+│  │ • SpiffyNode event translation                             │ │
+│  │ • P2P message routing                                      │ │  
+│  │ • Chain tip monitoring                                     │ │
+│  │ • Header message forwarding                                │ │
 │  └─────────────────────────────────────────────────────────────┘ │
 └─────────────────────────┬───────────────────────────────────────┘
                           │ Commands
@@ -85,6 +95,7 @@ LibSpiffy uses a **layered architecture** combining **Dactor actors** (coordinat
 │                                                                 │
 │  WalletCreatedEvent  │  UTXOReceivedEvent   │  TransactionCreatedEvent
 │  UTXOSpentEvent      │  ProtocolOutputReceivedEvent │ TransactionSignedEvent
+│  BlockHeaderStoredEvent │ ChainTipEventMessage │ HeaderSyncCompleteEvent
 └─────────────────────────┬───────────────────────────────────────┘
                           │
                           ▼
@@ -97,8 +108,19 @@ LibSpiffy uses a **layered architecture** combining **Dactor actors** (coordinat
 │  │ • Events            │    │ • TokenProjection               │ │
 │  │ • UTXOs             │    │ • IdentityProjection            │ │
 │  │ • Transactions      │    │ • SocialMediaProjection        │ │
-│  │ • Basic queries     │    │ • Custom protocol views        │ │
+│  │ • Block Headers     │    │ • Custom protocol views        │ │
+│  │ • Merkle Proofs     │    │                                 │ │
+│  │ • Basic queries     │    │                                 │ │
 │  └─────────────────────┘    └─────────────────────────────────┘ │
+│                                                                 │
+│  ┌─────────────────────────────────────────────────────────────┐ │
+│  │                 BlockHeaderChain                            │ │
+│  │                                                             │ │
+│  │ • Header validation and storage                            │ │
+│  │ • Chain reorganization handling                           │ │
+│  │ • Merkle proof verification                               │ │
+│  │ • SPV transaction validation                              │ │
+│  └─────────────────────────────────────────────────────────────┘ │
 └─────────────────────────┬───────────────────────────────────────┘
                           │
                           ▼
@@ -221,109 +243,328 @@ class WalletManagerActor extends Actor {
 
 ### SPVActor
 
-Integrates with SpiffyNode for blockchain monitoring and validation:
+Handles true SPV validation using stored block headers and merkle proofs:
 
 ```dart
 class SPVActor extends Actor {
-  final ChainTipTracker _chainTipTracker;
-  final PeerManager _peerManager;
+  final WalletStorage _storage;
   final ActorRef _walletManager;
-  final Set<String> _monitoredAddresses = {};
+  final BlockHeaderChain _headerChain;
   final Map<String, String> _addressToWallet = {}; // address -> walletId mapping
   
   @override
   Future<void> onReceive(Message message) async {
     switch (message.payload) {
-      case StartSPVSyncMessage msg:
-        await _startSPVSync(msg.walletId, msg.addresses);
-        
-      case NewBlockMessage msg:
-        await _scanBlockForTransactions(msg.blockHeader, msg.transactions);
-        
-      case TransactionFoundMessage msg:
-        await _processTransactionForWallet(msg.walletId, msg.transaction);
-        
       case ValidateBEEFMessage msg:
         var result = await _validateBEEFProof(msg.beefData);
         sender.tell(BEEFValidationResult(result.isValid, result.merkleRoot));
         
-      case ChainReorganizationMessage msg:
-        await _handleChainReorg(msg.oldTip, msg.newTip, msg.affectedBlocks);
+      case ValidateTransactionMessage msg:
+        var result = await _validateTransactionSPV(msg.transaction, msg.merkleProof);
+        sender.tell(TransactionValidationResult(result.isValid, result.blockHeight));
+        
+      case RetrieveMerkleProofMessage msg:
+        var proof = await _storage.getMerkleProof(msg.txid);
+        sender.tell(MerkleProofMessage(msg.txid, proof));
+        
+      case GetSPVStatusMessage():
+        var status = await _getSPVStatus();
+        sender.tell(SPVStatusMessage(status));
         
       case AddMonitoringAddressMessage msg:
-        _monitoredAddresses.add(msg.address);
         _addressToWallet[msg.address] = msg.walletId;
     }
   }
   
-  Future<void> _startSPVSync(String walletId, List<String> addresses) async {
-    // Add addresses to monitoring set
-    for (var address in addresses) {
-      _monitoredAddresses.add(address);
-      _addressToWallet[address] = walletId;
-    }
-    
-    // Start chain tip tracking
-    _chainTipTracker.events.listen((event) {
-      if (event.type == ChainTipEventType.newTip) {
-        self.tell(NewBlockMessage(event.tip, event.transactions ?? []));
-      } else if (event.type == ChainTipEventType.reorganization) {
-        self.tell(ChainReorganizationMessage(
-          event.oldTip, 
-          event.newTip, 
-          event.affectedBlocks ?? []
-        ));
-      }
-    });
-  }
-  
-  Future<void> _processTransactionForWallet(String walletId, Transaction transaction) async {
-    // Check outputs for relevant UTXOs
-    for (var i = 0; i < transaction.outputs.length; i++) {
-      var output = transaction.outputs[i];
-      var address = output.address?.toString();
-      
-      if (address != null && _monitoredAddresses.contains(address)) {
-        var command = ReceiveUTXOCommand(
-          walletId: walletId,
-          txid: transaction.id,
-          vout: i,
-          satoshis: output.satoshis,
-          scriptPubKey: output.script.toHex(),
-          address: address,
-          blockHeight: transaction.blockHeight,
-          confirmations: transaction.confirmations,
-        );
-        
-        _walletManager.tell(WalletCommandMessage(walletId, command));
-      }
-    }
-    
-    // Check inputs for spent UTXOs
-    for (var input in transaction.inputs) {
-      var spentOutpoint = '${input.previousTxId}:${input.outputIndex}';
-      // Notify relevant wallet of spent UTXO
-      var command = SpendUTXOCommand(
-        walletId: walletId,
-        utxoKey: spentOutpoint,
-        spendingTxId: transaction.id,
-      );
-      
-      _walletManager.tell(WalletCommandMessage(walletId, command));
-    }
-  }
-  
   Future<BEEFValidationResult> _validateBEEFProof(String beefData) async {
-    // Implement BEEF/BUMP validation logic
-    // This would integrate with DartSV for Merkle proof validation
     try {
       var beef = BEEF.fromHex(beefData);
-      var isValid = await beef.validateMerkleProofs(_chainTipTracker.currentTip);
-      return BEEFValidationResult(isValid, beef.merkleRoot);
+      
+      // Extract transactions and proofs from BEEF
+      var transactions = _extractTransactions(beef);
+      var merkleProofs = _extractMerkleProofs(beef);
+      
+      // Validate each transaction against stored headers
+      for (var i = 0; i < transactions.length; i++) {
+        var tx = transactions[i];
+        var proof = merkleProofs[i];
+        
+        var blockHeader = await _getBlockHeader(proof.blockHash);
+        if (blockHeader == null) {
+          return BEEFValidationResult(false, null, 'Block header not found');
+        }
+        
+        var isValid = _verifyMerkleProof(tx.id, proof, blockHeader.merkleRoot);
+        if (!isValid) {
+          return BEEFValidationResult(false, null, 'Invalid merkle proof for tx ${tx.id}');
+        }
+      }
+      
+      return BEEFValidationResult(true, beef.merkleRoot, null);
     } catch (e) {
-      return BEEFValidationResult(false, null);
+      return BEEFValidationResult(false, null, e.toString());
     }
   }
+  
+  Future<BlockHeader?> _getBlockHeader(String blockHash) async {
+    return await _storage.getBlockHeader(blockHash);
+  }
+  
+  List<BitcoinTransaction> _extractSpendableUTXOs(List<BitcoinTransaction> transactions) {
+    var spendableUTXOs = <BitcoinUtxo>[];
+    
+    for (var tx in transactions) {
+      for (var i = 0; i < tx.outputs.length; i++) {
+        var output = tx.outputs[i];
+        
+        // Check if output belongs to any monitored wallet
+        var walletId = _findWalletForOutput(output);
+        if (walletId != null) {
+          // TODO: Implement wallet key management integration
+          // This would check if the output can be spent by wallet keys
+          var utxo = BitcoinUtxo.fromTransactionOutput(
+            output,
+            tx.id,
+            i,
+            tx.blockHeight ?? 0,
+            tx.confirmations ?? 0,
+          );
+          spendableUTXOs.add(utxo);
+        }
+      }
+    }
+    
+    return spendableUTXOs;
+  }
+  
+  List<BitcoinUtxo> _extractSpentUTXOs(List<BitcoinTransaction> transactions) {
+    var spentUTXOs = <BitcoinUtxo>[];
+    
+    for (var tx in transactions) {
+      for (var input in tx.inputs) {
+        // TODO: Check if spent UTXO belongs to monitored wallets
+        // This would require tracking wallet UTXOs
+      }
+    }
+    
+    return spentUTXOs;
+  }
+  
+  String? _findWalletForOutput(TransactionOutput output) {
+    // TODO: Implement address/script -> wallet mapping
+    // This would check script against wallet addresses/pubkeys
+    return null;
+  }
+}
+```
+
+### HeaderSyncActor
+
+Manages block header synchronization and chain tip tracking:
+
+```dart
+class HeaderSyncActor extends Actor {
+  final BlockHeaderChain _headerChain;
+  final ActorRef? _spvActor;
+  int _headersProcessed = 0;
+  int _totalExpectedHeaders = 0;
+  
+  @override
+  Future<void> onReceive(Message message) async {
+    switch (message.payload) {
+      case BlockHeadersReceivedMessage msg:
+        await _processHeaders(msg.headers, msg.source);
+        
+      case ChainTipEventMessage msg:
+        await _handleChainTipEvent(msg.chainTip, msg.eventType);
+        
+      case RequestHeaderSyncMessage msg:
+        await _initiateHeaderSync(msg.startHeight, msg.requestor);
+        
+      case GetSyncStatusMessage():
+        sender.tell(HeaderSyncStatusMessage(
+          _headersProcessed,
+          _totalExpectedHeaders,
+          _headerChain.currentTip?.height ?? 0,
+        ));
+    }
+  }
+  
+  Future<void> _processHeaders(List<BlockHeader> headers, String source) async {
+    try {
+      for (var header in headers) {
+        var stored = await _headerChain.addHeader(header);
+        if (stored) {
+          _headersProcessed++;
+          
+          // Notify SPV Actor of new header for validation
+          _spvActor?.tell(BlockHeaderStoredMessage(
+            blockHash: header.blockHash(),
+            height: header.height ?? 0,
+            merkleRoot: header.merkleRoot,
+          ));
+        }
+      }
+      
+      // Update chain tip if headers extended the chain
+      var currentTip = await _headerChain.getCurrentTip();
+      if (currentTip != null) {
+        _spvActor?.tell(ChainTipUpdatedMessage(
+          blockHash: currentTip.blockHash,
+          height: currentTip.height,
+          previousHash: currentTip.prevBlock,
+        ));
+      }
+      
+    } catch (e) {
+      sender.tell(HeaderSyncErrorMessage('Failed to process headers: $e'));
+    }
+  }
+  
+  Future<void> _handleChainTipEvent(ChainTip chainTip, ChainTipEventType eventType) async {
+    switch (eventType) {
+      case ChainTipEventType.newTip:
+        await _handleNewChainTip(chainTip);
+        break;
+      case ChainTipEventType.reorganization:
+        await _handleChainReorganization(chainTip);
+        break;
+    }
+  }
+  
+  Future<void> _handleNewChainTip(ChainTip chainTip) async {
+    // Update our chain tip and notify interested actors
+    var header = await _headerChain.getHeader(chainTip.blockHash);
+    if (header != null) {
+      _spvActor?.tell(ChainTipUpdatedMessage(
+        blockHash: chainTip.blockHash,
+        height: chainTip.height,
+        previousHash: header.prevBlock,
+      ));
+    }
+  }
+  
+  Future<void> _handleChainReorganization(ChainTip newTip) async {
+    // Handle chain reorganization
+    var affectedHeaders = await _headerChain.handleReorganization(newTip.blockHash);
+    
+    _spvActor?.tell(ChainReorganizationMessage(
+      newTipHash: newTip.blockHash,
+      newTipHeight: newTip.height,
+      affectedBlocks: affectedHeaders.map((h) => h.blockHash()).toList(),
+    ));
+  }
+}
+```
+
+### SpiffyNodeBridge
+
+Translates SpiffyNode events to LibSpiffy actor messages:
+
+```dart
+class SpiffyNodeBridge {
+  final ActorRef _headerSyncActor;
+  final ActorRef? _spvActor;
+  StreamSubscription<ChainTipEvent>? _chainTipSubscription;
+  
+  SpiffyNodeBridge({
+    required ActorRef headerSyncActor,
+    ActorRef? spvActor,
+  }) : _headerSyncActor = headerSyncActor,
+       _spvActor = spvActor;
+  
+  /// Connect to SpiffyNode and start event translation
+  void connectToSpiffyNode(PeerManager peerManager) {
+    // Subscribe to chain tip events
+    _chainTipSubscription = peerManager.chainTipTracker.tipEvents.listen(
+      (event) => _translateChainTipEvent(event),
+      onError: (error) => print('Chain tip event error: $error'),
+    );
+    
+    // Register peer handler to capture MsgHeaders
+    peerManager.addPeerHandler(LibSpiffyPeerHandler(this));
+  }
+  
+  /// Disconnect from SpiffyNode
+  void disconnectFromSpiffyNode() {
+    _chainTipSubscription?.cancel();
+    _chainTipSubscription = null;
+  }
+  
+  /// Translate SpiffyNode ChainTipEvent to LibSpiffy actor message
+  void _translateChainTipEvent(ChainTipEvent event) {
+    var chainTip = _SimpleChainTip(
+      blockHash: event.tip.blockHash,
+      height: event.tip.height,
+      timestamp: event.tip.timestamp,
+    );
+    
+    var eventType = ChainTipEventType.values.firstWhere(
+      (type) => type.name == event.type.name,
+      orElse: () => ChainTipEventType.newTip,
+    );
+    
+    _headerSyncActor.tell(ChainTipEventMessage(
+      chainTip: chainTip,
+      eventType: eventType,
+      source: 'SpiffyNode',
+    ));
+  }
+  
+  /// Forward MsgHeaders from SpiffyNode to HeaderSyncActor
+  void storeHeaders(MsgHeaders headersMessage) {
+    var headers = headersMessage.headers.map((header) => 
+      BlockHeader.fromSpiffyNodeHeader(header)
+    ).toList();
+    
+    _headerSyncActor.tell(BlockHeadersReceivedMessage(
+      headers: headers,
+      source: 'SpiffyNode',
+      requestId: null,
+    ));
+  }
+}
+
+/// Peer handler that captures MsgHeaders and forwards to bridge
+class LibSpiffyPeerHandler extends PeerHandler {
+  final SpiffyNodeBridge _bridge;
+  
+  LibSpiffyPeerHandler(this._bridge);
+  
+  @override
+  Future<void> handleHeaders(MsgHeaders message, Peer peer) async {
+    // Forward headers to LibSpiffy for storage
+    _bridge.storeHeaders(message);
+  }
+  
+  // Other message handlers can be added as needed
+  @override
+  Future<void> handleAddr(MsgAddr message, Peer peer) async {
+    // Could forward address announcements if needed
+  }
+  
+  @override
+  Future<void> handleInv(MsgInv message, Peer peer) async {
+    // Could forward inventory announcements if needed
+  }
+}
+
+/// Simple ChainTip implementation for message translation
+class _SimpleChainTip implements ChainTip {
+  @override
+  final String blockHash;
+  
+  @override  
+  final int height;
+  
+  @override
+  final DateTime timestamp;
+  
+  _SimpleChainTip({
+    required this.blockHash,
+    required this.height,
+    required this.timestamp,
+  });
 }
 ```
 
@@ -809,6 +1050,100 @@ enum ProtocolType {
 }
 ```
 
+### SPV Actor Messages
+
+The SPV integration uses a comprehensive set of actor messages for communication between components:
+
+```dart
+// Block header synchronization messages
+class BlockHeadersReceivedMessage extends Message {
+  final List<BlockHeader> headers;
+  final String source;
+  final String? requestId;
+}
+
+class BlockHeaderStoredMessage extends Message {
+  final String blockHash;
+  final int height;
+  final String merkleRoot;
+}
+
+class ChainTipEventMessage extends Message {
+  final ChainTip chainTip;
+  final ChainTipEventType eventType;
+  final String source;
+}
+
+class RequestHeaderSyncMessage extends Message {
+  final int? startHeight;
+  final ActorRef requestor;
+}
+
+// SPV validation messages
+class ValidateTransactionMessage extends Message {
+  final BitcoinTransaction transaction;
+  final MerkleProof merkleProof;
+}
+
+class TransactionValidationResult extends Message {
+  final bool isValid;
+  final int? blockHeight;
+  final String? errorMessage;
+}
+
+class ValidateBEEFMessage extends Message {
+  final String beefData;
+}
+
+class BEEFValidationResult extends Message {
+  final bool isValid;
+  final String? merkleRoot;
+  final String? errorMessage;
+}
+
+class RetrieveMerkleProofMessage extends Message {
+  final String txid;
+}
+
+class MerkleProofStoredMessage extends Message {
+  final String txid;
+  final MerkleProof proof;
+}
+
+// SPV control messages
+class GetSPVStatusMessage extends Message {}
+
+class SPVStatusMessage extends Message {
+  final int storedHeaders;
+  final int currentHeight;
+  final String? currentTip;
+  final bool isSyncing;
+}
+
+class SPVControlMessage extends Message {
+  final SPVControlAction action;
+  final Map<String, dynamic>? parameters;
+}
+
+enum SPVControlAction {
+  startSync,
+  stopSync,
+  resync,
+  validateChain
+}
+
+class SPVErrorMessage extends Message {
+  final String error;
+  final String? context;
+  final DateTime timestamp;
+}
+
+// Configuration messages
+class SPVConfigMessage extends Message {
+  final Map<String, dynamic> config;
+}
+```
+
 ## Storage Architecture
 
 ### WalletStorage Interface
@@ -827,11 +1162,103 @@ abstract class WalletStorage {
   Future<List<BitcoinTransaction>> getTransactions(String walletId, {int? limit, String? afterTxid});
   Future<BitcoinTransaction?> getTransaction(String txid);
   
+  // Transaction history operations
+  Future<void> storeTransactionHistory(String walletId, TransactionHistory history);
+  Future<TransactionHistory?> getTransactionHistory(String walletId, String txid);
+  Future<List<TransactionHistory>> getTransactionHistories(String walletId, {int? limit});
+  
+  // Block header operations
+  Future<void> storeBlockHeader(BlockHeader header);
+  Future<BlockHeader?> getBlockHeader(String blockHash);
+  Future<List<BlockHeader>> getBlockHeaders({int? fromHeight, int? toHeight});
+  Future<BlockHeader?> getLatestBlockHeader();
+  Future<void> removeBlockHeader(String blockHash);
+  
+  // Merkle proof operations
+  Future<void> storeMerkleProof(String txid, MerkleProof proof);
+  Future<MerkleProof?> getMerkleProof(String txid);
+  Future<List<MerkleProof>> getMerkleProofs(List<String> txids);
+  Future<void> removeMerkleProof(String txid);
+  
   // Protocol output queries
   Future<List<ProtocolOutput>> getProtocolOutputs(String walletId, {ProtocolType? type});
   
   // Balance queries
   Future<WalletBalances> getBalances(String walletId);
+}
+
+// Enhanced data models
+class TransactionHistory {
+  final String walletId;
+  final String txid;
+  final BigInt amount;
+  final String direction; // 'incoming' or 'outgoing'
+  final String? fromAddress;
+  final String? toAddress;
+  final DateTime timestamp;
+  final int? blockHeight;
+  final int confirmations;
+  final String? memo;
+  final Map<String, dynamic>? metadata;
+}
+
+class MerkleProof {
+  final String txid;
+  final String blockHash;
+  final List<String> merkleNodes;
+  final int transactionIndex;
+  final String merkleRoot;
+  final bool isValid;
+}
+
+class BlockHeaderEntity {
+  final String blockHash;
+  final String? parentHash;
+  final String merkleRoot;
+  final int? height;
+  final int timestamp;
+  final int bits;
+  final int nonce;
+  final int version;
+}
+```
+
+### LibSpiffy Schema Integration
+
+For developers using Isar, LibSpiffy provides pre-built schemas:
+
+```dart
+class LibSpiffySchemas {
+  /// Get all LibSpiffy Isar schemas for integration
+  static List<CollectionSchema> get walletSchemas => [
+    BlockHeaderEntitySchema,
+    MerkleProofEntitySchema,
+    WalletEventEntitySchema,
+    BitcoinUtxoEntitySchema,
+    BitcoinTransactionEntitySchema,
+    WalletMetadataEntitySchema,
+  ];
+  
+  /// Helper to add LibSpiffy schemas to existing Isar configuration
+  static List<CollectionSchema> addToSchemas(List<CollectionSchema> existingSchemas) {
+    return [...existingSchemas, ...walletSchemas];
+  }
+}
+
+// Usage example:
+Future<Isar> initializeIsarWithLibSpiffy() async {
+  var customSchemas = [
+    UserEntitySchema,
+    SettingsEntitySchema,
+    // ... other app-specific schemas
+  ];
+  
+  var allSchemas = LibSpiffySchemas.addToSchemas(customSchemas);
+  
+  return await Isar.open(
+    allSchemas,
+    directory: await getApplicationDocumentsDirectory(),
+  );
 }
 ```
 
@@ -909,24 +1336,106 @@ abstract class ARCService {
 ### SpiffyNode Integration
 
 ```dart
-// Integration with SpiffyNode for SPV operations
-class SPVWalletService {
-  final ChainTipTracker chainTipTracker;
-  final PeerManager peerManager;
-  final BitcoinWalletAggregate walletAggregate;
+// Integration with SpiffyNode through LibSpiffyActorSystem bridge
+class LibSpiffyActorSystem {
+  final ActorSystem _actorSystem;
+  final WalletStorage _walletStorage;
+  final BlockHeaderChain _headerChain;
+  SpiffyNodeBridge? _spiffyNodeBridge;
   
-  // Listen for new blocks and scan for wallet transactions
-  void startSPVSync() {
-    chainTipTracker.events.listen((event) {
-      if (event.type == ChainTipEventType.newTip) {
-        _scanBlockForTransactions(event.tip);
-      }
-    });
+  // Actor references
+  ActorRef? _walletManagerActor;
+  ActorRef? _spvActor;
+  ActorRef? _arcActor;
+  ActorRef? _headerSyncActor;
+  
+  // Initialize the actor system and spawn core actors
+  Future<void> initialize([WalletStorage? storage]) async {
+    _walletStorage = storage ?? InMemoryWalletStorage();
+    _headerChain = BlockHeaderChain(storage: _walletStorage);
+    
+    // Spawn core actors
+    _walletManagerActor = await _actorSystem.spawn(
+      'wallet-manager',
+      () => WalletManagerActor(_walletStorage, _actorSystem),
+    );
+    
+    _spvActor = await _actorSystem.spawn(
+      'spv-actor',
+      () => SPVActor(storage: _walletStorage),
+    );
+    
+    _arcActor = await _actorSystem.spawn(
+      'arc-actor',
+      () => ARCActor(),
+    );
+    
+    _headerSyncActor = await _actorSystem.spawn(
+      'header-sync-actor',
+      () => HeaderSyncActor(_headerChain, _spvActor),
+    );
   }
   
-  // Request merkle proofs for wallet transactions
-  Future<void> requestMerkleProofs(List<String> txids) {
-    // Use peers to request merkle block data
+  // Connect to SpiffyNode for P2P blockchain integration
+  Future<void> connectToSpiffyNode(PeerManager peerManager) async {
+    if (_headerSyncActor == null) {
+      throw StateError('Actor system not initialized');
+    }
+    
+    _spiffyNodeBridge = SpiffyNodeBridge(
+      headerSyncActor: _headerSyncActor!,
+      spvActor: _spvActor,
+    );
+    
+    _spiffyNodeBridge!.connectToSpiffyNode(peerManager);
+  }
+  
+  // Disconnect from SpiffyNode
+  Future<void> disconnectFromSpiffyNode() async {
+    _spiffyNodeBridge?.disconnectFromSpiffyNode();
+    _spiffyNodeBridge = null;
+  }
+  
+  // Getters for external access
+  WalletStorage get walletStorage => _walletStorage;
+  BlockHeaderChain get headerChain => _headerChain;
+  ActorRef? get walletManagerActor => _walletManagerActor;
+  ActorRef? get spvActor => _spvActor;
+  ActorRef? get arcActor => _arcActor;
+  ActorRef? get headerSyncActor => _headerSyncActor;
+}
+
+// Usage example:
+class BitcoinWalletService {
+  final LibSpiffyActorSystem _actorSystem;
+  final PeerManager _peerManager;
+  
+  BitcoinWalletService(this._actorSystem, this._peerManager);
+  
+  Future<void> startWalletService() async {
+    // Initialize LibSpiffy actors
+    await _actorSystem.initialize();
+    
+    // Connect to SpiffyNode for blockchain data
+    await _actorSystem.connectToSpiffyNode(_peerManager);
+    
+    // Start SpiffyNode P2P connections
+    await _peerManager.startPeerDiscovery();
+  }
+  
+  Future<String> createWallet(String name, Map<String, dynamic> metadata) async {
+    var walletManager = _actorSystem.walletManagerActor;
+    if (walletManager == null) throw StateError('Wallet manager not available');
+    
+    var walletId = Uuid().v4();
+    walletManager.tell(CreateWalletMessage(walletId, name, metadata));
+    
+    return walletId;
+  }
+  
+  Future<void> stopWalletService() async {
+    await _actorSystem.disconnectFromSpiffyNode();
+    await _actorSystem.shutdown();
   }
 }
 ```
@@ -1551,28 +2060,39 @@ The **Dactor + Eventador layered architecture** provides several key advantages:
 - **Clear Data Flow**: Command → Event → State transitions are traceable
 
 #### 6. **External Integration Benefits**
-- **SpiffyNode Integration**: SPVActor handles all blockchain monitoring complexity
+- **SpiffyNode Integration**: HeaderSyncActor handles all blockchain monitoring complexity
 - **ARC Service Integration**: ARCActor manages transaction broadcasting and status
 - **Service Abstraction**: Business logic independent of external service changes
 - **Error Isolation**: External service failures don't corrupt wallet state
+- **Bridge Pattern**: SpiffyNodeBridge provides clean translation between systems
 
 ### Why This Architecture Works
 
 #### **Problem Solved**: 
-The original question was how to integrate Dactor actors with the existing Eventador-based system without architectural conflicts.
+The original question was how to integrate Dactor actors with the existing Eventador-based system without architectural conflicts, and specifically how to properly integrate SpiffyNode's P2P capabilities with LibSpiffy's SPV validation.
 
 #### **Solution**: 
-**Layered approach** where actors operate as a **coordination layer above** the business logic layer:
+**Layered approach** with a **bridge pattern** where actors operate as a **coordination layer above** the business logic layer:
 
 ```
-External Systems ↔ Dactor Actors ↔ Eventador Aggregates ↔ Event Store
-     (Network)      (Coordination)    (Business Logic)     (Persistence)
+SpiffyNode P2P ↔ SpiffyNodeBridge ↔ Dactor Actors ↔ Eventador Aggregates ↔ Event Store
+   (Network)        (Translation)     (Coordination)    (Business Logic)     (Persistence)
 ```
 
-#### **Key Insight**: 
-- **Actors** excel at **coordination, concurrency, and external integration**
-- **Aggregates** excel at **business logic, validation, and consistency**
-- **Combining both** gives us the benefits of each without the drawbacks
+#### **Key Architectural Insights**: 
+- **HeaderSyncActor**: Dedicated to block header chain management, separate from transaction validation
+- **SPVActor**: Focused purely on SPV validation using stored headers, not header synchronization
+- **SpiffyNodeBridge**: Clean translation layer between SpiffyNode events and LibSpiffy actor messages
+- **Separation of Concerns**: Header sync, SPV validation, and wallet management are distinct responsibilities
+- **Event-Driven Integration**: All components communicate through well-defined actor messages
+
+#### **Integration Flow**:
+1. **SpiffyNode** receives `MsgHeaders` from Bitcoin P2P network
+2. **LibSpiffyPeerHandler** captures headers and forwards to **SpiffyNodeBridge**
+3. **SpiffyNodeBridge** translates to `BlockHeadersReceivedMessage` and sends to **HeaderSyncActor**
+4. **HeaderSyncActor** validates and stores headers in **BlockHeaderChain**
+5. **HeaderSyncActor** notifies **SPVActor** of new headers via `BlockHeaderStoredMessage`
+6. **SPVActor** uses stored headers for BEEF/transaction validation
 
 ### Production Readiness
 

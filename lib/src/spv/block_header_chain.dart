@@ -17,6 +17,7 @@ import '../storage/wallet_storage.dart';
 class BlockHeaderChain {
   final WalletStorage _storage;
   final Logger _logger;
+  final bool _skipProofOfWorkValidation;
 
   // In-memory cache for recent headers (last 2016 blocks for difficulty calculation)
   final Map<String, BlockHeader> _headerCache = {};
@@ -29,8 +30,12 @@ class BlockHeaderChain {
   // Cache management
   static const int _maxCacheSize = 2016; // ~2 weeks of blocks
 
-  BlockHeaderChain(this._storage, {Logger? logger})
-      : _logger = logger ?? Logger('BlockHeaderChain');
+  BlockHeaderChain(
+    this._storage, {
+    Logger? logger,
+    bool skipProofOfWorkValidation = false,
+  }) : _logger = logger ?? Logger('BlockHeaderChain'),
+       _skipProofOfWorkValidation = skipProofOfWorkValidation;
 
   /// Current chain tip header
   BlockHeader? get chainTip => _chainTip;
@@ -76,7 +81,7 @@ class BlockHeaderChain {
       _heightToHash[height] = headerHash;
 
       // Update chain tip if this is the best height
-      if (height > _bestHeight) {
+      if (height >= _bestHeight) {
         _bestHeight = height;
         _chainTip = header;
       }
@@ -259,8 +264,8 @@ class BlockHeaderChain {
         return false;
       }
 
-      // Validate header hash meets difficulty target
-      if (!_validateProofOfWork(header)) {
+      // Validate header hash meets difficulty target (skip for testing)
+      if (!_skipProofOfWorkValidation && !_validateProofOfWork(header)) {
         _logger.warning('Header does not meet difficulty target at height $height');
         return false;
       }

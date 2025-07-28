@@ -495,6 +495,272 @@ void main() {
         expect(event2.timestamp, equals(future));
       });
     });
+
+    group('UTXO Reservation Events', () {
+      group('UTXOReservedEvent', () {
+        test('should create UTXOReservedEvent with all required fields', () {
+          final expiresAt = DateTime.now().add(Duration(minutes: 30));
+          final event = UTXOReservedEvent(
+            walletId: 'wallet_123',
+            txid: 'test_txid',
+            vout: 0,
+            reservedByTxId: 'reserve_tx_123',
+            expiresAt: expiresAt,
+          );
+
+          expect(event.walletId, equals('wallet_123'));
+          expect(event.txid, equals('test_txid'));
+          expect(event.vout, equals(0));
+          expect(event.reservedByTxId, equals('reserve_tx_123'));
+          expect(event.expiresAt, equals(expiresAt));
+          expect(event.priority, equals(0)); // Default priority
+          expect(event.reservationReason, isNull);
+        });
+
+        test('should create UTXOReservedEvent with all fields', () {
+          final expiresAt = DateTime.now().add(Duration(hours: 1));
+          final event = UTXOReservedEvent(
+            walletId: 'wallet_456',
+            txid: 'test_txid_2',
+            vout: 1,
+            reservedByTxId: 'reserve_tx_456',
+            reservationReason: 'High priority transaction',
+            expiresAt: expiresAt,
+            priority: 5,
+            version: 10,
+          );
+
+          expect(event.reservationReason, equals('High priority transaction'));
+          expect(event.priority, equals(5));
+          expect(event.version, equals(10));
+        });
+
+        test('should serialize and deserialize correctly', () {
+          final expiresAt = DateTime.now().add(Duration(minutes: 45));
+          final originalEvent = UTXOReservedEvent(
+            walletId: 'wallet_serialize',
+            txid: 'serialize_txid',
+            vout: 2,
+            reservedByTxId: 'reserve_serialize',
+            reservationReason: 'Serialization test',
+            expiresAt: expiresAt,
+            priority: 3,
+            version: 5,
+          );
+
+          final eventData = originalEvent.getWalletEventData();
+          expect(eventData['txid'], equals('serialize_txid'));
+          expect(eventData['vout'], equals(2));
+          expect(eventData['reservedByTxId'], equals('reserve_serialize'));
+          expect(eventData['reservationReason'], equals('Serialization test'));
+          expect(eventData['expiresAt'], equals(expiresAt.toIso8601String()));
+          expect(eventData['priority'], equals(3));
+
+          final deserializedEvent = UTXOReservedEvent.fromMap({
+            'walletId': 'wallet_serialize',
+            'txid': 'serialize_txid',
+            'vout': 2,
+            'reservedByTxId': 'reserve_serialize',
+            'reservationReason': 'Serialization test',
+            'expiresAt': expiresAt.toIso8601String(),
+            'priority': 3,
+            'version': 5,
+          });
+
+          expect(deserializedEvent.walletId, equals(originalEvent.walletId));
+          expect(deserializedEvent.txid, equals(originalEvent.txid));
+          expect(deserializedEvent.vout, equals(originalEvent.vout));
+          expect(deserializedEvent.reservedByTxId, equals(originalEvent.reservedByTxId));
+          expect(deserializedEvent.reservationReason, equals(originalEvent.reservationReason));
+          expect(deserializedEvent.expiresAt, equals(originalEvent.expiresAt));
+          expect(deserializedEvent.priority, equals(originalEvent.priority));
+        });
+      });
+
+      group('UTXOReleasedEvent', () {
+        test('should create UTXOReleasedEvent with required fields', () {
+          final event = UTXOReleasedEvent(
+            walletId: 'wallet_release',
+            txid: 'release_txid',
+            vout: 0,
+          );
+
+          expect(event.walletId, equals('wallet_release'));
+          expect(event.txid, equals('release_txid'));
+          expect(event.vout, equals(0));
+          expect(event.releaseReason, isNull);
+          expect(event.wasExpired, isFalse); // Default
+        });
+
+        test('should create UTXOReleasedEvent with all fields', () {
+          final event = UTXOReleasedEvent(
+            walletId: 'wallet_release_complete',
+            txid: 'release_txid_complete',
+            vout: 1,
+            releaseReason: 'Transaction cancelled',
+            wasExpired: true,
+            version: 7,
+          );
+
+          expect(event.releaseReason, equals('Transaction cancelled'));
+          expect(event.wasExpired, isTrue);
+          expect(event.version, equals(7));
+        });
+
+        test('should serialize and deserialize correctly', () {
+          final originalEvent = UTXOReleasedEvent(
+            walletId: 'wallet_release_serialize',
+            txid: 'release_serialize_txid',
+            vout: 2,
+            releaseReason: 'Manual release',
+            wasExpired: false,
+            version: 3,
+          );
+
+          final eventData = originalEvent.getWalletEventData();
+          expect(eventData['txid'], equals('release_serialize_txid'));
+          expect(eventData['vout'], equals(2));
+          expect(eventData['releaseReason'], equals('Manual release'));
+          expect(eventData['wasExpired'], isFalse);
+
+          final deserializedEvent = UTXOReleasedEvent.fromMap({
+            'walletId': 'wallet_release_serialize',
+            'txid': 'release_serialize_txid',
+            'vout': 2,
+            'releaseReason': 'Manual release',
+            'wasExpired': false,
+            'version': 3,
+          });
+
+          expect(deserializedEvent.walletId, equals(originalEvent.walletId));
+          expect(deserializedEvent.txid, equals(originalEvent.txid));
+          expect(deserializedEvent.vout, equals(originalEvent.vout));
+          expect(deserializedEvent.releaseReason, equals(originalEvent.releaseReason));
+          expect(deserializedEvent.wasExpired, equals(originalEvent.wasExpired));
+        });
+      });
+
+      group('UTXOReservationRenewedEvent', () {
+        test('should create UTXOReservationRenewedEvent with required fields', () {
+          final oldExpiry = DateTime.now().add(Duration(minutes: 15));
+          final newExpiry = DateTime.now().add(Duration(minutes: 30));
+          
+          final event = UTXOReservationRenewedEvent(
+            walletId: 'wallet_renewal',
+            txid: 'renewal_txid',
+            vout: 0,
+            newExpiresAt: newExpiry,
+            oldExpiresAt: oldExpiry,
+          );
+
+          expect(event.walletId, equals('wallet_renewal'));
+          expect(event.txid, equals('renewal_txid'));
+          expect(event.vout, equals(0));
+          expect(event.newExpiresAt, equals(newExpiry));
+          expect(event.oldExpiresAt, equals(oldExpiry));
+          expect(event.renewalReason, isNull);
+        });
+
+        test('should create UTXOReservationRenewedEvent with reason', () {
+          final oldExpiry = DateTime.now().add(Duration(minutes: 10));
+          final newExpiry = DateTime.now().add(Duration(hours: 1));
+          
+          final event = UTXOReservationRenewedEvent(
+            walletId: 'wallet_renewal_reason',
+            txid: 'renewal_reason_txid',
+            vout: 1,
+            newExpiresAt: newExpiry,
+            oldExpiresAt: oldExpiry,
+            renewalReason: 'Need more time for complex signing',
+            version: 8,
+          );
+
+          expect(event.renewalReason, equals('Need more time for complex signing'));
+          expect(event.version, equals(8));
+        });
+
+        test('should serialize and deserialize correctly', () {
+          final oldExpiry = DateTime.now().add(Duration(minutes: 20));
+          final newExpiry = DateTime.now().add(Duration(minutes: 50));
+          
+          final originalEvent = UTXOReservationRenewedEvent(
+            walletId: 'wallet_renewal_serialize',
+            txid: 'renewal_serialize_txid',
+            vout: 2,
+            newExpiresAt: newExpiry,
+            oldExpiresAt: oldExpiry,
+            renewalReason: 'Serialization renewal test',
+            version: 12,
+          );
+
+          final eventData = originalEvent.getWalletEventData();
+          expect(eventData['txid'], equals('renewal_serialize_txid'));
+          expect(eventData['vout'], equals(2));
+          expect(eventData['newExpiresAt'], equals(newExpiry.toIso8601String()));
+          expect(eventData['oldExpiresAt'], equals(oldExpiry.toIso8601String()));
+          expect(eventData['renewalReason'], equals('Serialization renewal test'));
+
+          final deserializedEvent = UTXOReservationRenewedEvent.fromMap({
+            'walletId': 'wallet_renewal_serialize',
+            'txid': 'renewal_serialize_txid',
+            'vout': 2,
+            'newExpiresAt': newExpiry.toIso8601String(),
+            'oldExpiresAt': oldExpiry.toIso8601String(),
+            'renewalReason': 'Serialization renewal test',
+            'version': 12,
+          });
+
+          expect(deserializedEvent.walletId, equals(originalEvent.walletId));
+          expect(deserializedEvent.txid, equals(originalEvent.txid));
+          expect(deserializedEvent.vout, equals(originalEvent.vout));
+          expect(deserializedEvent.newExpiresAt, equals(originalEvent.newExpiresAt));
+          expect(deserializedEvent.oldExpiresAt, equals(originalEvent.oldExpiresAt));
+          expect(deserializedEvent.renewalReason, equals(originalEvent.renewalReason));
+        });
+      });
+
+      group('Event Generation', () {
+        test('should generate unique event IDs', () {
+          final expiresAt = DateTime.now().add(Duration(minutes: 30));
+          
+          final event1 = UTXOReservedEvent(
+            walletId: 'wallet_unique',
+            txid: 'unique_txid_1',
+            vout: 0,
+            reservedByTxId: 'reserve_tx_1',
+            expiresAt: expiresAt,
+          );
+
+          final event2 = UTXOReservedEvent(
+            walletId: 'wallet_unique',
+            txid: 'unique_txid_2',
+            vout: 1,
+            reservedByTxId: 'reserve_tx_2',
+            expiresAt: expiresAt,
+          );
+
+          expect(event1.eventId, isNotNull);
+          expect(event2.eventId, isNotNull);
+          expect(event1.eventId, isNot(equals(event2.eventId)));
+        });
+
+        test('should generate timestamps for events', () {
+          final before = DateTime.now();
+          
+          final event = UTXOReleasedEvent(
+            walletId: 'wallet_timestamp',
+            txid: 'timestamp_txid',
+            vout: 0,
+          );
+          
+          final after = DateTime.now();
+
+          expect(event.timestamp, isNotNull);
+          expect(event.timestamp!.isAfter(before.subtract(Duration(seconds: 1))), isTrue);
+          expect(event.timestamp!.isBefore(after.add(Duration(seconds: 1))), isTrue);
+        });
+      });
+    });
   });
 }
 

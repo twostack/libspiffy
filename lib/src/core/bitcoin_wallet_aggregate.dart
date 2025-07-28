@@ -69,6 +69,14 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         return _handleReserveUTXOs(currentState, command as ReserveUTXOsCommand);
       case ReleaseUTXOsCommand:
         return _handleReleaseUTXOs(currentState, command as ReleaseUTXOsCommand);
+      case ReserveUTXOCommand:
+        return _handleReserveUTXO(currentState, command as ReserveUTXOCommand);
+      case ReleaseUTXOCommand:
+        return _handleReleaseUTXO(currentState, command as ReleaseUTXOCommand);
+      case RenewUTXOReservationCommand:
+        return _handleRenewUTXOReservation(currentState, command as RenewUTXOReservationCommand);
+      case CleanupExpiredReservationsCommand:
+        return _handleCleanupExpiredReservations(currentState, command as CleanupExpiredReservationsCommand);
       default:
         throw ArgumentError('Unknown command type: ${command.runtimeType}');
     }
@@ -108,6 +116,12 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         return _applyUTXOReservationReleased(currentState, event as UTXOReservationReleasedEvent);
       case UTXOReservationExpiredEvent:
         return _applyUTXOReservationExpired(currentState, event as UTXOReservationExpiredEvent);
+      case UTXOReservedEvent:
+        return _applyUTXOReserved(currentState, event as UTXOReservedEvent);
+      case UTXOReleasedEvent:
+        return _applyUTXOReleased(currentState, event as UTXOReleasedEvent);
+      case UTXOReservationRenewedEvent:
+        return _applyUTXOReservationRenewed(currentState, event as UTXOReservationRenewedEvent);
       default:
         throw ArgumentError('Unknown event type: ${event.runtimeType}');
     }
@@ -460,6 +474,159 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     return [event];
   }
 
+  List<Event> _handleReserveUTXO(WalletState currentState, ReserveUTXOCommand command) {
+    // Business rule: Wallet must exist
+    if (!currentState.isCreated) {
+      throw StateError('Cannot reserve UTXO for non-existent wallet');
+    }
+
+    // Business rule: UTXO must exist and be available (or have expired reservation)
+    final utxo = currentState.utxos[command.utxoKey];
+    if (utxo == null) {
+      throw StateError('UTXO ${command.utxoKey} not found in wallet');
+    }
+
+    if (utxo.status == UTXOStatus.spent) {
+      throw StateError('Cannot reserve spent UTXO ${command.utxoKey}');
+    }
+
+    if (utxo.status == UTXOStatus.reserved && !utxo.isReservationExpired) {
+      // Check priority - higher priority can override lower priority
+      final currentPriority = utxo.reservationPriority ?? 0;
+      if (command.priority <= currentPriority) {
+        throw StateError('UTXO ${command.utxoKey} is already reserved with higher or equal priority');
+      }
+    }
+
+    // Parse txid and vout from utxoKey
+    final parts = command.utxoKey.split(':');
+    final txid = parts[0];
+    final vout = int.parse(parts[1]);
+
+    // Calculate expiration time
+    final duration = command.reservationDuration ?? Duration(minutes: 30); // Default 30 minutes
+    final expiresAt = DateTime.now().add(duration);
+
+    final event = UTXOReservedEvent(
+      walletId: command.walletId,
+      txid: txid,
+      vout: vout,
+      reservedByTxId: command.reservedByTxId,
+      reservationReason: command.reservationReason,
+      expiresAt: expiresAt,
+      priority: command.priority,
+      version: currentState.version + 1,
+      timestamp: DateTime.now(),
+    );
+
+    return [event];
+  }
+
+  List<Event> _handleReleaseUTXO(WalletState currentState, ReleaseUTXOCommand command) {
+    // Business rule: Wallet must exist
+    if (!currentState.isCreated) {
+      throw StateError('Cannot release UTXO for non-existent wallet');
+    }
+
+    // Business rule: UTXO must exist and be reserved
+    final utxo = currentState.utxos[command.utxoKey];
+    if (utxo == null) {
+      throw StateError('UTXO ${command.utxoKey} not found in wallet');
+    }
+
+    if (utxo.status != UTXOStatus.reserved) {
+      throw StateError('UTXO ${command.utxoKey} is not reserved and cannot be released');
+    }
+
+    // Parse txid and vout from utxoKey
+    final parts = command.utxoKey.split(':');
+    final txid = parts[0];
+    final vout = int.parse(parts[1]);
+
+    final event = UTXOReleasedEvent(
+      walletId: command.walletId,
+      txid: txid,
+      vout: vout,
+      releaseReason: command.releaseReason,
+      wasExpired: utxo.isReservationExpired,
+      version: currentState.version + 1,
+      timestamp: DateTime.now(),
+    );
+
+    return [event];
+  }
+
+  List<Event> _handleRenewUTXOReservation(WalletState currentState, RenewUTXOReservationCommand command) {
+    // Business rule: Wallet must exist
+    if (!currentState.isCreated) {
+      throw StateError('Cannot renew UTXO reservation for non-existent wallet');
+    }
+
+    // Business rule: UTXO must exist and be reserved
+    final utxo = currentState.utxos[command.utxoKey];
+    if (utxo == null) {
+      throw StateError('UTXO ${command.utxoKey} not found in wallet');
+    }
+
+    if (utxo.status != UTXOStatus.reserved) {
+      throw StateError('UTXO ${command.utxoKey} is not reserved and cannot be renewed');
+    }
+
+    // Parse txid and vout from utxoKey
+    final parts = command.utxoKey.split(':');
+    final txid = parts[0];
+    final vout = int.parse(parts[1]);
+
+    final oldExpiresAt = utxo.reservationExpiresAt ?? DateTime.now();
+    final newExpiresAt = oldExpiresAt.add(command.extensionDuration);
+
+    final event = UTXOReservationRenewedEvent(
+      walletId: command.walletId,
+      txid: txid,
+      vout: vout,
+      newExpiresAt: newExpiresAt,
+      oldExpiresAt: oldExpiresAt,
+      renewalReason: command.renewalReason,
+      version: currentState.version + 1,
+      timestamp: DateTime.now(),
+    );
+
+    return [event];
+  }
+
+  List<Event> _handleCleanupExpiredReservations(WalletState currentState, CleanupExpiredReservationsCommand command) {
+    // Business rule: Wallet must exist
+    if (!currentState.isCreated) {
+      throw StateError('Cannot cleanup reservations for non-existent wallet');
+    }
+
+    final cutoffTime = command.cutoffTime ?? DateTime.now();
+    final events = <Event>[];
+
+    // Find expired reservations
+    for (final utxo in currentState.utxos.values) {
+      if (utxo.status == UTXOStatus.reserved && 
+          utxo.reservationExpiresAt != null && 
+          cutoffTime.isAfter(utxo.reservationExpiresAt!)) {
+        
+        // Create release event for expired reservation
+        final event = UTXOReleasedEvent(
+          walletId: command.walletId,
+          txid: utxo.txid,
+          vout: utxo.vout,
+          releaseReason: 'Expired reservation cleanup',
+          wasExpired: true,
+          version: currentState.version + events.length + 1,
+          timestamp: DateTime.now(),
+        );
+        
+        events.add(event);
+      }
+    }
+
+    return events;
+  }
+
   // ==========================================================================
   // EVENT APPLICATION (FUNCTIONAL STATE TRANSITIONS)
   // ==========================================================================
@@ -608,6 +775,74 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       version: event.version,
       lastModified: event.timestamp,
     );
+  }
+
+  WalletState _applyUTXOReserved(WalletState currentState, UTXOReservedEvent event) {
+    final utxoKey = '${event.txid}:${event.vout}';
+    final utxo = currentState.utxos[utxoKey];
+    
+    if (utxo != null) {
+      final reservedUtxo = utxo.copyWith(
+        status: UTXOStatus.reserved,
+        reservedByTxId: event.reservedByTxId,
+        reservationExpiresAt: event.expiresAt,
+        reservationPriority: event.priority,
+        reservationReason: event.reservationReason,
+        updatedAt: event.timestamp,
+      );
+      
+      final newUtxos = Map<String, BitcoinUtxo>.from(currentState.utxos);
+      newUtxos[utxoKey] = reservedUtxo;
+      
+      return currentState.copyWithWallet(
+        utxos: newUtxos,
+        version: event.version,
+        lastModified: event.timestamp,
+      ).recalculateBalances();
+    }
+    
+    return currentState.copyWithWallet(version: event.version, lastModified: event.timestamp);
+  }
+
+  WalletState _applyUTXOReleased(WalletState currentState, UTXOReleasedEvent event) {
+    final utxoKey = '${event.txid}:${event.vout}';
+    final utxo = currentState.utxos[utxoKey];
+    
+    if (utxo != null && utxo.status == UTXOStatus.reserved) {
+      final releasedUtxo = utxo.releaseReservation();
+      
+      final newUtxos = Map<String, BitcoinUtxo>.from(currentState.utxos);
+      newUtxos[utxoKey] = releasedUtxo;
+      
+      return currentState.copyWithWallet(
+        utxos: newUtxos,
+        version: event.version,
+        lastModified: event.timestamp,
+      ).recalculateBalances();
+    }
+    
+    return currentState.copyWithWallet(version: event.version, lastModified: event.timestamp);
+  }
+
+  WalletState _applyUTXOReservationRenewed(WalletState currentState, UTXOReservationRenewedEvent event) {
+    final utxoKey = '${event.txid}:${event.vout}';
+    final utxo = currentState.utxos[utxoKey];
+    
+    if (utxo != null && utxo.status == UTXOStatus.reserved) {
+      final extensionDuration = event.newExpiresAt.difference(event.oldExpiresAt);
+      final renewedUtxo = utxo.renewReservation(extensionDuration, reason: event.renewalReason);
+      
+      final newUtxos = Map<String, BitcoinUtxo>.from(currentState.utxos);
+      newUtxos[utxoKey] = renewedUtxo;
+      
+      return currentState.copyWithWallet(
+        utxos: newUtxos,
+        version: event.version,
+        lastModified: event.timestamp,
+      ).recalculateBalances();
+    }
+    
+    return currentState.copyWithWallet(version: event.version, lastModified: event.timestamp);
   }
 
   // ==========================================================================

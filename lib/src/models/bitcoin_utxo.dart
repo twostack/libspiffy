@@ -51,6 +51,15 @@ class BitcoinUtxo {
   /// Transaction ID that reserved this UTXO (if status is reserved)
   final String? reservedByTxId;
   
+  /// When the reservation expires (if status is reserved)
+  final DateTime? reservationExpiresAt;
+  
+  /// Priority of the reservation (higher numbers = higher priority)
+  final int? reservationPriority;
+  
+  /// Reason for the reservation (if status is reserved)
+  final String? reservationReason;
+  
   /// Derivation index used to generate the address (for HD wallets)
   final int? derivationIndex;
   
@@ -66,6 +75,9 @@ class BitcoinUtxo {
     required this.createdAt,
     required this.updatedAt,
     this.reservedByTxId,
+    this.reservationExpiresAt,
+    this.reservationPriority,
+    this.reservationReason,
     this.derivationIndex,
   });
   
@@ -127,6 +139,9 @@ class BitcoinUtxo {
     DateTime? createdAt,
     DateTime? updatedAt,
     Object? reservedByTxId = _sentinel,
+    Object? reservationExpiresAt = _sentinel,
+    Object? reservationPriority = _sentinel,
+    Object? reservationReason = _sentinel,
     int? derivationIndex,
   }) {
     return BitcoinUtxo(
@@ -141,15 +156,29 @@ class BitcoinUtxo {
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       reservedByTxId: reservedByTxId == _sentinel ? this.reservedByTxId : reservedByTxId as String?,
+      reservationExpiresAt: reservationExpiresAt == _sentinel ? this.reservationExpiresAt : reservationExpiresAt as DateTime?,
+      reservationPriority: reservationPriority == _sentinel ? this.reservationPriority : reservationPriority as int?,
+      reservationReason: reservationReason == _sentinel ? this.reservationReason : reservationReason as String?,
       derivationIndex: derivationIndex ?? this.derivationIndex,
     );
   }
   
   /// Reserve this UTXO for a transaction
-  BitcoinUtxo reserve(String transactionId) {
+  BitcoinUtxo reserve(String transactionId, {
+    Duration? duration,
+    int priority = 0,
+    String? reason,
+  }) {
+    final expiresAt = duration != null 
+        ? DateTime.now().add(duration)
+        : null;
+    
     return copyWith(
       status: UTXOStatus.reserved,
       reservedByTxId: transactionId,
+      reservationExpiresAt: expiresAt,
+      reservationPriority: priority,
+      reservationReason: reason,
       updatedAt: DateTime.now(),
     );
   }
@@ -167,8 +196,50 @@ class BitcoinUtxo {
     return copyWith(
       status: UTXOStatus.available,
       reservedByTxId: null,
+      reservationExpiresAt: null,
+      reservationPriority: null,
+      reservationReason: null,
       updatedAt: DateTime.now(),
     );
+  }
+
+  /// Renew/extend the reservation on this UTXO
+  BitcoinUtxo renewReservation(Duration extension, {String? reason}) {
+    if (status != UTXOStatus.reserved) {
+      throw StateError('Cannot renew reservation on non-reserved UTXO');
+    }
+    
+    final currentExpiry = reservationExpiresAt ?? DateTime.now();
+    final newExpiry = currentExpiry.add(extension);
+    
+    return copyWith(
+      reservationExpiresAt: newExpiry,
+      reservationReason: reason ?? reservationReason,
+      updatedAt: DateTime.now(),
+    );
+  }
+
+  /// Check if this UTXO's reservation has expired
+  bool get isReservationExpired {
+    if (status != UTXOStatus.reserved || reservationExpiresAt == null) {
+      return false;
+    }
+    return DateTime.now().isAfter(reservationExpiresAt!);
+  }
+
+  /// Check if this UTXO is effectively available (either truly available or reservation expired)
+  bool get isEffectivelyAvailable {
+    return status == UTXOStatus.available || 
+           (status == UTXOStatus.reserved && isReservationExpired);
+  }
+
+  /// Get time remaining on reservation (null if not reserved or no expiry)
+  Duration? get reservationTimeRemaining {
+    if (status != UTXOStatus.reserved || reservationExpiresAt == null) {
+      return null;
+    }
+    final remaining = reservationExpiresAt!.difference(DateTime.now());
+    return remaining.isNegative ? Duration.zero : remaining;
   }
   
   /// Update confirmation information

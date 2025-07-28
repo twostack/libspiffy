@@ -382,6 +382,180 @@ class UTXOConfirmationUpdatedEvent extends WalletEvent {
   }
 }
 
+/// Event fired when a UTXO is reserved for a transaction
+class UTXOReservedEvent extends WalletEvent {
+  final String txid;
+  final int vout;
+  final String reservedByTxId;
+  final String? reservationReason;
+  final DateTime expiresAt;
+  final int priority;
+
+  UTXOReservedEvent({
+    required String walletId,
+    required this.txid,
+    required this.vout,
+    required this.reservedByTxId,
+    this.reservationReason,
+    required this.expiresAt,
+    this.priority = 0,
+    String? eventId,
+    DateTime? timestamp,
+    int? version,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          eventId: eventId,
+          timestamp: timestamp,
+          version: version,
+          metadata: metadata,
+        );
+
+  @override
+  Map<String, dynamic> getWalletEventData() {
+    return {
+      'txid': txid,
+      'vout': vout,
+      'reservedByTxId': reservedByTxId,
+      'reservationReason': reservationReason,
+      'expiresAt': expiresAt.toIso8601String(),
+      'priority': priority,
+    };
+  }
+
+  static UTXOReservedEvent fromMap(Map<String, dynamic> map) {
+    return UTXOReservedEvent(
+      walletId: map['walletId'] as String,
+      txid: map['txid'] as String,
+      vout: map['vout'] as int,
+      reservedByTxId: map['reservedByTxId'] as String,
+      reservationReason: map['reservationReason'] as String?,
+      expiresAt: DateTime.parse(map['expiresAt'] as String),
+      priority: map['priority'] as int? ?? 0,
+      eventId: map['eventId'] as String?,
+      timestamp: map['timestamp'] != null
+          ? (map['timestamp'] is String 
+              ? DateTime.parse(map['timestamp'] as String)
+              : map['timestamp'] as DateTime)
+          : null,
+      version: map['version'] as int?,
+      metadata: map['metadata'] as Map<String, dynamic>?,
+    );
+  }
+}
+
+/// Event fired when a UTXO reservation is released
+class UTXOReleasedEvent extends WalletEvent {
+  final String txid;
+  final int vout;
+  final String? releaseReason;
+  final bool wasExpired;
+
+  UTXOReleasedEvent({
+    required String walletId,
+    required this.txid,
+    required this.vout,
+    this.releaseReason,
+    this.wasExpired = false,
+    String? eventId,
+    DateTime? timestamp,
+    int? version,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          eventId: eventId,
+          timestamp: timestamp,
+          version: version,
+          metadata: metadata,
+        );
+
+  @override
+  Map<String, dynamic> getWalletEventData() {
+    return {
+      'txid': txid,
+      'vout': vout,
+      'releaseReason': releaseReason,
+      'wasExpired': wasExpired,
+    };
+  }
+
+  static UTXOReleasedEvent fromMap(Map<String, dynamic> map) {
+    return UTXOReleasedEvent(
+      walletId: map['walletId'] as String,
+      txid: map['txid'] as String,
+      vout: map['vout'] as int,
+      releaseReason: map['releaseReason'] as String?,
+      wasExpired: map['wasExpired'] as bool? ?? false,
+      eventId: map['eventId'] as String?,
+      timestamp: map['timestamp'] != null
+          ? (map['timestamp'] is String 
+              ? DateTime.parse(map['timestamp'] as String)
+              : map['timestamp'] as DateTime)
+          : null,
+      version: map['version'] as int?,
+      metadata: map['metadata'] as Map<String, dynamic>?,
+    );
+  }
+}
+
+/// Event fired when a UTXO reservation is renewed/extended
+class UTXOReservationRenewedEvent extends WalletEvent {
+  final String txid;
+  final int vout;
+  final DateTime newExpiresAt;
+  final DateTime oldExpiresAt;
+  final String? renewalReason;
+
+  UTXOReservationRenewedEvent({
+    required String walletId,
+    required this.txid,
+    required this.vout,
+    required this.newExpiresAt,
+    required this.oldExpiresAt,
+    this.renewalReason,
+    String? eventId,
+    DateTime? timestamp,
+    int? version,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          eventId: eventId,
+          timestamp: timestamp,
+          version: version,
+          metadata: metadata,
+        );
+
+  @override
+  Map<String, dynamic> getWalletEventData() {
+    return {
+      'txid': txid,
+      'vout': vout,
+      'newExpiresAt': newExpiresAt.toIso8601String(),
+      'oldExpiresAt': oldExpiresAt.toIso8601String(),
+      'renewalReason': renewalReason,
+    };
+  }
+
+  static UTXOReservationRenewedEvent fromMap(Map<String, dynamic> map) {
+    return UTXOReservationRenewedEvent(
+      walletId: map['walletId'] as String,
+      txid: map['txid'] as String,
+      vout: map['vout'] as int,
+      newExpiresAt: DateTime.parse(map['newExpiresAt'] as String),
+      oldExpiresAt: DateTime.parse(map['oldExpiresAt'] as String),
+      renewalReason: map['renewalReason'] as String?,
+      eventId: map['eventId'] as String?,
+      timestamp: map['timestamp'] != null
+          ? (map['timestamp'] is String 
+              ? DateTime.parse(map['timestamp'] as String)
+              : map['timestamp'] as DateTime)
+          : null,
+      version: map['version'] as int?,
+      metadata: map['metadata'] as Map<String, dynamic>?,
+    );
+  }
+}
+
 // =============================================================================
 // TRANSACTION EVENTS
 // =============================================================================

@@ -624,5 +624,320 @@ void main() {
         expect(utxo.status, equals(UTXOStatus.available)); // Should default to available
       });
     });
+
+    group('UTXO Reservation System', () {
+      late BitcoinUtxo utxo;
+
+      setUp(() {
+        final now = DateTime.now();
+        final coin = dartsv.Coin.ofSat(BigInt.from(100000));
+        utxo = BitcoinUtxo(
+          txid: 'reservation_test',
+          vout: 0,
+          value: coin,
+          address: '1ReservationTest123456789012345678',
+          scriptPubKey: '76a914reservation123456789012345678901234567888ac',
+          status: UTXOStatus.available,
+          createdAt: now,
+          updatedAt: now,
+        );
+      });
+
+      group('Basic Reservation', () {
+        test('should reserve UTXO with transaction ID only', () {
+          final reserved = utxo.reserve('tx_123');
+          
+          expect(reserved.status, equals(UTXOStatus.reserved));
+          expect(reserved.reservedByTxId, equals('tx_123'));
+          expect(reserved.reservationPriority, equals(0)); // Default priority
+          expect(reserved.reservationReason, isNull);
+          expect(reserved.reservationExpiresAt, isNull); // No duration specified
+          expect(reserved.isReserved, isTrue);
+          expect(reserved.isAvailable, isFalse);
+        });
+
+        test('should reserve UTXO with duration', () {
+          final duration = Duration(minutes: 30);
+          final beforeReserve = DateTime.now();
+          final reserved = utxo.reserve('tx_456', duration: duration);
+          final afterReserve = DateTime.now();
+          
+          expect(reserved.status, equals(UTXOStatus.reserved));
+          expect(reserved.reservedByTxId, equals('tx_456'));
+          expect(reserved.reservationExpiresAt, isNotNull);
+          
+          final expiresAt = reserved.reservationExpiresAt!;
+          final expectedMin = beforeReserve.add(duration);
+          final expectedMax = afterReserve.add(duration);
+          
+          expect(expiresAt.isAfter(expectedMin) || expiresAt.isAtSameMomentAs(expectedMin), isTrue);
+          expect(expiresAt.isBefore(expectedMax) || expiresAt.isAtSameMomentAs(expectedMax), isTrue);
+        });
+
+        test('should reserve UTXO with priority and reason', () {
+          final reserved = utxo.reserve(
+            'tx_789',
+            priority: 5,
+            reason: 'High priority transaction',
+          );
+          
+          expect(reserved.status, equals(UTXOStatus.reserved));
+          expect(reserved.reservedByTxId, equals('tx_789'));
+          expect(reserved.reservationPriority, equals(5));
+          expect(reserved.reservationReason, equals('High priority transaction'));
+        });
+
+        test('should reserve UTXO with all parameters', () {
+          final duration = Duration(hours: 2);
+          final reserved = utxo.reserve(
+            'tx_complete',
+            duration: duration,
+            priority: 10,
+            reason: 'Complete test reservation',
+          );
+          
+          expect(reserved.status, equals(UTXOStatus.reserved));
+          expect(reserved.reservedByTxId, equals('tx_complete'));
+          expect(reserved.reservationPriority, equals(10));
+          expect(reserved.reservationReason, equals('Complete test reservation'));
+          expect(reserved.reservationExpiresAt, isNotNull);
+        });
+      });
+
+      group('Reservation Release', () {
+        test('should release reservation and clear all reservation fields', () {
+          final reserved = utxo.reserve(
+            'tx_release_test',
+            duration: Duration(minutes: 30),
+            priority: 5,
+            reason: 'Test reservation',
+          );
+          
+          expect(reserved.status, equals(UTXOStatus.reserved));
+          
+          final released = reserved.releaseReservation();
+          
+          expect(released.status, equals(UTXOStatus.available));
+          expect(released.reservedByTxId, isNull);
+          expect(released.reservationExpiresAt, isNull);
+          expect(released.reservationPriority, isNull);
+          expect(released.reservationReason, isNull);
+          expect(released.isAvailable, isTrue);
+          expect(released.isReserved, isFalse);
+        });
+
+        test('should update timestamp when releasing reservation', () {
+          final reserved = utxo.reserve('tx_timestamp_test');
+          final originalTimestamp = reserved.updatedAt;
+          
+          // Small delay to ensure timestamp difference
+          Future.delayed(Duration(milliseconds: 1));
+          
+          final released = reserved.releaseReservation();
+          
+          expect(released.updatedAt.isAfter(originalTimestamp), isTrue);
+        });
+      });
+
+      group('Reservation Renewal', () {
+        test('should renew reservation with extension', () {
+          final initialDuration = Duration(minutes: 30);
+          final reserved = utxo.reserve('tx_renew_test', duration: initialDuration);
+          final originalExpiry = reserved.reservationExpiresAt!;
+          
+          final extension = Duration(minutes: 15);
+          final renewed = reserved.renewReservation(extension);
+          
+          expect(renewed.status, equals(UTXOStatus.reserved));
+          expect(renewed.reservedByTxId, equals('tx_renew_test'));
+          expect(renewed.reservationExpiresAt, isNotNull);
+          expect(renewed.reservationExpiresAt!.isAfter(originalExpiry), isTrue);
+          
+          final expectedNewExpiry = originalExpiry.add(extension);
+          final actualNewExpiry = renewed.reservationExpiresAt!;
+          expect(actualNewExpiry.difference(expectedNewExpiry).abs().inMilliseconds, lessThan(100)); // Allow small timing difference
+        });
+
+        test('should renew reservation with new reason', () {
+          final reserved = utxo.reserve('tx_reason_test', reason: 'Original reason');
+          
+          final renewed = reserved.renewReservation(
+            Duration(minutes: 10),
+            reason: 'Updated reason',
+          );
+          
+          expect(renewed.reservationReason, equals('Updated reason'));
+        });
+
+        test('should throw error when renewing non-reserved UTXO', () {
+          expect(
+            () => utxo.renewReservation(Duration(minutes: 10)),
+            throwsA(isA<StateError>()),
+          );
+        });
+
+        test('should keep existing reason when not provided in renewal', () {
+          final reserved = utxo.reserve('tx_keep_reason', reason: 'Keep this reason');
+          
+          final renewed = reserved.renewReservation(Duration(minutes: 10));
+          
+          expect(renewed.reservationReason, equals('Keep this reason'));
+        });
+      });
+
+      group('Reservation Expiration', () {
+        test('should detect expired reservation', () {
+          final pastTime = DateTime.now().subtract(Duration(minutes: 10));
+          final expiredUtxo = utxo.copyWith(
+            status: UTXOStatus.reserved,
+            reservedByTxId: 'tx_expired',
+            reservationExpiresAt: pastTime,
+          );
+          
+          expect(expiredUtxo.isReservationExpired, isTrue);
+          expect(expiredUtxo.isEffectivelyAvailable, isTrue);
+        });
+
+        test('should detect non-expired reservation', () {
+          final futureTime = DateTime.now().add(Duration(minutes: 10));
+          final activeUtxo = utxo.copyWith(
+            status: UTXOStatus.reserved,
+            reservedByTxId: 'tx_active',
+            reservationExpiresAt: futureTime,
+          );
+          
+          expect(activeUtxo.isReservationExpired, isFalse);
+          expect(activeUtxo.isEffectivelyAvailable, isFalse);
+        });
+
+        test('should handle reservation without expiry time', () {
+          final noExpiryUtxo = utxo.copyWith(
+            status: UTXOStatus.reserved,
+            reservedByTxId: 'tx_no_expiry',
+          );
+          
+          expect(noExpiryUtxo.isReservationExpired, isFalse);
+          expect(noExpiryUtxo.isEffectivelyAvailable, isFalse);
+        });
+
+        test('should handle available UTXO (no reservation to expire)', () {
+          expect(utxo.isReservationExpired, isFalse);
+          expect(utxo.isEffectivelyAvailable, isTrue);
+        });
+      });
+
+      group('Reservation Time Remaining', () {
+        test('should calculate time remaining for active reservation', () {
+          final futureTime = DateTime.now().add(Duration(minutes: 15));
+          final activeUtxo = utxo.copyWith(
+            status: UTXOStatus.reserved,
+            reservedByTxId: 'tx_time_remaining',
+            reservationExpiresAt: futureTime,
+          );
+          
+          final remaining = activeUtxo.reservationTimeRemaining;
+          expect(remaining, isNotNull);
+          expect(remaining!.inMinutes, greaterThanOrEqualTo(14)); // Should be close to 15 minutes
+          expect(remaining.inMinutes, lessThan(16));
+        });
+
+        test('should return zero for expired reservation', () {
+          final pastTime = DateTime.now().subtract(Duration(minutes: 5));
+          final expiredUtxo = utxo.copyWith(
+            status: UTXOStatus.reserved,
+            reservedByTxId: 'tx_expired_time',
+            reservationExpiresAt: pastTime,
+          );
+          
+          final remaining = expiredUtxo.reservationTimeRemaining;
+          expect(remaining, isNotNull);
+          expect(remaining!, equals(Duration.zero));
+        });
+
+        test('should return null for non-reserved UTXO', () {
+          expect(utxo.reservationTimeRemaining, isNull);
+        });
+
+        test('should return null for reservation without expiry', () {
+          final noExpiryUtxo = utxo.copyWith(
+            status: UTXOStatus.reserved,
+            reservedByTxId: 'tx_no_expiry_time',
+          );
+          
+          expect(noExpiryUtxo.reservationTimeRemaining, isNull);
+        });
+      });
+
+      group('Effectively Available Status', () {
+        test('should be effectively available when truly available', () {
+          expect(utxo.isEffectivelyAvailable, isTrue);
+        });
+
+        test('should not be effectively available when actively reserved', () {
+          final futureTime = DateTime.now().add(Duration(minutes: 10));
+          final reservedUtxo = utxo.copyWith(
+            status: UTXOStatus.reserved,
+            reservedByTxId: 'tx_active_reservation',
+            reservationExpiresAt: futureTime,
+          );
+          
+          expect(reservedUtxo.isEffectivelyAvailable, isFalse);
+        });
+
+        test('should be effectively available when reservation expired', () {
+          final pastTime = DateTime.now().subtract(Duration(minutes: 5));
+          final expiredUtxo = utxo.copyWith(
+            status: UTXOStatus.reserved,
+            reservedByTxId: 'tx_expired_reservation',
+            reservationExpiresAt: pastTime,
+          );
+          
+          expect(expiredUtxo.isEffectivelyAvailable, isTrue);
+        });
+
+        test('should not be effectively available when spent', () {
+          final spentUtxo = utxo.copyWith(status: UTXOStatus.spent);
+          expect(spentUtxo.isEffectivelyAvailable, isFalse);
+        });
+      });
+
+      group('copyWith with Reservation Fields', () {
+        test('should update reservation fields with copyWith', () {
+          final futureTime = DateTime.now().add(Duration(minutes: 30));
+          
+          final updated = utxo.copyWith(
+            status: UTXOStatus.reserved,
+            reservedByTxId: 'tx_copy_with',
+            reservationExpiresAt: futureTime,
+            reservationPriority: 7,
+            reservationReason: 'CopyWith test',
+          );
+          
+          expect(updated.status, equals(UTXOStatus.reserved));
+          expect(updated.reservedByTxId, equals('tx_copy_with'));
+          expect(updated.reservationExpiresAt, equals(futureTime));
+          expect(updated.reservationPriority, equals(7));
+          expect(updated.reservationReason, equals('CopyWith test'));
+        });
+
+        test('should clear reservation fields with copyWith null values', () {
+          final reserved = utxo.reserve('tx_clear_test', priority: 5, reason: 'Clear me');
+          
+          final cleared = reserved.copyWith(
+            status: UTXOStatus.available,
+            reservedByTxId: null,
+            reservationExpiresAt: null,
+            reservationPriority: null,
+            reservationReason: null,
+          );
+          
+          expect(cleared.status, equals(UTXOStatus.available));
+          expect(cleared.reservedByTxId, isNull);
+          expect(cleared.reservationExpiresAt, isNull);
+          expect(cleared.reservationPriority, isNull);
+          expect(cleared.reservationReason, isNull);
+        });
+      });
+    });
   });
 } 

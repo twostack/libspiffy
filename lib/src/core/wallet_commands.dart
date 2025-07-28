@@ -218,6 +218,104 @@ class UpdateUTXOConfirmationsCommand extends WalletCommand {
   String get commandType => 'UpdateUTXOConfirmationsCommand';
 }
 
+/// Command to reserve a UTXO for a transaction
+class ReserveUTXOCommand extends WalletCommand {
+  final String utxoKey; // Format: "txid:vout"
+  final String reservedByTxId;
+  final String? reservationReason;
+  final Duration? reservationDuration;
+  final int priority;
+
+  ReserveUTXOCommand({
+    required String walletId,
+    required this.utxoKey,
+    required this.reservedByTxId,
+    this.reservationReason,
+    this.reservationDuration,
+    this.priority = 0,
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          commandId: commandId,
+          timestamp: timestamp,
+          metadata: metadata,
+        );
+
+  @override
+  String get commandType => 'ReserveUTXOCommand';
+}
+
+/// Command to release a UTXO reservation
+class ReleaseUTXOCommand extends WalletCommand {
+  final String utxoKey; // Format: "txid:vout"
+  final String? releaseReason;
+
+  ReleaseUTXOCommand({
+    required String walletId,
+    required this.utxoKey,
+    this.releaseReason,
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          commandId: commandId,
+          timestamp: timestamp,
+          metadata: metadata,
+        );
+
+  @override
+  String get commandType => 'ReleaseUTXOCommand';
+}
+
+/// Command to renew/extend a UTXO reservation
+class RenewUTXOReservationCommand extends WalletCommand {
+  final String utxoKey; // Format: "txid:vout"
+  final Duration extensionDuration;
+  final String? renewalReason;
+
+  RenewUTXOReservationCommand({
+    required String walletId,
+    required this.utxoKey,
+    required this.extensionDuration,
+    this.renewalReason,
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          commandId: commandId,
+          timestamp: timestamp,
+          metadata: metadata,
+        );
+
+  @override
+  String get commandType => 'RenewUTXOReservationCommand';
+}
+
+/// Command to clean up expired UTXO reservations
+class CleanupExpiredReservationsCommand extends WalletCommand {
+  final DateTime? cutoffTime; // Cleanup reservations older than this, or now if null
+
+  CleanupExpiredReservationsCommand({
+    required String walletId,
+    this.cutoffTime,
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          commandId: commandId,
+          timestamp: timestamp,
+          metadata: metadata,
+        );
+
+  @override
+  String get commandType => 'CleanupExpiredReservationsCommand';
+}
+
 // =============================================================================
 // TRANSACTION MANAGEMENT COMMANDS
 // =============================================================================

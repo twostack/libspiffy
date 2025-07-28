@@ -658,6 +658,194 @@ void main() {
         expect(command.reservationDuration!.inDays, equals(365));
       });
     });
+
+    group('UTXO Reservation Commands', () {
+      group('ReserveUTXOCommand', () {
+        test('should create ReserveUTXOCommand with required fields', () {
+          final command = ReserveUTXOCommand(
+            walletId: 'wallet_123',
+            utxoKey: 'txid:0',
+            reservedByTxId: 'reserve_tx_123',
+          );
+
+          expect(command.walletId, equals('wallet_123'));
+          expect(command.utxoKey, equals('txid:0'));
+          expect(command.reservedByTxId, equals('reserve_tx_123'));
+          expect(command.priority, equals(0)); // Default priority
+          expect(command.reservationReason, isNull);
+          expect(command.reservationDuration, isNull);
+          expect(command.commandType, equals('ReserveUTXOCommand'));
+        });
+
+        test('should create ReserveUTXOCommand with all optional fields', () {
+          final duration = Duration(minutes: 30);
+          final command = ReserveUTXOCommand(
+            walletId: 'wallet_456',
+            utxoKey: 'txid:1',
+            reservedByTxId: 'reserve_tx_456',
+            reservationReason: 'High priority transaction',
+            reservationDuration: duration,
+            priority: 5,
+          );
+
+          expect(command.reservationReason, equals('High priority transaction'));
+          expect(command.reservationDuration, equals(duration));
+          expect(command.priority, equals(5));
+        });
+
+        test('should generate commandId and timestamp if not provided', () {
+          final command = ReserveUTXOCommand(
+            walletId: 'wallet_auto',
+            utxoKey: 'txid:2',
+            reservedByTxId: 'reserve_tx_auto',
+          );
+
+          expect(command.commandId, isNotNull);
+          expect(command.timestamp, isNotNull);
+        });
+      });
+
+      group('ReleaseUTXOCommand', () {
+        test('should create ReleaseUTXOCommand with required fields', () {
+          final command = ReleaseUTXOCommand(
+            walletId: 'wallet_release',
+            utxoKey: 'txid:0',
+          );
+
+          expect(command.walletId, equals('wallet_release'));
+          expect(command.utxoKey, equals('txid:0'));
+          expect(command.releaseReason, isNull);
+          expect(command.commandType, equals('ReleaseUTXOCommand'));
+        });
+
+        test('should create ReleaseUTXOCommand with reason', () {
+          final command = ReleaseUTXOCommand(
+            walletId: 'wallet_release_reason',
+            utxoKey: 'txid:1',
+            releaseReason: 'Transaction cancelled',
+          );
+
+          expect(command.releaseReason, equals('Transaction cancelled'));
+        });
+      });
+
+      group('RenewUTXOReservationCommand', () {
+        test('should create RenewUTXOReservationCommand with required fields', () {
+          final extension = Duration(minutes: 15);
+          final command = RenewUTXOReservationCommand(
+            walletId: 'wallet_renew',
+            utxoKey: 'txid:0',
+            extensionDuration: extension,
+          );
+
+          expect(command.walletId, equals('wallet_renew'));
+          expect(command.utxoKey, equals('txid:0'));
+          expect(command.extensionDuration, equals(extension));
+          expect(command.renewalReason, isNull);
+          expect(command.commandType, equals('RenewUTXOReservationCommand'));
+        });
+
+        test('should create RenewUTXOReservationCommand with reason', () {
+          final extension = Duration(hours: 1);
+          final command = RenewUTXOReservationCommand(
+            walletId: 'wallet_renew_reason',
+            utxoKey: 'txid:1',
+            extensionDuration: extension,
+            renewalReason: 'Need more time for signing',
+          );
+
+          expect(command.extensionDuration, equals(extension));
+          expect(command.renewalReason, equals('Need more time for signing'));
+        });
+      });
+
+      group('CleanupExpiredReservationsCommand', () {
+        test('should create CleanupExpiredReservationsCommand with default cutoff', () {
+          final command = CleanupExpiredReservationsCommand(
+            walletId: 'wallet_cleanup',
+          );
+
+          expect(command.walletId, equals('wallet_cleanup'));
+          expect(command.cutoffTime, isNull); // Uses current time by default
+          expect(command.commandType, equals('CleanupExpiredReservationsCommand'));
+        });
+
+        test('should create CleanupExpiredReservationsCommand with specific cutoff', () {
+          final cutoff = DateTime.now().subtract(Duration(hours: 1));
+          final command = CleanupExpiredReservationsCommand(
+            walletId: 'wallet_cleanup_cutoff',
+            cutoffTime: cutoff,
+          );
+
+          expect(command.cutoffTime, equals(cutoff));
+        });
+      });
+
+      group('Command Validation', () {
+        test('should validate UTXO key format in reservation commands', () {
+          // These should not throw - just testing construction
+          final reserveCommand = ReserveUTXOCommand(
+            walletId: 'wallet_test',
+            utxoKey: 'valid_txid:0',
+            reservedByTxId: 'reserve_tx',
+          );
+          expect(reserveCommand.utxoKey, equals('valid_txid:0'));
+
+          final releaseCommand = ReleaseUTXOCommand(
+            walletId: 'wallet_test',
+            utxoKey: 'another_valid_txid:1',
+          );
+          expect(releaseCommand.utxoKey, equals('another_valid_txid:1'));
+
+          final renewCommand = RenewUTXOReservationCommand(
+            walletId: 'wallet_test',
+            utxoKey: 'yet_another_txid:2',
+            extensionDuration: Duration(minutes: 10),
+          );
+          expect(renewCommand.utxoKey, equals('yet_another_txid:2'));
+        });
+
+        test('should handle various duration values', () {
+          final durations = [
+            Duration(seconds: 30),
+            Duration(minutes: 5),
+            Duration(hours: 1),
+            Duration(days: 1),
+          ];
+
+          for (final duration in durations) {
+            final reserveCommand = ReserveUTXOCommand(
+              walletId: 'wallet_duration_test',
+              utxoKey: 'txid:0',
+              reservedByTxId: 'reserve_tx',
+              reservationDuration: duration,
+            );
+            expect(reserveCommand.reservationDuration, equals(duration));
+
+            final renewCommand = RenewUTXOReservationCommand(
+              walletId: 'wallet_duration_test',
+              utxoKey: 'txid:0',
+              extensionDuration: duration,
+            );
+            expect(renewCommand.extensionDuration, equals(duration));
+          }
+        });
+
+        test('should handle various priority values', () {
+          final priorities = [-1, 0, 1, 5, 10, 100];
+
+          for (final priority in priorities) {
+            final command = ReserveUTXOCommand(
+              walletId: 'wallet_priority_test',
+              utxoKey: 'txid:0',
+              reservedByTxId: 'reserve_tx',
+              priority: priority,
+            );
+            expect(command.priority, equals(priority));
+          }
+        });
+      });
+    });
   });
 }
 

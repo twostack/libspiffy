@@ -78,9 +78,10 @@ class SpiffyNodeBridge {
 
     try {
       // Translate SpiffyNode ChainTipEvent to LibSpiffy ChainTipEventMessage
+      // Pass through the original ChainTip objects as they're already the correct type
       final chainTipMessage = ChainTipEventMessage(
-        newTip: _createChainTipFromSpiffyNode(event.newTip),
-        oldTip: event.oldTip != null ? _createChainTipFromSpiffyNode(event.oldTip!) : null,
+        newTip: event.newTip,
+        oldTip: event.oldTip,
         eventType: event.isReorganization ? ChainTipEventType.reorganization : ChainTipEventType.heightIncrease,
         description: 'Chain tip ${event.isReorganization ? "reorganization" : "update"} at height ${event.newTip.height}',
       );
@@ -102,8 +103,13 @@ class SpiffyNodeBridge {
   /// access to the full ChainTip class structure
   dynamic _createChainTipFromSpiffyNode(dynamic spiffyNodeTip) {
     // Return a simple object with the properties LibSpiffy expects
+    // Convert Hash to string if needed
+    final blockHash = spiffyNodeTip.blockHash != null 
+        ? spiffyNodeTip.blockHash.toString() 
+        : 'unknown';
+    
     return _SimpleChainTip(
-      blockHash: spiffyNodeTip.blockHash ?? 'unknown',
+      blockHash: blockHash,
       height: spiffyNodeTip.height ?? 0,
       peerCount: spiffyNodeTip.peerCount ?? 1,
       confidence: spiffyNodeTip.confidence ?? 1.0,

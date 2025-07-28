@@ -375,8 +375,12 @@ class _MockHeaderSyncActor extends Actor {
 
 /// Mock PeerManager for testing
 class _MockPeerManager implements PeerManager {
-  final _MockChainTipTracker _chainTipTracker = _MockChainTipTracker();
+  late final _MockChainTipTracker _chainTipTracker;
   final StreamController<ChainTipEvent> _tipEventController = StreamController<ChainTipEvent>.broadcast();
+
+  _MockPeerManager() {
+    _chainTipTracker = _MockChainTipTracker(_tipEventController.stream);
+  }
 
   @override
   ChainTipTracker get chainTipTracker => _chainTipTracker;
@@ -396,18 +400,20 @@ class _MockPeerManager implements PeerManager {
 
 /// Mock ChainTipTracker for testing
 class _MockChainTipTracker implements ChainTipTracker {
+  final Stream<ChainTipEvent> _tipEventsStream;
+
+  _MockChainTipTracker(this._tipEventsStream);
+
   @override
   int get networkHeight => 100;
 
   @override
-  Stream<ChainTipEvent> get tipEvents => _mockPeerManager._tipEventController.stream;
+  Stream<ChainTipEvent> get tipEvents => _tipEventsStream;
 
   // Implement other ChainTipTracker methods as no-ops for testing
   @override
   dynamic noSuchMethod(Invocation invocation) => null;
 }
-
-late _MockPeerManager _mockPeerManager;
 
 /// Mock ChainTipEvent for testing
 class _MockChainTipEvent implements ChainTipEvent {

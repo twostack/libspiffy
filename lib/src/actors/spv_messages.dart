@@ -1,4 +1,5 @@
 import 'package:spiffynode/spiffy_node.dart';
+import 'package:dactor/dactor.dart';
 import '../storage/wallet_storage.dart';
 import '../models/bitcoin_transaction.dart';
 
@@ -8,12 +9,15 @@ abstract class SPVMessage {}
 /// Messages for block header management
 
 /// Message sent when new block headers are received from SpiffyNode
-class BlockHeadersReceivedMessage implements SPVMessage {
+class BlockHeadersReceivedMessage implements SPVMessage, Message {
   final String peerId;
   final List<BlockHeader> headers;
   final int startHeight;
   final bool isReorganization;
   final DateTime receivedAt;
+  final String _correlationId;
+  final ActorRef? _replyTo;
+  final Map<String, dynamic> _metadata;
 
   BlockHeadersReceivedMessage({
     required this.peerId,
@@ -21,7 +25,25 @@ class BlockHeadersReceivedMessage implements SPVMessage {
     required this.startHeight,
     this.isReorganization = false,
     DateTime? receivedAt,
-  }) : receivedAt = receivedAt ?? DateTime.now();
+    String? correlationId,
+    ActorRef? replyTo,
+    Map<String, dynamic>? metadata,
+  }) : receivedAt = receivedAt ?? DateTime.now(),
+       _correlationId = correlationId ?? 'headers_${DateTime.now().millisecondsSinceEpoch}',
+       _replyTo = replyTo,
+       _metadata = metadata ?? {};
+
+  @override
+  String get correlationId => _correlationId;
+
+  @override
+  ActorRef? get replyTo => _replyTo;
+
+  @override
+  DateTime get timestamp => receivedAt;
+
+  @override
+  Map<String, dynamic> get metadata => _metadata;
 
   @override
   String toString() => 'BlockHeadersReceivedMessage(peer: $peerId, '
@@ -67,13 +89,16 @@ class RequestHeaderSyncMessage implements SPVMessage {
 }
 
 /// Chain tip event from SpiffyNode's ChainTipTracker
-class ChainTipEventMessage implements SPVMessage {
+class ChainTipEventMessage implements SPVMessage, Message {
   final ChainTip? oldTip;
   final ChainTip newTip;
   final ChainTipEventType eventType;
   final String? triggeringPeer;
   final String description;
   final DateTime eventTime;
+  final String _correlationId;
+  final ActorRef? _replyTo;
+  final Map<String, dynamic> _metadata;
 
   ChainTipEventMessage({
     this.oldTip,
@@ -82,7 +107,25 @@ class ChainTipEventMessage implements SPVMessage {
     this.triggeringPeer,
     required this.description,
     DateTime? eventTime,
-  }) : eventTime = eventTime ?? DateTime.now();
+    String? correlationId,
+    ActorRef? replyTo,
+    Map<String, dynamic>? metadata,
+  }) : eventTime = eventTime ?? DateTime.now(),
+       _correlationId = correlationId ?? 'chain_tip_${DateTime.now().millisecondsSinceEpoch}',
+       _replyTo = replyTo,
+       _metadata = metadata ?? {};
+
+  @override
+  String get correlationId => _correlationId;
+
+  @override
+  ActorRef? get replyTo => _replyTo;
+
+  @override
+  DateTime get timestamp => eventTime;
+
+  @override
+  Map<String, dynamic> get metadata => _metadata;
 
   /// Height change (positive for increase, negative for decrease)
   int get heightChange {

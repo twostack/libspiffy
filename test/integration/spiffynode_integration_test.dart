@@ -37,7 +37,7 @@ void main() {
 
     setUp(() async {
       storage = InMemoryWalletStorage();
-      headerChain = BlockHeaderChain(storage);
+      headerChain = BlockHeaderChain(storage, skipProofOfWorkValidation: true);
       await headerChain.initialize();
     });
 
@@ -397,12 +397,12 @@ List<BlockHeader> _createTestBlockHeaders(int count) {
 /// Convert string to bytes for Hash creation (simplified for testing)
 List<int> _stringToBytes(String input) {
   if (input.length == 64) {
-    // Assume it's a hex string
+    // Assume it's a hex string - convert and reverse for Bitcoin's little-endian format
     final bytes = <int>[];
     for (int i = 0; i < input.length; i += 2) {
       bytes.add(int.parse(input.substring(i, i + 2), radix: 16));
     }
-    return bytes;
+    return bytes.reversed.toList(); // Reverse for little-endian
   } else {
     // Use string bytes, padded to 32 bytes
     final bytes = input.codeUnits.take(32).toList();

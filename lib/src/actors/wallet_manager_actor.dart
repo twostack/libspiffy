@@ -7,6 +7,8 @@ import '../core/wallet_commands.dart';
 import '../services/crypto_service.dart';
 import '../storage/secure_storage.dart';
 import 'wallet_messages.dart';
+import 'invoice_messages.dart';
+import 'libspiffy_actor_system.dart';
 
 /// Central coordinator that manages multiple wallet aggregates and routes commands
 class WalletManagerActor extends Actor {
@@ -15,8 +17,14 @@ class WalletManagerActor extends Actor {
   final SecureStorage _secureStorage;
   final Map<String, ActorRef> _walletActors = {};
   
-  ActorRef? _spvActor;
-  ActorRef? _arcActor;
+  // Track pending wallet creation requests to route responses back to original callers
+  final Map<String, ActorRef?> _pendingWalletCreations = {};
+  
+  // Invoice manager reference for invoice-based payments
+  ActorRef? _invoiceManager;
+  
+  // SPV and ARC actors are coordinated at the LibSpiffyActorSystem level
+  // and accessed via message passing rather than direct references
 
   WalletManagerActor({
     required EventStore eventStore,
@@ -50,6 +58,27 @@ class WalletManagerActor extends Actor {
         case SPVValidationResult:
           await _handleSPVValidationResult(message as SPVValidationResult);
           break;
+
+        case WalletCreatedResponse:
+          await _handleWalletCreatedResponse(message as WalletCreatedResponse);
+          break;
+        
+        case CreateInvoiceMessage:
+          await _handleCreateInvoice(message as CreateInvoiceMessage);
+          break;
+          
+        case CheckInvoiceMessage:
+        case CancelInvoiceMessage:
+        case ListInvoicesMessage:
+          // Forward invoice queries directly to InvoiceManager
+          _invoiceManager?.tell(message, sender: context.sender);
+          break;
+        
+        case SetInvoiceManagerMessage:
+          // Internal message to set invoice manager reference
+          _invoiceManager = (message as SetInvoiceManagerMessage).invoiceManager;
+          print('InvoiceManager reference set in WalletManager');
+          break;
           
         default:
           print('WalletManagerActor received unknown message: ${message.runtimeType}');
@@ -81,7 +110,7 @@ class WalletManagerActor extends Actor {
         return;
       }
 
-      // Spawn new wallet aggregate actor
+      // Spawn wallet aggregate as actor (AggregateRoot extends Actor)
       final walletActor = await context.system.spawn(
         'wallet-${msg.walletId}',
         () => BitcoinWalletAggregate(
@@ -96,26 +125,21 @@ class WalletManagerActor extends Actor {
       // Store reference
       _walletActors[msg.walletId] = walletActor;
 
+      // Track the original sender so we can route the WalletCreatedResponse back to them
+      _pendingWalletCreations[msg.walletId] = context.sender;
+
       // Send create wallet command to the aggregate
+      // The aggregate will respond with WalletCreatedResponse via onCommandProcessed hook
       final createCommand = CreateWalletCommand(
         walletId: msg.walletId,
         walletName: msg.name,
         walletMetadata: msg.walletMetadata,
       );
 
-      // Use fire-and-forget for now
-      walletActor.tell(LocalMessage(payload: createCommand));
-      
-      // TODO: Get actual root address from wallet response
-      final rootAddress = 'placeholder_${msg.walletId}';
-      
-      context.sender?.tell(WalletCreatedMessage(
-        msg.walletId,
-        rootAddress,
-        true,
-      ));
+      // Send command with ourselves as the sender so the aggregate sends response to us
+      walletActor.tell(LocalMessage(payload: createCommand), sender: context.self);
 
-      print('Wallet created successfully: ${msg.walletId}');
+      print('Wallet creation command sent to aggregate: ${msg.walletId}');
 
     } catch (e) {
       print('Error creating wallet ${msg.walletId}: $e');
@@ -125,6 +149,30 @@ class WalletManagerActor extends Actor {
         false,
         error: e.toString(),
       ));
+      _pendingWalletCreations.remove(msg.walletId);
+    }
+  }
+
+  /// Handle wallet creation response from BitcoinWalletAggregate
+  /// This receives the actual root address from the WalletCreatedEvent
+  Future<void> _handleWalletCreatedResponse(WalletCreatedResponse response) async {
+    print('Received wallet creation response for: ${response.walletId}');
+    
+    // Get the original sender who requested the wallet creation
+    final originalSender = _pendingWalletCreations.remove(response.walletId);
+    
+    if (originalSender != null) {
+      // Forward the response with real root address to the original caller
+      originalSender.tell(WalletCreatedMessage(
+        response.walletId,
+        response.rootAddress,
+        response.success,
+        error: response.error,
+      ));
+      
+      print('Wallet created successfully: ${response.walletId} with root address: ${response.rootAddress}');
+    } else {
+      print('Warning: No pending request found for wallet ${response.walletId}');
     }
   }
 
@@ -260,16 +308,9 @@ class WalletManagerActor extends Actor {
   /// Load wallet from event store and spawn actor
   Future<ActorRef?> _loadWalletFromEventStore(String walletId) async {
     try {
-      print('Loading wallet from event store: $walletId');
-      
-      // Check if wallet has events in store
-      final events = await _eventStore.getEvents(walletId);
-      if (events.isEmpty) {
-        print('No events found for wallet: $walletId');
-        return null;
-      }
 
-      // Spawn wallet aggregate actor
+      // Spawn wallet aggregate as actor (AggregateRoot extends Actor)
+      // The PersistentActor framework will automatically recover state from events
       final walletActor = await context.system.spawn(
         'wallet-$walletId',
         () => BitcoinWalletAggregate(
@@ -287,6 +328,62 @@ class WalletManagerActor extends Actor {
     } catch (e) {
       print('Error loading wallet $walletId: $e');
       return null;
+    }
+  }
+
+  /// Handle invoice creation - coordinate with InvoiceManager
+  Future<void> _handleCreateInvoice(CreateInvoiceMessage msg) async {
+    try {
+      if (_invoiceManager == null) {
+        print('Error: InvoiceManager not initialized');
+        context.sender?.tell(InvoiceCreatedMessage(
+          invoiceId: '',
+          walletId: msg.walletId,
+          addresses: [],
+          amount: msg.amount,
+          createdAt: DateTime.now(),
+          success: false,
+          error: 'InvoiceManager not available',
+        ));
+        return;
+      }
+      
+      print('Creating invoice for wallet ${msg.walletId}, amount: ${msg.amount}');
+      
+      // Ensure wallet is loaded
+      var walletActor = _walletActors[msg.walletId];
+      if (walletActor == null) {
+        // Try to load from event store
+        walletActor = await _loadWalletFromEventStore(msg.walletId);
+        if (walletActor == null) {
+          print('Wallet ${msg.walletId} not found');
+          context.sender?.tell(InvoiceCreatedMessage(
+            invoiceId: '',
+            walletId: msg.walletId,
+            addresses: [],
+            amount: msg.amount,
+            createdAt: DateTime.now(),
+            success: false,
+            error: 'Wallet ${msg.walletId} not found',
+          ));
+          return;
+        }
+      }
+      
+      // Forward to InvoiceManager (which will handle address generation)
+      _invoiceManager!.tell(msg, sender: context.sender);
+      
+    } catch (e) {
+      print('Error creating invoice: $e');
+      context.sender?.tell(InvoiceCreatedMessage(
+        invoiceId: '',
+        walletId: msg.walletId,
+        addresses: [],
+        amount: msg.amount,
+        createdAt: DateTime.now(),
+        success: false,
+        error: e.toString(),
+      ));
     }
   }
 

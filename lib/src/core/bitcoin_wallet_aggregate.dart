@@ -8,6 +8,7 @@ import '../models/bitcoin_utxo.dart';
 import '../services/crypto_service.dart';
 import '../storage/secure_storage.dart';
 import '../services/transaction_builder_service.dart';
+import '../actors/wallet_messages.dart';
 import 'wallet_commands.dart';
 import 'wallet_events.dart';
 
@@ -40,10 +41,102 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
   }
 
   /// Register command and event handlers
+  /// 
+  /// Note: This aggregate uses the override pattern for handleCommand() and applyEvent()
+  /// instead of the registry pattern. Command and event handling is implemented via
+  /// switch statements in the overridden methods (see lines 135-172 and 176-216).
+  /// This approach provides better support for async operations and type-safe handling.
   @override
   void registerHandlers() {
-    // TODO: Register command and event handlers when we implement them
-    // This method is required by the AggregateRoot base class
+    // Intentionally empty - using override pattern instead of registry pattern
+  }
+
+  /// Send response messages after successful command processing
+  /// Only active when aggregate is used as an actor in the actor system
+  @override
+  Future<void> onCommandProcessed(Command command, List<Event> events) async {
+    await super.onCommandProcessed(command, events);
+    
+    // Only send responses if we're running in an actor system
+    // (context is initialized by the actor system when spawned)
+    if (!_isInActorSystem()) return;
+    
+    if (context.sender == null) return;
+    
+    for (final event in events) {
+      if (event is WalletCreatedEvent) {
+        context.sender!.tell(WalletCreatedResponse(
+          walletId: event.walletId,
+          rootAddress: event.rootAddress,
+          success: true,
+        ));
+      } else if (event is AddressGeneratedEvent) {
+        context.sender!.tell(AddressGeneratedResponse(
+          walletId: event.walletId,
+          address: event.address,
+          derivationIndex: event.derivationIndex,
+          success: true,
+        ));
+      } else if (event is TransactionCreatedEvent) {
+        context.sender!.tell(TransactionCreatedResponse(
+          walletId: event.walletId,
+          txid: event.txid,
+          rawHex: event.rawHex,
+          success: true,
+        ));
+      }
+    }
+  }
+
+  /// Send error responses when command processing fails
+  /// Only active when aggregate is used as an actor in the actor system
+  @override
+  Future<void> onCommandFailure(Command command, dynamic error) async {
+    await super.onCommandFailure(command, error);
+    
+    // Only send responses if we're running in an actor system
+    if (!_isInActorSystem()) return;
+    
+    if (context.sender == null) return;
+    
+    final errorMessage = error.toString();
+
+    if (command is CreateWalletCommand) {
+      context.sender!.tell(WalletCreatedResponse(
+        walletId: command.walletId,
+        rootAddress: '',
+        success: false,
+        error: errorMessage,
+      ));
+    } else if (command is GenerateAddressCommand) {
+      context.sender!.tell(AddressGeneratedResponse(
+        walletId: command.walletId,
+        address: '',
+        derivationIndex: 0,
+        success: false,
+        error: errorMessage,
+      ));
+    } else if (command is CreateTransactionCommand) {
+      context.sender!.tell(TransactionCreatedResponse(
+        walletId: command.walletId,
+        txid: '',
+        rawHex: '',
+        success: false,
+        error: errorMessage,
+      ));
+    }
+  }
+
+  /// Check if we're running in an actor system (vs. direct domain testing)
+  bool _isInActorSystem() {
+    try {
+      // Try to access context - if it throws, we're not in an actor system
+      final _ = context;
+      return true;
+    } catch (e) {
+      // LateInitializationError means context not set - we're not in actor system
+      return false;
+    }
   }
 
   // ==========================================================================

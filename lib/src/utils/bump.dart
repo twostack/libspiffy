@@ -1,7 +1,6 @@
 import 'dart:typed_data';
 import 'package:buffer/buffer.dart';
 import 'package:convert/convert.dart';
-import 'package:crypto/crypto.dart' hide sha256;
 import 'package:dartsv/dartsv.dart';
 
 
@@ -309,26 +308,38 @@ class BUMP {
       throw Exception('Cannot compute merkle root: path is empty');
     }
     
-    // Find the txid in the first level
+    // CRITICAL: Try to find the txid in both formats (display and internal)
+    // since BUMP stores in internal format but callers might pass display format
     int? txidIndex;
+    Uint8List? matchingTxid;
+    
     for (int i = 0; i < path[0].leaves.length; i++) {
       final leaf = path[0].leaves[i];
       if (leaf.isTxid && !leaf.duplicate && leaf.hash != null) {
         if (listEquals(leaf.hash!, txid)) {
           txidIndex = leaf.offset;
+          matchingTxid = txid;
+          break;
+        }
+        // Try reversed format
+        final txidReversed = Uint8List.fromList(txid.reversed.toList());
+        if (listEquals(leaf.hash!, txidReversed)) {
+          txidIndex = leaf.offset;
+          matchingTxid = txidReversed;
           break;
         }
       }
     }
     
     // If txid not found, throw an exception
-    if (txidIndex == null) {
+    if (txidIndex == null || matchingTxid == null) {
       throw Exception('Transaction ID not found in merkle path');
     }
     
     // Convert BUMP to BRC-71 format for consistent calculation
-    // Convert txid to hex string
-    final txidHex = txid.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join('');
+    // CRITICAL: matchingTxid is in internal format (little-endian) as stored in BUMP
+    // But BRC-71 calculation expects display format (big-endian), so we must reverse
+    final txidHex = matchingTxid.reversed.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join('');
     
     // Extract the path in BRC-71 format
     final List<String> brc71Path = [];
@@ -338,7 +349,9 @@ class BUMP {
       final level = path[i];
       for (final leaf in level.leaves) {
         if (leaf.hash != null) {
-          brc71Path.add(leaf.hash!.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join(''));
+          // CRITICAL: BUMP stores hashes in internal (little-endian) format
+          // We need to reverse them to display (big-endian) format for BRC-71 calculation
+          brc71Path.add(leaf.hash!.reversed.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join(''));
         }
       }
     }
@@ -383,9 +396,6 @@ class BUMP {
       
       final firstHash = sha256(bytes);
       final secondHash = sha256(firstHash);
-      
-      // Convert back to hex
-      final hashedValue = hex.encode(secondHash);
       
       // Convert back to big-endian format for the next round
       String reversedHashedValue = hex.encode(secondHash.reversed.toList());

@@ -276,7 +276,11 @@ class BEEF {
 
   Future<bool> validateTransactionWithBlockHeader( Uint8List txid, BlockHeader blockHeader ) async {
 
-    // First, check if the transaction is included in this BEEF
+    // CRITICAL: This method receives TXID in display format (big-endian)
+    // but BUMP stores TXIDs in internal format (little-endian)
+    // We need to handle both formats correctly
+    
+    // First, check if the transaction is included in this BEEF (uses display format)
     final txInfo = findTransactionByTxid(txid);
     if (txInfo == null || !txInfo['hasMerkleProof']) {
       return false; // Transaction not found or doesn't have a merkle proof
@@ -290,20 +294,24 @@ class BEEF {
 
     final bump = bumps[bumpIdx];
 
-    // Validate the merkle path for this transaction
-    if (!bump.validateMerklePath(txid)) {
+    // Convert TXID from display format (big-endian) to internal format (little-endian) for BUMP validation
+    final txidInternal = Uint8List.fromList(txid.reversed.toList());
+    
+    // Validate the merkle path for this transaction (uses internal format)
+    if (!bump.validateMerklePath(txidInternal)) {
       return false; // Invalid merkle path
     }
 
 
-    // Compute the merkle root from the transaction and its merkle path
-    final computedMerkleRoot = bump.computeMerkleRoot(txid);
+    // Compute the merkle root from the transaction and its merkle path (uses internal format)
+    final computedMerkleRoot = bump.computeMerkleRoot(txidInternal);
 
     // Convert the computed merkle root to a hex string for comparison
     final computedMerkleRootHex = hex.encode(computedMerkleRoot);
+    final expectedMerkleRootHex = hex.encode(blockHeader.merkleRoot.bytes.reversed.toList());
 
     // Compare with the merkle root in the block header
-    return computedMerkleRootHex == hex.encode(blockHeader.merkleRoot.bytes.reversed.toList());
+    return computedMerkleRootHex == expectedMerkleRootHex;
 
   }
 

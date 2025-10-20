@@ -16,6 +16,7 @@ import 'wallet_manager_actor.dart';
 import 'spv_actor.dart';
 import 'arc_actor.dart';
 import 'header_sync_actor.dart';
+import 'invoice_manager_actor.dart';
 
 /// Initialization and management utilities for the LibSpiffy actor system
 class LibSpiffyActorSystem {
@@ -32,6 +33,7 @@ class LibSpiffyActorSystem {
   
   // Actor references
   ActorRef? _walletManager;
+  ActorRef? _invoiceManager;
   ActorRef? _spvActor;
   ActorRef? _arcActor;
   ActorRef? _headerSyncActor;
@@ -87,15 +89,26 @@ class LibSpiffyActorSystem {
       secureStorage: _secureStorage,
     ));
     
+    // Spawn InvoiceManagerActor (needed for invoice-based payments)
+    _invoiceManager = await _actorSystem.spawn('invoice-manager', () => InvoiceManagerActor(
+      walletManager: _walletManager!,
+      storage: _walletStorage,
+    ));
+    
+    // Wire up InvoiceManager reference in WalletManager
+    // We'll send a message to set the reference
+    _walletManager!.tell(SetInvoiceManagerMessage(_invoiceManager!));
+    
     // Spawn HeaderSyncActor early (other actors may need to communicate with it)
     _headerSyncActor = await _actorSystem.spawn('header-sync', () => HeaderSyncActor(
       headerChain: _headerChain,
       spvActor: null, // Will be set after SPVActor is spawned
     ));
     
-    // Spawn SPVActor with reference to WalletManager and storage
+    // Spawn SPVActor with reference to WalletManager, InvoiceManager and storage
     _spvActor = await _actorSystem.spawn('spv-actor', () => SPVActor(
       walletManager: _walletManager!,
+      invoiceManager: _invoiceManager!,
       storage: _walletStorage,
     ));
     
@@ -242,7 +255,7 @@ class LibSpiffyActorSystem {
   }
 
   /// Check if the system is initialized
-  bool get isInitialized => _walletManager != null && _spvActor != null && _arcActor != null && _headerSyncActor != null;
+  bool get isInitialized => _walletManager != null && _invoiceManager != null && _spvActor != null && _arcActor != null && _headerSyncActor != null;
 }
 
 /// Global instance for easy access
@@ -280,4 +293,23 @@ Future<void> shutdownLibSpiffy() async {
     await _globalInstance!.shutdown();
     _globalInstance = null;
   }
+}
+
+/// Internal message to set InvoiceManager reference in WalletManager
+class SetInvoiceManagerMessage implements Message {
+  final ActorRef invoiceManager;
+  
+  SetInvoiceManagerMessage(this.invoiceManager);
+
+  @override
+  String get correlationId => 'set-invoice-manager-${DateTime.now().millisecondsSinceEpoch}';
+  
+  @override
+  Map<String, dynamic> get metadata => {};
+  
+  @override
+  ActorRef? get replyTo => null;
+  
+  @override
+  DateTime get timestamp => DateTime.now();
 } 

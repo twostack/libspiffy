@@ -303,14 +303,29 @@ class ARCActor extends Actor {
     print('Estimating fee for ${msg.inputCount} inputs, ${msg.outputCount} outputs');
     
     try {
-      // TODO: Implement actual fee estimation
+      // Estimate transaction size (P2PKH inputs: ~148 bytes, outputs: ~34 bytes, overhead: ~10 bytes)
       final estimatedSize = (msg.inputCount * 148) + (msg.outputCount * 34) + 10;
-      final feeRate = 500; // satoshis per 1000 bytes
-      final estimatedFee = BigInt.from((estimatedSize * feeRate) ~/ 1000);
+      
+      // Try to get fee rate from Arc policy, fall back to 1 sat/KB default
+      double feeRatePerKb = 1.0; // Default: 1 satoshi per kilobyte (current network standard)
+      
+      try {
+        if (_arcService != null) {
+          final policy = await _arcService!.getPolicy();
+          feeRatePerKb = policy.standardFeePerKb;
+          print('Using Arc policy fee rate: $feeRatePerKb sat/KB');
+        }
+      } catch (e) {
+        print('Could not fetch Arc policy, using default fee rate: $feeRatePerKb sat/KB');
+      }
+      
+      // Calculate fee: (size_in_bytes * fee_rate_per_kb) / 1000
+      final estimatedFee = BigInt.from((estimatedSize * feeRatePerKb) ~/ 1000);
       
       context.sender?.tell(FeeEstimateMessage(estimatedFee));
       
     } catch (e) {
+      print('Error estimating fee: $e');
       context.sender?.tell(FeeEstimateMessage(BigInt.zero));
     }
   }

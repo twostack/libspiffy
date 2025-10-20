@@ -1,5 +1,4 @@
 import 'package:dactor/dactor.dart';
-import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:libspiffy/libspiffy.dart';
 import '../core/wallet_commands.dart';
 
@@ -27,7 +26,7 @@ class CreateWalletMessage implements Message {
   DateTime get timestamp => DateTime.now();
 }
 
-/// Response containing wallet creation result
+/// Response containing wallet creation result (from WalletManagerActor to external caller)
 class WalletCreatedMessage implements Message {
   final String walletId;
   final String rootAddress;
@@ -40,6 +39,82 @@ class WalletCreatedMessage implements Message {
   String get correlationId => 'wallet-created-$walletId';
   @override
   Map<String, dynamic> get metadata => {};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+/// Response from BitcoinWalletAggregate after processing CreateWalletCommand
+class WalletCreatedResponse implements Message {
+  final String walletId;
+  final String rootAddress;
+  final bool success;
+  final String? error;
+
+  WalletCreatedResponse({
+    required this.walletId,
+    required this.rootAddress,
+    required this.success,
+    this.error,
+  });
+
+  @override
+  String get correlationId => 'wallet-created-response-$walletId';
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+/// Response from BitcoinWalletAggregate after processing GenerateAddressCommand
+class AddressGeneratedResponse implements Message {
+  final String walletId;
+  final String address;
+  final int derivationIndex;
+  final bool success;
+  final String? error;
+
+  AddressGeneratedResponse({
+    required this.walletId,
+    required this.address,
+    required this.derivationIndex,
+    required this.success,
+    this.error,
+  });
+
+  @override
+  String get correlationId => 'address-generated-response-$walletId-$derivationIndex';
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId, 'address': address};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+/// Response from BitcoinWalletAggregate after processing CreateTransactionCommand
+class TransactionCreatedResponse implements Message {
+  final String walletId;
+  final String txid;
+  final String rawHex;
+  final bool success;
+  final String? error;
+
+  TransactionCreatedResponse({
+    required this.walletId,
+    required this.txid,
+    required this.rawHex,
+    required this.success,
+    this.error,
+  });
+
+  @override
+  String get correlationId => 'transaction-created-response-$txid';
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId, 'txid': txid};
   @override
   ActorRef? get replyTo => null;
   @override
@@ -101,6 +176,7 @@ class ReceiveTransactionMessage implements Message {
   final BEEF beef; //BEEF data for transactionId
   final String fromCounterparty;
   final String? targetWalletId; // Which wallet this transaction is for
+  final String? invoiceId; // Invoice ID for payment matching (transmitted in BEEF metadata)
   final DateTime receivedAt;
 
   ReceiveTransactionMessage({
@@ -108,6 +184,7 @@ class ReceiveTransactionMessage implements Message {
     required this.beef,
     required this.fromCounterparty,
     this.targetWalletId,
+    this.invoiceId,
     DateTime? receivedAt,
   }) : receivedAt = receivedAt ?? DateTime.now();
 
@@ -117,6 +194,7 @@ class ReceiveTransactionMessage implements Message {
   Map<String, dynamic> get metadata => {
     'counterparty': fromCounterparty,
     'walletId': targetWalletId,
+    'invoiceId': invoiceId,
   };
   @override
   ActorRef? get replyTo => null;
@@ -447,6 +525,29 @@ class BroadcastFailedMessage implements Message {
   String get correlationId => 'broadcast-failed-$txid';
   @override
   Map<String, dynamic> get metadata => {'txid': txid};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+/// Notification about blockchain reorganization
+class BlockchainReorganizationNotification implements Message {
+  final int orphanedHeaderCount;
+  final int newHeight;
+
+  BlockchainReorganizationNotification({
+    required this.orphanedHeaderCount,
+    required this.newHeight,
+  });
+
+  @override
+  String get correlationId => 'blockchain-reorg-${DateTime.now().millisecondsSinceEpoch}';
+  @override
+  Map<String, dynamic> get metadata => {
+    'orphanedHeaderCount': orphanedHeaderCount,
+    'newHeight': newHeight,
+  };
   @override
   ActorRef? get replyTo => null;
   @override

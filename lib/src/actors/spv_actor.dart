@@ -6,11 +6,10 @@ import 'package:dactor/dactor.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:spiffynode/spiffy_node.dart';
 
-import '../core/wallet_commands.dart';
 import '../storage/wallet_storage.dart';
 import '../utils/beef.dart';
-import '../utils/bump.dart';
 import 'wallet_messages.dart';
+import 'invoice_messages.dart';
 
 /// Actor that handles true SPV validation - receives transactions from counterparties
 /// and validates them using merkle proofs against the block header chain
@@ -18,13 +17,15 @@ import 'wallet_messages.dart';
 /// This actor is responsible for:
 /// - Direct transaction validation (NOT discovery)
 /// - Merkle proof validation against stored block headers
-/// - BEEF/BUMP transaction processing  
+/// - BEEF/BUMP transaction processing
+/// - Invoice-based payment verification
 /// - Coordinating with WalletManagerActor for validated transactions
 /// 
 /// Note: Block header synchronization is handled by SpiffyNode, which stores
 /// headers in WalletStorage. This actor consumes those stored headers for validation.
 class SPVActor extends Actor {
   final ActorRef _walletManager;
+  final ActorRef _invoiceManager;
   final WalletStorage _storage;
   
   int _currentHeight = 0;
@@ -32,8 +33,10 @@ class SPVActor extends Actor {
 
   SPVActor({
     required ActorRef walletManager,
+    required ActorRef invoiceManager,
     required WalletStorage storage,
   }) : _walletManager = walletManager,
+       _invoiceManager = invoiceManager,
        _storage = storage;
 
   @override
@@ -61,7 +64,7 @@ class SPVActor extends Actor {
         default:
           print('SPVActor received unknown message: ${message.runtimeType}');
       }
-    } catch (e, stackTrace) {
+    } catch (e) {
       print('Error in SPVActor: $e');
       
       // Send error response for validation messages
@@ -104,7 +107,7 @@ class SPVActor extends Actor {
 
   /// Handle transaction received directly from counterparty (CORE SPV)
   Future<void> _handleReceiveTransaction(ReceiveTransactionMessage msg) async {
-    print('Validating transaction from ${msg.fromCounterparty} for wallet ${msg.targetWalletId}');
+    print('Validating transaction from ${msg.fromCounterparty} for wallet ${msg.targetWalletId}${msg.invoiceId != null ? ' (invoice: ${msg.invoiceId})' : ''}');
     
     try {
       // This is the core SPV process
@@ -112,6 +115,7 @@ class SPVActor extends Actor {
         msg.transactionId,
         msg.beef,
         msg.targetWalletId,
+        msg.invoiceId,
       );
       
       // Send validation result to WalletManager
@@ -154,18 +158,23 @@ class SPVActor extends Actor {
     }
   }
 
-  /// Validate received transaction using SPV principles
+  /// Validate received transaction using SPV principles with invoice-based payment verification
   /// Received transactions will be assumed as having a BEEF structure that
   /// links to (some) blockheader's merkle root
   Future<SPVValidationResult> _validateReceivedTransaction(
-    String txidHex, //The TxId in the BEEF that should be validated
+    String txidHex, //The TxId in display format (big-endian)
     BEEF beef,  //The BEEF containing the Transaction that should be validated
     String? walletId,
-  ) async {
-    print('Performing SPV validation...');
+    String? invoiceId, // Invoice ID for payment matching
+  )   async {
+    print('Performing SPV validation${invoiceId != null ? ' for invoice $invoiceId' : ''}...');
 
-
+    // CRITICAL: beef.validateTransactionWithBlockHeader() expects TXID in display format (big-endian)
+    // It handles the internal conversion to BUMP's internal format internally
     final txid = Uint8List.fromList(hex.decode(txidHex));
+
+    print('Debug: Looking for TXID: $txidHex');
+    print('Debug: BEEF has ${beef.txs.length} transaction(s)');
 
     try {
       // Step 1: Validate each input UTXO has valid merkle proof
@@ -173,15 +182,29 @@ class SPVActor extends Actor {
 
       final txMap= beef.findTransactionByTxid(txid);
 
+      // Debug: Print what TXIDs are actually in the BEEF
+      if (txMap == null) {
+        print('Debug: Transaction not found. TXIDs in BEEF:');
+        for (int i = 0; i < beef.txs.length; i++) {
+          final calculatedTxid = beef.calculateTxid(beef.txs[i]);
+          print('  [$i]: ${hex.encode(calculatedTxid)}');
+        }
+      }
+
       if (txMap!= null){
 
         final bump = beef.bumps[txMap['index']];
         final blockHeader = await _getBlockHeader(bump.blockHeight);
-
-        //check transaction's validatity against block header
+        
+        // Debug merkle proof validation
+        print('Debug: BUMP block height: ${bump.blockHeight}');
+        print('Debug: Block header merkle root: ${hex.encode(blockHeader.merkleRoot.bytes)}');
+        
+        // Use BEEF's built-in validation (now fixed with proper byte order handling in bump.computeMerkleRoot())
         final isValidTx = await beef.validateTransactionWithBlockHeader(txid, blockHeader);
 
         if (!isValidTx) {
+          print('Debug: Merkle proof validation FAILED');
           return SPVValidationResult(
             txid: txidHex,
             isValid: false,
@@ -190,6 +213,8 @@ class SPVActor extends Actor {
           );
 
         }
+        
+        print('Debug: Merkle proof validation PASSED');
 
         // Step 2: Validate transaction structure and scripts
         final isTransactionValid = await _validateTransactionSpendsCorrectly(beef, txid);
@@ -204,9 +229,31 @@ class SPVActor extends Actor {
         }
 
         // Step 3: Extract spendable UTXOs for the target wallet
-        final transaction = dartsv.Transaction.fromHex(txMap['txData']);
-        final spendableUTXOs = await _extractSpendableUTXOs(transaction, walletId);
+        // If invoice ID is provided, validate outputs match invoice addresses
+        final transaction = dartsv.Transaction.fromHex(hex.encode(txMap['txData']));
+        final spendableUTXOs = await _extractSpendableUTXOs(transaction, walletId, invoiceId);
         final spentUTXOs = await _extractSpentUTXOs(transaction, walletId);
+
+        // Step 4: If invoice-based, verify payment matches invoice expectations
+        if (invoiceId != null && spendableUTXOs.isNotEmpty) {
+          final invoiceValidation = await _validateInvoicePayment(invoiceId, spendableUTXOs);
+          if (!invoiceValidation.isValid) {
+            return SPVValidationResult(
+              txid: txidHex,
+              isValid: false,
+              validationError: invoiceValidation.error ?? 'Payment does not match invoice',
+              targetWalletId: walletId,
+            );
+          }
+          
+          // Mark invoice as paid
+          _invoiceManager.tell(MarkInvoicePaidMessage(
+            invoiceId: invoiceId,
+            txid: txidHex,
+            amountReceived: invoiceValidation.totalReceived,
+            addressesPaidTo: spendableUTXOs.map((u) => u['address'] as String).toList(),
+          ), sender: context.self);
+        }
 
         print('SPV Validation SUCCESS: ${spendableUTXOs.length} new UTXOs, ${spentUTXOs.length} spent UTXOs');
 
@@ -238,20 +285,6 @@ class SPVActor extends Actor {
     }
   }
 
-  /// Validate merkle proof against block header chain
-  Future<bool> _validateMerkleProof(BEEF beef, String txid, BlockHeader blockHeader) async {
-    print('Validating merkle proof for $txid');
-    
-    try {
-
-      return await beef.validateTransactionWithBlockHeader(Uint8List.fromList(hex.decode(txid)), blockHeader);
-
-    } catch (e) {
-      print('Merkle proof validation failed: $e');
-      return false;
-    }
-  }
-
   ///validate that the transaction's inputs are spending properly from their corresponding UTXOs
   ///The BEEF should have all input/funding transactions available or this method will fail
   Future<bool> _validateTransactionSpendsCorrectly(BEEF beef, Uint8List txid) async {
@@ -271,7 +304,7 @@ class SPVActor extends Actor {
 
       if (txMap == null) return false;
 
-      final txToBeValidated = dartsv.Transaction.fromHex(txMap['txData']);
+      final txToBeValidated = dartsv.Transaction.fromHex(hex.encode(txMap['txData']));
 
       var interpreter = dartsv.Interpreter();
       try {
@@ -312,12 +345,26 @@ class SPVActor extends Actor {
   /// Extract UTXOs we can spend from this transaction
   /// 
   /// This method analyzes transaction outputs to identify those that belong
-  /// to the specified wallet and can be spent by it.
-  Future<List<Map<String, dynamic>>> _extractSpendableUTXOs(dartsv.Transaction transaction, String? walletId) async {
+  /// to the specified wallet (via invoice matching if invoiceId provided).
+  Future<List<Map<String, dynamic>>> _extractSpendableUTXOs(
+    dartsv.Transaction transaction, 
+    String? walletId,
+    String? invoiceId,
+  ) async {
     final spendableUTXOs = <Map<String, dynamic>>[];
     
     if (walletId == null) {
       return spendableUTXOs;
+    }
+
+    // Get invoice details if invoice-based payment
+    InvoiceDetailsResponse? invoice;
+    if (invoiceId != null) {
+      invoice = await _getInvoiceDetails(invoiceId);
+      if (invoice == null || !invoice.found) {
+        print('Warning: Invoice $invoiceId not found for transaction ${transaction.id}');
+        return spendableUTXOs;
+      }
     }
 
     try {
@@ -336,36 +383,63 @@ class SPVActor extends Actor {
           continue;
         }
 
-        String? pubkeyHash;
+        String? address;
 
         switch (scriptType) {
           case 'p2pkh':
-          case 'p2pk': 
+            // Extract address from pubkey hash
+            final pubkeyHash = scriptInfo['pubKeyHash'];
+            if (pubkeyHash != null) {
+              try {
+                // Create Address from pubkeyhash
+                address = dartsv.Address(pubkeyHash).toString();
+              } catch (e) {
+                print('Could not create address from pubkey hash: $e');
+              }
+            }
+            break;
+          case 'p2pk':
+            // For P2PK, we'd need to derive address from pubkey
+            final pubkey = scriptInfo['pubKey'];
+            if (pubkey != null) {
+              try {
+                final pubKeyObj = dartsv.SVPublicKey.fromHex(pubkey);
+                address = dartsv.Address.fromPublicKey(pubKeyObj, dartsv.NetworkType.MAIN).toString();
+              } catch (e) {
+                print('Could not derive address from P2PK pubkey: $e');
+              }
+            }
+            break;
           case 'p2sh':
-            pubkeyHash = scriptInfo['pubKeyHash'];
+            // P2SH address extraction
+            final scriptHash = scriptInfo['scriptHash'];
+            if (scriptHash != null) {
+              // Note: dartsv may not have direct P2SH address support
+              // This is a simplified approach
+              address = 'p2sh:$scriptHash'; // Placeholder
+            }
             break;
           case 'p2ms':
             // Multi-sig handling would require more complex logic
-            // TODO: Implement multi-sig UTXO recognition
+            // Skip for now
             continue;
           default:
             // Skip unknown script types
             continue;
         }
 
-        if (pubkeyHash != null) {
-          // TODO: Check if pubkeyHash belongs to walletId
-          // This requires wallet key management integration
-          final belongsToWallet = await _checkPubkeyHashOwnership(pubkeyHash, walletId);
+        if (address != null) {
+          // Check if address matches invoice (if invoice-based) or wallet
+          final belongsToUs = await _checkOutputOwnership(address, walletId, invoice);
           
-          if (belongsToWallet) {
+          if (belongsToUs) {
             spendableUTXOs.add({
               'txid': transaction.id,
               'outputIndex': outputIndex,
               'satoshis': output.satoshis.toInt(),
-              'script': output.script?.toString(),
+              'script': output.script.toString(),
               'scriptType': scriptType,
-              'pubkeyHash': pubkeyHash,
+              'address': address,
             });
           }
         }
@@ -377,12 +451,57 @@ class SPVActor extends Actor {
     return spendableUTXOs;
   }
   
-  /// Check if a pubkey hash belongs to the specified wallet
-  /// TODO: This needs integration with wallet key management
-  Future<bool> _checkPubkeyHashOwnership(String pubkeyHash, String walletId) async {
-    // Placeholder implementation
-    // In a real implementation, this would query the wallet's keys/addresses
+  /// Check if an output address belongs to us
+  /// For invoice-based payments, check against invoice addresses
+  /// Otherwise, would need to query wallet (not yet implemented)
+  Future<bool> _checkOutputOwnership(
+    String address, 
+    String walletId,
+    InvoiceDetailsResponse? invoice,
+  ) async {
+    // Invoice-based matching (primary flow)
+    if (invoice != null) {
+      return invoice.addresses.contains(address);
+    }
+    
+    // Non-invoice payments not yet supported
+    // Would require querying wallet for all known addresses
+    print('Warning: Non-invoice payment received to address $address - cannot verify ownership');
     return false;
+  }
+  
+  /// Get invoice details from InvoiceManager
+  Future<InvoiceDetailsResponse?> _getInvoiceDetails(String invoiceId) async {
+    try {
+      // Create a completer to wait for response
+      final completer = Completer<InvoiceDetailsResponse?>();
+      
+      // Create a temporary actor to receive the response
+      final responseReceiver = await context.system.spawn(
+        'invoice-query-${DateTime.now().millisecondsSinceEpoch}',
+        () => _InvoiceQueryReceiver(completer),
+      );
+      
+      // Send query
+      _invoiceManager.tell(
+        CheckInvoiceMessage(invoiceId),
+        sender: responseReceiver,
+      );
+      
+      // Wait for response with timeout
+      final response = await completer.future.timeout(
+        const Duration(seconds: 5),
+        onTimeout: () => null,
+      );
+      
+      // Stop the temporary actor
+      await context.system.stop(responseReceiver);
+      
+      return response;
+    } catch (e) {
+      print('Error querying invoice $invoiceId: $e');
+      return null;
+    }
   }
 
   /// Extract UTXOs that were spent in this transaction
@@ -496,13 +615,30 @@ class SPVActor extends Actor {
     print('Handling blockchain reorganization: ${orphanedHeaders.length} orphaned headers');
 
     //NOTE: BlockHeader-specific work is done by SpiffyNode. We handle
-    //Transaction-related and wallet-related mitigations
-    // TODO: Implement reorganization handling:
-    // 1. Invalidate merkle proofs for transactions in orphaned blocks
-    // 2. Notify WalletManager of affected transactions
-    // 3. Request re-validation of affected transactions
+    //Transaction-related and wallet-related mitigations.
+    //
+    // The actual reorg handling (merkle proof invalidation, transaction revalidation,
+    // UTXO recalculation) is implemented in the service layer:
+    // - SPVService: Revalidates transactions and fetches fresh merkle proofs
+    // - WalletBalanceService: Revalidates UTXOs and recalculates balances
+    // - BlockHeaderService: Handles header chain reorganization
+    //
+    // These services listen to ChainTipEvents directly from SpiffyNode.
+    // The SPVActor's role here is coordination and notification at the actor layer.
     
-    print('Blockchain reorganization handled (placeholder)');
+    if (orphanedHeaders.isEmpty) {
+      print('No orphaned headers to process');
+      return;
+    }
+    
+    // Notify WalletManager about the reorganization so it can coordinate
+    // any wallet-specific actions if needed
+    _walletManager.tell(BlockchainReorganizationNotification(
+      orphanedHeaderCount: orphanedHeaders.length,
+      newHeight: _currentHeight,
+    ));
+    
+    print('Blockchain reorganization handled: notified WalletManager about ${orphanedHeaders.length} orphaned headers');
   }
 
   /// Handle BEEF validation (enhanced transaction format)
@@ -613,4 +749,77 @@ class SPVActor extends Actor {
   /// Get current chain height
   int get currentHeight => _currentHeight;
 
+  /// Validate that payment matches invoice expectations
+  Future<_InvoiceValidationResult> _validateInvoicePayment(
+    String invoiceId,
+    List<Map<String, dynamic>> spendableUTXOs,
+  ) async {
+    // Get invoice details
+    final invoice = await _getInvoiceDetails(invoiceId);
+    
+    if (invoice == null || !invoice.found) {
+      return _InvoiceValidationResult(
+        isValid: false,
+        error: 'Invoice $invoiceId not found',
+        totalReceived: BigInt.zero,
+      );
+    }
+    
+    if (invoice.status != InvoiceStatus.pending) {
+      return _InvoiceValidationResult(
+        isValid: false,
+        error: 'Invoice $invoiceId is not pending (status: ${invoice.status})',
+        totalReceived: BigInt.zero,
+      );
+    }
+    
+    // Calculate total received
+    BigInt totalReceived = BigInt.zero;
+    for (final utxo in spendableUTXOs) {
+      totalReceived += BigInt.from(utxo['satoshis'] as int);
+    }
+    
+    // Check if amount meets or exceeds invoice amount
+    if (totalReceived < invoice.amount) {
+      return _InvoiceValidationResult(
+        isValid: false,
+        error: 'Payment amount ($totalReceived sats) is less than invoice amount (${invoice.amount} sats)',
+        totalReceived: totalReceived,
+      );
+    }
+    
+    return _InvoiceValidationResult(
+      isValid: true,
+      totalReceived: totalReceived,
+    );
+  }
+}
+
+/// Helper result for invoice validation
+class _InvoiceValidationResult {
+  final bool isValid;
+  final String? error;
+  final BigInt totalReceived;
+  
+  _InvoiceValidationResult({
+    required this.isValid,
+    this.error,
+    required this.totalReceived,
+  });
+}
+
+/// Temporary actor to receive invoice query responses
+class _InvoiceQueryReceiver extends Actor {
+  final Completer<InvoiceDetailsResponse?> completer;
+  
+  _InvoiceQueryReceiver(this.completer);
+  
+  @override
+  Future<void> onMessage(dynamic message) async {
+    if (message is InvoiceDetailsResponse) {
+      if (!completer.isCompleted) {
+        completer.complete(message);
+      }
+    }
+  }
 }

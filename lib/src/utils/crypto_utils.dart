@@ -249,13 +249,16 @@ class CryptoUtils {
     final int index = brc71Path['index'] as int;
     final List<String> path = brc71Path['path'].cast<String>();
 
+    // CRITICAL: BUMP stores hashes in internal format (little-endian)
+    // BRC-71 provides them in display format (big-endian), so we must reverse
+    
     // Create leaves for level 0 (transaction level)
     final List<Leaf> level0Leaves = [
       Leaf(
         offset: index,
         duplicate: false,
         isTxid: true,
-        hash: Uint8List.fromList(hex.decode(txid)),
+        hash: Uint8List.fromList(hex.decode(reverseBytes(txid))),
       )
     ];
 
@@ -273,7 +276,7 @@ class CryptoUtils {
           offset: offset,
           duplicate: false,
           isTxid: false,
-          hash: Uint8List.fromList(hex.decode(path[i])),
+          hash: Uint8List.fromList(hex.decode(reverseBytes(path[i]))),
         )
       ];
 

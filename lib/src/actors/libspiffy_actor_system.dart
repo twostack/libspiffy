@@ -20,7 +20,8 @@ import 'invoice_manager_actor.dart';
 
 /// Initialization and management utilities for the LibSpiffy actor system
 class LibSpiffyActorSystem {
-  late LocalActorSystem _actorSystem;
+  late ActorSystem _actorSystem;
+  bool _ownsActorSystem = false;
   late IsarEventStore _eventStore;
   late WalletStorage _walletStorage;
   late SecureStorage _secureStorage;
@@ -39,7 +40,23 @@ class LibSpiffyActorSystem {
   ActorRef? _headerSyncActor;
 
   /// Initialize the LibSpiffy actor system
+  /// 
+  /// If [actorSystem] is provided, LibSpiffy will spawn its actors in the provided system.
+  /// This allows integration with a host application's existing actor system.
+  /// If [actorSystem] is null, LibSpiffy will create and manage its own actor system.
+  /// 
+  /// Example with host actor system:
+  /// ```dart
+  /// final hostActorSystem = LocalActorSystem(ActorSystemConfig());
+  /// await libspiffy.initialize(actorSystem: hostActorSystem);
+  /// ```
+  /// 
+  /// Example with standalone system:
+  /// ```dart
+  /// await libspiffy.initialize(); // Creates its own actor system
+  /// ```
   Future<void> initialize({
+    ActorSystem? actorSystem,
     String? dataDirectory,
     ActorSystemConfig? config,
     WalletStorage? walletStorage,
@@ -49,8 +66,16 @@ class LibSpiffyActorSystem {
   }) async {
     print('Initializing LibSpiffy Actor System...');
     
-    // 1. Initialize Dactor system
-    _actorSystem = LocalActorSystem(config ?? ActorSystemConfig());
+    // 1. Initialize Dactor system (use provided or create new)
+    if (actorSystem != null) {
+      print('Using provided actor system');
+      _actorSystem = actorSystem;
+      _ownsActorSystem = false;
+    } else {
+      print('Creating new actor system');
+      _actorSystem = LocalActorSystem(config ?? ActorSystemConfig());
+      _ownsActorSystem = true;
+    }
     
     // 2. Initialize Eventador storage  
     await Isar.initializeIsarCore(download: true);
@@ -156,6 +181,14 @@ class LibSpiffyActorSystem {
     return _headerSyncActor!;
   }
 
+  /// Get reference to the Invoice Manager actor
+  ActorRef get invoiceManager {
+    if (_invoiceManager == null) {
+      throw StateError('LibSpiffy actor system not initialized');
+    }
+    return _invoiceManager!;
+  }
+
   /// Get reference to the wallet storage
   WalletStorage get walletStorage {
     if (!isInitialized) {
@@ -190,6 +223,23 @@ class LibSpiffyActorSystem {
 
   /// Get reference to the SpiffyNode bridge (if connected)
   SpiffyNodeBridge? get spiffyNodeBridge => _spiffyNodeBridge;
+
+  /// Get reference to the underlying actor system
+  /// 
+  /// This is useful for host applications that need to interact with
+  /// the actor system directly (e.g., spawning additional actors).
+  ActorSystem get actorSystem {
+    if (!isInitialized) {
+      throw StateError('LibSpiffy actor system not initialized');
+    }
+    return _actorSystem;
+  }
+
+  /// Check if LibSpiffy owns and manages its own actor system
+  /// 
+  /// Returns true if LibSpiffy created its own actor system.
+  /// Returns false if a host application provided the actor system.
+  bool get ownsActorSystem => _ownsActorSystem;
 
   /// Connect to SpiffyNode for automatic block header synchronization
   /// 
@@ -235,7 +285,15 @@ class LibSpiffyActorSystem {
     }
   }
 
-  /// Shutdown the entire actor system
+  /// Shutdown the LibSpiffy actor system
+  /// 
+  /// This will:
+  /// - Disconnect from SpiffyNode if connected
+  /// - Close the event store
+  /// - Shutdown the actor system ONLY if LibSpiffy created it (not provided by host)
+  /// 
+  /// If the host application provided its own actor system, it remains
+  /// the host's responsibility to shut it down.
   Future<void> shutdown() async {
     print('Shutting down LibSpiffy Actor System...');
     
@@ -243,8 +301,15 @@ class LibSpiffyActorSystem {
       // Disconnect from SpiffyNode first
       await disconnectFromSpiffyNode();
       
-      // Shutdown actor system and storage
-      await _actorSystem.shutdown();
+      // Shutdown actor system only if we own it
+      if (_ownsActorSystem) {
+        print('Shutting down LibSpiffy-owned actor system');
+        await _actorSystem.shutdown();
+      } else {
+        print('Actor system owned by host application - not shutting down');
+      }
+      
+      // Always close event store
       await _eventStore.close();
       
       print('LibSpiffy Actor System shutdown complete');
@@ -268,7 +333,11 @@ LibSpiffyActorSystem getLibSpiffySystem() {
 }
 
 /// Initialize the global LibSpiffy actor system instance
+/// 
+/// If [actorSystem] is provided, LibSpiffy will integrate with the host's actor system.
+/// Otherwise, it creates its own isolated system.
 Future<void> initializeLibSpiffy({
+  ActorSystem? actorSystem,
   String? dataDirectory,
   ActorSystemConfig? config,
   WalletStorage? walletStorage,
@@ -278,6 +347,7 @@ Future<void> initializeLibSpiffy({
 }) async {
   final system = getLibSpiffySystem();
   await system.initialize(
+    actorSystem: actorSystem,
     dataDirectory: dataDirectory, 
     config: config,
     walletStorage: walletStorage,

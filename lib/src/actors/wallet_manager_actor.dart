@@ -277,15 +277,20 @@ class WalletManagerActor extends Actor {
       // Process spent UTXOs
       for (final utxoData in result.spentUTXOs) {
         final utxoKey = '${utxoData['txid']}:${utxoData['vout']}';
+        
+        // Use the calculated transaction fee from SPV validation
+        // If fee is null, fall back to BigInt.zero (shouldn't happen in practice)
+        final fee = result.transactionFee ?? BigInt.zero;
+        
         final command = SpendUTXOCommand(
           walletId: walletId,
           utxoKey: utxoKey,
           spendingTxId: result.txid,
-          fee: BigInt.zero, // TODO: Get actual fee from transaction
+          fee: fee,
         );
         
         walletActor.tell(LocalMessage(payload: command));
-        print('Sent SpendUTXO command to wallet $walletId');
+        print('Sent SpendUTXO command to wallet $walletId (fee: $fee satoshis)');
       }
 
     } catch (e) {

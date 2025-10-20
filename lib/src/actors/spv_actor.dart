@@ -233,6 +233,15 @@ class SPVActor extends Actor {
         final transaction = dartsv.Transaction.fromHex(hex.encode(txMap['txData']));
         final spendableUTXOs = await _extractSpendableUTXOs(transaction, walletId, invoiceId);
         final spentUTXOs = await _extractSpentUTXOs(transaction, walletId);
+        
+        // Step 3.5: Calculate transaction fee (if there are spent UTXOs)
+        BigInt? transactionFee;
+        if (spentUTXOs.isNotEmpty) {
+          transactionFee = await _calculateTransactionFee(transaction, beef);
+          if (transactionFee != null) {
+            print('Transaction fee calculated: $transactionFee satoshis');
+          }
+        }
 
         // Step 4: If invoice-based, verify payment matches invoice expectations
         if (invoiceId != null && spendableUTXOs.isNotEmpty) {
@@ -263,6 +272,7 @@ class SPVActor extends Actor {
           spendableUTXOs: spendableUTXOs,
           spentUTXOs: spentUTXOs,
           targetWalletId: walletId,
+          transactionFee: transactionFee,
         );
 
 
@@ -451,6 +461,62 @@ class SPVActor extends Actor {
     return spendableUTXOs;
   }
   
+  /// Calculate the transaction fee from BEEF data
+  /// Fee = Sum of input values - Sum of output values
+  Future<BigInt?> _calculateTransactionFee(
+    dartsv.Transaction transaction,
+    BEEF beef,
+  ) async {
+    try {
+      // Calculate total input value by looking up parent transactions in BEEF
+      BigInt totalInputValue = BigInt.zero;
+      
+      for (final input in transaction.inputs) {
+        final prevTxid = input.prevTxnId;
+        final prevVout = input.prevTxnOutputIndex;
+        
+        // Look up the parent transaction in BEEF
+        final prevTxidBytes = Uint8List.fromList(hex.decode(prevTxid));
+        final parentTxInfo = beef.findTransactionByTxid(prevTxidBytes);
+        
+        if (parentTxInfo == null) {
+          print('Warning: Parent transaction $prevTxid not found in BEEF');
+          return null; // Can't calculate fee without all inputs
+        }
+        
+        // Parse parent transaction to get output value
+        final parentTx = dartsv.Transaction.fromHex(hex.encode(parentTxInfo['txData'] as Uint8List));
+        
+        if (prevVout >= parentTx.outputs.length) {
+          print('Warning: Invalid vout index $prevVout for parent tx $prevTxid');
+          return null;
+        }
+        
+        final parentOutput = parentTx.outputs[prevVout];
+        totalInputValue += BigInt.from(parentOutput.satoshis.toInt());
+      }
+      
+      // Calculate total output value
+      BigInt totalOutputValue = BigInt.zero;
+      for (final output in transaction.outputs) {
+        totalOutputValue += BigInt.from(output.satoshis.toInt());
+      }
+      
+      // Fee is the difference
+      final fee = totalInputValue - totalOutputValue;
+      
+      if (fee < BigInt.zero) {
+        print('Warning: Calculated negative fee: $fee');
+        return null;
+      }
+      
+      return fee;
+    } catch (e) {
+      print('Error calculating transaction fee: $e');
+      return null;
+    }
+  }
+  
   /// Check if an output address belongs to us
   /// For invoice-based payments, check against invoice addresses
   /// Otherwise, would need to query wallet (not yet implemented)
@@ -516,55 +582,24 @@ class SPVActor extends Actor {
     }
 
     try {
-      // For each input, we need to:
-      // 1. Get the previous transaction output being spent
-      // 2. Check if that output belongs to our wallet
+      // Extract all inputs as spent UTXOs
+      // The WalletManagerActor will determine which ones actually belong to this wallet
       for (int inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex++) {
         final input = transaction.inputs[inputIndex];
         final prevTxId = input.prevTxnId;
         final prevOutputIndex = input.prevTxnOutputIndex;
 
-        try {
-          // TODO: Retrieve the previous transaction to analyze the spent output
-          // This requires either:
-          // 1. Access to the BEEF data containing the funding transaction
-          // 2. A transaction cache/storage lookup
-          // 3. Network query (not recommended for SPV)
-          
-          final belongsToWallet = await _checkSpentUTXOOwnership(
-            prevTxId, 
-            prevOutputIndex, 
-            walletId
-          );
-          
-          if (belongsToWallet) {
-            spentUTXOs.add({
-              'prevTxId': prevTxId,
-              'prevOutputIndex': prevOutputIndex,
-              'inputIndex': inputIndex,
-              'sequence': input.sequenceNumber,
-            });
-          }
-        } catch (e) {
-          print('Error analyzing input $inputIndex: $e');
-          continue;
-        }
+        spentUTXOs.add({
+          'txid': prevTxId,
+          'vout': prevOutputIndex,
+          'inputIndex': inputIndex,
+        });
       }
     } catch (e) {
       print('Error extracting spent UTXOs: $e');
     }
 
     return spentUTXOs;
-  }
-  
-  /// Check if a spent UTXO belongs to the specified wallet
-  /// TODO: This needs integration with UTXO storage and wallet management
-  Future<bool> _checkSpentUTXOOwnership(String prevTxId, int prevOutputIndex, String walletId) async {
-    // Placeholder implementation
-    // In a real implementation, this would:
-    // 1. Look up the UTXO in wallet storage
-    // 2. Check if it belongs to the specified wallet
-    return false;
   }
 
   /// Calculate transaction ID (TXID) from raw transaction data

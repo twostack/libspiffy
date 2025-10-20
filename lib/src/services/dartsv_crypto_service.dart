@@ -14,11 +14,6 @@ import 'package:spiffynode/spiffy_node.dart';
 import '../utils/crypto_utils.dart';
 import 'crypto_service.dart';
 
-/// Stub implementation of CryptoService
-/// 
-/// This provides a working interface that compiles successfully.
-/// All methods throw UnimplementedError and should be implemented 
-/// with correct DartSV API signatures in production.
 class DartSVCryptoService implements CryptoService {
   final dartsv.NetworkType _networkType;
   static final SHA256Digest _sha256Digest = SHA256Digest();
@@ -83,10 +78,11 @@ class DartSVCryptoService implements CryptoService {
     int coinType = 0, //we ignore this for now and follow the bitcoin-cash 236' as L2
     bool isChange = false,
   }) async {
-    // m/44'/${cointype}/${accountIndex}/${isChange ?? 1 : 0}/${addressIndex}
+    // BIP44 path: m/44'/${cointype}'/${accountIndex}'/${isChange ? 1 : 0}/${addressIndex}
+    // Only purpose, coin_type, and account are hardened
 
     final changeType = isChange ? 1 : 0;
-    final privKey = hdPrivateKey.deriveChildKey("m/44'/236'/${accountIndex}'/${changeType}'/${addressIndex}'");
+    final privKey = hdPrivateKey.deriveChildKey("m/44'/236'/${accountIndex}'/${changeType}/${addressIndex}");
 
     return privKey.privateKey;
   }

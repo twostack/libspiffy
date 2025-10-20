@@ -459,7 +459,6 @@ void main() {
 
     group('UTXO Serialization', () {
       test('should serialize to map correctly', () {
-        final now = DateTime.now();
         final utxo = BitcoinUtxo.create(
           txid: 'serialize_test',
           vout: 3,

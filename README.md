@@ -2,7 +2,7 @@
 
 An actor-based Bitcoin wallet implementation using event sourcing, CQRS, and SPV (Simplified Payment Verification) built with the Dactor/Eventador/DuraQ stack.
 
-## 🏗️ Architecture Overview
+## Architecture Overview
 
 LibSpiffy implements a sophisticated Bitcoin wallet system using modern architectural patterns:
 
@@ -12,32 +12,32 @@ LibSpiffy implements a sophisticated Bitcoin wallet system using modern architec
 - **SPV**: Lightweight Bitcoin verification using merkle proofs
 - **Hybrid Stack**: Combines Dactor (actors), Eventador (event store), and DuraQ (workflows)
 
-## 🎯 Key Features
+## Key Features
 
 ### Core Wallet Functionality
-- ✅ HD wallet address generation and management
-- ✅ UTXO tracking with confirmation status
-- ✅ Transaction creation and signing
-- ✅ SPV transaction verification with merkle proofs
-- ✅ Multi-wallet support with isolation
-- ✅ Event-sourced state with full audit trail
+-  HD wallet address generation and management
+-  UTXO tracking with confirmation status
+-  Transaction creation and signing
+-  SPV transaction verification with merkle proofs
+-  Multi-wallet support with isolation
+-  Event-sourced state with full audit trail
 
 ### Advanced Features
-- ✅ UTXO holds and reservations
-- ✅ Funding requests for transaction preparation
-- ✅ Automatic cleanup of expired holds
-- ✅ Snapshot support for performance optimization
-- ✅ Real-time balance calculations
-- ✅ Transaction broadcasting via libp2p
+-  UTXO holds and reservations
+-  Funding requests for transaction preparation
+-  Automatic cleanup of expired holds
+-  Snapshot support for performance optimization
+-  Real-time balance calculations
+-  Transaction broadcasting via libp2p
 
 ### Network Integration
-- ✅ Bitcoin P2P network connectivity
-- ✅ Block header synchronization and validation
-- ✅ Libp2p-based SPV transaction exchange
-- ✅ Merkle proof validation against header chain
-- ✅ Peer-to-peer transaction broadcasting
+-  Bitcoin P2P network connectivity
+-  Block header synchronization and validation
+-  Libp2p-based SPV transaction exchange
+-  Merkle proof validation against header chain
+-  Peer-to-peer transaction broadcasting
 
-## 🏛️ System Architecture
+## System Architecture
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
@@ -77,7 +77,7 @@ LibSpiffy implements a sophisticated Bitcoin wallet system using modern architec
 └────────────────────────────────────────────────────────────────┘
 ```
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
 
@@ -114,7 +114,7 @@ await example.demonstrateWalletOperations();
 await example.shutdown();
 ```
 
-## 📋 Core Components
+## Core Components
 
 ### 1. Bitcoin Wallet Aggregate
 
@@ -210,7 +210,7 @@ libp2p.tell(BroadcastTransactionMessage(
 ));
 ```
 
-## 🔄 Event Sourcing Flow
+## Event Sourcing Flow
 
 ### Commands → Events → State
 
@@ -251,7 +251,7 @@ final newState = currentState.applyEvent(events.first);
 - **TransactionConfirmationsUpdatedEvent**: Confirmation count updated
 - **TransactionBroadcastEvent**: Transaction sent to network
 
-## 🔐 Security Features
+## Security Features
 
 ### SPV Verification
 - Merkle proof validation against block headers
@@ -268,7 +268,7 @@ final newState = currentState.applyEvent(events.first);
 - Complete audit trail of all wallet operations
 - Snapshot validation and consistency checks
 
-## 🛠️ Configuration
+## Configuration
 
 ### Event Store Configuration
 
@@ -309,7 +309,7 @@ final libp2pConfig = {
 };
 ```
 
-## 📊 Monitoring and Observability
+## Monitoring and Observability
 
 ### Actor Metrics
 - Message processing rates
@@ -329,7 +329,7 @@ final libp2pConfig = {
 - SPV transaction success rates
 - Peer connectivity and health
 
-## 🧪 Testing
+## Testing
 
 ### Unit Tests
 ```bash
@@ -346,7 +346,7 @@ dart test test/integration/
 dart run example/bitcoin_wallet_example.dart
 ```
 
-## 🔧 Development
+## Development
 
 ### Project Structure
 ```
@@ -390,7 +390,7 @@ lib/
    }
    ```
 
-## 🤝 Contributing
+## Contributing
 
 1. Fork the repository
 2. Create a feature branch
@@ -398,11 +398,11 @@ lib/
 4. Ensure all tests pass
 5. Submit a pull request
 
-## 📄 License
+## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
 - **Dactor**: Actor model framework for Dart
 - **Eventador**: Event sourcing and CQRS library
@@ -410,7 +410,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - **DartSV**: Bitcoin SV library for Dart
 - **Bitcoin Community**: For the foundational protocols and specifications
 
-## 📚 Further Reading
+## Further Reading
 
 - [Event Sourcing Pattern](https://martinfowler.com/eaaDev/EventSourcing.html)
 - [CQRS Pattern](https://docs.microsoft.com/en-us/azure/architecture/patterns/cqrs)
@@ -420,4 +420,4 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ---
 
-**LibSpiffy** - Building the future of Bitcoin wallets with event sourcing and actor-based architecture. 🚀
+**LibSpiffy** - Building the future of Bitcoin wallets with event sourcing and actor-based architecture. 

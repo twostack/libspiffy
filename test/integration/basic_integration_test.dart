@@ -10,6 +10,8 @@ void main() {
     late Isar isar;
     late EventStore eventStore;
     late Directory tempDir;
+    late CryptoService cryptoService;
+    late SecureStorage secureStorage;
 
     setUpAll(() async {
       tempDir = await Directory.systemTemp.createTemp('libspiffy_basic_test_');
@@ -23,6 +25,10 @@ void main() {
         name: 'basic_test_${DateTime.now().millisecondsSinceEpoch}',
       );
       eventStore = IsarEventStore(isar);
+      
+      // Initialize services
+      cryptoService = DartSVCryptoService();
+      secureStorage = InMemorySecureStorage();
       
       EventRegistry.clear();
       EventRegistry.register<WalletCreatedEvent>(
@@ -46,6 +52,8 @@ void main() {
         aggregateId: 'test-wallet-001',
         aggregateType: 'Wallet',
         eventStore: eventStore,
+        cryptoService: cryptoService,
+        secureStorage: secureStorage,
       );
 
       expect(wallet.aggregateId, equals('test-wallet-001'));
@@ -61,6 +69,8 @@ void main() {
         aggregateId: 'test-wallet-002',
         aggregateType: 'Wallet',
         eventStore: eventStore,
+        cryptoService: cryptoService,
+        secureStorage: secureStorage,
       );
 
       wallet.preStart();
@@ -92,6 +102,8 @@ void main() {
         aggregateId: 'recovery-test-wallet',
         aggregateType: 'Wallet',
         eventStore: eventStore,
+        cryptoService: cryptoService,
+        secureStorage: secureStorage,
       );
 
       wallet1.preStart();
@@ -109,6 +121,8 @@ void main() {
           aggregateId: 'recovery-test-wallet',
           aggregateType: 'Wallet',
           eventStore: eventStore,
+          cryptoService: cryptoService,
+          secureStorage: secureStorage,
         );
 
         wallet2.preStart();

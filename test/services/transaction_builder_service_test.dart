@@ -1,4 +1,3 @@
-import 'dart:typed_data';
 import 'dart:convert';
 import 'package:test/test.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
@@ -8,8 +7,6 @@ import 'package:libspiffy/src/services/transaction_builder_service.dart';
 import 'package:libspiffy/src/services/script_type_registry.dart';
 import 'package:libspiffy/src/models/bitcoin_utxo.dart';
 import 'package:libspiffy/src/models/bitcoin_transaction.dart';
-import 'package:libspiffy/src/utils/beef.dart';
-import 'package:libspiffy/src/utils/bump.dart';
 
 void main() {
   group('TransactionBuilderService', () {

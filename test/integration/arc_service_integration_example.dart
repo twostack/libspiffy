@@ -14,6 +14,8 @@ void main() {
     late Isar isar;
     late EventStore eventStore;
     late Directory tempDir;
+    late CryptoService cryptoService;
+    late SecureStorage secureStorage;
 
     setUpAll(() async {
       tempDir = await Directory.systemTemp.createTemp('arc_example_');
@@ -27,6 +29,10 @@ void main() {
         name: 'arc_example_${DateTime.now().millisecondsSinceEpoch}',
       );
       eventStore = IsarEventStore(isar);
+
+      // Initialize services
+      cryptoService = DartSVCryptoService();
+      secureStorage = InMemorySecureStorage();
 
       EventRegistry.clear();
       _registerWalletEvents();
@@ -45,7 +51,7 @@ void main() {
     group('Transaction Broadcasting with ARC', () {
       test('should integrate with ARC service for transaction broadcasting', () async {
         // Create wallet with mock ARC service configuration
-        final wallet = await _createWalletWithARCConfig(eventStore);
+        final wallet = await _createWalletWithARCConfig(eventStore, cryptoService, secureStorage);
 
         // Create transaction
         final outputs = [
@@ -85,7 +91,7 @@ void main() {
       });
 
       test('should handle fee estimation from ARC service', () async {
-        final wallet = await _createWalletWithARCConfig(eventStore);
+        final wallet = await _createWalletWithARCConfig(eventStore, cryptoService, secureStorage);
 
         try {
           // In real implementation: final fees = await wallet.getARCFeeEstimate();
@@ -93,6 +99,7 @@ void main() {
 
           expect(simulatedFees['economy'], lessThan(0));
           expect(simulatedFees['economy'], greaterThan(BigInt.zero));
+          expect(wallet.aggregateId, isNotEmpty);
 
           print('✅ ARC fee estimation workflow simulated');
         } catch (e) {
@@ -103,7 +110,7 @@ void main() {
 
     group('Merkle Proof Integration', () {
       test('should retrieve merkle proofs from ARC service', () async {
-        final wallet = await _createWalletWithARCConfig(eventStore);
+        final wallet = await _createWalletWithARCConfig(eventStore, cryptoService, secureStorage);
 
         try {
           // In real implementation: final proof = await wallet.getMerkleProofFromARC(txid);
@@ -112,6 +119,7 @@ void main() {
           expect(simulatedProof['txid'], equals('test_tx_123'));
           expect(simulatedProof['proof'], isA<List>());
           expect(simulatedProof['blockHeight'], greaterThan(0));
+          expect(wallet.aggregateId, isNotEmpty);
 
           print('✅ Merkle proof retrieval workflow simulated');
         } catch (e) {
@@ -122,7 +130,7 @@ void main() {
 
     group('Real-time Status Updates', () {
       test('should track transaction confirmations via ARC', () async {
-        final wallet = await _createWalletWithARCConfig(eventStore);
+        final wallet = await _createWalletWithARCConfig(eventStore, cryptoService, secureStorage);
 
         try {
           // In real implementation: await wallet.startARCStatusPolling(txid);
@@ -130,6 +138,7 @@ void main() {
 
           expect(statusUpdates.length, greaterThan(0));
           expect(statusUpdates.last['confirmations'], greaterThan(0));
+          expect(wallet.aggregateId, isNotEmpty);
 
           print('✅ ARC status polling workflow simulated');
         } catch (e) {
@@ -157,13 +166,19 @@ void _registerWalletEvents() {
   }
 }
 
-Future<BitcoinWalletAggregate> _createWalletWithARCConfig(EventStore eventStore) async {
+Future<BitcoinWalletAggregate> _createWalletWithARCConfig(
+  EventStore eventStore,
+  CryptoService cryptoService,
+  SecureStorage secureStorage,
+) async {
   final walletId = 'arc-config-wallet-${DateTime.now().millisecondsSinceEpoch}';
 
   final wallet = BitcoinWalletAggregate(
     aggregateId: walletId,
     aggregateType: 'Wallet',
     eventStore: eventStore,
+    cryptoService: cryptoService,
+    secureStorage: secureStorage,
     // In real implementation, would pass ARC service configuration
   );
 

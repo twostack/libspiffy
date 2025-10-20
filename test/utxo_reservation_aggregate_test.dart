@@ -7,6 +7,8 @@ import 'package:libspiffy/src/core/wallet_commands.dart';
 import 'package:libspiffy/src/core/wallet_events.dart';
 import 'package:libspiffy/src/models/bitcoin_utxo.dart';
 import 'package:libspiffy/src/models/wallet_state.dart';
+import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
+import 'package:libspiffy/src/storage/in_memory_secure_storage.dart';
 
 void main() {
   group('UTXO Reservation Aggregate Tests', () {
@@ -18,6 +20,8 @@ void main() {
         aggregateId: 'test_wallet',
         aggregateType: 'Wallet',
         eventStore: MockEventStore(),
+        cryptoService: DartSVCryptoService(),
+        secureStorage: InMemorySecureStorage(),
       );
 
       // Create initial wallet state with some UTXOs
@@ -66,7 +70,7 @@ void main() {
     });
 
     group('ReserveUTXOCommand Handler', () {
-      test('should successfully reserve available UTXO', () {
+      test('should successfully reserve available UTXO', () async {
         final command = ReserveUTXOCommand(
           walletId: 'test_wallet',
           utxoKey: 'test_tx_1:0',
@@ -75,7 +79,7 @@ void main() {
           priority: 5,
         );
 
-        final events = aggregate.handleCommand(initialState, command);
+        final events = await aggregate.handleCommand(initialState, command);
 
         expect(events, hasLength(1));
         expect(events[0], isA<UTXOReservedEvent>());
@@ -125,7 +129,7 @@ void main() {
         );
       });
 
-      test('should allow higher priority to override lower priority reservation', () {
+      test('should allow higher priority to override lower priority reservation', () async {
         // First create a reserved UTXO with low priority
         final reservedUtxo = initialState.utxos['test_tx_1:0']!.copyWith(
           status: UTXOStatus.reserved,
@@ -148,7 +152,7 @@ void main() {
           priority: 10,
         );
 
-        final events = aggregate.handleCommand(stateWithReservedUtxo, command);
+        final events = await aggregate.handleCommand(stateWithReservedUtxo, command);
 
         expect(events, hasLength(1));
         expect(events[0], isA<UTXOReservedEvent>());
@@ -187,7 +191,7 @@ void main() {
         );
       });
 
-      test('should allow reservation of expired UTXO regardless of priority', () {
+      test('should allow reservation of expired UTXO regardless of priority', () async {
         // Create an expired reservation
         final expiredUtxo = initialState.utxos['test_tx_1:0']!.copyWith(
           status: UTXOStatus.reserved,
@@ -209,7 +213,7 @@ void main() {
           priority: 1, // Lower priority but should work because original is expired
         );
 
-        final events = aggregate.handleCommand(stateWithExpiredUtxo, command);
+        final events = await aggregate.handleCommand(stateWithExpiredUtxo, command);
 
         expect(events, hasLength(1));
         expect(events[0], isA<UTXOReservedEvent>());
@@ -220,7 +224,7 @@ void main() {
     });
 
     group('ReleaseUTXOCommand Handler', () {
-      test('should successfully release reserved UTXO', () {
+      test('should successfully release reserved UTXO', () async {
         // First create a reserved UTXO
         final reservedUtxo = initialState.utxos['test_tx_1:0']!.copyWith(
           status: UTXOStatus.reserved,
@@ -239,7 +243,7 @@ void main() {
           releaseReason: 'Transaction cancelled',
         );
 
-        final events = aggregate.handleCommand(stateWithReservedUtxo, command);
+        final events = await aggregate.handleCommand(stateWithReservedUtxo, command);
 
         expect(events, hasLength(1));
         expect(events[0], isA<UTXOReleasedEvent>());
@@ -275,7 +279,7 @@ void main() {
         );
       });
 
-      test('should detect expired reservation when releasing', () {
+      test('should detect expired reservation when releasing', () async {
         // Create an expired reserved UTXO
         final expiredUtxo = initialState.utxos['test_tx_1:0']!.copyWith(
           status: UTXOStatus.reserved,
@@ -294,7 +298,7 @@ void main() {
           utxoKey: 'test_tx_1:0',
         );
 
-        final events = aggregate.handleCommand(stateWithExpiredUtxo, command);
+        final events = await aggregate.handleCommand(stateWithExpiredUtxo, command);
 
         expect(events, hasLength(1));
         final event = events[0] as UTXOReleasedEvent;
@@ -303,7 +307,7 @@ void main() {
     });
 
     group('RenewUTXOReservationCommand Handler', () {
-      test('should successfully renew UTXO reservation', () {
+      test('should successfully renew UTXO reservation', () async {
         // Create a reserved UTXO
         final originalExpiry = DateTime.now().add(Duration(minutes: 15));
         final reservedUtxo = initialState.utxos['test_tx_1:0']!.copyWith(
@@ -326,7 +330,7 @@ void main() {
           renewalReason: 'Need more time',
         );
 
-        final events = aggregate.handleCommand(stateWithReservedUtxo, command);
+        final events = await aggregate.handleCommand(stateWithReservedUtxo, command);
 
         expect(events, hasLength(1));
         expect(events[0], isA<UTXOReservationRenewedEvent>());
@@ -354,7 +358,7 @@ void main() {
     });
 
     group('CleanupExpiredReservationsCommand Handler', () {
-      test('should cleanup multiple expired reservations', () {
+      test('should cleanup multiple expired reservations', () async {
         // Create a state with mixed expired and active reservations
         final now = DateTime.now();
         final expiredUtxo1 = initialState.utxos['test_tx_1:0']!.copyWith(
@@ -395,7 +399,7 @@ void main() {
           cutoffTime: now,
         );
 
-        final events = aggregate.handleCommand(stateWithMixedUtxos, command);
+        final events = await aggregate.handleCommand(stateWithMixedUtxos, command);
 
         // Should generate 2 release events for the 2 expired reservations
         expect(events, hasLength(2));
@@ -411,12 +415,12 @@ void main() {
         expect(releaseEvents.every((e) => e.releaseReason == 'Expired reservation cleanup'), isTrue);
       });
 
-      test('should return no events when no expired reservations exist', () {
+      test('should return no events when no expired reservations exist', () async {
         final command = CleanupExpiredReservationsCommand(
           walletId: 'test_wallet',
         );
 
-        final events = aggregate.handleCommand(initialState, command);
+        final events = await aggregate.handleCommand(initialState, command);
 
         expect(events, isEmpty);
       });

@@ -2,7 +2,6 @@ import 'dart:io';
 import 'package:test/test.dart';
 import 'package:isar/isar.dart';
 import 'package:eventador/eventador.dart';
-import 'package:dartsv/dartsv.dart' as dartsv;
 
 import 'package:libspiffy/libspiffy.dart';
 
@@ -19,6 +18,8 @@ void main() {
     late Isar isar;
     late EventStore eventStore;
     late Directory tempDir;
+    late CryptoService cryptoService;
+    late SecureStorage secureStorage;
 
     setUpAll(() async {
       tempDir = await Directory.systemTemp.createTemp('libspiffy_integration_');
@@ -32,6 +33,10 @@ void main() {
         name: 'integration_${DateTime.now().millisecondsSinceEpoch}',
       );
       eventStore = IsarEventStore(isar);
+      
+      // Initialize services
+      cryptoService = DartSVCryptoService();
+      secureStorage = InMemorySecureStorage();
       
       EventRegistry.clear();
       _registerWalletEvents();
@@ -53,6 +58,8 @@ void main() {
           aggregateId: 'test-wallet-001',
           aggregateType: 'Wallet',
           eventStore: eventStore,
+          cryptoService: cryptoService,
+          secureStorage: secureStorage,
         );
 
         wallet.preStart();
@@ -85,7 +92,7 @@ void main() {
       });
 
       test('should handle wallet configuration updates', () async {
-        final wallet = await _createTestWallet('config-test-wallet', eventStore);
+        final wallet = await _createTestWallet('config-test-wallet', eventStore, cryptoService, secureStorage);
 
         try {
           final updateCommand = UpdateWalletConfigurationCommand(
@@ -113,7 +120,7 @@ void main() {
 
     group('Address Management', () {
       test('should generate and manage addresses', () async {
-        final wallet = await _createTestWallet('address-test-wallet', eventStore);
+        final wallet = await _createTestWallet('address-test-wallet', eventStore, cryptoService, secureStorage);
 
         try {
           // Generate multiple addresses
@@ -151,7 +158,7 @@ void main() {
 
     group('UTXO Management', () {
       test('should track received UTXOs and calculate balances', () async {
-        final wallet = await _createTestWallet('utxo-test-wallet', eventStore);
+        final wallet = await _createTestWallet('utxo-test-wallet', eventStore, cryptoService, secureStorage);
 
         try {
           // Add test UTXOs
@@ -193,7 +200,7 @@ void main() {
       });
 
       test('should update UTXO confirmations', () async {
-        final wallet = await _createTestWallet('confirmation-test-wallet', eventStore);
+        final wallet = await _createTestWallet('confirmation-test-wallet', eventStore, cryptoService, secureStorage);
 
         try {
           // Add unconfirmed UTXO
@@ -228,7 +235,7 @@ void main() {
       });
 
       test('should handle UTXO spending', () async {
-        final wallet = await _createFundedTestWallet(eventStore);
+        final wallet = await _createFundedTestWallet(eventStore, cryptoService, secureStorage);
 
         try {
           final utxoKey = wallet.currentState.utxos.keys.first;
@@ -253,7 +260,7 @@ void main() {
 
     group('Transaction Management', () {
       test('should create transactions with proper structure', () async {
-        final wallet = await _createFundedTestWallet(eventStore);
+        final wallet = await _createFundedTestWallet(eventStore, cryptoService, secureStorage);
 
         try {
           final outputs = [
@@ -281,7 +288,7 @@ void main() {
       });
 
       test('should handle transaction signing workflow', () async {
-        final wallet = await _createFundedTestWallet(eventStore);
+        final wallet = await _createFundedTestWallet(eventStore, cryptoService, secureStorage);
 
         try {
           // Create transaction first
@@ -328,6 +335,8 @@ void main() {
           aggregateId: walletId,
           aggregateType: 'Wallet',
           eventStore: eventStore,
+          cryptoService: cryptoService,
+          secureStorage: secureStorage,
         );
 
         wallet1.preStart();
@@ -348,6 +357,8 @@ void main() {
             aggregateId: walletId,
             aggregateType: 'Wallet',
             eventStore: eventStore,
+            cryptoService: cryptoService,
+            secureStorage: secureStorage,
           );
 
           wallet2.preStart();
@@ -372,6 +383,8 @@ void main() {
           aggregateId: 'error-test-wallet',
           aggregateType: 'Wallet',
           eventStore: eventStore,
+          cryptoService: cryptoService,
+          secureStorage: secureStorage,
         );
 
         wallet.preStart();
@@ -442,11 +455,18 @@ void _registerWalletEvents() {
   }
 }
 
-Future<BitcoinWalletAggregate> _createTestWallet(String walletId, EventStore eventStore) async {
+Future<BitcoinWalletAggregate> _createTestWallet(
+  String walletId, 
+  EventStore eventStore,
+  CryptoService cryptoService,
+  SecureStorage secureStorage,
+) async {
   final wallet = BitcoinWalletAggregate(
     aggregateId: walletId,
     aggregateType: 'Wallet',
     eventStore: eventStore,
+    cryptoService: cryptoService,
+    secureStorage: secureStorage,
   );
 
   wallet.preStart();
@@ -461,9 +481,13 @@ Future<BitcoinWalletAggregate> _createTestWallet(String walletId, EventStore eve
   return wallet;
 }
 
-Future<BitcoinWalletAggregate> _createFundedTestWallet(EventStore eventStore) async {
+Future<BitcoinWalletAggregate> _createFundedTestWallet(
+  EventStore eventStore,
+  CryptoService cryptoService,
+  SecureStorage secureStorage,
+) async {
   final walletId = 'funded-wallet-${DateTime.now().millisecondsSinceEpoch}';
-  final wallet = await _createTestWallet(walletId, eventStore);
+  final wallet = await _createTestWallet(walletId, eventStore, cryptoService, secureStorage);
 
   // Add funding UTXOs
   for (int i = 0; i < 2; i++) {

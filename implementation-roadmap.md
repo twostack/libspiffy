@@ -322,9 +322,7 @@ export 'src/services/script_type_registry.dart';     // Script type identificati
 - [ ] Secure key management and derivation
 
 **Advanced Transaction Features:**
-- [ ] Child-Pays-For-Parent (CPFP) fee bumping (BSV compatible)
 - [ ] Batch transaction processing
-- [ ] Smart fee estimation algorithms
 - [ ] Complex script template support
 
 ### **Option 2C: 🎭 Actor System Scaling** ✅ **COMPLETED**
@@ -512,7 +510,6 @@ export 'src/services/script_type_registry.dart';     // Script type identificati
 ### **📊 Wallet Analytics**
 - [ ] **Transaction history analysis**
   - [ ] Spending pattern analysis
-  - [ ] Fee optimization recommendations
   - [ ] Privacy score calculation
 - [ ] **Performance metrics**
   - [ ] Wallet synchronization status
@@ -530,7 +527,6 @@ export 'src/services/script_type_registry.dart';     // Script type identificati
   - [ ] Complex script handling
   - [ ] Custom transaction templates
 - [ ] **Transaction optimization**
-  - [ ] Fee optimization algorithms
   - [ ] UTXO consolidation strategies
   - [ ] Privacy-preserving transactions
 

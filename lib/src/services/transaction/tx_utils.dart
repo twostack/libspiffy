@@ -6,6 +6,8 @@ import 'dart:typed_data';
 import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart';
 
+import '../../models/bitcoin_utxo.dart';
+import '../../storage/wallet_storage.dart';
 import 'builder/hodl_lockbuilder.dart';
 import 'wallet_account.dart';
 
@@ -28,8 +30,9 @@ class LockerDetails {
 class TxUtils {
 
   final String _networkType;
+  final WalletStorage? _storage;
 
-  TxUtils(this._networkType);
+  TxUtils(this._networkType, {WalletStorage? storage}) : _storage = storage;
 
 
   ///
@@ -170,8 +173,21 @@ class TxUtils {
    * and selecting UTXOs until the total amount exceeds the required amount
    */
   Future<List<TransactionOutpoint>> getFundingInputs(SVPublicKey userPubKey, Address address, BigInt requiredAmount) async {
-    //TODO: This method should obtain funding inputs that can be used to construct new transactions
-    throw UnimplementedError();
+    if (_storage == null) {
+      throw StateError('WalletStorage not available for UTXO selection');
+    }
+
+    // Note: This method signature doesn't include walletId, so we can't properly
+    // query storage. This is a design issue with the original API.
+    // For now, we'll throw an exception with guidance.
+    throw UnsupportedError(
+      'getFundingInputs requires walletId parameter. '
+      'Use WalletStorage.getSpendableUTXOs(walletId) directly instead.'
+    );
+    
+    // Proper implementation would be:
+    // final spendableUtxos = await _storage.getSpendableUTXOs(walletId);
+    // return _selectUTXOsForAmount(spendableUtxos, requiredAmount, address);
   }
 
   (Transaction, BigInt) _spendFromLocktimeTxn( SVPrivateKey privateKey, Transaction locktimeTxn, SVScript scriptSig, BigInt lockedValue) {
@@ -200,9 +216,24 @@ class TxUtils {
   }
 
   void _addtoUtxoSet(currentItem) {
-    //TODO: IMplement as part of UTXO management
+    if (_storage == null) {
+      throw StateError('WalletStorage not available for UTXO management');
+    }
 
-    throw UnimplementedError();
+    // Note: This method signature is too vague - we don't know the type of currentItem
+    // or which wallet it belongs to. This is a design issue with the original API.
+    // For now, we'll throw an exception with guidance.
+    throw UnsupportedError(
+      '_addtoUtxoSet is deprecated. '
+      'Use WalletStorage.storeUTXO(walletId, utxo) directly instead. '
+      'Or emit a ReceiveUTXOCommand to the wallet aggregate for proper event sourcing.'
+    );
+    
+    // Proper implementation would be:
+    // if (currentItem is! BitcoinUtxo) {
+    //   throw ArgumentError('currentItem must be a BitcoinUtxo');
+    // }
+    // await _storage.storeUTXO(walletId, currentItem as BitcoinUtxo);
   }
 
 }

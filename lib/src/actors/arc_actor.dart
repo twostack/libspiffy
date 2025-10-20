@@ -2,11 +2,17 @@ import 'dart:async';
 import 'package:dactor/dactor.dart';
 
 import '../core/wallet_commands.dart';
+import '../services/arc_service.dart';
+import '../services/arc_service_config.dart';
 import 'wallet_messages.dart';
 
 /// Actor that handles ARC service integration for transaction broadcasting and monitoring
 class ARCActor extends Actor {
   final ActorRef _walletManager;
+  final ArcServiceConfig? _arcConfig;
+  
+  // ARC service client
+  ArcService? _arcService;
   
   // Transaction status tracking
   final Map<String, String> _transactionStatus = {}; // txid -> status
@@ -17,7 +23,9 @@ class ARCActor extends Actor {
 
   ARCActor({
     required ActorRef walletManager,
-  }) : _walletManager = walletManager;
+    ArcServiceConfig? arcConfig,
+  })  : _walletManager = walletManager,
+        _arcConfig = arcConfig;
 
   @override
   void preStart() {
@@ -57,7 +65,7 @@ class ARCActor extends Actor {
         default:
           print('ARCActor received unknown message: ${message.runtimeType}');
       }
-    } catch (e, stackTrace) {
+    } catch (e) {
       print('Error in ARCActor: $e');
       
       // Send error response for messages that expect responses
@@ -67,11 +75,19 @@ class ARCActor extends Actor {
     }
   }
 
-  /// Initialize ARC service integration (placeholder)
+  /// Initialize ARC service integration
   void _initializeARCService() {
     print('Initializing ARC service integration...');
-    // TODO: Initialize actual ARC service client
-    print('ARC service integration initialized (placeholder)');
+    
+    if (_arcConfig != null) {
+      _arcService = ArcService.fromConfig(_arcConfig);
+      print('ARC service initialized with endpoint: ${_arcConfig.baseUrl}');
+    } else {
+      print('WARNING: ARC service not configured - using testnet default');
+      _arcService = ArcService(
+        baseUrl: 'https://api.whatsonchain.com/v1/bsv/test',
+      );
+    }
   }
 
   /// Start periodic transaction status monitoring
@@ -87,34 +103,32 @@ class ARCActor extends Actor {
   Future<void> _handleBroadcastTransaction(BroadcastTransactionMessage msg) async {
     print('Broadcasting transaction ${msg.txid} for wallet ${msg.walletId}');
     
+    if (_arcService == null) {
+      print('ERROR: ARC service not initialized');
+      context.sender?.tell(BroadcastFailedMessage(msg.txid, 'ARC service not available'));
+      return;
+    }
+    
     try {
-      // TODO: Implement actual ARC service broadcast
-      // Placeholder implementation - simulate successful broadcast
-      await Future.delayed(Duration(milliseconds: 100));
+      // Broadcast transaction via ARC service
+      final response = await _arcService!.submitTransaction(msg.txHex);
       
-      final success = true; // Placeholder
-      final networkTxid = msg.txid;
+      // Track transaction status
+      _transactionStatus[msg.txid] = _arcStatusToString(response.status);
+      _transactionToWallet[msg.txid] = msg.walletId;
       
-      if (success) {
-        // Track transaction status
-        _transactionStatus[msg.txid] = 'broadcasted';
-        _transactionToWallet[msg.txid] = msg.walletId;
-        
-        // Notify wallet of successful broadcast
-        final command = BroadcastTransactionCommand(
-          walletId: msg.walletId,
-          transactionId: msg.txid,
-          signedTransaction: msg.txHex, // Add the signed transaction hex
-        );
-        _walletManager.tell(WalletCommandMessage(msg.walletId, command));
-        
-        // Send success response
-        context.sender?.tell(BroadcastSuccessMessage(msg.txid, networkTxid));
-        
-        print('Transaction ${msg.txid} broadcast successfully');
-      } else {
-        context.sender?.tell(BroadcastFailedMessage(msg.txid, 'Broadcast failed'));
-      }
+      // Notify wallet of successful broadcast
+      final command = BroadcastTransactionCommand(
+        walletId: msg.walletId,
+        transactionId: msg.txid,
+        signedTransaction: msg.txHex,
+      );
+      _walletManager.tell(WalletCommandMessage(msg.walletId, command));
+      
+      // Send success response
+      context.sender?.tell(BroadcastSuccessMessage(msg.txid, response.txid));
+      
+      print('Transaction ${msg.txid} broadcast successfully with status: ${response.status}');
       
     } catch (e) {
       print('Error broadcasting transaction ${msg.txid}: $e');
@@ -126,30 +140,31 @@ class ARCActor extends Actor {
   Future<void> _handleBroadcastBEEF(BroadcastBEEFMessage msg) async {
     print('Broadcasting BEEF transaction ${msg.txid} for wallet ${msg.walletId}');
     
+    if (_arcService == null) {
+      print('ERROR: ARC service not initialized');
+      context.sender?.tell(BroadcastFailedMessage(msg.txid, 'ARC service not available'));
+      return;
+    }
+    
     try {
-      // TODO: Implement actual ARC service BEEF broadcast
-      await Future.delayed(Duration(milliseconds: 100));
+      // Broadcast BEEF via ARC service
+      final response = await _arcService!.submitBEEF(msg.beefHex);
       
-      final success = true; // Placeholder
+      _transactionStatus[msg.txid] = _arcStatusToString(response.status);
+      _transactionToWallet[msg.txid] = msg.walletId;
       
-      if (success) {
-        _transactionStatus[msg.txid] = 'broadcasted';
-        _transactionToWallet[msg.txid] = msg.walletId;
-        
-        final command = BroadcastTransactionCommand(
-          walletId: msg.walletId,
-          transactionId: msg.txid,
-          signedTransaction: msg.beefHex, // Add the BEEF hex as signed transaction
-        );
-        _walletManager.tell(WalletCommandMessage(msg.walletId, command));
-        
-        context.sender?.tell(BroadcastSuccessMessage(msg.txid, msg.txid));
-        print('BEEF transaction ${msg.txid} broadcast successfully');
-      } else {
-        context.sender?.tell(BroadcastFailedMessage(msg.txid, 'BEEF broadcast failed'));
-      }
+      final command = BroadcastTransactionCommand(
+        walletId: msg.walletId,
+        transactionId: msg.txid,
+        signedTransaction: msg.beefHex,
+      );
+      _walletManager.tell(WalletCommandMessage(msg.walletId, command));
+      
+      context.sender?.tell(BroadcastSuccessMessage(msg.txid, response.txid));
+      print('BEEF transaction ${msg.txid} broadcast successfully with status: ${response.status}');
       
     } catch (e) {
+      print('Error broadcasting BEEF ${msg.txid}: $e');
       context.sender?.tell(BroadcastFailedMessage(msg.txid, e.toString()));
     }
   }
@@ -158,22 +173,36 @@ class ARCActor extends Actor {
   Future<void> _handleCheckTransactionStatus(CheckTransactionStatusMessage msg) async {
     print('Checking status for transaction ${msg.txid}');
     
+    if (_arcService == null) {
+      print('ERROR: ARC service not initialized');
+      context.sender?.tell(TransactionStatusMessage(
+        txid: msg.txid,
+        status: 'error',
+      ));
+      return;
+    }
+    
     try {
-      // TODO: Implement actual ARC service status check
-      final currentStatus = _transactionStatus[msg.txid] ?? 'unknown';
-      final confirmations = currentStatus == 'confirmed' ? 6 : 0;
-      final blockHeight = currentStatus == 'confirmed' ? 800000 : null;
-      final proofAvailable = currentStatus == 'confirmed'; // Can get proof when confirmed
+      // Query ARC service for transaction status
+      final response = await _arcService!.getTransaction(msg.txid);
+      
+      final status = _arcStatusToString(response.status);
+      _transactionStatus[msg.txid] = status; // Update cache
+      
+      // Determine confirmations based on status and block height
+      final confirmations = response.blockHeight != null ? 6 : 0; // Simplified
+      final proofAvailable = response.status == ArcTransactionStatus.mined;
       
       context.sender?.tell(TransactionStatusMessage(
         txid: msg.txid,
-        status: currentStatus,
+        status: status,
         confirmations: confirmations,
-        blockHeight: blockHeight,
+        blockHeight: response.blockHeight,
         proofAvailable: proofAvailable,
       ));
       
     } catch (e) {
+      print('Error checking status for ${msg.txid}: $e');
       context.sender?.tell(TransactionStatusMessage(
         txid: msg.txid,
         status: 'error',
@@ -185,23 +214,28 @@ class ARCActor extends Actor {
   Future<void> _handleRetrieveMerkleProof(RetrieveMerkleProofMessage msg) async {
     print('Retrieving merkle proof for transaction ${msg.txid}');
     
+    if (_arcService == null) {
+      print('ERROR: ARC service not initialized');
+      context.sender?.tell(MerkleProofMessage(
+        txid: msg.txid,
+        success: false,
+        error: 'ARC service not available',
+      ));
+      return;
+    }
+    
     try {
-      // TODO: Implement actual ARC service merkle proof retrieval
-      // final proof = await _arcService.getMerkleProof(msg.txid);
-
-      // Placeholder implementation
-      await Future.delayed(Duration(milliseconds: 100));
+      // Retrieve merkle proof from ARC service
+      final proofResponse = await _arcService!.getMerkleProof(msg.txid);
       
-      // Simulate successful proof retrieval for confirmed transactions
-      final hasProof = _transactionStatus[msg.txid] == 'confirmed';
-      
-      if (hasProof) {
-        // Create placeholder merkle proof
+      if (proofResponse != null) {
+        // Convert to proof map format
         final proof = {
-          'txid': msg.txid,
-          'blockHeight': msg.knownBlockHeight ?? 800000,
-          'merkleRoot': 'placeholder_merkle_root',
-          'merkleProof': ['proof_element_1', 'proof_element_2'],
+          'txid': proofResponse.txid,
+          'blockHeight': proofResponse.blockHeight,
+          'merkleRoot': proofResponse.merkleRoot,
+          'merklePath': proofResponse.merklePath,
+          'blockHash': proofResponse.blockHash,
         };
         
         context.sender?.tell(MerkleProofMessage(
@@ -218,7 +252,7 @@ class ARCActor extends Actor {
           error: 'Transaction not confirmed yet - proof not available',
         ));
         
-        print('Merkle proof not available for ${msg.txid} - transaction not confirmed');
+        print('Merkle proof not available for ${msg.txid}');
       }
       
     } catch (e) {
@@ -235,17 +269,31 @@ class ARCActor extends Actor {
   Future<void> _handleGetFeeQuote(GetFeeQuoteMessage msg) async {
     print('Getting fee quote from ARC service');
     
+    if (_arcService == null) {
+      context.sender?.tell(FeeQuoteMessage({'error': 'ARC service not available'}));
+      return;
+    }
+    
     try {
-      // TODO: Implement actual ARC service fee quote
+      // Get policy from ARC service (includes fee rates)
+      final policy = await _arcService!.getPolicy();
+      
       final feeData = {
-        'mining': {'satoshis': 500, 'bytes': 1000},
-        'relay': {'satoshis': 250, 'bytes': 1000},
+        'mining': {
+          'satoshis': policy.standardFeePerKb.toInt(),
+          'bytes': 1000
+        },
+        'relay': {
+          'satoshis': policy.minFeePerKb.toInt(),
+          'bytes': 1000
+        },
         'timestamp': DateTime.now().toIso8601String(),
       };
       
       context.sender?.tell(FeeQuoteMessage(feeData));
       
     } catch (e) {
+      print('Error getting fee quote: $e');
       context.sender?.tell(FeeQuoteMessage({'error': e.toString()}));
     }
   }
@@ -285,25 +333,26 @@ class ARCActor extends Actor {
 
   /// Check and update status for a specific transaction
   Future<void> _checkAndUpdateTransactionStatus(String txid) async {
+    if (_arcService == null) return;
+    
     try {
-      // TODO: Implement actual ARC service status check
-      // Placeholder: randomly confirm some transactions
-      final random = DateTime.now().millisecondsSinceEpoch % 10;
-      final newStatus = random < 2 ? 'confirmed' : _transactionStatus[txid];
+      // Query ARC service for transaction status
+      final response = await _arcService!.getTransaction(txid);
       
+      final newStatus = _arcStatusToString(response.status);
       final previousStatus = _transactionStatus[txid];
       
       if (newStatus != previousStatus) {
-        _transactionStatus[txid] = newStatus!;
+        _transactionStatus[txid] = newStatus;
         print('Transaction $txid status changed: $previousStatus -> $newStatus');
         
         final walletId = _transactionToWallet[txid];
-        if (walletId != null && newStatus == 'confirmed') {
+        if (walletId != null && response.status == ArcTransactionStatus.mined && response.blockHeight != null) {
           final command = UpdateUTXOConfirmationsCommand(
             walletId: walletId,
             utxoKey: txid,
-            confirmations: 6,
-            blockHeight: 800000,
+            confirmations: 6, // Simplified - assume 6 confirmations when mined
+            blockHeight: response.blockHeight!,
           );
           
           _walletManager.tell(WalletCommandMessage(walletId, command));
@@ -312,6 +361,36 @@ class ARCActor extends Actor {
       
     } catch (e) {
       print('Error checking status for transaction $txid: $e');
+    }
+  }
+
+  /// Convert ARC transaction status to string
+  String _arcStatusToString(ArcTransactionStatus status) {
+    switch (status) {
+      case ArcTransactionStatus.queued:
+        return 'queued';
+      case ArcTransactionStatus.received:
+        return 'received';
+      case ArcTransactionStatus.stored:
+        return 'stored';
+      case ArcTransactionStatus.announcedToNetwork:
+        return 'announced';
+      case ArcTransactionStatus.requestedByNetwork:
+        return 'requested';
+      case ArcTransactionStatus.sentToNetwork:
+        return 'sent';
+      case ArcTransactionStatus.acceptedByNetwork:
+        return 'accepted';
+      case ArcTransactionStatus.seenOnNetwork:
+        return 'seen_on_network';
+      case ArcTransactionStatus.mined:
+        return 'mined';
+      case ArcTransactionStatus.rejected:
+        return 'rejected';
+      case ArcTransactionStatus.doubleSpendAttempted:
+        return 'double_spend';
+      default:
+        return 'unknown';
     }
   }
 

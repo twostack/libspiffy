@@ -1,5 +1,4 @@
 import 'package:test/test.dart';
-import 'package:uuid/uuid.dart';
 
 import 'package:libspiffy/src/core/wallet_events.dart';
 import 'package:libspiffy/src/models/wallet_event.dart';
@@ -34,7 +33,7 @@ void main() {
       test('should generate ID for eventId if not provided', () {
         final event = TestWalletEvent(walletId: 'test_wallet');
         expect(event.eventId, isNotNull);
-        expect(event.eventId!.length, greaterThan(10)); // Should be some reasonable length
+        expect(event.eventId.length, greaterThan(10)); // Should be some reasonable length
       });
 
       test('should use current time for timestamp if not provided', () {
@@ -43,8 +42,8 @@ void main() {
         final after = DateTime.now();
         
         expect(event.timestamp, isNotNull);
-        expect(event.timestamp!.isAfter(before.subtract(Duration(seconds: 1))), isTrue);
-        expect(event.timestamp!.isBefore(after.add(Duration(seconds: 1))), isTrue);
+        expect(event.timestamp.isAfter(before.subtract(Duration(seconds: 1))), isTrue);
+        expect(event.timestamp.isBefore(after.add(Duration(seconds: 1))), isTrue);
       });
 
       test('should include wallet event data in getEventData', () {
@@ -417,8 +416,6 @@ void main() {
 
         expect(walletCreated.runtimeType, equals(WalletCreatedEvent));
         expect(configUpdated.runtimeType, equals(WalletConfigurationUpdatedEvent));
-        expect(walletCreated is WalletEvent, isTrue);
-        expect(configUpdated is WalletEvent, isTrue);
       });
     });
 
@@ -756,8 +753,8 @@ void main() {
           final after = DateTime.now();
 
           expect(event.timestamp, isNotNull);
-          expect(event.timestamp!.isAfter(before.subtract(Duration(seconds: 1))), isTrue);
-          expect(event.timestamp!.isBefore(after.add(Duration(seconds: 1))), isTrue);
+          expect(event.timestamp.isAfter(before.subtract(Duration(seconds: 1))), isTrue);
+          expect(event.timestamp.isBefore(after.add(Duration(seconds: 1))), isTrue);
         });
       });
     });

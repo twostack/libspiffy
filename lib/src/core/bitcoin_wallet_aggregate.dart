@@ -5,6 +5,9 @@ import 'package:dartsv/dartsv.dart' as dartsv;
 import '../models/wallet_event.dart';
 import '../models/wallet_state.dart';
 import '../models/bitcoin_utxo.dart';
+import '../services/crypto_service.dart';
+import '../storage/secure_storage.dart';
+import '../services/transaction_builder_service.dart';
 import 'wallet_commands.dart';
 import 'wallet_events.dart';
 
@@ -14,11 +17,17 @@ import 'wallet_events.dart';
 /// ensuring consistency and providing full audit trail for all operations.
 /// Follows the Eventador AggregateRoot pattern with functional state management.
 class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
+  final CryptoService cryptoService;
+  final SecureStorage secureStorage;
+  final TransactionBuilderService? transactionBuilder;
 
   BitcoinWalletAggregate({
     required String aggregateId,
     required String aggregateType,
     required EventStore eventStore,
+    required this.cryptoService,
+    required this.secureStorage,
+    this.transactionBuilder,
   }) : super(aggregateId: aggregateId, aggregateType: aggregateType, eventStore: eventStore) {
     // Register handlers immediately upon construction
     registerHandlers();
@@ -41,16 +50,19 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
   // EVENTADOR AGGREGATE ROOT IMPLEMENTATION
   // ==========================================================================
 
-  /// Handle commands and return events (Eventador pattern)
+  /// Handle commands asynchronously and return events
+  /// 
+  /// This method supports async cryptographic operations and secure storage access
+  /// required for wallet operations. All calling code must await this method.
   @override
-  List<Event> handleCommand(WalletState currentState, Command command) {
+  Future<List<Event>> handleCommand(WalletState currentState, Command command) async {
     switch (command.runtimeType) {
       case CreateWalletCommand:
-        return _handleCreateWallet(currentState, command as CreateWalletCommand);
+        return await _handleCreateWallet(currentState, command as CreateWalletCommand);
       case UpdateWalletConfigurationCommand:
         return _handleUpdateConfiguration(currentState, command as UpdateWalletConfigurationCommand);
       case GenerateAddressCommand:
-        return _handleGenerateAddress(currentState, command as GenerateAddressCommand);
+        return await _handleGenerateAddress(currentState, command as GenerateAddressCommand);
       case UpdateAddressLabelCommand:
         return _handleUpdateAddressLabel(currentState, command as UpdateAddressLabelCommand);
       case ReceiveUTXOCommand:
@@ -60,7 +72,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       case UpdateUTXOConfirmationsCommand:
         return _handleUpdateUTXOConfirmations(currentState, command as UpdateUTXOConfirmationsCommand);
       case CreateTransactionCommand:
-        return _handleCreateTransaction(currentState, command as CreateTransactionCommand);
+        return await _handleCreateTransaction(currentState, command as CreateTransactionCommand);
       case SignTransactionCommand:
         return _handleSignTransaction(currentState, command as SignTransactionCommand);
       case BroadcastTransactionCommand:
@@ -131,17 +143,50 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
   // WALLET LIFECYCLE COMMAND HANDLERS
   // ==========================================================================
 
-  List<Event> _handleCreateWallet(WalletState currentState, CreateWalletCommand command) {
+  Future<List<Event>> _handleCreateWallet(WalletState currentState, CreateWalletCommand command) async {
     // Business rule: Cannot create wallet that already exists
     if (currentState.isCreated) {
       throw StateError('Wallet ${command.walletId} already exists');
     }
 
-    // TODO: In Phase 1D, integrate with crypto service to:
-    // 1. Generate mnemonic if not provided
-    // 2. Derive root address from mnemonic
-    // For now, use placeholder values
-    final rootAddress = 'placeholder_address_${command.walletId.substring(0, 8)}';
+    // Validate or generate mnemonic
+    String mnemonic = command.mnemonic ?? '';
+    if (mnemonic.isEmpty) {
+      // Generate new mnemonic if not provided
+      mnemonic = await cryptoService.generateMnemonic();
+    } else {
+      // Validate provided mnemonic
+      final isValid = await cryptoService.validateMnemonic(mnemonic);
+      if (!isValid) {
+        throw ArgumentError('Invalid mnemonic phrase provided');
+      }
+    }
+
+    // Determine network type from metadata or default to testnet
+    final metadata = command.walletMetadata ?? {};
+    final networkTypeStr = metadata['network'] as String? ?? 'testnet';
+    final networkType = networkTypeStr == 'mainnet' ? dartsv.NetworkType.MAIN : dartsv.NetworkType.TEST;
+
+    // Derive HD private key from mnemonic
+    final hdPrivateKey = await cryptoService.mnemonicToHDPrivateKey(
+      mnemonic,
+      passphrase: command.passphrase ?? '',
+      network: networkType,
+    );
+
+    // Derive HD public key for address generation
+    final hdPublicKey = cryptoService.deriveHDPublicKey(hdPrivateKey);
+
+    // Generate root address (first receiving address at index 0)
+    final rootAddress = cryptoService.generateReceivingAddress(
+      hdPublicKey,
+      0,
+      network: networkType,
+    );
+
+    // Store mnemonic and HD public key securely
+    await secureStorage.setMnemonic(command.walletId, mnemonic);
+    await secureStorage.setString('wallet_hdpubkey_${command.walletId}', hdPublicKey.xpubkey);
 
     final event = WalletCreatedEvent(
       walletId: command.walletId,
@@ -182,7 +227,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
   // ADDRESS MANAGEMENT COMMAND HANDLERS
   // ==========================================================================
 
-  List<Event> _handleGenerateAddress(WalletState currentState, GenerateAddressCommand command) {
+  Future<List<Event>> _handleGenerateAddress(WalletState currentState, GenerateAddressCommand command) async {
     // Business rule: Wallet must exist
     if (!currentState.isCreated) {
       throw StateError('Cannot generate address for non-existent wallet');
@@ -191,9 +236,35 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     // Use next available derivation index
     final derivationIndex = currentState.nextDerivationIndex;
 
-    // TODO: In Phase 1D, integrate with crypto service to generate actual address
-    // For now, use placeholder
-    final address = 'addr_${command.walletId.substring(0, 8)}_$derivationIndex';
+    // Retrieve HD public key from secure storage
+    final xpubkey = await secureStorage.getString('wallet_hdpubkey_${command.walletId}');
+    if (xpubkey == null) {
+      throw StateError('HD public key not found for wallet ${command.walletId}');
+    }
+
+    // Determine network type
+    final networkTypeStr = currentState.networkType;
+    final networkType = networkTypeStr == 'mainnet' ? dartsv.NetworkType.MAIN : dartsv.NetworkType.TEST;
+
+    // Reconstruct HD public key from xpubkey
+    final hdPublicKey = dartsv.HDPublicKey.fromXpub(xpubkey);
+
+    // Generate address based on purpose
+    final String address;
+    if (command.purpose == 'change') {
+      address = cryptoService.generateChangeAddress(
+        hdPublicKey,
+        derivationIndex,
+        network: networkType,
+      );
+    } else {
+      // Default to receiving address
+      address = cryptoService.generateReceivingAddress(
+        hdPublicKey,
+        derivationIndex,
+        network: networkType,
+      );
+    }
 
     final event = AddressGeneratedEvent(
       eventId: const Uuid().v4(),
@@ -342,7 +413,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
   // TRANSACTION MANAGEMENT COMMAND HANDLERS
   // ==========================================================================
 
-  List<Event> _handleCreateTransaction(WalletState currentState, CreateTransactionCommand command) {
+  Future<List<Event>> _handleCreateTransaction(WalletState currentState, CreateTransactionCommand command) async {
     // Business rule: Wallet must exist
     if (!currentState.isCreated) {
       throw StateError('Cannot create transaction for non-existent wallet');
@@ -359,18 +430,68 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       (sum, output) => sum + output.satoshis,
     );
 
-    // TODO: In Phase 1D, integrate with transaction builder service to:
-    // 1. Select UTXOs for the required amount
-    // 2. Calculate fees
-    // 3. Build unsigned transaction
-    // 4. Reserve selected UTXOs
-    // For now, use placeholder values
-    final utxoKeys = <String>[];
-    final totalInput = totalOutput + BigInt.from(1000); // Placeholder fee
-    final fee = BigInt.from(1000);
-    final rawTransaction = 'placeholder_raw_tx_${command.transactionId}';
+    // Get available UTXOs for spending
+    final availableUtxos = currentState.utxos.values
+        .where((utxo) => utxo.status == UTXOStatus.available)
+        .toList();
 
-    final event = TransactionCreatedEvent(
+    if (availableUtxos.isEmpty) {
+      throw StateError('No available UTXOs for transaction');
+    }
+
+    // Simple UTXO selection: largest-first strategy
+    availableUtxos.sort((a, b) => b.value.getValue().compareTo(a.value.getValue()));
+    
+    final selectedUtxos = <BitcoinUtxo>[];
+    BigInt totalInput = BigInt.zero;
+    final feeRate = command.feeRate ?? BigInt.one;
+    
+    // Estimate fee (approximately 180 bytes per input + 34 bytes per output + 10 bytes overhead)
+    int estimatedSize() {
+      return 10 + (selectedUtxos.length * 180) + (command.outputs.length * 34);
+    }
+    
+    // Select UTXOs until we have enough to cover outputs + estimated fee
+    for (final utxo in availableUtxos) {
+      selectedUtxos.add(utxo);
+      totalInput += utxo.value.getValue();
+      
+      final estimatedFee = feeRate * BigInt.from(estimatedSize());
+      if (totalInput >= totalOutput + estimatedFee) {
+        break;
+      }
+    }
+    
+    final fee = feeRate * BigInt.from(estimatedSize());
+    
+    // Check if we have enough to cover output + fee
+    if (totalInput < totalOutput + fee) {
+      throw StateError(
+        'Insufficient funds: need ${totalOutput + fee} satoshis, have $totalInput satoshis'
+      );
+    }
+
+    // For now, create a placeholder transaction hex
+    // In a real implementation, this would use TransactionBuilder to build the unsigned transaction
+    final rawTransaction = 'unsigned_tx_${command.transactionId}';
+
+    // Reserve selected UTXOs
+    final reserveEvents = selectedUtxos.map((utxo) {
+      return UTXOReservedEvent(
+        walletId: command.walletId,
+        txid: utxo.txid,
+        vout: utxo.vout,
+        reservedByTxId: command.transactionId,
+        reservationReason: 'Transaction creation',
+        expiresAt: DateTime.now().add(Duration(hours: 1)),
+        priority: 10, // High priority
+        version: currentState.version + 1,
+        timestamp: DateTime.now(),
+      );
+    }).toList();
+
+    // Create transaction event
+    final transactionEvent = TransactionCreatedEvent(
       walletId: command.walletId,
       txid: command.transactionId,
       rawHex: rawTransaction,
@@ -384,7 +505,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       timestamp: DateTime.now(),
     );
 
-    return [event];
+    // Return both transaction creation and UTXO reservation events
+    return [transactionEvent, ...reserveEvents];
   }
 
   List<Event> _handleSignTransaction(WalletState currentState, SignTransactionCommand command) {
@@ -904,8 +1026,4 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     return selected;
   }
 
-  // Utility method for UTXO selection
-  BigInt _calculateOutputTotal(List<TransactionOutput> outputs) {
-    return outputs.fold(BigInt.zero, (sum, output) => sum + output.satoshis);
-  }
 } 

@@ -4,11 +4,15 @@ import 'package:eventador/eventador.dart';
 
 import '../core/bitcoin_wallet_aggregate.dart';
 import '../core/wallet_commands.dart';
+import '../services/crypto_service.dart';
+import '../storage/secure_storage.dart';
 import 'wallet_messages.dart';
 
 /// Central coordinator that manages multiple wallet aggregates and routes commands
 class WalletManagerActor extends Actor {
   final EventStore _eventStore;
+  final CryptoService _cryptoService;
+  final SecureStorage _secureStorage;
   final Map<String, ActorRef> _walletActors = {};
   
   ActorRef? _spvActor;
@@ -16,7 +20,11 @@ class WalletManagerActor extends Actor {
 
   WalletManagerActor({
     required EventStore eventStore,
-  }) : _eventStore = eventStore;
+    required CryptoService cryptoService,
+    required SecureStorage secureStorage,
+  })  : _eventStore = eventStore,
+        _cryptoService = cryptoService,
+        _secureStorage = secureStorage;
 
   @override
   void preStart() {
@@ -46,7 +54,7 @@ class WalletManagerActor extends Actor {
         default:
           print('WalletManagerActor received unknown message: ${message.runtimeType}');
       }
-    } catch (e, stackTrace) {
+    } catch (e) {
       print('Error in WalletManagerActor: $e');
       
       if (context.sender != null) {
@@ -80,6 +88,8 @@ class WalletManagerActor extends Actor {
           aggregateId: msg.walletId,
           aggregateType: 'BitcoinWallet',
           eventStore: _eventStore,
+          cryptoService: _cryptoService,
+          secureStorage: _secureStorage,
         ),
       );
 
@@ -266,6 +276,8 @@ class WalletManagerActor extends Actor {
           aggregateId: walletId,
           aggregateType: 'BitcoinWallet',
           eventStore: _eventStore,
+          cryptoService: _cryptoService,
+          secureStorage: _secureStorage,
         ),
       );
 

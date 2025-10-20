@@ -9,6 +9,8 @@ void main() {
     late Isar isar;
     late EventStore eventStore;
     late Directory tempDir;
+    late CryptoService cryptoService;
+    late SecureStorage secureStorage;
 
     setUpAll(() async {
       // Create temporary directory for test database
@@ -24,6 +26,10 @@ void main() {
         name: 'test_${DateTime.now().millisecondsSinceEpoch}',
       );
       eventStore = IsarEventStore(isar);
+      
+      // Initialize services for wallet aggregate
+      cryptoService = DartSVCryptoService();
+      secureStorage = InMemorySecureStorage();
       
       // Register all wallet event types for deserialization
       EventRegistry.clear();
@@ -47,6 +53,8 @@ void main() {
           aggregateId: 'wallet-123',
           aggregateType: 'Wallet',
           eventStore: eventStore,
+          cryptoService: cryptoService,
+          secureStorage: secureStorage,
         );
 
         expect(wallet.aggregateId, equals('wallet-123'));
@@ -60,6 +68,8 @@ void main() {
           aggregateId: 'wallet-123',
           aggregateType: 'Wallet',
           eventStore: eventStore,
+          cryptoService: cryptoService,
+          secureStorage: secureStorage,
         );
 
         // Start the actor to trigger recovery
@@ -87,6 +97,8 @@ void main() {
           aggregateId: 'wallet-123',
           aggregateType: 'Wallet',
           eventStore: eventStore,
+          cryptoService: cryptoService,
+          secureStorage: secureStorage,
         );
 
         wallet.preStart();
@@ -117,6 +129,8 @@ void main() {
           aggregateId: 'wallet-123',
           aggregateType: 'Wallet',
           eventStore: eventStore,
+          cryptoService: cryptoService,
+          secureStorage: secureStorage,
         );
         wallet.preStart();
         await Future.delayed(Duration(milliseconds: 100));
@@ -178,6 +192,8 @@ void main() {
           aggregateId: 'wallet-123',
           aggregateType: 'Wallet',
           eventStore: eventStore,
+          cryptoService: cryptoService,
+          secureStorage: secureStorage,
         );
         wallet.preStart();
         await Future.delayed(Duration(milliseconds: 100));
@@ -308,6 +324,8 @@ void main() {
           aggregateId: 'wallet-123',
           aggregateType: 'Wallet',
           eventStore: eventStore,
+          cryptoService: cryptoService,
+          secureStorage: secureStorage,
         );
         wallet.preStart();
         await Future.delayed(Duration(milliseconds: 100));
@@ -421,6 +439,8 @@ void main() {
           aggregateId: 'wallet-123',
           aggregateType: 'Wallet',
           eventStore: eventStore,
+          cryptoService: cryptoService,
+          secureStorage: secureStorage,
         );
         wallet.preStart();
         await Future.delayed(Duration(milliseconds: 100));
@@ -458,6 +478,8 @@ void main() {
           aggregateId: 'wallet-123',
           aggregateType: 'Wallet',
           eventStore: eventStore,
+          cryptoService: cryptoService,
+          secureStorage: secureStorage,
         );
         wallet.preStart(); // Triggers recovery
         await Future.delayed(Duration(milliseconds: 200)); // Wait for recovery
@@ -484,6 +506,8 @@ void main() {
           aggregateId: 'wallet-123',
           aggregateType: 'Wallet',
           eventStore: eventStore,
+          cryptoService: cryptoService,
+          secureStorage: secureStorage,
         );
         wallet.preStart();
         await Future.delayed(Duration(milliseconds: 100));

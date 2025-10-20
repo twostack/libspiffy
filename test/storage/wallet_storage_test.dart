@@ -1,5 +1,4 @@
 import 'package:test/test.dart';
-import 'package:dartsv/dartsv.dart' as dartsv;
 
 import 'package:libspiffy/src/storage/wallet_storage.dart';
 import 'package:libspiffy/src/storage/in_memory_wallet_storage.dart';
@@ -35,7 +34,6 @@ class TestWalletEvent extends WalletEvent {
     };
   }
 
-  @override
   String get eventType => eventTypeName;
 }
 

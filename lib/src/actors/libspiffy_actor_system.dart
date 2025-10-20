@@ -5,6 +5,11 @@ import 'package:isar/isar.dart';
 
 import '../storage/wallet_storage.dart';
 import '../storage/in_memory_wallet_storage.dart';
+import '../storage/secure_storage.dart';
+import '../storage/in_memory_secure_storage.dart';
+import '../services/crypto_service.dart';
+import '../services/dartsv_crypto_service.dart';
+import '../services/arc_service_config.dart';
 import '../spv/block_header_chain.dart';
 import '../integration/spiffynode_bridge.dart';
 import 'wallet_manager_actor.dart';
@@ -17,7 +22,10 @@ class LibSpiffyActorSystem {
   late LocalActorSystem _actorSystem;
   late IsarEventStore _eventStore;
   late WalletStorage _walletStorage;
+  late SecureStorage _secureStorage;
+  late CryptoService _cryptoService;
   late BlockHeaderChain _headerChain;
+  ArcServiceConfig? _arcConfig;
   
   // SpiffyNode integration (optional)
   SpiffyNodeBridge? _spiffyNodeBridge;
@@ -33,6 +41,9 @@ class LibSpiffyActorSystem {
     String? dataDirectory,
     ActorSystemConfig? config,
     WalletStorage? walletStorage,
+    SecureStorage? secureStorage,
+    CryptoService? cryptoService,
+    ArcServiceConfig? arcConfig,
   }) async {
     print('Initializing LibSpiffy Actor System...');
     
@@ -46,11 +57,20 @@ class LibSpiffyActorSystem {
     // 3. Initialize wallet storage (use provided or default to in-memory)
     _walletStorage = walletStorage ?? InMemoryWalletStorage();
     
-    // 4. Initialize block header chain for SPV validation
+    // 4. Initialize secure storage (use provided or default to in-memory)
+    _secureStorage = secureStorage ?? InMemorySecureStorage();
+    
+    // 5. Initialize crypto service (use provided or default to DartSV)
+    _cryptoService = cryptoService ?? DartSVCryptoService();
+    
+    // 6. Store ARC configuration for actors
+    _arcConfig = arcConfig;
+    
+    // 7. Initialize block header chain for SPV validation
     _headerChain = BlockHeaderChain(_walletStorage);
     await _headerChain.initialize();
     
-    // 5. Spawn coordination actors
+    // 8. Spawn coordination actors
     await _spawnActors();
     
     print('LibSpiffy Actor System initialized successfully');
@@ -63,6 +83,8 @@ class LibSpiffyActorSystem {
     // Spawn WalletManagerActor first
     _walletManager = await _actorSystem.spawn('wallet-manager', () => WalletManagerActor(
       eventStore: _eventStore,
+      cryptoService: _cryptoService,
+      secureStorage: _secureStorage,
     ));
     
     // Spawn HeaderSyncActor early (other actors may need to communicate with it)
@@ -80,9 +102,10 @@ class LibSpiffyActorSystem {
     // Now update HeaderSyncActor with SPVActor reference
     // Note: This is a limitation of the current design - we need a way to update references
     
-    // Spawn ARCActor with reference to WalletManager  
+    // Spawn ARCActor with reference to WalletManager and ARC config
     _arcActor = await _actorSystem.spawn('arc-actor', () => ARCActor(
       walletManager: _walletManager!,
+      arcConfig: _arcConfig,
     ));
     
     print('All LibSpiffy actors spawned successfully');
@@ -134,6 +157,22 @@ class LibSpiffyActorSystem {
       throw StateError('LibSpiffy actor system not initialized');
     }
     return _headerChain;
+  }
+
+  /// Get reference to the crypto service
+  CryptoService get cryptoService {
+    if (!isInitialized) {
+      throw StateError('LibSpiffy actor system not initialized');
+    }
+    return _cryptoService;
+  }
+
+  /// Get reference to the secure storage
+  SecureStorage get secureStorage {
+    if (!isInitialized) {
+      throw StateError('LibSpiffy actor system not initialized');
+    }
+    return _secureStorage;
   }
 
   /// Get reference to the SpiffyNode bridge (if connected)
@@ -220,12 +259,18 @@ Future<void> initializeLibSpiffy({
   String? dataDirectory,
   ActorSystemConfig? config,
   WalletStorage? walletStorage,
+  SecureStorage? secureStorage,
+  CryptoService? cryptoService,
+  ArcServiceConfig? arcConfig,
 }) async {
   final system = getLibSpiffySystem();
   await system.initialize(
     dataDirectory: dataDirectory, 
     config: config,
     walletStorage: walletStorage,
+    secureStorage: secureStorage,
+    cryptoService: cryptoService,
+    arcConfig: arcConfig,
   );
 }
 

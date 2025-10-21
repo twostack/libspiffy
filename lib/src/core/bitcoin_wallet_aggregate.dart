@@ -99,6 +99,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
           address: event.address,
           derivationIndex: event.derivationIndex,
           success: true,
+          metadata: event.metadata, // Pass through metadata (e.g., invoiceId)
         ));
       } else if (event is TransactionCreatedEvent) {
         context.sender!.tell(TransactionCreatedResponse(
@@ -138,6 +139,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         derivationIndex: 0,
         success: false,
         error: errorMessage,
+        metadata: command.metadata, // Pass through metadata even on error
       ));
     } else if (command is CreateTransactionCommand) {
       context.sender!.tell(TransactionCreatedResponse(
@@ -212,8 +214,16 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
 
   /// Apply events to internal state (Eventador pattern)
   /// This method mutates _currentState directly as events are replayed or persisted.
+  /// 
+  /// Note: We override eventHandler instead of using the registry pattern.
+  /// When overriding, we must call ensureStateInitialized() to replicate the base class
+  /// initialization behavior that would normally happen before event application.
   @override
   void eventHandler(Event event) {
+    // Ensure state is initialized before processing events
+    // This is critical during recovery when the first event is replayed
+    ensureStateInitialized();
+    
     if (event is! WalletEvent) {
       throw ArgumentError('Expected WalletEvent, got ${event.runtimeType}');
     }
@@ -413,6 +423,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       derivationIndex: derivationIndex,
       label: command.label,
       purpose: command.purpose,
+      metadata: command.metadata, // Preserve metadata (e.g., invoiceId from coordinator)
     );
 
     return [event];

@@ -76,6 +76,7 @@ class AddressGeneratedResponse implements Message {
   final int derivationIndex;
   final bool success;
   final String? error;
+  final Map<String, dynamic> _metadata;
 
   AddressGeneratedResponse({
     required this.walletId,
@@ -83,12 +84,17 @@ class AddressGeneratedResponse implements Message {
     required this.derivationIndex,
     required this.success,
     this.error,
-  });
+    Map<String, dynamic>? metadata,
+  }) : _metadata = metadata ?? {};
 
   @override
   String get correlationId => 'address-generated-response-$walletId-$derivationIndex';
   @override
-  Map<String, dynamic> get metadata => {'walletId': walletId, 'address': address};
+  Map<String, dynamic> get metadata => {
+    'walletId': walletId,
+    'address': address,
+    ..._metadata, // Merge passed metadata
+  };
   @override
   ActorRef? get replyTo => null;
   @override

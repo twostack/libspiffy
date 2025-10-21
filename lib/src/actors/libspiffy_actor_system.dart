@@ -20,7 +20,7 @@ import 'wallet_manager_actor.dart';
 import 'spv_actor.dart';
 import 'arc_actor.dart';
 import 'header_sync_actor.dart';
-import 'invoice_manager_actor.dart';
+import 'invoice_coordinator_actor.dart';
 
 /// Initialization and management utilities for the LibSpiffy actor system
 class LibSpiffyActorSystem {
@@ -44,7 +44,7 @@ class LibSpiffyActorSystem {
   
   // Actor references
   ActorRef? _walletManager;
-  ActorRef? _invoiceManager;
+  ActorRef? _invoiceCoordinator;
   ActorRef? _spvActor;
   ActorRef? _arcActor;
   ActorRef? _headerSyncActor;
@@ -171,45 +171,32 @@ class LibSpiffyActorSystem {
   /// Projections listen to events from the EventStore and build denormalized
   /// read models in Isar for efficient queries. This separates write concerns
   /// (aggregates) from read concerns (queries).
-  /// 
-  /// Uses Akka Persistence Query-inspired architecture where projections
-  /// automatically subscribe to event streams from EventStore.
   Future<void> _initializeProjections() async {
     print('Initializing CQRS projections...');
     
-    // TODO: ProjectionManager integration pending Eventador API updates
-    // The current Eventador version requires QueueManager and different registration API
-    // Once the Akka Persistence Query-inspired API is available, uncomment this section:
-    
-    /*
-    // Create ProjectionManager with EventStore (which implements EventStream)
+    // Create ProjectionManager with EventStream from EventStore
     _projectionManager = ProjectionManager(_eventStore);
     
-    // Create and register WalletProjection for wallet read models
+    // Create and register WalletProjection
     _walletProjection = WalletProjection(
       projectionId: 'wallet-projection',
       eventStore: _eventStore,
       storage: _walletStorage,
     );
     await _projectionManager!.registerProjection(_walletProjection!);
-    print('✓ WalletProjection registered and subscribed to event stream');
     
-    // Create and register InvoiceProjection for invoice read models
+    // Create and register InvoiceProjection
     _invoiceProjection = InvoiceProjection(
       projectionId: 'invoice-projection',
       eventStore: _eventStore,
       storage: _walletStorage,
     );
     await _projectionManager!.registerProjection(_invoiceProjection!);
-    print('✓ InvoiceProjection registered and subscribed to event stream');
     
-    // Start the projection manager to begin streaming events
+    // Start streaming events to projections
     await _projectionManager!.start();
-    print('✓ ProjectionManager started - projections are now processing events in real-time');
-    */
     
-    print('⚠️  ProjectionManager integration temporarily disabled - awaiting Eventador API update');
-    print('   Projection classes are ready and will be automatically integrated when API is available');
+    print('✓ ProjectionManager started with 2 projections');
   }
 
   /// Spawn all coordination actors
@@ -223,16 +210,17 @@ class LibSpiffyActorSystem {
       secureStorage: _secureStorage,
     ));
     
-    // Spawn InvoiceManagerActor (needed for invoice-based payments)
-    // Use _walletStorage (persistent) not _actorStorage (in-memory)
-    _invoiceManager = await _actorSystem.spawn('invoice-manager', () => InvoiceManagerActor(
+    // Spawn InvoiceCoordinatorActor (needed for invoice-based payments)
+    // Coordinator routes commands to InvoiceAggregate instances
+    _invoiceCoordinator = await _actorSystem.spawn('invoice-coordinator', () => InvoiceCoordinatorActor(
       walletManager: _walletManager!,
-      storage: _walletStorage, // Use persistent storage for invoices
+      storage: _walletStorage,
+      eventStore: _eventStore,
     ));
     
-    // Wire up InvoiceManager reference in WalletManager
+    // Wire up InvoiceCoordinator reference in WalletManager
     // We'll send a message to set the reference
-    _walletManager!.tell(SetInvoiceManagerMessage(_invoiceManager!));
+    _walletManager!.tell(SetInvoiceManagerMessage(_invoiceCoordinator!));
     
     // Spawn HeaderSyncActor early (other actors may need to communicate with it)
     _headerSyncActorInstance = HeaderSyncActor(
@@ -242,10 +230,10 @@ class LibSpiffyActorSystem {
     );
     _headerSyncActor = await _actorSystem.spawn('header-sync', () => _headerSyncActorInstance!);
     
-    // Spawn SPVActor with reference to WalletManager, InvoiceManager and storage
+    // Spawn SPVActor with reference to WalletManager, InvoiceCoordinator and storage
     _spvActor = await _actorSystem.spawn('spv-actor', () => SPVActor(
       walletManager: _walletManager!,
-      invoiceManager: _invoiceManager!,
+      invoiceCoordinator: _invoiceCoordinator!,
       storage: _actorStorage,
     ));
     
@@ -293,12 +281,12 @@ class LibSpiffyActorSystem {
     return _headerSyncActor!;
   }
 
-  /// Get reference to the Invoice Manager actor
-  ActorRef get invoiceManager {
-    if (_invoiceManager == null) {
+  /// Get reference to the Invoice Coordinator actor
+  ActorRef get invoiceCoordinator {
+    if (_invoiceCoordinator == null) {
       throw StateError('LibSpiffy actor system not initialized');
     }
-    return _invoiceManager!;
+    return _invoiceCoordinator!;
   }
 
   /// Get reference to the wallet storage
@@ -422,6 +410,7 @@ class LibSpiffyActorSystem {
   /// 
   /// This will:
   /// - Disconnect from SpiffyNode if connected
+  /// - Stop projection manager
   /// - Close the event store
   /// - Shutdown the actor system ONLY if LibSpiffy created it (not provided by host)
   /// 
@@ -434,16 +423,10 @@ class LibSpiffyActorSystem {
       // 1. Disconnect from SpiffyNode first
       await disconnectFromSpiffyNode();
       
-      // 2. Stop projection manager (stop listening to events)
-      // TODO: Uncomment when ProjectionManager is integrated
-      /*
+      // 2. Stop projection manager
       if (_projectionManager != null) {
-        print('Stopping ProjectionManager...');
         await _projectionManager!.stop();
-        _projectionManager = null;
-        print('✓ ProjectionManager stopped');
       }
-      */
       
       // 3. Shutdown actor system only if we own it
       if (_ownsActorSystem) {
@@ -464,7 +447,7 @@ class LibSpiffyActorSystem {
   }
 
   /// Check if the system is initialized
-  bool get isInitialized => _walletManager != null && _invoiceManager != null && _spvActor != null && _arcActor != null && _headerSyncActor != null;
+  bool get isInitialized => _walletManager != null && _invoiceCoordinator != null && _spvActor != null && _arcActor != null && _headerSyncActor != null;
 }
 
 /// Global instance for easy access

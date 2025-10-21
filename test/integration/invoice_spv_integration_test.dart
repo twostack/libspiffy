@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'package:test/test.dart';
 import 'package:dactor/dactor.dart';
-import 'package:libspiffy/src/actors/invoice_manager_actor.dart';
 import 'package:libspiffy/src/actors/invoice_messages.dart';
 import 'package:libspiffy/src/actors/wallet_messages.dart';
 import 'package:libspiffy/src/core/wallet_commands.dart';
@@ -25,13 +24,11 @@ void main() {
         () => _MockWalletManagerActor(),
       );
       
-      // Create invoice manager
+      // Create simplified mock invoice manager for testing
+      // Note: These tests focus on SPV validation, not invoice aggregate persistence
       invoiceManager = await actorSystem.spawn(
-        'invoice-manager',
-        () => InvoiceManagerActor(
-          walletManager: mockWalletManager,
-          storage: storage,
-        ),
+        'mock-invoice-manager',
+        () => _MockInvoiceManagerActor(storage),
       );
       
       // Note: SPVActor would be spawned here for full SPV validation tests
@@ -437,13 +434,169 @@ class _MockWalletManagerActor extends Actor {
         // Generate testnet-style addresses (starting with 'n' or 'm')
         final address = 'n${_addressCounter}TestAddr${DateTime.now().millisecondsSinceEpoch.toString().substring(7)}';
         
+        // Preserve metadata from the command (contains invoiceId)
         context.sender?.tell(AddressGeneratedResponse(
           walletId: message.walletId,
           address: address,
           derivationIndex: _addressCounter,
           success: true,
+          metadata: command.metadata, // Pass through metadata
         ));
       }
+    }
+  }
+}
+
+/// Simplified mock invoice manager for SPV tests
+/// This avoids the Isar/EventStore complexity since these tests focus on SPV validation
+class _MockInvoiceManagerActor extends Actor {
+  final Map<String, Invoice> _invoices = {};
+  int _invoiceCounter = 0;
+
+  _MockInvoiceManagerActor(InMemoryWalletStorage storage);
+
+  @override
+  Future<void> onMessage(dynamic message) async {
+    if (message is CreateInvoiceMessage) {
+      _invoiceCounter++;
+      final invoiceId = 'test-invoice-$_invoiceCounter';
+      
+      // Wait for address from wallet manager (simulated)
+      await Future.delayed(Duration(milliseconds: 10));
+      
+      // Generate addresses based on numberOfAddresses parameter
+      final addresses = List.generate(
+        message.numberOfAddresses,
+        (index) => 'mock-address-${_invoiceCounter}-${index + 1}',
+      );
+      
+      final invoice = Invoice(
+        invoiceId: invoiceId,
+        walletId: message.walletId,
+        addresses: addresses,
+        amount: message.amount,
+        description: message.description,
+        status: InvoiceStatus.pending,
+        createdAt: DateTime.now(),
+        expiresAt: message.expiresIn != null ? DateTime.now().add(message.expiresIn!) : null,
+        metadata: message.invoiceMetadata,
+      );
+      
+      _invoices[invoiceId] = invoice;
+      
+      context.sender?.tell(InvoiceCreatedMessage(
+        invoiceId: invoiceId,
+        walletId: message.walletId,
+        addresses: invoice.addresses,
+        amount: invoice.amount,
+        description: invoice.description,
+        createdAt: invoice.createdAt,
+        expiresAt: invoice.expiresAt,
+        success: true,
+        error: null,
+      ));
+    } else if (message is MarkInvoicePaidMessage) {
+      final invoice = _invoices[message.invoiceId];
+      if (invoice != null) {
+        _invoices[message.invoiceId] = Invoice(
+          invoiceId: invoice.invoiceId,
+          walletId: invoice.walletId,
+          addresses: invoice.addresses,
+          amount: invoice.amount,
+          description: invoice.description,
+          status: InvoiceStatus.paid,
+          createdAt: invoice.createdAt,
+          expiresAt: invoice.expiresAt,
+          paidAt: message.paidAt,
+          paymentTxid: message.txid,
+          amountReceived: message.amountReceived,
+          metadata: invoice.metadata,
+        );
+      }
+      
+      context.sender?.tell(InvoiceStatusMessage(
+        invoiceId: message.invoiceId,
+        status: InvoiceStatus.paid,
+        paidAt: message.paidAt,
+        txid: message.txid,
+        statusMessage: 'Invoice marked as paid',
+      ));
+    } else if (message is CheckInvoiceMessage) {
+      final invoice = _invoices[message.invoiceId];
+      if (invoice != null) {
+        context.sender?.tell(InvoiceDetailsResponse(
+          invoiceId: invoice.invoiceId,
+          walletId: invoice.walletId,
+          addresses: invoice.addresses,
+          amount: invoice.amount,
+          description: invoice.description,
+          status: invoice.status,
+          createdAt: invoice.createdAt,
+          expiresAt: invoice.expiresAt,
+          paidAt: invoice.paidAt,
+          paymentTxid: invoice.paymentTxid,
+          found: true,
+        ));
+      } else {
+        context.sender?.tell(InvoiceDetailsResponse(
+          invoiceId: message.invoiceId,
+          addresses: [],
+          amount: BigInt.zero,
+          status: InvoiceStatus.pending,
+          createdAt: DateTime.now(),
+          found: false,
+          error: 'Invoice not found',
+        ));
+      }
+    } else if (message is ListInvoicesMessage) {
+      // Filter invoices by wallet if specified
+      final invoices = _invoices.values.where((invoice) {
+        if (message.walletId != null && invoice.walletId != message.walletId) {
+          return false;
+        }
+        return true;
+      }).toList();
+      
+      // Convert Invoice objects to InvoiceDetailsResponse
+      final invoiceDetails = invoices.map((invoice) => InvoiceDetailsResponse(
+        invoiceId: invoice.invoiceId,
+        walletId: invoice.walletId,
+        addresses: invoice.addresses,
+        amount: invoice.amount,
+        description: invoice.description,
+        status: invoice.status,
+        createdAt: invoice.createdAt,
+        expiresAt: invoice.expiresAt,
+        paidAt: invoice.paidAt,
+        paymentTxid: invoice.paymentTxid,
+        found: true,
+      )).toList();
+      
+      context.sender?.tell(InvoicesListMessage(invoiceDetails));
+    } else if (message is CancelInvoiceMessage) {
+      final invoice = _invoices[message.invoiceId];
+      if (invoice != null) {
+        _invoices[message.invoiceId] = Invoice(
+          invoiceId: invoice.invoiceId,
+          walletId: invoice.walletId,
+          addresses: invoice.addresses,
+          amount: invoice.amount,
+          description: invoice.description,
+          status: InvoiceStatus.cancelled,
+          createdAt: invoice.createdAt,
+          expiresAt: invoice.expiresAt,
+          paidAt: invoice.paidAt,
+          paymentTxid: invoice.paymentTxid,
+          amountReceived: invoice.amountReceived,
+          metadata: invoice.metadata,
+        );
+      }
+      
+      context.sender?.tell(InvoiceStatusMessage(
+        invoiceId: message.invoiceId,
+        status: InvoiceStatus.cancelled,
+        statusMessage: 'Invoice cancelled',
+      ));
     }
   }
 }

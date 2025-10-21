@@ -222,19 +222,44 @@ List<Map<String, dynamic>> loadTestTransactions() {
 }
 
 /// Verify invoice exists in database with expected status
+/// Uses retry mechanism to wait for asynchronous projection to complete
 Future<void> verifyInvoiceInDatabase({
   required Isar isar,
   required String invoiceId,
   required InvoiceStatus expectedStatus,
+  Duration timeout = const Duration(seconds: 5),
+  Duration retryInterval = const Duration(milliseconds: 100),
 }) async {
-  final invoice = await isar.invoiceEntitys
-      .filter()
-      .invoiceIdEqualTo(invoiceId)
-      .findFirst();
+  final startTime = DateTime.now();
+  final expectedStatusStr = expectedStatus.toString().split('.').last;
+  InvoiceEntity? invoice;
+  int attempts = 0;
   
-  expect(invoice, isNotNull, reason: 'Invoice $invoiceId should exist in database');
-  expect(invoice!.status, equals(expectedStatus.name), 
-      reason: 'Invoice status should be ${expectedStatus.name}');
+  // Retry until invoice appears with correct status or timeout
+  while (DateTime.now().difference(startTime) < timeout) {
+    attempts++;
+    invoice = await isar.invoiceEntitys
+        .filter()
+        .invoiceIdEqualTo(invoiceId)
+        .findFirst();
+    
+    if (invoice != null && invoice.status == expectedStatusStr) {
+      print('✓ Invoice verified after ${attempts} attempts (${DateTime.now().difference(startTime).inMilliseconds}ms)');
+      return; // Success!
+    }
+    
+    if (invoice != null && attempts % 10 == 0) {
+      print('  Waiting for projection: invoice status is "${invoice.status}", expecting "$expectedStatusStr" (attempt $attempts)');
+    }
+    
+    await Future.delayed(retryInterval);
+  }
+  
+  // Timeout reached - provide detailed error
+  expect(invoice, isNotNull, 
+      reason: 'Invoice $invoiceId should exist in database (waited ${DateTime.now().difference(startTime).inMilliseconds}ms, $attempts attempts)');
+  expect(invoice!.status, equals(expectedStatusStr), 
+      reason: 'Invoice status should be $expectedStatusStr after ${DateTime.now().difference(startTime).inMilliseconds}ms ($attempts attempts)');
 }
 
 /// Verify invoice does NOT exist in database

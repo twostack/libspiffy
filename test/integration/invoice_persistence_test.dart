@@ -16,7 +16,6 @@ import 'package:libspiffy/libspiffy.dart';
 import 'package:libspiffy/src/actors/libspiffy_actor_system.dart';
 import 'package:libspiffy/src/actors/invoice_messages.dart';
 import 'package:libspiffy/src/actors/wallet_messages.dart';
-import 'package:libspiffy/src/storage/isar_wallet_storage.dart';
 
 void main() {
   group('Invoice Persistence Tests', () {
@@ -75,8 +74,17 @@ void main() {
     });
 
     tearDown(() async {
-      await actorSystem.shutdown();
-      await isar.close();
+      // Shutdown LibSpiffy (this stops projections, closes EventStore and Isar)
+      // Some tests may have already shut down libspiffy, so catch errors
+      try {
+        await libspiffy.shutdown();
+      } catch (e) {
+        print('Note: LibSpiffy already shut down or error during shutdown: $e');
+      }
+      
+      // Note: Isar is closed by libspiffy.shutdown() via EventStore.close()
+      // so we don't need to close it here
+      
       try {
         await testDir.delete(recursive: true);
       } catch (e) {
@@ -95,7 +103,7 @@ void main() {
       );
       
       print('Sending CreateInvoiceMessage...');
-      libspiffy.invoiceManager.tell(
+      libspiffy.invoiceCoordinator.tell(
         CreateInvoiceMessage(
           walletId: walletId,
           amount: BigInt.from(100000),
@@ -151,7 +159,7 @@ void main() {
         () => _TestReceiverActor<InvoiceCreatedMessage>(createCompleter),
       );
       
-      libspiffy.invoiceManager.tell(
+      libspiffy.invoiceCoordinator.tell(
         CreateInvoiceMessage(
           walletId: walletId,
           amount: BigInt.from(50000),
@@ -182,7 +190,7 @@ void main() {
         () => _TestReceiverActor<InvoiceStatusMessage>(paidCompleter),
       );
       
-      libspiffy.invoiceManager.tell(
+      libspiffy.invoiceCoordinator.tell(
         MarkInvoicePaidMessage(
           invoiceId: invoice.invoiceId,
           txid: 'test_txid_123',
@@ -225,7 +233,7 @@ void main() {
           () => _TestReceiverActor<InvoiceCreatedMessage>(completer),
         );
         
-        libspiffy.invoiceManager.tell(
+        libspiffy.invoiceCoordinator.tell(
           CreateInvoiceMessage(
             walletId: walletId,
             amount: BigInt.from(10000 * (i + 1)),
@@ -273,7 +281,7 @@ void main() {
         () => _TestReceiverActor<InvoiceCreatedMessage>(createCompleter),
       );
       
-      libspiffy.invoiceManager.tell(
+      libspiffy.invoiceCoordinator.tell(
         CreateInvoiceMessage(
           walletId: walletId,
           amount: BigInt.from(75000),
@@ -294,7 +302,7 @@ void main() {
         () => _TestReceiverActor<InvoiceDetailsResponse>(queryCompleter),
       );
       
-      libspiffy.invoiceManager.tell(
+      libspiffy.invoiceCoordinator.tell(
         CheckInvoiceMessage(invoice.invoiceId),
         sender: queryReceiver,
       );
@@ -317,7 +325,7 @@ void main() {
         () => _TestReceiverActor<InvoiceCreatedMessage>(createCompleter),
       );
       
-      libspiffy.invoiceManager.tell(
+      libspiffy.invoiceCoordinator.tell(
         CreateInvoiceMessage(
           walletId: walletId,
           amount: BigInt.from(60000),
@@ -340,9 +348,21 @@ void main() {
       expect(entityBeforeShutdown, isNotNull);
       print('✓ Invoice persisted before shutdown');
       
-      // Shutdown and restart actor system (but keep Isar open)
-      print('Shutting down actor system...');
-      await actorSystem.shutdown();
+      // Shutdown LibSpiffy (this closes EventStore and Isar)
+      print('Shutting down LibSpiffy...');
+      await libspiffy.shutdown();
+      
+      // Reopen Isar with same directory AND name to verify persistence
+      print('Reopening Isar database...');
+      final newIsar = await Isar.open(
+        [
+          ...LibSpiffySchemas.walletSchemas,
+          EventEnvelopeSchema,
+          SnapshotEnvelopeSchema,
+        ],
+        directory: testDir.path,
+        name: 'invoice_test_db', // MUST match the original DB name
+      );
       
       // Create new actor system and LibSpiffy instance
       print('Restarting actor system...');
@@ -350,7 +370,7 @@ void main() {
       final newLibspiffy = LibSpiffyActorSystem();
       await newLibspiffy.initialize(
         actorSystem: newActorSystem,
-        isar: isar, // Reuse same Isar instance
+        isar: newIsar,
         dataDirectory: testDir.path,
       );
       
@@ -366,7 +386,7 @@ void main() {
         () => _TestReceiverActor<InvoiceDetailsResponse>(queryCompleter),
       );
       
-      newLibspiffy.invoiceManager.tell(
+      newLibspiffy.invoiceCoordinator.tell(
         CheckInvoiceMessage(invoiceId),
         sender: queryReceiver,
       );
@@ -377,8 +397,8 @@ void main() {
       print('✓ Invoice found after restart');
       print('  Loaded from storage: $invoiceId');
       
-      // Cleanup new actor system
-      await newActorSystem.shutdown();
+      // Cleanup new LibSpiffy instance (this will close newIsar)
+      await newLibspiffy.shutdown();
     });
   });
 }

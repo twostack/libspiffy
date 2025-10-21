@@ -151,13 +151,12 @@ void main() {
     tearDown(() async {
       print('\n--- Cleanup ---');
       
-      // Shutdown actor systems
-      await aliceActorSystem.shutdown();
-      await bobActorSystem.shutdown();
+      // Shutdown LibSpiffy systems (this stops projection managers, closes event stores, and closes Isar)
+      await aliceLibSpiffy.shutdown();
+      await bobLibSpiffy.shutdown();
       
-      // Close databases
-      await aliceIsar.close();
-      await bobIsar.close();
+      // Note: Isar instances are closed by LibSpiffy.shutdown() via EventStore.close()
+      // so we don't need to close them here
       
       // Clean up test directories
       try {
@@ -180,7 +179,7 @@ void main() {
         () => TestReceiverActor<InvoiceCreatedMessage>(bobCreateCompleter),
       );
       
-      bobLibSpiffy.invoiceManager.tell(
+      bobLibSpiffy.invoiceCoordinator.tell(
         CreateInvoiceMessage(
           walletId: bobWalletId,
           amount: BigInt.from(100000),
@@ -277,7 +276,7 @@ void main() {
         () => TestReceiverActor<InvoiceStatusMessage>(bobPaidCompleter),
       );
       
-      bobLibSpiffy.invoiceManager.tell(
+      bobLibSpiffy.invoiceCoordinator.tell(
         MarkInvoicePaidMessage(
           invoiceId: invoiceId,
           txid: txid,
@@ -340,7 +339,7 @@ void main() {
         () => TestReceiverActor<InvoiceCreatedMessage>(createCompleter),
       );
       
-      bobLibSpiffy.invoiceManager.tell(
+      bobLibSpiffy.invoiceCoordinator.tell(
         CreateInvoiceMessage(
           walletId: bobWalletId,
           amount: BigInt.from(50000),
@@ -378,6 +377,7 @@ void main() {
       print('\n=== Testing multiple invoices ===');
       
       final invoiceIds = <String>[];
+      final invoiceAddresses = <String>[];
       
       // Bob creates 3 invoices
       for (int i = 0; i < 3; i++) {
@@ -387,7 +387,7 @@ void main() {
           () => TestReceiverActor<InvoiceCreatedMessage>(completer),
         );
         
-        bobLibSpiffy.invoiceManager.tell(
+        bobLibSpiffy.invoiceCoordinator.tell(
           CreateInvoiceMessage(
             walletId: bobWalletId,
             amount: BigInt.from(10000 * (i + 1)),
@@ -399,7 +399,8 @@ void main() {
         final invoice = await completer.future;
         expect(invoice.success, isTrue);
         invoiceIds.add(invoice.invoiceId);
-        print('✓ Created invoice ${i + 1}: ${invoice.invoiceId}');
+        invoiceAddresses.add(invoice.addresses.first);
+        print('✓ Created invoice ${i + 1}: ${invoice.invoiceId} with address ${invoice.addresses.first}');
       }
       
       // Verify all invoices in Bob's DB
@@ -411,19 +412,19 @@ void main() {
         );
       }
       
-      // Mark one as paid
+      // Mark one as paid (using the ACTUAL invoice address)
       final paidCompleter = Completer<InvoiceStatusMessage>();
       final paidReceiver = await bobActorSystem.spawn(
         'bob-paid-multi',
         () => TestReceiverActor<InvoiceStatusMessage>(paidCompleter),
       );
       
-      bobLibSpiffy.invoiceManager.tell(
+      bobLibSpiffy.invoiceCoordinator.tell(
         MarkInvoicePaidMessage(
           invoiceId: invoiceIds[1],
           txid: 'test_txid_multi',
           amountReceived: BigInt.from(20000),
-          addressesPaidTo: ['test_address'],
+          addressesPaidTo: [invoiceAddresses[1]], // Use the actual invoice address
         ),
         sender: paidReceiver,
       );
@@ -457,7 +458,7 @@ void main() {
         () => TestReceiverActor<InvoiceCreatedMessage>(bobCompleter),
       );
       
-      bobLibSpiffy.invoiceManager.tell(
+      bobLibSpiffy.invoiceCoordinator.tell(
         CreateInvoiceMessage(
           walletId: bobWalletId,
           amount: BigInt.from(100000),
@@ -475,7 +476,7 @@ void main() {
         () => TestReceiverActor<InvoiceCreatedMessage>(aliceCompleter),
       );
       
-      aliceLibSpiffy.invoiceManager.tell(
+      aliceLibSpiffy.invoiceCoordinator.tell(
         CreateInvoiceMessage(
           walletId: aliceWalletId,
           amount: BigInt.from(50000),
@@ -521,7 +522,7 @@ void main() {
         () => TestReceiverActor<InvoiceCreatedMessage>(completer),
       );
       
-      bobLibSpiffy.invoiceManager.tell(
+      bobLibSpiffy.invoiceCoordinator.tell(
         CreateInvoiceMessage(
           walletId: bobWalletId,
           amount: BigInt.from(10000000), // 10 million (more than Alice has)

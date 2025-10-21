@@ -22,10 +22,10 @@ dependencies:
 
   # Actor system foundation
   dactor:
-    path: /Users/stephanfeb/IdeaProjects/bsv_apps/dactor  # Actor model foundation
+    path: /Users/stephanfeb/IdeaProjects/agentic/dactor  # Actor model foundation
 
   duraq:
-    path: /Users/stephanfeb/IdeaProjects/bsv_apps/duraq  # Operational workflows
+    path: /Users/stephanfeb/IdeaProjects/agentic/duraq  # Operational workflows
 
   eventador:
     path: /Users/stephanfeb/IdeaProjects/bsv_apps/eventador  # Event sourcing

@@ -51,6 +51,10 @@ class InvoiceAggregate extends AggregateRoot<InvoiceState> {
   
   @override
   void eventHandler(Event event) {
+    // Ensure state is initialized before processing events
+    // This is critical during recovery when the first event is replayed
+    ensureStateInitialized();
+    
     if (event is! InvoiceEvent) {
       throw ArgumentError('Expected InvoiceEvent, got ${event.runtimeType}');
     }

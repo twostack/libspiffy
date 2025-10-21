@@ -37,7 +37,7 @@ void main() async {
     'payment-processor',
     () => PaymentProcessorActor(
       walletManager: libspiffy.walletManager,
-      invoiceManager: libspiffy.invoiceManager,
+      invoiceCoordinator: libspiffy.invoiceCoordinator,
       spvActor: libspiffy.spvActor,
     ),
   );
@@ -214,14 +214,14 @@ void isolateConfigExample() async {
 /// Example custom actor that processes payments using LibSpiffy
 class PaymentProcessorActor extends Actor {
   final ActorRef _walletManager;
-  final ActorRef _invoiceManager;
+  final ActorRef _invoiceCoordinator;
 
   PaymentProcessorActor({
     required ActorRef walletManager,
-    required ActorRef invoiceManager,
+    required ActorRef invoiceCoordinator,
     required ActorRef spvActor, // Keep parameter for API consistency
   })  : _walletManager = walletManager,
-        _invoiceManager = invoiceManager;
+        _invoiceCoordinator = invoiceCoordinator;
 
   @override
   Future<void> onMessage(dynamic message) async {
@@ -237,7 +237,7 @@ class PaymentProcessorActor extends Actor {
       );
       
       // 2. Create invoice (direct communication with LibSpiffy actor)
-      _invoiceManager.tell(
+      _invoiceCoordinator.tell(
         CreateInvoiceMessage(
           walletId: message.walletId,
           amount: message.amount,

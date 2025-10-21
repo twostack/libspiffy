@@ -25,7 +25,7 @@ import 'invoice_messages.dart';
 /// headers in WalletStorage. This actor consumes those stored headers for validation.
 class SPVActor extends Actor {
   final ActorRef _walletManager;
-  final ActorRef _invoiceManager;
+  final ActorRef _invoiceCoordinator;
   final WalletStorage _storage;
   
   int _currentHeight = 0;
@@ -33,10 +33,10 @@ class SPVActor extends Actor {
 
   SPVActor({
     required ActorRef walletManager,
-    required ActorRef invoiceManager,
+    required ActorRef invoiceCoordinator,
     required WalletStorage storage,
   }) : _walletManager = walletManager,
-       _invoiceManager = invoiceManager,
+       _invoiceCoordinator = invoiceCoordinator,
        _storage = storage;
 
   @override
@@ -256,7 +256,7 @@ class SPVActor extends Actor {
           }
           
           // Mark invoice as paid
-          _invoiceManager.tell(MarkInvoicePaidMessage(
+          _invoiceCoordinator.tell(MarkInvoicePaidMessage(
             invoiceId: invoiceId,
             txid: txidHex,
             amountReceived: invoiceValidation.totalReceived,
@@ -549,7 +549,7 @@ class SPVActor extends Actor {
       );
       
       // Send query
-      _invoiceManager.tell(
+      _invoiceCoordinator.tell(
         CheckInvoiceMessage(invoiceId),
         sender: responseReceiver,
       );

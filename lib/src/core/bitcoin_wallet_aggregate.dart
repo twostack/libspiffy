@@ -30,8 +30,31 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     required this.secureStorage,
     this.transactionBuilder,
   }) : super(aggregateId: aggregateId, aggregateType: aggregateType, eventStore: eventStore) {
+    print('[BitcoinWalletAggregate] Constructor called for: $aggregateId');
     // Register handlers immediately upon construction
     registerHandlers();
+  }
+  
+  @override
+  void preStart() {
+    print('[BitcoinWalletAggregate] preStart() called for: $aggregateId');
+    print('[BitcoinWalletAggregate]   Starting recovery process...');
+    super.preStart();
+    print('[BitcoinWalletAggregate]   preStart() completed (recovery is async)');
+  }
+  
+  @override
+  Future<void> onRecoveryComplete() async {
+    await super.onRecoveryComplete();
+    print('[BitcoinWalletAggregate] ✓ Recovery complete for: $aggregateId');
+    print('[BitcoinWalletAggregate]   isInitialized: $isInitialized');
+    print('[BitcoinWalletAggregate]   Ready to process commands');
+  }
+  
+  @override
+  Future<void> onMessage(dynamic message) async {
+    print('[BitcoinWalletAggregate] onMessage called: ${message.runtimeType}');
+    await super.onMessage(message);
   }
 
   /// Create initial empty wallet state
@@ -237,10 +260,15 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
   // ==========================================================================
 
   Future<List<Event>> _handleCreateWallet(WalletState currentState, CreateWalletCommand command) async {
+    print('[BitcoinWalletAggregate] _handleCreateWallet called for: ${command.walletId}');
+    
     // Business rule: Cannot create wallet that already exists
     if (currentState.isCreated) {
+      print('[BitcoinWalletAggregate]   ERROR: Wallet already exists');
       throw StateError('Wallet ${command.walletId} already exists');
     }
+    
+    print('[BitcoinWalletAggregate]   Generating mnemonic...');
 
     // Validate or generate mnemonic
     String mnemonic = command.mnemonic ?? '';

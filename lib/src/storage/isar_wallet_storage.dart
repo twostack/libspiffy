@@ -3,6 +3,7 @@ import 'package:isar/isar.dart';
 import 'package:spiffynode/spiffy_node.dart';
 import '../models/bitcoin_utxo.dart';
 import '../models/bitcoin_transaction.dart';
+import '../actors/invoice_messages.dart';
 import 'read_model_storage.dart';
 import 'libspiffy_schemas.dart';
 import 'isar_config.dart';
@@ -372,7 +373,7 @@ class IsarWalletStorage implements ReadModelStorage {
     dynamic status, {
     String? walletId,
   }) async {
-    final statusName = status is String ? status : status.name;
+    final statusName = status is String ? status : (status as InvoiceStatus).toString().split('.').last;
     
     var query = _isar.invoiceEntitys
         .filter()
@@ -404,7 +405,7 @@ class IsarWalletStorage implements ReadModelStorage {
           .findFirst();
       
       if (entity != null) {
-        final statusName = status is String ? status : status.name;
+        final statusName = status is String ? status : (status as InvoiceStatus).toString().split('.').last;
         entity.status = statusName;
         
         if (txid != null) {

@@ -500,7 +500,7 @@ class InvoiceEntity {
       ..addressesJson = _encodeList(invoice.addresses)
       ..amount = invoice.amount.toString()
       ..description = invoice.description
-      ..status = invoice.status.name
+      ..status = invoice.status.toString().split('.').last
       ..createdAt = invoice.createdAt
       ..expiresAt = invoice.expiresAt
       ..paidAt = invoice.paidAt

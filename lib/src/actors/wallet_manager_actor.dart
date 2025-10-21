@@ -83,6 +83,7 @@ class WalletManagerActor extends Actor {
 
   @override
   Future<void> onMessage(dynamic message) async {
+    print('[WalletManagerActor] Received message: ${message.runtimeType}');
     try {
       switch (message.runtimeType) {
         case CreateWalletMessage:
@@ -170,6 +171,10 @@ class WalletManagerActor extends Actor {
       // Track the original sender so we can route the WalletCreatedResponse back to them
       _pendingWalletCreations[msg.walletId] = context.sender;
 
+      // IMPORTANT: Wait for aggregate recovery to complete before sending commands
+      // PersistentActor drops messages that arrive during recovery
+      await Future.delayed(Duration(milliseconds: 200));
+
       // Send create wallet command to the aggregate
       // The aggregate will respond with WalletCreatedResponse via onCommandProcessed hook
       final createCommand = CreateWalletCommand(
@@ -178,8 +183,8 @@ class WalletManagerActor extends Actor {
         walletMetadata: msg.walletMetadata,
       );
 
-      // Send command with ourselves as the sender so the aggregate sends response to us
-      walletActor.tell(LocalMessage(payload: createCommand), sender: context.self);
+      // Send command directly - AggregateRoot handles Command objects directly
+      walletActor.tell(createCommand, sender: context.self);
 
       print('Wallet creation command sent to aggregate: ${msg.walletId}');
 
@@ -198,23 +203,30 @@ class WalletManagerActor extends Actor {
   /// Handle wallet creation response from BitcoinWalletAggregate
   /// This receives the actual root address from the WalletCreatedEvent
   Future<void> _handleWalletCreatedResponse(WalletCreatedResponse response) async {
-    print('Received wallet creation response for: ${response.walletId}');
+    print('[WalletManagerActor] Received wallet creation response for: ${response.walletId}');
+    print('[WalletManagerActor]   Success: ${response.success}');
+    print('[WalletManagerActor]   Root address: ${response.rootAddress}');
+    print('[WalletManagerActor]   Error: ${response.error}');
     
     // Get the original sender who requested the wallet creation
     final originalSender = _pendingWalletCreations.remove(response.walletId);
+    print('[WalletManagerActor]   Original sender exists: ${originalSender != null}');
     
     if (originalSender != null) {
       // Forward the response with real root address to the original caller
-      originalSender.tell(WalletCreatedMessage(
+      final message = WalletCreatedMessage(
         response.walletId,
         response.rootAddress,
         response.success,
         error: response.error,
-      ));
+      );
       
-      print('Wallet created successfully: ${response.walletId} with root address: ${response.rootAddress}');
+      print('[WalletManagerActor]   Sending WalletCreatedMessage to original sender...');
+      originalSender.tell(message);
+      
+      print('[WalletManagerActor] ✓ Wallet created successfully: ${response.walletId} with root address: ${response.rootAddress}');
     } else {
-      print('Warning: No pending request found for wallet ${response.walletId}');
+      print('[WalletManagerActor] ⚠️ Warning: No pending request found for wallet ${response.walletId}');
     }
   }
 
@@ -239,8 +251,8 @@ class WalletManagerActor extends Actor {
         return;
       }
 
-      // Forward command to wallet aggregate
-      walletActor.tell(LocalMessage(payload: msg.command), sender: context.sender);
+      // Forward command to wallet aggregate (send command directly, not wrapped)
+      walletActor.tell(msg.command, sender: context.sender);
 
     } catch (e) {
       print('Error handling wallet command for ${msg.walletId}: $e');
@@ -312,7 +324,7 @@ class WalletManagerActor extends Actor {
           confirmations: utxoData['confirmations'] ?? 0,
         );
         
-        walletActor.tell(LocalMessage(payload: command));
+        walletActor.tell(command);
         print('Sent ReceiveUTXO command to wallet $walletId');
       }
 
@@ -331,7 +343,7 @@ class WalletManagerActor extends Actor {
           fee: fee,
         );
         
-        walletActor.tell(LocalMessage(payload: command));
+        walletActor.tell(command);
         print('Sent SpendUTXO command to wallet $walletId (fee: $fee satoshis)');
       }
 

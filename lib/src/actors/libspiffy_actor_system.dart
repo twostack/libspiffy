@@ -168,9 +168,10 @@ class LibSpiffyActorSystem {
     ));
     
     // Spawn InvoiceManagerActor (needed for invoice-based payments)
+    // Use _walletStorage (persistent) not _actorStorage (in-memory)
     _invoiceManager = await _actorSystem.spawn('invoice-manager', () => InvoiceManagerActor(
       walletManager: _walletManager!,
-      storage: _actorStorage,
+      storage: _walletStorage, // Use persistent storage for invoices
     ));
     
     // Wire up InvoiceManager reference in WalletManager

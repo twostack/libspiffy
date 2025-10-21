@@ -244,10 +244,14 @@ class InvoiceManagerActor extends Actor {
     // Persist invoice to storage
     if (_storage != null) {
       try {
+        print('Persisting invoice ${invoice.invoiceId} to storage...');
         await _storage.storeInvoice(invoice);
+        print('✓ Invoice ${invoice.invoiceId} persisted to storage');
       } catch (e) {
-        print('Warning: Failed to persist invoice: $e');
+        print('❌ Failed to persist invoice: $e');
       }
+    } else {
+      print('⚠️  No storage configured - invoice ${invoice.invoiceId} only in memory');
     }
     
     // Remove from pending

@@ -3,6 +3,7 @@ import 'package:spiffynode/spiffy_node.dart';
 import '../models/wallet_event.dart';
 import '../models/bitcoin_utxo.dart';
 import '../models/bitcoin_transaction.dart';
+import '../actors/invoice_messages.dart';
 import 'wallet_storage.dart';
 
 /// In-memory implementation of WalletStorage for development and testing.
@@ -519,7 +520,7 @@ class InMemoryWalletStorage implements WalletStorage {
 
   @override
   Future<List<dynamic>> getInvoicesByStatus(dynamic status, {String? walletId}) async {
-    final statusName = status is String ? status : status.name;
+    final statusName = status is String ? status : (status as InvoiceStatus).toString().split('.').last;
     
     if (walletId != null) {
       return await _withLock(walletId, () async {
@@ -548,7 +549,7 @@ class InMemoryWalletStorage implements WalletStorage {
     final invoice = _invoices[invoiceId];
     if (invoice != null) {
       final statusEnum = status is String 
-          ? invoice.status.values.firstWhere((s) => s.name == status)
+          ? InvoiceStatus.values.firstWhere((s) => s.toString().split('.').last == status)
           : status;
       
       invoice.status = statusEnum;

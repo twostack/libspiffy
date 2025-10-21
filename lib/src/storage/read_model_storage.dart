@@ -9,6 +9,28 @@ import 'package:spiffynode/spiffy_node.dart';
 /// This represents the "read side" of CQRS pattern.
 abstract class ReadModelStorage {
   // ========================================
+  // Wallet Metadata
+  // ========================================
+  
+  /// Store or update wallet metadata
+  Future<void> storeWallet(
+    String walletId,
+    String name, {
+    String? rootAddress,
+    String? networkType,
+    Map<String, dynamic>? metadata,
+  });
+  
+  /// Get wallet metadata
+  Future<Map<String, dynamic>?> getWallet(String walletId);
+  
+  /// List all wallet IDs
+  Future<List<String>> listWallets();
+  
+  /// Delete wallet and all associated data
+  Future<void> deleteWallet(String walletId);
+  
+  // ========================================
   // UTXO Queries
   // ========================================
 

@@ -210,46 +210,63 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     }
   }
 
-  /// Apply events to state and return new state (Eventador pattern)
+  /// Apply events to internal state (Eventador pattern)
+  /// This method mutates _currentState directly as events are replayed or persisted.
   @override
-  WalletState applyEvent(WalletState currentState, Event event) {
+  void eventHandler(Event event) {
     if (event is! WalletEvent) {
       throw ArgumentError('Expected WalletEvent, got ${event.runtimeType}');
     }
 
     switch (event.runtimeType) {
       case WalletCreatedEvent:
-        return _applyWalletCreated(currentState, event as WalletCreatedEvent);
+        _applyWalletCreated(event as WalletCreatedEvent);
+        break;
       case WalletConfigurationUpdatedEvent:
-        return _applyWalletConfigurationUpdated(currentState, event as WalletConfigurationUpdatedEvent);
+        _applyWalletConfigurationUpdated(event as WalletConfigurationUpdatedEvent);
+        break;
       case AddressGeneratedEvent:
-        return _applyAddressGenerated(currentState, event as AddressGeneratedEvent);
+        _applyAddressGenerated(event as AddressGeneratedEvent);
+        break;
       case AddressLabelUpdatedEvent:
-        return _applyAddressLabelUpdated(currentState, event as AddressLabelUpdatedEvent);
+        _applyAddressLabelUpdated(event as AddressLabelUpdatedEvent);
+        break;
       case UTXOReceivedEvent:
-        return _applyUTXOReceived(currentState, event as UTXOReceivedEvent);
+        _applyUTXOReceived(event as UTXOReceivedEvent);
+        break;
       case UTXOSpentEvent:
-        return _applyUTXOSpent(currentState, event as UTXOSpentEvent);
+        _applyUTXOSpent(event as UTXOSpentEvent);
+        break;
       case UTXOConfirmationUpdatedEvent:
-        return _applyUTXOConfirmationUpdated(currentState, event as UTXOConfirmationUpdatedEvent);
+        _applyUTXOConfirmationUpdated(event as UTXOConfirmationUpdatedEvent);
+        break;
       case TransactionCreatedEvent:
-        return _applyTransactionCreated(currentState, event as TransactionCreatedEvent);
+        _applyTransactionCreated(event as TransactionCreatedEvent);
+        break;
       case TransactionSignedEvent:
-        return _applyTransactionSigned(currentState, event as TransactionSignedEvent);
+        _applyTransactionSigned(event as TransactionSignedEvent);
+        break;
       case TransactionBroadcastEvent:
-        return _applyTransactionBroadcast(currentState, event as TransactionBroadcastEvent);
+        _applyTransactionBroadcast(event as TransactionBroadcastEvent);
+        break;
       case UTXOReservationPlacedEvent:
-        return _applyUTXOReservationPlaced(currentState, event as UTXOReservationPlacedEvent);
+        _applyUTXOReservationPlaced(event as UTXOReservationPlacedEvent);
+        break;
       case UTXOReservationReleasedEvent:
-        return _applyUTXOReservationReleased(currentState, event as UTXOReservationReleasedEvent);
+        _applyUTXOReservationReleased(event as UTXOReservationReleasedEvent);
+        break;
       case UTXOReservationExpiredEvent:
-        return _applyUTXOReservationExpired(currentState, event as UTXOReservationExpiredEvent);
+        _applyUTXOReservationExpired(event as UTXOReservationExpiredEvent);
+        break;
       case UTXOReservedEvent:
-        return _applyUTXOReserved(currentState, event as UTXOReservedEvent);
+        _applyUTXOReserved(event as UTXOReservedEvent);
+        break;
       case UTXOReleasedEvent:
-        return _applyUTXOReleased(currentState, event as UTXOReleasedEvent);
+        _applyUTXOReleased(event as UTXOReleasedEvent);
+        break;
       case UTXOReservationRenewedEvent:
-        return _applyUTXOReservationRenewed(currentState, event as UTXOReservationRenewedEvent);
+        _applyUTXOReservationRenewed(event as UTXOReservationRenewedEvent);
+        break;
       default:
         throw ArgumentError('Unknown event type: ${event.runtimeType}');
     }
@@ -871,58 +888,47 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
   }
 
   // ==========================================================================
-  // EVENT APPLICATION (FUNCTIONAL STATE TRANSITIONS)
+  // EVENT APPLICATION (IMPERATIVE STATE MUTATIONS)
   // ==========================================================================
+  // These methods mutate _currentState directly as required by Eventador's eventHandler pattern
 
-  WalletState _applyWalletCreated(WalletState currentState, WalletCreatedEvent event) {
-    return currentState.copyWithWallet(
-      isCreated: true,
-      name: event.walletName,
-      rootAddress: event.rootAddress,
-      metadata: event.walletMetadata ?? {},
-      version: event.version,
-      lastModified: event.timestamp,
-    );
-  }
-
-  WalletState _applyWalletConfigurationUpdated(WalletState currentState, WalletConfigurationUpdatedEvent event) {
-    final newMetadata = Map<String, dynamic>.from(currentState.metadata);
-    if (event.newMetadata != null) {
-      newMetadata.addAll(event.newMetadata!);
+  void _applyWalletCreated(WalletCreatedEvent event) {
+    currentState.isCreated = true;
+    currentState.name = event.walletName;
+    currentState.rootAddress = event.rootAddress;
+    currentState.metadata.clear();
+    if (event.walletMetadata != null) {
+      currentState.metadata.addAll(event.walletMetadata!);
     }
-
-    return currentState.copyWithWallet(
-      name: event.newName ?? currentState.name,
-      metadata: newMetadata,
-      version: event.version,
-      lastModified: event.timestamp,
-    );
+    currentState.version = event.version;
+    currentState.lastModified = event.timestamp;
   }
 
-  WalletState _applyAddressGenerated(WalletState currentState, AddressGeneratedEvent event) {
-    final newAddresses = Map<String, String?>.from(currentState.addresses);
-    newAddresses[event.address] = event.label;
-
-    return currentState.copyWithWallet(
-      addresses: newAddresses,
-      nextDerivationIndex: event.derivationIndex + 1,
-      version: event.version,
-      lastModified: event.timestamp,
-    );
+  void _applyWalletConfigurationUpdated(WalletConfigurationUpdatedEvent event) {
+    if (event.newName != null) {
+      currentState.name = event.newName!;
+    }
+    if (event.newMetadata != null) {
+      currentState.metadata.addAll(event.newMetadata!);
+    }
+    currentState.version = event.version;
+    currentState.lastModified = event.timestamp;
   }
 
-  WalletState _applyAddressLabelUpdated(WalletState currentState, AddressLabelUpdatedEvent event) {
-    final newAddresses = Map<String, String?>.from(currentState.addresses);
-    newAddresses[event.address] = event.newLabel;
-
-    return currentState.copyWithWallet(
-      addresses: newAddresses,
-      version: event.version,
-      lastModified: event.timestamp,
-    );
+  void _applyAddressGenerated(AddressGeneratedEvent event) {
+    currentState.addresses[event.address] = event.label;
+    currentState.nextDerivationIndex = event.derivationIndex + 1;
+    currentState.version = event.version;
+    currentState.lastModified = event.timestamp;
   }
 
-  WalletState _applyUTXOReceived(WalletState currentState, UTXOReceivedEvent event) {
+  void _applyAddressLabelUpdated(AddressLabelUpdatedEvent event) {
+    currentState.addresses[event.address] = event.newLabel;
+    currentState.version = event.version;
+    currentState.lastModified = event.timestamp;
+  }
+
+  void _applyUTXOReceived(UTXOReceivedEvent event) {
     final utxoKey = '${event.txid}:${event.vout}';
     final utxo = BitcoinUtxo.create(
       txid: event.txid,
@@ -934,34 +940,25 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       confirmations: event.confirmations ?? 0,
     );
     
-    final newUtxos = Map<String, BitcoinUtxo>.from(currentState.utxos);
-    newUtxos[utxoKey] = utxo;
-    
-    return currentState.copyWithWallet(
-      utxos: newUtxos,
-      version: event.version,
-      lastModified: event.timestamp,
-    ).recalculateBalances();
+    currentState.utxos[utxoKey] = utxo;
+    currentState.version = event.version;
+    currentState.lastModified = event.timestamp;
+    _recalculateBalances();
   }
 
-  WalletState _applyUTXOSpent(WalletState currentState, UTXOSpentEvent event) {
+  void _applyUTXOSpent(UTXOSpentEvent event) {
     final utxoKey = '${event.txid}:${event.vout}';
     final utxo = currentState.utxos[utxoKey];
     if (utxo != null) {
       final spentUtxo = utxo.markSpent();
-      final newUtxos = Map<String, BitcoinUtxo>.from(currentState.utxos);
-      newUtxos[utxoKey] = spentUtxo;
-
-      return currentState.copyWithWallet(
-        utxos: newUtxos,
-        version: event.version,
-        lastModified: event.timestamp,
-      ).recalculateBalances();
+      currentState.utxos[utxoKey] = spentUtxo;
     }
-    return currentState.copyWithWallet(version: event.version, lastModified: event.timestamp);
+    currentState.version = event.version;
+    currentState.lastModified = event.timestamp;
+    _recalculateBalances();
   }
 
-  WalletState _applyUTXOConfirmationUpdated(WalletState currentState, UTXOConfirmationUpdatedEvent event) {
+  void _applyUTXOConfirmationUpdated(UTXOConfirmationUpdatedEvent event) {
     final utxoKey = '${event.txid}:${event.vout}';
     final utxo = currentState.utxos[utxoKey];
     if (utxo != null) {
@@ -969,58 +966,47 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         blockHeight: event.blockHeight,
         confirmations: event.confirmations,
       );
-      final newUtxos = Map<String, BitcoinUtxo>.from(currentState.utxos);
-      newUtxos[utxoKey] = updatedUtxo;
-
-      return currentState.copyWithWallet(
-        utxos: newUtxos,
-        version: event.version,
-        lastModified: event.timestamp,
-      ).recalculateBalances();
+      currentState.utxos[utxoKey] = updatedUtxo;
     }
-    return currentState.copyWithWallet(version: event.version, lastModified: event.timestamp);
+    currentState.version = event.version;
+    currentState.lastModified = event.timestamp;
+    _recalculateBalances();
   }
 
-  WalletState _applyTransactionCreated(WalletState currentState, TransactionCreatedEvent event) {
+  void _applyTransactionCreated(TransactionCreatedEvent event) {
     // Transaction state is managed separately - just update version
-    return currentState.copyWith(version: event.version);
+    currentState.version = event.version;
   }
 
-  WalletState _applyTransactionSigned(WalletState currentState, TransactionSignedEvent event) {
+  void _applyTransactionSigned(TransactionSignedEvent event) {
     // Transaction state is managed separately - just update version
-    return currentState.copyWith(version: event.version);
+    currentState.version = event.version;
   }
 
-  WalletState _applyTransactionBroadcast(WalletState currentState, TransactionBroadcastEvent event) {
+  void _applyTransactionBroadcast(TransactionBroadcastEvent event) {
     // Transaction state is managed separately - just update version
-    return currentState.copyWith(version: event.version);
+    currentState.version = event.version;
   }
 
-  WalletState _applyUTXOReservationPlaced(WalletState currentState, UTXOReservationPlacedEvent event) {
+  void _applyUTXOReservationPlaced(UTXOReservationPlacedEvent event) {
     // For now, simply update the state version - full reservation tracking in Phase 1D
-    return currentState.copyWithWallet(
-      version: event.version,
-      lastModified: event.timestamp,
-    );
+    currentState.version = event.version;
+    currentState.lastModified = event.timestamp;
   }
 
-  WalletState _applyUTXOReservationReleased(WalletState currentState, UTXOReservationReleasedEvent event) {
+  void _applyUTXOReservationReleased(UTXOReservationReleasedEvent event) {
     // For now, simply update the state version - full reservation tracking in Phase 1D
-    return currentState.copyWithWallet(
-      version: event.version,
-      lastModified: event.timestamp,
-    );
+    currentState.version = event.version;
+    currentState.lastModified = event.timestamp;
   }
 
-  WalletState _applyUTXOReservationExpired(WalletState currentState, UTXOReservationExpiredEvent event) {
+  void _applyUTXOReservationExpired(UTXOReservationExpiredEvent event) {
     // For now, simply update the state version - full reservation tracking in Phase 1D
-    return currentState.copyWithWallet(
-      version: event.version,
-      lastModified: event.timestamp,
-    );
+    currentState.version = event.version;
+    currentState.lastModified = event.timestamp;
   }
 
-  WalletState _applyUTXOReserved(WalletState currentState, UTXOReservedEvent event) {
+  void _applyUTXOReserved(UTXOReservedEvent event) {
     final utxoKey = '${event.txid}:${event.vout}';
     final utxo = currentState.utxos[utxoKey];
     
@@ -1034,58 +1020,64 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         updatedAt: event.timestamp,
       );
       
-      final newUtxos = Map<String, BitcoinUtxo>.from(currentState.utxos);
-      newUtxos[utxoKey] = reservedUtxo;
-      
-      return currentState.copyWithWallet(
-        utxos: newUtxos,
-        version: event.version,
-        lastModified: event.timestamp,
-      ).recalculateBalances();
+      currentState.utxos[utxoKey] = reservedUtxo;
+      _recalculateBalances();
     }
     
-    return currentState.copyWithWallet(version: event.version, lastModified: event.timestamp);
+    currentState.version = event.version;
+    currentState.lastModified = event.timestamp;
   }
 
-  WalletState _applyUTXOReleased(WalletState currentState, UTXOReleasedEvent event) {
+  void _applyUTXOReleased(UTXOReleasedEvent event) {
     final utxoKey = '${event.txid}:${event.vout}';
     final utxo = currentState.utxos[utxoKey];
     
     if (utxo != null && utxo.status == UTXOStatus.reserved) {
       final releasedUtxo = utxo.releaseReservation();
-      
-      final newUtxos = Map<String, BitcoinUtxo>.from(currentState.utxos);
-      newUtxos[utxoKey] = releasedUtxo;
-      
-      return currentState.copyWithWallet(
-        utxos: newUtxos,
-        version: event.version,
-        lastModified: event.timestamp,
-      ).recalculateBalances();
+      currentState.utxos[utxoKey] = releasedUtxo;
+      _recalculateBalances();
     }
     
-    return currentState.copyWithWallet(version: event.version, lastModified: event.timestamp);
+    currentState.version = event.version;
+    currentState.lastModified = event.timestamp;
   }
 
-  WalletState _applyUTXOReservationRenewed(WalletState currentState, UTXOReservationRenewedEvent event) {
+  void _applyUTXOReservationRenewed(UTXOReservationRenewedEvent event) {
     final utxoKey = '${event.txid}:${event.vout}';
     final utxo = currentState.utxos[utxoKey];
     
     if (utxo != null && utxo.status == UTXOStatus.reserved) {
       final extensionDuration = event.newExpiresAt.difference(event.oldExpiresAt);
       final renewedUtxo = utxo.renewReservation(extensionDuration, reason: event.renewalReason);
-      
-      final newUtxos = Map<String, BitcoinUtxo>.from(currentState.utxos);
-      newUtxos[utxoKey] = renewedUtxo;
-      
-      return currentState.copyWithWallet(
-        utxos: newUtxos,
-        version: event.version,
-        lastModified: event.timestamp,
-      ).recalculateBalances();
+      currentState.utxos[utxoKey] = renewedUtxo;
+      _recalculateBalances();
     }
     
-    return currentState.copyWithWallet(version: event.version, lastModified: event.timestamp);
+    currentState.version = event.version;
+    currentState.lastModified = event.timestamp;
+  }
+  
+  /// Helper method to recalculate wallet balances after UTXO changes
+  void _recalculateBalances() {
+    BigInt confirmed = BigInt.zero;
+    BigInt unconfirmed = BigInt.zero;
+    BigInt reserved = BigInt.zero;
+
+    for (final utxo in currentState.utxos.values) {
+      if (utxo.status == UTXOStatus.spent) continue;
+
+      if (utxo.status == UTXOStatus.reserved) {
+        reserved += utxo.satoshis;
+      } else if ((utxo.confirmations ?? 0) >= 6) {
+        confirmed += utxo.satoshis;
+      } else {
+        unconfirmed += utxo.satoshis;
+      }
+    }
+
+    currentState.confirmedBalance = dartsv.Coin.ofSat(confirmed);
+    currentState.unconfirmedBalance = dartsv.Coin.ofSat(unconfirmed);
+    currentState.reservedBalance = dartsv.Coin.ofSat(reserved);
   }
 
   // ==========================================================================

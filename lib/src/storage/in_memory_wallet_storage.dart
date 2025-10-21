@@ -85,6 +85,68 @@ class InMemoryWalletStorage implements WalletStorage {
     _balanceCache.clear();
   }
   
+  // ========================================
+  // Wallet Metadata
+  // ========================================
+  
+  // Wallet metadata storage
+  final Map<String, Map<String, dynamic>> _walletMetadata = {};
+  
+  @override
+  Future<void> storeWallet(
+    String walletId,
+    String name, {
+    String? rootAddress,
+    String? networkType,
+    Map<String, dynamic>? metadata,
+  }) async {
+    _walletMetadata[walletId] = {
+      'walletId': walletId,
+      'name': name,
+      'rootAddress': rootAddress,
+      'networkType': networkType,
+      'metadata': metadata ?? {},
+    };
+    _walletIds.add(walletId);
+  }
+  
+  @override
+  Future<Map<String, dynamic>?> getWallet(String walletId) async {
+    return _walletMetadata[walletId];
+  }
+  
+  @override
+  Future<List<String>> listWallets() async {
+    return _walletIds.toList();
+  }
+  
+  @override
+  Future<void> deleteWallet(String walletId) async {
+    _events.remove(walletId);
+    _utxos.remove(walletId);
+    _walletTransactions.remove(walletId);
+    _balanceCache.remove(walletId);
+    _walletMetadata.remove(walletId);
+    _walletIds.remove(walletId);
+    _walletInvoices.remove(walletId);
+    
+    // Remove transactions belonging to this wallet
+    final txids = _walletTransactions[walletId];
+    if (txids != null) {
+      for (final txid in txids) {
+        _transactions.remove(txid);
+      }
+    }
+    
+    // Remove invoices belonging to this wallet
+    final invoiceIds = _walletInvoices[walletId];
+    if (invoiceIds != null) {
+      for (final invoiceId in invoiceIds) {
+        _invoices.remove(invoiceId);
+      }
+    }
+  }
+  
   @override
   Future<void> saveEvents(String walletId, List<WalletEvent> events) async {
     await _withLock(walletId, () async {
@@ -195,22 +257,6 @@ class InMemoryWalletStorage implements WalletStorage {
   @override
   Future<bool> walletExists(String walletId) async {
     return _walletIds.contains(walletId);
-  }
-  
-  @override
-  Future<void> deleteWallet(String walletId) async {
-    await _withLock(walletId, () async {
-      final eventsRemoved = _events[walletId]?.length ?? 0;
-      final utxosRemoved = _utxos[walletId]?.length ?? 0;
-      
-      _events.remove(walletId);
-      _utxos.remove(walletId);
-      _balanceCache.remove(walletId);
-      _walletIds.remove(walletId);
-      
-      _totalEvents -= eventsRemoved;
-      _totalUtxos -= utxosRemoved;
-    });
   }
   
   // ========================================

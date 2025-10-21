@@ -4,43 +4,53 @@ import 'bitcoin_utxo.dart';
 
 /// Represents the current state of a wallet at a specific point in time.
 /// 
-/// This class is used for event sourcing snapshots and represents the complete
-/// wallet state derived from applying a sequence of wallet events.
+/// This class is used for event sourcing and represents the complete
+/// wallet state derived from applying a sequence of wallet events via eventHandler.
+/// 
+/// NOTE: Fields are mutable to allow direct state updates in eventHandler.
+/// This is the write model - projections create separate read models for queries.
 class WalletState extends State {
   /// Unique identifier for this wallet
   final String walletId;
   
   /// Human-readable name for the wallet
-  final String name;
+  String name;
   
   /// Root address derived from the wallet's mnemonic
-  final String? rootAddress;
+  String? rootAddress;
   
   /// Whether the wallet has been created (initialized)
-  final bool isCreated;
+  bool isCreated;
   
   /// Network type (mainnet, testnet)
-  final String networkType;
+  String networkType;
   
   /// Timestamp when this state was created
-  final DateTime timestamp;
+  DateTime timestamp;
   
-  /// All UTXOs currently tracked by this wallet
+  /// All UTXOs currently tracked by this wallet (mutable map)
   final Map<String, BitcoinUtxo> utxos;
   
-  /// Generated addresses for this wallet (address -> label mapping)
+  /// Generated addresses for this wallet (mutable map: address -> label)
   final Map<String, String?> addresses;
   
   /// Next address derivation index
-  final int nextDerivationIndex;
+  int nextDerivationIndex;
   
-  /// Additional wallet metadata
+  /// Additional wallet metadata (mutable map)
   final Map<String, dynamic> metadata;
   
   /// Cached balance calculations
-  final dartsv.Coin confirmedBalance;
-  final dartsv.Coin unconfirmedBalance;
-  final dartsv.Coin reservedBalance;
+  dartsv.Coin confirmedBalance;
+  dartsv.Coin unconfirmedBalance;
+  dartsv.Coin reservedBalance;
+  
+  /// Override parent State version/lastModified with mutable fields
+  @override
+  int version;
+  
+  @override
+  DateTime lastModified;
   
   WalletState({
     required this.walletId,
@@ -56,9 +66,10 @@ class WalletState extends State {
     required this.confirmedBalance,
     required this.unconfirmedBalance,
     required this.reservedBalance,
-    int version = 0,
+    this.version = 0,
     DateTime? lastModified,
-  }) : super(version: version, lastModified: lastModified);
+  }) : lastModified = lastModified ?? DateTime.now(),
+       super(version: version, lastModified: lastModified ?? DateTime.now());
   
   /// Create an empty wallet state (before wallet creation)
   factory WalletState.empty(String walletId) {
@@ -236,7 +247,7 @@ class WalletState extends State {
       'confirmedBalance': confirmedBalance.getValue().toString(),
       'unconfirmedBalance': unconfirmedBalance.getValue().toString(),
       'reservedBalance': reservedBalance.getValue().toString(),
-      'lastModified': lastModified?.toIso8601String(),
+      'lastModified': lastModified.toIso8601String(),
     };
   }
   

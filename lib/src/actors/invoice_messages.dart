@@ -10,6 +10,54 @@ enum InvoiceStatus {
   cancelled,
 }
 
+/// Invoice data class for storage
+class Invoice {
+  final String invoiceId;
+  final String walletId;
+  final List<String> addresses;
+  final BigInt amount;
+  final String? description;
+  final InvoiceStatus status;
+  final DateTime createdAt;
+  final DateTime? expiresAt;
+  final DateTime? paidAt;
+  final String? paymentTxid;
+  final BigInt? amountReceived;
+  final Map<String, dynamic>? metadata;
+  
+  Invoice({
+    required this.invoiceId,
+    required this.walletId,
+    required this.addresses,
+    required this.amount,
+    this.description,
+    required this.status,
+    required this.createdAt,
+    this.expiresAt,
+    this.paidAt,
+    this.paymentTxid,
+    this.amountReceived,
+    this.metadata,
+  });
+  
+  Map<String, dynamic> toMap() {
+    return {
+      'invoiceId': invoiceId,
+      'walletId': walletId,
+      'addresses': addresses,
+      'amount': amount.toString(),
+      'description': description,
+      'status': status,
+      'createdAt': createdAt.toIso8601String(),
+      'expiresAt': expiresAt?.toIso8601String(),
+      'paidAt': paidAt?.toIso8601String(),
+      'paymentTxid': paymentTxid,
+      'amountReceived': amountReceived?.toString(),
+      'metadata': metadata,
+    };
+  }
+}
+
 /// Request to create a new invoice/payment request
 class CreateInvoiceMessage implements Message {
   final String walletId;

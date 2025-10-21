@@ -5,7 +5,7 @@ import '../actors/invoice_messages.dart';
 const _uuid = Uuid();
 
 /// Base class for all invoice-related domain events
-abstract class InvoiceEvent extends AggregateEventBase {
+abstract class InvoiceEvent extends AggregateEventBase with SerializableEvent {
   final String invoiceId;
   final String walletId;
 
@@ -28,6 +28,15 @@ abstract class InvoiceEvent extends AggregateEventBase {
   /// Get event-specific data for serialization
   Map<String, dynamic> getInvoiceEventData();
 
+  /// Implementation of SerializableEvent.getEventData
+  @override
+  Map<String, dynamic> getEventData() {
+    final data = getInvoiceEventData();
+    data['invoiceId'] = invoiceId;
+    data['walletId'] = walletId;
+    return data;
+  }
+  
   @override
   Map<String, dynamic> toMap() {
     return {

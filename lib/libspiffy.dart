@@ -7,8 +7,11 @@ library libspiffy;
 // ✅ CORE MODELS - Complete domain models with DartSV integration
 export 'src/models/wallet_event.dart';          // Event sourcing base class
 export 'src/models/bitcoin_utxo.dart';          // UTXO tracking with reservations
-export 'src/models/wallet_state.dart';          // Immutable wallet state
+export 'src/models/wallet_state.dart';          // Write model for wallet aggregate
+export 'src/models/wallet_read_model.dart';     // Read model for wallet queries (CQRS)
 export 'src/models/bitcoin_transaction.dart';   // Transaction tracking
+export 'src/models/invoice_state.dart';         // Write model for invoice aggregate
+export 'src/models/invoice_read_model.dart';    // Read model for invoice queries (CQRS)
 
 // ✅ STORAGE INTERFACES - Platform-agnostic storage abstraction  
 export 'src/storage/event_storage.dart';        // Event storage interface
@@ -24,8 +27,16 @@ export 'src/storage/isar_wallet_storage.dart';  // Production Isar storage
 // ✅ CORE WALLET SYSTEM - Production-ready event-sourced wallet
 export 'src/core/wallet_commands.dart';         // 13 wallet commands extending eventador.Command
 export 'src/core/wallet_events.dart';           // 13 wallet events extending AggregateEventBase
-export 'src/core/invoice_events.dart';          // Invoice lifecycle events for CQRS pattern  
 export 'src/core/bitcoin_wallet_aggregate.dart'; // Complete aggregate root with business logic
+
+// ✅ INVOICE SYSTEM - CQRS-based invoice management
+export 'src/core/invoice_commands.dart';        // Invoice commands for aggregate
+export 'src/core/invoice_events.dart';          // Invoice lifecycle events for CQRS pattern  
+export 'src/core/invoice_aggregate.dart';       // Invoice aggregate root with business logic
+
+// ✅ PROJECTIONS - Read-side event handlers for CQRS
+export 'src/projections/wallet_projection.dart';   // Wallet read model projection
+export 'src/projections/invoice_projection.dart';  // Invoice read model projection
 
 // 🎭 ACTOR COORDINATION LAYER - Dactor-based multi-wallet coordination
 export 'src/actors/actors.dart';                // Complete actor system: WalletManager, SPV, ARC actors

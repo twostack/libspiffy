@@ -36,6 +36,62 @@ class IsarWalletStorage implements ReadModelStorage {
       : _config = config ?? IsolateConfig.defaultConfig();
 
   // ========================================
+  // Wallet Metadata
+  // ========================================
+  
+  @override
+  Future<void> storeWallet(
+    String walletId,
+    String name, {
+    String? rootAddress,
+    String? networkType,
+    Map<String, dynamic>? metadata,
+  }) async {
+    // For now, wallet metadata is stored in WalletEntity which is managed by aggregates
+    // This method can be extended to store denormalized wallet metadata for queries
+    // TODO: Consider adding a separate WalletMetadataEntity if needed for projections
+  }
+  
+  @override
+  Future<Map<String, dynamic>?> getWallet(String walletId) async {
+    // TODO: Implement wallet metadata query if needed
+    // For now, return null as wallet metadata is managed by aggregates
+    return null;
+  }
+  
+  @override
+  Future<List<String>> listWallets() async {
+    // TODO: Implement wallet listing if needed
+    // For now, return empty list
+    return [];
+  }
+  
+  @override
+  Future<void> deleteWallet(String walletId) async {
+    await _isar.writeTxn(() async {
+      // Delete all UTXOs for this wallet
+      await _isar.bitcoinUtxoEntitys
+          .filter()
+          .walletIdEqualTo(walletId)
+          .deleteAll();
+      
+      // Delete all transactions for this wallet
+      await _isar.bitcoinTransactionEntitys
+          .filter()
+          .walletIdEqualTo(walletId)
+          .deleteAll();
+      
+      // Delete all invoices for this wallet
+      await _isar.invoiceEntitys
+          .filter()
+          .walletIdEqualTo(walletId)
+          .deleteAll();
+          
+      // Note: Events are managed by Eventador's EventStore, not deleted here
+    });
+  }
+
+  // ========================================
   // UTXO Queries
   // ========================================
 
@@ -304,35 +360,6 @@ class IsarWalletStorage implements ReadModelStorage {
         .count();
 
     return hasTransactions > 0;
-  }
-
-  @override
-  Future<void> deleteWallet(String walletId) async {
-    await _isar.writeTxn(() async {
-      // Delete all UTXOs for this wallet
-      await _isar.bitcoinUtxoEntitys
-          .filter()
-          .walletIdEqualTo(walletId)
-          .deleteAll();
-
-      // Delete all transactions for this wallet
-      await _isar.bitcoinTransactionEntitys
-          .filter()
-          .walletIdEqualTo(walletId)
-          .deleteAll();
-
-      // Delete wallet metadata if it exists
-      await _isar.walletMetadataEntitys
-          .filter()
-          .walletIdEqualTo(walletId)
-          .deleteAll();
-
-      // Delete all invoices for this wallet
-      await _isar.invoiceEntitys
-          .filter()
-          .walletIdEqualTo(walletId)
-          .deleteAll();
-    });
   }
 
   // ========================================

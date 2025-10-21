@@ -23,7 +23,8 @@ export 'src/storage/isar_wallet_storage.dart';  // Production Isar storage
 
 // ✅ CORE WALLET SYSTEM - Production-ready event-sourced wallet
 export 'src/core/wallet_commands.dart';         // 13 wallet commands extending eventador.Command
-export 'src/core/wallet_events.dart';           // 13 wallet events extending AggregateEventBase  
+export 'src/core/wallet_events.dart';           // 13 wallet events extending AggregateEventBase
+export 'src/core/invoice_events.dart';          // Invoice lifecycle events for CQRS pattern  
 export 'src/core/bitcoin_wallet_aggregate.dart'; // Complete aggregate root with business logic
 
 // 🎭 ACTOR COORDINATION LAYER - Dactor-based multi-wallet coordination

@@ -41,6 +41,9 @@ class LibSpiffyActorSystem {
   ActorRef? _spvActor;
   ActorRef? _arcActor;
   ActorRef? _headerSyncActor;
+  
+  // Actor instances (kept for configuration after spawn)
+  HeaderSyncActor? _headerSyncActorInstance;
 
   /// Initialize the LibSpiffy actor system
   /// 
@@ -175,10 +178,12 @@ class LibSpiffyActorSystem {
     _walletManager!.tell(SetInvoiceManagerMessage(_invoiceManager!));
     
     // Spawn HeaderSyncActor early (other actors may need to communicate with it)
-    _headerSyncActor = await _actorSystem.spawn('header-sync', () => HeaderSyncActor(
+    _headerSyncActorInstance = HeaderSyncActor(
       headerChain: _headerChain,
       spvActor: null, // Will be set after SPVActor is spawned
-    ));
+      spiffyNodeBridge: null, // Will be set after SpiffyNode connection
+    );
+    _headerSyncActor = await _actorSystem.spawn('header-sync', () => _headerSyncActorInstance!);
     
     // Spawn SPVActor with reference to WalletManager, InvoiceManager and storage
     _spvActor = await _actorSystem.spawn('spv-actor', () => SPVActor(
@@ -314,6 +319,9 @@ class LibSpiffyActorSystem {
       );
       
       await _spiffyNodeBridge!.initialize();
+      
+      // Set the bridge reference in HeaderSyncActor
+      _headerSyncActorInstance?.setSpiffyNodeBridge(_spiffyNodeBridge);
       
       print('LibSpiffy-SpiffyNode integration active');
       print('Bridge statistics: ${_spiffyNodeBridge!.statistics}');

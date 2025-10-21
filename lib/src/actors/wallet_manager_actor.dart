@@ -25,6 +25,9 @@ class WalletManagerActor extends Actor {
   
   // SPV and ARC actors are coordinated at the LibSpiffyActorSystem level
   // and accessed via message passing rather than direct references
+  
+  // Timer for automated UTXO reservation cleanup
+  Timer? _reservationCleanupTimer;
 
   WalletManagerActor({
     required EventStore eventStore,
@@ -37,6 +40,45 @@ class WalletManagerActor extends Actor {
   @override
   void preStart() {
     print('WalletManagerActor started');
+    _startReservationCleanupTimer();
+  }
+
+  /// Start periodic timer to clean up expired UTXO reservations
+  /// Runs every 5 minutes to free up UTXOs whose reservations have expired
+  void _startReservationCleanupTimer() {
+    _reservationCleanupTimer = Timer.periodic(
+      const Duration(minutes: 5),
+      (_) => _cleanupExpiredReservations(),
+    );
+    print('UTXO reservation cleanup timer started (runs every 5 minutes)');
+  }
+
+  /// Clean up expired UTXO reservations across all active wallets
+  Future<void> _cleanupExpiredReservations() async {
+    print('Running automated UTXO reservation cleanup...');
+    
+    int walletsProcessed = 0;
+    for (final entry in _walletActors.entries) {
+      final walletId = entry.key;
+      final walletRef = entry.value;
+      
+      try {
+        // Send cleanup command to each wallet
+        final cleanupCommand = CleanupExpiredReservationsCommand(
+          walletId: walletId,
+          cutoffTime: DateTime.now(),
+        );
+        
+        walletRef.tell(WalletCommandMessage(walletId, cleanupCommand));
+        walletsProcessed++;
+      } catch (e) {
+        print('Warning: Failed to cleanup reservations for wallet $walletId: $e');
+      }
+    }
+    
+    if (walletsProcessed > 0) {
+      print('Sent cleanup commands to $walletsProcessed wallets');
+    }
   }
 
   @override
@@ -394,6 +436,7 @@ class WalletManagerActor extends Actor {
 
   @override
   void postStop() {
+    _reservationCleanupTimer?.cancel();
     print('WalletManagerActor stopped');
   }
 } 

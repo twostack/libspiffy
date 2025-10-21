@@ -170,12 +170,28 @@ class SpiffyNodeBridge {
     }
   }
 
+  /// Get list of connected peer IDs
+  List<String> getConnectedPeerIds() {
+    if (!_isInitialized) return [];
+    
+    try {
+      // Get connected peers from PeerManager
+      // PeerManager.getPeers() returns a List<PeerI> .
+      // These are peers on the bitcoin network. toString() returns address:port
+      return _peerManager.getPeers().map((peer) => peer.toString()).toList();
+    } catch (e) {
+      _logger.warning('Failed to get connected peer IDs: $e');
+      return [];
+    }
+  }
+
   /// Get bridge statistics
   Map<String, dynamic> get statistics => {
     'initialized': _isInitialized,
     'eventsProcessed': _eventsProcessed,
     'lastEventAt': _lastEventAt?.toIso8601String(),
     'spiffyNodeHeight': _peerManager.chainTipTracker.networkHeight,
+    'connectedPeers': getConnectedPeerIds(),
   };
 }
 

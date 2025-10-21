@@ -191,6 +191,65 @@ abstract class ReadModelStorage {
   /// Parameters:
   /// - [walletId]: Unique identifier for the wallet
   Future<void> deleteWallet(String walletId);
+
+  // ========================================
+  // Invoice Operations
+  // ========================================
+
+  /// Store an invoice in the read model.
+  ///
+  /// Parameters:
+  /// - [invoice]: Invoice to store
+  Future<void> storeInvoice(dynamic invoice);
+
+  /// Get a specific invoice by ID.
+  ///
+  /// Parameters:
+  /// - [invoiceId]: Unique identifier for the invoice
+  ///
+  /// Returns: Invoice if found, null if not found
+  Future<dynamic> getInvoice(String invoiceId);
+
+  /// Get all invoices for a specific wallet.
+  ///
+  /// Parameters:
+  /// - [walletId]: Unique identifier for the wallet
+  ///
+  /// Returns: List of invoices for the wallet
+  Future<List<dynamic>> getInvoicesByWallet(String walletId);
+
+  /// Get all invoices with a specific status.
+  ///
+  /// Parameters:
+  /// - [status]: Invoice status to filter by
+  /// - [walletId]: Optional wallet ID to filter further
+  ///
+  /// Returns: List of invoices matching the status
+  Future<List<dynamic>> getInvoicesByStatus(dynamic status, {String? walletId});
+
+  /// Update the status of an invoice.
+  ///
+  /// Parameters:
+  /// - [invoiceId]: Unique identifier for the invoice
+  /// - [status]: New status for the invoice
+  /// - [txid]: Transaction ID if paid
+  /// - [amountReceived]: Amount received if paid
+  /// - [paidAt]: Timestamp when paid
+  Future<void> updateInvoiceStatus(
+    String invoiceId,
+    dynamic status, {
+    String? txid,
+    BigInt? amountReceived,
+    DateTime? paidAt,
+  });
+
+  /// Get the count of stored merkle proofs.
+  ///
+  /// Parameters:
+  /// - [walletId]: Optional wallet ID to count proofs for a specific wallet
+  ///
+  /// Returns: Number of merkle proofs stored
+  Future<int> getMerkleProofCount({String? walletId});
 }
 
 /// Merkle proof data for SPV validation

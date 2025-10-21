@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'package:dactor/dactor.dart';
 import 'package:uuid/uuid.dart';
-import '../storage/wallet_storage.dart';
+import '../storage/read_model_storage.dart';
 import 'invoice_messages.dart';
 import 'wallet_messages.dart';
 import '../core/wallet_commands.dart';
@@ -16,10 +16,9 @@ import '../core/wallet_commands.dart';
 /// - Provide invoice lookup for SPV validation
 class InvoiceManagerActor extends Actor {
   final ActorRef _walletManager;
-  // ignore: unused_field
-  final WalletStorage? _storage; // Optional persistence (currently not used - invoice state is in-memory)
+  final ReadModelStorage? _storage; // Optional persistence for invoice read models
   
-  // In-memory invoice tracking
+  // In-memory invoice tracking (for fast lookups)
   final Map<String, Invoice> _invoices = {};
   final Map<String, String> _addressToInvoice = {}; // address → invoiceId lookup
   
@@ -31,14 +30,69 @@ class InvoiceManagerActor extends Actor {
 
   InvoiceManagerActor({
     required ActorRef walletManager,
-    WalletStorage? storage,
+    ReadModelStorage? storage,
   })  : _walletManager = walletManager,
         _storage = storage;
 
   @override
   void preStart() {
     print('InvoiceManagerActor started');
+    _loadInvoicesFromStorage();
     _startExpirationTimer();
+  }
+
+  /// Load existing invoices from storage on startup
+  Future<void> _loadInvoicesFromStorage() async {
+    if (_storage == null) return;
+    
+    try {
+      // Load all invoices from storage (across all wallets)
+      // Note: This could be optimized to load on-demand per wallet
+      final allInvoices = await _storage.getInvoicesByStatus(InvoiceStatus.pending);
+      
+      for (final invoiceData in allInvoices) {
+        final invoice = _invoiceFromMap(invoiceData);
+        _invoices[invoice.invoiceId] = invoice;
+        
+        // Rebuild address lookup index
+        for (final address in invoice.addresses) {
+          _addressToInvoice[address] = invoice.invoiceId;
+        }
+      }
+      
+      print('Loaded ${allInvoices.length} pending invoices from storage');
+    } catch (e) {
+      print('Warning: Failed to load invoices from storage: $e');
+    }
+  }
+
+  /// Convert map to Invoice object
+  Invoice _invoiceFromMap(dynamic data) {
+    if (data is Invoice) return data;
+    
+    final map = data as Map<String, dynamic>;
+    return Invoice(
+      invoiceId: map['invoiceId'] as String,
+      walletId: map['walletId'] as String,
+      addresses: List<String>.from(map['addresses']),
+      amount: map['amount'] is BigInt ? map['amount'] as BigInt : BigInt.parse(map['amount'].toString()),
+      description: map['description'] as String?,
+      status: map['status'] is InvoiceStatus 
+          ? map['status'] as InvoiceStatus
+          : InvoiceStatus.values.firstWhere((s) => s.name == map['status']),
+      createdAt: map['createdAt'] is DateTime ? map['createdAt'] as DateTime : DateTime.parse(map['createdAt'] as String),
+      expiresAt: map['expiresAt'] != null 
+          ? (map['expiresAt'] is DateTime ? map['expiresAt'] as DateTime : DateTime.parse(map['expiresAt'] as String))
+          : null,
+      paidAt: map['paidAt'] != null
+          ? (map['paidAt'] is DateTime ? map['paidAt'] as DateTime : DateTime.parse(map['paidAt'] as String))
+          : null,
+      paymentTxid: map['paymentTxid'] as String?,
+      amountReceived: map['amountReceived'] != null
+          ? (map['amountReceived'] is BigInt ? map['amountReceived'] as BigInt : BigInt.parse(map['amountReceived'].toString()))
+          : null,
+      metadata: map['metadata'] as Map<String, dynamic>?,
+    );
   }
 
   @override
@@ -187,15 +241,14 @@ class InvoiceManagerActor extends Actor {
       _addressToInvoice[address] = invoice.invoiceId;
     }
     
-    // Persist if storage available (storage methods for invoices are optional)
-    // TODO: Implement invoice persistence in WalletStorage if needed
-    // if (_storage != null) {
-    //   try {
-    //     await _storage.storeInvoice(invoice);
-    //   } catch (e) {
-    //     print('Warning: Failed to persist invoice: $e');
-    //   }
-    // }
+    // Persist invoice to storage
+    if (_storage != null) {
+      try {
+        await _storage.storeInvoice(invoice);
+      } catch (e) {
+        print('Warning: Failed to persist invoice: $e');
+      }
+    }
     
     // Remove from pending
     _pendingInvoices.remove(pending.invoiceId);
@@ -268,15 +321,20 @@ class InvoiceManagerActor extends Actor {
     invoice.paymentTxid = msg.txid;
     invoice.amountReceived = msg.amountReceived;
     
-    // Persist update if storage available
-    // TODO: Implement invoice persistence in WalletStorage if needed
-    // if (_storage != null) {
-    //   try {
-    //     await _storage.updateInvoiceStatus(msg.invoiceId, InvoiceStatus.paid);
-    //   } catch (e) {
-    //     print('Warning: Failed to persist invoice update: $e');
-    //   }
-    // }
+    // Persist update to storage
+    if (_storage != null) {
+      try {
+        await _storage.updateInvoiceStatus(
+          msg.invoiceId,
+          InvoiceStatus.paid,
+          txid: msg.txid,
+          amountReceived: msg.amountReceived,
+          paidAt: msg.paidAt,
+        );
+      } catch (e) {
+        print('Warning: Failed to persist invoice update: $e');
+      }
+    }
     
     // Notify sender
     context.sender?.tell(InvoiceStatusMessage(
@@ -311,15 +369,14 @@ class InvoiceManagerActor extends Actor {
     
     invoice.status = InvoiceStatus.cancelled;
     
-    // Persist update
-    // TODO: Implement invoice persistence in WalletStorage if needed
-    // if (_storage != null) {
-    //   try {
-    //     await _storage.updateInvoiceStatus(msg.invoiceId, InvoiceStatus.cancelled);
-    //   } catch (e) {
-    //     print('Warning: Failed to persist invoice cancellation: $e');
-    //   }
-    // }
+    // Persist update to storage
+    if (_storage != null) {
+      try {
+        await _storage.updateInvoiceStatus(msg.invoiceId, InvoiceStatus.cancelled);
+      } catch (e) {
+        print('Warning: Failed to persist invoice cancellation: $e');
+      }
+    }
     
     context.sender?.tell(InvoiceStatusMessage(
       invoiceId: invoice.invoiceId,
@@ -379,7 +436,7 @@ class InvoiceManagerActor extends Actor {
   }
 
   /// Check and expire old invoices
-  void _checkExpiredInvoices() {
+  Future<void> _checkExpiredInvoices() async {
     final now = DateTime.now();
     final expiredIds = <String>[];
     
@@ -395,10 +452,14 @@ class InvoiceManagerActor extends Actor {
       final invoice = _invoices[invoiceId]!;
       invoice.status = InvoiceStatus.expired;
       
-      // TODO: Implement invoice persistence in WalletStorage if needed
-      // if (_storage != null) {
-      //   _storage.updateInvoiceStatus(invoiceId, InvoiceStatus.expired);
-      // }
+      // Persist update to storage
+      if (_storage != null) {
+        try {
+          await _storage.updateInvoiceStatus(invoiceId, InvoiceStatus.expired);
+        } catch (e) {
+          print('Warning: Failed to persist invoice expiration: $e');
+        }
+      }
       
       print('Invoice $invoiceId expired');
     }

@@ -28,6 +28,7 @@ import 'isar_config.dart';
 /// ```
 class IsarWalletStorage implements ReadModelStorage {
   final Isar _isar;
+  // ignore: unused_field
   final IsolateConfig _config;
 
   IsarWalletStorage(this._isar, {IsolateConfig? config})
@@ -324,7 +325,108 @@ class IsarWalletStorage implements ReadModelStorage {
           .filter()
           .walletIdEqualTo(walletId)
           .deleteAll();
+
+      // Delete all invoices for this wallet
+      await _isar.invoiceEntitys
+          .filter()
+          .walletIdEqualTo(walletId)
+          .deleteAll();
     });
+  }
+
+  // ========================================
+  // Invoice Operations
+  // ========================================
+
+  @override
+  Future<void> storeInvoice(dynamic invoice) async {
+    final entity = InvoiceEntity.fromDomain(invoice);
+    await _isar.writeTxn(() async {
+      await _isar.invoiceEntitys.put(entity);
+    });
+  }
+
+  @override
+  Future<dynamic> getInvoice(String invoiceId) async {
+    final entity = await _isar.invoiceEntitys
+        .filter()
+        .invoiceIdEqualTo(invoiceId)
+        .findFirst();
+    
+    return entity?.toDomain();
+  }
+
+  @override
+  Future<List<dynamic>> getInvoicesByWallet(String walletId) async {
+    final entities = await _isar.invoiceEntitys
+        .filter()
+        .walletIdEqualTo(walletId)
+        .sortByCreatedAtDesc()
+        .findAll();
+    
+    return entities.map((e) => e.toDomain()).toList();
+  }
+
+  @override
+  Future<List<dynamic>> getInvoicesByStatus(
+    dynamic status, {
+    String? walletId,
+  }) async {
+    final statusName = status is String ? status : status.name;
+    
+    var query = _isar.invoiceEntitys
+        .filter()
+        .statusEqualTo(statusName);
+    
+    if (walletId != null) {
+      query = query.walletIdEqualTo(walletId);
+    }
+    
+    final entities = await query
+        .sortByCreatedAtDesc()
+        .findAll();
+    
+    return entities.map((e) => e.toDomain()).toList();
+  }
+
+  @override
+  Future<void> updateInvoiceStatus(
+    String invoiceId,
+    dynamic status, {
+    String? txid,
+    BigInt? amountReceived,
+    DateTime? paidAt,
+  }) async {
+    await _isar.writeTxn(() async {
+      final entity = await _isar.invoiceEntitys
+          .filter()
+          .invoiceIdEqualTo(invoiceId)
+          .findFirst();
+      
+      if (entity != null) {
+        final statusName = status is String ? status : status.name;
+        entity.status = statusName;
+        
+        if (txid != null) {
+          entity.paymentTxid = txid;
+        }
+        if (amountReceived != null) {
+          entity.amountReceived = amountReceived.toString();
+        }
+        if (paidAt != null) {
+          entity.paidAt = paidAt;
+        }
+        
+        await _isar.invoiceEntitys.put(entity);
+      }
+    });
+  }
+
+  @override
+  Future<int> getMerkleProofCount({String? walletId}) async {
+    // Merkle proofs are stored globally, not per-wallet
+    // So we ignore the walletId parameter for now
+    return await _isar.merkleProofEntitys.count();
   }
 }
 

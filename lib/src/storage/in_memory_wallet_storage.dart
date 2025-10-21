@@ -476,6 +476,102 @@ class InMemoryWalletStorage implements WalletStorage {
     }
   }
   
+  // ========================================
+  // Invoice Operations
+  // ========================================
+
+  // Invoice storage: invoiceId -> Invoice
+  final Map<String, dynamic> _invoices = {};
+  
+  // Invoice by wallet: walletId -> List of invoiceIds
+  final Map<String, List<String>> _walletInvoices = {};
+
+  @override
+  Future<void> storeInvoice(dynamic invoice) async {
+    final invoiceId = invoice.invoiceId as String;
+    final walletId = invoice.walletId as String;
+    
+    await _withLock(walletId, () async {
+      _invoices[invoiceId] = invoice;
+      
+      final walletInvs = _walletInvoices.putIfAbsent(walletId, () => []);
+      if (!walletInvs.contains(invoiceId)) {
+        walletInvs.add(invoiceId);
+      }
+    });
+  }
+
+  @override
+  Future<dynamic> getInvoice(String invoiceId) async {
+    return _invoices[invoiceId];
+  }
+
+  @override
+  Future<List<dynamic>> getInvoicesByWallet(String walletId) async {
+    return await _withLock(walletId, () async {
+      final invoiceIds = _walletInvoices[walletId] ?? [];
+      return invoiceIds
+          .map((id) => _invoices[id])
+          .where((inv) => inv != null)
+          .toList();
+    });
+  }
+
+  @override
+  Future<List<dynamic>> getInvoicesByStatus(dynamic status, {String? walletId}) async {
+    final statusName = status is String ? status : status.name;
+    
+    if (walletId != null) {
+      return await _withLock(walletId, () async {
+        final invoiceIds = _walletInvoices[walletId] ?? [];
+        return invoiceIds
+            .map((id) => _invoices[id])
+            .where((inv) => inv != null && inv.status.name == statusName)
+            .toList();
+      });
+    }
+    
+    // Global search across all invoices
+    return _invoices.values
+        .where((inv) => inv.status.name == statusName)
+        .toList();
+  }
+
+  @override
+  Future<void> updateInvoiceStatus(
+    String invoiceId,
+    dynamic status, {
+    String? txid,
+    BigInt? amountReceived,
+    DateTime? paidAt,
+  }) async {
+    final invoice = _invoices[invoiceId];
+    if (invoice != null) {
+      final statusEnum = status is String 
+          ? invoice.status.values.firstWhere((s) => s.name == status)
+          : status;
+      
+      invoice.status = statusEnum;
+      
+      if (txid != null) {
+        invoice.paymentTxid = txid;
+      }
+      if (amountReceived != null) {
+        invoice.amountReceived = amountReceived;
+      }
+      if (paidAt != null) {
+        invoice.paidAt = paidAt;
+      }
+    }
+  }
+
+  @override
+  Future<int> getMerkleProofCount({String? walletId}) async {
+    // In-memory storage doesn't track proofs by wallet
+    // Return total count
+    return _merkleProofs.length;
+  }
+
   /// Clear all data (useful for testing)
   void clear() {
     _events.clear();
@@ -489,6 +585,8 @@ class InMemoryWalletStorage implements WalletStorage {
     _blockToProofs.clear();
     _balanceCache.clear();
     _walletIds.clear();
+    _invoices.clear();
+    _walletInvoices.clear();
     _totalEvents = 0;
     _totalUtxos = 0;
     _totalTransactions = 0;

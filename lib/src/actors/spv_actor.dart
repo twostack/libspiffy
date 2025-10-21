@@ -712,9 +712,19 @@ class SPVActor extends Actor {
         });
       }
       
+      // Extract merkle root from first BUMP if available
+      String? merkleRoot;
+      if (beef.bumps.isNotEmpty && beef.bumps.first.path.isNotEmpty) {
+        // Get the merkle root from the last level of the first BUMP
+        final topLevel = beef.bumps.first.path.last;
+        if (topLevel.leaves.isNotEmpty && topLevel.leaves.first.hash != null) {
+          merkleRoot = hex.encode(topLevel.leaves.first.hash!);
+        }
+      }
+      
       final result = BEEFValidationResult(
         isValid: true,
-        merkleRoot: 'placeholder_merkle_root', // TODO: Extract actual merkle root
+        merkleRoot: merkleRoot,
         error: null,
         targetWalletId: msg.targetWalletId,
         extractedTransactions: extractedTransactions,
@@ -726,10 +736,15 @@ class SPVActor extends Actor {
       if (extractedTransactions.isNotEmpty) {
         for (final txData in extractedTransactions) {
           // Convert to ReceiveTransactionMessage and process
+          // Use metadata to get actual peer ID if available, otherwise use generic identifier
+          final peerId = msg.metadata['peerId']?.toString() ?? 
+                        msg.metadata['source']?.toString() ?? 
+                        'beef_transaction';
+          
           final receiveMsg = ReceiveTransactionMessage(
             transactionId: txData['transactionId'], // Now correctly uses transactionId
             beef: beef,
-            fromCounterparty: 'beef_bundle', // TODO: Update to actual peer ID
+            fromCounterparty: peerId,
             targetWalletId: msg.targetWalletId,
           );
           

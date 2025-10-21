@@ -675,7 +675,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     }
 
     // For now, create empty utxoIdentifiers since ReleaseUTXOsCommand only has reservationId
-    // TODO: In Phase 1D, implement proper reservation tracking
+    // Note: Automated cleanup runs every 5 minutes via WalletManagerActor timer
     final utxoIdentifiers = <Map<String, dynamic>>[];
 
     final event = UTXOReservationReleasedEvent(

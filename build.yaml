@@ -1,0 +1,7 @@
+targets:
+  $default:
+    builders:
+      isar_generator:
+        options:
+          # Generate schemas for LibSpiffy Isar entities
+

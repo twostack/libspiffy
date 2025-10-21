@@ -1,0 +1,236 @@
+import '../models/bitcoin_utxo.dart';
+import '../models/bitcoin_transaction.dart';
+import 'package:spiffynode/spiffy_node.dart';
+
+/// Abstract interface for read-model storage operations.
+///
+/// This interface handles query operations for wallet data projections,
+/// including UTXOs, transactions, block headers, and merkle proofs.
+/// This represents the "read side" of CQRS pattern.
+abstract class ReadModelStorage {
+  // ========================================
+  // UTXO Queries
+  // ========================================
+
+  /// Get all UTXOs for a specific wallet.
+  ///
+  /// Parameters:
+  /// - [walletId]: Unique identifier for the wallet
+  /// - [includeSpent]: Whether to include spent UTXOs (default: false)
+  ///
+  /// Returns: List of UTXOs for the wallet
+  Future<List<BitcoinUtxo>> getUTXOs(String walletId, {bool includeSpent = false});
+
+  /// Get only available (unspent and unreserved) UTXOs for a wallet.
+  ///
+  /// This is the primary method for transaction building, as it returns
+  /// only UTXOs that can be spent immediately.
+  ///
+  /// Parameters:
+  /// - [walletId]: Unique identifier for the wallet
+  ///
+  /// Returns: List of available UTXOs
+  Future<List<BitcoinUtxo>> getAvailableUTXOs(String walletId);
+
+  /// Calculate the total balance for a wallet.
+  ///
+  /// This should return the sum of all available (unspent) UTXOs
+  /// for the wallet, excluding reserved UTXOs.
+  ///
+  /// Parameters:
+  /// - [walletId]: Unique identifier for the wallet
+  ///
+  /// Returns: Total balance in satoshis
+  Future<BigInt> getBalance(String walletId);
+
+  // ========================================
+  // Transaction History
+  // ========================================
+
+  /// Get transaction history for a wallet
+  ///
+  /// Parameters:
+  /// - [walletId]: Unique identifier for the wallet
+  /// - [limit]: Maximum number of transactions to return
+  /// - [offset]: Number of transactions to skip
+  ///
+  /// Returns: List of transactions in reverse chronological order
+  Future<List<BitcoinTransaction>> getTransactionHistory(
+    String walletId, {
+    int? limit,
+    int? offset,
+  });
+
+  /// Get a specific transaction by ID
+  ///
+  /// Parameters:
+  /// - [txid]: Transaction ID to retrieve
+  ///
+  /// Returns: Transaction if found, null if not found
+  Future<BitcoinTransaction?> getTransaction(String txid);
+
+  // ========================================
+  // Block Header Storage (SPV)
+  // ========================================
+
+  /// Store a block header at a specific height
+  ///
+  /// Parameters:
+  /// - [header]: Block header to store
+  /// - [height]: Block height
+  Future<void> storeBlockHeader(BlockHeader header, int height);
+
+  /// Get block header by hash
+  ///
+  /// Parameters:
+  /// - [hash]: Block hash as hex string
+  ///
+  /// Returns: Block header if found, null if not found
+  Future<BlockHeader?> getBlockHeaderByHash(String hash);
+
+  /// Get block header by height
+  ///
+  /// Parameters:
+  /// - [height]: Block height
+  ///
+  /// Returns: Block header if found, null if not found
+  Future<BlockHeader?> getBlockHeaderByHeight(int height);
+
+  /// Get height for a block hash
+  ///
+  /// Parameters:
+  /// - [hash]: Block hash as hex string
+  ///
+  /// Returns: Block height if found, null if not found
+  Future<int?> getHeightByBlockHash(String hash);
+
+  /// Get range of block headers
+  ///
+  /// Parameters:
+  /// - [fromHeight]: Starting height (inclusive)
+  /// - [toHeight]: Ending height (inclusive)
+  ///
+  /// Returns: List of block headers in height order
+  Future<List<BlockHeader>> getBlockHeaderRange(int fromHeight, int toHeight);
+
+  /// Mark a block header as orphaned due to reorganization
+  ///
+  /// Parameters:
+  /// - [hash]: Block hash as hex string
+  Future<void> markHeaderAsOrphaned(String hash);
+
+  /// Get current chain tip header
+  ///
+  /// Returns: Current chain tip header, null if no headers stored
+  Future<BlockHeader?> getChainTip();
+
+  /// Get current best block height
+  ///
+  /// Returns: Best known block height, 0 if no headers stored
+  Future<int> getBestHeight();
+
+  /// Get recent block headers
+  ///
+  /// Parameters:
+  /// - [count]: Number of recent headers to retrieve
+  ///
+  /// Returns: List of recent headers in reverse height order (newest first)
+  Future<List<BlockHeader>> getRecentHeaders(int count);
+
+  // ========================================
+  // Merkle Proof Storage (SPV)
+  // ========================================
+
+  /// Store merkle proof for a transaction
+  ///
+  /// Parameters:
+  /// - [txid]: Transaction ID
+  /// - [proof]: Merkle proof data
+  Future<void> storeMerkleProof(String txid, MerkleProof proof);
+
+  /// Get merkle proof for a transaction
+  ///
+  /// Parameters:
+  /// - [txid]: Transaction ID
+  ///
+  /// Returns: Merkle proof if found, null if not found
+  Future<MerkleProof?> getMerkleProof(String txid);
+
+  /// Get all merkle proofs for a block
+  ///
+  /// Parameters:
+  /// - [blockHash]: Block hash as hex string
+  ///
+  /// Returns: List of merkle proofs for transactions in the block
+  Future<List<MerkleProof>> getMerkleProofsForBlock(String blockHash);
+
+  // ========================================
+  // Wallet Management
+  // ========================================
+
+  /// Get a list of all wallet IDs in storage.
+  ///
+  /// This is useful for wallet enumeration and management operations.
+  ///
+  /// Returns: List of wallet identifiers
+  Future<List<String>> getWalletIds();
+
+  /// Check if a wallet exists in storage.
+  ///
+  /// Parameters:
+  /// - [walletId]: Unique identifier for the wallet
+  ///
+  /// Returns: true if the wallet exists, false otherwise
+  Future<bool> walletExists(String walletId);
+
+  /// Delete all data for a specific wallet.
+  ///
+  /// This operation should remove all read model data for the wallet.
+  /// Use with caution.
+  ///
+  /// Parameters:
+  /// - [walletId]: Unique identifier for the wallet
+  Future<void> deleteWallet(String walletId);
+}
+
+/// Merkle proof data for SPV validation
+class MerkleProof {
+  final String blockHash;
+  final String txid;
+  final List<String> merkleProof; // Sibling hashes in merkle tree
+  final int position; // Position of tx in block
+  final int blockHeight;
+  final DateTime createdAt;
+
+  MerkleProof({
+    required this.blockHash,
+    required this.txid,
+    required this.merkleProof,
+    required this.position,
+    required this.blockHeight,
+    DateTime? createdAt,
+  }) : createdAt = createdAt ?? DateTime.now();
+
+  Map<String, dynamic> toMap() {
+    return {
+      'blockHash': blockHash,
+      'txid': txid,
+      'merkleProof': merkleProof,
+      'position': position,
+      'blockHeight': blockHeight,
+      'createdAt': createdAt.toIso8601String(),
+    };
+  }
+
+  factory MerkleProof.fromMap(Map<String, dynamic> map) {
+    return MerkleProof(
+      blockHash: map['blockHash'],
+      txid: map['txid'],
+      merkleProof: List<String>.from(map['merkleProof']),
+      position: map['position'],
+      blockHeight: map['blockHeight'],
+      createdAt: DateTime.parse(map['createdAt']),
+    );
+  }
+}
+

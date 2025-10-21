@@ -5,6 +5,8 @@ import 'package:isar/isar.dart';
 
 import '../storage/wallet_storage.dart';
 import '../storage/in_memory_wallet_storage.dart';
+import '../storage/isar_wallet_storage.dart';
+import '../storage/isar_config.dart';
 import '../storage/secure_storage.dart';
 import '../storage/in_memory_secure_storage.dart';
 import '../services/crypto_service.dart';
@@ -23,7 +25,8 @@ class LibSpiffyActorSystem {
   late ActorSystem _actorSystem;
   bool _ownsActorSystem = false;
   late IsarEventStore _eventStore;
-  late WalletStorage _walletStorage;
+  late ReadModelStorage _walletStorage;
+  late WalletStorage _actorStorage; // For actors that need full WalletStorage
   late SecureStorage _secureStorage;
   late CryptoService _cryptoService;
   late BlockHeaderChain _headerChain;
@@ -44,25 +47,41 @@ class LibSpiffyActorSystem {
   /// If [actorSystem] is provided, LibSpiffy will spawn its actors in the provided system.
   /// This allows integration with a host application's existing actor system.
   /// If [actorSystem] is null, LibSpiffy will create and manage its own actor system.
+  ///
+  /// If [isar] is provided, LibSpiffy will use it for read-model storage and optionally
+  /// for event storage. The host application is responsible for including LibSpiffy's
+  /// schemas when opening the Isar instance.
+  ///
+  /// If [readModelStorage] is provided, it will be used instead of creating IsarWalletStorage.
+  /// Note: If providing custom storage, it's recommended to implement ReadModelStorage
+  /// rather than the full WalletStorage interface.
   /// 
-  /// Example with host actor system:
+  /// Example with host actor system and Isar:
   /// ```dart
   /// final hostActorSystem = LocalActorSystem(ActorSystemConfig());
-  /// await libspiffy.initialize(actorSystem: hostActorSystem);
+  /// final isar = await Isar.open([...LibSpiffySchemas.walletSchemas, ...hostSchemas]);
+  /// 
+  /// await libspiffy.initialize(
+  ///   actorSystem: hostActorSystem,
+  ///   isar: isar,
+  ///   isolateConfig: IsolateConfig.defaultConfig(),
+  /// );
   /// ```
   /// 
   /// Example with standalone system:
   /// ```dart
-  /// await libspiffy.initialize(); // Creates its own actor system
+  /// await libspiffy.initialize(); // Creates its own actor system and uses in-memory storage
   /// ```
   Future<void> initialize({
     ActorSystem? actorSystem,
     String? dataDirectory,
     ActorSystemConfig? config,
-    WalletStorage? walletStorage,
+    ReadModelStorage? readModelStorage,
     SecureStorage? secureStorage,
     CryptoService? cryptoService,
     ArcServiceConfig? arcConfig,
+    Isar? isar,
+    IsolateConfig? isolateConfig,
   }) async {
     print('Initializing LibSpiffy Actor System...');
     
@@ -77,12 +96,43 @@ class LibSpiffyActorSystem {
       _ownsActorSystem = true;
     }
     
-    // 2. Initialize Eventador storage  
-    await Isar.initializeIsarCore(download: true);
-    _eventStore = await IsarEventStore.create(directory: dataDirectory ?? './data');
+    // 2. Initialize Eventador storage
+    if (isar != null) {
+      // Use provided Isar instance for event store
+      print('Using provided Isar instance for event store');
+      _eventStore = IsarEventStore(isar);
+    } else {
+      // Create separate Isar instance for Eventador
+      print('Creating Isar instance for event store');
+      await Isar.initializeIsarCore(download: true);
+      _eventStore = await IsarEventStore.create(directory: dataDirectory ?? './data');
+    }
     
-    // 3. Initialize wallet storage (use provided or default to in-memory)
-    _walletStorage = walletStorage ?? InMemoryWalletStorage();
+    // 3. Initialize read model storage (use provided or create based on Isar)
+    if (readModelStorage != null) {
+      print('Using provided read model storage');
+      _walletStorage = readModelStorage;
+      // For actors: if the provided storage is already WalletStorage, use it
+      // Otherwise create a separate InMemoryWalletStorage for actors
+      if (readModelStorage is WalletStorage) {
+        _actorStorage = readModelStorage;
+        print('Using same storage instance for actors (implements WalletStorage)');
+      } else {
+        _actorStorage = InMemoryWalletStorage();
+        print('Using separate InMemoryWalletStorage for actors');
+      }
+    } else if (isar != null) {
+      print('Creating Isar wallet storage with provided Isar instance');
+      _walletStorage = IsarWalletStorage(isar, config: isolateConfig);
+      // For actors, use InMemoryWalletStorage as they need full WalletStorage
+      // TODO: Update actors to use ReadModelStorage instead of WalletStorage
+      _actorStorage = InMemoryWalletStorage();
+    } else {
+      print('Using in-memory wallet storage (development mode)');
+      final inMemoryStorage = InMemoryWalletStorage();
+      _walletStorage = inMemoryStorage;
+      _actorStorage = inMemoryStorage;
+    }
     
     // 4. Initialize secure storage (use provided or default to in-memory)
     _secureStorage = secureStorage ?? InMemorySecureStorage();
@@ -94,7 +144,7 @@ class LibSpiffyActorSystem {
     _arcConfig = arcConfig;
     
     // 7. Initialize block header chain for SPV validation
-    _headerChain = BlockHeaderChain(_walletStorage);
+    _headerChain = BlockHeaderChain(_actorStorage);
     await _headerChain.initialize();
     
     // 8. Spawn coordination actors
@@ -117,7 +167,7 @@ class LibSpiffyActorSystem {
     // Spawn InvoiceManagerActor (needed for invoice-based payments)
     _invoiceManager = await _actorSystem.spawn('invoice-manager', () => InvoiceManagerActor(
       walletManager: _walletManager!,
-      storage: _walletStorage,
+      storage: _actorStorage,
     ));
     
     // Wire up InvoiceManager reference in WalletManager
@@ -134,7 +184,7 @@ class LibSpiffyActorSystem {
     _spvActor = await _actorSystem.spawn('spv-actor', () => SPVActor(
       walletManager: _walletManager!,
       invoiceManager: _invoiceManager!,
-      storage: _walletStorage,
+      storage: _actorStorage,
     ));
     
     // Now update HeaderSyncActor with SPVActor reference
@@ -190,7 +240,7 @@ class LibSpiffyActorSystem {
   }
 
   /// Get reference to the wallet storage
-  WalletStorage get walletStorage {
+  ReadModelStorage get walletStorage {
     if (!isInitialized) {
       throw StateError('LibSpiffy actor system not initialized');
     }
@@ -336,24 +386,32 @@ LibSpiffyActorSystem getLibSpiffySystem() {
 /// 
 /// If [actorSystem] is provided, LibSpiffy will integrate with the host's actor system.
 /// Otherwise, it creates its own isolated system.
+///
+/// If [isar] is provided, LibSpiffy will use it for read-model storage and optionally
+/// for event storage. The host application must include LibSpiffy's schemas when
+/// opening the Isar instance using LibSpiffySchemas.walletSchemas.
 Future<void> initializeLibSpiffy({
   ActorSystem? actorSystem,
   String? dataDirectory,
   ActorSystemConfig? config,
-  WalletStorage? walletStorage,
+  ReadModelStorage? readModelStorage,
   SecureStorage? secureStorage,
   CryptoService? cryptoService,
   ArcServiceConfig? arcConfig,
+  Isar? isar,
+  IsolateConfig? isolateConfig,
 }) async {
   final system = getLibSpiffySystem();
   await system.initialize(
     actorSystem: actorSystem,
-    dataDirectory: dataDirectory, 
+    dataDirectory: dataDirectory,
     config: config,
-    walletStorage: walletStorage,
+    readModelStorage: readModelStorage,
     secureStorage: secureStorage,
     cryptoService: cryptoService,
     arcConfig: arcConfig,
+    isar: isar,
+    isolateConfig: isolateConfig,
   );
 }
 

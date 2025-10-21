@@ -11,10 +11,15 @@ export 'src/models/wallet_state.dart';          // Immutable wallet state
 export 'src/models/bitcoin_transaction.dart';   // Transaction tracking
 
 // ✅ STORAGE INTERFACES - Platform-agnostic storage abstraction  
-export 'src/storage/wallet_storage.dart';       // Event & UTXO storage interface
+export 'src/storage/event_storage.dart';        // Event storage interface
+export 'src/storage/read_model_storage.dart';   // Read model storage interface
+export 'src/storage/wallet_storage.dart';       // Combined interface (backward compat)
 export 'src/storage/secure_storage.dart';       // Secure key storage interface
 export 'src/storage/in_memory_wallet_storage.dart';  // Development implementation
 export 'src/storage/in_memory_secure_storage.dart';  // Development implementation
+export 'src/storage/isar_config.dart';          // Isolate configuration
+export 'src/storage/libspiffy_schemas.dart';    // Isar schemas for host integration
+export 'src/storage/isar_wallet_storage.dart';  // Production Isar storage
 
 // ✅ CORE WALLET SYSTEM - Production-ready event-sourced wallet
 export 'src/core/wallet_commands.dart';         // 13 wallet commands extending eventador.Command
@@ -44,9 +49,4 @@ export 'src/services/wallet_balance_service.dart'; // BEEF-based multi-tier bala
 
 // TRANSACTION BUILDING - Production-ready transaction construction
 export 'src/services/transaction_builder_service.dart'; // Comprehensive transaction building with UTXO selection
-
-// CRYPTOGRAPHIC SERVICES - Full Bitcoin cryptographic operations
-export 'src/services/crypto_service.dart';              // Cryptographic service interface
-export 'src/services/dartsv_crypto_service.dart';       // Production DartSV implementation ✅
-
 

@@ -48,7 +48,7 @@ void main() {
       libspiffySystem = LibSpiffyActorSystem();
       
       await libspiffySystem.initialize(
-        walletStorage: walletStorage,
+        readModelStorage: walletStorage,
       );
 
       // Get reference to the shared header chain
@@ -497,22 +497,6 @@ class _MockChainTip implements ChainTip {
 
   @override
   int get hashCode => Object.hash(height, _blockHashString);
-}
-
-/// Problematic WalletStorage for error testing
-class _ProblematicWalletStorage implements WalletStorage {
-  @override
-  Future<void> storeBlockHeader(BlockHeader header, int height) async {
-    throw StorageException('Problematic storage error', Exception('Mock error'));
-  }
-
-  @override
-  dynamic noSuchMethod(Invocation invocation) {
-    if (invocation.memberName.toString().contains('get')) {
-      return Future.value(null);
-    }
-    return Future.value();
-  }
 }
 
 /// Test utilities

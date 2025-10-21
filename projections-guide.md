@@ -1,6 +1,6 @@
 # Guide: Building Projections for Read Models
 
-This guide explains how to create and manage projections to build real-time read models from your event stream in Eventador.
+This guide explains how to create and manage projections to build real-time read models from your event stream in Eventador using an Akka Persistence-inspired architecture.
 
 ## 1. Introduction
 
@@ -8,154 +8,415 @@ This guide explains how to create and manage projections to build real-time read
 
 A projection is a process that listens to a stream of events and transforms them into a new representation, typically a denormalized read model. In a CQRS (Command Query Responsibility Segregation) architecture, projections are responsible for building the "read side" of your application.
 
-### Projections and Persistent Actors
+### Architecture: Akka Persistence Query Pattern
 
-In Eventador, persistent actors are the primary source of events. When a command is processed by a persistent actor, it results in one or more events being persisted to the `EventStore`. Projections subscribe to the `EventStore` and are notified when new events are persisted. They can then process these events to update their read models.
+Eventador implements an **Akka Persistence Query-inspired architecture** where projections automatically subscribe to event streams rather than receiving manually routed events. This provides:
 
-This creates a one-way flow of data:
+- **Automatic Event Flow**: Events automatically flow from EventStore to projections
+- **Stream-Based Processing**: Projections consume events from streams, supporting both replay and live streaming
+- **Separation of Concerns**: EventStore doesn't know about ProjectionManager
+- **Pull-Based Model**: Projections subscribe to and pull events from streams
 
-`Command` -> `Persistent Actor` -> `Event` -> `EventStore` -> `Projection` -> `Read Model`
+### Event Flow
+
+```
+Command → Aggregate → EventStore.persist()
+                          ↓
+                    Broadcast to EventStream
+                          ↓
+              ProjectionManager (subscribed)
+                          ↓
+                    Filter by event type
+                          ↓
+                  Route to interested Projections
+                          ↓
+                    Update Read Models
+```
 
 ### Why use Projections?
 
-*   **Optimized for Queries**: Read models can be tailored to the specific needs of your UI, making queries fast and efficient.
-*   **Decoupling**: Projections decouple your read models from your write models, allowing them to evolve independently.
-*   **Real-time Updates**: Projections can update read models in real-time as new events occur.
+*   **Optimized for Queries**: Read models can be tailored to specific UI needs, making queries fast and efficient
+*   **Decoupling**: Projections decouple read models from write models, allowing independent evolution
+*   **Real-time Updates**: Projections update read models in real-time as new events occur
+*   **Automatic Streaming**: No manual event routing needed - projections automatically receive events
+*   **Replay Support**: Can rebuild read models by replaying historical events
 
 ## 2. Creating a Projection
 
-To create a projection, you need to extend the `Projection` base class:
+To create a projection, extend the `Projection` base class:
 
 ```dart
-class MyProjection extends Projection<MyReadModel> {
-  MyProjection({
-    required String projectionId,
-    required EventStore eventStore,
-  }) : super(projectionId: projectionId, eventStore: eventStore);
+class AccountSummaryProjection extends Projection<Map<String, AccountSummary>> {
+  final Isar isar;
+  final Map<String, AccountSummary> _inMemoryCache = {};
 
-  // ... implementation ...
+  AccountSummaryProjection({required this.isar});
+
+  @override
+  String get projectionId => 'account-summary';
+
+  @override
+  Map<String, AccountSummary> get readModel => _inMemoryCache;
+
+  @override
+  List<Type> get interestedEventTypes => [
+        AccountOpenedEvent,
+        MoneyDepositedEvent,
+        MoneyWithdrawnEvent,
+      ];
+
+  @override
+  Future<bool> handle(Event event) async {
+    // Handle events and update read model
+    // Return true if handled, false otherwise
+  }
+
+  @override
+  Future<void> reset() async {
+    // Reset read model to initial state
+  }
+
+  @override
+  Future<void> rebuild() async {
+    // Rebuild read model from scratch
+  }
 }
 ```
 
-The key components are:
+**Key Components**:
 
-*   `projectionId`: A unique identifier for the projection. This is used to store and retrieve checkpoints.
-*   `eventStore`: An instance of an `EventStore` implementation, which is used to read the event stream.
-*   `MyReadModel`: The type of the read model that this projection builds.
+*   `projectionId`: Unique identifier for the projection (used for checkpointing)
+*   `readModel`: The current state of the read model (in-memory or database-backed)
+*   `interestedEventTypes`: List of event types this projection processes
+*   No EventStore parameter needed - ProjectionManager handles the streaming!
 
 ## 3. Handling Events
 
-The `handle` method is where you define the logic for processing events and updating your read model.
+The `handle` method processes events and updates your read model:
 
 ```dart
 @override
 Future<bool> handle(Event event) async {
-  if (event is UserRegistered) {
-    _readModel = _readModel.copyWith(
-      totalUsers: _readModel.totalUsers + 1,
-    );
-    return true;
+  try {
+    if (event is AccountOpenedEvent) {
+      await _handleAccountOpened(event);
+      return true;
+    } else if (event is MoneyDepositedEvent) {
+      await _handleMoneyDeposited(event);
+      return true;
+    } else if (event is MoneyWithdrawnEvent) {
+      await _handleMoneyWithdrawn(event);
+      return true;
+    }
+    return false;
+  } catch (e, stackTrace) {
+    await onError(e, stackTrace);
+    rethrow;
   }
-  return false;
+}
+
+Future<void> _handleAccountOpened(AccountOpenedEvent event) async {
+  final summary = AccountSummary.fromEvent(
+    event.aggregateId,
+    event.accountHolder,
+    event.initialDeposit,
+  );
+
+  // Update in-memory cache
+  _inMemoryCache[event.aggregateId] = summary;
+
+  // Persist to database
+  await isar.writeTxn(() async {
+    await isar.accountSummarys.put(summary);
+  });
+
+  print('📊 Account Summary Created: ${event.aggregateId}');
+}
+```
+
+**Best Practices**:
+
+*   Return `true` if the event was processed, `false` otherwise
+*   Update both in-memory cache and persistent storage
+*   Handle errors gracefully using try-catch
+*   Use the `onError` callback for error reporting
+*   Keep event handlers focused and single-purpose
+
+## 4. Using ProjectionManager
+
+The `ProjectionManager` handles automatic event streaming to projections:
+
+```dart
+void main() async {
+  // 1. Create EventStore with EventStream support
+  final eventStore = await IsarEventStore.create(
+    directory: './data',
+    name: 'my_app',
+  );
+
+  // 2. Create projection
+  final projection = AccountSummaryProjection(isar: isar);
+
+  // 3. Create ProjectionManager with EventStream
+  final projectionManager = ProjectionManager(eventStore);
+
+  // 4. Register projection - auto-subscribes to event stream
+  await projectionManager.registerProjection(projection);
+
+  // 5. Start streaming events to projections
+  await projectionManager.start();
+
+  // 6. Use aggregates normally - events flow automatically!
+  final account = BankAccountAggregate(
+    accountId: 'account-001',
+    eventStore: eventStore,
+  );
+  
+  await account.handle(OpenAccountCommand(...));
+  
+  // No manual routing needed! Events automatically flow to projections
+  
+  // 7. Query the read model
+  final summary = await projection.getAccountSummary('account-001');
+  print('Balance: \$${summary?.balance}');
+
+  // 8. Cleanup
+  await projectionManager.stop();
 }
 ```
 
 **Key Points**:
 
-*   The `handle` method should return `true` if the event was processed, and `false` otherwise.
-*   It is responsible for updating the in-memory read model.
-*   You should also persist the updated read model to a database or other storage medium.
+*   ProjectionManager accepts an `EventStream` (which EventStore implements)
+*   `registerProjection()` takes a projection instance
+*   `start()` begins streaming events to all registered projections
+*   Events automatically flow to projections - no manual routing!
+*   Multiple projections can be registered and run concurrently
 
-## 4. Managing Checkpoints
+## 5. Managing Checkpoints
 
-To avoid reprocessing the entire event stream every time the projection starts, we use checkpoints. A checkpoint stores the sequence number of the last event that was processed.
-
-The `Projection` base class automatically handles loading and saving checkpoints. You can access the current checkpoint via the `checkpoint` property.
-
-## 5. Full Example
-
-Here is a complete example of a `CounterProjection` that works with the `CounterActor` from the [Persistent Actors Guide](./persistent-actors-guide.md).
+Projections track their progress using checkpoints:
 
 ```dart
-import 'package:eventador/eventador.dart';
-
-// 1. Define Events (from the CounterActor)
-class CounterIncrementedEvent extends Event {
-  final int value;
-  CounterIncrementedEvent(this.value);
+@override
+Future<int> getCheckpoint() async {
+  // Load checkpoint from persistent storage
+  // For in-memory: return 0
+  // For database: query and return last processed sequence
+  return 0;
 }
 
-class CounterDecrementedEvent extends Event {
-  final int value;
-  CounterDecrementedEvent(this.value);
+@override
+Future<void> updateCheckpoint(int sequenceNumber) async {
+  // Save checkpoint to persistent storage
+  // This allows resuming from the last processed event
 }
+```
 
-// 2. Define the Read Model
-class CounterReadModel {
-  final int totalIncrements;
-  final int totalDecrements;
-  final int currentValue;
+**Checkpoint Usage**:
 
-  CounterReadModel({
-    this.totalIncrements = 0,
-    this.totalDecrements = 0,
-    this.currentValue = 0,
-  });
+*   ProjectionManager loads the checkpoint when subscribing
+*   Events are replayed from the checkpoint position
+*   Prevents reprocessing all events on restart
+*   Should be persisted to survive application restarts
 
-  CounterReadModel copyWith({
-    int? totalIncrements,
-    int? totalDecrements,
-    int? currentValue,
-  }) {
-    return CounterReadModel(
-      totalIncrements: totalIncrements ?? this.totalIncrements,
-      totalDecrements: totalDecrements ?? this.totalDecrements,
-      currentValue: currentValue ?? this.currentValue,
-    );
-  }
-}
+## 6. Persisting Read Models
 
-// 3. Implement the Projection
-class CounterProjection extends Projection<CounterReadModel> {
-  late CounterReadModel _readModel;
+### Option 1: In-Memory (Simple)
 
-  CounterProjection({
-    required String projectionId,
-    required EventStore eventStore,
-  }) : super(projectionId: projectionId, eventStore: eventStore) {
-    _readModel = CounterReadModel();
-  }
+```dart
+class SimpleProjection extends Projection<MyReadModel> {
+  MyReadModel _readModel = MyReadModel.empty();
 
   @override
-  CounterReadModel get readModel => _readModel;
-
-  @override
-  List<Type> get interestedEventTypes => [
-        CounterIncrementedEvent,
-        CounterDecrementedEvent,
-      ];
+  MyReadModel get readModel => _readModel;
 
   @override
   Future<bool> handle(Event event) async {
-    if (event is CounterIncrementedEvent) {
-      _readModel = _readModel.copyWith(
-        totalIncrements: _readModel.totalIncrements + 1,
-        currentValue: _readModel.currentValue + event.value,
-      );
-      return true;
-    } else if (event is CounterDecrementedEvent) {
-      _readModel = _readModel.copyWith(
-        totalDecrements: _readModel.totalDecrements + 1,
-        currentValue: _readModel.currentValue - event.value,
-      );
-      return true;
-    }
-    return false;
-  }
-
-  @override
-  Future<void> reset() async {
-    _readModel = CounterReadModel();
+    // Update in-memory model only
+    _readModel = _readModel.copyWith(...);
+    return true;
   }
 }
 ```
+
+### Option 2: Database-Backed (Production)
+
+```dart
+class DatabaseProjection extends Projection<Map<String, Summary>> {
+  final Isar isar;
+  final Map<String, Summary> _cache = {};
+
+  @override
+  Map<String, Summary> get readModel => _cache;
+
+  @override
+  Future<bool> handle(Event event) async {
+    // 1. Update in-memory cache
+    _cache[key] = summary;
+
+    // 2. Persist to database
+    await isar.writeTxn(() async {
+      await isar.summarys.put(summary);
+    });
+
+    return true;
+  }
+
+  // Query methods for read model
+  Future<Summary?> getSummary(String id) async {
+    // Try cache first
+    if (_cache.containsKey(id)) {
+      return _cache[id];
+    }
+
+    // Load from database
+    final summary = await isar.summarys
+        .filter()
+        .idEqualTo(id)
+        .findFirst();
+
+    if (summary != null) {
+      _cache[id] = summary;
+    }
+
+    return summary;
+  }
+}
+```
+
+## 7. Complete Example: Bank Account
+
+See `example/bank_account_e2e_example.dart` for a complete working example featuring:
+
+- **BankAccountAggregate**: Write-side aggregate with business rules
+- **AccountSummaryProjection**: Read-side projection with Isar persistence
+- **ProjectionManager**: Automatic event streaming setup
+- **Full E2E Flow**: Commands → Events → Projections → Read Model queries
+
+### Key Excerpts:
+
+```dart
+// Define Isar Read Model
+@collection
+class AccountSummary {
+  Id id = Isar.autoIncrement;
+  @Index(unique: true)
+  late String accountId;
+  late String accountHolder;
+  late double balance;
+  late int transactionCount;
+  // ... more fields
+}
+
+// Create Projection
+class AccountSummaryProjection extends Projection<Map<String, AccountSummary>> {
+  final Isar isar;
+  final Map<String, AccountSummary> _inMemoryCache = {};
+
+  @override
+  String get projectionId => 'account-summary';
+
+  @override
+  List<Type> get interestedEventTypes => [
+    AccountOpenedEvent,
+    MoneyDepositedEvent,
+    MoneyWithdrawnEvent,
+  ];
+
+  @override
+  Future<bool> handle(Event event) async {
+    if (event is AccountOpenedEvent) {
+      final summary = AccountSummary.fromEvent(...);
+      _inMemoryCache[event.aggregateId] = summary;
+      await isar.writeTxn(() => isar.accountSummarys.put(summary));
+      return true;
+    }
+    // ... handle other events
+    return false;
+  }
+
+  // Query methods
+  Future<AccountSummary?> getAccountSummary(String accountId) async {
+    // Check cache, then database
+  }
+
+  Future<double> getTotalBalanceAllAccounts() async {
+    final accounts = await isar.accountSummarys.where().findAll();
+    return accounts.fold(0.0, (sum, account) => sum + account.balance);
+  }
+}
+
+// Setup in main()
+final eventStore = await IsarEventStore.create(...);
+final projection = AccountSummaryProjection(isar: isar);
+final projectionManager = ProjectionManager(eventStore);
+
+await projectionManager.registerProjection(projection);
+await projectionManager.start();
+
+// Events now automatically flow to projection!
+```
+
+## 8. Advanced Topics
+
+### Rebuilding Projections
+
+```dart
+// Rebuild a specific projection from scratch
+await projectionManager.rebuildProjection('account-summary');
+```
+
+This will:
+1. Pause the projection
+2. Reset the read model
+3. Replay all events from the beginning
+4. Resume normal operation
+
+### Pausing and Resuming
+
+```dart
+// Pause a projection
+await projectionManager.pauseProjection('account-summary');
+
+// Resume a projection
+await projectionManager.resumeProjection('account-summary');
+```
+
+### Monitoring Projections
+
+```dart
+// Get projection status
+final info = await projectionManager.getProjectionInfo('account-summary');
+print('Status: ${info.status}');
+print('Events processed: ${info.eventsProcessed}');
+print('Last sequence: ${info.lastProcessedSequence}');
+
+// Get all projections
+final allInfos = projectionManager.getProjectionInfos();
+```
+
+## 9. Best Practices
+
+1. **Idempotency**: Design event handlers to be idempotent (safe to process same event multiple times)
+2. **Error Handling**: Implement proper error handling and use `onError` callback
+3. **Checkpointing**: Persist checkpoints regularly for fast recovery
+4. **Caching**: Use in-memory caching for frequently accessed data
+5. **Batch Updates**: Consider batching database writes for performance
+6. **Monitoring**: Track projection health and lag using ProjectionInfo
+7. **Testing**: Test projections independently with mock event streams
+8. **Read Model Design**: Design read models for query patterns, not normalized data
+
+## 10. Comparison with Akka Persistence
+
+Eventador's projection system is inspired by Akka Persistence Query:
+
+| Feature | Akka Persistence | Eventador |
+|---------|------------------|-----------|
+| Event Streaming | `eventsByTag()`, `allEvents()` | `EventStream` interface |
+| Projection Manager | Akka Projection | `ProjectionManager` |
+| Subscription | Pull-based streams | Pull-based Dart streams |
+| Checkpointing | Offset storage | `getCheckpoint()` / `updateCheckpoint()` |
+| Read Model | User-defined | `Projection<TReadModel>` |
+
+Both systems follow the same principle: **projections subscribe to event streams rather than receiving manually routed events**.

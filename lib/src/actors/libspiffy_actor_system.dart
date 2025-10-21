@@ -14,6 +14,8 @@ import '../services/dartsv_crypto_service.dart';
 import '../services/arc_service_config.dart';
 import '../spv/block_header_chain.dart';
 import '../integration/spiffynode_bridge.dart';
+import '../projections/wallet_projection.dart';
+import '../projections/invoice_projection.dart';
 import 'wallet_manager_actor.dart';
 import 'spv_actor.dart';
 import 'arc_actor.dart';
@@ -34,6 +36,11 @@ class LibSpiffyActorSystem {
   
   // SpiffyNode integration (optional)
   SpiffyNodeBridge? _spiffyNodeBridge;
+  
+  // CQRS Projections (read-side event handlers)
+  ProjectionManager? _projectionManager;
+  WalletProjection? _walletProjection;
+  InvoiceProjection? _invoiceProjection;
   
   // Actor references
   ActorRef? _walletManager;
@@ -150,10 +157,59 @@ class LibSpiffyActorSystem {
     _headerChain = BlockHeaderChain(_actorStorage);
     await _headerChain.initialize();
     
-    // 8. Spawn coordination actors
+    // 8. Initialize CQRS projections (read-side event handlers)
+    await _initializeProjections();
+    
+    // 9. Spawn coordination actors
     await _spawnActors();
     
     print('LibSpiffy Actor System initialized successfully');
+  }
+  
+  /// Initialize CQRS projections for read-side persistence
+  /// 
+  /// Projections listen to events from the EventStore and build denormalized
+  /// read models in Isar for efficient queries. This separates write concerns
+  /// (aggregates) from read concerns (queries).
+  /// 
+  /// Uses Akka Persistence Query-inspired architecture where projections
+  /// automatically subscribe to event streams from EventStore.
+  Future<void> _initializeProjections() async {
+    print('Initializing CQRS projections...');
+    
+    // TODO: ProjectionManager integration pending Eventador API updates
+    // The current Eventador version requires QueueManager and different registration API
+    // Once the Akka Persistence Query-inspired API is available, uncomment this section:
+    
+    /*
+    // Create ProjectionManager with EventStore (which implements EventStream)
+    _projectionManager = ProjectionManager(_eventStore);
+    
+    // Create and register WalletProjection for wallet read models
+    _walletProjection = WalletProjection(
+      projectionId: 'wallet-projection',
+      eventStore: _eventStore,
+      storage: _walletStorage,
+    );
+    await _projectionManager!.registerProjection(_walletProjection!);
+    print('✓ WalletProjection registered and subscribed to event stream');
+    
+    // Create and register InvoiceProjection for invoice read models
+    _invoiceProjection = InvoiceProjection(
+      projectionId: 'invoice-projection',
+      eventStore: _eventStore,
+      storage: _walletStorage,
+    );
+    await _projectionManager!.registerProjection(_invoiceProjection!);
+    print('✓ InvoiceProjection registered and subscribed to event stream');
+    
+    // Start the projection manager to begin streaming events
+    await _projectionManager!.start();
+    print('✓ ProjectionManager started - projections are now processing events in real-time');
+    */
+    
+    print('⚠️  ProjectionManager integration temporarily disabled - awaiting Eventador API update');
+    print('   Projection classes are ready and will be automatically integrated when API is available');
   }
 
   /// Spawn all coordination actors
@@ -280,6 +336,24 @@ class LibSpiffyActorSystem {
   /// Get reference to the SpiffyNode bridge (if connected)
   SpiffyNodeBridge? get spiffyNodeBridge => _spiffyNodeBridge;
 
+  /// Get reference to the ProjectionManager (CQRS read-side)
+  /// 
+  /// The ProjectionManager routes events from the EventStore to registered
+  /// projections which build denormalized read models for queries.
+  ProjectionManager? get projectionManager => _projectionManager;
+
+  /// Get reference to the WalletProjection
+  /// 
+  /// The WalletProjection listens to wallet events and maintains wallet
+  /// read models in Isar for efficient queries.
+  WalletProjection? get walletProjection => _walletProjection;
+
+  /// Get reference to the InvoiceProjection
+  /// 
+  /// The InvoiceProjection listens to invoice events and maintains invoice
+  /// read models in Isar for efficient queries.
+  InvoiceProjection? get invoiceProjection => _invoiceProjection;
+
   /// Get reference to the underlying actor system
   /// 
   /// This is useful for host applications that need to interact with
@@ -357,10 +431,21 @@ class LibSpiffyActorSystem {
     print('Shutting down LibSpiffy Actor System...');
     
     try {
-      // Disconnect from SpiffyNode first
+      // 1. Disconnect from SpiffyNode first
       await disconnectFromSpiffyNode();
       
-      // Shutdown actor system only if we own it
+      // 2. Stop projection manager (stop listening to events)
+      // TODO: Uncomment when ProjectionManager is integrated
+      /*
+      if (_projectionManager != null) {
+        print('Stopping ProjectionManager...');
+        await _projectionManager!.stop();
+        _projectionManager = null;
+        print('✓ ProjectionManager stopped');
+      }
+      */
+      
+      // 3. Shutdown actor system only if we own it
       if (_ownsActorSystem) {
         print('Shutting down LibSpiffy-owned actor system');
         await _actorSystem.shutdown();
@@ -368,7 +453,7 @@ class LibSpiffyActorSystem {
         print('Actor system owned by host application - not shutting down');
       }
       
-      // Always close event store
+      // 4. Always close event store
       await _eventStore.close();
       
       print('LibSpiffy Actor System shutdown complete');

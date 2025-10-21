@@ -27,9 +27,6 @@ abstract class ReadModelStorage {
   /// List all wallet IDs
   Future<List<String>> listWallets();
   
-  /// Delete wallet and all associated data
-  Future<void> deleteWallet(String walletId);
-  
   // ========================================
   // UTXO Queries
   // ========================================

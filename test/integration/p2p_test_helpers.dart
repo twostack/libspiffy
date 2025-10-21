@@ -174,39 +174,49 @@ Future<String> generateAddress({
 }
 
 /// Setup test block headers from existing test data
+/// Idempotent - skips headers that already exist
 Future<void> setupTestHeaders(IsarWalletStorage storage) async {
   // Block 1291860 - Real testnet data
-  final header1 = BlockHeader(
-    version: 536870912,
-    prevBlock: Hash.fromHex('00000000000000f789c089187720163628764945e9c694e260c35ad81f863338'),
-    merkleRoot: Hash.fromHex('4baf0b15bbc9c92db8f9360a3a1dd1bd258d96b59bb93a754bf32346d6ff5d1f'),
-    timestamp: DateTime.fromMillisecondsSinceEpoch(1553178908 * 1000),
-    bits: 0x1a02f043,
-    nonce: 333457262,
-  );
-  await storage.storeBlockHeader(header1, 1291860);
+  final existingHeader1 = await storage.getBlockHeaderByHeight(1291860);
+  if (existingHeader1 == null) {
+    final header1 = BlockHeader(
+      version: 536870912,
+      prevBlock: Hash.fromHex('00000000000000f789c089187720163628764945e9c694e260c35ad81f863338'),
+      merkleRoot: Hash.fromHex('4baf0b15bbc9c92db8f9360a3a1dd1bd258d96b59bb93a754bf32346d6ff5d1f'),
+      timestamp: DateTime.fromMillisecondsSinceEpoch(1553178908 * 1000),
+      bits: 0x1a02f043,
+      nonce: 333457262,
+    );
+    await storage.storeBlockHeader(header1, 1291860);
+  }
   
   // Block 1358861 - Real testnet data
-  final header2 = BlockHeader(
-    version: 536870912,
-    prevBlock: Hash.fromHex('000000000000005eac106af39f73bdd7bbc4b7b5b550c0b14dcb2de473aefc99'),
-    merkleRoot: Hash.fromHex('0161129d1c9fc51739b5de8be89ecf9ffb9505dfbe0c53f02ace6b11b96fe373'),
-    timestamp: DateTime.fromMillisecondsSinceEpoch(1586816355 * 1000),
-    bits: 0x1d00ffff,
-    nonce: 354199361,
-  );
-  await storage.storeBlockHeader(header2, 1358861);
+  final existingHeader2 = await storage.getBlockHeaderByHeight(1358861);
+  if (existingHeader2 == null) {
+    final header2 = BlockHeader(
+      version: 536870912,
+      prevBlock: Hash.fromHex('000000000000005eac106af39f73bdd7bbc4b7b5b550c0b14dcb2de473aefc99'),
+      merkleRoot: Hash.fromHex('0161129d1c9fc51739b5de8be89ecf9ffb9505dfbe0c53f02ace6b11b96fe373'),
+      timestamp: DateTime.fromMillisecondsSinceEpoch(1586816355 * 1000),
+      bits: 0x1d00ffff,
+      nonce: 354199361,
+    );
+    await storage.storeBlockHeader(header2, 1358861);
+  }
   
   // Block 1359485 - Real testnet data
-  final header3 = BlockHeader(
-    version: 536870912,
-    prevBlock: Hash.fromHex('0000000000000017e934c5ea8dbff86c2acb79a6775d15636ad5acc3ed177c2c'),
-    merkleRoot: Hash.fromHex('a6941deb95c11e72842ec13c8f2e8db9c48f1492bf8f77ca4115acd79bf46331'),
-    timestamp: DateTime.fromMillisecondsSinceEpoch(1587144912 * 1000),
-    bits: 0x1d00ffff,
-    nonce: 2278258890,
-  );
-  await storage.storeBlockHeader(header3, 1359485);
+  final existingHeader3 = await storage.getBlockHeaderByHeight(1359485);
+  if (existingHeader3 == null) {
+    final header3 = BlockHeader(
+      version: 536870912,
+      prevBlock: Hash.fromHex('0000000000000017e934c5ea8dbff86c2acb79a6775d15636ad5acc3ed177c2c'),
+      merkleRoot: Hash.fromHex('a6941deb95c11e72842ec13c8f2e8db9c48f1492bf8f77ca4115acd79bf46331'),
+      timestamp: DateTime.fromMillisecondsSinceEpoch(1587144912 * 1000),
+      bits: 0x1d00ffff,
+      nonce: 2278258890,
+    );
+    await storage.storeBlockHeader(header3, 1359485);
+  }
 }
 
 /// Load test transaction data

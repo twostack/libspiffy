@@ -546,6 +546,197 @@ void main() {
       print('✓ Invoice remains pending (no payment made)');
       print('✓ Insufficient funds handling verified\n');
     });
+    
+    test('Verifies complete CQRS event sourcing flow', () async {
+      print('\n=== Testing Complete CQRS Event Sourcing Flow ===');
+      
+      // STEP 1: Command → Aggregate → Events
+      print('STEP 1: Sending create invoice command...');
+      final createCompleter = Completer<InvoiceCreatedMessage>();
+      final createReceiver = await bobActorSystem.spawn(
+        'cqrs-flow-receiver',
+        () => TestReceiverActor<InvoiceCreatedMessage>(createCompleter),
+      );
+      
+      bobLibSpiffy.invoiceCoordinator.tell(
+        CreateInvoiceMessage(
+          walletId: bobWalletId,
+          amount: BigInt.from(75000),
+          description: 'CQRS flow test invoice',
+        ),
+        sender: createReceiver,
+      );
+      
+      final invoice = await createCompleter.future;
+      final invoiceId = invoice.invoiceId;
+      print('✓ Command processed, invoice created: $invoiceId');
+      
+      // STEP 2: Verify Events in EventStore
+      print('\nSTEP 2: Verifying events persisted in EventStore...');
+      // Give EventStore time to persist events to Isar
+      await Future.delayed(Duration(milliseconds: 1000));
+      
+      final fullPersistenceId = 'Invoice_$invoiceId';
+      final createEvents = await bobIsar.eventEnvelopes
+          .filter()
+          .persistenceIdEqualTo(fullPersistenceId)
+          .findAll();
+      
+      expect(createEvents, isNotEmpty, reason: 'Events should be in EventStore');
+      expect(createEvents.any((e) => e.eventType == 'InvoiceCreatedEvent'), isTrue,
+          reason: 'InvoiceCreatedEvent should be in EventStore');
+      print('✓ ${createEvents.length} event(s) persisted in EventStore');
+      print('  Event types: ${createEvents.map((e) => e.eventType).join(", ")}');
+      
+      // STEP 3: Verify Projection Updated Read Model
+      print('\nSTEP 3: Verifying projection updated read model...');
+      await verifyInvoiceInDatabase(
+        isar: bobIsar,
+        invoiceId: invoiceId,
+        expectedStatus: InvoiceStatus.pending,
+      );
+      print('✓ Projection updated read model in Isar (status: pending)');
+      
+      // STEP 4: Mark as Paid (generates more events)
+      print('\nSTEP 4: Marking invoice as paid...');
+      final paidCompleter = Completer<InvoiceStatusMessage>();
+      final paidReceiver = await bobActorSystem.spawn(
+        'paid-cqrs-receiver',
+        () => TestReceiverActor<InvoiceStatusMessage>(paidCompleter),
+      );
+      
+      bobLibSpiffy.invoiceCoordinator.tell(
+        MarkInvoicePaidMessage(
+          invoiceId: invoiceId,
+          txid: 'cqrs-flow-test-txid',
+          amountReceived: BigInt.from(75000),
+          addressesPaidTo: invoice.addresses,
+        ),
+        sender: paidReceiver,
+      );
+      
+      await paidCompleter.future;
+      print('✓ Invoice marked as paid');
+      
+      // STEP 5: Verify More Events Appended
+      print('\nSTEP 5: Verifying additional events appended...');
+      // Give EventStore time to persist new events to Isar
+      await Future.delayed(Duration(milliseconds: 1000));
+      
+      final fullPersistenceIdForPaid = 'Invoice_$invoiceId';
+      final allInvoiceEvents = await bobIsar.eventEnvelopes
+          .filter()
+          .persistenceIdEqualTo(fullPersistenceIdForPaid)
+          .findAll();
+      
+      expect(allInvoiceEvents.length, greaterThan(createEvents.length),
+          reason: 'More events should be appended after marking paid');
+      expect(allInvoiceEvents.any((e) => e.eventType == 'InvoicePaidEvent'), isTrue,
+          reason: 'InvoicePaidEvent should be in EventStore');
+      print('✓ Additional events appended (${allInvoiceEvents.length} total)');
+      print('  All event types: ${allInvoiceEvents.map((e) => e.eventType).join(", ")}');
+      
+      // STEP 6: Verify Read Model Updated Again
+      print('\nSTEP 6: Verifying projection updated read model with new status...');
+      await verifyInvoiceInDatabase(
+        isar: bobIsar,
+        invoiceId: invoiceId,
+        expectedStatus: InvoiceStatus.paid,
+      );
+      print('✓ Projection updated read model (status: paid)');
+      
+      // STEP 7: Test Event Replay (shutdown and restart)
+      print('\nSTEP 7: Testing aggregate recovery from events...');
+      print('  Shutting down Bob\'s system...');
+      await bobLibSpiffy.shutdown();
+      
+      // Reopen database with same name to access persisted events
+      print('  Reopening Isar database...');
+      bobIsar = await Isar.open(
+        [
+          ...LibSpiffySchemas.walletSchemas,
+          EventEnvelopeSchema,
+          SnapshotEnvelopeSchema,
+        ],
+        directory: bobTestDir.path,
+        name: 'bob_db', // Same name as original
+      );
+      
+      // Restart Bob's system
+      print('  Restarting Bob\'s actor system...');
+      bobActorSystem = LocalActorSystem(ActorSystemConfig());
+      bobLibSpiffy = LibSpiffyActorSystem();
+      await bobLibSpiffy.initialize(
+        actorSystem: bobActorSystem,
+        isar: bobIsar,
+        dataDirectory: bobTestDir.path,
+      );
+      
+      // Setup test headers again (they're in-memory in BlockHeaderChain)
+      await setupTestHeaders(bobLibSpiffy.walletStorage as IsarWalletStorage);
+      
+      print('✓ Bob\'s system restarted');
+      
+      // STEP 8: Verify Aggregate Can Query from Read Model (Events Still Persisted)
+      print('\nSTEP 8: Verifying invoice state survived restart...');
+      await Future.delayed(Duration(milliseconds: 500)); // Let projections catch up
+      
+      final queryCompleter = Completer<InvoiceDetailsResponse>();
+      final queryReceiver = await bobActorSystem.spawn(
+        'query-after-restart',
+        () => TestReceiverActor<InvoiceDetailsResponse>(queryCompleter),
+      );
+      
+      bobLibSpiffy.invoiceCoordinator.tell(
+        CheckInvoiceMessage(invoiceId),
+        sender: queryReceiver,
+      );
+      
+      final details = await queryCompleter.future.timeout(Duration(seconds: 5));
+      expect(details.found, isTrue, reason: 'Invoice should be found after restart');
+      expect(details.status, equals(InvoiceStatus.paid),
+          reason: 'Invoice should still be paid after restart');
+      expect(details.paymentTxid, equals('cqrs-flow-test-txid'),
+          reason: 'Payment details should persist');
+      print('✓ Invoice recovered after restart with correct state');
+      print('  Status: ${details.status}');
+      print('  Payment TXID: ${details.paymentTxid}');
+      
+      // STEP 9: Verify Events Still Exist in EventStore
+      print('\nSTEP 9: Verifying events persisted across restart...');
+      final fullPersistenceIdForRecovered = 'Invoice_$invoiceId';
+      final recoveredEvents = await bobIsar.eventEnvelopes
+          .filter()
+          .persistenceIdEqualTo(fullPersistenceIdForRecovered)
+          .findAll();
+      
+      expect(recoveredEvents.length, equals(allInvoiceEvents.length),
+          reason: 'All events should persist across restart');
+      print('✓ All ${recoveredEvents.length} events persisted across restart');
+      
+      // STEP 10: Document the CQRS Flow
+      print('\n=== CQRS Flow Summary ===');
+      print('Command Layer:');
+      print('  CreateInvoiceMessage → InvoiceCoordinatorActor → InvoiceAggregate');
+      print('  MarkInvoicePaidMessage → InvoiceCoordinatorActor → InvoiceAggregate');
+      print('');
+      print('Event Sourcing:');
+      print('  InvoiceAggregate → emits events → EventStore (${recoveredEvents.length} events)');
+      print('  Events: ${recoveredEvents.map((e) => e.eventType).join(", ")}');
+      print('');
+      print('Projection (Read Side):');
+      print('  EventStore → ProjectionManager → InvoiceProjection → Isar read model');
+      print('  Status transitions: pending → paid');
+      print('');
+      print('Query Layer:');
+      print('  CheckInvoiceMessage → reads from Isar (not EventStore)');
+      print('');
+      print('Recovery:');
+      print('  System restart → EventStore replays events → state reconstructed');
+      print('========================\n');
+      
+      print('✓ Complete CQRS Event Sourcing Flow Verified\n');
+    });
   });
 }
 

@@ -103,23 +103,30 @@ class InvoiceProjection extends Projection<InvoiceReadModel> {
       metadata: event.invoiceMetadata ?? {},
     );
     
-    // Create Invoice object for storage
-    final invoice = Invoice(
-      invoiceId: event.invoiceId,
-      walletId: event.walletId,
-      addresses: List.from(event.addresses),
-      amount: event.amount,
-      description: event.description,
-      status: InvoiceStatus.pending,
-      createdAt: event.timestamp,
-      expiresAt: event.expiresAt,
-      paidAt: null,
-      paymentTxid: null,
-      amountReceived: null,
-      metadata: event.invoiceMetadata,
-    );
+    // Check if invoice already exists (for idempotent projection replay)
+    final existing = await _storage.getInvoice(event.invoiceId);
     
-    await _storage.storeInvoice(invoice);
+    if (existing == null) {
+      // Create Invoice object for storage
+      final invoice = Invoice(
+        invoiceId: event.invoiceId,
+        walletId: event.walletId,
+        addresses: List.from(event.addresses),
+        amount: event.amount,
+        description: event.description,
+        status: InvoiceStatus.pending,
+        createdAt: event.timestamp,
+        expiresAt: event.expiresAt,
+        paidAt: null,
+        paymentTxid: null,
+        amountReceived: null,
+        metadata: event.invoiceMetadata,
+      );
+      
+      await _storage.storeInvoice(invoice);
+    }
+    // If invoice already exists, skip insert (idempotent replay)
+    // The invoice will be updated by subsequent events (paid, expired, etc.)
   }
   
   Future<void> _handleInvoiceStatusChanged(InvoiceStatusChangedEvent event) async {

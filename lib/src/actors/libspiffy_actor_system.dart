@@ -16,6 +16,8 @@ import '../spv/block_header_chain.dart';
 import '../integration/spiffynode_bridge.dart';
 import '../projections/wallet_projection.dart';
 import '../projections/invoice_projection.dart';
+import '../core/wallet_events.dart';
+import '../core/invoice_events.dart';
 import 'wallet_manager_actor.dart';
 import 'spv_actor.dart';
 import 'arc_actor.dart';
@@ -157,6 +159,9 @@ class LibSpiffyActorSystem {
     _headerChain = BlockHeaderChain(_actorStorage);
     await _headerChain.initialize();
     
+    // 7.5. Register event types for deserialization (BEFORE projections!)
+    await _registerEventTypes();
+    
     // 8. Initialize CQRS projections (read-side event handlers)
     await _initializeProjections();
     
@@ -164,6 +169,142 @@ class LibSpiffyActorSystem {
     await _spawnActors();
     
     print('LibSpiffy Actor System initialized successfully');
+  }
+  
+  /// Register all LibSpiffy event types with Eventador's EventRegistry
+  /// 
+  /// This is REQUIRED for event deserialization from CBOR storage after restart.
+  /// During live operation, events flow through memory as objects, but after
+  /// a restart, they must be reconstructed from CBOR bytes in the EventStore.
+  /// 
+  /// The EventRegistry provides the mapping from event type names to their
+  /// fromMap() factory functions for deserialization.
+  /// 
+  /// MUST be called before _initializeProjections() because projections may
+  /// need to deserialize events when catching up on startup.
+  Future<void> _registerEventTypes() async {
+    print('Registering event types with Eventador EventRegistry...');
+    
+    // =================================================================
+    // WALLET EVENTS (16 total)
+    // =================================================================
+    
+    // Wallet Lifecycle
+    EventRegistry.register<WalletCreatedEvent>(
+      'WalletCreatedEvent',
+      (map) => WalletCreatedEvent.fromMap(map),
+    );
+    
+    EventRegistry.register<WalletConfigurationUpdatedEvent>(
+      'WalletConfigurationUpdatedEvent',
+      (map) => WalletConfigurationUpdatedEvent.fromMap(map),
+    );
+    
+    // Address Management
+    EventRegistry.register<AddressGeneratedEvent>(
+      'AddressGeneratedEvent',
+      (map) => AddressGeneratedEvent.fromMap(map),
+    );
+    
+    EventRegistry.register<AddressLabelUpdatedEvent>(
+      'AddressLabelUpdatedEvent',
+      (map) => AddressLabelUpdatedEvent.fromMap(map),
+    );
+    
+    // UTXO Management
+    EventRegistry.register<UTXOReceivedEvent>(
+      'UTXOReceivedEvent',
+      (map) => UTXOReceivedEvent.fromMap(map),
+    );
+    
+    EventRegistry.register<UTXOSpentEvent>(
+      'UTXOSpentEvent',
+      (map) => UTXOSpentEvent.fromMap(map),
+    );
+    
+    EventRegistry.register<UTXOConfirmationUpdatedEvent>(
+      'UTXOConfirmationUpdatedEvent',
+      (map) => UTXOConfirmationUpdatedEvent.fromMap(map),
+    );
+    
+    // UTXO Reservation (Legacy)
+    EventRegistry.register<UTXOReservedEvent>(
+      'UTXOReservedEvent',
+      (map) => UTXOReservedEvent.fromMap(map),
+    );
+    
+    EventRegistry.register<UTXOReleasedEvent>(
+      'UTXOReleasedEvent',
+      (map) => UTXOReleasedEvent.fromMap(map),
+    );
+    
+    EventRegistry.register<UTXOReservationRenewedEvent>(
+      'UTXOReservationRenewedEvent',
+      (map) => UTXOReservationRenewedEvent.fromMap(map),
+    );
+    
+    // UTXO Reservation (New Pattern)
+    EventRegistry.register<UTXOReservationPlacedEvent>(
+      'UTXOReservationPlacedEvent',
+      (map) => UTXOReservationPlacedEvent.fromMap(map),
+    );
+    
+    EventRegistry.register<UTXOReservationReleasedEvent>(
+      'UTXOReservationReleasedEvent',
+      (map) => UTXOReservationReleasedEvent.fromMap(map),
+    );
+    
+    EventRegistry.register<UTXOReservationExpiredEvent>(
+      'UTXOReservationExpiredEvent',
+      (map) => UTXOReservationExpiredEvent.fromMap(map),
+    );
+    
+    // Transaction Management
+    EventRegistry.register<TransactionCreatedEvent>(
+      'TransactionCreatedEvent',
+      (map) => TransactionCreatedEvent.fromMap(map),
+    );
+    
+    EventRegistry.register<TransactionSignedEvent>(
+      'TransactionSignedEvent',
+      (map) => TransactionSignedEvent.fromMap(map),
+    );
+    
+    EventRegistry.register<TransactionBroadcastEvent>(
+      'TransactionBroadcastEvent',
+      (map) => TransactionBroadcastEvent.fromMap(map),
+    );
+    
+    // =================================================================
+    // INVOICE EVENTS (5 total)
+    // =================================================================
+    
+    EventRegistry.register<InvoiceCreatedEvent>(
+      'InvoiceCreatedEvent',
+      (map) => InvoiceCreatedEvent.fromMap(map),
+    );
+    
+    EventRegistry.register<InvoiceStatusChangedEvent>(
+      'InvoiceStatusChangedEvent',
+      (map) => InvoiceStatusChangedEvent.fromMap(map),
+    );
+    
+    EventRegistry.register<InvoicePaidEvent>(
+      'InvoicePaidEvent',
+      (map) => InvoicePaidEvent.fromMap(map),
+    );
+    
+    EventRegistry.register<InvoiceExpiredEvent>(
+      'InvoiceExpiredEvent',
+      (map) => InvoiceExpiredEvent.fromMap(map),
+    );
+    
+    EventRegistry.register<InvoiceCancelledEvent>(
+      'InvoiceCancelledEvent',
+      (map) => InvoiceCancelledEvent.fromMap(map),
+    );
+    
+    print('✓ Registered 21 event types for deserialization');
   }
   
   /// Initialize CQRS projections for read-side persistence

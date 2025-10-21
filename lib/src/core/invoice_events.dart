@@ -37,19 +37,9 @@ abstract class InvoiceEvent extends AggregateEventBase with SerializableEvent {
     return data;
   }
   
-  @override
-  Map<String, dynamic> toMap() {
-    return {
-      'eventType': runtimeType.toString(),
-      'invoiceId': invoiceId,
-      'walletId': walletId,
-      'eventId': eventId,
-      'timestamp': timestamp.toIso8601String(),
-      'version': version,
-      'metadata': metadata,
-      ...getInvoiceEventData(),
-    };
-  }
+  // Note: toMap() is inherited from SerializableEvent mixin, which properly
+  // chains through Event.toMap() to include the 'type' field required by
+  // CborSerializer.deserializeEvent(). Do not override toMap() here.
 }
 
 // =============================================================================
@@ -104,12 +94,16 @@ class InvoiceCreatedEvent extends InvoiceEvent {
       amount: BigInt.parse(map['amount'] as String),
       description: map['description'] as String?,
       expiresAt: map['expiresAt'] != null
-          ? DateTime.parse(map['expiresAt'] as String)
+          ? (map['expiresAt'] is String
+              ? DateTime.parse(map['expiresAt'] as String)
+              : map['expiresAt'] as DateTime)
           : null,
       invoiceMetadata: map['invoiceMetadata'] as Map<String, dynamic>?,
       eventId: map['eventId'] as String?,
       timestamp: map['timestamp'] != null
-          ? DateTime.parse(map['timestamp'] as String)
+          ? (map['timestamp'] is String
+              ? DateTime.parse(map['timestamp'] as String)
+              : map['timestamp'] as DateTime)
           : null,
       version: map['version'] as int?,
       metadata: map['metadata'] as Map<String, dynamic>?,
@@ -164,7 +158,9 @@ class InvoiceStatusChangedEvent extends InvoiceEvent {
       reason: map['reason'] as String?,
       eventId: map['eventId'] as String?,
       timestamp: map['timestamp'] != null
-          ? DateTime.parse(map['timestamp'] as String)
+          ? (map['timestamp'] is String
+              ? DateTime.parse(map['timestamp'] as String)
+              : map['timestamp'] as DateTime)
           : null,
       version: map['version'] as int?,
       metadata: map['metadata'] as Map<String, dynamic>?,
@@ -217,10 +213,14 @@ class InvoicePaidEvent extends InvoiceEvent {
       txid: map['txid'] as String,
       amountReceived: BigInt.parse(map['amountReceived'] as String),
       addressesPaidTo: List<String>.from(map['addressesPaidTo']),
-      paidAt: DateTime.parse(map['paidAt'] as String),
+      paidAt: map['paidAt'] is String
+          ? DateTime.parse(map['paidAt'] as String)
+          : map['paidAt'] as DateTime,
       eventId: map['eventId'] as String?,
       timestamp: map['timestamp'] != null
-          ? DateTime.parse(map['timestamp'] as String)
+          ? (map['timestamp'] is String
+              ? DateTime.parse(map['timestamp'] as String)
+              : map['timestamp'] as DateTime)
           : null,
       version: map['version'] as int?,
       metadata: map['metadata'] as Map<String, dynamic>?,
@@ -257,7 +257,9 @@ class InvoiceExpiredEvent extends InvoiceEvent {
       walletId: map['walletId'] as String,
       eventId: map['eventId'] as String?,
       timestamp: map['timestamp'] != null
-          ? DateTime.parse(map['timestamp'] as String)
+          ? (map['timestamp'] is String
+              ? DateTime.parse(map['timestamp'] as String)
+              : map['timestamp'] as DateTime)
           : null,
       version: map['version'] as int?,
       metadata: map['metadata'] as Map<String, dynamic>?,
@@ -300,7 +302,9 @@ class InvoiceCancelledEvent extends InvoiceEvent {
       reason: map['reason'] as String?,
       eventId: map['eventId'] as String?,
       timestamp: map['timestamp'] != null
-          ? DateTime.parse(map['timestamp'] as String)
+          ? (map['timestamp'] is String
+              ? DateTime.parse(map['timestamp'] as String)
+              : map['timestamp'] as DateTime)
           : null,
       version: map['version'] as int?,
       metadata: map['metadata'] as Map<String, dynamic>?,

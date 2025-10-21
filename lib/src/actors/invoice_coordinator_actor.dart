@@ -179,6 +179,9 @@ class InvoiceCoordinatorActor extends Actor {
       
       _invoiceAggregates[invoiceId] = aggregateActor;
       
+      // Allow recovery to complete before sending commands
+      await Future.delayed(Duration(milliseconds: 200));
+      
       // Send CreateInvoiceCommand to the aggregate
       final command = CreateInvoiceCommand(
         invoiceId: invoiceId,

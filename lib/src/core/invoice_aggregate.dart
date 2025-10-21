@@ -35,18 +35,13 @@ class InvoiceAggregate extends AggregateRoot<InvoiceState> {
   
   @override
   Future<List<Event>> handleCommand(InvoiceState currentState, Command command) async {
-    switch (command.runtimeType) {
-      case CreateInvoiceCommand:
-        return _handleCreateInvoice(currentState, command as CreateInvoiceCommand);
-      case MarkInvoicePaidCommand:
-        return _handleMarkInvoicePaid(currentState, command as MarkInvoicePaidCommand);
-      case CancelInvoiceCommand:
-        return _handleCancelInvoice(currentState, command as CancelInvoiceCommand);
-      case ExpireInvoiceCommand:
-        return _handleExpireInvoice(currentState, command as ExpireInvoiceCommand);
-      default:
-        throw ArgumentError('Unknown command type: ${command.runtimeType}');
-    }
+    return switch (command.runtimeType) {
+      CreateInvoiceCommand => _handleCreateInvoice(currentState, command as CreateInvoiceCommand),
+      MarkInvoicePaidCommand => _handleMarkInvoicePaid(currentState, command as MarkInvoicePaidCommand),
+      CancelInvoiceCommand => _handleCancelInvoice(currentState, command as CancelInvoiceCommand),
+      ExpireInvoiceCommand => _handleExpireInvoice(currentState, command as ExpireInvoiceCommand),
+      _ => throw ArgumentError('Unknown command type: ${command.runtimeType}'),
+    };
   }
   
   @override

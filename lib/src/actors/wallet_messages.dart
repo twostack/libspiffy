@@ -12,9 +12,19 @@ import '../core/wallet_commands.dart';
 class CreateWalletMessage implements Message {
   final String walletId;
   final String name;
+  final String? mnemonic;
+  final String? wif;
+  final String? xpriv;
   final Map<String, dynamic>? walletMetadata;
 
-  CreateWalletMessage(this.walletId, this.name, {this.walletMetadata});
+  CreateWalletMessage(
+    this.walletId,
+    this.name, {
+    this.mnemonic,
+    this.wif,
+    this.xpriv,
+    this.walletMetadata,
+  });
 
   @override
   String get correlationId => 'create-wallet-$walletId';

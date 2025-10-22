@@ -1,3 +1,4 @@
+import 'package:libspiffy/src/models/wallet_type.dart';
 import 'package:test/test.dart';
 
 import 'package:libspiffy/src/core/wallet_events.dart';
@@ -70,6 +71,7 @@ void main() {
           walletName: walletName,
           rootAddress: rootAddress,
           walletMetadata: walletMetadata,
+          walletType: WalletType.hd,
         );
 
         expect(event.walletId, equals(walletId));
@@ -87,7 +89,7 @@ void main() {
           eventId: 'event_123',
           timestamp: DateTime(2024, 1, 1, 12, 0, 0),
           version: 1,
-          metadata: {'context': 'test'},
+          metadata: {'context': 'test'}, walletType: WalletType.hd,
         );
 
         final eventData = original.getWalletEventData();
@@ -126,6 +128,7 @@ void main() {
           walletName: 'Test Wallet',
           rootAddress: '1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2',
           walletMetadata: null,
+          walletType: WalletType.hd,
         );
 
         expect(event.walletMetadata, isNull);
@@ -377,6 +380,7 @@ void main() {
             walletId: 'wallet_1',
             walletName: 'Wallet 1',
             rootAddress: '1Address1',
+            walletType: WalletType.hd,
           ),
           WalletConfigurationUpdatedEvent(
             walletId: 'wallet_1',
@@ -407,6 +411,7 @@ void main() {
           walletId: 'wallet_1',
           walletName: 'Test Wallet',
           rootAddress: '1Address1',
+          walletType: WalletType.hd,
         );
 
         final configUpdated = WalletConfigurationUpdatedEvent(
@@ -479,6 +484,7 @@ void main() {
           walletName: 'Old Wallet',
           rootAddress: '1Address',
           timestamp: veryOld,
+          walletType: WalletType.hd,
         );
 
         final event2 = WalletCreatedEvent(
@@ -486,6 +492,7 @@ void main() {
           walletName: 'Future Wallet',
           rootAddress: '1Address',
           timestamp: future,
+          walletType: WalletType.hd,
         );
 
         expect(event1.timestamp, equals(veryOld));

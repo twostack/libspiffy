@@ -67,6 +67,9 @@ Future<String> createWallet({
   required ActorSystem actorSystem,
   required String walletId,
   required String walletName,
+  String? mnemonic,
+  String? wif,
+  String? xpriv,
 }) async {
   final completer = Completer<WalletCreatedMessage>();
   final receiver = await actorSystem.spawn(
@@ -75,7 +78,13 @@ Future<String> createWallet({
   );
   
   walletManager.tell(
-    CreateWalletMessage(walletId, walletName),
+    CreateWalletMessage(
+      walletId,
+      walletName,
+      mnemonic: mnemonic,
+      wif: wif,
+      xpriv: xpriv,
+    ),
     sender: receiver,
   );
   

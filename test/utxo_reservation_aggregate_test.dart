@@ -1,3 +1,4 @@
+import 'package:libspiffy/src/models/wallet_type.dart';
 import 'package:test/test.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:eventador/eventador.dart';
@@ -53,6 +54,7 @@ void main() {
         name: 'Test Wallet',
         isCreated: true,
         networkType: 'testnet',
+        walletType: WalletType.hd,
         timestamp: now,
         utxos: {
           'test_tx_1:0': utxo1,

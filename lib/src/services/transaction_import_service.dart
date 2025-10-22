@@ -4,6 +4,7 @@ import 'package:dactor/dactor.dart';
 import 'package:convert/convert.dart';
 
 import '../storage/read_model_storage.dart';
+import '../models/bitcoin_transaction.dart';
 import '../core/wallet_commands.dart';
 import '../actors/wallet_messages.dart';
 import '../utils/beef.dart';
@@ -64,16 +65,44 @@ class TransactionImportService {
           await _storage.storeMerkleProof(importTx.txid, importTx.merkleProof!);
         }
         
+        // Parse transaction for analysis and storage
+        final dartsvTx = dartsv.Transaction.fromHex(importTx.rawHex);
+        
+        // Store raw transaction in read model (for BEEF construction)
+        final outputValue = dartsvTx.outputs.fold<BigInt>(
+          BigInt.zero,
+          (sum, output) => sum + output.satoshis,
+        );
+        
+        final bitcoinTx = BitcoinTransaction(
+          txid: importTx.txid,
+          rawHex: importTx.rawHex,
+          status: importTx.blockHeight > 0 
+              ? TransactionStatus.confirmed 
+              : TransactionStatus.pending,
+          blockHeight: importTx.blockHeight > 0 ? importTx.blockHeight : null,
+          confirmations: importTx.blockHeight > 0 ? 1 : 0,
+          inputValue: BigInt.zero, // Not needed for reference data
+          outputValue: outputValue,
+          fee: BigInt.zero, // Not needed for reference data
+          receivingAddresses: [], // Not needed for reference data
+          sendingAddresses: [], // Not needed for reference data  
+          netAmount: BigInt.zero, // Not needed for reference data
+          createdAt: importTx.timestamp,
+          updatedAt: importTx.timestamp,
+          lockTime: dartsvTx.nLockTime,
+          version: dartsvTx.version,
+        );
+        
+        await _storage.storeTransaction(walletId, bitcoinTx);
+        
         importedTxids.add(importTx.txid);
         transactionHeights[importTx.txid] = importTx.blockHeight;
         transactionTimestamps[importTx.txid] = importTx.timestamp;
-        
-        // Parse for analysis
-        final dartsvTx = dartsv.Transaction.fromHex(importTx.rawHex);
         dartsvTransactions.add(dartsvTx);
       }
       
-      print('✓ Stored ${importedTxids.length} merkle proofs in read model');
+      print('✓ Stored ${importedTxids.length} transactions and merkle proofs in read model');
       
       // Step 2: Sort by dependency order (parents before children)
       final sortedTransactions = TransactionAnalyzer.sortByDependency(

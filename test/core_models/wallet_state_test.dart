@@ -1,3 +1,4 @@
+import 'package:libspiffy/src/models/wallet_type.dart';
 import 'package:test/test.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
 
@@ -216,6 +217,7 @@ void main() {
           rootAddress: '1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2',
           isCreated: true,
           networkType: 'testnet',
+          walletType: WalletType.hd,
           timestamp: now,
           utxos: {'tx1:0': utxo},
           addresses: {'addr1': 'Label1', 'addr2': null},
@@ -296,6 +298,7 @@ void main() {
           rootAddress: null, // Explicitly null
           isCreated: true,
           networkType: 'mainnet',
+          walletType: WalletType.hd,
           timestamp: DateTime.now(),
           utxos: {},
           addresses: {},
@@ -496,6 +499,7 @@ WalletState _createTestWalletState({
   String? rootAddress,
   bool? isCreated,
   String? networkType,
+  WalletType? walletType,
   DateTime? timestamp,
   Map<String, BitcoinUtxo>? utxos,
   Map<String, String?>? addresses,
@@ -514,6 +518,7 @@ WalletState _createTestWalletState({
     rootAddress: rootAddress ?? '1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2',
     isCreated: isCreated ?? true,
     networkType: networkType ?? 'mainnet',
+    walletType: walletType ?? WalletType.hd,
     timestamp: timestamp ?? now,
     utxos: utxos ?? {},
     addresses: addresses ?? {},

@@ -256,6 +256,38 @@ class InMemoryWalletStorage implements WalletStorage {
       return balance;
     });
   }
+
+  @override
+  Future<void> upsertUTXO(String walletId, BitcoinUtxo utxo) async {
+    await _withLock(walletId, () async {
+      if (!_walletIds.contains(walletId)) {
+        _walletIds.add(walletId);
+      }
+      
+      if (!_utxos.containsKey(walletId)) {
+        _utxos[walletId] = {};
+      }
+      
+      final utxoKey = '${utxo.txid}:${utxo.vout}';
+      _utxos[walletId]![utxoKey] = utxo;
+      
+      // Invalidate cache
+      _balanceCache.remove(walletId);
+    });
+  }
+
+  @override
+  Future<void> deleteUTXO(String walletId, String txid, int vout) async {
+    await _withLock(walletId, () async {
+      if (_utxos.containsKey(walletId)) {
+        final utxoKey = '$txid:$vout';
+        _utxos[walletId]!.remove(utxoKey);
+        
+        // Invalidate cache
+        _balanceCache.remove(walletId);
+      }
+    });
+  }
   
   @override
   Future<List<String>> getWalletIds() async {
@@ -350,6 +382,23 @@ class InMemoryWalletStorage implements WalletStorage {
   @override
   Future<BitcoinTransaction?> getTransaction(String txid) async {
     return _transactions[txid];
+  }
+
+  @override
+  Future<void> storeTransaction(String walletId, BitcoinTransaction transaction) async {
+    await _withLock(walletId, () async {
+      // Store transaction
+      _transactions[transaction.txid] = transaction;
+      
+      // Associate transaction with wallet
+      if (!_walletTransactions.containsKey(walletId)) {
+        _walletTransactions[walletId] = [];
+      }
+      
+      if (!_walletTransactions[walletId]!.contains(transaction.txid)) {
+        _walletTransactions[walletId]!.add(transaction.txid);
+      }
+    });
   }
 
   // ========================================

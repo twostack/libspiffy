@@ -180,6 +180,9 @@ class WalletManagerActor extends Actor {
       final createCommand = CreateWalletCommand(
         walletId: msg.walletId,
         walletName: msg.name,
+        mnemonic: msg.mnemonic,
+        wif: msg.wif,
+        xpriv: msg.xpriv,
         walletMetadata: msg.walletMetadata,
       );
 

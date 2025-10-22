@@ -57,6 +57,25 @@ abstract class ReadModelStorage {
   /// Returns: List of available UTXOs
   Future<List<BitcoinUtxo>> getAvailableUTXOs(String walletId);
 
+  /// Upsert (insert or update) a UTXO in the read model.
+  ///
+  /// Used by projections to persist UTXO state changes.
+  ///
+  /// Parameters:
+  /// - [walletId]: Unique identifier for the wallet
+  /// - [utxo]: UTXO to store
+  Future<void> upsertUTXO(String walletId, BitcoinUtxo utxo);
+
+  /// Delete a UTXO from the read model.
+  ///
+  /// Used by projections when UTXOs are spent.
+  ///
+  /// Parameters:
+  /// - [walletId]: Unique identifier for the wallet
+  /// - [txid]: Transaction ID
+  /// - [vout]: Output index
+  Future<void> deleteUTXO(String walletId, String txid, int vout);
+
   /// Calculate the total balance for a wallet.
   ///
   /// This should return the sum of all available (unspent) UTXOs
@@ -93,6 +112,16 @@ abstract class ReadModelStorage {
   ///
   /// Returns: Transaction if found, null if not found
   Future<BitcoinTransaction?> getTransaction(String txid);
+
+  /// Store a raw transaction in the read model.
+  ///
+  /// Used by TransactionImportService to persist historical transaction data
+  /// for BEEF construction and transaction history queries.
+  ///
+  /// Parameters:
+  /// - [walletId]: Wallet ID this transaction belongs to
+  /// - [transaction]: Transaction to store
+  Future<void> storeTransaction(String walletId, BitcoinTransaction transaction);
 
   // ========================================
   // Block Header Storage (SPV)

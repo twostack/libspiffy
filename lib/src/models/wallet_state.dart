@@ -1,6 +1,7 @@
 import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:eventador/eventador.dart';
 import 'bitcoin_utxo.dart';
+import 'wallet_type.dart';
 
 /// Represents the current state of a wallet at a specific point in time.
 /// 
@@ -16,7 +17,7 @@ class WalletState extends State {
   /// Human-readable name for the wallet
   String name;
   
-  /// Root address derived from the wallet's mnemonic
+  /// Root address derived from the wallet's mnemonic/wif/xpriv
   String? rootAddress;
   
   /// Whether the wallet has been created (initialized)
@@ -24,6 +25,9 @@ class WalletState extends State {
   
   /// Network type (mainnet, testnet)
   String networkType;
+  
+  /// Type of wallet (hd, wif, xpriv)
+  WalletType walletType;
   
   /// Timestamp when this state was created
   DateTime timestamp;
@@ -58,6 +62,7 @@ class WalletState extends State {
     this.rootAddress,
     required this.isCreated,
     required this.networkType,
+    required this.walletType,
     required this.timestamp,
     required this.utxos,
     required this.addresses,
@@ -80,6 +85,7 @@ class WalletState extends State {
       rootAddress: null,
       isCreated: false,
       networkType: 'mainnet',
+      walletType: WalletType.hd, // Default to HD
       timestamp: now,
       utxos: {},
       addresses: {},
@@ -99,6 +105,7 @@ class WalletState extends State {
     required String name,
     required String rootAddress,
     required String networkType,
+    WalletType walletType = WalletType.hd,
   }) {
     final now = DateTime.now();
     return WalletState(
@@ -107,6 +114,7 @@ class WalletState extends State {
       rootAddress: rootAddress,
       isCreated: true,
       networkType: networkType,
+      walletType: walletType,
       timestamp: now,
       utxos: {},
       addresses: {},
@@ -132,6 +140,7 @@ class WalletState extends State {
       rootAddress: rootAddress,
       isCreated: isCreated,
       networkType: networkType,
+      walletType: walletType,
       timestamp: timestamp,
       utxos: utxos,
       addresses: addresses,
@@ -152,6 +161,7 @@ class WalletState extends State {
     String? rootAddress,
     bool? isCreated,
     String? networkType,
+    WalletType? walletType,
     DateTime? timestamp,
     Map<String, BitcoinUtxo>? utxos,
     Map<String, String?>? addresses,
@@ -169,6 +179,7 @@ class WalletState extends State {
       rootAddress: rootAddress ?? this.rootAddress,
       isCreated: isCreated ?? this.isCreated,
       networkType: networkType ?? this.networkType,
+      walletType: walletType ?? this.walletType,
       timestamp: timestamp ?? this.timestamp,
       utxos: utxos ?? this.utxos,
       addresses: addresses ?? this.addresses,
@@ -238,6 +249,7 @@ class WalletState extends State {
       'rootAddress': rootAddress,
       'isCreated': isCreated,
       'networkType': networkType,
+      'walletType': walletType.toStorageString(),
       'version': version,
       'timestamp': timestamp.toIso8601String(),
       'utxos': utxos.map((key, utxo) => MapEntry(key, utxo.toMap())),
@@ -267,6 +279,9 @@ class WalletState extends State {
       rootAddress: map['rootAddress'] as String?,
       isCreated: map['isCreated'] as bool,
       networkType: map['networkType'] as String,
+      walletType: WalletTypeExtension.fromStorageString(
+        map['walletType'] as String? ?? 'hd', // Default to HD for backwards compatibility
+      ),
       timestamp: DateTime.parse(map['timestamp'] as String),
       utxos: utxosMap,
       addresses: Map<String, String?>.from(map['addresses'] ?? {}),

@@ -49,6 +49,10 @@ class InMemorySecureStorage implements SecureStorage {
         keyType = 'wallet_private_keys';
       } else if (key.startsWith('wallet_mnemonic_')) {
         keyType = 'wallet_mnemonics';
+      } else if (key.startsWith('wallet_wif_')) {
+        keyType = 'wallet_wifs';
+      } else if (key.startsWith('wallet_xpriv_')) {
+        keyType = 'wallet_xprivs';
       } else if (key.startsWith('identity_private_key_')) {
         keyType = 'identity_keys';
       } else if (key.startsWith('account_metadata_')) {
@@ -125,6 +129,26 @@ class InMemorySecureStorage implements SecureStorage {
   @override
   Future<void> setMnemonic(String walletId, String mnemonic) async {
     await setString('wallet_mnemonic_$walletId', mnemonic);
+  }
+  
+  @override
+  Future<String?> getWIF(String walletId) async {
+    return await getString('wallet_wif_$walletId');
+  }
+  
+  @override
+  Future<void> setWIF(String walletId, String wif) async {
+    await setString('wallet_wif_$walletId', wif);
+  }
+  
+  @override
+  Future<String?> getXPriv(String walletId) async {
+    return await getString('wallet_xpriv_$walletId');
+  }
+  
+  @override
+  Future<void> setXPriv(String walletId, String xpriv) async {
+    await setString('wallet_xpriv_$walletId', xpriv);
   }
   
   // ========================================
@@ -228,6 +252,8 @@ class InMemorySecureStorage implements SecureStorage {
   Future<void> deleteWalletData(String walletId) async {
     await delete('wallet_private_key_$walletId');
     await delete('wallet_mnemonic_$walletId');
+    await delete('wallet_wif_$walletId');
+    await delete('wallet_xpriv_$walletId');
     await deleteAccountMetadata(walletId);
   }
 } 

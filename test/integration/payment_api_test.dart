@@ -66,14 +66,19 @@ void main() {
     // Setup test block headers
     await setupTestHeaders(libspiffy.walletStorage as IsarWalletStorage);
 
-    // Create test wallet
+    // Create WIF wallet using the test WIF key so we can spend imported UTXOs
     walletId = 'payment-test-wallet-${DateTime.now().millisecondsSinceEpoch}';
     await createWallet(
       walletManager: libspiffy.walletManager,
       actorSystem: actorSystem,
       walletId: walletId,
-      walletName: 'payment-test-wallet',
+      walletName: 'WIF Payment Test Wallet',
+      wif: kTestWIF, // Using WIF so wallet has the private key to spend
     );
+    
+    // Wait for wallet creation event to be persisted and projection to update
+    print('⏳ Waiting for wallet creation to complete...');
+    await Future.delayed(Duration(seconds: 2));
   });
 
   tearDown(() async {
@@ -283,8 +288,24 @@ void main() {
       expect(importResult.utxosHarvested, greaterThan(0), 
              reason: 'Should harvest UTXOs with correct address');
       
-      // Wait for aggregate to process commands and projection to update read model
-      await Future.delayed(Duration(seconds: 1));
+      // Wait for:
+      // 1. Aggregate to process ReceiveUTXOCommand
+      // 2. Aggregate to persist UTXOReceivedEvent
+      // 3. ProjectionManager to stream event to WalletProjection
+      // 4. WalletProjection to update ReadModelStorage
+      print('⏳ Waiting for projection to update read model...');
+      await Future.delayed(Duration(seconds: 3));
+      
+      // Verify UTXOs are now in read model
+      final availableUtxos = await libspiffy.walletStorage.getAvailableUTXOs(walletId);
+      print('📊 Available UTXOs in read model: ${availableUtxos.length}');
+      if (availableUtxos.isNotEmpty) {
+        final totalBalance = availableUtxos.fold<BigInt>(
+          BigInt.zero,
+          (sum, utxo) => sum + utxo.satoshis,
+        );
+        print('💰 Total balance: $totalBalance satoshis');
+      }
       
       // STEP 3: Verify transaction stored with merkle proof
       print('\nSTEP 3: Verifying transaction storage...');

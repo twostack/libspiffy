@@ -271,7 +271,7 @@ class WalletProjection extends Projection<WalletReadModel> {
   /// Persist read model to storage (Isar)
   Future<void> _persistReadModel() async {
     try {
-      // Store wallet in read model storage
+      // Store wallet metadata in read model storage
       await _storage.storeWallet(
         _readModel.walletId,
         _readModel.name,
@@ -279,6 +279,11 @@ class WalletProjection extends Projection<WalletReadModel> {
         networkType: _readModel.networkType,
         metadata: _readModel.metadata,
       );
+      
+      // Persist all UTXOs to storage
+      for (final utxo in _utxos.values) {
+        await _storage.upsertUTXO(_readModel.walletId, utxo);
+      }
     } catch (e) {
       print('Error persisting wallet read model: $e');
       rethrow;

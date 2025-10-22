@@ -119,6 +119,52 @@ abstract class SecureStorage {
     await setString('wallet_mnemonic_$walletId', mnemonic);
   }
   
+  /// Get the WIF private key for a specific wallet.
+  /// 
+  /// Parameters:
+  /// - [walletId]: Unique identifier for the wallet
+  /// 
+  /// Returns: The WIF private key or null if not found
+  /// 
+  /// Throws [SecureStorageException] if the operation fails
+  Future<String?> getWIF(String walletId) async {
+    return await getString('wallet_wif_$walletId');
+  }
+  
+  /// Store the WIF private key for a specific wallet.
+  /// 
+  /// Parameters:
+  /// - [walletId]: Unique identifier for the wallet
+  /// - [wif]: The WIF private key to store
+  /// 
+  /// Throws [SecureStorageException] if the operation fails
+  Future<void> setWIF(String walletId, String wif) async {
+    await setString('wallet_wif_$walletId', wif);
+  }
+  
+  /// Get the XPRIV extended private key for a specific wallet.
+  /// 
+  /// Parameters:
+  /// - [walletId]: Unique identifier for the wallet
+  /// 
+  /// Returns: The XPRIV extended private key or null if not found
+  /// 
+  /// Throws [SecureStorageException] if the operation fails
+  Future<String?> getXPriv(String walletId) async {
+    return await getString('wallet_xpriv_$walletId');
+  }
+  
+  /// Store the XPRIV extended private key for a specific wallet.
+  /// 
+  /// Parameters:
+  /// - [walletId]: Unique identifier for the wallet
+  /// - [xpriv]: The XPRIV extended private key to store
+  /// 
+  /// Throws [SecureStorageException] if the operation fails
+  Future<void> setXPriv(String walletId, String xpriv) async {
+    await setString('wallet_xpriv_$walletId', xpriv);
+  }
+  
   // ========================================
   // Identity Operations
   // ========================================

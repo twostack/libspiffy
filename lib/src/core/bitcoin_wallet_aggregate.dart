@@ -5,6 +5,7 @@ import 'package:dartsv/dartsv.dart' as dartsv;
 import '../models/wallet_event.dart';
 import '../models/wallet_state.dart';
 import '../models/bitcoin_utxo.dart';
+import '../models/wallet_type.dart';
 import '../services/crypto_service.dart';
 import '../storage/secure_storage.dart';
 import '../services/transaction_builder_service.dart';
@@ -294,53 +295,129 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       print('[BitcoinWalletAggregate]   ERROR: Wallet already exists');
       throw StateError('Wallet ${command.walletId} already exists');
     }
+
+    // Determine wallet type and extract/generate keys
+    final WalletType walletType;
+    final String rootAddress;
     
-    print('[BitcoinWalletAggregate]   Generating mnemonic...');
-
-    // Validate or generate mnemonic
-    String mnemonic = command.mnemonic ?? '';
-    if (mnemonic.isEmpty) {
-      // Generate new mnemonic if not provided
-      mnemonic = await cryptoService.generateMnemonic();
-    } else {
-      // Validate provided mnemonic
-      final isValid = await cryptoService.validateMnemonic(mnemonic);
-      if (!isValid) {
-        throw ArgumentError('Invalid mnemonic phrase provided');
-      }
-    }
-
-    // Determine network type from metadata or default to testnet
+    // Extract network type from metadata
     final metadata = command.walletMetadata ?? {};
     final networkTypeStr = metadata['network'] as String? ?? 'testnet';
     final networkType = networkTypeStr == 'mainnet' ? dartsv.NetworkType.MAIN : dartsv.NetworkType.TEST;
 
-    // Derive HD private key from mnemonic
-    final hdPrivateKey = await cryptoService.mnemonicToHDPrivateKey(
-      mnemonic,
-      passphrase: command.passphrase ?? '',
-      network: networkType,
-    );
+    if (command.wif != null && command.wif!.isNotEmpty) {
+      // WIF WALLET: Single address from private key
+      print('[BitcoinWalletAggregate]   Creating WIF wallet...');
+      walletType = WalletType.wif;
+      
+      // Parse and validate WIF
+      final privateKey = dartsv.SVPrivateKey.fromWIF(command.wif!);
+      
+      // Verify network type matches
+      if (privateKey.networkType != networkType) {
+        throw ArgumentError(
+          'WIF network type does not match wallet network type'
+        );
+      }
+      
+      // Derive address from WIF key
+      final publicKey = privateKey.publicKey;
+      final address = publicKey.toAddress(networkType);
+      rootAddress = address.toBase58();
+      
+      // Store WIF securely
+      await secureStorage.setWIF(command.walletId, command.wif!);
+      
+      print('[BitcoinWalletAggregate]   ✓ WIF wallet created with address: $rootAddress');
+      
+    } else if (command.xpriv != null && command.xpriv!.isNotEmpty) {
+      // XPRIV WALLET: HD derivation from extended private key
+      print('[BitcoinWalletAggregate]   Creating XPRIV wallet...');
+      walletType = WalletType.xpriv;
+      
+      // Parse and validate XPRIV
+      final hdPrivateKey = dartsv.HDPrivateKey.fromXpriv(command.xpriv!);
+      
+      // Verify network type matches
+      if (hdPrivateKey.networkType != networkType) {
+        throw ArgumentError(
+          'XPRIV network type does not match wallet network type'
+        );
+      }
+      
+      // Derive HD public key
+      final hdPublicKey = cryptoService.deriveHDPublicKey(hdPrivateKey);
+      
+      // Generate root address (first receiving address at index 0)
+      rootAddress = cryptoService.generateReceivingAddress(
+        hdPublicKey,
+        0,
+        network: networkType,
+      );
+      
+      // Store XPRIV and HD public key securely
+      await secureStorage.setXPriv(command.walletId, command.xpriv!);
+      await secureStorage.setString(
+        'wallet_hdpubkey_${command.walletId}',
+        hdPublicKey.xpubkey,
+      );
+      
+      print('[BitcoinWalletAggregate]   ✓ XPRIV wallet created with root address: $rootAddress');
+      
+    } else {
+      // HD WALLET: Generate or validate mnemonic
+      print('[BitcoinWalletAggregate]   Creating HD wallet...');
+      walletType = WalletType.hd;
+      
+      String mnemonic = command.mnemonic ?? '';
+      if (mnemonic.isEmpty) {
+        mnemonic = await cryptoService.generateMnemonic();
+        print('[BitcoinWalletAggregate]   Generated new mnemonic');
+      } else {
+        final isValid = await cryptoService.validateMnemonic(mnemonic);
+        if (!isValid) {
+          throw ArgumentError('Invalid mnemonic phrase provided');
+        }
+        print('[BitcoinWalletAggregate]   Using provided mnemonic');
+      }
+      
+      // Derive HD private key from mnemonic
+      final hdPrivateKey = await cryptoService.mnemonicToHDPrivateKey(
+        mnemonic,
+        passphrase: command.passphrase ?? '',
+        network: networkType,
+      );
+      
+      // Derive HD public key
+      final hdPublicKey = cryptoService.deriveHDPublicKey(hdPrivateKey);
+      
+      // Generate root address
+      rootAddress = cryptoService.generateReceivingAddress(
+        hdPublicKey,
+        0,
+        network: networkType,
+      );
+      
+      // Store mnemonic and HD public key securely
+      await secureStorage.setMnemonic(command.walletId, mnemonic);
+      await secureStorage.setString(
+        'wallet_hdpubkey_${command.walletId}',
+        hdPublicKey.xpubkey,
+      );
+      
+      print('[BitcoinWalletAggregate]   ✓ HD wallet created with root address: $rootAddress');
+    }
 
-    // Derive HD public key for address generation
-    final hdPublicKey = cryptoService.deriveHDPublicKey(hdPrivateKey);
-
-    // Generate root address (first receiving address at index 0)
-    final rootAddress = cryptoService.generateReceivingAddress(
-      hdPublicKey,
-      0,
-      network: networkType,
-    );
-
-    // Store mnemonic and HD public key securely
-    await secureStorage.setMnemonic(command.walletId, mnemonic);
-    await secureStorage.setString('wallet_hdpubkey_${command.walletId}', hdPublicKey.xpubkey);
-
+    // Create WalletCreatedEvent with wallet type
     final event = WalletCreatedEvent(
       walletId: command.walletId,
       walletName: command.walletName,
       rootAddress: rootAddress,
-      walletMetadata: command.walletMetadata,
+      walletType: walletType,
+      walletMetadata: {
+        ...?command.walletMetadata,
+        'network': networkTypeStr,
+      },
       version: currentState.version + 1,
       timestamp: DateTime.now(),
     );
@@ -381,6 +458,31 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       throw StateError('Cannot generate address for non-existent wallet');
     }
 
+    // For WIF wallets, always return the root address
+    if (currentState.walletType == WalletType.wif) {
+      // WIF wallets are single-address - return the existing address
+      if (currentState.rootAddress == null) {
+        throw StateError('WIF wallet has no root address');
+      }
+      
+      print('[BitcoinWalletAggregate] WIF wallet - returning root address: ${currentState.rootAddress}');
+      
+      // Return AddressGeneratedEvent with same address and index 0
+      final event = AddressGeneratedEvent(
+        walletId: command.walletId,
+        address: currentState.rootAddress!,
+        derivationIndex: 0,
+        label: command.label,
+        purpose: command.purpose,
+        metadata: command.metadata,
+        timestamp: DateTime.now(),
+        version: currentState.version + 1,
+      );
+      
+      return [event];
+    }
+
+    // For HD and XPRIV wallets, derive new address
     // Use next available derivation index
     final derivationIndex = currentState.nextDerivationIndex;
 
@@ -907,12 +1009,21 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     currentState.isCreated = true;
     currentState.name = event.walletName;
     currentState.rootAddress = event.rootAddress;
+    currentState.walletType = event.walletType;
+    currentState.networkType = event.walletMetadata?['network'] ?? 'testnet';
+    currentState.timestamp = event.timestamp;
+    currentState.nextDerivationIndex = 1; // Root address is index 0
     currentState.metadata.clear();
     if (event.walletMetadata != null) {
       currentState.metadata.addAll(event.walletMetadata!);
     }
     currentState.version = event.version;
     currentState.lastModified = event.timestamp;
+    
+    // Add root address to addresses map
+    if (event.rootAddress.isNotEmpty) {
+      currentState.addresses[event.rootAddress] = null;
+    }
   }
 
   void _applyWalletConfigurationUpdated(WalletConfigurationUpdatedEvent event) {

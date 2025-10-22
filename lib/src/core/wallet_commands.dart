@@ -1,4 +1,3 @@
-import 'package:uuid/uuid.dart';
 import 'package:eventador/eventador.dart';
 
 /// Base class for all wallet commands
@@ -32,7 +31,9 @@ abstract class WalletCommand extends Command {
 /// Command to create a new wallet
 class CreateWalletCommand extends WalletCommand {
   final String walletName;
-  final String? mnemonic; // Optional - will generate if null
+  final String? mnemonic; // For HD wallets - will generate if null
+  final String? wif; // For WIF wallets
+  final String? xpriv; // For XPRIV wallets
   final String? passphrase; // Optional passphrase for mnemonic
   final Map<String, dynamic>? walletMetadata; // Additional wallet metadata
 
@@ -40,6 +41,8 @@ class CreateWalletCommand extends WalletCommand {
     required String walletId,
     required this.walletName,
     this.mnemonic,
+    this.wif,
+    this.xpriv,
     this.passphrase,
     this.walletMetadata,
     String? commandId,
@@ -50,7 +53,20 @@ class CreateWalletCommand extends WalletCommand {
           commandId: commandId,
           timestamp: timestamp,
           metadata: metadata,
-        );
+        ) {
+    // Validation: At most one wallet type can be specified
+    final specified = [
+      mnemonic != null && mnemonic!.isNotEmpty,
+      wif != null && wif!.isNotEmpty,
+      xpriv != null && xpriv!.isNotEmpty,
+    ].where((x) => x).length;
+    
+    if (specified > 1) {
+      throw ArgumentError(
+        'Only one of mnemonic, wif, or xpriv can be specified'
+      );
+    }
+  }
 
   @override
   String get commandType => 'CreateWalletCommand';

@@ -143,6 +143,58 @@ class IsarWalletStorage implements ReadModelStorage {
     );
   }
 
+  @override
+  Future<void> upsertUTXO(String walletId, BitcoinUtxo utxo) async {
+    await _isar.writeTxn(() async {
+      // Check if UTXO already exists
+      final existingEntity = await _isar.bitcoinUtxoEntitys
+          .filter()
+          .walletIdEqualTo(walletId)
+          .and()
+          .txidEqualTo(utxo.txid)
+          .and()
+          .voutEqualTo(utxo.vout)
+          .findFirst();
+      
+      if (existingEntity != null) {
+        // Update existing
+        existingEntity
+          ..satoshis = utxo.satoshis.toString()
+          ..scriptPubKey = utxo.scriptPubKey
+          ..address = utxo.address
+          ..blockHeight = utxo.blockHeight
+          ..confirmations = utxo.confirmations ?? 0
+          ..status = utxo.status.name
+          ..isSpendable = utxo.status == UTXOStatus.available;
+        
+        if (utxo.status == UTXOStatus.spent) {
+          existingEntity.spentAt = utxo.updatedAt;
+        }
+        
+        await _isar.bitcoinUtxoEntitys.put(existingEntity);
+      } else {
+        // Insert new
+        final entity = BitcoinUtxoEntity.fromDomain(utxo);
+        entity.walletId = walletId; // Set the walletId
+        await _isar.bitcoinUtxoEntitys.put(entity);
+      }
+    });
+  }
+
+  @override
+  Future<void> deleteUTXO(String walletId, String txid, int vout) async {
+    await _isar.writeTxn(() async {
+      await _isar.bitcoinUtxoEntitys
+          .filter()
+          .walletIdEqualTo(walletId)
+          .and()
+          .txidEqualTo(txid)
+          .and()
+          .voutEqualTo(vout)
+          .deleteAll();
+    });
+  }
+
   // ========================================
   // Transaction History
   // ========================================
@@ -179,6 +231,57 @@ class IsarWalletStorage implements ReadModelStorage {
         .findFirst();
 
     return entity?.toDomain();
+  }
+
+  @override
+  Future<void> storeTransaction(String walletId, BitcoinTransaction transaction) async {
+    await _isar.writeTxn(() async {
+      // Check if transaction already exists
+      final existing = await _isar.bitcoinTransactionEntitys
+          .filter()
+          .txidEqualTo(transaction.txid)
+          .findFirst();
+      
+      if (existing != null) {
+        // Update existing transaction
+        existing
+          ..rawHex = transaction.rawHex
+          ..status = transaction.status.name
+          ..blockHeight = transaction.blockHeight
+          ..confirmations = transaction.confirmations ?? 0
+          ..totalInput = transaction.inputValue.toString()
+          ..totalOutput = transaction.outputValue.toString()
+          ..fee = transaction.fee.toString();
+        
+        if (transaction.blockHeight != null && transaction.blockHeight! > 0) {
+          existing.confirmedAt = transaction.updatedAt;
+        }
+        
+        await _isar.bitcoinTransactionEntitys.put(existing);
+      } else {
+        // Insert new transaction
+        final entity = BitcoinTransactionEntity()
+          ..walletId = walletId
+          ..txid = transaction.txid
+          ..rawHex = transaction.rawHex
+          ..blockHeight = transaction.blockHeight
+          ..blockHash = null // Not available in BitcoinTransaction
+          ..confirmations = transaction.confirmations ?? 0
+          ..totalInput = transaction.inputValue.toString()
+          ..totalOutput = transaction.outputValue.toString()
+          ..fee = transaction.fee.toString()
+          ..isIncoming = transaction.netAmount > BigInt.zero
+          ..isOutgoing = transaction.netAmount < BigInt.zero
+          ..status = transaction.status.name
+          ..createdAt = transaction.createdAt
+          ..confirmedAt = (transaction.blockHeight != null && transaction.blockHeight! > 0) 
+              ? transaction.updatedAt 
+              : null
+          ..broadcastAt = null; // Not available in BitcoinTransaction
+        
+        await _isar.bitcoinTransactionEntitys.put(entity);
+      }
+    });
   }
 
   // ========================================

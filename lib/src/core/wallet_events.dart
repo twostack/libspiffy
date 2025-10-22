@@ -1,4 +1,5 @@
 import '../models/wallet_event.dart';
+import '../models/wallet_type.dart';
 
 // =============================================================================
 // WALLET LIFECYCLE EVENTS
@@ -7,13 +8,15 @@ import '../models/wallet_event.dart';
 /// Event fired when a wallet is created
 class WalletCreatedEvent extends WalletEvent {
   final String walletName;
-  final String rootAddress; // Initial address generated from mnemonic
+  final String rootAddress; // Initial address generated from mnemonic/wif/xpriv
+  final WalletType walletType; // Type of wallet (hd, wif, xpriv)
   final Map<String, dynamic>? walletMetadata;
 
   WalletCreatedEvent({
     required String walletId,
     required this.walletName,
     required this.rootAddress,
+    required this.walletType,
     this.walletMetadata,
     String? eventId,
     DateTime? timestamp,
@@ -32,6 +35,7 @@ class WalletCreatedEvent extends WalletEvent {
     return {
       'walletName': walletName,
       'rootAddress': rootAddress,
+      'walletType': walletType.toStorageString(),
       'walletMetadata': walletMetadata,
     };
   }
@@ -41,6 +45,9 @@ class WalletCreatedEvent extends WalletEvent {
       walletId: map['walletId'] as String,
       walletName: map['walletName'] as String,
       rootAddress: map['rootAddress'] as String,
+      walletType: WalletTypeExtension.fromStorageString(
+        map['walletType'] as String? ?? 'hd', // Default to HD for backwards compatibility
+      ),
       walletMetadata: map['walletMetadata'] as Map<String, dynamic>?,
       eventId: map['eventId'] as String?,
       timestamp: map['timestamp'] != null

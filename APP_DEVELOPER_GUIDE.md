@@ -157,14 +157,24 @@ Future<void> disconnectFromSpiffyNode()
 
 ## Wallet Management
 
-**Description:** Create and manage Bitcoin wallets with hierarchical deterministic (HD) key derivation.
+**Description:** Create and manage Bitcoin wallets with support for three wallet types: HD (mnemonic), WIF (single private key), and XPRIV (extended private key).
+
+### Wallet Types
+
+LibSpiffy supports three wallet types:
+
+1. **HD (Hierarchical Deterministic)** - Default type. Create from mnemonic seed phrase. Supports unlimited address generation via BIP32/44 derivation.
+
+2. **WIF (Wallet Import Format)** - Import a single private key. Single address only - calling `GenerateAddressCommand` always returns the same address.
+
+3. **XPRIV (Extended Private Key)** - Import from extended private key (xpriv). Supports HD address generation like mnemonic wallets.
 
 ### 🟢 CreateWalletMessage
 
 **Type:** PUBLIC  
-**Description:** Creates a new event-sourced wallet with optional mnemonic seed.
+**Description:** Creates a new event-sourced wallet. Specify one of: `mnemonic`, `wif`, or `xpriv`.
 
-**Usage:**
+**Usage - HD Wallet (Default):**
 
 ```dart
 import 'package:dactor/dactor.dart';
@@ -176,9 +186,13 @@ final receiver = await actorSystem.spawn(
   () => TestReceiverActor<WalletCreatedMessage>(completer),
 );
 
-// Send create command
+// Create HD wallet (generates new mnemonic if not provided)
 libspiffy.walletManager.tell(
-  CreateWalletMessage('my-wallet-id', 'My Bitcoin Wallet'),
+  CreateWalletMessage(
+    'my-wallet-id', 
+    'My Bitcoin Wallet',
+    // Optional: mnemonic: 'your twelve word seed phrase here',
+  ),
   sender: receiver,
 );
 
@@ -186,19 +200,63 @@ libspiffy.walletManager.tell(
 final response = await completer.future.timeout(Duration(seconds: 5));
 if (response.success) {
   print('✓ Wallet created: ${response.walletId}');
+  print('  Root address: ${response.rootAddress}');
 } else {
   print('✗ Error: ${response.error}');
 }
 ```
 
-**Returns:** `WalletCreatedMessage` with `success`, `walletId`, `name`, and optional `error`.
+**Usage - WIF Wallet (Single Address):**
+
+```dart
+// Import from WIF private key
+libspiffy.walletManager.tell(
+  CreateWalletMessage(
+    'imported-wallet-id',
+    'Imported Wallet',
+    wif: 'cPBBhyEvTZXSZhLJ8AuotbAmzR2bM8eQJV7fiBAQGcGsaSAaPfBf',
+  ),
+  sender: receiver,
+);
+// Note: WIF wallets are single-address. GenerateAddressCommand will always 
+// return the same address derived from the private key.
+```
+
+**Usage - XPRIV Wallet (HD from Extended Key):**
+
+```dart
+// Import from extended private key
+libspiffy.walletManager.tell(
+  CreateWalletMessage(
+    'xpriv-wallet-id',
+    'XPRIV Wallet',
+    xpriv: 'xprv9s21ZrQH143K3QTDL4LXw2F7HEK3wJUD2nW2nRk4stbPy6cq3jPPqjiChkVvvNKmPGJxWUtg6LnF5kejMRNNU3TGtRBeJgk33yuGBxrMPHi',
+  ),
+  sender: receiver,
+);
+// XPRIV wallets support unlimited address generation like HD wallets
+```
+
+**Parameters:**
+- `walletId` (String, required) - Unique identifier for the wallet
+- `walletName` (String, required) - Human-readable name
+- `mnemonic` (String?, optional) - For HD wallets. Auto-generated if null.
+- `wif` (String?, optional) - For WIF wallets. Single-address import.
+- `xpriv` (String?, optional) - For XPRIV wallets. HD derivation from extended key.
+- `walletMetadata` (Map?, optional) - Custom metadata (e.g., `{'network': 'testnet'}`)
+
+**Validation:** Exactly one of `mnemonic`, `wif`, or `xpriv` must be specified (or none for auto-generated HD wallet).
+
+**Returns:** `WalletCreatedMessage` with `success`, `walletId`, `name`, `rootAddress`, and optional `error`.
 
 ---
 
 ### 🟢 GenerateAddressCommand
 
 **Type:** PUBLIC  
-**Description:** Generates a new HD-derived address for receiving payments. Addresses are deterministically generated and tracked.
+**Description:** Generates a new address for receiving payments. Behavior depends on wallet type:
+- **HD/XPRIV wallets:** Derives new addresses sequentially (BIP32/44)
+- **WIF wallets:** Always returns the same single address
 
 **Usage:**
 
@@ -224,10 +282,15 @@ final response = await completer.future.timeout(Duration(seconds: 5));
 if (response.success) {
   print('✓ Address: ${response.address}');
   print('  Derivation index: ${response.derivationIndex}');
+  // Note: For WIF wallets, address and index are always the same
 } else {
   print('✗ Error: ${response.error}');
 }
 ```
+
+**Wallet Type Behavior:**
+- **HD/XPRIV:** Each call generates a new address at `derivationIndex` (incrementing)
+- **WIF:** Each call returns the root address at `derivationIndex = 0`
 
 **Returns:** `AddressGeneratedResponse` with `walletId`, `address`, `derivationIndex`, `success`, `error`, and `metadata`.
 
@@ -343,6 +406,107 @@ for (final invoice in list.invoices) {
 ## SPV Payments with BEEF
 
 **Description:** Simplified API for creating SPV-validated payments. Automatically handles UTXO selection, transaction building, ancestor chain collection, and BEEF package construction.
+
+---
+
+### Understanding SPV Payments
+
+**What is SPV (Simplified Payment Verification)?**
+
+Traditional Bitcoin wallets broadcast transactions to miners first and hope they get confirmed. LibSpiffy implements **true peer-to-peer SPV payments** where:
+
+1. **Payer (Alice)** creates a transaction with complete proof chain (BEEF)
+2. **Direct transfer** - Alice sends BEEF directly to Bob via p2p channel (libp2p, websocket, HTTP, etc.)
+3. **Receiver validates** - Bob validates against his SPV block headers (no miner trust required)
+4. **Receiver broadcasts** - Bob broadcasts to network only after validation passes
+
+**Why SPV Payments?**
+
+- ✅ **Instant finality** - Bob knows payment is valid immediately upon receipt
+- ✅ **No third-party trust** - Validation uses cryptographic merkle proofs against known headers
+- ✅ **Privacy** - Direct peer-to-peer exchange, no broadcast until receiver validates
+- ✅ **Unconfirmed chain support** - Can spend recently received UTXOs before confirmation
+- ✅ **True micropayments** - No need to wait for miner confirmation before accepting small amounts
+
+**How is this different from traditional wallets?**
+
+| Traditional Broadcast-First | LibSpiffy SPV Payments |
+|----------------------------|------------------------|
+| Send TX → Wait for miners → Hope it confirms | Create BEEF → Send to receiver → Receiver validates & broadcasts |
+| Trust miners/nodes to include TX | Trust cryptographic proofs (SPV) |
+| Can't spend unconfirmed UTXOs reliably | Can chain unconfirmed transactions |
+| Receiver must monitor mempool | Receiver gets complete proof package |
+| Privacy leak (broadcast to all) | Private peer-to-peer transfer |
+
+**What is BEEF (Background Evaluation Extended Format)?**
+
+BEEF is a self-contained package that includes everything needed for SPV validation:
+
+```
+BEEF Package Contents:
+├── Payment Transaction (the actual payment to Bob)
+├── Ancestor Transactions (all parent TXs back to confirmed UTXOs)
+├── Merkle Proofs (SPV proof that ancestors were mined)
+└── Block Headers (optional - for header validation)
+```
+
+This allows Bob to validate that Alice's payment is backed by real confirmed UTXOs without trusting any third party or querying the blockchain.
+
+**Example Chain:**
+
+```
+[Confirmed TX with Merkle Proof] ← Block 100,000
+         ↓
+[Unconfirmed TX 1] (Alice received funds)
+         ↓
+[Unconfirmed TX 2] (Alice spending to Bob)
+
+BEEF includes ALL of these transactions + merkle proof for the confirmed one.
+Bob validates the entire chain and confirms Alice owns the UTXOs.
+```
+
+**Critical Prerequisite: Transaction History Import**
+
+For Alice to create BEEF, she **must have**:
+
+1. ✅ All transactions in the ancestor chain stored in LibSpiffy
+2. ✅ At least one merkle proof per UTXO chain (confirmed transaction)
+3. ✅ Complete transaction history with no gaps
+
+**How to ensure transaction history exists:**
+
+```dart
+// Import historical transactions with merkle proofs
+import 'package:libspiffy/libspiffy.dart';
+
+final importResult = await libspiffy.transactionImportService.importTransactions(
+  walletId: 'alice-wallet',
+  transactions: [
+    ImportableTransaction(
+      txid: 'abc123...',
+      rawHex: '0200000001...',
+      blockHeight: 100000,
+      merkleProof: MerkleProof(...), // Critical!
+    ),
+    // ... more transactions
+  ],
+  walletAddresses: ['aliceAddress1', 'aliceAddress2'],
+);
+
+// Wait for projection to update
+await Future.delayed(Duration(seconds: 1));
+
+// Now Alice can create BEEF payments
+```
+
+Without transaction import, `PayInvoiceMessage` will fail with:
+- **"Transaction X not found in storage"** - Missing ancestor
+- **"No merkle proof found"** - Chain doesn't terminate at confirmed TX
+- **"Incomplete transaction chain"** - Gap in ancestor chain
+
+See [TransactionImportService](#-transactionimportservice-public) for detailed import guide.
+
+---
 
 ### 🟢 PayInvoiceMessage
 
@@ -1331,25 +1495,35 @@ Future<List<Invoice>> listInvoices(String walletId)
 
 **⚠️ Only projections should write to read models**
 
+CQRS Architecture ensures data integrity:
+- **Commands** → Aggregates → **Events** (write side)
+- **Events** → Projections → **Read Models** (read side)
+
+The following write methods are **projection-only** and handle eventual consistency automatically:
+
 ```dart
 // Wallet operations (projection use only)
 Future<void> storeWallet(String walletId, String name, ...)
 Future<void> deleteWallet(String walletId)
 
-// UTXO operations (projection use only)
-Future<void> storeUTXO(String walletId, BitcoinUtxo utxo)
-Future<void> markUTXOSpent(String walletId, String txid, int vout, ...)
-Future<void> deleteUTXO(String walletId, String txid, int vout)
+// UTXO operations (projection use only)  
+// WalletProjection calls these after processing UTXOReceivedEvent
+Future<void> upsertUTXO(String walletId, BitcoinUtxo utxo)  // ✅ NEW
+Future<void> deleteUTXO(String walletId, String txid, int vout)  // ✅ NEW
 
-// Transaction operations (projection use only)
-Future<void> storeTransaction(String walletId, BitcoinTransaction tx)
-Future<void> deleteTransaction(String walletId, String txid)
+// Transaction operations (import service and projection use)
+Future<void> storeTransaction(String walletId, BitcoinTransaction tx)  // ✅ HYBRID
 
 // Invoice operations (projection use only)
 Future<void> storeInvoice(Invoice invoice)
 Future<void> updateInvoiceStatus(String invoiceId, InvoiceStatus status, ...)
 Future<void> deleteInvoice(String invoiceId)
 ```
+
+**Eventual Consistency Timing:**
+- UTXOs typically appear in read model within 100-300ms after command
+- For critical flows, add delays: `await Future.delayed(Duration(milliseconds: 500))`
+- Transaction imports: Wait longer for projection updates
 
 ---
 
@@ -1394,20 +1568,36 @@ abstract class UnlockingScriptBuilder {
 
 ### 🟢 TransactionImportService (PUBLIC)
 
-**Description:** Import historical transactions and harvest UTXOs using hybrid event sourcing approach.
+**Description:** Import historical transactions and harvest UTXOs using hybrid event sourcing approach. Essential for BEEF (SPV payment) construction.
 
-**Architecture:**
-- Transaction history stored as reference data (ReadModelStorage) with merkle proofs
-- UTXOs harvested via commands to aggregate (event-sourced)
-- Maintains event sourcing integrity while enabling BEEF construction
+**Architecture - Hybrid Event Sourcing:**
 
-**Key Concept - Hybrid Event Sourcing:**
+LibSpiffy uses a **hybrid approach** for historical transaction import:
 
-LibSpiffy uses a hybrid approach for historical transaction import:
-1. **Reference Data**: Raw transactions and merkle proofs are stored in ReadModelStorage for SPV validation and BEEF construction
-2. **Event-Sourced State**: UTXOs are harvested and sent as `ReceiveUTXOCommand` to aggregates, which emit `UTXOReceivedEvent` for full event sourcing integrity
+1. **Reference Data (Transactions)** 
+   - Raw transaction hex + merkle proofs stored directly in `ReadModelStorage`
+   - Enables BEEF ancestor chain collection without event replay
+   - Stored via `storeTransaction()` during import
+   - Retrieved via `getTransaction(txid)` for payment construction
 
-This ensures wallet state is fully recoverable from events while maintaining transaction history for ancestor chain collection.
+2. **Event-Sourced State (UTXOs)**
+   - UTXOs harvested and sent as `ReceiveUTXOCommand` to `BitcoinWalletAggregate`
+   - Aggregate emits `UTXOReceivedEvent` for full event sourcing integrity
+   - Projections update read model asynchronously
+   - Wallet state fully recoverable from event replay
+
+**Why Hybrid?**
+- ✅ Wallet state remains fully event-sourced and recoverable
+- ✅ Transaction history available for BEEF without replaying thousands of events
+- ✅ SPV validation works with confirmed historical transactions
+- ✅ Eventual consistency: UTXOs appear in read model after projection updates
+
+**Critical Flow:**
+```
+Import → Store TX + Merkle → Harvest UTXOs → Commands → Events → Projections → Read Model
+         ↓                                     ↓
+     Reference Data                    Event Sourcing
+```
 
 #### Import from Raw Transactions
 

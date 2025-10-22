@@ -3,9 +3,100 @@ import 'package:test/test.dart';
 import 'package:libspiffy/libspiffy.dart';
 import 'package:dactor/dactor.dart';
 import 'package:isar/isar.dart';
+import 'package:dartsv/dartsv.dart';
+import 'package:eventador/eventador.dart';
 
 void main() {
+
+  // Private key in WIF format for testnet address n49CCQFuncaXbtBoNm39gSP9dvRP2eFFSw
+  const walletWIF = 'cPBBhyEvTZXSZhLJ8AuotbAmzR2bM8eQJV7fiBAQGcGsaSAaPfBf';
+
   group('TransactionImportService', () {
+    test('verifies UTXO harvesting with real address derivation', () async {
+      // Derive address from WIF
+      final privateKey = SVPrivateKey.fromWIF(walletWIF);
+      final address = privateKey.publicKey.toAddress(NetworkType.TEST);
+      final addressString = address.toBase58();
+      
+      print('Derived address: $addressString');
+      expect(addressString, equals('n49CCQFuncaXbtBoNm39gSP9dvRP2eFFSw'), 
+             reason: 'WIF should derive to expected testnet address');
+      
+      // Setup test system
+      await Isar.initializeIsarCore(download: true);
+      
+      final testDir = Directory.systemTemp.createTempSync('harvest-test');
+      final actorSystem = LocalActorSystem(ActorSystemConfig());
+      
+      // Open Isar with both LibSpiffy and Eventador schemas
+      final isar = await Isar.open(
+        [
+          ...LibSpiffySchemas.walletSchemas,
+          ...IsarEventStore.requiredSchemas,
+        ],
+        directory: testDir.path,
+        name: 'test_harvest_db',
+      );
+      
+      final libspiffy = LibSpiffyActorSystem();
+      await libspiffy.initialize(
+        actorSystem: actorSystem,
+        isar: isar,
+        dataDirectory: testDir.path,
+      );
+      
+      final walletId = 'harvest-wallet-${DateTime.now().millisecondsSinceEpoch}';
+      
+      // Real transaction from full_tx_data.json for address n49CCQFuncaXbtBoNm39gSP9dvRP2eFFSw
+      // This transaction has outputs to our derived address
+      final tx1 = ImportableTransaction(
+        txid: '5e0ae9db2586ac8ea89b0f0eb628e1624ccfbdafff860052b67069a401d8ed71',
+        rawHex: '0200000001dcffa6652c96b84d22277235198e86301e6ed5ac41dc859329c7b5b25c370721010000006a473044022033542938413acf616862fb9cdecedc86ed472773a3c8be33f6024051837e9a520220628937b5db1baef5b87b42e8d2a13403625713a083d5c28b77ae535f62293b8241210341dcbd921964fc54c125608ffb6f9114d53d7a8bb3fcab29cff657dbfc882268feffffff02db9e183b000000001976a914b9f4a12e17e6614a47ccb5b1464756cd9119064088ac00879303000000001976a914f82d58dd8487044d8d0879c15a2a3516a425de2a88ac53b61300',
+        blockHeight: 1291860,
+        merkleProof: MerkleProof(
+          blockHash: '',
+          txid: '5e0ae9db2586ac8ea89b0f0eb628e1624ccfbdafff860052b67069a401d8ed71',
+          merkleProof: [
+            'a7026883d1074d1477d23c030f9997ff9fa45d07641a8a9c95f9116a2ac1cdd5',
+            '378e4682082a1307d1e4a64807f93fc786e34bf5dc79760688613e18c41cda20',
+            '04586929cfce578ca23105f4d1f059af87f108aac1fee23955c3193d617198d6',
+          ],
+          position: 2,
+          blockHeight: 1291860,
+        ),
+      );
+      
+      // Import transaction with real address
+      final result = await libspiffy.transactionImportService.importTransactions(
+        walletId: walletId,
+        transactions: [tx1],
+        walletAddresses: [addressString],
+      );
+      
+      // Verify import success
+      expect(result.success, isTrue, reason: 'Import should succeed');
+      expect(result.transactionsImported, equals(1), reason: 'Should import 1 transaction');
+      
+      // THIS IS THE KEY TEST: UTXOs should be harvested now!
+      print('Import result: ${result.transactionsImported} transactions, ${result.utxosHarvested} UTXOs');
+      expect(result.utxosHarvested, greaterThan(0), 
+             reason: 'Should harvest UTXOs from transaction outputs to our address');
+      
+      // Verify merkle proof stored
+      final proof = await libspiffy.walletStorage.getMerkleProof(tx1.txid);
+      expect(proof, isNotNull, reason: 'Merkle proof should be stored');
+      expect(proof!.blockHeight, equals(1291860), reason: 'Correct block height');
+      
+      // Verify UTXOs were issued as commands to aggregate
+      print('✓ Successfully harvested ${result.utxosHarvested} UTXO(s)');
+      print('  Harvested UTXO IDs: ${result.harvestedUtxoIds}');
+      
+      // Cleanup
+      await libspiffy.shutdown();
+      await isar.close(deleteFromDisk: true);
+      testDir.deleteSync(recursive: true);
+    });
+    
     test('imports transactions and stores merkle proofs', () async {
       // Setup test system
       await Isar.initializeIsarCore(download: true);
@@ -14,7 +105,10 @@ void main() {
       final actorSystem = LocalActorSystem(ActorSystemConfig());
       
       final isar = await Isar.open(
-        LibSpiffySchemas.walletSchemas,
+        [
+          ...LibSpiffySchemas.walletSchemas,
+          ...IsarEventStore.requiredSchemas,
+        ],
         directory: testDir.path,
         name: 'test_import_db',
       );
@@ -85,7 +179,10 @@ void main() {
       final actorSystem = LocalActorSystem(ActorSystemConfig());
       
       final isar = await Isar.open(
-        LibSpiffySchemas.walletSchemas,
+        [
+          ...LibSpiffySchemas.walletSchemas,
+          ...IsarEventStore.requiredSchemas,
+        ],
         directory: testDir.path,
         name: 'test_event_db',
       );

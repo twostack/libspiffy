@@ -23,11 +23,14 @@ import 'spv_actor.dart';
 import 'arc_actor.dart';
 import 'header_sync_actor.dart';
 import 'invoice_coordinator_actor.dart';
+import 'payment_coordinator_actor.dart';
+import '../services/transaction_import_service.dart';
 
 /// Initialization and management utilities for the LibSpiffy actor system
 class LibSpiffyActorSystem {
   late ActorSystem _actorSystem;
   bool _ownsActorSystem = false;
+  bool _ownsIsar = false; // Track if we created the Isar instance
   late IsarEventStore _eventStore;
   late ReadModelStorage _walletStorage;
   late WalletStorage _actorStorage; // For actors that need full WalletStorage
@@ -35,6 +38,9 @@ class LibSpiffyActorSystem {
   late CryptoService _cryptoService;
   late BlockHeaderChain _headerChain;
   ArcServiceConfig? _arcConfig;
+  
+  // Transaction import service
+  TransactionImportService? _transactionImportService;
   
   // SpiffyNode integration (optional)
   SpiffyNodeBridge? _spiffyNodeBridge;
@@ -47,6 +53,7 @@ class LibSpiffyActorSystem {
   // Actor references
   ActorRef? _walletManager;
   ActorRef? _invoiceCoordinator;
+  ActorRef? _paymentCoordinator;
   ActorRef? _spvActor;
   ActorRef? _arcActor;
   ActorRef? _headerSyncActor;
@@ -113,11 +120,13 @@ class LibSpiffyActorSystem {
       // Use provided Isar instance for event store
       print('Using provided Isar instance for event store');
       _eventStore = IsarEventStore(isar);
+      _ownsIsar = false; // Isar instance owned by host application
     } else {
       // Create separate Isar instance for Eventador
       print('Creating Isar instance for event store');
       await Isar.initializeIsarCore(download: true);
       _eventStore = await IsarEventStore.create(directory: dataDirectory ?? './data');
+      _ownsIsar = true; // We created and own this Isar instance
     }
     
     // 3. Initialize read model storage (use provided or create based on Isar)
@@ -167,6 +176,13 @@ class LibSpiffyActorSystem {
     
     // 9. Spawn coordination actors
     await _spawnActors();
+    
+    // 10. Initialize transaction import service
+    _transactionImportService = TransactionImportService(
+      storage: _walletStorage,
+      walletManager: _walletManager!,
+    );
+    print('✓ Transaction import service initialized');
     
     print('LibSpiffy Actor System initialized successfully');
   }
@@ -363,6 +379,12 @@ class LibSpiffyActorSystem {
     // We'll send a message to set the reference
     _walletManager!.tell(SetInvoiceManagerMessage(_invoiceCoordinator!));
     
+    // Spawn PaymentCoordinatorActor for BEEF-based payments
+    _paymentCoordinator = await _actorSystem.spawn('payment-coordinator', () => PaymentCoordinatorActor(
+      walletManager: _walletManager!,
+      storage: _walletStorage,
+    ));
+    
     // Spawn HeaderSyncActor early (other actors may need to communicate with it)
     _headerSyncActorInstance = HeaderSyncActor(
       headerChain: _headerChain,
@@ -396,6 +418,14 @@ class LibSpiffyActorSystem {
       throw StateError('LibSpiffy actor system not initialized');
     }
     return _walletManager!;
+  }
+
+  /// Get reference to the PaymentCoordinator actor
+  ActorRef get paymentCoordinator {
+    if (_paymentCoordinator == null) {
+      throw StateError('LibSpiffy actor system not initialized');
+    }
+    return _paymentCoordinator!;
   }
 
   /// Get reference to the SPV actor
@@ -482,6 +512,17 @@ class LibSpiffyActorSystem {
   /// The InvoiceProjection listens to invoice events and maintains invoice
   /// read models in Isar for efficient queries.
   InvoiceProjection? get invoiceProjection => _invoiceProjection;
+
+  /// Get reference to the transaction import service
+  /// 
+  /// The TransactionImportService imports historical transactions and
+  /// harvests UTXOs using a hybrid event sourcing approach.
+  TransactionImportService get transactionImportService {
+    if (_transactionImportService == null) {
+      throw StateError('LibSpiffy actor system not initialized');
+    }
+    return _transactionImportService!;
+  }
 
   /// Get reference to the underlying actor system
   /// 
@@ -577,8 +618,15 @@ class LibSpiffyActorSystem {
         print('Actor system owned by host application - not shutting down');
       }
       
-      // 4. Always close event store
-      await _eventStore.close();
+      // 4. Close event store only if we own the Isar instance
+      if (_ownsIsar) {
+        print('Closing LibSpiffy-owned Isar instance');
+        await _eventStore.close();
+      } else {
+        print('Isar instance owned by host application - not closing event store');
+        // Note: We cannot close the event stream controller without closing Isar
+        // This is acceptable since the host owns the Isar instance and will close it
+      }
       
       print('LibSpiffy Actor System shutdown complete');
     } catch (e) {

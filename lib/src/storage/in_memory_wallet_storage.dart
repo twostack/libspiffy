@@ -121,6 +121,14 @@ class InMemoryWalletStorage implements WalletStorage {
   }
   
   @override
+  Future<List<String>> getWalletAddresses(String walletId) async {
+    // Get unique addresses from UTXO records
+    final utxos = await getAvailableUTXOs(walletId);
+    final addresses = utxos.map((u) => u.address).toSet().toList();
+    return addresses;
+  }
+  
+  @override
   Future<void> deleteWallet(String walletId) async {
     _events.remove(walletId);
     _utxos.remove(walletId);

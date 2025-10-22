@@ -62,3 +62,8 @@ export 'src/services/wallet_balance_service.dart'; // BEEF-based multi-tier bala
 // TRANSACTION BUILDING - Production-ready transaction construction
 export 'src/services/transaction_builder_service.dart'; // Comprehensive transaction building with UTXO selection
 
+// 🎯 TRANSACTION IMPORT - Hybrid event sourcing for historical data
+export 'src/services/transaction_import_service.dart'; // Import historical transactions with UTXO harvesting
+export 'src/services/transaction_import_models.dart'; // Import data structures (ImportableTransaction, TransactionImportResult)
+export 'src/services/transaction_analyzer.dart';     // Two-phase UTXO harvesting and dependency sorting
+

@@ -27,6 +27,12 @@ abstract class ReadModelStorage {
   /// List all wallet IDs
   Future<List<String>> listWallets();
   
+  /// Get all addresses for a wallet
+  /// 
+  /// Used by transaction import to identify wallet outputs.
+  /// Returns addresses from UTXO records or address generation events.
+  Future<List<String>> getWalletAddresses(String walletId);
+  
   // ========================================
   // UTXO Queries
   // ========================================

@@ -31,7 +31,7 @@ LibSpiffy implements a **script-centric, event-sourced Bitcoin SPV wallet** that
 
 ## System Architecture
 
-LibSpiffy uses a **layered architecture** combining **Dactor actors** (coordination layer) with **Eventador aggregates** (business logic layer):
+LibSpiffy uses a **CQRS-based layered architecture** combining **Dactor actors** (coordination layer) with **Eventador aggregates** (business logic layer) and **Projections** (read-side updates):
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -41,88 +41,114 @@ LibSpiffy uses a **layered architecture** combining **Dactor actors** (coordinat
                           │
                           ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                 DACTOR COORDINATION LAYER                       │
+│           DACTOR COORDINATION LAYER (Command Routers)           │
+│                                                                 │
+│  ┌─────────────────────┐  ┌──────────────────────────────────┐  │
+│  │ WalletManagerActor  │  │  InvoiceCoordinatorActor         │  │
+│  │                     │  │                                  │  │
+│  │ • Multi-wallet mgmt │  │ • Invoice lifecycle routing      │  │
+│  │ • Command routing   │  │ • Address coordination           │  │
+│  │ • Wallet lifecycle  │  │ • Query read models             │  │
+│  │ • UTXO cleanup      │  │ • Expiration checks             │  │
+│  └─────────────────────┘  └──────────────────────────────────┘  │
 │                                                                 │
 │  ┌─────────────────────┐  ┌─────────────────────────────────────┐ │
-│  │ WalletManagerActor  │  │           SPVActor                  │ │
+│  │      SPVActor       │  │          HeaderSyncActor            │ │
 │  │                     │  │                                     │ │
-│  │ • Multi-wallet mgmt │  │ • BEEF/BUMP validation              │ │
-│  │ • Command routing   │  │ • Transaction validation            │ │
-│  │ • Wallet lifecycle  │  │ • Merkle proof verification        │ │
-│  │ • Cross-wallet ops  │  │ • Chain reorganization              │ │
+│  │ • BEEF/BUMP valid.  │  │ • Block header management           │ │
+│  │ • Tx validation     │  │ • Chain tip events                  │ │
+│  │ • Merkle proofs     │  │ • Header storage                    │ │
+│  │ • Invoice matching  │  │ • SPV coordination                  │ │
 │  └─────────────────────┘  └─────────────────────────────────────┘ │
 │                                                                 │
 │  ┌─────────────────────┐  ┌─────────────────────────────────────┐ │
-│  │  HeaderSyncActor    │  │            ARCActor                 │ │
+│  │      ARCActor       │  │         SpiffyNodeBridge            │ │
 │  │                     │  │                                     │ │
-│  │ • Block header mgmt │  │ • ARC service integration           │ │
-│  │ • Chain tip events  │  │ • Transaction broadcasting          │ │
-│  │ • Header storage    │  │ • Fee estimation                    │ │
-│  │ • SPV validation    │  │ • Merkle proof retrieval            │ │
+│  │ • Tx broadcasting   │  │ • SpiffyNode event translation      │ │
+│  │ • Fee estimation    │  │ • P2P message routing               │ │
+│  │ • Merkle retrieval  │  │ • Chain tip monitoring              │ │
+│  │ • Policy query      │  │ • Header forwarding                 │ │
 │  └─────────────────────┘  └─────────────────────────────────────┘ │
-│                                                                 │
-│  ┌─────────────────────────────────────────────────────────────┐ │
-│  │                 SpiffyNodeBridge                            │ │
-│  │                                                             │ │
-│  │ • SpiffyNode event translation                             │ │
-│  │ • P2P message routing                                      │ │  
-│  │ • Chain tip monitoring                                     │ │
-│  │ • Header message forwarding                                │ │
-│  └─────────────────────────────────────────────────────────────┘ │
 └─────────────────────────┬───────────────────────────────────────┘
                           │ Commands
                           ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                 EVENTADOR BUSINESS LAYER                        │
+│         EVENTADOR BUSINESS LAYER (Write Side - CQRS)            │
+│                                                                 │
+│  ┌───────────────────────────┐  ┌────────────────────────────┐  │
+│  │  BITCOIN WALLET AGGREGATE │  │    INVOICE AGGREGATE       │  │
+│  │   (Event-Sourced Root)    │  │  (Event-Sourced Root)      │  │
+│  │                           │  │                            │  │
+│  │ • Script-aware UTXO       │  │ • Invoice state machine    │  │
+│  │ • Registry-driven tx      │  │ • Payment validation       │  │
+│  │ • Protocol registration   │  │ • Status transitions       │  │
+│  │ • UTXO categorization     │  │ • Expiration handling      │  │
+│  │ • Business rules          │  │ • Business rules           │  │
+│  │ • State consistency       │  │ • Audit trail              │  │
+│  └───────────────────────────┘  └────────────────────────────┘  │
+└─────────────────────────┬───────────────────────────────────────┘
+                          │ Events (Immutable)
+                          ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                EVENT STORE (Write-Only by Aggregates)           │
+│                   (Eventador + Isar CBOR)                      │
+│                                                                 │
+│  Wallet Events: WalletCreatedEvent, UTXOReceivedEvent,         │
+│                 UTXOSpentEvent, TransactionCreatedEvent        │
+│  Invoice Events: InvoiceCreatedEvent, InvoicePaidEvent,        │
+│                  InvoiceExpiredEvent, InvoiceCancelledEvent    │
+│  Block Events: BlockHeaderStoredEvent, ChainTipEventMessage    │
+└─────────────────────────┬───────────────────────────────────────┘
+                          │ Event Stream
+                          ▼
+┌─────────────────────────────────────────────────────────────────┐
+│              PROJECTION MANAGER (CQRS Orchestration)            │
+│                                                                 │
+│  • Streams events from EventStore                              │
+│  • Routes events to interested projections                     │
+│  • Manages checkpoints for each projection                     │
+│  • Ensures eventual consistency                                │
+└─────────────────────────┬───────────────────────────────────────┘
+                          │ Events by Type
+                          ▼
+┌─────────────────────────────────────────────────────────────────┐
+│       CQRS PROJECTIONS (Read Side - Write to ReadModels)       │
+│                                                                 │
+│  ┌───────────────────┐  ┌────────────────────────────────────┐  │
+│  │ WalletProjection  │  │      InvoiceProjection            │  │
+│  │                   │  │                                    │  │
+│  │ • UTXO views      │  │ • Invoice status tracking          │  │
+│  │ • Balance updates │  │ • Address associations             │  │
+│  │ • Tx history      │  │ • Payment matching                 │  │
+│  │ • Confirmations   │  │ • Expiration monitoring            │  │
+│  └───────────────────┘  └────────────────────────────────────┘  │
 │                                                                 │
 │  ┌─────────────────────────────────────────────────────────────┐ │
-│  │              BITCOIN WALLET AGGREGATE                       │ │
-│  │                (Event-Sourced Root)                        │ │
+│  │           Domain Projections (Optional)                     │ │
 │  │                                                             │ │
-│  │ • Script-aware UTXO processing                             │ │
-│  │ • Registry-driven transaction building                     │ │
-│  │ • Protocol registration at initialization                  │ │
-│  │ • UTXO categorization (funding/special/protocol)          │ │
-│  │ • Business rule validation                                 │ │
-│  │ • State consistency enforcement                            │ │
+│  │ • TokenProjection (NFT tracking)                           │ │
+│  │ • IdentityProjection (AIP signatures)                      │ │
+│  │ • SocialMediaProjection (BMAP content)                     │ │
+│  │ • Custom protocol views                                    │ │
 │  └─────────────────────────────────────────────────────────────┘ │
 └─────────────────────────┬───────────────────────────────────────┘
-                          │ Events
+                          │ Writes
                           ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                    EVENT STORE                                  │
-│                   (Eventador + Isar)                           │
-│                                                                 │
-│  WalletCreatedEvent  │  UTXOReceivedEvent   │  TransactionCreatedEvent
-│  UTXOSpentEvent      │  ProtocolOutputReceivedEvent │ TransactionSignedEvent
-│  BlockHeaderStoredEvent │ ChainTipEventMessage │ HeaderSyncCompleteEvent
-└─────────────────────────┬───────────────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────────────┐
-│           CORE STORAGE + DOMAIN PROJECTIONS                    │
+│      READ MODEL STORAGE (Isar - Query Optimized, Read-Only)    │
 │                                                                 │
 │  ┌─────────────────────┐    ┌─────────────────────────────────┐ │
-│  │   WalletStorage     │    │     Domain Projections          │ │
-│  │                     │    │                                 │ │
-│  │ • Events            │    │ • TokenProjection               │ │
-│  │ • UTXOs             │    │ • IdentityProjection            │ │
-│  │ • Transactions      │    │ • SocialMediaProjection        │ │
-│  │ • Block Headers     │    │ • Custom protocol views        │ │
-│  │ • Merkle Proofs     │    │                                 │ │
-│  │ • Basic queries     │    │                                 │ │
+│  │ ReadModelStorage    │    │      BlockHeaderChain           │ │
+│  │ (Denormalized)      │    │                                 │ │
+│  │                     │    │ • Header validation/storage     │ │
+│  │ • UTXOs (fast query)│    │ • Chain reorganization          │ │
+│  │ • Transactions      │    │ • Merkle proof verification     │ │
+│  │ • Invoices          │    │ • SPV transaction validation    │ │
+│  │ • Balances          │    │                                 │ │
+│  │ • No joins needed   │    │                                 │ │
 │  └─────────────────────┘    └─────────────────────────────────┘ │
-│                                                                 │
-│  ┌─────────────────────────────────────────────────────────────┐ │
-│  │                 BlockHeaderChain                            │ │
-│  │                                                             │ │
-│  │ • Header validation and storage                            │ │
-│  │ • Chain reorganization handling                           │ │
-│  │ • Merkle proof verification                               │ │
-│  │ • SPV transaction validation                              │ │
-│  └─────────────────────────────────────────────────────────────┘ │
 └─────────────────────────┬───────────────────────────────────────┘
-                          │
+                          │ Reads (Queries)
                           ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                   SERVICES LAYER                                │
@@ -138,37 +164,104 @@ LibSpiffy uses a **layered architecture** combining **Dactor actors** (coordinat
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+### Key CQRS Flow
+
+**Write Side (Commands → Events → EventStore):**
+1. Coordinator Actor receives command
+2. Spawns/routes to appropriate Aggregate
+3. Aggregate validates and emits events
+4. Events persisted to EventStore (CBOR)
+
+**Read Side (EventStore → Projections → ReadModels):**
+1. ProjectionManager streams events from EventStore
+2. Routes events to interested Projections
+3. Projections update denormalized ReadModels
+4. Applications query ReadModels (never EventStore)
+
+**Benefits:**
+- **Separation**: Clear boundary between write and read operations
+- **Performance**: Optimized read models for fast queries
+- **Scalability**: Read/write can scale independently
+- **Audit Trail**: Complete event history in EventStore
+- **Eventual Consistency**: Projections update asynchronously
+
 ## Layered Architecture Explained
 
-### Dactor Coordination Layer
-The **Dactor actors** handle concurrency, external integrations, and coordination between multiple wallets. They operate **above** the business logic layer and never directly modify wallet state.
+### Dactor Coordination Layer (CQRS Coordinators)
+The **Dactor actors** are long-lived coordinators that route commands to aggregates and query read models. They **never directly modify state** - that's the job of aggregates and projections.
+
+**Key Responsibilities:**
+- **Command Routing**: Route commands to appropriate aggregate actors
+- **Aggregate Spawning**: Spawn aggregate actors on-demand (one per entity)
+- **External Integration**: Manage SpiffyNode, ARC Service, and other external systems
+- **Query Handling**: Query read models (not EventStore) for application needs
+- **Coordination**: Coordinate between aggregates (e.g., Invoice requesting wallet address)
 
 **Key Benefits:**
 - **Concurrency**: Handle multiple operations simultaneously
-- **External Integration**: Manage SpiffyNode, ARC Service, and other external systems
-- **Coordination**: Route commands between wallets and services
 - **Scalability**: Can distribute across multiple nodes
+- **Fault Tolerance**: Supervision trees handle failures
+- **Clean Separation**: No business logic in coordinators
 
-### Eventador Business Layer
-The **BitcoinWalletAggregate** contains all business logic and maintains consistency through event sourcing. Each wallet is a separate aggregate instance.
+### Eventador Business Layer (CQRS Write Side)
+The **Aggregates** (BitcoinWalletAggregate, InvoiceAggregate) contain all business logic and maintain consistency through event sourcing. Each entity (wallet, invoice) is a separate aggregate actor instance.
+
+**Key Responsibilities:**
+- **Command Validation**: Enforce business rules before emitting events
+- **Event Emission**: Produce immutable events representing state changes
+- **State Management**: Maintain mutable state from event replay
+- **Consistency**: Ensure state transitions are valid and atomic
 
 **Key Benefits:**
 - **Consistency**: Event sourcing ensures reliable state management
-- **Business Rules**: All wallet logic centralized and testable
-- **Audit Trail**: Complete history of all wallet operations
-- **Testability**: Pure functions for state transitions
+- **Business Rules**: All domain logic centralized and testable
+- **Audit Trail**: Complete history of all operations
+- **Recovery**: State can be rebuilt from events after restart
+- **Testability**: Pure command handlers and event appliers
 
-### Integration Pattern
+### CQRS Read Side (Projections)
+The **Projections** (WalletProjection, InvoiceProjection) listen to event streams and update denormalized read models optimized for queries.
+
+**Key Responsibilities:**
+- **Event Handling**: Subscribe to events from EventStore
+- **Read Model Updates**: Write denormalized data to ReadModelStorage
+- **Checkpointing**: Track last processed event for idempotent replay
+- **View Building**: Create optimized query models
+
+**Key Benefits:**
+- **Performance**: Read models optimized for fast queries
+- **Flexibility**: Multiple read models from same events
+- **Eventual Consistency**: Async updates don't block writes
+- **Scalability**: Read and write scale independently
+
+### CQRS Integration Pattern
 ```
-Actors send Commands → Aggregates validate & emit Events → Storage persists → Projections provide views
+Commands → Coordinators → Aggregates → Events → EventStore
+                                                    ↓
+                                          ProjectionManager
+                                                    ↓
+                                              Projections
+                                                    ↓
+                                           ReadModelStorage ← Queries
 ```
 
-**Flow Example:**
-1. **SPVActor** detects new transaction
-2. Sends `ReceiveUTXOCommand` to **WalletManagerActor**
-3. **WalletManagerActor** routes to correct **BitcoinWalletAggregate**
-4. **Aggregate** validates and emits `UTXOReceivedEvent`
-5. **Event** is persisted and triggers balance updates
+**Complete Flow Example (Invoice Payment):**
+1. **SPVActor** validates BEEF transaction with invoice metadata
+2. Sends `MarkInvoicePaidMessage` to **InvoiceCoordinatorActor**
+3. **InvoiceCoordinatorActor** routes `MarkInvoicePaidCommand` to **InvoiceAggregate**
+4. **InvoiceAggregate** validates state (pending?) and emits `InvoicePaidEvent`
+5. **EventStore** persists event (CBOR format)
+6. **ProjectionManager** streams event to **InvoiceProjection**
+7. **InvoiceProjection** updates invoice read model in Isar (status: paid)
+8. **Application** queries read model to show updated invoice status
+
+**Critical CQRS Rules:**
+- ❌ Coordinators never write to storage (except via commands to aggregates)
+- ❌ Aggregates never query read models (only use their own state)
+- ❌ Projections never emit events (only read and update read models)
+- ✅ Commands go through aggregates only
+- ✅ Queries read from read models only (never EventStore)
+- ✅ Events are the source of truth for state reconstruction
 
 ## Dactor Actor Implementations
 
@@ -794,6 +887,523 @@ class WalletState extends eventador.State {
   final ScriptTypeRegistry scriptRegistry;
 }
 ```
+
+### Invoice System (CQRS Pattern)
+
+LibSpiffy implements a complete invoice-based payment system using proper CQRS patterns with event sourcing.
+
+#### InvoiceCoordinatorActor
+
+The coordinator that routes invoice commands to aggregate instances and coordinates with WalletManager for address generation:
+
+```dart
+class InvoiceCoordinatorActor extends Actor {
+  final ActorRef _walletManager;
+  final ReadModelStorage _storage;
+  final EventStore _eventStore;
+  final Map<String, ActorRef> _invoiceAggregates = {}; // invoiceId -> ActorRef
+  final Map<String, _PendingInvoiceRequest> _pendingInvoiceRequests = {};
+  Timer? _expirationTimer;
+  
+  @override
+  Future<void> onMessage(dynamic message) async {
+    switch (message.runtimeType) {
+      case CreateInvoiceMessage:
+        await _handleCreateInvoice(message as CreateInvoiceMessage);
+        break;
+      case MarkInvoicePaidMessage:
+        await _handleMarkInvoicePaid(message as MarkInvoicePaidMessage);
+        break;
+      case CheckInvoiceMessage:
+        await _handleCheckInvoice(message as CheckInvoiceMessage);
+        break;
+      case ListInvoicesMessage:
+        await _handleListInvoices(message as ListInvoicesMessage);
+        break;
+      case CancelInvoiceMessage:
+        await _handleCancelInvoice(message as CancelInvoiceMessage);
+        break;
+      case AddressGeneratedResponse:
+        await _handleAddressGenerated(message as AddressGeneratedResponse);
+        break;
+    }
+  }
+  
+  // Request address from wallet, store pending request
+  Future<void> _handleCreateInvoice(CreateInvoiceMessage msg) async {
+    final invoiceId = _uuid.v4();
+    
+    // Store pending request
+    _pendingInvoiceRequests[invoiceId] = _PendingInvoiceRequest(
+      invoiceId: invoiceId,
+      walletId: msg.walletId,
+      amount: msg.amount,
+      description: msg.description,
+      expiresIn: msg.expiresIn,
+      numberOfAddresses: msg.numberOfAddresses,
+      originalSender: context.sender,
+    );
+    
+    // Request address from wallet (with invoiceId in metadata)
+    _walletManager.tell(
+      WalletCommandMessage(
+        msg.walletId,
+        GenerateAddressCommand(
+          walletId: msg.walletId,
+          metadata: {'invoiceId': invoiceId},
+        ),
+      ),
+      sender: context.self,
+    );
+  }
+  
+  // Receive address, spawn InvoiceAggregate, send CreateInvoiceCommand
+  Future<void> _handleAddressGenerated(AddressGeneratedResponse msg) async {
+    final invoiceId = msg.metadata['invoiceId'] as String?;
+    if (invoiceId == null || !_pendingInvoiceRequests.containsKey(invoiceId)) {
+      return;
+    }
+    
+    final pending = _pendingInvoiceRequests.remove(invoiceId)!;
+    
+    // Spawn InvoiceAggregate actor
+    final aggregateRef = await context.actorSystem.spawn(
+      'Invoice_$invoiceId',
+      () => InvoiceAggregate(
+        persistenceId: 'Invoice_$invoiceId',
+        eventStore: _eventStore,
+      ),
+    );
+    _invoiceAggregates[invoiceId] = aggregateRef;
+    
+    // Allow recovery to complete
+    await Future.delayed(Duration(milliseconds: 200));
+    
+    // Send CreateInvoiceCommand to aggregate
+    aggregateRef.tell(CreateInvoiceCommand(
+      invoiceId: invoiceId,
+      walletId: pending.walletId,
+      addresses: [msg.address], // Generated address(es)
+      amount: pending.amount,
+      description: pending.description,
+      expiresIn: pending.expiresIn,
+      invoiceMetadata: {},
+    ));
+    
+    // Respond to original sender
+    pending.originalSender?.tell(InvoiceCreatedMessage(
+      invoiceId: invoiceId,
+      walletId: pending.walletId,
+      addresses: [msg.address],
+      amount: pending.amount,
+      description: pending.description,
+      createdAt: DateTime.now(),
+      expiresAt: pending.expiresIn != null 
+          ? DateTime.now().add(pending.expiresIn!) 
+          : null,
+      success: true,
+    ));
+  }
+  
+  // Route command to InvoiceAggregate
+  Future<void> _handleMarkInvoicePaid(MarkInvoicePaidMessage msg) async {
+    var aggregateRef = _invoiceAggregates[msg.invoiceId];
+    if (aggregateRef == null) {
+      // Spawn aggregate to recover from events
+      aggregateRef = await context.actorSystem.spawn(
+        'Invoice_${msg.invoiceId}',
+        () => InvoiceAggregate(
+          persistenceId: 'Invoice_${msg.invoiceId}',
+          eventStore: _eventStore,
+        ),
+      );
+      _invoiceAggregates[msg.invoiceId] = aggregateRef;
+      await Future.delayed(Duration(milliseconds: 200)); // Allow recovery
+    }
+    
+    // Send command to aggregate
+    aggregateRef.tell(MarkInvoicePaidCommand(
+      invoiceId: msg.invoiceId,
+      txid: msg.txid,
+      amountReceived: msg.amountReceived,
+      addressesPaidTo: msg.addressesPaidTo,
+      paidAt: msg.paidAt,
+    ));
+    
+    // Respond with status
+    context.sender?.tell(InvoiceStatusMessage(
+      invoiceId: msg.invoiceId,
+      status: InvoiceStatus.paid,
+      paidAt: msg.paidAt,
+      txid: msg.txid,
+      statusMessage: 'Invoice marked as paid',
+    ));
+  }
+  
+  // Query read model (NOT EventStore)
+  Future<void> _handleCheckInvoice(CheckInvoiceMessage msg) async {
+    final invoice = await _storage.getInvoice(msg.invoiceId);
+    
+    if (invoice != null) {
+      context.sender?.tell(InvoiceDetailsResponse(
+        invoiceId: invoice.invoiceId,
+        walletId: invoice.walletId,
+        addresses: invoice.addresses,
+        amount: invoice.amount,
+        description: invoice.description,
+        status: invoice.status,
+        createdAt: invoice.createdAt,
+        expiresAt: invoice.expiresAt,
+        paidAt: invoice.paidAt,
+        paymentTxid: invoice.paymentTxid,
+        found: true,
+      ));
+    } else {
+      context.sender?.tell(InvoiceDetailsResponse(
+        invoiceId: msg.invoiceId,
+        addresses: [],
+        amount: BigInt.zero,
+        status: InvoiceStatus.pending,
+        createdAt: DateTime.now(),
+        found: false,
+        error: 'Invoice not found',
+      ));
+    }
+  }
+  
+  // Periodic expiration check
+  void _startExpirationTimer() {
+    _expirationTimer = Timer.periodic(const Duration(minutes: 5), (_) {
+      _checkExpiredInvoices();
+    });
+  }
+  
+  Future<void> _checkExpiredInvoices() async {
+    // Query read model for pending invoices
+    final pendingInvoices = await _storage.listInvoicesByStatus(
+      InvoiceStatus.pending,
+    );
+    
+    final now = DateTime.now();
+    for (final invoice in pendingInvoices) {
+      if (invoice.expiresAt != null && invoice.expiresAt!.isBefore(now)) {
+        // Get/spawn aggregate and send ExpireInvoiceCommand
+        var aggregateRef = _invoiceAggregates[invoice.invoiceId];
+        if (aggregateRef == null) {
+          aggregateRef = await context.actorSystem.spawn(
+            'Invoice_${invoice.invoiceId}',
+            () => InvoiceAggregate(
+              persistenceId: 'Invoice_${invoice.invoiceId}',
+              eventStore: _eventStore,
+            ),
+          );
+          _invoiceAggregates[invoice.invoiceId] = aggregateRef;
+          await Future.delayed(Duration(milliseconds: 200));
+        }
+        
+        aggregateRef.tell(ExpireInvoiceCommand(
+          invoiceId: invoice.invoiceId,
+        ));
+      }
+    }
+  }
+}
+```
+
+#### InvoiceAggregate
+
+The event-sourced aggregate root for invoice business logic:
+
+```dart
+class InvoiceAggregate extends AggregateRoot<InvoiceState> {
+  InvoiceAggregate({
+    required String persistenceId,
+    required EventStore eventStore,
+  }) : super(persistenceId: persistenceId, eventStore: eventStore);
+  
+  @override
+  InvoiceState createInitialState() => InvoiceState(
+    invoiceId: persistenceId.replaceFirst('Invoice_', ''),
+    walletId: '',
+    addresses: [],
+    amount: BigInt.zero,
+    status: InvoiceStatus.pending,
+    createdAt: DateTime.now(),
+    metadata: {},
+  );
+  
+  @override
+  Future<List<Event>> handleCommand(InvoiceState currentState, Command command) async {
+    return switch (command.runtimeType) {
+      CreateInvoiceCommand => _handleCreateInvoice(currentState, command as CreateInvoiceCommand),
+      MarkInvoicePaidCommand => _handleMarkInvoicePaid(currentState, command as MarkInvoicePaidCommand),
+      CancelInvoiceCommand => _handleCancelInvoice(currentState, command as CancelInvoiceCommand),
+      ExpireInvoiceCommand => _handleExpireInvoice(currentState, command as ExpireInvoiceCommand),
+      _ => throw ArgumentError('Unknown command type: ${command.runtimeType}'),
+    };
+  }
+  
+  // Business logic: Validate and emit events
+  List<Event> _handleCreateInvoice(InvoiceState state, CreateInvoiceCommand cmd) {
+    if (cmd.amount <= BigInt.zero) {
+      throw ArgumentError('Invoice amount must be positive');
+    }
+    if (cmd.addresses.isEmpty) {
+      throw ArgumentError('Invoice must have at least one payment address');
+    }
+    
+    return [InvoiceCreatedEvent(
+      invoiceId: cmd.invoiceId,
+      walletId: cmd.walletId,
+      addresses: cmd.addresses,
+      amount: cmd.amount,
+      description: cmd.description,
+      createdAt: DateTime.now(),
+      expiresAt: cmd.expiresIn != null 
+          ? DateTime.now().add(cmd.expiresIn!) 
+          : null,
+      metadata: cmd.invoiceMetadata ?? {},
+    )];
+  }
+  
+  List<Event> _handleMarkInvoicePaid(InvoiceState state, MarkInvoicePaidCommand cmd) {
+    if (state.status != InvoiceStatus.pending) {
+      throw StateError('Invoice is not pending (status: ${state.status})');
+    }
+    if (cmd.amountReceived < state.amount) {
+      throw ArgumentError('Payment amount ${cmd.amountReceived} is less than invoice amount ${state.amount}');
+    }
+    
+    return [InvoicePaidEvent(
+      invoiceId: cmd.invoiceId,
+      paidAt: cmd.paidAt ?? DateTime.now(),
+      txid: cmd.txid,
+      amountReceived: cmd.amountReceived,
+      addressesPaidTo: cmd.addressesPaidTo,
+    )];
+  }
+  
+  List<Event> _handleExpireInvoice(InvoiceState state, ExpireInvoiceCommand cmd) {
+    if (state.status != InvoiceStatus.pending) {
+      return []; // Already paid/cancelled/expired
+    }
+    
+    return [InvoiceExpiredEvent(
+      invoiceId: cmd.invoiceId,
+      expiredAt: DateTime.now(),
+    )];
+  }
+  
+  @override
+  void eventHandler(Event event) {
+    ensureStateInitialized(); // Critical for recovery!
+    
+    if (event is! InvoiceEvent) {
+      throw ArgumentError('Expected InvoiceEvent, got ${event.runtimeType}');
+    }
+    
+    switch (event.runtimeType) {
+      case InvoiceCreatedEvent:
+        _applyInvoiceCreated(event as InvoiceCreatedEvent);
+        break;
+      case InvoicePaidEvent:
+        _applyInvoicePaid(event as InvoicePaidEvent);
+        break;
+      case InvoiceExpiredEvent:
+        _applyInvoiceExpired(event as InvoiceExpiredEvent);
+        break;
+      case InvoiceCancelledEvent:
+        _applyInvoiceCancelled(event as InvoiceCancelledEvent);
+        break;
+      default:
+        throw ArgumentError('Unknown event type: ${event.runtimeType}');
+    }
+  }
+  
+  // Mutate currentState directly (new Eventador pattern)
+  void _applyInvoiceCreated(InvoiceCreatedEvent event) {
+    currentState.walletId = event.walletId;
+    currentState.addresses = List.from(event.addresses);
+    currentState.amount = event.amount;
+    currentState.description = event.description;
+    currentState.status = InvoiceStatus.pending;
+    currentState.createdAt = event.createdAt;
+    currentState.expiresAt = event.expiresAt;
+    currentState.version++;
+    currentState.lastModified = event.timestamp;
+  }
+  
+  void _applyInvoicePaid(InvoicePaidEvent event) {
+    currentState.status = InvoiceStatus.paid;
+    currentState.paidAt = event.paidAt;
+    currentState.paymentTxid = event.txid;
+    currentState.amountReceived = event.amountReceived;
+    currentState.version++;
+    currentState.lastModified = event.timestamp;
+  }
+  
+  void _applyInvoiceExpired(InvoiceExpiredEvent event) {
+    currentState.status = InvoiceStatus.expired;
+    currentState.version++;
+    currentState.lastModified = event.timestamp;
+  }
+}
+```
+
+#### InvoiceProjection
+
+Builds the invoice read model from events:
+
+```dart
+class InvoiceProjection extends Projection<InvoiceReadModel> {
+  final ReadModelStorage _storage;
+  final String _projectionId;
+  late InvoiceReadModel _readModel;
+  int _checkpoint = 0;
+  
+  InvoiceProjection({
+    required String projectionId,
+    required EventStore eventStore,
+    required ReadModelStorage storage,
+  }) : _projectionId = projectionId,
+       _storage = storage;
+  
+  @override
+  Future<bool> handle(Event event) async {
+    if (event is! InvoiceEvent) return false;
+    
+    switch (event.runtimeType) {
+      case InvoiceCreatedEvent:
+        await _handleInvoiceCreated(event as InvoiceCreatedEvent);
+        return true;
+      case InvoicePaidEvent:
+        await _handleInvoicePaid(event as InvoicePaidEvent);
+        return true;
+      case InvoiceExpiredEvent:
+        await _handleInvoiceExpired(event as InvoiceExpiredEvent);
+        return true;
+      case InvoiceCancelledEvent:
+        await _handleInvoiceCancelled(event as InvoiceCancelledEvent);
+        return true;
+      default:
+        return false;
+    }
+  }
+  
+  // Update read model (idempotent for replay)
+  Future<void> _handleInvoiceCreated(InvoiceCreatedEvent event) async {
+    final existing = await _storage.getInvoice(event.invoiceId);
+    if (existing == null) {
+      final invoice = Invoice(
+        invoiceId: event.invoiceId,
+        walletId: event.walletId,
+        addresses: event.addresses,
+        amount: event.amount,
+        description: event.description,
+        status: InvoiceStatus.pending,
+        createdAt: event.createdAt,
+        expiresAt: event.expiresAt,
+        metadata: event.metadata,
+      );
+      await _storage.storeInvoice(invoice);
+    }
+    // If exists, skip (idempotent replay)
+  }
+  
+  Future<void> _handleInvoicePaid(InvoicePaidEvent event) async {
+    await _storage.updateInvoiceStatus(
+      event.invoiceId,
+      InvoiceStatus.paid,
+      paidAt: event.paidAt,
+      txid: event.txid,
+      amountReceived: event.amountReceived,
+    );
+  }
+  
+  Future<void> _handleInvoiceExpired(InvoiceExpiredEvent event) async {
+    await _storage.updateInvoiceStatus(
+      event.invoiceId,
+      InvoiceStatus.expired,
+    );
+  }
+}
+```
+
+#### Invoice State Machine
+
+```
+      ┌─────────┐
+      │ PENDING │ (Initial state)
+      └────┬────┘
+           │
+    ┌──────┼──────┐
+    │      │      │
+    ▼      ▼      ▼
+┌──────┐ ┌────┐ ┌─────────┐
+│ PAID │ │EXPI│ │CANCELLED│ (Terminal states)
+└──────┘ │RED │ └─────────┘
+         └────┘
+```
+
+**State Transitions:**
+- **PENDING → PAID**: When payment received and validated
+- **PENDING → EXPIRED**: When expiration time passes
+- **PENDING → CANCELLED**: When user cancels invoice
+- Terminal states cannot transition further
+
+#### Invoice SPV Flow
+
+Complete end-to-end invoice-based payment with SPV validation:
+
+```dart
+// 1. Receiver creates invoice
+invoiceCoordinator.tell(CreateInvoiceMessage(
+  walletId: 'bob-wallet',
+  amount: BigInt.from(100000),
+  description: 'Payment for services',
+));
+
+// 2. InvoiceCoordinator requests address from WalletManager
+// 3. WalletManager routes to BitcoinWalletAggregate
+// 4. Aggregate emits AddressGeneratedEvent
+// 5. WalletProjection updates read model
+// 6. InvoiceCoordinator spawns InvoiceAggregate with address
+// 7. Aggregate emits InvoiceCreatedEvent
+// 8. InvoiceProjection updates invoice read model
+
+// 9. Sender broadcasts BEEF transaction to invoice address
+spvActor.tell(ReceiveTransactionMessage(
+  transactionId: 'txid',
+  beef: beefData,
+  fromCounterparty: 'alice',
+  targetWalletId: 'bob-wallet',
+  invoiceId: 'invoice-123',
+));
+
+// 10. SPVActor validates BEEF merkle proof
+// 11. SPVActor extracts UTXOs and verifies payment to invoice address
+// 12. SPVActor notifies InvoiceCoordinator
+invoiceCoordinator.tell(MarkInvoicePaidMessage(
+  invoiceId: 'invoice-123',
+  txid: 'transaction-hex',
+  amountReceived: BigInt.from(100000),
+  addressesPaidTo: ['invoice-address'],
+));
+
+// 13. InvoiceCoordinator routes to InvoiceAggregate
+// 14. Aggregate validates payment and emits InvoicePaidEvent
+// 15. InvoiceProjection updates invoice status to PAID
+// 16. SPVActor sends ReceiveUTXOCommand to WalletManager
+// 17. WalletAggregate emits UTXOReceivedEvent
+// 18. WalletProjection updates UTXO read model
+```
+
+**Key Benefits:**
+- **Simplified SPV**: No need to monitor entire blockchain
+- **Privacy**: Single-use addresses per invoice
+- **Immediate Validation**: SPV validation completes in milliseconds
+- **Audit Trail**: Complete event history for invoice lifecycle
+- **Separation of Concerns**: Invoice domain separate from wallet domain
 
 ## Transaction Building Strategy
 

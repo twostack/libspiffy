@@ -67,6 +67,14 @@ class IsarWalletStorage implements ReadModelStorage {
   }
   
   @override
+  Future<List<String>> getWalletAddresses(String walletId) async {
+    // Get unique addresses from UTXO records
+    final utxos = await getAvailableUTXOs(walletId);
+    final addresses = utxos.map((u) => u.address).toSet().toList();
+    return addresses;
+  }
+  
+  @override
   Future<void> deleteWallet(String walletId) async {
     await _isar.writeTxn(() async {
       // Delete all UTXOs for this wallet

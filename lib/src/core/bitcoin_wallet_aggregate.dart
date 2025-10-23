@@ -1,6 +1,7 @@
 import 'package:eventador/eventador.dart';
 import 'package:uuid/uuid.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
+import 'package:dactor/dactor.dart';
 
 import '../models/wallet_event.dart';
 import '../models/wallet_state.dart';
@@ -140,6 +141,25 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
           txid: event.txid,
           rawHex: event.rawHex,
           success: true,
+        ));
+      } else if (event is UTXOReceivedEvent) {
+        // Send generic success response for UTXO commands
+        context.sender!.tell(LocalMessage(
+          payload: {
+            'success': true,
+            'eventType': 'UTXOReceivedEvent',
+            'txid': event.txid,
+            'vout': event.vout,
+          },
+        ));
+      } else if (event is TransactionImportedEvent) {
+        // Send generic success response for transaction import commands
+        context.sender!.tell(LocalMessage(
+          payload: {
+            'success': true,
+            'eventType': 'TransactionImportedEvent',
+            'txid': event.txid,
+          },
         ));
       }
     }

@@ -431,6 +431,12 @@ class ImportActor extends Actor {
               WalletCommandMessage(message.walletId, receiveCommand),
               sender: context.self,
             );
+            
+            // WORKAROUND: Delay to prevent concurrency exceptions
+            // Root cause: Eventador's AggregateRoot doesn't synchronously update currentState.version
+            // after persistEvents(), causing the next command to see stale version.
+            // TODO: File bug report with Eventador - actor mailbox should guarantee sequential processing
+            await Future.delayed(const Duration(milliseconds: 50));
             _logger.info('            ✅ ReceiveUTXOCommand sent');
 
             importedUtxos.add({
@@ -470,6 +476,12 @@ class ImportActor extends Actor {
           WalletCommandMessage(message.walletId, recordCommand),
           sender: context.self,
         );
+        
+        // WORKAROUND: Delay to prevent concurrency exceptions
+        // Root cause: Eventador's AggregateRoot doesn't synchronously update currentState.version
+        // after persistEvents(), causing the next command to see stale version.
+        // TODO: File bug report with Eventador - actor mailbox should guarantee sequential processing
+        await Future.delayed(const Duration(milliseconds: 50));
         _logger.info('         ✅ RecordImportedTransactionCommand sent');
 
         _reportProgress(

@@ -3,6 +3,7 @@ import '../core/wallet_events.dart';
 import '../models/wallet_event.dart';
 import '../models/wallet_read_model.dart';
 import '../models/bitcoin_utxo.dart';
+import '../models/bitcoin_transaction.dart';
 import '../storage/read_model_storage.dart';
 
 /// Wallet projection that builds read models from wallet events
@@ -48,6 +49,8 @@ class WalletProjection extends Projection<WalletReadModel> {
         UTXOReservedEvent,
         UTXOReleasedEvent,
         UTXOReservationRenewedEvent,
+        TransactionImportedEvent,
+        TransactionCreatedEvent,
       ];
   
   @override
@@ -101,6 +104,12 @@ class WalletProjection extends Projection<WalletReadModel> {
           return true;
         case UTXOReservationRenewedEvent:
           // Renewal doesn't change statistics
+          return true;
+        case TransactionImportedEvent:
+          await _handleTransactionImported(event as TransactionImportedEvent);
+          return true;
+        case TransactionCreatedEvent:
+          await _handleTransactionCreated(event as TransactionCreatedEvent);
           return true;
         default:
           return false;
@@ -159,6 +168,7 @@ class WalletProjection extends Projection<WalletReadModel> {
   }
   
   Future<void> _handleUTXOReceived(UTXOReceivedEvent event) async {
+    print('[WalletProjection] 📥 Processing UTXOReceivedEvent: ${event.txid}:${event.vout} (${event.satoshis} sats)');
     final utxoKey = '${event.txid}:${event.vout}';
     final utxo = BitcoinUtxo.create(
       txid: event.txid,
@@ -171,7 +181,9 @@ class WalletProjection extends Projection<WalletReadModel> {
     );
     
     _utxos[utxoKey] = utxo;
+    print('[WalletProjection]    → UTXO added to in-memory cache, total UTXOs: ${_utxos.length}');
     await _recalculateAndPersist(event.timestamp);
+    print('[WalletProjection]    ✅ UTXO persisted to Isar');
   }
   
   Future<void> _handleUTXOSpent(UTXOSpentEvent event) async {
@@ -286,6 +298,124 @@ class WalletProjection extends Projection<WalletReadModel> {
       }
     } catch (e) {
       print('Error persisting wallet read model: $e');
+      rethrow;
+    }
+  }
+  
+  Future<void> _handleTransactionImported(TransactionImportedEvent event) async {
+    print('[WalletProjection] 📥 Processing TransactionImportedEvent: ${event.txid}');
+    
+    try {
+      // Use pre-calculated values from BEEF import (no need to re-parse!)
+      final totalOutput = BigInt.from(event.totalOutputSats);
+      final totalInput = BigInt.from(event.totalInputSats);
+      final walletReceivedSats = BigInt.from(event.walletReceivedSats);
+      
+      print('[WalletProjection]    → Transaction data from BEEF:');
+      print('[WalletProjection]       Inputs: ${event.numInputs}, Outputs: ${event.numOutputs}');
+      print('[WalletProjection]       Total input: $totalInput sats (${event.sendingAddresses.length} sending addresses)');
+      print('[WalletProjection]       Total output: $totalOutput sats');
+      print('[WalletProjection]       Wallet received: $walletReceivedSats sats from ${event.walletReceivingAddresses.length} addresses');
+      print('[WalletProjection]       Receiving addresses: ${event.walletReceivingAddresses.join(", ")}');
+      print('[WalletProjection]       Sending addresses: ${event.sendingAddresses.join(", ")}');
+      print('[WalletProjection]       Version: ${event.txVersion}, LockTime: ${event.txLockTime}');
+      
+      // Calculate fee from actual input/output values (if inputs are available)
+      final fee = totalInput > BigInt.zero ? totalInput - totalOutput : BigInt.zero;
+      
+      // Determine if this is incoming or outgoing
+      // If we received funds, it's incoming; if we spent, it's outgoing
+      // For imported transactions, we're typically importing receives
+      final isIncoming = walletReceivedSats > BigInt.zero;
+      // Note: isOutgoing would need to check if inputs are from our wallet
+      
+      // Net amount: positive for receives, negative for sends
+      final netAmount = walletReceivedSats; // For receives this is positive
+      
+      // Create BitcoinTransaction with complete wallet-aware data from BEEF
+      final transaction = BitcoinTransaction(
+        txid: event.txid,
+        rawHex: event.rawHex,
+        status: TransactionStatus.confirmed,
+        blockHeight: event.blockHeight,
+        confirmations: 6, // Assume sufficient confirmations for imported txs
+        inputValue: totalInput,
+        outputValue: totalOutput,
+        fee: fee,
+        receivingAddresses: event.walletReceivingAddresses, // Our addresses that received
+        sendingAddresses: event.sendingAddresses, // Addresses from parent tx outputs (BEEF)
+        netAmount: netAmount,
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+        lockTime: event.txLockTime,
+        version: event.txVersion,
+      );
+      
+      print('[WalletProjection]    → Storing transaction in Isar (block: ${event.blockHeight})');
+      print('[WalletProjection]       Net amount for wallet: ${netAmount} sats (${isIncoming ? "INCOMING" : "OUTGOING"})');
+      await _storage.storeTransaction(_readModel.walletId, transaction);
+      print('[WalletProjection]    ✅ Transaction persisted to Isar');
+    } catch (e, stackTrace) {
+      print('[WalletProjection]    ❌ Failed to store transaction: $e');
+      print('[WalletProjection]    Stack trace: $stackTrace');
+      rethrow;
+    }
+  }
+  
+  Future<void> _handleTransactionCreated(TransactionCreatedEvent event) async {
+    print('[WalletProjection] 📥 Processing TransactionCreatedEvent: ${event.txid}');
+    
+    try {
+      // Use pre-calculated values from the event (no need to re-parse!)
+      final totalInput = BigInt.from(event.totalInput);
+      final totalOutput = BigInt.from(event.totalOutput);
+      final fee = BigInt.from(event.fee);
+      
+      print('[WalletProjection]    → Transaction data from event:');
+      print('[WalletProjection]       Total input: $totalInput sats');
+      print('[WalletProjection]       Total output: $totalOutput sats');
+      print('[WalletProjection]       Fee: $fee sats');
+      print('[WalletProjection]       Direction: ${event.isIncoming ? "INCOMING" : ""} ${event.isOutgoing ? "OUTGOING" : ""}');
+      
+      // Use pre-calculated addresses from event (no parsing needed!)
+      print('[WalletProjection]       Receiving addresses (${event.receivingAddresses.length}): ${event.receivingAddresses.join(", ")}');
+      print('[WalletProjection]       Sending addresses (${event.sendingAddresses.length}): ${event.sendingAddresses.join(", ")}');
+      print('[WalletProjection]       Version: ${event.txVersion}, LockTime: ${event.txLockTime}');
+      
+      // Net amount calculation:
+      // - For outgoing: we're spending, so negative (we lose the inputs we spent)
+      // - For incoming: we're receiving, so positive
+      // Note: The aggregate should calculate this, but for created txs it's typically outgoing
+      final netAmount = event.isOutgoing 
+          ? -(totalInput - totalOutput) // We spent totalInput, got totalOutput change back (if any)
+          : totalOutput; // We received
+      
+      // Create BitcoinTransaction with complete data from event (no parsing!)
+      final transaction = BitcoinTransaction(
+        txid: event.txid,
+        rawHex: event.rawHex,
+        status: TransactionStatus.pending,
+        blockHeight: null, // Created transactions are unconfirmed
+        confirmations: 0,
+        inputValue: totalInput,
+        outputValue: totalOutput,
+        fee: fee,
+        receivingAddresses: event.receivingAddresses, // From event
+        sendingAddresses: event.sendingAddresses, // From event
+        netAmount: netAmount,
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+        lockTime: event.txLockTime, // From event
+        version: event.txVersion, // From event
+      );
+      
+      print('[WalletProjection]    → Storing transaction in Isar (unconfirmed)');
+      print('[WalletProjection]       Net amount for wallet: $netAmount sats (${event.isOutgoing ? "SENT" : "RECEIVED"})');
+      await _storage.storeTransaction(_readModel.walletId, transaction);
+      print('[WalletProjection]    ✅ Transaction persisted to Isar');
+    } catch (e, stackTrace) {
+      print('[WalletProjection]    ❌ Failed to store transaction: $e');
+      print('[WalletProjection]    Stack trace: $stackTrace');
       rethrow;
     }
   }

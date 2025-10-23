@@ -95,6 +95,37 @@ class UpdateWalletConfigurationCommand extends WalletCommand {
   String get commandType => 'UpdateWalletConfigurationCommand';
 }
 
+/// Command to import a wallet from xpriv with transaction history
+class ImportWalletFromXprivCommand extends WalletCommand {
+  final String xpriv;
+  final String walletName;
+  final bool importTransactionHistory;
+  final int addressGapLimit;
+  final int? transactionLimit; // Per address
+  final Map<String, dynamic>? walletMetadata;
+
+  ImportWalletFromXprivCommand({
+    required String walletId,
+    required this.xpriv,
+    required this.walletName,
+    this.importTransactionHistory = true,
+    this.addressGapLimit = 20,
+    this.transactionLimit,
+    this.walletMetadata,
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          commandId: commandId,
+          timestamp: timestamp,
+          metadata: metadata,
+        );
+
+  @override
+  String get commandType => 'ImportWalletFromXprivCommand';
+}
+
 // =============================================================================
 // ADDRESS MANAGEMENT COMMANDS
 // =============================================================================
@@ -180,6 +211,51 @@ class ReceiveUTXOCommand extends WalletCommand {
 
   @override
   String get commandType => 'ReceiveUTXOCommand';
+}
+
+/// Command to record an imported transaction (from blockchain scan)
+class RecordImportedTransactionCommand extends WalletCommand {
+  final String txid;
+  final String rawHex;
+  final int blockHeight;
+  final Map<String, dynamic> bumpProof;
+  final int totalOutputSats;
+  final int numInputs;
+  final int numOutputs;
+  final int txVersion;
+  final int txLockTime;
+  final List<String> walletReceivingAddresses;
+  final int walletReceivedSats;
+  final int totalInputSats;
+  final List<String> sendingAddresses;
+
+  RecordImportedTransactionCommand({
+    required String walletId,
+    required this.txid,
+    required this.rawHex,
+    required this.blockHeight,
+    required this.bumpProof,
+    required this.totalOutputSats,
+    required this.numInputs,
+    required this.numOutputs,
+    required this.txVersion,
+    required this.txLockTime,
+    required this.walletReceivingAddresses,
+    required this.walletReceivedSats,
+    required this.totalInputSats,
+    required this.sendingAddresses,
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          commandId: commandId,
+          timestamp: timestamp,
+          metadata: metadata,
+        );
+
+  @override
+  String get commandType => 'RecordImportedTransactionCommand';
 }
 
 /// Command to spend a UTXO

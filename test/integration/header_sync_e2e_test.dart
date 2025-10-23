@@ -43,24 +43,29 @@ void main() {
     });
 
     setUp(() async {
-      // Initialize LibSpiffy actor system
+      // Initialize LibSpiffy actor system without P2P (we'll inject mock for testing)
       walletStorage = InMemoryWalletStorage();
       libspiffySystem = LibSpiffyActorSystem();
       
       await libspiffySystem.initialize(
         readModelStorage: walletStorage,
+        enableP2P: false, // Disable automatic P2P since we're using mock
       );
 
       // Get reference to the shared header chain
       headerChain = libspiffySystem.headerChain;
 
-      // Set up mock SpiffyNode integration
+      // Set up mock SpiffyNode integration for testing
       mockPeerManager = _MockPeerManager();
       
-      // Connect SpiffyNode bridge
-      await libspiffySystem.connectToSpiffyNode(mockPeerManager);
+      // Manually create SpiffyNodeBridge with mock PeerManager for testing
+      // Note: This is a test-specific setup that bypasses the normal internal P2P management
+      bridge = SpiffyNodeBridge(
+        peerManager: mockPeerManager,
+        headerSyncActor: libspiffySystem.headerSyncActor,
+      );
       
-      bridge = libspiffySystem.spiffyNodeBridge!;
+      await bridge.initialize();
 
       // Give system time to initialize
       await Future.delayed(Duration(milliseconds: 200));

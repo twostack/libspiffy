@@ -54,8 +54,38 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
   
   @override
   Future<void> onMessage(dynamic message) async {
-    print('[BitcoinWalletAggregate] onMessage called: ${message.runtimeType}');
-    await super.onMessage(message);
+    try {
+      if (message is Command) {
+        print('[BitcoinWalletAggregate] 📨 Command received: ${message.runtimeType}');
+        print('   commandId: ${message.commandId}');
+        print('   sender: ${context.sender?.toString() ?? "null"}');
+        
+        // Check if this is a duplicate command
+        if (message is CreateWalletCommand) {
+          print('   walletName: ${message.walletName}');
+          print('   isInitialized: $isInitialized');
+          try {
+            print('   currentState.isCreated: ${currentState.isCreated}');
+            print('   currentState.name: ${currentState.name}');
+            if (currentState.isCreated) {
+              print('   ⚠️  WARNING: Wallet already created, ignoring duplicate CreateWalletCommand');
+              return;
+            }
+          } catch (e) {
+            print('   ⚠️  Error accessing currentState: $e');
+          }
+        }
+      } else {
+        print('[BitcoinWalletAggregate] onMessage called: ${message.runtimeType}');
+      }
+      print('[BitcoinWalletAggregate] → Calling super.onMessage()...');
+      await super.onMessage(message);
+      print('[BitcoinWalletAggregate] ✓ super.onMessage() completed');
+    } catch (e, stack) {
+      print('[BitcoinWalletAggregate] ❌ FATAL ERROR in onMessage: $e');
+      print('[BitcoinWalletAggregate] Stack trace: $stack');
+      rethrow;
+    }
   }
 
   /// Create initial empty wallet state
@@ -79,6 +109,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
   /// Only active when aggregate is used as an actor in the actor system
   @override
   Future<void> onCommandProcessed(Command command, List<Event> events) async {
+    print('[BitcoinWalletAggregate] ✅ Command processed: ${command.runtimeType}');
+    print('   Emitted ${events.length} event(s): ${events.map((e) => e.runtimeType).join(", ")}');
     await super.onCommandProcessed(command, events);
     
     // Only send responses if we're running in an actor system
@@ -117,6 +149,9 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
   /// Only active when aggregate is used as an actor in the actor system
   @override
   Future<void> onCommandFailure(Command command, dynamic error) async {
+    print('[BitcoinWalletAggregate] ❌ Command failed: ${command.runtimeType}');
+    print('   Error: $error');
+    print('   Stack trace: ${StackTrace.current}');
     await super.onCommandFailure(command, error);
     
     // Only send responses if we're running in an actor system
@@ -186,6 +221,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         return _handleUpdateAddressLabel(currentState, command as UpdateAddressLabelCommand);
       case ReceiveUTXOCommand:
         return _handleReceiveUTXO(currentState, command as ReceiveUTXOCommand);
+      case RecordImportedTransactionCommand:
+        return _handleRecordImportedTransaction(currentState, command as RecordImportedTransactionCommand);
       case SpendUTXOCommand:
         return _handleSpendUTXO(currentState, command as SpendUTXOCommand);
       case UpdateUTXOConfirmationsCommand:
@@ -277,6 +314,21 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         break;
       case UTXOReservationRenewedEvent:
         _applyUTXOReservationRenewed(event as UTXOReservationRenewedEvent);
+        break;
+      case WalletImportStartedEvent:
+        _applyWalletImportStarted(event as WalletImportStartedEvent);
+        break;
+      case AddressDiscoveredEvent:
+        _applyAddressDiscovered(event as AddressDiscoveredEvent);
+        break;
+      case TransactionImportedEvent:
+        _applyTransactionImported(event as TransactionImportedEvent);
+        break;
+      case WalletImportCompletedEvent:
+        _applyWalletImportCompleted(event as WalletImportCompletedEvent);
+        break;
+      case WalletImportFailedEvent:
+        _applyWalletImportFailed(event as WalletImportFailedEvent);
         break;
       default:
         throw ArgumentError('Unknown event type: ${event.runtimeType}');
@@ -558,8 +610,11 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
   // ==========================================================================
 
   List<Event> _handleReceiveUTXO(WalletState currentState, ReceiveUTXOCommand command) {
+    print('[BitcoinWalletAggregate] 📥 Handling ReceiveUTXOCommand: ${command.txid}:${command.vout} (${command.satoshis} sats)');
+    
     // Business rule: Wallet must exist
     if (!currentState.isCreated) {
+      print('[BitcoinWalletAggregate]    ❌ Wallet not created yet');
       throw StateError('Cannot receive UTXO for non-existent wallet');
     }
 
@@ -567,14 +622,17 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
 
     // Business rule: Cannot receive duplicate UTXO
     if (currentState.utxos.containsKey(utxoKey)) {
+      print('[BitcoinWalletAggregate]    ⚠️  UTXO $utxoKey already exists, skipping');
       throw StateError('UTXO $utxoKey already exists in wallet');
     }
 
     // Business rule: Amount must be positive
     if (command.satoshis <= BigInt.zero) {
+      print('[BitcoinWalletAggregate]    ❌ Invalid amount: ${command.satoshis}');
       throw ArgumentError('UTXO amount must be positive');
     }
 
+    print('[BitcoinWalletAggregate]    ✅ Creating UTXOReceivedEvent');
     final event = UTXOReceivedEvent(
       walletId: command.walletId,
       txid: command.txid,
@@ -660,6 +718,39 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     return [event];
   }
 
+  List<Event> _handleRecordImportedTransaction(WalletState currentState, RecordImportedTransactionCommand command) {
+    print('[BitcoinWalletAggregate] 📥 Handling RecordImportedTransactionCommand: ${command.txid}');
+    
+    // Business rule: Wallet must exist
+    if (!currentState.isCreated) {
+      throw StateError('Cannot record transaction for non-existent wallet');
+    }
+
+    print('[BitcoinWalletAggregate]    ✅ Creating TransactionImportedEvent');
+    
+    // Emit TransactionImportedEvent with all the pre-calculated data from ImportActor
+    final event = TransactionImportedEvent(
+      walletId: command.walletId,
+      txid: command.txid,
+      rawHex: command.rawHex,
+      blockHeight: command.blockHeight,
+      bumpProof: command.bumpProof,
+      totalOutputSats: command.totalOutputSats,
+      numInputs: command.numInputs,
+      numOutputs: command.numOutputs,
+      txVersion: command.txVersion,
+      txLockTime: command.txLockTime,
+      walletReceivingAddresses: command.walletReceivingAddresses,
+      walletReceivedSats: command.walletReceivedSats,
+      totalInputSats: command.totalInputSats,
+      sendingAddresses: command.sendingAddresses,
+      version: currentState.version + 1,
+      timestamp: DateTime.now(),
+    );
+
+    return [event];
+  }
+
   // ==========================================================================
   // TRANSACTION MANAGEMENT COMMAND HANDLERS
   // ==========================================================================
@@ -726,6 +817,16 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     // In a real implementation, this would use TransactionBuilder to build the unsigned transaction
     final rawTransaction = 'unsigned_tx_${command.transactionId}';
 
+    // Extract receiving addresses from outputs (where we're sending to)
+    final receivingAddresses = command.outputs
+        .map((output) => output.address)
+        .toList();
+
+    // Extract sending addresses from selected UTXOs (our addresses that we're spending from)
+    final sendingAddresses = selectedUtxos
+        .map((utxo) => utxo.address)
+        .toList();
+
     // Reserve selected UTXOs
     final reserveEvents = selectedUtxos.map((utxo) {
       return UTXOReservedEvent(
@@ -741,7 +842,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       );
     }).toList();
 
-    // Create transaction event
+    // Create transaction event with all required fields
     final transactionEvent = TransactionCreatedEvent(
       walletId: command.walletId,
       txid: command.transactionId,
@@ -751,6 +852,10 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       fee: fee.toInt(),
       isIncoming: false, // Created transactions are outgoing
       isOutgoing: true,
+      receivingAddresses: receivingAddresses, // Where we're sending to
+      sendingAddresses: sendingAddresses, // Our addresses we're spending from
+      txVersion: 1, // Standard Bitcoin transaction version
+      txLockTime: 0, // No time lock by default
       transactionMetadata: command.metadata,
       version: currentState.version + 1,
       timestamp: DateTime.now(),
@@ -1173,6 +1278,69 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       final renewedUtxo = utxo.renewReservation(extensionDuration, reason: event.renewalReason);
       currentState.utxos[utxoKey] = renewedUtxo;
       _recalculateBalances();
+    }
+    
+    currentState.version = event.version;
+    currentState.lastModified = event.timestamp;
+  }
+
+  // ==========================================================================
+  // WALLET IMPORT EVENT HANDLERS
+  // ==========================================================================
+
+  void _applyWalletImportStarted(WalletImportStartedEvent event) {
+    // Track import in metadata
+    currentState.metadata['importInProgress'] = true;
+    currentState.metadata['importStartedAt'] = event.timestamp.toIso8601String();
+    currentState.version = event.version;
+    currentState.lastModified = event.timestamp;
+  }
+
+  void _applyAddressDiscovered(AddressDiscoveredEvent event) {
+    // Add discovered address to wallet
+    currentState.addresses[event.address] = 'Imported (${event.isChange ? 'change' : 'receive'} #${event.derivationIndex})';
+    
+    // Update next derivation index if this is higher
+    if (event.derivationIndex >= currentState.nextDerivationIndex) {
+      currentState.nextDerivationIndex = event.derivationIndex + 1;
+    }
+    
+    currentState.version = event.version;
+    currentState.lastModified = event.timestamp;
+  }
+
+  void _applyTransactionImported(TransactionImportedEvent event) {
+    // Store imported transaction in metadata (for audit/history)
+    final importedTxs = currentState.metadata['importedTransactions'] as List? ?? [];
+    importedTxs.add({
+      'txid': event.txid,
+      'blockHeight': event.blockHeight,
+      'importedAt': event.timestamp.toIso8601String(),
+    });
+    currentState.metadata['importedTransactions'] = importedTxs;
+    
+    currentState.version = event.version;
+    currentState.lastModified = event.timestamp;
+  }
+
+  void _applyWalletImportCompleted(WalletImportCompletedEvent event) {
+    // Mark import as complete
+    currentState.metadata['importInProgress'] = false;
+    currentState.metadata['importCompletedAt'] = event.timestamp.toIso8601String();
+    currentState.metadata['totalImportedAddresses'] = event.totalAddresses;
+    currentState.metadata['totalImportedTransactions'] = event.totalTransactions;
+    
+    currentState.version = event.version;
+    currentState.lastModified = event.timestamp;
+  }
+
+  void _applyWalletImportFailed(WalletImportFailedEvent event) {
+    // Mark import as failed
+    currentState.metadata['importInProgress'] = false;
+    currentState.metadata['importFailedAt'] = event.timestamp.toIso8601String();
+    currentState.metadata['importError'] = event.error;
+    if (event.partialProgress != null) {
+      currentState.metadata['importPartialProgress'] = event.partialProgress;
     }
     
     currentState.version = event.version;

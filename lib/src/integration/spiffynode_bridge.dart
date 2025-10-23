@@ -185,13 +185,22 @@ class SpiffyNodeBridge {
     }
   }
 
-  /// Get bridge statistics
+  /// Get current chain tip height from SpiffyNode
+  int get currentHeight => _peerManager.chainTipTracker.networkHeight;
+  
+  /// Get the ActorRef to HeaderSyncActor for querying stats
+  ActorRef get headerSyncActor => _headerSyncActor;
+  
+  /// Get bridge statistics (enhanced with HeaderSyncActor stats)
   Map<String, dynamic> get statistics => {
     'initialized': _isInitialized,
     'eventsProcessed': _eventsProcessed,
     'lastEventAt': _lastEventAt?.toIso8601String(),
     'spiffyNodeHeight': _peerManager.chainTipTracker.networkHeight,
     'connectedPeers': getConnectedPeerIds(),
+    'peerCount': getConnectedPeerIds().length,
+    // Note: For HeaderSyncActor stats (blockHeight, headerCount), 
+    // query via LibSpiffyActorSystem.getHeaderSyncStats()
   };
 }
 
@@ -218,27 +227,40 @@ class LibSpiffyPeerHandler implements PeerHandlerI {
   final SpiffyNodeBridge _bridge;
   final PeerHandlerI? _userHandler;
   final Logger _logger;
+  final dynamic _headerChain; // Reference to BlockHeaderChain for querying actual height
 
   LibSpiffyPeerHandler({
     required SpiffyNodeBridge bridge,
     PeerHandlerI? userHandler,
     Logger? logger,
+    dynamic headerChain, // BlockHeaderChain reference
   }) : _bridge = bridge,
        _userHandler = userHandler,
-       _logger = logger ?? Logger('LibSpiffyPeerHandler');
+       _logger = logger ?? Logger('LibSpiffyPeerHandler'),
+       _headerChain = headerChain;
 
   @override
   Future<void> handleHeaders(WireMessage message, PeerI peer) async {
     if (message is MsgHeaders && message.headers.isNotEmpty) {
-      _logger.fine('Capturing ${message.headers.length} headers from ${peer.toString()}');
+      _logger.info('📥 Capturing ${message.headers.length} headers from ${peer.toString()}');
       
       try {
+        // Query actual chain height from BlockHeaderChain (not cached counter)
+        // Bitcoin's getHeaders returns blocks AFTER the locator, so next height is bestHeight + 1
+        final currentBestHeight = _headerChain?.bestHeight ?? 0;
+        final startHeight = currentBestHeight > 0 ? currentBestHeight + 1 : 0;
+        final batchSize = message.headers.length;
+        
+        _logger.info('Forwarding ${batchSize} headers starting at height $startHeight (current tip: $currentBestHeight)');
+        
         // Forward headers to HeaderSyncActor via bridge
-        // Note: We approximate the starting height since we don't have exact tracking
-        await _bridge.storeHeaders(message.headers, 0);
+        await _bridge.storeHeaders(message.headers, startHeight);
+        
+        final endHeight = startHeight + batchSize - 1;
+        _logger.info('✓ Forwarded ${batchSize} headers (expected range: $startHeight-$endHeight)');
         
       } catch (e) {
-        _logger.warning('Failed to forward headers from ${peer.toString()}: $e');
+        _logger.severe('❌ Failed to forward headers from ${peer.toString()}: $e');
       }
     }
 

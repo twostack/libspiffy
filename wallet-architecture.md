@@ -1986,18 +1986,18 @@ class LibSpiffyActorSystem {
     );
   }
   
-  // Connect to SpiffyNode for P2P blockchain integration
-  Future<void> connectToSpiffyNode(PeerManager peerManager) async {
-    if (_headerSyncActor == null) {
-      throw StateError('Actor system not initialized');
-    }
-    
-    _spiffyNodeBridge = SpiffyNodeBridge(
-      headerSyncActor: _headerSyncActor!,
-      spvActor: _spvActor,
-    );
-    
-    _spiffyNodeBridge!.connectToSpiffyNode(peerManager);
+  // P2P integration is now handled internally during initialize()
+  // SpiffyNode PeerManager is created and managed automatically when enableP2P: true
+  // This internal method is called by initialize() when P2P is enabled
+  Future<void> _initializeP2P({
+    required String networkType,
+    int? startHeight,
+    List<String>? peerAddresses,
+    String? userAgent,
+  }) async {
+    // Create PeerManager internally
+    // Connect to Bitcoin P2P network
+    // Initialize SpiffyNodeBridge automatically
   }
   
   // Disconnect from SpiffyNode
@@ -2018,19 +2018,21 @@ class LibSpiffyActorSystem {
 // Usage example:
 class BitcoinWalletService {
   final LibSpiffyActorSystem _actorSystem;
-  final PeerManager _peerManager;
   
-  BitcoinWalletService(this._actorSystem, this._peerManager);
+  BitcoinWalletService(this._actorSystem);
   
   Future<void> startWalletService() async {
-    // Initialize LibSpiffy actors
-    await _actorSystem.initialize();
+    // Initialize LibSpiffy with automatic P2P connectivity
+    // No need to manage SpiffyNode PeerManager - it's all internal!
+    await _actorSystem.initialize(
+      networkType: 'test',        // 'test' or 'main'
+      enableP2P: true,            // Automatic P2P sync (default)
+      // Optional: custom configuration
+      // peerAddresses: ['testnet-seed.bitcoinsv.io:18333'],
+      // startHeight: 50000,
+    );
     
-    // Connect to SpiffyNode for blockchain data
-    await _actorSystem.connectToSpiffyNode(_peerManager);
-    
-    // Start SpiffyNode P2P connections
-    await _peerManager.startPeerDiscovery();
+    // That's it! P2P is connected and syncing automatically
   }
   
   Future<String> createWallet(String name, Map<String, dynamic> metadata) async {

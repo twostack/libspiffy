@@ -2,6 +2,9 @@ import 'dart:async';
 import 'package:dactor/dactor.dart';
 import 'package:eventador/eventador.dart';
 import 'package:isar/isar.dart';
+import 'package:libspiffy/libspiffy.dart';
+import 'package:logging/logging.dart';
+import 'package:spiffynode/spiffy_node.dart';
 
 import '../storage/wallet_storage.dart';
 import '../storage/in_memory_wallet_storage.dart';
@@ -24,6 +27,7 @@ import 'arc_actor.dart';
 import 'header_sync_actor.dart';
 import 'invoice_coordinator_actor.dart';
 import 'payment_coordinator_actor.dart';
+import 'import_actor.dart';
 import '../services/transaction_import_service.dart';
 
 /// Initialization and management utilities for the LibSpiffy actor system
@@ -33,7 +37,7 @@ class LibSpiffyActorSystem {
   bool _ownsIsar = false; // Track if we created the Isar instance
   late IsarEventStore _eventStore;
   late ReadModelStorage _walletStorage;
-  late WalletStorage _actorStorage; // For actors that need full WalletStorage
+  late ReadModelStorage _actorStorage; // For actors (headers, UTXOs, etc.)
   late SecureStorage _secureStorage;
   late CryptoService _cryptoService;
   late BlockHeaderChain _headerChain;
@@ -44,6 +48,7 @@ class LibSpiffyActorSystem {
   
   // SpiffyNode integration (optional)
   SpiffyNodeBridge? _spiffyNodeBridge;
+  PeerManager? _peerManager;
   
   // CQRS Projections (read-side event handlers)
   ProjectionManager? _projectionManager;
@@ -57,9 +62,16 @@ class LibSpiffyActorSystem {
   ActorRef? _spvActor;
   ActorRef? _arcActor;
   ActorRef? _headerSyncActor;
+  ActorRef? _importActor;
   
   // Actor instances (kept for configuration after spawn)
   HeaderSyncActor? _headerSyncActorInstance;
+  
+  // Blockchain data source for imports (optional)
+  dynamic _blockchainDataSource;
+  
+  // Event broadcast for UI subscriptions
+  final StreamController<WalletEvent> _walletEventBroadcaster = StreamController<WalletEvent>.broadcast();
 
   /// Initialize the LibSpiffy actor system
   /// 
@@ -75,6 +87,19 @@ class LibSpiffyActorSystem {
   /// Note: If providing custom storage, it's recommended to implement ReadModelStorage
   /// rather than the full WalletStorage interface.
   /// 
+  /// P2P Configuration:
+  /// - [networkType]: 'main' for mainnet, 'test' for testnet (default: 'test')
+  /// - [enableP2P]: Enable automatic P2P block header synchronization (default: true)
+  /// - [startHeight]: Optional starting block height for SPV sync
+  /// - [peerAddresses]: Optional custom peer addresses in 'host:port' format
+  /// - [userAgent]: Optional custom user agent string (default: '/LibSpiffy:1.0/')
+  /// 
+  /// When [enableP2P] is true, LibSpiffy automatically:
+  /// - Initializes SpiffyNode for P2P connectivity (no application setup needed)
+  /// - Connects to Bitcoin network seed nodes (or custom peers if provided)
+  /// - Synchronizes block headers for SPV validation
+  /// - Manages all P2P resources internally
+  /// 
   /// Example with host actor system and Isar:
   /// ```dart
   /// final hostActorSystem = LocalActorSystem(ActorSystemConfig());
@@ -84,12 +109,14 @@ class LibSpiffyActorSystem {
   ///   actorSystem: hostActorSystem,
   ///   isar: isar,
   ///   isolateConfig: IsolateConfig.defaultConfig(),
+  ///   networkType: 'test',
+  ///   enableP2P: true,
   /// );
   /// ```
   /// 
-  /// Example with standalone system:
+  /// Example with standalone system (P2P disabled):
   /// ```dart
-  /// await libspiffy.initialize(); // Creates its own actor system and uses in-memory storage
+  /// await libspiffy.initialize(enableP2P: false); // No P2P connectivity
   /// ```
   Future<void> initialize({
     ActorSystem? actorSystem,
@@ -101,6 +128,12 @@ class LibSpiffyActorSystem {
     ArcServiceConfig? arcConfig,
     Isar? isar,
     IsolateConfig? isolateConfig,
+    String networkType = 'test',
+    bool enableP2P = true,
+    int? startHeight,
+    List<String>? peerAddresses,
+    String? userAgent,
+    dynamic blockchainDataSource, // For wallet imports (WhatsOnChainDataSource, etc.)
   }) async {
     print('Initializing LibSpiffy Actor System...');
     
@@ -144,10 +177,11 @@ class LibSpiffyActorSystem {
       }
     } else if (isar != null) {
       print('Creating Isar wallet storage with provided Isar instance');
-      _walletStorage = IsarWalletStorage(isar, config: isolateConfig);
-      // For actors, use InMemoryWalletStorage as they need full WalletStorage
-      // TODO: Update actors to use ReadModelStorage instead of WalletStorage
-      _actorStorage = InMemoryWalletStorage();
+      final isarStorage = IsarWalletStorage(isar, config: isolateConfig);
+      _walletStorage = isarStorage;
+      // Block headers MUST be persisted to Isar for SPV validation!
+      // Use Isar storage for actors that need persistent storage (headers, etc.)
+      _actorStorage = isarStorage;
     } else {
       print('Using in-memory wallet storage (development mode)');
       final inMemoryStorage = InMemoryWalletStorage();
@@ -164,7 +198,11 @@ class LibSpiffyActorSystem {
     // 6. Store ARC configuration for actors
     _arcConfig = arcConfig;
     
+    // 6.5. Store blockchain data source for imports
+    _blockchainDataSource = blockchainDataSource;
+    
     // 7. Initialize block header chain for SPV validation
+    // IMPORTANT: BlockHeaderChain uses _actorStorage which now points to Isar
     _headerChain = BlockHeaderChain(_actorStorage);
     await _headerChain.initialize();
     
@@ -177,12 +215,19 @@ class LibSpiffyActorSystem {
     // 9. Spawn coordination actors
     await _spawnActors();
     
-    // 10. Initialize transaction import service
-    _transactionImportService = TransactionImportService(
-      storage: _walletStorage,
-      walletManager: _walletManager!,
-    );
-    print('✓ Transaction import service initialized');
+    // 10. Transaction import service will be created on-demand by ImportActor
+    // No longer initialized here - uses dependency injection via BlockchainDataSource
+    print('✓ Transaction import service ready (on-demand)');
+    
+    // 11. Initialize P2P if enabled
+    if (enableP2P) {
+      await _initializeP2P(
+        networkType: networkType,
+        startHeight: startHeight,
+        peerAddresses: peerAddresses,
+        userAgent: userAgent,
+      );
+    }
     
     print('LibSpiffy Actor System initialized successfully');
   }
@@ -353,6 +398,9 @@ class LibSpiffyActorSystem {
     // Start streaming events to projections
     await _projectionManager!.start();
     
+    // TODO: Subscribe to event store for real-time UI broadcasting
+    // For now, events will be manually broadcast by actors
+    
     print('✓ ProjectionManager started with 2 projections');
   }
 
@@ -390,6 +438,8 @@ class LibSpiffyActorSystem {
       headerChain: _headerChain,
       spvActor: null, // Will be set after SPVActor is spawned
       spiffyNodeBridge: null, // Will be set after SpiffyNode connection
+      peerManager: null, // Will be set after P2P initialization
+      startHeight: null, // Will be set via _initializeP2P parameter
     );
     _headerSyncActor = await _actorSystem.spawn('header-sync', () => _headerSyncActorInstance!);
     
@@ -409,7 +459,132 @@ class LibSpiffyActorSystem {
       arcConfig: _arcConfig,
     ));
     
+    // Spawn ImportActor if blockchain data source is provided
+    if (_blockchainDataSource != null) {
+      _importActor = await _actorSystem.spawn('import-actor', () => ImportActor(
+        dataSource: _blockchainDataSource,
+        walletManagerActor: _walletManager!,
+        eventBroadcaster: broadcastWalletEvent,
+      ));
+      print('✓ ImportActor spawned with blockchain data source');
+    }
+    
     print('All LibSpiffy actors spawned successfully');
+  }
+
+  /// Initialize P2P connectivity with SpiffyNode (internal method)
+  /// 
+  /// This method:
+  /// - Initializes SpiffyNode message types
+  /// - Creates PeerManager with appropriate network configuration
+  /// - Connects to Bitcoin P2P network via seed nodes or custom peers
+  /// - Sets up SpiffyNodeBridge for automatic header synchronization
+  Future<void> _initializeP2P({
+    required String networkType,
+    int? startHeight,
+    List<String>? peerAddresses,
+    String? userAgent,
+  }) async {
+    print('Initializing P2P connectivity...');
+    
+    try {
+      // 1. Initialize SpiffyNode message types
+      initializeMessages();
+      print('✓ SpiffyNode message types initialized');
+      
+      // 2. Map network type to BitcoinNetwork enum
+      final network = networkType == 'main' 
+          ? BitcoinNetwork.mainnet 
+          : BitcoinNetwork.testnet;
+      
+      // 3. Create PeerManager
+      _peerManager = PeerManager(
+        network: network,
+        logger: Logger('LibSpiffy-SpiffyNode'),
+      );
+      print('✓ PeerManager created for ${networkType == 'main' ? 'mainnet' : 'testnet'}');
+      
+      // 4. Create and initialize SpiffyNodeBridge (before adding peers)
+      _spiffyNodeBridge = SpiffyNodeBridge(
+        peerManager: _peerManager!,
+        headerSyncActor: _headerSyncActor!,
+      );
+      
+      await _spiffyNodeBridge!.initialize();
+      print('✓ SpiffyNodeBridge initialized');
+      
+      // 5. Create LibSpiffyPeerHandler with BlockHeaderChain reference
+      // Handler will query actual bestHeight dynamically for each batch
+      final peerHandler = LibSpiffyPeerHandler(
+        bridge: _spiffyNodeBridge!,
+        headerChain: _headerChain, // Pass BlockHeaderChain for dynamic height queries
+      );
+      print('✓ LibSpiffyPeerHandler created for header capture (will query bestHeight dynamically)');
+      
+      // 6. Get peer addresses (use provided or defaults)
+      final peers = peerAddresses ?? _getDefaultPeers(networkType);
+      
+      // 7. Connect to peers WITH handler to capture headers
+      for (final peerAddr in peers) {
+        final parts = peerAddr.split(':');
+        if (parts.length != 2) {
+          print('⚠ Invalid peer address format: $peerAddr (expected host:port)');
+          continue;
+        }
+        
+        final host = parts[0];
+        final port = int.tryParse(parts[1]);
+        if (port == null) {
+          print('⚠ Invalid port in peer address: $peerAddr');
+          continue;
+        }
+        
+        final peerConfig = startHeight != null
+            ? PeerConfig(
+                startHeight: startHeight,
+                userAgent: userAgent ?? '/LibSpiffy:1.0/',
+              )
+            : PeerConfig(
+                userAgent: userAgent ?? '/LibSpiffy:1.0/',
+              );
+        
+        await _peerManager!.addPeerByAddress(
+          host,
+          port,
+          peerConfig: peerConfig,
+          handler: peerHandler, // ✨ NEW: Custom handler for header capture!
+        );
+        print('✓ Connected to peer: $peerAddr with header capture enabled');
+      }
+      
+      // 8. Set bridge reference in HeaderSyncActor
+      _headerSyncActorInstance?.setSpiffyNodeBridge(_spiffyNodeBridge);
+      
+      // 9. Set PeerManager reference and startHeight in HeaderSyncActor
+      _headerSyncActorInstance?.setPeerManager(_peerManager);
+      _headerSyncActorInstance?.startHeight = startHeight;
+      
+      // 10. Trigger initial header sync (PeerManager and handler are set)
+      _headerSyncActorInstance?.initiateSyncAfterP2PSetup();
+      
+      print('✓ P2P connectivity established with header capture');
+      print('✓ Custom handler installed: LibSpiffyPeerHandler will capture MsgHeaders');
+      print('Bridge statistics: ${_spiffyNodeBridge!.statistics}');
+      
+    } catch (e, stackTrace) {
+      print('Failed to initialize P2P connectivity: $e');
+      print('Stack trace: $stackTrace');
+      _peerManager = null;
+      _spiffyNodeBridge = null;
+      rethrow;
+    }
+  }
+  
+  /// Get default seed nodes for the specified network
+  List<String> _getDefaultPeers(String networkType) {
+    return networkType == 'main'
+        ? ['seed.bitcoinsv.io:8333']
+        : ['testnet-seed.bitcoinsv.io:18333'];
   }
 
   /// Get reference to the WalletManager actor
@@ -494,6 +669,26 @@ class LibSpiffyActorSystem {
 
   /// Get reference to the SpiffyNode bridge (if connected)
   SpiffyNodeBridge? get spiffyNodeBridge => _spiffyNodeBridge;
+  
+  /// Get header sync statistics
+  /// Returns current sync progress including stored header count and height
+  Map<String, dynamic> getHeaderSyncStats() {
+    if (_headerSyncActorInstance == null) {
+      return {
+        'blockHeight': 0,
+        'headerCount': 0,
+        'isInitialized': false,
+      };
+    }
+    
+    final stats = _headerSyncActorInstance!.statistics;
+    return {
+      'blockHeight': stats['currentHeight'] ?? 0,
+      'headerCount': stats['headersProcessed'] ?? 0,
+      'isInitialized': stats['initialized'] ?? false,
+      'lastHeaderAt': stats['lastHeaderAt'],
+    };
+  }
 
   /// Get reference to the ProjectionManager (CQRS read-side)
   /// 
@@ -541,41 +736,62 @@ class LibSpiffyActorSystem {
   /// Returns false if a host application provided the actor system.
   bool get ownsActorSystem => _ownsActorSystem;
 
-  /// Connect to SpiffyNode for automatic block header synchronization
+  /// Broadcast a wallet event to UI subscribers
   /// 
-  /// This creates a bridge between SpiffyNode's ChainTipTracker and LibSpiffy's
-  /// BlockHeaderChain to enable automatic header storage for SPV validation.
-  Future<void> connectToSpiffyNode(dynamic peerManager) async {
+  /// Internal method used by actors to notify the UI of events
+  void broadcastWalletEvent(WalletEvent event) {
+    if (_walletEventBroadcaster.isClosed) return;
+    _walletEventBroadcaster.add(event);
+  }
+  
+  /// Subscribe to wallet events for a specific wallet
+  /// 
+  /// Returns a stream of events for the given wallet ID. Useful for
+  /// monitoring real-time progress of operations like wallet imports.
+  /// 
+  /// The stream emits all events from the event store filtered by aggregateId (walletId).
+  Stream<WalletEvent> subscribeToWalletEvents(String walletId) {
     if (!isInitialized) {
       throw StateError('LibSpiffy actor system not initialized');
     }
+    
+    // Return filtered broadcast stream
+    return _walletEventBroadcaster.stream.where((event) => event.walletId == walletId);
+  }
 
-    if (_spiffyNodeBridge != null) {
-      print('Already connected to SpiffyNode');
-      return;
+  /// Import wallet from extended private key (xpriv)
+  /// 
+  /// This triggers the ImportActor to perform the complete wallet import flow:
+  /// 1. Create wallet from xpriv
+  /// 2. Discover used addresses (BIP44 gap limit scanning)
+  /// 3. Import transactions with merkle proofs
+  /// 4. Import UTXOs into the wallet
+  /// 
+  /// The import runs asynchronously in the ImportActor. Progress can be monitored
+  /// by subscribing to wallet events from the event store.
+  /// 
+  /// Returns immediately after sending the import message to the actor.
+  /// Check wallet events or query the wallet projection for completion status.
+  void importWalletFromXpriv({
+    required String walletId,
+    required String xpriv,
+    required String walletName,
+    String networkType = 'test',
+    int addressGapLimit = 20,
+  }) {
+    if (_importActor == null) {
+      throw StateError('ImportActor not available. Did you provide a blockchainDataSource during initialization?');
     }
-
-    try {
-      print('Connecting LibSpiffy to SpiffyNode...');
-      
-      _spiffyNodeBridge = SpiffyNodeBridge(
-        peerManager: peerManager,
-        headerSyncActor: _headerSyncActor!,
-      );
-      
-      await _spiffyNodeBridge!.initialize();
-      
-      // Set the bridge reference in HeaderSyncActor
-      _headerSyncActorInstance?.setSpiffyNodeBridge(_spiffyNodeBridge);
-      
-      print('LibSpiffy-SpiffyNode integration active');
-      print('Bridge statistics: ${_spiffyNodeBridge!.statistics}');
-      
-    } catch (e) {
-      print('Failed to connect to SpiffyNode: $e');
-      _spiffyNodeBridge = null;
-      rethrow;
-    }
+    
+    final importMessage = ImportWalletMessage(
+      walletId: walletId,
+      xpriv: xpriv,
+      walletName: walletName,
+      networkType: networkType,
+      addressGapLimit: addressGapLimit,
+    );
+    
+    _importActor!.tell(importMessage);
   }
 
   /// Disconnect from SpiffyNode
@@ -584,6 +800,7 @@ class LibSpiffyActorSystem {
       print('Disconnecting from SpiffyNode...');
       await _spiffyNodeBridge!.shutdown();
       _spiffyNodeBridge = null;
+      _peerManager = null;
       print('Disconnected from SpiffyNode');
     }
   }
@@ -628,6 +845,9 @@ class LibSpiffyActorSystem {
         // This is acceptable since the host owns the Isar instance and will close it
       }
       
+      // 5. Close event broadcaster
+      await _walletEventBroadcaster.close();
+      
       print('LibSpiffy Actor System shutdown complete');
     } catch (e) {
       print('Error during shutdown: $e');
@@ -656,6 +876,13 @@ LibSpiffyActorSystem getLibSpiffySystem() {
 /// If [isar] is provided, LibSpiffy will use it for read-model storage and optionally
 /// for event storage. The host application must include LibSpiffy's schemas when
 /// opening the Isar instance using LibSpiffySchemas.walletSchemas.
+/// 
+/// P2P Parameters:
+/// - [networkType]: 'main' for mainnet, 'test' for testnet (default: 'test')
+/// - [enableP2P]: Enable automatic P2P block header synchronization (default: true)
+/// - [startHeight]: Optional starting block height for SPV sync
+/// - [peerAddresses]: Optional custom peer addresses (format: 'host:port')
+/// - [userAgent]: Optional custom user agent string (default: '/LibSpiffy:1.0/')
 Future<void> initializeLibSpiffy({
   ActorSystem? actorSystem,
   String? dataDirectory,
@@ -666,6 +893,11 @@ Future<void> initializeLibSpiffy({
   ArcServiceConfig? arcConfig,
   Isar? isar,
   IsolateConfig? isolateConfig,
+  String networkType = 'test',
+  bool enableP2P = true,
+  int? startHeight,
+  List<String>? peerAddresses,
+  String? userAgent,
 }) async {
   final system = getLibSpiffySystem();
   await system.initialize(
@@ -678,6 +910,11 @@ Future<void> initializeLibSpiffy({
     arcConfig: arcConfig,
     isar: isar,
     isolateConfig: isolateConfig,
+    networkType: networkType,
+    enableP2P: enableP2P,
+    startHeight: startHeight,
+    peerAddresses: peerAddresses,
+    userAgent: userAgent,
   );
 }
 

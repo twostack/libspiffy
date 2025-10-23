@@ -6,9 +6,11 @@ import 'package:libspiffy/libspiffy.dart';
 /// 
 /// This example shows:
 /// 1. Creating a host application with its own actor system
-/// 2. Integrating LibSpiffy into that system
+/// 2. Integrating LibSpiffy into that system with automatic P2P connectivity
 /// 3. Creating custom actors that interact with LibSpiffy actors
 /// 4. Proper lifecycle management
+/// 
+/// Key Feature: No SpiffyNode imports or manual P2P management needed!
 
 void main() async {
   print('=== LibSpiffy Actor System Integration Example ===\n');
@@ -18,18 +20,24 @@ void main() async {
   final hostActorSystem = LocalActorSystem(ActorSystemConfig());
   print('   ✓ Host actor system created\n');
 
-  // Step 2: Initialize LibSpiffy with the host's actor system
-  print('2. Integrating LibSpiffy into host actor system...');
+  // Step 2: Initialize LibSpiffy with automatic P2P connectivity
+  print('2. Integrating LibSpiffy with automatic P2P...');
   await initializeLibSpiffy(
-    actorSystem: hostActorSystem, // Key: Share the actor system!
+    actorSystem: hostActorSystem, // Share the actor system
     dataDirectory: './example-data',
+    networkType: 'test',          // 'test' or 'main'
+    enableP2P: true,              // Automatic P2P sync (default: true)
+    // Optional: custom peers
+    // peerAddresses: ['testnet-seed.bitcoinsv.io:18333'],
+    // startHeight: 50000,
   );
   
   // Verify integration
   final libspiffy = getLibSpiffySystem();
-  print('   ✓ LibSpiffy initialized');
+  print('   ✓ LibSpiffy initialized with P2P connectivity');
   print('   ✓ Owns actor system: ${libspiffy.ownsActorSystem}'); // Should be false
-  print('   ✓ All actors in same system: ${identical(hostActorSystem, libspiffy.actorSystem)}\n');
+  print('   ✓ All actors in same system: ${identical(hostActorSystem, libspiffy.actorSystem)}');
+  print('   ✓ P2P bridge active: ${libspiffy.spiffyNodeBridge != null}\n');
 
   // Step 3: Spawn a custom host actor that interacts with LibSpiffy
   print('3. Creating custom payment processor actor...');
@@ -87,9 +95,58 @@ void main() async {
   print('=== Example Complete ===');
   print('\nKey Takeaways:');
   print('• LibSpiffy actors integrate seamlessly into host system');
+  print('• P2P connectivity is automatic - no SpiffyNode imports needed');
   print('• Single actor system = better performance and supervision');
   print('• Host retains full control over actor system lifecycle');
   print('• Custom actors can directly communicate with LibSpiffy actors');
+}
+
+/// Example demonstrating P2P disabled mode
+void noPeerExample() async {
+  print('\n=== LibSpiffy Without P2P Example ===\n');
+
+  // Initialize without P2P connectivity
+  print('1. Initializing LibSpiffy without P2P...');
+  await initializeLibSpiffy(
+    dataDirectory: './example-data',
+    enableP2P: false,  // Disable automatic P2P
+  );
+  
+  final libspiffy = getLibSpiffySystem();
+  print('   ✓ LibSpiffy initialized');
+  print('   ✓ P2P disabled: ${libspiffy.spiffyNodeBridge == null}\n');
+  
+  print('Use case: Applications that get block headers from alternative sources');
+  print('(e.g., ARC service, centralized API, or pre-validated headers)\n');
+
+  await shutdownLibSpiffy();
+  print('=== No P2P Example Complete ===');
+}
+
+/// Example with custom peer configuration
+void customPeerExample() async {
+  print('\n=== LibSpiffy Custom Peer Configuration Example ===\n');
+
+  print('1. Initializing LibSpiffy with custom peers...');
+  await initializeLibSpiffy(
+    dataDirectory: './example-data',
+    networkType: 'test',
+    enableP2P: true,
+    peerAddresses: [
+      'testnet-seed.bitcoinsv.io:18333',
+      'testnet.bitcoin.jonasschnelli.ch:18333',
+      'testnet-seed.bitcoin.sipa.be:18333',
+    ],
+    startHeight: 100000,  // Start SPV sync from block 100000
+    userAgent: '/MyApp:1.0.0/',
+  );
+  
+  final libspiffy = getLibSpiffySystem();
+  print('   ✓ LibSpiffy initialized with custom configuration');
+  print('   ✓ Connected to ${libspiffy.spiffyNodeBridge?.statistics['connectedPeers']?.length ?? 0} peers\n');
+
+  await shutdownLibSpiffy();
+  print('=== Custom Peer Example Complete ===');
 }
 
 /// Example showing how to integrate with Isar database
@@ -115,17 +172,19 @@ void isarIntegrationExample() async {
   final hostActorSystem = LocalActorSystem(ActorSystemConfig());
   print('   ✓ Actor system ready\n');
 
-  // Step 3: Initialize LibSpiffy with Isar
-  print('3. Initializing LibSpiffy with host-provided Isar...');
+  // Step 3: Initialize LibSpiffy with Isar and P2P
+  print('3. Initializing LibSpiffy with host-provided Isar and P2P...');
   await initializeLibSpiffy(
     actorSystem: hostActorSystem,
     isar: isar, // Pass host's Isar instance
     isolateConfig: IsolateConfig.defaultConfig(), // Enable isolate optimization
+    networkType: 'test',
+    enableP2P: true, // Automatic P2P connectivity
   );
   
-  final libspiffy = getLibSpiffySystem();
   print('   ✓ LibSpiffy using shared Isar instance');
-  print('   ✓ Isolate-aware storage enabled\n');
+  print('   ✓ Isolate-aware storage enabled');
+  print('   ✓ P2P connectivity established\n');
 
   // Step 4: Demonstrate storage capabilities
   print('4. Storage architecture:');
@@ -170,40 +229,48 @@ void isolateConfigExample() async {
     directory: './example-data',
   );
 
-  // Example 1: Default configuration (recommended)
-  print('1. Default configuration:');
+  // Example 1: Default configuration with P2P (recommended)
+  print('1. Default configuration with P2P:');
   await initializeLibSpiffy(
     isar: isar,
     isolateConfig: IsolateConfig.defaultConfig(),
+    enableP2P: true,
+    networkType: 'test',
   );
   print('   • Threshold: 100 items');
   print('   • Enabled: true');
+  print('   • P2P: enabled');
   print('   • Heavy operations use isolates automatically\n');
 
   await shutdownLibSpiffy();
 
-  // Example 2: Custom threshold
-  print('2. Custom threshold configuration:');
+  // Example 2: Custom threshold with custom peers
+  print('2. Custom threshold with custom peers:');
   await initializeLibSpiffy(
     isar: isar,
     isolateConfig: IsolateConfig(
       operationThreshold: 50, // Lower threshold = more isolate usage
       enabled: true,
     ),
+    enableP2P: true,
+    peerAddresses: ['testnet-seed.bitcoinsv.io:18333'],
   );
   print('   • Threshold: 50 items');
-  print('   • Good for UI-heavy applications\n');
+  print('   • Good for UI-heavy applications');
+  print('   • Custom peer configuration\n');
 
   await shutdownLibSpiffy();
 
-  // Example 3: Disabled (for testing or simple apps)
-  print('3. Isolates disabled:');
+  // Example 3: Disabled isolates, no P2P (for testing)
+  print('3. Isolates and P2P disabled (testing mode):');
   await initializeLibSpiffy(
     isar: isar,
     isolateConfig: IsolateConfig.disabled(),
+    enableP2P: false,
   );
   print('   • All operations in main isolate');
-  print('   • Good for testing or low-volume apps\n');
+  print('   • No P2P connectivity');
+  print('   • Good for unit testing\n');
 
   await shutdownLibSpiffy();
   await isar.close();

@@ -4,7 +4,7 @@ import 'package:crypto/crypto.dart';
 import 'package:logging/logging.dart';
 import 'package:spiffynode/spiffy_node.dart';
 
-import '../storage/wallet_storage.dart';
+import '../storage/read_model_storage.dart';
 
 /// Manages the block header chain for SPV validation
 /// 
@@ -15,7 +15,7 @@ import '../storage/wallet_storage.dart';
 /// - Handles blockchain reorganizations
 /// - Provides the foundation for true SPV security
 class BlockHeaderChain {
-  final WalletStorage _storage;
+  final ReadModelStorage _storage;
   final Logger _logger;
   final bool _skipProofOfWorkValidation;
 

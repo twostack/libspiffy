@@ -140,18 +140,29 @@ ActorRef invoiceCoordinator
 ```dart
 // 🟢 PUBLIC: Initialize the LibSpiffy system
 Future<void> initialize({
-  required LocalActorSystem actorSystem,
-  required Isar isar,
-  required String dataDirectory,
+  LocalActorSystem? actorSystem,
+  Isar? isar,
+  String? dataDirectory,
+  // P2P Configuration (automatic blockchain sync)
+  String networkType = 'test',      // 'test' or 'main'
+  bool enableP2P = true,            // Enable automatic P2P sync
+  int? startHeight,                 // Optional SPV start height
+  List<String>? peerAddresses,      // Optional custom peers ('host:port')
+  String? userAgent,                // Optional user agent
 })
 
 // 🟢 PUBLIC: Clean shutdown (always call this!)
 Future<void> shutdown()
 
-// 🟡 INTERNAL: SpiffyNode integration for blockchain sync
-Future<void> connectToSpiffyNode(SpiffyNode node)
+// 🟡 INTERNAL: SpiffyNode integration (managed automatically if enableP2P: true)
 Future<void> disconnectFromSpiffyNode()
 ```
+
+**P2P Notes:**
+- When `enableP2P: true` (default), LibSpiffy automatically manages SpiffyNode for blockchain sync
+- No need to import or configure SpiffyNode directly - it's handled internally
+- Custom peers can be specified with `peerAddresses: ['host:port']`
+- To disable P2P (e.g., using alternative header sources), set `enableP2P: false`
 
 ---
 

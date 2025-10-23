@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:dactor/dactor.dart';
 import 'package:libspiffy/src/actors/spv_messages.dart';
 import 'package:logging/logging.dart';
+import 'package:spiffynode/spiffy_node.dart';
 
 import '../spv/block_header_chain.dart';
 
@@ -10,6 +11,7 @@ import '../spv/block_header_chain.dart';
 /// This actor:
 /// - Manages BlockHeaderChain for header validation and storage
 /// - Receives block header events from SpiffyNode integration
+/// - Sends getHeaders requests to peers to fetch headers
 /// - Notifies SPVActor and other components of header updates
 /// - Handles blockchain reorganizations
 /// - Provides the bridge between SpiffyNode's network layer and LibSpiffy's SPV validation
@@ -20,10 +22,12 @@ class HeaderSyncActor extends Actor {
   
   // SpiffyNode bridge reference for peer information
   dynamic _spiffyNodeBridge; // Will be set after bridge connection
+  dynamic _peerManager; // PeerManager for sending getHeaders requests
   
   // Integration state
   bool _isInitialized = false;
   int _lastProcessedHeight = 0;
+  int? _startHeight; // Configured starting height for sync
   
   // Statistics
   int _headersProcessed = 0;
@@ -32,20 +36,54 @@ class HeaderSyncActor extends Actor {
   
   // Pending messages queue (for messages received before initialization)
   final List<BlockHeadersReceivedMessage> _pendingMessages = [];
+  
+  // Sync state guard to prevent concurrent header requests
+  bool _syncInProgress = false;
 
   HeaderSyncActor({
     required BlockHeaderChain headerChain,
     ActorRef? spvActor,
     dynamic spiffyNodeBridge,
+    dynamic peerManager,
+    int? startHeight,
     Logger? logger,
   }) : _headerChain = headerChain,
        _spvActor = spvActor,
        _spiffyNodeBridge = spiffyNodeBridge,
+       _peerManager = peerManager,
+       _startHeight = startHeight,
        _logger = logger ?? Logger('HeaderSyncActor');
 
   /// Set the SpiffyNode bridge reference (called after bridge is initialized)
   void setSpiffyNodeBridge(dynamic bridge) {
     _spiffyNodeBridge = bridge;
+  }
+  
+  /// Set the PeerManager reference (called after P2P initialization)
+  void setPeerManager(dynamic peerManager) {
+    _peerManager = peerManager;
+  }
+  
+  /// Set the start height for header sync
+  set startHeight(int? height) {
+    _startHeight = height;
+  }
+  
+  /// Initiate header sync after P2P setup is complete
+  /// This is called by LibSpiffyActorSystem after PeerManager and startHeight are set
+  void initiateSyncAfterP2PSetup() {
+    if (!_isInitialized) {
+      _logger.warning('Cannot initiate sync: HeaderSyncActor not initialized yet');
+      return;
+    }
+    
+    if (_peerManager == null) {
+      _logger.warning('Cannot initiate sync: PeerManager not set');
+      return;
+    }
+    
+    _logger.info('P2P setup complete, initiating header sync...');
+    _triggerHeaderSync();
   }
 
   @override
@@ -110,6 +148,87 @@ class HeaderSyncActor extends Actor {
         statusMessage: 'Header chain initialized and ready for SPV validation',
       ) as dynamic);
     }
+    
+    // NOTE: Do NOT trigger sync here - PeerManager is set after spawn
+    // Sync will be triggered by initiateSyncAfterP2PSetup() call from system
+  }
+  
+  /// Request headers from connected peers
+  Future<void> _triggerHeaderSync() async {
+    try {
+      if (_syncInProgress) {
+        _logger.fine('Header sync already in progress, skipping duplicate request');
+        return;
+      }
+      
+      if (_peerManager == null) {
+        _logger.warning('Cannot trigger header sync: no peer manager available');
+        return;
+      }
+      
+      final currentHeight = _headerChain.bestHeight;
+      _logger.info('Triggering header sync from height $currentHeight...');
+      
+      // Mark sync as in progress
+      _syncInProgress = true;
+      
+      final peers = _peerManager.getPeers();
+      if (peers.isEmpty) {
+        _logger.warning('No peers available for header sync');
+        return;
+      }
+      
+      // Build block locator hashes for efficient sync
+      // Use current chain tip to request headers from where we left off
+      final blockLocators = <Hash>[];
+      
+      if (currentHeight > 0) {
+        // Get the header at our current tip to use as locator
+        final tipHeader = await _headerChain.getHeaderByHeight(currentHeight);
+        if (tipHeader != null) {
+          // SpiffyNode BlockHeader uses blockHash() method
+          final tipHash = tipHeader.blockHash();
+          blockLocators.add(tipHash);
+          _logger.info('Using tip hash as locator: ${tipHash.toString()} at height $currentHeight');
+        } else {
+          _logger.warning('Could not get header at height $currentHeight, using zero hash');
+          blockLocators.add(Hash.zero());
+        }
+      } else {
+        // Starting from genesis
+        blockLocators.add(Hash.zero());
+      }
+      
+      final getHeadersMsg = MsgGetHeaders(
+        protocolVersion: 70016,
+        blockLocatorHashes: blockLocators,
+        hashStop: Hash.zero(), // No stop hash - get all available
+      );
+      
+      // Send to first healthy peer (others will respond too, but we only need one)
+      var sentCount = 0;
+      for (final peer in peers) {
+        try {
+          peer.writeMessage(getHeadersMsg);
+          sentCount++;
+          _logger.info('Sent getHeaders request to ${peer.toString()} from height $currentHeight');
+          break; // Only send to one peer to avoid duplicate responses
+        } catch (e) {
+          _logger.warning('Failed to send getHeaders to ${peer.toString()}: $e');
+        }
+      }
+      
+      if (sentCount > 0) {
+        _logger.info('✓ Requested next batch of headers from height $currentHeight');
+      } else {
+        _logger.warning('❌ Failed to send getHeaders to any peer');
+        _syncInProgress = false; // Clear flag if no request was sent
+      }
+      
+    } catch (e, stackTrace) {
+      _logger.severe('Error triggering header sync: $e\n$stackTrace');
+      _syncInProgress = false; // Clear flag on error
+    }
   }
 
   /// Handle incoming block headers from SpiffyNode
@@ -145,6 +264,18 @@ class HeaderSyncActor extends Actor {
       _headersProcessed += successCount;
       
       _logger.info('Header processing complete: $successCount stored, $failureCount failed');
+      _logger.info('Current height: $_lastProcessedHeight');
+      
+      // Clear sync-in-progress flag BEFORE potentially triggering next batch
+      _syncInProgress = false;
+      
+      // Check if we received a full batch (2000 = protocol limit = more headers available)
+      if (successCount >= 2000) {
+        _logger.info('📡 Received full batch (2000 headers), requesting more...');
+        _triggerHeaderSync(); // Request next batch automatically
+      } else {
+        _logger.info('✅ Sync complete: received ${successCount} headers (less than 2000)');
+      }
       
       // Notify SPVActor of new headers (using the last header stored)
       if (_spvActor != null && successCount > 0 && msg.headers.isNotEmpty) {
@@ -166,6 +297,7 @@ class HeaderSyncActor extends Actor {
       
     } catch (e) {
       _logger.severe('Error processing headers from ${msg.peerId}: $e');
+      _syncInProgress = false; // Clear flag on error
       
       if (context.sender != null) {
         context.sender!.tell(SPVErrorMessage(
@@ -191,10 +323,14 @@ class HeaderSyncActor extends Actor {
         await _handleReorganization(msg);
       }
       
-      // Update our tracking
-      if (msg.newTip.height > _lastProcessedHeight) {
-        // This indicates we might be behind - could trigger header sync request
-        _logger.info('Chain tip ahead of processed headers: ${msg.newTip.height} > $_lastProcessedHeight');
+      // Check if we're behind and need to catch up
+      final behindBy = msg.newTip.height - _lastProcessedHeight;
+      if (behindBy > 100) {
+        // Significantly behind - trigger catch-up sync
+        _logger.info('⚠️  Behind by $behindBy blocks (${msg.newTip.height} > $_lastProcessedHeight), triggering catch-up sync...');
+        _triggerHeaderSync();
+      } else if (behindBy > 0) {
+        _logger.info('Slightly behind by $behindBy blocks, will catch up naturally');
       }
       
       // Notify SPVActor of chain tip change
@@ -244,6 +380,9 @@ class HeaderSyncActor extends Actor {
     try {
       final currentHeight = _headerChain.bestHeight;
       final requestedHeight = msg.fromHeight ?? 0;
+      
+      // Trigger header sync to fetch any missing headers
+      _triggerHeaderSync();
       
       context.sender?.tell(HeaderSyncStatusMessage(
         requestedHeight: requestedHeight,

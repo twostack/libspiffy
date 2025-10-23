@@ -22,11 +22,11 @@ import 'invoice_messages.dart';
 /// - Coordinating with WalletManagerActor for validated transactions
 /// 
 /// Note: Block header synchronization is handled by SpiffyNode, which stores
-/// headers in WalletStorage. This actor consumes those stored headers for validation.
+/// headers in storage. This actor consumes those stored headers for validation.
 class SPVActor extends Actor {
   final ActorRef _walletManager;
   final ActorRef _invoiceCoordinator;
-  final WalletStorage _storage;
+  final ReadModelStorage _storage;
   
   int _currentHeight = 0;
   dynamic _currentTip;
@@ -34,7 +34,7 @@ class SPVActor extends Actor {
   SPVActor({
     required ActorRef walletManager,
     required ActorRef invoiceCoordinator,
-    required WalletStorage storage,
+    required ReadModelStorage storage,
   }) : _walletManager = walletManager,
        _invoiceCoordinator = invoiceCoordinator,
        _storage = storage;

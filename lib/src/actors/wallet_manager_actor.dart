@@ -139,6 +139,9 @@ class WalletManagerActor extends Actor {
 
   /// Handle wallet creation requests
   Future<void> _handleCreateWallet(CreateWalletMessage msg) async {
+    print('[WalletManagerActor] 🔧 _handleCreateWallet called for: ${msg.walletId}');
+    print('[WalletManagerActor]    Name: ${msg.name}');
+    print('[WalletManagerActor]    Has xpriv: ${msg.xpriv != null && msg.xpriv!.isNotEmpty}');
     try {
       print('Creating wallet: ${msg.walletId}');
       
@@ -235,19 +238,27 @@ class WalletManagerActor extends Actor {
 
   /// Route commands to specific wallet aggregates
   Future<void> _handleWalletCommand(WalletCommandMessage msg) async {
+    print('[WalletManagerActor] Handling command for wallet: ${msg.walletId}');
+    print('[WalletManagerActor] Command type: ${msg.command.runtimeType}');
+    print('[WalletManagerActor] Wallets in memory: ${_walletActors.keys.toList()}');
+    
     try {
       var walletActor = _walletActors[msg.walletId];
       
       // Load wallet if not already in memory
       if (walletActor == null) {
+        print('[WalletManagerActor] Wallet not in memory, trying to load from event store...');
         walletActor = await _loadWalletFromEventStore(msg.walletId);
         if (walletActor != null) {
           _walletActors[msg.walletId] = walletActor;
+          print('[WalletManagerActor] ✓ Wallet loaded from event store');
         }
+      } else {
+        print('[WalletManagerActor] ✓ Wallet found in memory');
       }
 
       if (walletActor == null) {
-        print('Wallet not found: ${msg.walletId}');
+        print('[WalletManagerActor] ❌ Wallet not found: ${msg.walletId}');
         context.sender?.tell(LocalMessage(
           payload: {'error': 'Wallet not found', 'walletId': msg.walletId},
         ));
@@ -255,7 +266,9 @@ class WalletManagerActor extends Actor {
       }
 
       // Forward command to wallet aggregate (send command directly, not wrapped)
+      print('[WalletManagerActor] → Forwarding ${msg.command.runtimeType} to wallet aggregate');
       walletActor.tell(msg.command, sender: context.sender);
+      print('[WalletManagerActor] ✓ Command forwarded');
 
     } catch (e) {
       print('Error handling wallet command for ${msg.walletId}: $e');

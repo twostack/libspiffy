@@ -68,3 +68,8 @@ export 'src/services/transaction_import_service.dart'; // Import historical tran
 export 'src/services/transaction_import_models.dart'; // Import data structures (ImportableTransaction, TransactionImportResult)
 export 'src/services/transaction_analyzer.dart';     // Two-phase UTXO harvesting and dependency sorting
 
+// 🎯 BLOCKCHAIN DATA SOURCES - External blockchain APIs for wallet imports
+export 'src/services/blockchain_data_source.dart';    // Abstract blockchain data source interface
+export 'src/services/whatsonchain_data_source.dart';  // WhatsOnChain API implementation
+export 'src/models/blockchain_data_models.dart';      // Data models for blockchain imports
+

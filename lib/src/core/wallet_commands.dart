@@ -176,6 +176,48 @@ class UpdateAddressLabelCommand extends WalletCommand {
   String get commandType => 'UpdateAddressLabelCommand';
 }
 
+/// Command to register a discovered address (from wallet import)
+/// 
+/// This command is sent by ImportActor to properly persist discovered addresses
+/// through the CQRS EventStore flow, ensuring WalletProjection can build the
+/// read model with AddressEntity records.
+class RegisterDiscoveredAddressCommand extends WalletCommand {
+  final String address;
+  final int derivationIndex;
+  final bool isChange;
+  final int transactionCount;
+
+  RegisterDiscoveredAddressCommand({
+    required String walletId,
+    required this.address,
+    required this.derivationIndex,
+    required this.isChange,
+    required this.transactionCount,
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          commandId: commandId,
+          timestamp: timestamp,
+          metadata: metadata,
+        );
+
+  @override
+  String get commandType => 'RegisterDiscoveredAddressCommand';
+
+  @override
+  Map<String, dynamic> toMap() {
+    return {
+      ...super.toMap(),
+      'address': address,
+      'derivationIndex': derivationIndex,
+      'isChange': isChange,
+      'transactionCount': transactionCount,
+    };
+  }
+}
+
 // =============================================================================
 // UTXO MANAGEMENT COMMANDS
 // =============================================================================

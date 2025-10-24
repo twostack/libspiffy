@@ -1,5 +1,7 @@
 import '../models/bitcoin_utxo.dart';
 import '../models/bitcoin_transaction.dart';
+import '../models/address_metadata.dart';
+import '../models/transaction_address_link.dart';
 import 'package:spiffynode/spiffy_node.dart';
 
 /// Abstract interface for read-model storage operations.
@@ -32,6 +34,76 @@ abstract class ReadModelStorage {
   /// Used by transaction import to identify wallet outputs.
   /// Returns addresses from UTXO records or address generation events.
   Future<List<String>> getWalletAddresses(String walletId);
+  
+  // ========================================
+  // Address Management
+  // ========================================
+
+  /// Check if an address belongs to a wallet (O(1) hash lookup)
+  Future<bool> isWalletAddress(String walletId, String address);
+
+  /// Get address metadata if it belongs to wallet
+  Future<AddressMetadata?> getAddressMetadata(String walletId, String address);
+
+  /// Batch check if addresses belong to wallet (optimized for bulk operations)
+  Future<Map<String, bool>> checkAddresses(String walletId, List<String> addresses);
+
+  /// Get all addresses for a wallet with pagination
+  Future<List<AddressMetadata>> getAddressesWithMetadata(
+    String walletId, {
+    bool? includeUnused,
+    bool? isChange,
+    int? limit,
+    int? offset,
+  });
+
+  /// Get addresses by derivation range (efficient for HD wallets)
+  Future<List<AddressMetadata>> getAddressRange(
+    String walletId, {
+    required int startIndex,
+    required int count,
+    bool isChange = false,
+  });
+
+  /// Store or update address metadata
+  Future<void> upsertAddress(String walletId, AddressMetadata metadata);
+
+  /// Update address usage statistics
+  Future<void> updateAddressUsage(
+    String walletId,
+    String address, {
+    DateTime? usedAt,
+    BigInt? balanceDelta,
+  });
+
+  // ========================================
+  // Transaction-Address Junction (Address-Centric Queries)
+  // ========================================
+
+  /// Store transaction-address junction records
+  Future<void> storeTransactionAddresses(
+    String walletId,
+    String txid,
+    List<TransactionAddressLink> links,
+  );
+
+  /// Get all transactions involving a specific address
+  Future<List<String>> getTransactionsByAddress(
+    String walletId,
+    String address, {
+    String? direction, // 'input', 'output', or null for both
+    int? limit,
+    int? offset,
+  });
+
+  /// Get all addresses involved in a transaction
+  Future<TransactionAddresses> getTransactionAddresses(
+    String walletId,
+    String txid,
+  );
+
+  /// Get transaction count for an address
+  Future<int> getAddressTransactionCount(String walletId, String address);
   
   // ========================================
   // UTXO Queries

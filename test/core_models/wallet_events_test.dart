@@ -336,6 +336,10 @@ void main() {
           fee: fee,
           isIncoming: isIncoming,
           isOutgoing: isOutgoing,
+          receivingAddresses: ['1TestReceiveAddr123456789012345678'],
+          sendingAddresses: ['1TestSendAddr123456789012345678901'],
+          txVersion: 1,
+          txLockTime: 0,
           transactionMetadata: transactionMetadata,
         );
 
@@ -360,6 +364,10 @@ void main() {
           fee: 10000,
           isIncoming: false,
           isOutgoing: true,
+          receivingAddresses: ['1TestReceiveAddr123456789012345678'],
+          sendingAddresses: ['1TestSendAddr123456789012345678901'],
+          txVersion: 1,
+          txLockTime: 0,
         );
 
         final eventData = event.getWalletEventData();
@@ -435,6 +443,10 @@ void main() {
           fee: 0,
           isIncoming: false,
           isOutgoing: false,
+          receivingAddresses: [],
+          sendingAddresses: [],
+          txVersion: 1,
+          txLockTime: 0,
         );
 
         expect(event.walletId, isEmpty);

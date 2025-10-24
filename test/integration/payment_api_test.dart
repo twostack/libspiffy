@@ -61,6 +61,7 @@ void main() {
       actorSystem: actorSystem,
       isar: isar,
       dataDirectory: testDir.path,
+      enableP2P: false
     );
 
     // Setup test block headers
@@ -275,18 +276,15 @@ void main() {
       );
       
       final importResult = await libspiffy.transactionImportService.importTransactions(
-        walletId: walletId,
-        transactions: [tx1],
-        walletAddresses: [addressString],
+        txids: [kTestTxid],
       );
       
-      expect(importResult.success, isTrue, reason: 'Import should succeed');
-      print('✓ Imported ${importResult.transactionsImported} transaction(s)');
-      print('✓ Harvested ${importResult.utxosHarvested} UTXO(s)');
+      expect(importResult, isNotEmpty, reason: 'Import should succeed');
+      print('✓ Imported ${importResult.length} transaction(s)');
       
-      // Verify we harvested UTXOs
-      expect(importResult.utxosHarvested, greaterThan(0), 
-             reason: 'Should harvest UTXOs with correct address');
+      // Verify transaction was imported
+      expect(importResult.length, equals(1), 
+             reason: 'Should import one transaction');
       
       // Wait for:
       // 1. Aggregate to process ReceiveUTXOCommand
@@ -398,13 +396,10 @@ void main() {
       
       // Import both transactions
       final importResult = await libspiffy.transactionImportService.importTransactions(
-        walletId: walletId,
-        transactions: [tx0, tx1],
-        walletAddresses: [addressString],
+        txids: [tx0.txid, tx1.txid],
       );
       
-      print('✓ Imported ${importResult.transactionsImported} transaction(s) in chain');
-      print('✓ Harvested ${importResult.utxosHarvested} UTXO(s)');
+      print('✓ Imported ${importResult.length} transaction(s) in chain');
       
       // Verify both merkle proofs stored
       final proof0 = await libspiffy.walletStorage.getMerkleProof(tx0.txid);
@@ -451,9 +446,7 @@ void main() {
       );
       
       final importResult = await libspiffy.transactionImportService.importTransactions(
-        walletId: walletId,
-        transactions: [unconfirmedTx],
-        walletAddresses: [addressString],
+        txids: [unconfirmedTx.txid],
       );
       
       print('✓ Imported unconfirmed transaction (no merkle proof)');
@@ -462,8 +455,8 @@ void main() {
       final proof = await libspiffy.walletStorage.getMerkleProof(unconfirmedTx.txid);
       expect(proof, isNull, reason: 'No merkle proof should exist for unconfirmed TX');
       
-      // If we harvested a UTXO, attempting to spend it should fail when collecting ancestors
-      if (importResult.utxosHarvested > 0) {
+      // If we imported a transaction, attempting to spend it should fail when collecting ancestors
+      if (importResult.isNotEmpty) {
         print('⚠️  Spending this UTXO will fail during BEEF creation (no merkle proof in chain)');
         
         final completer = Completer<BEEFPaymentResponse>();

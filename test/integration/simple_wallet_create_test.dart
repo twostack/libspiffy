@@ -45,6 +45,7 @@ void main() {
       actorSystem: actorSystem,
       isar: isar,
       dataDirectory: testDir.path,
+      enableP2P: false
     );
     print('✓ LibSpiffy initialized');
     

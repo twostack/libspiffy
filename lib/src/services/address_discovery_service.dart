@@ -61,7 +61,7 @@ class AddressDiscoveryService {
     
     _logger.info('   Network type resolved to: ${network == dartsv.NetworkType.MAIN ? "MAINNET" : "TESTNET"}');
 
-    // Scan receiving addresses (m/44'/0'/0'/0/x)
+    // Scan receiving addresses (m/44'/236'/0'/0/x for BSV)
     _logger.fine('Scanning receiving addresses...');
     final receivingResults = await _scanAddressChain(
       hdPublicKey: hdPublicKey,
@@ -76,7 +76,7 @@ class AddressDiscoveryService {
       (sum, addr) => sum + addr.transactionCount,
     );
 
-    // Scan change addresses (m/44'/0'/0'/1/x)
+    // Scan change addresses (m/44'/236'/0'/1/x for BSV)
     _logger.fine('Scanning change addresses...');
     final changeResults = await _scanAddressChain(
       hdPublicKey: hdPublicKey,
@@ -136,7 +136,7 @@ class AddressDiscoveryService {
       if (index < 3 || usedAddresses.isNotEmpty) {
         // Log first 3 addresses always, and any address when we've found used ones
         _logger.info(
-          '      Checking ${isChange ? "change" : "receiving"} address m/44\'/0\'/0\'/0/$index: $address',
+          '      Checking ${isChange ? "change" : "receiving"} address m/44\'/236\'/0\'/${isChange ? "1" : "0"}/$index: $address',
         );
       }
 

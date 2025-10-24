@@ -6,6 +6,7 @@ import '../services/blockchain_data_source.dart';
 import '../services/address_discovery_service.dart';
 import '../services/transaction_import_service.dart';
 import '../services/script_type_registry.dart';
+import '../storage/read_model_storage.dart';
 import '../models/blockchain_data_models.dart';
 import '../models/wallet_event.dart';
 import '../core/wallet_commands.dart';
@@ -28,6 +29,7 @@ class ImportActor extends Actor {
   final BlockchainDataSource _dataSource;
   final AddressDiscoveryService _discoveryService;
   final TransactionImportService _importService;
+  final ReadModelStorage _storage;
   final ActorRef _walletManagerActor;
   final void Function(WalletEvent)? _eventBroadcaster;
 
@@ -40,11 +42,13 @@ class ImportActor extends Actor {
 
   ImportActor({
     required BlockchainDataSource dataSource,
+    required ReadModelStorage storage,
     required ActorRef walletManagerActor,
     void Function(WalletEvent)? eventBroadcaster,
   })  : _dataSource = dataSource,
         _discoveryService = AddressDiscoveryService(dataSource),
         _importService = TransactionImportService(dataSource: dataSource),
+        _storage = storage,
         _walletManagerActor = walletManagerActor,
         _eventBroadcaster = eventBroadcaster;
 
@@ -224,21 +228,54 @@ class ImportActor extends Actor {
 
     _logger.info('   → Discovery complete: ${discoveryResult.usedAddresses.length} addresses found');
     _logger.info('   → Total transactions across all addresses: ${discoveryResult.totalTransactions}');
+    
+    // Log each discovered address for debugging
+    _logger.info('   📋 Discovered addresses:');
+    for (final addr in discoveryResult.usedAddresses) {
+      _logger.info('      • ${addr.address} (index: ${addr.derivationIndex}, change: ${addr.isChange}, txs: ${addr.transactionCount})');
+    }
 
-    // Notify discovered addresses
+    // Register discovered addresses via proper CQRS command flow
+    // This ensures events are persisted to EventStore and WalletProjection builds AddressEntity records
+    _logger.info('   → Sending RegisterDiscoveredAddressCommands for ${discoveryResult.usedAddresses.length} addresses...');
+    int commandsSent = 0;
     for (final address in discoveryResult.usedAddresses) {
-      if (_isCancelled) break;
+      if (_isCancelled) {
+        _logger.warning('      ⚠️  Import cancelled, stopping address registration');
+        break;
+      }
 
-      _logger.fine('      Address: ${address.address}, index: ${address.derivationIndex}, txCount: ${address.transactionCount}');
+      _logger.info('      → [${commandsSent + 1}/${discoveryResult.usedAddresses.length}] Registering: ${address.address}');
+      _logger.info('         (index: ${address.derivationIndex}, change: ${address.isChange}, txs: ${address.transactionCount})');
       
-      await _notifyEvent(message.walletId, AddressDiscoveredEvent(
+      final command = RegisterDiscoveredAddressCommand(
         walletId: message.walletId,
         address: address.address,
         derivationIndex: address.derivationIndex,
         isChange: address.isChange,
         transactionCount: address.transactionCount,
-      ));
+      );
+      
+      _logger.info('         📤 Sending command to WalletManagerActor...');
+      _walletManagerActor.tell(
+        WalletCommandMessage(message.walletId, command),
+        sender: context.self,
+      );
+      commandsSent++;
+      _logger.info('         ✅ Command sent (#$commandsSent)');
+      
+      // Small delay to prevent command queue overload (commands processed sequentially)
+      await Future.delayed(const Duration(milliseconds: 10));
     }
+    
+    _logger.info('   ✅ All $commandsSent RegisterDiscoveredAddressCommands sent');
+
+    
+    // Give projection a moment to process the address registration events
+    // This is much shorter than before because we're now using proper CQRS flow
+    _logger.info('   → Waiting for projection to process ${discoveryResult.usedAddresses.length} address events (500ms)...');
+    await Future.delayed(const Duration(milliseconds: 500));
+    _logger.info('   ✅ Address registration complete');
 
     _totalTransactions = discoveryResult.totalTransactions;
     _reportProgress(
@@ -398,12 +435,13 @@ class ImportActor extends Actor {
             continue;
           }
 
-          // Check if this output belongs to one of our addresses
-          final belongsToWallet = addresses.any((addr) => addr.address == outputAddress);
+          // Check if this output belongs to one of our addresses (O(1) hash lookup)
+          _logger.info('            → Checking if address $outputAddress belongs to wallet...');
+          final belongsToWallet = await _storage.isWalletAddress(message.walletId, outputAddress);
           
           _logger.info('            → Belongs to wallet? $belongsToWallet');
-          if (!belongsToWallet && addresses.length <= 3) {
-            _logger.info('            → Expected addresses: ${addresses.map((a) => a.address).join(", ")}');
+          if (!belongsToWallet) {
+            _logger.info('            → Address NOT in wallet. Expected one of: ${addresses.take(5).map((a) => a.address).join(", ")}${addresses.length > 5 ? "..." : ""}');
           }
 
           if (belongsToWallet) {

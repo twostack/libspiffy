@@ -805,6 +805,117 @@ final transactions = await libspiffy.walletStorage.getWalletTransactions('my-wal
 
 ---
 
+### 🟢 Address Management Queries
+
+**Type:** PUBLIC  
+**Description:** Efficiently manage and query wallet addresses with support for all Bitcoin script types (P2PKH, P2PK, P2MS, P2SH, custom scripts).
+
+**Key Features:**
+- **O(1) Address Lookups:** Hash-indexed address checking for optimal performance
+- **Script Type Support:** Works with any Bitcoin script type, not just standard scripts
+- **Address Metadata Tracking:** Track usage statistics, balances, derivation paths, and labels
+- **Transaction-Address Relationships:** Query all transactions for a given address
+
+**Usage:**
+
+```dart
+// Check if address belongs to wallet (O(1) hash lookup)
+final belongs = await libspiffy.walletStorage.isWalletAddress('my-wallet-id', 'address123...');
+if (belongs) {
+  print('This address belongs to the wallet');
+}
+
+// Get address metadata (usage stats, balance, derivation info)
+final metadata = await libspiffy.walletStorage.getAddressMetadata('my-wallet-id', 'address123...');
+if (metadata != null) {
+  print('Script Type: ${metadata.scriptType}'); // p2pkh, p2pk, p2ms, p2sh, custom
+  print('Usage Count: ${metadata.usageCount}');
+  print('Balance: ${metadata.balance} satoshis');
+  print('First Used: ${metadata.firstUsedAt}');
+  print('Last Used: ${metadata.lastUsedAt}');
+  print('Derivation Path: ${metadata.derivationPath}');
+  print('Derivation Index: ${metadata.derivationIndex}');
+  print('Purpose: ${metadata.purpose}'); // receive, change, invoice, import
+}
+
+// Batch check multiple addresses (efficient for large lists)
+final checkResults = await libspiffy.walletStorage.checkAddresses(
+  'my-wallet-id',
+  ['addr1', 'addr2', 'addr3', ...],
+);
+// Returns: {'addr1': true, 'addr2': false, 'addr3': true}
+
+// Get all addresses with metadata (supports filtering and pagination)
+final addresses = await libspiffy.walletStorage.getAddressesWithMetadata(
+  'my-wallet-id',
+  includeUnused: false,  // Only addresses that have been used
+  isChange: false,        // Only receiving addresses
+  limit: 50,
+  offset: 0,
+);
+for (final addr in addresses) {
+  print('${addr.address}: ${addr.usageCount} uses, ${addr.balance} sats');
+}
+
+// Get addresses by derivation index range (efficient for HD wallets)
+final rangeAddresses = await libspiffy.walletStorage.getAddressRange(
+  'my-wallet-id',
+  startIndex: 0,
+  count: 20,
+  isChange: false,  // false = receiving addresses, true = change addresses
+);
+
+// Get all transactions for a specific address
+final txids = await libspiffy.walletStorage.getTransactionsByAddress(
+  'my-wallet-id',
+  'address123...',
+  direction: 'output',  // 'output' (received), 'input' (sent), or null (both)
+  limit: 100,
+);
+print('Address involved in ${txids.length} transactions');
+
+// Get transaction count for an address
+final txCount = await libspiffy.walletStorage.getAddressTransactionCount(
+  'my-wallet-id',
+  'address123...',
+);
+print('Address has been used in $txCount transactions');
+
+// Get all addresses and their transaction details for a specific transaction
+final txAddresses = await libspiffy.walletStorage.getTransactionAddresses(
+  'my-wallet-id',
+  'txid123...',
+);
+print('Inputs from ${txAddresses.inputs.length} addresses');
+print('Outputs to ${txAddresses.outputs.length} addresses');
+for (final input in txAddresses.inputs) {
+  print('  Input from ${input.address}: ${input.amount} sats (vin: ${input.vin})');
+}
+for (final output in txAddresses.outputs) {
+  print('  Output to ${output.address}: ${output.amount} sats (vout: ${output.vout})');
+}
+```
+
+**Address Payment Destinations:**
+
+LibSpiffy treats addresses as generic "payment destinations" that support all Bitcoin script types:
+
+- **P2PKH/P2PK:** Standard base58 addresses (e.g., `1A1zP1...`)
+- **P2MS (Multisig):** Deterministic identifier using sorted public keys (e.g., `multisig:pubkey1:pubkey2:pubkey3`)
+- **P2SH:** Script hash identifier (e.g., `scripthash:a9b8c7d6...`)
+- **Custom Scripts:** Script-based identifier (e.g., `script:1a2b3c4d`)
+- **OP_RETURN:** Automatically skipped (unspendable outputs)
+
+This design embraces BSV's philosophy of allowing any script type without restrictions to "standard" scripts.
+
+**Performance Notes:**
+- `isWalletAddress()` uses hash indexing for O(1) lookups (vs O(N) linear search)
+- `checkAddresses()` is optimized for batch operations with a single database query
+- `getAddressRange()` is efficient for HD wallets scanning sequential derivation indexes
+- Address metadata is automatically tracked and updated by the wallet projection
+
+---
+
 ### 🟢 Invoice Queries
 
 **Type:** PUBLIC  

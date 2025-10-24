@@ -7662,33 +7662,48 @@ const BitcoinTransactionEntitySchema = CollectionSchema(
       name: r'notes',
       type: IsarType.string,
     ),
-    r'rawHex': PropertySchema(
+    r'primaryCounterparty': PropertySchema(
       id: 11,
+      name: r'primaryCounterparty',
+      type: IsarType.string,
+    ),
+    r'rawHex': PropertySchema(
+      id: 12,
       name: r'rawHex',
       type: IsarType.string,
     ),
+    r'receivingAddressesJson': PropertySchema(
+      id: 13,
+      name: r'receivingAddressesJson',
+      type: IsarType.string,
+    ),
+    r'sendingAddressesJson': PropertySchema(
+      id: 14,
+      name: r'sendingAddressesJson',
+      type: IsarType.string,
+    ),
     r'status': PropertySchema(
-      id: 12,
+      id: 15,
       name: r'status',
       type: IsarType.string,
     ),
     r'totalInput': PropertySchema(
-      id: 13,
+      id: 16,
       name: r'totalInput',
       type: IsarType.string,
     ),
     r'totalOutput': PropertySchema(
-      id: 14,
+      id: 17,
       name: r'totalOutput',
       type: IsarType.string,
     ),
     r'txid': PropertySchema(
-      id: 15,
+      id: 18,
       name: r'txid',
       type: IsarType.string,
     ),
     r'walletId': PropertySchema(
-      id: 16,
+      id: 19,
       name: r'walletId',
       type: IsarType.string,
     )
@@ -7750,6 +7765,19 @@ const BitcoinTransactionEntitySchema = CollectionSchema(
           caseSensitive: false,
         )
       ],
+    ),
+    r'primaryCounterparty': IndexSchema(
+      id: 4290160039439669883,
+      name: r'primaryCounterparty',
+      unique: false,
+      replace: false,
+      properties: [
+        IndexPropertySchema(
+          name: r'primaryCounterparty',
+          type: IndexType.hash,
+          caseSensitive: true,
+        )
+      ],
     )
   },
   links: {},
@@ -7785,7 +7813,15 @@ int _bitcoinTransactionEntityEstimateSize(
       bytesCount += 3 + value.length * 3;
     }
   }
+  {
+    final value = object.primaryCounterparty;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
   bytesCount += 3 + object.rawHex.length * 3;
+  bytesCount += 3 + object.receivingAddressesJson.length * 3;
+  bytesCount += 3 + object.sendingAddressesJson.length * 3;
   bytesCount += 3 + object.status.length * 3;
   bytesCount += 3 + object.totalInput.length * 3;
   bytesCount += 3 + object.totalOutput.length * 3;
@@ -7811,12 +7847,15 @@ void _bitcoinTransactionEntitySerialize(
   writer.writeBool(offsets[8], object.isIncoming);
   writer.writeBool(offsets[9], object.isOutgoing);
   writer.writeString(offsets[10], object.notes);
-  writer.writeString(offsets[11], object.rawHex);
-  writer.writeString(offsets[12], object.status);
-  writer.writeString(offsets[13], object.totalInput);
-  writer.writeString(offsets[14], object.totalOutput);
-  writer.writeString(offsets[15], object.txid);
-  writer.writeString(offsets[16], object.walletId);
+  writer.writeString(offsets[11], object.primaryCounterparty);
+  writer.writeString(offsets[12], object.rawHex);
+  writer.writeString(offsets[13], object.receivingAddressesJson);
+  writer.writeString(offsets[14], object.sendingAddressesJson);
+  writer.writeString(offsets[15], object.status);
+  writer.writeString(offsets[16], object.totalInput);
+  writer.writeString(offsets[17], object.totalOutput);
+  writer.writeString(offsets[18], object.txid);
+  writer.writeString(offsets[19], object.walletId);
 }
 
 BitcoinTransactionEntity _bitcoinTransactionEntityDeserialize(
@@ -7838,12 +7877,15 @@ BitcoinTransactionEntity _bitcoinTransactionEntityDeserialize(
   object.isIncoming = reader.readBool(offsets[8]);
   object.isOutgoing = reader.readBool(offsets[9]);
   object.notes = reader.readStringOrNull(offsets[10]);
-  object.rawHex = reader.readString(offsets[11]);
-  object.status = reader.readString(offsets[12]);
-  object.totalInput = reader.readString(offsets[13]);
-  object.totalOutput = reader.readString(offsets[14]);
-  object.txid = reader.readString(offsets[15]);
-  object.walletId = reader.readString(offsets[16]);
+  object.primaryCounterparty = reader.readStringOrNull(offsets[11]);
+  object.rawHex = reader.readString(offsets[12]);
+  object.receivingAddressesJson = reader.readString(offsets[13]);
+  object.sendingAddressesJson = reader.readString(offsets[14]);
+  object.status = reader.readString(offsets[15]);
+  object.totalInput = reader.readString(offsets[16]);
+  object.totalOutput = reader.readString(offsets[17]);
+  object.txid = reader.readString(offsets[18]);
+  object.walletId = reader.readString(offsets[19]);
   return object;
 }
 
@@ -7877,7 +7919,7 @@ P _bitcoinTransactionEntityDeserializeProp<P>(
     case 10:
       return (reader.readStringOrNull(offset)) as P;
     case 11:
-      return (reader.readString(offset)) as P;
+      return (reader.readStringOrNull(offset)) as P;
     case 12:
       return (reader.readString(offset)) as P;
     case 13:
@@ -7887,6 +7929,12 @@ P _bitcoinTransactionEntityDeserializeProp<P>(
     case 15:
       return (reader.readString(offset)) as P;
     case 16:
+      return (reader.readString(offset)) as P;
+    case 17:
+      return (reader.readString(offset)) as P;
+    case 18:
+      return (reader.readString(offset)) as P;
+    case 19:
       return (reader.readString(offset)) as P;
     default:
       throw IsarError('Unknown property with id $propertyId');
@@ -8278,6 +8326,75 @@ extension BitcoinTransactionEntityQueryWhere on QueryBuilder<
         upper: [upperCreatedAt],
         includeUpper: includeUpper,
       ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterWhereClause> primaryCounterpartyIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'primaryCounterparty',
+        value: [null],
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterWhereClause> primaryCounterpartyIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.between(
+        indexName: r'primaryCounterparty',
+        lower: [null],
+        includeLower: false,
+        upper: [],
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+          QAfterWhereClause>
+      primaryCounterpartyEqualTo(String? primaryCounterparty) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'primaryCounterparty',
+        value: [primaryCounterparty],
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+          QAfterWhereClause>
+      primaryCounterpartyNotEqualTo(String? primaryCounterparty) {
+    return QueryBuilder.apply(this, (query) {
+      if (query.whereSort == Sort.asc) {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'primaryCounterparty',
+              lower: [],
+              upper: [primaryCounterparty],
+              includeUpper: false,
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'primaryCounterparty',
+              lower: [primaryCounterparty],
+              includeLower: false,
+              upper: [],
+            ));
+      } else {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'primaryCounterparty',
+              lower: [primaryCounterparty],
+              includeLower: false,
+              upper: [],
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'primaryCounterparty',
+              lower: [],
+              upper: [primaryCounterparty],
+              includeUpper: false,
+            ));
+      }
     });
   }
 }
@@ -9301,6 +9418,162 @@ extension BitcoinTransactionEntityQueryFilter on QueryBuilder<
   }
 
   QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> primaryCounterpartyIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'primaryCounterparty',
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> primaryCounterpartyIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'primaryCounterparty',
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> primaryCounterpartyEqualTo(
+    String? value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'primaryCounterparty',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> primaryCounterpartyGreaterThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'primaryCounterparty',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> primaryCounterpartyLessThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'primaryCounterparty',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> primaryCounterpartyBetween(
+    String? lower,
+    String? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'primaryCounterparty',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> primaryCounterpartyStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'primaryCounterparty',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> primaryCounterpartyEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'primaryCounterparty',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+          QAfterFilterCondition>
+      primaryCounterpartyContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'primaryCounterparty',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+          QAfterFilterCondition>
+      primaryCounterpartyMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'primaryCounterparty',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> primaryCounterpartyIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'primaryCounterparty',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> primaryCounterpartyIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'primaryCounterparty',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
       QAfterFilterCondition> rawHexEqualTo(
     String value, {
     bool caseSensitive = true,
@@ -9433,6 +9706,284 @@ extension BitcoinTransactionEntityQueryFilter on QueryBuilder<
     return QueryBuilder.apply(this, (query) {
       return query.addFilterCondition(FilterCondition.greaterThan(
         property: r'rawHex',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> receivingAddressesJsonEqualTo(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'receivingAddressesJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> receivingAddressesJsonGreaterThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'receivingAddressesJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> receivingAddressesJsonLessThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'receivingAddressesJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> receivingAddressesJsonBetween(
+    String lower,
+    String upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'receivingAddressesJson',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> receivingAddressesJsonStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'receivingAddressesJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> receivingAddressesJsonEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'receivingAddressesJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+          QAfterFilterCondition>
+      receivingAddressesJsonContains(String value,
+          {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'receivingAddressesJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+          QAfterFilterCondition>
+      receivingAddressesJsonMatches(String pattern,
+          {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'receivingAddressesJson',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> receivingAddressesJsonIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'receivingAddressesJson',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> receivingAddressesJsonIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'receivingAddressesJson',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> sendingAddressesJsonEqualTo(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'sendingAddressesJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> sendingAddressesJsonGreaterThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'sendingAddressesJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> sendingAddressesJsonLessThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'sendingAddressesJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> sendingAddressesJsonBetween(
+    String lower,
+    String upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'sendingAddressesJson',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> sendingAddressesJsonStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'sendingAddressesJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> sendingAddressesJsonEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'sendingAddressesJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+          QAfterFilterCondition>
+      sendingAddressesJsonContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'sendingAddressesJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+          QAfterFilterCondition>
+      sendingAddressesJsonMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'sendingAddressesJson',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> sendingAddressesJsonIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'sendingAddressesJson',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> sendingAddressesJsonIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'sendingAddressesJson',
         value: '',
       ));
     });
@@ -10292,6 +10843,20 @@ extension BitcoinTransactionEntityQuerySortBy on QueryBuilder<
   }
 
   QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterSortBy>
+      sortByPrimaryCounterparty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'primaryCounterparty', Sort.asc);
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterSortBy>
+      sortByPrimaryCounterpartyDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'primaryCounterparty', Sort.desc);
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterSortBy>
       sortByRawHex() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'rawHex', Sort.asc);
@@ -10302,6 +10867,34 @@ extension BitcoinTransactionEntityQuerySortBy on QueryBuilder<
       sortByRawHexDesc() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'rawHex', Sort.desc);
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterSortBy>
+      sortByReceivingAddressesJson() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'receivingAddressesJson', Sort.asc);
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterSortBy>
+      sortByReceivingAddressesJsonDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'receivingAddressesJson', Sort.desc);
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterSortBy>
+      sortBySendingAddressesJson() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'sendingAddressesJson', Sort.asc);
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterSortBy>
+      sortBySendingAddressesJsonDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'sendingAddressesJson', Sort.desc);
     });
   }
 
@@ -10547,6 +11140,20 @@ extension BitcoinTransactionEntityQuerySortThenBy on QueryBuilder<
   }
 
   QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterSortBy>
+      thenByPrimaryCounterparty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'primaryCounterparty', Sort.asc);
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterSortBy>
+      thenByPrimaryCounterpartyDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'primaryCounterparty', Sort.desc);
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterSortBy>
       thenByRawHex() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'rawHex', Sort.asc);
@@ -10557,6 +11164,34 @@ extension BitcoinTransactionEntityQuerySortThenBy on QueryBuilder<
       thenByRawHexDesc() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'rawHex', Sort.desc);
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterSortBy>
+      thenByReceivingAddressesJson() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'receivingAddressesJson', Sort.asc);
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterSortBy>
+      thenByReceivingAddressesJsonDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'receivingAddressesJson', Sort.desc);
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterSortBy>
+      thenBySendingAddressesJson() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'sendingAddressesJson', Sort.asc);
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterSortBy>
+      thenBySendingAddressesJsonDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'sendingAddressesJson', Sort.desc);
     });
   }
 
@@ -10711,9 +11346,33 @@ extension BitcoinTransactionEntityQueryWhereDistinct on QueryBuilder<
   }
 
   QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QDistinct>
+      distinctByPrimaryCounterparty({bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'primaryCounterparty',
+          caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QDistinct>
       distinctByRawHex({bool caseSensitive = true}) {
     return QueryBuilder.apply(this, (query) {
       return query.addDistinctBy(r'rawHex', caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QDistinct>
+      distinctByReceivingAddressesJson({bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'receivingAddressesJson',
+          caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QDistinct>
+      distinctBySendingAddressesJson({bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'sendingAddressesJson',
+          caseSensitive: caseSensitive);
     });
   }
 
@@ -10838,10 +11497,31 @@ extension BitcoinTransactionEntityQueryProperty on QueryBuilder<
     });
   }
 
+  QueryBuilder<BitcoinTransactionEntity, String?, QQueryOperations>
+      primaryCounterpartyProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'primaryCounterparty');
+    });
+  }
+
   QueryBuilder<BitcoinTransactionEntity, String, QQueryOperations>
       rawHexProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'rawHex');
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, String, QQueryOperations>
+      receivingAddressesJsonProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'receivingAddressesJson');
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, String, QQueryOperations>
+      sendingAddressesJsonProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'sendingAddressesJson');
     });
   }
 
@@ -13667,6 +14347,4996 @@ extension WalletMetadataEntityQueryProperty on QueryBuilder<
       walletTypeProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'walletType');
+    });
+  }
+}
+
+// coverage:ignore-file
+// ignore_for_file: duplicate_ignore, non_constant_identifier_names, constant_identifier_names, invalid_use_of_protected_member, unnecessary_cast, prefer_const_constructors, lines_longer_than_80_chars, require_trailing_commas, inference_failure_on_function_invocation, unnecessary_parenthesis, unnecessary_raw_strings, unnecessary_null_checks, join_return_with_assignment, prefer_final_locals, avoid_js_rounded_ints, avoid_positional_boolean_parameters, always_specify_types
+
+extension GetAddressEntityCollection on Isar {
+  IsarCollection<AddressEntity> get addressEntitys => this.collection();
+}
+
+const AddressEntitySchema = CollectionSchema(
+  name: r'AddressEntity',
+  id: 5884920456001426106,
+  properties: {
+    r'address': PropertySchema(
+      id: 0,
+      name: r'address',
+      type: IsarType.string,
+    ),
+    r'balance': PropertySchema(
+      id: 1,
+      name: r'balance',
+      type: IsarType.string,
+    ),
+    r'createdAt': PropertySchema(
+      id: 2,
+      name: r'createdAt',
+      type: IsarType.dateTime,
+    ),
+    r'derivationIndex': PropertySchema(
+      id: 3,
+      name: r'derivationIndex',
+      type: IsarType.long,
+    ),
+    r'derivationPath': PropertySchema(
+      id: 4,
+      name: r'derivationPath',
+      type: IsarType.string,
+    ),
+    r'firstUsedAt': PropertySchema(
+      id: 5,
+      name: r'firstUsedAt',
+      type: IsarType.dateTime,
+    ),
+    r'isChange': PropertySchema(
+      id: 6,
+      name: r'isChange',
+      type: IsarType.bool,
+    ),
+    r'isWatched': PropertySchema(
+      id: 7,
+      name: r'isWatched',
+      type: IsarType.bool,
+    ),
+    r'label': PropertySchema(
+      id: 8,
+      name: r'label',
+      type: IsarType.string,
+    ),
+    r'lastUsedAt': PropertySchema(
+      id: 9,
+      name: r'lastUsedAt',
+      type: IsarType.dateTime,
+    ),
+    r'purpose': PropertySchema(
+      id: 10,
+      name: r'purpose',
+      type: IsarType.string,
+    ),
+    r'scriptType': PropertySchema(
+      id: 11,
+      name: r'scriptType',
+      type: IsarType.string,
+    ),
+    r'usageCount': PropertySchema(
+      id: 12,
+      name: r'usageCount',
+      type: IsarType.long,
+    ),
+    r'walletId': PropertySchema(
+      id: 13,
+      name: r'walletId',
+      type: IsarType.string,
+    )
+  },
+  estimateSize: _addressEntityEstimateSize,
+  serialize: _addressEntitySerialize,
+  deserialize: _addressEntityDeserialize,
+  deserializeProp: _addressEntityDeserializeProp,
+  idName: r'id',
+  indexes: {
+    r'walletId': IndexSchema(
+      id: -1783113319798776304,
+      name: r'walletId',
+      unique: false,
+      replace: false,
+      properties: [
+        IndexPropertySchema(
+          name: r'walletId',
+          type: IndexType.hash,
+          caseSensitive: true,
+        )
+      ],
+    ),
+    r'address': IndexSchema(
+      id: -259407546592846288,
+      name: r'address',
+      unique: true,
+      replace: false,
+      properties: [
+        IndexPropertySchema(
+          name: r'address',
+          type: IndexType.hash,
+          caseSensitive: true,
+        )
+      ],
+    ),
+    r'derivationIndex': IndexSchema(
+      id: -6950711977521998012,
+      name: r'derivationIndex',
+      unique: false,
+      replace: false,
+      properties: [
+        IndexPropertySchema(
+          name: r'derivationIndex',
+          type: IndexType.value,
+          caseSensitive: false,
+        )
+      ],
+    )
+  },
+  links: {},
+  embeddedSchemas: {},
+  getId: _addressEntityGetId,
+  getLinks: _addressEntityGetLinks,
+  attach: _addressEntityAttach,
+  version: '3.1.0+1',
+);
+
+int _addressEntityEstimateSize(
+  AddressEntity object,
+  List<int> offsets,
+  Map<Type, List<int>> allOffsets,
+) {
+  var bytesCount = offsets.last;
+  bytesCount += 3 + object.address.length * 3;
+  bytesCount += 3 + object.balance.length * 3;
+  {
+    final value = object.derivationPath;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
+  {
+    final value = object.label;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
+  bytesCount += 3 + object.purpose.length * 3;
+  bytesCount += 3 + object.scriptType.length * 3;
+  bytesCount += 3 + object.walletId.length * 3;
+  return bytesCount;
+}
+
+void _addressEntitySerialize(
+  AddressEntity object,
+  IsarWriter writer,
+  List<int> offsets,
+  Map<Type, List<int>> allOffsets,
+) {
+  writer.writeString(offsets[0], object.address);
+  writer.writeString(offsets[1], object.balance);
+  writer.writeDateTime(offsets[2], object.createdAt);
+  writer.writeLong(offsets[3], object.derivationIndex);
+  writer.writeString(offsets[4], object.derivationPath);
+  writer.writeDateTime(offsets[5], object.firstUsedAt);
+  writer.writeBool(offsets[6], object.isChange);
+  writer.writeBool(offsets[7], object.isWatched);
+  writer.writeString(offsets[8], object.label);
+  writer.writeDateTime(offsets[9], object.lastUsedAt);
+  writer.writeString(offsets[10], object.purpose);
+  writer.writeString(offsets[11], object.scriptType);
+  writer.writeLong(offsets[12], object.usageCount);
+  writer.writeString(offsets[13], object.walletId);
+}
+
+AddressEntity _addressEntityDeserialize(
+  Id id,
+  IsarReader reader,
+  List<int> offsets,
+  Map<Type, List<int>> allOffsets,
+) {
+  final object = AddressEntity();
+  object.address = reader.readString(offsets[0]);
+  object.balance = reader.readString(offsets[1]);
+  object.createdAt = reader.readDateTime(offsets[2]);
+  object.derivationIndex = reader.readLongOrNull(offsets[3]);
+  object.derivationPath = reader.readStringOrNull(offsets[4]);
+  object.firstUsedAt = reader.readDateTimeOrNull(offsets[5]);
+  object.id = id;
+  object.isChange = reader.readBool(offsets[6]);
+  object.isWatched = reader.readBool(offsets[7]);
+  object.label = reader.readStringOrNull(offsets[8]);
+  object.lastUsedAt = reader.readDateTimeOrNull(offsets[9]);
+  object.purpose = reader.readString(offsets[10]);
+  object.scriptType = reader.readString(offsets[11]);
+  object.usageCount = reader.readLong(offsets[12]);
+  object.walletId = reader.readString(offsets[13]);
+  return object;
+}
+
+P _addressEntityDeserializeProp<P>(
+  IsarReader reader,
+  int propertyId,
+  int offset,
+  Map<Type, List<int>> allOffsets,
+) {
+  switch (propertyId) {
+    case 0:
+      return (reader.readString(offset)) as P;
+    case 1:
+      return (reader.readString(offset)) as P;
+    case 2:
+      return (reader.readDateTime(offset)) as P;
+    case 3:
+      return (reader.readLongOrNull(offset)) as P;
+    case 4:
+      return (reader.readStringOrNull(offset)) as P;
+    case 5:
+      return (reader.readDateTimeOrNull(offset)) as P;
+    case 6:
+      return (reader.readBool(offset)) as P;
+    case 7:
+      return (reader.readBool(offset)) as P;
+    case 8:
+      return (reader.readStringOrNull(offset)) as P;
+    case 9:
+      return (reader.readDateTimeOrNull(offset)) as P;
+    case 10:
+      return (reader.readString(offset)) as P;
+    case 11:
+      return (reader.readString(offset)) as P;
+    case 12:
+      return (reader.readLong(offset)) as P;
+    case 13:
+      return (reader.readString(offset)) as P;
+    default:
+      throw IsarError('Unknown property with id $propertyId');
+  }
+}
+
+Id _addressEntityGetId(AddressEntity object) {
+  return object.id;
+}
+
+List<IsarLinkBase<dynamic>> _addressEntityGetLinks(AddressEntity object) {
+  return [];
+}
+
+void _addressEntityAttach(
+    IsarCollection<dynamic> col, Id id, AddressEntity object) {
+  object.id = id;
+}
+
+extension AddressEntityByIndex on IsarCollection<AddressEntity> {
+  Future<AddressEntity?> getByAddress(String address) {
+    return getByIndex(r'address', [address]);
+  }
+
+  AddressEntity? getByAddressSync(String address) {
+    return getByIndexSync(r'address', [address]);
+  }
+
+  Future<bool> deleteByAddress(String address) {
+    return deleteByIndex(r'address', [address]);
+  }
+
+  bool deleteByAddressSync(String address) {
+    return deleteByIndexSync(r'address', [address]);
+  }
+
+  Future<List<AddressEntity?>> getAllByAddress(List<String> addressValues) {
+    final values = addressValues.map((e) => [e]).toList();
+    return getAllByIndex(r'address', values);
+  }
+
+  List<AddressEntity?> getAllByAddressSync(List<String> addressValues) {
+    final values = addressValues.map((e) => [e]).toList();
+    return getAllByIndexSync(r'address', values);
+  }
+
+  Future<int> deleteAllByAddress(List<String> addressValues) {
+    final values = addressValues.map((e) => [e]).toList();
+    return deleteAllByIndex(r'address', values);
+  }
+
+  int deleteAllByAddressSync(List<String> addressValues) {
+    final values = addressValues.map((e) => [e]).toList();
+    return deleteAllByIndexSync(r'address', values);
+  }
+
+  Future<Id> putByAddress(AddressEntity object) {
+    return putByIndex(r'address', object);
+  }
+
+  Id putByAddressSync(AddressEntity object, {bool saveLinks = true}) {
+    return putByIndexSync(r'address', object, saveLinks: saveLinks);
+  }
+
+  Future<List<Id>> putAllByAddress(List<AddressEntity> objects) {
+    return putAllByIndex(r'address', objects);
+  }
+
+  List<Id> putAllByAddressSync(List<AddressEntity> objects,
+      {bool saveLinks = true}) {
+    return putAllByIndexSync(r'address', objects, saveLinks: saveLinks);
+  }
+}
+
+extension AddressEntityQueryWhereSort
+    on QueryBuilder<AddressEntity, AddressEntity, QWhere> {
+  QueryBuilder<AddressEntity, AddressEntity, QAfterWhere> anyId() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(const IdWhereClause.any());
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterWhere> anyDerivationIndex() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(
+        const IndexWhereClause.any(indexName: r'derivationIndex'),
+      );
+    });
+  }
+}
+
+extension AddressEntityQueryWhere
+    on QueryBuilder<AddressEntity, AddressEntity, QWhereClause> {
+  QueryBuilder<AddressEntity, AddressEntity, QAfterWhereClause> idEqualTo(
+      Id id) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IdWhereClause.between(
+        lower: id,
+        upper: id,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterWhereClause> idNotEqualTo(
+      Id id) {
+    return QueryBuilder.apply(this, (query) {
+      if (query.whereSort == Sort.asc) {
+        return query
+            .addWhereClause(
+              IdWhereClause.lessThan(upper: id, includeUpper: false),
+            )
+            .addWhereClause(
+              IdWhereClause.greaterThan(lower: id, includeLower: false),
+            );
+      } else {
+        return query
+            .addWhereClause(
+              IdWhereClause.greaterThan(lower: id, includeLower: false),
+            )
+            .addWhereClause(
+              IdWhereClause.lessThan(upper: id, includeUpper: false),
+            );
+      }
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterWhereClause> idGreaterThan(
+      Id id,
+      {bool include = false}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(
+        IdWhereClause.greaterThan(lower: id, includeLower: include),
+      );
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterWhereClause> idLessThan(
+      Id id,
+      {bool include = false}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(
+        IdWhereClause.lessThan(upper: id, includeUpper: include),
+      );
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterWhereClause> idBetween(
+    Id lowerId,
+    Id upperId, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IdWhereClause.between(
+        lower: lowerId,
+        includeLower: includeLower,
+        upper: upperId,
+        includeUpper: includeUpper,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterWhereClause> walletIdEqualTo(
+      String walletId) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'walletId',
+        value: [walletId],
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterWhereClause>
+      walletIdNotEqualTo(String walletId) {
+    return QueryBuilder.apply(this, (query) {
+      if (query.whereSort == Sort.asc) {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId',
+              lower: [],
+              upper: [walletId],
+              includeUpper: false,
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId',
+              lower: [walletId],
+              includeLower: false,
+              upper: [],
+            ));
+      } else {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId',
+              lower: [walletId],
+              includeLower: false,
+              upper: [],
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId',
+              lower: [],
+              upper: [walletId],
+              includeUpper: false,
+            ));
+      }
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterWhereClause> addressEqualTo(
+      String address) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'address',
+        value: [address],
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterWhereClause>
+      addressNotEqualTo(String address) {
+    return QueryBuilder.apply(this, (query) {
+      if (query.whereSort == Sort.asc) {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'address',
+              lower: [],
+              upper: [address],
+              includeUpper: false,
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'address',
+              lower: [address],
+              includeLower: false,
+              upper: [],
+            ));
+      } else {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'address',
+              lower: [address],
+              includeLower: false,
+              upper: [],
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'address',
+              lower: [],
+              upper: [address],
+              includeUpper: false,
+            ));
+      }
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterWhereClause>
+      derivationIndexIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'derivationIndex',
+        value: [null],
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterWhereClause>
+      derivationIndexIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.between(
+        indexName: r'derivationIndex',
+        lower: [null],
+        includeLower: false,
+        upper: [],
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterWhereClause>
+      derivationIndexEqualTo(int? derivationIndex) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'derivationIndex',
+        value: [derivationIndex],
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterWhereClause>
+      derivationIndexNotEqualTo(int? derivationIndex) {
+    return QueryBuilder.apply(this, (query) {
+      if (query.whereSort == Sort.asc) {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'derivationIndex',
+              lower: [],
+              upper: [derivationIndex],
+              includeUpper: false,
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'derivationIndex',
+              lower: [derivationIndex],
+              includeLower: false,
+              upper: [],
+            ));
+      } else {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'derivationIndex',
+              lower: [derivationIndex],
+              includeLower: false,
+              upper: [],
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'derivationIndex',
+              lower: [],
+              upper: [derivationIndex],
+              includeUpper: false,
+            ));
+      }
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterWhereClause>
+      derivationIndexGreaterThan(
+    int? derivationIndex, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.between(
+        indexName: r'derivationIndex',
+        lower: [derivationIndex],
+        includeLower: include,
+        upper: [],
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterWhereClause>
+      derivationIndexLessThan(
+    int? derivationIndex, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.between(
+        indexName: r'derivationIndex',
+        lower: [],
+        upper: [derivationIndex],
+        includeUpper: include,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterWhereClause>
+      derivationIndexBetween(
+    int? lowerDerivationIndex,
+    int? upperDerivationIndex, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.between(
+        indexName: r'derivationIndex',
+        lower: [lowerDerivationIndex],
+        includeLower: includeLower,
+        upper: [upperDerivationIndex],
+        includeUpper: includeUpper,
+      ));
+    });
+  }
+}
+
+extension AddressEntityQueryFilter
+    on QueryBuilder<AddressEntity, AddressEntity, QFilterCondition> {
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      addressEqualTo(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'address',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      addressGreaterThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'address',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      addressLessThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'address',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      addressBetween(
+    String lower,
+    String upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'address',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      addressStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'address',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      addressEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'address',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      addressContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'address',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      addressMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'address',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      addressIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'address',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      addressIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'address',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      balanceEqualTo(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'balance',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      balanceGreaterThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'balance',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      balanceLessThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'balance',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      balanceBetween(
+    String lower,
+    String upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'balance',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      balanceStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'balance',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      balanceEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'balance',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      balanceContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'balance',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      balanceMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'balance',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      balanceIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'balance',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      balanceIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'balance',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      createdAtEqualTo(DateTime value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'createdAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      createdAtGreaterThan(
+    DateTime value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'createdAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      createdAtLessThan(
+    DateTime value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'createdAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      createdAtBetween(
+    DateTime lower,
+    DateTime upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'createdAt',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      derivationIndexIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'derivationIndex',
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      derivationIndexIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'derivationIndex',
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      derivationIndexEqualTo(int? value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'derivationIndex',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      derivationIndexGreaterThan(
+    int? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'derivationIndex',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      derivationIndexLessThan(
+    int? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'derivationIndex',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      derivationIndexBetween(
+    int? lower,
+    int? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'derivationIndex',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      derivationPathIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'derivationPath',
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      derivationPathIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'derivationPath',
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      derivationPathEqualTo(
+    String? value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'derivationPath',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      derivationPathGreaterThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'derivationPath',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      derivationPathLessThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'derivationPath',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      derivationPathBetween(
+    String? lower,
+    String? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'derivationPath',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      derivationPathStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'derivationPath',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      derivationPathEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'derivationPath',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      derivationPathContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'derivationPath',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      derivationPathMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'derivationPath',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      derivationPathIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'derivationPath',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      derivationPathIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'derivationPath',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      firstUsedAtIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'firstUsedAt',
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      firstUsedAtIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'firstUsedAt',
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      firstUsedAtEqualTo(DateTime? value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'firstUsedAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      firstUsedAtGreaterThan(
+    DateTime? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'firstUsedAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      firstUsedAtLessThan(
+    DateTime? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'firstUsedAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      firstUsedAtBetween(
+    DateTime? lower,
+    DateTime? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'firstUsedAt',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition> idEqualTo(
+      Id value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'id',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      idGreaterThan(
+    Id value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'id',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition> idLessThan(
+    Id value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'id',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition> idBetween(
+    Id lower,
+    Id upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'id',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      isChangeEqualTo(bool value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'isChange',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      isWatchedEqualTo(bool value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'isWatched',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      labelIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'label',
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      labelIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'label',
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      labelEqualTo(
+    String? value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'label',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      labelGreaterThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'label',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      labelLessThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'label',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      labelBetween(
+    String? lower,
+    String? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'label',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      labelStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'label',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      labelEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'label',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      labelContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'label',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      labelMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'label',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      labelIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'label',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      labelIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'label',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      lastUsedAtIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'lastUsedAt',
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      lastUsedAtIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'lastUsedAt',
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      lastUsedAtEqualTo(DateTime? value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'lastUsedAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      lastUsedAtGreaterThan(
+    DateTime? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'lastUsedAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      lastUsedAtLessThan(
+    DateTime? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'lastUsedAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      lastUsedAtBetween(
+    DateTime? lower,
+    DateTime? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'lastUsedAt',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      purposeEqualTo(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'purpose',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      purposeGreaterThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'purpose',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      purposeLessThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'purpose',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      purposeBetween(
+    String lower,
+    String upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'purpose',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      purposeStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'purpose',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      purposeEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'purpose',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      purposeContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'purpose',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      purposeMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'purpose',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      purposeIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'purpose',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      purposeIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'purpose',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      scriptTypeEqualTo(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'scriptType',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      scriptTypeGreaterThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'scriptType',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      scriptTypeLessThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'scriptType',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      scriptTypeBetween(
+    String lower,
+    String upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'scriptType',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      scriptTypeStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'scriptType',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      scriptTypeEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'scriptType',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      scriptTypeContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'scriptType',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      scriptTypeMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'scriptType',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      scriptTypeIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'scriptType',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      scriptTypeIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'scriptType',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      usageCountEqualTo(int value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'usageCount',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      usageCountGreaterThan(
+    int value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'usageCount',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      usageCountLessThan(
+    int value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'usageCount',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      usageCountBetween(
+    int lower,
+    int upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'usageCount',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      walletIdEqualTo(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'walletId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      walletIdGreaterThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'walletId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      walletIdLessThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'walletId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      walletIdBetween(
+    String lower,
+    String upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'walletId',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      walletIdStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'walletId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      walletIdEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'walletId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      walletIdContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'walletId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      walletIdMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'walletId',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      walletIdIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'walletId',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      walletIdIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'walletId',
+        value: '',
+      ));
+    });
+  }
+}
+
+extension AddressEntityQueryObject
+    on QueryBuilder<AddressEntity, AddressEntity, QFilterCondition> {}
+
+extension AddressEntityQueryLinks
+    on QueryBuilder<AddressEntity, AddressEntity, QFilterCondition> {}
+
+extension AddressEntityQuerySortBy
+    on QueryBuilder<AddressEntity, AddressEntity, QSortBy> {
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy> sortByAddress() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'address', Sort.asc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy> sortByAddressDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'address', Sort.desc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy> sortByBalance() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'balance', Sort.asc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy> sortByBalanceDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'balance', Sort.desc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy> sortByCreatedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'createdAt', Sort.asc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy>
+      sortByCreatedAtDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'createdAt', Sort.desc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy>
+      sortByDerivationIndex() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'derivationIndex', Sort.asc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy>
+      sortByDerivationIndexDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'derivationIndex', Sort.desc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy>
+      sortByDerivationPath() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'derivationPath', Sort.asc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy>
+      sortByDerivationPathDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'derivationPath', Sort.desc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy> sortByFirstUsedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'firstUsedAt', Sort.asc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy>
+      sortByFirstUsedAtDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'firstUsedAt', Sort.desc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy> sortByIsChange() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'isChange', Sort.asc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy>
+      sortByIsChangeDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'isChange', Sort.desc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy> sortByIsWatched() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'isWatched', Sort.asc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy>
+      sortByIsWatchedDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'isWatched', Sort.desc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy> sortByLabel() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'label', Sort.asc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy> sortByLabelDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'label', Sort.desc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy> sortByLastUsedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'lastUsedAt', Sort.asc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy>
+      sortByLastUsedAtDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'lastUsedAt', Sort.desc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy> sortByPurpose() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'purpose', Sort.asc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy> sortByPurposeDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'purpose', Sort.desc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy> sortByScriptType() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'scriptType', Sort.asc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy>
+      sortByScriptTypeDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'scriptType', Sort.desc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy> sortByUsageCount() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'usageCount', Sort.asc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy>
+      sortByUsageCountDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'usageCount', Sort.desc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy> sortByWalletId() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'walletId', Sort.asc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy>
+      sortByWalletIdDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'walletId', Sort.desc);
+    });
+  }
+}
+
+extension AddressEntityQuerySortThenBy
+    on QueryBuilder<AddressEntity, AddressEntity, QSortThenBy> {
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy> thenByAddress() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'address', Sort.asc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy> thenByAddressDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'address', Sort.desc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy> thenByBalance() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'balance', Sort.asc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy> thenByBalanceDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'balance', Sort.desc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy> thenByCreatedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'createdAt', Sort.asc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy>
+      thenByCreatedAtDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'createdAt', Sort.desc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy>
+      thenByDerivationIndex() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'derivationIndex', Sort.asc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy>
+      thenByDerivationIndexDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'derivationIndex', Sort.desc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy>
+      thenByDerivationPath() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'derivationPath', Sort.asc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy>
+      thenByDerivationPathDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'derivationPath', Sort.desc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy> thenByFirstUsedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'firstUsedAt', Sort.asc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy>
+      thenByFirstUsedAtDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'firstUsedAt', Sort.desc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy> thenById() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'id', Sort.asc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy> thenByIdDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'id', Sort.desc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy> thenByIsChange() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'isChange', Sort.asc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy>
+      thenByIsChangeDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'isChange', Sort.desc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy> thenByIsWatched() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'isWatched', Sort.asc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy>
+      thenByIsWatchedDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'isWatched', Sort.desc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy> thenByLabel() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'label', Sort.asc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy> thenByLabelDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'label', Sort.desc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy> thenByLastUsedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'lastUsedAt', Sort.asc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy>
+      thenByLastUsedAtDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'lastUsedAt', Sort.desc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy> thenByPurpose() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'purpose', Sort.asc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy> thenByPurposeDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'purpose', Sort.desc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy> thenByScriptType() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'scriptType', Sort.asc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy>
+      thenByScriptTypeDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'scriptType', Sort.desc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy> thenByUsageCount() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'usageCount', Sort.asc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy>
+      thenByUsageCountDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'usageCount', Sort.desc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy> thenByWalletId() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'walletId', Sort.asc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy>
+      thenByWalletIdDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'walletId', Sort.desc);
+    });
+  }
+}
+
+extension AddressEntityQueryWhereDistinct
+    on QueryBuilder<AddressEntity, AddressEntity, QDistinct> {
+  QueryBuilder<AddressEntity, AddressEntity, QDistinct> distinctByAddress(
+      {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'address', caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QDistinct> distinctByBalance(
+      {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'balance', caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QDistinct> distinctByCreatedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'createdAt');
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QDistinct>
+      distinctByDerivationIndex() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'derivationIndex');
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QDistinct>
+      distinctByDerivationPath({bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'derivationPath',
+          caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QDistinct>
+      distinctByFirstUsedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'firstUsedAt');
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QDistinct> distinctByIsChange() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'isChange');
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QDistinct> distinctByIsWatched() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'isWatched');
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QDistinct> distinctByLabel(
+      {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'label', caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QDistinct> distinctByLastUsedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'lastUsedAt');
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QDistinct> distinctByPurpose(
+      {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'purpose', caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QDistinct> distinctByScriptType(
+      {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'scriptType', caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QDistinct> distinctByUsageCount() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'usageCount');
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QDistinct> distinctByWalletId(
+      {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'walletId', caseSensitive: caseSensitive);
+    });
+  }
+}
+
+extension AddressEntityQueryProperty
+    on QueryBuilder<AddressEntity, AddressEntity, QQueryProperty> {
+  QueryBuilder<AddressEntity, int, QQueryOperations> idProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'id');
+    });
+  }
+
+  QueryBuilder<AddressEntity, String, QQueryOperations> addressProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'address');
+    });
+  }
+
+  QueryBuilder<AddressEntity, String, QQueryOperations> balanceProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'balance');
+    });
+  }
+
+  QueryBuilder<AddressEntity, DateTime, QQueryOperations> createdAtProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'createdAt');
+    });
+  }
+
+  QueryBuilder<AddressEntity, int?, QQueryOperations>
+      derivationIndexProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'derivationIndex');
+    });
+  }
+
+  QueryBuilder<AddressEntity, String?, QQueryOperations>
+      derivationPathProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'derivationPath');
+    });
+  }
+
+  QueryBuilder<AddressEntity, DateTime?, QQueryOperations>
+      firstUsedAtProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'firstUsedAt');
+    });
+  }
+
+  QueryBuilder<AddressEntity, bool, QQueryOperations> isChangeProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'isChange');
+    });
+  }
+
+  QueryBuilder<AddressEntity, bool, QQueryOperations> isWatchedProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'isWatched');
+    });
+  }
+
+  QueryBuilder<AddressEntity, String?, QQueryOperations> labelProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'label');
+    });
+  }
+
+  QueryBuilder<AddressEntity, DateTime?, QQueryOperations>
+      lastUsedAtProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'lastUsedAt');
+    });
+  }
+
+  QueryBuilder<AddressEntity, String, QQueryOperations> purposeProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'purpose');
+    });
+  }
+
+  QueryBuilder<AddressEntity, String, QQueryOperations> scriptTypeProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'scriptType');
+    });
+  }
+
+  QueryBuilder<AddressEntity, int, QQueryOperations> usageCountProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'usageCount');
+    });
+  }
+
+  QueryBuilder<AddressEntity, String, QQueryOperations> walletIdProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'walletId');
+    });
+  }
+}
+
+// coverage:ignore-file
+// ignore_for_file: duplicate_ignore, non_constant_identifier_names, constant_identifier_names, invalid_use_of_protected_member, unnecessary_cast, prefer_const_constructors, lines_longer_than_80_chars, require_trailing_commas, inference_failure_on_function_invocation, unnecessary_parenthesis, unnecessary_raw_strings, unnecessary_null_checks, join_return_with_assignment, prefer_final_locals, avoid_js_rounded_ints, avoid_positional_boolean_parameters, always_specify_types
+
+extension GetTransactionAddressEntityCollection on Isar {
+  IsarCollection<TransactionAddressEntity> get transactionAddressEntitys =>
+      this.collection();
+}
+
+const TransactionAddressEntitySchema = CollectionSchema(
+  name: r'TransactionAddressEntity',
+  id: 4435734835252030740,
+  properties: {
+    r'address': PropertySchema(
+      id: 0,
+      name: r'address',
+      type: IsarType.string,
+    ),
+    r'amount': PropertySchema(
+      id: 1,
+      name: r'amount',
+      type: IsarType.string,
+    ),
+    r'createdAt': PropertySchema(
+      id: 2,
+      name: r'createdAt',
+      type: IsarType.dateTime,
+    ),
+    r'direction': PropertySchema(
+      id: 3,
+      name: r'direction',
+      type: IsarType.string,
+    ),
+    r'txid': PropertySchema(
+      id: 4,
+      name: r'txid',
+      type: IsarType.string,
+    ),
+    r'vin': PropertySchema(
+      id: 5,
+      name: r'vin',
+      type: IsarType.long,
+    ),
+    r'vout': PropertySchema(
+      id: 6,
+      name: r'vout',
+      type: IsarType.long,
+    ),
+    r'walletId': PropertySchema(
+      id: 7,
+      name: r'walletId',
+      type: IsarType.string,
+    ),
+    r'walletIdAddress': PropertySchema(
+      id: 8,
+      name: r'walletIdAddress',
+      type: IsarType.string,
+    ),
+    r'walletIdTxid': PropertySchema(
+      id: 9,
+      name: r'walletIdTxid',
+      type: IsarType.string,
+    )
+  },
+  estimateSize: _transactionAddressEntityEstimateSize,
+  serialize: _transactionAddressEntitySerialize,
+  deserialize: _transactionAddressEntityDeserialize,
+  deserializeProp: _transactionAddressEntityDeserializeProp,
+  idName: r'id',
+  indexes: {
+    r'walletId': IndexSchema(
+      id: -1783113319798776304,
+      name: r'walletId',
+      unique: false,
+      replace: false,
+      properties: [
+        IndexPropertySchema(
+          name: r'walletId',
+          type: IndexType.hash,
+          caseSensitive: true,
+        )
+      ],
+    ),
+    r'txid': IndexSchema(
+      id: 7339874292043634331,
+      name: r'txid',
+      unique: false,
+      replace: false,
+      properties: [
+        IndexPropertySchema(
+          name: r'txid',
+          type: IndexType.hash,
+          caseSensitive: true,
+        )
+      ],
+    ),
+    r'address': IndexSchema(
+      id: -259407546592846288,
+      name: r'address',
+      unique: false,
+      replace: false,
+      properties: [
+        IndexPropertySchema(
+          name: r'address',
+          type: IndexType.hash,
+          caseSensitive: true,
+        )
+      ],
+    ),
+    r'direction': IndexSchema(
+      id: -4378097054569869819,
+      name: r'direction',
+      unique: false,
+      replace: false,
+      properties: [
+        IndexPropertySchema(
+          name: r'direction',
+          type: IndexType.hash,
+          caseSensitive: true,
+        )
+      ],
+    ),
+    r'walletIdAddress_address': IndexSchema(
+      id: -4045275986138552383,
+      name: r'walletIdAddress_address',
+      unique: false,
+      replace: false,
+      properties: [
+        IndexPropertySchema(
+          name: r'walletIdAddress',
+          type: IndexType.hash,
+          caseSensitive: true,
+        ),
+        IndexPropertySchema(
+          name: r'address',
+          type: IndexType.hash,
+          caseSensitive: true,
+        )
+      ],
+    ),
+    r'walletIdTxid_txid': IndexSchema(
+      id: 4199928552273787480,
+      name: r'walletIdTxid_txid',
+      unique: false,
+      replace: false,
+      properties: [
+        IndexPropertySchema(
+          name: r'walletIdTxid',
+          type: IndexType.hash,
+          caseSensitive: true,
+        ),
+        IndexPropertySchema(
+          name: r'txid',
+          type: IndexType.hash,
+          caseSensitive: true,
+        )
+      ],
+    )
+  },
+  links: {},
+  embeddedSchemas: {},
+  getId: _transactionAddressEntityGetId,
+  getLinks: _transactionAddressEntityGetLinks,
+  attach: _transactionAddressEntityAttach,
+  version: '3.1.0+1',
+);
+
+int _transactionAddressEntityEstimateSize(
+  TransactionAddressEntity object,
+  List<int> offsets,
+  Map<Type, List<int>> allOffsets,
+) {
+  var bytesCount = offsets.last;
+  bytesCount += 3 + object.address.length * 3;
+  bytesCount += 3 + object.amount.length * 3;
+  bytesCount += 3 + object.direction.length * 3;
+  bytesCount += 3 + object.txid.length * 3;
+  bytesCount += 3 + object.walletId.length * 3;
+  bytesCount += 3 + object.walletIdAddress.length * 3;
+  bytesCount += 3 + object.walletIdTxid.length * 3;
+  return bytesCount;
+}
+
+void _transactionAddressEntitySerialize(
+  TransactionAddressEntity object,
+  IsarWriter writer,
+  List<int> offsets,
+  Map<Type, List<int>> allOffsets,
+) {
+  writer.writeString(offsets[0], object.address);
+  writer.writeString(offsets[1], object.amount);
+  writer.writeDateTime(offsets[2], object.createdAt);
+  writer.writeString(offsets[3], object.direction);
+  writer.writeString(offsets[4], object.txid);
+  writer.writeLong(offsets[5], object.vin);
+  writer.writeLong(offsets[6], object.vout);
+  writer.writeString(offsets[7], object.walletId);
+  writer.writeString(offsets[8], object.walletIdAddress);
+  writer.writeString(offsets[9], object.walletIdTxid);
+}
+
+TransactionAddressEntity _transactionAddressEntityDeserialize(
+  Id id,
+  IsarReader reader,
+  List<int> offsets,
+  Map<Type, List<int>> allOffsets,
+) {
+  final object = TransactionAddressEntity();
+  object.address = reader.readString(offsets[0]);
+  object.amount = reader.readString(offsets[1]);
+  object.createdAt = reader.readDateTime(offsets[2]);
+  object.direction = reader.readString(offsets[3]);
+  object.id = id;
+  object.txid = reader.readString(offsets[4]);
+  object.vin = reader.readLongOrNull(offsets[5]);
+  object.vout = reader.readLongOrNull(offsets[6]);
+  object.walletId = reader.readString(offsets[7]);
+  object.walletIdAddress = reader.readString(offsets[8]);
+  object.walletIdTxid = reader.readString(offsets[9]);
+  return object;
+}
+
+P _transactionAddressEntityDeserializeProp<P>(
+  IsarReader reader,
+  int propertyId,
+  int offset,
+  Map<Type, List<int>> allOffsets,
+) {
+  switch (propertyId) {
+    case 0:
+      return (reader.readString(offset)) as P;
+    case 1:
+      return (reader.readString(offset)) as P;
+    case 2:
+      return (reader.readDateTime(offset)) as P;
+    case 3:
+      return (reader.readString(offset)) as P;
+    case 4:
+      return (reader.readString(offset)) as P;
+    case 5:
+      return (reader.readLongOrNull(offset)) as P;
+    case 6:
+      return (reader.readLongOrNull(offset)) as P;
+    case 7:
+      return (reader.readString(offset)) as P;
+    case 8:
+      return (reader.readString(offset)) as P;
+    case 9:
+      return (reader.readString(offset)) as P;
+    default:
+      throw IsarError('Unknown property with id $propertyId');
+  }
+}
+
+Id _transactionAddressEntityGetId(TransactionAddressEntity object) {
+  return object.id;
+}
+
+List<IsarLinkBase<dynamic>> _transactionAddressEntityGetLinks(
+    TransactionAddressEntity object) {
+  return [];
+}
+
+void _transactionAddressEntityAttach(
+    IsarCollection<dynamic> col, Id id, TransactionAddressEntity object) {
+  object.id = id;
+}
+
+extension TransactionAddressEntityQueryWhereSort on QueryBuilder<
+    TransactionAddressEntity, TransactionAddressEntity, QWhere> {
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterWhere>
+      anyId() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(const IdWhereClause.any());
+    });
+  }
+}
+
+extension TransactionAddressEntityQueryWhere on QueryBuilder<
+    TransactionAddressEntity, TransactionAddressEntity, QWhereClause> {
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterWhereClause> idEqualTo(Id id) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IdWhereClause.between(
+        lower: id,
+        upper: id,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterWhereClause> idNotEqualTo(Id id) {
+    return QueryBuilder.apply(this, (query) {
+      if (query.whereSort == Sort.asc) {
+        return query
+            .addWhereClause(
+              IdWhereClause.lessThan(upper: id, includeUpper: false),
+            )
+            .addWhereClause(
+              IdWhereClause.greaterThan(lower: id, includeLower: false),
+            );
+      } else {
+        return query
+            .addWhereClause(
+              IdWhereClause.greaterThan(lower: id, includeLower: false),
+            )
+            .addWhereClause(
+              IdWhereClause.lessThan(upper: id, includeUpper: false),
+            );
+      }
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterWhereClause> idGreaterThan(Id id, {bool include = false}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(
+        IdWhereClause.greaterThan(lower: id, includeLower: include),
+      );
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterWhereClause> idLessThan(Id id, {bool include = false}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(
+        IdWhereClause.lessThan(upper: id, includeUpper: include),
+      );
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterWhereClause> idBetween(
+    Id lowerId,
+    Id upperId, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IdWhereClause.between(
+        lower: lowerId,
+        includeLower: includeLower,
+        upper: upperId,
+        includeUpper: includeUpper,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterWhereClause> walletIdEqualTo(String walletId) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'walletId',
+        value: [walletId],
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterWhereClause> walletIdNotEqualTo(String walletId) {
+    return QueryBuilder.apply(this, (query) {
+      if (query.whereSort == Sort.asc) {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId',
+              lower: [],
+              upper: [walletId],
+              includeUpper: false,
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId',
+              lower: [walletId],
+              includeLower: false,
+              upper: [],
+            ));
+      } else {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId',
+              lower: [walletId],
+              includeLower: false,
+              upper: [],
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId',
+              lower: [],
+              upper: [walletId],
+              includeUpper: false,
+            ));
+      }
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterWhereClause> txidEqualTo(String txid) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'txid',
+        value: [txid],
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterWhereClause> txidNotEqualTo(String txid) {
+    return QueryBuilder.apply(this, (query) {
+      if (query.whereSort == Sort.asc) {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'txid',
+              lower: [],
+              upper: [txid],
+              includeUpper: false,
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'txid',
+              lower: [txid],
+              includeLower: false,
+              upper: [],
+            ));
+      } else {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'txid',
+              lower: [txid],
+              includeLower: false,
+              upper: [],
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'txid',
+              lower: [],
+              upper: [txid],
+              includeUpper: false,
+            ));
+      }
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterWhereClause> addressEqualTo(String address) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'address',
+        value: [address],
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterWhereClause> addressNotEqualTo(String address) {
+    return QueryBuilder.apply(this, (query) {
+      if (query.whereSort == Sort.asc) {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'address',
+              lower: [],
+              upper: [address],
+              includeUpper: false,
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'address',
+              lower: [address],
+              includeLower: false,
+              upper: [],
+            ));
+      } else {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'address',
+              lower: [address],
+              includeLower: false,
+              upper: [],
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'address',
+              lower: [],
+              upper: [address],
+              includeUpper: false,
+            ));
+      }
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterWhereClause> directionEqualTo(String direction) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'direction',
+        value: [direction],
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterWhereClause> directionNotEqualTo(String direction) {
+    return QueryBuilder.apply(this, (query) {
+      if (query.whereSort == Sort.asc) {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'direction',
+              lower: [],
+              upper: [direction],
+              includeUpper: false,
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'direction',
+              lower: [direction],
+              includeLower: false,
+              upper: [],
+            ));
+      } else {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'direction',
+              lower: [direction],
+              includeLower: false,
+              upper: [],
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'direction',
+              lower: [],
+              upper: [direction],
+              includeUpper: false,
+            ));
+      }
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+          QAfterWhereClause>
+      walletIdAddressEqualToAnyAddress(String walletIdAddress) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'walletIdAddress_address',
+        value: [walletIdAddress],
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+          QAfterWhereClause>
+      walletIdAddressNotEqualToAnyAddress(String walletIdAddress) {
+    return QueryBuilder.apply(this, (query) {
+      if (query.whereSort == Sort.asc) {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletIdAddress_address',
+              lower: [],
+              upper: [walletIdAddress],
+              includeUpper: false,
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletIdAddress_address',
+              lower: [walletIdAddress],
+              includeLower: false,
+              upper: [],
+            ));
+      } else {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletIdAddress_address',
+              lower: [walletIdAddress],
+              includeLower: false,
+              upper: [],
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletIdAddress_address',
+              lower: [],
+              upper: [walletIdAddress],
+              includeUpper: false,
+            ));
+      }
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+          QAfterWhereClause>
+      walletIdAddressAddressEqualTo(String walletIdAddress, String address) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'walletIdAddress_address',
+        value: [walletIdAddress, address],
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+          QAfterWhereClause>
+      walletIdAddressEqualToAddressNotEqualTo(
+          String walletIdAddress, String address) {
+    return QueryBuilder.apply(this, (query) {
+      if (query.whereSort == Sort.asc) {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletIdAddress_address',
+              lower: [walletIdAddress],
+              upper: [walletIdAddress, address],
+              includeUpper: false,
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletIdAddress_address',
+              lower: [walletIdAddress, address],
+              includeLower: false,
+              upper: [walletIdAddress],
+            ));
+      } else {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletIdAddress_address',
+              lower: [walletIdAddress, address],
+              includeLower: false,
+              upper: [walletIdAddress],
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletIdAddress_address',
+              lower: [walletIdAddress],
+              upper: [walletIdAddress, address],
+              includeUpper: false,
+            ));
+      }
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterWhereClause> walletIdTxidEqualToAnyTxid(String walletIdTxid) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'walletIdTxid_txid',
+        value: [walletIdTxid],
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterWhereClause> walletIdTxidNotEqualToAnyTxid(String walletIdTxid) {
+    return QueryBuilder.apply(this, (query) {
+      if (query.whereSort == Sort.asc) {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletIdTxid_txid',
+              lower: [],
+              upper: [walletIdTxid],
+              includeUpper: false,
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletIdTxid_txid',
+              lower: [walletIdTxid],
+              includeLower: false,
+              upper: [],
+            ));
+      } else {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletIdTxid_txid',
+              lower: [walletIdTxid],
+              includeLower: false,
+              upper: [],
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletIdTxid_txid',
+              lower: [],
+              upper: [walletIdTxid],
+              includeUpper: false,
+            ));
+      }
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+          QAfterWhereClause>
+      walletIdTxidTxidEqualTo(String walletIdTxid, String txid) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'walletIdTxid_txid',
+        value: [walletIdTxid, txid],
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+          QAfterWhereClause>
+      walletIdTxidEqualToTxidNotEqualTo(String walletIdTxid, String txid) {
+    return QueryBuilder.apply(this, (query) {
+      if (query.whereSort == Sort.asc) {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletIdTxid_txid',
+              lower: [walletIdTxid],
+              upper: [walletIdTxid, txid],
+              includeUpper: false,
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletIdTxid_txid',
+              lower: [walletIdTxid, txid],
+              includeLower: false,
+              upper: [walletIdTxid],
+            ));
+      } else {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletIdTxid_txid',
+              lower: [walletIdTxid, txid],
+              includeLower: false,
+              upper: [walletIdTxid],
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletIdTxid_txid',
+              lower: [walletIdTxid],
+              upper: [walletIdTxid, txid],
+              includeUpper: false,
+            ));
+      }
+    });
+  }
+}
+
+extension TransactionAddressEntityQueryFilter on QueryBuilder<
+    TransactionAddressEntity, TransactionAddressEntity, QFilterCondition> {
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> addressEqualTo(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'address',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> addressGreaterThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'address',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> addressLessThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'address',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> addressBetween(
+    String lower,
+    String upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'address',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> addressStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'address',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> addressEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'address',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+          QAfterFilterCondition>
+      addressContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'address',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+          QAfterFilterCondition>
+      addressMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'address',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> addressIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'address',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> addressIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'address',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> amountEqualTo(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'amount',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> amountGreaterThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'amount',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> amountLessThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'amount',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> amountBetween(
+    String lower,
+    String upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'amount',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> amountStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'amount',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> amountEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'amount',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+          QAfterFilterCondition>
+      amountContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'amount',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+          QAfterFilterCondition>
+      amountMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'amount',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> amountIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'amount',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> amountIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'amount',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> createdAtEqualTo(DateTime value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'createdAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> createdAtGreaterThan(
+    DateTime value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'createdAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> createdAtLessThan(
+    DateTime value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'createdAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> createdAtBetween(
+    DateTime lower,
+    DateTime upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'createdAt',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> directionEqualTo(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'direction',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> directionGreaterThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'direction',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> directionLessThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'direction',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> directionBetween(
+    String lower,
+    String upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'direction',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> directionStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'direction',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> directionEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'direction',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+          QAfterFilterCondition>
+      directionContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'direction',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+          QAfterFilterCondition>
+      directionMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'direction',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> directionIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'direction',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> directionIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'direction',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> idEqualTo(Id value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'id',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> idGreaterThan(
+    Id value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'id',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> idLessThan(
+    Id value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'id',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> idBetween(
+    Id lower,
+    Id upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'id',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> txidEqualTo(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'txid',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> txidGreaterThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'txid',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> txidLessThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'txid',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> txidBetween(
+    String lower,
+    String upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'txid',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> txidStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'txid',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> txidEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'txid',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+          QAfterFilterCondition>
+      txidContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'txid',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+          QAfterFilterCondition>
+      txidMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'txid',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> txidIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'txid',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> txidIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'txid',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> vinIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'vin',
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> vinIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'vin',
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> vinEqualTo(int? value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'vin',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> vinGreaterThan(
+    int? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'vin',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> vinLessThan(
+    int? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'vin',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> vinBetween(
+    int? lower,
+    int? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'vin',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> voutIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'vout',
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> voutIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'vout',
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> voutEqualTo(int? value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'vout',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> voutGreaterThan(
+    int? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'vout',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> voutLessThan(
+    int? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'vout',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> voutBetween(
+    int? lower,
+    int? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'vout',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> walletIdEqualTo(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'walletId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> walletIdGreaterThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'walletId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> walletIdLessThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'walletId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> walletIdBetween(
+    String lower,
+    String upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'walletId',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> walletIdStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'walletId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> walletIdEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'walletId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+          QAfterFilterCondition>
+      walletIdContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'walletId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+          QAfterFilterCondition>
+      walletIdMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'walletId',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> walletIdIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'walletId',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> walletIdIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'walletId',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> walletIdAddressEqualTo(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'walletIdAddress',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> walletIdAddressGreaterThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'walletIdAddress',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> walletIdAddressLessThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'walletIdAddress',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> walletIdAddressBetween(
+    String lower,
+    String upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'walletIdAddress',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> walletIdAddressStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'walletIdAddress',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> walletIdAddressEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'walletIdAddress',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+          QAfterFilterCondition>
+      walletIdAddressContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'walletIdAddress',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+          QAfterFilterCondition>
+      walletIdAddressMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'walletIdAddress',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> walletIdAddressIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'walletIdAddress',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> walletIdAddressIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'walletIdAddress',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> walletIdTxidEqualTo(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'walletIdTxid',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> walletIdTxidGreaterThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'walletIdTxid',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> walletIdTxidLessThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'walletIdTxid',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> walletIdTxidBetween(
+    String lower,
+    String upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'walletIdTxid',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> walletIdTxidStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'walletIdTxid',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> walletIdTxidEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'walletIdTxid',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+          QAfterFilterCondition>
+      walletIdTxidContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'walletIdTxid',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+          QAfterFilterCondition>
+      walletIdTxidMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'walletIdTxid',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> walletIdTxidIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'walletIdTxid',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity,
+      QAfterFilterCondition> walletIdTxidIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'walletIdTxid',
+        value: '',
+      ));
+    });
+  }
+}
+
+extension TransactionAddressEntityQueryObject on QueryBuilder<
+    TransactionAddressEntity, TransactionAddressEntity, QFilterCondition> {}
+
+extension TransactionAddressEntityQueryLinks on QueryBuilder<
+    TransactionAddressEntity, TransactionAddressEntity, QFilterCondition> {}
+
+extension TransactionAddressEntityQuerySortBy on QueryBuilder<
+    TransactionAddressEntity, TransactionAddressEntity, QSortBy> {
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterSortBy>
+      sortByAddress() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'address', Sort.asc);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterSortBy>
+      sortByAddressDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'address', Sort.desc);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterSortBy>
+      sortByAmount() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'amount', Sort.asc);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterSortBy>
+      sortByAmountDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'amount', Sort.desc);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterSortBy>
+      sortByCreatedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'createdAt', Sort.asc);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterSortBy>
+      sortByCreatedAtDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'createdAt', Sort.desc);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterSortBy>
+      sortByDirection() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'direction', Sort.asc);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterSortBy>
+      sortByDirectionDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'direction', Sort.desc);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterSortBy>
+      sortByTxid() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'txid', Sort.asc);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterSortBy>
+      sortByTxidDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'txid', Sort.desc);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterSortBy>
+      sortByVin() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'vin', Sort.asc);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterSortBy>
+      sortByVinDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'vin', Sort.desc);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterSortBy>
+      sortByVout() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'vout', Sort.asc);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterSortBy>
+      sortByVoutDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'vout', Sort.desc);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterSortBy>
+      sortByWalletId() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'walletId', Sort.asc);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterSortBy>
+      sortByWalletIdDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'walletId', Sort.desc);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterSortBy>
+      sortByWalletIdAddress() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'walletIdAddress', Sort.asc);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterSortBy>
+      sortByWalletIdAddressDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'walletIdAddress', Sort.desc);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterSortBy>
+      sortByWalletIdTxid() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'walletIdTxid', Sort.asc);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterSortBy>
+      sortByWalletIdTxidDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'walletIdTxid', Sort.desc);
+    });
+  }
+}
+
+extension TransactionAddressEntityQuerySortThenBy on QueryBuilder<
+    TransactionAddressEntity, TransactionAddressEntity, QSortThenBy> {
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterSortBy>
+      thenByAddress() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'address', Sort.asc);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterSortBy>
+      thenByAddressDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'address', Sort.desc);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterSortBy>
+      thenByAmount() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'amount', Sort.asc);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterSortBy>
+      thenByAmountDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'amount', Sort.desc);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterSortBy>
+      thenByCreatedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'createdAt', Sort.asc);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterSortBy>
+      thenByCreatedAtDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'createdAt', Sort.desc);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterSortBy>
+      thenByDirection() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'direction', Sort.asc);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterSortBy>
+      thenByDirectionDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'direction', Sort.desc);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterSortBy>
+      thenById() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'id', Sort.asc);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterSortBy>
+      thenByIdDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'id', Sort.desc);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterSortBy>
+      thenByTxid() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'txid', Sort.asc);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterSortBy>
+      thenByTxidDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'txid', Sort.desc);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterSortBy>
+      thenByVin() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'vin', Sort.asc);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterSortBy>
+      thenByVinDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'vin', Sort.desc);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterSortBy>
+      thenByVout() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'vout', Sort.asc);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterSortBy>
+      thenByVoutDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'vout', Sort.desc);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterSortBy>
+      thenByWalletId() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'walletId', Sort.asc);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterSortBy>
+      thenByWalletIdDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'walletId', Sort.desc);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterSortBy>
+      thenByWalletIdAddress() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'walletIdAddress', Sort.asc);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterSortBy>
+      thenByWalletIdAddressDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'walletIdAddress', Sort.desc);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterSortBy>
+      thenByWalletIdTxid() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'walletIdTxid', Sort.asc);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterSortBy>
+      thenByWalletIdTxidDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'walletIdTxid', Sort.desc);
+    });
+  }
+}
+
+extension TransactionAddressEntityQueryWhereDistinct on QueryBuilder<
+    TransactionAddressEntity, TransactionAddressEntity, QDistinct> {
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QDistinct>
+      distinctByAddress({bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'address', caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QDistinct>
+      distinctByAmount({bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'amount', caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QDistinct>
+      distinctByCreatedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'createdAt');
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QDistinct>
+      distinctByDirection({bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'direction', caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QDistinct>
+      distinctByTxid({bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'txid', caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QDistinct>
+      distinctByVin() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'vin');
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QDistinct>
+      distinctByVout() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'vout');
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QDistinct>
+      distinctByWalletId({bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'walletId', caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QDistinct>
+      distinctByWalletIdAddress({bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'walletIdAddress',
+          caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QDistinct>
+      distinctByWalletIdTxid({bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'walletIdTxid', caseSensitive: caseSensitive);
+    });
+  }
+}
+
+extension TransactionAddressEntityQueryProperty on QueryBuilder<
+    TransactionAddressEntity, TransactionAddressEntity, QQueryProperty> {
+  QueryBuilder<TransactionAddressEntity, int, QQueryOperations> idProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'id');
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, String, QQueryOperations>
+      addressProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'address');
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, String, QQueryOperations>
+      amountProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'amount');
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, DateTime, QQueryOperations>
+      createdAtProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'createdAt');
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, String, QQueryOperations>
+      directionProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'direction');
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, String, QQueryOperations>
+      txidProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'txid');
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, int?, QQueryOperations> vinProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'vin');
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, int?, QQueryOperations>
+      voutProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'vout');
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, String, QQueryOperations>
+      walletIdProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'walletId');
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, String, QQueryOperations>
+      walletIdAddressProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'walletIdAddress');
+    });
+  }
+
+  QueryBuilder<TransactionAddressEntity, String, QQueryOperations>
+      walletIdTxidProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'walletIdTxid');
     });
   }
 }

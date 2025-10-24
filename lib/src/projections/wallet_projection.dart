@@ -1,9 +1,13 @@
 import 'package:eventador/eventador.dart';
+import 'package:dartsv/dartsv.dart' as dartsv;
+import 'package:libspiffy/src/services/script_type_registry.dart';
 import '../core/wallet_events.dart';
 import '../models/wallet_event.dart';
 import '../models/wallet_read_model.dart';
 import '../models/bitcoin_utxo.dart';
 import '../models/bitcoin_transaction.dart';
+import '../models/address_metadata.dart';
+import '../models/transaction_address_link.dart';
 import '../storage/read_model_storage.dart';
 
 /// Wallet projection that builds read models from wallet events
@@ -42,6 +46,7 @@ class WalletProjection extends Projection<WalletReadModel> {
         WalletCreatedEvent,
         WalletConfigurationUpdatedEvent,
         AddressGeneratedEvent,
+        AddressDiscoveredEvent,
         AddressLabelUpdatedEvent,
         UTXOReceivedEvent,
         UTXOSpentEvent,
@@ -84,6 +89,9 @@ class WalletProjection extends Projection<WalletReadModel> {
         case AddressGeneratedEvent:
           await _handleAddressGenerated(event as AddressGeneratedEvent);
           return true;
+        case AddressDiscoveredEvent:
+          await _handleAddressDiscovered(event as AddressDiscoveredEvent);
+          return true;
         case AddressLabelUpdatedEvent:
           // Label updates don't affect read model statistics
           return true;
@@ -121,6 +129,10 @@ class WalletProjection extends Projection<WalletReadModel> {
   }
   
   Future<void> _handleWalletCreated(WalletCreatedEvent event) async {
+    print('[WalletProjection] 🆕 Processing WalletCreatedEvent: ${event.walletName}');
+    print('[WalletProjection]    Wallet ID: ${event.walletId}');
+    print('[WalletProjection]    Root address: ${event.rootAddress}');
+    
     _readModel = WalletReadModel(
       walletId: event.walletId,
       name: event.walletName,
@@ -140,6 +152,33 @@ class WalletProjection extends Projection<WalletReadModel> {
       metadata: event.walletMetadata ?? {},
     );
     
+    // CRITICAL: Persist the root address to AddressEntity
+    // The root address is the first receiving address (m/0/0) and must be queryable
+    print('[WalletProjection]    → Persisting root address to AddressEntity...');
+    _addresses.add(event.rootAddress);
+    
+    final rootAddressMetadata = AddressMetadata(
+      address: event.rootAddress,
+      scriptType: 'p2pkh',
+      derivationPath: 'm/0/0', // First receiving address
+      derivationIndex: 0,
+      isChange: false,
+      label: 'Root address (m/0/0)',
+      purpose: 'receive',
+      firstUsedAt: null,
+      lastUsedAt: null,
+      usageCount: 0,
+      balance: BigInt.zero,
+      createdAt: event.timestamp,
+      isWatched: true,
+    );
+    
+    await _storage.upsertAddress(event.walletId, rootAddressMetadata);
+    print('[WalletProjection]    ✅ Root address persisted to AddressEntity');
+    
+    // Update address count in read model
+    _readModel = _readModel.copyWith(addressCount: 1);
+    
     // Persist to storage
     await _persistReadModel();
   }
@@ -157,7 +196,29 @@ class WalletProjection extends Projection<WalletReadModel> {
   }
   
   Future<void> _handleAddressGenerated(AddressGeneratedEvent event) async {
+    print('[WalletProjection] 📍 Processing AddressGeneratedEvent: ${event.address}');
+    
     _addresses.add(event.address);
+    
+    // Store address in AddressEntity for efficient lookup
+    final metadata = AddressMetadata(
+      address: event.address,
+      scriptType: 'p2pkh', // Standard HD wallet addresses are P2PKH
+      derivationPath: null, // AddressGeneratedEvent doesn't include derivation path
+      derivationIndex: event.derivationIndex,
+      isChange: event.purpose == 'change',
+      label: event.label,
+      purpose: event.purpose ?? 'receive',
+      firstUsedAt: null,
+      lastUsedAt: null,
+      usageCount: 0,
+      balance: BigInt.zero,
+      createdAt: event.timestamp,
+      isWatched: true,
+    );
+    
+    await _storage.upsertAddress(_readModel.walletId, metadata);
+    print('[WalletProjection]    ✅ Address stored in AddressEntity');
     
     _readModel = _readModel.copyWith(
       addressCount: _addresses.length,
@@ -167,8 +228,64 @@ class WalletProjection extends Projection<WalletReadModel> {
     await _persistReadModel();
   }
   
+  Future<void> _handleAddressDiscovered(AddressDiscoveredEvent event) async {
+    print('[WalletProjection] 📍 Processing AddressDiscoveredEvent: ${event.address}');
+    print('[WalletProjection]    Wallet: ${_readModel.walletId}');
+    print('[WalletProjection]    Index: ${event.derivationIndex}, Change: ${event.isChange}, Txs: ${event.transactionCount}');
+    
+    _addresses.add(event.address);
+    print('[WalletProjection]    → Address added to in-memory set (total: ${_addresses.length})');
+    
+    // Store discovered address in AddressEntity
+    print('[WalletProjection]    → Creating AddressMetadata...');
+    final metadata = AddressMetadata(
+      address: event.address,
+      scriptType: 'p2pkh', // Discovered addresses are typically P2PKH
+      derivationPath: null,
+      derivationIndex: event.derivationIndex,
+      isChange: event.isChange,
+      label: 'Imported (${event.isChange ? 'change' : 'receive'} #${event.derivationIndex})',
+      purpose: event.isChange ? 'change' : 'receive',
+      firstUsedAt: null,
+      lastUsedAt: null,
+      usageCount: event.transactionCount,
+      balance: BigInt.zero,
+      createdAt: event.timestamp,
+      isWatched: true,
+    );
+    
+    print('[WalletProjection]    → Calling storage.upsertAddress()...');
+    await _storage.upsertAddress(_readModel.walletId, metadata);
+    print('[WalletProjection]    ✅ Address persisted to AddressEntity in Isar');
+    
+    print('[WalletProjection]    → Updating read model (addressCount: ${_addresses.length})...');
+    _readModel = _readModel.copyWith(
+      addressCount: _addresses.length,
+      lastUpdated: event.timestamp,
+    );
+    
+    print('[WalletProjection]    → Persisting read model to WalletMetadataEntity...');
+    await _persistReadModel();
+    print('[WalletProjection]    ✅ AddressDiscoveredEvent processing complete!');
+  }
+  
   Future<void> _handleUTXOReceived(UTXOReceivedEvent event) async {
     print('[WalletProjection] 📥 Processing UTXOReceivedEvent: ${event.txid}:${event.vout} (${event.satoshis} sats)');
+    print('[WalletProjection]    Wallet: ${_readModel.walletId}');
+    print('[WalletProjection]    Address: ${event.address}');
+    print('[WalletProjection]    Block Height: ${event.blockHeight}');
+    
+    // Update address usage statistics
+    if (event.address.isNotEmpty) {
+      await _storage.updateAddressUsage(
+        _readModel.walletId,
+        event.address,
+        usedAt: event.timestamp,
+        balanceDelta: BigInt.from(event.satoshis),
+      );
+      print('[WalletProjection]    ✅ Address usage updated: ${event.address}');
+    }
+    
     final utxoKey = '${event.txid}:${event.vout}';
     final utxo = BitcoinUtxo.create(
       txid: event.txid,
@@ -181,9 +298,11 @@ class WalletProjection extends Projection<WalletReadModel> {
     );
     
     _utxos[utxoKey] = utxo;
-    print('[WalletProjection]    → UTXO added to in-memory cache, total UTXOs: ${_utxos.length}');
+    print('[WalletProjection]    → UTXO added to in-memory cache');
+    print('[WalletProjection]    → Total UTXOs in cache: ${_utxos.length}');
+    print('[WalletProjection]    → UTXO keys: ${_utxos.keys.toList()}');
     await _recalculateAndPersist(event.timestamp);
-    print('[WalletProjection]    ✅ UTXO persisted to Isar');
+    print('[WalletProjection]    ✅ UTXO persist cycle complete');
   }
   
   Future<void> _handleUTXOSpent(UTXOSpentEvent event) async {
@@ -283,21 +402,38 @@ class WalletProjection extends Projection<WalletReadModel> {
   /// Persist read model to storage (Isar)
   Future<void> _persistReadModel() async {
     try {
+      print('[WalletProjection] 💾 Persisting read model to Isar...');
+      print('[WalletProjection]    Wallet: ${_readModel.walletId}');
+      print('[WalletProjection]    Balance: ${_readModel.totalBalance} sats');
+      print('[WalletProjection]    UTXO count to persist: ${_utxos.length}');
+      
       // Store wallet metadata in read model storage
       await _storage.storeWallet(
         _readModel.walletId,
         _readModel.name,
         rootAddress: _readModel.rootAddress,
         networkType: _readModel.networkType,
-        metadata: _readModel.metadata,
+        metadata: {
+          ..._readModel.metadata,
+          'confirmedBalance': _readModel.confirmedBalance.toString(),
+          'unconfirmedBalance': _readModel.unconfirmedBalance.toString(),
+          'totalBalance': _readModel.totalBalance.toString(),
+          'addressCount': _readModel.addressCount,
+          'utxoCount': _readModel.utxoCount,
+          'availableUtxoCount': _readModel.availableUtxoCount,
+        },
       );
+      print('[WalletProjection]    ✅ Wallet metadata persisted');
       
       // Persist all UTXOs to storage
       for (final utxo in _utxos.values) {
+        print('[WalletProjection]    → Persisting UTXO: ${utxo.txid}:${utxo.vout} (${utxo.satoshis} sats)');
         await _storage.upsertUTXO(_readModel.walletId, utxo);
       }
-    } catch (e) {
-      print('Error persisting wallet read model: $e');
+      print('[WalletProjection]    ✅ All ${_utxos.length} UTXOs persisted to Isar');
+    } catch (e, stackTrace) {
+      print('[WalletProjection] ❌ Error persisting wallet read model: $e');
+      print('[WalletProjection] Stack trace: $stackTrace');
       rethrow;
     }
   }
@@ -355,6 +491,14 @@ class WalletProjection extends Projection<WalletReadModel> {
       print('[WalletProjection]       Net amount for wallet: ${netAmount} sats (${isIncoming ? "INCOMING" : "OUTGOING"})');
       await _storage.storeTransaction(_readModel.walletId, transaction);
       print('[WalletProjection]    ✅ Transaction persisted to Isar');
+      
+      // Create junction table records for efficient address-centric queries
+      await _createTransactionAddressJunctions(
+        event.txid,
+        event.walletReceivingAddresses,
+        event.sendingAddresses,
+        transaction,
+      );
     } catch (e, stackTrace) {
       print('[WalletProjection]    ❌ Failed to store transaction: $e');
       print('[WalletProjection]    Stack trace: $stackTrace');
@@ -413,10 +557,124 @@ class WalletProjection extends Projection<WalletReadModel> {
       print('[WalletProjection]       Net amount for wallet: $netAmount sats (${event.isOutgoing ? "SENT" : "RECEIVED"})');
       await _storage.storeTransaction(_readModel.walletId, transaction);
       print('[WalletProjection]    ✅ Transaction persisted to Isar');
+      
+      // Create junction table records
+      await _createTransactionAddressJunctions(
+        event.txid,
+        event.receivingAddresses,
+        event.sendingAddresses,
+        transaction,
+      );
     } catch (e, stackTrace) {
       print('[WalletProjection]    ❌ Failed to store transaction: $e');
       print('[WalletProjection]    Stack trace: $stackTrace');
       rethrow;
+    }
+  }
+
+  Future<void> _createTransactionAddressJunctions(
+    String txid,
+    List<String> receivingAddresses,
+    List<String> sendingAddresses,
+    BitcoinTransaction transaction,
+  ) async {
+    final links = <TransactionAddressLink>[];
+    
+    // Create registry once for all outputs
+    final scriptTypeRegistry = ScriptTypeRegistry();
+    
+    // Parse transaction to get exact amounts per address
+    final parsedTx = dartsv.Transaction.fromHex(transaction.rawHex);
+    
+    // Add output links (receiving addresses)
+    for (int i = 0; i < parsedTx.outputs.length; i++) {
+      final output = parsedTx.outputs[i];
+      
+      try {
+        final script = dartsv.SVScript.fromHex(output.script.toHex());
+        
+        // Use the registry to extract metadata for ANY script type
+        final metadata = scriptTypeRegistry.extractScriptMetadata(script);
+        
+        if (metadata != null) {
+          // Extract identifier and script type
+          final destination = _extractPaymentDestination(metadata, script);
+          
+          if (destination != null) {
+            final (outputDestination, scriptType) = destination;
+            
+            // Check if this destination is in our receiving addresses
+            if (receivingAddresses.contains(outputDestination)) {
+              links.add(TransactionAddressLink(
+                address: outputDestination,
+                direction: 'output',
+                amount: output.satoshis,
+                vout: i,
+              ));
+            }
+          }
+        }
+      } catch (e) {
+        print('[WalletProjection] Failed to extract destination from output $i: $e');
+        continue;
+      }
+    }
+    
+    // Add input links (sending addresses)
+    for (int i = 0; i < sendingAddresses.length && i < parsedTx.inputs.length; i++) {
+      final sendingAddress = sendingAddresses[i];
+      links.add(TransactionAddressLink(
+        address: sendingAddress,
+        direction: 'input',
+        amount: BigInt.zero, // Would need parent tx to get exact amount
+        vin: i,
+      ));
+    }
+    
+    await _storage.storeTransactionAddresses(_readModel.walletId, txid, links);
+    print('[WalletProjection]    ✅ Created ${links.length} transaction-address junction records');
+  }
+  
+  /// Extract a canonical payment destination identifier from script metadata
+  /// Returns (identifier, scriptType) tuple or null if not extractable
+  (String, String)? _extractPaymentDestination(
+    Map<String, dynamic> metadata,
+    dartsv.SVScript script,
+  ) {
+    final scriptType = metadata['scriptType'] as String?;
+    
+    switch (scriptType?.toLowerCase()) {
+      case 'p2pkh':
+      case 'p2pk':
+        // These have standard addresses
+        final address = metadata['address'] as String?;
+        return address != null ? (address, scriptType!) : null;
+        
+      case 'p2ms':
+        // Multisig: concatenate sorted public keys for deterministic identifier
+        final publicKeys = metadata['publicKeys'] as List?;
+        if (publicKeys != null && publicKeys.isNotEmpty) {
+          final sortedKeys = (publicKeys.cast<String>()..sort());
+          final identifier = 'multisig:${sortedKeys.join(':')}';
+          return (identifier, 'p2ms');
+        }
+        return null;
+        
+      case 'p2sh':
+        // P2SH: use script hash as identifier
+        final scriptHash = metadata['scriptHash'] as String?;
+        return scriptHash != null ? ('scripthash:$scriptHash', 'p2sh') : null;
+        
+      case 'opreturn':
+      case 'op_return':
+        // OP_RETURN outputs are not spendable, skip
+        return null;
+        
+      default:
+        // Unknown/custom script: use script hex hash
+        final scriptHex = script.toHex();
+        final identifier = 'script:${scriptHex.hashCode.toRadixString(16)}';
+        return (identifier, 'custom');
     }
   }
   

@@ -1,8 +1,11 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:isar/isar.dart';
 import 'package:spiffynode/spiffy_node.dart';
 import '../models/bitcoin_utxo.dart';
 import '../models/bitcoin_transaction.dart';
+import '../models/address_metadata.dart';
+import '../models/transaction_address_link.dart';
 import '../actors/invoice_messages.dart';
 import 'read_model_storage.dart';
 import 'libspiffy_schemas.dart';
@@ -47,31 +50,394 @@ class IsarWalletStorage implements ReadModelStorage {
     String? networkType,
     Map<String, dynamic>? metadata,
   }) async {
-    // For now, wallet metadata is stored in WalletEntity which is managed by aggregates
-    // This method can be extended to store denormalized wallet metadata for queries
-    // TODO: Consider adding a separate WalletMetadataEntity if needed for projections
+    await _isar.writeTxn(() async {
+      var entity = await _isar.walletMetadataEntitys
+          .filter()
+          .walletIdEqualTo(walletId)
+          .findFirst();
+      
+      if (entity == null) {
+        entity = WalletMetadataEntity()
+          ..walletId = walletId
+          ..name = name
+          ..walletType = metadata?['walletType'] as String? ?? 'hd'
+          ..network = networkType ?? 'mainnet'
+          ..rootAddress = rootAddress
+          ..derivationIndex = metadata?['derivationIndex'] as int? ?? 0
+          ..isCreated = true
+          ..createdAt = DateTime.now()
+          ..lastAccessedAt = DateTime.now()
+          ..metadataJson = _encodeJson(metadata ?? {})
+          ..aggregateVersion = metadata?['aggregateVersion'] as int? ?? 0
+          ..confirmedBalance = metadata?['confirmedBalance'] as String? ?? '0'
+          ..unconfirmedBalance = metadata?['unconfirmedBalance'] as String? ?? '0'
+          ..addressesJson = metadata?['addressesJson'] as String? ?? ''
+          ..publicKeysJson = metadata?['publicKeysJson'] as String? ?? '';
+      } else {
+        entity.name = name;
+        entity.network = networkType ?? entity.network;
+        if (rootAddress != null) entity.rootAddress = rootAddress;
+        entity.lastAccessedAt = DateTime.now();
+        
+        // Update balances and metadata if provided
+        if (metadata != null) {
+          // Update balance fields
+          if (metadata.containsKey('confirmedBalance')) {
+            entity.confirmedBalance = metadata['confirmedBalance'] as String;
+          }
+          if (metadata.containsKey('unconfirmedBalance')) {
+            entity.unconfirmedBalance = metadata['unconfirmedBalance'] as String;
+          }
+          
+          // Merge new metadata with existing metadata
+          final existingMeta = _decodeJson(entity.metadataJson);
+          existingMeta.addAll(metadata);
+          entity.metadataJson = _encodeJson(existingMeta);
+        }
+      }
+      
+      await _isar.walletMetadataEntitys.put(entity);
+    });
   }
   
   @override
   Future<Map<String, dynamic>?> getWallet(String walletId) async {
-    // TODO: Implement wallet metadata query if needed
-    // For now, return null as wallet metadata is managed by aggregates
-    return null;
+    final entity = await _isar.walletMetadataEntitys
+        .filter()
+        .walletIdEqualTo(walletId)
+        .findFirst();
+    
+    if (entity == null) return null;
+    
+    return {
+      'walletId': entity.walletId,
+      'name': entity.name,
+      'walletType': entity.walletType,
+      'network': entity.network,
+      'rootAddress': entity.rootAddress,
+      'derivationIndex': entity.derivationIndex,
+      'isCreated': entity.isCreated,
+      'createdAt': entity.createdAt.toIso8601String(),
+      'lastAccessedAt': entity.lastAccessedAt.toIso8601String(),
+      'confirmedBalance': entity.confirmedBalance,
+      'unconfirmedBalance': entity.unconfirmedBalance,
+      'metadata': _decodeJson(entity.metadataJson),
+    };
   }
   
   @override
   Future<List<String>> listWallets() async {
-    // TODO: Implement wallet listing if needed
-    // For now, return empty list
-    return [];
+    final entities = await _isar.walletMetadataEntitys
+        .where()
+        .sortByCreatedAtDesc()
+        .findAll();
+    
+    return entities.map((e) => e.walletId).toList();
   }
   
   @override
   Future<List<String>> getWalletAddresses(String walletId) async {
-    // Get unique addresses from UTXO records
-    final utxos = await getAvailableUTXOs(walletId);
-    final addresses = utxos.map((u) => u.address).toSet().toList();
+    final addresses = await _isar.addressEntitys
+        .filter()
+        .walletIdEqualTo(walletId)
+        .addressProperty()
+        .findAll();
     return addresses;
+  }
+
+  // ========================================
+  // Address Management
+  // ========================================
+
+  @override
+  Future<bool> isWalletAddress(String walletId, String address) async {
+    final count = await _isar.addressEntitys
+        .filter()
+        .walletIdEqualTo(walletId)
+        .and()
+        .addressEqualTo(address)
+        .count();
+    
+    // Debug logging for address lookup
+    if (count == 0) {
+      // Check how many addresses exist for this wallet
+      final totalAddresses = await _isar.addressEntitys
+          .filter()
+          .walletIdEqualTo(walletId)
+          .count();
+      print('[IsarWalletStorage] Address lookup: $address NOT found (wallet has $totalAddresses addresses)');
+    } else {
+      print('[IsarWalletStorage] Address lookup: $address FOUND in wallet');
+    }
+    
+    return count > 0;
+  }
+
+  @override
+  Future<AddressMetadata?> getAddressMetadata(String walletId, String address) async {
+    final entity = await _isar.addressEntitys
+        .filter()
+        .walletIdEqualTo(walletId)
+        .and()
+        .addressEqualTo(address)
+        .findFirst();
+    
+    return entity != null ? AddressMetadata.fromEntity(entity) : null;
+  }
+
+  @override
+  Future<Map<String, bool>> checkAddresses(String walletId, List<String> addresses) async {
+    final result = <String, bool>{};
+    
+    // Batch query using 'in' filter
+    final foundAddresses = await _isar.addressEntitys
+        .filter()
+        .walletIdEqualTo(walletId)
+        .and()
+        .anyOf(addresses, (q, address) => q.addressEqualTo(address))
+        .addressProperty()
+        .findAll();
+    
+    final foundSet = foundAddresses.toSet();
+    for (final address in addresses) {
+      result[address] = foundSet.contains(address);
+    }
+    
+    return result;
+  }
+
+  @override
+  Future<List<AddressMetadata>> getAddressesWithMetadata(
+    String walletId, {
+    bool? includeUnused,
+    bool? isChange,
+    int? limit,
+    int? offset,
+  }) async {
+    var query = _isar.addressEntitys
+        .filter()
+        .walletIdEqualTo(walletId);
+    
+    if (includeUnused == false) {
+      query = query.usageCountGreaterThan(0);
+    }
+    
+    if (isChange != null) {
+      query = query.isChangeEqualTo(isChange);
+    }
+    
+    var orderedQuery = query.sortByCreatedAtDesc();
+    
+    if (offset != null && limit != null) {
+      final entities = await orderedQuery.offset(offset).limit(limit).findAll();
+      return entities.map((e) => AddressMetadata.fromEntity(e)).toList();
+    } else if (offset != null) {
+      final entities = await orderedQuery.offset(offset).findAll();
+      return entities.map((e) => AddressMetadata.fromEntity(e)).toList();
+    } else if (limit != null) {
+      final entities = await orderedQuery.limit(limit).findAll();
+      return entities.map((e) => AddressMetadata.fromEntity(e)).toList();
+    }
+    
+    final entities = await orderedQuery.findAll();
+    return entities.map((e) => AddressMetadata.fromEntity(e)).toList();
+  }
+
+  @override
+  Future<List<AddressMetadata>> getAddressRange(
+    String walletId, {
+    required int startIndex,
+    required int count,
+    bool isChange = false,
+  }) async {
+    final entities = await _isar.addressEntitys
+        .filter()
+        .walletIdEqualTo(walletId)
+        .and()
+        .isChangeEqualTo(isChange)
+        .and()
+        .derivationIndexBetween(startIndex, startIndex + count - 1)
+        .sortByDerivationIndex()
+        .findAll();
+    
+    return entities.map((e) => AddressMetadata.fromEntity(e)).toList();
+  }
+
+  @override
+  Future<void> upsertAddress(String walletId, AddressMetadata metadata) async {
+    print('[IsarWalletStorage] 💾 Upserting address: ${metadata.address} for wallet $walletId');
+    await _isar.writeTxn(() async {
+      // Find existing entity by address (unique index)
+      final existing = await _isar.addressEntitys
+          .filter()
+          .walletIdEqualTo(walletId)
+          .and()
+          .addressEqualTo(metadata.address)
+          .findFirst();
+      
+      final entity = metadata.toEntity(walletId);
+      
+      // If exists, preserve the ID for update; otherwise Isar will insert new
+      if (existing != null) {
+        entity.id = existing.id;
+      }
+      
+      await _isar.addressEntitys.put(entity);
+    });
+    print('[IsarWalletStorage]    ✅ Address persisted to Isar');
+  }
+
+  @override
+  Future<void> updateAddressUsage(
+    String walletId,
+    String address, {
+    DateTime? usedAt,
+    BigInt? balanceDelta,
+  }) async {
+    await _isar.writeTxn(() async {
+      final entity = await _isar.addressEntitys
+          .filter()
+          .walletIdEqualTo(walletId)
+          .and()
+          .addressEqualTo(address)
+          .findFirst();
+      
+      if (entity == null) return;
+      
+      if (usedAt != null) {
+        entity.firstUsedAt ??= usedAt;
+        entity.lastUsedAt = usedAt;
+        entity.usageCount++;
+      }
+      
+      if (balanceDelta != null) {
+        final currentBalance = BigInt.parse(entity.balance);
+        entity.balance = (currentBalance + balanceDelta).toString();
+      }
+      
+      await _isar.addressEntitys.put(entity);
+    });
+  }
+
+  // ========================================
+  // Transaction-Address Junction
+  // ========================================
+
+  @override
+  Future<void> storeTransactionAddresses(
+    String walletId,
+    String txid,
+    List<TransactionAddressLink> links,
+  ) async {
+    await _isar.writeTxn(() async {
+      // Delete existing records for this transaction
+      await _isar.transactionAddressEntitys
+          .filter()
+          .walletIdEqualTo(walletId)
+          .and()
+          .txidEqualTo(txid)
+          .deleteAll();
+      
+      // Insert new records
+      final entities = links.map((link) {
+        return TransactionAddressEntity()
+          ..walletId = walletId
+          ..txid = txid
+          ..address = link.address
+          ..direction = link.direction
+          ..amount = link.amount.toString()
+          ..vout = link.vout
+          ..vin = link.vin
+          ..createdAt = DateTime.now()
+          ..walletIdAddress = '${walletId}_${link.address}'
+          ..walletIdTxid = '${walletId}_$txid';
+      }).toList();
+      
+      await _isar.transactionAddressEntitys.putAll(entities);
+    });
+  }
+
+  @override
+  Future<List<String>> getTransactionsByAddress(
+    String walletId,
+    String address, {
+    String? direction,
+    int? limit,
+    int? offset,
+  }) async {
+    var query = _isar.transactionAddressEntitys
+        .filter()
+        .walletIdEqualTo(walletId)
+        .and()
+        .addressEqualTo(address);
+    
+    if (direction != null) {
+      query = query.directionEqualTo(direction);
+    }
+    
+    var orderedQuery = query
+        .sortByCreatedAtDesc()
+        .distinctByTxid();
+    
+    if (offset != null && limit != null) {
+      final entities = await orderedQuery.offset(offset).limit(limit).findAll();
+      return entities.map((e) => e.txid).toList();
+    } else if (offset != null) {
+      final entities = await orderedQuery.offset(offset).findAll();
+      return entities.map((e) => e.txid).toList();
+    } else if (limit != null) {
+      final entities = await orderedQuery.limit(limit).findAll();
+      return entities.map((e) => e.txid).toList();
+    }
+    
+    final entities = await orderedQuery.findAll();
+    return entities.map((e) => e.txid).toList();
+  }
+
+  @override
+  Future<TransactionAddresses> getTransactionAddresses(
+    String walletId,
+    String txid,
+  ) async {
+    final entities = await _isar.transactionAddressEntitys
+        .filter()
+        .walletIdEqualTo(walletId)
+        .and()
+        .txidEqualTo(txid)
+        .findAll();
+    
+    final inputs = entities
+        .where((e) => e.direction == 'input')
+        .map((e) => TransactionAddressLink(
+              address: e.address,
+              direction: e.direction,
+              amount: BigInt.parse(e.amount),
+              vin: e.vin,
+            ))
+        .toList();
+    
+    final outputs = entities
+        .where((e) => e.direction == 'output')
+        .map((e) => TransactionAddressLink(
+              address: e.address,
+              direction: e.direction,
+              amount: BigInt.parse(e.amount),
+              vout: e.vout,
+            ))
+        .toList();
+    
+    return TransactionAddresses(inputs: inputs, outputs: outputs);
+  }
+
+  @override
+  Future<int> getAddressTransactionCount(String walletId, String address) async {
+    return await _isar.transactionAddressEntitys
+        .filter()
+        .walletIdEqualTo(walletId)
+        .and()
+        .addressEqualTo(address)
+        .distinctByTxid()
+        .count();
   }
   
   @override
@@ -251,13 +617,20 @@ class IsarWalletStorage implements ReadModelStorage {
           ..confirmations = transaction.confirmations ?? 0
           ..totalInput = transaction.inputValue.toString()
           ..totalOutput = transaction.outputValue.toString()
-          ..fee = transaction.fee.toString();
+          ..fee = transaction.fee.toString()
+          ..isIncoming = transaction.netAmount > BigInt.zero
+          ..isOutgoing = transaction.netAmount < BigInt.zero
+          ..receivingAddressesJson = jsonEncode(transaction.receivingAddresses)
+          ..sendingAddressesJson = jsonEncode(transaction.sendingAddresses)
+          ..primaryCounterparty = _getPrimaryCounterparty(transaction)
+          ..notes = transaction.memo;
         
         if (transaction.blockHeight != null && transaction.blockHeight! > 0) {
           existing.confirmedAt = transaction.updatedAt;
         }
         
         await _isar.bitcoinTransactionEntitys.put(existing);
+        return;
       } else {
         // Insert new transaction
         final entity = BitcoinTransactionEntity()
@@ -277,7 +650,12 @@ class IsarWalletStorage implements ReadModelStorage {
           ..confirmedAt = (transaction.blockHeight != null && transaction.blockHeight! > 0) 
               ? transaction.updatedAt 
               : null
-          ..broadcastAt = null; // Not available in BitcoinTransaction
+          ..broadcastAt = null // Not available in BitcoinTransaction
+          ..receivingAddressesJson = jsonEncode(transaction.receivingAddresses)
+          ..sendingAddressesJson = jsonEncode(transaction.sendingAddresses)
+          ..primaryCounterparty = _getPrimaryCounterparty(transaction)
+          ..counterparty = _getPrimaryCounterparty(transaction)
+          ..notes = transaction.memo;
         
         await _isar.bitcoinTransactionEntitys.put(entity);
       }
@@ -474,6 +852,20 @@ class IsarWalletStorage implements ReadModelStorage {
   }
 
   // ========================================
+  // Helper Methods
+  // ========================================
+
+  String? _getPrimaryCounterparty(BitcoinTransaction tx) {
+    final netAmount = tx.netAmount;
+    if (netAmount > BigInt.zero) {
+      return tx.sendingAddresses.isNotEmpty ? tx.sendingAddresses.first : null;
+    } else if (netAmount < BigInt.zero) {
+      return tx.receivingAddresses.isNotEmpty ? tx.receivingAddresses.first : null;
+    }
+    return null;
+  }
+
+  // ========================================
   // Invoice Operations
   // ========================================
 
@@ -566,6 +958,29 @@ class IsarWalletStorage implements ReadModelStorage {
     // Merkle proofs are stored globally, not per-wallet
     // So we ignore the walletId parameter for now
     return await _isar.merkleProofEntitys.count();
+  }
+
+  // ========================================
+  // Helper Methods
+  // ========================================
+
+  String _encodeJson(Map<String, dynamic> data) {
+    try {
+      return jsonEncode(data);
+    } catch (e) {
+      print('Error encoding JSON: $e');
+      return '{}';
+    }
+  }
+
+  Map<String, dynamic> _decodeJson(String jsonString) {
+    try {
+      if (jsonString.isEmpty) return {};
+      return jsonDecode(jsonString) as Map<String, dynamic>;
+    } catch (e) {
+      print('Error decoding JSON: $e');
+      return {};
+    }
   }
 }
 

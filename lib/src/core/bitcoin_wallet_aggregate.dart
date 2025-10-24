@@ -239,6 +239,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         return await _handleGenerateAddress(currentState, command as GenerateAddressCommand);
       case UpdateAddressLabelCommand:
         return _handleUpdateAddressLabel(currentState, command as UpdateAddressLabelCommand);
+      case RegisterDiscoveredAddressCommand:
+        return _handleRegisterDiscoveredAddress(currentState, command as RegisterDiscoveredAddressCommand);
       case ReceiveUTXOCommand:
         return _handleReceiveUTXO(currentState, command as ReceiveUTXOCommand);
       case RecordImportedTransactionCommand:
@@ -622,6 +624,39 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       oldLabel: oldLabel,
     );
 
+    return [event];
+  }
+
+  List<Event> _handleRegisterDiscoveredAddress(WalletState currentState, RegisterDiscoveredAddressCommand command) {
+    print('[BitcoinWalletAggregate] 📍 Handling RegisterDiscoveredAddressCommand for: ${command.address}');
+    print('[BitcoinWalletAggregate]    Wallet: ${command.walletId}');
+    print('[BitcoinWalletAggregate]    Index: ${command.derivationIndex}, Change: ${command.isChange}');
+    
+    // Business rule: Wallet must exist
+    if (!currentState.isCreated) {
+      print('[BitcoinWalletAggregate]    ❌ ERROR: Wallet not created yet!');
+      throw StateError('Cannot register discovered address for non-existent wallet');
+    }
+
+    // If address already exists in state, this is idempotent (no-op)
+    if (currentState.addresses.containsKey(command.address)) {
+      print('[BitcoinWalletAggregate]    ℹ️  Address ${command.address} already registered, skipping (idempotent)');
+      return [];
+    }
+
+    print('[BitcoinWalletAggregate]    ✅ Creating AddressDiscoveredEvent...');
+    final event = AddressDiscoveredEvent(
+      eventId: const Uuid().v4(),
+      walletId: command.walletId,
+      timestamp: DateTime.now(),
+      version: currentState.version + 1,
+      address: command.address,
+      derivationIndex: command.derivationIndex,
+      isChange: command.isChange,
+      transactionCount: command.transactionCount,
+    );
+
+    print('[BitcoinWalletAggregate]    ✅ AddressDiscoveredEvent created, returning to aggregate for persistence');
     return [event];
   }
 

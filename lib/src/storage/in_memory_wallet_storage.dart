@@ -3,6 +3,8 @@ import 'package:spiffynode/spiffy_node.dart';
 import '../models/wallet_event.dart';
 import '../models/bitcoin_utxo.dart';
 import '../models/bitcoin_transaction.dart';
+import '../models/address_metadata.dart';
+import '../models/transaction_address_link.dart';
 import '../actors/invoice_messages.dart';
 import 'wallet_storage.dart';
 
@@ -674,6 +676,99 @@ class InMemoryWalletStorage implements WalletStorage {
     // In-memory storage doesn't track proofs by wallet
     // Return total count
     return _merkleProofs.length;
+  }
+
+  // Address Management Methods (stubs for in-memory storage)
+  
+  @override
+  Future<bool> isWalletAddress(String walletId, String address) async {
+    // Stub implementation for in-memory storage
+    return false;
+  }
+  
+  @override
+  Future<AddressMetadata?> getAddressMetadata(String walletId, String address) async {
+    // Stub implementation for in-memory storage
+    return null;
+  }
+  
+  @override
+  Future<Map<String, bool>> checkAddresses(String walletId, List<String> addresses) async {
+    // Stub implementation for in-memory storage
+    return {for (var addr in addresses) addr: false};
+  }
+  
+  @override
+  Future<List<AddressMetadata>> getAddressesWithMetadata(
+    String walletId, {
+    bool? includeUnused,
+    bool? isChange,
+    int? limit,
+    int? offset,
+  }) async {
+    // Stub implementation for in-memory storage
+    return [];
+  }
+  
+  @override
+  Future<List<AddressMetadata>> getAddressRange(
+    String walletId, {
+    required int startIndex,
+    required int count,
+    bool isChange = false,
+  }) async {
+    // Stub implementation for in-memory storage
+    return [];
+  }
+  
+  @override
+  Future<void> upsertAddress(String walletId, AddressMetadata metadata) async {
+    // Stub implementation for in-memory storage
+  }
+  
+  @override
+  Future<void> updateAddressUsage(
+    String walletId,
+    String address, {
+    DateTime? usedAt,
+    BigInt? balanceDelta,
+  }) async {
+    // Stub implementation for in-memory storage
+  }
+  
+  // Transaction-Address Junction Methods (stubs for in-memory storage)
+  
+  @override
+  Future<void> storeTransactionAddresses(
+    String walletId,
+    String txid,
+    List<TransactionAddressLink> links,
+  ) async {
+    // Stub implementation for in-memory storage
+  }
+  
+  @override
+  Future<List<String>> getTransactionsByAddress(
+    String walletId,
+    String address, {
+    String? direction,
+    int? limit,
+    int? offset,
+  }) async {
+    // Stub implementation for in-memory storage
+    return [];
+  }
+  
+  @override
+  Future<TransactionAddresses> getTransactionAddresses(String walletId, String txid) async {
+    // Stub implementation for in-memory storage
+    return TransactionAddresses(inputs: [], outputs: []);
+  }
+  
+  @override
+  Future<int> getAddressTransactionCount(String walletId, String address) async {
+    // Stub implementation for in-memory storage
+    return 0;
   }
 
   /// Clear all data (useful for testing)

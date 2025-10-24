@@ -463,6 +463,7 @@ class LibSpiffyActorSystem {
     if (_blockchainDataSource != null) {
       _importActor = await _actorSystem.spawn('import-actor', () => ImportActor(
         dataSource: _blockchainDataSource,
+        storage: _walletStorage,
         walletManagerActor: _walletManager!,
         eventBroadcaster: broadcastWalletEvent,
       ));

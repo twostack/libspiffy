@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:isar/isar.dart';
 import 'package:spiffynode/spiffy_node.dart';
 import 'read_model_storage.dart';
@@ -33,6 +34,8 @@ class LibSpiffySchemas {
       BitcoinUtxoEntitySchema,
       BitcoinTransactionEntitySchema,
       WalletMetadataEntitySchema,
+      AddressEntitySchema,
+      TransactionAddressEntitySchema,
       InvoiceEntitySchema,
     ];
   }
@@ -341,6 +344,16 @@ class BitcoinTransactionEntity {
   /// Notes or metadata about this transaction
   String? notes;
 
+  /// Receiving addresses (stored as JSON array string)
+  late String receivingAddressesJson = '[]';
+
+  /// Sending addresses (stored as JSON array string)
+  late String sendingAddressesJson = '[]';
+
+  /// Primary counterparty for quick filtering
+  @Index()
+  String? primaryCounterparty;
+
   BitcoinTransactionEntity();
 
   /// Create from domain model BitcoinTransaction
@@ -364,12 +377,31 @@ class BitcoinTransactionEntity {
       ..createdAt = tx.createdAt
       ..confirmedAt = null // Not directly available in model
       ..broadcastAt = null // Not directly available in model
+      ..receivingAddressesJson = jsonEncode(tx.receivingAddresses)
+      ..sendingAddressesJson = jsonEncode(tx.sendingAddresses)
+      ..primaryCounterparty = _getPrimaryCounterparty(tx, netAmount)
       ..counterparty = null
       ..notes = tx.memo;
   }
 
+  static String? _getPrimaryCounterparty(BitcoinTransaction tx, BigInt netAmount) {
+    if (netAmount > BigInt.zero) {
+      return tx.sendingAddresses.isNotEmpty ? tx.sendingAddresses.first : null;
+    } else if (netAmount < BigInt.zero) {
+      return tx.receivingAddresses.isNotEmpty ? tx.receivingAddresses.first : null;
+    }
+    return null;
+  }
+
   /// Convert back to domain model BitcoinTransaction
   BitcoinTransaction toDomain() {
+    final receiving = receivingAddressesJson.isNotEmpty && receivingAddressesJson != '[]'
+        ? (jsonDecode(receivingAddressesJson) as List).cast<String>()
+        : <String>[];
+    final sending = sendingAddressesJson.isNotEmpty && sendingAddressesJson != '[]'
+        ? (jsonDecode(sendingAddressesJson) as List).cast<String>()
+        : <String>[];
+    
     return BitcoinTransaction(
       txid: txid,
       rawHex: rawHex,
@@ -379,8 +411,8 @@ class BitcoinTransactionEntity {
       inputValue: BigInt.parse(totalInput),
       outputValue: BigInt.parse(totalOutput),
       fee: BigInt.parse(fee),
-      receivingAddresses: [], // Would need to store these separately
-      sendingAddresses: [], // Would need to store these separately
+      receivingAddresses: receiving,
+      sendingAddresses: sending,
       netAmount: BigInt.parse(totalInput) - BigInt.parse(totalOutput),
       createdAt: createdAt,
       updatedAt: createdAt, // Use createdAt as fallback
@@ -443,6 +475,104 @@ class WalletMetadataEntity {
   late String publicKeysJson;
 
   WalletMetadataEntity();
+}
+
+/// Address entity for efficient address lookup and metadata
+@collection
+class AddressEntity {
+  Id id = Isar.autoIncrement;
+
+  /// Wallet ID this address belongs to
+  @Index()
+  late String walletId;
+
+  /// Bitcoin address (base58) or payment destination identifier
+  @Index(unique: true, type: IndexType.hash)
+  late String address;
+
+  /// Script type: 'p2pkh', 'p2pk', 'p2ms', 'p2sh', 'custom', 'unknown'
+  late String scriptType;
+
+  /// Derivation path (e.g., "m/44'/0'/0'/0/0")
+  String? derivationPath;
+
+  /// Derivation index (for quick range queries)
+  @Index()
+  int? derivationIndex;
+
+  /// Is this a change address?
+  late bool isChange;
+
+  /// Address label (user-friendly name)
+  String? label;
+
+  /// Address purpose ('receive', 'change', 'invoice', 'import')
+  late String purpose;
+
+  /// First time this address was used (received funds)
+  DateTime? firstUsedAt;
+
+  /// Last time this address was used
+  DateTime? lastUsedAt;
+
+  /// Number of times this address has been used
+  late int usageCount;
+
+  /// Current balance (as string for BigInt)
+  late String balance;
+
+  /// When this address was generated/discovered
+  late DateTime createdAt;
+
+  /// Is this address currently being watched?
+  late bool isWatched;
+
+  AddressEntity();
+}
+
+/// Junction table for transaction-address many-to-many relationship
+/// Enables efficient queries like "all transactions involving address X"
+@collection
+class TransactionAddressEntity {
+  Id id = Isar.autoIncrement;
+
+  /// Wallet ID (for partition isolation)
+  @Index()
+  late String walletId;
+
+  /// Transaction ID
+  @Index()
+  late String txid;
+
+  /// Address involved in this transaction
+  @Index()
+  late String address;
+
+  /// Direction: 'input' or 'output'
+  @Index()
+  late String direction;
+
+  /// Amount in satoshis (as string for BigInt)
+  late String amount;
+
+  /// Output index (vout) if this is an output
+  int? vout;
+
+  /// Input index (vin) if this is an input
+  int? vin;
+
+  /// When this junction record was created
+  late DateTime createdAt;
+
+  /// Composite index for wallet+address queries
+  @Index(composite: [CompositeIndex('address')])
+  late String walletIdAddress;
+
+  /// Composite index for wallet+txid queries
+  @Index(composite: [CompositeIndex('txid')])
+  late String walletIdTxid;
+
+  TransactionAddressEntity();
 }
 
 /// Invoice entity for payment request management

@@ -52,6 +52,8 @@ void main() {
         actorSystem: actorSystem,
         isar: isar,
         dataDirectory: testDir.path,
+        enableP2P: false,
+
       );
       
       // Create a wallet first
@@ -108,6 +110,7 @@ void main() {
           walletId: walletId,
           amount: BigInt.from(100000),
           description: 'Test invoice',
+
         ),
         sender: createReceiver,
       );

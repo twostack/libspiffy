@@ -252,7 +252,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       case CreateTransactionCommand:
         return await _handleCreateTransaction(currentState, command as CreateTransactionCommand);
       case SignTransactionCommand:
-        return _handleSignTransaction(currentState, command as SignTransactionCommand);
+        return await _handleSignTransaction(currentState, command as SignTransactionCommand);
       case BroadcastTransactionCommand:
         return _handleBroadcastTransaction(currentState, command as BroadcastTransactionCommand);
       case ReserveUTXOsCommand:
@@ -444,15 +444,11 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       walletType = WalletType.hd;
       
       String mnemonic = command.mnemonic ?? '';
+
+      //Force the caller to provide the mnemonic. Mnemonic validation
+      //is responsibility of the caller.
       if (mnemonic.isEmpty) {
-        mnemonic = await cryptoService.generateMnemonic();
-        print('[BitcoinWalletAggregate]   Generated new mnemonic');
-      } else {
-        final isValid = await cryptoService.validateMnemonic(mnemonic);
-        if (!isValid) {
-          throw ArgumentError('Invalid mnemonic phrase provided');
-        }
-        print('[BitcoinWalletAggregate]   Using provided mnemonic');
+        throw ArgumentError('Invalid mnemonic phrase provided. Mnemonic is empty');
       }
       
       // Derive HD private key from mnemonic
@@ -789,7 +785,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       txid: command.txid,
       rawHex: command.rawHex,
       blockHeight: command.blockHeight,
-      bumpProof: command.bumpProof,
+      bumpProof: command.bumpProofHex,
       totalOutputSats: command.totalOutputSats,
       numInputs: command.numInputs,
       numOutputs: command.numOutputs,
@@ -920,21 +916,170 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     return [transactionEvent, ...reserveEvents];
   }
 
-  List<Event> _handleSignTransaction(WalletState currentState, SignTransactionCommand command) {
+  /// Retrieve the private key for a given address from secure storage
+  /// Supports WIF, XPRIV, and HD wallets
+  Future<dartsv.SVPrivateKey> _getPrivateKeyForAddress(
+    String address,
+    String walletId,
+    WalletState currentState,
+  ) async {
+    final networkType = currentState.networkType == 'mainnet' 
+        ? dartsv.NetworkType.MAIN 
+        : dartsv.NetworkType.TEST;
+
+    if (currentState.walletType == WalletType.wif) {
+      // WIF wallet: single private key
+      final wif = await secureStorage.getWIF(walletId);
+      if (wif == null) {
+        throw StateError('WIF not found for wallet $walletId');
+      }
+      return dartsv.SVPrivateKey.fromWIF(wif);
+    } else if (currentState.walletType == WalletType.xpriv || 
+               currentState.walletType == WalletType.hd) {
+      // HD/XPRIV wallet: derive key for specific address
+      int derivationIndex;
+      
+      // Check if this is the root address (m/0/0)
+      if (address == currentState.rootAddress) {
+        derivationIndex = 0; // Root address is always at index 0
+      } else {
+        // Find the derivation index for generated addresses
+        final addressInfo = currentState.addresses[address];
+        if (addressInfo == null) {
+          throw StateError('Address $address not found in wallet state');
+        }
+        
+        // Get derivation index from metadata (stored during address generation)
+        derivationIndex = currentState.metadata['address_indices']?[address] ?? 0;
+      }
+      
+      // Retrieve xpriv or mnemonic
+      final xprivStr = await secureStorage.getXPriv(walletId);
+      if (xprivStr != null) {
+        final hdPrivateKey = dartsv.HDPrivateKey.fromXpriv(xprivStr);
+        return await cryptoService.derivePrivateKey(
+          hdPrivateKey,
+          0, // account index
+          derivationIndex,
+          coinType: networkType == dartsv.NetworkType.MAIN ? 0 : 236,
+          isChange: false,
+        );
+      }
+      
+      // Try mnemonic if xpriv not available
+      final mnemonic = await secureStorage.getMnemonic(walletId);
+      if (mnemonic != null) {
+        final hdPrivateKey = await cryptoService.mnemonicToHDPrivateKey(
+          mnemonic,
+          network: networkType,
+        );
+        return await cryptoService.derivePrivateKey(
+          hdPrivateKey,
+          0,
+          derivationIndex,
+          coinType: networkType == dartsv.NetworkType.MAIN ? 0 : 236,
+          isChange: false,
+        );
+      }
+      
+      throw StateError('No private key material found for wallet $walletId');
+    } else {
+      throw StateError('Unsupported wallet type: ${currentState.walletType}');
+    }
+  }
+
+  Future<List<Event>> _handleSignTransaction(
+    WalletState currentState,
+    SignTransactionCommand command,
+  ) async {
     // Business rule: Wallet must exist
     if (!currentState.isCreated) {
       throw StateError('Cannot sign transaction for non-existent wallet');
     }
 
-    final event = TransactionSignedEvent(
-      walletId: command.walletId,
-      txid: command.transactionId,
-      signedRawHex: command.rawTransaction, // This will be updated after signing
-      version: currentState.version + 1,
-      timestamp: DateTime.now(),
-    );
+    try {
+      // Parse unsigned transaction
+      final unsignedTx = dartsv.Transaction.fromHex(command.rawTransaction);
+      
+      // For each UTXO being spent, sign the corresponding input
+      for (int i = 0; i < command.utxoKeys.length; i++) {
+        final utxoKey = command.utxoKeys[i];
+        
+        // Get UTXO details from state
+        final utxo = currentState.utxos[utxoKey];
+        if (utxo == null) {
+          throw StateError('UTXO $utxoKey not found in wallet state');
+        }
+        
+        // Get private key for this UTXO's address
+        final privateKey = await _getPrivateKeyForAddress(
+          utxo.address,
+          command.walletId,
+          currentState,
+        );
+        
+        // Create TransactionOutput for the UTXO being spent
+        final lockingScript = dartsv.SVScript.fromHex(utxo.scriptPubKey);
+        final utxoOutput = dartsv.TransactionOutput(
+          utxo.value.getValue(),
+          lockingScript,
+        );
 
-    return [event];
+        //Create the placeholder Tx Input that will hold the signature
+        final txInput = dartsv.TransactionInput(utxo.txid, utxo.vout, dartsv.TransactionInput.MAX_SEQ_NUMBER);
+        unsignedTx.addInput(txInput);
+
+        // Create signer and sign this input
+        final signer = dartsv.TransactionSigner(
+          dartsv.SighashType.SIGHASH_ALL.value | dartsv.SighashType.SIGHASH_FORKID.value,
+          privateKey,
+        );
+
+
+        // Sign the transaction at this input index
+        signer.sign(unsignedTx, utxoOutput, i);
+      }
+      
+      // Serialize signed transaction
+      final signedHex = unsignedTx.serialize();
+      
+      // Send success response if in actor system
+      if (_isInActorSystem() && context.sender != null) {
+        context.sender!.tell(TransactionSignedResponse(
+          walletId: command.walletId,
+          txid: command.transactionId,
+          signedHex: signedHex,
+          success: true,
+        ));
+      }
+      
+      // Return TransactionSignedEvent
+      final event = TransactionSignedEvent(
+        walletId: command.walletId,
+        txid: command.transactionId,
+        signedRawHex: signedHex,
+        version: currentState.version + 1,
+        timestamp: DateTime.now(),
+      );
+      
+      return [event];
+    } catch (e, stackTrace) {
+      print('Error signing transaction: $e');
+      print('Stack trace: $stackTrace');
+      
+      // Send error response if in actor system
+      if (_isInActorSystem() && context.sender != null) {
+        context.sender!.tell(TransactionSignedResponse(
+          walletId: command.walletId,
+          txid: command.transactionId,
+          signedHex: '',
+          success: false,
+          error: e.toString(),
+        ));
+      }
+      
+      throw StateError('Failed to sign transaction: $e');
+    }
   }
 
   List<Event> _handleBroadcastTransaction(WalletState currentState, BroadcastTransactionCommand command) {

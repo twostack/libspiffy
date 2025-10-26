@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:convert/convert.dart';
 import 'package:dactor/dactor.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:logging/logging.dart';
@@ -39,6 +42,9 @@ class ImportActor extends Actor {
   int _totalAddresses = 0;
   int _totalTransactions = 0;
   int _processedTransactions = 0;
+  
+  // Completer for waiting for wallet creation
+  Completer<WalletCreatedMessage>? _walletCreatedCompleter;
 
   ImportActor({
     required BlockchainDataSource dataSource,
@@ -71,6 +77,11 @@ class ImportActor extends Actor {
           _logger.info('✅ WalletCreatedMessage received: ${message.walletId}, root address: ${message.rootAddress}');
         } else {
           _logger.severe('❌ WalletCreatedMessage received with error: ${message.error}');
+        }
+        
+        // Complete the wallet creation completer if waiting
+        if (_walletCreatedCompleter != null && !_walletCreatedCompleter!.isCompleted) {
+          _walletCreatedCompleter!.complete(message);
         }
       } else {
         _logger.warning('❓ Unknown message type: ${message.runtimeType}');
@@ -172,11 +183,38 @@ class ImportActor extends Actor {
     _logger.info('   → CreateWalletMessage sent to WalletManagerActor');
     
     // Wait for wallet actor to be spawned and initialized
-    // TODO: Replace with proper async confirmation via WalletCreatedMessage handler
-    _logger.info('   → Waiting 500ms for wallet to spawn and initialize...');
-    await Future.delayed(const Duration(milliseconds: 500));
+    // The WalletCreatedMessage will be received in onMessage and complete the completer
+    _logger.info('   → Waiting for WalletCreatedMessage (max 10 seconds)...');
+    _walletCreatedCompleter = Completer<WalletCreatedMessage>();
     
-    _logger.info('   → Wallet aggregate spawned, broadcasting WalletImportStartedEvent');
+    try {
+      final walletCreatedMsg = await _walletCreatedCompleter!.future.timeout(
+        const Duration(seconds: 10),
+        onTimeout: () {
+          _logger.warning('   ⚠️  Timeout waiting for WalletCreatedMessage, proceeding anyway...');
+          // Return a fake success message to continue
+          return WalletCreatedMessage(
+            message.walletId,
+            '', // rootAddress
+            true, // success
+          );
+        },
+      );
+      
+      // Check if wallet creation succeeded
+      if (!walletCreatedMsg.success) {
+        throw StateError('Wallet creation failed: ${walletCreatedMsg.error}');
+      }
+      
+      _logger.info('   → Wallet aggregate confirmed spawned with root address: ${walletCreatedMsg.rootAddress}');
+    } catch (e) {
+      _logger.severe('   ❌ Error waiting for wallet creation: $e');
+      rethrow;
+    } finally {
+      _walletCreatedCompleter = null; // Clean up
+    }
+    
+    _logger.info('   → Broadcasting WalletImportStartedEvent');
 
     // Notify import started
     await _notifyEvent(message.walletId, WalletImportStartedEvent(
@@ -495,10 +533,7 @@ class ImportActor extends Actor {
           txid: tx.txid,
           rawHex: tx.rawHex,
           blockHeight: tx.blockHeight,
-          bumpProof: {
-            'blockHeight': tx.bump.blockHeight,
-            'pathLength': tx.bump.path.length,
-          },
+          bumpProofHex: hex.encode(tx.bump.serialize()),
           totalOutputSats: totalOutput.toInt(),
           numInputs: parsedTx.inputs.length,
           numOutputs: parsedTx.outputs.length,

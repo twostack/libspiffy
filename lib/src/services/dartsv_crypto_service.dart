@@ -206,6 +206,8 @@ class DartSVCryptoService implements CryptoService {
 
   }
 
+
   /// Get network type
   dartsv.NetworkType get networkType => _networkType;
-} 
+
+}

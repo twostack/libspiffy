@@ -526,17 +526,25 @@ class LibSpiffyActorSystem {
       final peers = peerAddresses ?? _getDefaultPeers(networkType);
       
       // 7. Connect to peers WITH handler to capture headers
+      // Try ALL peers, only fail if ALL are unreachable
+      print('🌐 Attempting to connect to ${peers.length} Bitcoin P2P node(s)...');
+      
+      int successCount = 0;
+      final failures = <String, String>{}; // peer -> error
+      
       for (final peerAddr in peers) {
         final parts = peerAddr.split(':');
         if (parts.length != 2) {
-          print('⚠ Invalid peer address format: $peerAddr (expected host:port)');
+          print('⚠️  Invalid peer address format: $peerAddr (expected host:port)');
+          failures[peerAddr] = 'Invalid format (expected host:port)';
           continue;
         }
         
         final host = parts[0];
         final port = int.tryParse(parts[1]);
         if (port == null) {
-          print('⚠ Invalid port in peer address: $peerAddr');
+          print('⚠️  Invalid port in peer address: $peerAddr');
+          failures[peerAddr] = 'Invalid port number';
           continue;
         }
         
@@ -549,13 +557,46 @@ class LibSpiffyActorSystem {
                 userAgent: userAgent ?? '/LibSpiffy:1.0/',
               );
         
-        await _peerManager!.addPeerByAddress(
-          host,
-          port,
-          peerConfig: peerConfig,
-          handler: peerHandler, // ✨ NEW: Custom handler for header capture!
+        // Try to connect to this peer
+        try {
+          print('   → Connecting to $peerAddr...');
+          await _peerManager!.addPeerByAddress(
+            host,
+            port,
+            peerConfig: peerConfig,
+            handler: peerHandler, // ✨ NEW: Custom handler for header capture!
+          );
+          successCount++;
+          print('   ✅ Connected to peer: $peerAddr with header capture enabled');
+        } catch (e) {
+          print('   ⚠️  Failed to connect to $peerAddr: $e');
+          failures[peerAddr] = e.toString();
+          // Don't throw - try the next peer
+        }
+      }
+      
+      // Check if we connected to at least one peer
+      if (successCount == 0) {
+        print('❌ Failed to connect to ANY Bitcoin P2P nodes');
+        print('Attempted ${peers.length} peer(s):');
+        failures.forEach((peer, error) {
+          print('   • $peer: $error');
+        });
+        _peerManager = null;
+        _spiffyNodeBridge = null;
+        throw StateError(
+          'P2P initialization failed: Could not connect to any of ${peers.length} peer(s). '
+          'LibSpiffy will fall back to API-only mode. Failures: ${failures.keys.join(", ")}'
         );
-        print('✓ Connected to peer: $peerAddr with header capture enabled');
+      }
+      
+      // Log summary
+      print('✅ P2P connectivity established: $successCount/${peers.length} peer(s) connected');
+      if (failures.isNotEmpty) {
+        print('⚠️  Failed to connect to ${failures.length} peer(s):');
+        failures.forEach((peer, error) {
+          print('   • $peer: $error');
+        });
       }
       
       // 8. Set bridge reference in HeaderSyncActor
@@ -568,7 +609,6 @@ class LibSpiffyActorSystem {
       // 10. Trigger initial header sync (PeerManager and handler are set)
       _headerSyncActorInstance?.initiateSyncAfterP2PSetup();
       
-      print('✓ P2P connectivity established with header capture');
       print('✓ Custom handler installed: LibSpiffyPeerHandler will capture MsgHeaders');
       print('Bridge statistics: ${_spiffyNodeBridge!.statistics}');
       

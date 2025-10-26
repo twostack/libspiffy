@@ -137,6 +137,32 @@ class TransactionCreatedResponse implements Message {
   DateTime get timestamp => DateTime.now();
 }
 
+/// Response from BitcoinWalletAggregate after signing transaction
+class TransactionSignedResponse implements Message {
+  final String walletId;
+  final String txid;
+  final String signedHex;
+  final bool success;
+  final String? error;
+
+  TransactionSignedResponse({
+    required this.walletId,
+    required this.txid,
+    required this.signedHex,
+    required this.success,
+    this.error,
+  });
+
+  @override
+  String get correlationId => 'transaction-signed-response-$txid';
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId, 'txid': txid};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
 /// Route a command to a specific wallet
 class WalletCommandMessage implements Message {
   final String walletId;

@@ -216,7 +216,7 @@ class TransactionImportedEvent extends WalletEvent {
   final String txid;
   final String rawHex;
   final int blockHeight;
-  final Map<String, dynamic> bumpProof; // Serialized BUMP format
+  final String bumpProof; // Serialized BUMP format
   
   // Parsed transaction data (from BEEF import)
   final int totalOutputSats;
@@ -285,7 +285,7 @@ class TransactionImportedEvent extends WalletEvent {
       txid: map['txid'] as String,
       rawHex: map['rawHex'] as String,
       blockHeight: map['blockHeight'] as int,
-      bumpProof: map['bumpProof'] as Map<String, dynamic>,
+      bumpProof: map['bumpProof'] as String,
       totalOutputSats: map['totalOutputSats'] as int,
       numInputs: map['numInputs'] as int,
       numOutputs: map['numOutputs'] as int,

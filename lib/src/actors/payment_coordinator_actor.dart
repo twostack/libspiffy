@@ -1,4 +1,5 @@
 import 'dart:typed_data';
+import 'dart:async';
 import 'package:dactor/dactor.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:spiffynode/spiffy_node.dart' as spiffy;
@@ -9,7 +10,9 @@ import '../models/bitcoin_transaction.dart';
 import '../storage/read_model_storage.dart';
 import '../utils/beef.dart';
 import '../utils/bump.dart';
+import '../core/wallet_commands.dart';
 import 'payment_messages.dart';
+import 'wallet_messages.dart';
 
 /// Coordinator actor for payment operations with SPV BEEF construction
 /// 
@@ -22,11 +25,13 @@ import 'payment_messages.dart';
 /// 6. Returning BEEF (does NOT broadcast - pure SPV model)
 class PaymentCoordinatorActor extends Actor {
   final ReadModelStorage _storage;
+  final ActorRef _walletManager;
 
   PaymentCoordinatorActor({
-    required ActorRef walletManager, // Keep parameter for future use
+    required ActorRef walletManager,
     required ReadModelStorage storage,
-  })  : _storage = storage;
+  })  : _storage = storage,
+        _walletManager = walletManager;
 
   @override
   void preStart() {
@@ -107,7 +112,41 @@ class PaymentCoordinatorActor extends Actor {
       _sendError(msg.invoiceId, 'Failed to build payment transaction');
       return;
     }
-    print('  ✓ Payment transaction built: ${paymentTx.txid}');
+    print('  ✓ Unsigned transaction built: ${paymentTx.txid}');
+
+    // 4b. Sign the transaction
+    print('  Signing transaction...');
+    final utxoKeys = selectedUtxos.map((u) => '${u.txid}:${u.vout}').toList();
+    final signedTxHex = await _signTransaction(
+      walletId: msg.walletId,
+      txid: paymentTx.txid,
+      unsignedTxHex: paymentTx.rawHex,
+      utxoKeys: utxoKeys,
+    );
+
+    if (signedTxHex == null) {
+      _sendError(msg.invoiceId, 'Failed to sign transaction');
+      return;
+    }
+
+    // Update payment transaction with signed hex
+    final signedPaymentTx = BitcoinTransaction(
+      txid: paymentTx.txid, // TXID doesn't change after signing
+      rawHex: signedTxHex,
+      status: paymentTx.status,
+      inputValue: paymentTx.inputValue,
+      outputValue: paymentTx.outputValue,
+      fee: paymentTx.fee,
+      receivingAddresses: paymentTx.receivingAddresses,
+      sendingAddresses: paymentTx.sendingAddresses,
+      netAmount: paymentTx.netAmount,
+      createdAt: paymentTx.createdAt,
+      updatedAt: DateTime.now(),
+      lockTime: paymentTx.lockTime,
+      version: paymentTx.version,
+    );
+
+    print('  ✓ Transaction signed: ${signedPaymentTx.txid}');
 
     // 5. Get block headers for validation
     print('  Retrieving block headers...');
@@ -118,7 +157,7 @@ class PaymentCoordinatorActor extends Actor {
     print('  Creating BEEF package...');
     try {
       final beef = await _createBEEF(
-        paymentTransaction: paymentTx,
+        paymentTransaction: signedPaymentTx,
         ancestorTransactions: ancestorResult.ancestorTransactions,
         merkleProofs: ancestorResult.merkleProofs,
         blockHeaders: blockHeaders,
@@ -135,16 +174,22 @@ class PaymentCoordinatorActor extends Actor {
 
       // 7. Return BEEF to caller (does NOT broadcast)
       final sender = context.sender;
+      print('  📤 Sending response to sender: ${sender != null ? "YES" : "NULL"}');
       if (sender != null) {
-        sender.tell(BEEFPaymentResponse(
+        final response = BEEFPaymentResponse(
           invoiceId: msg.invoiceId,
           beefBytes: beef,
-          txid: paymentTx.txid,
+          txid: signedPaymentTx.txid, // Use signed transaction's txid
           amountPaid: msg.amount,
           changeAmount: changeAmount > BigInt.zero ? changeAmount : BigInt.zero,
           ancestorCount: ancestorResult.ancestorTransactions.length,
           success: true,
-        ));
+        );
+        print('  📤 Response: invoiceId=${response.invoiceId}, txid=${response.txid}, success=${response.success}');
+        sender.tell(response);
+        print('  ✅ Response sent to sender');
+      } else {
+        print('  ⚠️  WARNING: sender is null, cannot send response!');
       }
 
       print('✓ Payment BEEF ready for invoice ${msg.invoiceId}');
@@ -276,6 +321,7 @@ class PaymentCoordinatorActor extends Actor {
   }
 
   /// Build payment transaction from selected UTXOs
+  /// Using proven patterns from transaction_builder_service.dart
   Future<BitcoinTransaction?> _buildPaymentTransaction({
     required List<BitcoinUtxo> selectedUtxos,
     required List<String> outputAddresses,
@@ -284,30 +330,75 @@ class PaymentCoordinatorActor extends Actor {
     required String walletId,
   }) async {
     try {
-      // For now, create a simplified transaction representation
-      // In a full implementation, this would use TransactionBuilderService
+      print('    Building transaction with ${selectedUtxos.length} inputs');
       
       // Calculate total input
       final totalInput = selectedUtxos.fold<BigInt>(
         BigInt.zero,
         (sum, utxo) => sum + utxo.satoshis,
       );
-
-      // Rough fee estimate
-      final fee = BigInt.from(1000);
-      final changeAmount = totalInput - outputAmount - fee;
-
-      // Generate txid (simplified - in reality this would be from signed tx)
-      final txid = 'payment-${DateTime.now().millisecondsSinceEpoch}';
-
+      
+      // Build transaction using proven TransactionBuilder pattern
+      final txBuilder = dartsv.TransactionBuilder();
+      
+      // Add payment outputs first (proven pattern from transaction_builder_service.dart)
+      for (final address in outputAddresses) {
+        final toAddress = dartsv.Address.fromBase58(address);
+        final amountPerAddress = outputAmount ~/ BigInt.from(outputAddresses.length);
+        
+        final recipientBuilder = dartsv.P2PKHLockBuilder.fromAddress(toAddress);
+        txBuilder.spendToLockBuilder(recipientBuilder, amountPerAddress);
+      }
+      
+      // Add change address (proven pattern)
+      final changeAddr = changeAddress ?? selectedUtxos.first.address;
+      final changeAddress_ = dartsv.Address.fromBase58(changeAddr);
+      txBuilder.sendChangeToPKH(changeAddress_);
+      
+      // Add inputs from selected UTXOs
+      // NOTE: Creating UNSIGNED transaction - signing should be done by wallet aggregate
+      // which has secure access to private keys
+      for (final utxo in selectedUtxos) {
+        final lockedAddress = dartsv.Address.fromBase58(utxo.address);
+        final lockingScript = dartsv.P2PKHLockBuilder.fromAddress(lockedAddress).getScriptPubkey();
+        
+        final outpoint = dartsv.TransactionOutpoint(
+          utxo.txid,
+          utxo.vout,
+          utxo.satoshis,
+          lockingScript,
+        );
+        
+      }
+      
+      // Apply transaction settings (proven pattern)
+      txBuilder
+          .withFeePerKb(1) // Low fee rate (proven from transaction_builder_service.dart)
+          .withOption(dartsv.TransactionOption.DISABLE_DUST_OUTPUTS);
+      
+      // Build transaction (proven pattern: skip sanity checks for flexibility)
+      final signedTx = txBuilder.build(false);
+      final rawHex = signedTx.serialize();
+      final txid = signedTx.id;
+      
+      // Calculate actual fee and change from built transaction
+      final totalOutput = signedTx.outputs.fold<BigInt>(
+        BigInt.zero,
+        (sum, output) => sum + output.satoshis,
+      );
+      final fee = totalInput - totalOutput;
+      
+      print('    ✓ Transaction built: $txid (${rawHex.length ~/ 2} bytes)');
+      print('      Total input: $totalInput, Total output: $totalOutput, Fee: $fee');
+      print('      Outputs: ${signedTx.outputs.length}');
+      
       // Create transaction record
-      // Note: In full implementation, this would build actual dartsv.Transaction
       return BitcoinTransaction(
         txid: txid,
-        rawHex: '', // Would be populated by actual transaction builder
+        rawHex: rawHex,
         status: TransactionStatus.created,
         inputValue: totalInput,
-        outputValue: outputAmount + (changeAmount > BigInt.zero ? changeAmount : BigInt.zero),
+        outputValue: totalOutput,
         fee: fee,
         receivingAddresses: outputAddresses,
         sendingAddresses: selectedUtxos.map((u) => u.address).toList(),
@@ -315,12 +406,67 @@ class PaymentCoordinatorActor extends Actor {
         createdAt: DateTime.now(),
         updatedAt: DateTime.now(),
         lockTime: 0,
-        version: 1,
+        version: 2,
       );
-    } catch (e) {
+    } catch (e, stackTrace) {
       print('Error building payment transaction: $e');
+      print('Stack trace: $stackTrace');
       return null;
     }
+  }
+
+  /// Request wallet to sign the transaction
+  /// Returns signed transaction hex or null on failure
+  Future<String?> _signTransaction({
+    required String walletId,
+    required String txid,
+    required String unsignedTxHex,
+    required List<String> utxoKeys,
+  }) async {
+    print('    Requesting signature from wallet...');
+    
+    final completer = Completer<TransactionSignedResponse>();
+    final receiver = await context.system.spawn(
+      'sign-receiver-$txid',
+      () => _SigningReceiverActor(completer),
+    );
+    
+    // Send SignTransactionCommand to wallet
+    _walletManager.tell(
+      WalletCommandMessage(
+        walletId,
+        SignTransactionCommand(
+          walletId: walletId,
+          transactionId: txid,
+          rawTransaction: unsignedTxHex,
+          utxoKeys: utxoKeys,
+        ),
+      ),
+      sender: receiver,
+    );
+    
+    // Wait for signing response
+    final response = await completer.future.timeout(
+      Duration(seconds: 10),
+      onTimeout: () {
+        print('    ⚠️ Signing timeout after 10 seconds');
+        return TransactionSignedResponse(
+          walletId: walletId,
+          txid: txid,
+          signedHex: '',
+          success: false,
+          error: 'Signing timeout',
+        );
+      },
+    );
+    
+    if (!response.success) {
+      print('    ❌ Signing failed: ${response.error}');
+      return null;
+    }
+    
+    print('    ✓ Transaction signed successfully');
+    return response.signedHex;
   }
 
   /// Get block headers for validation
@@ -345,6 +491,18 @@ class PaymentCoordinatorActor extends Actor {
     required List<spiffy.BlockHeader> blockHeaders,
   }) async {
     try {
+      print('  📥 _createBEEF inputs:');
+      print('    Payment transaction: ${paymentTransaction.txid}');
+      print('      Raw hex length: ${paymentTransaction.rawHex.length} chars');
+      print('    Ancestor transactions: ${ancestorTransactions.length}');
+      for (final ancestor in ancestorTransactions) {
+        print('      - ${ancestor.txid} (${ancestor.rawHex.length} chars)');
+      }
+      print('    Merkle proofs: ${merkleProofs.length}');
+      for (final proof in merkleProofs) {
+        print('      - ${proof.txid} at height ${proof.blockHeight}, position ${proof.position}');
+      }
+      
       // 1. Convert all transactions to raw bytes
       final txBytes = <Uint8List>[];
       
@@ -383,6 +541,16 @@ class PaymentCoordinatorActor extends Actor {
         }
       }
       
+      // Debug: Log what we're passing to BEEF.create()
+      print('  📊 BEEF.create() inputs:');
+      print('    txBytes: ${txBytes.length} transactions');
+      for (int i = 0; i < txBytes.length; i++) {
+        print('      [$i] ${txBytes[i].length} bytes');
+      }
+      print('    bumps: ${bumps.length} merkle proofs');
+      print('    hasMerkle: ${hasMerkle.length} flags = $hasMerkle');
+      print('    bumpIndex: ${bumpIndex.length} indices = $bumpIndex');
+      
       // 5. Create BEEF using the existing BEEF.create() method
       final beef = BEEF.create(
         bumps: bumps,
@@ -391,8 +559,23 @@ class PaymentCoordinatorActor extends Actor {
         bumpIndex: bumpIndex,
       );
       
-      // 6. Serialize and return
-      return beef.serialize();
+      // 6. Serialize BEEF
+      final serialized = beef.serialize();
+      print('  ✓ BEEF serialized: ${serialized.length} bytes');
+      
+      // 7. Verify BEEF can be parsed (sanity check)
+      try {
+        final parsed = BEEF.parse(serialized);
+        print('  ✓ BEEF parse verification passed');
+        print('    Parsed ${parsed.txs.length} transactions');
+        print('    Parsed ${parsed.bumps.length} merkle proofs');
+      } catch (e, stackTrace) {
+        print('  ❌ BEEF parse verification FAILED: $e');
+        print('  Stack trace: $stackTrace');
+        throw Exception('Created BEEF is invalid: $e');
+      }
+      
+      return serialized;
     } catch (e) {
       print('Error creating BEEF: $e');
       rethrow;
@@ -401,11 +584,13 @@ class PaymentCoordinatorActor extends Actor {
   
   /// Build a BUMP from a MerkleProof
   /// 
-  /// Converts our MerkleProof storage format to the BUMP structure needed for BEEF
+  /// Converts our MerkleProof storage format to the BUMP structure needed for BEEF.
+  /// Based on CryptoUtils.createBumpFromTscProof() implementation.
   BUMP _buildBUMPFromMerkleProof(MerkleProof proof) {
     final levels = <Level>[];
     
-    // First level: the transaction itself at its position in the block
+    // Level 0: Transaction ID at its position in the block
+    // This matches CryptoUtils.createBumpFromTscProof() implementation
     levels.add(Level(leaves: [
       Leaf(
         offset: proof.position,
@@ -415,12 +600,21 @@ class PaymentCoordinatorActor extends Actor {
       ),
     ]));
     
-    // Subsequent levels: merkle path siblings
+    // Subsequent levels: merkle path siblings with calculated offsets
     // Each hash in the merkleProof list is a sibling at the next level up
+    // Sibling offset calculation matches CryptoUtils.createBumpFromTscProof()
     for (int i = 0; i < proof.merkleProof.length; i++) {
+      // Calculate sibling offset using bit manipulation
+      // In a Merkle tree, if index bit at level i is 0, then sibling is at (index | (1 << i))
+      // If index bit at level i is 1, then sibling is at (index & ~(1 << i))
+      final indexBit = (proof.position >> i) & 1;
+      final siblingOffset = indexBit == 0 
+          ? (proof.position | (1 << i)) 
+          : (proof.position & ~(1 << i));
+      
       levels.add(Level(leaves: [
         Leaf(
-          offset: 0, // Simplified - actual offset would be calculated from tree structure
+          offset: siblingOffset,
           duplicate: false,
           isTxid: false,
           hash: Uint8List.fromList(hex.decode(proof.merkleProof[i])),
@@ -481,5 +675,19 @@ class _CollectionStep {
         error = null;
 
   _CollectionStep.error(this.error) : success = false;
+}
+
+/// Helper actor to receive signing response
+class _SigningReceiverActor extends Actor {
+  final Completer<TransactionSignedResponse> completer;
+  
+  _SigningReceiverActor(this.completer);
+  
+  @override
+  Future<void> onMessage(dynamic message) async {
+    if (message is TransactionSignedResponse && !completer.isCompleted) {
+      completer.complete(message);
+    }
+  }
 }
 

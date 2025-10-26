@@ -260,7 +260,7 @@ class RecordImportedTransactionCommand extends WalletCommand {
   final String txid;
   final String rawHex;
   final int blockHeight;
-  final Map<String, dynamic> bumpProof;
+  final String bumpProofHex;
   final int totalOutputSats;
   final int numInputs;
   final int numOutputs;
@@ -276,7 +276,7 @@ class RecordImportedTransactionCommand extends WalletCommand {
     required this.txid,
     required this.rawHex,
     required this.blockHeight,
-    required this.bumpProof,
+    required this.bumpProofHex,
     required this.totalOutputSats,
     required this.numInputs,
     required this.numOutputs,

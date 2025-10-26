@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+import 'package:convert/convert.dart';
 import 'package:eventador/eventador.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:libspiffy/src/services/script_type_registry.dart';
@@ -9,6 +11,7 @@ import '../models/bitcoin_transaction.dart';
 import '../models/address_metadata.dart';
 import '../models/transaction_address_link.dart';
 import '../storage/read_model_storage.dart';
+import '../utils/bump.dart';
 
 /// Wallet projection that builds read models from wallet events
 /// 
@@ -491,6 +494,11 @@ class WalletProjection extends Projection<WalletReadModel> {
       print('[WalletProjection]       Net amount for wallet: ${netAmount} sats (${isIncoming ? "INCOMING" : "OUTGOING"})');
       await _storage.storeTransaction(_readModel.walletId, transaction);
       print('[WalletProjection]    ✅ Transaction persisted to Isar');
+
+      // Store Merkle proof from BUMP
+      if (event.bumpProof.isNotEmpty) {
+        await _storeMerkleProofFromBump(event.txid, event.bumpProof, event.blockHeight);
+      }
       
       // Create junction table records for efficient address-centric queries
       await _createTransactionAddressJunctions(
@@ -675,6 +683,100 @@ class WalletProjection extends Projection<WalletReadModel> {
         final scriptHex = script.toHex();
         final identifier = 'script:${scriptHex.hashCode.toRadixString(16)}';
         return (identifier, 'custom');
+    }
+  }
+  
+  /// Convert hex-encoded BUMP data to MerkleProof and store it
+  /// 
+  /// This utility function:
+  /// 1. Decodes the hex-encoded BUMP bytes
+  /// 2. Parses the BUMP structure
+  /// 3. Extracts transaction position from sibling offsets
+  /// 4. Looks up the block hash from block headers (if available)
+  /// 5. Creates and stores a MerkleProof object
+  /// 
+  /// Note: BUMP proofs only contain sibling hashes, not the txid itself.
+  /// The transaction position is derived from the first level's sibling offset.
+  Future<void> _storeMerkleProofFromBump(
+    String txid,
+    String bumpHex,
+    int blockHeight,
+  ) async {
+    print('[WalletProjection]    → Storing Merkle proof for $txid');
+    try {
+      // Decode hex to bytes
+      final bumpBytes = Uint8List.fromList(hex.decode(bumpHex));
+      
+      // Parse BUMP
+      final bump = BUMP.fromBytes(bumpBytes);
+      print('[WalletProjection]       BUMP parsed: height=${bump.blockHeight}, path length=${bump.path.length}');
+      
+      // CRITICAL: BUMP proofs only contain sibling hashes, not the txid
+      // The transaction position must be derived from the sibling offset at level 0
+      if (bump.path.isEmpty || bump.path[0].leaves.isEmpty) {
+        throw Exception('BUMP has no leaves at level 0');
+      }
+      
+      // Get the sibling offset from the first level
+      final siblingOffset = bump.path[0].leaves[0].offset;
+      
+      // Derive transaction position from sibling offset
+      // If sibling is even, tx is at sibling + 1 (tx on right)
+      // If sibling is odd, tx is at sibling - 1 (tx on left)
+      final txPosition = (siblingOffset % 2 == 0) ? siblingOffset + 1 : siblingOffset - 1;
+      
+      print('[WalletProjection]       Derived tx position: $txPosition (from sibling offset: $siblingOffset)');
+      
+      // Extract sibling hashes from BUMP path (all levels contain siblings)
+      final siblingHashes = <String>[];
+      for (int i = 0; i < bump.path.length; i++) {
+        for (final leaf in bump.path[i].leaves) {
+          if (!leaf.duplicate && leaf.hash != null) {
+            // Convert hash bytes to hex (reversed for display format)
+            final hashHex = leaf.hash!.reversed
+                .map((byte) => byte.toRadixString(16).padLeft(2, '0'))
+                .join('');
+            siblingHashes.add(hashHex);
+          }
+        }
+      }
+      
+      print('[WalletProjection]       Position: $txPosition, Sibling hashes: ${siblingHashes.length}');
+      
+      // Look up block header to get block hash
+      String blockHash = '';
+      try {
+        final blockHeader = await _storage.getBlockHeaderByHeight(blockHeight);
+        if (blockHeader != null) {
+          blockHash = blockHeader.blockHash().toString();
+          print('[WalletProjection]       Block hash: $blockHash');
+        } else {
+          print('[WalletProjection]       ⚠️ Block header not found for height $blockHeight');
+          // Use a placeholder - merkle proof can still be stored without block hash
+          blockHash = 'pending'; // Placeholder until header is synced
+        }
+      } catch (e) {
+        print('[WalletProjection]       ⚠️ Error fetching block header: $e');
+        blockHash = 'pending';
+      }
+      
+      // Create MerkleProof object
+      final merkleProof = MerkleProof(
+        txid: txid,
+        blockHash: blockHash,
+        blockHeight: bump.blockHeight,
+        position: txPosition,
+        merkleProof: siblingHashes,
+      );
+      
+      // Store to database
+      await _storage.storeMerkleProof(txid, merkleProof);
+      print('[WalletProjection]    ✅ Merkle proof persisted');
+      
+    } catch (e, stackTrace) {
+      print('[WalletProjection]    ⚠️ Failed to store Merkle proof: $e');
+      print('[WalletProjection]    Stack trace: $stackTrace');
+      // Don't rethrow - transaction is still valid without proof stored
     }
   }
   

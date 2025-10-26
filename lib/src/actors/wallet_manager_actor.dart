@@ -398,6 +398,13 @@ class WalletManagerActor extends Actor {
       );
 
       print('Wallet loaded successfully: $walletId');
+      
+      // IMPORTANT: Wait for aggregate recovery to complete before returning
+      // PersistentActor needs time to replay events and initialize state
+      // Without this delay, commands sent immediately after loading will be dropped
+      await Future.delayed(Duration(milliseconds: 200));
+      print('Wallet recovery complete: $walletId');
+      
       return walletActor;
 
     } catch (e) {

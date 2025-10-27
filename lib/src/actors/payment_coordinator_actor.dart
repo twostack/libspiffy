@@ -370,10 +370,12 @@ class PaymentCoordinatorActor extends Actor {
         );
         
       }
-      
+
+      // txBuilder.sendChangeToPKH(changeAddress);
+
       // Apply transaction settings (proven pattern)
       txBuilder
-          .withFeePerKb(1) // Low fee rate (proven from transaction_builder_service.dart)
+          .withFeePerKb(1) // Low fee rate (proven from transaction_builder_service.dart) valid for BSV network
           .withOption(dartsv.TransactionOption.DISABLE_DUST_OUTPUTS);
       
       // Build transaction (proven pattern: skip sanity checks for flexibility)
@@ -509,6 +511,7 @@ class PaymentCoordinatorActor extends Actor {
       // Add ancestor transactions first (in order they were collected)
       for (final tx in ancestorTransactions) {
         txBytes.add(Uint8List.fromList(hex.decode(tx.rawHex)));
+        print('  Ancestor Transaction: ${tx.rawHex}');
       }
       
       // Add payment transaction last (the new transaction being created)
@@ -550,7 +553,9 @@ class PaymentCoordinatorActor extends Actor {
       print('    bumps: ${bumps.length} merkle proofs');
       print('    hasMerkle: ${hasMerkle.length} flags = $hasMerkle');
       print('    bumpIndex: ${bumpIndex.length} indices = $bumpIndex');
-      
+
+      print('  Payment Transaction: ${paymentTransaction.rawHex}');
+
       // 5. Create BEEF using the existing BEEF.create() method
       final beef = BEEF.create(
         bumps: bumps,
@@ -562,6 +567,8 @@ class PaymentCoordinatorActor extends Actor {
       // 6. Serialize BEEF
       final serialized = beef.serialize();
       print('  ✓ BEEF serialized: ${serialized.length} bytes');
+      print('    BEEF HEX: ${hex.encode(serialized)}');
+      Future.delayed(Duration(seconds: 1)); //debug delay so BEEF hex can dump to console
       
       // 7. Verify BEEF can be parsed (sanity check)
       try {
@@ -581,7 +588,8 @@ class PaymentCoordinatorActor extends Actor {
       rethrow;
     }
   }
-  
+
+
   /// Build a BUMP from a MerkleProof
   /// 
   /// Converts our MerkleProof storage format to the BUMP structure needed for BEEF.
@@ -591,12 +599,15 @@ class PaymentCoordinatorActor extends Actor {
     
     // Level 0: Transaction ID at its position in the block
     // This matches CryptoUtils.createBumpFromTscProof() implementation
+    // CRITICAL: proof.txid is in display format (big-endian) from database
+    // but BUMP stores txids in internal format (little-endian)
+    final reversedTxid = _reverseHexBytes(proof.txid);
     levels.add(Level(leaves: [
       Leaf(
         offset: proof.position,
         duplicate: false,
         isTxid: true,
-        hash: Uint8List.fromList(hex.decode(proof.txid)),
+        hash: Uint8List.fromList(hex.decode(reversedTxid)),
       ),
     ]));
     
@@ -612,12 +623,18 @@ class PaymentCoordinatorActor extends Actor {
           ? (proof.position | (1 << i)) 
           : (proof.position & ~(1 << i));
       
+      // CRITICAL: proof.merkleProof[i] is in display format (big-endian) from database
+      // but BUMP stores hashes in internal format (little-endian)
+      // We must reverse the bytes when converting
+      final siblingHashHex = proof.merkleProof[i];
+      final reversedHash = _reverseHexBytes(siblingHashHex);
+      
       levels.add(Level(leaves: [
         Leaf(
           offset: siblingOffset,
           duplicate: false,
           isTxid: false,
-          hash: Uint8List.fromList(hex.decode(proof.merkleProof[i])),
+          hash: Uint8List.fromList(hex.decode(reversedHash)),
         ),
       ]));
     }
@@ -626,6 +643,21 @@ class PaymentCoordinatorActor extends Actor {
       blockHeight: proof.blockHeight,
       path: levels,
     );
+  }
+
+  /// Reverse bytes in a hex string (for Bitcoin's little-endian format)
+  /// 
+  /// Converts between display format (big-endian) and internal format (little-endian)
+  String _reverseHexBytes(String hexString) {
+    if (hexString.length % 2 != 0) {
+      throw Exception('Hex string must have an even number of characters: $hexString');
+    }
+
+    final result = StringBuffer();
+    for (int i = hexString.length - 2; i >= 0; i -= 2) {
+      result.write(hexString.substring(i, i + 2));
+    }
+    return result.toString();
   }
 
   /// Send error response to caller

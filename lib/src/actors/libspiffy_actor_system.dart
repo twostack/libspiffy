@@ -336,6 +336,11 @@ class LibSpiffyActorSystem {
       (map) => TransactionBroadcastEvent.fromMap(map),
     );
     
+    EventRegistry.register<TransactionImportedEvent>(
+      'TransactionImportedEvent',
+      (map) => TransactionImportedEvent.fromMap(map),
+    );
+    
     // =================================================================
     // INVOICE EVENTS (5 total)
     // =================================================================
@@ -365,7 +370,7 @@ class LibSpiffyActorSystem {
       (map) => InvoiceCancelledEvent.fromMap(map),
     );
     
-    print('✓ Registered 21 event types for deserialization');
+    print('✓ Registered 22 event types for deserialization');
   }
   
   /// Initialize CQRS projections for read-side persistence
@@ -514,13 +519,15 @@ class LibSpiffyActorSystem {
       await _spiffyNodeBridge!.initialize();
       print('✓ SpiffyNodeBridge initialized');
       
-      // 5. Create LibSpiffyPeerHandler with BlockHeaderChain reference
+      // 5. Create LibSpiffyPeerHandler with BlockHeaderChain and HeaderSyncActor references
       // Handler will query actual bestHeight dynamically for each batch
+      // and trigger header sync when new blocks are announced
       final peerHandler = LibSpiffyPeerHandler(
         bridge: _spiffyNodeBridge!,
         headerChain: _headerChain, // Pass BlockHeaderChain for dynamic height queries
+        headerSyncActor: _headerSyncActor, // Pass HeaderSyncActor for triggering sync on block announcements
       );
-      print('✓ LibSpiffyPeerHandler created for header capture (will query bestHeight dynamically)');
+      print('✓ LibSpiffyPeerHandler created for header capture and block announcement handling');
       
       // 6. Get peer addresses (use provided or defaults)
       final peers = peerAddresses ?? _getDefaultPeers(networkType);

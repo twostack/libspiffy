@@ -398,7 +398,13 @@ class BUMP {
       final secondHash = sha256(firstHash);
       
       // Convert back to big-endian format for the next round
-      String reversedHashedValue = hex.encode(secondHash.reversed.toList());
+      // CRITICAL: Must hex-encode FIRST, then reverse the hex string
+      // (not reverse bytes then encode, as that produces different results with lazy iterables)
+      final hashHex = hex.encode(secondHash);
+      String reversedHashedValue = "";
+      for (int j = hashHex.length - 2; j >= 0; j -= 2) {
+        reversedHashedValue += hashHex.substring(j, j + 2);
+      }
 
       currentHash = reversedHashedValue;
       
@@ -406,10 +412,17 @@ class BUMP {
       currentIndex = currentIndex ~/ 2;
     }
     
-    // Convert the final hash from hex string to bytes
+    // currentHash is now in display format (big-endian)
+    // Reverse it to internal format (little-endian) before returning
+    String internalFormat = "";
+    for (int i = currentHash.length - 2; i >= 0; i -= 2) {
+      internalFormat += currentHash.substring(i, i + 2);
+    }
+    
+    // Convert the final hash from hex string to bytes (internal format)
     final resultBytes = <int>[];
-    for (int i = 0; i < currentHash.length; i += 2) {
-      resultBytes.add(int.parse(currentHash.substring(i, i + 2), radix: 16));
+    for (int i = 0; i < internalFormat.length; i += 2) {
+      resultBytes.add(int.parse(internalFormat.substring(i, i + 2), radix: 16));
     }
     
     return Uint8List.fromList(resultBytes);

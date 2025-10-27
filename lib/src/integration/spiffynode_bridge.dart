@@ -228,16 +228,19 @@ class LibSpiffyPeerHandler implements PeerHandlerI {
   final PeerHandlerI? _userHandler;
   final Logger _logger;
   final dynamic _headerChain; // Reference to BlockHeaderChain for querying actual height
+  final dynamic _headerSyncActor; // Reference to HeaderSyncActor for triggering sync
 
   LibSpiffyPeerHandler({
     required SpiffyNodeBridge bridge,
     PeerHandlerI? userHandler,
     Logger? logger,
     dynamic headerChain, // BlockHeaderChain reference
+    dynamic headerSyncActor, // HeaderSyncActor reference
   }) : _bridge = bridge,
        _userHandler = userHandler,
        _logger = logger ?? Logger('LibSpiffyPeerHandler'),
-       _headerChain = headerChain;
+       _headerChain = headerChain,
+       _headerSyncActor = headerSyncActor;
 
   @override
   Future<void> handleHeaders(WireMessage message, PeerI peer) async {
@@ -247,8 +250,10 @@ class LibSpiffyPeerHandler implements PeerHandlerI {
       try {
         // Query actual chain height from BlockHeaderChain (not cached counter)
         // Bitcoin's getHeaders returns blocks AFTER the locator, so next height is bestHeight + 1
+        // IMPORTANT: When starting fresh (bestHeight = 0), peers send blocks starting from height 1, 
+        // not genesis (height 0). Genesis is hardcoded and not synced from the network.
         final currentBestHeight = _headerChain?.bestHeight ?? 0;
-        final startHeight = currentBestHeight > 0 ? currentBestHeight + 1 : 0;
+        final startHeight = currentBestHeight > 0 ? currentBestHeight + 1 : 1;
         final batchSize = message.headers.length;
         
         _logger.info('Forwarding ${batchSize} headers starting at height $startHeight (current tip: $currentBestHeight)');
@@ -329,6 +334,30 @@ class LibSpiffyPeerHandler implements PeerHandlerI {
 
   @override
   Future<void> handleBlockAnnouncement(InvVect inv, PeerI peer) async {
+    _logger.info('📢 New block announced: ${inv.hash}');
+    
+    try {
+      // Check if we already have this block
+      final currentBestHeight = _headerChain?.bestHeight ?? 0;
+      final existingHeader = await _headerChain?.getHeaderByHash(inv.hash.toString());
+      
+      if (existingHeader != null) {
+        _logger.fine('Already have block ${inv.hash}, skipping');
+      } else {
+        _logger.info('New block detected, triggering header sync from height ${currentBestHeight + 1}');
+        
+        // Send RequestHeaderSyncMessage to HeaderSyncActor to fetch new headers
+        if (_headerSyncActor != null) {
+          _headerSyncActor.tell(RequestHeaderSyncMessage(
+            fromHeight: currentBestHeight, // Sync from current tip
+            forceFull: false,
+          ) as dynamic);
+        }
+      }
+    } catch (e) {
+      _logger.warning('Error handling block announcement: $e');
+    }
+    
     // Delegate to user handler
     if (_userHandler != null) {
       await _userHandler.handleBlockAnnouncement(inv, peer);

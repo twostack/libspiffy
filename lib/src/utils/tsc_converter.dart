@@ -82,9 +82,13 @@ class TscConverter {
       final siblingOffset = isRightSide ? currentPosition - 1 : currentPosition + 1;
 
       // Convert sibling hash from hex to bytes
+      // IMPORTANT: WhatsOnChain returns hashes in DISPLAY format (big-endian)
+      // but BUMP stores them in INTERNAL format (little-endian)
+      // We must reverse the bytes when converting
       Uint8List hashBytes;
       try {
-        hashBytes = Uint8List.fromList(hex.decode(siblingHash));
+        final reversedHash = _reverseBytes(siblingHash);
+        hashBytes = Uint8List.fromList(hex.decode(reversedHash));
       } catch (e) {
         throw TscConversionException(
           'Invalid hex hash at level $levelIndex: $siblingHash',
@@ -116,6 +120,23 @@ class TscConverter {
     }
 
     return path;
+  }
+
+  /// Reverse bytes in a hex string (for Bitcoin's little-endian format)
+  /// 
+  /// Converts between display format (big-endian) and internal format (little-endian)
+  String _reverseBytes(String hexString) {
+    if (hexString.length % 2 != 0) {
+      throw TscConversionException(
+        'Hex string must have an even number of characters: $hexString',
+      );
+    }
+
+    final result = StringBuffer();
+    for (int i = hexString.length - 2; i >= 0; i -= 2) {
+      result.write(hexString.substring(i, i + 2));
+    }
+    return result.toString();
   }
 
   /// Validate that a TSC proof has all required fields

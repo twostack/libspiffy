@@ -199,7 +199,8 @@ class SPVActor extends Actor {
         // Debug merkle proof validation
         print('Debug: BUMP block height: ${bump.blockHeight}');
         print('Debug: Block header merkle root: ${hex.encode(blockHeader.merkleRoot.bytes)}');
-        
+        print('Debug: Bump Merkle Root ${hex.encode(bump.computeMerkleRoot(Uint8List.fromList(hex.decode(txidHex))))}');
+
         // Use BEEF's built-in validation (now fixed with proper byte order handling in bump.computeMerkleRoot())
         final isValidTx = await beef.validateTransactionWithBlockHeader(txid, blockHeader);
 

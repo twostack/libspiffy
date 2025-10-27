@@ -303,12 +303,14 @@ class BEEF {
     }
 
 
-    // Compute the merkle root from the transaction and its merkle path (uses internal format)
+    // Compute the merkle root from the transaction and its merkle path
+    // Returns bytes in internal format (little-endian)
     final computedMerkleRoot = bump.computeMerkleRoot(txidInternal);
 
-    // Convert the computed merkle root to a hex string for comparison
+    // Convert both to hex for comparison (both in internal format)
+    // blockHeader.merkleRoot.bytes is already in internal format
     final computedMerkleRootHex = hex.encode(computedMerkleRoot);
-    final expectedMerkleRootHex = hex.encode(blockHeader.merkleRoot.bytes.reversed.toList());
+    final expectedMerkleRootHex = hex.encode(blockHeader.merkleRoot.bytes);
 
     // Compare with the merkle root in the block header
     return computedMerkleRootHex == expectedMerkleRootHex;

@@ -192,30 +192,87 @@ class SPVActor extends Actor {
       }
 
       if (txMap!= null){
-
-        final bump = beef.bumps[txMap['index']];
-        final blockHeader = await _getBlockHeader(bump.blockHeight);
+        final txIndex = txMap['index'] as int;
+        final transaction = dartsv.Transaction.fromHex(hex.encode(txMap['txData']));
         
-        // Debug merkle proof validation
-        print('Debug: BUMP block height: ${bump.blockHeight}');
-        print('Debug: Block header merkle root: ${hex.encode(blockHeader.merkleRoot.bytes)}');
-        print('Debug: Bump Merkle Root ${hex.encode(bump.computeMerkleRoot(Uint8List.fromList(hex.decode(txidHex))))}');
+        // Check if this transaction has a merkle proof
+        final hasProof = beef.hasMerkle[txIndex];
+        
+        if (hasProof) {
+          // This transaction has a proof - validate it directly via SPV
+          print('Debug: Transaction has merkle proof - performing direct SPV validation');
+          
+          // Calculate BUMP index by counting how many transactions before this have proofs
+          int bumpIndex = 0;
+          for (int i = 0; i < txIndex; i++) {
+            if (beef.hasMerkle[i]) {
+              bumpIndex++;
+            }
+          }
+          
+          final bump = beef.bumps[bumpIndex];
+          final blockHeader = await _getBlockHeader(bump.blockHeight);
+          
+          print('Debug: BUMP block height: ${bump.blockHeight}');
+          print('Debug: Block header merkle root: ${hex.encode(blockHeader.merkleRoot.bytes)}');
+          print('Debug: Bump Merkle Root ${hex.encode(bump.computeMerkleRoot(Uint8List.fromList(hex.decode(txidHex))))}');
 
-        // Use BEEF's built-in validation (now fixed with proper byte order handling in bump.computeMerkleRoot())
-        final isValidTx = await beef.validateTransactionWithBlockHeader(txid, blockHeader);
+          // Validate this transaction's merkle proof
+          final isValidTx = await beef.validateTransactionWithBlockHeader(txid, blockHeader);
 
-        if (!isValidTx) {
-          print('Debug: Merkle proof validation FAILED');
-          return SPVValidationResult(
-            txid: txidHex,
-            isValid: false,
-            validationError: 'Transaction not connected to existing blockheader',
-            targetWalletId: walletId,
-          );
-
+          if (!isValidTx) {
+            print('Debug: Merkle proof validation FAILED');
+            return SPVValidationResult(
+              txid: txidHex,
+              isValid: false,
+              validationError: 'Transaction not connected to existing blockheader',
+              targetWalletId: walletId,
+            );
+          }
+          
+          print('Debug: Merkle proof validation PASSED');
+          
+        } else {
+          // This transaction has NO proof (unconfirmed payment transaction)
+          // Validate that all its ancestors (inputs) have valid merkle proofs
+          print('Debug: Transaction has no merkle proof (unconfirmed)');
+          print('Debug: Validating all ancestor transactions have valid proofs...');
+          
+          // Validate ALL transactions in BEEF that have proofs
+          for (int i = 0; i < beef.txs.length; i++) {
+            if (!beef.hasMerkle[i]) {
+              continue; // Skip transactions without proofs (like this payment tx)
+            }
+            
+            // Calculate BUMP index for this ancestor
+            int bumpIndex = 0;
+            for (int j = 0; j < i; j++) {
+              if (beef.hasMerkle[j]) {
+                bumpIndex++;
+              }
+            }
+            
+            final ancestorTxid = beef.calculateTxid(beef.txs[i]);
+            final bump = beef.bumps[bumpIndex];
+            final blockHeader = await _getBlockHeader(bump.blockHeight);
+            
+            print('Debug: Validating ancestor $i (txid: ${hex.encode(ancestorTxid)})');
+            
+            final isValid = await beef.validateTransactionWithBlockHeader(ancestorTxid, blockHeader);
+            
+            if (!isValid) {
+              print('Debug: Ancestor $i merkle proof validation FAILED');
+              return SPVValidationResult(
+                txid: txidHex,
+                isValid: false,
+                validationError: 'Ancestor transaction at index $i failed merkle proof validation',
+                targetWalletId: walletId,
+              );
+            }
+          }
+          
+          print('Debug: All ancestor merkle proofs validated successfully');
         }
-        
-        print('Debug: Merkle proof validation PASSED');
 
         // Step 2: Validate transaction structure and scripts
         final isTransactionValid = await _validateTransactionSpendsCorrectly(beef, txid);
@@ -228,10 +285,11 @@ class SPVActor extends Actor {
             targetWalletId: walletId,
           );
         }
+        
+        print('Debug: Transaction spends correctly');
 
         // Step 3: Extract spendable UTXOs for the target wallet
         // If invoice ID is provided, validate outputs match invoice addresses
-        final transaction = dartsv.Transaction.fromHex(hex.encode(txMap['txData']));
         final spendableUTXOs = await _extractSpendableUTXOs(transaction, walletId, invoiceId);
         final spentUTXOs = await _extractSpentUTXOs(transaction, walletId);
         
@@ -733,27 +791,7 @@ class SPVActor extends Actor {
       
       context.sender?.tell(result);
       
-      // If valid, process extracted transactions
-      if (extractedTransactions.isNotEmpty) {
-        for (final txData in extractedTransactions) {
-          // Convert to ReceiveTransactionMessage and process
-          // Use metadata to get actual peer ID if available, otherwise use generic identifier
-          final peerId = msg.metadata['peerId']?.toString() ?? 
-                        msg.metadata['source']?.toString() ?? 
-                        'beef_transaction';
-          
-          final receiveMsg = ReceiveTransactionMessage(
-            transactionId: txData['transactionId'], // Now correctly uses transactionId
-            beef: beef,
-            fromCounterparty: peerId,
-            targetWalletId: msg.targetWalletId,
-          );
-          
-          await _handleReceiveTransaction(receiveMsg);
-        }
-      }
-      
-      print('BEEF validation result: VALID');
+      print('BEEF validation result: VALID (${extractedTransactions.length} transactions extracted)');
       
     } catch (e) {
       print('BEEF validation error: $e');

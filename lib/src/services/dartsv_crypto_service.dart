@@ -82,7 +82,8 @@ class DartSVCryptoService implements CryptoService {
     // Only purpose, coin_type, and account are hardened
 
     final changeType = isChange ? 1 : 0;
-    final privKey = hdPrivateKey.deriveChildKey("m/44'/236'/${accountIndex}'/${changeType}/${addressIndex}");
+    // final privKey = hdPrivateKey.deriveChildKey("m/44'/236'/${accountIndex}'/${changeType}/${addressIndex}");
+    final privKey = hdPrivateKey.deriveChildKey("m/${accountIndex}/${addressIndex}");
 
     return privKey.privateKey;
   }

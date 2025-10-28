@@ -462,12 +462,7 @@ class PaymentCoordinatorActor extends Actor {
         throw Exception('Address metadata not found for ${utxo.address}');
       }
       
-      // Derive the private key for this address
-      // Standard BIP44 path: m/44'/236'/0'/0/index (for receive addresses)
-      // or m/44'/236'/0'/1/index (for change addresses)
-      // Note: BSV uses coin type 236
-      final changeIndex = addressMetadata.isChange ? 1 : 0;
-      final derivationPath = "m/44'/236'/0'/$changeIndex/${addressMetadata.derivationIndex}";
+      final derivationPath = "m/0/${addressMetadata.derivationIndex}";
       
       final derivedHdKey = hdPrivateKey.deriveChildKey(derivationPath);
       final privateKey = derivedHdKey.privateKey;

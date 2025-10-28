@@ -9,9 +9,10 @@ import 'dart:typed_data';
 
 import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
+import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 import 'package:libspiffy/src/utils/beef.dart';
 
-void main() {
+Future<void> main() async {
   print('═══════════════════════════════════════════════════════════');
   print(' BSV Xpriv Derivation Utility (BIP44 m/44\'/236\'/0\')');
   print('═══════════════════════════════════════════════════════════\n');
@@ -26,9 +27,10 @@ void main() {
   print('Derivation path: m/44\'/236\'/0\'');
   print('');
 
+  final cryptoService = DartSVCryptoService();
 
-  // final jopKey = dartsv.HDPrivateKey.fromXpriv("tprv8ZgxMBicQKsPeMiDjtXBGAyFY1wEMGgomjwf54ZmiZfKTNYvVdBa6GqWUwnvtHm6NKVkQkhCKxaobd9JPxNEXgDfVgJ5RNHJ3ivogSG3V1R");
-  final jopKey = dartsv.HDPrivateKey.fromXpriv("tprv8ZgxMBicQKsPfMi8zRfbn9aPteVMnmnNRuAkWzALcAmyKycA5LJ9xfwGCgqTjskEUSDWn6RaNL6Bu6iXcGmQr6ZfMaQvT4bDyWpBpyPgL9m");
+  final jopKey = dartsv.HDPrivateKey.fromXpriv("tprv8ZgxMBicQKsPeMiDjtXBGAyFY1wEMGgomjwf54ZmiZfKTNYvVdBa6GqWUwnvtHm6NKVkQkhCKxaobd9JPxNEXgDfVgJ5RNHJ3ivogSG3V1R");
+  // final jopKey = dartsv.HDPrivateKey.fromXpriv("tprv8ZgxMBicQKsPfMi8zRfbn9aPteVMnmnNRuAkWzALcAmyKycA5LJ9xfwGCgqTjskEUSDWn6RaNL6Bu6iXcGmQr6ZfMaQvT4bDyWpBpyPgL9m");
   // final j1 = jopKey.publicKey.toAddress(dartsv.NetworkType.TEST);
   // final jobKeyD1 = jopKey.deriveChildNumber(1);
 
@@ -36,8 +38,9 @@ void main() {
     final j1 = jopKey.deriveChildNumber(i);
     print("j1 Addr : " +  j1.publicKey.toAddress(dartsv.NetworkType.MAIN).toBase58());
 
-    final j2 = jopKey.deriveChildKey("m/0'/${i}");
-    print("j2 Addr : " + j2.publicKey.toAddress(dartsv.NetworkType.MAIN).toBase58());
+    final j2 = await cryptoService.derivePrivateKey(jopKey, 0, i, coinType: 236, isChange: false);
+    // final j2 = jopKey.deriveChildKey("m/0'/${i}");
+    print("j2 Addr : " + j2.publicKey.toAddress(dartsv.NetworkType.TEST).toBase58());
   }
 
   // final j1 = jopKey.deriveChildKey("m/44'/236'/0/0");

@@ -962,7 +962,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
           hdPrivateKey,
           0, // account index
           derivationIndex,
-          coinType: networkType == dartsv.NetworkType.MAIN ? 0 : 236,
+          coinType: 236,
           isChange: false,
         );
       }
@@ -1032,7 +1032,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
 
         final registry = ScriptTypeRegistry();
 
-        final scriptType = registry.identifyScriptType(dartsv.SVScript.fromHex(utxo.scriptPubKey));
+        final utxoScript = dartsv.SVScript.fromHex(utxo.scriptPubKey);
+        final scriptType = registry.identifyScriptType(utxoScript);
 
         if (scriptType?.toLowerCase() == 'p2pkh') {
           final unlocker = dartsv.P2PKHUnlockBuilder(dartsv.SVPublicKey.fromHex(command.publicKeys[i]));
@@ -1056,7 +1057,24 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
 
         // Sign the transaction at this input index
         signedTx = signer.sign(unsignedTx, utxoOutput, i);
+
+        //perform a sanity check to see if we're correctly spending the utxo
+        var scriptFlags = <dartsv.VerifyFlag>{}..addAll([
+          dartsv.VerifyFlag.SIGHASH_FORKID,
+          dartsv.VerifyFlag.UTXO_AFTER_GENESIS
+        ]);
+        final interpreter = dartsv.Interpreter();
+        var inputIndex = 0;
+        final scriptSig = signedTx.inputs[inputIndex].script;
+
+        //run the input(s) through the interpreter to verify it
+        interpreter.correctlySpends(
+            scriptSig!, utxoScript, signedTx, inputIndex, scriptFlags,
+            dartsv.Coin.ofSat(utxo.satoshis));
+        /*end spend validation*/
+
       }
+
 
 
       if (signedTx == null ) {

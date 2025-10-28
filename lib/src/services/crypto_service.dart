@@ -27,7 +27,7 @@ abstract class CryptoService {
     dartsv.HDPrivateKey hdPrivateKey,
     int accountIndex,
     int addressIndex, {
-    int coinType = 0, // 0 for Bitcoin, 236 for Bitcoin SV testnet
+    int coinType = 236, // 236 for Bitcoin SV testnet
     bool isChange = false,
   });
 

@@ -8,6 +8,7 @@ import 'package:convert/convert.dart';
 import '../models/bitcoin_utxo.dart';
 import '../models/bitcoin_transaction.dart';
 import '../storage/read_model_storage.dart';
+import '../storage/secure_storage.dart';
 import '../utils/beef.dart';
 import '../utils/bump.dart';
 import '../core/wallet_commands.dart';
@@ -25,12 +26,15 @@ import 'wallet_messages.dart';
 /// 6. Returning BEEF (does NOT broadcast - pure SPV model)
 class PaymentCoordinatorActor extends Actor {
   final ReadModelStorage _storage;
+  final SecureStorage _secureStorage;
   final ActorRef _walletManager;
 
   PaymentCoordinatorActor({
     required ActorRef walletManager,
     required ReadModelStorage storage,
+    required SecureStorage secureStorage,
   })  : _storage = storage,
+        _secureStorage = secureStorage,
         _walletManager = walletManager;
 
   @override
@@ -98,6 +102,9 @@ class PaymentCoordinatorActor extends Actor {
     }
     print('  ✓ Ancestor chain validated: ${ancestorResult.ancestorTransactions.length} transactions, ${ancestorResult.merkleProofs.length} proofs');
 
+
+    final publicKeys = await _getPublicKeysForUTXOs(msg.walletId, selectedUtxos);
+
     // 4. Build payment transaction
     print('  Building payment transaction...');
     final paymentTx = await _buildPaymentTransaction(
@@ -106,6 +113,7 @@ class PaymentCoordinatorActor extends Actor {
       outputAmount: msg.amount,
       changeAddress: msg.changeAddress,
       walletId: msg.walletId,
+      publicKeys: publicKeys,
     );
     
     if (paymentTx == null) {
@@ -122,6 +130,7 @@ class PaymentCoordinatorActor extends Actor {
       txid: paymentTx.txid,
       unsignedTxHex: paymentTx.rawHex,
       utxoKeys: utxoKeys,
+      publicKeys: publicKeys,
     );
 
     if (signedTxHex == null) {
@@ -328,9 +337,11 @@ class PaymentCoordinatorActor extends Actor {
     required BigInt outputAmount,
     String? changeAddress,
     required String walletId,
+    required List<dartsv.SVPublicKey> publicKeys,
   }) async {
     try {
       print('    Building transaction with ${selectedUtxos.length} inputs');
+      
       
       // Calculate total input
       final totalInput = selectedUtxos.fold<BigInt>(
@@ -355,10 +366,11 @@ class PaymentCoordinatorActor extends Actor {
       final changeAddress_ = dartsv.Address.fromBase58(changeAddr);
       txBuilder.sendChangeToPKH(changeAddress_);
       
-      // Add inputs from selected UTXOs
-      // NOTE: Creating UNSIGNED transaction - signing should be done by wallet aggregate
-      // which has secure access to private keys
-      for (final utxo in selectedUtxos) {
+      // Add inputs from selected UTXOs with public keys
+      for (int i = 0; i < selectedUtxos.length; i++) {
+        final utxo = selectedUtxos[i];
+        final publicKey = publicKeys[i];
+        
         final lockedAddress = dartsv.Address.fromBase58(utxo.address);
         final lockingScript = dartsv.P2PKHLockBuilder.fromAddress(lockedAddress).getScriptPubkey();
         
@@ -368,7 +380,11 @@ class PaymentCoordinatorActor extends Actor {
           utxo.satoshis,
           lockingScript,
         );
-        
+
+        // Prime the scriptSig with the public key for this UTXO
+        // Signing will populate the signature later
+        final unlockBuilder = dartsv.P2PKHUnlockBuilder(publicKey);
+        txBuilder.spendFromOutpoint(outpoint, dartsv.TransactionInput.MAX_SEQ_NUMBER, unlockBuilder);
       }
 
       // txBuilder.sendChangeToPKH(changeAddress);
@@ -378,13 +394,13 @@ class PaymentCoordinatorActor extends Actor {
           .withFeePerKb(1) // Low fee rate (proven from transaction_builder_service.dart) valid for BSV network
           .withOption(dartsv.TransactionOption.DISABLE_DUST_OUTPUTS);
       
-      // Build transaction (proven pattern: skip sanity checks for flexibility)
-      final signedTx = txBuilder.build(false);
-      final rawHex = signedTx.serialize();
-      final txid = signedTx.id;
+      // Build unsigned transaction (proven pattern: skip sanity checks for flexibility)
+      final unsignedTx = txBuilder.build(false);
+      final rawHex = unsignedTx.serialize();
+      final txid = unsignedTx.id;
       
       // Calculate actual fee and change from built transaction
-      final totalOutput = signedTx.outputs.fold<BigInt>(
+      final totalOutput = unsignedTx.outputs.fold<BigInt>(
         BigInt.zero,
         (sum, output) => sum + output.satoshis,
       );
@@ -392,7 +408,7 @@ class PaymentCoordinatorActor extends Actor {
       
       print('    ✓ Transaction built: $txid (${rawHex.length ~/ 2} bytes)');
       print('      Total input: $totalInput, Total output: $totalOutput, Fee: $fee');
-      print('      Outputs: ${signedTx.outputs.length}');
+      print('      Outputs: ${unsignedTx.outputs.length}');
       
       // Create transaction record
       return BitcoinTransaction(
@@ -417,6 +433,52 @@ class PaymentCoordinatorActor extends Actor {
     }
   }
 
+  /// Get public keys for all UTXOs being spent
+  /// 
+  /// For each UTXO, this method:
+  /// 1. Retrieves the address metadata to find the derivation index
+  /// 2. Derives the private key for that address from the wallet's xpriv
+  /// 3. Extracts the public key from the private key
+  Future<List<dartsv.SVPublicKey>> _getPublicKeysForUTXOs(
+    String walletId,
+    List<BitcoinUtxo> utxos,
+  ) async {
+    final publicKeys = <dartsv.SVPublicKey>[];
+    
+    // Get the wallet's extended private key
+    final xpriv = await _secureStorage.getXPriv(walletId);
+    if (xpriv == null) {
+      throw Exception('Wallet xpriv not found in secure storage');
+    }
+    
+    // Parse the extended private key
+    final hdPrivateKey = dartsv.HDPrivateKey.fromXpriv(xpriv);
+    
+    // For each UTXO, derive its public key
+    for (final utxo in utxos) {
+      // Get address metadata to find derivation index
+      final addressMetadata = await _storage.getAddressMetadata(walletId, utxo.address);
+      if (addressMetadata == null) {
+        throw Exception('Address metadata not found for ${utxo.address}');
+      }
+      
+      // Derive the private key for this address
+      // Standard BIP44 path: m/44'/236'/0'/0/index (for receive addresses)
+      // or m/44'/236'/0'/1/index (for change addresses)
+      // Note: BSV uses coin type 236
+      final changeIndex = addressMetadata.isChange ? 1 : 0;
+      final derivationPath = "m/44'/236'/0'/$changeIndex/${addressMetadata.derivationIndex}";
+      
+      final derivedHdKey = hdPrivateKey.deriveChildKey(derivationPath);
+      final privateKey = derivedHdKey.privateKey;
+      final publicKey = privateKey.publicKey;
+      
+      publicKeys.add(publicKey);
+    }
+    
+    return publicKeys;
+  }
+
   /// Request wallet to sign the transaction
   /// Returns signed transaction hex or null on failure
   Future<String?> _signTransaction({
@@ -424,6 +486,7 @@ class PaymentCoordinatorActor extends Actor {
     required String txid,
     required String unsignedTxHex,
     required List<String> utxoKeys,
+    required List<dartsv.SVPublicKey> publicKeys,
   }) async {
     print('    Requesting signature from wallet...');
     
@@ -442,6 +505,7 @@ class PaymentCoordinatorActor extends Actor {
           transactionId: txid,
           rawTransaction: unsignedTxHex,
           utxoKeys: utxoKeys,
+          publicKeys: publicKeys.map((key) => key.toHex()).toList(),
         ),
       ),
       sender: receiver,

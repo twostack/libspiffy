@@ -436,6 +436,7 @@ class LibSpiffyActorSystem {
     _paymentCoordinator = await _actorSystem.spawn('payment-coordinator', () => PaymentCoordinatorActor(
       walletManager: _walletManager!,
       storage: _walletStorage,
+      secureStorage: _secureStorage,
     ));
     
     // Spawn HeaderSyncActor early (other actors may need to communicate with it)

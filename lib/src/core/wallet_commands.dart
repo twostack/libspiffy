@@ -490,15 +490,17 @@ class SignTransactionCommand extends WalletCommand {
   final String transactionId;
   final String rawTransaction; // Unsigned transaction hex
   final List<String> utxoKeys; // UTXOs being spent
+  final List<String> publicKeys;
 
   SignTransactionCommand({
     required String walletId,
     required this.transactionId,
     required this.rawTransaction,
     required this.utxoKeys,
+    required this.publicKeys,
     String? commandId,
     DateTime? timestamp,
-    Map<String, dynamic>? metadata,
+    Map<String, dynamic>? metadata, 
   }) : super(
           walletId: walletId,
           commandId: commandId,

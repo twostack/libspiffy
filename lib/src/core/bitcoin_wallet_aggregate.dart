@@ -8,6 +8,7 @@ import '../models/wallet_state.dart';
 import '../models/bitcoin_utxo.dart';
 import '../models/wallet_type.dart';
 import '../services/crypto_service.dart';
+import '../services/script_type_registry.dart';
 import '../storage/secure_storage.dart';
 import '../services/transaction_builder_service.dart';
 import '../actors/wallet_messages.dart';
@@ -997,6 +998,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       throw StateError('Cannot sign transaction for non-existent wallet');
     }
 
+    dartsv.Transaction? signedTx;
+
     try {
       // Parse unsigned transaction
       final unsignedTx = dartsv.Transaction.fromHex(command.rawTransaction);
@@ -1026,8 +1029,24 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         );
 
         //Create the placeholder Tx Input that will hold the signature
-        final txInput = dartsv.TransactionInput(utxo.txid, utxo.vout, dartsv.TransactionInput.MAX_SEQ_NUMBER);
-        unsignedTx.addInput(txInput);
+
+        final registry = ScriptTypeRegistry();
+
+        final scriptType = registry.identifyScriptType(dartsv.SVScript.fromHex(utxo.scriptPubKey));
+
+        if (scriptType?.toLowerCase() == 'p2pkh') {
+          final unlocker = dartsv.P2PKHUnlockBuilder(dartsv.SVPublicKey.fromHex(command.publicKeys[i]));
+
+          final txInput = dartsv.TransactionInput(
+              utxo.txid,
+              utxo.vout,
+              dartsv.TransactionInput.MAX_SEQ_NUMBER,
+              scriptBuilder: unlocker
+          );
+
+          //overwrite the input with our defined locking script builder
+          unsignedTx.inputs[i] = txInput;
+        }
 
         // Create signer and sign this input
         final signer = dartsv.TransactionSigner(
@@ -1035,15 +1054,19 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
           privateKey,
         );
 
-
         // Sign the transaction at this input index
-        signer.sign(unsignedTx, utxoOutput, i);
+        signedTx = signer.sign(unsignedTx, utxoOutput, i);
+      }
+
+
+      if (signedTx == null ) {
+        throw Exception("Failed to sign transaction");
       }
       
       // Serialize signed transaction
-      final signedHex = unsignedTx.serialize();
+      final signedHex = signedTx.serialize();
       
-      // Send success response if in actor system
+      // Send response if in actor system
       if (_isInActorSystem() && context.sender != null) {
         context.sender!.tell(TransactionSignedResponse(
           walletId: command.walletId,
@@ -1052,7 +1075,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
           success: true,
         ));
       }
-      
+
+
       // Return TransactionSignedEvent
       final event = TransactionSignedEvent(
         walletId: command.walletId,
@@ -1061,7 +1085,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         version: currentState.version + 1,
         timestamp: DateTime.now(),
       );
-      
+
       return [event];
     } catch (e, stackTrace) {
       print('Error signing transaction: $e');

@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'package:convert/convert.dart';
 import 'package:http/http.dart' as http;
 
 import 'arc_service_config.dart';
@@ -30,7 +29,7 @@ class ArcSubmitResponse {
   final String? message;
   final int? blockHeight;
   final String? blockHash;
-  final int? timestamp;
+  final String? timestamp;  // date-time string, not integer
   final List<String>? doubleSpendTxids;
 
   ArcSubmitResponse({
@@ -95,9 +94,11 @@ class ArcSubmitResponse {
       txid: json['txid'] ?? '',
       status: status,
       message: json['message'],
-      blockHeight: json['blockHeight'],
+      blockHeight: json['blockHeight'] is String 
+          ? int.tryParse(json['blockHeight']) 
+          : json['blockHeight'] as int?,
       blockHash: json['blockHash'],
-      timestamp: json['timestamp'],
+      timestamp: json['timestamp']?.toString(),  // Keep as date-time string
       doubleSpendTxids: json['doubleSpendTxids'] != null
           ? List<String>.from(json['doubleSpendTxids'])
           : null,
@@ -112,7 +113,7 @@ class ArcTransactionResponse {
   final String? message;
   final int? blockHeight;
   final String? blockHash;
-  final int? timestamp;
+  final String? timestamp;  // date-time string, not integer
   final List<String>? doubleSpendTxids;
   final String? rawTx;
   final List<String>? merklePath;
@@ -183,9 +184,11 @@ class ArcTransactionResponse {
       txid: json['txid'] ?? '',
       status: status,
       message: json['message'],
-      blockHeight: json['blockHeight'],
+      blockHeight: json['blockHeight'] is String 
+          ? int.tryParse(json['blockHeight']) 
+          : json['blockHeight'] as int?,
       blockHash: json['blockHash'],
-      timestamp: json['timestamp'],
+      timestamp: json['timestamp']?.toString(),  // Keep as date-time string
       doubleSpendTxids: json['doubleSpendTxids'] != null
           ? List<String>.from(json['doubleSpendTxids'])
           : null,
@@ -214,10 +217,18 @@ class ArcPolicyResponse {
 
   factory ArcPolicyResponse.fromJson(Map<String, dynamic> json) {
     return ArcPolicyResponse(
-      maxTxSize: json['maxTxSize'] ?? 100000000,
-      minFeePerKb: json['minFeePerKb'] ?? 0.5,
-      standardFeePerKb: json['standardFeePerKb'] ?? 0.5,
-      dataFeePerKb: json['dataFeePerKb'] ?? 0.5,
+      maxTxSize: json['maxTxSize'] is String 
+          ? int.tryParse(json['maxTxSize']) ?? 100000000
+          : (json['maxTxSize'] as int?) ?? 100000000,
+      minFeePerKb: json['minFeePerKb'] is String 
+          ? double.tryParse(json['minFeePerKb']) ?? 0.5
+          : (json['minFeePerKb'] as double?) ?? 0.5,
+      standardFeePerKb: json['standardFeePerKb'] is String 
+          ? double.tryParse(json['standardFeePerKb']) ?? 0.5
+          : (json['standardFeePerKb'] as double?) ?? 0.5,
+      dataFeePerKb: json['dataFeePerKb'] is String 
+          ? double.tryParse(json['dataFeePerKb']) ?? 0.5
+          : (json['dataFeePerKb'] as double?) ?? 0.5,
     );
   }
 }
@@ -263,7 +274,9 @@ class ArcMerkleProofResponse {
           ? List<String>.from(json['merklePath'])
           : [],
       merkleRoot: json['merkleRoot'] ?? '',
-      blockHeight: json['blockHeight'] ?? 0,
+      blockHeight: json['blockHeight'] is String 
+          ? int.tryParse(json['blockHeight']) ?? 0
+          : (json['blockHeight'] as int?) ?? 0,
       blockHash: json['blockHash'],
     );
   }
@@ -277,6 +290,11 @@ class ArcMerkleProofResponse {
 /// **TAAL ARC Endpoints:**
 /// - Mainnet: https://arc.taal.com/v1
 /// - Testnet: https://arc-test.taal.com/v1
+/// 
+/// **Authentication:**
+/// All requests include an Authorization header when an API key is provided.
+/// The testnet default configuration includes a testnet API key automatically.
+/// Format: `Authorization: Bearer <apiKey>`
 /// 
 /// **Documentation:**
 /// - API Reference: https://bitcoin-sv.github.io/arc/api.html
@@ -348,33 +366,19 @@ class ArcService {
     }
   }
 
-  /// Submit a BEEF (Background Evaluation Extended Format) package
+  /// Submit BEEF transactions via Extended Format (EF)
   /// 
-  /// [beefHex] - The BEEF package in hex format
-  /// [callbackUrl] - Optional callback URL to receive transaction status updates
-  Future<ArcSubmitResponse> submitBEEF(String beefHex, {String? callbackUrl}) async {
-    final url = '$baseUrl/beef';
-    
-    final headers = Map<String, String>.from(_headers);
-    if (callbackUrl != null) {
-      headers['X-CallbackUrl'] = callbackUrl;
-    }
-    headers['Content-Type'] = 'application/octet-stream';
-
-    // Convert BEEF hex to bytes
-    final beefBytes = hex.decode(beefHex);     
-    final response = await _client.post(
-      Uri.parse(url),
-      headers: headers,
-      body: beefBytes,
-    );
-
-    if (response.statusCode == 200 || response.statusCode == 201) {
-      return ArcSubmitResponse.fromJson(jsonDecode(response.body));
-    } else {
-      throw ArcException('Failed to submit BEEF: ${response.body}');
-    }
-  }
+  /// **Note**: This method has been replaced by the ARCActor's internal
+  /// Extended Format conversion. BEEF packages are now:
+  /// 1. Parsed to extract the payment transaction and ancestors
+  /// 2. Converted to Extended Format (EF) which includes previous output data
+  /// 3. Submitted via `submitTransaction()` to the `/tx` endpoint
+  /// 
+  /// Extended Format (BRC-30/BIP-239) allows nodes to validate transactions
+  /// without UTXO lookup by including the previous output script and value
+  /// for each input directly in the transaction format.
+  /// 
+  /// See: `ARCActor._convertToExtendedFormat()` for implementation details.
 
   /// Get the status of a transaction
   /// 

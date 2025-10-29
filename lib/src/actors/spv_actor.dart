@@ -633,6 +633,9 @@ class SPVActor extends Actor {
   /// 
   /// This method analyzes transaction inputs to identify UTXOs that belonged
   /// to the specified wallet and are being spent by this transaction.
+  /// 
+  /// CRITICAL: Only returns inputs that the wallet actually owns. When receiving
+  /// a payment, this will return empty list since inputs belong to the sender.
   Future<List<Map<String, dynamic>>> _extractSpentUTXOs(dartsv.Transaction transaction, String? walletId) async {
     final spentUTXOs = <Map<String, dynamic>>[];
     
@@ -641,19 +644,33 @@ class SPVActor extends Actor {
     }
 
     try {
-      // Extract all inputs as spent UTXOs
-      // The WalletManagerActor will determine which ones actually belong to this wallet
+      // Get wallet's current UTXOs to check ownership
+      final walletUtxos = await _storage.getUTXOs(walletId, includeSpent: false);
+      
+      // Build a set of UTXO keys for O(1) lookup
+      final walletUtxoKeys = walletUtxos.map((utxo) => '${utxo.txid}:${utxo.vout}').toSet();
+      
+      print('Debug: Wallet $walletId has ${walletUtxoKeys.length} UTXOs');
+      
+      // Check each transaction input to see if it belongs to this wallet
       for (int inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex++) {
         final input = transaction.inputs[inputIndex];
         final prevTxId = input.prevTxnId;
         final prevOutputIndex = input.prevTxnOutputIndex;
+        final utxoKey = '$prevTxId:$prevOutputIndex';
 
-        spentUTXOs.add({
-          'txid': prevTxId,
-          'vout': prevOutputIndex,
-          'inputIndex': inputIndex,
-        });
+        // Only add to spentUTXOs if this wallet actually owns the UTXO being spent
+        if (walletUtxoKeys.contains(utxoKey)) {
+          spentUTXOs.add({
+            'txid': prevTxId,
+            'vout': prevOutputIndex,
+            'inputIndex': inputIndex,
+          });
+          print('Debug: Wallet owns UTXO $utxoKey being spent in this transaction');
+        }
       }
+      
+      print('Debug: Found ${spentUTXOs.length} UTXOs owned by wallet $walletId being spent (out of ${transaction.inputs.length} total inputs)');
     } catch (e) {
       print('Error extracting spent UTXOs: $e');
     }

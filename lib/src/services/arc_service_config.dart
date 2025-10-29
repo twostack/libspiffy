@@ -19,6 +19,7 @@ class ArcServiceConfig {
   /// Configuration for the TAAL testnet ARC service
   static const ArcServiceConfig taalTestnet = ArcServiceConfig(
     baseUrl: 'https://arc-test.taal.com/v1',
+    apiKey: 'testnet_4c8508f7b426d2cc4690ce6be9aa47e7',
   );
 
   /// Configuration for the TAAL mainnet ARC service

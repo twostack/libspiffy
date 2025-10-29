@@ -1,9 +1,14 @@
 import 'dart:async';
+import 'dart:typed_data';
 import 'package:dactor/dactor.dart';
+import 'package:convert/convert.dart';
+import 'package:dartsv/dartsv.dart' as dartsv;
+import 'package:buffer/buffer.dart';
 
 import '../core/wallet_commands.dart';
 import '../services/arc_service.dart';
 import '../services/arc_service_config.dart';
+import '../utils/beef.dart';
 import 'wallet_messages.dart';
 
 /// Actor that handles ARC service integration for transaction broadcasting and monitoring
@@ -84,9 +89,8 @@ class ARCActor extends Actor {
       print('ARC service initialized with endpoint: ${_arcConfig.baseUrl}');
     } else {
       print('WARNING: ARC service not configured - using TAAL testnet default');
-      _arcService = ArcService(
-        baseUrl: 'https://arc-test.taal.com/v1',
-      );
+      _arcService = ArcService.fromConfig(ArcServiceConfig.taalTestnet);
+      print('ARC service initialized with TAAL testnet (with API key)');
     }
   }
 
@@ -147,8 +151,44 @@ class ARCActor extends Actor {
     }
     
     try {
-      // Broadcast BEEF via ARC service
-      final response = await _arcService!.submitBEEF(msg.beefHex);
+      // 1. Extract the payment transaction (last tx) and ancestors from BEEF
+      final beef = BEEF.parse(Uint8List.fromList(hex.decode(msg.beefHex)));
+      
+      if (beef.txs.isEmpty) {
+        throw Exception('BEEF contains no transactions');
+      }
+      
+      // The payment transaction is the last one in the BEEF
+      final paymentTxData = beef.txs.last;
+      final paymentTxHex = hex.encode(paymentTxData);
+      final paymentTx = dartsv.Transaction.fromHex(paymentTxHex);
+      
+      print('Extracted payment transaction: ${msg.txid}');
+      print('  Inputs: ${paymentTx.inputs.length}, Outputs: ${paymentTx.outputs.length}');
+      
+      // 2. Build a map of ancestor transactions for UTXO lookup
+      final ancestorTxMap = <String, dartsv.Transaction>{};
+      for (int i = 0; i < beef.txs.length - 1; i++) {
+        final ancestorTxHex = hex.encode(beef.txs[i]);
+        final ancestorTx = dartsv.Transaction.fromHex(ancestorTxHex);
+        final ancestorTxid = ancestorTx.id;
+        ancestorTxMap[ancestorTxid] = ancestorTx;
+      }
+      
+      print('Built ancestor map with ${ancestorTxMap.length} transactions');
+      
+      // // 3. Convert payment transaction to Extended Format (EF)
+      // final extendedFormatTxHex = _convertToExtendedFormat(
+      //   paymentTx,
+      //   ancestorTxMap,
+      // );
+      //
+      // print('Converted to Extended Format: ${extendedFormatTxHex.length} chars');
+      
+      // 4a (deferred) Broadcast Extended Format transaction via ARC service
+      // 4b (deferred) Broadcast Raw Format transaction via ARC service. Extended format seems still not supported by Arc API
+
+      final response = await _arcService!.submitTransaction(paymentTxHex);
       
       _transactionStatus[msg.txid] = _arcStatusToString(response.status);
       _transactionToWallet[msg.txid] = msg.walletId;
@@ -161,10 +201,10 @@ class ARCActor extends Actor {
       _walletManager.tell(WalletCommandMessage(msg.walletId, command));
       
       context.sender?.tell(BroadcastSuccessMessage(msg.txid, response.txid));
-      print('BEEF transaction ${msg.txid} broadcast successfully with status: ${response.status}');
+      print('Transaction ${msg.txid} broadcast successfully with status: ${response.status}');
       
     } catch (e) {
-      print('Error broadcasting BEEF ${msg.txid}: $e');
+      print('Error broadcasting transaction ${msg.txid}: $e');
       context.sender?.tell(BroadcastFailedMessage(msg.txid, e.toString()));
     }
   }
@@ -434,6 +474,100 @@ class ARCActor extends Actor {
         context.sender?.tell(FeeEstimateMessage(BigInt.zero));
         break;
     }
+  }
+
+  /// Convert a transaction to Extended Format (EF)
+  /// 
+  /// Extended Format adds the previous output script and value for each input,
+  /// allowing nodes to validate without UTXO lookup.
+  /// 
+  /// Format: [version] [EF_MARKER] [for each input: prevOutScript + value] [rest of tx]
+  /// EF_MARKER = 0x00000000EF (5 bytes)
+  String _convertToExtendedFormat(
+    dartsv.Transaction tx,
+    Map<String, dartsv.Transaction> ancestorTxMap,
+  ) {
+    final buffer = ByteDataWriter();
+    
+    // 1. Write version (4 bytes, little endian)
+    buffer.writeUint32(tx.version, Endian.little);
+    
+    // 2. Write EF marker: 0x00000000EF (5 bytes)
+    buffer.writeUint8(0x00);
+    buffer.writeUint8(0x00);
+    buffer.writeUint8(0x00);
+    buffer.writeUint8(0x00);
+    buffer.writeUint8(0xEF);
+    
+    // 3. Write input count
+    final inputCountVarint = dartsv.VarInt.fromInt(tx.inputs.length);
+    buffer.write(inputCountVarint.encode());
+    
+    // 4. For each input, write: prevOutScript, value, and then standard input data
+    for (final input in tx.inputs) {
+      final prevTxid = input.prevTxnId;
+      final prevVout = input.prevTxnOutputIndex;
+      
+      // Find the previous output from ancestor transactions
+      final prevTx = ancestorTxMap[prevTxid];
+      if (prevTx == null) {
+        throw Exception('Previous transaction $prevTxid not found in ancestors');
+      }
+      
+      if (prevVout >= prevTx.outputs.length) {
+        throw Exception('Invalid output index $prevVout for transaction $prevTxid');
+      }
+      
+      final prevOutput = prevTx.outputs[prevVout];
+      
+      // Write previous output script length and script
+      final scriptHex = prevOutput.script.toHex();
+      final scriptBytes = hex.decode(scriptHex);
+      final scriptLengthVarint = dartsv.VarInt.fromInt(scriptBytes.length);
+      buffer.write(scriptLengthVarint.encode());
+      buffer.write(scriptBytes);
+      
+      // Write previous output value (8 bytes, little endian)
+      buffer.writeUint64(prevOutput.satoshis.toInt(), Endian.little);
+      
+      // Write standard input data: prev txid (32 bytes) + prev vout (4 bytes)
+      final prevTxidBytes = hex.decode(prevTxid);
+      buffer.write(Uint8List.fromList(prevTxidBytes.reversed.toList())); // Reverse for little endian
+      buffer.writeUint32(prevVout, Endian.little);
+      
+      // Write scriptSig length and scriptSig
+      final scriptSigBytes = input.script?.buffer ?? Uint8List(0);
+      final scriptSigLengthVarint = dartsv.VarInt.fromInt(scriptSigBytes.length);
+      buffer.write(scriptSigLengthVarint.encode());
+      buffer.write(scriptSigBytes);
+      
+      // Write sequence (4 bytes)
+      buffer.writeUint32(input.sequenceNumber, Endian.little);
+    }
+    
+    // 5. Write output count
+    final outputCountVarint = dartsv.VarInt.fromInt(tx.outputs.length);
+    buffer.write(outputCountVarint.encode());
+    
+    // 6. Write each output
+    for (final output in tx.outputs) {
+      // Write value (8 bytes, little endian)
+      buffer.writeUint64(output.satoshis.toInt(), Endian.little);
+      
+      // Write scriptPubKey length and scriptPubKey
+      final scriptPubKeyHex = output.script.toHex();
+      final scriptPubKeyBytes = hex.decode(scriptPubKeyHex);
+      final scriptPubKeyLengthVarint = dartsv.VarInt.fromInt(scriptPubKeyBytes.length);
+      buffer.write(scriptPubKeyLengthVarint.encode());
+      buffer.write(scriptPubKeyBytes);
+    }
+    
+    // 7. Write locktime (4 bytes)
+    buffer.writeUint32(tx.nLockTime, Endian.little);
+    
+    // Convert to hex string
+    final efBytes = buffer.toBytes();
+    return hex.encode(efBytes);
   }
 
   @override

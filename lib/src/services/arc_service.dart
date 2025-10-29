@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'package:convert/convert.dart';
 import 'package:http/http.dart' as http;
 
@@ -270,7 +269,19 @@ class ArcMerkleProofResponse {
   }
 }
 
-/// Service for interacting with the ARC API
+/// Service for interacting with the ARC API (Advanced Relayer Console)
+/// 
+/// ARC is the successor to mAPI (merchant API) and implements the BIP-239 
+/// standard for BEEF (Background Evaluation Extended Format) transaction submission.
+/// 
+/// **TAAL ARC Endpoints:**
+/// - Mainnet: https://arc.taal.com/v1
+/// - Testnet: https://arc-test.taal.com/v1
+/// 
+/// **Documentation:**
+/// - API Reference: https://bitcoin-sv.github.io/arc/api.html
+/// - BIP-239 Standard: https://github.com/bitcoin-sv/arc/blob/master/doc/BIP-239.md
+/// - GitHub: https://github.com/bitcoin-sv/arc
 class ArcService {
   final String baseUrl;
   final String? apiKey;
@@ -278,8 +289,9 @@ class ArcService {
   
   /// Create a new ARC service
   /// 
-  /// [baseUrl] - The base URL of the ARC API (e.g., https://arc.taal.com/v1)
-  /// [apiKey] - Optional API key for authentication
+  /// [baseUrl] - The base URL of the ARC API (e.g., https://arc.taal.com/v1 for mainnet,
+  ///             https://arc-test.taal.com/v1 for testnet)
+  /// [apiKey] - Optional API key for authentication (required for TAAL production use)
   ArcService({
     required this.baseUrl,
     this.apiKey,

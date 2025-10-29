@@ -83,9 +83,9 @@ class ARCActor extends Actor {
       _arcService = ArcService.fromConfig(_arcConfig);
       print('ARC service initialized with endpoint: ${_arcConfig.baseUrl}');
     } else {
-      print('WARNING: ARC service not configured - using testnet default');
+      print('WARNING: ARC service not configured - using TAAL testnet default');
       _arcService = ArcService(
-        baseUrl: 'https://api.whatsonchain.com/v1/bsv/test',
+        baseUrl: 'https://arc-test.taal.com/v1',
       );
     }
   }

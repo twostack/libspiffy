@@ -344,29 +344,58 @@ class WalletManagerActor extends Actor {
         print('Sent ReceiveUTXO command to wallet $walletId');
       }
 
-      // Process spent UTXOs
-      for (final utxoData in result.spentUTXOs) {
-        final utxoKey = '${utxoData['txid']}:${utxoData['vout']}';
-        
-        // Use the calculated transaction fee from SPV validation
-        // If fee is null, fall back to BigInt.zero (shouldn't happen in practice)
-        final fee = result.transactionFee ?? BigInt.zero;
-        
-        final command = SpendUTXOCommand(
-          walletId: walletId,
-          utxoKey: utxoKey,
-          spendingTxId: result.txid,
-          fee: fee,
-        );
-        
-        walletActor.tell(command);
-        print('Sent SpendUTXO command to wallet $walletId (fee: $fee satoshis)');
-      }
-
-    } catch (e) {
-      print('Error processing SPV result for wallet $walletId: $e');
+    // Process spent UTXOs
+    for (final utxoData in result.spentUTXOs) {
+      final utxoKey = '${utxoData['txid']}:${utxoData['vout']}';
+      
+      // Use the calculated transaction fee from SPV validation
+      // If fee is null, fall back to BigInt.zero (shouldn't happen in practice)
+      final fee = result.transactionFee ?? BigInt.zero;
+      
+      final command = SpendUTXOCommand(
+        walletId: walletId,
+        utxoKey: utxoKey,
+        spendingTxId: result.txid,
+        fee: fee,
+      );
+      
+      walletActor.tell(command);
+      print('Sent SpendUTXO command to wallet $walletId (fee: $fee satoshis)');
     }
+
+    // ✨ NEW: Record the transaction in transaction history
+    // This is critical for maintaining an accurate transaction history
+    if (result.transactionData != null) {
+      final txData = result.transactionData!;
+      
+      // Record the imported transaction (this will emit TransactionImportedEvent)
+      final command = RecordImportedTransactionCommand(
+        walletId: walletId,
+        txid: result.txid,
+        rawHex: txData['rawHex'] ?? '',
+        blockHeight: txData['blockHeight'] ?? 0,
+        bumpProofHex: txData['bumpProof'] ?? '',
+        totalOutputSats: txData['totalOutputSats'] ?? 0,
+        numInputs: txData['numInputs'] ?? 0,
+        numOutputs: txData['numOutputs'] ?? 0,
+        txVersion: txData['txVersion'] ?? 1,
+        txLockTime: txData['txLockTime'] ?? 0,
+        walletReceivingAddresses: List<String>.from(txData['walletReceivingAddresses'] ?? []),
+        walletReceivedSats: txData['walletReceivedSats'] ?? 0,
+        totalInputSats: txData['totalInputSats'] ?? 0,
+        sendingAddresses: List<String>.from(txData['sendingAddresses'] ?? []),
+      );
+      
+      walletActor.tell(command);
+      print('✅ Sent RecordImportedTransaction command to wallet $walletId for transaction ${result.txid}');
+    } else {
+      print('⚠️ Warning: SPV result missing transaction data - cannot record in history');
+    }
+
+  } catch (e) {
+    print('Error processing SPV result for wallet $walletId: $e');
   }
+}
 
   /// Process SPV validation result for all wallets (when target not specified)
   Future<void> _processSPVResultForAllWallets(SPVValidationResult result) async {

@@ -58,6 +58,8 @@ class WalletProjection extends Projection<WalletReadModel> {
         UTXOReleasedEvent,
         UTXOReservationRenewedEvent,
         TransactionImportedEvent,
+        TransactionRecordedEvent,
+        TransactionConfirmedEvent,
         TransactionCreatedEvent,
       ];
   
@@ -118,6 +120,12 @@ class WalletProjection extends Projection<WalletReadModel> {
           return true;
         case TransactionImportedEvent:
           await _handleTransactionImported(event as TransactionImportedEvent);
+          return true;
+        case TransactionRecordedEvent:
+          await _handleTransactionRecorded(event as TransactionRecordedEvent);
+          return true;
+        case TransactionConfirmedEvent:
+          await _handleTransactionConfirmed(event as TransactionConfirmedEvent);
           return true;
         case TransactionCreatedEvent:
           await _handleTransactionCreated(event as TransactionCreatedEvent);
@@ -514,6 +522,66 @@ class WalletProjection extends Projection<WalletReadModel> {
     }
   }
   
+  Future<void> _handleTransactionRecorded(TransactionRecordedEvent event) async {
+    print('[WalletProjection] 📤 Processing TransactionRecordedEvent: ${event.txid}');
+    
+    try {
+      // For outgoing transactions, net amount should be:
+      // -(payment amount + fee) because we're losing this amount from our wallet
+      final paymentAmount = BigInt.parse(event.paymentAmount);
+      final fee = BigInt.from(event.fee);
+      final netAmount = -(paymentAmount + fee);
+      
+      // Create transaction record in PENDING state
+      final transaction = BitcoinTransaction(
+        txid: event.txid,
+        rawHex: event.rawHex,
+        status: TransactionStatus.pending, // Important: starts as PENDING
+        blockHeight: null, // No block height yet
+        confirmations: 0,
+        inputValue: BigInt.from(event.totalInputSats),
+        outputValue: BigInt.from(event.totalOutputSats),
+        fee: fee,
+        receivingAddresses: event.recipientAddresses,
+        sendingAddresses: [], // Sender addresses will be from our wallet
+        netAmount: netAmount, // Negative for outgoing
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+        lockTime: event.txLockTime,
+        version: event.txVersion,
+      );
+      
+      print('[WalletProjection]    → Storing outgoing transaction (status: PENDING)');
+      print('[WalletProjection]       Payment amount: ${event.paymentAmount} sats');
+      print('[WalletProjection]       Fee: ${event.fee} sats');
+      print('[WalletProjection]       Recipients: ${event.recipientAddresses.join(", ")}');
+      
+      await _storage.storeTransaction(event.walletId, transaction);
+      print('[WalletProjection]    ✅ Outgoing transaction recorded (PENDING)');
+    } catch (e, stackTrace) {
+      print('[WalletProjection] ❌ Error processing TransactionRecordedEvent: $e');
+      print('[WalletProjection] Stack trace: $stackTrace');
+    }
+  }
+
+  Future<void> _handleTransactionConfirmed(TransactionConfirmedEvent event) async {
+    print('[WalletProjection] ✅ Processing TransactionConfirmedEvent: ${event.txid}');
+    
+    try {
+      // Update transaction status from PENDING to CONFIRMED
+      // For now, just log it - full implementation would update the Isar record
+      print('[WalletProjection]    → Transaction confirmed at block: ${event.blockHeight}');
+      print('[WalletProjection]    → Block hash: ${event.blockHash}');
+      
+      // TODO: Implement status update in Isar
+      // This would require fetching the transaction and updating its status
+      print('[WalletProjection]    ⚠️  Status update not yet implemented');
+    } catch (e, stackTrace) {
+      print('[WalletProjection] ❌ Error processing TransactionConfirmedEvent: $e');
+      print('[WalletProjection] Stack trace: $stackTrace');
+    }
+  }
+
   Future<void> _handleTransactionCreated(TransactionCreatedEvent event) async {
     print('[WalletProjection] 📥 Processing TransactionCreatedEvent: ${event.txid}');
     

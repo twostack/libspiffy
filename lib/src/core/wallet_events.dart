@@ -1042,6 +1042,150 @@ class TransactionBroadcastEvent extends WalletEvent {
   }
 }
 
+/// Event fired when an outgoing transaction is recorded (in pending state)
+class TransactionRecordedEvent extends WalletEvent {
+  final String txid;
+  final String rawHex;
+  final int totalInputSats;
+  final int totalOutputSats;
+  final int fee;
+  final int numInputs;
+  final int numOutputs;
+  final int txVersion;
+  final int txLockTime;
+  final List<String> spentUtxoKeys;
+  final List<String> recipientAddresses;
+  final String paymentAmount; // Store as string to avoid BigInt serialization issues
+  final String? changeAddress;
+  final String? changeAmount;
+
+  TransactionRecordedEvent({
+    required String walletId,
+    required this.txid,
+    required this.rawHex,
+    required this.totalInputSats,
+    required this.totalOutputSats,
+    required this.fee,
+    required this.numInputs,
+    required this.numOutputs,
+    required this.txVersion,
+    required this.txLockTime,
+    required this.spentUtxoKeys,
+    required this.recipientAddresses,
+    required this.paymentAmount,
+    this.changeAddress,
+    this.changeAmount,
+    String? eventId,
+    DateTime? timestamp,
+    int? version,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          eventId: eventId,
+          timestamp: timestamp,
+          version: version,
+          metadata: metadata,
+        );
+
+  @override
+  Map<String, dynamic> getWalletEventData() {
+    return {
+      'txid': txid,
+      'rawHex': rawHex,
+      'totalInputSats': totalInputSats,
+      'totalOutputSats': totalOutputSats,
+      'fee': fee,
+      'numInputs': numInputs,
+      'numOutputs': numOutputs,
+      'txVersion': txVersion,
+      'txLockTime': txLockTime,
+      'spentUtxoKeys': spentUtxoKeys,
+      'recipientAddresses': recipientAddresses,
+      'paymentAmount': paymentAmount,
+      'changeAddress': changeAddress,
+      'changeAmount': changeAmount,
+    };
+  }
+
+  static TransactionRecordedEvent fromMap(Map<String, dynamic> map) {
+    return TransactionRecordedEvent(
+      walletId: map['walletId'] as String,
+      txid: map['txid'] as String,
+      rawHex: map['rawHex'] as String,
+      totalInputSats: map['totalInputSats'] as int,
+      totalOutputSats: map['totalOutputSats'] as int,
+      fee: map['fee'] as int,
+      numInputs: map['numInputs'] as int,
+      numOutputs: map['numOutputs'] as int,
+      txVersion: map['txVersion'] as int,
+      txLockTime: map['txLockTime'] as int,
+      spentUtxoKeys: List<String>.from(map['spentUtxoKeys'] as List),
+      recipientAddresses: List<String>.from(map['recipientAddresses'] as List),
+      paymentAmount: map['paymentAmount'] as String,
+      changeAddress: map['changeAddress'] as String?,
+      changeAmount: map['changeAmount'] as String?,
+      eventId: map['eventId'] as String?,
+      timestamp: map['timestamp'] != null
+          ? (map['timestamp'] is String 
+              ? DateTime.parse(map['timestamp'] as String)
+              : map['timestamp'] as DateTime)
+          : null,
+      version: map['version'] as int?,
+      metadata: map['metadata'] as Map<String, dynamic>?,
+    );
+  }
+}
+
+/// Event fired when a pending transaction is confirmed
+class TransactionConfirmedEvent extends WalletEvent {
+  final String txid;
+  final int? blockHeight;
+  final String? blockHash;
+
+  TransactionConfirmedEvent({
+    required String walletId,
+    required this.txid,
+    this.blockHeight,
+    this.blockHash,
+    String? eventId,
+    DateTime? timestamp,
+    int? version,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          eventId: eventId,
+          timestamp: timestamp,
+          version: version,
+          metadata: metadata,
+        );
+
+  @override
+  Map<String, dynamic> getWalletEventData() {
+    return {
+      'txid': txid,
+      'blockHeight': blockHeight,
+      'blockHash': blockHash,
+    };
+  }
+
+  static TransactionConfirmedEvent fromMap(Map<String, dynamic> map) {
+    return TransactionConfirmedEvent(
+      walletId: map['walletId'] as String,
+      txid: map['txid'] as String,
+      blockHeight: map['blockHeight'] as int?,
+      blockHash: map['blockHash'] as String?,
+      eventId: map['eventId'] as String?,
+      timestamp: map['timestamp'] != null
+          ? (map['timestamp'] is String 
+              ? DateTime.parse(map['timestamp'] as String)
+              : map['timestamp'] as DateTime)
+          : null,
+      version: map['version'] as int?,
+      metadata: map['metadata'] as Map<String, dynamic>?,
+    );
+  }
+}
+
 // =============================================================================
 // UTXO RESERVATION EVENTS
 // =============================================================================

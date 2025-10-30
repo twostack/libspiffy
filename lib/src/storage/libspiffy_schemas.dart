@@ -317,6 +317,10 @@ class BitcoinTransactionEntity {
 
   /// Transaction fee (as string to handle BigInt)
   late String fee;
+  
+  /// Net amount from wallet's perspective (as string to handle BigInt)
+  /// Positive for incoming, negative for outgoing
+  late String netAmount;
 
   /// Whether this is an incoming transaction
   late bool isIncoming;
@@ -371,6 +375,7 @@ class BitcoinTransactionEntity {
       ..totalInput = tx.inputValue.toString()
       ..totalOutput = tx.outputValue.toString()
       ..fee = tx.fee.toString()
+      ..netAmount = netAmount.toString()
       ..isIncoming = netAmount > BigInt.zero
       ..isOutgoing = netAmount < BigInt.zero
       ..status = tx.status.name
@@ -413,7 +418,7 @@ class BitcoinTransactionEntity {
       fee: BigInt.parse(fee),
       receivingAddresses: receiving,
       sendingAddresses: sending,
-      netAmount: BigInt.parse(totalInput) - BigInt.parse(totalOutput),
+      netAmount: BigInt.parse(netAmount), // Read directly from stored value
       createdAt: createdAt,
       updatedAt: createdAt, // Use createdAt as fallback
       memo: notes,

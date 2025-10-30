@@ -157,6 +157,18 @@ class PaymentCoordinatorActor extends Actor {
 
     print('  ✓ Transaction signed: ${signedPaymentTx.txid}');
 
+    // 4c. Record the outgoing transaction in PENDING state
+    print('  Recording outgoing transaction...');
+    await _recordOutgoingTransaction(
+      walletId: msg.walletId,
+      transaction: signedPaymentTx,
+      spentUtxoKeys: utxoKeys,
+      recipientAddresses: msg.addresses,
+      paymentAmount: msg.amount,
+      changeAddress: msg.changeAddress,
+    );
+    print('  ✓ Transaction recorded in wallet history (status: PENDING)');
+
     // 5. Get block headers for validation
     print('  Retrieving block headers...');
     final blockHeaders = await _getBlockHeaders(ancestorResult.blockHeights);
@@ -726,6 +738,42 @@ class PaymentCoordinatorActor extends Actor {
       invoiceId: invoiceId,
       error: error,
     ));
+  }
+
+  /// Record outgoing transaction in wallet history (in PENDING state)
+  Future<void> _recordOutgoingTransaction({
+    required String walletId,
+    required BitcoinTransaction transaction,
+    required List<String> spentUtxoKeys,
+    required List<String> recipientAddresses,
+    required BigInt paymentAmount,
+    String? changeAddress,
+  }) async {
+    // Calculate change amount
+    final changeAmount = transaction.outputValue - paymentAmount;
+    
+    final command = RecordOutgoingTransactionCommand(
+      walletId: walletId,
+      txid: transaction.txid,
+      rawHex: transaction.rawHex,
+      totalInputSats: transaction.inputValue.toInt(),
+      totalOutputSats: transaction.outputValue.toInt(),
+      fee: transaction.fee.toInt(),
+      numInputs: spentUtxoKeys.length,
+      numOutputs: recipientAddresses.length + (changeAddress != null ? 1 : 0),
+      txVersion: transaction.version,
+      txLockTime: transaction.lockTime,
+      spentUtxoKeys: spentUtxoKeys,
+      recipientAddresses: recipientAddresses,
+      paymentAmount: paymentAmount,
+      changeAddress: changeAddress,
+      changeAmount: changeAmount > BigInt.zero ? changeAmount : null,
+    );
+    
+    _walletManager.tell(
+      WalletCommandMessage(walletId, command),
+      sender: context.self,
+    );
   }
 
   @override

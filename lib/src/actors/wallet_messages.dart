@@ -254,6 +254,7 @@ class SPVValidationResult implements Message {
   final List<Map<String, dynamic>> spentUTXOs; // UTXOs that were spent
   final String? targetWalletId;
   final BigInt? transactionFee; // Total transaction fee (only when spentUTXOs is not empty)
+  final Map<String, dynamic>? transactionData; // Full transaction data for recording history
 
   SPVValidationResult({
     required this.txid,
@@ -263,6 +264,7 @@ class SPVValidationResult implements Message {
     this.spentUTXOs = const [],
     this.targetWalletId,
     this.transactionFee,
+    this.transactionData,
   });
 
   @override

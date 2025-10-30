@@ -7657,53 +7657,58 @@ const BitcoinTransactionEntitySchema = CollectionSchema(
       name: r'isOutgoing',
       type: IsarType.bool,
     ),
-    r'notes': PropertySchema(
+    r'netAmount': PropertySchema(
       id: 10,
+      name: r'netAmount',
+      type: IsarType.string,
+    ),
+    r'notes': PropertySchema(
+      id: 11,
       name: r'notes',
       type: IsarType.string,
     ),
     r'primaryCounterparty': PropertySchema(
-      id: 11,
+      id: 12,
       name: r'primaryCounterparty',
       type: IsarType.string,
     ),
     r'rawHex': PropertySchema(
-      id: 12,
+      id: 13,
       name: r'rawHex',
       type: IsarType.string,
     ),
     r'receivingAddressesJson': PropertySchema(
-      id: 13,
+      id: 14,
       name: r'receivingAddressesJson',
       type: IsarType.string,
     ),
     r'sendingAddressesJson': PropertySchema(
-      id: 14,
+      id: 15,
       name: r'sendingAddressesJson',
       type: IsarType.string,
     ),
     r'status': PropertySchema(
-      id: 15,
+      id: 16,
       name: r'status',
       type: IsarType.string,
     ),
     r'totalInput': PropertySchema(
-      id: 16,
+      id: 17,
       name: r'totalInput',
       type: IsarType.string,
     ),
     r'totalOutput': PropertySchema(
-      id: 17,
+      id: 18,
       name: r'totalOutput',
       type: IsarType.string,
     ),
     r'txid': PropertySchema(
-      id: 18,
+      id: 19,
       name: r'txid',
       type: IsarType.string,
     ),
     r'walletId': PropertySchema(
-      id: 19,
+      id: 20,
       name: r'walletId',
       type: IsarType.string,
     )
@@ -7807,6 +7812,7 @@ int _bitcoinTransactionEntityEstimateSize(
     }
   }
   bytesCount += 3 + object.fee.length * 3;
+  bytesCount += 3 + object.netAmount.length * 3;
   {
     final value = object.notes;
     if (value != null) {
@@ -7846,16 +7852,17 @@ void _bitcoinTransactionEntitySerialize(
   writer.writeString(offsets[7], object.fee);
   writer.writeBool(offsets[8], object.isIncoming);
   writer.writeBool(offsets[9], object.isOutgoing);
-  writer.writeString(offsets[10], object.notes);
-  writer.writeString(offsets[11], object.primaryCounterparty);
-  writer.writeString(offsets[12], object.rawHex);
-  writer.writeString(offsets[13], object.receivingAddressesJson);
-  writer.writeString(offsets[14], object.sendingAddressesJson);
-  writer.writeString(offsets[15], object.status);
-  writer.writeString(offsets[16], object.totalInput);
-  writer.writeString(offsets[17], object.totalOutput);
-  writer.writeString(offsets[18], object.txid);
-  writer.writeString(offsets[19], object.walletId);
+  writer.writeString(offsets[10], object.netAmount);
+  writer.writeString(offsets[11], object.notes);
+  writer.writeString(offsets[12], object.primaryCounterparty);
+  writer.writeString(offsets[13], object.rawHex);
+  writer.writeString(offsets[14], object.receivingAddressesJson);
+  writer.writeString(offsets[15], object.sendingAddressesJson);
+  writer.writeString(offsets[16], object.status);
+  writer.writeString(offsets[17], object.totalInput);
+  writer.writeString(offsets[18], object.totalOutput);
+  writer.writeString(offsets[19], object.txid);
+  writer.writeString(offsets[20], object.walletId);
 }
 
 BitcoinTransactionEntity _bitcoinTransactionEntityDeserialize(
@@ -7876,16 +7883,17 @@ BitcoinTransactionEntity _bitcoinTransactionEntityDeserialize(
   object.id = id;
   object.isIncoming = reader.readBool(offsets[8]);
   object.isOutgoing = reader.readBool(offsets[9]);
-  object.notes = reader.readStringOrNull(offsets[10]);
-  object.primaryCounterparty = reader.readStringOrNull(offsets[11]);
-  object.rawHex = reader.readString(offsets[12]);
-  object.receivingAddressesJson = reader.readString(offsets[13]);
-  object.sendingAddressesJson = reader.readString(offsets[14]);
-  object.status = reader.readString(offsets[15]);
-  object.totalInput = reader.readString(offsets[16]);
-  object.totalOutput = reader.readString(offsets[17]);
-  object.txid = reader.readString(offsets[18]);
-  object.walletId = reader.readString(offsets[19]);
+  object.netAmount = reader.readString(offsets[10]);
+  object.notes = reader.readStringOrNull(offsets[11]);
+  object.primaryCounterparty = reader.readStringOrNull(offsets[12]);
+  object.rawHex = reader.readString(offsets[13]);
+  object.receivingAddressesJson = reader.readString(offsets[14]);
+  object.sendingAddressesJson = reader.readString(offsets[15]);
+  object.status = reader.readString(offsets[16]);
+  object.totalInput = reader.readString(offsets[17]);
+  object.totalOutput = reader.readString(offsets[18]);
+  object.txid = reader.readString(offsets[19]);
+  object.walletId = reader.readString(offsets[20]);
   return object;
 }
 
@@ -7917,11 +7925,11 @@ P _bitcoinTransactionEntityDeserializeProp<P>(
     case 9:
       return (reader.readBool(offset)) as P;
     case 10:
-      return (reader.readStringOrNull(offset)) as P;
+      return (reader.readString(offset)) as P;
     case 11:
       return (reader.readStringOrNull(offset)) as P;
     case 12:
-      return (reader.readString(offset)) as P;
+      return (reader.readStringOrNull(offset)) as P;
     case 13:
       return (reader.readString(offset)) as P;
     case 14:
@@ -7935,6 +7943,8 @@ P _bitcoinTransactionEntityDeserializeProp<P>(
     case 18:
       return (reader.readString(offset)) as P;
     case 19:
+      return (reader.readString(offset)) as P;
+    case 20:
       return (reader.readString(offset)) as P;
     default:
       throw IsarError('Unknown property with id $propertyId');
@@ -9257,6 +9267,144 @@ extension BitcoinTransactionEntityQueryFilter on QueryBuilder<
       return query.addFilterCondition(FilterCondition.equalTo(
         property: r'isOutgoing',
         value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> netAmountEqualTo(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'netAmount',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> netAmountGreaterThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'netAmount',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> netAmountLessThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'netAmount',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> netAmountBetween(
+    String lower,
+    String upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'netAmount',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> netAmountStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'netAmount',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> netAmountEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'netAmount',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+          QAfterFilterCondition>
+      netAmountContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'netAmount',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+          QAfterFilterCondition>
+      netAmountMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'netAmount',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> netAmountIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'netAmount',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> netAmountIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'netAmount',
+        value: '',
       ));
     });
   }
@@ -10829,6 +10977,20 @@ extension BitcoinTransactionEntityQuerySortBy on QueryBuilder<
   }
 
   QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterSortBy>
+      sortByNetAmount() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'netAmount', Sort.asc);
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterSortBy>
+      sortByNetAmountDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'netAmount', Sort.desc);
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterSortBy>
       sortByNotes() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'notes', Sort.asc);
@@ -11126,6 +11288,20 @@ extension BitcoinTransactionEntityQuerySortThenBy on QueryBuilder<
   }
 
   QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterSortBy>
+      thenByNetAmount() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'netAmount', Sort.asc);
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterSortBy>
+      thenByNetAmountDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'netAmount', Sort.desc);
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterSortBy>
       thenByNotes() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'notes', Sort.asc);
@@ -11339,6 +11515,13 @@ extension BitcoinTransactionEntityQueryWhereDistinct on QueryBuilder<
   }
 
   QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QDistinct>
+      distinctByNetAmount({bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'netAmount', caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QDistinct>
       distinctByNotes({bool caseSensitive = true}) {
     return QueryBuilder.apply(this, (query) {
       return query.addDistinctBy(r'notes', caseSensitive: caseSensitive);
@@ -11487,6 +11670,13 @@ extension BitcoinTransactionEntityQueryProperty on QueryBuilder<
       isOutgoingProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'isOutgoing');
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, String, QQueryOperations>
+      netAmountProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'netAmount');
     });
   }
 

@@ -300,6 +300,79 @@ class RecordImportedTransactionCommand extends WalletCommand {
   String get commandType => 'RecordImportedTransactionCommand';
 }
 
+/// Command to record an outgoing transaction (payment created by this wallet)
+/// Records transaction in PENDING state until payment is confirmed by recipient
+class RecordOutgoingTransactionCommand extends WalletCommand {
+  final String txid;
+  final String rawHex;
+  final int totalInputSats;
+  final int totalOutputSats;
+  final int fee;
+  final int numInputs;
+  final int numOutputs;
+  final int txVersion;
+  final int txLockTime;
+  final List<String> spentUtxoKeys; // UTXOs being spent by this transaction
+  final List<String> recipientAddresses;
+  final BigInt paymentAmount;
+  final String? changeAddress;
+  final BigInt? changeAmount;
+
+  RecordOutgoingTransactionCommand({
+    required String walletId,
+    required this.txid,
+    required this.rawHex,
+    required this.totalInputSats,
+    required this.totalOutputSats,
+    required this.fee,
+    required this.numInputs,
+    required this.numOutputs,
+    required this.txVersion,
+    required this.txLockTime,
+    required this.spentUtxoKeys,
+    required this.recipientAddresses,
+    required this.paymentAmount,
+    this.changeAddress,
+    this.changeAmount,
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          commandId: commandId,
+          timestamp: timestamp,
+          metadata: metadata,
+        );
+
+  @override
+  String get commandType => 'RecordOutgoingTransactionCommand';
+}
+
+/// Command to confirm a pending transaction (transition from pending to confirmed)
+class ConfirmTransactionCommand extends WalletCommand {
+  final String txid;
+  final int? blockHeight;
+  final String? blockHash;
+
+  ConfirmTransactionCommand({
+    required String walletId,
+    required this.txid,
+    this.blockHeight,
+    this.blockHash,
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          commandId: commandId,
+          timestamp: timestamp,
+          metadata: metadata,
+        );
+
+  @override
+  String get commandType => 'ConfirmTransactionCommand';
+}
+
 /// Command to spend a UTXO
 class SpendUTXOCommand extends WalletCommand {
   final String utxoKey; // Format: "txid:vout"

@@ -618,6 +618,7 @@ class IsarWalletStorage implements ReadModelStorage {
           ..totalInput = transaction.inputValue.toString()
           ..totalOutput = transaction.outputValue.toString()
           ..fee = transaction.fee.toString()
+          ..netAmount = transaction.netAmount.toString()
           ..isIncoming = transaction.netAmount > BigInt.zero
           ..isOutgoing = transaction.netAmount < BigInt.zero
           ..receivingAddressesJson = jsonEncode(transaction.receivingAddresses)
@@ -643,6 +644,7 @@ class IsarWalletStorage implements ReadModelStorage {
           ..totalInput = transaction.inputValue.toString()
           ..totalOutput = transaction.outputValue.toString()
           ..fee = transaction.fee.toString()
+          ..netAmount = transaction.netAmount.toString()
           ..isIncoming = transaction.netAmount > BigInt.zero
           ..isOutgoing = transaction.netAmount < BigInt.zero
           ..status = transaction.status.name

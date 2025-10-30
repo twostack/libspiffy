@@ -155,28 +155,6 @@ class MockArcService extends _i1.Mock implements _i2.ArcService {
       ) as _i7.Future<_i2.ArcSubmitResponse>);
 
   @override
-  _i7.Future<_i2.ArcSubmitResponse> submitBEEF(
-    String? beefHex, {
-    String? callbackUrl,
-  }) =>
-      (super.noSuchMethod(
-        Invocation.method(
-          #submitBEEF,
-          [beefHex],
-          {#callbackUrl: callbackUrl},
-        ),
-        returnValue:
-            _i7.Future<_i2.ArcSubmitResponse>.value(_FakeArcSubmitResponse_0(
-          this,
-          Invocation.method(
-            #submitBEEF,
-            [beefHex],
-            {#callbackUrl: callbackUrl},
-          ),
-        )),
-      ) as _i7.Future<_i2.ArcSubmitResponse>);
-
-  @override
   _i7.Future<_i2.ArcTransactionResponse> getTransaction(String? txid) =>
       (super.noSuchMethod(
         Invocation.method(

@@ -341,6 +341,16 @@ class LibSpiffyActorSystem {
       (map) => TransactionImportedEvent.fromMap(map),
     );
     
+    EventRegistry.register<TransactionRecordedEvent>(
+      'TransactionRecordedEvent',
+      (map) => TransactionRecordedEvent.fromMap(map),
+    );
+    
+    EventRegistry.register<TransactionConfirmedEvent>(
+      'TransactionConfirmedEvent',
+      (map) => TransactionConfirmedEvent.fromMap(map),
+    );
+    
     // =================================================================
     // INVOICE EVENTS (5 total)
     // =================================================================

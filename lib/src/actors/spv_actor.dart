@@ -325,6 +325,15 @@ class SPVActor extends Actor {
 
         print('SPV Validation SUCCESS: ${spendableUTXOs.length} new UTXOs, ${spentUTXOs.length} spent UTXOs');
 
+        // Build complete transaction data for recording in transaction history
+        final transactionData = await _buildTransactionData(
+          transaction,
+          beef,
+          txIndex,
+          spendableUTXOs,
+          spentUTXOs,
+        );
+
         return SPVValidationResult(
           txid: txidHex,
           isValid: true,
@@ -332,6 +341,7 @@ class SPVActor extends Actor {
           spentUTXOs: spentUTXOs,
           targetWalletId: walletId,
           transactionFee: transactionFee,
+          transactionData: transactionData,
         );
 
 
@@ -898,6 +908,140 @@ class SPVActor extends Actor {
       isValid: true,
       totalReceived: totalReceived,
     );
+  }
+  
+  /// Build complete transaction data for recording in transaction history
+  Future<Map<String, dynamic>> _buildTransactionData(
+    dartsv.Transaction transaction,
+    BEEF beef,
+    int txIndex,
+    List<Map<String, dynamic>> spendableUTXOs,
+    List<Map<String, dynamic>> spentUTXOs,
+  ) async {
+    try {
+      // Extract basic transaction info
+      final rawHex = hex.encode(beef.txs[txIndex]);
+      final numInputs = transaction.inputs.length;
+      final numOutputs = transaction.outputs.length;
+      final txVersion = transaction.version;
+      final txLockTime = transaction.nLockTime;
+      
+      // Calculate total output value
+      BigInt totalOutputSats = BigInt.zero;
+      for (final output in transaction.outputs) {
+        totalOutputSats += output.satoshis;
+      }
+      
+      // Extract wallet receiving addresses and received amount from spendable UTXOs
+      final walletReceivingAddresses = <String>[];
+      BigInt walletReceivedSats = BigInt.zero;
+      
+      for (final utxo in spendableUTXOs) {
+        final address = utxo['address'] as String?;
+        if (address != null && !walletReceivingAddresses.contains(address)) {
+          walletReceivingAddresses.add(address);
+        }
+        final satoshis = utxo['satoshis'];
+        if (satoshis is BigInt) {
+          walletReceivedSats += satoshis;
+        } else if (satoshis != null) {
+          walletReceivedSats += BigInt.from(satoshis);
+        }
+      }
+      
+      // Calculate total input value and extract sending addresses from parent transactions
+      BigInt totalInputSats = BigInt.zero;
+      final sendingAddresses = <String>[];
+      
+      // Build a map of all transactions in the BEEF for lookups
+      final txMap = <String, dartsv.Transaction>{};
+      for (int i = 0; i < beef.txs.length; i++) {
+        final tx = dartsv.Transaction.fromHex(hex.encode(beef.txs[i]));
+        txMap[tx.id] = tx;
+      }
+      
+      // For each input, find the parent transaction and extract the output being spent
+      for (final input in transaction.inputs) {
+        final prevTxid = input.prevTxnId;
+        final prevVout = input.prevTxnOutputIndex;
+        
+        final parentTx = txMap[prevTxid];
+        if (parentTx != null && prevVout < parentTx.outputs.length) {
+          final prevOutput = parentTx.outputs[prevVout];
+          totalInputSats += prevOutput.satoshis;
+          
+          // Try to extract address from scriptPubKey
+          try {
+            // For P2PKH scripts, extract the pubkey hash and convert to address
+            final scriptHex = prevOutput.script.toHex();
+            if (scriptHex.length >= 50 && scriptHex.startsWith('76a914') && scriptHex.endsWith('88ac')) {
+              // Standard P2PKH: OP_DUP OP_HASH160 <20 bytes> OP_EQUALVERIFY OP_CHECKSIG
+              final pubKeyHash = scriptHex.substring(6, 46); // Extract the 20-byte hash
+              final address = dartsv.Address(pubKeyHash).toString();
+              if (!sendingAddresses.contains(address)) {
+                sendingAddresses.add(address);
+              }
+            }
+          } catch (e) {
+            // If we can't extract address (e.g., non-standard script), skip
+            print('Could not extract address from input $prevTxid:$prevVout: $e');
+          }
+        }
+      }
+      
+      // Get block height from BUMP if transaction has merkle proof
+      int? blockHeight;
+      String bumpProof = '';
+      
+      if (beef.hasMerkle[txIndex]) {
+        // Calculate BUMP index
+        int bumpIndex = 0;
+        for (int i = 0; i < txIndex; i++) {
+          if (beef.hasMerkle[i]) {
+            bumpIndex++;
+          }
+        }
+        
+        if (bumpIndex < beef.bumps.length) {
+          final bump = beef.bumps[bumpIndex];
+          blockHeight = bump.blockHeight;
+          // Serialize BUMP for storage
+          bumpProof = hex.encode(bump.serialize());
+        }
+      }
+      
+      return {
+        'rawHex': rawHex,
+        'blockHeight': blockHeight ?? 0,
+        'bumpProof': bumpProof,
+        'totalOutputSats': totalOutputSats.toInt(),
+        'numInputs': numInputs,
+        'numOutputs': numOutputs,
+        'txVersion': txVersion,
+        'txLockTime': txLockTime,
+        'walletReceivingAddresses': walletReceivingAddresses,
+        'walletReceivedSats': walletReceivedSats.toInt(),
+        'totalInputSats': totalInputSats.toInt(),
+        'sendingAddresses': sendingAddresses,
+      };
+    } catch (e) {
+      print('Error building transaction data: $e');
+      // Return minimal data on error
+      return {
+        'rawHex': hex.encode(beef.txs[txIndex]),
+        'blockHeight': 0,
+        'bumpProof': '',
+        'totalOutputSats': 0,
+        'numInputs': transaction.inputs.length,
+        'numOutputs': transaction.outputs.length,
+        'txVersion': transaction.version,
+        'txLockTime': transaction.nLockTime,
+        'walletReceivingAddresses': <String>[],
+        'walletReceivedSats': 0,
+        'totalInputSats': 0,
+        'sendingAddresses': <String>[],
+      };
+    }
   }
 }
 

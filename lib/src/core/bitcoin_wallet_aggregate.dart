@@ -246,6 +246,10 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         return _handleReceiveUTXO(currentState, command as ReceiveUTXOCommand);
       case RecordImportedTransactionCommand:
         return _handleRecordImportedTransaction(currentState, command as RecordImportedTransactionCommand);
+      case RecordOutgoingTransactionCommand:
+        return _handleRecordOutgoingTransaction(currentState, command as RecordOutgoingTransactionCommand);
+      case ConfirmTransactionCommand:
+        return _handleConfirmTransaction(currentState, command as ConfirmTransactionCommand);
       case SpendUTXOCommand:
         return _handleSpendUTXO(currentState, command as SpendUTXOCommand);
       case UpdateUTXOConfirmationsCommand:
@@ -346,6 +350,12 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         break;
       case TransactionImportedEvent:
         _applyTransactionImported(event as TransactionImportedEvent);
+        break;
+      case TransactionRecordedEvent:
+        _applyTransactionRecorded(event as TransactionRecordedEvent);
+        break;
+      case TransactionConfirmedEvent:
+        _applyTransactionConfirmed(event as TransactionConfirmedEvent);
         break;
       case WalletImportCompletedEvent:
         _applyWalletImportCompleted(event as WalletImportCompletedEvent);
@@ -796,6 +806,65 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       walletReceivedSats: command.walletReceivedSats,
       totalInputSats: command.totalInputSats,
       sendingAddresses: command.sendingAddresses,
+      version: currentState.version + 1,
+      timestamp: DateTime.now(),
+    );
+
+    return [event];
+  }
+
+  /// Handle recording an outgoing transaction (payment created by this wallet)
+  List<Event> _handleRecordOutgoingTransaction(WalletState currentState, RecordOutgoingTransactionCommand command) {
+    print('[BitcoinWalletAggregate] 📤 Handling RecordOutgoingTransactionCommand: ${command.txid}');
+    
+    // Business rule: Wallet must exist
+    if (!currentState.isCreated) {
+      throw StateError('Cannot record outgoing transaction for non-existent wallet');
+    }
+
+    print('[BitcoinWalletAggregate]    ✅ Creating TransactionRecordedEvent (status: PENDING)');
+    
+    // Emit TransactionRecordedEvent
+    final event = TransactionRecordedEvent(
+      walletId: command.walletId,
+      txid: command.txid,
+      rawHex: command.rawHex,
+      totalInputSats: command.totalInputSats,
+      totalOutputSats: command.totalOutputSats,
+      fee: command.fee,
+      numInputs: command.numInputs,
+      numOutputs: command.numOutputs,
+      txVersion: command.txVersion,
+      txLockTime: command.txLockTime,
+      spentUtxoKeys: command.spentUtxoKeys,
+      recipientAddresses: command.recipientAddresses,
+      paymentAmount: command.paymentAmount.toString(),
+      changeAddress: command.changeAddress,
+      changeAmount: command.changeAmount?.toString(),
+      version: currentState.version + 1,
+      timestamp: DateTime.now(),
+    );
+
+    return [event];
+  }
+
+  /// Handle confirming a pending transaction
+  List<Event> _handleConfirmTransaction(WalletState currentState, ConfirmTransactionCommand command) {
+    print('[BitcoinWalletAggregate] ✅ Handling ConfirmTransactionCommand: ${command.txid}');
+    
+    // Business rule: Wallet must exist
+    if (!currentState.isCreated) {
+      throw StateError('Cannot confirm transaction for non-existent wallet');
+    }
+
+    print('[BitcoinWalletAggregate]    ✅ Creating TransactionConfirmedEvent');
+    
+    // Emit TransactionConfirmedEvent
+    final event = TransactionConfirmedEvent(
+      walletId: command.walletId,
+      txid: command.txid,
+      blockHeight: command.blockHeight,
+      blockHash: command.blockHash,
       version: currentState.version + 1,
       timestamp: DateTime.now(),
     );
@@ -1560,6 +1629,39 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       'importedAt': event.timestamp.toIso8601String(),
     });
     currentState.metadata['importedTransactions'] = importedTxs;
+    
+    currentState.version = event.version;
+    currentState.lastModified = event.timestamp;
+  }
+
+  void _applyTransactionRecorded(TransactionRecordedEvent event) {
+    // Store outgoing transaction in metadata (for audit/history)
+    // Status starts as PENDING - will be updated to CONFIRMED when recipient accepts
+    final outgoingTxs = currentState.metadata['outgoingTransactions'] as List? ?? [];
+    outgoingTxs.add({
+      'txid': event.txid,
+      'status': 'pending',
+      'recipientAddresses': event.recipientAddresses,
+      'paymentAmount': event.paymentAmount,
+      'fee': event.fee,
+      'recordedAt': event.timestamp.toIso8601String(),
+    });
+    currentState.metadata['outgoingTransactions'] = outgoingTxs;
+    
+    currentState.version = event.version;
+    currentState.lastModified = event.timestamp;
+  }
+
+  void _applyTransactionConfirmed(TransactionConfirmedEvent event) {
+    // Update transaction status from PENDING to CONFIRMED
+    final outgoingTxs = currentState.metadata['outgoingTransactions'] as List? ?? [];
+    final txIndex = outgoingTxs.indexWhere((tx) => tx['txid'] == event.txid);
+    if (txIndex >= 0) {
+      outgoingTxs[txIndex]['status'] = 'confirmed';
+      outgoingTxs[txIndex]['blockHeight'] = event.blockHeight;
+      outgoingTxs[txIndex]['blockHash'] = event.blockHash;
+      outgoingTxs[txIndex]['confirmedAt'] = event.timestamp.toIso8601String();
+    }
     
     currentState.version = event.version;
     currentState.lastModified = event.timestamp;

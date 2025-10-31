@@ -317,12 +317,23 @@ class WalletProjection extends Projection<WalletReadModel> {
   }
   
   Future<void> _handleUTXOSpent(UTXOSpentEvent event) async {
+    print('[WalletProjection] 💸 Processing UTXOSpentEvent: ${event.txid}:${event.vout}');
     final utxoKey = '${event.txid}:${event.vout}';
     final utxo = _utxos[utxoKey];
     
     if (utxo != null) {
-      _utxos[utxoKey] = utxo.markSpent();
+      print('[WalletProjection]    → Removing spent UTXO from memory and database');
+      
+      // Remove from in-memory cache
+      _utxos.remove(utxoKey);
+      
+      // Delete from database
+      await _storage.deleteUTXO(_readModel.walletId, event.txid, event.vout);
+      print('[WalletProjection]    ✅ UTXO deleted: ${event.txid}:${event.vout}');
+      
       await _recalculateAndPersist(event.timestamp);
+    } else {
+      print('[WalletProjection]    ⚠️  UTXO not found in cache: ${event.txid}:${event.vout}');
     }
   }
   

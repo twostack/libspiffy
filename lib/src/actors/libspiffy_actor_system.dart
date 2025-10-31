@@ -483,6 +483,12 @@ class LibSpiffyActorSystem {
         walletManagerActor: _walletManager!,
         eventBroadcaster: broadcastWalletEvent,
       ));
+      
+      // Initialize transaction import service
+      _transactionImportService = TransactionImportService(
+        dataSource: _blockchainDataSource,
+      );
+      
       print('✓ ImportActor spawned with blockchain data source');
     }
     

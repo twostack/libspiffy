@@ -407,6 +407,10 @@ void main() {
         for (final utxo in utxos) {
           print('  ${utxo.txid}:${utxo.vout} - ${utxo.value.getValue()} sats');
         }
+        
+        // Verify the UTXO is from TX2 (not TX1, which should be spent)
+        expect(utxos.first.txid, equals(kTx2Id), 
+          reason: 'The unspent UTXO should be from TX2');
 
         print('\nStep 8: Verify wallet events were broadcast');
         // Check that events were captured

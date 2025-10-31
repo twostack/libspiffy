@@ -424,6 +424,38 @@ class ImportActor extends Actor {
           _logger.info('         ℹ️  This transaction might be SPENDING from address ${address.address}, not receiving to it');
         }
 
+        // Check if this transaction spends any wallet UTXOs
+        _logger.info('      → Checking if transaction spends wallet UTXOs...');
+        final spentUtxos = await _findSpentWalletUTXOs(parsedTx, message.walletId);
+        
+        if (spentUtxos.isNotEmpty) {
+          _logger.info('      → Transaction spends ${spentUtxos.length} wallet UTXO(s)');
+          
+          for (final spentUtxo in spentUtxos) {
+            final utxoKey = '${spentUtxo['txid']}:${spentUtxo['vout']}';
+            _logger.info('         Marking UTXO as spent: $utxoKey');
+            
+            // Send command to mark UTXO as spent
+            final spendCommand = SpendUTXOCommand(
+              walletId: message.walletId,
+              utxoKey: utxoKey,
+              spendingTxId: tx.txid,
+              fee: BigInt.zero, // Fee calculation done separately
+            );
+            
+            _walletManagerActor.tell(
+              WalletCommandMessage(message.walletId, spendCommand),
+              sender: context.self,
+            );
+            
+            // WORKAROUND: Delay to prevent concurrency exceptions
+            await Future.delayed(const Duration(milliseconds: 50));
+            _logger.info('         ✅ SpendUTXOCommand sent for $utxoKey');
+          }
+        } else {
+          _logger.info('      ℹ️  Transaction does not spend any wallet UTXOs');
+        }
+
         // Find outputs that belong to discovered addresses
         for (int vout = 0; vout < parsedTx.outputs.length; vout++) {
           final output = parsedTx.outputs[vout];
@@ -635,6 +667,51 @@ class ImportActor extends Actor {
       totalTransactions: _totalTransactions,
     );
     _logger.info('Progress: ${progressInfo.progress * 100}%');
+  }
+
+  /// Check if transaction inputs spend any wallet UTXOs
+  /// 
+  /// This method follows the same pattern as SPVActor._extractSpentUTXOs
+  /// to ensure consistent UTXO accounting across import and SPV flows.
+  Future<List<Map<String, dynamic>>> _findSpentWalletUTXOs(
+    dartsv.Transaction transaction,
+    String walletId,
+  ) async {
+    final spentUTXOs = <Map<String, dynamic>>[];
+    
+    try {
+      // Get wallet's current UTXOs to check ownership
+      final walletUtxos = await _storage.getUTXOs(walletId, includeSpent: false);
+      
+      // Build set for O(1) lookup
+      final walletUtxoKeys = walletUtxos
+          .map((utxo) => '${utxo.txid}:${utxo.vout}')
+          .toSet();
+      
+      _logger.fine('      Wallet $walletId has ${walletUtxoKeys.length} UTXOs');
+      
+      // Check each transaction input to see if it belongs to this wallet
+      for (final input in transaction.inputs) {
+        final prevTxId = input.prevTxnId.toString();
+        final prevVout = input.prevTxnOutputIndex;
+        final utxoKey = '$prevTxId:$prevVout';
+        
+        // Only add to spentUTXOs if this wallet actually owns the UTXO being spent
+        if (walletUtxoKeys.contains(utxoKey)) {
+          spentUTXOs.add({
+            'txid': prevTxId,
+            'vout': prevVout,
+          });
+          _logger.fine('      Wallet owns UTXO $utxoKey being spent in this transaction');
+        }
+      }
+      
+      _logger.fine('      Found ${spentUTXOs.length} UTXOs owned by wallet $walletId being spent (out of ${transaction.inputs.length} total inputs)');
+    } catch (e) {
+      _logger.warning('      ⚠️  Error checking spent UTXOs: $e');
+    }
+    
+    return spentUTXOs;
   }
 }
 

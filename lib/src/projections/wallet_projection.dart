@@ -65,11 +65,15 @@ class WalletProjection extends Projection<WalletReadModel> {
   
   @override
   Future<int> getCheckpoint() async {
+    // Checkpoint persistence is now handled automatically by ProjectionManager
+    // This is only used as a fallback if ProjectionManager doesn't have Isar
     return _checkpoint;
   }
   
   @override
   Future<void> updateCheckpoint(int checkpoint) async {
+    // Checkpoint persistence is now handled automatically by ProjectionManager
+    // We just maintain an in-memory checkpoint for backward compatibility
     _checkpoint = checkpoint;
   }
   

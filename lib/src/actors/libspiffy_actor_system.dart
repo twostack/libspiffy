@@ -391,8 +391,13 @@ class LibSpiffyActorSystem {
   Future<void> _initializeProjections() async {
     print('Initializing CQRS projections...');
     
-    // Create ProjectionManager with EventStream from EventStore
-    _projectionManager = ProjectionManager(_eventStore);
+    // Get Isar instance for checkpoint persistence (if using IsarWalletStorage)
+    final Isar? isar = _walletStorage is IsarWalletStorage 
+        ? (_walletStorage as IsarWalletStorage).isar 
+        : null;
+    
+    // Create ProjectionManager with EventStream and optional Isar for automatic checkpoint persistence
+    _projectionManager = ProjectionManager(_eventStore, isar: isar);
     
     // Create and register WalletProjection
     _walletProjection = WalletProjection(

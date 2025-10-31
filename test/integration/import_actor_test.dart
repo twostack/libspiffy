@@ -282,11 +282,9 @@ Future<TestContext> setupTestContext() async {
   final actorSystem = LocalActorSystem(ActorSystemConfig());
 
   // Open Isar with both LibSpiffy and Eventador schemas
+  // Open Isar with all required schemas including checkpoint persistence
   final isar = await Isar.open(
-    [
-      ...LibSpiffySchemas.walletSchemas,
-      ...IsarEventStore.requiredSchemas,
-    ],
+    LibSpiffySchemas.allSchemas,  // Includes wallet schemas + event store + projections
     directory: testDir.path,
     name: 'test_import_db',
   );

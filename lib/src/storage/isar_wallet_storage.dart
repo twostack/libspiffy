@@ -32,6 +32,10 @@ import 'isar_config.dart';
 /// ```
 class IsarWalletStorage implements ReadModelStorage {
   final Isar _isar;
+  
+  /// Expose Isar instance for ProjectionManager to handle automatic checkpoint persistence
+  Isar get isar => _isar;
+  
   // ignore: unused_field
   final IsolateConfig _config;
 
@@ -52,7 +56,7 @@ class IsarWalletStorage implements ReadModelStorage {
   }) async {
     await _isar.writeTxn(() async {
       var entity = await _isar.walletMetadataEntitys
-          .filter()
+          .where()
           .walletIdEqualTo(walletId)
           .findFirst();
       
@@ -103,7 +107,7 @@ class IsarWalletStorage implements ReadModelStorage {
   @override
   Future<Map<String, dynamic>?> getWallet(String walletId) async {
     final entity = await _isar.walletMetadataEntitys
-        .filter()
+        .where()
         .walletIdEqualTo(walletId)
         .findFirst();
     
@@ -138,7 +142,7 @@ class IsarWalletStorage implements ReadModelStorage {
   @override
   Future<List<String>> getWalletAddresses(String walletId) async {
     final addresses = await _isar.addressEntitys
-        .filter()
+        .where()
         .walletIdEqualTo(walletId)
         .addressProperty()
         .findAll();
@@ -152,17 +156,17 @@ class IsarWalletStorage implements ReadModelStorage {
   @override
   Future<bool> isWalletAddress(String walletId, String address) async {
     final count = await _isar.addressEntitys
+        .where()
+        .addressEqualTo(address)
         .filter()
         .walletIdEqualTo(walletId)
-        .and()
-        .addressEqualTo(address)
         .count();
     
     // Debug logging for address lookup
     if (count == 0) {
       // Check how many addresses exist for this wallet
       final totalAddresses = await _isar.addressEntitys
-          .filter()
+          .where()
           .walletIdEqualTo(walletId)
           .count();
       print('[IsarWalletStorage] Address lookup: $address NOT found (wallet has $totalAddresses addresses)');
@@ -176,10 +180,10 @@ class IsarWalletStorage implements ReadModelStorage {
   @override
   Future<AddressMetadata?> getAddressMetadata(String walletId, String address) async {
     final entity = await _isar.addressEntitys
+        .where()
+        .addressEqualTo(address)
         .filter()
         .walletIdEqualTo(walletId)
-        .and()
-        .addressEqualTo(address)
         .findFirst();
     
     return entity != null ? AddressMetadata.fromEntity(entity) : null;
@@ -191,10 +195,10 @@ class IsarWalletStorage implements ReadModelStorage {
     
     // Batch query using 'in' filter
     final foundAddresses = await _isar.addressEntitys
+        .where()
+        .anyOf(addresses, (q, address) => q.addressEqualTo(address))
         .filter()
         .walletIdEqualTo(walletId)
-        .and()
-        .anyOf(addresses, (q, address) => q.addressEqualTo(address))
         .addressProperty()
         .findAll();
     
@@ -251,9 +255,9 @@ class IsarWalletStorage implements ReadModelStorage {
     bool isChange = false,
   }) async {
     final entities = await _isar.addressEntitys
-        .filter()
+        .where()
         .walletIdEqualTo(walletId)
-        .and()
+        .filter()
         .isChangeEqualTo(isChange)
         .and()
         .derivationIndexBetween(startIndex, startIndex + count - 1)
@@ -269,10 +273,10 @@ class IsarWalletStorage implements ReadModelStorage {
     await _isar.writeTxn(() async {
       // Find existing entity by address (unique index)
       final existing = await _isar.addressEntitys
+          .where()
+          .addressEqualTo(metadata.address)
           .filter()
           .walletIdEqualTo(walletId)
-          .and()
-          .addressEqualTo(metadata.address)
           .findFirst();
       
       final entity = metadata.toEntity(walletId);
@@ -296,10 +300,10 @@ class IsarWalletStorage implements ReadModelStorage {
   }) async {
     await _isar.writeTxn(() async {
       final entity = await _isar.addressEntitys
+          .where()
+          .addressEqualTo(address)
           .filter()
           .walletIdEqualTo(walletId)
-          .and()
-          .addressEqualTo(address)
           .findFirst();
       
       if (entity == null) return;
@@ -332,10 +336,10 @@ class IsarWalletStorage implements ReadModelStorage {
     await _isar.writeTxn(() async {
       // Delete existing records for this transaction
       await _isar.transactionAddressEntitys
+          .where()
+          .txidEqualTo(txid)
           .filter()
           .walletIdEqualTo(walletId)
-          .and()
-          .txidEqualTo(txid)
           .deleteAll();
       
       // Insert new records
@@ -366,11 +370,11 @@ class IsarWalletStorage implements ReadModelStorage {
     int? offset,
   }) async {
     var query = _isar.transactionAddressEntitys
+        .where()
+        .addressEqualTo(address)
         .filter()
-        .walletIdEqualTo(walletId)
-        .and()
-        .addressEqualTo(address);
-    
+        .walletIdEqualTo(walletId);
+
     if (direction != null) {
       query = query.directionEqualTo(direction);
     }
@@ -400,9 +404,9 @@ class IsarWalletStorage implements ReadModelStorage {
     String txid,
   ) async {
     final entities = await _isar.transactionAddressEntitys
-        .filter()
+        .where()
         .walletIdEqualTo(walletId)
-        .and()
+        .filter()
         .txidEqualTo(txid)
         .findAll();
     
@@ -432,9 +436,9 @@ class IsarWalletStorage implements ReadModelStorage {
   @override
   Future<int> getAddressTransactionCount(String walletId, String address) async {
     return await _isar.transactionAddressEntitys
-        .filter()
+        .where()
         .walletIdEqualTo(walletId)
-        .and()
+        .filter()
         .addressEqualTo(address)
         .distinctByTxid()
         .count();
@@ -445,19 +449,19 @@ class IsarWalletStorage implements ReadModelStorage {
     await _isar.writeTxn(() async {
       // Delete all UTXOs for this wallet
       await _isar.bitcoinUtxoEntitys
-          .filter()
+          .where()
           .walletIdEqualTo(walletId)
           .deleteAll();
       
       // Delete all transactions for this wallet
       await _isar.bitcoinTransactionEntitys
-          .filter()
+          .where()
           .walletIdEqualTo(walletId)
           .deleteAll();
       
       // Delete all invoices for this wallet
       await _isar.invoiceEntitys
-          .filter()
+          .where()
           .walletIdEqualTo(walletId)
           .deleteAll();
           
@@ -475,7 +479,7 @@ class IsarWalletStorage implements ReadModelStorage {
     bool includeSpent = false,
   }) async {
     final allEntities = await _isar.bitcoinUtxoEntitys
-        .filter()
+        .where()
         .walletIdEqualTo(walletId)
         .findAll();
     
@@ -491,9 +495,9 @@ class IsarWalletStorage implements ReadModelStorage {
   @override
   Future<List<BitcoinUtxo>> getAvailableUTXOs(String walletId) async {
     final entities = await _isar.bitcoinUtxoEntitys
-        .filter()
+        .where()
         .walletIdEqualTo(walletId)
-        .and()
+        .filter()
         .statusEqualTo('available')
         .findAll();
 
@@ -514,9 +518,9 @@ class IsarWalletStorage implements ReadModelStorage {
     await _isar.writeTxn(() async {
       // Check if UTXO already exists
       final existingEntity = await _isar.bitcoinUtxoEntitys
-          .filter()
+          .where()
           .walletIdEqualTo(walletId)
-          .and()
+          .filter()
           .txidEqualTo(utxo.txid)
           .and()
           .voutEqualTo(utxo.vout)
@@ -551,9 +555,9 @@ class IsarWalletStorage implements ReadModelStorage {
   Future<void> deleteUTXO(String walletId, String txid, int vout) async {
     await _isar.writeTxn(() async {
       await _isar.bitcoinUtxoEntitys
-          .filter()
+          .where()
           .walletIdEqualTo(walletId)
-          .and()
+          .filter()
           .txidEqualTo(txid)
           .and()
           .voutEqualTo(vout)
@@ -572,7 +576,7 @@ class IsarWalletStorage implements ReadModelStorage {
     int? offset,
   }) async {
     final allEntities = await _isar.bitcoinTransactionEntitys
-        .filter()
+        .where()
         .walletIdEqualTo(walletId)
         .sortByCreatedAtDesc()
         .findAll();
@@ -592,7 +596,7 @@ class IsarWalletStorage implements ReadModelStorage {
   @override
   Future<BitcoinTransaction?> getTransaction(String txid) async {
     final entity = await _isar.bitcoinTransactionEntitys
-        .filter()
+        .where()
         .txidEqualTo(txid)
         .findFirst();
 
@@ -604,7 +608,7 @@ class IsarWalletStorage implements ReadModelStorage {
     await _isar.writeTxn(() async {
       // Check if transaction already exists
       final existing = await _isar.bitcoinTransactionEntitys
-          .filter()
+          .where()
           .txidEqualTo(transaction.txid)
           .findFirst();
       
@@ -680,9 +684,9 @@ class IsarWalletStorage implements ReadModelStorage {
   @override
   Future<BlockHeader?> getBlockHeaderByHash(String hash) async {
     final entity = await _isar.blockHeaderEntitys
-        .filter()
+        .where()
         .hashEqualTo(hash)
-        .and()
+        .filter()
         .isOrphanedEqualTo(false)
         .findFirst();
 
@@ -692,9 +696,9 @@ class IsarWalletStorage implements ReadModelStorage {
   @override
   Future<BlockHeader?> getBlockHeaderByHeight(int height) async {
     final entity = await _isar.blockHeaderEntitys
-        .filter()
+        .where()
         .heightEqualTo(height)
-        .and()
+        .filter()
         .isOrphanedEqualTo(false)
         .findFirst();
 
@@ -704,9 +708,9 @@ class IsarWalletStorage implements ReadModelStorage {
   @override
   Future<int?> getHeightByBlockHash(String hash) async {
     final entity = await _isar.blockHeaderEntitys
-        .filter()
+        .where()
         .hashEqualTo(hash)
-        .and()
+        .filter()
         .isOrphanedEqualTo(false)
         .findFirst();
 
@@ -719,9 +723,9 @@ class IsarWalletStorage implements ReadModelStorage {
     int toHeight,
   ) async {
     final entities = await _isar.blockHeaderEntitys
-        .filter()
+        .where()
         .heightBetween(fromHeight, toHeight)
-        .and()
+        .filter()
         .isOrphanedEqualTo(false)
         .sortByHeight()
         .findAll();
@@ -733,7 +737,7 @@ class IsarWalletStorage implements ReadModelStorage {
   Future<void> markHeaderAsOrphaned(String hash) async {
     await _isar.writeTxn(() async {
       final entity = await _isar.blockHeaderEntitys
-          .filter()
+          .where()
           .hashEqualTo(hash)
           .findFirst();
 
@@ -747,7 +751,7 @@ class IsarWalletStorage implements ReadModelStorage {
   @override
   Future<BlockHeader?> getChainTip() async {
     final entity = await _isar.blockHeaderEntitys
-        .filter()
+        .where()
         .isOrphanedEqualTo(false)
         .sortByHeightDesc()
         .findFirst();
@@ -758,7 +762,7 @@ class IsarWalletStorage implements ReadModelStorage {
   @override
   Future<int> getBestHeight() async {
     final entity = await _isar.blockHeaderEntitys
-        .filter()
+        .where()
         .isOrphanedEqualTo(false)
         .sortByHeightDesc()
         .findFirst();
@@ -769,7 +773,7 @@ class IsarWalletStorage implements ReadModelStorage {
   @override
   Future<List<BlockHeader>> getRecentHeaders(int count) async {
     final entities = await _isar.blockHeaderEntitys
-        .filter()
+        .where()
         .isOrphanedEqualTo(false)
         .sortByHeightDesc()
         .limit(count)
@@ -794,7 +798,7 @@ class IsarWalletStorage implements ReadModelStorage {
   @override
   Future<MerkleProof?> getMerkleProof(String txid) async {
     final entity = await _isar.merkleProofEntitys
-        .filter()
+        .where()
         .txidEqualTo(txid)
         .findFirst();
 
@@ -804,7 +808,7 @@ class IsarWalletStorage implements ReadModelStorage {
   @override
   Future<List<MerkleProof>> getMerkleProofsForBlock(String blockHash) async {
     final entities = await _isar.merkleProofEntitys
-        .filter()
+        .where()
         .blockHashEqualTo(blockHash)
         .findAll();
 
@@ -839,14 +843,14 @@ class IsarWalletStorage implements ReadModelStorage {
   @override
   Future<bool> walletExists(String walletId) async {
     final hasUtxos = await _isar.bitcoinUtxoEntitys
-        .filter()
+        .where()
         .walletIdEqualTo(walletId)
         .count();
 
     if (hasUtxos > 0) return true;
 
     final hasTransactions = await _isar.bitcoinTransactionEntitys
-        .filter()
+        .where()
         .walletIdEqualTo(walletId)
         .count();
 
@@ -882,7 +886,7 @@ class IsarWalletStorage implements ReadModelStorage {
   @override
   Future<dynamic> getInvoice(String invoiceId) async {
     final entity = await _isar.invoiceEntitys
-        .filter()
+        .where()
         .invoiceIdEqualTo(invoiceId)
         .findFirst();
     
@@ -892,7 +896,7 @@ class IsarWalletStorage implements ReadModelStorage {
   @override
   Future<List<dynamic>> getInvoicesByWallet(String walletId) async {
     final entities = await _isar.invoiceEntitys
-        .filter()
+        .where()
         .walletIdEqualTo(walletId)
         .sortByCreatedAtDesc()
         .findAll();
@@ -932,7 +936,7 @@ class IsarWalletStorage implements ReadModelStorage {
   }) async {
     await _isar.writeTxn(() async {
       final entity = await _isar.invoiceEntitys
-          .filter()
+          .where()
           .invoiceIdEqualTo(invoiceId)
           .findFirst();
       

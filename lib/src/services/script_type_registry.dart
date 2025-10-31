@@ -164,7 +164,7 @@ class ScriptTypeRegistry {
             // Use SVAddressHelper to create an address from the pubkey hash
             // This is a simplified approach - in a real implementation we would use
             // the appropriate network type and address format
-            metadata['address'] = Address.fromPubkeyHash(hex.encode(pubKeyHash), _networkType);
+            metadata['address'] = Address.fromPubkeyHash(hex.encode(pubKeyHash), _networkType).toBase58();
           } catch (e) {
             // Address derivation failed
           }
@@ -190,7 +190,7 @@ class ScriptTypeRegistry {
             // This is a simplified approach - in a real implementation we would use
             // the appropriate network type and address format
             var svPubKey = SVPublicKey.fromHex(hex.encode(pubKey));
-            metadata['address'] = Address.fromPublicKey(svPubKey, _networkType);
+            metadata['address'] = Address.fromPublicKey(svPubKey, _networkType).toBase58();
           } catch (e) {
             // Address derivation failed
           }

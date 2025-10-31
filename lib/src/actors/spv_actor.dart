@@ -464,14 +464,14 @@ class SPVActor extends Actor {
 
         String? address;
 
-        switch (scriptType) {
+        switch (scriptType.toLowerCase()) {
           case 'p2pkh':
             // Extract address from pubkey hash
             final pubkeyHash = scriptInfo['pubKeyHash'];
             if (pubkeyHash != null) {
               try {
                 // Create Address from pubkeyhash
-                address = dartsv.Address(pubkeyHash).toString();
+                address = dartsv.Address.fromPubkeyHash(hex.encode(pubkeyHash), dartsv.NetworkType.TEST).toBase58();
               } catch (e) {
                 print('Could not create address from pubkey hash: $e');
               }
@@ -483,7 +483,7 @@ class SPVActor extends Actor {
             if (pubkey != null) {
               try {
                 final pubKeyObj = dartsv.SVPublicKey.fromHex(pubkey);
-                address = dartsv.Address.fromPublicKey(pubKeyObj, dartsv.NetworkType.MAIN).toString();
+                address = dartsv.Address.fromPublicKey(pubKeyObj, dartsv.NetworkType.TEST).toBase58();
               } catch (e) {
                 print('Could not derive address from P2PK pubkey: $e');
               }
@@ -588,21 +588,36 @@ class SPVActor extends Actor {
   
   /// Check if an output address belongs to us
   /// For invoice-based payments, check against invoice addresses
-  /// Otherwise, would need to query wallet (not yet implemented)
+  /// Otherwise, query wallet storage for address ownership
   Future<bool> _checkOutputOwnership(
     String address, 
     String walletId,
     InvoiceDetailsResponse? invoice,
   ) async {
-    // Invoice-based matching (primary flow)
+    // Invoice-based matching (primary flow - most reliable)
     if (invoice != null) {
-      return invoice.addresses.contains(address);
+      final matchesInvoice = invoice.addresses.contains(address);
+      if (matchesInvoice) {
+        print('✅ Address $address matches invoice address');
+      }
+      return matchesInvoice;
     }
     
-    // Non-invoice payments not yet supported
-    // Would require querying wallet for all known addresses
-    print('Warning: Non-invoice payment received to address $address - cannot verify ownership');
-    return false;
+    // Fallback: Query wallet storage to check if address belongs to wallet
+    // This handles cases where invoice is not found or not provided
+    print('⚠️  No invoice provided - checking wallet storage for address $address');
+    try {
+      final belongsToWallet = await _storage.isWalletAddress(walletId, address);
+      if (belongsToWallet) {
+        print('✅ Address $address belongs to wallet $walletId');
+      } else {
+        print('❌ Address $address does NOT belong to wallet $walletId');
+      }
+      return belongsToWallet;
+    } catch (e) {
+      print('Error checking wallet address ownership: $e');
+      return false;
+    }
   }
   
   /// Get invoice details from InvoiceManager

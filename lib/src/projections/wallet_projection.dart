@@ -690,7 +690,8 @@ class WalletProjection extends Projection<WalletReadModel> {
             }
           }
         }
-      } catch (e) {
+      } catch (e, stacktrace) {
+        print(stacktrace);
         print('[WalletProjection] Failed to extract destination from output $i: $e');
         continue;
       }
@@ -725,7 +726,7 @@ class WalletProjection extends Projection<WalletReadModel> {
         // These have standard addresses
         final address = metadata['address'] as String?;
         return address != null ? (address, scriptType!) : null;
-        
+
       case 'p2ms':
         // Multisig: concatenate sorted public keys for deterministic identifier
         final publicKeys = metadata['publicKeys'] as List?;

@@ -528,6 +528,11 @@ class IsarWalletStorage implements ReadModelStorage {
       
       if (existingEntity != null) {
         // Update existing
+        print('[IsarWalletStorage] Updating existing UTXO ${utxo.txid.substring(0,8)}:${utxo.vout} - status: ${utxo.status.name}');
+        if (existingEntity.status == 'spent' && utxo.status != UTXOStatus.spent) {
+          print('[IsarWalletStorage]   ⚠️  WARNING: Overwriting SPENT status with ${utxo.status.name}!');
+          print('[IsarWalletStorage]   Stack trace: ${StackTrace.current}');
+        }
         existingEntity
           ..satoshis = utxo.satoshis.toString()
           ..scriptPubKey = utxo.scriptPubKey
@@ -542,6 +547,7 @@ class IsarWalletStorage implements ReadModelStorage {
         }
         
         await _isar.bitcoinUtxoEntitys.put(existingEntity);
+        print('[IsarWalletStorage]   ✅ UTXO updated in Isar with status: ${utxo.status.name}');
       } else {
         // Insert new
         final entity = BitcoinUtxoEntity.fromDomain(utxo);

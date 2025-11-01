@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 import 'package:convert/convert.dart';
-import '../../lib/src/services/arc_service.dart';
+import 'package:libspiffy/src/services/arc_service.dart';
 import '../../lib/src/utils/beef.dart';
 import '../../lib/src/utils/bump.dart';
 
@@ -104,7 +104,7 @@ class MockArcService extends ArcService {
     await Future.delayed(Duration(milliseconds: 50));
     
     Map<String, dynamic>? proofData;
-    
+
     // Check if we have a real test proof
     if (_testProofs.containsKey(txid)) {
       proofData = _testProofs[txid]!;

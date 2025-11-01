@@ -358,14 +358,27 @@ class WalletProjection extends Projection<WalletReadModel> {
     print('[WalletProjection] 💸 Processing UTXOSpentEvent: ${event.txid}:${event.vout}');
     final utxoKey = '${event.walletId}:${event.txid}:${event.vout}';  // ← Include walletId
     
-    print('[WalletProjection]    → Marking spent UTXO in database');
+    print('[WalletProjection]    → Marking UTXO as spent in database');
     
-    // Remove from in-memory cache
+    // Get the UTXO from storage
+    final utxos = await _storage.getUTXOs(event.walletId, includeSpent: true);
+    final utxo = utxos.firstWhere(
+      (u) => u.txid == event.txid && u.vout == event.vout,
+      orElse: () => throw StateError('UTXO not found for spending'),
+    );
+    
+    // Mark as spent
+    final spentUtxo = utxo.copyWith(
+      status: UTXOStatus.spent,
+      updatedAt: event.timestamp,
+    );
+    
+    // Update in storage
+    await _storage.upsertUTXO(event.walletId, spentUtxo);
+    print('[WalletProjection]    ✅ UTXO marked as spent: ${event.txid}:${event.vout}');
+    
+    // Remove from in-memory cache (spent UTXOs don't need to be in cache for balance calculations)
     _utxos.remove(utxoKey);
-    
-    // Delete from database (use event.walletId)
-    await _storage.deleteUTXO(event.walletId, event.txid, event.vout);
-    print('[WalletProjection]    ✅ UTXO deleted: ${event.txid}:${event.vout}');
     
     await _recalculateAndPersistForWallet(event.walletId, event.timestamp);
   }
@@ -517,13 +530,9 @@ class WalletProjection extends Projection<WalletReadModel> {
       );
       print('[WalletProjection]    ✅ Wallet metadata persisted');
       
-      // Persist all UTXOs to storage (create snapshot to avoid concurrent modification)
-      final utxosSnapshot = _utxos.values.toList();
-      for (final utxo in utxosSnapshot) {
-        print('[WalletProjection]    → Persisting UTXO: ${utxo.txid}:${utxo.vout} (${utxo.satoshis} sats)');
-        await _storage.upsertUTXO(_readModel.walletId, utxo);
-      }
-      print('[WalletProjection]    ✅ All ${utxosSnapshot.length} UTXOs persisted to Isar');
+      // NOTE: Do NOT persist UTXOs here! Each UTXO event handler is responsible for
+      // persisting its own UTXO state. Persisting from the cache here would overwrite
+      // spent/reserved status with stale data from the cache.
     } catch (e, stackTrace) {
       print('[WalletProjection] ❌ Error persisting wallet read model: $e');
       print('[WalletProjection] Stack trace: $stackTrace');

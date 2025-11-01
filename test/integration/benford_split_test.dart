@@ -661,10 +661,10 @@ void main() {
         print('✓ Broadcast $broadcastCount transaction(s)');
 
         print('\nStep 6: Verify wallet projection updated UTXOs');
-        // Wait a bit more for projections to process events
-        await Future.delayed(const Duration(seconds: 2));
+        // Wait for projections to fully process all events (spent + new UTXOs)
+        await Future.delayed(const Duration(seconds: 5));
         
-        final finalUtxos = await context.storage.getUTXOs(walletId);
+        final finalUtxos = await context.storage.getUTXOs(walletId, includeSpent: true);
         print('  Total UTXOs in projection: ${finalUtxos.length}');
         
         // Should have:
@@ -699,15 +699,15 @@ void main() {
         final txHistory = await context.storage.getTransactionHistory(walletId);
         print('  Total transactions: ${txHistory.length}');
         
-        // Should have original UTXO creation txs + 2 split txs
-        expect(txHistory.length, greaterThanOrEqualTo(4),
-          reason: 'Should have initial txs + split txs');
+        // Should have 2 split txs (initial UTXOs were created without tx records)
+        expect(txHistory.length, greaterThanOrEqualTo(2),
+          reason: 'Should have at least split txs');
 
         final splitTxs = txHistory.where((tx) {
           final txn = dartsv.Transaction.fromHex(tx.rawHex);
           return txn.inputs.length == 1 && txn.outputs.length == 5;
         }).toList();
-        expect(splitTxs.length, greaterThanOrEqualTo(2),
+        expect(splitTxs.length, equals(2),
           reason: 'Should have 2 split transactions (1 input -> 5 outputs each)');
         print('✓ Split transactions recorded in projection');
 

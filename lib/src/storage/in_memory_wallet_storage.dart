@@ -387,6 +387,35 @@ class InMemoryWalletStorage implements WalletStorage {
   }
 
   @override
+  Future<List<BitcoinTransaction>> getTransactionsByStatus(
+    TransactionStatus status, {
+    String? walletId,
+  }) async {
+    // Get all transactions or filter by wallet
+    Iterable<BitcoinTransaction> transactions;
+    
+    if (walletId != null) {
+      // Filter by wallet
+      final walletTxIds = _walletTransactions[walletId] ?? [];
+      transactions = walletTxIds
+          .map((txid) => _transactions[txid])
+          .where((tx) => tx != null)
+          .cast<BitcoinTransaction>();
+    } else {
+      // Get all transactions
+      transactions = _transactions.values;
+    }
+    
+    // Filter by status and sort by creation date (descending)
+    final filtered = transactions
+        .where((tx) => tx.status == status)
+        .toList()
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    
+    return filtered;
+  }
+
+  @override
   Future<void> storeTransaction(String walletId, BitcoinTransaction transaction) async {
     await _withLock(walletId, () async {
       // Store transaction

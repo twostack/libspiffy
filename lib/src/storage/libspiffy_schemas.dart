@@ -478,7 +478,7 @@ class BitcoinTransactionEntity {
     final netAmount = tx.netAmount;
     
     return BitcoinTransactionEntity()
-      ..walletId = '' // Will be set by the storage implementation
+      ..walletId = tx.walletId ?? '' // Use transaction's walletId or empty string as fallback
       ..txid = tx.txid
       ..rawHex = tx.rawHex
       ..blockHeight = tx.blockHeight
@@ -520,6 +520,7 @@ class BitcoinTransactionEntity {
         : <String>[];
     
     return BitcoinTransaction(
+      walletId: walletId.isNotEmpty ? walletId : null,
       txid: txid,
       rawHex: rawHex,
       status: TransactionStatus.values.firstWhere((s) => s.name == status),

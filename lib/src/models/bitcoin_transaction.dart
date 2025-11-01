@@ -59,6 +59,9 @@ enum TransactionStatus {
 /// Based on the BitcoinTransaction model from speculative code, adapted for
 /// the event-sourced wallet architecture with DartSV integration.
 class BitcoinTransaction {
+  /// Wallet ID this transaction belongs to (optional for backward compatibility)
+  final String? walletId;
+  
   /// Bitcoin transaction ID (hash)
   final String txid;
   
@@ -108,6 +111,7 @@ class BitcoinTransaction {
   final int version;
   
   const BitcoinTransaction({
+    this.walletId,
     required this.txid,
     required this.rawHex,
     required this.status,
@@ -128,6 +132,7 @@ class BitcoinTransaction {
   
   /// Create a transaction from a DartSV Transaction object
   factory BitcoinTransaction.fromDartSvTransaction({
+    String? walletId,
     required dartsv.Transaction transaction,
     required TransactionStatus status,
     required List<String> receivingAddresses,
@@ -148,6 +153,7 @@ class BitcoinTransaction {
     final totalInputValue = inputValue ?? BigInt.zero;
     
     return BitcoinTransaction(
+      walletId: walletId,
       txid: transaction.id,
       rawHex: transaction.serialize(),
       status: status,
@@ -190,6 +196,7 @@ class BitcoinTransaction {
   
   /// Create a copy with updated fields
   BitcoinTransaction copyWith({
+    String? walletId,
     String? txid,
     String? rawHex,
     TransactionStatus? status,
@@ -208,6 +215,7 @@ class BitcoinTransaction {
     int? version,
   }) {
     return BitcoinTransaction(
+      walletId: walletId ?? this.walletId,
       txid: txid ?? this.txid,
       rawHex: rawHex ?? this.rawHex,
       status: status ?? this.status,
@@ -252,6 +260,7 @@ class BitcoinTransaction {
   /// Convert to map for serialization
   Map<String, dynamic> toMap() {
     return {
+      'walletId': walletId,
       'txid': txid,
       'rawHex': rawHex,
       'status': status.name,
@@ -274,6 +283,7 @@ class BitcoinTransaction {
   /// Create from map (deserialization)
   factory BitcoinTransaction.fromMap(Map<String, dynamic> map) {
     return BitcoinTransaction(
+      walletId: map['walletId'] as String?,
       txid: map['txid'] as String,
       rawHex: map['rawHex'] as String,
       status: TransactionStatus.values.firstWhere(

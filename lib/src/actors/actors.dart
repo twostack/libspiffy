@@ -8,4 +8,5 @@ export 'invoice_messages.dart';
 export 'payment_coordinator_actor.dart';
 export 'payment_messages.dart';
 export 'benford_coordinator_actor.dart';
+export 'transaction_lifecycle_coordinator_actor.dart';
 export 'libspiffy_actor_system.dart'; 

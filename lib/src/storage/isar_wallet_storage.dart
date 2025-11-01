@@ -610,6 +610,26 @@ class IsarWalletStorage implements ReadModelStorage {
   }
 
   @override
+  Future<List<BitcoinTransaction>> getTransactionsByStatus(
+    TransactionStatus status, {
+    String? walletId,
+  }) async {
+    var query = _isar.bitcoinTransactionEntitys
+        .filter()
+        .statusEqualTo(status.name);
+    
+    if (walletId != null) {
+      query = query.walletIdEqualTo(walletId);
+    }
+    
+    final entities = await query
+        .sortByCreatedAtDesc()
+        .findAll();
+    
+    return entities.map((e) => e.toDomain()).toList();
+  }
+
+  @override
   Future<void> storeTransaction(String walletId, BitcoinTransaction transaction) async {
     await _isar.writeTxn(() async {
       // Check if transaction already exists

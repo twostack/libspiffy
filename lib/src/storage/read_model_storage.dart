@@ -185,6 +185,18 @@ abstract class ReadModelStorage {
   /// Returns: Transaction if found, null if not found
   Future<BitcoinTransaction?> getTransaction(String txid);
 
+  /// Get transactions by status
+  /// 
+  /// Parameters:
+  /// - [status]: Transaction status to filter by
+  /// - [walletId]: Optional wallet ID to filter by specific wallet
+  /// 
+  /// Returns: List of transactions matching the status
+  Future<List<BitcoinTransaction>> getTransactionsByStatus(
+    TransactionStatus status, {
+    String? walletId,
+  });
+
   /// Store a raw transaction in the read model.
   ///
   /// Used by TransactionImportService to persist historical transaction data

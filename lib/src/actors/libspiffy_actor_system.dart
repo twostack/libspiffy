@@ -66,6 +66,7 @@ class LibSpiffyActorSystem {
   ActorRef? _arcActor;
   ActorRef? _headerSyncActor;
   ActorRef? _importActor;
+  ActorRef? _transactionLifecycleCoordinator;
   
   // Actor instances (kept for configuration after spawn)
   HeaderSyncActor? _headerSyncActorInstance;
@@ -513,6 +514,17 @@ class LibSpiffyActorSystem {
     // Wire up ARC actor reference in WalletManager
     _walletManager!.tell(SetArcActorMessage(_arcActor!));
     
+    // Spawn TransactionLifecycleCoordinator for transaction monitoring recovery
+    _transactionLifecycleCoordinator = await _actorSystem.spawn(
+      'transaction-lifecycle-coordinator',
+      () => TransactionLifecycleCoordinator(
+        arcActor: _arcActor!,
+        storage: _walletStorage,
+        eventStream: _walletEventBroadcaster.stream,
+      ),
+    );
+    print('✓ TransactionLifecycleCoordinator spawned');
+    
     // Spawn Benford coordinator for privacy-focused UTXO splitting
     _benfordCoordinator = await _actorSystem.spawn('benford-coordinator', () => BenfordCoordinatorActor(
       walletManager: _walletManager!,
@@ -748,6 +760,14 @@ class LibSpiffyActorSystem {
       throw StateError('LibSpiffy actor system not initialized');
     }
     return _invoiceCoordinator!;
+  }
+
+  /// Get reference to the TransactionLifecycle Coordinator actor
+  ActorRef get transactionLifecycleCoordinator {
+    if (_transactionLifecycleCoordinator == null) {
+      throw StateError('LibSpiffy actor system not initialized');
+    }
+    return _transactionLifecycleCoordinator!;
   }
 
   /// Get reference to the wallet storage

@@ -260,14 +260,16 @@ class BenfordCoordinatorActor extends Actor {
       throw StateError('Wallet not found: $walletId');
     }
 
+    print('[BenfordCoordinatorActor] Generating addresses for wallet type: ${wallet['walletType']}');
+
     // For WIF wallets, all outputs go to the same address
-    if (wallet['type'] == 'wif') {
+    if (wallet['walletType'] == 'wif') {
       final wifKey = await _secureStorage.getWIF(walletId);
       if (wifKey == null) {
         throw StateError('WIF key not found for wallet: $walletId');
       }
       final privKey = dartsv.SVPrivateKey.fromWIF(wifKey);
-      final networkType = wallet['networkType'] == 'mainnet' 
+      final networkType = wallet['network'] == 'mainnet' 
         ? dartsv.NetworkType.MAIN 
         : dartsv.NetworkType.TEST;
       final address = dartsv.Address.fromPublicKey(privKey.publicKey, networkType);
@@ -285,7 +287,7 @@ class BenfordCoordinatorActor extends Actor {
     }
 
     final hdPublicKey = dartsv.HDPublicKey.fromXpub(hdPubkeyStr);
-    final networkType = wallet['networkType'] == 'mainnet'
+    final networkType = wallet['network'] == 'mainnet'
         ? dartsv.NetworkType.MAIN
         : dartsv.NetworkType.TEST;
 
@@ -405,8 +407,10 @@ class BenfordCoordinatorActor extends Actor {
       throw StateError('Wallet not found: $walletId');
     }
 
+    print('[BenfordCoordinatorActor] Getting private key for wallet type: ${wallet['walletType']}');
+
     // For WIF wallets
-    if (wallet['type'] == 'wif') {
+    if (wallet['walletType'] == 'wif') {
       final wifKey = await _secureStorage.getWIF(walletId);
       if (wifKey == null) {
         throw StateError('WIF key not found for wallet: $walletId');

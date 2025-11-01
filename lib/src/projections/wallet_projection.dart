@@ -6,6 +6,7 @@ import 'package:libspiffy/src/services/script_type_registry.dart';
 import '../core/wallet_events.dart';
 import '../models/wallet_event.dart';
 import '../models/wallet_read_model.dart';
+import '../models/wallet_type.dart';
 import '../models/bitcoin_utxo.dart';
 import '../models/bitcoin_transaction.dart';
 import '../models/address_metadata.dart';
@@ -150,6 +151,7 @@ class WalletProjection extends Projection<WalletReadModel> {
   Future<void> _handleWalletCreated(WalletCreatedEvent event) async {
     print('[WalletProjection] 🆕 Processing WalletCreatedEvent: ${event.walletName}');
     print('[WalletProjection]    Wallet ID: ${event.walletId}');
+    print('[WalletProjection]    Wallet Type: ${event.walletType.toStorageString()}');
     print('[WalletProjection]    Root address: ${event.rootAddress}');
     
     _readModel = WalletReadModel(
@@ -168,7 +170,10 @@ class WalletProjection extends Projection<WalletReadModel> {
       availableUtxoCount: 0,
       reservedUtxoCount: 0,
       spentUtxoCount: 0,
-      metadata: event.walletMetadata ?? {},
+      metadata: {
+        ...event.walletMetadata ?? {},
+        'walletType': event.walletType.toStorageString(), // CRITICAL: Include wallet type in metadata
+      },
     );
     
     // CRITICAL: Persist the root address to AddressEntity

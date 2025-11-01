@@ -144,7 +144,7 @@ class AddressDiscoveryService {
       try {
         final history = await _dataSource.getTransactionHistory(
           address,
-          limit: 1000, // Get up to 1000 transactions
+          // No limit - fetch all transactions (data source handles pagination)
         );
 
         if (history.isNotEmpty) {
@@ -228,7 +228,7 @@ class AddressDiscoveryService {
       try {
         final history = await _dataSource.getTransactionHistory(
           address,
-          limit: 1000,
+          // No limit - fetch all transactions (data source handles pagination)
         );
 
         if (history.isNotEmpty) {

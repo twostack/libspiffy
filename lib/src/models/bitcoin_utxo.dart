@@ -5,6 +5,8 @@ const _sentinel = Object();
 
 /// Enumeration of UTXO statuses
 enum UTXOStatus {
+  /// UTXO is pending network confirmation (not yet spendable)
+  pending,
   /// UTXO is available for spending
   available,
   /// UTXO is reserved for a pending transaction
@@ -91,6 +93,7 @@ class BitcoinUtxo {
     int? blockHeight,
     int? confirmations,
     int? derivationIndex,
+    UTXOStatus status = UTXOStatus.pending,
   }) {
     final now = DateTime.now();
     return BitcoinUtxo(
@@ -99,7 +102,7 @@ class BitcoinUtxo {
       value: dartsv.Coin.ofSat(satoshis),
       scriptPubKey: scriptPubKey,
       address: address,
-      status: UTXOStatus.available,
+      status: status,
       blockHeight: blockHeight,
       confirmations: confirmations,
       createdAt: now,
@@ -187,6 +190,14 @@ class BitcoinUtxo {
   BitcoinUtxo markSpent() {
     return copyWith(
       status: UTXOStatus.spent,
+      updatedAt: DateTime.now(),
+    );
+  }
+  
+  /// Mark this UTXO as available for spending
+  BitcoinUtxo markAvailable() {
+    return copyWith(
+      status: UTXOStatus.available,
       updatedAt: DateTime.now(),
     );
   }

@@ -1,3 +1,5 @@
+import 'package:libspiffy/src/models/bitcoin_utxo.dart';
+
 import '../models/wallet_event.dart';
 import '../models/wallet_type.dart';
 
@@ -109,13 +111,15 @@ class WalletConfigurationUpdatedEvent extends WalletEvent {
 
 /// Event fired when wallet import starts
 class WalletImportStartedEvent extends WalletEvent {
-  final String xpriv;
+  final String? xpriv;
+  final String? wif;
   final String walletName;
   final int addressGapLimit;
 
   WalletImportStartedEvent({
     required String walletId,
-    required this.xpriv,
+    this.xpriv,
+    this.wif,
     required this.walletName,
     required this.addressGapLimit,
     String? eventId,
@@ -134,6 +138,7 @@ class WalletImportStartedEvent extends WalletEvent {
   Map<String, dynamic> getWalletEventData() {
     return {
       'xpriv': xpriv,
+      'wif': wif,
       'walletName': walletName,
       'addressGapLimit': addressGapLimit,
     };
@@ -142,9 +147,68 @@ class WalletImportStartedEvent extends WalletEvent {
   static WalletImportStartedEvent fromMap(Map<String, dynamic> map) {
     return WalletImportStartedEvent(
       walletId: map['walletId'] as String,
-      xpriv: map['xpriv'] as String,
+      xpriv: map['xpriv'] as String?,
+      wif: map['wif'] as String?,
       walletName: map['walletName'] as String,
       addressGapLimit: map['addressGapLimit'] as int,
+      eventId: map['eventId'] as String?,
+      timestamp: map['timestamp'] != null
+          ? (map['timestamp'] is String
+              ? DateTime.parse(map['timestamp'] as String)
+              : map['timestamp'] as DateTime)
+          : null,
+      version: map['version'] as int?,
+      metadata: map['metadata'] as Map<String, dynamic>?,
+    );
+  }
+}
+
+/// Event fired during wallet import to report progress
+class WalletImportProgressEvent extends WalletEvent {
+  final String phase;
+  final String message;
+  final int currentStep;
+  final int totalSteps;
+  final double progress;
+
+  WalletImportProgressEvent({
+    required String walletId,
+    required this.phase,
+    required this.message,
+    required this.currentStep,
+    required this.totalSteps,
+    required this.progress,
+    String? eventId,
+    DateTime? timestamp,
+    int? version,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          eventId: eventId,
+          timestamp: timestamp,
+          version: version,
+          metadata: metadata,
+        );
+
+  @override
+  Map<String, dynamic> getWalletEventData() {
+    return {
+      'phase': phase,
+      'message': message,
+      'currentStep': currentStep,
+      'totalSteps': totalSteps,
+      'progress': progress,
+    };
+  }
+
+  static WalletImportProgressEvent fromMap(Map<String, dynamic> map) {
+    return WalletImportProgressEvent(
+      walletId: map['walletId'] as String,
+      phase: map['phase'] as String,
+      message: map['message'] as String,
+      currentStep: map['currentStep'] as int,
+      totalSteps: map['totalSteps'] as int,
+      progress: (map['progress'] as num).toDouble(),
       eventId: map['eventId'] as String?,
       timestamp: map['timestamp'] != null
           ? (map['timestamp'] is String
@@ -525,6 +589,7 @@ class UTXOReceivedEvent extends WalletEvent {
   final String address;
   final int? blockHeight;
   final int? confirmations;
+  final UTXOStatus initialStatus; // Initial status when creating the UTXO
 
   UTXOReceivedEvent({
     required String walletId,
@@ -535,6 +600,7 @@ class UTXOReceivedEvent extends WalletEvent {
     required this.address,
     this.blockHeight,
     this.confirmations,
+    this.initialStatus = UTXOStatus.pending, // Default to pending
     String? eventId,
     DateTime? timestamp,
     int? version,
@@ -557,10 +623,21 @@ class UTXOReceivedEvent extends WalletEvent {
       'address': address,
       'blockHeight': blockHeight,
       'confirmations': confirmations,
+      'initialStatus': initialStatus.name,
     };
   }
 
   static UTXOReceivedEvent fromMap(Map<String, dynamic> map) {
+    // Parse initialStatus, defaulting to pending for backwards compatibility
+    UTXOStatus initialStatus = UTXOStatus.pending;
+    if (map.containsKey('initialStatus')) {
+      final statusName = map['initialStatus'] as String;
+      initialStatus = UTXOStatus.values.firstWhere(
+        (s) => s.name == statusName,
+        orElse: () => UTXOStatus.pending,
+      );
+    }
+    
     return UTXOReceivedEvent(
       walletId: map['walletId'] as String,
       txid: map['txid'] as String,
@@ -570,6 +647,53 @@ class UTXOReceivedEvent extends WalletEvent {
       address: map['address'] as String,
       blockHeight: map['blockHeight'] as int?,
       confirmations: map['confirmations'] as int?,
+      initialStatus: initialStatus,
+      eventId: map['eventId'] as String?,
+      timestamp: map['timestamp'] != null
+          ? (map['timestamp'] is String 
+              ? DateTime.parse(map['timestamp'] as String)
+              : map['timestamp'] as DateTime)
+          : null,
+      version: map['version'] as int?,
+      metadata: map['metadata'] as Map<String, dynamic>?,
+    );
+  }
+}
+
+/// Event fired when UTXO becomes available for spending
+class UTXOMarkedAvailableEvent extends WalletEvent {
+  final String txid;
+  final int vout;
+  
+  UTXOMarkedAvailableEvent({
+    required String walletId,
+    required this.txid,
+    required this.vout,
+    String? eventId,
+    DateTime? timestamp,
+    int? version,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          eventId: eventId,
+          timestamp: timestamp,
+          version: version,
+          metadata: metadata,
+        );
+  
+  @override
+  Map<String, dynamic> getWalletEventData() {
+    return {
+      'txid': txid,
+      'vout': vout,
+    };
+  }
+  
+  static UTXOMarkedAvailableEvent fromMap(Map<String, dynamic> map) {
+    return UTXOMarkedAvailableEvent(
+      walletId: map['walletId'] as String,
+      txid: map['txid'] as String,
+      vout: map['vout'] as int,
       eventId: map['eventId'] as String?,
       timestamp: map['timestamp'] != null
           ? (map['timestamp'] is String 

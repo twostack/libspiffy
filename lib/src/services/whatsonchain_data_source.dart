@@ -72,29 +72,52 @@ class WhatsOnChainDataSource implements BlockchainDataSource {
   }) async {
     _logger.fine('Getting transaction history for $address');
 
-    final history = await _getConfirmedHistory(
-      address,
-      limit: limit,
-    );
-
     final transactions = <TransactionInfo>[];
-    final result = history['result'] as List?;
+    String? nextToken;
+    int fetchedCount = 0;
+    final requestLimit = (limit != null && limit <= 1000) ? limit : 1000;
 
-    if (result == null) {
-      return transactions;
-    }
+    // Keep fetching pages until we have all transactions or reach the limit
+    do {
+      final history = await _getConfirmedHistory(
+        address,
+        limit: requestLimit,
+        token: nextToken,
+      );
 
-    for (final tx in result) {
-      if (tx is Map<String, dynamic>) {
-        transactions.add(TransactionInfo(
-          txid: tx['tx_hash'] as String? ?? '',
-          blockHeight: tx['height'] as int?,
-          blockHash: null, // WhatsOnChain doesn't provide this in history
-          blockIndex: null, // Not provided in history endpoint
-          timestamp: null, // Not provided in history endpoint
-        ));
+      final result = history['result'] as List?;
+
+      if (result == null || result.isEmpty) {
+        break;
       }
-    }
+
+      for (final tx in result) {
+        if (tx is Map<String, dynamic>) {
+          transactions.add(TransactionInfo(
+            txid: tx['tx_hash'] as String? ?? '',
+            blockHeight: tx['height'] as int?,
+            blockHash: null, // WhatsOnChain doesn't provide this in history
+            blockIndex: null, // Not provided in history endpoint
+            timestamp: null, // Not provided in history endpoint
+          ));
+          fetchedCount++;
+
+          // If we have a specific limit and reached it, stop
+          if (limit != null && fetchedCount >= limit) {
+            break;
+          }
+        }
+      }
+
+      // Get the next page token if available
+      nextToken = history['token'] as String?;
+
+      // Continue if we have a token and haven't reached the limit
+    } while (nextToken != null && 
+             nextToken.isNotEmpty && 
+             (limit == null || fetchedCount < limit));
+
+    _logger.fine('Fetched ${transactions.length} transactions for $address');
 
     // Apply offset if specified
     if (offset != null && offset > 0) {

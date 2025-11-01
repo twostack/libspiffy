@@ -278,6 +278,11 @@ class LibSpiffyActorSystem {
       (map) => UTXOReceivedEvent.fromMap(map),
     );
     
+    EventRegistry.register<UTXOMarkedAvailableEvent>(
+      'UTXOMarkedAvailableEvent',
+      (map) => UTXOMarkedAvailableEvent.fromMap(map),
+    );
+    
     EventRegistry.register<UTXOSpentEvent>(
       'UTXOSpentEvent',
       (map) => UTXOSpentEvent.fromMap(map),
@@ -479,6 +484,9 @@ class LibSpiffyActorSystem {
       walletManager: _walletManager!,
       arcConfig: _arcConfig,
     ));
+    
+    // Wire up ARC actor reference in WalletManager
+    _walletManager!.tell(SetArcActorMessage(_arcActor!));
     
     // Spawn ImportActor if blockchain data source is provided
     if (_blockchainDataSource != null) {
@@ -864,6 +872,40 @@ class LibSpiffyActorSystem {
     _importActor!.tell(importMessage);
   }
 
+  /// Import wallet from WIF (Wallet Import Format) private key
+  /// 
+  /// This triggers the ImportActor to perform a single-address wallet import:
+  /// 1. Create wallet from WIF
+  /// 2. Discover the single address associated with the WIF key
+  /// 3. Import transaction history for that address
+  /// 4. Import UTXOs into the wallet
+  /// 
+  /// The import runs asynchronously in the ImportActor. Progress can be monitored
+  /// by subscribing to wallet events from the event store.
+  /// 
+  /// Returns immediately after sending the import message to the actor.
+  /// Check wallet events or query the wallet projection for completion status.
+  void importWalletFromWif({
+    required String walletId,
+    required String wif,
+    required String walletName,
+    String networkType = 'test',
+  }) {
+    if (_importActor == null) {
+      throw StateError('ImportActor not available. Did you provide a blockchainDataSource during initialization?');
+    }
+    
+    final importMessage = ImportWalletMessage(
+      walletId: walletId,
+      wif: wif,
+      walletName: walletName,
+      networkType: networkType,
+      addressGapLimit: 1, // Not used for WIF, but required by message
+    );
+    
+    _importActor!.tell(importMessage);
+  }
+
   /// Disconnect from SpiffyNode
   Future<void> disconnectFromSpiffyNode() async {
     if (_spiffyNodeBridge != null) {
@@ -1004,6 +1046,25 @@ class SetInvoiceManagerMessage implements Message {
 
   @override
   String get correlationId => 'set-invoice-manager-${DateTime.now().millisecondsSinceEpoch}';
+  
+  @override
+  Map<String, dynamic> get metadata => {};
+  
+  @override
+  ActorRef? get replyTo => null;
+  
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+/// Internal message to set ARC actor reference in WalletManager
+class SetArcActorMessage implements Message {
+  final ActorRef arcActor;
+  
+  SetArcActorMessage(this.arcActor);
+
+  @override
+  String get correlationId => 'set-arc-actor-${DateTime.now().millisecondsSinceEpoch}';
   
   @override
   Map<String, dynamic> get metadata => {};

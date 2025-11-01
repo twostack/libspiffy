@@ -180,22 +180,31 @@ class ArcTransactionResponse {
       }
     }
 
+    // Safely parse lists that might be strings or other types
+    List<String>? parseStringList(dynamic value) {
+      if (value == null) return null;
+      if (value is List) {
+        return value.map((e) => e.toString()).toList();
+      }
+      if (value is String && value.isNotEmpty) {
+        return [value]; // Wrap single string in list
+      }
+      return null;
+    }
+    
     return ArcTransactionResponse(
       txid: json['txid'] ?? '',
       status: status,
-      message: json['message'],
+      message: json['message'] ?? json['extraInfo'], // API uses 'extraInfo' sometimes
       blockHeight: json['blockHeight'] is String 
           ? int.tryParse(json['blockHeight']) 
           : json['blockHeight'] as int?,
       blockHash: json['blockHash'],
       timestamp: json['timestamp']?.toString(),  // Keep as date-time string
-      doubleSpendTxids: json['doubleSpendTxids'] != null
-          ? List<String>.from(json['doubleSpendTxids'])
-          : null,
+      // API uses 'competingTxs' field name, not 'doubleSpendTxids'
+      doubleSpendTxids: parseStringList(json['competingTxs'] ?? json['doubleSpendTxids']),
       rawTx: json['rawTx'],
-      merklePath: json['merklePath'] != null
-          ? List<String>.from(json['merklePath'])
-          : null,
+      merklePath: parseStringList(json['merklePath']),
       merkleRoot: json['merkleRoot'],
     );
   }
@@ -366,19 +375,6 @@ class ArcService {
     }
   }
 
-  /// Submit BEEF transactions via Extended Format (EF)
-  /// 
-  /// **Note**: This method has been replaced by the ARCActor's internal
-  /// Extended Format conversion. BEEF packages are now:
-  /// 1. Parsed to extract the payment transaction and ancestors
-  /// 2. Converted to Extended Format (EF) which includes previous output data
-  /// 3. Submitted via `submitTransaction()` to the `/tx` endpoint
-  /// 
-  /// Extended Format (BRC-30/BIP-239) allows nodes to validate transactions
-  /// without UTXO lookup by including the previous output script and value
-  /// for each input directly in the transaction format.
-  /// 
-  /// See: `ARCActor._convertToExtendedFormat()` for implementation details.
 
   /// Get the status of a transaction
   /// 

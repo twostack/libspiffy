@@ -52,6 +52,7 @@ class WalletProjection extends Projection<WalletReadModel> {
         AddressDiscoveredEvent,
         AddressLabelUpdatedEvent,
         UTXOReceivedEvent,
+        UTXOMarkedAvailableEvent,
         UTXOSpentEvent,
         UTXOConfirmationUpdatedEvent,
         UTXOReservedEvent,
@@ -106,6 +107,9 @@ class WalletProjection extends Projection<WalletReadModel> {
           return true;
         case UTXOReceivedEvent:
           await _handleUTXOReceived(event as UTXOReceivedEvent);
+          return true;
+        case UTXOMarkedAvailableEvent:
+          await _handleUTXOMarkedAvailable(event as UTXOMarkedAvailableEvent);
           return true;
         case UTXOSpentEvent:
           await _handleUTXOSpent(event as UTXOSpentEvent);
@@ -310,6 +314,7 @@ class WalletProjection extends Projection<WalletReadModel> {
       address: event.address,
       blockHeight: event.blockHeight,
       confirmations: event.confirmations ?? 0,
+      status: event.initialStatus, // Use status from event (available for imports, pending for new receives)
     );
     
     _utxos[utxoKey] = utxo;
@@ -318,6 +323,25 @@ class WalletProjection extends Projection<WalletReadModel> {
     print('[WalletProjection]    → UTXO keys: ${_utxos.keys.toList()}');
     await _recalculateAndPersist(event.timestamp);
     print('[WalletProjection]    ✅ UTXO persist cycle complete');
+  }
+  
+  Future<void> _handleUTXOMarkedAvailable(UTXOMarkedAvailableEvent event) async {
+    print('[WalletProjection] ✅ Processing UTXOMarkedAvailableEvent: ${event.txid}:${event.vout}');
+    final utxoKey = '${event.txid}:${event.vout}';
+    final utxo = _utxos[utxoKey];
+    
+    if (utxo != null) {
+      if (utxo.status == UTXOStatus.pending) {
+        print('[WalletProjection]    → Marking UTXO as available for spending');
+        _utxos[utxoKey] = utxo.markAvailable();
+        await _recalculateAndPersist(event.timestamp);
+        print('[WalletProjection]    ✅ UTXO marked available: ${event.txid}:${event.vout}');
+      } else {
+        print('[WalletProjection]    ⚠️  UTXO already in status: ${utxo.status}, skipping');
+      }
+    } else {
+      print('[WalletProjection]    ⚠️  UTXO not found in cache: ${event.txid}:${event.vout}');
+    }
   }
   
   Future<void> _handleUTXOSpent(UTXOSpentEvent event) async {

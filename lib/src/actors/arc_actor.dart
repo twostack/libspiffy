@@ -3,7 +3,6 @@ import 'dart:typed_data';
 import 'package:dactor/dactor.dart';
 import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
-import 'package:buffer/buffer.dart';
 
 import '../core/wallet_commands.dart';
 import '../services/arc_service.dart';
@@ -22,6 +21,7 @@ class ARCActor extends Actor {
   // Transaction status tracking
   final Map<String, String> _transactionStatus = {}; // txid -> status
   final Map<String, String> _transactionToWallet = {}; // txid -> walletId
+  final Map<String, List<int>> _transactionOutputs = {}; // txid -> [vout, vout, ...]
   
   // Periodic status checking
   Timer? _statusCheckTimer;
@@ -65,6 +65,10 @@ class ARCActor extends Actor {
           
         case EstimateFeeMessage:
           await _handleEstimateFee(message as EstimateFeeMessage);
+          break;
+          
+        case RegisterTransactionOutputsMessage:
+          _handleRegisterOutputs(message as RegisterTransactionOutputsMessage);
           break;
           
         default:
@@ -372,8 +376,12 @@ class ARCActor extends Actor {
 
   /// Periodically check status of pending transactions
   void _checkPendingTransactions() {
+    // Check all transactions NOT in terminal states (mined/rejected)
     final pendingTxids = _transactionStatus.entries
-        .where((entry) => entry.value == 'broadcasted' || entry.value == 'pending')
+        .where((entry) => 
+            entry.value != 'mined' && 
+            entry.value != 'rejected' &&
+            entry.value != 'double_spend')
         .map((entry) => entry.key)
         .toList();
     
@@ -402,20 +410,57 @@ class ARCActor extends Actor {
         print('Transaction $txid status changed: $previousStatus -> $newStatus');
         
         final walletId = _transactionToWallet[txid];
-        if (walletId != null && response.status == ArcTransactionStatus.mined && response.blockHeight != null) {
-          final command = UpdateUTXOConfirmationsCommand(
-            walletId: walletId,
-            utxoKey: txid,
-            confirmations: 6, // Simplified - assume 6 confirmations when mined
-            blockHeight: response.blockHeight!,
-          );
+        if (walletId != null) {
+          // SEEN_ON_NETWORK: Mark outputs as available for spending
+          if (response.status == ArcTransactionStatus.seenOnNetwork) {
+            final outputs = _transactionOutputs[txid];
+            if (outputs != null) {
+              print('Transaction $txid SEEN_ON_NETWORK - marking ${outputs.length} outputs as available');
+              for (final vout in outputs) {
+                final command = MarkUTXOAvailableCommand(
+                  walletId: walletId,
+                  txid: txid,
+                  vout: vout,
+                );
+                _walletManager.tell(WalletCommandMessage(walletId, command));
+              }
+            }
+          }
           
-          _walletManager.tell(WalletCommandMessage(walletId, command));
+          // MINED: Update confirmations for each registered output
+          if (response.status == ArcTransactionStatus.mined && response.blockHeight != null) {
+            final outputs = _transactionOutputs[txid];
+            if (outputs != null) {
+              print('Transaction $txid MINED - updating confirmations for ${outputs.length} outputs');
+              for (final vout in outputs) {
+                final utxoKey = '$txid:$vout';
+                final command = UpdateUTXOConfirmationsCommand(
+                  walletId: walletId,
+                  utxoKey: utxoKey,
+                  confirmations: 6, // Simplified - assume 6 confirmations when mined
+                  blockHeight: response.blockHeight!,
+                );
+                
+                _walletManager.tell(WalletCommandMessage(walletId, command));
+              }
+            }
+          }
         }
       }
       
     } catch (e) {
       print('Error checking status for transaction $txid: $e');
+    }
+  }
+
+  /// Handle registration of transaction outputs for tracking
+  void _handleRegisterOutputs(RegisterTransactionOutputsMessage msg) {
+    print('Registering outputs for tracking: ${msg.txid} -> ${msg.vouts}');
+    _transactionOutputs[msg.txid] = msg.vouts;
+    
+    // Also ensure we're tracking this transaction's wallet mapping
+    if (!_transactionToWallet.containsKey(msg.txid)) {
+      _transactionToWallet[msg.txid] = msg.walletId;
     }
   }
 
@@ -474,100 +519,6 @@ class ARCActor extends Actor {
         context.sender?.tell(FeeEstimateMessage(BigInt.zero));
         break;
     }
-  }
-
-  /// Convert a transaction to Extended Format (EF)
-  /// 
-  /// Extended Format adds the previous output script and value for each input,
-  /// allowing nodes to validate without UTXO lookup.
-  /// 
-  /// Format: [version] [EF_MARKER] [for each input: prevOutScript + value] [rest of tx]
-  /// EF_MARKER = 0x00000000EF (5 bytes)
-  String _convertToExtendedFormat(
-    dartsv.Transaction tx,
-    Map<String, dartsv.Transaction> ancestorTxMap,
-  ) {
-    final buffer = ByteDataWriter();
-    
-    // 1. Write version (4 bytes, little endian)
-    buffer.writeUint32(tx.version, Endian.little);
-    
-    // 2. Write EF marker: 0x00000000EF (5 bytes)
-    buffer.writeUint8(0x00);
-    buffer.writeUint8(0x00);
-    buffer.writeUint8(0x00);
-    buffer.writeUint8(0x00);
-    buffer.writeUint8(0xEF);
-    
-    // 3. Write input count
-    final inputCountVarint = dartsv.VarInt.fromInt(tx.inputs.length);
-    buffer.write(inputCountVarint.encode());
-    
-    // 4. For each input, write: prevOutScript, value, and then standard input data
-    for (final input in tx.inputs) {
-      final prevTxid = input.prevTxnId;
-      final prevVout = input.prevTxnOutputIndex;
-      
-      // Find the previous output from ancestor transactions
-      final prevTx = ancestorTxMap[prevTxid];
-      if (prevTx == null) {
-        throw Exception('Previous transaction $prevTxid not found in ancestors');
-      }
-      
-      if (prevVout >= prevTx.outputs.length) {
-        throw Exception('Invalid output index $prevVout for transaction $prevTxid');
-      }
-      
-      final prevOutput = prevTx.outputs[prevVout];
-      
-      // Write previous output script length and script
-      final scriptHex = prevOutput.script.toHex();
-      final scriptBytes = hex.decode(scriptHex);
-      final scriptLengthVarint = dartsv.VarInt.fromInt(scriptBytes.length);
-      buffer.write(scriptLengthVarint.encode());
-      buffer.write(scriptBytes);
-      
-      // Write previous output value (8 bytes, little endian)
-      buffer.writeUint64(prevOutput.satoshis.toInt(), Endian.little);
-      
-      // Write standard input data: prev txid (32 bytes) + prev vout (4 bytes)
-      final prevTxidBytes = hex.decode(prevTxid);
-      buffer.write(Uint8List.fromList(prevTxidBytes.reversed.toList())); // Reverse for little endian
-      buffer.writeUint32(prevVout, Endian.little);
-      
-      // Write scriptSig length and scriptSig
-      final scriptSigBytes = input.script?.buffer ?? Uint8List(0);
-      final scriptSigLengthVarint = dartsv.VarInt.fromInt(scriptSigBytes.length);
-      buffer.write(scriptSigLengthVarint.encode());
-      buffer.write(scriptSigBytes);
-      
-      // Write sequence (4 bytes)
-      buffer.writeUint32(input.sequenceNumber, Endian.little);
-    }
-    
-    // 5. Write output count
-    final outputCountVarint = dartsv.VarInt.fromInt(tx.outputs.length);
-    buffer.write(outputCountVarint.encode());
-    
-    // 6. Write each output
-    for (final output in tx.outputs) {
-      // Write value (8 bytes, little endian)
-      buffer.writeUint64(output.satoshis.toInt(), Endian.little);
-      
-      // Write scriptPubKey length and scriptPubKey
-      final scriptPubKeyHex = output.script.toHex();
-      final scriptPubKeyBytes = hex.decode(scriptPubKeyHex);
-      final scriptPubKeyLengthVarint = dartsv.VarInt.fromInt(scriptPubKeyBytes.length);
-      buffer.write(scriptPubKeyLengthVarint.encode());
-      buffer.write(scriptPubKeyBytes);
-    }
-    
-    // 7. Write locktime (4 bytes)
-    buffer.writeUint32(tx.nLockTime, Endian.little);
-    
-    // Convert to hex string
-    final efBytes = buffer.toBytes();
-    return hex.encode(efBytes);
   }
 
   @override

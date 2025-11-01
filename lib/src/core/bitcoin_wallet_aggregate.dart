@@ -244,6 +244,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         return _handleRegisterDiscoveredAddress(currentState, command as RegisterDiscoveredAddressCommand);
       case ReceiveUTXOCommand:
         return _handleReceiveUTXO(currentState, command as ReceiveUTXOCommand);
+      case MarkUTXOAvailableCommand:
+        return _handleMarkUTXOAvailable(currentState, command as MarkUTXOAvailableCommand);
       case RecordImportedTransactionCommand:
         return _handleRecordImportedTransaction(currentState, command as RecordImportedTransactionCommand);
       case RecordOutgoingTransactionCommand:
@@ -308,6 +310,9 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         break;
       case UTXOReceivedEvent:
         _applyUTXOReceived(event as UTXOReceivedEvent);
+        break;
+      case UTXOMarkedAvailableEvent:
+        _applyUTXOMarkedAvailable(event as UTXOMarkedAvailableEvent);
         break;
       case UTXOSpentEvent:
         _applyUTXOSpent(event as UTXOSpentEvent);
@@ -694,7 +699,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       throw ArgumentError('UTXO amount must be positive');
     }
 
-    print('[BitcoinWalletAggregate]    ✅ Creating UTXOReceivedEvent');
+    print('[BitcoinWalletAggregate]    ✅ Creating UTXOReceivedEvent (status: ${command.initialStatus})');
     final event = UTXOReceivedEvent(
       walletId: command.walletId,
       txid: command.txid,
@@ -702,6 +707,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       satoshis: command.satoshis.toInt(),
       scriptPubKey: command.scriptPubKey,
       address: command.address,
+      initialStatus: command.initialStatus,
       blockHeight: command.blockHeight,
       confirmations: command.confirmations,
       version: currentState.version + 1,
@@ -709,6 +715,37 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     );
 
     return [event];
+  }
+
+  List<Event> _handleMarkUTXOAvailable(WalletState currentState, MarkUTXOAvailableCommand command) {
+    print('[BitcoinWalletAggregate] ✅ Handling MarkUTXOAvailableCommand: ${command.txid}:${command.vout}');
+    
+    // Business rule: Wallet must exist
+    if (!currentState.isCreated) {
+      throw StateError('Cannot mark UTXO available for non-existent wallet');
+    }
+    
+    final utxoKey = '${command.txid}:${command.vout}';
+    final utxo = currentState.utxos[utxoKey];
+    
+    if (utxo == null) {
+      throw StateError('UTXO $utxoKey not found');
+    }
+    
+    if (utxo.status != UTXOStatus.pending) {
+      // Already available or spent, no-op
+      print('[BitcoinWalletAggregate]    ⚠️  UTXO $utxoKey is not pending (status: ${utxo.status}), skipping');
+      return [];
+    }
+    
+    print('[BitcoinWalletAggregate]    ✅ Creating UTXOMarkedAvailableEvent');
+    return [UTXOMarkedAvailableEvent(
+      walletId: command.walletId,
+      txid: command.txid,
+      vout: command.vout,
+      version: currentState.version + 1,
+      timestamp: DateTime.now(),
+    )];
   }
 
   List<Event> _handleSpendUTXO(WalletState currentState, SpendUTXOCommand command) {
@@ -822,10 +859,12 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       throw StateError('Cannot record outgoing transaction for non-existent wallet');
     }
 
+    final events = <Event>[];
+    
     print('[BitcoinWalletAggregate]    ✅ Creating TransactionRecordedEvent (status: PENDING)');
     
     // Emit TransactionRecordedEvent
-    final event = TransactionRecordedEvent(
+    final transactionEvent = TransactionRecordedEvent(
       walletId: command.walletId,
       txid: command.txid,
       rawHex: command.rawHex,
@@ -844,8 +883,55 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       version: currentState.version + 1,
       timestamp: DateTime.now(),
     );
+    events.add(transactionEvent);
 
-    return [event];
+    // If there's a change output, create a UTXO for it with pending status
+    if (command.changeAddress != null && command.changeAmount != null && command.changeAmount! > BigInt.zero) {
+      print('[BitcoinWalletAggregate]    💰 Change detected: ${command.changeAmount} sats to ${command.changeAddress}');
+      
+      // Parse transaction to find change output vout and scriptPubKey
+      try {
+        final tx = dartsv.Transaction.fromHex(command.rawHex);
+        int? changeVout;
+        String? changeScriptPubKey;
+        
+        // Find which output is the change (matches change address and amount)
+        for (int i = 0; i < tx.outputs.length; i++) {
+          final output = tx.outputs[i];
+          if (output.satoshis == command.changeAmount) {
+            // This might be the change output
+            changeVout = i;
+            changeScriptPubKey = output.script.toHex();
+            print('[BitcoinWalletAggregate]       Found change at vout $i');
+            break;
+          }
+        }
+        
+        if (changeVout != null && changeScriptPubKey != null) {
+          print('[BitcoinWalletAggregate]    ✅ Creating UTXOReceivedEvent for change (status: PENDING)');
+          final utxoEvent = UTXOReceivedEvent(
+            walletId: command.walletId,
+            txid: command.txid,
+            vout: changeVout,
+            satoshis: command.changeAmount!.toInt(),
+            scriptPubKey: changeScriptPubKey,
+            address: command.changeAddress!,
+            blockHeight: null, // Not confirmed yet
+            confirmations: 0,
+            initialStatus: UTXOStatus.pending, // Change output starts as pending
+            version: currentState.version + 2, // Increment from transaction event
+            timestamp: DateTime.now(),
+          );
+          events.add(utxoEvent);
+        } else {
+          print('[BitcoinWalletAggregate]    ⚠️  Could not find change output in transaction');
+        }
+      } catch (e) {
+        print('[BitcoinWalletAggregate]    ⚠️  Error parsing transaction for change output: $e');
+      }
+    }
+
+    return events;
   }
 
   /// Handle confirming a pending transaction
@@ -1476,12 +1562,25 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       address: event.address,
       blockHeight: event.blockHeight,
       confirmations: event.confirmations ?? 0,
+      status: event.initialStatus, // Use the status from the event
     );
     
     currentState.utxos[utxoKey] = utxo;
     currentState.version = event.version;
     currentState.lastModified = event.timestamp;
     _recalculateBalances();
+  }
+
+  void _applyUTXOMarkedAvailable(UTXOMarkedAvailableEvent event) {
+    final utxoKey = '${event.txid}:${event.vout}';
+    final utxo = currentState.utxos[utxoKey];
+    
+    if (utxo != null) {
+      currentState.utxos[utxoKey] = utxo.markAvailable();
+      currentState.version = event.version;
+      currentState.lastModified = event.timestamp;
+      _recalculateBalances();
+    }
   }
 
   void _applyUTXOSpent(UTXOSpentEvent event) {

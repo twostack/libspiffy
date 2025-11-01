@@ -11,6 +11,7 @@ import '../services/transaction_import_service.dart';
 import '../services/script_type_registry.dart';
 import '../storage/read_model_storage.dart';
 import '../models/blockchain_data_models.dart';
+import '../models/bitcoin_utxo.dart'; // For UTXOStatus
 import '../models/wallet_event.dart';
 import '../core/wallet_commands.dart';
 import '../core/wallet_events.dart';
@@ -113,9 +114,9 @@ class ImportActor extends Actor {
     _logger.info('   Network: ${message.networkType}, Gap Limit: ${message.addressGapLimit}');
 
     try {
-      // Phase 1: Create wallet from xpriv
+      // Phase 1: Create wallet from xpriv or wif
       _logger.info('📝 Phase 1/4: Creating wallet...');
-      await _createWalletFromXpriv(message);
+      await _createWallet(message);
       _logger.info('   ✅ Wallet created successfully');
 
       if (_isCancelled) {
@@ -160,8 +161,11 @@ class ImportActor extends Actor {
     }
   }
 
-  Future<void> _createWalletFromXpriv(ImportWalletMessage message) async {
+  Future<void> _createWallet(ImportWalletMessage message) async {
     _logger.info('   → Creating wallet via CreateWalletMessage for wallet ${message.walletId}');
+    
+    final importType = message.xpriv != null ? 'xpriv' : 'wif';
+    _logger.info('   → Import type: $importType');
     
     // Create wallet using CreateWalletMessage (spawns the wallet actor)
     // NOT CreateWalletCommand wrapped in WalletCommandMessage (which expects existing actor)
@@ -169,15 +173,20 @@ class ImportActor extends Actor {
       message.walletId,
       message.walletName,
       xpriv: message.xpriv,
+      wif: message.wif,
       walletMetadata: {
         'network': message.networkType,
-        'importedFrom': 'xpriv',
+        'importedFrom': importType,
       },
     );
 
     _logger.info('   → Sending CreateWalletMessage to WalletManagerActor to spawn wallet aggregate');
     _logger.info('   → Wallet ID: ${message.walletId}, Name: ${message.walletName}');
-    _logger.info('   → Has xpriv: ${message.xpriv.isNotEmpty}');
+    if (message.xpriv != null) {
+      _logger.info('   → Has xpriv: ${message.xpriv!.isNotEmpty}');
+    } else {
+      _logger.info('   → Has wif: ${message.wif!.isNotEmpty}');
+    }
     
     _walletManagerActor.tell(createMessage, sender: context.self);
     _logger.info('   → CreateWalletMessage sent to WalletManagerActor');
@@ -220,6 +229,7 @@ class ImportActor extends Actor {
     await _notifyEvent(message.walletId, WalletImportStartedEvent(
       walletId: message.walletId,
       xpriv: message.xpriv,
+      wif: message.wif,
       walletName: message.walletName,
       addressGapLimit: message.addressGapLimit,
     ));
@@ -236,8 +246,18 @@ class ImportActor extends Actor {
   Future<List<DiscoveredAddress>> _discoverAddresses(
     ImportWalletMessage message,
   ) async {
+    if (message.wif != null) {
+      return await _discoverAddressesForWif(message);
+    } else {
+      return await _discoverAddressesForXpriv(message);
+    }
+  }
+
+  Future<List<DiscoveredAddress>> _discoverAddressesForXpriv(
+    ImportWalletMessage message,
+  ) async {
     _logger.info('   → Deriving HD keys from xpriv');
-    final hdPrivateKey = dartsv.HDPrivateKey.fromXpriv(message.xpriv);
+    final hdPrivateKey = dartsv.HDPrivateKey.fromXpriv(message.xpriv!);
     final hdPublicKey = hdPrivateKey.hdPublicKey;
     
     _logger.info('   → Xpriv path info:');
@@ -326,6 +346,82 @@ class ImportActor extends Actor {
     return discoveryResult.usedAddresses;
   }
 
+  /// Discover the single address associated with a WIF private key
+  Future<List<DiscoveredAddress>> _discoverAddressesForWif(
+    ImportWalletMessage message,
+  ) async {
+    _logger.info('   → Importing from WIF private key');
+    
+    // Parse WIF to get private key
+    final privateKey = dartsv.SVPrivateKey.fromWIF(message.wif!);
+    
+    // Determine network type
+    final network = message.networkType == 'main'
+        ? dartsv.NetworkType.MAIN
+        : dartsv.NetworkType.TEST;
+    
+    // Derive the single address
+    final address = dartsv.Address.fromPublicKey(privateKey.publicKey, network).toBase58();
+    _logger.info('   → WIF address: $address');
+    _logger.info('   → Network: ${message.networkType}');
+    
+    _reportProgress(
+      'Checking address history...',
+      0.2,
+      0,
+      0,
+    );
+    
+    // Fetch transaction history for this single address
+    // No limit - fetch all transactions (data source handles pagination)
+    List<TransactionInfo> history;
+    try {
+      history = await _dataSource.getTransactionHistory(address);
+      _logger.info('   → Found ${history.length} transactions for address');
+    } catch (e) {
+      _logger.severe('   ❌ Error fetching transaction history: $e');
+      history = [];
+    }
+    
+    // Create discovered address entry (single entry for WIF)
+    final discoveredAddress = DiscoveredAddress(
+      address: address,
+      derivationIndex: 0, // WIF has no derivation
+      isChange: false, // Not applicable for WIF
+      transactionCount: history.length,
+      txids: history.map((tx) => tx.txid).toList(),
+    );
+    
+    // Register the address via CQRS command
+    _logger.info('   → Registering WIF address...');
+    final command = RegisterDiscoveredAddressCommand(
+      walletId: message.walletId,
+      address: address,
+      derivationIndex: 0,
+      isChange: false,
+      transactionCount: history.length,
+    );
+    
+    _walletManagerActor.tell(
+      WalletCommandMessage(message.walletId, command),
+      sender: context.self,
+    );
+    _logger.info('   ✅ WIF address registered');
+    
+    // Give projection time to process
+    await Future.delayed(const Duration(milliseconds: 500));
+    
+    _totalTransactions = history.length;
+    _reportProgress(
+      'Found 1 address with $_totalTransactions transactions',
+      0.4,
+      0,
+      _totalTransactions,
+    );
+    
+    return [discoveredAddress];
+  }
+
   Future<void> _importTransactions(
     ImportWalletMessage message,
     List<DiscoveredAddress> addresses,
@@ -338,273 +434,297 @@ class ImportActor extends Actor {
       final address = addresses[i];
       if (_isCancelled) break;
 
-      _logger.info('   → [${ i+1}/${addresses.length}] Processing address: ${address.address}');
+      _logger.info('   → [${i+1}/${addresses.length}] Processing address: ${address.address}');
       
-      // Import all transactions for this address
-      final transactions = await _importService.importAddressTransactions(address);
-      _logger.info('      Found ${transactions.length} transactions for this address');
-
-      for (final tx in transactions) {
-        if (_isCancelled) break;
-
-        _processedTransactions++;
-
-        // Parse transaction to extract data (BEEF already has this parsed)
-        final parsedTx = tx.transaction;
-        
-        // Calculate total output value and track wallet-relevant data
-        BigInt totalOutput = BigInt.zero;
-        final walletReceivingAddresses = <String>[];
-        BigInt walletReceivedSats = BigInt.zero;
-        
-        for (final output in parsedTx.outputs) {
-          totalOutput += output.satoshis;
-        }
-        
-        // Extract input information by fetching parent transactions
-        final sendingAddresses = <String>[];
-        BigInt totalInputSats = BigInt.zero;
-        
-        // Fetch parent transactions for each input to get values and addresses
-        for (final input in parsedTx.inputs) {
-          try {
-            final prevTxid = input.prevTxnId.toString();
-            final prevVout = input.prevTxnOutputIndex;
-            
-            // Fetch parent transaction
-            final parentRawHex = await _dataSource.getRawTransaction(prevTxid);
-            final parentTx = dartsv.Transaction.fromHex(parentRawHex);
-            
-            // Get the output being spent
-            if (prevVout >= parentTx.outputs.length) {
-              _logger.warning('      ⚠️  Invalid prevVout $prevVout for parent tx $prevTxid');
-              continue;
-            }
-            
-            final spentOutput = parentTx.outputs[prevVout];
-            totalInputSats += spentOutput.satoshis;
-            
-            // Extract sending address from output script
-            final scriptRegistry = ScriptTypeRegistry(
-              networkType: message.networkType == 'main' 
-                ? dartsv.NetworkType.MAIN 
-                : dartsv.NetworkType.TEST,
-            );
-            final scriptType = scriptRegistry.identifyScriptType(spentOutput.script);
-            
-            if (scriptType?.toLowerCase() == 'p2pkh') {
-              final locker = dartsv.P2PKHLockBuilder.fromScript(
-                spentOutput.script,
-                networkType: message.networkType == 'main' 
-                  ? dartsv.NetworkType.MAIN 
-                  : dartsv.NetworkType.TEST,
-              );
-              if (locker.address != null) {
-                final senderAddress = locker.address!.toBase58();
-                sendingAddresses.add(senderAddress);
-                _logger.fine('      Input from: $senderAddress (${spentOutput.satoshis} sats)');
-              }
-            }
-          } catch (e) {
-            _logger.warning('      ⚠️  Failed to fetch parent tx for input: $e');
-            // Continue processing other inputs
-          }
-        }
-        
-        if (totalInputSats > BigInt.zero) {
-          final fee = totalInputSats - totalOutput;
-          _logger.info('      💰 Total inputs: $totalInputSats sats, fee: $fee sats');
-        }
-        
-        _logger.info('      📦 Parsing TX ${tx.txid}: ${parsedTx.inputs.length} inputs, ${parsedTx.outputs.length} outputs');
-        
-        // Note: Input addresses require looking up the previous transaction output
-        if (parsedTx.inputs.isNotEmpty) {
-          _logger.info('         ℹ️  Transaction has ${parsedTx.inputs.length} inputs (spending UTXOs)');
-          _logger.info('         ℹ️  This transaction might be SPENDING from address ${address.address}, not receiving to it');
-        }
-
-        // Check if this transaction spends any wallet UTXOs
-        _logger.info('      → Checking if transaction spends wallet UTXOs...');
-        final spentUtxos = await _findSpentWalletUTXOs(parsedTx, message.walletId);
-        
-        if (spentUtxos.isNotEmpty) {
-          _logger.info('      → Transaction spends ${spentUtxos.length} wallet UTXO(s)');
+      // Import and process transactions incrementally for this address
+      await _importService.importAddressTransactions(
+        address,
+        onProgress: (completed, total) {
+          // Update UI progress as each transaction is imported
+          _logger.info('      Progress: $completed/$total transactions imported');
+          _reportProgress(
+            'Importing transactions: $_processedTransactions/$_totalTransactions',
+            0.4 + (0.5 * (_processedTransactions / _totalTransactions)),
+            _processedTransactions,
+            _totalTransactions,
+          );
+        },
+        onTransactionImported: (tx) async {
+          if (_isCancelled) return;
           
-          for (final spentUtxo in spentUtxos) {
-            final utxoKey = '${spentUtxo['txid']}:${spentUtxo['vout']}';
-            _logger.info('         Marking UTXO as spent: $utxoKey');
-            
-            // Send command to mark UTXO as spent
-            final spendCommand = SpendUTXOCommand(
-              walletId: message.walletId,
-              utxoKey: utxoKey,
-              spendingTxId: tx.txid,
-              fee: BigInt.zero, // Fee calculation done separately
-            );
-            
-            _walletManagerActor.tell(
-              WalletCommandMessage(message.walletId, spendCommand),
-              sender: context.self,
-            );
-            
-            // WORKAROUND: Delay to prevent concurrency exceptions
-            await Future.delayed(const Duration(milliseconds: 50));
-            _logger.info('         ✅ SpendUTXOCommand sent for $utxoKey');
-          }
-        } else {
-          _logger.info('      ℹ️  Transaction does not spend any wallet UTXOs');
-        }
+          _processedTransactions++;
+          
+          // Process this transaction immediately
+          final utxosFound = await _processImportedTransaction(
+            tx,
+            message,
+            address,
+            addresses,
+          );
+          
+          totalUtxosFound += utxosFound.length;
+          importedUtxos.addAll(utxosFound);
+        },
+      );
+    }
 
-        // Find outputs that belong to discovered addresses
-        for (int vout = 0; vout < parsedTx.outputs.length; vout++) {
-          final output = parsedTx.outputs[vout];
-          String? outputAddress;
-          
-          // Log raw script info
-          final scriptHex = output.script.toHex();
-          _logger.info('         Output $vout: ${output.satoshis} sats');
-          _logger.info('            Script (hex): ${scriptHex.substring(0, scriptHex.length > 50 ? 50 : scriptHex.length)}${scriptHex.length > 50 ? "..." : ""}');
-          _logger.info('            Script length: ${output.script.chunks.length} chunks');
-          
-          // Step 1: Identify script type
-          final scriptRegistry = ScriptTypeRegistry(
+    _logger.info('   ✅ All addresses processed');
+    _logger.info('   📊 Summary: $_processedTransactions transactions, $totalUtxosFound UTXOs');
+    
+    _reportProgress(
+      'Import complete: $_processedTransactions transactions, $totalUtxosFound UTXOs',
+      0.9,
+      _processedTransactions,
+      _totalTransactions,
+    );
+  }
+
+  /// Process a single imported transaction
+  /// 
+  /// Returns list of UTXO maps found in this transaction
+  Future<List<Map<String, dynamic>>> _processImportedTransaction(
+    ImportedTransaction tx,
+    ImportWalletMessage message,
+    DiscoveredAddress currentAddress,
+    List<DiscoveredAddress> allAddresses,
+  ) async {
+    final importedUtxos = <Map<String, dynamic>>[];
+    
+    // Parse transaction to extract data (BEEF already has this parsed)
+    final parsedTx = tx.transaction;
+    
+    // Calculate total output value and track wallet-relevant data
+    BigInt totalOutput = BigInt.zero;
+    final walletReceivingAddresses = <String>[];
+    BigInt walletReceivedSats = BigInt.zero;
+    
+    for (final output in parsedTx.outputs) {
+      totalOutput += output.satoshis;
+    }
+    
+    // Extract input information by fetching parent transactions
+    final sendingAddresses = <String>[];
+    BigInt totalInputSats = BigInt.zero;
+    
+    // Fetch parent transactions for each input to get values and addresses
+    for (final input in parsedTx.inputs) {
+      try {
+        final prevTxid = input.prevTxnId.toString();
+        final prevVout = input.prevTxnOutputIndex;
+        
+        // Fetch parent transaction
+        final parentRawHex = await _dataSource.getRawTransaction(prevTxid);
+        final parentTx = dartsv.Transaction.fromHex(parentRawHex);
+        
+        // Get the output being spent
+        if (prevVout >= parentTx.outputs.length) {
+          _logger.warning('      ⚠️  Invalid prevVout $prevVout for parent tx $prevTxid');
+          continue;
+        }
+        
+        final spentOutput = parentTx.outputs[prevVout];
+        totalInputSats += spentOutput.satoshis;
+        
+        // Extract sending address from output script
+        final scriptRegistry = ScriptTypeRegistry(
+          networkType: message.networkType == 'main' 
+            ? dartsv.NetworkType.MAIN 
+            : dartsv.NetworkType.TEST,
+        );
+        final scriptType = scriptRegistry.identifyScriptType(spentOutput.script);
+        
+        if (scriptType?.toLowerCase() == 'p2pkh') {
+          final locker = dartsv.P2PKHLockBuilder.fromScript(
+            spentOutput.script,
             networkType: message.networkType == 'main' 
               ? dartsv.NetworkType.MAIN 
               : dartsv.NetworkType.TEST,
           );
-          final scriptType = scriptRegistry.identifyScriptType(output.script);
-          _logger.info('            Script type: $scriptType');
-          
-          // Step 2: Use appropriate builder based on script type
-          try {
-            if (scriptType?.toLowerCase() == 'p2pkh') {
-              // Use P2PKH builder to extract address
-              final locker = dartsv.P2PKHLockBuilder.fromScript(
-                output.script,
-                networkType: message.networkType == 'main' 
-                  ? dartsv.NetworkType.MAIN 
-                  : dartsv.NetworkType.TEST,
-              );
-              outputAddress = locker.address?.toBase58();
-              _logger.info('            Decoded P2PKH address: $outputAddress');
-            } else if (scriptType?.toLowerCase() == 'p2sh') {
-              _logger.info('            ⚠️  P2SH output detected - skipping (not supported for UTXO import)');
-              continue;
-            } else {
-              _logger.info('            ⚠️  Unsupported script type: $scriptType - skipping');
-              continue;
-            }
-          } catch (e) {
-            _logger.info('            ❌ Failed to parse script: $e');
-            continue;
-          }
-          
-          if (outputAddress == null) {
-            _logger.info('            ⚠️  Could not extract address from script');
-            continue;
-          }
-
-          // Check if this output belongs to one of our addresses (O(1) hash lookup)
-          _logger.info('            → Checking if address $outputAddress belongs to wallet...');
-          final belongsToWallet = await _storage.isWalletAddress(message.walletId, outputAddress);
-          
-          _logger.info('            → Belongs to wallet? $belongsToWallet');
-          if (!belongsToWallet) {
-            _logger.info('            → Address NOT in wallet. Expected one of: ${addresses.take(5).map((a) => a.address).join(", ")}${addresses.length > 5 ? "..." : ""}');
-          }
-
-          if (belongsToWallet) {
-            totalUtxosFound++;
-            _logger.info('            ✅ UTXO found: ${tx.txid}:$vout (${output.satoshis} sats) → $outputAddress');
-            
-            // Track wallet-specific data for the event
-            walletReceivingAddresses.add(outputAddress);
-            walletReceivedSats += output.satoshis;
-            
-            // Send ReceiveUTXOCommand to wallet aggregate
-            final receiveCommand = ReceiveUTXOCommand(
-              walletId: message.walletId,
-              txid: tx.txid,
-              vout: vout,
-              satoshis: output.satoshis,
-              scriptPubKey: output.script.toHex(),
-              address: outputAddress,
-              blockHeight: tx.blockHeight,
-              confirmations: null, // Will be updated separately
-            );
-
-            _logger.info('            → Sending ReceiveUTXOCommand to WalletManager for wallet ${message.walletId}');
-            _walletManagerActor.tell(
-              WalletCommandMessage(message.walletId, receiveCommand),
-              sender: context.self,
-            );
-            
-            // WORKAROUND: Delay to prevent concurrency exceptions
-            // Root cause: Eventador's AggregateRoot doesn't synchronously update currentState.version
-            // after persistEvents(), causing the next command to see stale version.
-            // TODO: File bug report with Eventador - actor mailbox should guarantee sequential processing
-            await Future.delayed(const Duration(milliseconds: 50));
-            _logger.info('            ✅ ReceiveUTXOCommand sent');
-
-            importedUtxos.add({
-              'txid': tx.txid,
-              'vout': vout,
-              'satoshis': output.satoshis.toString(),
-              'address': outputAddress,
-              'blockHeight': tx.blockHeight,
-            });
+          if (locker.address != null) {
+            final senderAddress = locker.address!.toBase58();
+            sendingAddresses.add(senderAddress);
+            _logger.fine('      Input from: $senderAddress (${spentOutput.satoshis} sats)');
           }
         }
+      } catch (e) {
+        _logger.warning('      ⚠️  Failed to fetch parent tx for input: $e');
+        // Continue processing other inputs
+      }
+    }
+    
+    if (totalInputSats > BigInt.zero) {
+      final fee = totalInputSats - totalOutput;
+      _logger.info('      💰 Total inputs: $totalInputSats sats, fee: $fee sats');
+    }
+    
+    _logger.info('      📦 Parsing TX ${tx.txid}: ${parsedTx.inputs.length} inputs, ${parsedTx.outputs.length} outputs');
+    
+    // Note: Input addresses require looking up the previous transaction output
+    if (parsedTx.inputs.isNotEmpty) {
+      _logger.info('         ℹ️  Transaction has ${parsedTx.inputs.length} inputs (spending UTXOs)');
+      _logger.info('         ℹ️  This transaction might be SPENDING from address ${currentAddress.address}, not receiving to it');
+    }
 
-        // Send command to aggregate to record the imported transaction
-        // This will emit TransactionImportedEvent to EventStore → Projection → Isar
-        _logger.info('         → Sending RecordImportedTransactionCommand to WalletManager');
-        final recordCommand = RecordImportedTransactionCommand(
+    // Check if this transaction spends any wallet UTXOs
+    _logger.info('      → Checking if transaction spends wallet UTXOs...');
+    final spentUtxos = await _findSpentWalletUTXOs(parsedTx, message.walletId);
+    
+    if (spentUtxos.isNotEmpty) {
+      _logger.info('      → Transaction spends ${spentUtxos.length} wallet UTXO(s)');
+      
+      for (final spentUtxo in spentUtxos) {
+        final utxoKey = '${spentUtxo['txid']}:${spentUtxo['vout']}';
+        _logger.info('         Marking UTXO as spent: $utxoKey');
+        
+        // Send command to mark UTXO as spent
+        final spendCommand = SpendUTXOCommand(
           walletId: message.walletId,
-          txid: tx.txid,
-          rawHex: tx.rawHex,
-          blockHeight: tx.blockHeight,
-          bumpProofHex: hex.encode(tx.bump.serialize()),
-          totalOutputSats: totalOutput.toInt(),
-          numInputs: parsedTx.inputs.length,
-          numOutputs: parsedTx.outputs.length,
-          txVersion: parsedTx.version,
-          txLockTime: parsedTx.nLockTime,
-          walletReceivingAddresses: walletReceivingAddresses,
-          walletReceivedSats: walletReceivedSats.toInt(),
-          totalInputSats: totalInputSats.toInt(),
-          sendingAddresses: sendingAddresses,
+          utxoKey: utxoKey,
+          spendingTxId: tx.txid,
+          fee: BigInt.zero, // Fee calculation done separately
         );
         
         _walletManagerActor.tell(
-          WalletCommandMessage(message.walletId, recordCommand),
+          WalletCommandMessage(message.walletId, spendCommand),
           sender: context.self,
         );
         
         // WORKAROUND: Delay to prevent concurrency exceptions
-        // Root cause: Eventador's AggregateRoot doesn't synchronously update currentState.version
-        // after persistEvents(), causing the next command to see stale version.
-        // TODO: File bug report with Eventador - actor mailbox should guarantee sequential processing
         await Future.delayed(const Duration(milliseconds: 50));
-        _logger.info('         ✅ RecordImportedTransactionCommand sent');
+        _logger.info('         ✅ SpendUTXOCommand sent for $utxoKey');
+      }
+    } else {
+      _logger.info('      ℹ️  Transaction does not spend any wallet UTXOs');
+    }
 
-        _reportProgress(
-          'Imported transaction ${_processedTransactions}/$_totalTransactions',
-          0.4 + (0.5 * (_processedTransactions / _totalTransactions)),
-          _processedTransactions,
-          _totalTransactions,
+    // Find outputs that belong to discovered addresses
+    for (int vout = 0; vout < parsedTx.outputs.length; vout++) {
+      final output = parsedTx.outputs[vout];
+      String? outputAddress;
+      
+      // Log raw script info
+      final scriptHex = output.script.toHex();
+      _logger.info('         Output $vout: ${output.satoshis} sats');
+      _logger.info('            Script (hex): ${scriptHex.substring(0, scriptHex.length > 50 ? 50 : scriptHex.length)}${scriptHex.length > 50 ? "..." : ""}');
+      _logger.info('            Script length: ${output.script.chunks.length} chunks');
+      
+      // Step 1: Identify script type
+      final scriptRegistry = ScriptTypeRegistry(
+        networkType: message.networkType == 'main' 
+          ? dartsv.NetworkType.MAIN 
+          : dartsv.NetworkType.TEST,
+      );
+      final scriptType = scriptRegistry.identifyScriptType(output.script);
+      _logger.info('            Script type: $scriptType');
+      
+      // Step 2: Use appropriate builder based on script type
+      try {
+        if (scriptType?.toLowerCase() == 'p2pkh') {
+          // Use P2PKH builder to extract address
+          final locker = dartsv.P2PKHLockBuilder.fromScript(
+            output.script,
+            networkType: message.networkType == 'main' 
+              ? dartsv.NetworkType.MAIN 
+              : dartsv.NetworkType.TEST,
+          );
+          outputAddress = locker.address?.toBase58();
+          _logger.info('            Decoded P2PKH address: $outputAddress');
+        } else if (scriptType?.toLowerCase() == 'p2sh') {
+          _logger.info('            ⚠️  P2SH output detected - skipping (not supported for UTXO import)');
+          continue;
+        } else {
+          _logger.info('            ⚠️  Unsupported script type: $scriptType - skipping');
+          continue;
+        }
+      } catch (e) {
+        _logger.info('            ❌ Failed to parse script: $e');
+        continue;
+      }
+      
+      if (outputAddress == null) {
+        _logger.info('            ⚠️  Could not extract address from script');
+        continue;
+      }
+
+      // Check if this output belongs to one of our addresses (O(1) hash lookup)
+      _logger.info('            → Checking if address $outputAddress belongs to wallet...');
+      final belongsToWallet = await _storage.isWalletAddress(message.walletId, outputAddress);
+      
+      _logger.info('            → Belongs to wallet? $belongsToWallet');
+      if (!belongsToWallet) {
+        _logger.info('            → Address NOT in wallet. Expected one of: ${allAddresses.take(5).map((a) => a.address).join(", ")}${allAddresses.length > 5 ? "..." : ""}');
+      }
+
+      if (belongsToWallet) {
+        _logger.info('            ✅ UTXO found: ${tx.txid}:$vout (${output.satoshis} sats) → $outputAddress');
+        
+        // Track wallet-specific data for the event
+        walletReceivingAddresses.add(outputAddress);
+        walletReceivedSats += output.satoshis;
+        
+        // Send ReceiveUTXOCommand to wallet aggregate
+        // IMPORTANT: Imported UTXOs are already confirmed, mark as available immediately
+        final receiveCommand = ReceiveUTXOCommand(
+          walletId: message.walletId,
+          txid: tx.txid,
+          vout: vout,
+          satoshis: output.satoshis,
+          scriptPubKey: output.script.toHex(),
+          address: outputAddress,
+          blockHeight: tx.blockHeight,
+          confirmations: null, // Will be updated separately
+          initialStatus: UTXOStatus.available, // Imported UTXOs are already confirmed
         );
+
+        _logger.info('            → Sending ReceiveUTXOCommand to WalletManager for wallet ${message.walletId}');
+        _walletManagerActor.tell(
+          WalletCommandMessage(message.walletId, receiveCommand),
+          sender: context.self,
+        );
+        
+        // WORKAROUND: Delay to prevent concurrency exceptions
+        await Future.delayed(const Duration(milliseconds: 50));
+        _logger.info('            ✅ ReceiveUTXOCommand sent');
+
+        importedUtxos.add({
+          'txid': tx.txid,
+          'vout': vout,
+          'satoshis': output.satoshis.toString(),
+          'address': outputAddress,
+          'blockHeight': tx.blockHeight,
+        });
       }
     }
 
-    _logger.info('   → Transaction import summary:');
-    _logger.info('      Addresses processed: ${addresses.length}');
-    _logger.info('      Transactions imported: $_processedTransactions');
-    _logger.info('      UTXOs found: $totalUtxosFound');
+    // Send command to aggregate to record the imported transaction
+    _logger.info('         → Sending RecordImportedTransactionCommand to WalletManager');
+    final recordCommand = RecordImportedTransactionCommand(
+      walletId: message.walletId,
+      txid: tx.txid,
+      rawHex: tx.rawHex,
+      blockHeight: tx.blockHeight,
+      bumpProofHex: hex.encode(tx.bump.serialize()),
+      totalOutputSats: totalOutput.toInt(),
+      numInputs: parsedTx.inputs.length,
+      numOutputs: parsedTx.outputs.length,
+      txVersion: parsedTx.version,
+      txLockTime: parsedTx.nLockTime,
+      walletReceivingAddresses: walletReceivingAddresses,
+      walletReceivedSats: walletReceivedSats.toInt(),
+      totalInputSats: totalInputSats.toInt(),
+      sendingAddresses: sendingAddresses,
+    );
     
-    // Store imported UTXOs for completion event
-    message.walletId; // Store for later use
+    _walletManagerActor.tell(
+      WalletCommandMessage(message.walletId, recordCommand),
+      sender: context.self,
+    );
+    
+    // WORKAROUND: Delay to prevent concurrency exceptions
+    await Future.delayed(const Duration(milliseconds: 50));
+    _logger.info('         ✅ RecordImportedTransactionCommand sent');
+
+    return importedUtxos;
   }
 
   Future<void> _completeImport(ImportWalletMessage message) async {
@@ -648,7 +768,30 @@ class ImportActor extends Actor {
 
   void _reportProgress(String message, double progress, int completed, int total) {
     _logger.info(message);
-    // Progress can be queried via ImportProgressQuery message
+    
+    // Broadcast progress event for UI subscribers
+    if (_eventBroadcaster != null && _currentImportWalletId != null) {
+      // Determine phase based on progress
+      String phase;
+      if (progress < 0.2) {
+        phase = 'setup';
+      } else if (progress < 0.4) {
+        phase = 'discovery';
+      } else if (progress < 0.9) {
+        phase = 'import';
+      } else {
+        phase = 'finalize';
+      }
+      
+      _eventBroadcaster(WalletImportProgressEvent(
+        walletId: _currentImportWalletId!,
+        phase: phase,
+        message: message,
+        currentStep: completed,
+        totalSteps: total,
+        progress: progress,
+      ));
+    }
   }
 
   void _handleCancelImport() {
@@ -722,18 +865,23 @@ class ImportActor extends Actor {
 /// Message to start wallet import
 class ImportWalletMessage implements Message {
   final String walletId;
-  final String xpriv;
+  final String? xpriv;
+  final String? wif;
   final String walletName;
   final String networkType;
   final int addressGapLimit;
 
   ImportWalletMessage({
     required this.walletId,
-    required this.xpriv,
+    this.xpriv,
+    this.wif,
     required this.walletName,
     this.networkType = 'test',
     this.addressGapLimit = 20,
-  });
+  }) : assert(
+          (xpriv != null && wif == null) || (xpriv == null && wif != null),
+          'Exactly one of xpriv or wif must be provided',
+        );
   
   @override
   String get correlationId => 'import-wallet-$walletId-${DateTime.now().millisecondsSinceEpoch}';
@@ -746,6 +894,7 @@ class ImportWalletMessage implements Message {
     'walletId': walletId,
     'networkType': networkType,
     'addressGapLimit': addressGapLimit,
+    'importType': xpriv != null ? 'xpriv' : 'wif',
   };
   
   @override

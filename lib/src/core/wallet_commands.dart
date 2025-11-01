@@ -1,4 +1,5 @@
 import 'package:eventador/eventador.dart';
+import '../models/bitcoin_utxo.dart'; // For UTXOStatus
 
 /// Base class for all wallet commands
 abstract class WalletCommand extends Command {
@@ -231,6 +232,7 @@ class ReceiveUTXOCommand extends WalletCommand {
   final String address;
   final int? blockHeight; // null for unconfirmed
   final int? confirmations;
+  final UTXOStatus initialStatus; // Status to set when creating the UTXO
 
   ReceiveUTXOCommand({
     required String walletId,
@@ -241,6 +243,7 @@ class ReceiveUTXOCommand extends WalletCommand {
     required this.address,
     this.blockHeight,
     this.confirmations,
+    this.initialStatus = UTXOStatus.pending, // Default to pending for new receives
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,
@@ -253,6 +256,29 @@ class ReceiveUTXOCommand extends WalletCommand {
 
   @override
   String get commandType => 'ReceiveUTXOCommand';
+}
+
+/// Command to mark UTXO as available for spending
+class MarkUTXOAvailableCommand extends WalletCommand {
+  final String txid;
+  final int vout;
+  
+  MarkUTXOAvailableCommand({
+    required String walletId,
+    required this.txid,
+    required this.vout,
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          commandId: commandId,
+          timestamp: timestamp,
+          metadata: metadata,
+        );
+  
+  @override
+  String get commandType => 'MarkUTXOAvailableCommand';
 }
 
 /// Command to record an imported transaction (from blockchain scan)

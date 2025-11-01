@@ -23,7 +23,10 @@ class WalletManagerActor extends Actor {
   // Invoice manager reference for invoice-based payments
   ActorRef? _invoiceManager;
   
-  // SPV and ARC actors are coordinated at the LibSpiffyActorSystem level
+  // ARC actor reference for transaction status tracking
+  ActorRef? _arcActor;
+  
+  // SPV actors are coordinated at the LibSpiffyActorSystem level
   // and accessed via message passing rather than direct references
   
   // Timer for automated UTXO reservation cleanup
@@ -121,6 +124,12 @@ class WalletManagerActor extends Actor {
           // Internal message to set invoice manager reference
           _invoiceManager = (message as SetInvoiceManagerMessage).invoiceManager;
           print('InvoiceManager reference set in WalletManager');
+          break;
+          
+        case SetArcActorMessage:
+          // Internal message to set ARC actor reference
+          _arcActor = (message as SetArcActorMessage).arcActor;
+          print('ARC actor reference set in WalletManager');
           break;
           
         default:
@@ -342,6 +351,23 @@ class WalletManagerActor extends Actor {
         
         walletActor.tell(command);
         print('Sent ReceiveUTXO command to wallet $walletId');
+      }
+
+      // Register received UTXOs with ARC actor for status tracking
+      if (result.spendableUTXOs.isNotEmpty && _arcActor != null) {
+        final txid = result.txid;
+        final vouts = result.spendableUTXOs
+            .map((utxoData) => utxoData['vout'] as int? ?? 0)
+            .toList();
+        
+        final registerMsg = RegisterTransactionOutputsMessage(
+          txid: txid,
+          walletId: walletId,
+          vouts: vouts,
+        );
+        
+        _arcActor!.tell(registerMsg);
+        print('✅ Registered ${vouts.length} received output(s) with ARC actor for status tracking: $txid');
       }
 
     // Process spent UTXOs

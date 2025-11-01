@@ -101,12 +101,14 @@ class TransactionImportService {
   ///
   /// Parameters:
   /// - [txids]: List of transaction IDs to import
-  /// - [onProgress]: Optional progress callback
+  /// - [onProgress]: Optional progress callback (completed, total)
+  /// - [onTransactionImported]: Optional callback for each successfully imported transaction
   ///
   /// Returns list of [ImportedTransaction], skipping any that fail.
   Future<List<ImportedTransaction>> importTransactions({
     required List<String> txids,
     void Function(int completed, int total)? onProgress,
+    void Function(ImportedTransaction transaction)? onTransactionImported,
   }) async {
     _logger.info('📦 Importing ${txids.length} transactions');
 
@@ -119,6 +121,11 @@ class TransactionImportService {
         final transaction = await importTransaction(txid);
         imported.add(transaction);
         _logger.info('   ✅ TX $txid imported successfully');
+        
+        // Call the callback immediately after importing each transaction
+        if (onTransactionImported != null) {
+          onTransactionImported(transaction);
+        }
       } catch (e, stackTrace) {
         _logger.warning('   ❌ Failed to import transaction $txid: $e');
         _logger.fine('   Stack trace: $stackTrace');
@@ -140,11 +147,15 @@ class TransactionImportService {
   ///
   /// Parameters:
   /// - [address]: The discovered address
+  /// - [onProgress]: Optional progress callback (completed, total)
+  /// - [onTransactionImported]: Optional callback for each successfully imported transaction
   ///
   /// Returns list of [ImportedTransaction] for the address.
   Future<List<ImportedTransaction>> importAddressTransactions(
-    DiscoveredAddress address,
-  ) async {
+    DiscoveredAddress address, {
+    void Function(int completed, int total)? onProgress,
+    void Function(ImportedTransaction transaction)? onTransactionImported,
+  }) async {
     _logger.info(
       '🔄 Importing ${address.transactionCount} transactions for address ${address.address}',
     );
@@ -154,7 +165,12 @@ class TransactionImportService {
       txids: address.txids,
       onProgress: (completed, total) {
         _logger.info('   Progress: $completed/$total transactions imported');
+        // Propagate progress to caller
+        if (onProgress != null) {
+          onProgress(completed, total);
+        }
       },
+      onTransactionImported: onTransactionImported,
     );
     
     _logger.info('   ✅ Completed: ${result.length} transactions imported for ${address.address}');

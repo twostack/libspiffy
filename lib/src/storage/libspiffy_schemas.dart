@@ -116,6 +116,37 @@ class BlockHeaderEntity {
       nonce: nonce,
     );
   }
+
+  /// Serialize to JSON for backup
+  Map<String, dynamic> toJson() {
+    return {
+      'height': height,
+      'hash': hash,
+      'prevBlockHash': prevBlockHash,
+      'merkleRoot': merkleRoot,
+      'timestamp': timestamp,
+      'version': version,
+      'bits': bits,
+      'nonce': nonce,
+      'isOrphaned': isOrphaned,
+      'storedAt': storedAt.toIso8601String(),
+    };
+  }
+
+  /// Deserialize from JSON for restore
+  factory BlockHeaderEntity.fromJson(Map<String, dynamic> json) {
+    return BlockHeaderEntity()
+      ..height = json['height'] as int
+      ..hash = json['hash'] as String
+      ..prevBlockHash = json['prevBlockHash'] as String
+      ..merkleRoot = json['merkleRoot'] as String
+      ..timestamp = json['timestamp'] as int
+      ..version = json['version'] as int
+      ..bits = json['bits'] as int
+      ..nonce = json['nonce'] as int
+      ..isOrphaned = json['isOrphaned'] as bool
+      ..storedAt = DateTime.parse(json['storedAt'] as String);
+  }
 }
 
 /// Merkle proof storage entity for SPV validation
@@ -166,6 +197,29 @@ class MerkleProofEntity {
       blockHeight: blockHeight,
       createdAt: createdAt,
     );
+  }
+
+  /// Serialize to JSON for backup
+  Map<String, dynamic> toJson() {
+    return {
+      'txid': txid,
+      'blockHash': blockHash,
+      'blockHeight': blockHeight,
+      'position': position,
+      'merkleProofJson': merkleProofJson,
+      'createdAt': createdAt.toIso8601String(),
+    };
+  }
+
+  /// Deserialize from JSON for restore
+  factory MerkleProofEntity.fromJson(Map<String, dynamic> json) {
+    return MerkleProofEntity()
+      ..txid = json['txid'] as String
+      ..blockHash = json['blockHash'] as String
+      ..blockHeight = json['blockHeight'] as int
+      ..position = json['position'] as int
+      ..merkleProofJson = json['merkleProofJson'] as String
+      ..createdAt = DateTime.parse(json['createdAt'] as String);
   }
 }
 
@@ -289,6 +343,49 @@ class BitcoinUtxoEntity {
       blockHeight: blockHeight,
       confirmations: confirmations,
     );
+  }
+
+  /// Serialize to JSON for backup
+  Map<String, dynamic> toJson() {
+    return {
+      'walletId': walletId,
+      'txid': txid,
+      'vout': vout,
+      'utxoKey': utxoKey,
+      'satoshis': satoshis,
+      'scriptPubKey': scriptPubKey,
+      'address': address,
+      'blockHeight': blockHeight,
+      'confirmations': confirmations,
+      'status': status,
+      'createdAt': createdAt.toIso8601String(),
+      'spentAt': spentAt?.toIso8601String(),
+      'spentInTxId': spentInTxId,
+      'scriptType': scriptType,
+      'isSpendable': isSpendable,
+      'category': category,
+    };
+  }
+
+  /// Deserialize from JSON for restore
+  factory BitcoinUtxoEntity.fromJson(Map<String, dynamic> json) {
+    return BitcoinUtxoEntity()
+      ..walletId = json['walletId'] as String
+      ..txid = json['txid'] as String
+      ..vout = json['vout'] as int
+      ..utxoKey = json['utxoKey'] as String
+      ..satoshis = json['satoshis'] as String
+      ..scriptPubKey = json['scriptPubKey'] as String
+      ..address = json['address'] as String?
+      ..blockHeight = json['blockHeight'] as int?
+      ..confirmations = json['confirmations'] as int
+      ..status = json['status'] as String
+      ..createdAt = DateTime.parse(json['createdAt'] as String)
+      ..spentAt = json['spentAt'] != null ? DateTime.parse(json['spentAt'] as String) : null
+      ..spentInTxId = json['spentInTxId'] as String?
+      ..scriptType = json['scriptType'] as String
+      ..isSpendable = json['isSpendable'] as bool
+      ..category = json['category'] as String;
   }
 }
 
@@ -434,6 +531,59 @@ class BitcoinTransactionEntity {
       version: 1, // Would need to parse from rawHex or store separately
     );
   }
+
+  /// Serialize to JSON for backup
+  Map<String, dynamic> toJson() {
+    return {
+      'walletId': walletId,
+      'txid': txid,
+      'rawHex': rawHex,
+      'blockHeight': blockHeight,
+      'blockHash': blockHash,
+      'confirmations': confirmations,
+      'totalInput': totalInput,
+      'totalOutput': totalOutput,
+      'fee': fee,
+      'netAmount': netAmount,
+      'isIncoming': isIncoming,
+      'isOutgoing': isOutgoing,
+      'status': status,
+      'createdAt': createdAt.toIso8601String(),
+      'confirmedAt': confirmedAt?.toIso8601String(),
+      'broadcastAt': broadcastAt?.toIso8601String(),
+      'counterparty': counterparty,
+      'notes': notes,
+      'receivingAddressesJson': receivingAddressesJson,
+      'sendingAddressesJson': sendingAddressesJson,
+      'primaryCounterparty': primaryCounterparty,
+    };
+  }
+
+  /// Deserialize from JSON for restore
+  factory BitcoinTransactionEntity.fromJson(Map<String, dynamic> json) {
+    return BitcoinTransactionEntity()
+      ..walletId = json['walletId'] as String
+      ..txid = json['txid'] as String
+      ..rawHex = json['rawHex'] as String
+      ..blockHeight = json['blockHeight'] as int?
+      ..blockHash = json['blockHash'] as String?
+      ..confirmations = json['confirmations'] as int
+      ..totalInput = json['totalInput'] as String
+      ..totalOutput = json['totalOutput'] as String
+      ..fee = json['fee'] as String
+      ..netAmount = json['netAmount'] as String
+      ..isIncoming = json['isIncoming'] as bool
+      ..isOutgoing = json['isOutgoing'] as bool
+      ..status = json['status'] as String
+      ..createdAt = DateTime.parse(json['createdAt'] as String)
+      ..confirmedAt = json['confirmedAt'] != null ? DateTime.parse(json['confirmedAt'] as String) : null
+      ..broadcastAt = json['broadcastAt'] != null ? DateTime.parse(json['broadcastAt'] as String) : null
+      ..counterparty = json['counterparty'] as String?
+      ..notes = json['notes'] as String?
+      ..receivingAddressesJson = json['receivingAddressesJson'] as String
+      ..sendingAddressesJson = json['sendingAddressesJson'] as String
+      ..primaryCounterparty = json['primaryCounterparty'] as String?;
+  }
 }
 
 /// Wallet metadata storage entity
@@ -488,6 +638,47 @@ class WalletMetadataEntity {
   late String publicKeysJson;
 
   WalletMetadataEntity();
+
+  /// Serialize to JSON for backup
+  Map<String, dynamic> toJson() {
+    return {
+      'walletId': walletId,
+      'name': name,
+      'walletType': walletType,
+      'network': network,
+      'rootAddress': rootAddress,
+      'derivationIndex': derivationIndex,
+      'isCreated': isCreated,
+      'createdAt': createdAt.toIso8601String(),
+      'lastAccessedAt': lastAccessedAt.toIso8601String(),
+      'metadataJson': metadataJson,
+      'aggregateVersion': aggregateVersion,
+      'confirmedBalance': confirmedBalance,
+      'unconfirmedBalance': unconfirmedBalance,
+      'addressesJson': addressesJson,
+      'publicKeysJson': publicKeysJson,
+    };
+  }
+
+  /// Deserialize from JSON for restore
+  factory WalletMetadataEntity.fromJson(Map<String, dynamic> json) {
+    return WalletMetadataEntity()
+      ..walletId = json['walletId'] as String
+      ..name = json['name'] as String
+      ..walletType = json['walletType'] as String
+      ..network = json['network'] as String
+      ..rootAddress = json['rootAddress'] as String?
+      ..derivationIndex = json['derivationIndex'] as int
+      ..isCreated = json['isCreated'] as bool
+      ..createdAt = DateTime.parse(json['createdAt'] as String)
+      ..lastAccessedAt = DateTime.parse(json['lastAccessedAt'] as String)
+      ..metadataJson = json['metadataJson'] as String
+      ..aggregateVersion = json['aggregateVersion'] as int
+      ..confirmedBalance = json['confirmedBalance'] as String
+      ..unconfirmedBalance = json['unconfirmedBalance'] as String
+      ..addressesJson = json['addressesJson'] as String
+      ..publicKeysJson = json['publicKeysJson'] as String;
+  }
 }
 
 /// Address entity for efficient address lookup and metadata
@@ -541,6 +732,45 @@ class AddressEntity {
   late bool isWatched;
 
   AddressEntity();
+
+  /// Serialize to JSON for backup
+  Map<String, dynamic> toJson() {
+    return {
+      'walletId': walletId,
+      'address': address,
+      'scriptType': scriptType,
+      'derivationPath': derivationPath,
+      'derivationIndex': derivationIndex,
+      'isChange': isChange,
+      'label': label,
+      'purpose': purpose,
+      'firstUsedAt': firstUsedAt?.toIso8601String(),
+      'lastUsedAt': lastUsedAt?.toIso8601String(),
+      'usageCount': usageCount,
+      'balance': balance,
+      'createdAt': createdAt.toIso8601String(),
+      'isWatched': isWatched,
+    };
+  }
+
+  /// Deserialize from JSON for restore
+  factory AddressEntity.fromJson(Map<String, dynamic> json) {
+    return AddressEntity()
+      ..walletId = json['walletId'] as String
+      ..address = json['address'] as String
+      ..scriptType = json['scriptType'] as String
+      ..derivationPath = json['derivationPath'] as String?
+      ..derivationIndex = json['derivationIndex'] as int?
+      ..isChange = json['isChange'] as bool
+      ..label = json['label'] as String?
+      ..purpose = json['purpose'] as String
+      ..firstUsedAt = json['firstUsedAt'] != null ? DateTime.parse(json['firstUsedAt'] as String) : null
+      ..lastUsedAt = json['lastUsedAt'] != null ? DateTime.parse(json['lastUsedAt'] as String) : null
+      ..usageCount = json['usageCount'] as int
+      ..balance = json['balance'] as String
+      ..createdAt = DateTime.parse(json['createdAt'] as String)
+      ..isWatched = json['isWatched'] as bool;
+  }
 }
 
 /// Junction table for transaction-address many-to-many relationship
@@ -586,6 +816,37 @@ class TransactionAddressEntity {
   late String walletIdTxid;
 
   TransactionAddressEntity();
+
+  /// Serialize to JSON for backup
+  Map<String, dynamic> toJson() {
+    return {
+      'walletId': walletId,
+      'txid': txid,
+      'address': address,
+      'direction': direction,
+      'amount': amount,
+      'vout': vout,
+      'vin': vin,
+      'createdAt': createdAt.toIso8601String(),
+      'walletIdAddress': walletIdAddress,
+      'walletIdTxid': walletIdTxid,
+    };
+  }
+
+  /// Deserialize from JSON for restore
+  factory TransactionAddressEntity.fromJson(Map<String, dynamic> json) {
+    return TransactionAddressEntity()
+      ..walletId = json['walletId'] as String
+      ..txid = json['txid'] as String
+      ..address = json['address'] as String
+      ..direction = json['direction'] as String
+      ..amount = json['amount'] as String
+      ..vout = json['vout'] as int?
+      ..vin = json['vin'] as int?
+      ..createdAt = DateTime.parse(json['createdAt'] as String)
+      ..walletIdAddress = json['walletIdAddress'] as String
+      ..walletIdTxid = json['walletIdTxid'] as String;
+  }
 }
 
 /// Invoice entity for payment request management
@@ -676,6 +937,41 @@ class InvoiceEntity {
           ? _decodeJson(metadataJson!)
           : null,
     };
+  }
+
+  /// Serialize to JSON for backup
+  Map<String, dynamic> toJson() {
+    return {
+      'invoiceId': invoiceId,
+      'walletId': walletId,
+      'addressesJson': addressesJson,
+      'amount': amount,
+      'description': description,
+      'status': status,
+      'createdAt': createdAt.toIso8601String(),
+      'expiresAt': expiresAt?.toIso8601String(),
+      'paidAt': paidAt?.toIso8601String(),
+      'paymentTxid': paymentTxid,
+      'amountReceived': amountReceived,
+      'metadataJson': metadataJson,
+    };
+  }
+
+  /// Deserialize from JSON for restore
+  factory InvoiceEntity.fromJson(Map<String, dynamic> json) {
+    return InvoiceEntity()
+      ..invoiceId = json['invoiceId'] as String
+      ..walletId = json['walletId'] as String
+      ..addressesJson = json['addressesJson'] as String
+      ..amount = json['amount'] as String
+      ..description = json['description'] as String?
+      ..status = json['status'] as String
+      ..createdAt = DateTime.parse(json['createdAt'] as String)
+      ..expiresAt = json['expiresAt'] != null ? DateTime.parse(json['expiresAt'] as String) : null
+      ..paidAt = json['paidAt'] != null ? DateTime.parse(json['paidAt'] as String) : null
+      ..paymentTxid = json['paymentTxid'] as String?
+      ..amountReceived = json['amountReceived'] as String?
+      ..metadataJson = json['metadataJson'] as String?;
   }
 }
 

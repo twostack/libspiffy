@@ -334,6 +334,12 @@ class BitcoinUtxoEntity {
 
   /// Convert back to domain model BitcoinUtxo
   BitcoinUtxo toDomain() {
+    // Parse status from stored string
+    final utxoStatus = UTXOStatus.values.firstWhere(
+      (s) => s.name == status,
+      orElse: () => UTXOStatus.pending,  // Default fallback
+    );
+    
     return BitcoinUtxo.create(
       txid: txid,
       vout: vout,
@@ -342,6 +348,7 @@ class BitcoinUtxoEntity {
       address: address ?? '',
       blockHeight: blockHeight,
       confirmations: confirmations,
+      status: utxoStatus,  // ← Include the status!
     );
   }
 

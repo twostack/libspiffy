@@ -274,6 +274,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         return _handleRenewUTXOReservation(currentState, command as RenewUTXOReservationCommand);
       case CleanupExpiredReservationsCommand:
         return _handleCleanupExpiredReservations(currentState, command as CleanupExpiredReservationsCommand);
+      case SplitUTXOsToBenfordCommand:
+        return await _handleSplitUTXOsToBenford(currentState, command as SplitUTXOsToBenfordCommand);
       default:
         throw ArgumentError('Unknown command type: ${command.runtimeType}');
     }
@@ -367,6 +369,15 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         break;
       case WalletImportFailedEvent:
         _applyWalletImportFailed(event as WalletImportFailedEvent);
+        break;
+      case UTXOSplitInitiatedEvent:
+        _applyUTXOSplitInitiated(event as UTXOSplitInitiatedEvent);
+        break;
+      case UTXOSplitCompletedEvent:
+        _applyUTXOSplitCompleted(event as UTXOSplitCompletedEvent);
+        break;
+      case AllUTXOsSplitCompletedEvent:
+        _applyAllUTXOsSplitCompleted(event as AllUTXOsSplitCompletedEvent);
         break;
       default:
         throw ArgumentError('Unknown event type: ${event.runtimeType}');
@@ -1870,6 +1881,75 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     }
 
     return selected;
+  }
+
+  // ==========================================================================
+  // PRIVACY FEATURE HANDLERS - Benford UTXO Splitting
+  // ==========================================================================
+
+  /// Handle command to split UTXOs according to Benford's Law distribution
+  /// 
+  /// This handler only validates the request and emits an event.
+  /// The actual orchestration (transaction building, signing, broadcasting)
+  /// is performed by BenfordCoordinatorActor, which listens to the
+  /// UTXOSplitInitiatedEvent and handles all external service calls.
+  Future<List<Event>> _handleSplitUTXOsToBenford(
+    WalletState currentState,
+    SplitUTXOsToBenfordCommand command,
+  ) async {
+    print('[BitcoinWalletAggregate] Handling SplitUTXOsToBenfordCommand');
+    
+    // Business rule: Wallet must exist
+    if (!currentState.isCreated) {
+      throw StateError('Cannot split UTXOs for non-existent wallet');
+    }
+
+    // Get all available UTXOs
+    final availableUtxos = getAvailableUTXOs(currentState);
+    if (availableUtxos.isEmpty) {
+      throw StateError('No available UTXOs to split');
+    }
+
+    print('[BitcoinWalletAggregate] Found ${availableUtxos.length} available UTXOs to split');
+
+    // Emit single event - BenfordCoordinatorActor will handle orchestration
+    return [
+      UTXOSplitInitiatedEvent(
+        walletId: command.walletId,
+        utxoKeysToSplit: availableUtxos.map((u) => u.key).toList(),
+        targetUtxoCount: command.targetUtxoCount,
+        feeRate: command.feeRate ?? BigInt.one,
+        version: currentState.version + 1,
+        timestamp: DateTime.now(),
+      ),
+    ];
+  }
+
+  // ==========================================================================
+  // EVENT APPLICATION METHODS - Benford Splitting
+  // ==========================================================================
+
+  void _applyUTXOSplitInitiated(UTXOSplitInitiatedEvent event) {
+    // This event is informational - triggers BenfordCoordinatorActor orchestration
+    // No direct state changes in the aggregate
+    currentState.version = event.version;
+    currentState.lastModified = event.timestamp;
+  }
+
+  void _applyUTXOSplitCompleted(UTXOSplitCompletedEvent event) {
+    // State changes are handled by separate CQRS commands:
+    // - SpendUTXOCommand marks source UTXO as spent
+    // - ReceiveUTXOCommand adds new UTXOs
+    // - RecordOutgoingTransactionCommand records transaction
+    // This event is primarily for UI/reporting purposes
+    currentState.version = event.version;
+    currentState.lastModified = event.timestamp;
+  }
+
+  void _applyAllUTXOsSplitCompleted(AllUTXOsSplitCompletedEvent event) {
+    // This event is informational - final summary
+    currentState.version = event.version;
+    currentState.lastModified = event.timestamp;
   }
 
 } 

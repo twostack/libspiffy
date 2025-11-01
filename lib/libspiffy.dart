@@ -58,6 +58,7 @@ export 'src/services/script_type_registry.dart'; // Script type identification a
 // 🚀 SPV VALIDATION - BEEF/BUMP utilities for SPV transaction validation
 export 'src/utils/bump.dart';                   // BSV Universal Merkle Path (BUMP) implementation
 export 'src/utils/beef.dart';                   // Background Evaluation Extended Format (BEEF) implementation
+export 'src/utils/benford_distribution.dart';   // Benford's Law distribution for privacy
 export 'src/services/block_header_service.dart'; // Block header management with reorganization handling
 export 'src/services/spv_service.dart';         // Enhanced SPV validation with ChainTipTracker integration
 export 'src/services/wallet_balance_service.dart'; // BEEF-based multi-tier balance tracking with reorganization handling

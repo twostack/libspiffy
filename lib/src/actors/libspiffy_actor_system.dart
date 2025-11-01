@@ -27,6 +27,7 @@ import 'arc_actor.dart';
 import 'header_sync_actor.dart';
 import 'invoice_coordinator_actor.dart';
 import 'payment_coordinator_actor.dart';
+import 'benford_coordinator_actor.dart';
 import 'import_actor.dart';
 import '../services/transaction_import_service.dart';
 
@@ -42,6 +43,7 @@ class LibSpiffyActorSystem {
   late CryptoService _cryptoService;
   late BlockHeaderChain _headerChain;
   ArcServiceConfig? _arcConfig;
+  dynamic _arcService;  // ← Mock service for testing (dynamic for test mocks)
   
   // Transaction import service
   TransactionImportService? _transactionImportService;
@@ -59,6 +61,7 @@ class LibSpiffyActorSystem {
   ActorRef? _walletManager;
   ActorRef? _invoiceCoordinator;
   ActorRef? _paymentCoordinator;
+  ActorRef? _benfordCoordinator;
   ActorRef? _spvActor;
   ActorRef? _arcActor;
   ActorRef? _headerSyncActor;
@@ -126,6 +129,7 @@ class LibSpiffyActorSystem {
     SecureStorage? secureStorage,
     CryptoService? cryptoService,
     ArcServiceConfig? arcConfig,
+    dynamic arcService,  // ← Allow injecting mock service for testing (dynamic for test mocks)
     Isar? isar,
     IsolateConfig? isolateConfig,
     String networkType = 'test',
@@ -197,6 +201,7 @@ class LibSpiffyActorSystem {
     
     // 6. Store ARC configuration for actors
     _arcConfig = arcConfig;
+    _arcService = arcService;  // ← Store mock service for testing
     
     // 6.5. Store blockchain data source for imports
     _blockchainDataSource = blockchainDataSource;
@@ -385,7 +390,26 @@ class LibSpiffyActorSystem {
       (map) => InvoiceCancelledEvent.fromMap(map),
     );
     
-    print('✓ Registered 22 event types for deserialization');
+    // =================================================================
+    // BENFORD SPLIT EVENTS (3 total)
+    // =================================================================
+    
+    EventRegistry.register<UTXOSplitInitiatedEvent>(
+      'UTXOSplitInitiatedEvent',
+      (map) => UTXOSplitInitiatedEvent.fromMap(map),
+    );
+    
+    EventRegistry.register<UTXOSplitCompletedEvent>(
+      'UTXOSplitCompletedEvent',
+      (map) => UTXOSplitCompletedEvent.fromMap(map),
+    );
+    
+    EventRegistry.register<AllUTXOsSplitCompletedEvent>(
+      'AllUTXOsSplitCompletedEvent',
+      (map) => AllUTXOsSplitCompletedEvent.fromMap(map),
+    );
+    
+    print('✓ Registered 25 event types for deserialization');
   }
   
   /// Initialize CQRS projections for read-side persistence
@@ -483,10 +507,23 @@ class LibSpiffyActorSystem {
     _arcActor = await _actorSystem.spawn('arc-actor', () => ARCActor(
       walletManager: _walletManager!,
       arcConfig: _arcConfig,
+      arcService: _arcService,  // ← Pass mock service for testing
     ));
     
     // Wire up ARC actor reference in WalletManager
     _walletManager!.tell(SetArcActorMessage(_arcActor!));
+    
+    // Spawn Benford coordinator for privacy-focused UTXO splitting
+    _benfordCoordinator = await _actorSystem.spawn('benford-coordinator', () => BenfordCoordinatorActor(
+      walletManager: _walletManager!,
+      arcActor: _arcActor!,
+      cryptoService: _cryptoService,
+      secureStorage: _secureStorage,
+      storage: _walletStorage,
+    ));
+    
+    // Wire up Benford coordinator reference in WalletManager
+    _walletManager!.tell(SetBenfordCoordinatorMessage(_benfordCoordinator!));
     
     // Spawn ImportActor if blockchain data source is provided
     if (_blockchainDataSource != null) {

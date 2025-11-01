@@ -290,14 +290,15 @@ class WalletProjection extends Projection<WalletReadModel> {
   
   Future<void> _handleUTXOReceived(UTXOReceivedEvent event) async {
     print('[WalletProjection] 📥 Processing UTXOReceivedEvent: ${event.txid}:${event.vout} (${event.satoshis} sats)');
-    print('[WalletProjection]    Wallet: ${_readModel.walletId}');
+    print('[WalletProjection]    Wallet: ${event.walletId}');  // ← Use event.walletId
     print('[WalletProjection]    Address: ${event.address}');
     print('[WalletProjection]    Block Height: ${event.blockHeight}');
+    print('[WalletProjection]    Initial Status: ${event.initialStatus}');
     
     // Update address usage statistics
     if (event.address.isNotEmpty) {
       await _storage.updateAddressUsage(
-        _readModel.walletId,
+        event.walletId,  // ← Use event.walletId, not _readModel.walletId
         event.address,
         usedAt: event.timestamp,
         balanceDelta: BigInt.from(event.satoshis),
@@ -305,7 +306,7 @@ class WalletProjection extends Projection<WalletReadModel> {
       print('[WalletProjection]    ✅ Address usage updated: ${event.address}');
     }
     
-    final utxoKey = '${event.txid}:${event.vout}';
+    // Create UTXO and persist directly to storage
     final utxo = BitcoinUtxo.create(
       txid: event.txid,
       vout: event.vout,
@@ -317,96 +318,123 @@ class WalletProjection extends Projection<WalletReadModel> {
       status: event.initialStatus, // Use status from event (available for imports, pending for new receives)
     );
     
+    // Persist directly to storage with correct wallet ID
+    await _storage.upsertUTXO(event.walletId, utxo);
+    print('[WalletProjection]    ✅ UTXO persisted to Isar: ${event.txid}:${event.vout} (${event.initialStatus})');
+    
+    // Also update in-memory cache for balance calculation
+    final utxoKey = '${event.walletId}:${event.txid}:${event.vout}';  // ← Include walletId in key
     _utxos[utxoKey] = utxo;
-    print('[WalletProjection]    → UTXO added to in-memory cache');
-    print('[WalletProjection]    → Total UTXOs in cache: ${_utxos.length}');
-    print('[WalletProjection]    → UTXO keys: ${_utxos.keys.toList()}');
-    await _recalculateAndPersist(event.timestamp);
+    
+    // Recalculate and persist wallet metadata (balance, counts, etc.)
+    await _recalculateAndPersistForWallet(event.walletId, event.timestamp);
     print('[WalletProjection]    ✅ UTXO persist cycle complete');
   }
   
   Future<void> _handleUTXOMarkedAvailable(UTXOMarkedAvailableEvent event) async {
     print('[WalletProjection] ✅ Processing UTXOMarkedAvailableEvent: ${event.txid}:${event.vout}');
-    final utxoKey = '${event.txid}:${event.vout}';
-    final utxo = _utxos[utxoKey];
+    final utxoKey = '${event.walletId}:${event.txid}:${event.vout}';  // ← Include walletId
     
-    if (utxo != null) {
-      if (utxo.status == UTXOStatus.pending) {
-        print('[WalletProjection]    → Marking UTXO as available for spending');
-        _utxos[utxoKey] = utxo.markAvailable();
-        await _recalculateAndPersist(event.timestamp);
-        print('[WalletProjection]    ✅ UTXO marked available: ${event.txid}:${event.vout}');
-      } else {
-        print('[WalletProjection]    ⚠️  UTXO already in status: ${utxo.status}, skipping');
-      }
+    // Get from storage
+    final utxos = await _storage.getUTXOs(event.walletId, includeSpent: true);
+    final utxo = utxos.firstWhere(
+      (u) => u.txid == event.txid && u.vout == event.vout,
+      orElse: () => throw StateError('UTXO not found'),
+    );
+    
+    if (utxo.status == UTXOStatus.pending) {
+      print('[WalletProjection]    → Marking UTXO as available for spending');
+      final updatedUtxo = utxo.markAvailable();
+      await _storage.upsertUTXO(event.walletId, updatedUtxo);
+      _utxos[utxoKey] = updatedUtxo;
+      await _recalculateAndPersistForWallet(event.walletId, event.timestamp);
+      print('[WalletProjection]    ✅ UTXO marked available: ${event.txid}:${event.vout}');
     } else {
-      print('[WalletProjection]    ⚠️  UTXO not found in cache: ${event.txid}:${event.vout}');
+      print('[WalletProjection]    ⚠️  UTXO already in status: ${utxo.status}, skipping');
     }
   }
   
   Future<void> _handleUTXOSpent(UTXOSpentEvent event) async {
     print('[WalletProjection] 💸 Processing UTXOSpentEvent: ${event.txid}:${event.vout}');
-    final utxoKey = '${event.txid}:${event.vout}';
-    final utxo = _utxos[utxoKey];
+    final utxoKey = '${event.walletId}:${event.txid}:${event.vout}';  // ← Include walletId
     
-    if (utxo != null) {
-      print('[WalletProjection]    → Removing spent UTXO from memory and database');
-      
-      // Remove from in-memory cache
-      _utxos.remove(utxoKey);
-      
-      // Delete from database
-      await _storage.deleteUTXO(_readModel.walletId, event.txid, event.vout);
-      print('[WalletProjection]    ✅ UTXO deleted: ${event.txid}:${event.vout}');
-      
-      await _recalculateAndPersist(event.timestamp);
-    } else {
-      print('[WalletProjection]    ⚠️  UTXO not found in cache: ${event.txid}:${event.vout}');
-    }
+    print('[WalletProjection]    → Marking spent UTXO in database');
+    
+    // Remove from in-memory cache
+    _utxos.remove(utxoKey);
+    
+    // Delete from database (use event.walletId)
+    await _storage.deleteUTXO(event.walletId, event.txid, event.vout);
+    print('[WalletProjection]    ✅ UTXO deleted: ${event.txid}:${event.vout}');
+    
+    await _recalculateAndPersistForWallet(event.walletId, event.timestamp);
   }
   
   Future<void> _handleUTXOConfirmationUpdated(UTXOConfirmationUpdatedEvent event) async {
-    final utxoKey = '${event.txid}:${event.vout}';
-    final utxo = _utxos[utxoKey];
+    final utxoKey = '${event.walletId}:${event.txid}:${event.vout}';  // ← Include walletId
     
-    if (utxo != null) {
-      _utxos[utxoKey] = utxo.updateConfirmations(
-        blockHeight: event.blockHeight,
-        confirmations: event.confirmations,
-      );
-      await _recalculateAndPersist(event.timestamp);
-    }
+    // Update in storage
+    final utxos = await _storage.getUTXOs(event.walletId, includeSpent: true);
+    final utxo = utxos.firstWhere(
+      (u) => u.txid == event.txid && u.vout == event.vout,
+      orElse: () => throw StateError('UTXO not found'),
+    );
+    
+    final updatedUtxo = utxo.updateConfirmations(
+      blockHeight: event.blockHeight,
+      confirmations: event.confirmations,
+    );
+    _utxos[utxoKey] = updatedUtxo;
+    await _storage.upsertUTXO(event.walletId, updatedUtxo);
+    await _recalculateAndPersistForWallet(event.walletId, event.timestamp);
   }
   
   Future<void> _handleUTXOReserved(UTXOReservedEvent event) async {
-    final utxoKey = '${event.txid}:${event.vout}';
-    final utxo = _utxos[utxoKey];
+    final utxoKey = '${event.walletId}:${event.txid}:${event.vout}';  // ← Include walletId
     
-    if (utxo != null) {
-      _utxos[utxoKey] = utxo.copyWith(
-        status: UTXOStatus.reserved,
-        reservedByTxId: event.reservedByTxId,
-        reservationExpiresAt: event.expiresAt,
-        reservationPriority: event.priority,
-        reservationReason: event.reservationReason,
-        updatedAt: event.timestamp,
-      );
-      await _recalculateAndPersist(event.timestamp);
-    }
+    // Update in storage
+    final utxos = await _storage.getUTXOs(event.walletId, includeSpent: true);
+    final utxo = utxos.firstWhere(
+      (u) => u.txid == event.txid && u.vout == event.vout,
+      orElse: () => throw StateError('UTXO not found'),
+    );
+    
+    final updatedUtxo = utxo.copyWith(
+      status: UTXOStatus.reserved,
+      reservedByTxId: event.reservedByTxId,
+      reservationExpiresAt: event.expiresAt,
+      reservationPriority: event.priority,
+      reservationReason: event.reservationReason,
+      updatedAt: event.timestamp,
+    );
+    _utxos[utxoKey] = updatedUtxo;
+    await _storage.upsertUTXO(event.walletId, updatedUtxo);
+    await _recalculateAndPersistForWallet(event.walletId, event.timestamp);
   }
   
   Future<void> _handleUTXOReleased(UTXOReleasedEvent event) async {
-    final utxoKey = '${event.txid}:${event.vout}';
-    final utxo = _utxos[utxoKey];
+    final utxoKey = '${event.walletId}:${event.txid}:${event.vout}';  // ← Include walletId
     
-    if (utxo != null && utxo.status == UTXOStatus.reserved) {
-      _utxos[utxoKey] = utxo.releaseReservation();
-      await _recalculateAndPersist(event.timestamp);
+    // Update in storage
+    final utxos = await _storage.getUTXOs(event.walletId, includeSpent: true);
+    final utxo = utxos.firstWhere(
+      (u) => u.txid == event.txid && u.vout == event.vout,
+      orElse: () => throw StateError('UTXO not found'),
+    );
+    
+    if (utxo.status == UTXOStatus.reserved) {
+      final updatedUtxo = utxo.releaseReservation();
+      _utxos[utxoKey] = updatedUtxo;
+      await _storage.upsertUTXO(event.walletId, updatedUtxo);
+      await _recalculateAndPersistForWallet(event.walletId, event.timestamp);
     }
   }
   
-  /// Recalculate statistics and persist
-  Future<void> _recalculateAndPersist(DateTime timestamp) async {
+  /// Recalculate statistics and persist for a specific wallet
+  Future<void> _recalculateAndPersistForWallet(String walletId, DateTime timestamp) async {
+    // Get all UTXOs for this specific wallet from storage
+    final walletUtxos = await _storage.getUTXOs(walletId, includeSpent: true);
+    
     BigInt confirmed = BigInt.zero;
     BigInt unconfirmed = BigInt.zero;
     BigInt reserved = BigInt.zero;
@@ -414,7 +442,7 @@ class WalletProjection extends Projection<WalletReadModel> {
     int reservedCount = 0;
     int spentCount = 0;
     
-    for (final utxo in _utxos.values) {
+    for (final utxo in walletUtxos) {
       if (utxo.status == UTXOStatus.spent) {
         spentCount++;
         continue;
@@ -434,19 +462,33 @@ class WalletProjection extends Projection<WalletReadModel> {
     
     final total = confirmed + unconfirmed;
     
-    _readModel = _readModel.copyWith(
-      confirmedBalance: confirmed,
-      unconfirmedBalance: unconfirmed,
-      reservedBalance: reserved,
-      totalBalance: total,
-      utxoCount: _utxos.length,
-      availableUtxoCount: available,
-      reservedUtxoCount: reservedCount,
-      spentUtxoCount: spentCount,
-      lastUpdated: timestamp,
+    // Get existing wallet metadata
+    final existingWallet = await _storage.getWallet(walletId);
+    if (existingWallet == null) {
+      print('[WalletProjection] ⚠️  Wallet $walletId not found for balance update');
+      return;
+    }
+    
+    // Update wallet metadata with new balances
+    await _storage.storeWallet(
+      walletId,
+      existingWallet['name'] as String,
+      rootAddress: existingWallet['root_address'] as String?,
+      networkType: existingWallet['network_type'] as String?,
+      metadata: {
+        ...existingWallet['metadata'] as Map<String, dynamic>? ?? {},
+        'confirmedBalance': confirmed.toString(),
+        'unconfirmedBalance': unconfirmed.toString(),
+        'totalBalance': total.toString(),
+        'utxoCount': walletUtxos.length,
+        'availableUtxoCount': available,
+        'reservedUtxoCount': reservedCount,
+        'spentUtxoCount': spentCount,
+        'lastUpdated': timestamp.toIso8601String(),
+      },
     );
     
-    await _persistReadModel();
+    print('[WalletProjection]    ✅ Wallet $walletId metadata updated (balance: $total sats, UTXOs: ${walletUtxos.length})');
   }
   
   /// Persist read model to storage (Isar)
@@ -475,12 +517,13 @@ class WalletProjection extends Projection<WalletReadModel> {
       );
       print('[WalletProjection]    ✅ Wallet metadata persisted');
       
-      // Persist all UTXOs to storage
-      for (final utxo in _utxos.values) {
+      // Persist all UTXOs to storage (create snapshot to avoid concurrent modification)
+      final utxosSnapshot = _utxos.values.toList();
+      for (final utxo in utxosSnapshot) {
         print('[WalletProjection]    → Persisting UTXO: ${utxo.txid}:${utxo.vout} (${utxo.satoshis} sats)');
         await _storage.upsertUTXO(_readModel.walletId, utxo);
       }
-      print('[WalletProjection]    ✅ All ${_utxos.length} UTXOs persisted to Isar');
+      print('[WalletProjection]    ✅ All ${utxosSnapshot.length} UTXOs persisted to Isar');
     } catch (e, stackTrace) {
       print('[WalletProjection] ❌ Error persisting wallet read model: $e');
       print('[WalletProjection] Stack trace: $stackTrace');

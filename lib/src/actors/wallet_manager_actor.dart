@@ -26,6 +26,9 @@ class WalletManagerActor extends Actor {
   // ARC actor reference for transaction status tracking
   ActorRef? _arcActor;
   
+  // Benford coordinator for privacy-focused UTXO splitting
+  ActorRef? _benfordCoordinator;
+  
   // SPV actors are coordinated at the LibSpiffyActorSystem level
   // and accessed via message passing rather than direct references
   
@@ -130,6 +133,12 @@ class WalletManagerActor extends Actor {
           // Internal message to set ARC actor reference
           _arcActor = (message as SetArcActorMessage).arcActor;
           print('ARC actor reference set in WalletManager');
+          break;
+          
+        case SetBenfordCoordinatorMessage:
+          // Internal message to set Benford coordinator reference
+          _benfordCoordinator = (message as SetBenfordCoordinatorMessage).benfordCoordinator;
+          print('Benford coordinator reference set in WalletManager');
           break;
           
         default:
@@ -250,6 +259,22 @@ class WalletManagerActor extends Actor {
     print('[WalletManagerActor] Handling command for wallet: ${msg.walletId}');
     print('[WalletManagerActor] Command type: ${msg.command.runtimeType}');
     print('[WalletManagerActor] Wallets in memory: ${_walletActors.keys.toList()}');
+    
+    // Route Benford split commands directly to BenfordCoordinatorActor
+    // The coordinator will handle orchestration (building, signing, broadcasting)
+    if (msg.command is SplitUTXOsToBenfordCommand) {
+      print('[WalletManagerActor] → Routing ${msg.command.runtimeType} to BenfordCoordinatorActor');
+      if (_benfordCoordinator != null) {
+        _benfordCoordinator!.tell(msg.command, sender: context.sender);
+        return; // Don't send to aggregate
+      } else {
+        print('[WalletManagerActor] ⚠️ Warning: BenfordCoordinator not available, cannot process split command');
+        context.sender?.tell(LocalMessage(
+          payload: {'error': 'Benford coordinator not available'},
+        ));
+        return;
+      }
+    }
     
     try {
       var walletActor = _walletActors[msg.walletId];

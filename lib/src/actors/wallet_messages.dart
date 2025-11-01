@@ -624,4 +624,20 @@ class BlockchainReorganizationNotification implements Message {
   ActorRef? get replyTo => null;
   @override
   DateTime get timestamp => DateTime.now();
-} 
+}
+
+/// Message to set the Benford coordinator reference in WalletManager
+class SetBenfordCoordinatorMessage implements Message {
+  final ActorRef benfordCoordinator;
+
+  SetBenfordCoordinatorMessage(this.benfordCoordinator);
+
+  @override
+  String get correlationId => 'set-benford-coordinator-${DateTime.now().millisecondsSinceEpoch}';
+  @override
+  Map<String, dynamic> get metadata => {'actorRef': benfordCoordinator.toString()};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}

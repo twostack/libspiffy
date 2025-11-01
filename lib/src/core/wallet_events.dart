@@ -1457,3 +1457,177 @@ class UTXOReservationExpiredEvent extends WalletEvent {
     );
   }
 } 
+
+// =============================================================================
+// PRIVACY EVENTS - Benford UTXO Splitting
+// =============================================================================
+
+/// Event fired when UTXO split operation is initiated by the aggregate
+/// 
+/// The aggregate validates the request and emits this event with the list of
+/// UTXO keys to split. The BenfordCoordinatorActor listens to this event and
+/// performs the actual orchestration (building, signing, broadcasting).
+class UTXOSplitInitiatedEvent extends WalletEvent {
+  final List<String> utxoKeysToSplit;
+  final int targetUtxoCount;
+  final BigInt feeRate;
+
+  UTXOSplitInitiatedEvent({
+    required String walletId,
+    required this.utxoKeysToSplit,
+    required this.targetUtxoCount,
+    required this.feeRate,
+    String? eventId,
+    DateTime? timestamp,
+    int? version,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          eventId: eventId,
+          timestamp: timestamp,
+          version: version,
+          metadata: metadata,
+        );
+
+  @override
+  Map<String, dynamic> getWalletEventData() {
+    return {
+      'utxoKeysToSplit': utxoKeysToSplit,
+      'targetUtxoCount': targetUtxoCount,
+      'feeRate': feeRate.toString(),
+    };
+  }
+
+  static UTXOSplitInitiatedEvent fromMap(Map<String, dynamic> map) {
+    return UTXOSplitInitiatedEvent(
+      walletId: map['walletId'] as String,
+      utxoKeysToSplit: List<String>.from(map['utxoKeysToSplit']),
+      targetUtxoCount: map['targetUtxoCount'] as int,
+      feeRate: BigInt.parse(map['feeRate'] as String),
+      eventId: map['eventId'] as String?,
+      timestamp: map['timestamp'] != null
+          ? (map['timestamp'] is String
+              ? DateTime.parse(map['timestamp'] as String)
+              : map['timestamp'] as DateTime)
+          : null,
+      version: map['version'] as int?,
+      metadata: map['metadata'] as Map<String, dynamic>?,
+    );
+  }
+}
+
+/// Event fired when a single UTXO has been successfully split
+/// 
+/// Emitted by BenfordCoordinatorActor after building, signing, and broadcasting
+/// the split transaction. This is informational only - actual state changes
+/// happen via CQRS commands (SpendUTXO, ReceiveUTXO, RecordTransaction).
+class UTXOSplitCompletedEvent extends WalletEvent {
+  final String originalUtxoKey;
+  final String originalAmount;
+  final String splitTxid;
+  final int outputsCreated;
+  final String feePaid;
+
+  UTXOSplitCompletedEvent({
+    required String walletId,
+    required this.originalUtxoKey,
+    required this.originalAmount,
+    required this.splitTxid,
+    required this.outputsCreated,
+    required this.feePaid,
+    String? eventId,
+    DateTime? timestamp,
+    int? version,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          eventId: eventId,
+          timestamp: timestamp,
+          version: version,
+          metadata: metadata,
+        );
+
+  @override
+  Map<String, dynamic> getWalletEventData() {
+    return {
+      'originalUtxoKey': originalUtxoKey,
+      'originalAmount': originalAmount,
+      'splitTxid': splitTxid,
+      'outputsCreated': outputsCreated,
+      'feePaid': feePaid,
+    };
+  }
+
+  static UTXOSplitCompletedEvent fromMap(Map<String, dynamic> map) {
+    return UTXOSplitCompletedEvent(
+      walletId: map['walletId'] as String,
+      originalUtxoKey: map['originalUtxoKey'] as String,
+      originalAmount: map['originalAmount'] as String,
+      splitTxid: map['splitTxid'] as String,
+      outputsCreated: map['outputsCreated'] as int,
+      feePaid: map['feePaid'] as String,
+      eventId: map['eventId'] as String?,
+      timestamp: map['timestamp'] != null
+          ? (map['timestamp'] is String
+              ? DateTime.parse(map['timestamp'] as String)
+              : map['timestamp'] as DateTime)
+          : null,
+      version: map['version'] as int?,
+      metadata: map['metadata'] as Map<String, dynamic>?,
+    );
+  }
+}
+
+/// Event fired when all UTXOs have been processed
+class AllUTXOsSplitCompletedEvent extends WalletEvent {
+  final int totalUtxosSplit;
+  final int totalOutputsCreated;
+  final String totalFeesPaid; // Store as string
+  final List<String> transactionIds;
+
+  AllUTXOsSplitCompletedEvent({
+    required String walletId,
+    required this.totalUtxosSplit,
+    required this.totalOutputsCreated,
+    required this.totalFeesPaid,
+    required this.transactionIds,
+    String? eventId,
+    DateTime? timestamp,
+    int? version,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          eventId: eventId,
+          timestamp: timestamp,
+          version: version,
+          metadata: metadata,
+        );
+
+  @override
+  Map<String, dynamic> getWalletEventData() {
+    return {
+      'totalUtxosSplit': totalUtxosSplit,
+      'totalOutputsCreated': totalOutputsCreated,
+      'totalFeesPaid': totalFeesPaid,
+      'transactionIds': transactionIds,
+    };
+  }
+
+  static AllUTXOsSplitCompletedEvent fromMap(Map<String, dynamic> map) {
+    return AllUTXOsSplitCompletedEvent(
+      walletId: map['walletId'] as String,
+      totalUtxosSplit: map['totalUtxosSplit'] as int,
+      totalOutputsCreated: map['totalOutputsCreated'] as int,
+      totalFeesPaid: map['totalFeesPaid'] as String,
+      transactionIds: List<String>.from(map['transactionIds']),
+      eventId: map['eventId'] as String?,
+      timestamp: map['timestamp'] != null
+          ? (map['timestamp'] is String
+              ? DateTime.parse(map['timestamp'] as String)
+              : map['timestamp'] as DateTime)
+          : null,
+      version: map['version'] as int?,
+      metadata: map['metadata'] as Map<String, dynamic>?,
+    );
+  }
+} 

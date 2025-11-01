@@ -15,8 +15,8 @@ class ARCActor extends Actor {
   final ActorRef _walletManager;
   final ArcServiceConfig? _arcConfig;
   
-  // ARC service client
-  ArcService? _arcService;
+  // ARC service client (dynamic to allow mock services in tests)
+  dynamic _arcService;
   
   // Transaction status tracking
   final Map<String, String> _transactionStatus = {}; // txid -> status
@@ -29,8 +29,10 @@ class ARCActor extends Actor {
   ARCActor({
     required ActorRef walletManager,
     ArcServiceConfig? arcConfig,
+    dynamic arcService,  // ← Allow injecting mock service for testing (dynamic for test mocks)
   })  : _walletManager = walletManager,
-        _arcConfig = arcConfig;
+        _arcConfig = arcConfig,
+        _arcService = arcService;  // ← Use provided service if available (no cast needed)
 
   @override
   void preStart() {
@@ -86,6 +88,12 @@ class ARCActor extends Actor {
 
   /// Initialize ARC service integration
   void _initializeARCService() {
+    // Skip if ARC service was already provided (e.g., mock for testing)
+    if (_arcService != null) {
+      print('ARC service already provided (using injected instance)');
+      return;
+    }
+    
     print('Initializing ARC service integration...');
     
     if (_arcConfig != null) {

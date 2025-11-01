@@ -2,12 +2,15 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 import 'package:convert/convert.dart';
+import '../../lib/src/services/arc_service.dart';
 import '../../lib/src/utils/beef.dart';
 import '../../lib/src/utils/bump.dart';
 
 /// Mock ARC service for testing
 /// Simulates transaction broadcasting and merkle proof generation
-class MockArcService {
+class MockArcService extends ArcService {
+  MockArcService() : super(baseUrl: 'mock://arc', apiKey: null);
+  
   final Map<String, String> _broadcastedTransactions = {};
   final Map<String, Map<String, dynamic>> _merkleProofs = {};
   
@@ -50,7 +53,34 @@ class MockArcService {
     },
   };
   
-  /// Broadcast a transaction and return txid
+  /// Override submitTransaction to intercept ARC service calls (PRIMARY METHOD CALLED BY ARCActor)
+  @override
+  Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl}) async {
+    print('[MockArcService] ✅ submitTransaction OVERRIDE CALLED');
+    print('[MockArcService]    Raw TX length: ${rawTx.length} chars');
+    
+    // Simulate network delay
+    await Future.delayed(Duration(milliseconds: 50));
+    
+    final txid = _calculateMockTxid(rawTx);
+    _broadcastedTransactions[txid] = rawTx;
+    _merkleProofs[txid] = _generateMockMerkleProof(txid);
+    
+    print('[MockArcService]    ✅ Transaction tracked: $txid');
+    print('[MockArcService]    Total broadcasts: ${_broadcastedTransactions.length}');
+    
+    // Return mock response
+    return ArcSubmitResponse(
+      txid: txid,
+      status: ArcTransactionStatus.seenOnNetwork,
+      message: 'Transaction broadcast successfully (mock)',
+      blockHeight: null,
+      blockHash: null,
+      timestamp: DateTime.now().toIso8601String(),
+    );
+  }
+  
+  /// Broadcast a transaction and return txid (LEGACY METHOD for old tests)
   Future<String> broadcastTransaction(String txHex) async {
     // Simulate network delay
     await Future.delayed(Duration(milliseconds: 50));
@@ -66,31 +96,50 @@ class MockArcService {
     
     return txid;
   }
-  
+
   /// Get merkle proof for a transaction
-  Future<Map<String, dynamic>> getMerkleProof(String txid) async {
+  @override
+  Future<ArcMerkleProofResponse?> getMerkleProof(String txid) async {
     // Simulate network delay
     await Future.delayed(Duration(milliseconds: 50));
     
+    Map<String, dynamic>? proofData;
+    
     // Check if we have a real test proof
     if (_testProofs.containsKey(txid)) {
-      return _testProofs[txid]!;
+      proofData = _testProofs[txid]!;
+    } else if (_merkleProofs.containsKey(txid)) {
+      proofData = _merkleProofs[txid]!;
+    } else {
+      return null;
     }
     
-    // Return mock proof if we have one
-    if (_merkleProofs.containsKey(txid)) {
-      return _merkleProofs[txid]!;
-    }
-    
-    throw Exception('Merkle proof not available for txid: $txid');
+    // Convert to ArcMerkleProofResponse
+    return ArcMerkleProofResponse(
+      txid: txid,
+      merklePath: (proofData['path'] as List).cast<String>(),
+      merkleRoot: 'mock_merkle_root',
+      blockHeight: proofData['blockHeight'] as int,
+    );
   }
   
   /// Create BEEF with transaction and merkle proof
   Future<String> createBEEF(String txHex, String txid) async {
     final proof = await getMerkleProof(txid);
     
+    if (proof == null) {
+      throw Exception('No merkle proof available for txid: $txid');
+    }
+    
+    // Convert ArcMerkleProofResponse to Map for BUMP creation
+    final proofMap = {
+      'path': proof.merklePath,
+      'blockHeight': proof.blockHeight,
+      'index': 0, // Default index
+    };
+    
     // Create BUMP from merkle proof
-    final bump = _createBUMPFromProof(proof);
+    final bump = _createBUMPFromProof(proofMap);
     
     // Create BEEF
     final beef = BEEF(
@@ -113,7 +162,17 @@ class MockArcService {
   bool wasTransactionBroadcasted(String txid) {
     return _broadcastedTransactions.containsKey(txid);
   }
-  
+
+  /// Get the count of broadcasted transactions
+  int getBroadcastCount() {
+    return _broadcastedTransactions.length;
+  }
+
+  /// Get all broadcasted transaction IDs
+  List<String> getBroadcastedTxids() {
+    return _broadcastedTransactions.keys.toList();
+  }
+
   /// Reset mock state
   void reset() {
     _broadcastedTransactions.clear();

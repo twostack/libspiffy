@@ -685,6 +685,68 @@ class ReleaseUTXOsCommand extends WalletCommand {
 }
 
 // =============================================================================
+// PRIVACY COMMANDS
+// =============================================================================
+
+/// Command to split wallet UTXOs into Benford distribution for privacy
+/// 
+/// This command processes each available UTXO individually, splitting it into
+/// multiple outputs whose amounts follow Benford's Law distribution. This makes
+/// transaction patterns appear more natural and organic, improving privacy.
+/// 
+/// Each source UTXO will be split into [targetUtxoCount] new UTXOs through
+/// a single transaction (1 input -> N outputs). The outputs are sent to newly
+/// generated addresses within the same wallet.
+/// 
+/// This is NOT part of the SPV flow - we broadcast our own transactions directly
+/// via ArcService and handle CQRS integration manually.
+class SplitUTXOsToBenfordCommand extends WalletCommand {
+  /// Number of outputs to create per source UTXO
+  final int targetUtxoCount;
+  
+  /// Optional fee rate in satoshis per byte (default: 1 for BSV)
+  final BigInt? feeRate;
+
+  SplitUTXOsToBenfordCommand({
+    required String walletId,
+    required this.targetUtxoCount,
+    this.feeRate,
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          commandId: commandId,
+          timestamp: timestamp,
+          metadata: metadata,
+        ) {
+    // Validation
+    if (targetUtxoCount < 2) {
+      throw ArgumentError('Target UTXO count must be at least 2');
+    }
+    if (targetUtxoCount > 100) {
+      throw ArgumentError('Target UTXO count cannot exceed 100 (transaction size limits)');
+    }
+    if (feeRate != null && feeRate! <= BigInt.zero) {
+      throw ArgumentError('Fee rate must be positive');
+    }
+  }
+
+  @override
+  String get commandType => 'SplitUTXOsToBenfordCommand';
+  
+  @override
+  String toString() {
+    return 'SplitUTXOsToBenfordCommand('
+        'walletId: $walletId, '
+        'targetUtxoCount: $targetUtxoCount, '
+        'feeRate: $feeRate, '
+        'commandId: $commandId'
+        ')';
+  }
+}
+
+// =============================================================================
 // SUPPORTING CLASSES
 // =============================================================================
 

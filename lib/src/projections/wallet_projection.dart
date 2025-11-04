@@ -398,10 +398,15 @@ class WalletProjection extends Projection<WalletReadModel> {
       orElse: () => throw StateError('UTXO not found'),
     );
     
+    // Update confirmations and status
+    // If confirmations > 0, mark as available (transition from pending)
     final updatedUtxo = utxo.updateConfirmations(
       blockHeight: event.blockHeight,
       confirmations: event.confirmations,
+    ).copyWith(
+      status: event.confirmations > 0 ? UTXOStatus.available : utxo.status,
     );
+    
     _utxos[utxoKey] = updatedUtxo;
     await _storage.upsertUTXO(event.walletId, updatedUtxo);
     await _recalculateAndPersistForWallet(event.walletId, event.timestamp);
@@ -497,6 +502,7 @@ class WalletProjection extends Projection<WalletReadModel> {
         ...existingWallet['metadata'] as Map<String, dynamic>? ?? {},
         'confirmedBalance': confirmed.toString(),
         'unconfirmedBalance': unconfirmed.toString(),
+        'reservedBalance': reserved.toString(),
         'totalBalance': total.toString(),
         'utxoCount': walletUtxos.length,
         'availableUtxoCount': available,
@@ -630,6 +636,7 @@ class WalletProjection extends Projection<WalletReadModel> {
       
       // Create transaction record in PENDING state
       final transaction = BitcoinTransaction(
+        walletId: event.walletId, // Include wallet ID for proper querying
         txid: event.txid,
         rawHex: event.rawHex,
         status: TransactionStatus.pending, // Important: starts as PENDING
@@ -664,14 +671,30 @@ class WalletProjection extends Projection<WalletReadModel> {
     print('[WalletProjection] ✅ Processing TransactionConfirmedEvent: ${event.txid}');
     
     try {
-      // Update transaction status from PENDING to CONFIRMED
-      // For now, just log it - full implementation would update the Isar record
+      // Fetch the existing transaction from storage
+      final existingTx = await _storage.getTransaction(event.txid);
+      
+      if (existingTx == null) {
+        print('[WalletProjection]    ⚠️  Transaction ${event.txid} not found in storage');
+        return;
+      }
+      
+      // Update transaction status to confirmed
+      final confirmedTx = existingTx.copyWith(
+        status: TransactionStatus.confirmed,
+        blockHeight: event.blockHeight,
+        confirmations: 1, // Assume 1 confirmations when confirmed
+        updatedAt: event.timestamp,
+      );
+      
       print('[WalletProjection]    → Transaction confirmed at block: ${event.blockHeight}');
       print('[WalletProjection]    → Block hash: ${event.blockHash}');
+      print('[WalletProjection]    → Updating status: ${existingTx.status.name} → ${confirmedTx.status.name}');
       
-      // TODO: Implement status update in Isar
-      // This would require fetching the transaction and updating its status
-      print('[WalletProjection]    ⚠️  Status update not yet implemented');
+      // Store the updated transaction
+      await _storage.storeTransaction(event.walletId, confirmedTx);
+      
+      print('[WalletProjection]    ✅ Transaction status updated successfully');
     } catch (e, stackTrace) {
       print('[WalletProjection] ❌ Error processing TransactionConfirmedEvent: $e');
       print('[WalletProjection] Stack trace: $stackTrace');

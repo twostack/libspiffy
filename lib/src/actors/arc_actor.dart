@@ -7,6 +7,7 @@ import 'package:dartsv/dartsv.dart' as dartsv;
 import '../core/wallet_commands.dart';
 import '../services/arc_service.dart';
 import '../services/arc_service_config.dart';
+import '../storage/read_model_storage.dart';
 import '../utils/beef.dart';
 import 'wallet_messages.dart';
 
@@ -14,6 +15,7 @@ import 'wallet_messages.dart';
 class ARCActor extends Actor {
   final ActorRef _walletManager;
   final ArcServiceConfig? _arcConfig;
+  final ReadModelStorage _storage;
   
   // ARC service client (dynamic to allow mock services in tests)
   dynamic _arcService;
@@ -28,9 +30,11 @@ class ARCActor extends Actor {
 
   ARCActor({
     required ActorRef walletManager,
+    required ReadModelStorage storage,
     ArcServiceConfig? arcConfig,
     dynamic arcService,  // ← Allow injecting mock service for testing (dynamic for test mocks)
   })  : _walletManager = walletManager,
+        _storage = storage,
         _arcConfig = arcConfig,
         _arcService = arcService;  // ← Use provided service if available (no cast needed)
 
@@ -435,8 +439,40 @@ class ARCActor extends Actor {
             }
           }
           
-          // MINED: Update confirmations for each registered output
+          // MINED: Update transaction status and confirmations
           if (response.status == ArcTransactionStatus.mined && response.blockHeight != null) {
+            // First, confirm the transaction itself
+            print('Transaction $txid MINED at height ${response.blockHeight} - confirming transaction');
+            final confirmTxCommand = ConfirmTransactionCommand(
+              walletId: walletId,
+              txid: txid,
+              blockHeight: response.blockHeight,
+              blockHash: response.blockHash,
+            );
+            _walletManager.tell(WalletCommandMessage(walletId, confirmTxCommand));
+            
+            // Store merkle proof if available
+            if (response.merklePath != null && 
+                response.merklePath!.isNotEmpty && 
+                response.blockHash != null) {
+              print('Transaction $txid - storing merkle proof (${response.merklePath!.length} elements)');
+              final merkleProof = MerkleProof(
+                txid: txid,
+                blockHash: response.blockHash!,
+                blockHeight: response.blockHeight!,
+                merkleProof: response.merklePath!,
+                position: 0, // Position is encoded in BUMP format, using 0 as default
+              );
+              
+              try {
+                await _storage.storeMerkleProof(txid, merkleProof);
+                print('  ✅ Merkle proof stored for transaction $txid');
+              } catch (e) {
+                print('  ⚠️  Failed to store merkle proof for $txid: $e');
+              }
+            }
+            
+            // Then update confirmations for each registered output
             final outputs = _transactionOutputs[txid];
             if (outputs != null) {
               print('Transaction $txid MINED - updating confirmations for ${outputs.length} outputs');
@@ -469,6 +505,13 @@ class ARCActor extends Actor {
     // Also ensure we're tracking this transaction's wallet mapping
     if (!_transactionToWallet.containsKey(msg.txid)) {
       _transactionToWallet[msg.txid] = msg.walletId;
+    }
+    
+    // CRITICAL: Initialize status to 'pending' so _checkPendingTransactions() will pick it up
+    // This is especially important for recovery scenarios where transactions are re-registered
+    if (!_transactionStatus.containsKey(msg.txid)) {
+      _transactionStatus[msg.txid] = 'pending';
+      print('  → Initialized status to pending for monitoring');
     }
   }
 

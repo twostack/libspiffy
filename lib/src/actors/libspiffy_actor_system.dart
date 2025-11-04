@@ -507,6 +507,7 @@ class LibSpiffyActorSystem {
     // Spawn ARCActor with reference to WalletManager and ARC config
     _arcActor = await _actorSystem.spawn('arc-actor', () => ARCActor(
       walletManager: _walletManager!,
+      storage: _walletStorage,
       arcConfig: _arcConfig,
       arcService: _arcService,  // ← Pass mock service for testing
     ));

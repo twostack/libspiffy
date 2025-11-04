@@ -624,7 +624,7 @@ class BlockchainReorganizationNotification implements Message {
   ActorRef? get replyTo => null;
   @override
   DateTime get timestamp => DateTime.now();
-}
+} 
 
 /// Message to set the Benford coordinator reference in WalletManager
 class SetBenfordCoordinatorMessage implements Message {

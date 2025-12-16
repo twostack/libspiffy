@@ -243,7 +243,7 @@ void main() {
       
       // Get merkle proof from mock ARC
       final merkleProof = await mockArc.getMerkleProof(txid);
-      print('✓ Retrieved merkle proof for block height ${merkleProof['blockHeight']}');
+      // print('✓ Retrieved merkle proof for block height ${merkleProof?["blockHeight"]}');
       
       // Create BEEF with transaction and proof
       final beefHex = await mockArc.createBEEF(txHex, txid);

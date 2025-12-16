@@ -68,6 +68,7 @@ void main() {
         final createCommand = CreateWalletCommand(
           walletId: 'test-wallet-001',
           walletName: 'Integration Test Wallet',
+          mnemonic: 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
           walletMetadata: {
             'purpose': 'integration_testing',
             'network': 'mainnet',
@@ -314,6 +315,7 @@ void main() {
             transactionId: 'signing_test_tx',
             rawTransaction: '0100000001000000000000000000000000000000000000000000000000000000000000000000000000ffffffff01409c000000000000ffffffff00000000',
             utxoKeys: utxoKeys,
+            publicKeys: [],
           ));
 
           expect(wallet.currentState.version, greaterThan(2));
@@ -346,6 +348,7 @@ void main() {
           await wallet1.commandHandler(CreateWalletCommand(
             walletId: walletId,
             walletName: 'Recovery Test Wallet',
+            mnemonic: 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
             walletMetadata: {'test_type': 'recovery'},
           ));
 
@@ -475,6 +478,7 @@ Future<BitcoinWalletAggregate> _createTestWallet(
   await wallet.commandHandler(CreateWalletCommand(
     walletId: walletId,
     walletName: 'Test Wallet $walletId',
+    mnemonic: 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
     walletMetadata: {'purpose': 'testing'},
   ));
 

@@ -3,6 +3,7 @@ import 'package:test/test.dart';
 import 'package:isar/isar.dart';
 import 'package:eventador/eventador.dart';
 import 'package:libspiffy/libspiffy.dart';
+import 'package:dartsv/dartsv.dart' as dartsv;
 
 void main() {
   group('BitcoinWalletAggregate Tests', () {
@@ -80,6 +81,7 @@ void main() {
         final createCommand = CreateWalletCommand(
           walletId: 'wallet-123',
           walletName: 'My Test Wallet',
+          mnemonic: 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
           walletMetadata: {'purpose': 'testing'},
         );
 
@@ -108,6 +110,7 @@ void main() {
         await wallet.commandHandler(CreateWalletCommand(
           walletId: 'wallet-123',
           walletName: 'My Test Wallet',
+          mnemonic: 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
         ));
 
         // Try to create again - should fail
@@ -115,6 +118,7 @@ void main() {
           () => wallet.commandHandler(CreateWalletCommand(
             walletId: 'wallet-123',
             walletName: 'Another Wallet',
+            mnemonic: 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
           )),
           throwsA(isA<StateError>()),
         );
@@ -139,6 +143,7 @@ void main() {
         await wallet.commandHandler(CreateWalletCommand(
           walletId: 'wallet-123',
           walletName: 'My Test Wallet',
+          mnemonic: 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
         ));
       });
 
@@ -152,13 +157,14 @@ void main() {
         await wallet.commandHandler(generateCommand);
 
         expect(wallet.currentState.version, equals(2));
-        expect(wallet.currentState.nextDerivationIndex, equals(1));
-        expect(wallet.currentState.addresses, hasLength(1));
+        // Wallet creation creates a root address (index 0), then GenerateAddressCommand creates another (index 1)
+        expect(wallet.currentState.nextDerivationIndex, equals(2));
+        expect(wallet.currentState.addresses, hasLength(2)); // root address + generated address
         
-        // Address should be generated and labeled
-        final address = wallet.currentState.addresses.keys.first;
-        expect(address, isNotEmpty);
-        expect(wallet.currentState.addresses[address], equals('Receiving Address'));
+        // Find the labeled address (should be the one with 'Receiving Address' label)
+        final labeledAddressEntry = wallet.currentState.addresses.entries
+            .firstWhere((e) => e.value == 'Receiving Address');
+        expect(labeledAddressEntry.key, isNotEmpty);
       });
 
       test('should update address label', () async {
@@ -202,6 +208,7 @@ void main() {
         await wallet.commandHandler(CreateWalletCommand(
           walletId: 'wallet-123',
           walletName: 'My Test Wallet',
+          mnemonic: 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
         ));
 
         // Generate an address
@@ -216,10 +223,10 @@ void main() {
         
         final receiveCommand = ReceiveUTXOCommand(
           walletId: 'wallet-123',
-          txid: 'tx123',
+          txid: '0000000000000000000000000000000000000000000000000000000000000123',
           vout: 0,
           satoshis: BigInt.from(100000), // 0.001 BTC
-          scriptPubKey: 'scriptpubkey',
+          scriptPubKey: '76a914000000000000000000000000000000000000000088ac',
           address: address,
           blockHeight: 800000,
           confirmations: 1,
@@ -230,13 +237,13 @@ void main() {
         expect(wallet.currentState.version, equals(3));
         expect(wallet.currentState.utxos, hasLength(1));
         
-        final utxo = wallet.currentState.utxos['tx123:0'];
+        final utxo = wallet.currentState.utxos['0000000000000000000000000000000000000000000000000000000000000123:0'];
         expect(utxo, isNotNull);
-        expect(utxo!.txid, equals('tx123'));
+        expect(utxo!.txid, equals('0000000000000000000000000000000000000000000000000000000000000123'));
         expect(utxo.vout, equals(0));
         expect(utxo.satoshis, equals(BigInt.from(100000)));
         expect(utxo.address, equals(address));
-        expect(utxo.status, equals(UTXOStatus.available));
+        expect(utxo.status, equals(UTXOStatus.pending)); // New UTXOs start as pending
         expect(utxo.confirmations, equals(1));
       });
 
@@ -246,10 +253,10 @@ void main() {
         // Receive UTXO first
         await wallet.commandHandler(ReceiveUTXOCommand(
           walletId: 'wallet-123',
-          txid: 'tx123',
+          txid: '0000000000000000000000000000000000000000000000000000000000000123',
           vout: 0,
           satoshis: BigInt.from(100000),
-          scriptPubKey: 'scriptpubkey',
+          scriptPubKey: '76a914000000000000000000000000000000000000000088ac',
           address: address,
           blockHeight: 800000,
           confirmations: 1,
@@ -258,7 +265,7 @@ void main() {
         // Update confirmations
         final updateCommand = UpdateUTXOConfirmationsCommand(
           walletId: 'wallet-123',
-          utxoKey: 'tx123:0',
+          utxoKey: '0000000000000000000000000000000000000000000000000000000000000123:0',
           confirmations: 6,
           blockHeight: 800005,
         );
@@ -266,7 +273,7 @@ void main() {
         await wallet.commandHandler(updateCommand);
 
         expect(wallet.currentState.version, equals(4));
-        final utxo = wallet.currentState.utxos['tx123:0'];
+        final utxo = wallet.currentState.utxos['0000000000000000000000000000000000000000000000000000000000000123:0'];
         expect(utxo!.confirmations, equals(6));
         expect(utxo.blockHeight, equals(800005));
       });
@@ -274,29 +281,37 @@ void main() {
       test('should spend UTXO', () async {
         final address = wallet.currentState.addresses.keys.first;
         
-        // Receive UTXO first
+        // Receive UTXO first (starts as pending)
         await wallet.commandHandler(ReceiveUTXOCommand(
           walletId: 'wallet-123',
-          txid: 'tx123',
+          txid: '0000000000000000000000000000000000000000000000000000000000000123',
           vout: 0,
           satoshis: BigInt.from(100000),
-          scriptPubKey: 'scriptpubkey',
+          scriptPubKey: '76a914000000000000000000000000000000000000000088ac',
           address: address,
+          confirmations: 0,
+        ));
+
+        // Confirm the UTXO to make it available for spending
+        await wallet.commandHandler(UpdateUTXOConfirmationsCommand(
+          walletId: 'wallet-123',
+          utxoKey: '0000000000000000000000000000000000000000000000000000000000000123:0',
           confirmations: 6,
+          blockHeight: 800000,
         ));
 
         // Spend UTXO
         final spendCommand = SpendUTXOCommand(
           walletId: 'wallet-123',
-          utxoKey: 'tx123:0',
+          utxoKey: '0000000000000000000000000000000000000000000000000000000000000123:0',
           spendingTxId: 'tx456',
           fee: BigInt.from(500),
         );
 
         await wallet.commandHandler(spendCommand);
 
-        expect(wallet.currentState.version, equals(4));
-        final utxo = wallet.currentState.utxos['tx123:0'];
+        expect(wallet.currentState.version, equals(5)); // +1 for confirmation update
+        final utxo = wallet.currentState.utxos['0000000000000000000000000000000000000000000000000000000000000123:0'];
         expect(utxo!.status, equals(UTXOStatus.spent));
       });
 
@@ -334,6 +349,7 @@ void main() {
         await wallet.commandHandler(CreateWalletCommand(
           walletId: 'wallet-123',
           walletName: 'My Test Wallet',
+          mnemonic: 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
         ));
 
         await wallet.commandHandler(GenerateAddressCommand(
@@ -342,14 +358,26 @@ void main() {
         ));
 
         final address = wallet.currentState.addresses.keys.first;
+        // Derive the correct P2PKH scriptPubKey from the wallet's actual address
+        final decodedAddress = dartsv.Address.fromBase58(address);
+        final pubKeyHash = decodedAddress.pubkeyHash160; // Already a hex string
+        final validScriptPubKey = '76a914${pubKeyHash}88ac'; // OP_DUP OP_HASH160 <pubkeyhash> OP_EQUALVERIFY OP_CHECKSIG
         await wallet.commandHandler(ReceiveUTXOCommand(
           walletId: 'wallet-123',
-          txid: 'tx123',
+          txid: '0000000000000000000000000000000000000000000000000000000000000123',
           vout: 0,
           satoshis: BigInt.from(100000),
-          scriptPubKey: 'scriptpubkey',
+          scriptPubKey: validScriptPubKey,
           address: address,
+          confirmations: 0,
+        ));
+
+        // Confirm the UTXO to make it available for transactions
+        await wallet.commandHandler(UpdateUTXOConfirmationsCommand(
+          walletId: 'wallet-123',
+          utxoKey: '0000000000000000000000000000000000000000000000000000000000000123:0',
           confirmations: 6,
+          blockHeight: 800000,
         ));
       });
 
@@ -368,7 +396,7 @@ void main() {
 
         await wallet.commandHandler(createTxCommand);
 
-        expect(wallet.currentState.version, equals(4));
+        expect(wallet.currentState.version, equals(5)); // +1 for UTXO confirmation in setUp
         // Transaction creation is a placeholder in current implementation
         // In Phase 1D, this will integrate with actual transaction building
       });
@@ -386,20 +414,43 @@ void main() {
           ],
         ));
 
+        // A minimal valid unsigned transaction hex (version 1, 1 input, 1 output, locktime 0)
+        const validUnsignedTxHex = '0100000001'  // version + input count
+            '0000000000000000000000000000000000000000000000000000000000000000'  // prev txid (32 bytes)
+            '00000000'  // prev vout
+            '00'  // empty script
+            'ffffffff'  // sequence
+            '01'  // output count
+            '50c3000000000000'  // 50000 satoshis (little endian)
+            '00'  // empty output script
+            '00000000';  // locktime
+
         final signCommand = SignTransactionCommand(
           walletId: 'wallet-123',
           transactionId: 'tx456',
-          rawTransaction: 'unsigned_tx_hex',
-          utxoKeys: ['tx123:0'],
+          rawTransaction: validUnsignedTxHex,
+          utxoKeys: ['0000000000000000000000000000000000000000000000000000000000000123:0'],
+          publicKeys: []
         );
 
         await wallet.commandHandler(signCommand);
 
-        expect(wallet.currentState.version, equals(5));
+        expect(wallet.currentState.version, equals(6)); // setUp(4) + create(1 with UTXOReserved counted together) + sign(1) = 6
         // Signing logic is placeholder - will be implemented in Phase 1D
       });
 
       test('should broadcast transaction', () async {
+        // A minimal valid transaction hex
+        const validTxHex = '0100000001'
+            '0000000000000000000000000000000000000000000000000000000000000000'
+            '00000000'
+            '00'
+            'ffffffff'
+            '01'
+            '50c3000000000000'
+            '00'
+            '00000000';
+
         // Create and sign transaction first
         await wallet.commandHandler(CreateTransactionCommand(
           walletId: 'wallet-123',
@@ -415,19 +466,20 @@ void main() {
         await wallet.commandHandler(SignTransactionCommand(
           walletId: 'wallet-123',
           transactionId: 'tx456',
-          rawTransaction: 'unsigned_tx_hex',
-          utxoKeys: ['tx123:0'],
+          rawTransaction: validTxHex,
+          utxoKeys: ['0000000000000000000000000000000000000000000000000000000000000123:0'],
+          publicKeys: []
         ));
 
         final broadcastCommand = BroadcastTransactionCommand(
           walletId: 'wallet-123',
           transactionId: 'tx456',
-          signedTransaction: 'signed_tx_hex',
+          signedTransaction: validTxHex,
         );
 
         await wallet.commandHandler(broadcastCommand);
 
-        expect(wallet.currentState.version, equals(6));
+        expect(wallet.currentState.version, equals(7)); // setUp(4) + create(1) + sign(1) + broadcast(1)
         // Broadcasting logic is placeholder - will be implemented in Phase 1D
       });
     });
@@ -449,6 +501,7 @@ void main() {
         await wallet.commandHandler(CreateWalletCommand(
           walletId: 'wallet-123',
           walletName: 'Recovery Test Wallet',
+          mnemonic: 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
         ));
 
         await wallet.commandHandler(GenerateAddressCommand(
@@ -459,10 +512,10 @@ void main() {
         final address = wallet.currentState.addresses.keys.first;
         await wallet.commandHandler(ReceiveUTXOCommand(
           walletId: 'wallet-123',
-          txid: 'tx123',
+          txid: '0000000000000000000000000000000000000000000000000000000000000123',
           vout: 0,
           satoshis: BigInt.from(100000),
-          scriptPubKey: 'scriptpubkey',
+          scriptPubKey: '76a914000000000000000000000000000000000000000088ac',
           address: address,
           confirmations: 1,
         ));
@@ -491,8 +544,8 @@ void main() {
         expect(wallet.currentState.addresses, equals(originalAddresses));
         expect(wallet.currentState.utxos.length, equals(originalUtxos.length));
         
-        final recoveredUtxo = wallet.currentState.utxos['tx123:0'];
-        final originalUtxo = originalUtxos['tx123:0'];
+        final recoveredUtxo = wallet.currentState.utxos['0000000000000000000000000000000000000000000000000000000000000123:0'];
+        final originalUtxo = originalUtxos['0000000000000000000000000000000000000000000000000000000000000123:0'];
         expect(recoveredUtxo?.txid, equals(originalUtxo?.txid));
         expect(recoveredUtxo?.satoshis, equals(originalUtxo?.satoshis));
       });
@@ -530,10 +583,10 @@ void main() {
         // Try to receive UTXO without creating wallet
         final receiveCommand = ReceiveUTXOCommand(
           walletId: 'wallet-123',
-          txid: 'tx123',
+          txid: '0000000000000000000000000000000000000000000000000000000000000123',
           vout: 0,
           satoshis: BigInt.from(100000),
-          scriptPubKey: 'scriptpubkey',
+          scriptPubKey: '76a914000000000000000000000000000000000000000088ac',
           address: '1TestAddress',
         );
 

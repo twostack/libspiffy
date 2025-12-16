@@ -74,6 +74,7 @@ void main() {
           transactionId: 'arc_broadcast_test',
           rawTransaction: '0100000001000000000000000000000000000000000000000000000000000000000000000000000000ffffffff01409c000000000000ffffffff00000000',
           utxoKeys: ['funding_tx_0:0'],
+          publicKeys: []
         ));
 
         // In a real implementation, this would broadcast through ARC

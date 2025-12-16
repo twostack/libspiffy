@@ -313,18 +313,21 @@ void main() {
         const transactionId = 'transaction_123';
         const rawTransaction = '0100000001abc123...';
         final utxoKeys = ['tx1:0', 'tx2:1'];
+        final publicKeys = ['pubkey1', 'pubkey2'];
 
         final command = SignTransactionCommand(
           walletId: walletId,
           transactionId: transactionId,
           rawTransaction: rawTransaction,
           utxoKeys: utxoKeys,
+          publicKeys: publicKeys,
         );
 
         expect(command.walletId, equals(walletId));
         expect(command.transactionId, equals(transactionId));
         expect(command.rawTransaction, equals(rawTransaction));
         expect(command.utxoKeys, equals(utxoKeys));
+        expect(command.publicKeys, equals(publicKeys));
         expect(command.commandType, equals('SignTransactionCommand'));
       });
 
@@ -332,16 +335,19 @@ void main() {
         const walletId = 'wallet_123';
         const transactionId = 'transaction_123';
         final utxoKeys = <String>[];
+        final publicKeys = <String>[];
 
         final command = SignTransactionCommand(
           walletId: walletId,
           transactionId: transactionId,
           rawTransaction: '',
           utxoKeys: utxoKeys,
+          publicKeys: publicKeys,
         );
 
         expect(command.rawTransaction, isEmpty);
         expect(command.utxoKeys, isEmpty);
+        expect(command.publicKeys, isEmpty);
       });
     });
 
@@ -532,7 +538,7 @@ void main() {
           GenerateAddressCommand(walletId: 'w1'),
           UpdateAddressLabelCommand(walletId: 'w1', address: '1Addr'),
           CreateTransactionCommand(walletId: 'w1', transactionId: 'tx1', outputs: []),
-          SignTransactionCommand(walletId: 'w1', transactionId: 'tx1', rawTransaction: 'hex', utxoKeys: []),
+          SignTransactionCommand(walletId: 'w1', transactionId: 'tx1', rawTransaction: 'hex', utxoKeys: [], publicKeys: []),
           BroadcastTransactionCommand(walletId: 'w1', transactionId: 'tx1', signedTransaction: 'hex'),
         ];
 

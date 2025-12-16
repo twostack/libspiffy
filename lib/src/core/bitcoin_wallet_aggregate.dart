@@ -1202,7 +1202,9 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         final scriptType = registry.identifyScriptType(utxoScript);
 
         if (scriptType?.toLowerCase() == 'p2pkh') {
-          final unlocker = dartsv.P2PKHUnlockBuilder(dartsv.SVPublicKey.fromHex(command.publicKeys[i]));
+          // Derive public key from the private key (no need to pass it in command)
+          final publicKey = privateKey.publicKey;
+          final unlocker = dartsv.P2PKHUnlockBuilder(publicKey);
 
           final txInput = dartsv.TransactionInput(
               utxo.txid,

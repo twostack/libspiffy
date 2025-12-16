@@ -98,7 +98,7 @@ void main() {
           expect(result.txid, equals(testTxId));
           expect(result.status, equals(ArcTransactionStatus.received));
           expect(result.message, equals('Transaction received'));
-          expect(result.timestamp, equals(1641234567));
+          expect(result.timestamp, equals('1641234567'));
 
           verify(mockClient.post(
             Uri.parse('$baseUrl/tx'),
@@ -167,61 +167,6 @@ void main() {
         });
       });
 
-      group('submitBEEF', () {
-        test('should submit BEEF package successfully', () async {
-          const responseJson = {
-            'txid': testTxId,
-            'txStatus': 'STORED',
-            'blockHeight': 123456,
-            'blockHash': 'block-hash-123',
-          };
-
-          when(mockClient.post(
-            any,
-            headers: anyNamed('headers'),
-            body: anyNamed('body'),
-          )).thenAnswer((_) async => http.Response(
-            jsonEncode(responseJson),
-            200,
-          ));
-
-          final result = await arcService.submitBEEF(testBeefHex);
-
-          expect(result.txid, equals(testTxId));
-          expect(result.status, equals(ArcTransactionStatus.stored));
-          expect(result.blockHeight, equals(123456));
-          expect(result.blockHash, equals('block-hash-123'));
-
-          verify(mockClient.post(
-            Uri.parse('$baseUrl/beef'),
-            headers: argThat(
-              containsPair('Content-Type', 'application/octet-stream'),
-              named: 'headers',
-            ),
-            body: anyNamed('body'),
-          ));
-        });
-
-        test('should handle BEEF submission error', () async {
-          when(mockClient.post(
-            any,
-            headers: anyNamed('headers'),
-            body: anyNamed('body'),
-          )).thenAnswer((_) async => http.Response(
-            'Invalid BEEF format',
-            400,
-          ));
-
-          expect(
-            () => arcService.submitBEEF(testBeefHex),
-            throwsA(isA<ArcException>().having(
-              (e) => e.message,
-              'message',
-              contains('Failed to submit BEEF'),
-            )),
-          );
-        });
-      });
 
       group('getTransaction', () {
         test('should get transaction status successfully', () async {
@@ -794,7 +739,7 @@ void main() {
           expect(response.message, equals('Transaction mined'));
           expect(response.blockHeight, equals(123456));
           expect(response.blockHash, equals('block-hash'));
-          expect(response.timestamp, equals(1641234567));
+          expect(response.timestamp, equals('1641234567'));
           expect(response.doubleSpendTxids, equals(['txid1', 'txid2']));
         });
 

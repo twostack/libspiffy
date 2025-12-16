@@ -254,11 +254,18 @@ class BitcoinUtxo {
   }
   
   /// Update confirmation information
+  /// When confirmations > 0 and UTXO is pending, it becomes available
   BitcoinUtxo updateConfirmations({
     required int blockHeight,
     required int confirmations,
   }) {
+    // If UTXO is pending and now has confirmations, make it available
+    final newStatus = (status == UTXOStatus.pending && confirmations > 0)
+        ? UTXOStatus.available
+        : status;
+    
     return copyWith(
+      status: newStatus,
       blockHeight: blockHeight,
       confirmations: confirmations,
       updatedAt: DateTime.now(),

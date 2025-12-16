@@ -2,12 +2,6 @@
 	"folders": [
 		{
 			"path": "."
-		},
-		{
-			"path": "../eventador"
-		},
-		{
-			"path": "../../agentic/dart-libp2p"
 		}
 	],
 	"settings": {}

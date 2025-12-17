@@ -689,7 +689,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
 
   List<Event> _handleReceiveUTXO(WalletState currentState, ReceiveUTXOCommand command) {
     print('[BitcoinWalletAggregate] 📥 Handling ReceiveUTXOCommand: ${command.txid}:${command.vout} (${command.satoshis} sats)');
-    
+
     // Business rule: Wallet must exist
     if (!currentState.isCreated) {
       print('[BitcoinWalletAggregate]    ❌ Wallet not created yet');
@@ -710,7 +710,13 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       throw ArgumentError('UTXO amount must be positive');
     }
 
-    print('[BitcoinWalletAggregate]    ✅ Creating UTXOReceivedEvent (status: ${command.initialStatus})');
+    // Determine initial status based on confirmations
+    // If confirmations > 0, the UTXO is already confirmed and can be marked as available
+    final initialStatus = (command.confirmations != null && command.confirmations! > 0)
+        ? UTXOStatus.available
+        : command.initialStatus;
+
+    print('[BitcoinWalletAggregate]    ✅ Creating UTXOReceivedEvent (status: $initialStatus, confirmations: ${command.confirmations})');
     final event = UTXOReceivedEvent(
       walletId: command.walletId,
       txid: command.txid,
@@ -718,7 +724,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       satoshis: command.satoshis.toInt(),
       scriptPubKey: command.scriptPubKey,
       address: command.address,
-      initialStatus: command.initialStatus,
+      initialStatus: initialStatus,
       blockHeight: command.blockHeight,
       confirmations: command.confirmations,
       version: currentState.version + 1,

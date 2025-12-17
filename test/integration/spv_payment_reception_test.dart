@@ -1,8 +1,10 @@
 import 'dart:async';
+import 'dart:math';
 import 'dart:typed_data';
 import 'package:test/test.dart';
 import 'package:dactor/dactor.dart';
 import 'package:convert/convert.dart';
+import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:libspiffy/src/actors/invoice_messages.dart';
 import 'package:libspiffy/src/actors/spv_actor.dart';
 import 'package:libspiffy/src/actors/wallet_messages.dart';
@@ -70,14 +72,33 @@ void main() {
       
       print('✓ Test wallet ID: $testWalletId');
       
-      // Step 2: Create invoice for this wallet
+      // Step 2: Get real testnet transaction to extract the actual recipient address
+      final realTx = _getRealTransaction1();
+      final tscProof = _getTscProof1();
+      
+      // Extract the actual recipient address from the transaction
+      // The real transaction output address (Base58 encoded for testnet)
+      // This is the address corresponding to pubkey hash f82d58dd8487044d8d0879c15a2a3516a425de2a
+      final realRecipientAddress = 'n49CCQFuncaXbtBoNm39gSP9dvRP2eFFSw';
+      
+      print('Using real transaction recipient address: $realRecipientAddress');
+      
+      // Step 3: Create a new invoice manager with the predefined real address
+      final customMockInvoice = _MockInvoiceManagerActor(predefinedAddress: realRecipientAddress);
+      customMockInvoice.setWalletManager(walletManager);
+      final customInvoiceManager = await actorSystem.spawn(
+        'custom-invoice-manager',
+        () => customMockInvoice,
+      );
+      
+      // Create invoice - it will use the real address
       final invoiceCreateCompleter = Completer<InvoiceCreatedMessage>();
       final invoiceCreateReceiver = await actorSystem.spawn(
         'invoice-create-receiver',
         () => _TestReceiverActor<InvoiceCreatedMessage>(invoiceCreateCompleter),
       );
       
-      invoiceManager.tell(
+      customInvoiceManager.tell(
         CreateInvoiceMessage(
           walletId: testWalletId,
           amount: BigInt.from(100000), // 0.001 BSV
@@ -94,11 +115,78 @@ void main() {
       
       print('✓ Invoice created: $invoiceId');
       print('  Wallet ID: ${invoice.walletId}');
-      print('  Address: $invoiceAddress');
+      print('  Invoice Address: $invoiceAddress');
+      print('  Expected Address: $realRecipientAddress');
       
-      // Step 3: Get real testnet transaction
-      final realTx = _getRealTransaction1();
-      final tscProof = _getTscProof1();
+      // Verify the address matches
+      expect(invoiceAddress, equals(realRecipientAddress), 
+        reason: 'Invoice address must match the real transaction recipient address');
+      
+      // Parse the transaction to see what address is in the outputs
+      final txHex = realTx['hex'] as String;
+      final transaction = dartsv.Transaction.fromHex(txHex);
+      print('  Transaction has ${transaction.outputs.length} outputs');
+      
+      // Extract addresses from transaction outputs (same logic as SPV actor)
+      final templateRegistry = dartsv.ScriptTemplateRegistry();
+      for (int i = 0; i < transaction.outputs.length; i++) {
+        final output = transaction.outputs[i];
+        final script = output.script;
+        final scriptHex = script.toHex();
+        final scriptInfo = templateRegistry.extractScriptInfo(script);
+        final scriptType = templateRegistry.identifyScriptType(script);
+        
+        print('    Output $i: ${output.satoshis} sats, type: $scriptType');
+        print('      Script hex: ${scriptHex.substring(0, min(60, scriptHex.length))}${scriptHex.length > 60 ? "..." : ""}');
+        print('      Script info: $scriptInfo');
+        
+        // Try to manually extract the address from P2PKH script
+        // P2PKH script format: OP_DUP OP_HASH160 <20 bytes> OP_EQUALVERIFY OP_CHECKSIG
+        // Hex: 76 a9 14 <20 bytes> 88 ac
+        if (scriptHex.startsWith('76a914') && scriptHex.endsWith('88ac') && scriptHex.length == 50) {
+          // This is a P2PKH script
+          final pubkeyHashHex = scriptHex.substring(6, 46); // Extract the 20-byte hash
+          print('      Detected P2PKH script manually');
+          print('      Pubkey hash: $pubkeyHashHex');
+          
+          try {
+            final extractedAddress = dartsv.Address.fromPubkeyHash(
+              pubkeyHashHex, 
+              dartsv.NetworkType.TEST
+            ).toBase58();
+            print('      Extracted address: $extractedAddress');
+            print('      Matches invoice: ${extractedAddress == invoiceAddress}');
+          } catch (e) {
+            print('      Error extracting address: $e');
+          }
+        }
+        
+        if (scriptType == 'P2PKH' || scriptType == 'p2pkh') {
+          final pubkeyHash = scriptInfo?['pubKeyHash'];
+          if (pubkeyHash != null) {
+            try {
+              final extractedAddress = dartsv.Address.fromPubkeyHash(
+                hex.encode(pubkeyHash), 
+                dartsv.NetworkType.TEST
+              ).toBase58();
+              print('      Registry extracted address: $extractedAddress');
+              print('      Matches invoice: ${extractedAddress == invoiceAddress}');
+            } catch (e) {
+              print('      Error extracting address: $e');
+            }
+          }
+        }
+      }
+      
+      // Create new SPV actor with the custom invoice manager
+      final customSpvActor = await actorSystem.spawn(
+        'custom-spv-actor',
+        () => SPVActor(
+          walletManager: walletManager,
+          invoiceCoordinator: customInvoiceManager,
+          storage: storage,
+        ),
+      );
       
       // Create BEEF from real data
       final beef = _createBeefFromRealData(realTx, tscProof);
@@ -115,7 +203,7 @@ void main() {
         () => _TestReceiverActor<BEEFValidationResult>(beefValidationCompleter),
       );
       
-      spvActor.tell(
+      customSpvActor.tell(
         ValidateBEEFMessage(
           hex.encode(beef.serialize()),
           targetWalletId: testWalletId,
@@ -144,7 +232,7 @@ void main() {
         () => _TestReceiverActor<SPVValidationResult>(spvValidationCompleter),
       );
       
-      spvActor.tell(
+      customSpvActor.tell(
         ReceiveTransactionMessage(
           transactionId: realTx['txid'] as String,
           beef: beef,
@@ -196,6 +284,22 @@ void main() {
       
       final testWalletId = 'test-recipient-wallet-2-${DateTime.now().millisecondsSinceEpoch}';
       
+      // Get real transaction and extract recipient address
+      final realTx = _getRealTransaction1();
+      final tscProof = _getTscProof1();
+      // This is the address corresponding to pubkey hash f82d58dd8487044d8d0879c15a2a3516a425de2a
+      final realRecipientAddress = 'n49CCQFuncaXbtBoNm39gSP9dvRP2eFFSw';
+      
+      print('Using real transaction recipient address: $realRecipientAddress');
+      
+      // Create custom invoice manager with real address
+      final customMockInvoice = _MockInvoiceManagerActor(predefinedAddress: realRecipientAddress);
+      customMockInvoice.setWalletManager(walletManager);
+      final customInvoiceManager = await actorSystem.spawn(
+        'custom-invoice-manager-2',
+        () => customMockInvoice,
+      );
+      
       // Create invoice
       final invoiceCreateCompleter = Completer<InvoiceCreatedMessage>();
       final invoiceCreateReceiver = await actorSystem.spawn(
@@ -203,7 +307,7 @@ void main() {
         () => _TestReceiverActor<InvoiceCreatedMessage>(invoiceCreateCompleter),
       );
       
-      invoiceManager.tell(
+      customInvoiceManager.tell(
         CreateInvoiceMessage(
           walletId: testWalletId,
           amount: BigInt.from(200000),
@@ -214,9 +318,16 @@ void main() {
       final invoice = await invoiceCreateCompleter.future.timeout(Duration(seconds: 5));
       final invoiceId = invoice.invoiceId;
       
-      // Get real transaction (recipient receives payment)
-      final realTx = _getRealTransaction1();
-      final tscProof = _getTscProof1();
+      // Create custom SPV actor with custom invoice manager
+      final customSpvActor = await actorSystem.spawn(
+        'custom-spv-actor-2',
+        () => SPVActor(
+          walletManager: walletManager,
+          invoiceCoordinator: customInvoiceManager,
+          storage: storage,
+        ),
+      );
+      
       final beef = _createBeefFromRealData(realTx, tscProof);
       
       // Send for SPV validation
@@ -226,7 +337,7 @@ void main() {
         () => _TestReceiverActor<SPVValidationResult>(spvValidationCompleter),
       );
       
-      spvActor.tell(
+      customSpvActor.tell(
         ReceiveTransactionMessage(
           transactionId: realTx['txid'] as String,
           beef: beef,
@@ -375,11 +486,16 @@ class _MockInvoiceManagerActor extends Actor {
   ActorRef? _walletManager;
   final Map<String, Map<String, dynamic>> _invoices = {};
   int _invoiceCounter = 0;
+  String? _predefinedAddress; // For testing with specific addresses
   
-  _MockInvoiceManagerActor();
+  _MockInvoiceManagerActor({String? predefinedAddress}) : _predefinedAddress = predefinedAddress;
   
   void setWalletManager(ActorRef walletManager) {
     _walletManager = walletManager;
+  }
+  
+  void setPredefinedAddress(String address) {
+    _predefinedAddress = address;
   }
   
   @override
@@ -396,26 +512,33 @@ class _MockInvoiceManagerActor extends Actor {
   Future<void> _handleCreateInvoice(CreateInvoiceMessage msg) async {
     final invoiceId = 'test-invoice-${_invoiceCounter++}-${DateTime.now().millisecondsSinceEpoch}';
     
-    // Request address from wallet manager
-    final addressCompleter = Completer<AddressGeneratedResponse>();
-    final addressReceiver = await context.system.spawn(
-      'address-receiver-$invoiceId',
-      () => _TestReceiverActor<AddressGeneratedResponse>(addressCompleter),
-    );
-    
-    _walletManager?.tell(
-      WalletCommandMessage(
-        msg.walletId,
-        GenerateAddressCommand(
-          walletId: msg.walletId,
-          label: 'invoice-$invoiceId',
+    // Use predefined address if set, otherwise request from wallet manager
+    String address;
+    if (_predefinedAddress != null) {
+      address = _predefinedAddress!;
+      print('Using predefined address for invoice: $address');
+    } else {
+      // Request address from wallet manager
+      final addressCompleter = Completer<AddressGeneratedResponse>();
+      final addressReceiver = await context.system.spawn(
+        'address-receiver-$invoiceId',
+        () => _TestReceiverActor<AddressGeneratedResponse>(addressCompleter),
+      );
+      
+      _walletManager?.tell(
+        WalletCommandMessage(
+          msg.walletId,
+          GenerateAddressCommand(
+            walletId: msg.walletId,
+            label: 'invoice-$invoiceId',
+          ),
         ),
-      ),
-      sender: addressReceiver,
-    );
-    
-    final addressResponse = await addressCompleter.future.timeout(Duration(seconds: 5));
-    final address = addressResponse.address;
+        sender: addressReceiver,
+      );
+      
+      final addressResponse = await addressCompleter.future.timeout(Duration(seconds: 5));
+      address = addressResponse.address;
+    }
     
     // Store invoice
     _invoices[invoiceId] = {

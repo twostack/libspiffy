@@ -399,6 +399,18 @@ void main() {
         // Verify UTXOs were registered
         // Since TX2 spends from TX1, we should have exactly 1 unspent UTXO
         final utxos = await context.storage.getUTXOs(walletId);
+        print('Found ${utxos.length} UTXO(s):');
+        for (final utxo in utxos) {
+          print('  ${utxo.txid}:${utxo.vout} - ${utxo.value.getValue()} sats (status: ${utxo.status})');
+        }
+        
+        // Let's also check all UTXOs including spent ones
+        final allUtxos = await context.storage.getUTXOs(walletId, includeSpent: true);
+        print('All UTXOs (including spent): ${allUtxos.length}');
+        for (final utxo in allUtxos) {
+          print('  ${utxo.txid}:${utxo.vout} - ${utxo.value.getValue()} sats (status: ${utxo.status})');
+        }
+        
         expect(utxos.length, equals(1), 
           reason: 'Should have exactly 1 UTXO (TX2 spends from TX1, leaving 1 unspent output)');
         print('✓ Tracked ${utxos.length} UTXO(s)');

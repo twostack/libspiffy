@@ -566,16 +566,22 @@ class ImportActor extends Actor {
     }
 
     // Check if this transaction spends any wallet UTXOs
-    _logger.info('      → Checking if transaction spends wallet UTXOs...');
+    _logger.info('      → Checking if transaction ${tx.txid} spends wallet UTXOs...');
+    _logger.fine('         Transaction has ${parsedTx.inputs.length} input(s)');
+    for (final input in parsedTx.inputs) {
+      final prevTxid = input.prevTxnId.toString();
+      final prevVout = input.prevTxnOutputIndex;
+      _logger.fine('         Input spends: $prevTxid:$prevVout');
+    }
     final spentUtxos = await _findSpentWalletUTXOs(parsedTx, message.walletId);
-    
+
     if (spentUtxos.isNotEmpty) {
       _logger.info('      → Transaction spends ${spentUtxos.length} wallet UTXO(s)');
       
       for (final spentUtxo in spentUtxos) {
         final utxoKey = '${spentUtxo['txid']}:${spentUtxo['vout']}';
         _logger.info('         Marking UTXO as spent: $utxoKey');
-        
+
         // Send command to mark UTXO as spent
         final spendCommand = SpendUTXOCommand(
           walletId: message.walletId,
@@ -583,15 +589,16 @@ class ImportActor extends Actor {
           spendingTxId: tx.txid,
           fee: BigInt.zero, // Fee calculation done separately
         );
-        
+
         _walletManagerActor.tell(
           WalletCommandMessage(message.walletId, spendCommand),
           sender: context.self,
         );
-        
-        // WORKAROUND: Delay to prevent concurrency exceptions
-        await Future.delayed(const Duration(milliseconds: 50));
-        _logger.info('         ✅ SpendUTXOCommand sent for $utxoKey');
+
+        // Wait for UTXO to be marked as spent in storage
+        // This ensures that UTXOs are properly tracked before proceeding
+        await _waitForUtxoSpent(message.walletId, spentUtxo['txid'], spentUtxo['vout']);
+        _logger.info('         ✅ SpendUTXOCommand sent and UTXO marked as spent');
       }
     } else {
       _logger.info('      ℹ️  Transaction does not spend any wallet UTXOs');
@@ -681,10 +688,13 @@ class ImportActor extends Actor {
           WalletCommandMessage(message.walletId, receiveCommand),
           sender: context.self,
         );
-        
-        // WORKAROUND: Delay to prevent concurrency exceptions
-        await Future.delayed(const Duration(milliseconds: 50));
-        _logger.info('            ✅ ReceiveUTXOCommand sent');
+
+        // Wait for UTXO to be persisted to storage before proceeding
+        // This ensures subsequent transactions can correctly identify spent UTXOs
+        final utxoKey = '${tx.txid}:$vout';
+        _logger.info('            → Waiting for UTXO $utxoKey to be persisted...');
+        await _waitForUtxoPersisted(message.walletId, tx.txid, vout);
+        _logger.info('            ✅ ReceiveUTXOCommand sent and UTXO persisted');
 
         importedUtxos.add({
           'txid': tx.txid,
@@ -821,40 +831,113 @@ class ImportActor extends Actor {
     String walletId,
   ) async {
     final spentUTXOs = <Map<String, dynamic>>[];
-    
+
     try {
       // Get wallet's current UTXOs to check ownership
       final walletUtxos = await _storage.getUTXOs(walletId, includeSpent: false);
-      
+
       // Build set for O(1) lookup
       final walletUtxoKeys = walletUtxos
           .map((utxo) => '${utxo.txid}:${utxo.vout}')
           .toSet();
-      
-      _logger.fine('      Wallet $walletId has ${walletUtxoKeys.length} UTXOs');
-      
+
+      _logger.fine('      Wallet $walletId has ${walletUtxoKeys.length} available UTXO(s)');
+      for (final utxoKey in walletUtxoKeys) {
+        _logger.fine('         Available UTXO: $utxoKey');
+      }
+
       // Check each transaction input to see if it belongs to this wallet
       for (final input in transaction.inputs) {
         final prevTxId = input.prevTxnId.toString();
         final prevVout = input.prevTxnOutputIndex;
         final utxoKey = '$prevTxId:$prevVout';
-        
+
+        _logger.fine('         Checking if wallet owns: $utxoKey');
+
         // Only add to spentUTXOs if this wallet actually owns the UTXO being spent
         if (walletUtxoKeys.contains(utxoKey)) {
           spentUTXOs.add({
             'txid': prevTxId,
             'vout': prevVout,
           });
-          _logger.fine('      Wallet owns UTXO $utxoKey being spent in this transaction');
+          _logger.info('         ✓ Wallet owns UTXO $utxoKey - will mark as spent');
+        } else {
+          _logger.fine('         ✗ Wallet does NOT own UTXO $utxoKey');
         }
       }
-      
-      _logger.fine('      Found ${spentUTXOs.length} UTXOs owned by wallet $walletId being spent (out of ${transaction.inputs.length} total inputs)');
+
+      _logger.info('      Found ${spentUTXOs.length} wallet UTXO(s) being spent (out of ${transaction.inputs.length} total inputs)');
     } catch (e) {
       _logger.warning('      ⚠️  Error checking spent UTXOs: $e');
     }
-    
+
     return spentUTXOs;
+  }
+
+  /// Wait for a UTXO to be persisted to storage
+  /// 
+  /// This ensures that when processing transactions sequentially,
+  /// we can correctly identify which UTXOs are spent by later transactions.
+  /// Without this wait, a race condition occurs where TX2 might be processed
+  /// before TX1's UTXO is persisted, causing TX1's UTXO to not be marked as spent.
+  Future<void> _waitForUtxoPersisted(String walletId, String txid, int vout) async {
+    const maxAttempts = 20; // 20 attempts * 100ms = 2 seconds max
+    const delayBetweenAttempts = Duration(milliseconds: 100);
+    
+    for (int attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        final utxos = await _storage.getUTXOs(walletId, includeSpent: false);
+        final utxoExists = utxos.any((u) => u.txid == txid && u.vout == vout);
+        
+        if (utxoExists) {
+          if (attempt > 0) {
+            _logger.fine('            UTXO $txid:$vout persisted after ${attempt * delayBetweenAttempts.inMilliseconds}ms');
+          }
+          return;
+        }
+        
+        // Wait before next attempt
+        await Future.delayed(delayBetweenAttempts);
+      } catch (e) {
+        _logger.warning('            ⚠️  Error checking UTXO persistence: $e');
+        await Future.delayed(delayBetweenAttempts);
+      }
+    }
+    
+    _logger.warning('            ⚠️  UTXO $txid:$vout not found in storage after ${maxAttempts * delayBetweenAttempts.inMilliseconds}ms');
+  }
+
+  /// Wait for a UTXO to be marked as spent in storage
+  /// 
+  /// This ensures that spent UTXOs are properly tracked and won't appear
+  /// as available in subsequent queries.
+  Future<void> _waitForUtxoSpent(String walletId, String txid, int vout) async {
+    const maxAttempts = 20; // 20 attempts * 100ms = 2 seconds max
+    const delayBetweenAttempts = Duration(milliseconds: 100);
+    
+    for (int attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        // Check if UTXO is marked as spent (not in available list)
+        final availableUtxos = await _storage.getUTXOs(walletId, includeSpent: false);
+        final isStillAvailable = availableUtxos.any((u) => u.txid == txid && u.vout == vout);
+        
+        if (!isStillAvailable) {
+          // UTXO is no longer available, meaning it was marked as spent
+          if (attempt > 0) {
+            _logger.fine('            UTXO $txid:$vout marked as spent after ${attempt * delayBetweenAttempts.inMilliseconds}ms');
+          }
+          return;
+        }
+        
+        // Wait before next attempt
+        await Future.delayed(delayBetweenAttempts);
+      } catch (e) {
+        _logger.warning('            ⚠️  Error checking UTXO spent status: $e');
+        await Future.delayed(delayBetweenAttempts);
+      }
+    }
+    
+    _logger.warning('            ⚠️  UTXO $txid:$vout still available after ${maxAttempts * delayBetweenAttempts.inMilliseconds}ms');
   }
 }
 

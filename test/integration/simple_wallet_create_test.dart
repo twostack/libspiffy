@@ -23,6 +23,9 @@ void main() {
     final testDir = await Directory.systemTemp.createTemp('simple_test_');
     print('Test DB: ${testDir.path}');
     
+    // Generate unique DB name to avoid conflicts
+    final dbName = 'simple_test_${DateTime.now().microsecondsSinceEpoch}';
+    
     // Open Isar with required schemas
     final isar = await Isar.open(
       [
@@ -31,7 +34,7 @@ void main() {
         SnapshotEnvelopeSchema,
       ],
       directory: testDir.path,
-      name: 'simple_test_db',
+      name: dbName,
     );
     print('✓ Isar opened');
     
@@ -49,6 +52,11 @@ void main() {
     );
     print('✓ LibSpiffy initialized');
     
+    // Generate mnemonic for test wallet
+    final cryptoService = DartSVCryptoService();
+    final mnemonic = await cryptoService.generateMnemonic();
+    print('✓ Mnemonic generated');
+    
     // Create a test receiver actor
     final completer = Completer<WalletCreatedMessage>();
     final receiver = await actorSystem.spawn(
@@ -62,7 +70,7 @@ void main() {
     print('Sending CreateWalletMessage for: $walletId');
     
     libspiffy.walletManager.tell(
-      CreateWalletMessage(walletId, 'Test Wallet'),
+      CreateWalletMessage(walletId, 'Test Wallet', mnemonic: mnemonic),
       sender: receiver,
     );
     

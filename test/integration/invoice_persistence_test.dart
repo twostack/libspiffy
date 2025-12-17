@@ -24,6 +24,7 @@ void main() {
     late LocalActorSystem actorSystem;
     late Directory testDir;
     late String walletId;
+    late String dbName;
 
     setUp(() async {
       // Initialize Isar
@@ -31,6 +32,9 @@ void main() {
       
       // Create test directory
       testDir = await Directory.systemTemp.createTemp('invoice_persist_test_');
+      
+      // Generate unique DB name per test run to avoid conflicts
+      dbName = 'invoice_test_${DateTime.now().microsecondsSinceEpoch}';
       
       // Open Isar with required schemas
       isar = await Isar.open(
@@ -40,7 +44,7 @@ void main() {
           SnapshotEnvelopeSchema,
         ],
         directory: testDir.path,
-        name: 'invoice_test_db',
+        name: dbName,
       );
       
       // Create actor system
@@ -56,6 +60,10 @@ void main() {
 
       );
       
+      // Generate mnemonic for test wallet
+      final cryptoService = DartSVCryptoService();
+      final mnemonic = await cryptoService.generateMnemonic();
+      
       // Create a wallet first
       walletId = 'test-wallet-${DateTime.now().millisecondsSinceEpoch}';
       final walletCompleter = Completer<WalletCreatedMessage>();
@@ -65,7 +73,7 @@ void main() {
       );
       
       libspiffy.walletManager.tell(
-        CreateWalletMessage(walletId, 'Test Wallet'),
+        CreateWalletMessage(walletId, 'Test Wallet', mnemonic: mnemonic),
         sender: walletReceiver,
       );
       
@@ -351,9 +359,13 @@ void main() {
       expect(entityBeforeShutdown, isNotNull);
       print('✓ Invoice persisted before shutdown');
       
-      // Shutdown LibSpiffy (this closes EventStore and Isar)
+      // Shutdown LibSpiffy (doesn't close Isar since it's owned by test)
       print('Shutting down LibSpiffy...');
       await libspiffy.shutdown();
+      
+      // Close Isar manually since it was provided by the test
+      print('Closing Isar...');
+      await isar.close();
       
       // Reopen Isar with same directory AND name to verify persistence
       print('Reopening Isar database...');
@@ -364,7 +376,7 @@ void main() {
           SnapshotEnvelopeSchema,
         ],
         directory: testDir.path,
-        name: 'invoice_test_db', // MUST match the original DB name
+        name: dbName, // MUST match the original DB name
       );
       
       // Create new actor system and LibSpiffy instance
@@ -375,6 +387,7 @@ void main() {
         actorSystem: newActorSystem,
         isar: newIsar,
         dataDirectory: testDir.path,
+        enableP2P: false
       );
       
       print('✓ New LibSpiffy instance initialized');

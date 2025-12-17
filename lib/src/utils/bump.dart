@@ -413,11 +413,16 @@ class BUMP {
     }
     
     // currentHash is now in display format (big-endian)
-    // But actually, the algorithm already produces the correct internal format
-    // DON'T reverse it - just convert directly to bytes
+    // Reverse it to internal format (little-endian) before returning
+    String internalFormat = "";
+    for (int i = currentHash.length - 2; i >= 0; i -= 2) {
+      internalFormat += currentHash.substring(i, i + 2);
+    }
+    
+    // Convert the final hash from hex string to bytes (internal format)
     final resultBytes = <int>[];
-    for (int i = 0; i < currentHash.length; i += 2) {
-      resultBytes.add(int.parse(currentHash.substring(i, i + 2), radix: 16));
+    for (int i = 0; i < internalFormat.length; i += 2) {
+      resultBytes.add(int.parse(internalFormat.substring(i, i + 2), radix: 16));
     }
     
     return Uint8List.fromList(resultBytes);

@@ -57,6 +57,10 @@ void main() {
         enableP2P: false,
       );
       
+      // Generate mnemonic for test wallet
+      final cryptoService = DartSVCryptoService();
+      final mnemonic = await cryptoService.generateMnemonic();
+      
       // Create a wallet first
       walletId = 'test-wallet-${DateTime.now().millisecondsSinceEpoch}';
       final walletCompleter = Completer<WalletCreatedMessage>();
@@ -66,7 +70,7 @@ void main() {
       );
       
       libspiffy.walletManager.tell(
-        CreateWalletMessage(walletId, 'Test Wallet for Addresses'),
+        CreateWalletMessage(walletId, 'Test Wallet for Addresses', mnemonic: mnemonic),
         sender: walletReceiver,
       );
       
@@ -397,6 +401,10 @@ void main() {
       print('Shutting down LibSpiffy...');
       await libspiffy.shutdown();
       
+      // Close the original Isar instance before reopening
+      print('Closing original Isar instance...');
+      await isar.close();
+      
       // Reopen Isar with same directory and name
       print('Reopening Isar database...');
       final newIsar = await Isar.open(
@@ -417,6 +425,7 @@ void main() {
         actorSystem: newActorSystem,
         isar: newIsar,
         dataDirectory: testDir.path,
+        enableP2P: false,
       );
       
       print('✓ New LibSpiffy instance initialized');

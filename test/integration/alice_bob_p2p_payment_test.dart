@@ -50,6 +50,10 @@ void main() {
     // Mocked external services (shared for simplicity, but could be separate)
     late MockArcService mockArc;
     
+    // Database names for restart tests
+    late String aliceDbName;
+    late String bobDbName;
+    
     setUp(() async {
       print('\n--- Setting up Alice and Bob systems ---');
       
@@ -68,6 +72,7 @@ void main() {
       
       // Initialize Alice's system
       aliceActorSystem = LocalActorSystem(ActorSystemConfig());
+      aliceDbName = 'alice_db_${DateTime.now().microsecondsSinceEpoch}';
       aliceIsar = await Isar.open(
         [
           ...LibSpiffySchemas.walletSchemas,
@@ -75,13 +80,14 @@ void main() {
           SnapshotEnvelopeSchema,
         ],
         directory: aliceTestDir.path,
-        name: 'alice_db',
+        name: aliceDbName,
       );
       aliceLibSpiffy = LibSpiffyActorSystem();
       await aliceLibSpiffy.initialize(
         actorSystem: aliceActorSystem,
         isar: aliceIsar,
         dataDirectory: aliceTestDir.path,
+        enableP2P: false,
       );
       
       // Setup test headers for Alice
@@ -106,6 +112,7 @@ void main() {
       
       // Initialize Bob's system
       bobActorSystem = LocalActorSystem(ActorSystemConfig());
+      bobDbName = 'bob_db_${DateTime.now().microsecondsSinceEpoch}';
       bobIsar = await Isar.open(
         [
           ...LibSpiffySchemas.walletSchemas,
@@ -113,13 +120,14 @@ void main() {
           SnapshotEnvelopeSchema,
         ],
         directory: bobTestDir.path,
-        name: 'bob_db',
+        name: bobDbName,
       );
       bobLibSpiffy = LibSpiffyActorSystem();
       await bobLibSpiffy.initialize(
         actorSystem: bobActorSystem,
         isar: bobIsar,
         dataDirectory: bobTestDir.path,
+        enableP2P: false,
       );
       
       // Setup test headers for Bob
@@ -650,6 +658,10 @@ void main() {
       print('  Shutting down Bob\'s system...');
       await bobLibSpiffy.shutdown();
       
+      // Close the Isar instance before reopening
+      print('  Closing Isar instance...');
+      await bobIsar.close();
+      
       // Reopen database with same name to access persisted events
       print('  Reopening Isar database...');
       bobIsar = await Isar.open(
@@ -659,7 +671,7 @@ void main() {
           SnapshotEnvelopeSchema,
         ],
         directory: bobTestDir.path,
-        name: 'bob_db', // Same name as original
+        name: bobDbName, // Same name as original
       );
       
       // Restart Bob's system
@@ -670,6 +682,7 @@ void main() {
         actorSystem: bobActorSystem,
         isar: bobIsar,
         dataDirectory: bobTestDir.path,
+        enableP2P: false
       );
       
       // Setup test headers again (they're in-memory in BlockHeaderChain)
@@ -679,7 +692,7 @@ void main() {
       
       // STEP 8: Verify Aggregate Can Query from Read Model (Events Still Persisted)
       print('\nSTEP 8: Verifying invoice state survived restart...');
-      await Future.delayed(Duration(milliseconds: 500)); // Let projections catch up
+      await Future.delayed(Duration(milliseconds: 1500)); // Let projections replay events and catch up
       
       final queryCompleter = Completer<InvoiceDetailsResponse>();
       final queryReceiver = await bobActorSystem.spawn(

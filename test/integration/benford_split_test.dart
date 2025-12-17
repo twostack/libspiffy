@@ -292,20 +292,8 @@ void main() {
           utxoAmounts: [BigInt.from(100000)],
         );
 
-        print('\nStep 2: Create aggregate and process SplitUTXOsToBenfordCommand');
-        final aggregate = BitcoinWalletAggregate(
-          aggregateId: walletId,
-          aggregateType: 'Wallet',
-          eventStore: context.eventStore,
-          cryptoService: context.cryptoService,
-          secureStorage: context.secureStorage,
-        );
-
-        // Start the actor to trigger recovery
-        aggregate.preStart();
-        await Future.delayed(const Duration(milliseconds: 100));
-
-        // Send split command
+        print('\nStep 2: Send SplitUTXOsToBenfordCommand through WalletManager');
+        // Send split command through the wallet manager (proper flow)
         final splitCommand = SplitUTXOsToBenfordCommand(
           walletId: walletId,
           targetUtxoCount: 10,
@@ -313,27 +301,47 @@ void main() {
         );
 
         print('  Processing command...');
-        final events = await aggregate.handleCommand(
-          aggregate.currentState,
+        // Send through WalletManager (this will forward to the correct aggregate)
+        context.libspiffy.walletManager.tell(WalletCommandMessage(
+          walletId,
           splitCommand,
-        );
-
-        print('\nStep 3: Verify initiation event was emitted');
-        expect(events, isNotEmpty, reason: 'Should emit events');
+        ));
         
-        final initiatedEvents = events.whereType<UTXOSplitInitiatedEvent>();
-        expect(initiatedEvents.length, equals(1), 
-          reason: 'Should emit UTXOSplitInitiatedEvent');
-        print('✓ UTXOSplitInitiatedEvent emitted');
-
-        final initiatedEvent = initiatedEvents.first;
-        expect(initiatedEvent.utxoKeysToSplit.length, equals(1),
-          reason: 'Should have 1 UTXO to split');
-        expect(initiatedEvent.targetUtxoCount, equals(10),
-          reason: 'Target count should be 10');
-        expect(initiatedEvent.feeRate, equals(BigInt.one),
-          reason: 'Fee rate should be 1');
-        print('✓ Event contains correct split parameters');
+        print('\nStep 3: Verify split operation completed successfully');
+        // Give time for command processing and event persistence
+        // The split operation involves: coordinator processing, address generation (10 addresses),
+        // transaction building, signing, broadcasting, UTXO recording, and event persistence
+        // This can take several seconds due to all the async actor messages
+        await Future.delayed(const Duration(milliseconds: 5000));
+        
+        // Verify split by checking the actual UTXOs (like the end-to-end test does)
+        final allUtxos = await context.storage.getUTXOs(walletId, includeSpent: true);
+        
+        print('  Total UTXOs (including spent): ${allUtxos.length}');
+        
+        for (final utxo in allUtxos.take(12)) {
+          print('    UTXO: ${utxo.txid.substring(0, 16)}...:${utxo.vout} - ${utxo.satoshis} sats (${utxo.status.name})');
+        }
+        
+        // After split, we should have:
+        // - 1 spent UTXO (the original 100000 sats)
+        // - 10 new UTXOs from the split transaction (pending status)
+        final spentUtxos = allUtxos.where((u) => u.status == UTXOStatus.spent).length;
+        final pendingUtxos = allUtxos.where((u) => u.status == UTXOStatus.pending).length;
+        
+        print('  Spent UTXOs: $spentUtxos');
+        print('  Pending UTXOs: $pendingUtxos');
+        
+        // Verify we have at least 10 new UTXOs (they may be pending)
+        expect(pendingUtxos, greaterThanOrEqualTo(10),
+          reason: 'Split should have created at least 10 new pending UTXOs');
+        
+        // Verify original UTXO was spent
+        expect(spentUtxos, greaterThanOrEqualTo(1),
+          reason: 'Original UTXO should be marked as spent');
+        
+        print('✓ Split operation completed successfully');
+        print('  Original UTXO spent, created $pendingUtxos new UTXOs from split');
 
         print('\n✅ Aggregate validation test PASSED\n');
       } finally {
@@ -361,41 +369,41 @@ void main() {
         );
 
         print('\nStep 2: Process split command');
-        // Use the same secure storage and crypto service from context
-        final aggregate = BitcoinWalletAggregate(
-          aggregateId: walletId,
-          aggregateType: 'Wallet',
-          eventStore: context.eventStore,
-          cryptoService: context.cryptoService,
-          secureStorage: context.secureStorage,
-        );
-
-        // Start the actor to trigger recovery (will load wallet from events)
-        aggregate.preStart();
-        await Future.delayed(const Duration(milliseconds: 100));
-
         final splitCommand = SplitUTXOsToBenfordCommand(
           walletId: walletId,
           targetUtxoCount: 8,
           feeRate: BigInt.one,
         );
 
-        final events = await aggregate.handleCommand(
-          aggregate.currentState,
+        // Send through WalletManager (proper flow)
+        context.libspiffy.walletManager.tell(WalletCommandMessage(
+          walletId,
           splitCommand,
-        );
+        ));
 
-        print('\nStep 3: Verify initiation event contains all UTXOs');
-        final initiatedEvents = events.whereType<UTXOSplitInitiatedEvent>();
-        expect(initiatedEvents.length, equals(1),
-          reason: 'Should emit single initiation event');
+        print('\nStep 3: Verify split completed for all 3 UTXOs');
+        // Give time for the split operation to complete
+        await Future.delayed(const Duration(milliseconds: 15000));
         
-        final initiatedEvent = initiatedEvents.first;
-        expect(initiatedEvent.utxoKeysToSplit.length, equals(3),
-          reason: 'Should have 3 UTXOs to split');
-        expect(initiatedEvent.targetUtxoCount, equals(8),
-          reason: 'Target count should be 8');
-        print('✓ Initiation event contains all 3 UTXOs');
+        // Verify all 3 UTXOs were split by checking the resulting UTXOs
+        final allUtxos = await context.storage.getUTXOs(walletId, includeSpent: true);
+        
+        print('  Total UTXOs after split: ${allUtxos.length}');
+        
+        // After split: 3 original UTXOs spent + (3 * 8) = 24 new UTXOs
+        final spentUtxos = allUtxos.where((u) => u.status == UTXOStatus.spent).length;
+        final pendingUtxos = allUtxos.where((u) => u.status == UTXOStatus.pending).length;
+        
+        print('  Spent UTXOs: $spentUtxos');
+        print('  Pending UTXOs: $pendingUtxos');
+        
+        // Each of the 3 UTXOs should be split into 8, creating 24 new UTXOs
+        expect(pendingUtxos, greaterThanOrEqualTo(24),
+          reason: 'Should have at least 24 new UTXOs (3 * 8)');
+        expect(spentUtxos, greaterThanOrEqualTo(3),
+          reason: 'All 3 original UTXOs should be spent');
+        
+        print('✓ All 3 UTXOs were split successfully (3 spent → $pendingUtxos new)');
 
         print('\n✅ Multiple UTXOs split test PASSED\n');
       } finally {

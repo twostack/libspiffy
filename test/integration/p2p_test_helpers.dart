@@ -43,7 +43,7 @@ Future<LibSpiffyActorSystem> initializeTestSystem({
   final isar = await Isar.open(
     LibSpiffySchemas.walletSchemas,
     directory: testDir.path,
-    name: '${name}_db',
+    name: '${name}_db_${DateTime.now().microsecondsSinceEpoch}',
   );
   
   // Create actor system
@@ -55,6 +55,7 @@ Future<LibSpiffyActorSystem> initializeTestSystem({
     actorSystem: actorSystem,
     isar: isar,
     dataDirectory: testDir.path,
+    enableP2P: false,
   );
   
   // Setup test block headers
@@ -73,6 +74,13 @@ Future<String> createWallet({
   String? wif,
   String? xpriv,
 }) async {
+  // Generate a mnemonic if none provided and no wif/xpriv
+  String? finalMnemonic = mnemonic;
+  if (finalMnemonic == null && wif == null && xpriv == null) {
+    final cryptoService = DartSVCryptoService();
+    finalMnemonic = await cryptoService.generateMnemonic();
+  }
+  
   final completer = Completer<WalletCreatedMessage>();
   final receiver = await actorSystem.spawn(
     'create-wallet-receiver-$walletId',
@@ -83,7 +91,7 @@ Future<String> createWallet({
     CreateWalletMessage(
       walletId,
       walletName,
-      mnemonic: mnemonic,
+      mnemonic: finalMnemonic,
       wif: wif,
       xpriv: xpriv,
     ),

@@ -164,13 +164,20 @@ class PaymentCoordinatorActor extends Actor {
 
     // 4c. Record the outgoing transaction in PENDING state
     print('  Recording outgoing transaction...');
+    
+    // CRITICAL: Use the actual change address (same logic as _buildPaymentTransaction)
+    // If no changeAddress was provided, we use the first UTXO's address as change destination
+    final actualChangeAddress = msg.changeAddress ?? selectedUtxos.first.address;
+
+    print('  Change address for outgoing transaction is [$actualChangeAddress]');
+    
     await _recordOutgoingTransaction(
       walletId: msg.walletId,
       transaction: signedPaymentTx,
       spentUtxoKeys: utxoKeys,
       recipientAddresses: msg.addresses,
       paymentAmount: msg.amount,
-      changeAddress: msg.changeAddress,
+      changeAddress: actualChangeAddress,
     );
     print('  ✓ Transaction recorded in wallet history (status: PENDING)');
 

@@ -902,6 +902,35 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     );
     events.add(transactionEvent);
 
+    // CRITICAL: Mark all spent UTXOs as spent to prevent double-spending
+    // This must happen when the outgoing transaction is recorded, not later
+    print('[BitcoinWalletAggregate]    💸 Marking ${command.spentUtxoKeys.length} UTXOs as spent');
+    for (final utxoKey in command.spentUtxoKeys) {
+      final parts = utxoKey.split(':');
+      if (parts.length != 2) {
+        print('[BitcoinWalletAggregate]    ⚠️  Invalid UTXO key format: $utxoKey');
+        continue;
+      }
+      final utxoTxid = parts[0];
+      final utxoVout = int.tryParse(parts[1]);
+      if (utxoVout == null) {
+        print('[BitcoinWalletAggregate]    ⚠️  Invalid vout in UTXO key: $utxoKey');
+        continue;
+      }
+      
+      print('[BitcoinWalletAggregate]       → Emitting UTXOSpentEvent for $utxoKey');
+      final spentEvent = UTXOSpentEvent(
+        walletId: command.walletId,
+        txid: utxoTxid,
+        vout: utxoVout,
+        spentInTxId: command.txid,
+        version: currentState.version + events.length + 1,
+        timestamp: DateTime.now(),
+      );
+      events.add(spentEvent);
+    }
+    print('[BitcoinWalletAggregate]    ✅ Emitted ${command.spentUtxoKeys.length} UTXOSpentEvent(s)');
+
     // If there's a change output, create a UTXO for it with pending status
     if (command.changeAddress != null && command.changeAmount != null && command.changeAmount! > BigInt.zero) {
       print('[BitcoinWalletAggregate]    💰 Change detected: ${command.changeAmount} sats to ${command.changeAddress}');
@@ -936,7 +965,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
             blockHeight: null, // Not confirmed yet
             confirmations: 0,
             initialStatus: UTXOStatus.pending, // Change output starts as pending
-            version: currentState.version + 2, // Increment from transaction event
+            version: currentState.version + events.length + 1, // Dynamic version based on events count
             timestamp: DateTime.now(),
           );
           events.add(utxoEvent);
@@ -1258,11 +1287,15 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       // Serialize signed transaction
       final signedHex = signedTx.serialize();
       
+      // IMPORTANT: Get the CORRECT txid from the signed transaction
+      // The txid changes after signing because the scriptSig bytes are different
+      final signedTxid = signedTx.id;
+      
       // Send response if in actor system
       if (_isInActorSystem() && context.sender != null) {
         context.sender!.tell(TransactionSignedResponse(
           walletId: command.walletId,
-          txid: command.transactionId,
+          txid: signedTxid, // Use signed txid, not unsigned command.transactionId
           signedHex: signedHex,
           success: true,
         ));
@@ -1272,7 +1305,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       // Return TransactionSignedEvent
       final event = TransactionSignedEvent(
         walletId: command.walletId,
-        txid: command.transactionId,
+        txid: signedTxid, // Use signed txid, not unsigned command.transactionId
         signedRawHex: signedHex,
         version: currentState.version + 1,
         timestamp: DateTime.now(),

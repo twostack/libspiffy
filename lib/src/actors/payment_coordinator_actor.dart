@@ -139,8 +139,13 @@ class PaymentCoordinatorActor extends Actor {
     }
 
     // Update payment transaction with signed hex
+    // IMPORTANT: TXID DOES change after signing because scriptSig changes the raw bytes
+    // We must recalculate TXID from the signed transaction
+    final signedDartsvTx = dartsv.Transaction.fromHex(signedTxHex);
+    final signedTxid = signedDartsvTx.id;
+    
     final signedPaymentTx = BitcoinTransaction(
-      txid: paymentTx.txid, // TXID doesn't change after signing
+      txid: signedTxid, // Recalculated from signed transaction
       rawHex: signedTxHex,
       status: paymentTx.status,
       inputValue: paymentTx.inputValue,

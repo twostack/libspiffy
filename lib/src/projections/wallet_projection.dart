@@ -241,8 +241,10 @@ class WalletProjection extends Projection<WalletReadModel> {
       isWatched: true,
     );
     
-    await _storage.upsertAddress(_readModel.walletId, metadata);
-    print('[WalletProjection]    ✅ Address stored in AddressEntity');
+    // IMPORTANT: Use event.walletId, not _readModel.walletId
+    // This ensures addresses are stored under the correct wallet ID for isWalletAddress() lookups
+    await _storage.upsertAddress(event.walletId, metadata);
+    print('[WalletProjection]    ✅ Address stored in AddressEntity for wallet ${event.walletId}');
     
     _readModel = _readModel.copyWith(
       addressCount: _addresses.length,
@@ -254,7 +256,7 @@ class WalletProjection extends Projection<WalletReadModel> {
   
   Future<void> _handleAddressDiscovered(AddressDiscoveredEvent event) async {
     print('[WalletProjection] 📍 Processing AddressDiscoveredEvent: ${event.address}');
-    print('[WalletProjection]    Wallet: ${_readModel.walletId}');
+    print('[WalletProjection]    Wallet: ${event.walletId}');  // ← Use event.walletId
     print('[WalletProjection]    Index: ${event.derivationIndex}, Change: ${event.isChange}, Txs: ${event.transactionCount}');
     
     _addresses.add(event.address);
@@ -278,9 +280,11 @@ class WalletProjection extends Projection<WalletReadModel> {
       isWatched: true,
     );
     
-    print('[WalletProjection]    → Calling storage.upsertAddress()...');
-    await _storage.upsertAddress(_readModel.walletId, metadata);
-    print('[WalletProjection]    ✅ Address persisted to AddressEntity in Isar');
+    // IMPORTANT: Use event.walletId, not _readModel.walletId
+    // This ensures addresses are stored under the correct wallet ID for isWalletAddress() lookups
+    print('[WalletProjection]    → Calling storage.upsertAddress() with walletId: ${event.walletId}...');
+    await _storage.upsertAddress(event.walletId, metadata);
+    print('[WalletProjection]    ✅ Address persisted to AddressEntity in Isar for wallet ${event.walletId}');
     
     print('[WalletProjection]    → Updating read model (addressCount: ${_addresses.length})...');
     _readModel = _readModel.copyWith(
@@ -602,7 +606,7 @@ class WalletProjection extends Projection<WalletReadModel> {
       
       print('[WalletProjection]    → Storing transaction in Isar (block: ${event.blockHeight})');
       print('[WalletProjection]       Net amount for wallet: ${netAmount} sats (${isIncoming ? "INCOMING" : "OUTGOING"})');
-      await _storage.storeTransaction(_readModel.walletId, transaction);
+      await _storage.storeTransaction(event.walletId, transaction);
       print('[WalletProjection]    ✅ Transaction persisted to Isar');
 
       // Store Merkle proof from BUMP
@@ -612,6 +616,7 @@ class WalletProjection extends Projection<WalletReadModel> {
       
       // Create junction table records for efficient address-centric queries
       await _createTransactionAddressJunctions(
+        event.walletId,
         event.txid,
         event.walletReceivingAddresses,
         event.sendingAddresses,
@@ -750,11 +755,12 @@ class WalletProjection extends Projection<WalletReadModel> {
       
       print('[WalletProjection]    → Storing transaction in Isar (unconfirmed)');
       print('[WalletProjection]       Net amount for wallet: $netAmount sats (${event.isOutgoing ? "SENT" : "RECEIVED"})');
-      await _storage.storeTransaction(_readModel.walletId, transaction);
+      await _storage.storeTransaction(event.walletId, transaction);
       print('[WalletProjection]    ✅ Transaction persisted to Isar');
       
       // Create junction table records
       await _createTransactionAddressJunctions(
+        event.walletId,
         event.txid,
         event.receivingAddresses,
         event.sendingAddresses,
@@ -768,6 +774,7 @@ class WalletProjection extends Projection<WalletReadModel> {
   }
 
   Future<void> _createTransactionAddressJunctions(
+    String walletId,
     String txid,
     List<String> receivingAddresses,
     List<String> sendingAddresses,
@@ -827,7 +834,7 @@ class WalletProjection extends Projection<WalletReadModel> {
       ));
     }
     
-    await _storage.storeTransactionAddresses(_readModel.walletId, txid, links);
+    await _storage.storeTransactionAddresses(walletId, txid, links);
     print('[WalletProjection]    ✅ Created ${links.length} transaction-address junction records');
   }
   

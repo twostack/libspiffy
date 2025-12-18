@@ -447,6 +447,9 @@ class SPVActor extends Actor {
     }
 
     try {
+      // Ensure templates are registered (P2PKH, P2PK, P2SH, etc.)
+      // This is idempotent - safe to call multiple times
+      dartsv.TemplateRegistry.initialize();
       final templateRegistry = dartsv.ScriptTemplateRegistry();
       
       for (int outputIndex = 0; outputIndex < transaction.outputs.length; outputIndex++) {
@@ -514,7 +517,7 @@ class SPVActor extends Actor {
           if (belongsToUs) {
             spendableUTXOs.add({
               'txid': transaction.id,
-              'outputIndex': outputIndex,
+              'vout': outputIndex,  // Use 'vout' to match WalletManagerActor expectation
               'satoshis': output.satoshis.toInt(),
               'script': output.script.toString(),
               'scriptType': scriptType,

@@ -677,7 +677,28 @@ class PaymentCoordinatorActor extends Actor {
   /// 
   /// Converts our MerkleProof storage format to the BUMP structure needed for BEEF.
   /// Based on CryptoUtils.createBumpFromTscProof() implementation.
+  /// 
+  /// Supports two storage formats:
+  /// 1. Raw BUMP hex string (single element > 64 chars) - parse directly
+  /// 2. List of sibling hashes (each 64 chars) - build BUMP from scratch
   BUMP _buildBUMPFromMerkleProof(MerkleProof proof) {
+    // Check if merkleProof contains a raw BUMP serialization (single element > 64 chars)
+    // or a list of sibling hashes (each exactly 64 chars for a 32-byte hash)
+    if (proof.merkleProof.length == 1 && proof.merkleProof[0].length > 64) {
+      // This is a raw BUMP hex string - parse it directly
+      print('  [PaymentCoordinator] Detected raw BUMP format in storage, parsing directly...');
+      try {
+        final bumpBytes = Uint8List.fromList(hex.decode(proof.merkleProof[0]));
+        final bump = BUMP.fromBytes(bumpBytes);
+        print('  [PaymentCoordinator] ✓ Parsed BUMP: height=${bump.blockHeight}, levels=${bump.path.length}');
+        return bump;
+      } catch (e) {
+        print('  [PaymentCoordinator] ❌ Failed to parse raw BUMP: $e');
+        rethrow;
+      }
+    }
+    
+    // Otherwise, build BUMP from sibling hashes (original logic)
     final levels = <Level>[];
     
     // Level 0: Transaction ID at its position in the block

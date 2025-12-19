@@ -1571,12 +1571,17 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     if (event.walletMetadata != null) {
       currentState.metadata.addAll(event.walletMetadata!);
     }
+    
+    // Initialize address_indices map for tracking derivation indices
+    currentState.metadata['address_indices'] ??= <String, int>{};
+    
     currentState.version = event.version;
     currentState.lastModified = event.timestamp;
     
-    // Add root address to addresses map
+    // Add root address to addresses map with derivation index 0
     if (event.rootAddress.isNotEmpty) {
       currentState.addresses[event.rootAddress] = null;
+      (currentState.metadata['address_indices'] as Map<String, int>)[event.rootAddress] = 0;
     }
   }
 
@@ -1594,6 +1599,11 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
   void _applyAddressGenerated(AddressGeneratedEvent event) {
     currentState.addresses[event.address] = event.label;
     currentState.nextDerivationIndex = event.derivationIndex + 1;
+    
+    // Store the derivation index for key derivation during signing
+    currentState.metadata['address_indices'] ??= <String, int>{};
+    (currentState.metadata['address_indices'] as Map<String, int>)[event.address] = event.derivationIndex;
+    
     currentState.version = event.version;
     currentState.lastModified = event.timestamp;
   }
@@ -1761,6 +1771,10 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
   void _applyAddressDiscovered(AddressDiscoveredEvent event) {
     // Add discovered address to wallet
     currentState.addresses[event.address] = 'Imported (${event.isChange ? 'change' : 'receive'} #${event.derivationIndex})';
+    
+    // Store the derivation index for key derivation during signing
+    currentState.metadata['address_indices'] ??= <String, int>{};
+    (currentState.metadata['address_indices'] as Map<String, int>)[event.address] = event.derivationIndex;
     
     // Update next derivation index if this is higher
     if (event.derivationIndex >= currentState.nextDerivationIndex) {

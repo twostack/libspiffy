@@ -20,6 +20,13 @@ class WalletManagerActor extends Actor {
   // Track pending wallet creation requests to route responses back to original callers
   final Map<String, ActorRef?> _pendingWalletCreations = {};
   
+  // Track wallets that are currently being loaded to prevent duplicate load attempts
+  final Set<String> _loadingWallets = {};
+  
+  // Queue of commands waiting for a wallet to finish loading
+  // Key: walletId, Value: list of (command, sender) pairs
+  final Map<String, List<_PendingCommand>> _pendingCommands = {};
+  
   // Invoice manager reference for invoice-based payments
   ActorRef? _invoiceManager;
   
@@ -260,6 +267,12 @@ class WalletManagerActor extends Actor {
     print('[WalletManagerActor] Command type: ${msg.command.runtimeType}');
     print('[WalletManagerActor] Wallets in memory: ${_walletActors.keys.toList()}');
     
+    // Handle PreloadWalletCommand - just loads the wallet without forwarding to aggregate
+    if (msg.command is PreloadWalletCommand) {
+      await _handlePreloadWallet(msg.walletId);
+      return;
+    }
+    
     // Route Benford split commands directly to BenfordCoordinatorActor
     // The coordinator will handle orchestration (building, signing, broadcasting)
     if (msg.command is SplitUTXOsToBenfordCommand) {
@@ -279,36 +292,77 @@ class WalletManagerActor extends Actor {
     try {
       var walletActor = _walletActors[msg.walletId];
       
-      // Load wallet if not already in memory
-      if (walletActor == null) {
-        print('[WalletManagerActor] Wallet not in memory, trying to load from event store...');
-        walletActor = await _loadWalletFromEventStore(msg.walletId);
-        if (walletActor != null) {
-          _walletActors[msg.walletId] = walletActor;
-          print('[WalletManagerActor] ✓ Wallet loaded from event store');
-        }
-      } else {
+      // Check if wallet is already loaded
+      if (walletActor != null) {
         print('[WalletManagerActor] ✓ Wallet found in memory');
-      }
-
-      if (walletActor == null) {
-        print('[WalletManagerActor] ❌ Wallet not found: ${msg.walletId}');
-        context.sender?.tell(LocalMessage(
-          payload: {'error': 'Wallet not found', 'walletId': msg.walletId},
-        ));
+        // Forward command directly
+        print('[WalletManagerActor] → Forwarding ${msg.command.runtimeType} to wallet aggregate');
+        walletActor.tell(msg.command, sender: context.sender);
+        print('[WalletManagerActor] ✓ Command forwarded');
         return;
       }
-
-      // Forward command to wallet aggregate (send command directly, not wrapped)
-      print('[WalletManagerActor] → Forwarding ${msg.command.runtimeType} to wallet aggregate');
-      walletActor.tell(msg.command, sender: context.sender);
-      print('[WalletManagerActor] ✓ Command forwarded');
+      
+      // Check if wallet is currently being loaded (race condition prevention)
+      if (_loadingWallets.contains(msg.walletId)) {
+        print('[WalletManagerActor] ⏳ Wallet is currently loading, queuing command: ${msg.command.runtimeType}');
+        _pendingCommands.putIfAbsent(msg.walletId, () => []);
+        _pendingCommands[msg.walletId]!.add(_PendingCommand(msg.command, context.sender));
+        return;
+      }
+      
+      // Start loading the wallet
+      print('[WalletManagerActor] Wallet not in memory, starting load from event store...');
+      _loadingWallets.add(msg.walletId);
+      
+      // Queue the current command to be processed after loading
+      _pendingCommands.putIfAbsent(msg.walletId, () => []);
+      _pendingCommands[msg.walletId]!.add(_PendingCommand(msg.command, context.sender));
+      
+      // Load wallet asynchronously
+      walletActor = await _loadWalletFromEventStore(msg.walletId);
+      
+      // Remove from loading set
+      _loadingWallets.remove(msg.walletId);
+      
+      if (walletActor != null) {
+        _walletActors[msg.walletId] = walletActor;
+        print('[WalletManagerActor] ✓ Wallet loaded from event store');
+        
+        // Process all queued commands for this wallet
+        final queuedCommands = _pendingCommands.remove(msg.walletId) ?? [];
+        print('[WalletManagerActor] 📬 Processing ${queuedCommands.length} queued command(s)');
+        
+        for (final pending in queuedCommands) {
+          print('[WalletManagerActor] → Forwarding queued ${pending.command.runtimeType} to wallet aggregate');
+          walletActor.tell(pending.command, sender: pending.sender);
+        }
+        print('[WalletManagerActor] ✓ All queued commands processed');
+        
+      } else {
+        print('[WalletManagerActor] ❌ Wallet not found: ${msg.walletId}');
+        
+        // Notify all waiting senders that wallet was not found
+        final queuedCommands = _pendingCommands.remove(msg.walletId) ?? [];
+        for (final pending in queuedCommands) {
+          pending.sender?.tell(LocalMessage(
+            payload: {'error': 'Wallet not found', 'walletId': msg.walletId},
+          ));
+        }
+      }
 
     } catch (e) {
       print('Error handling wallet command for ${msg.walletId}: $e');
-      context.sender?.tell(LocalMessage(
-        payload: {'error': e.toString(), 'walletId': msg.walletId},
-      ));
+      
+      // Clean up loading state on error
+      _loadingWallets.remove(msg.walletId);
+      
+      // Notify all waiting senders of the error
+      final queuedCommands = _pendingCommands.remove(msg.walletId) ?? [];
+      for (final pending in queuedCommands) {
+        pending.sender?.tell(LocalMessage(
+          payload: {'error': e.toString(), 'walletId': msg.walletId},
+        ));
+      }
     }
   }
 
@@ -316,6 +370,44 @@ class WalletManagerActor extends Actor {
   Future<void> _handleListWallets(ListWalletsMessage msg) async {
     final walletIds = _walletActors.keys.toList();
     context.sender?.tell(WalletListMessage(walletIds));
+  }
+
+  /// Handle wallet preloading - loads the wallet aggregate without forwarding any command
+  /// 
+  /// This is used during system startup to ensure wallet aggregates are ready
+  /// before real commands arrive, eliminating race conditions.
+  Future<void> _handlePreloadWallet(String walletId) async {
+    // Already loaded?
+    if (_walletActors.containsKey(walletId)) {
+      print('[WalletManagerActor] ✓ Wallet $walletId already loaded (preload skipped)');
+      return;
+    }
+    
+    // Already being loaded?
+    if (_loadingWallets.contains(walletId)) {
+      print('[WalletManagerActor] ⏳ Wallet $walletId already loading (preload skipped)');
+      return;
+    }
+    
+    // Load the wallet
+    print('[WalletManagerActor] 🚀 Preloading wallet aggregate: $walletId');
+    _loadingWallets.add(walletId);
+    
+    try {
+      final walletActor = await _loadWalletFromEventStore(walletId);
+      
+      _loadingWallets.remove(walletId);
+      
+      if (walletActor != null) {
+        _walletActors[walletId] = walletActor;
+        print('[WalletManagerActor] ✅ Wallet $walletId preloaded successfully');
+      } else {
+        print('[WalletManagerActor] ⚠️ Failed to preload wallet $walletId (not found)');
+      }
+    } catch (e) {
+      _loadingWallets.remove(walletId);
+      print('[WalletManagerActor] ❌ Error preloading wallet $walletId: $e');
+    }
   }
 
   /// Handle SPV validation results from SPVActor (NEW for correct SPV)
@@ -348,12 +440,9 @@ class WalletManagerActor extends Actor {
     try {
       var walletActor = _walletActors[walletId];
       
-      // Load wallet if not in memory
+      // Load wallet if not in memory (with race condition protection)
       if (walletActor == null) {
-        walletActor = await _loadWalletFromEventStore(walletId);
-        if (walletActor != null) {
-          _walletActors[walletId] = walletActor;
-        }
+        walletActor = await _getOrLoadWallet(walletId);
       }
 
       if (walletActor == null) {
@@ -492,6 +581,58 @@ class WalletManagerActor extends Actor {
       return null;
     }
   }
+  
+  /// Get wallet actor from memory, or load it safely with race condition protection.
+  /// 
+  /// This helper ensures that only one load attempt happens at a time for a given wallet.
+  /// If a load is already in progress, this method waits for it to complete.
+  Future<ActorRef?> _getOrLoadWallet(String walletId) async {
+    // Check if already loaded
+    var walletActor = _walletActors[walletId];
+    if (walletActor != null) {
+      return walletActor;
+    }
+    
+    // Check if currently being loaded - wait for it
+    if (_loadingWallets.contains(walletId)) {
+      print('[WalletManagerActor] ⏳ Waiting for wallet $walletId to finish loading...');
+      // Poll until loading completes (with timeout)
+      const maxWaitMs = 5000;
+      const pollIntervalMs = 50;
+      var waitedMs = 0;
+      
+      while (_loadingWallets.contains(walletId) && waitedMs < maxWaitMs) {
+        await Future.delayed(const Duration(milliseconds: pollIntervalMs));
+        waitedMs += pollIntervalMs;
+      }
+      
+      // Check if loaded now
+      walletActor = _walletActors[walletId];
+      if (walletActor != null) {
+        print('[WalletManagerActor] ✓ Wallet $walletId loaded (waited ${waitedMs}ms)');
+        return walletActor;
+      }
+      
+      print('[WalletManagerActor] ⚠️ Wallet $walletId still not available after waiting');
+      return null;
+    }
+    
+    // Not loaded and not loading - start loading
+    _loadingWallets.add(walletId);
+    
+    try {
+      walletActor = await _loadWalletFromEventStore(walletId);
+      
+      if (walletActor != null) {
+        _walletActors[walletId] = walletActor;
+      }
+      
+      return walletActor;
+      
+    } finally {
+      _loadingWallets.remove(walletId);
+    }
+  }
 
   /// Handle invoice creation - coordinate with InvoiceManager
   Future<void> _handleCreateInvoice(CreateInvoiceMessage msg) async {
@@ -512,24 +653,20 @@ class WalletManagerActor extends Actor {
       
       print('Creating invoice for wallet ${msg.walletId}, amount: ${msg.amount}');
       
-      // Ensure wallet is loaded
-      var walletActor = _walletActors[msg.walletId];
+      // Ensure wallet is loaded (with race condition protection)
+      final walletActor = await _getOrLoadWallet(msg.walletId);
       if (walletActor == null) {
-        // Try to load from event store
-        walletActor = await _loadWalletFromEventStore(msg.walletId);
-        if (walletActor == null) {
-          print('Wallet ${msg.walletId} not found');
-          context.sender?.tell(InvoiceCreatedMessage(
-            invoiceId: '',
-            walletId: msg.walletId,
-            addresses: [],
-            amount: msg.amount,
-            createdAt: DateTime.now(),
-            success: false,
-            error: 'Wallet ${msg.walletId} not found',
-          ));
-          return;
-        }
+        print('Wallet ${msg.walletId} not found');
+        context.sender?.tell(InvoiceCreatedMessage(
+          invoiceId: '',
+          walletId: msg.walletId,
+          addresses: [],
+          amount: msg.amount,
+          createdAt: DateTime.now(),
+          success: false,
+          error: 'Wallet ${msg.walletId} not found',
+        ));
+        return;
       }
       
       // Forward to InvoiceManager (which will handle address generation)
@@ -554,4 +691,12 @@ class WalletManagerActor extends Actor {
     _reservationCleanupTimer?.cancel();
     print('WalletManagerActor stopped');
   }
+}
+
+/// Helper class to store pending commands while wallet is loading
+class _PendingCommand {
+  final WalletCommand command;
+  final ActorRef? sender;
+  
+  _PendingCommand(this.command, this.sender);
 } 

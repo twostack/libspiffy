@@ -746,6 +746,33 @@ class SplitUTXOsToBenfordCommand extends WalletCommand {
   }
 }
 
+/// Command to preload a wallet aggregate at startup
+/// 
+/// This is a no-op command that triggers wallet loading without performing
+/// any actual operation. Used during system initialization to ensure wallet
+/// aggregates are ready before commands arrive.
+class PreloadWalletCommand extends WalletCommand {
+  PreloadWalletCommand({
+    required String walletId,
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          commandId: commandId,
+          timestamp: timestamp,
+          metadata: metadata,
+        );
+
+  @override
+  String get commandType => 'PreloadWalletCommand';
+  
+  @override
+  String toString() {
+    return 'PreloadWalletCommand(walletId: $walletId, commandId: $commandId)';
+  }
+}
+
 // =============================================================================
 // SUPPORTING CLASSES
 // =============================================================================

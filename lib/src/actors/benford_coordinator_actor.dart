@@ -424,16 +424,34 @@ class BenfordCoordinatorActor extends Actor {
       throw StateError('Extended private key not found for wallet: $walletId');
     }
 
-    // Get all UTXOs to find derivation index
+    // Try to get derivation index from UTXO first
+    int? derivationIndex;
     final utxos = await _storage.getUTXOs(walletId);
     final utxo = utxos.firstWhere(
       (u) => u.address == address,
       orElse: () => throw StateError('UTXO with address not found: $address'),
     );
+    derivationIndex = utxo.derivationIndex;
+    
+    // If UTXO doesn't have derivationIndex, look up from address metadata
+    if (derivationIndex == null) {
+      final addressMeta = await _storage.getAddressMetadata(walletId, address);
+      if (addressMeta != null) {
+        derivationIndex = addressMeta.derivationIndex;
+        print('[BenfordCoordinatorActor]    → Using derivation index from address metadata: $derivationIndex');
+      }
+    }
+    
+    // Default to 0 only if still unknown (shouldn't happen for properly imported wallets)
+    if (derivationIndex == null) {
+      print('[BenfordCoordinatorActor]    ⚠️ Warning: No derivation index found for address $address, defaulting to 0');
+      derivationIndex = 0;
+    }
 
-    // Derive the private key using derivation index from UTXO
+    // Derive the private key using derivation index
     final hdPrivateKey = dartsv.HDPrivateKey.fromXpriv(xpriv);
-    final derivationPath = 'm/0/${utxo.derivationIndex ?? 0}';
+    final derivationPath = 'm/0/$derivationIndex';
+    print('[BenfordCoordinatorActor]    → Deriving key at path: $derivationPath');
     final derivedKey = hdPrivateKey.deriveChildKey(derivationPath);
     
     return derivedKey.privateKey;

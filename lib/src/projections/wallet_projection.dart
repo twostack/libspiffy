@@ -304,6 +304,16 @@ class WalletProjection extends Projection<WalletReadModel> {
     print('[WalletProjection]    Block Height: ${event.blockHeight}');
     print('[WalletProjection]    Initial Status: ${event.initialStatus}');
     
+    // Look up derivation index from address metadata
+    int? derivationIndex;
+    if (event.address.isNotEmpty) {
+      final addressMeta = await _storage.getAddressMetadata(event.walletId, event.address);
+      if (addressMeta != null) {
+        derivationIndex = addressMeta.derivationIndex;
+        print('[WalletProjection]    Derivation Index: $derivationIndex');
+      }
+    }
+    
     // Update address usage statistics
     if (event.address.isNotEmpty) {
       await _storage.updateAddressUsage(
@@ -315,7 +325,7 @@ class WalletProjection extends Projection<WalletReadModel> {
       print('[WalletProjection]    ✅ Address usage updated: ${event.address}');
     }
     
-    // Create UTXO and persist directly to storage
+    // Create UTXO and persist directly to storage (with derivation index for signing)
     final utxo = BitcoinUtxo.create(
       txid: event.txid,
       vout: event.vout,
@@ -325,6 +335,7 @@ class WalletProjection extends Projection<WalletReadModel> {
       blockHeight: event.blockHeight,
       confirmations: event.confirmations ?? 0,
       status: event.initialStatus, // Use status from event (available for imports, pending for new receives)
+      derivationIndex: derivationIndex,
     );
     
     // Persist directly to storage with correct wallet ID

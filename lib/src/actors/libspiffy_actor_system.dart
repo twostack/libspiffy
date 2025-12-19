@@ -253,7 +253,7 @@ class LibSpiffyActorSystem {
     print('Registering event types with Eventador EventRegistry...');
     
     // =================================================================
-    // WALLET EVENTS (16 total)
+    // WALLET EVENTS (17 total)
     // =================================================================
     
     // Wallet Lifecycle
@@ -276,6 +276,11 @@ class LibSpiffyActorSystem {
     EventRegistry.register<AddressLabelUpdatedEvent>(
       'AddressLabelUpdatedEvent',
       (map) => AddressLabelUpdatedEvent.fromMap(map),
+    );
+    
+    EventRegistry.register<AddressDiscoveredEvent>(
+      'AddressDiscoveredEvent',
+      (map) => AddressDiscoveredEvent.fromMap(map),
     );
     
     // UTXO Management
@@ -562,6 +567,47 @@ class LibSpiffyActorSystem {
     }
     
     print('All LibSpiffy actors spawned successfully');
+    
+    // Preload all wallet aggregates to eliminate race conditions
+    await _preloadWalletAggregates();
+  }
+
+  /// Preload all wallet aggregates so commands don't need to wait for loading
+  /// 
+  /// This eliminates race conditions that can occur when multiple commands
+  /// arrive for a wallet before it finishes loading.
+  Future<void> _preloadWalletAggregates() async {
+    try {
+      print('🚀 Preloading wallet aggregates...');
+      
+      // Query all wallet IDs from storage
+      final walletIds = await _walletStorage.listWallets();
+      
+      if (walletIds.isEmpty) {
+        print('   No wallets found to preload');
+        return;
+      }
+      
+      print('   Found ${walletIds.length} wallet(s) to preload');
+      
+      // Send PreloadWalletCommand for each wallet
+      for (final walletId in walletIds) {
+        _walletManager!.tell(WalletCommandMessage(
+          walletId,
+          PreloadWalletCommand(walletId: walletId),
+        ));
+      }
+      
+      // Wait briefly for wallet aggregates to load
+      // 200ms per wallet with minimum of 500ms
+      final waitMs = (200 * walletIds.length).clamp(500, 5000);
+      await Future.delayed(Duration(milliseconds: waitMs));
+      
+      print('✅ Wallet aggregates preloaded (${walletIds.length} wallets)');
+    } catch (e) {
+      print('⚠️ Error preloading wallet aggregates: $e');
+      // Non-fatal - wallets will load on-demand if preload fails
+    }
   }
 
   /// Initialize P2P connectivity with SpiffyNode (internal method)

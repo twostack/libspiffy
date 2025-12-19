@@ -641,3 +641,42 @@ class SetBenfordCoordinatorMessage implements Message {
   @override
   DateTime get timestamp => DateTime.now();
 }
+
+/// Message to trigger checking all pending UTXOs from storage against Arc
+/// 
+/// Sent when new block headers are received to check if any pending UTXOs
+/// have been mined and need merkle proofs fetched from Arc.
+class CheckStoragePendingUTXOsMessage implements Message {
+  /// Block height that triggered this check (informational)
+  final int triggerBlockHeight;
+  
+  CheckStoragePendingUTXOsMessage({required this.triggerBlockHeight});
+
+  @override
+  String get correlationId => 'check-pending-utxos-${DateTime.now().millisecondsSinceEpoch}';
+  @override
+  Map<String, dynamic> get metadata => {'triggerBlockHeight': triggerBlockHeight};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+/// Message to set the ARC actor reference in SPVActor
+/// 
+/// Used to wire up the ARCActor reference after actor system initialization,
+/// enabling SPVActor to trigger pending UTXO checks when block headers arrive.
+class SetArcActorForSPVMessage implements Message {
+  final ActorRef arcActor;
+
+  SetArcActorForSPVMessage(this.arcActor);
+
+  @override
+  String get correlationId => 'set-arc-actor-spv-${DateTime.now().millisecondsSinceEpoch}';
+  @override
+  Map<String, dynamic> get metadata => {'arcActorRef': arcActor.toString()};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}

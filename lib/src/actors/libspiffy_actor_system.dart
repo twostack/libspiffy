@@ -483,25 +483,27 @@ class LibSpiffyActorSystem {
       storage: _walletStorage,
       secureStorage: _secureStorage,
     ));
-    
-    // Spawn HeaderSyncActor early (other actors may need to communicate with it)
-    _headerSyncActorInstance = HeaderSyncActor(
-      headerChain: _headerChain,
-      spvActor: null, // Will be set after SPVActor is spawned
-      spiffyNodeBridge: null, // Will be set after SpiffyNode connection
-      peerManager: null, // Will be set after P2P initialization
-      startHeight: null, // Will be set via _initializeP2P parameter
-    );
-    _headerSyncActor = await _actorSystem.spawn('header-sync', () => _headerSyncActorInstance!);
-    
+
+
     // Spawn SPVActor with reference to WalletManager, InvoiceCoordinator and storage
     _spvActor = await _actorSystem.spawn('spv-actor', () => SPVActor(
       walletManager: _walletManager!,
       invoiceCoordinator: _invoiceCoordinator!,
       storage: _actorStorage,
     ));
+
+    // Spawn HeaderSyncActor early (other actors may need to communicate with it)
+    _headerSyncActorInstance = HeaderSyncActor(
+      headerChain: _headerChain,
+      spvActor: _spvActor,
+      spiffyNodeBridge: null, // Will be set after SpiffyNode connection
+      peerManager: null, // Will be set after P2P initialization
+      startHeight: null, // Will be set via _initializeP2P parameter
+    );
+    _headerSyncActor = await _actorSystem.spawn('header-sync', () => _headerSyncActorInstance!);
     
-    // Now update HeaderSyncActor with SPVActor reference
+
+    // Now launch update HeaderSyncActor . Missing references will be wired up after P2P init completes.
     // Note: This is a limitation of the current design - we need a way to update references
     
     // Spawn ARCActor with reference to WalletManager and ARC config
@@ -514,6 +516,10 @@ class LibSpiffyActorSystem {
     
     // Wire up ARC actor reference in WalletManager
     _walletManager!.tell(SetArcActorMessage(_arcActor!));
+    
+    // Wire up ARC actor reference in SPVActor for pending UTXO checking
+    // This enables SPVActor to trigger Arc status checks when new block headers arrive
+    _spvActor!.tell(SetArcActorForSPVMessage(_arcActor!));
     
     // Spawn TransactionLifecycleCoordinator for transaction monitoring recovery
     _transactionLifecycleCoordinator = await _actorSystem.spawn(

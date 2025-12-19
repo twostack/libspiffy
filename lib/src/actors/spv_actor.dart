@@ -8,6 +8,7 @@ import 'package:spiffynode/spiffy_node.dart';
 
 import '../storage/wallet_storage.dart';
 import '../utils/beef.dart';
+import 'spv_messages.dart' hide ValidateBEEFMessage, BEEFValidationResult;
 import 'wallet_messages.dart';
 import 'invoice_messages.dart';
 
@@ -28,6 +29,9 @@ class SPVActor extends Actor {
   final ActorRef _invoiceCoordinator;
   final ReadModelStorage _storage;
   
+  /// Optional reference to ARCActor for triggering pending UTXO checks
+  ActorRef? _arcActor;
+  
   int _currentHeight = 0;
   dynamic _currentTip;
 
@@ -35,9 +39,22 @@ class SPVActor extends Actor {
     required ActorRef walletManager,
     required ActorRef invoiceCoordinator,
     required ReadModelStorage storage,
+    ActorRef? arcActor,
   }) : _walletManager = walletManager,
        _invoiceCoordinator = invoiceCoordinator,
-       _storage = storage;
+       _storage = storage,
+       _arcActor = arcActor;
+  
+  /// Set the ARC actor reference (called after actor system initialization)
+  void setArcActor(ActorRef arcActor) {
+    _arcActor = arcActor;
+  }
+  
+  /// Handle SetArcActorForSPVMessage
+  void _handleSetArcActor(SetArcActorForSPVMessage msg) {
+    _arcActor = msg.arcActor;
+    print('SPVActor: ARCActor reference set successfully');
+  }
 
   @override
   void preStart() {
@@ -55,6 +72,14 @@ class SPVActor extends Actor {
           
         case BlockHeaderUpdateMessage:
           await _handleBlockHeaderUpdate(message as BlockHeaderUpdateMessage);
+          break;
+          
+        case BlockHeaderStoredMessage:
+          await _handleBlockHeaderStored(message as BlockHeaderStoredMessage);
+          break;
+          
+        case SetArcActorForSPVMessage:
+          _handleSetArcActor(message as SetArcActorForSPVMessage);
           break;
           
         case ValidateBEEFMessage:
@@ -746,6 +771,44 @@ class SPVActor extends Actor {
       
     } catch (e) {
       print('Error updating block header chain: $e');
+    }
+  }
+
+  /// Handle block header stored notifications from HeaderSyncActor
+  /// 
+  /// When new block headers are stored, we need to:
+  /// 1. Update our chain height tracking
+  /// 2. Trigger checking of pending UTXOs to see if they've been mined
+  Future<void> _handleBlockHeaderStored(BlockHeaderStoredMessage msg) async {
+    print('Block header stored notification: height ${msg.height}, reorg: ${msg.isReorg}');
+
+    try {
+      // Handle reorganization if this was part of a reorg
+      if (msg.isReorg) {
+        await _handleBlockchainReorganization([]);
+      }
+      
+      // Update chain tip if this is a new highest block
+      if (msg.height > _currentHeight) {
+        _currentHeight = msg.height;
+        _currentTip = msg.header;
+        print('SPVActor chain tip updated to height $_currentHeight');
+      }
+      
+      // CRITICAL: Trigger check of pending UTXOs with Arc
+      // This is the key link between receiving block headers and checking
+      // if pending UTXOs have been mined
+      if (_arcActor != null) {
+        print('Triggering pending UTXO check with Arc for block ${msg.height}');
+        _arcActor!.tell(CheckStoragePendingUTXOsMessage(
+          triggerBlockHeight: msg.height,
+        ));
+      } else {
+        print('WARNING: ARCActor reference not set - cannot check pending UTXOs');
+      }
+      
+    } catch (e) {
+      print('Error handling block header stored: $e');
     }
   }
 

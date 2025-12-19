@@ -5,6 +5,7 @@ import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
 
 import '../core/wallet_commands.dart';
+import '../models/bitcoin_utxo.dart';
 import '../services/arc_service.dart';
 import '../services/arc_service_config.dart';
 import '../storage/read_model_storage.dart';
@@ -75,6 +76,10 @@ class ARCActor extends Actor {
           
         case RegisterTransactionOutputsMessage:
           _handleRegisterOutputs(message as RegisterTransactionOutputsMessage);
+          break;
+          
+        case CheckStoragePendingUTXOsMessage:
+          await _handleCheckStoragePendingUTXOs(message as CheckStoragePendingUTXOsMessage);
           break;
           
         default:
@@ -512,6 +517,81 @@ class ARCActor extends Actor {
     if (!_transactionStatus.containsKey(msg.txid)) {
       _transactionStatus[msg.txid] = 'pending';
       print('  → Initialized status to pending for monitoring');
+    }
+  }
+
+  /// Handle request to check all pending UTXOs from storage against Arc
+  /// 
+  /// This is triggered when new block headers are received, to check if any
+  /// pending UTXOs have been mined and need merkle proofs fetched.
+  Future<void> _handleCheckStoragePendingUTXOs(CheckStoragePendingUTXOsMessage msg) async {
+    print('Checking pending UTXOs from storage (triggered by block ${msg.triggerBlockHeight})');
+    
+    if (_arcService == null) {
+      print('ERROR: ARC service not initialized - cannot check pending UTXOs');
+      return;
+    }
+    
+    try {
+      // Get all wallet IDs from storage
+      final walletIds = await _storage.getWalletIds();
+      
+      if (walletIds.isEmpty) {
+        print('No wallets in storage - nothing to check');
+        return;
+      }
+      
+      // Collect all pending UTXOs across all wallets
+      final pendingTxidsToCheck = <String, String>{}; // txid -> walletId
+      
+      for (final walletId in walletIds) {
+        // Get all UTXOs (including non-spent) for this wallet
+        final utxos = await _storage.getUTXOs(walletId, includeSpent: false);
+        
+        // Filter for pending UTXOs and collect unique txids
+        for (final utxo in utxos) {
+          if (utxo.status == UTXOStatus.pending) {
+            // Only add if we don't already have this txid from another wallet
+            if (!pendingTxidsToCheck.containsKey(utxo.txid)) {
+              pendingTxidsToCheck[utxo.txid] = walletId;
+              
+              // Also register outputs for this txid if not already tracked
+              if (!_transactionOutputs.containsKey(utxo.txid)) {
+                _transactionOutputs[utxo.txid] = [utxo.vout];
+              } else if (!_transactionOutputs[utxo.txid]!.contains(utxo.vout)) {
+                _transactionOutputs[utxo.txid]!.add(utxo.vout);
+              }
+              
+              // Ensure wallet mapping exists
+              if (!_transactionToWallet.containsKey(utxo.txid)) {
+                _transactionToWallet[utxo.txid] = walletId;
+              }
+            } else {
+              // Same txid but different vout - add vout to outputs list
+              if (!_transactionOutputs[utxo.txid]!.contains(utxo.vout)) {
+                _transactionOutputs[utxo.txid]!.add(utxo.vout);
+              }
+            }
+          }
+        }
+      }
+      
+      if (pendingTxidsToCheck.isEmpty) {
+        print('No pending UTXOs found in storage');
+        return;
+      }
+      
+      print('Found ${pendingTxidsToCheck.length} pending transaction(s) to check with Arc');
+      
+      // Check each pending transaction with Arc
+      for (final txid in pendingTxidsToCheck.keys) {
+        await _checkAndUpdateTransactionStatus(txid);
+      }
+      
+      print('Completed checking pending UTXOs from storage');
+      
+    } catch (e) {
+      print('Error checking pending UTXOs from storage: $e');
     }
   }
 

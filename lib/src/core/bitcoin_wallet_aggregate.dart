@@ -1179,7 +1179,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
           hdPrivateKey,
           0,
           derivationIndex,
-          coinType: networkType == dartsv.NetworkType.MAIN ? 0 : 236,
+          coinType: 236,
           isChange: false,
         );
       }

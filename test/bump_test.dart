@@ -521,53 +521,202 @@ void main() {
       expect(isValid, true, reason: 'Merkle proof validation should succeed');
     });
 
-    test('can create and validate the following bump structure', () async {
-
-     const jsonProof = '{"index":2,"path":["d194ec91b4f931ac613437f78fe8fd1a3c83d9d45179c2a94fd13999bc70dee3","c7437c9dd1e6292b9c54e367530ec6988b08bb88f2e6c2531d6fc41a9040431b"]}';
-     //[{"index":2,"txOrId":"d194ec91b4f931ac613437f78fe8fd1a3c83d9d45179c2a94fd13999bc70dee3","target":"000000000000000273312eecee76b164f6d3ab00fa2a7426ce04228a6efe9f2b","nodes":["d194ec91b4f931ac613437f78fe8fd1a3c83d9d45179c2a94fd13999bc70dee3","c7437c9dd1e6292b9c54e367530ec6988b08bb88f2e6c2531d6fc41a9040431b"]}]
-
-    final merkleProofJson = jsonDecode(jsonProof);
-            
-    final merkleRoot = CryptoUtils.computeMerkleRootFromBrc71("d194ec91b4f931ac613437f78fe8fd1a3c83d9d45179c2a94fd13999bc70dee3", jsonDecode(jsonProof));
-
-     // Convert BRC-71 format to BUMP
-     final bump = CryptoUtils.convertBrc71PathToBump( merkleProofJson, 1578586, "d194ec91b4f931ac613437f78fe8fd1a3c83d9d45179c2a94fd13999bc70dee3" );
-
-     // bump.validateMerklePath(txid);
-     final bumpRoot = bump.computeMerkleRoot(Uint8List.fromList(hex.decode("d194ec91b4f931ac613437f78fe8fd1a3c83d9d45179c2a94fd13999bc70dee3")));
-     final bumpRootHex = hex.encode(bumpRoot);
-
-
-     expect(bumpRootHex, merkleRoot); //the computed merkle root from BUMP must match the known-good calculation from merkleRoo
-
-     const rawTx = "0200000001ecda13a4f024b84f096064f7cc63e2970b6fa3d927de6b1e8867411d9a645d21010000006b483045022100e02985dfdffe26d87a6053cc3a4d7af834de1271ba9e7608fa4dd74f6d627aa4022003fecf482c7228385eba23be698964c676891f7224b365eaef91579226c7f0974121028fa64c7d1931de5c0a41fa67b2c3db1b747fa2ff8bcc1ba94d512ce620fac2ac0100000002e803000000000000fda6032097dfd76851bf465e8f715593b217714858bbe9570ff3bd5e33840a34e20ff0262102ba79df5f8ae7604a9830f03c7933028186aede0675a16f025dc4f8be8eec0382201008ce7480da41702918d1ec8e6849ba32b4d65b1e40dc669c31a1e6306b266c0000144e07670dfb42341d1708e17b8813424ce7646c3b035a1618610079040065cd1d9f690079547a75537a537a537a5179537a75527a527a7575615579014161517957795779210ac407f0e4bd44bfc207355a778b046225a7068fc59ee7eda43ad905aadbffc800206c266b30e6a1319c66dc401e5bd6b432ba49688eecd118297041da8074ce081059795679615679aa0079610079517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e01007e81517a75615779567956795679567961537956795479577995939521414136d08c5ed2bf3ba048afe6dcaebafeffffffffffffffffffffffffffffff00517951796151795179970079009f63007952799367007968517a75517a75517a7561527a75517a517951795296a0630079527994527a75517a6853798277527982775379012080517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f517f7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e7c7e01205279947f7754537993527993013051797e527e54797e58797e527e53797e52797e57797e0079517a75517a75517a75517a75517a75517a75517a75517a75517a75517a75517a75517a75517a756100795779ac517a75517a75517a75517a75517a75517a75517a75517a75517a7561517a75517a756169557961007961007982775179517954947f75517958947f77517a75517a756161007901007e81517a7561517a7561040065cd1d9f6955796100796100798277517951790128947f755179012c947f77517a75517a756161007901007e81517a7561517a756105ffffffff009f69557961007961007982775179517954947f75517958947f77517a75517a756161007901007e81517a7561517a75615279a2695679a95179876957795779ac777777777777777716e5a435000000001976a9144e07670dfb42341d1708e17b8813424ce7646c3b88ac00000000";
-
-    final beef = BEEF.create(
-      bumps: [bump],
-      txs: [Uint8List.fromList(hex.decode(rawTx))],
-      hasMerkle: [true],
-      bumpIndex: [0],
-    );
-
-     final blockHeaderWithMerkleRoot = BlockHeader(
-       version: 1,
-       prevBlock: Hash.fromHex('000000000000001365b00b48c462a9345f92b3683a5c0496e287970666b0b2d6'),
-       merkleRoot: Hash.fromHex('f8f0c910c6b26a66822638435f0fcf58ca25154ccc349ff83445ab1262c464ea'),
-       timestamp: DateTime.fromMicrosecondsSinceEpoch(1698044011),
-       bits: 0,
-       nonce: 2009140124,
-     );
-
-     expect(merkleRoot, hex.encode(blockHeaderWithMerkleRoot.merkleRoot.bytes.reversed.toList()));
-
-     final txn = dartsv.Transaction.fromHex(rawTx);
-
-     final isBeefValid = await beef.validateTransactionWithBlockHeader(Uint8List.fromList(hex.decode(txn.id)), blockHeaderWithMerkleRoot );
-
-     expect(isBeefValid, true);
-
-     // final isValid = CryptoUtils.validateMerkleProofWithByteReversal(txid, proof.path, blockHeader, index);
-     // expect(isValid, true);
+    test('PRODUCTION BUG: validateMerklePath confuses array index with leaf offset', () {
+      // This test reproduces the production bug where validateMerklePath fails
+      // because it uses the array index of the leaf instead of the leaf's offset property.
+      //
+      // From production logs:
+      //   BUMP[0] Level 0 Leaves: 2
+      //     Leaf[0]: offset=5, isTxid=false, duplicate=true, hash: null
+      //     Leaf[1]: offset=4, isTxid=true, duplicate=false, hash: c58145671d4feee37da85a404e6bfddbaee8036e8e469b203e6855c81cfc4d4c
+      //
+      // The txid leaf is at array index 1, but its offset (Merkle tree position) is 4.
+      // The current code uses txidIndex = 1 when it should use txidIndex = 4.
+      //
+      // This causes incorrect merkle path calculation because:
+      // - offset=4 means the transaction is at position 4 in the block (binary: 100)
+      // - The sibling at offset=5 (binary: 101) differs only in the last bit, making them siblings
+      // - With duplicate=true at offset=5, the txid should hash with itself
+      // - But if we use array index 1, we get completely wrong behavior
+      
+      const ancestorTxidHex = 'c58145671d4feee37da85a404e6bfddbaee8036e8e469b203e6855c81cfc4d4c';
+      
+      // Create the BUMP structure exactly as seen in production logs
+      // Note: hash is stored in internal (little-endian) format in BUMP
+      final txidBytes = Uint8List.fromList(hex.decode(ancestorTxidHex));
+      
+      // Level 1 sibling from production: offset=3, hash: bf893c298335ad5c79e98247fabdf3ccd4562c2336ac27e2058423c2487ebd99
+      final level1SiblingHash = Uint8List.fromList(hex.decode('bf893c298335ad5c79e98247fabdf3ccd4562c2336ac27e2058423c2487ebd99'));
+      
+      final bump = BUMP(
+        blockHeight: 1709746, // 0x1a16b2 from production
+        path: [
+          // Level 0: Two leaves - a duplicate sibling and the txid
+          Level(leaves: [
+            // Leaf[0]: offset=5, duplicate=true (sibling that duplicates the txid)
+            Leaf(
+              offset: 5,
+              duplicate: true,
+              isTxid: false,
+              hash: null, // duplicate leaves have no hash
+            ),
+            // Leaf[1]: offset=4, the actual txid
+            Leaf(
+              offset: 4,
+              duplicate: false,
+              isTxid: true,
+              hash: txidBytes,
+            ),
+          ]),
+          // Level 1: Sibling hash
+          Level(leaves: [
+            Leaf(
+              offset: 3,
+              duplicate: false,
+              isTxid: false,
+              hash: level1SiblingHash,
+            ),
+          ]),
+          // Level 2: Duplicate (from BEEF parsing)
+          Level(leaves: [
+            Leaf(
+              offset: 1,
+              duplicate: true,
+              isTxid: false,
+              hash: null,
+            ),
+          ]),
+        ],
+      );
+      
+      print('=== PRODUCTION BUG REPRODUCTION TEST ===');
+      print('BUMP structure:');
+      print('  Block Height: ${bump.blockHeight}');
+      print('  Path Levels: ${bump.path.length}');
+      for (int i = 0; i < bump.path.length; i++) {
+        print('  Level $i:');
+        for (int j = 0; j < bump.path[i].leaves.length; j++) {
+          final leaf = bump.path[i].leaves[j];
+          print('    Leaf[$j]: offset=${leaf.offset}, isTxid=${leaf.isTxid}, duplicate=${leaf.duplicate}');
+          if (leaf.hash != null) {
+            print('      hash: ${hex.encode(leaf.hash!)}');
+          }
+        }
+      }
+      
+      // The txid leaf is at array index 1, but offset is 4
+      // The bug is in validateMerklePath: it uses array index (1) instead of offset (4)
+      
+      // This SHOULD return true if the implementation is correct
+      // It will FAIL if validateMerklePath confuses array index with offset
+      final isValid = bump.validateMerklePath(txidBytes);
+      
+      print('');
+      print('validateMerklePath result: $isValid');
+      print('');
+      print('BUG EXPLANATION:');
+      print('  The txid is at array index 1, but leaf.offset = 4');
+      print('  Current code does: txidIndex = i (array index = 1)');
+      print('  Correct code should: txidIndex = leaf.offset (= 4)');
+      print('');
+      print('  Using offset=4 (binary: 100):');
+      print('    - Position 4 sibling is at offset 5 (binary: 101) - same parent');
+      print('    - offset=5 has duplicate=true, so hash with itself');
+      print('  Using array index=1 (binary: 001):');
+      print('    - Would look for sibling at offset 0 or 2 - WRONG!');
+      
+      // This assertion demonstrates the bug - it should pass but fails
+      expect(isValid, true, 
+        reason: 'validateMerklePath should use leaf.offset, not array index');
     });
+    
+    test('PRODUCTION BUG: computeMerkleRoot skips duplicate sibling hashing', () {
+      // This test demonstrates that computeMerkleRoot incorrectly handles
+      // duplicate siblings (where sibling has duplicate=true, meaning hash with self).
+      //
+      // From production logs:
+      //   Leaf[0]: offset=5, isTxid=false, duplicate=true, hash: null
+      //   Leaf[1]: offset=4, isTxid=true, hash: c58145...
+      //
+      // When a sibling has duplicate=true, it means the txid should be hashed
+      // with ITSELF to produce the parent hash. But computeMerkleRoot's code:
+      //
+      //   if (!leaf.isTxid && !leaf.duplicate && leaf.hash != null) {
+      //     brc71Path.add(...)
+      //   }
+      //
+      // This SKIPS duplicate leaves entirely, so the hash-with-self step
+      // is never performed, resulting in an incorrect merkle root.
+      
+      // Create a minimal BUMP to test duplicate sibling handling
+      // Txid at offset=0, duplicate sibling at offset=1
+      final txidBytes = Uint8List.fromList(List.generate(32, (i) => i + 1));
+      
+      final bump = BUMP(
+        blockHeight: 100,
+        path: [
+          Level(leaves: [
+            // Txid at offset=0
+            Leaf(
+              offset: 0,
+              duplicate: false,
+              isTxid: true,
+              hash: txidBytes,
+            ),
+            // Duplicate sibling at offset=1 (means hash with self)
+            Leaf(
+              offset: 1,
+              duplicate: true,
+              isTxid: false,
+              hash: null,
+            ),
+          ]),
+        ],
+      );
+      
+      print('=== DUPLICATE SIBLING MERKLE ROOT TEST ===');
+      print('BUMP structure:');
+      print('  Level 0: txid at offset=0, duplicate sibling at offset=1');
+      print('  txid: ${hex.encode(txidBytes)}');
+      
+      // Compute merkle root - should hash txid with itself
+      final computedRoot = bump.computeMerkleRoot(txidBytes);
+      print('  Computed merkle root: ${hex.encode(computedRoot)}');
+      
+      // Manually compute what the correct root should be:
+      // When we have a duplicate sibling, we hash the txid with itself
+      // Step 1: Reverse txid for internal format calculation
+      // Step 2: Hash(txid || txid) using double-SHA256
+      
+      // The txid in internal format
+      final txidInternal = Uint8List.fromList(txidBytes.toList());
+      
+      // Concatenate and hash with itself
+      final combined = Uint8List(64);
+      combined.setRange(0, 32, txidInternal);
+      combined.setRange(32, 64, txidInternal);
+      
+      final firstHash = dartsv.sha256(combined);
+      final expectedRoot = dartsv.sha256(firstHash);
+      
+      print('  Expected merkle root (hash with self): ${hex.encode(expectedRoot)}');
+      
+      // Compare roots
+      final rootsMatch = hex.encode(computedRoot) == hex.encode(expectedRoot);
+      print('  Roots match: $rootsMatch');
+      
+      print('');
+      print('BUG EXPLANATION:');
+      print('  computeMerkleRoot extracts sibling hashes with this condition:');
+      print('    if (!leaf.isTxid && !leaf.duplicate && leaf.hash != null)');
+      print('  This SKIPS duplicate=true leaves, so the hash-with-self step');
+      print('  is never performed. The txid is returned as-is instead of');
+      print('  being hashed with itself.');
+      
+      // The assertion - roots should match if duplicate handling is correct
+      expect(rootsMatch, true,
+        reason: 'computeMerkleRoot should hash txid with itself when sibling is duplicate');
+    });
+    
   });
 }

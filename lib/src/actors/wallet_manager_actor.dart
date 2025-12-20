@@ -457,7 +457,7 @@ class WalletManagerActor extends Actor {
           txid: utxoData['txid'] ?? result.txid,
           vout: utxoData['vout'] ?? 0,
           satoshis: BigInt.tryParse(utxoData['satoshis'].toString()) ?? BigInt.zero,
-          scriptPubKey: utxoData['scriptPubKey'] ?? '',
+          scriptPubKey: utxoData['script'] ?? '',
           address: utxoData['address'],
           blockHeight: utxoData['blockHeight'],
           confirmations: utxoData['confirmations'] ?? 0,

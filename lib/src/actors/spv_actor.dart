@@ -544,7 +544,7 @@ class SPVActor extends Actor {
               'txid': transaction.id,
               'vout': outputIndex,  // Use 'vout' to match WalletManagerActor expectation
               'satoshis': output.satoshis.toInt(),
-              'script': output.script.toString(),
+              'script': output.script.toHex(),
               'scriptType': scriptType,
               'address': address,
             });

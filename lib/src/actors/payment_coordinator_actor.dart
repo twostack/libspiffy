@@ -461,7 +461,7 @@ class PaymentCoordinatorActor extends Actor {
   /// 
   /// For each UTXO, this method:
   /// 1. Retrieves the address metadata to find the derivation index
-  /// 2. Derives the private key for that address from the wallet's xpriv
+  /// 2. Derives the private key for that address from the wallet's xpriv or mnemonic
   /// 3. Extracts the public key from the private key
   Future<List<dartsv.SVPublicKey>> _getPublicKeysForUTXOs(
     String walletId,
@@ -470,13 +470,32 @@ class PaymentCoordinatorActor extends Actor {
     final publicKeys = <dartsv.SVPublicKey>[];
     
     // Get the wallet's extended private key
-    final xpriv = await _secureStorage.getXPriv(walletId);
-    if (xpriv == null) {
-      throw Exception('Wallet xpriv not found in secure storage');
-    }
+    dartsv.HDPrivateKey hdPrivateKey;
     
-    // Parse the extended private key
-    final hdPrivateKey = dartsv.HDPrivateKey.fromXpriv(xpriv);
+    final xpriv = await _secureStorage.getXPriv(walletId);
+    if (xpriv != null) {
+      // Parse the extended private key directly
+      hdPrivateKey = dartsv.HDPrivateKey.fromXpriv(xpriv);
+    } else {
+      // Try mnemonic if xpriv not available (e.g., wallet created from seed phrase)
+      final mnemonic = await _secureStorage.getMnemonic(walletId);
+      if (mnemonic == null) {
+        throw Exception('Wallet xpriv or mnemonic not found in secure storage');
+      }
+      
+      // Get wallet network type from storage
+      final walletData = await _storage.getWallet(walletId);
+      final networkStr = walletData?['network'] as String? ?? 'test';
+      final networkType = networkStr == 'main' 
+          ? dartsv.NetworkType.MAIN 
+          : dartsv.NetworkType.TEST;
+      
+      // Derive HD private key from mnemonic
+      hdPrivateKey = dartsv.HDPrivateKey.fromSeed(
+        dartsv.Mnemonic().toSeedHex(mnemonic, ''),
+        networkType,
+      );
+    }
     
     // For each UTXO, derive its public key
     for (final utxo in utxos) {

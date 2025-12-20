@@ -192,25 +192,26 @@ class BUMP {
     }
     
     // Find the txid in the first level
-    int? txidIndex;
+    int? txidOffset;
     for (int i = 0; i < path[0].leaves.length; i++) {
       final leaf = path[0].leaves[i];
       if (leaf.isTxid && !leaf.duplicate && leaf.hash != null) {
         if (listEquals(leaf.hash!, txid)) {
-          txidIndex = i;
+          // CRITICAL: Use leaf.offset (Merkle tree position), NOT array index i
+          txidOffset = leaf.offset;
           break;
         }
       }
     }
     
     // If txid not found, return false
-    if (txidIndex == null) {
+    if (txidOffset == null) {
       return false;
     }
     
     // Compute the merkle root by walking up the tree
     Uint8List? currentHash = txid;
-    int currentIndex = txidIndex;
+    int currentIndex = txidOffset;
     
     for (int level = 0; level < path.length; level++) {
       final leaves = path[level].leaves;
@@ -342,13 +343,37 @@ class BUMP {
     final txidHex = matchingTxid.reversed.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join('');
     
     // Extract the path in BRC-71 format
-    final List<String> brc71Path = [];
+    // Each entry is either a sibling hash (String) or null (for duplicate - hash with self)
+    final List<String?> brc71Path = [];
     
-    // Starting from level 1, extract sibling hashes in the path
+    // CRITICAL FIX: ARC compact format puts sibling at level 0 alongside txid
+    // We need to extract sibling from level 0 FIRST (if present), then levels 1+
+    
+    // Check level 0 for sibling (ARC compact format)
+    for (final leaf in path[0].leaves) {
+      // Skip the txid leaf, we want the sibling
+      if (!leaf.isTxid) {
+        if (leaf.duplicate) {
+          // CRITICAL FIX: Duplicate sibling means hash with self
+          // We add null to indicate "use current hash as sibling"
+          brc71Path.add(null);
+        } else if (leaf.hash != null) {
+          // Regular sibling with hash
+          // CRITICAL: BUMP stores hashes in internal (little-endian) format
+          // We need to reverse them to display (big-endian) format for BRC-71 calculation
+          brc71Path.add(leaf.hash!.reversed.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join(''));
+        }
+      }
+    }
+    
+    // Then extract sibling hashes from levels 1+ (standard format)
     for (int i = 1; i < path.length; i++) {
       final level = path[i];
       for (final leaf in level.leaves) {
-        if (leaf.hash != null) {
+        if (leaf.duplicate) {
+          // CRITICAL FIX: Duplicate sibling means hash with self
+          brc71Path.add(null);
+        } else if (leaf.hash != null) {
           // CRITICAL: BUMP stores hashes in internal (little-endian) format
           // We need to reverse them to display (big-endian) format for BRC-71 calculation
           brc71Path.add(leaf.hash!.reversed.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join(''));
@@ -364,28 +389,34 @@ class BUMP {
     for (int i = 0; i < brc71Path.length; i++) {
       final node = brc71Path[i];
       
-      // Determine if we need to concatenate left+right or right+left
-      bool isLeftSide = (currentIndex % 2 == 0);
-      String concatenated;
-      
-      // First, reverse both hashes (to get little-endian format)
-      // Convert both hashes to bytes and reverse them (simulate reverseBytes function from CryptoUtils)
+      // First, reverse current hash (to get little-endian format)
       String reversedCurrentHash = "";
       for (int j = currentHash.length - 2; j >= 0; j -= 2) {
         reversedCurrentHash += currentHash.substring(j, j + 2);
       }
       
-      String reversedNode = "";
-      for (int j = node.length - 2; j >= 0; j -= 2) {
-        reversedNode += node.substring(j, j + 2);
-      }
+      String concatenated;
       
-      if (isLeftSide) {
-        // Our txid is on the left side, so concatenate with the right sibling
-        concatenated = reversedCurrentHash + reversedNode;
+      if (node == null) {
+        // CRITICAL FIX: Duplicate sibling - hash with self
+        // Both left and right are the same (current hash)
+        concatenated = reversedCurrentHash + reversedCurrentHash;
       } else {
-        // Our txid is on the right side, so concatenate with the left sibling
-        concatenated = reversedNode + reversedCurrentHash;
+        // Normal sibling - determine order based on position
+        bool isLeftSide = (currentIndex % 2 == 0);
+        
+        String reversedNode = "";
+        for (int j = node.length - 2; j >= 0; j -= 2) {
+          reversedNode += node.substring(j, j + 2);
+        }
+        
+        if (isLeftSide) {
+          // Our txid is on the left side, so concatenate with the right sibling
+          concatenated = reversedCurrentHash + reversedNode;
+        } else {
+          // Our txid is on the right side, so concatenate with the left sibling
+          concatenated = reversedNode + reversedCurrentHash;
+        }
       }
       
       // Double-SHA256 hash the concatenated value

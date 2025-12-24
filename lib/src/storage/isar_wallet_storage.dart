@@ -10,6 +10,7 @@ import '../actors/invoice_messages.dart';
 import 'read_model_storage.dart';
 import 'libspiffy_schemas.dart';
 import 'isar_config.dart';
+import 'payment_channel_entity.dart';
 
 // TODO: Import compute from foundation when needed for isolate operations
 // import 'package:flutter/foundation.dart' show compute;
@@ -990,6 +991,94 @@ class IsarWalletStorage implements ReadModelStorage {
     // Merkle proofs are stored globally, not per-wallet
     // So we ignore the walletId parameter for now
     return await _isar.merkleProofEntitys.count();
+  }
+
+  // ========================================
+  // Payment Channel Storage
+  // ========================================
+
+  @override
+  Future<void> storePaymentChannel(dynamic channel) async {
+    await _isar.writeTxn(() async {
+      // Check if channel already exists (upsert)
+      final existing = await _isar.paymentChannelEntitys
+          .where()
+          .channelIdEqualTo(channel.channelId)
+          .findFirst();
+      
+      final entity = PaymentChannelEntity.fromPaymentChannel(channel);
+      
+      // If exists, keep the same Isar ID for update
+      if (existing != null) {
+        entity.id = existing.id;
+      }
+      
+      await _isar.paymentChannelEntitys.put(entity);
+    });
+  }
+
+  @override
+  Future<dynamic> getPaymentChannel(String channelId) async {
+    final entity = await _isar.paymentChannelEntitys
+        .where()
+        .channelIdEqualTo(channelId)
+        .findFirst();
+    return entity?.toPaymentChannel();
+  }
+
+  @override
+  Future<List<dynamic>> getPaymentChannelsForWallet(String walletId) async {
+    final entities = await _isar.paymentChannelEntitys
+        .where()
+        .walletIdEqualTo(walletId)
+        .findAll();
+    return entities.map((e) => e.toPaymentChannel()).toList();
+  }
+
+  @override
+  Future<void> updatePaymentChannelState(String channelId, String state) async {
+    await _isar.writeTxn(() async {
+      final entity = await _isar.paymentChannelEntitys
+          .where()
+          .channelIdEqualTo(channelId)
+          .findFirst();
+      if (entity != null) {
+        entity.state = state;
+        await _isar.paymentChannelEntitys.put(entity);
+      }
+    });
+  }
+
+  @override
+  Future<void> updatePaymentChannelBalance(
+    String channelId,
+    BigInt clientBalance,
+    BigInt serverBalance,
+  ) async {
+    await _isar.writeTxn(() async {
+      final entity = await _isar.paymentChannelEntitys
+          .where()
+          .channelIdEqualTo(channelId)
+          .findFirst();
+      if (entity != null) {
+        entity.clientBalanceSats = clientBalance.toString();
+        entity.serverBalanceSats = serverBalance.toString();
+        await _isar.paymentChannelEntitys.put(entity);
+      }
+    });
+  }
+
+  @override
+  Future<void> deletePaymentChannel(String channelId) async {
+    await _isar.writeTxn(() async {
+      final entity = await _isar.paymentChannelEntitys
+          .where()
+          .channelIdEqualTo(channelId)
+          .findFirst();
+      if (entity != null) {
+        await _isar.paymentChannelEntitys.delete(entity.id);
+      }
+    });
   }
 
   // ========================================

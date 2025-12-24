@@ -388,6 +388,32 @@ abstract class ReadModelStorage {
   ///
   /// Returns: Number of merkle proofs stored
   Future<int> getMerkleProofCount({String? walletId});
+
+  // ========================================
+  // Payment Channel Storage
+  // ========================================
+
+  /// Store a payment channel
+  Future<void> storePaymentChannel(dynamic channel);
+
+  /// Get a payment channel by ID
+  Future<dynamic> getPaymentChannel(String channelId);
+
+  /// Get all payment channels for a wallet
+  Future<List<dynamic>> getPaymentChannelsForWallet(String walletId);
+
+  /// Update payment channel state
+  Future<void> updatePaymentChannelState(String channelId, String state);
+
+  /// Update payment channel balances
+  Future<void> updatePaymentChannelBalance(
+    String channelId,
+    BigInt clientBalance,
+    BigInt serverBalance,
+  );
+
+  /// Delete a payment channel
+  Future<void> deletePaymentChannel(String channelId);
 }
 
 /// Merkle proof data for SPV validation

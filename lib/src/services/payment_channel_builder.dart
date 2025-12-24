@@ -12,7 +12,11 @@ import 'dart:typed_data';
 import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
 
+import '../models/bitcoin_transaction.dart';
 import '../models/bitcoin_utxo.dart';
+import '../storage/read_model_storage.dart';
+import '../utils/beef.dart';
+import '../utils/bump.dart';
 import 'crypto_service.dart';
 import 'transaction_builder_service.dart';
 
@@ -427,4 +431,197 @@ class PaymentChannelBuilder {
   dartsv.SVPublicKey getPublicKey(dartsv.SVPrivateKey privateKey) {
     return privateKey.publicKey;
   }
+
+  /// Build payment transaction with extended BEEF for unconfirmed funding
+  ///
+  /// This method creates a BEEF package that includes:
+  /// 1. Ancestor transactions (with merkle proofs)
+  /// 2. Funding transaction (no proof yet if unconfirmed)
+  /// 3. Payment transaction (no proof)
+  ///
+  /// This allows the receiver to validate the entire chain back to confirmed
+  /// transactions even when the funding transaction is unconfirmed.
+  Future<PaymentWithBEEF> buildPaymentWithAncestry({
+    required ChannelTransactionResult paymentTx,
+    required BitcoinTransaction fundingTransaction,
+    required List<BitcoinTransaction> fundingAncestors,
+    required List<MerkleProof> ancestorProofs,
+  }) async {
+    print('  📦 Building payment with ancestry BEEF');
+    print('    Payment TX: ${paymentTx.txid}');
+    print('    Funding TX: ${fundingTransaction.txid}');
+    print('    Ancestors: ${fundingAncestors.length}');
+    print('    Proofs: ${ancestorProofs.length}');
+
+    // 1. Order transactions correctly:
+    //    - Ancestors (with proofs) first
+    //    - Funding transaction (no proof yet)
+    //    - Payment transaction (no proof)
+    final txBytes = <Uint8List>[];
+
+    // Add ancestors
+    for (final ancestor in fundingAncestors) {
+      txBytes.add(Uint8List.fromList(hex.decode(ancestor.rawHex)));
+    }
+
+    // Add funding transaction
+    txBytes.add(Uint8List.fromList(hex.decode(fundingTransaction.rawHex)));
+
+    // Add payment transaction
+    txBytes.add(Uint8List.fromList(hex.decode(paymentTx.transactionHex)));
+
+    // 2. Build BUMPs from merkle proofs
+    final bumps = <BUMP>[];
+    for (final proof in ancestorProofs) {
+      bumps.add(_buildBUMPFromMerkleProof(proof));
+    }
+
+    // 3. Set hasMerkle flags
+    final hasMerkle = <bool>[];
+
+    // Ancestors: check which ones have proofs
+    for (final ancestor in fundingAncestors) {
+      final hasProof = ancestorProofs.any((p) => p.txid == ancestor.txid);
+      hasMerkle.add(hasProof);
+    }
+
+    // Funding transaction: no proof yet (unconfirmed)
+    hasMerkle.add(false);
+
+    // Payment transaction: no proof (just created)
+    hasMerkle.add(false);
+
+    // 4. Build bumpIndex array
+    final bumpIndex = <int>[];
+    for (int i = 0; i < fundingAncestors.length; i++) {
+      if (hasMerkle[i]) {
+        final proofIdx =
+            ancestorProofs.indexWhere((p) => p.txid == fundingAncestors[i].txid);
+        if (proofIdx != -1) {
+          bumpIndex.add(proofIdx);
+        }
+      }
+    }
+
+    print('  📊 BEEF structure:');
+    print('    Total transactions: ${txBytes.length}');
+    print('    Total BUMPs: ${bumps.length}');
+    print('    hasMerkle flags: $hasMerkle');
+    print('    bumpIndex: $bumpIndex');
+
+    // 5. Create BEEF
+    final beef = BEEF.create(
+      bumps: bumps,
+      txs: txBytes,
+      hasMerkle: hasMerkle,
+      bumpIndex: bumpIndex,
+    );
+
+    // 6. Serialize
+    final serialized = beef.serialize();
+    print('  ✓ BEEF created: ${serialized.length} bytes');
+
+    // 7. Verify
+    try {
+      final parsed = BEEF.parse(serialized);
+      print('  ✓ BEEF verification passed');
+      print('    Parsed ${parsed.txs.length} transactions');
+      print('    Parsed ${parsed.bumps.length} proofs');
+    } catch (e) {
+      print('  ❌ BEEF verification failed: $e');
+      throw Exception('Created BEEF is invalid: $e');
+    }
+
+    return PaymentWithBEEF(
+      paymentTx: paymentTx,
+      beefBytes: serialized,
+      ancestorCount: fundingAncestors.length + 1, // +1 for funding tx
+      proofCount: ancestorProofs.length,
+    );
+  }
+
+  /// Build BUMP from MerkleProof (helper method)
+  BUMP _buildBUMPFromMerkleProof(MerkleProof proof) {
+    // Check if raw BUMP format
+    if (proof.merkleProof.length == 1 && proof.merkleProof[0].length > 64) {
+      final bumpBytes = Uint8List.fromList(hex.decode(proof.merkleProof[0]));
+      return BUMP.fromBytes(bumpBytes);
+    }
+
+    // Build from sibling hashes
+    final levels = <Level>[];
+
+    // Level 0: Transaction ID
+    final reversedTxid = _reverseHexBytes(proof.txid);
+    levels.add(Level(leaves: [
+      Leaf(
+        offset: proof.position,
+        duplicate: false,
+        isTxid: true,
+        hash: Uint8List.fromList(hex.decode(reversedTxid)),
+      ),
+    ]));
+
+    // Subsequent levels
+    for (int i = 0; i < proof.merkleProof.length; i++) {
+      final indexBit = (proof.position >> i) & 1;
+      final siblingOffset =
+          indexBit == 0 ? (proof.position | (1 << i)) : (proof.position & ~(1 << i));
+
+      final siblingHashHex = proof.merkleProof[i];
+      final reversedHash = _reverseHexBytes(siblingHashHex);
+
+      levels.add(Level(leaves: [
+        Leaf(
+          offset: siblingOffset,
+          duplicate: false,
+          isTxid: false,
+          hash: Uint8List.fromList(hex.decode(reversedHash)),
+        ),
+      ]));
+    }
+
+    return BUMP(
+      blockHeight: proof.blockHeight,
+      path: levels,
+    );
+  }
+
+  /// Reverse hex bytes for Bitcoin's little-endian format
+  String _reverseHexBytes(String hexString) {
+    if (hexString.length % 2 != 0) {
+      throw Exception('Hex string must have even number of characters');
+    }
+
+    final result = StringBuffer();
+    for (int i = hexString.length - 2; i >= 0; i -= 2) {
+      result.write(hexString.substring(i, i + 2));
+    }
+    return result.toString();
+  }
+}
+
+/// Result of building a payment transaction with BEEF ancestry
+class PaymentWithBEEF {
+  /// The payment transaction result
+  final ChannelTransactionResult paymentTx;
+
+  /// BEEF bytes containing the payment + ancestry chain
+  final Uint8List beefBytes;
+
+  /// BEEF hex string
+  final String beefHex;
+
+  /// Number of ancestor transactions included
+  final int ancestorCount;
+
+  /// Number of merkle proofs included
+  final int proofCount;
+
+  PaymentWithBEEF({
+    required this.paymentTx,
+    required this.beefBytes,
+    required this.ancestorCount,
+    required this.proofCount,
+  }) : beefHex = hex.encode(beefBytes);
 }

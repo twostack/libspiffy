@@ -9,6 +9,7 @@ import '../models/bitcoin_utxo.dart';
 import '../models/bitcoin_transaction.dart';
 import '../storage/read_model_storage.dart';
 import '../storage/secure_storage.dart';
+import '../services/ancestor_chain_service.dart';
 import '../utils/beef.dart';
 import '../utils/bump.dart';
 import '../core/wallet_commands.dart';
@@ -28,6 +29,7 @@ class PaymentCoordinatorActor extends Actor {
   final ReadModelStorage _storage;
   final SecureStorage _secureStorage;
   final ActorRef _walletManager;
+  late final AncestorChainService _ancestorService;
 
   PaymentCoordinatorActor({
     required ActorRef walletManager,
@@ -35,7 +37,9 @@ class PaymentCoordinatorActor extends Actor {
     required SecureStorage secureStorage,
   })  : _storage = storage,
         _secureStorage = secureStorage,
-        _walletManager = walletManager;
+        _walletManager = walletManager {
+    _ancestorService = AncestorChainService(storage: storage);
+  }
 
   @override
   void preStart() {
@@ -90,9 +94,11 @@ class PaymentCoordinatorActor extends Actor {
     }
     print('  Selected ${selectedUtxos.length} UTXOs for payment');
 
-    // 3. CRITICAL: Validate complete ancestor chain
+    // 3. CRITICAL: Validate complete ancestor chain using AncestorChainService
     print('  Collecting and validating ancestor chain...');
-    final ancestorResult = await _collectAndValidateAncestors(selectedUtxos);
+    final ancestorResult = await _ancestorService.collectAncestorChainForUtxos(
+      selectedUtxos.map((u) => u.txid).toList(),
+    );
     if (!ancestorResult.isValid) {
       _sendError(
         msg.invoiceId,
@@ -231,105 +237,7 @@ class PaymentCoordinatorActor extends Actor {
     }
   }
 
-  /// Recursively collect ancestors up to first merkle proof
-  Future<AncestorCollectionResult> _collectAndValidateAncestors(
-    List<BitcoinUtxo> utxos,
-  ) async {
-    final ancestorTxs = <BitcoinTransaction>[];
-    final merkleProofs = <MerkleProof>[];
-    final blockHeights = <int>{};
-    final visited = <String>{}; // Prevent infinite loops
-
-    for (final utxo in utxos) {
-      final result = await _collectAncestorsRecursive(
-        utxo.txid,
-        visited,
-        ancestorTxs,
-        merkleProofs,
-        blockHeights,
-      );
-
-      if (!result.success) {
-        return AncestorCollectionResult.error(result.error!);
-      }
-    }
-
-    // Validate we have at least one merkle proof
-    if (merkleProofs.isEmpty) {
-      return AncestorCollectionResult.error(
-        'No merkle proofs found in transaction chain - cannot create valid BEEF',
-      );
-    }
-
-    return AncestorCollectionResult.success(
-      ancestorTransactions: ancestorTxs,
-      merkleProofs: merkleProofs,
-      blockHeights: blockHeights.toList(),
-    );
-  }
-
-  /// Recursive helper: collect ancestors until merkle proof found
-  Future<_CollectionStep> _collectAncestorsRecursive(
-    String txid,
-    Set<String> visited,
-    List<BitcoinTransaction> ancestorTxs,
-    List<MerkleProof> merkleProofs,
-    Set<int> blockHeights,
-  ) async {
-    // Skip if already processed
-    if (visited.contains(txid)) {
-      return _CollectionStep.success();
-    }
-    visited.add(txid);
-
-    // Get transaction from storage (must exist)
-    final tx = await _storage.getTransaction(txid);
-    if (tx == null) {
-      return _CollectionStep.error(
-        'Transaction $txid not found in storage - may need to import historical transactions',
-      );
-    }
-
-    // Check for merkle proof (stopping condition)
-    final proof = await _storage.getMerkleProof(txid);
-
-    if (proof != null) {
-      // Found merkle proof - chain complete for this branch
-      ancestorTxs.add(tx);
-      merkleProofs.add(proof);
-      blockHeights.add(proof.blockHeight);
-      return _CollectionStep.success();
-    }
-
-    // No merkle proof - must recurse to parents
-    ancestorTxs.add(tx);
-
-    // Parse transaction to get parent txids
-    try {
-      final dartsvTx = dartsv.Transaction.fromHex(tx.rawHex);
-
-      for (final input in dartsvTx.inputs) {
-        final parentTxid = input.prevTxnId;
-
-        // Recursively process parent
-        final result = await _collectAncestorsRecursive(
-          parentTxid,
-          visited,
-          ancestorTxs,
-          merkleProofs,
-          blockHeights,
-        );
-
-        if (!result.success) {
-          return result; // Propagate error
-        }
-      }
-    } catch (e) {
-      return _CollectionStep.error('Failed to parse transaction $txid: $e');
-    }
-
-    return _CollectionStep.success();
-  }
+  // Ancestor collection methods removed - now using AncestorChainService
 
   /// Select UTXOs to fund payment (greedy largest-first strategy)
   List<BitcoinUtxo>? _selectUTXOs(List<BitcoinUtxo> utxos, BigInt targetAmount) {
@@ -832,40 +740,6 @@ class PaymentCoordinatorActor extends Actor {
   Future<void> postStop() async {
     print('PaymentCoordinatorActor stopped');
   }
-}
-
-/// Result of ancestor collection with validation
-class AncestorCollectionResult {
-  final bool isValid;
-  final List<BitcoinTransaction> ancestorTransactions;
-  final List<MerkleProof> merkleProofs;
-  final List<int> blockHeights;
-  final String? error;
-
-  AncestorCollectionResult.success({
-    required this.ancestorTransactions,
-    required this.merkleProofs,
-    required this.blockHeights,
-  })  : isValid = true,
-        error = null;
-
-  AncestorCollectionResult.error(this.error)
-      : isValid = false,
-        ancestorTransactions = const [],
-        merkleProofs = const [],
-        blockHeights = const [];
-}
-
-/// Internal helper for recursion step result
-class _CollectionStep {
-  final bool success;
-  final String? error;
-
-  _CollectionStep.success()
-      : success = true,
-        error = null;
-
-  _CollectionStep.error(this.error) : success = false;
 }
 
 /// Helper actor to receive signing response

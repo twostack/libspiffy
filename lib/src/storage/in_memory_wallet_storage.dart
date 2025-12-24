@@ -815,10 +815,84 @@ class InMemoryWalletStorage implements WalletStorage {
     _walletIds.clear();
     _invoices.clear();
     _walletInvoices.clear();
+    _paymentChannels.clear();
+    _walletChannels.clear();
     _totalEvents = 0;
     _totalUtxos = 0;
     _totalTransactions = 0;
     _totalHeaders = 0;
     _totalProofs = 0;
+  }
+
+  // ========================================
+  // Payment Channel Storage
+  // ========================================
+
+  final Map<String, dynamic> _paymentChannels = {};
+  final Map<String, List<String>> _walletChannels = {};
+
+  @override
+  Future<void> storePaymentChannel(dynamic channel) async {
+    await _withGlobalLock(() async {
+      _paymentChannels[channel.channelId] = channel;
+      
+      // Index by wallet
+      final walletChannels = _walletChannels.putIfAbsent(channel.walletId, () => []);
+      if (!walletChannels.contains(channel.channelId)) {
+        walletChannels.add(channel.channelId);
+      }
+    });
+  }
+
+  @override
+  Future<dynamic> getPaymentChannel(String channelId) async {
+    return _paymentChannels[channelId];
+  }
+
+  @override
+  Future<List<dynamic>> getPaymentChannelsForWallet(String walletId) async {
+    final channelIds = _walletChannels[walletId] ?? [];
+    return channelIds
+        .map((id) => _paymentChannels[id])
+        .where((ch) => ch != null)
+        .toList();
+  }
+
+  @override
+  Future<void> updatePaymentChannelState(String channelId, String state) async {
+    await _withGlobalLock(() async {
+      final channel = _paymentChannels[channelId];
+      if (channel != null) {
+        // Update the state field
+        channel.state = state;
+      }
+    });
+  }
+
+  @override
+  Future<void> updatePaymentChannelBalance(
+    String channelId,
+    BigInt clientBalance,
+    BigInt serverBalance,
+  ) async {
+    await _withGlobalLock(() async {
+      final channel = _paymentChannels[channelId];
+      if (channel != null) {
+        channel.clientBalanceSats = clientBalance;
+        channel.serverBalanceSats = serverBalance;
+      }
+    });
+  }
+
+  @override
+  Future<void> deletePaymentChannel(String channelId) async {
+    await _withGlobalLock(() async {
+      final channel = _paymentChannels.remove(channelId);
+      if (channel != null) {
+        // Remove from wallet index
+        final walletChannels = _walletChannels[channel.walletId];
+        walletChannels?.remove(channelId);
+      }
+    });
   }
 } 

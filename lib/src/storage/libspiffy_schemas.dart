@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:isar/isar.dart';
+import 'package:libspiffy/src/storage/payment_channel_entity.dart';
 import 'package:spiffynode/spiffy_node.dart';
 import 'package:eventador/eventador.dart';
 import 'read_model_storage.dart';
@@ -36,6 +37,7 @@ class LibSpiffySchemas {
       AddressEntitySchema,
       TransactionAddressEntitySchema,
       InvoiceEntitySchema,
+      PaymentChannelEntitySchema,
     ];
   }
   

@@ -846,11 +846,10 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       throw ArgumentError('UTXO amount must be positive');
     }
 
-    // Determine initial status based on confirmations
-    // If confirmations > 0, the UTXO is already confirmed and can be marked as available
-    final initialStatus = (command.confirmations != null && command.confirmations! > 0)
-        ? UTXOStatus.available
-        : command.initialStatus;
+    // Use the initialStatus provided by the caller (defaults to pending)
+    // The caller (e.g., wallet_manager_actor for SPV-validated UTXOs) is responsible
+    // for determining the appropriate status based on merkle proof verification
+    final initialStatus = command.initialStatus;
 
     print('[BitcoinWalletAggregate]    ✅ Creating UTXOReceivedEvent (status: $initialStatus, confirmations: ${command.confirmations})');
     final event = UTXOReceivedEvent(

@@ -38,6 +38,11 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     registerHandlers();
   }
   
+  // Capture sender at start of message processing for use in onCommandProcessed
+  // This is needed because context.sender can be cleared by the time async processing completes
+  // Use a Map keyed by command ID to handle concurrent message processing
+  final Map<String, ActorRef> _capturedSenders = {};
+  
   @override
   void preStart() {
     print('[BitcoinWalletAggregate] preStart() called for: $aggregateId');
@@ -56,6 +61,15 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
   
   @override
   Future<void> onMessage(dynamic message) async {
+    // Capture sender at the START of message processing, keyed by command ID
+    // This handles concurrent message processing where multiple commands
+    // may be processed at the same time
+    String? commandKey;
+    if (message is Command && context.sender != null) {
+      commandKey = message.commandId;
+      _capturedSenders[commandKey] = context.sender!;
+    }
+    
     try {
       if (message is Command) {
         print('[BitcoinWalletAggregate] 📨 Command received: ${message.runtimeType}');
@@ -87,6 +101,11 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       print('[BitcoinWalletAggregate] ❌ FATAL ERROR in onMessage: $e');
       print('[BitcoinWalletAggregate] Stack trace: $stack');
       rethrow;
+    } finally {
+      // Clean up the captured sender for this specific command
+      if (commandKey != null) {
+        _capturedSenders.remove(commandKey);
+      }
     }
   }
 
@@ -119,48 +138,54 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     // (context is initialized by the actor system when spawned)
     if (!_isInActorSystem()) return;
     
-    if (context.sender == null) return;
+    // Use captured sender (captured at start of onMessage) keyed by command ID
+    // This handles concurrent message processing correctly
+    final sender = _capturedSenders[command.commandId];
+    if (sender == null) return;
     
     for (final event in events) {
       if (event is WalletCreatedEvent) {
-        context.sender!.tell(WalletCreatedResponse(
+        sender.tell(WalletCreatedResponse(
           walletId: event.walletId,
           rootAddress: event.rootAddress,
           success: true,
         ));
       } else if (event is AddressGeneratedEvent) {
-        context.sender!.tell(AddressGeneratedResponse(
+        sender.tell(AddressGeneratedResponse(
           walletId: event.walletId,
           address: event.address,
           derivationIndex: event.derivationIndex,
           success: true,
           metadata: event.metadata, // Pass through metadata (e.g., invoiceId)
         ));
+      } else if (event is ChannelAddressGeneratedEvent) {
+        sender.tell(ChannelAddressGeneratedResponse(
+          walletId: event.walletId,
+          correlationId: event.correlationId,
+          address: event.address,
+          publicKey: event.publicKeyHex,
+          derivationIndex: event.derivationIndex,
+          success: true,
+        ));
       } else if (event is TransactionCreatedEvent) {
-        context.sender!.tell(TransactionCreatedResponse(
+        sender.tell(TransactionCreatedResponse(
           walletId: event.walletId,
           txid: event.txid,
           rawHex: event.rawHex,
           success: true,
         ));
       } else if (event is UTXOReceivedEvent) {
-        // Send generic success response for UTXO commands
-        context.sender!.tell(LocalMessage(
-          payload: {
-            'success': true,
-            'eventType': 'UTXOReceivedEvent',
-            'txid': event.txid,
-            'vout': event.vout,
-          },
+        sender.tell(UTXOReceivedResponse(
+          walletId: event.walletId,
+          txid: event.txid,
+          vout: event.vout,
+          success: true,
         ));
       } else if (event is TransactionImportedEvent) {
-        // Send generic success response for transaction import commands
-        context.sender!.tell(LocalMessage(
-          payload: {
-            'success': true,
-            'eventType': 'TransactionImportedEvent',
-            'txid': event.txid,
-          },
+        sender.tell(TransactionRecordedResponse(
+          walletId: event.walletId,
+          txid: event.txid,
+          success: true,
         ));
       }
     }
@@ -178,19 +203,21 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     // Only send responses if we're running in an actor system
     if (!_isInActorSystem()) return;
     
-    if (context.sender == null) return;
+    // Use captured sender keyed by command ID (same reasoning as onCommandProcessed)
+    final sender = _capturedSenders[command.commandId];
+    if (sender == null) return;
     
     final errorMessage = error.toString();
 
     if (command is CreateWalletCommand) {
-      context.sender!.tell(WalletCreatedResponse(
+      sender.tell(WalletCreatedResponse(
         walletId: command.walletId,
         rootAddress: '',
         success: false,
         error: errorMessage,
       ));
     } else if (command is GenerateAddressCommand) {
-      context.sender!.tell(AddressGeneratedResponse(
+      sender.tell(AddressGeneratedResponse(
         walletId: command.walletId,
         address: '',
         derivationIndex: 0,
@@ -198,8 +225,18 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         error: errorMessage,
         metadata: command.metadata, // Pass through metadata even on error
       ));
+    } else if (command is GenerateChannelAddressCommand) {
+      sender.tell(ChannelAddressGeneratedResponse(
+        walletId: command.walletId,
+        correlationId: command.correlationId,
+        address: '',
+        publicKey: '',
+        derivationIndex: 0,
+        success: false,
+        error: errorMessage,
+      ));
     } else if (command is CreateTransactionCommand) {
-      context.sender!.tell(TransactionCreatedResponse(
+      sender.tell(TransactionCreatedResponse(
         walletId: command.walletId,
         txid: '',
         rawHex: '',
@@ -238,6 +275,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         return _handleUpdateConfiguration(currentState, command as UpdateWalletConfigurationCommand);
       case GenerateAddressCommand:
         return await _handleGenerateAddress(currentState, command as GenerateAddressCommand);
+      case GenerateChannelAddressCommand:
+        return await _handleGenerateChannelAddress(currentState, command as GenerateChannelAddressCommand);
       case UpdateAddressLabelCommand:
         return _handleUpdateAddressLabel(currentState, command as UpdateAddressLabelCommand);
       case RegisterDiscoveredAddressCommand:
@@ -260,6 +299,10 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         return await _handleCreateTransaction(currentState, command as CreateTransactionCommand);
       case SignTransactionCommand:
         return await _handleSignTransaction(currentState, command as SignTransactionCommand);
+      case SignMultisigTransactionCommand:
+        return await _handleSignMultisigTransaction(currentState, command as SignMultisigTransactionCommand);
+      case BuildFundingTransactionCommand:
+        return await _handleBuildFundingTransaction(currentState, command as BuildFundingTransactionCommand);
       case BroadcastTransactionCommand:
         return _handleBroadcastTransaction(currentState, command as BroadcastTransactionCommand);
       case ReserveUTXOsCommand:
@@ -306,6 +349,9 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         break;
       case AddressGeneratedEvent:
         _applyAddressGenerated(event as AddressGeneratedEvent);
+        break;
+      case ChannelAddressGeneratedEvent:
+        _applyChannelAddressGenerated(event as ChannelAddressGeneratedEvent);
         break;
       case AddressLabelUpdatedEvent:
         _applyAddressLabelUpdated(event as AddressLabelUpdatedEvent);
@@ -623,6 +669,96 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       label: command.label,
       purpose: command.purpose,
       metadata: command.metadata, // Preserve metadata (e.g., invoiceId from coordinator)
+    );
+
+    return [event];
+  }
+
+  /// Handle generating a channel address (includes public key)
+  /// Used for payment channels which need both address and public key for multisig setup
+  Future<List<Event>> _handleGenerateChannelAddress(
+    WalletState currentState,
+    GenerateChannelAddressCommand command,
+  ) async {
+    // Business rule: Wallet must exist
+    if (!currentState.isCreated) {
+      throw StateError('Cannot generate channel address for non-existent wallet');
+    }
+
+    // For WIF wallets, always return the root address
+    if (currentState.walletType == WalletType.wif) {
+      // WIF wallets are single-address - return the existing address
+      if (currentState.rootAddress == null) {
+        throw StateError('WIF wallet has no root address');
+      }
+      
+      // Get public key for WIF wallet
+      final wif = await secureStorage.getWIF(command.walletId);
+      if (wif == null) {
+        throw StateError('WIF not found for wallet ${command.walletId}');
+      }
+      final privateKey = dartsv.SVPrivateKey.fromWIF(wif);
+      final publicKeyHex = privateKey.publicKey.toHex();
+      
+      print('[BitcoinWalletAggregate] WIF wallet - returning root address for channel: ${currentState.rootAddress}');
+      
+      // Return ChannelAddressGeneratedEvent with address + pubkey
+      final event = ChannelAddressGeneratedEvent(
+        walletId: command.walletId,
+        correlationId: command.correlationId,
+        address: currentState.rootAddress!,
+        publicKeyHex: publicKeyHex,
+        derivationIndex: 0,
+        context: command.context,
+        label: command.label,
+        metadata: command.metadata,
+        timestamp: DateTime.now(),
+        version: currentState.version + 1,
+      );
+      
+      return [event];
+    }
+
+    // For HD and XPRIV wallets, derive new address
+    // Use next available derivation index
+    final derivationIndex = currentState.nextDerivationIndex;
+
+    // Retrieve HD public key from secure storage
+    final xpubkey = await secureStorage.getString('wallet_hdpubkey_${command.walletId}');
+    if (xpubkey == null) {
+      throw StateError('HD public key not found for wallet ${command.walletId}');
+    }
+
+    // Determine network type
+    final networkTypeStr = currentState.networkType;
+    final networkType = networkTypeStr == 'mainnet' ? dartsv.NetworkType.MAIN : dartsv.NetworkType.TEST;
+
+    // Reconstruct HD public key from xpubkey
+    final hdPublicKey = dartsv.HDPublicKey.fromXpub(xpubkey);
+
+    // Generate receiving address (channels always use receiving path m/0/{index})
+    final address = cryptoService.generateReceivingAddress(
+      hdPublicKey,
+      derivationIndex,
+      network: networkType,
+    );
+
+    // Derive the public key at this index
+    final childKey = hdPublicKey.deriveChildKey("m/0/$derivationIndex");
+    final publicKeyHex = childKey.publicKey.toHex();
+
+    final event = ChannelAddressGeneratedEvent(
+      eventId: const Uuid().v4(),
+      walletId: command.walletId,
+      correlationId: command.correlationId,
+      timestamp: DateTime.now(),
+      version: currentState.version + 1,
+      address: address,
+      publicKeyHex: publicKeyHex,
+      derivationIndex: derivationIndex,
+      context: command.context,
+      label: command.label,
+      metadata: command.metadata,
     );
 
     return [event];
@@ -1292,8 +1428,9 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       final signedTxid = signedTx.id;
       
       // Send response if in actor system
-      if (_isInActorSystem() && context.sender != null) {
-        context.sender!.tell(TransactionSignedResponse(
+      final sender = _capturedSenders[command.commandId];
+      if (_isInActorSystem() && sender != null) {
+        sender.tell(TransactionSignedResponse(
           walletId: command.walletId,
           txid: signedTxid, // Use signed txid, not unsigned command.transactionId
           signedHex: signedHex,
@@ -1317,8 +1454,9 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       print('Stack trace: $stackTrace');
       
       // Send error response if in actor system
-      if (_isInActorSystem() && context.sender != null) {
-        context.sender!.tell(TransactionSignedResponse(
+      final sender = _capturedSenders[command.commandId];
+      if (_isInActorSystem() && sender != null) {
+        sender.tell(TransactionSignedResponse(
           walletId: command.walletId,
           txid: command.transactionId,
           signedHex: '',
@@ -1328,6 +1466,313 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       }
       
       throw StateError('Failed to sign transaction: $e');
+    }
+  }
+
+  /// Handle signing a multisig transaction input
+  /// Used for payment channels where we sign one input of a 2-of-2 multisig
+  Future<List<Event>> _handleSignMultisigTransaction(
+    WalletState currentState,
+    SignMultisigTransactionCommand command,
+  ) async {
+    // Business rule: Wallet must exist
+    if (!currentState.isCreated) {
+      throw StateError('Cannot sign multisig transaction for non-existent wallet');
+    }
+
+    try {
+      // Parse unsigned transaction
+      final unsignedTx = dartsv.Transaction.fromHex(command.rawTransaction);
+      
+      // Get private key at the specified derivation index
+      final privateKey = await _getPrivateKeyAtIndex(
+        command.walletId,
+        command.derivationIndex,
+        currentState,
+      );
+      
+      // Parse the redeem script
+      final redeemScript = dartsv.SVScript.fromHex(command.redeemScriptHex);
+      
+      // Create the UTXO output being spent
+      final utxoOutput = dartsv.TransactionOutput(
+        BigInt.from(command.prevOutValue),
+        redeemScript,
+      );
+      
+      // Sign the transaction at the specified input index
+      final signer = dartsv.TransactionSigner(
+        command.sighashType,
+        privateKey,
+      );
+      
+      final signedTx = signer.sign(unsignedTx, utxoOutput, command.inputIndex);
+      
+      // Extract the signature we just created
+      final input = signedTx.inputs[command.inputIndex];
+      final scriptSig = input.script;
+      
+      // For multisig, the signature is in the scriptSig
+      // The scriptSig format for 2-of-2 multisig is: OP_0 <sig1> <sig2> <redeemScript>
+      // We need to extract our signature
+      String signatureHex = '';
+      if (scriptSig != null && scriptSig.chunks.isNotEmpty) {
+        // The first non-OP_0 chunk should be a signature
+        for (final chunk in scriptSig.chunks) {
+          if (chunk.buf != null && chunk.buf!.isNotEmpty) {
+            signatureHex = chunk.buf!.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+            break;
+          }
+        }
+      }
+      
+      final signedHex = signedTx.serialize();
+      final signedTxid = signedTx.id;
+      
+      // Send response if in actor system
+      final sender = _capturedSenders[command.commandId];
+      if (_isInActorSystem() && sender != null) {
+        sender.tell(MultisigTransactionSignedResponse(
+          walletId: command.walletId,
+          txid: signedTxid,
+          originalTransactionId: command.transactionId, // Pass back for correlation
+          signedHex: signedHex,
+          signatureHex: signatureHex,
+          success: true,
+        ));
+      }
+      
+      // Return empty event list - we don't need to persist multisig signatures
+      // The channel coordinator tracks the transaction state
+      return [];
+      
+    } catch (e, stackTrace) {
+      print('[BitcoinWalletAggregate] Error signing multisig transaction: $e');
+      print(stackTrace);
+      
+      // Send error response if in actor system
+      final sender = _capturedSenders[command.commandId];
+      if (_isInActorSystem() && sender != null) {
+        sender.tell(MultisigTransactionSignedResponse(
+          walletId: command.walletId,
+          txid: command.transactionId,
+          originalTransactionId: command.transactionId, // Pass back for correlation
+          signedHex: '',
+          signatureHex: '',
+          success: false,
+          error: e.toString(),
+        ));
+      }
+      
+      throw StateError('Failed to sign multisig transaction: $e');
+    }
+  }
+
+  /// Handle building and signing a funding transaction for payment channels.
+  /// 
+  /// This creates a 2-of-2 multisig output funded by the client's P2PKH UTXOs.
+  /// All signing happens within this aggregate, keeping private keys secure.
+  Future<List<Event>> _handleBuildFundingTransaction(
+    WalletState currentState,
+    BuildFundingTransactionCommand command,
+  ) async {
+    if (!currentState.isCreated) {
+      throw StateError('Cannot build funding transaction for non-existent wallet');
+    }
+
+    try {
+      print('[BitcoinWalletAggregate] Building funding TX for channel ${command.channelId}');
+      print('[BitcoinWalletAggregate]   UTXOs in wallet state: ${currentState.utxos.length}');
+      
+      // Parse public keys
+      final clientPubKey = dartsv.SVPublicKey.fromHex(command.clientPubKeyHex);
+      final serverPubKey = dartsv.SVPublicKey.fromHex(command.serverPubKeyHex);
+      final changeAddress = dartsv.Address.fromBase58(command.changeAddressBase58);
+      
+      // Get private key for signing
+      final privateKey = command.derivationIndex != null
+          ? await _getPrivateKeyAtIndex(command.walletId, command.derivationIndex!, currentState)
+          : await _getPrivateKeyForAddress(command.walletId, command.changeAddressBase58, currentState);
+      
+      // Get available UTXOs (must have merkle proofs / be SPV-validated)
+      final utxos = currentState.utxos.values
+          .where((u) => u.isAvailable && !u.isSpent && !u.isReserved)
+          .toList();
+      
+      print('[BitcoinWalletAggregate]   Available UTXOs: ${utxos.length}');
+      
+      if (utxos.isEmpty) {
+        throw StateError('No available UTXOs for funding');
+      }
+      
+      // Create 2-of-2 multisig locking script
+      final msLockBuilder = dartsv.P2MSLockBuilder(
+        [clientPubKey, serverPubKey],
+        2,
+        sorting: true,
+      );
+      
+      // Calculate total input
+      final totalInput = utxos.fold<BigInt>(
+        BigInt.zero,
+        (sum, utxo) => sum + utxo.value.getValue(),
+      );
+      
+      final fundingAmount = BigInt.from(command.fundingAmountSats);
+      
+      // Estimate fee (conservative estimate)
+      const txOverhead = 10;
+      const p2pkhInputSize = 148;
+      const p2pkhOutputSize = 34;
+      const feePerKb = 1000;
+      final estimatedSize = txOverhead + (utxos.length * p2pkhInputSize) + p2pkhOutputSize + p2pkhOutputSize;
+      final fee = BigInt.from((estimatedSize * feePerKb) ~/ 1000);
+      
+      if (totalInput < fundingAmount + fee) {
+        throw StateError('Insufficient funds: need ${fundingAmount + fee}, have $totalInput');
+      }
+      
+      final changeAmount = totalInput - fundingAmount - fee;
+      
+      // Build transaction using dartsv's TransactionBuilder API
+      final txBuilder = dartsv.TransactionBuilder();
+      
+      // Add multisig output first (will be at index 0)
+      txBuilder.spendToLockBuilder(msLockBuilder, fundingAmount);
+      
+      // Add change output if above dust threshold
+      if (changeAmount > BigInt.from(546)) {
+        txBuilder.sendChangeToPKH(changeAddress);
+      }
+      
+      // Add inputs with signers
+      final sighashType = dartsv.SighashType.SIGHASH_ALL.value | dartsv.SighashType.SIGHASH_FORKID.value;
+      
+      for (final utxo in utxos) {
+        final utxoAddress = dartsv.Address.fromBase58(utxo.address);
+        final lockingScript = dartsv.P2PKHLockBuilder.fromAddress(utxoAddress).getScriptPubkey();
+        
+        final outpoint = dartsv.TransactionOutpoint(
+          utxo.txid,
+          utxo.vout,
+          utxo.value.getValue(),
+          lockingScript,
+        );
+        
+        final signer = dartsv.TransactionSigner(sighashType, privateKey);
+        
+        txBuilder.spendFromOutpointWithSigner(
+          signer,
+          outpoint,
+          dartsv.TransactionInput.MAX_SEQ_NUMBER,
+          dartsv.P2PKHUnlockBuilder(privateKey.publicKey),
+        );
+      }
+      
+      txBuilder
+          .withFeePerKb(feePerKb)
+          .withOption(dartsv.TransactionOption.DISABLE_DUST_OUTPUTS);
+      
+      // Build (already signed via spendFromOutpointWithSigner)
+      final signedTx = txBuilder.build(false);
+      
+      final fundingTxHex = signedTx.serialize();
+      final fundingTxId = signedTx.id;
+      
+      print('[BitcoinWalletAggregate] Funding TX built: $fundingTxId');
+      
+      // Send response
+      final sender = _capturedSenders[command.commandId];
+      if (_isInActorSystem() && sender != null) {
+        sender.tell(FundingTransactionBuiltResponse(
+          walletId: command.walletId,
+          correlationId: command.correlationId,
+          channelId: command.channelId,
+          fundingTxHex: fundingTxHex,
+          fundingTxId: fundingTxId,
+          fundingOutputIndex: 0,
+          success: true,
+        ));
+      }
+      
+      // Return empty - no events to persist for funding TX building
+      // The channel coordinator will track the TX state
+      return [];
+      
+    } catch (e, stackTrace) {
+      print('[BitcoinWalletAggregate] Error building funding transaction: $e');
+      print(stackTrace);
+      
+      final sender = _capturedSenders[command.commandId];
+      if (_isInActorSystem() && sender != null) {
+        sender.tell(FundingTransactionBuiltResponse(
+          walletId: command.walletId,
+          correlationId: command.correlationId,
+          channelId: command.channelId,
+          fundingTxHex: '',
+          fundingTxId: '',
+          fundingOutputIndex: 0,
+          success: false,
+          error: e.toString(),
+        ));
+      }
+      
+      throw StateError('Failed to build funding transaction: $e');
+    }
+  }
+
+  /// Get private key at a specific derivation index
+  /// Used for multisig signing where we know the exact index
+  Future<dartsv.SVPrivateKey> _getPrivateKeyAtIndex(
+    String walletId,
+    int derivationIndex,
+    WalletState currentState,
+  ) async {
+    final networkType = currentState.networkType == 'mainnet' 
+        ? dartsv.NetworkType.MAIN 
+        : dartsv.NetworkType.TEST;
+
+    if (currentState.walletType == WalletType.wif) {
+      // WIF wallet: single private key
+      final wif = await secureStorage.getWIF(walletId);
+      if (wif == null) {
+        throw StateError('WIF not found for wallet $walletId');
+      }
+      return dartsv.SVPrivateKey.fromWIF(wif);
+    } else if (currentState.walletType == WalletType.xpriv || 
+               currentState.walletType == WalletType.hd) {
+      // HD/XPRIV wallet: derive key at specific index
+      final xprivStr = await secureStorage.getXPriv(walletId);
+      if (xprivStr != null) {
+        final hdPrivateKey = dartsv.HDPrivateKey.fromXpriv(xprivStr);
+        // Use simple m/0/{index} path: accountIndex=0, addressIndex=derivationIndex
+        return await cryptoService.derivePrivateKey(
+          hdPrivateKey,
+          0, // accountIndex
+          derivationIndex, // addressIndex
+          isChange: false,
+        );
+      }
+
+      // Try mnemonic if xpriv not found
+      final mnemonic = await secureStorage.getMnemonic(walletId);
+      if (mnemonic != null) {
+        final hdPrivateKey = await cryptoService.mnemonicToHDPrivateKey(
+          mnemonic,
+          network: networkType,
+        );
+        // Use simple m/0/{index} path: accountIndex=0, addressIndex=derivationIndex
+        return await cryptoService.derivePrivateKey(
+          hdPrivateKey,
+          0, // accountIndex
+          derivationIndex, // addressIndex
+          isChange: false,
+        );
+      }
+
+      throw StateError('No xpriv or mnemonic found for wallet $walletId');
+    } else {
+      throw StateError('Unsupported wallet type: ${currentState.walletType}');
     }
   }
 
@@ -1603,6 +2048,23 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     // Store the derivation index for key derivation during signing
     currentState.metadata['address_indices'] ??= <String, int>{};
     (currentState.metadata['address_indices'] as Map<String, int>)[event.address] = event.derivationIndex;
+    
+    currentState.version = event.version;
+    currentState.lastModified = event.timestamp;
+  }
+
+  void _applyChannelAddressGenerated(ChannelAddressGeneratedEvent event) {
+    // Store address and label
+    currentState.addresses[event.address] = event.label;
+    currentState.nextDerivationIndex = event.derivationIndex + 1;
+    
+    // Store the derivation index for key derivation during signing
+    currentState.metadata['address_indices'] ??= <String, int>{};
+    (currentState.metadata['address_indices'] as Map<String, int>)[event.address] = event.derivationIndex;
+    
+    // Store public key for channel operations (in metadata to avoid changing state schema)
+    currentState.metadata['channel_pubkeys'] ??= <String, String>{};
+    (currentState.metadata['channel_pubkeys'] as Map<String, String>)[event.address] = event.publicKeyHex;
     
     currentState.version = event.version;
     currentState.lastModified = event.timestamp;

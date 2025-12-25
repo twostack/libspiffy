@@ -154,6 +154,33 @@ class GenerateAddressCommand extends WalletCommand {
   String get commandType => 'GenerateAddressCommand';
 }
 
+/// Command to generate an address for payment channels
+/// Returns address + public key + derivation index (needed for channel operations)
+class GenerateChannelAddressCommand extends WalletCommand {
+  final String correlationId; // Unique ID to correlate request/response
+  final String? context; // Context identifier (e.g., "audiospace:meeting-123")
+  final String? label; // Optional label for the address
+  
+  GenerateChannelAddressCommand({
+    required String walletId,
+    String? correlationId,
+    this.context,
+    this.label,
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : correlationId = correlationId ?? commandId ?? 'channel-${DateTime.now().millisecondsSinceEpoch}',
+       super(
+          walletId: walletId,
+          commandId: commandId,
+          timestamp: timestamp,
+          metadata: metadata,
+        );
+
+  @override
+  String get commandType => 'GenerateChannelAddressCommand';
+}
+
 /// Command to update an address label
 class UpdateAddressLabelCommand extends WalletCommand {
   final String address;
@@ -632,6 +659,76 @@ class BroadcastTransactionCommand extends WalletCommand {
 
   @override
   String get commandType => 'BroadcastTransactionCommand';
+}
+
+/// Command to sign a multisig transaction input
+/// Used for payment channels where we need to sign one input of a 2-of-2 multisig
+class SignMultisigTransactionCommand extends WalletCommand {
+  final String transactionId;
+  final String rawTransaction; // Unsigned transaction hex
+  final int derivationIndex; // Which key to use (m/0/{index})
+  final int inputIndex; // Which input to sign
+  final int prevOutValue; // Satoshi value of input being spent
+  final String redeemScriptHex; // 2-of-2 multisig redeem script
+  final int sighashType; // SIGHASH flags (e.g., SIGHASH_ALL | SIGHASH_FORKID)
+
+  SignMultisigTransactionCommand({
+    required String walletId,
+    required this.transactionId,
+    required this.rawTransaction,
+    required this.derivationIndex,
+    required this.inputIndex,
+    required this.prevOutValue,
+    required this.redeemScriptHex,
+    this.sighashType = 0x41, // SIGHASH_ALL | SIGHASH_FORKID by default
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          commandId: commandId,
+          timestamp: timestamp,
+          metadata: metadata,
+        );
+
+  @override
+  String get commandType => 'SignMultisigTransactionCommand';
+}
+
+/// Command to build and sign a payment channel funding transaction.
+/// 
+/// This creates a 2-of-2 multisig output funded by the client's UTXOs.
+/// The signing happens entirely within the wallet aggregate, keeping keys secure.
+class BuildFundingTransactionCommand extends WalletCommand {
+  final String correlationId; // To match response
+  final String channelId;
+  final String clientPubKeyHex;
+  final String serverPubKeyHex;
+  final int fundingAmountSats;
+  final String changeAddressBase58;
+  final int? derivationIndex; // If provided, use this key; otherwise use default
+
+  BuildFundingTransactionCommand({
+    required String walletId,
+    required this.correlationId,
+    required this.channelId,
+    required this.clientPubKeyHex,
+    required this.serverPubKeyHex,
+    required this.fundingAmountSats,
+    required this.changeAddressBase58,
+    this.derivationIndex,
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          commandId: commandId,
+          timestamp: timestamp,
+          metadata: metadata,
+        );
+
+  @override
+  String get commandType => 'BuildFundingTransactionCommand';
 }
 
 // =============================================================================

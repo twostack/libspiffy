@@ -129,11 +129,13 @@ void main() {
         walletName: 'Alice Wallet',
       );
 
-      // Create Alice's channel service
+      // Create Alice's channel service with actor system support
       aliceChannelService = PaymentChannelService(
         storage: aliceLibSpiffy.walletStorage,
         secureStorage: aliceLibSpiffy.secureStorage,
         cryptoService: DartSVCryptoService(),
+        actorSystem: aliceActorSystem,
+        walletManager: aliceLibSpiffy.walletManager,
       );
 
       print('✓ Alice system initialized with wallet: $aliceWalletId');
@@ -170,11 +172,13 @@ void main() {
         walletName: 'Bob Wallet',
       );
 
-      // Create Bob's channel service
+      // Create Bob's channel service with actor system support
       bobChannelService = PaymentChannelService(
         storage: bobLibSpiffy.walletStorage,
         secureStorage: bobLibSpiffy.secureStorage,
         cryptoService: DartSVCryptoService(),
+        actorSystem: bobActorSystem,
+        walletManager: bobLibSpiffy.walletManager,
       );
 
       print('✓ Bob system initialized with wallet: $bobWalletId');

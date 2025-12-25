@@ -4,6 +4,7 @@ import 'package:eventador/eventador.dart';
 
 import '../core/bitcoin_wallet_aggregate.dart';
 import '../core/wallet_commands.dart';
+import '../models/bitcoin_utxo.dart' show UTXOStatus;
 import '../services/crypto_service.dart';
 import '../storage/secure_storage.dart';
 import 'wallet_messages.dart';
@@ -451,6 +452,9 @@ class WalletManagerActor extends Actor {
       }
 
       // Process new spendable UTXOs
+      // This code path only executes when result.isValid == true, meaning
+      // the merkle proof was verified. All UTXOs from SPV-validated transactions
+      // are immediately available for spending.
       for (final utxoData in result.spendableUTXOs) {
         final command = ReceiveUTXOCommand(
           walletId: walletId,
@@ -459,8 +463,9 @@ class WalletManagerActor extends Actor {
           satoshis: BigInt.tryParse(utxoData['satoshis'].toString()) ?? BigInt.zero,
           scriptPubKey: utxoData['script'] ?? '',
           address: utxoData['address'],
-          blockHeight: utxoData['blockHeight'],
+          blockHeight: utxoData['blockHeight'] as int?,
           confirmations: utxoData['confirmations'] ?? 0,
+          initialStatus: UTXOStatus.available, // SPV validated = merkle proof verified
         );
         
         walletActor.tell(command);

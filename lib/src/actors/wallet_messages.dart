@@ -137,6 +137,40 @@ class AddressGeneratedResponse implements Message {
   DateTime get timestamp => DateTime.now();
 }
 
+/// Response from BitcoinWalletAggregate after processing GenerateChannelAddressCommand
+class ChannelAddressGeneratedResponse implements Message {
+  final String walletId;
+  final String _correlationId;
+  final String address;
+  final String publicKey;
+  final int derivationIndex;
+  final bool success;
+  final String? error;
+
+  ChannelAddressGeneratedResponse({
+    required this.walletId,
+    required String correlationId,
+    required this.address,
+    required this.publicKey,
+    required this.derivationIndex,
+    required this.success,
+    this.error,
+  }) : _correlationId = correlationId;
+
+  @override
+  String get correlationId => 'channel-address-generated-response-$_correlationId';
+  @override
+  Map<String, dynamic> get metadata => {
+    'walletId': walletId,
+    'correlationId': _correlationId,
+    'publicKeyHex': publicKey,
+  };
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
 /// Response from BitcoinWalletAggregate after processing CreateTransactionCommand
 class TransactionCreatedResponse implements Message {
   final String walletId;
@@ -181,6 +215,118 @@ class TransactionSignedResponse implements Message {
 
   @override
   String get correlationId => 'transaction-signed-response-$txid';
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId, 'txid': txid};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+/// Response for multisig transaction signing
+class MultisigTransactionSignedResponse implements Message {
+  final String walletId;
+  final String txid; // The actual signed transaction ID (hash)
+  final String? originalTransactionId; // The transactionId from the original command (for correlation)
+  final String signedHex; // Partially or fully signed TX
+  final String signatureHex; // Just our signature (for verification/building)
+  final bool success;
+  final String? error;
+
+  MultisigTransactionSignedResponse({
+    required this.walletId,
+    required this.txid,
+    this.originalTransactionId,
+    required this.signedHex,
+    required this.signatureHex,
+    required this.success,
+    this.error,
+  });
+
+  @override
+  String get correlationId => 'multisig-signed-response-${originalTransactionId ?? txid}';
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId, 'txid': txid, 'originalTransactionId': originalTransactionId};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+/// Response from building and signing a funding transaction
+class FundingTransactionBuiltResponse implements Message {
+  final String walletId;
+  final String correlationId_;
+  final String channelId;
+  final String fundingTxHex;
+  final String fundingTxId;
+  final int fundingOutputIndex; // Always 0 for multisig output
+  final bool success;
+  final String? error;
+
+  FundingTransactionBuiltResponse({
+    required this.walletId,
+    required String correlationId,
+    required this.channelId,
+    required this.fundingTxHex,
+    required this.fundingTxId,
+    required this.fundingOutputIndex,
+    required this.success,
+    this.error,
+  }) : correlationId_ = correlationId;
+
+  @override
+  String get correlationId => 'funding-tx-response-$correlationId_';
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId, 'correlationId': correlationId_, 'channelId': channelId};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+/// Response from BitcoinWalletAggregate after processing ReceiveUTXOCommand
+class UTXOReceivedResponse implements Message {
+  final String walletId;
+  final String txid;
+  final int vout;
+  final bool success;
+  final String? error;
+
+  UTXOReceivedResponse({
+    required this.walletId,
+    required this.txid,
+    required this.vout,
+    required this.success,
+    this.error,
+  });
+
+  @override
+  String get correlationId => 'utxo-received-response-$txid:$vout';
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId, 'txid': txid, 'vout': vout};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+/// Response from BitcoinWalletAggregate after processing RecordImportedTransactionCommand
+class TransactionRecordedResponse implements Message {
+  final String walletId;
+  final String txid;
+  final bool success;
+  final String? error;
+
+  TransactionRecordedResponse({
+    required this.walletId,
+    required this.txid,
+    required this.success,
+    this.error,
+  });
+
+  @override
+  String get correlationId => 'transaction-recorded-response-$txid';
   @override
   Map<String, dynamic> get metadata => {'walletId': walletId, 'txid': txid};
   @override

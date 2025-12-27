@@ -1588,21 +1588,60 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       final serverPubKey = dartsv.SVPublicKey.fromHex(command.serverPubKeyHex);
       final changeAddress = dartsv.Address.fromBase58(command.changeAddressBase58);
       
-      // Get private key for signing
-      final privateKey = command.derivationIndex != null
-          ? await _getPrivateKeyAtIndex(command.walletId, command.derivationIndex!, currentState)
-          : await _getPrivateKeyForAddress(command.walletId, command.changeAddressBase58, currentState);
-      
-      // Get available UTXOs (must have merkle proofs / be SPV-validated)
-      final utxos = currentState.utxos.values
+      // Get available UTXOs and sort by value descending (largest first for efficient selection)
+      final availableUtxos = currentState.utxos.values
           .where((u) => u.isAvailable && !u.isSpent && !u.isReserved)
-          .toList();
+          .toList()
+        ..sort((a, b) => b.value.getValue().compareTo(a.value.getValue()));
       
-      print('[BitcoinWalletAggregate]   Available UTXOs: ${utxos.length}');
+      print('[BitcoinWalletAggregate]   Available UTXOs: ${availableUtxos.length}');
       
-      if (utxos.isEmpty) {
+      if (availableUtxos.isEmpty) {
         throw StateError('No available UTXOs for funding');
       }
+      
+      final fundingAmount = BigInt.from(command.fundingAmountSats);
+      
+      // Fee estimation constants
+      const txOverhead = 10;
+      const p2pkhInputSize = 148;
+      const p2pkhOutputSize = 34;
+      const feePerKb = 100;
+      
+      // Select UTXOs using greedy algorithm (largest first)
+      final selectedUtxos = <BitcoinUtxo>[];
+      var selectedTotal = BigInt.zero;
+      
+      for (final utxo in availableUtxos) {
+        selectedUtxos.add(utxo);
+        selectedTotal += utxo.value.getValue();
+        
+        // Estimate fee for current selection
+        final estimatedSize = txOverhead + 
+            (selectedUtxos.length * p2pkhInputSize) + 
+            p2pkhOutputSize + // multisig output
+            p2pkhOutputSize;  // change output
+        final estimatedFee = BigInt.from((estimatedSize * feePerKb) ~/ 1000);
+        
+        // Check if we have enough (with some buffer for fee variance)
+        if (selectedTotal >= fundingAmount + estimatedFee) {
+          break;
+        }
+      }
+      
+      // Final fee calculation with selected UTXOs
+      final estimatedSize = txOverhead + 
+          (selectedUtxos.length * p2pkhInputSize) + 
+          p2pkhOutputSize + p2pkhOutputSize;
+      final fee = BigInt.from((estimatedSize * feePerKb) ~/ 1000);
+      
+      if (selectedTotal < fundingAmount + fee) {
+        throw StateError('Insufficient funds: need ${fundingAmount + fee}, have $selectedTotal');
+      }
+      
+      print('[BitcoinWalletAggregate]   Selected ${selectedUtxos.length} UTXOs (total: $selectedTotal sats)');
+      
+      final changeAmount = selectedTotal - fundingAmount - fee;
       
       // Create 2-of-2 multisig locking script
       final msLockBuilder = dartsv.P2MSLockBuilder(
@@ -1610,28 +1649,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         2,
         sorting: true,
       );
-      
-      // Calculate total input
-      final totalInput = utxos.fold<BigInt>(
-        BigInt.zero,
-        (sum, utxo) => sum + utxo.value.getValue(),
-      );
-      
-      final fundingAmount = BigInt.from(command.fundingAmountSats);
-      
-      // Estimate fee (conservative estimate)
-      const txOverhead = 10;
-      const p2pkhInputSize = 148;
-      const p2pkhOutputSize = 34;
-      const feePerKb = 1000;
-      final estimatedSize = txOverhead + (utxos.length * p2pkhInputSize) + p2pkhOutputSize + p2pkhOutputSize;
-      final fee = BigInt.from((estimatedSize * feePerKb) ~/ 1000);
-      
-      if (totalInput < fundingAmount + fee) {
-        throw StateError('Insufficient funds: need ${fundingAmount + fee}, have $totalInput');
-      }
-      
-      final changeAmount = totalInput - fundingAmount - fee;
       
       // Build transaction using dartsv's TransactionBuilder API
       final txBuilder = dartsv.TransactionBuilder();
@@ -1645,9 +1662,11 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       }
       
       // Add inputs with signers
+      // Each UTXO may be from a different address with a different derivation index,
+      // so we need to get the correct private key for each input
       final sighashType = dartsv.SighashType.SIGHASH_ALL.value | dartsv.SighashType.SIGHASH_FORKID.value;
       
-      for (final utxo in utxos) {
+      for (final utxo in selectedUtxos) {
         final utxoAddress = dartsv.Address.fromBase58(utxo.address);
         final lockingScript = dartsv.P2PKHLockBuilder.fromAddress(utxoAddress).getScriptPubkey();
         
@@ -1658,13 +1677,18 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
           lockingScript,
         );
         
-        final signer = dartsv.TransactionSigner(sighashType, privateKey);
+        // Get the correct private key for THIS specific UTXO's address
+        final utxoPrivateKey = utxo.derivationIndex != null
+            ? await _getPrivateKeyAtIndex(command.walletId, utxo.derivationIndex!, currentState)
+            : await _getPrivateKeyForAddress(utxo.address, command.walletId, currentState);
+        
+        final signer = dartsv.TransactionSigner(sighashType, utxoPrivateKey);
         
         txBuilder.spendFromOutpointWithSigner(
           signer,
           outpoint,
           dartsv.TransactionInput.MAX_SEQ_NUMBER,
-          dartsv.P2PKHUnlockBuilder(privateKey.publicKey),
+          dartsv.P2PKHUnlockBuilder(utxoPrivateKey.publicKey),
         );
       }
       
@@ -1676,11 +1700,25 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       final signedTx = txBuilder.build(false);
       
       final fundingTxHex = signedTx.serialize();
+
+      print('Funding TX Hex: $fundingTxHex');
       final fundingTxId = signedTx.id;
       
       print('[BitcoinWalletAggregate] Funding TX built: $fundingTxId');
       
-      // Send response
+      // Capture spent UTXO keys for proper wallet bookkeeping
+      final spentUtxoKeys = selectedUtxos.map((u) => '${u.txid}:${u.vout}').toList();
+      
+      // Determine if change output was actually added (above dust threshold)
+      final hasChange = changeAmount > BigInt.from(546);
+      final actualChangeAmount = hasChange ? changeAmount.toInt() : 0;
+      final changeOutputIdx = hasChange ? 1 : null; // Change is second output if present
+      
+      // Calculate totals
+      final totalInputSats = selectedTotal.toInt();
+      final totalOutputSats = fundingAmount.toInt() + actualChangeAmount;
+      
+      // Send response with full transaction details for wallet bookkeeping
       final sender = _capturedSenders[command.commandId];
       if (_isInActorSystem() && sender != null) {
         sender.tell(FundingTransactionBuiltResponse(
@@ -1691,11 +1729,18 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
           fundingTxId: fundingTxId,
           fundingOutputIndex: 0,
           success: true,
+          spentUtxoKeys: spentUtxoKeys,
+          changeAddress: hasChange ? command.changeAddressBase58 : null,
+          changeAmount: actualChangeAmount > 0 ? actualChangeAmount : null,
+          changeOutputIndex: changeOutputIdx,
+          fee: fee.toInt(),
+          totalInputSats: totalInputSats,
+          totalOutputSats: totalOutputSats,
         ));
       }
       
       // Return empty - no events to persist for funding TX building
-      // The channel coordinator will track the TX state
+      // The coordinator will send RecordOutgoingTransactionCommand after broadcast
       return [];
       
     } catch (e, stackTrace) {

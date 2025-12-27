@@ -422,53 +422,100 @@ class ImportActor extends Actor {
     return [discoveredAddress];
   }
 
+  /// Import transactions for all discovered addresses
+  /// 
+  /// Uses a three-phase approach to ensure correct ordering:
+  /// 1. Collect all transactions from all addresses
+  /// 2. Sort by block height (oldest first) to ensure parent TXs are processed
+  ///    before child TXs that spend their outputs
+  /// 3. Process in sorted order
   Future<void> _importTransactions(
     ImportWalletMessage message,
     List<DiscoveredAddress> addresses,
   ) async {
     _logger.info('   → Importing transactions for ${addresses.length} addresses');
-    final importedUtxos = <Map<String, dynamic>>[];
-    int totalUtxosFound = 0;
-
+    
+    // PHASE 1: Collect all transactions from all addresses
+    _logger.info('   📥 Phase 1: Collecting all transactions...');
+    final allTransactions = <ImportedTransaction>[];
+    final addressMap = <String, DiscoveredAddress>{}; // txid -> address that found it
+    
     for (int i = 0; i < addresses.length; i++) {
       final address = addresses[i];
       if (_isCancelled) break;
 
-      _logger.info('   → [${i+1}/${addresses.length}] Processing address: ${address.address}');
+      _logger.info('   → [${i+1}/${addresses.length}] Fetching transactions for: ${address.address}');
       
-      // Import and process transactions incrementally for this address
+      // Import transactions but don't process yet - just collect them
       await _importService.importAddressTransactions(
         address,
         onProgress: (completed, total) {
-          // Update UI progress as each transaction is imported
-          _logger.info('      Progress: $completed/$total transactions imported');
-          _reportProgress(
-            'Importing transactions: $_processedTransactions/$_totalTransactions',
-            0.4 + (0.5 * (_processedTransactions / _totalTransactions)),
-            _processedTransactions,
-            _totalTransactions,
-          );
+          _logger.info('      Progress: $completed/$total transactions fetched');
         },
         onTransactionImported: (tx) async {
           if (_isCancelled) return;
           
-          _processedTransactions++;
-          
-          // Process this transaction immediately
-          final utxosFound = await _processImportedTransaction(
-            tx,
-            message,
-            address,
-            addresses,
-          );
-          
-          totalUtxosFound += utxosFound.length;
-          importedUtxos.addAll(utxosFound);
+          // Only add if not already in collection (same tx can appear for multiple addresses)
+          if (!allTransactions.any((t) => t.txid == tx.txid)) {
+            allTransactions.add(tx);
+            addressMap[tx.txid] = address;
+            _logger.info('      📦 Collected: ${tx.txid} (block: ${tx.blockHeight})');
+          } else {
+            _logger.info('      ⏭️ Skipping duplicate: ${tx.txid}');
+          }
         },
       );
     }
+    
+    if (_isCancelled) return;
+    
+    if (allTransactions.isEmpty) {
+      _logger.info('   ℹ️ No transactions found to import');
+      _reportProgress('Import complete: 0 transactions', 0.9, 0, 0);
+      return;
+    }
+    
+    // PHASE 2: Sort by block height (ascending - oldest first)
+    // This ensures parent transactions are processed before transactions that spend their outputs
+    _logger.info('   🔄 Phase 2: Sorting ${allTransactions.length} transactions by block height...');
+    allTransactions.sort((a, b) => a.blockHeight.compareTo(b.blockHeight));
+    
+    _logger.info('   ✅ Sorted: first block ${allTransactions.first.blockHeight}, '
+        'last block ${allTransactions.last.blockHeight}');
+    
+    // PHASE 3: Process transactions in sorted order
+    _logger.info('   ⚙️ Phase 3: Processing ${allTransactions.length} transactions in block order...');
+    _totalTransactions = allTransactions.length;
+    _processedTransactions = 0;
+    
+    final importedUtxos = <Map<String, dynamic>>[];
+    int totalUtxosFound = 0;
+    
+    for (final tx in allTransactions) {
+      if (_isCancelled) break;
+      
+      _processedTransactions++;
+      _reportProgress(
+        'Processing transactions: $_processedTransactions/$_totalTransactions',
+        0.4 + (0.5 * (_processedTransactions / _totalTransactions)),
+        _processedTransactions,
+        _totalTransactions,
+      );
+      
+      final currentAddress = addressMap[tx.txid]!;
+      
+      final utxosFound = await _processImportedTransaction(
+        tx,
+        message,
+        currentAddress,
+        addresses,
+      );
+      
+      totalUtxosFound += utxosFound.length;
+      importedUtxos.addAll(utxosFound);
+    }
 
-    _logger.info('   ✅ All addresses processed');
+    _logger.info('   ✅ All transactions processed');
     _logger.info('   📊 Summary: $_processedTransactions transactions, $totalUtxosFound UTXOs');
     
     _reportProgress(

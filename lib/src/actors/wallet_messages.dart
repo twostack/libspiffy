@@ -263,6 +263,15 @@ class FundingTransactionBuiltResponse implements Message {
   final int fundingOutputIndex; // Always 0 for multisig output
   final bool success;
   final String? error;
+  
+  // Fields for recording the transaction and updating UTXOs
+  final List<String> spentUtxoKeys; // e.g., ['txid:vout', ...]
+  final String? changeAddress;
+  final int? changeAmount;
+  final int? changeOutputIndex;
+  final int fee;
+  final int totalInputSats;
+  final int totalOutputSats;
 
   FundingTransactionBuiltResponse({
     required this.walletId,
@@ -273,6 +282,13 @@ class FundingTransactionBuiltResponse implements Message {
     required this.fundingOutputIndex,
     required this.success,
     this.error,
+    this.spentUtxoKeys = const [],
+    this.changeAddress,
+    this.changeAmount,
+    this.changeOutputIndex,
+    this.fee = 0,
+    this.totalInputSats = 0,
+    this.totalOutputSats = 0,
   }) : correlationId_ = correlationId;
 
   @override

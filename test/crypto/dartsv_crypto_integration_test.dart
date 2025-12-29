@@ -78,6 +78,33 @@ void main() {
     });
 
     group('HD Wallet Operations', () {
+
+
+      test('derive the tprv', () async {
+
+        //actual testnet mnemonic with some test coins in it
+        var mnemonic  = 'else beach father art number credit extend hamster work seed trial orphan';
+
+        final hdPrivateKey = await cryptoService.mnemonicToHDPrivateKey(mnemonic);
+
+        expect(hdPrivateKey, isNotNull);
+        expect(hdPrivateKey, isA<dartsv.HDPrivateKey>());
+
+        // Derive HD public key
+        final hdPublicKey = cryptoService.deriveHDPublicKey(hdPrivateKey);
+
+        // Generate root address
+        var rootAddress = cryptoService.generateReceivingAddress(
+          hdPublicKey,
+          0,
+          network: dartsv.NetworkType.TEST,
+        );
+
+        print("root address : ${rootAddress}");
+        print("tpriv : ${hdPrivateKey.xprivkey}");
+
+      });
+
       test('should derive HD private key from mnemonic', () async {
         const testMnemonic = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
         

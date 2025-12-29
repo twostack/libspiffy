@@ -140,18 +140,26 @@ class AddressDiscoveryService {
         );
       }
 
-      // Check if address has transaction history
+      // Check if address has associated scripts (P2PKH, P2MS, etc.)
       try {
-        final history = await _dataSource.getTransactionHistory(
-          address,
-          // No limit - fetch all transactions (data source handles pagination)
-        );
+        final scripts = await _dataSource.getAddressScripts(address);
 
-        if (history.isNotEmpty) {
-          // Address has been used
+        if (scripts.isNotEmpty) {
+          // Address has been used - log script types
           _logger.info(
-            '      ✅ Found used address at index $index with ${history.length} transactions',
+            '      ✅ Found used address at index $index with ${scripts.length} script(s)',
           );
+          
+          // Log script types for debugging
+          for (final script in scripts) {
+            _logger.info('         Script type: ${script.scriptType}, hash: ${script.scriptHash.substring(0, 16)}...');
+          }
+
+          // Fetch transaction history using the regular address history endpoint
+          // The script info is metadata; transactions are fetched by address
+          final history = await _dataSource.getTransactionHistory(address);
+          
+          _logger.info('         Total transactions: ${history.length}');
 
           usedAddresses.add(DiscoveredAddress(
             address: address,
@@ -159,6 +167,7 @@ class AddressDiscoveryService {
             isChange: isChange,
             transactionCount: history.length,
             txids: history.map((tx) => tx.txid).toList(),
+            scripts: scripts,
           ));
 
           consecutiveUnused = 0; // Reset gap counter
@@ -226,18 +235,19 @@ class AddressDiscoveryService {
       final address = addressKey.publicKey.toAddress(network).toString();
 
       try {
-        final history = await _dataSource.getTransactionHistory(
-          address,
-          // No limit - fetch all transactions (data source handles pagination)
-        );
+        final scripts = await _dataSource.getAddressScripts(address);
 
-        if (history.isNotEmpty) {
+        if (scripts.isNotEmpty) {
+          // Fetch transaction history using the regular address history endpoint
+          final history = await _dataSource.getTransactionHistory(address);
+
           usedAddresses.add(DiscoveredAddress(
             address: address,
             derivationIndex: index,
             isChange: isChange,
             transactionCount: history.length,
             txids: history.map((tx) => tx.txid).toList(),
+            scripts: scripts,
           ));
         }
       } catch (e) {

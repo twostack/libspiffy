@@ -251,6 +251,36 @@ class MerkleProofData {
   }
 }
 
+/// Information about a script associated with an address
+/// 
+/// From WhatsOnChain /address/{addr}/scripts API
+class AddressScriptInfo {
+  /// Script hash (hex string)
+  final String scriptHash;
+  
+  /// Script type ('pubkeyhash', 'multisig', 'scripthash', etc.)
+  final String scriptType;
+  
+  AddressScriptInfo({
+    required this.scriptHash,
+    required this.scriptType,
+  });
+  
+  factory AddressScriptInfo.fromJson(Map<String, dynamic> json) {
+    return AddressScriptInfo(
+      scriptHash: json['script'] as String,
+      scriptType: json['type'] as String,
+    );
+  }
+  
+  Map<String, dynamic> toJson() {
+    return {
+      'script': scriptHash,
+      'type': scriptType,
+    };
+  }
+}
+
 /// Result of address discovery scan
 class AddressDiscoveryResult {
   /// List of addresses that have transaction history
@@ -285,6 +315,9 @@ class DiscoveredAddress {
 
   /// List of transaction IDs for this address
   final List<String> txids;
+  
+  /// Associated scripts (P2PKH, P2MS, etc.) for this address
+  final List<AddressScriptInfo> scripts;
 
   DiscoveredAddress({
     required this.address,
@@ -292,6 +325,7 @@ class DiscoveredAddress {
     required this.isChange,
     required this.transactionCount,
     required this.txids,
+    this.scripts = const [],
   });
 }
 

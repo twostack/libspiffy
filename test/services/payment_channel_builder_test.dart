@@ -609,6 +609,279 @@ void main() {
           )),
         );
       });
+
+      test('payment transaction correctly spends from P2MS output using Interpreter.correctlySpends', () async {
+        // This test verifies the CRITICAL bug fix: payment TX must spend from the
+        // correct P2MS output index, not hardcoded index 0
+        //
+        // The funding TX structure is:
+        //   - Output 0: Change (P2PKH) - due to TransactionBuilder output ordering
+        //   - Output 1: Multisig (P2MS) - the channel funding
+        //
+        // The payment TX must spend from Output 1, not Output 0.
+        
+        final fundingAmount = BigInt.from(100000);
+        final serverAmount = BigInt.from(10000);
+        
+        // Create test UTXOs for funding
+        final clientUtxos = createClientUtxos(count: 1, satoshisPerUtxo: BigInt.from(200000));
+        
+        // Build the funding transaction (creates P2MS output)
+        final fundingResult = await channelBuilder.buildFundingTransaction(
+          clientPubKey: clientPubKey,
+          serverPubKey: serverPubKey,
+          fundingAmountSats: fundingAmount,
+          clientUtxos: clientUtxos,
+          clientPrivateKey: clientPrivateKey,
+          changeAddress: clientAddress,
+        );
+        
+        expect(fundingResult.transaction, isNotNull);
+        expect(fundingResult.transaction.outputs.isNotEmpty, isTrue);
+        
+        // Find the actual multisig output index
+        // TransactionBuilder.sendChangeToPKH() puts change at index 0!
+        final multisigScript = dartsv.P2MSLockBuilder(
+          [clientPubKey, serverPubKey],
+          2,
+          sorting: true,
+        ).getScriptPubkey();
+        
+        int multisigOutputIndex = -1;
+        for (int i = 0; i < fundingResult.transaction.outputs.length; i++) {
+          final output = fundingResult.transaction.outputs[i];
+          if (output.satoshis == fundingAmount) {
+            multisigOutputIndex = i;
+            print('Found multisig output at index $i (${output.satoshis} sats)');
+            // Verify it's actually the multisig script
+            expect(output.script.toHex(), equals(multisigScript.toHex()),
+                reason: 'Output at index $i should be the multisig');
+          }
+        }
+        
+        expect(multisigOutputIndex, greaterThanOrEqualTo(0),
+            reason: 'Multisig output must exist in funding tx');
+        
+        // Log the funding TX structure for debugging
+        print('Funding TX outputs:');
+        for (int i = 0; i < fundingResult.transaction.outputs.length; i++) {
+          final output = fundingResult.transaction.outputs[i];
+          print('  Output[$i]: ${output.satoshis} sats');
+        }
+        print('Multisig output index: $multisigOutputIndex');
+        
+        print('Funding TX ID: ${fundingResult.txid}');
+        
+        // Build payment transaction using the CORRECT output index
+        final paymentResult = await channelBuilder.buildPaymentTransaction(
+          fundingTxId: fundingResult.txid,
+          fundingOutputIndex: multisigOutputIndex, // Use actual index!
+          fundingAmountSats: fundingAmount,
+          clientPubKey: clientPubKey,
+          serverPubKey: serverPubKey,
+          clientAddress: clientAddress,
+          serverAddress: serverAddress,
+          serverAmountSats: serverAmount,
+          sequenceNumber: 1,
+        );
+        
+        expect(paymentResult.transaction, isNotNull);
+        print('Payment TX input prevTxnId: ${paymentResult.transaction.inputs[0].prevTxnId}');
+        print('Payment TX input prevOutIdx: ${paymentResult.transaction.inputs[0].prevTxnOutputIndex}');
+        expect(paymentResult.transaction.inputs[0].prevTxnOutputIndex, equals(multisigOutputIndex),
+            reason: 'Payment TX must reference correct output index');
+        
+        // Use TransactionSigner like the dartsv test does - this is the proven approach
+        // First, we need to rebuild the payment transaction with an unlock builder attached
+        final unlockBuilder = dartsv.P2MSUnlockBuilder();
+        
+        // Rebuild the payment transaction from scratch with unlock builder attached
+        final paymentTx = dartsv.Transaction();
+        paymentTx.version = 1;
+        paymentTx.nLockTime = 0;
+        
+        // Add input with unlock builder
+        final input = dartsv.TransactionInput(
+          fundingResult.txid,
+          multisigOutputIndex,
+          1, // sequence number
+          scriptBuilder: unlockBuilder,
+        );
+        paymentTx.inputs.add(input);
+        
+        // Copy outputs from original payment result
+        for (final output in paymentResult.transaction.outputs) {
+          paymentTx.outputs.add(output);
+        }
+        
+        // Create the funding UTXO for signing (represents the multisig output being spent)
+        final fundingUtxo = dartsv.TransactionOutput(
+          fundingAmount,
+          multisigScript,
+        );
+        
+        // Sign with both keys using TransactionSigner (like dartsv test)
+        final sighashType = dartsv.SighashType.SIGHASH_ALL.value | 
+                           dartsv.SighashType.SIGHASH_FORKID.value;
+        
+        final clientSigner = dartsv.TransactionSigner(sighashType, clientPrivateKey);
+        final serverSigner = dartsv.TransactionSigner(sighashType, serverPrivateKey);
+        
+        final signedTx1 = clientSigner.sign(paymentTx, fundingUtxo, 0);
+        final signedTx = serverSigner.sign(signedTx1, fundingUtxo, 0);
+        
+        expect(unlockBuilder.signatures.length, equals(2),
+            reason: 'Both signatures should be added to unlock builder');
+        
+        // CRITICAL VERIFICATION: Use Interpreter.correctlySpends() to verify
+        // the script executes successfully
+        final scriptSig = signedTx.inputs[0].script!;
+        final scriptPubKey = multisigScript;
+        final scriptFlags = <dartsv.VerifyFlag>{
+          dartsv.VerifyFlag.SIGHASH_FORKID,
+          dartsv.VerifyFlag.UTXO_AFTER_GENESIS,
+        };
+        
+        final interpreter = dartsv.Interpreter();
+        
+        // Log detailed info for debugging
+        print('ScriptSig hex: ${scriptSig.toHex()}');
+        print('ScriptSig ASM: ${scriptSig.toString()}');
+        print('ScriptPubKey hex: ${scriptPubKey.toHex()}');
+        print('TX hex: ${signedTx.serialize()}');
+        print('Input prevTxId: ${signedTx.inputs[0].prevTxnId}');
+        print('Input prevOutIdx: ${signedTx.inputs[0].prevTxnOutputIndex}');
+        
+        // This will throw if the script execution fails
+        try {
+          interpreter.correctlySpends(
+            scriptSig,
+            scriptPubKey,
+            signedTx,
+            0, // input index
+            scriptFlags,
+            dartsv.Coin.ofSat(fundingAmount),
+          );
+          print('✓ Interpreter.correctlySpends() verification PASSED');
+          print('  Payment TX can correctly spend from P2MS output at index $multisigOutputIndex');
+        } on dartsv.ScriptException catch (e) {
+          print('✗ Interpreter.correctlySpends() FAILED');
+          print('  Error code: ${e.error}');
+          print('  Cause: ${e.cause}');
+          rethrow;
+        }
+      });
+
+      test('signMultisigInput produces valid signatures verified by Interpreter.correctlySpends', () async {
+        // This test verifies that channelBuilder.signMultisigInput() produces
+        // valid signatures that can be verified by Interpreter.correctlySpends()
+        
+        final fundingAmount = BigInt.from(100000);
+        final serverAmount = BigInt.from(10000);
+        
+        // Create test UTXOs for funding
+        final clientUtxos = createClientUtxos(count: 1, satoshisPerUtxo: BigInt.from(200000));
+        
+        // Build the funding transaction (creates P2MS output)
+        final fundingResult = await channelBuilder.buildFundingTransaction(
+          clientPubKey: clientPubKey,
+          serverPubKey: serverPubKey,
+          fundingAmountSats: fundingAmount,
+          clientUtxos: clientUtxos,
+          clientPrivateKey: clientPrivateKey,
+          changeAddress: clientAddress,
+        );
+        
+        // Find the actual multisig output index
+        final multisigScript = dartsv.P2MSLockBuilder(
+          [clientPubKey, serverPubKey],
+          2,
+          sorting: true,
+        ).getScriptPubkey();
+        
+        int multisigOutputIndex = -1;
+        for (int i = 0; i < fundingResult.transaction.outputs.length; i++) {
+          if (fundingResult.transaction.outputs[i].satoshis == fundingAmount) {
+            multisigOutputIndex = i;
+            break;
+          }
+        }
+        expect(multisigOutputIndex, greaterThanOrEqualTo(0));
+        
+        // Build payment transaction
+        final paymentResult = await channelBuilder.buildPaymentTransaction(
+          fundingTxId: fundingResult.txid,
+          fundingOutputIndex: multisigOutputIndex,
+          fundingAmountSats: fundingAmount,
+          clientPubKey: clientPubKey,
+          serverPubKey: serverPubKey,
+          clientAddress: clientAddress,
+          serverAddress: serverAddress,
+          serverAmountSats: serverAmount,
+          sequenceNumber: 1,
+        );
+        
+        // Use channelBuilder's signMultisigInput method
+        final clientSignResult = await channelBuilder.signMultisigInput(
+          transaction: paymentResult.transaction,
+          inputIndex: 0,
+          privateKey: clientPrivateKey,
+          clientPubKey: clientPubKey,
+          serverPubKey: serverPubKey,
+          inputAmountSats: fundingAmount,
+        );
+        expect(clientSignResult.signature, isNotNull);
+        
+        final serverSignResult = await channelBuilder.signMultisigInput(
+          transaction: paymentResult.transaction,
+          inputIndex: 0,
+          privateKey: serverPrivateKey,
+          clientPubKey: clientPubKey,
+          serverPubKey: serverPubKey,
+          inputAmountSats: fundingAmount,
+        );
+        expect(serverSignResult.signature, isNotNull);
+        
+        // Apply signatures using channelBuilder
+        final signedTx = channelBuilder.applyMultisigSignatures(
+          transaction: paymentResult.transaction,
+          inputIndex: 0,
+          clientPubKey: clientPubKey,
+          serverPubKey: serverPubKey,
+          clientSignature: clientSignResult.signature,
+          serverSignature: serverSignResult.signature,
+        );
+        
+        // Verify with Interpreter.correctlySpends()
+        final scriptSig = signedTx.inputs[0].script!;
+        final scriptFlags = <dartsv.VerifyFlag>{
+          dartsv.VerifyFlag.SIGHASH_FORKID,
+          dartsv.VerifyFlag.UTXO_AFTER_GENESIS,
+        };
+        
+        final interpreter = dartsv.Interpreter();
+        
+        print('Testing signMultisigInput signatures:');
+        print('  Client sig: ${clientSignResult.signatureHex}');
+        print('  Server sig: ${serverSignResult.signatureHex}');
+        
+        try {
+          interpreter.correctlySpends(
+            scriptSig,
+            multisigScript,
+            signedTx,
+            0,
+            scriptFlags,
+            dartsv.Coin.ofSat(fundingAmount),
+          );
+          print('✓ signMultisigInput verification PASSED');
+        } on dartsv.ScriptException catch (e) {
+          print('✗ signMultisigInput verification FAILED');
+          print('  Error: ${e.error}');
+          print('  Cause: ${e.cause}');
+          rethrow;
+        }
+      });
     });
 
     // =========================================================================

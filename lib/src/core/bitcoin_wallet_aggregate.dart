@@ -1,3 +1,4 @@
+
 import 'package:eventador/eventador.dart';
 import 'package:uuid/uuid.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
@@ -1470,6 +1471,9 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
 
   /// Handle signing a multisig transaction input
   /// Used for payment channels where we sign one input of a 2-of-2 multisig
+  /// 
+  /// Uses dartsv's TransactionSigner which correctly handles sighash computation
+  /// and ECDSA signing for multisig transactions.
   Future<List<Event>> _handleSignMultisigTransaction(
     WalletState currentState,
     SignMultisigTransactionCommand command,
@@ -1480,8 +1484,16 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     }
 
     try {
-      // Parse unsigned transaction
-      final unsignedTx = dartsv.Transaction.fromHex(command.rawTransaction);
+      print('[BitcoinWalletAggregate] 🔏 Signing multisig transaction (using TransactionSigner)');
+      print('[BitcoinWalletAggregate]    Input index: ${command.inputIndex}');
+      print('[BitcoinWalletAggregate]    Prev out value: ${command.prevOutValue} sats');
+      print('[BitcoinWalletAggregate]    Sighash type: 0x${command.sighashType.toRadixString(16)}');
+      
+      // Parse the transaction to sign
+      final txToSign = dartsv.Transaction.fromHex(command.rawTransaction);
+      print('[BitcoinWalletAggregate]    TX inputs: ${txToSign.inputs.length}');
+      print('[BitcoinWalletAggregate]    TX outputs: ${txToSign.outputs.length}');
+      print('[BitcoinWalletAggregate]    TX hex being signed: ${command.rawTransaction}');
       
       // Get private key at the specified derivation index
       final privateKey = await _getPrivateKeyAtIndex(
@@ -1489,54 +1501,70 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         command.derivationIndex,
         currentState,
       );
+      print('[BitcoinWalletAggregate]    Private key derived at index ${command.derivationIndex}');
+      print('[BitcoinWalletAggregate]    Public key: ${privateKey.publicKey.toHex()}');
       
-      // Parse the redeem script
+      // Parse the redeem script (2-of-2 multisig locking script)
       final redeemScript = dartsv.SVScript.fromHex(command.redeemScriptHex);
+      print('[BitcoinWalletAggregate]    Redeem script: ${command.redeemScriptHex}');
       
-      // Create the UTXO output being spent
-      final utxoOutput = dartsv.TransactionOutput(
+      // Create the UTXO that we're spending from (multisig output)
+      final utxo = dartsv.TransactionOutput(
         BigInt.from(command.prevOutValue),
         redeemScript,
       );
       
-      // Sign the transaction at the specified input index
-      final signer = dartsv.TransactionSigner(
-        command.sighashType,
-        privateKey,
+      // IMPORTANT: Replace the input with one that has a P2MSUnlockBuilder
+      // The default parser creates a DefaultUnlockBuilder which doesn't properly
+      // build multisig scriptSigs from signatures.
+      // (This is what TransactionBuilder.spendFromUtxoMap() does internally)
+      final unlockBuilder = dartsv.P2MSUnlockBuilder();
+      final originalInput = txToSign.inputs[command.inputIndex];
+      final newInput = dartsv.TransactionInput(
+        originalInput.prevTxnId,
+        originalInput.prevTxnOutputIndex,
+        originalInput.sequenceNumber,
+        scriptBuilder: unlockBuilder,
       );
+      txToSign.inputs[command.inputIndex] = newInput;
       
-      final signedTx = signer.sign(unsignedTx, utxoOutput, command.inputIndex);
+      // Use TransactionSigner - this handles sighash computation and signing correctly
+      // This is the same method used in dartsv's multisig tests
+      final signer = dartsv.TransactionSigner(command.sighashType, privateKey);
+      signer.sign(txToSign, utxo, command.inputIndex); // Signature added to unlockBuilder
       
-      // Extract the signature we just created
-      final input = signedTx.inputs[command.inputIndex];
-      final scriptSig = input.script;
-      
-      // For multisig, the signature is in the scriptSig
-      // The scriptSig format for 2-of-2 multisig is: OP_0 <sig1> <sig2> <redeemScript>
-      // We need to extract our signature
-      String signatureHex = '';
-      if (scriptSig != null && scriptSig.chunks.isNotEmpty) {
-        // The first non-OP_0 chunk should be a signature
-        for (final chunk in scriptSig.chunks) {
-          if (chunk.buf != null && chunk.buf!.isNotEmpty) {
-            signatureHex = chunk.buf!.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
-            break;
-          }
-        }
+      // Extract our signature from the unlock builder (TransactionSigner added it there)
+      if (unlockBuilder.signatures.isEmpty) {
+        throw StateError('No signature added by TransactionSigner');
       }
       
-      final signedHex = signedTx.serialize();
-      final signedTxid = signedTx.id;
+      final ourSignature = unlockBuilder.signatures.last;
+      final signatureHex = ourSignature.toTxFormat();
+      
+      print('[BitcoinWalletAggregate]    Signature (txFormat): $signatureHex');
+      print('[BitcoinWalletAggregate]    Signature length: ${signatureHex.length ~/ 2} bytes');
+      
+      // NOTE: Individual signature verification is not possible here because:
+      // - The signature is created for a 2-of-2 multisig (sighash includes full redeem script)
+      // - A 1-of-1 test would use a different sighash and always fail
+      // The full 2-of-2 verification happens in PaymentChannelCoordinator after both signatures
+      // are combined using Interpreter.correctlySpends()
+      
+      print('[BitcoinWalletAggregate] ✅ Multisig signature created successfully');
+      
+      // Return the unsigned transaction hex (coordinator applies signatures)
+      final txHex = dartsv.Transaction.fromHex(command.rawTransaction).serialize();
+      final txid = dartsv.Transaction.fromHex(command.rawTransaction).id;
       
       // Send response if in actor system
       final sender = _capturedSenders[command.commandId];
       if (_isInActorSystem() && sender != null) {
         sender.tell(MultisigTransactionSignedResponse(
           walletId: command.walletId,
-          txid: signedTxid,
+          txid: txid,
           originalTransactionId: command.transactionId, // Pass back for correlation
-          signedHex: signedHex,
-          signatureHex: signatureHex,
+          signedHex: txHex,  // Return unsigned TX - coordinator applies signatures
+          signatureHex: signatureHex,  // Our signature for the multisig
           success: true,
         ));
       }
@@ -1546,7 +1574,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       return [];
       
     } catch (e, stackTrace) {
-      print('[BitcoinWalletAggregate] Error signing multisig transaction: $e');
+      print('[BitcoinWalletAggregate] ❌ Error signing multisig transaction: $e');
       print(stackTrace);
       
       // Send error response if in actor system
@@ -1709,10 +1737,50 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       // Capture spent UTXO keys for proper wallet bookkeeping
       final spentUtxoKeys = selectedUtxos.map((u) => '${u.txid}:${u.vout}').toList();
       
+      // CRITICAL: Reserve the selected UTXOs immediately to prevent double-spend
+      // These will be marked as spent after broadcast, or released on failure
+      var reserveVersion = currentState.version;
+      final reserveEvents = selectedUtxos.map((utxo) {
+        reserveVersion++;
+        return UTXOReservedEvent(
+          walletId: command.walletId,
+          txid: utxo.txid,
+          vout: utxo.vout,
+          reservedByTxId: fundingTxId,
+          reservationReason: 'Payment channel funding: ${command.channelId}',
+          expiresAt: DateTime.now().add(Duration(hours: 1)),
+          priority: 10, // High priority
+          version: reserveVersion,
+          timestamp: DateTime.now(),
+        );
+      }).toList();
+      
+      print('[BitcoinWalletAggregate]   Reserved ${reserveEvents.length} UTXOs for funding TX');
+      
+      // CRITICAL: Find the actual multisig output index
+      // TransactionBuilder.sendChangeToPKH() may reorder outputs, putting change at index 0
+      // We need to find where the multisig output actually ended up
+      int multisigOutputIndex = -1;
+      int? actualChangeOutputIdx;
+      
+      for (int i = 0; i < signedTx.outputs.length; i++) {
+        final output = signedTx.outputs[i];
+        if (output.satoshis == fundingAmount) {
+          multisigOutputIndex = i;
+          print('[BitcoinWalletAggregate]   Found multisig output at index $i (${output.satoshis} sats)');
+        } else {
+          actualChangeOutputIdx = i;
+          print('[BitcoinWalletAggregate]   Found change output at index $i (${output.satoshis} sats)');
+        }
+      }
+      
+      if (multisigOutputIndex == -1) {
+        throw StateError('Could not find multisig output in funding transaction');
+      }
+      
       // Determine if change output was actually added (above dust threshold)
       final hasChange = changeAmount > BigInt.from(546);
       final actualChangeAmount = hasChange ? changeAmount.toInt() : 0;
-      final changeOutputIdx = hasChange ? 1 : null; // Change is second output if present
       
       // Calculate totals
       final totalInputSats = selectedTotal.toInt();
@@ -1727,21 +1795,21 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
           channelId: command.channelId,
           fundingTxHex: fundingTxHex,
           fundingTxId: fundingTxId,
-          fundingOutputIndex: 0,
+          fundingOutputIndex: multisigOutputIndex,  // Use actual index, not hardcoded 0
           success: true,
           spentUtxoKeys: spentUtxoKeys,
           changeAddress: hasChange ? command.changeAddressBase58 : null,
           changeAmount: actualChangeAmount > 0 ? actualChangeAmount : null,
-          changeOutputIndex: changeOutputIdx,
+          changeOutputIndex: actualChangeOutputIdx,  // Use actual index found above
           fee: fee.toInt(),
           totalInputSats: totalInputSats,
           totalOutputSats: totalOutputSats,
         ));
       }
       
-      // Return empty - no events to persist for funding TX building
-      // The coordinator will send RecordOutgoingTransactionCommand after broadcast
-      return [];
+      // Return reservation events to prevent double-spend of selected UTXOs
+      // The coordinator will mark as spent after broadcast via RecordOutgoingTransactionCommand
+      return reserveEvents;
       
     } catch (e, stackTrace) {
       print('[BitcoinWalletAggregate] Error building funding transaction: $e');

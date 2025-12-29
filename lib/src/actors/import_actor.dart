@@ -672,6 +672,8 @@ class ImportActor extends Actor {
       _logger.info('            Script type: $scriptType');
       
       // Step 2: Use appropriate builder based on script type
+      bool belongsToWallet = false;
+      
       try {
         if (scriptType?.toLowerCase() == 'p2pkh') {
           // Use P2PKH builder to extract address
@@ -683,6 +685,51 @@ class ImportActor extends Actor {
           );
           outputAddress = locker.address?.toBase58();
           _logger.info('            Decoded P2PKH address: $outputAddress');
+          
+          if (outputAddress != null) {
+            belongsToWallet = await _storage.isWalletAddress(message.walletId, outputAddress);
+          }
+        } else if (scriptType?.toLowerCase() == 'p2ms') {
+          // P2MS (multisig) - check if any of the public keys belong to wallet
+          _logger.info('            P2MS (multisig) output detected');
+          
+          final scriptRegistry = ScriptTypeRegistry(
+            networkType: message.networkType == 'main' 
+              ? dartsv.NetworkType.MAIN 
+              : dartsv.NetworkType.TEST,
+          );
+          final scriptInfo = scriptRegistry.extractScriptMetadata(output.script);
+          final pubKeys = scriptInfo?['publicKeys'] as List?;
+          
+          if (pubKeys != null && pubKeys.isNotEmpty) {
+            _logger.info('            Multisig has ${pubKeys.length} public keys');
+            
+            final network = message.networkType == 'main' 
+              ? dartsv.NetworkType.MAIN 
+              : dartsv.NetworkType.TEST;
+            
+            // Check if any public key derives to a wallet address
+            for (final pubKeyHex in pubKeys) {
+              try {
+                final pubKey = dartsv.SVPublicKey.fromHex(pubKeyHex.toString());
+                final derivedAddress = dartsv.Address.fromPublicKey(pubKey, network).toBase58();
+                
+                if (await _storage.isWalletAddress(message.walletId, derivedAddress)) {
+                  _logger.info('            ✅ Wallet owns multisig key: $derivedAddress');
+                  belongsToWallet = true;
+                  // Use the first matching address for UTXO tracking
+                  outputAddress = derivedAddress;
+                  break;
+                }
+              } catch (e) {
+                _logger.warning('            ⚠️  Error deriving address from P2MS pubkey: $e');
+              }
+            }
+            
+            if (!belongsToWallet) {
+              _logger.info('            ℹ️  Multisig does not include wallet keys');
+            }
+          }
         } else if (scriptType?.toLowerCase() == 'p2sh') {
           _logger.info('            ⚠️  P2SH output detected - skipping (not supported for UTXO import)');
           continue;
@@ -695,21 +742,16 @@ class ImportActor extends Actor {
         continue;
       }
       
-      if (outputAddress == null) {
-        _logger.info('            ⚠️  Could not extract address from script');
+      if (outputAddress == null && belongsToWallet) {
+        _logger.warning('            ⚠️  Wallet owns output but could not determine address');
         continue;
       }
-
-      // Check if this output belongs to one of our addresses (O(1) hash lookup)
-      _logger.info('            → Checking if address $outputAddress belongs to wallet...');
-      final belongsToWallet = await _storage.isWalletAddress(message.walletId, outputAddress);
       
-      _logger.info('            → Belongs to wallet? $belongsToWallet');
-      if (!belongsToWallet) {
-        _logger.info('            → Address NOT in wallet. Expected one of: ${allAddresses.take(5).map((a) => a.address).join(", ")}${allAddresses.length > 5 ? "..." : ""}');
+      if (outputAddress != null && !belongsToWallet) {
+        _logger.info('            → Address $outputAddress NOT in wallet');
       }
 
-      if (belongsToWallet) {
+      if (belongsToWallet && outputAddress != null) {
         _logger.info('            ✅ UTXO found: ${tx.txid}:$vout (${output.satoshis} sats) → $outputAddress');
         
         // Track wallet-specific data for the event

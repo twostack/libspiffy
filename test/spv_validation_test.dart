@@ -122,6 +122,7 @@ void main() {
       'c4f09f1a5fb1e66a95b66ca7502062292708597c7e15574fc6dd1f9bcc7d2f5a',
     ];
 
+
     test('MerkleProof to BUMP conversion - CryptoUtils vs Working Implementation', () {
       // Create MerkleProof
       final merkleProof = MerkleProof(

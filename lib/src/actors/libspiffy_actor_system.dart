@@ -546,7 +546,6 @@ class LibSpiffyActorSystem {
     _benfordCoordinator = await _actorSystem.spawn('benford-coordinator', () => BenfordCoordinatorActor(
       walletManager: _walletManager!,
       arcActor: _arcActor!,
-      cryptoService: _cryptoService,
       secureStorage: _secureStorage,
       storage: _walletStorage,
     ));

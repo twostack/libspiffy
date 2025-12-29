@@ -82,12 +82,28 @@ class PaymentChannelBuilder {
 
   /// Transaction overhead
   static const int txOverhead = 10;
+  
+  /// Minimum fee in satoshis (ensures fee is never zero)
+  static const int minimumFeeSats = 1;
 
   PaymentChannelBuilder({
     required CryptoService cryptoService,
     dartsv.NetworkType networkType = dartsv.NetworkType.TEST,
   })  : _cryptoService = cryptoService,
         _networkType = networkType;
+  
+  /// Calculate transaction fee with minimum guarantee
+  /// 
+  /// Ensures fee is never zero due to integer division rounding.
+  /// With 1 sat/KB rate and sub-KB transactions, naive integer division
+  /// would result in 0 fee which causes transaction rejection.
+  static BigInt calculateFee(int estimatedSizeBytes, int feePerKb) {
+    // Round up to ensure fee is never zero for valid transactions
+    // Formula: ceiling of (size * rate / 1000)
+    final calculatedFee = ((estimatedSizeBytes * feePerKb) + 999) ~/ 1000;
+    // Ensure minimum fee
+    return BigInt.from(calculatedFee < minimumFeeSats ? minimumFeeSats : calculatedFee);
+  }
 
   /// Build a 2-of-2 multisig funding transaction (T1)
   ///
@@ -120,12 +136,12 @@ class PaymentChannelBuilder {
       (sum, utxo) => sum + utxo.value.getValue(),
     );
 
-    // Estimate fee
+    // Estimate fee (with minimum guarantee to avoid zero-fee rejection)
     final estimatedSize = txOverhead +
         (clientUtxos.length * 148) +
         p2pkhOutputSize +
         p2pkhOutputSize;
-    final fee = BigInt.from((estimatedSize * feePerKb) ~/ 1000);
+    final fee = calculateFee(estimatedSize, feePerKb);
 
     if (totalInput < fundingAmountSats + fee) {
       throw TransactionBuildException(
@@ -210,8 +226,9 @@ class PaymentChannelBuilder {
     );
     final multisigScript = lockBuilder.getScriptPubkey();
 
+    // Calculate fee (with minimum guarantee to avoid zero-fee rejection)
     final estimatedSize = txOverhead + multisigInputSize + p2pkhOutputSize;
-    final fee = BigInt.from((estimatedSize * feePerKb) ~/ 1000);
+    final fee = calculateFee(estimatedSize, feePerKb);
     final outputAmount = fundingAmountSats - fee;
 
     if (outputAmount <= BigInt.from(dustThreshold)) {
@@ -274,9 +291,10 @@ class PaymentChannelBuilder {
     );
     final multisigScript = lockBuilder.getScriptPubkey();
 
+    // Calculate fee (with minimum guarantee to avoid zero-fee rejection)
     final estimatedSize =
         txOverhead + multisigInputSize + (2 * p2pkhOutputSize);
-    final fee = BigInt.from((estimatedSize * feePerKb) ~/ 1000);
+    final fee = calculateFee(estimatedSize, feePerKb);
     final clientAmount = fundingAmountSats - serverAmountSats - fee;
 
     if (clientAmount < BigInt.zero) {
@@ -329,7 +347,11 @@ class PaymentChannelBuilder {
     );
   }
 
-  /// Sign a multisig input
+  /// Sign a multisig input using TransactionSigner
+  /// 
+  /// This method uses dartsv's TransactionSigner which correctly computes
+  /// the sighash for multisig inputs. The previous implementation using
+  /// Sighash.hash() directly produced invalid signatures.
   Future<MultisigSignatureResult> signMultisigInput({
     required dartsv.Transaction transaction,
     required int inputIndex,
@@ -338,6 +360,7 @@ class PaymentChannelBuilder {
     required dartsv.SVPublicKey serverPubKey,
     required BigInt inputAmountSats,
   }) async {
+    // Create the multisig locking script (scriptPubKey being spent)
     final lockBuilder = dartsv.P2MSLockBuilder(
       [clientPubKey, serverPubKey],
       2,
@@ -348,20 +371,35 @@ class PaymentChannelBuilder {
     final sighashType = dartsv.SighashType.SIGHASH_ALL.value |
         dartsv.SighashType.SIGHASH_FORKID.value;
 
-    final sighash = dartsv.Sighash();
-    final preimage = sighash.hash(
-      transaction,
-      sighashType,
-      inputIndex,
-      redeemScript,
-      inputAmountSats,
+    // Create a P2MSUnlockBuilder to collect signatures
+    final unlockBuilder = dartsv.P2MSUnlockBuilder();
+    
+    // Save the original input's script builder (if any)
+    final originalInput = transaction.inputs[inputIndex];
+    
+    // Replace the input with one that has our unlock builder attached
+    // This is required because TransactionSigner adds signatures to the unlock builder
+    final newInput = dartsv.TransactionInput(
+      originalInput.prevTxnId,
+      originalInput.prevTxnOutputIndex,
+      originalInput.sequenceNumber,
+      scriptBuilder: unlockBuilder,
     );
-
-    final signature = await _cryptoService.signTransactionHash(
-      privateKey,
-      Uint8List.fromList(hex.decode(preimage)),
-      sighashType,
-    );
+    transaction.inputs[inputIndex] = newInput;
+    
+    // Create the UTXO output that we're spending from
+    final utxo = dartsv.TransactionOutput(inputAmountSats, redeemScript);
+    
+    // Use TransactionSigner - this correctly computes sighash and signs
+    final signer = dartsv.TransactionSigner(sighashType, privateKey);
+    signer.sign(transaction, utxo, inputIndex);
+    
+    // Extract our signature from the unlock builder
+    if (unlockBuilder.signatures.isEmpty) {
+      throw StateError('TransactionSigner did not add signature to unlock builder');
+    }
+    
+    final signature = unlockBuilder.signatures.last;
 
     return MultisigSignatureResult(
       signature: signature,
@@ -378,21 +416,37 @@ class PaymentChannelBuilder {
     required dartsv.SVPublicKey clientPubKey,
     required dartsv.SVPublicKey serverPubKey,
   }) {
+    print('[PaymentChannelBuilder] 🔏 Applying multisig signatures');
+    print('[PaymentChannelBuilder]    Client pubkey: ${clientPubKey.toHex()}');
+    print('[PaymentChannelBuilder]    Server pubkey: ${serverPubKey.toHex()}');
+    print('[PaymentChannelBuilder]    Client sig (txFormat): ${clientSignature.toTxFormat()}');
+    print('[PaymentChannelBuilder]    Server sig (txFormat): ${serverSignature.toTxFormat()}');
+    
     final sortedPubKeys = [clientPubKey, serverPubKey]
       ..sort((a, b) => a.toString().compareTo(b.toString()));
 
+    print('[PaymentChannelBuilder]    Sorted order:');
+    print('[PaymentChannelBuilder]      [0]: ${sortedPubKeys[0].toHex()}');
+    print('[PaymentChannelBuilder]      [1]: ${sortedPubKeys[1].toHex()}');
+    
     final List<dartsv.SVSignature> orderedSigs;
     if (sortedPubKeys[0].toString() == clientPubKey.toString()) {
       orderedSigs = [clientSignature, serverSignature];
+      print('[PaymentChannelBuilder]    Sig order: [client, server]');
     } else {
       orderedSigs = [serverSignature, clientSignature];
+      print('[PaymentChannelBuilder]    Sig order: [server, client]');
     }
 
     final unlockBuilder = dartsv.P2MSUnlockBuilder.fromSignatures(orderedSigs);
     final scriptSig = unlockBuilder.getScriptSig();
 
+    print('[PaymentChannelBuilder]    ScriptSig hex: ${scriptSig.toHex()}');
+    print('[PaymentChannelBuilder]    ScriptSig: ${scriptSig.toString()}');
+    
     transaction.inputs[inputIndex].script = scriptSig;
 
+    print('[PaymentChannelBuilder] ✅ Signatures applied');
     return transaction;
   }
 
@@ -419,7 +473,7 @@ class PaymentChannelBuilder {
     final inputSize = isMultisigInput ? multisigInputSize : 148;
     final estimatedSize =
         txOverhead + (inputCount * inputSize) + (outputCount * p2pkhOutputSize);
-    return BigInt.from((estimatedSize * feePerKb) ~/ 1000);
+    return calculateFee(estimatedSize, feePerKb);
   }
 
   /// Parse a transaction from hex

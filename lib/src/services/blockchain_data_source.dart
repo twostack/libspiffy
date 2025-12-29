@@ -82,6 +82,36 @@ abstract class BlockchainDataSource {
   /// - height (if available)
   Future<List<UtxoInfo>> getUtxos(String address);
 
+  /// Get all scripts associated with an address
+  ///
+  /// Returns all script types (P2PKH, P2MS, P2SH, etc.) that include
+  /// this address's public key. This enables discovery of multisig
+  /// involvement and other script types beyond standard P2PKH.
+  ///
+  /// Parameters:
+  /// - [address]: Bitcoin address to query
+  ///
+  /// Returns list of [AddressScriptInfo] with script hashes and types.
+  /// Empty list if address has no associated scripts.
+  Future<List<AddressScriptInfo>> getAddressScripts(String address);
+
+  /// Get transaction history for a specific script hash
+  ///
+  /// Returns transactions involving a specific script (identified by hash).
+  /// Useful for fetching multisig or other non-standard script transactions.
+  ///
+  /// Parameters:
+  /// - [scriptHash]: Script hash (hex string) to query
+  /// - [limit]: Optional maximum number of transactions to return
+  /// - [offset]: Optional offset for pagination
+  ///
+  /// Returns list of [TransactionInfo] for transactions using this script.
+  Future<List<TransactionInfo>> getScriptHistory(
+    String scriptHash, {
+    int? limit,
+    int? offset,
+  });
+
   /// Optional: Submit a raw transaction to the network
   ///
   /// Implementations may throw [UnsupportedError] if broadcast

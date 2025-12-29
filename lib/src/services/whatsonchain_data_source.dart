@@ -312,6 +312,106 @@ class WhatsOnChainDataSource implements BlockchainDataSource {
     );
   }
 
+  @override
+  Future<List<AddressScriptInfo>> getAddressScripts(String address) async {
+    _logger.fine('Getting scripts for address $address');
+
+    return _retryApiCall<List<AddressScriptInfo>>(
+      () async {
+        final response = await _client.get(
+          Uri.parse('$_baseUrl/address/$address/scripts'),
+        );
+
+        if (response.statusCode == 200) {
+          final responseData = json.decode(response.body);
+          
+          if (responseData is List) {
+            return responseData
+                .map((item) => AddressScriptInfo.fromJson(item as Map<String, dynamic>))
+                .toList();
+          } else {
+            return [];
+          }
+        } else if (response.statusCode == 404) {
+          // Address has no associated scripts
+          return [];
+        } else {
+          throw DataSourceException(
+            'Failed to get address scripts: ${response.statusCode}',
+            address: address,
+          );
+        }
+      },
+      'Error getting address scripts',
+    );
+  }
+
+  @override
+  Future<List<TransactionInfo>> getScriptHistory(
+    String scriptHash, {
+    int? limit,
+    int? offset,
+  }) async {
+    _logger.fine('Getting transaction history for script $scriptHash');
+
+    final transactions = <TransactionInfo>[];
+    String? nextToken;
+    int fetchedCount = 0;
+    final requestLimit = (limit != null && limit <= 1000) ? limit : 1000;
+
+    // Keep fetching pages until we have all transactions or reach the limit
+    do {
+      final history = await _getScriptConfirmedHistory(
+        scriptHash,
+        limit: requestLimit,
+        token: nextToken,
+      );
+
+      final result = history['result'] as List?;
+
+      if (result == null || result.isEmpty) {
+        break;
+      }
+
+      for (final tx in result) {
+        if (tx is Map<String, dynamic>) {
+          transactions.add(TransactionInfo(
+            txid: tx['tx_hash'] as String? ?? '',
+            blockHeight: tx['height'] as int?,
+            blockHash: null,
+            blockIndex: null,
+            timestamp: null,
+          ));
+          fetchedCount++;
+
+          // If we have a specific limit and reached it, stop
+          if (limit != null && fetchedCount >= limit) {
+            break;
+          }
+        }
+      }
+
+      // Get the next page token if available
+      nextToken = history['token'] as String?;
+
+      // Continue if we have a token and haven't reached the limit
+    } while (nextToken != null && 
+             nextToken.isNotEmpty && 
+             (limit == null || fetchedCount < limit));
+
+    _logger.fine('Fetched ${transactions.length} transactions for script $scriptHash');
+
+    // Apply offset if specified
+    if (offset != null && offset > 0) {
+      if (offset >= transactions.length) {
+        return [];
+      }
+      return transactions.sublist(offset);
+    }
+
+    return transactions;
+  }
+
   // Private helper methods
 
   Future<Map<String, dynamic>> _getConfirmedHistory(
@@ -359,6 +459,54 @@ class WhatsOnChainDataSource implements BlockchainDataSource {
         }
       },
       'Error getting confirmed transaction history',
+    );
+  }
+
+  Future<Map<String, dynamic>> _getScriptConfirmedHistory(
+    String scriptHash, {
+    int? limit,
+    String? token,
+  }) async {
+    return _retryApiCall<Map<String, dynamic>>(
+      () async {
+        final queryParams = <String, String>{};
+        if (limit != null && limit >= 1 && limit <= 1000) {
+          queryParams['limit'] = limit.toString();
+        }
+        if (token != null && token.isNotEmpty) {
+          queryParams['token'] = token;
+        }
+
+        final uri = Uri.parse('$_baseUrl/script/$scriptHash/history')
+            .replace(queryParameters: queryParams);
+
+        final response = await _client.get(uri);
+
+        if (response.statusCode == 200) {
+          final responseData = json.decode(response.body);
+          if (responseData is Map<String, dynamic>) {
+            responseData['scriptHash'] = scriptHash;
+            return responseData;
+          } else {
+            return {
+              'scriptHash': scriptHash,
+              'result': [],
+              'error': 'Unexpected response format'
+            };
+          }
+        } else if (response.statusCode == 404) {
+          return {
+            'scriptHash': scriptHash,
+            'result': [],
+            'error': 'Script not found or no history'
+          };
+        } else {
+          throw Exception(
+            'Failed to get script history: ${response.statusCode}',
+          );
+        }
+      },
+      'Error getting script transaction history',
     );
   }
 

@@ -915,13 +915,24 @@ class UTXOReservedEvent extends WalletEvent {
   }
 
   static UTXOReservedEvent fromMap(Map<String, dynamic> map) {
+    // Handle expiresAt - may be String (from JSON) or DateTime (from CBOR/Isar)
+    final expiresAtValue = map['expiresAt'];
+    final DateTime expiresAt;
+    if (expiresAtValue is String) {
+      expiresAt = DateTime.parse(expiresAtValue);
+    } else if (expiresAtValue is DateTime) {
+      expiresAt = expiresAtValue;
+    } else {
+      throw ArgumentError('expiresAt must be String or DateTime, got ${expiresAtValue.runtimeType}');
+    }
+    
     return UTXOReservedEvent(
       walletId: map['walletId'] as String,
       txid: map['txid'] as String,
       vout: map['vout'] as int,
       reservedByTxId: map['reservedByTxId'] as String,
       reservationReason: map['reservationReason'] as String?,
-      expiresAt: DateTime.parse(map['expiresAt'] as String),
+      expiresAt: expiresAt,
       priority: map['priority'] as int? ?? 0,
       eventId: map['eventId'] as String?,
       timestamp: map['timestamp'] != null
@@ -1028,12 +1039,19 @@ class UTXOReservationRenewedEvent extends WalletEvent {
   }
 
   static UTXOReservationRenewedEvent fromMap(Map<String, dynamic> map) {
+    // Helper to parse DateTime that may be String (from JSON) or DateTime (from CBOR/Isar)
+    DateTime parseDateTime(dynamic value, String fieldName) {
+      if (value is String) return DateTime.parse(value);
+      if (value is DateTime) return value;
+      throw ArgumentError('$fieldName must be String or DateTime, got ${value.runtimeType}');
+    }
+    
     return UTXOReservationRenewedEvent(
       walletId: map['walletId'] as String,
       txid: map['txid'] as String,
       vout: map['vout'] as int,
-      newExpiresAt: DateTime.parse(map['newExpiresAt'] as String),
-      oldExpiresAt: DateTime.parse(map['oldExpiresAt'] as String),
+      newExpiresAt: parseDateTime(map['newExpiresAt'], 'newExpiresAt'),
+      oldExpiresAt: parseDateTime(map['oldExpiresAt'], 'oldExpiresAt'),
       renewalReason: map['renewalReason'] as String?,
       eventId: map['eventId'] as String?,
       timestamp: map['timestamp'] != null

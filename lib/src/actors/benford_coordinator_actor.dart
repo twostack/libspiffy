@@ -5,7 +5,6 @@ import 'package:dartsv/dartsv.dart' as dartsv;
 import '../core/wallet_commands.dart';
 import '../core/wallet_events.dart';
 import '../models/bitcoin_utxo.dart';
-import '../services/crypto_service.dart';
 import '../storage/secure_storage.dart';
 import '../storage/read_model_storage.dart';
 import '../utils/benford_distribution.dart';
@@ -24,19 +23,16 @@ import 'wallet_messages.dart';
 class BenfordCoordinatorActor extends Actor {
   final ActorRef _walletManager;
   final ActorRef _arcActor;
-  final CryptoService _cryptoService;
   final SecureStorage _secureStorage;
   final ReadModelStorage _storage;
 
   BenfordCoordinatorActor({
     required ActorRef walletManager,
     required ActorRef arcActor,
-    required CryptoService cryptoService,
     required SecureStorage secureStorage,
     required ReadModelStorage storage,
   })  : _walletManager = walletManager,
         _arcActor = arcActor,
-        _cryptoService = cryptoService,
         _secureStorage = secureStorage,
         _storage = storage;
 
@@ -248,6 +244,9 @@ class BenfordCoordinatorActor extends Actor {
   }
 
   /// Generate N new addresses for the wallet
+  /// 
+  /// For HD wallets, this waits for address persistence before returning
+  /// to ensure addresses are in the database before transactions are broadcast.
   Future<List<String>> _generateAddresses({
     required String walletId,
     required int count,
@@ -260,7 +259,7 @@ class BenfordCoordinatorActor extends Actor {
       throw StateError('Wallet not found: $walletId');
     }
 
-    print('[BenfordCoordinatorActor] Generating addresses for wallet type: ${wallet['walletType']}');
+    print('[BenfordCoordinatorActor] Generating $count addresses for wallet type: ${wallet['walletType']}');
 
     // For WIF wallets, all outputs go to the same address
     if (wallet['walletType'] == 'wif') {
@@ -280,39 +279,42 @@ class BenfordCoordinatorActor extends Actor {
       return addresses;
     }
 
-    // For HD wallets, generate new addresses
-    final hdPubkeyStr = await _secureStorage.getString('wallet_hdpubkey_$walletId');
-    if (hdPubkeyStr == null) {
-      throw StateError('HD public key not found for wallet: $walletId');
-    }
+    // For HD wallets, generate addresses and WAIT for persistence
+    final futures = <Future<String>>[];
 
-    final hdPublicKey = dartsv.HDPublicKey.fromXpub(hdPubkeyStr);
-    final networkType = wallet['network'] == 'mainnet'
-        ? dartsv.NetworkType.MAIN
-        : dartsv.NetworkType.TEST;
-
-    // Get current derivation index from wallet
-    int currentIndex = wallet['nextDerivationIndex'] as int? ?? 0;
-
-    // Generate addresses
     for (int i = 0; i < count; i++) {
-      final address = _cryptoService.generateReceivingAddress(
-        hdPublicKey,
-        currentIndex + i,
-        network: networkType,
+      final completer = Completer<String>();
+      
+      // Spawn temporary actor to receive response
+      final receiver = await context.system.spawn(
+        'benford-addr-receiver-$i-${DateTime.now().millisecondsSinceEpoch}',
+        () => _AddressReceiverActor(completer),
       );
-      addresses.add(address);
+
+      // Send command WITH sender for response routing
+      _walletManager.tell(
+        WalletCommandMessage(
+          walletId,
+          GenerateAddressCommand(walletId: walletId),
+        ),
+        sender: receiver,
+      );
+
+      futures.add(completer.future);
     }
 
-    // Update derivation index in wallet
-    // This will be done via GenerateAddressCommand for each address
-    for (int i = 0; i < count; i++) {
-      _walletManager.tell(WalletCommandMessage(
-        walletId,
-        GenerateAddressCommand(
-          walletId: walletId,
-        ),
-      ));
+    // Wait for ALL addresses to be generated and persisted
+    try {
+      final generatedAddresses = await Future.wait(futures)
+          .timeout(const Duration(seconds: 30));
+      addresses.addAll(generatedAddresses);
+      print('[BenfordCoordinatorActor] Generated ${addresses.length} addresses (persisted)');
+    } on TimeoutException {
+      print('[BenfordCoordinatorActor] Timeout waiting for address generation');
+      throw StateError('Address generation timed out after 30 seconds');
+    } catch (e) {
+      print('[BenfordCoordinatorActor] Error generating addresses: $e');
+      rethrow;
     }
 
     return addresses;
@@ -462,6 +464,26 @@ class BenfordCoordinatorActor extends Actor {
     final addr = dartsv.Address.fromBase58(address);
     final script = dartsv.P2PKHLockBuilder.fromAddress(addr).getScriptPubkey();
     return script.toHex();
+  }
+}
+
+/// Helper actor to receive address generation responses
+class _AddressReceiverActor extends Actor {
+  final Completer<String> completer;
+
+  _AddressReceiverActor(this.completer);
+
+  @override
+  Future<void> onMessage(dynamic message) async {
+    if (message is AddressGeneratedResponse && !completer.isCompleted) {
+      if (message.success) {
+        completer.complete(message.address);
+      } else {
+        completer.completeError(
+          Exception(message.error ?? 'Address generation failed'),
+        );
+      }
+    }
   }
 }
 

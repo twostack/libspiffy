@@ -571,18 +571,35 @@ class WalletManagerActor extends Actor {
         ),
       );
 
-      print('Wallet loaded successfully: $walletId');
+      print('[WalletManagerActor] Wallet actor spawned: $walletId');
       
       // IMPORTANT: Wait for aggregate recovery to complete before returning
-      // PersistentActor needs time to replay events and initialize state
-      // Without this delay, commands sent immediately after loading will be dropped
-      await Future.delayed(Duration(milliseconds: 200));
-      print('Wallet recovery complete: $walletId');
+      // Use RecoveryStatusQuery to reliably wait for recovery completion
+      // instead of an arbitrary delay that might not be sufficient
+      try {
+        print('[WalletManagerActor] ⏳ Waiting for recovery to complete...');
+        final recoveryResponse = await walletActor.ask<RecoveryStatusResponse>(
+          RecoveryStatusQuery(),
+          Duration(seconds: 30), // 30 second timeout for recovery
+        );
+        
+        if (recoveryResponse.isRecovered) {
+          print('[WalletManagerActor] ✓ Wallet recovery complete: $walletId (seq: ${recoveryResponse.sequenceNumber})');
+        } else {
+          print('[WalletManagerActor] ⚠️ Wallet recovery incomplete: $walletId');
+        }
+      } on TimeoutException {
+        print('[WalletManagerActor] ⚠️ Recovery status query timed out for $walletId');
+        // Continue anyway - the wallet might still work
+      } catch (e) {
+        print('[WalletManagerActor] ⚠️ Recovery status query failed for $walletId: $e');
+        // Continue anyway - the wallet might still work
+      }
       
       return walletActor;
 
     } catch (e) {
-      print('Error loading wallet $walletId: $e');
+      print('[WalletManagerActor] Error loading wallet $walletId: $e');
       return null;
     }
   }

@@ -803,11 +803,16 @@ class SplitUTXOsToBenfordCommand extends WalletCommand {
   
   /// Optional fee rate in satoshis per byte (default: 1 for BSV)
   final BigInt? feeRate;
+  
+  /// Maximum number of UTXOs to split (null = split all available)
+  /// This allows users to keep some UTXOs available for transactions
+  final int? maxUtxosToSplit;
 
   SplitUTXOsToBenfordCommand({
     required String walletId,
     required this.targetUtxoCount,
     this.feeRate,
+    this.maxUtxosToSplit,
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,
@@ -826,6 +831,9 @@ class SplitUTXOsToBenfordCommand extends WalletCommand {
     }
     if (feeRate != null && feeRate! <= BigInt.zero) {
       throw ArgumentError('Fee rate must be positive');
+    }
+    if (maxUtxosToSplit != null && maxUtxosToSplit! < 1) {
+      throw ArgumentError('maxUtxosToSplit must be at least 1');
     }
   }
 

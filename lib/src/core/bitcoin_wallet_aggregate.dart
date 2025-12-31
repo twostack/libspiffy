@@ -244,6 +244,17 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         success: false,
         error: errorMessage,
       ));
+    } else if (command is BuildFundingTransactionCommand) {
+      sender.tell(FundingTransactionBuiltResponse(
+        walletId: command.walletId,
+        correlationId: command.correlationId,
+        channelId: command.channelId,
+        fundingTxHex: '',
+        fundingTxId: '',
+        fundingOutputIndex: 0,
+        success: false,
+        error: errorMessage,
+      ));
     }
   }
 

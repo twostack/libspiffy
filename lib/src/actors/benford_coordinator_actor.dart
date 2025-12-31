@@ -73,8 +73,18 @@ class BenfordCoordinatorActor extends Actor {
       return;
     }
 
+    // Determine how many UTXOs to split
+    final utxosToSplit = command.maxUtxosToSplit != null
+        ? availableUtxos.take(command.maxUtxosToSplit!).toList()
+        : availableUtxos;
+
+    print('[BenfordCoordinatorActor] Splitting ${utxosToSplit.length} of ${availableUtxos.length} available UTXOs');
+    if (command.maxUtxosToSplit != null) {
+      print('[BenfordCoordinatorActor]   Keeping ${availableUtxos.length - utxosToSplit.length} UTXOs available for transactions');
+    }
+
     // Process each UTXO
-    for (final sourceUtxo in availableUtxos) {
+    for (final sourceUtxo in utxosToSplit) {
       await _splitSingleUtxo(
         walletId: command.walletId,
         sourceUtxo: sourceUtxo,

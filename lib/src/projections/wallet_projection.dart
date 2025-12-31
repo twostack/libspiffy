@@ -5,7 +5,6 @@ import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:libspiffy/src/services/script_type_registry.dart';
 import '../core/wallet_events.dart';
 import '../models/wallet_event.dart';
-import '../models/wallet_read_model.dart';
 import '../models/wallet_type.dart';
 import '../models/bitcoin_utxo.dart';
 import '../models/bitcoin_transaction.dart';
@@ -19,15 +18,18 @@ import '../utils/bump.dart';
 /// This projection subscribes to wallet events from the EventStore and
 /// maintains denormalized read models in Isar for fast queries.
 /// Separates write concerns (aggregate) from read concerns (queries).
-class WalletProjection extends Projection<WalletReadModel> {
+/// 
+/// STATELESS DESIGN: This projection does NOT cache state in memory.
+/// Storage (Isar) is the source of truth. Checkpoints track which events
+/// have been processed, but all state is read from/written to storage.
+/// This design survives app restarts correctly - no checkpoint/state mismatch.
+class WalletProjection extends Projection<void> {
   final ReadModelStorage _storage;
   final String _projectionId;
-  late WalletReadModel _readModel;
   int _checkpoint = 0;
   
-  // Track UTXO statistics for the read model
-  final Map<String, BitcoinUtxo> _utxos = {};
-  final Set<String> _addresses = {};
+  // NOTE: No in-memory state caching. Storage IS the read model.
+  // This prevents checkpoint/state mismatch bugs on restart.
   
   WalletProjection({
     required String projectionId,
@@ -35,15 +37,13 @@ class WalletProjection extends Projection<WalletReadModel> {
     required ReadModelStorage storage,
   })  : _storage = storage,
         _projectionId = projectionId,
-        super() {
-    _readModel = WalletReadModel.empty(projectionId);
-  }
+        super();
   
   @override
   String get projectionId => _projectionId;
   
   @override
-  WalletReadModel get readModel => _readModel;
+  void get readModel => null; // Storage is the read model, query it directly
   
   @override
   List<Type> get interestedEventTypes => [
@@ -154,33 +154,8 @@ class WalletProjection extends Projection<WalletReadModel> {
     print('[WalletProjection]    Wallet Type: ${event.walletType.toStorageString()}');
     print('[WalletProjection]    Root address: ${event.rootAddress}');
     
-    _readModel = WalletReadModel(
-      walletId: event.walletId,
-      name: event.walletName,
-      rootAddress: event.rootAddress,
-      networkType: event.walletMetadata?['network'] as String? ?? 'mainnet',
-      createdAt: event.timestamp,
-      lastUpdated: event.timestamp,
-      confirmedBalance: BigInt.zero,
-      unconfirmedBalance: BigInt.zero,
-      reservedBalance: BigInt.zero,
-      totalBalance: BigInt.zero,
-      addressCount: 0,
-      utxoCount: 0,
-      availableUtxoCount: 0,
-      reservedUtxoCount: 0,
-      spentUtxoCount: 0,
-      metadata: {
-        ...event.walletMetadata ?? {},
-        'walletType': event.walletType.toStorageString(), // CRITICAL: Include wallet type in metadata
-      },
-    );
-    
-    // CRITICAL: Persist the root address to AddressEntity
-    // The root address is the first receiving address (m/0/0) and must be queryable
+    // Persist root address to AddressEntity
     print('[WalletProjection]    → Persisting root address to AddressEntity...');
-    _addresses.add(event.rootAddress);
-    
     final rootAddressMetadata = AddressMetadata(
       address: event.rootAddress,
       scriptType: 'p2pkh',
@@ -196,35 +171,58 @@ class WalletProjection extends Projection<WalletReadModel> {
       createdAt: event.timestamp,
       isWatched: true,
     );
-    
     await _storage.upsertAddress(event.walletId, rootAddressMetadata);
     print('[WalletProjection]    ✅ Root address persisted to AddressEntity');
     
-    // Update address count in read model
-    _readModel = _readModel.copyWith(addressCount: 1);
-    
-    // Persist to storage
-    await _persistReadModel();
+    // Store wallet metadata directly to storage (no in-memory caching)
+    await _storage.storeWallet(
+      event.walletId,
+      event.walletName,
+      rootAddress: event.rootAddress,
+      networkType: event.walletMetadata?['network'] as String? ?? 'mainnet',
+      metadata: {
+        ...event.walletMetadata ?? {},
+        'walletType': event.walletType.toStorageString(),
+        'confirmedBalance': '0',
+        'unconfirmedBalance': '0',
+        'totalBalance': '0',
+        'addressCount': 1,
+        'utxoCount': 0,
+        'availableUtxoCount': 0,
+        'lastUpdated': event.timestamp.toIso8601String(),
+      },
+    );
+    print('[WalletProjection]    ✅ Wallet metadata persisted to storage');
   }
   
   Future<void> _handleWalletConfigurationUpdated(WalletConfigurationUpdatedEvent event) async {
-    _readModel = _readModel.copyWith(
-      name: event.newName,
-      metadata: event.newMetadata != null
-          ? {..._readModel.metadata, ...event.newMetadata!}
-          : _readModel.metadata,
-      lastUpdated: event.timestamp,
-    );
+    // Read current wallet from storage
+    final existingWallet = await _storage.getWallet(event.walletId);
+    if (existingWallet == null) {
+      print('[WalletProjection] ⚠️  Wallet ${event.walletId} not found in storage for configuration update');
+      return;
+    }
     
-    await _persistReadModel();
+    // Update wallet metadata in storage
+    final existingMetadata = existingWallet['metadata'] as Map<String, dynamic>? ?? {};
+    await _storage.storeWallet(
+      event.walletId,
+      event.newName ?? existingWallet['name'] as String,
+      rootAddress: existingWallet['root_address'] as String?,
+      networkType: existingWallet['network_type'] as String?,
+      metadata: {
+        ...existingMetadata,
+        if (event.newMetadata != null) ...event.newMetadata!,
+        'lastUpdated': event.timestamp.toIso8601String(),
+      },
+    );
+    print('[WalletProjection]    ✅ Wallet configuration updated in storage');
   }
   
   Future<void> _handleAddressGenerated(AddressGeneratedEvent event) async {
     print('[WalletProjection] 📍 Processing AddressGeneratedEvent: ${event.address}');
     
-    _addresses.add(event.address);
-    
-    // Store address in AddressEntity for efficient lookup
+    // Store address in AddressEntity
     final metadata = AddressMetadata(
       address: event.address,
       scriptType: 'p2pkh', // Standard HD wallet addresses are P2PKH
@@ -240,30 +238,19 @@ class WalletProjection extends Projection<WalletReadModel> {
       createdAt: event.timestamp,
       isWatched: true,
     );
-    
-    // IMPORTANT: Use event.walletId, not _readModel.walletId
-    // This ensures addresses are stored under the correct wallet ID for isWalletAddress() lookups
     await _storage.upsertAddress(event.walletId, metadata);
     print('[WalletProjection]    ✅ Address stored in AddressEntity for wallet ${event.walletId}');
     
-    _readModel = _readModel.copyWith(
-      addressCount: _addresses.length,
-      lastUpdated: event.timestamp,
-    );
-    
-    await _persistReadModel();
+    // Update wallet metadata with new address count (read from storage, update, write back)
+    await _updateWalletAddressCount(event.walletId, event.timestamp);
   }
   
   Future<void> _handleAddressDiscovered(AddressDiscoveredEvent event) async {
     print('[WalletProjection] 📍 Processing AddressDiscoveredEvent: ${event.address}');
-    print('[WalletProjection]    Wallet: ${event.walletId}');  // ← Use event.walletId
+    print('[WalletProjection]    Wallet: ${event.walletId}');
     print('[WalletProjection]    Index: ${event.derivationIndex}, Change: ${event.isChange}, Txs: ${event.transactionCount}');
     
-    _addresses.add(event.address);
-    print('[WalletProjection]    → Address added to in-memory set (total: ${_addresses.length})');
-    
     // Store discovered address in AddressEntity
-    print('[WalletProjection]    → Creating AddressMetadata...');
     final metadata = AddressMetadata(
       address: event.address,
       scriptType: 'p2pkh', // Discovered addresses are typically P2PKH
@@ -279,27 +266,45 @@ class WalletProjection extends Projection<WalletReadModel> {
       createdAt: event.timestamp,
       isWatched: true,
     );
-    
-    // IMPORTANT: Use event.walletId, not _readModel.walletId
-    // This ensures addresses are stored under the correct wallet ID for isWalletAddress() lookups
-    print('[WalletProjection]    → Calling storage.upsertAddress() with walletId: ${event.walletId}...');
     await _storage.upsertAddress(event.walletId, metadata);
     print('[WalletProjection]    ✅ Address persisted to AddressEntity in Isar for wallet ${event.walletId}');
     
-    print('[WalletProjection]    → Updating read model (addressCount: ${_addresses.length})...');
-    _readModel = _readModel.copyWith(
-      addressCount: _addresses.length,
-      lastUpdated: event.timestamp,
-    );
-    
-    print('[WalletProjection]    → Persisting read model to WalletMetadataEntity...');
-    await _persistReadModel();
+    // Update wallet metadata with new address count (read from storage, update, write back)
+    await _updateWalletAddressCount(event.walletId, event.timestamp);
     print('[WalletProjection]    ✅ AddressDiscoveredEvent processing complete!');
+  }
+  
+  /// Helper: Update wallet address count by reading current count from storage
+  Future<void> _updateWalletAddressCount(String walletId, DateTime timestamp) async {
+    final existingWallet = await _storage.getWallet(walletId);
+    if (existingWallet == null) {
+      print('[WalletProjection]    ⚠️  Wallet $walletId not found in storage, cannot update address count');
+      return;
+    }
+    
+    // Get actual address count from storage
+    final addresses = await _storage.getWalletAddresses(walletId);
+    final addressCount = addresses.length;
+    
+    // Update wallet metadata
+    final existingMetadata = existingWallet['metadata'] as Map<String, dynamic>? ?? {};
+    await _storage.storeWallet(
+      walletId,
+      existingWallet['name'] as String,
+      rootAddress: existingWallet['root_address'] as String?,
+      networkType: existingWallet['network_type'] as String?,
+      metadata: {
+        ...existingMetadata,
+        'addressCount': addressCount,
+        'lastUpdated': timestamp.toIso8601String(),
+      },
+    );
+    print('[WalletProjection]    ✅ Wallet address count updated: $addressCount');
   }
   
   Future<void> _handleUTXOReceived(UTXOReceivedEvent event) async {
     print('[WalletProjection] 📥 Processing UTXOReceivedEvent: ${event.txid}:${event.vout} (${event.satoshis} sats)');
-    print('[WalletProjection]    Wallet: ${event.walletId}');  // ← Use event.walletId
+    print('[WalletProjection]    Wallet: ${event.walletId}');
     print('[WalletProjection]    Address: ${event.address}');
     print('[WalletProjection]    Block Height: ${event.blockHeight}');
     print('[WalletProjection]    Initial Status: ${event.initialStatus}');
@@ -317,7 +322,7 @@ class WalletProjection extends Projection<WalletReadModel> {
     // Update address usage statistics
     if (event.address.isNotEmpty) {
       await _storage.updateAddressUsage(
-        event.walletId,  // ← Use event.walletId, not _readModel.walletId
+        event.walletId,
         event.address,
         usedAt: event.timestamp,
         balanceDelta: BigInt.from(event.satoshis),
@@ -325,7 +330,7 @@ class WalletProjection extends Projection<WalletReadModel> {
       print('[WalletProjection]    ✅ Address usage updated: ${event.address}');
     }
     
-    // Create UTXO and persist directly to storage (with derivation index for signing)
+    // Create UTXO and persist directly to storage
     final utxo = BitcoinUtxo.create(
       txid: event.txid,
       vout: event.vout,
@@ -334,17 +339,11 @@ class WalletProjection extends Projection<WalletReadModel> {
       address: event.address,
       blockHeight: event.blockHeight,
       confirmations: event.confirmations ?? 0,
-      status: event.initialStatus, // Use status from event (available for imports, pending for new receives)
+      status: event.initialStatus,
       derivationIndex: derivationIndex,
     );
-    
-    // Persist directly to storage with correct wallet ID
     await _storage.upsertUTXO(event.walletId, utxo);
     print('[WalletProjection]    ✅ UTXO persisted to Isar: ${event.txid}:${event.vout} (${event.initialStatus})');
-    
-    // Also update in-memory cache for balance calculation
-    final utxoKey = '${event.walletId}:${event.txid}:${event.vout}';  // ← Include walletId in key
-    _utxos[utxoKey] = utxo;
     
     // Recalculate and persist wallet metadata (balance, counts, etc.)
     await _recalculateAndPersistForWallet(event.walletId, event.timestamp);
@@ -353,7 +352,6 @@ class WalletProjection extends Projection<WalletReadModel> {
   
   Future<void> _handleUTXOMarkedAvailable(UTXOMarkedAvailableEvent event) async {
     print('[WalletProjection] ✅ Processing UTXOMarkedAvailableEvent: ${event.txid}:${event.vout}');
-    final utxoKey = '${event.walletId}:${event.txid}:${event.vout}';  // ← Include walletId
     
     // Get from storage
     final utxos = await _storage.getUTXOs(event.walletId, includeSpent: true);
@@ -366,7 +364,6 @@ class WalletProjection extends Projection<WalletReadModel> {
       print('[WalletProjection]    → Marking UTXO as available for spending');
       final updatedUtxo = utxo.markAvailable();
       await _storage.upsertUTXO(event.walletId, updatedUtxo);
-      _utxos[utxoKey] = updatedUtxo;
       await _recalculateAndPersistForWallet(event.walletId, event.timestamp);
       print('[WalletProjection]    ✅ UTXO marked available: ${event.txid}:${event.vout}');
     } else {
@@ -376,8 +373,6 @@ class WalletProjection extends Projection<WalletReadModel> {
   
   Future<void> _handleUTXOSpent(UTXOSpentEvent event) async {
     print('[WalletProjection] 💸 Processing UTXOSpentEvent: ${event.txid}:${event.vout}');
-    final utxoKey = '${event.walletId}:${event.txid}:${event.vout}';  // ← Include walletId
-    
     print('[WalletProjection]    → Marking UTXO as spent in database');
     
     // Get the UTXO from storage
@@ -397,16 +392,11 @@ class WalletProjection extends Projection<WalletReadModel> {
     await _storage.upsertUTXO(event.walletId, spentUtxo);
     print('[WalletProjection]    ✅ UTXO marked as spent: ${event.txid}:${event.vout}');
     
-    // Remove from in-memory cache (spent UTXOs don't need to be in cache for balance calculations)
-    _utxos.remove(utxoKey);
-    
     await _recalculateAndPersistForWallet(event.walletId, event.timestamp);
   }
   
   Future<void> _handleUTXOConfirmationUpdated(UTXOConfirmationUpdatedEvent event) async {
-    final utxoKey = '${event.walletId}:${event.txid}:${event.vout}';  // ← Include walletId
-    
-    // Update in storage
+    // Get from storage
     final utxos = await _storage.getUTXOs(event.walletId, includeSpent: true);
     final utxo = utxos.firstWhere(
       (u) => u.txid == event.txid && u.vout == event.vout,
@@ -422,15 +412,12 @@ class WalletProjection extends Projection<WalletReadModel> {
       status: event.confirmations > 0 ? UTXOStatus.available : utxo.status,
     );
     
-    _utxos[utxoKey] = updatedUtxo;
     await _storage.upsertUTXO(event.walletId, updatedUtxo);
     await _recalculateAndPersistForWallet(event.walletId, event.timestamp);
   }
   
   Future<void> _handleUTXOReserved(UTXOReservedEvent event) async {
-    final utxoKey = '${event.walletId}:${event.txid}:${event.vout}';  // ← Include walletId
-    
-    // Update in storage
+    // Get from storage
     final utxos = await _storage.getUTXOs(event.walletId, includeSpent: true);
     final utxo = utxos.firstWhere(
       (u) => u.txid == event.txid && u.vout == event.vout,
@@ -445,15 +432,12 @@ class WalletProjection extends Projection<WalletReadModel> {
       reservationReason: event.reservationReason,
       updatedAt: event.timestamp,
     );
-    _utxos[utxoKey] = updatedUtxo;
     await _storage.upsertUTXO(event.walletId, updatedUtxo);
     await _recalculateAndPersistForWallet(event.walletId, event.timestamp);
   }
   
   Future<void> _handleUTXOReleased(UTXOReleasedEvent event) async {
-    final utxoKey = '${event.walletId}:${event.txid}:${event.vout}';  // ← Include walletId
-    
-    // Update in storage
+    // Get from storage
     final utxos = await _storage.getUTXOs(event.walletId, includeSpent: true);
     final utxo = utxos.firstWhere(
       (u) => u.txid == event.txid && u.vout == event.vout,
@@ -462,7 +446,6 @@ class WalletProjection extends Projection<WalletReadModel> {
     
     if (utxo.status == UTXOStatus.reserved) {
       final updatedUtxo = utxo.releaseReservation();
-      _utxos[utxoKey] = updatedUtxo;
       await _storage.upsertUTXO(event.walletId, updatedUtxo);
       await _recalculateAndPersistForWallet(event.walletId, event.timestamp);
     }
@@ -528,42 +511,6 @@ class WalletProjection extends Projection<WalletReadModel> {
     );
     
     print('[WalletProjection]    ✅ Wallet $walletId metadata updated (balance: $total sats, UTXOs: ${walletUtxos.length})');
-  }
-  
-  /// Persist read model to storage (Isar)
-  Future<void> _persistReadModel() async {
-    try {
-      print('[WalletProjection] 💾 Persisting read model to Isar...');
-      print('[WalletProjection]    Wallet: ${_readModel.walletId}');
-      print('[WalletProjection]    Balance: ${_readModel.totalBalance} sats');
-      print('[WalletProjection]    UTXO count to persist: ${_utxos.length}');
-      
-      // Store wallet metadata in read model storage
-      await _storage.storeWallet(
-        _readModel.walletId,
-        _readModel.name,
-        rootAddress: _readModel.rootAddress,
-        networkType: _readModel.networkType,
-        metadata: {
-          ..._readModel.metadata,
-          'confirmedBalance': _readModel.confirmedBalance.toString(),
-          'unconfirmedBalance': _readModel.unconfirmedBalance.toString(),
-          'totalBalance': _readModel.totalBalance.toString(),
-          'addressCount': _readModel.addressCount,
-          'utxoCount': _readModel.utxoCount,
-          'availableUtxoCount': _readModel.availableUtxoCount,
-        },
-      );
-      print('[WalletProjection]    ✅ Wallet metadata persisted');
-      
-      // NOTE: Do NOT persist UTXOs here! Each UTXO event handler is responsible for
-      // persisting its own UTXO state. Persisting from the cache here would overwrite
-      // spent/reserved status with stale data from the cache.
-    } catch (e, stackTrace) {
-      print('[WalletProjection] ❌ Error persisting wallet read model: $e');
-      print('[WalletProjection] Stack trace: $stackTrace');
-      rethrow;
-    }
   }
   
   Future<void> _handleTransactionImported(TransactionImportedEvent event) async {
@@ -988,9 +935,10 @@ class WalletProjection extends Projection<WalletReadModel> {
   
   @override
   Future<void> reset() async {
-    _readModel = WalletReadModel.empty(projectionId);
-    _utxos.clear();
-    _addresses.clear();
+    // Stateless projection - no in-memory state to clear.
+    // Storage is the source of truth and is not cleared here.
+    // (If you need to rebuild, clear the storage separately.)
+    _checkpoint = 0;
   }
 }
 

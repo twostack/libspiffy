@@ -615,6 +615,552 @@ void main() {
         );
       });
     });
+
+    group('RecordOutgoingTransaction - Output Scanning', () {
+      late BitcoinWalletAggregate wallet;
+      late String walletAddress1;
+      late String walletAddress2;
+      late String externalAddress;
+
+      setUp(() async {
+        wallet = BitcoinWalletAggregate(
+          aggregateId: 'wallet-456',
+          aggregateType: 'Wallet',
+          eventStore: eventStore,
+          cryptoService: cryptoService,
+          secureStorage: secureStorage,
+        );
+        wallet.preStart();
+        await Future.delayed(Duration(milliseconds: 100));
+
+        // Create wallet
+        await wallet.commandHandler(CreateWalletCommand(
+          walletId: 'wallet-456',
+          walletName: 'Output Scan Test Wallet',
+          mnemonic: 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+        ));
+
+        // Generate two addresses for testing
+        await wallet.commandHandler(GenerateAddressCommand(
+          walletId: 'wallet-456',
+          label: 'Address 1',
+        ));
+        await wallet.commandHandler(GenerateAddressCommand(
+          walletId: 'wallet-456',
+          label: 'Address 2',
+        ));
+
+        final addresses = wallet.currentState.addresses.keys.toList();
+        walletAddress1 = addresses[0];
+        walletAddress2 = addresses[1];
+        
+        // Use a valid external address for testnet
+        externalAddress = 'n4VQ5YdHf7hLQ2gWQYYrcxoE5B7nWuDFNF'; // Valid testnet address
+      });
+
+      test('should create UTXOs for all P2PKH outputs belonging to wallet', () async {
+        // Build a transaction with 3 outputs:
+        // - Output 0: to external address (50000 sats)
+        // - Output 1: to wallet address 1 (30000 sats)
+        // - Output 2: to wallet address 2 (19000 sats)
+        // Total: 99000 sats + 1000 sat fee = 100000 sats input
+        
+        final tx = dartsv.Transaction();
+        tx.version = 1;
+        tx.nLockTime = 0;
+        
+        // Add a dummy input
+        tx.inputs.add(dartsv.TransactionInput(
+          'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          0,
+          dartsv.TransactionInput.MAX_SEQ_NUMBER,
+        ));
+        
+        // Output 0: External address
+        final externalAddr = dartsv.Address.fromBase58(externalAddress);
+        final externalScript = dartsv.P2PKHLockBuilder.fromAddress(externalAddr).getScriptPubkey();
+        tx.outputs.add(dartsv.TransactionOutput(BigInt.from(50000), externalScript));
+        
+        // Output 1: Wallet address 1
+        final addr1 = dartsv.Address.fromBase58(walletAddress1);
+        final script1 = dartsv.P2PKHLockBuilder.fromAddress(addr1).getScriptPubkey();
+        tx.outputs.add(dartsv.TransactionOutput(BigInt.from(30000), script1));
+        
+        // Output 2: Wallet address 2
+        final addr2 = dartsv.Address.fromBase58(walletAddress2);
+        final script2 = dartsv.P2PKHLockBuilder.fromAddress(addr2).getScriptPubkey();
+        tx.outputs.add(dartsv.TransactionOutput(BigInt.from(19000), script2));
+        
+        final txHex = tx.serialize();
+        final txid = tx.id;
+        
+        // Record the transaction
+        final recordCommand = RecordOutgoingTransactionCommand(
+          walletId: 'wallet-456',
+          txid: txid,
+          rawHex: txHex,
+          totalInputSats: 100000,
+          totalOutputSats: 99000,
+          fee: 1000,
+          numInputs: 1,
+          numOutputs: 3,
+          txVersion: 1,
+          txLockTime: 0,
+          spentUtxoKeys: ['aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0'],
+          recipientAddresses: [externalAddress],
+          paymentAmount: BigInt.from(50000),
+          changeAddress: null,
+          changeAmount: null,
+        );
+        
+        await wallet.commandHandler(recordCommand);
+        
+        // Should create UTXOs for outputs 1 and 2 (wallet addresses)
+        expect(wallet.currentState.utxos, hasLength(2));
+        
+        final utxo1 = wallet.currentState.utxos['$txid:1'];
+        expect(utxo1, isNotNull);
+        expect(utxo1!.address, equals(walletAddress1));
+        expect(utxo1.satoshis, equals(BigInt.from(30000)));
+        expect(utxo1.status, equals(UTXOStatus.pending));
+        
+        final utxo2 = wallet.currentState.utxos['$txid:2'];
+        expect(utxo2, isNotNull);
+        expect(utxo2!.address, equals(walletAddress2));
+        expect(utxo2.satoshis, equals(BigInt.from(19000)));
+        expect(utxo2.status, equals(UTXOStatus.pending));
+      });
+
+      test('should handle transaction with only external outputs', () async {
+        // Build a transaction with only external outputs
+        final tx = dartsv.Transaction();
+        tx.version = 1;
+        tx.nLockTime = 0;
+        
+        tx.inputs.add(dartsv.TransactionInput(
+          'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+          0,
+          dartsv.TransactionInput.MAX_SEQ_NUMBER,
+        ));
+        
+        // Only external output
+        final externalAddr = dartsv.Address.fromBase58(externalAddress);
+        final externalScript = dartsv.P2PKHLockBuilder.fromAddress(externalAddr).getScriptPubkey();
+        tx.outputs.add(dartsv.TransactionOutput(BigInt.from(99000), externalScript));
+        
+        final txHex = tx.serialize();
+        final txid = tx.id;
+        
+        final recordCommand = RecordOutgoingTransactionCommand(
+          walletId: 'wallet-456',
+          txid: txid,
+          rawHex: txHex,
+          totalInputSats: 100000,
+          totalOutputSats: 99000,
+          fee: 1000,
+          numInputs: 1,
+          numOutputs: 1,
+          txVersion: 1,
+          txLockTime: 0,
+          spentUtxoKeys: ['bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:0'],
+          recipientAddresses: [externalAddress],
+          paymentAmount: BigInt.from(99000),
+          changeAddress: null,
+          changeAmount: null,
+        );
+        
+        await wallet.commandHandler(recordCommand);
+        
+        // Should not create any UTXOs (all outputs are external)
+        expect(wallet.currentState.utxos, hasLength(0));
+      });
+
+      test('should handle P2PK outputs to wallet', () async {
+        // Generate a new keypair for this test
+        final testPrivKey = dartsv.SVPrivateKey();
+        final testPubKey = testPrivKey.publicKey;
+        final testAddress = dartsv.Address.fromPublicKey(testPubKey, dartsv.NetworkType.TEST).toBase58();
+        
+        // Add this address to the wallet manually
+        wallet.currentState.addresses[testAddress] = 'P2PK Test Address';
+        
+        // Build transaction with P2PK output using P2PKLockBuilder
+        final tx = dartsv.Transaction();
+        tx.version = 1;
+        tx.nLockTime = 0;
+        
+        tx.inputs.add(dartsv.TransactionInput(
+          'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+          0,
+          dartsv.TransactionInput.MAX_SEQ_NUMBER,
+        ));
+        
+        // P2PK output using P2PKLockBuilder
+        final p2pkLockBuilder = dartsv.P2PKLockBuilder(testPubKey);
+        final p2pkScript = p2pkLockBuilder.getScriptPubkey();
+        tx.outputs.add(dartsv.TransactionOutput(BigInt.from(50000), p2pkScript));
+        
+        final txHex = tx.serialize();
+        final txid = tx.id;
+        
+        final recordCommand = RecordOutgoingTransactionCommand(
+          walletId: 'wallet-456',
+          txid: txid,
+          rawHex: txHex,
+          totalInputSats: 51000,
+          totalOutputSats: 50000,
+          fee: 1000,
+          numInputs: 1,
+          numOutputs: 1,
+          txVersion: 1,
+          txLockTime: 0,
+          spentUtxoKeys: ['cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:0'],
+          recipientAddresses: [],
+          paymentAmount: BigInt.from(50000),
+          changeAddress: null,
+          changeAmount: null,
+        );
+        
+        await wallet.commandHandler(recordCommand);
+        
+        // Should create UTXO for P2PK output
+        expect(wallet.currentState.utxos, hasLength(1));
+        
+        final utxo = wallet.currentState.utxos['$txid:0'];
+        expect(utxo, isNotNull);
+        expect(utxo!.address, equals(testAddress));
+        expect(utxo.satoshis, equals(BigInt.from(50000)));
+      });
+
+      test('should handle P2MS multisig outputs where wallet has one key', () async {
+        // Generate two keypairs - one for wallet, one external
+        final walletPrivKey = dartsv.SVPrivateKey();
+        final walletPubKey = walletPrivKey.publicKey;
+        final walletAddr = dartsv.Address.fromPublicKey(walletPubKey, dartsv.NetworkType.TEST).toBase58();
+        
+        final externalPrivKey = dartsv.SVPrivateKey();
+        final externalPubKey = externalPrivKey.publicKey;
+        
+        // Add wallet address
+        wallet.currentState.addresses[walletAddr] = 'Multisig Key';
+        
+        // Build transaction with 2-of-2 multisig output
+        final tx = dartsv.Transaction();
+        tx.version = 1;
+        tx.nLockTime = 0;
+        
+        tx.inputs.add(dartsv.TransactionInput(
+          'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+          0,
+          dartsv.TransactionInput.MAX_SEQ_NUMBER,
+        ));
+        
+        // Create 2-of-2 multisig script
+        final lockBuilder = dartsv.P2MSLockBuilder(
+          [walletPubKey, externalPubKey],
+          2,
+          sorting: true,
+        );
+        final multisigScript = lockBuilder.getScriptPubkey();
+        tx.outputs.add(dartsv.TransactionOutput(BigInt.from(100000), multisigScript));
+        
+        final txHex = tx.serialize();
+        final txid = tx.id;
+        
+        final recordCommand = RecordOutgoingTransactionCommand(
+          walletId: 'wallet-456',
+          txid: txid,
+          rawHex: txHex,
+          totalInputSats: 101000,
+          totalOutputSats: 100000,
+          fee: 1000,
+          numInputs: 1,
+          numOutputs: 1,
+          txVersion: 1,
+          txLockTime: 0,
+          spentUtxoKeys: ['dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd:0'],
+          recipientAddresses: [],
+          paymentAmount: BigInt.from(100000),
+          changeAddress: null,
+          changeAmount: null,
+        );
+        
+        await wallet.commandHandler(recordCommand);
+        
+        // Should create UTXO for multisig output since wallet has one of the keys
+        expect(wallet.currentState.utxos, hasLength(1));
+        
+        final utxo = wallet.currentState.utxos['$txid:0'];
+        expect(utxo, isNotNull);
+        expect(utxo!.address, equals(walletAddr));
+        expect(utxo.satoshis, equals(BigInt.from(100000)));
+      });
+
+      test('should handle settlement-like transaction (payment channel)', () async {
+        // Simulate a payment channel settlement where:
+        // - Input: 2-of-2 multisig UTXO (funded channel)
+        // - Output 0: Server payment (wallet address 1)
+        // - Output 1: Client refund (external address)
+        
+        final tx = dartsv.Transaction();
+        tx.version = 1;
+        tx.nLockTime = 0;
+        
+        // Input from multisig funding
+        tx.inputs.add(dartsv.TransactionInput(
+          'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+          0,
+          1, // sequence number 1 (settlement tx)
+        ));
+        
+        // Output 0: Server payment (to wallet)
+        final addr1 = dartsv.Address.fromBase58(walletAddress1);
+        final script1 = dartsv.P2PKHLockBuilder.fromAddress(addr1).getScriptPubkey();
+        tx.outputs.add(dartsv.TransactionOutput(BigInt.from(70000), script1));
+        
+        // Output 1: Client refund (external)
+        final externalAddr = dartsv.Address.fromBase58(externalAddress);
+        final externalScript = dartsv.P2PKHLockBuilder.fromAddress(externalAddr).getScriptPubkey();
+        tx.outputs.add(dartsv.TransactionOutput(BigInt.from(29000), externalScript));
+        
+        final txHex = tx.serialize();
+        final txid = tx.id;
+        
+        // Record as settlement transaction
+        final recordCommand = RecordOutgoingTransactionCommand(
+          walletId: 'wallet-456',
+          txid: txid,
+          rawHex: txHex,
+          totalInputSats: 100000,
+          totalOutputSats: 99000,
+          fee: 1000,
+          numInputs: 1,
+          numOutputs: 2,
+          txVersion: 1,
+          txLockTime: 0,
+          spentUtxoKeys: ['eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee:0'],
+          recipientAddresses: [],
+          paymentAmount: BigInt.zero, // Settlement, not a regular payment
+          changeAddress: null, // No change - explicit settlement
+          changeAmount: null,
+        );
+        
+        await wallet.commandHandler(recordCommand);
+        
+        // Should create UTXO for the server payment output
+        expect(wallet.currentState.utxos, hasLength(1));
+        
+        final utxo = wallet.currentState.utxos['$txid:0'];
+        expect(utxo, isNotNull);
+        expect(utxo!.address, equals(walletAddress1));
+        expect(utxo.satoshis, equals(BigInt.from(70000)));
+        expect(utxo.status, equals(UTXOStatus.pending));
+      });
+
+      test('should mark spent UTXOs and create wallet UTXOs in same transaction', () async {
+        // First, give wallet a UTXO to spend
+        final initialUtxoKey = 'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff:0';
+        await wallet.commandHandler(ReceiveUTXOCommand(
+          walletId: 'wallet-456',
+          txid: 'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+          vout: 0,
+          satoshis: BigInt.from(100000),
+          scriptPubKey: dartsv.P2PKHLockBuilder.fromAddress(
+            dartsv.Address.fromBase58(walletAddress1)
+          ).getScriptPubkey().toHex(),
+          address: walletAddress1,
+          confirmations: 6,
+        ));
+        
+        // Build transaction that spends it and creates change
+        final tx = dartsv.Transaction();
+        tx.version = 1;
+        tx.nLockTime = 0;
+        
+        tx.inputs.add(dartsv.TransactionInput(
+          'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
+          0,
+          dartsv.TransactionInput.MAX_SEQ_NUMBER,
+        ));
+        
+        // Output 0: Payment to external (50000 sats)
+        final externalAddr = dartsv.Address.fromBase58(externalAddress);
+        final externalScript = dartsv.P2PKHLockBuilder.fromAddress(externalAddr).getScriptPubkey();
+        tx.outputs.add(dartsv.TransactionOutput(BigInt.from(50000), externalScript));
+        
+        // Output 1: Change back to wallet address 2 (49000 sats)
+        final addr2 = dartsv.Address.fromBase58(walletAddress2);
+        final script2 = dartsv.P2PKHLockBuilder.fromAddress(addr2).getScriptPubkey();
+        tx.outputs.add(dartsv.TransactionOutput(BigInt.from(49000), script2));
+        
+        final txHex = tx.serialize();
+        final txid = tx.id;
+        
+        final recordCommand = RecordOutgoingTransactionCommand(
+          walletId: 'wallet-456',
+          txid: txid,
+          rawHex: txHex,
+          totalInputSats: 100000,
+          totalOutputSats: 99000,
+          fee: 1000,
+          numInputs: 1,
+          numOutputs: 2,
+          txVersion: 1,
+          txLockTime: 0,
+          spentUtxoKeys: [initialUtxoKey],
+          recipientAddresses: [externalAddress],
+          paymentAmount: BigInt.from(50000),
+          changeAddress: null,
+          changeAmount: null,
+        );
+        
+        await wallet.commandHandler(recordCommand);
+        
+        // Should have 1 UTXO (the change), and the original should be spent
+        expect(wallet.currentState.utxos, hasLength(2)); // Original + new change
+        
+        final spentUtxo = wallet.currentState.utxos[initialUtxoKey];
+        expect(spentUtxo, isNotNull);
+        expect(spentUtxo!.status, equals(UTXOStatus.spent));
+        
+        final changeUtxo = wallet.currentState.utxos['$txid:1'];
+        expect(changeUtxo, isNotNull);
+        expect(changeUtxo!.address, equals(walletAddress2));
+        expect(changeUtxo.satoshis, equals(BigInt.from(49000)));
+        expect(changeUtxo.status, equals(UTXOStatus.pending));
+      });
+
+      test('COMPREHENSIVE: Payment channel settlement with correct UTXO attribution', () async {
+        // This test validates the complete payment channel settlement flow:
+        // 1. Multisig funding UTXO exists and is marked as spent
+        // 2. Server payment output creates a UTXO for wallet
+        // 3. Client refund output does NOT create a UTXO (external)
+        // 4. Transaction metadata correctly shows client as recipient
+        
+        // Setup: Create a multisig funding UTXO (simulating channel funding)
+        final serverPrivKey = dartsv.SVPrivateKey();
+        final serverPubKey = serverPrivKey.publicKey;
+        final serverAddr = dartsv.Address.fromPublicKey(serverPubKey, dartsv.NetworkType.TEST).toBase58();
+        
+        final clientPrivKey = dartsv.SVPrivateKey();
+        final clientPubKey = clientPrivKey.publicKey;
+        final clientAddr = dartsv.Address.fromPublicKey(clientPubKey, dartsv.NetworkType.TEST).toBase58();
+        
+        // Add server address to wallet
+        wallet.currentState.addresses[serverAddr] = 'Payment Channel Server Key';
+        
+        // Create the multisig funding UTXO
+        final fundingTxid = 'abcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcd';
+        final fundingVout = 1;
+        final fundingAmount = 10000;
+        
+        final lockBuilder = dartsv.P2MSLockBuilder(
+          [serverPubKey, clientPubKey],
+          2,
+          sorting: true,
+        );
+        final multisigScript = lockBuilder.getScriptPubkey();
+        
+        // Record the funding UTXO (2-of-2 multisig)
+        await wallet.commandHandler(ReceiveUTXOCommand(
+          walletId: 'wallet-456',
+          txid: fundingTxid,
+          vout: fundingVout,
+          satoshis: BigInt.from(fundingAmount),
+          scriptPubKey: multisigScript.toHex(),
+          address: serverAddr, // Associated with server's key in the multisig
+          confirmations: 6,
+        ));
+        
+        // Build the settlement transaction
+        // Structure:
+        // - Input: The multisig funding UTXO
+        // - Output 0: Server payment (2400 sats to wallet)
+        // - Output 1: Client refund (7599 sats to external)
+        // - Fee: 1 sat
+        
+        final settlementTx = dartsv.Transaction();
+        settlementTx.version = 1;
+        settlementTx.nLockTime = 0;
+        
+        // Input: Spend the multisig funding UTXO
+        settlementTx.inputs.add(dartsv.TransactionInput(
+          fundingTxid,
+          fundingVout,
+          1, // sequence number for settlement
+        ));
+        
+        // Output 0: Server payment (to wallet)
+        final serverScript = dartsv.P2PKHLockBuilder.fromAddress(
+          dartsv.Address.fromBase58(serverAddr)
+        ).getScriptPubkey();
+        settlementTx.outputs.add(dartsv.TransactionOutput(BigInt.from(2400), serverScript));
+        
+        // Output 1: Client refund (external)
+        final clientScript = dartsv.P2PKHLockBuilder.fromAddress(
+          dartsv.Address.fromBase58(clientAddr)
+        ).getScriptPubkey();
+        settlementTx.outputs.add(dartsv.TransactionOutput(BigInt.from(7599), clientScript));
+        
+        final settlementTxHex = settlementTx.serialize();
+        final settlementTxid = settlementTx.id;
+        
+        // Record the settlement transaction (as done by payment channel coordinator)
+        final recordCommand = RecordOutgoingTransactionCommand(
+          walletId: 'wallet-456',
+          txid: settlementTxid,
+          rawHex: settlementTxHex,
+          totalInputSats: fundingAmount,
+          totalOutputSats: 9999,
+          fee: 1,
+          numInputs: 1,
+          numOutputs: 2,
+          txVersion: 1,
+          txLockTime: 0,
+          spentUtxoKeys: ['$fundingTxid:$fundingVout'],
+          recipientAddresses: [clientAddr], // Client is the recipient
+          paymentAmount: BigInt.from(7599), // Amount sent to client
+          changeAddress: null,
+          changeAmount: null,
+        );
+        
+        await wallet.commandHandler(recordCommand);
+        
+        // VALIDATIONS
+        
+        // 1. The multisig funding UTXO should be marked as spent
+        final fundingUtxo = wallet.currentState.utxos['$fundingTxid:$fundingVout'];
+        expect(fundingUtxo, isNotNull, reason: 'Funding UTXO should exist');
+        expect(fundingUtxo!.status, equals(UTXOStatus.spent), 
+            reason: 'Funding UTXO should be marked as spent');
+        
+        // 2. Server payment output should create a UTXO for the wallet
+        final serverPaymentUtxo = wallet.currentState.utxos['$settlementTxid:0'];
+        expect(serverPaymentUtxo, isNotNull, 
+            reason: 'Server payment UTXO should be created');
+        expect(serverPaymentUtxo!.address, equals(serverAddr),
+            reason: 'Server payment UTXO should belong to wallet address');
+        expect(serverPaymentUtxo.satoshis, equals(BigInt.from(2400)),
+            reason: 'Server payment UTXO should have correct amount');
+        expect(serverPaymentUtxo.status, equals(UTXOStatus.pending),
+            reason: 'New UTXO should start as pending');
+        
+        // 3. Client refund output should NOT create a UTXO (it's external)
+        final clientRefundUtxo = wallet.currentState.utxos['$settlementTxid:1'];
+        expect(clientRefundUtxo, isNull,
+            reason: 'Client refund UTXO should NOT be created (external address)');
+        
+        // 4. Total UTXOs should be 2: spent funding + new server payment
+        expect(wallet.currentState.utxos, hasLength(2),
+            reason: 'Should have exactly 2 UTXOs (spent funding + new server payment)');
+        
+        print('✅ Payment channel settlement UTXO attribution test passed!');
+        print('   - Funding UTXO correctly marked as spent');
+        print('   - Server payment UTXO correctly created (2400 sats)');
+        print('   - Client refund UTXO correctly NOT created (external)');
+        print('   - Total UTXO count correct: ${wallet.currentState.utxos.length}');
+      });
+    });
   });
 }
 
@@ -671,5 +1217,13 @@ void _registerWalletEvents() {
   EventRegistry.register<UTXOReservationExpiredEvent>(
     'UTXOReservationExpiredEvent',
     UTXOReservationExpiredEvent.fromMap,
+  );
+  EventRegistry.register<TransactionRecordedEvent>(
+    'TransactionRecordedEvent',
+    TransactionRecordedEvent.fromMap,
+  );
+  EventRegistry.register<TransactionConfirmedEvent>(
+    'TransactionConfirmedEvent',
+    TransactionConfirmedEvent.fromMap,
   );
 } 

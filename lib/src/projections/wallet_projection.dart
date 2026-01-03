@@ -316,6 +316,61 @@ class WalletProjection extends Projection<void> {
       if (addressMeta != null) {
         derivationIndex = addressMeta.derivationIndex;
         print('[WalletProjection]    Derivation Index: $derivationIndex');
+      } else {
+        // Address doesn't exist yet - create it!
+        // This can happen for payment channel addresses or other externally generated addresses
+        print('[WalletProjection]    ⚠️  Address not found in address table, creating it now');
+        
+        // Parse the scriptPubKey to determine actual script type (don't guess!)
+        String scriptType = 'unknown';
+        Map<String, dynamic>? scriptMetadata;
+        
+        try {
+          // Get wallet network type
+          final walletMeta = await _storage.getWallet(event.walletId);
+          final networkTypeStr = walletMeta?['network_type'] as String? ?? 'test';
+          final networkType = networkTypeStr == 'main' 
+              ? dartsv.NetworkType.MAIN 
+              : dartsv.NetworkType.TEST;
+          
+          // Parse script to identify type
+          final script = dartsv.SVScript.fromHex(event.scriptPubKey);
+          final scriptRegistry = ScriptTypeRegistry(networkType: networkType);
+          
+          final identifiedType = scriptRegistry.identifyScriptType(script);
+          if (identifiedType != null) {
+            scriptType = identifiedType.toLowerCase();
+            scriptMetadata = scriptRegistry.extractScriptMetadata(script);
+            print('[WalletProjection]    Script type identified: $scriptType');
+            if (scriptMetadata != null && scriptMetadata.isNotEmpty) {
+              print('[WalletProjection]    Script metadata: $scriptMetadata');
+            }
+          }
+        } catch (e) {
+          print('[WalletProjection]    ⚠️  Could not parse scriptPubKey: $e');
+          // Fall back to unknown rather than guessing
+        }
+        
+        final newAddressMeta = AddressMetadata(
+          address: event.address,
+          scriptType: scriptType, // Actual script type from parsing
+          derivationPath: null, // Unknown for externally received addresses
+          derivationIndex: null, // Unknown for externally received addresses
+          isChange: false, // Assume not change for received UTXOs
+          label: 'Received UTXO ($scriptType)', // Include script type in label
+          purpose: 'receive',
+          firstUsedAt: event.timestamp,
+          lastUsedAt: event.timestamp,
+          usageCount: 1,
+          balance: BigInt.from(event.satoshis),
+          createdAt: event.timestamp,
+          isWatched: true,
+        );
+        await _storage.upsertAddress(event.walletId, newAddressMeta);
+        print('[WalletProjection]    ✅ Address created with script type: $scriptType');
+        
+        // Update wallet address count since we just added a new address
+        await _updateWalletAddressCount(event.walletId, event.timestamp);
       }
     }
     

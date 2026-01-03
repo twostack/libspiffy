@@ -1078,50 +1078,136 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     }
     print('[BitcoinWalletAggregate]    ✅ Emitted ${command.spentUtxoKeys.length} UTXOSpentEvent(s)');
 
-    // If there's a change output, create a UTXO for it with pending status
-    if (command.changeAddress != null && command.changeAmount != null && command.changeAmount! > BigInt.zero) {
-      print('[BitcoinWalletAggregate]    💰 Change detected: ${command.changeAmount} sats to ${command.changeAddress}');
+    // SCAN ALL OUTPUTS: Create UTXOs for any outputs that belong to wallet addresses
+    // This handles change outputs, settlement outputs, self-transfers, and any other
+    // scenario where transaction outputs belong to this wallet
+    try {
+      final tx = dartsv.Transaction.fromHex(command.rawHex);
+      final walletAddresses = currentState.addresses.keys.toSet();
+      final network = currentState.networkType == 'main' 
+          ? dartsv.NetworkType.MAIN 
+          : dartsv.NetworkType.TEST;
       
-      // Parse transaction to find change output vout and scriptPubKey
-      try {
-        final tx = dartsv.Transaction.fromHex(command.rawHex);
-        int? changeVout;
-        String? changeScriptPubKey;
+      print('[BitcoinWalletAggregate]    🔍 Scanning ${tx.outputs.length} output(s) for wallet membership');
+      print('[BitcoinWalletAggregate]       Wallet has ${walletAddresses.length} address(es)');
+      
+      // Use ScriptTypeRegistry to identify output types and extract addresses
+      final scriptRegistry = ScriptTypeRegistry(networkType: network);
+      
+      for (int i = 0; i < tx.outputs.length; i++) {
+        final output = tx.outputs[i];
+        final satoshis = output.satoshis.toInt();
         
-        // Find which output is the change (matches change address and amount)
-        for (int i = 0; i < tx.outputs.length; i++) {
-          final output = tx.outputs[i];
-          if (output.satoshis == command.changeAmount) {
-            // This might be the change output
-            changeVout = i;
-            changeScriptPubKey = output.script.toHex();
-            print('[BitcoinWalletAggregate]       Found change at vout $i');
-            break;
-          }
+        if (satoshis <= 0) {
+          print('[BitcoinWalletAggregate]       Output $i: SKIP (zero satoshis)');
+          continue;
         }
         
-        if (changeVout != null && changeScriptPubKey != null) {
-          print('[BitcoinWalletAggregate]    ✅ Creating UTXOReceivedEvent for change (status: PENDING)');
+        // Identify script type
+        final scriptType = scriptRegistry.identifyScriptType(output.script)?.toLowerCase() ?? 'unknown';
+        
+        String? outputAddress;
+        bool belongsToWallet = false;
+        
+        // Extract address based on script type
+        switch (scriptType) {
+          case 'p2pkh':
+            try {
+              final locker = dartsv.P2PKHLockBuilder.fromScript(output.script, networkType: network);
+              outputAddress = locker.address?.toBase58();
+              if (outputAddress != null && walletAddresses.contains(outputAddress)) {
+                belongsToWallet = true;
+              }
+            } catch (e) {
+              print('[BitcoinWalletAggregate]       Output $i: Error extracting P2PKH address: $e');
+            }
+            break;
+            
+          case 'p2pk':
+            try {
+              final scriptInfo = scriptRegistry.extractScriptMetadata(output.script);
+              final pubkeyHex = scriptInfo?['pubKey'] ?? scriptInfo?['publicKey'];
+              if (pubkeyHex != null) {
+                final pubKeyObj = dartsv.SVPublicKey.fromHex(pubkeyHex);
+                outputAddress = dartsv.Address.fromPublicKey(pubKeyObj, network).toBase58();
+                if (walletAddresses.contains(outputAddress)) {
+                  belongsToWallet = true;
+                }
+              }
+            } catch (e) {
+              print('[BitcoinWalletAggregate]       Output $i: Error extracting P2PK address: $e');
+            }
+            break;
+            
+          case 'p2ms':
+            // For P2MS (multisig), check if any of the public keys belong to wallet addresses
+            try {
+              final scriptInfo = scriptRegistry.extractScriptMetadata(output.script);
+              final pubKeys = scriptInfo?['publicKeys'] as List?;
+              if (pubKeys != null) {
+                for (final pubKeyHex in pubKeys) {
+                  try {
+                    final pubKey = dartsv.SVPublicKey.fromHex(pubKeyHex.toString());
+                    final derivedAddress = dartsv.Address.fromPublicKey(pubKey, network).toBase58();
+                    if (walletAddresses.contains(derivedAddress)) {
+                      belongsToWallet = true;
+                      outputAddress = derivedAddress; // Use the first matching address
+                      break;
+                    }
+                  } catch (e) {
+                    print('[BitcoinWalletAggregate]       Output $i: Error deriving address from P2MS pubkey: $e');
+                  }
+                }
+              }
+            } catch (e) {
+              print('[BitcoinWalletAggregate]       Output $i: Error processing P2MS output: $e');
+            }
+            break;
+            
+          case 'opreturn':
+          case 'op_return':
+            // OP_RETURN outputs don't belong to anyone
+            print('[BitcoinWalletAggregate]       Output $i: SKIP (OP_RETURN)');
+            continue;
+            
+          default:
+            print('[BitcoinWalletAggregate]       Output $i: SKIP (unsupported script type: $scriptType)');
+            continue;
+        }
+        
+        // If output belongs to wallet, create a UTXO for it
+        if (belongsToWallet && outputAddress != null) {
+          print('[BitcoinWalletAggregate]       Output $i: ✅ BELONGS TO WALLET');
+          print('[BitcoinWalletAggregate]          Address: $outputAddress');
+          print('[BitcoinWalletAggregate]          Amount: $satoshis sats');
+          print('[BitcoinWalletAggregate]          Script type: $scriptType');
+          
           final utxoEvent = UTXOReceivedEvent(
             walletId: command.walletId,
             txid: command.txid,
-            vout: changeVout,
-            satoshis: command.changeAmount!.toInt(),
-            scriptPubKey: changeScriptPubKey,
-            address: command.changeAddress!,
+            vout: i,
+            satoshis: satoshis,
+            scriptPubKey: output.script.toHex(),
+            address: outputAddress,
             blockHeight: null, // Not confirmed yet
             confirmations: 0,
-            initialStatus: UTXOStatus.pending, // Change output starts as pending
-            version: currentState.version + events.length + 1, // Dynamic version based on events count
+            initialStatus: UTXOStatus.pending, // Starts as pending until confirmed
+            version: currentState.version + events.length + 1,
             timestamp: DateTime.now(),
           );
           events.add(utxoEvent);
         } else {
-          print('[BitcoinWalletAggregate]    ⚠️  Could not find change output in transaction');
+          print('[BitcoinWalletAggregate]       Output $i: ❌ External (to: ${outputAddress ?? 'unknown'}, $satoshis sats)');
         }
-      } catch (e) {
-        print('[BitcoinWalletAggregate]    ⚠️  Error parsing transaction for change output: $e');
       }
+      
+      final walletOutputsCount = events.length - 1 - command.spentUtxoKeys.length;
+      print('[BitcoinWalletAggregate]    ✅ Output scan complete: found $walletOutputsCount wallet output(s)');
+      
+    } catch (e, stackTrace) {
+      print('[BitcoinWalletAggregate]    ⚠️  Error scanning transaction outputs: $e');
+      print('[BitcoinWalletAggregate]    Stack trace: $stackTrace');
+      // Continue without creating UTXOs - better than crashing
     }
 
     return events;

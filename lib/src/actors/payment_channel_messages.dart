@@ -106,6 +106,22 @@ class ChannelAcceptedResponse extends LocalMessage {
   dynamic get payload => this;
 }
 
+/// Client records that server accepted the channel (stores server pubkey/address)
+class RecordServerAcceptanceMessage extends LocalMessage {
+  final String channelId;
+  final String serverPubKeyHex;
+  final String serverAddressB58;
+
+  RecordServerAcceptanceMessage({
+    required this.channelId,
+    required this.serverPubKeyHex,
+    required this.serverAddressB58,
+  }) : super(payload: null);
+
+  @override
+  dynamic get payload => this;
+}
+
 // =============================================================================
 // REFUND TRANSACTION MESSAGES
 // =============================================================================
@@ -328,6 +344,7 @@ class PaymentRecordedResponse extends LocalMessage {
 class AcknowledgePaymentMessage extends LocalMessage {
   final String channelId;
   final String walletId;
+  final BigInt amountSats;  // Incremental payment amount
   final String paymentTxHex;
   final String clientSignatureHex;
   final int proposedSequence;
@@ -337,6 +354,7 @@ class AcknowledgePaymentMessage extends LocalMessage {
   AcknowledgePaymentMessage({
     required this.channelId,
     required this.walletId,
+    required this.amountSats,
     required this.paymentTxHex,
     required this.clientSignatureHex,
     required this.proposedSequence,
@@ -359,9 +377,9 @@ class PaymentAcknowledgedResponse extends LocalMessage {
 
   PaymentAcknowledgedResponse({
     required this.channelId,
-    required this.sequenceNumber,
-    required this.fullySignedPaymentTxHex,
-    required this.serverSignatureHex,
+    this.sequenceNumber = 0,
+    this.fullySignedPaymentTxHex = '',
+    this.serverSignatureHex = '',
     required this.success,
     this.error,
   }) : super(payload: null);
@@ -436,6 +454,66 @@ class ChannelStateResponse extends LocalMessage {
     this.clientBalanceSats,
     this.serverBalanceSats,
     this.latestSequenceNumber,
+    required this.success,
+    this.error,
+  }) : super(payload: null);
+
+  @override
+  dynamic get payload => this;
+}
+
+/// Direct query to aggregate for full state (for building transactions)
+class ChannelStateQuery extends LocalMessage {
+  final String channelId;
+
+  ChannelStateQuery({
+    required this.channelId,
+  }) : super(payload: null);
+
+  @override
+  dynamic get payload => this;
+}
+
+/// Full channel state response from aggregate (for building transactions)
+class FullChannelStateResponse extends LocalMessage {
+  final String channelId;
+  final String walletId;
+  final String status;
+  final String? role;
+  final BigInt clientBalanceSats;
+  final BigInt serverBalanceSats;
+  final int latestSequenceNumber;
+  final BigInt fundingAmountSats;
+  final String? fundingTxId;
+  final String? fundingTxHex;
+  final int? fundingOutputIndex;
+  final String? clientPubKeyHex;
+  final String? serverPubKeyHex;
+  final String? clientAddressB58;
+  final String? serverAddressB58;
+  final int? derivationIndex;
+  final int? lockTimeUnix;
+  final bool success;
+  final String? error;
+
+  FullChannelStateResponse({
+    required this.channelId,
+    required this.walletId,
+    required this.status,
+    this.role,
+    required this.clientBalanceSats,
+    required this.serverBalanceSats,
+    required this.latestSequenceNumber,
+    required this.fundingAmountSats,
+    this.fundingTxId,
+    this.fundingTxHex,
+    this.fundingOutputIndex,
+    this.clientPubKeyHex,
+    this.serverPubKeyHex,
+    this.clientAddressB58,
+    this.serverAddressB58,
+    this.derivationIndex,
+    this.lockTimeUnix,
     required this.success,
     this.error,
   }) : super(payload: null);

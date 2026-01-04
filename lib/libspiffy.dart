@@ -37,6 +37,15 @@ export 'src/core/invoice_commands.dart';        // Invoice commands for aggregat
 export 'src/core/invoice_events.dart';          // Invoice lifecycle events for CQRS pattern  
 export 'src/core/invoice_aggregate.dart';       // Invoice aggregate root with business logic
 
+// ✅ PAYMENT CHANNEL SYSTEM - CQRS-based payment channel management
+export 'src/core/channel_commands.dart';        // Channel commands for aggregate
+export 'src/core/channel_events.dart';          // Channel lifecycle events for CQRS pattern  
+export 'src/core/channel_state.dart';           // Channel state model
+export 'src/core/payment_channel_aggregate.dart'; // Channel aggregate root with business logic
+export 'src/actors/payment_channel_messages.dart'; // High-level channel manager messages
+export 'src/actors/payment_channel_manager_actor.dart'; // Channel manager actor
+export 'src/storage/payment_channel_entity.dart'; // Channel read model entity
+
 // ✅ PROJECTIONS - Read-side event handlers for CQRS
 export 'src/projections/wallet_projection.dart';   // Wallet read model projection
 export 'src/projections/invoice_projection.dart';  // Invoice read model projection

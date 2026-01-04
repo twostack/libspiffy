@@ -30,6 +30,7 @@ import 'header_sync_actor.dart';
 import 'invoice_coordinator_actor.dart';
 import 'payment_coordinator_actor.dart';
 import 'benford_coordinator_actor.dart';
+import 'payment_channel_manager_actor.dart';
 import 'import_actor.dart';
 import '../services/transaction_import_service.dart';
 
@@ -65,6 +66,7 @@ class LibSpiffyActorSystem {
   ActorRef? _invoiceCoordinator;
   ActorRef? _paymentCoordinator;
   ActorRef? _benfordCoordinator;
+  ActorRef? _channelManager;
   ActorRef? _spvActor;
   ActorRef? _arcActor;
   ActorRef? _headerSyncActor;
@@ -79,6 +81,7 @@ class LibSpiffyActorSystem {
   
   // Event broadcast for UI subscriptions
   final StreamController<WalletEvent> _walletEventBroadcaster = StreamController<WalletEvent>.broadcast();
+  final StreamController<ChannelEvent> _channelEventBroadcaster = StreamController<ChannelEvent>.broadcast();
 
   /// Initialize the LibSpiffy actor system
   /// 
@@ -437,6 +440,11 @@ class LibSpiffyActorSystem {
       (map) => ChannelRejectedEvent.fromMap(map),
     );
     
+    EventRegistry.register<ServerAcceptanceRecordedEvent>(
+      'ServerAcceptanceRecordedEvent',
+      (map) => ServerAcceptanceRecordedEvent.fromMap(map),
+    );
+    
     EventRegistry.register<RefundBuiltEvent>(
       'RefundBuiltEvent',
       (map) => RefundBuiltEvent.fromMap(map),
@@ -522,9 +530,6 @@ class LibSpiffyActorSystem {
     
     // Start streaming events to projections
     await _projectionManager!.start();
-    
-    // TODO: Subscribe to event store for real-time UI broadcasting
-    // For now, events will be manually broadcast by actors
     
     print('✓ ProjectionManager started with 3 projections');
   }
@@ -617,6 +622,15 @@ class LibSpiffyActorSystem {
     
     // Wire up Benford coordinator reference in WalletManager
     _walletManager!.tell(SetBenfordCoordinatorMessage(_benfordCoordinator!));
+    
+    // Spawn PaymentChannelManagerActor for payment channel operations
+    _channelManager = await _actorSystem.spawn('payment-channel-manager', () => PaymentChannelManagerActor(
+      walletManager: _walletManager!,
+      eventStore: _eventStore,
+      cryptoService: _cryptoService,
+      eventBroadcaster: broadcastChannelEvent,
+    ));
+    print('✓ PaymentChannelManagerActor spawned');
     
     // Spawn ImportActor if blockchain data source is provided
     if (_blockchainDataSource != null) {
@@ -935,6 +949,35 @@ class LibSpiffyActorSystem {
     return _eventStore;
   }
 
+  /// Get reference to the PaymentChannelManager actor
+  /// 
+  /// The PaymentChannelManagerActor orchestrates payment channel operations,
+  /// coordinating between WalletManager for cryptographic operations and
+  /// PaymentChannelAggregate for domain logic.
+  ActorRef get channelManager {
+    if (!isInitialized) {
+      throw StateError('LibSpiffy actor system not initialized');
+    }
+    if (_channelManager == null) {
+      throw StateError('PaymentChannelManagerActor not spawned');
+    }
+    return _channelManager!;
+  }
+
+  /// Get stream of channel events for external subscribers
+  /// 
+  /// External components (like P2P adapters) can subscribe to this stream
+  /// to receive payment channel events for protocol message translation.
+  Stream<ChannelEvent> get channelEvents => _channelEventBroadcaster.stream;
+
+  /// Broadcast a channel event to external subscribers
+  /// 
+  /// This should be called by PaymentChannelManagerActor when channel events
+  /// are emitted, allowing external components (like P2P adapters) to react.
+  void broadcastChannelEvent(ChannelEvent event) {
+    _channelEventBroadcaster.add(event);
+  }
+
   /// Get reference to the SpiffyNode bridge (if connected)
   SpiffyNodeBridge? get spiffyNodeBridge => _spiffyNodeBridge;
   
@@ -1147,8 +1190,9 @@ class LibSpiffyActorSystem {
         // This is acceptable since the host owns the Isar instance and will close it
       }
       
-      // 5. Close event broadcaster
+      // 5. Close event broadcasters
       await _walletEventBroadcaster.close();
+      await _channelEventBroadcaster.close();
       
       print('LibSpiffy Actor System shutdown complete');
     } catch (e) {

@@ -118,16 +118,28 @@ class ChannelRequestedEvent extends ChannelEvent {
 /// Server has accepted a channel request
 class ChannelAcceptedEvent extends ChannelEvent {
   final String walletId;
+  final String clientPeerId;
+  final String clientPubKeyHex;
+  final String clientAddressB58;
   final String serverPubKeyHex;
   final String serverAddressB58;
   final int derivationIndex;
+  final BigInt fundingAmountSats;
+  final int lockTimeUnix;
+  final String? context;
 
   ChannelAcceptedEvent({
     required String channelId,
     required this.walletId,
+    required this.clientPeerId,
+    required this.clientPubKeyHex,
+    required this.clientAddressB58,
     required this.serverPubKeyHex,
     required this.serverAddressB58,
     required this.derivationIndex,
+    required this.fundingAmountSats,
+    required this.lockTimeUnix,
+    this.context,
     String? eventId,
     DateTime? timestamp,
     int? version,
@@ -143,18 +155,30 @@ class ChannelAcceptedEvent extends ChannelEvent {
   @override
   Map<String, dynamic> getChannelEventData() => {
         'walletId': walletId,
+        'clientPeerId': clientPeerId,
+        'clientPubKeyHex': clientPubKeyHex,
+        'clientAddressB58': clientAddressB58,
         'serverPubKeyHex': serverPubKeyHex,
         'serverAddressB58': serverAddressB58,
         'derivationIndex': derivationIndex,
+        'fundingAmountSats': fundingAmountSats.toString(),
+        'lockTimeUnix': lockTimeUnix,
+        'context': context,
       };
 
   factory ChannelAcceptedEvent.fromMap(Map<String, dynamic> map) {
     return ChannelAcceptedEvent(
       channelId: map['channelId'] as String,
       walletId: map['walletId'] as String,
+      clientPeerId: map['clientPeerId'] as String,
+      clientPubKeyHex: map['clientPubKeyHex'] as String,
+      clientAddressB58: map['clientAddressB58'] as String,
       serverPubKeyHex: map['serverPubKeyHex'] as String,
       serverAddressB58: map['serverAddressB58'] as String,
       derivationIndex: map['derivationIndex'] as int,
+      fundingAmountSats: BigInt.parse(map['fundingAmountSats'] as String),
+      lockTimeUnix: map['lockTimeUnix'] as int,
+      context: map['context'] as String?,
       eventId: map['eventId'] as String?,
       timestamp: ChannelEvent._parseTimestamp(map['timestamp']),
       version: map['version'] as int?,
@@ -189,6 +213,50 @@ class ChannelRejectedEvent extends ChannelEvent {
     return ChannelRejectedEvent(
       channelId: map['channelId'] as String,
       reason: map['reason'] as String,
+      eventId: map['eventId'] as String?,
+      timestamp: ChannelEvent._parseTimestamp(map['timestamp']),
+      version: map['version'] as int?,
+      metadata: map['metadata'] as Map<String, dynamic>?,
+    );
+  }
+}
+
+/// Client has recorded server's acceptance (server pubkey/address)
+/// 
+/// This event is emitted by the client's aggregate after receiving
+/// the server's acceptance via P2P. It stores the server's cryptographic
+/// info needed for building channel transactions.
+class ServerAcceptanceRecordedEvent extends ChannelEvent {
+  final String serverPubKeyHex;
+  final String serverAddressB58;
+
+  ServerAcceptanceRecordedEvent({
+    required String channelId,
+    required this.serverPubKeyHex,
+    required this.serverAddressB58,
+    String? eventId,
+    DateTime? timestamp,
+    int? version,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          channelId: channelId,
+          eventId: eventId,
+          timestamp: timestamp,
+          version: version,
+          metadata: metadata,
+        );
+
+  @override
+  Map<String, dynamic> getChannelEventData() => {
+        'serverPubKeyHex': serverPubKeyHex,
+        'serverAddressB58': serverAddressB58,
+      };
+
+  factory ServerAcceptanceRecordedEvent.fromMap(Map<String, dynamic> map) {
+    return ServerAcceptanceRecordedEvent(
+      channelId: map['channelId'] as String,
+      serverPubKeyHex: map['serverPubKeyHex'] as String,
+      serverAddressB58: map['serverAddressB58'] as String,
       eventId: map['eventId'] as String?,
       timestamp: ChannelEvent._parseTimestamp(map['timestamp']),
       version: map['version'] as int?,
@@ -425,6 +493,7 @@ class PaymentRecordedEvent extends ChannelEvent {
 
 /// Payment has been acknowledged (server side - verified and countersigned)
 class PaymentAcknowledgedEvent extends ChannelEvent {
+  final BigInt amountSats;
   final int sequenceNumber;
   final BigInt newClientBalanceSats;
   final BigInt newServerBalanceSats;
@@ -433,6 +502,7 @@ class PaymentAcknowledgedEvent extends ChannelEvent {
 
   PaymentAcknowledgedEvent({
     required String channelId,
+    required this.amountSats,
     required this.sequenceNumber,
     required this.newClientBalanceSats,
     required this.newServerBalanceSats,
@@ -452,6 +522,7 @@ class PaymentAcknowledgedEvent extends ChannelEvent {
 
   @override
   Map<String, dynamic> getChannelEventData() => {
+        'amountSats': amountSats.toString(),
         'sequenceNumber': sequenceNumber,
         'newClientBalanceSats': newClientBalanceSats.toString(),
         'newServerBalanceSats': newServerBalanceSats.toString(),
@@ -462,6 +533,7 @@ class PaymentAcknowledgedEvent extends ChannelEvent {
   factory PaymentAcknowledgedEvent.fromMap(Map<String, dynamic> map) {
     return PaymentAcknowledgedEvent(
       channelId: map['channelId'] as String,
+      amountSats: BigInt.parse(map['amountSats'] as String),
       sequenceNumber: map['sequenceNumber'] as int,
       newClientBalanceSats: BigInt.parse(map['newClientBalanceSats'] as String),
       newServerBalanceSats: BigInt.parse(map['newServerBalanceSats'] as String),
@@ -483,11 +555,15 @@ class PaymentAcknowledgedEvent extends ChannelEvent {
 class ChannelClosingEvent extends ChannelEvent {
   final String? reason;
   final String initiator; // 'client' or 'server'
+  final BigInt clientBalanceSats;
+  final BigInt serverBalanceSats;
 
   ChannelClosingEvent({
     required String channelId,
     this.reason,
     required this.initiator,
+    required this.clientBalanceSats,
+    required this.serverBalanceSats,
     String? eventId,
     DateTime? timestamp,
     int? version,
@@ -504,6 +580,8 @@ class ChannelClosingEvent extends ChannelEvent {
   Map<String, dynamic> getChannelEventData() => {
         'reason': reason,
         'initiator': initiator,
+        'clientBalanceSats': clientBalanceSats.toString(),
+        'serverBalanceSats': serverBalanceSats.toString(),
       };
 
   factory ChannelClosingEvent.fromMap(Map<String, dynamic> map) {
@@ -511,6 +589,8 @@ class ChannelClosingEvent extends ChannelEvent {
       channelId: map['channelId'] as String,
       reason: map['reason'] as String?,
       initiator: map['initiator'] as String,
+      clientBalanceSats: BigInt.parse(map['clientBalanceSats'] as String? ?? '0'),
+      serverBalanceSats: BigInt.parse(map['serverBalanceSats'] as String? ?? '0'),
       eventId: map['eventId'] as String?,
       timestamp: ChannelEvent._parseTimestamp(map['timestamp']),
       version: map['version'] as int?,

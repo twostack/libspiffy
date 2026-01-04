@@ -172,30 +172,33 @@ class ChannelProjection extends Projection<void> {
     if (existing == null) {
       print('[ChannelProjection]    ⚠️ Channel ${event.channelId} not found, creating new entity as server');
       // Server side: create entity on accept if it doesn't exist
+      // Event now includes all necessary data from AcceptChannelCommand
       final entity = PaymentChannelEntity()
         ..channelId = event.channelId
         ..walletId = event.walletId
         ..role = 'server'
-        ..clientPeerId = '' // Will be set from request
-        ..serverPeerId = '' // Will be set from request
-        ..clientPubKeyHex = '' // Will be set from request
-        ..clientAddressB58 = '' // Will be set from request
+        ..clientPeerId = event.clientPeerId
+        ..serverPeerId = '' // Server's own peer ID not needed in entity
+        ..clientPubKeyHex = event.clientPubKeyHex
+        ..clientAddressB58 = event.clientAddressB58
         ..serverPubKeyHex = event.serverPubKeyHex
         ..serverAddressB58 = event.serverAddressB58
-        ..fundingAmountSats = '0' // Will be set from request
+        ..fundingAmountSats = event.fundingAmountSats.toString()
         ..fundingTxId = ''
         ..fundingTxHex = ''
         ..fundingOutputIndex = 0
-        ..lockTimeUnix = 0 // Will be set from request
+        ..lockTimeUnix = event.lockTimeUnix
         ..state = 'opening' // ChannelStatus.accepted → 'opening'
-        ..clientBalanceSats = '0'
+        ..clientBalanceSats = event.fundingAmountSats.toString()
         ..serverBalanceSats = '0'
         ..latestSequenceNumber = 0
         ..fundingAncestorTxids = []
+        ..context = event.context
         ..createdAt = event.timestamp
         ..hasFundingMerkleProof = false;
       
       await _storage.storePaymentChannel(entity);
+      print('[ChannelProjection]    ✅ Server channel entity created (funding: ${event.fundingAmountSats} sats)');
     } else {
       // Client side: update existing entity with server info
       final entity = existing as PaymentChannelEntity;

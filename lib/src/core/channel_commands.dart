@@ -108,6 +108,33 @@ class AcceptChannelCommand extends ChannelCommand {
   String get commandType => 'AcceptChannelCommand';
 }
 
+/// Client records that the server accepted the channel
+/// 
+/// This command is used by the client after receiving the server's
+/// acceptance via P2P. It updates the client's aggregate with the
+/// server's public key and address for building transactions.
+class RecordServerAcceptanceCommand extends ChannelCommand {
+  final String serverPubKeyHex;
+  final String serverAddressB58;
+
+  RecordServerAcceptanceCommand({
+    required String channelId,
+    required this.serverPubKeyHex,
+    required this.serverAddressB58,
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          channelId: channelId,
+          commandId: commandId,
+          timestamp: timestamp,
+          metadata: metadata,
+        );
+
+  @override
+  String get commandType => 'RecordServerAcceptanceCommand';
+}
+
 /// Server rejects a channel request
 class RejectChannelCommand extends ChannelCommand {
   final String reason;
@@ -274,6 +301,7 @@ class RecordPaymentCommand extends ChannelCommand {
 /// 1. Validation (sequence incrementing, amounts correct)
 /// 2. PaymentAcknowledgedEvent emission with fully signed TX
 class AcknowledgePaymentCommand extends ChannelCommand {
+  final BigInt amountSats;                  // Incremental payment amount
   final String paymentTxHex;
   final String clientSignatureHex;
   final String serverSignatureHex;         // Pre-computed by WalletManager
@@ -284,6 +312,7 @@ class AcknowledgePaymentCommand extends ChannelCommand {
 
   AcknowledgePaymentCommand({
     required String channelId,
+    required this.amountSats,
     required this.paymentTxHex,
     required this.clientSignatureHex,
     required this.serverSignatureHex,

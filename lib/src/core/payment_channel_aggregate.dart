@@ -2,6 +2,7 @@ import 'package:dactor/dactor.dart';
 import 'package:eventador/eventador.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
 
+import '../actors/payment_channel_messages.dart';
 import '../services/payment_channel_builder.dart';
 import '../services/crypto_service.dart';
 import 'channel_commands.dart';
@@ -44,6 +45,12 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState> {
   
   @override
   Future<void> onMessage(dynamic message) async {
+    // Handle state query before passing to base class
+    if (message is ChannelStateQuery) {
+      _handleStateQuery(message);
+      return;
+    }
+    
     // Capture sender at start of message processing
     if (message is Command) {
       final sender = context.sender;
@@ -52,6 +59,43 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState> {
       }
     }
     await super.onMessage(message);
+  }
+  
+  /// Handle state query (non-command message)
+  void _handleStateQuery(ChannelStateQuery query) {
+    final sender = context.sender;
+    if (sender == null) {
+      print('[PaymentChannelAggregate] State query with no sender');
+      return;
+    }
+    
+    print('[PaymentChannelAggregate] State query for ${query.channelId}');
+    print('[PaymentChannelAggregate]   Status: ${currentState.status}');
+    print('[PaymentChannelAggregate]   clientPubKeyHex: ${currentState.clientPubKeyHex?.substring(0, 10) ?? 'null'}...');
+    print('[PaymentChannelAggregate]   serverPubKeyHex: ${currentState.serverPubKeyHex?.substring(0, 10) ?? 'null'}...');
+    print('[PaymentChannelAggregate]   fundingTxId: ${currentState.fundingTxId ?? 'null'}');
+    print('[PaymentChannelAggregate]   derivationIndex: ${currentState.derivationIndex}');
+    
+    sender.tell(FullChannelStateResponse(
+      channelId: currentState.channelId,
+      walletId: currentState.walletId ?? '',
+      status: currentState.status.name,
+      role: currentState.role?.name,
+      clientBalanceSats: currentState.clientBalanceSats,
+      serverBalanceSats: currentState.serverBalanceSats,
+      latestSequenceNumber: currentState.latestSequenceNumber,
+      fundingAmountSats: currentState.fundingAmountSats,
+      fundingTxId: currentState.fundingTxId,
+      fundingTxHex: currentState.fundingTxHex,
+      fundingOutputIndex: currentState.fundingOutputIndex,
+      clientPubKeyHex: currentState.clientPubKeyHex,
+      serverPubKeyHex: currentState.serverPubKeyHex,
+      clientAddressB58: currentState.clientAddressB58,
+      serverAddressB58: currentState.serverAddressB58,
+      derivationIndex: currentState.derivationIndex,
+      lockTimeUnix: currentState.lockTimeUnix,
+      success: true,
+    ));
   }
   
   @override
@@ -94,6 +138,8 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState> {
       return await _handleAcceptChannel(currentState, command);
     } else if (command is RejectChannelCommand) {
       return _handleRejectChannel(currentState, command);
+    } else if (command is RecordServerAcceptanceCommand) {
+      return _handleRecordServerAcceptance(currentState, command);
     } else if (command is RequestRefundSignatureCommand) {
       return await _handleRequestRefundSignature(currentState, command);
     } else if (command is ProvideRefundSignatureCommand) {
@@ -132,6 +178,9 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState> {
         break;
       case ChannelRejectedEvent:
         _applyChannelRejected(event as ChannelRejectedEvent);
+        break;
+      case ServerAcceptanceRecordedEvent:
+        _applyServerAcceptanceRecorded(event as ServerAcceptanceRecordedEvent);
         break;
       case RefundBuiltEvent:
         _applyRefundBuilt(event as RefundBuiltEvent);
@@ -201,6 +250,7 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState> {
     AcceptChannelCommand cmd,
   ) {
     // Business rule: Channel must be in pending state
+    // Note: For server, fresh aggregate defaults to pending status
     if (currentState.status != ChannelStatus.pending) {
       throw StateError('Channel not in pending state');
     }
@@ -210,9 +260,15 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState> {
       ChannelAcceptedEvent(
         channelId: cmd.channelId,
         walletId: cmd.walletId,
+        clientPeerId: cmd.clientPeerId,
+        clientPubKeyHex: cmd.clientPubKeyHex,
+        clientAddressB58: cmd.clientAddressB58,
         serverPubKeyHex: cmd.serverPubKeyHex,
         serverAddressB58: cmd.serverAddressB58,
         derivationIndex: cmd.derivationIndex,
+        fundingAmountSats: cmd.fundingAmountSats,
+        lockTimeUnix: cmd.lockTimeUnix,
+        context: cmd.context,
         version: currentState.version + 1,
       ),
     ];
@@ -231,6 +287,29 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState> {
       ChannelRejectedEvent(
         channelId: cmd.channelId,
         reason: cmd.reason,
+        version: currentState.version + 1,
+      ),
+    ];
+  }
+
+  /// Client records that server accepted the channel
+  List<Event> _handleRecordServerAcceptance(
+    ChannelState currentState,
+    RecordServerAcceptanceCommand cmd,
+  ) {
+    // Business rule: Channel must be in pending state and we must be client
+    if (currentState.status != ChannelStatus.pending) {
+      throw StateError('Channel not in pending state');
+    }
+    if (currentState.role != ChannelRole.client) {
+      throw StateError('Only client can record server acceptance');
+    }
+
+    return [
+      ServerAcceptanceRecordedEvent(
+        channelId: cmd.channelId,
+        serverPubKeyHex: cmd.serverPubKeyHex,
+        serverAddressB58: cmd.serverAddressB58,
         version: currentState.version + 1,
       ),
     ];
@@ -383,6 +462,7 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState> {
     return [
       PaymentAcknowledgedEvent(
         channelId: cmd.channelId,
+        amountSats: cmd.amountSats,
         sequenceNumber: cmd.proposedSequence,
         newClientBalanceSats: cmd.proposedClientBalance,
         newServerBalanceSats: cmd.proposedServerBalance,
@@ -407,6 +487,8 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState> {
         channelId: cmd.channelId,
         reason: cmd.reason,
         initiator: currentState.role?.name ?? 'unknown',
+        clientBalanceSats: currentState.clientBalanceSats,
+        serverBalanceSats: currentState.serverBalanceSats,
         version: currentState.version + 1,
       ),
     ];
@@ -486,15 +568,39 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState> {
     currentState.walletId ??= event.walletId;
     currentState.status = ChannelStatus.accepted;
     currentState.role ??= ChannelRole.server;
+    currentState.clientPeerId ??= event.clientPeerId;
+    currentState.clientPubKeyHex ??= event.clientPubKeyHex;
+    currentState.clientAddressB58 ??= event.clientAddressB58;
     currentState.serverPubKeyHex = event.serverPubKeyHex;
     currentState.serverAddressB58 = event.serverAddressB58;
     currentState.derivationIndex ??= event.derivationIndex;
+    // Set funding amount (server's aggregate needs this from the event)
+    if (currentState.fundingAmountSats == BigInt.zero) {
+      currentState.fundingAmountSats = event.fundingAmountSats;
+    }
+    currentState.lockTimeUnix ??= event.lockTimeUnix;
+    currentState.context ??= event.context;
+    // Set initial balances (server's aggregate needs this from the event)
+    if (currentState.clientBalanceSats == BigInt.zero) {
+      currentState.clientBalanceSats = event.fundingAmountSats;
+    }
+    if (currentState.serverBalanceSats == BigInt.zero) {
+      currentState.serverBalanceSats = BigInt.zero;
+    }
     currentState.version = event.version;
     currentState.lastModified = event.timestamp;
   }
 
   void _applyChannelRejected(ChannelRejectedEvent event) {
     currentState.status = ChannelStatus.rejected;
+    currentState.version = event.version;
+    currentState.lastModified = event.timestamp;
+  }
+
+  void _applyServerAcceptanceRecorded(ServerAcceptanceRecordedEvent event) {
+    currentState.serverPubKeyHex = event.serverPubKeyHex;
+    currentState.serverAddressB58 = event.serverAddressB58;
+    currentState.status = ChannelStatus.accepted;
     currentState.version = event.version;
     currentState.lastModified = event.timestamp;
   }

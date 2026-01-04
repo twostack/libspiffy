@@ -91,6 +91,120 @@ class PaymentChannelBuilder {
     dartsv.NetworkType networkType = dartsv.NetworkType.TEST,
   })  : _cryptoService = cryptoService,
         _networkType = networkType;
+
+  // =============================================================================
+  // SCRIPT VERIFICATION
+  // =============================================================================
+
+  /// Standard script verification flags for BSV
+  static final Set<dartsv.VerifyFlag> _scriptFlags = {
+    dartsv.VerifyFlag.SIGHASH_FORKID,
+    dartsv.VerifyFlag.UTXO_AFTER_GENESIS,
+  };
+
+  /// Verify a fully-signed multisig transaction correctly spends its input
+  ///
+  /// This is a critical safety check that ensures:
+  /// - Both signatures are valid
+  /// - The redeem script matches the expected 2-of-2 multisig
+  /// - The scriptSig correctly unlocks the UTXO
+  ///
+  /// Throws [ScriptVerificationException] if verification fails.
+  void verifyMultisigSpend({
+    required dartsv.Transaction signedTx,
+    required dartsv.SVScript redeemScript,
+    required BigInt inputValueSats,
+    int inputIndex = 0,
+  }) {
+    final interpreter = dartsv.Interpreter();
+
+    try {
+      final input = signedTx.inputs[inputIndex];
+      final scriptSig = input.script;
+
+      if (scriptSig == null) {
+        throw ScriptVerificationException(
+          'Input $inputIndex has no scriptSig',
+          code: 'MISSING_SCRIPTSIG',
+        );
+      }
+
+      interpreter.correctlySpends(
+        scriptSig,
+        redeemScript,
+        signedTx,
+        inputIndex,
+        _scriptFlags,
+        dartsv.Coin.ofSat(inputValueSats),
+      );
+
+      print('[PaymentChannelBuilder] ✓ Multisig script verification passed');
+    } on dartsv.ScriptException catch (e) {
+      print('[PaymentChannelBuilder] ✗ Multisig script verification failed: $e');
+      throw ScriptVerificationException(
+        'Multisig script verification failed: $e',
+        code: 'SCRIPT_EXECUTION_FAILED',
+      );
+    }
+  }
+
+  /// Verify a P2PKH transaction correctly spends its inputs
+  ///
+  /// Used for validating funding transactions that spend from client UTXOs.
+  void verifyP2PKHSpend({
+    required dartsv.Transaction signedTx,
+    required List<dartsv.SVScript> inputScripts,
+    required List<BigInt> inputValues,
+  }) {
+    final interpreter = dartsv.Interpreter();
+
+    for (int i = 0; i < signedTx.inputs.length; i++) {
+      try {
+        final input = signedTx.inputs[i];
+        final scriptSig = input.script;
+
+        if (scriptSig == null) {
+          throw ScriptVerificationException(
+            'Input $i has no scriptSig',
+            code: 'MISSING_SCRIPTSIG',
+          );
+        }
+
+        interpreter.correctlySpends(
+          scriptSig,
+          inputScripts[i],
+          signedTx,
+          i,
+          _scriptFlags,
+          dartsv.Coin.ofSat(inputValues[i]),
+        );
+      } on dartsv.ScriptException catch (e) {
+        print('[PaymentChannelBuilder] ✗ P2PKH script verification failed for input $i: $e');
+        throw ScriptVerificationException(
+          'P2PKH script verification failed for input $i: $e',
+          code: 'SCRIPT_EXECUTION_FAILED',
+        );
+      }
+    }
+
+    print('[PaymentChannelBuilder] ✓ P2PKH script verification passed for ${signedTx.inputs.length} inputs');
+  }
+
+  /// Build multisig redeem script for verification
+  ///
+  /// Creates the 2-of-2 multisig script used as the locking script
+  /// for the funding output.
+  dartsv.SVScript buildMultisigRedeemScript({
+    required dartsv.SVPublicKey clientPubKey,
+    required dartsv.SVPublicKey serverPubKey,
+  }) {
+    final lockBuilder = dartsv.P2MSLockBuilder(
+      [clientPubKey, serverPubKey],
+      2,
+      sorting: true,
+    );
+    return lockBuilder.getScriptPubkey();
+  }
   
   /// Calculate transaction fee with minimum guarantee
   /// 
@@ -192,6 +306,19 @@ class PaymentChannelBuilder {
 
     final transaction = txBuilder.build(false);
     final transactionHex = transaction.serialize();
+
+    // SAFETY CHECK: Verify the signed funding TX correctly spends all inputs
+    final inputScripts = clientUtxos.map((utxo) {
+      final utxoAddress = dartsv.Address.fromBase58(utxo.address);
+      return dartsv.P2PKHLockBuilder.fromAddress(utxoAddress).getScriptPubkey();
+    }).toList();
+    final inputValues = clientUtxos.map((utxo) => utxo.value.getValue()).toList();
+    
+    verifyP2PKHSpend(
+      signedTx: transaction,
+      inputScripts: inputScripts,
+      inputValues: inputValues,
+    );
 
     return ChannelTransactionResult(
       transaction: transaction,
@@ -678,4 +805,16 @@ class PaymentWithBEEF {
     required this.ancestorCount,
     required this.proofCount,
   }) : beefHex = hex.encode(beefBytes);
+}
+
+/// Exception thrown when script verification fails
+class ScriptVerificationException implements Exception {
+  final String message;
+  final String? code;
+
+  ScriptVerificationException(this.message, {this.code});
+
+  @override
+  String toString() =>
+      'ScriptVerificationException${code != null ? ' ($code)' : ''}: $message';
 }

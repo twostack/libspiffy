@@ -25,6 +25,10 @@ dependencies:
   dactor:
     path: /Users/stephanfeb/IdeaProjects/agentic/dactor  # Actor model foundation
 
+  # Actor system foundation
+  dactor_test:
+    path: /Users/stephanfeb/IdeaProjects/agentic/dactor_test  # Actor model foundation
+
   duraq:
     path: /Users/stephanfeb/IdeaProjects/agentic/duraq  # Operational workflows
 
@@ -51,3 +55,5 @@ dev_dependencies:
   test: ^1.24.0
   mockito: ^5.4.2
   lints: ^5.0.0
+  dactor_test:
+    path: /Users/stephanfeb/IdeaProjects/agentic/dactor_test

@@ -478,6 +478,7 @@ class AddressGeneratedEvent extends WalletEvent {
   final int derivationIndex;
   final String? label;
   final String? purpose;
+  final String? publicKeyHex; // Optional: Public key hex (for multisig/channels)
 
   AddressGeneratedEvent({
     required String walletId,
@@ -485,6 +486,8 @@ class AddressGeneratedEvent extends WalletEvent {
     required this.derivationIndex,
     this.label,
     this.purpose,
+    this.publicKeyHex,
+    String? correlationId,
     String? eventId,
     DateTime? timestamp,
     int? version,
@@ -494,8 +497,14 @@ class AddressGeneratedEvent extends WalletEvent {
           eventId: eventId,
           timestamp: timestamp,
           version: version,
-          metadata: metadata,
+          metadata: {
+            ...?metadata,
+            if (correlationId != null) 'correlationId': correlationId,
+          },
         );
+
+  /// Get the optional correlation ID from metadata
+  String? getCorrelationId() => metadata['correlationId'] as String?;
 
   @override
   Map<String, dynamic> getWalletEventData() {
@@ -504,6 +513,7 @@ class AddressGeneratedEvent extends WalletEvent {
       'derivationIndex': derivationIndex,
       'label': label,
       'purpose': purpose,
+      'publicKeyHex': publicKeyHex,
     };
   }
 
@@ -514,6 +524,8 @@ class AddressGeneratedEvent extends WalletEvent {
       derivationIndex: map['derivationIndex'] as int,
       label: map['label'] as String?,
       purpose: map['purpose'] as String?,
+      publicKeyHex: map['publicKeyHex'] as String?,
+      correlationId: map['correlationId'] as String? ?? map['metadata']?['correlationId'] as String?,
       eventId: map['eventId'] as String?,
       timestamp: map['timestamp'] != null
           ? (map['timestamp'] is String 
@@ -526,68 +538,6 @@ class AddressGeneratedEvent extends WalletEvent {
   }
 }
 
-/// Event fired when a payment channel address is generated
-/// Includes public key needed for multisig channel operations
-class ChannelAddressGeneratedEvent extends WalletEvent {
-  final String correlationId;
-  final String address;
-  final String publicKeyHex;
-  final int derivationIndex;
-  final String? context;
-  final String? label;
-
-  ChannelAddressGeneratedEvent({
-    required String walletId,
-    required this.correlationId,
-    required this.address,
-    required this.publicKeyHex,
-    required this.derivationIndex,
-    this.context,
-    this.label,
-    String? eventId,
-    DateTime? timestamp,
-    int? version,
-    Map<String, dynamic>? metadata,
-  }) : super(
-          walletId: walletId,
-          eventId: eventId,
-          timestamp: timestamp,
-          version: version,
-          metadata: metadata,
-        );
-
-  @override
-  Map<String, dynamic> getWalletEventData() {
-    return {
-      'correlationId': correlationId,
-      'address': address,
-      'publicKeyHex': publicKeyHex,
-      'derivationIndex': derivationIndex,
-      'context': context,
-      'label': label,
-    };
-  }
-
-  static ChannelAddressGeneratedEvent fromMap(Map<String, dynamic> map) {
-    return ChannelAddressGeneratedEvent(
-      walletId: map['walletId'] as String,
-      correlationId: map['correlationId'] as String,
-      address: map['address'] as String,
-      publicKeyHex: map['publicKeyHex'] as String,
-      derivationIndex: map['derivationIndex'] as int,
-      context: map['context'] as String?,
-      label: map['label'] as String?,
-      eventId: map['eventId'] as String?,
-      timestamp: map['timestamp'] != null
-          ? (map['timestamp'] is String 
-              ? DateTime.parse(map['timestamp'] as String)
-              : map['timestamp'] as DateTime)
-          : null,
-      version: map['version'] as int?,
-      metadata: map['metadata'] as Map<String, dynamic>?,
-    );
-  }
-}
 
 /// Event fired when an address label is updated
 class AddressLabelUpdatedEvent extends WalletEvent {

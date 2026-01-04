@@ -135,11 +135,14 @@ class ImportWalletFromXprivCommand extends WalletCommand {
 class GenerateAddressCommand extends WalletCommand {
   final String? label; // Optional label for the address
   final String? purpose; // Purpose: 'receive', 'change', etc.
+  final bool includePublicKey; // If true, includes public key hex in response (needed for multisig/channels)
 
   GenerateAddressCommand({
     required String walletId,
     this.label,
     this.purpose,
+    this.includePublicKey = false,
+    String? correlationId,
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,
@@ -147,39 +150,19 @@ class GenerateAddressCommand extends WalletCommand {
           walletId: walletId,
           commandId: commandId,
           timestamp: timestamp,
-          metadata: metadata,
+          metadata: {
+            ...?metadata,
+            if (correlationId != null) 'correlationId': correlationId,
+          },
         );
 
   @override
   String get commandType => 'GenerateAddressCommand';
-}
-
-/// Command to generate an address for payment channels
-/// Returns address + public key + derivation index (needed for channel operations)
-class GenerateChannelAddressCommand extends WalletCommand {
-  final String correlationId; // Unique ID to correlate request/response
-  final String? context; // Context identifier (e.g., "audiospace:meeting-123")
-  final String? label; // Optional label for the address
   
-  GenerateChannelAddressCommand({
-    required String walletId,
-    String? correlationId,
-    this.context,
-    this.label,
-    String? commandId,
-    DateTime? timestamp,
-    Map<String, dynamic>? metadata,
-  }) : correlationId = correlationId ?? commandId ?? 'channel-${DateTime.now().millisecondsSinceEpoch}',
-       super(
-          walletId: walletId,
-          commandId: commandId,
-          timestamp: timestamp,
-          metadata: metadata,
-        );
-
-  @override
-  String get commandType => 'GenerateChannelAddressCommand';
+  /// Get the optional correlation ID from metadata
+  String? getCorrelationId() => metadata['correlationId'] as String?;
 }
+
 
 /// Command to update an address label
 class UpdateAddressLabelCommand extends WalletCommand {

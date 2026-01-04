@@ -137,39 +137,6 @@ class AddressGeneratedResponse implements Message {
   DateTime get timestamp => DateTime.now();
 }
 
-/// Response from BitcoinWalletAggregate after processing GenerateChannelAddressCommand
-class ChannelAddressGeneratedResponse implements Message {
-  final String walletId;
-  final String _correlationId;
-  final String address;
-  final String publicKey;
-  final int derivationIndex;
-  final bool success;
-  final String? error;
-
-  ChannelAddressGeneratedResponse({
-    required this.walletId,
-    required String correlationId,
-    required this.address,
-    required this.publicKey,
-    required this.derivationIndex,
-    required this.success,
-    this.error,
-  }) : _correlationId = correlationId;
-
-  @override
-  String get correlationId => 'channel-address-generated-response-$_correlationId';
-  @override
-  Map<String, dynamic> get metadata => {
-    'walletId': walletId,
-    'correlationId': _correlationId,
-    'publicKeyHex': publicKey,
-  };
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
-}
 
 /// Response from BitcoinWalletAggregate after processing CreateTransactionCommand
 class TransactionCreatedResponse implements Message {

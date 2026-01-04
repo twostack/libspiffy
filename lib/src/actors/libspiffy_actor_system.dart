@@ -273,11 +273,6 @@ class LibSpiffyActorSystem {
       (map) => AddressGeneratedEvent.fromMap(map),
     );
     
-    EventRegistry.register<ChannelAddressGeneratedEvent>(
-      'ChannelAddressGeneratedEvent',
-      (map) => ChannelAddressGeneratedEvent.fromMap(map),
-    );
-    
     EventRegistry.register<AddressLabelUpdatedEvent>(
       'AddressLabelUpdatedEvent',
       (map) => AddressLabelUpdatedEvent.fromMap(map),

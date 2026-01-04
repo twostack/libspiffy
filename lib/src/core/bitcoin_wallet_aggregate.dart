@@ -159,15 +159,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
           success: true,
           metadata: event.metadata, // Pass through metadata (e.g., invoiceId)
         ));
-      } else if (event is ChannelAddressGeneratedEvent) {
-        sender.tell(ChannelAddressGeneratedResponse(
-          walletId: event.walletId,
-          correlationId: event.correlationId,
-          address: event.address,
-          publicKey: event.publicKeyHex,
-          derivationIndex: event.derivationIndex,
-          success: true,
-        ));
       } else if (event is TransactionCreatedEvent) {
         sender.tell(TransactionCreatedResponse(
           walletId: event.walletId,
@@ -226,16 +217,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         error: errorMessage,
         metadata: command.metadata, // Pass through metadata even on error
       ));
-    } else if (command is GenerateChannelAddressCommand) {
-      sender.tell(ChannelAddressGeneratedResponse(
-        walletId: command.walletId,
-        correlationId: command.correlationId,
-        address: '',
-        publicKey: '',
-        derivationIndex: 0,
-        success: false,
-        error: errorMessage,
-      ));
     } else if (command is CreateTransactionCommand) {
       sender.tell(TransactionCreatedResponse(
         walletId: command.walletId,
@@ -287,8 +268,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         return _handleUpdateConfiguration(currentState, command as UpdateWalletConfigurationCommand);
       case GenerateAddressCommand:
         return await _handleGenerateAddress(currentState, command as GenerateAddressCommand);
-      case GenerateChannelAddressCommand:
-        return await _handleGenerateChannelAddress(currentState, command as GenerateChannelAddressCommand);
       case UpdateAddressLabelCommand:
         return _handleUpdateAddressLabel(currentState, command as UpdateAddressLabelCommand);
       case RegisterDiscoveredAddressCommand:
@@ -361,9 +340,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         break;
       case AddressGeneratedEvent:
         _applyAddressGenerated(event as AddressGeneratedEvent);
-        break;
-      case ChannelAddressGeneratedEvent:
-        _applyChannelAddressGenerated(event as ChannelAddressGeneratedEvent);
         break;
       case AddressLabelUpdatedEvent:
         _applyAddressLabelUpdated(event as AddressLabelUpdatedEvent);
@@ -622,6 +598,17 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       
       print('[BitcoinWalletAggregate] WIF wallet - returning root address: ${currentState.rootAddress}');
       
+      // Get public key if requested
+      String? publicKeyHex;
+      if (command.includePublicKey) {
+        final wif = await secureStorage.getWIF(command.walletId);
+        if (wif == null) {
+          throw StateError('WIF not found for wallet ${command.walletId}');
+        }
+        final privateKey = dartsv.SVPrivateKey.fromWIF(wif);
+        publicKeyHex = privateKey.publicKey.toHex();
+      }
+      
       // Return AddressGeneratedEvent with same address and index 0
       final event = AddressGeneratedEvent(
         walletId: command.walletId,
@@ -629,6 +616,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         derivationIndex: 0,
         label: command.label,
         purpose: command.purpose,
+        publicKeyHex: publicKeyHex,
+        correlationId: command.getCorrelationId(),
         metadata: command.metadata,
         timestamp: DateTime.now(),
         version: currentState.version + 1,
@@ -656,12 +645,14 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
 
     // Generate address based on purpose
     final String address;
+    final int derivationPath; // 0 for receiving, 1 for change
     if (command.purpose == 'change') {
       address = cryptoService.generateChangeAddress(
         hdPublicKey,
         derivationIndex,
         network: networkType,
       );
+      derivationPath = 1;
     } else {
       // Default to receiving address
       address = cryptoService.generateReceivingAddress(
@@ -669,6 +660,14 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         derivationIndex,
         network: networkType,
       );
+      derivationPath = 0;
+    }
+
+    // Derive public key if requested
+    String? publicKeyHex;
+    if (command.includePublicKey) {
+      final childKey = hdPublicKey.deriveChildKey("m/$derivationPath/$derivationIndex");
+      publicKeyHex = childKey.publicKey.toHex();
     }
 
     final event = AddressGeneratedEvent(
@@ -680,97 +679,9 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       derivationIndex: derivationIndex,
       label: command.label,
       purpose: command.purpose,
-      metadata: command.metadata, // Preserve metadata (e.g., invoiceId from coordinator)
-    );
-
-    return [event];
-  }
-
-  /// Handle generating a channel address (includes public key)
-  /// Used for payment channels which need both address and public key for multisig setup
-  Future<List<Event>> _handleGenerateChannelAddress(
-    WalletState currentState,
-    GenerateChannelAddressCommand command,
-  ) async {
-    // Business rule: Wallet must exist
-    if (!currentState.isCreated) {
-      throw StateError('Cannot generate channel address for non-existent wallet');
-    }
-
-    // For WIF wallets, always return the root address
-    if (currentState.walletType == WalletType.wif) {
-      // WIF wallets are single-address - return the existing address
-      if (currentState.rootAddress == null) {
-        throw StateError('WIF wallet has no root address');
-      }
-      
-      // Get public key for WIF wallet
-      final wif = await secureStorage.getWIF(command.walletId);
-      if (wif == null) {
-        throw StateError('WIF not found for wallet ${command.walletId}');
-      }
-      final privateKey = dartsv.SVPrivateKey.fromWIF(wif);
-      final publicKeyHex = privateKey.publicKey.toHex();
-      
-      print('[BitcoinWalletAggregate] WIF wallet - returning root address for channel: ${currentState.rootAddress}');
-      
-      // Return ChannelAddressGeneratedEvent with address + pubkey
-      final event = ChannelAddressGeneratedEvent(
-        walletId: command.walletId,
-        correlationId: command.correlationId,
-        address: currentState.rootAddress!,
-        publicKeyHex: publicKeyHex,
-        derivationIndex: 0,
-        context: command.context,
-        label: command.label,
-        metadata: command.metadata,
-        timestamp: DateTime.now(),
-        version: currentState.version + 1,
-      );
-      
-      return [event];
-    }
-
-    // For HD and XPRIV wallets, derive new address
-    // Use next available derivation index
-    final derivationIndex = currentState.nextDerivationIndex;
-
-    // Retrieve HD public key from secure storage
-    final xpubkey = await secureStorage.getString('wallet_hdpubkey_${command.walletId}');
-    if (xpubkey == null) {
-      throw StateError('HD public key not found for wallet ${command.walletId}');
-    }
-
-    // Determine network type
-    final networkTypeStr = currentState.networkType;
-    final networkType = networkTypeStr == 'mainnet' ? dartsv.NetworkType.MAIN : dartsv.NetworkType.TEST;
-
-    // Reconstruct HD public key from xpubkey
-    final hdPublicKey = dartsv.HDPublicKey.fromXpub(xpubkey);
-
-    // Generate receiving address (channels always use receiving path m/0/{index})
-    final address = cryptoService.generateReceivingAddress(
-      hdPublicKey,
-      derivationIndex,
-      network: networkType,
-    );
-
-    // Derive the public key at this index
-    final childKey = hdPublicKey.deriveChildKey("m/0/$derivationIndex");
-    final publicKeyHex = childKey.publicKey.toHex();
-
-    final event = ChannelAddressGeneratedEvent(
-      eventId: const Uuid().v4(),
-      walletId: command.walletId,
-      correlationId: command.correlationId,
-      timestamp: DateTime.now(),
-      version: currentState.version + 1,
-      address: address,
       publicKeyHex: publicKeyHex,
-      derivationIndex: derivationIndex,
-      context: command.context,
-      label: command.label,
-      metadata: command.metadata,
+      correlationId: command.getCorrelationId(),
+      metadata: command.metadata, // Preserve metadata (e.g., invoiceId from coordinator)
     );
 
     return [event];
@@ -2257,23 +2168,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     // Store the derivation index for key derivation during signing
     currentState.metadata['address_indices'] ??= <String, int>{};
     (currentState.metadata['address_indices'] as Map<String, int>)[event.address] = event.derivationIndex;
-    
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
-  }
-
-  void _applyChannelAddressGenerated(ChannelAddressGeneratedEvent event) {
-    // Store address and label
-    currentState.addresses[event.address] = event.label;
-    currentState.nextDerivationIndex = event.derivationIndex + 1;
-    
-    // Store the derivation index for key derivation during signing
-    currentState.metadata['address_indices'] ??= <String, int>{};
-    (currentState.metadata['address_indices'] as Map<String, int>)[event.address] = event.derivationIndex;
-    
-    // Store public key for channel operations (in metadata to avoid changing state schema)
-    currentState.metadata['channel_pubkeys'] ??= <String, String>{};
-    (currentState.metadata['channel_pubkeys'] as Map<String, String>)[event.address] = event.publicKeyHex;
     
     currentState.version = event.version;
     currentState.lastModified = event.timestamp;

@@ -1000,13 +1000,20 @@ class IsarWalletStorage implements ReadModelStorage {
   @override
   Future<void> storePaymentChannel(dynamic channel) async {
     await _isar.writeTxn(() async {
+      PaymentChannelEntity entity;
+      
+      // Support both PaymentChannelEntity (projection) and PaymentChannel (old code)
+      if (channel is PaymentChannelEntity) {
+        entity = channel;
+      } else {
+        entity = PaymentChannelEntity.fromPaymentChannel(channel);
+      }
+      
       // Check if channel already exists (upsert)
       final existing = await _isar.paymentChannelEntitys
           .where()
-          .channelIdEqualTo(channel.channelId)
+          .channelIdEqualTo(entity.channelId)
           .findFirst();
-      
-      final entity = PaymentChannelEntity.fromPaymentChannel(channel);
       
       // If exists, keep the same Isar ID for update
       if (existing != null) {
@@ -1023,7 +1030,8 @@ class IsarWalletStorage implements ReadModelStorage {
         .where()
         .channelIdEqualTo(channelId)
         .findFirst();
-    return entity?.toPaymentChannel();
+    // Return entity directly for projection, can be converted to PaymentChannel if needed
+    return entity;
   }
 
   @override

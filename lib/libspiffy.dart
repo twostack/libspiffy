@@ -40,6 +40,7 @@ export 'src/core/invoice_aggregate.dart';       // Invoice aggregate root with b
 // ✅ PROJECTIONS - Read-side event handlers for CQRS
 export 'src/projections/wallet_projection.dart';   // Wallet read model projection
 export 'src/projections/invoice_projection.dart';  // Invoice read model projection
+export 'src/projections/channel_projection.dart';  // Channel read model projection
 
 // 🎭 ACTOR COORDINATION LAYER - Dactor-based multi-wallet coordination
 export 'src/actors/actors.dart';                // Complete actor system: WalletManager, SPV, ARC actors

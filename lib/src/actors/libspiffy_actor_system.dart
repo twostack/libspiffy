@@ -19,8 +19,10 @@ import '../spv/block_header_chain.dart';
 import '../integration/spiffynode_bridge.dart';
 import '../projections/wallet_projection.dart';
 import '../projections/invoice_projection.dart';
+import '../projections/channel_projection.dart';
 import '../core/wallet_events.dart';
 import '../core/invoice_events.dart';
+import '../core/channel_events.dart';
 import 'wallet_manager_actor.dart';
 import 'spv_actor.dart';
 import 'arc_actor.dart';
@@ -56,6 +58,7 @@ class LibSpiffyActorSystem {
   ProjectionManager? _projectionManager;
   WalletProjection? _walletProjection;
   InvoiceProjection? _invoiceProjection;
+  ChannelProjection? _channelProjection;
   
   // Actor references
   ActorRef? _walletManager;
@@ -415,7 +418,66 @@ class LibSpiffyActorSystem {
       (map) => AllUTXOsSplitCompletedEvent.fromMap(map),
     );
     
-    print('✓ Registered 25 event types for deserialization');
+    // =================================================================
+    // PAYMENT CHANNEL EVENTS (11 total)
+    // =================================================================
+    
+    EventRegistry.register<ChannelRequestedEvent>(
+      'ChannelRequestedEvent',
+      (map) => ChannelRequestedEvent.fromMap(map),
+    );
+    
+    EventRegistry.register<ChannelAcceptedEvent>(
+      'ChannelAcceptedEvent',
+      (map) => ChannelAcceptedEvent.fromMap(map),
+    );
+    
+    EventRegistry.register<ChannelRejectedEvent>(
+      'ChannelRejectedEvent',
+      (map) => ChannelRejectedEvent.fromMap(map),
+    );
+    
+    EventRegistry.register<RefundBuiltEvent>(
+      'RefundBuiltEvent',
+      (map) => RefundBuiltEvent.fromMap(map),
+    );
+    
+    EventRegistry.register<RefundCountersignedEvent>(
+      'RefundCountersignedEvent',
+      (map) => RefundCountersignedEvent.fromMap(map),
+    );
+    
+    EventRegistry.register<ChannelOpenedEvent>(
+      'ChannelOpenedEvent',
+      (map) => ChannelOpenedEvent.fromMap(map),
+    );
+    
+    EventRegistry.register<PaymentRecordedEvent>(
+      'PaymentRecordedEvent',
+      (map) => PaymentRecordedEvent.fromMap(map),
+    );
+    
+    EventRegistry.register<PaymentAcknowledgedEvent>(
+      'PaymentAcknowledgedEvent',
+      (map) => PaymentAcknowledgedEvent.fromMap(map),
+    );
+    
+    EventRegistry.register<ChannelClosingEvent>(
+      'ChannelClosingEvent',
+      (map) => ChannelClosingEvent.fromMap(map),
+    );
+    
+    EventRegistry.register<ChannelClosedEvent>(
+      'ChannelClosedEvent',
+      (map) => ChannelClosedEvent.fromMap(map),
+    );
+    
+    EventRegistry.register<RefundClaimedEvent>(
+      'RefundClaimedEvent',
+      (map) => RefundClaimedEvent.fromMap(map),
+    );
+    
+    print('✓ Registered 36 event types for deserialization');
   }
   
   /// Initialize CQRS projections for read-side persistence
@@ -450,13 +512,21 @@ class LibSpiffyActorSystem {
     );
     await _projectionManager!.registerProjection(_invoiceProjection!);
     
+    // Create and register ChannelProjection
+    _channelProjection = ChannelProjection(
+      projectionId: 'channel-projection',
+      eventStore: _eventStore,
+      storage: _walletStorage,
+    );
+    await _projectionManager!.registerProjection(_channelProjection!);
+    
     // Start streaming events to projections
     await _projectionManager!.start();
     
     // TODO: Subscribe to event store for real-time UI broadcasting
     // For now, events will be manually broadcast by actors
     
-    print('✓ ProjectionManager started with 2 projections');
+    print('✓ ProjectionManager started with 3 projections');
   }
 
   /// Spawn all coordination actors
@@ -852,6 +922,17 @@ class LibSpiffyActorSystem {
       throw StateError('LibSpiffy actor system not initialized');
     }
     return _secureStorage;
+  }
+
+  /// Get reference to the event store
+  /// 
+  /// The EventStore is used for event sourcing and CQRS. Aggregates persist
+  /// their events to this store, and projections consume events from it.
+  EventStore get eventStore {
+    if (!isInitialized) {
+      throw StateError('LibSpiffy actor system not initialized');
+    }
+    return _eventStore;
   }
 
   /// Get reference to the SpiffyNode bridge (if connected)

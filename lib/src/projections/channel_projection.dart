@@ -1,0 +1,370 @@
+import 'package:eventador/eventador.dart';
+import '../core/channel_events.dart';
+import '../storage/read_model_storage.dart';
+import '../storage/payment_channel_entity.dart';
+
+/// Channel projection that builds read models from channel events
+/// 
+/// This projection subscribes to payment channel events from the EventStore and
+/// maintains denormalized `PaymentChannelEntity` in Isar for fast queries.
+/// Separates write concerns (aggregate) from read concerns (queries).
+/// 
+/// STATELESS DESIGN: This projection does NOT cache state in memory.
+/// Storage (Isar) is the source of truth. Checkpoints track which events
+/// have been processed, but all state is read from/written to storage.
+/// This design survives app restarts correctly - no checkpoint/state mismatch.
+class ChannelProjection extends Projection<void> {
+  final ReadModelStorage _storage;
+  final String _projectionId;
+  int _checkpoint = 0;
+  
+  // NOTE: No in-memory state caching. Storage IS the read model.
+  // This prevents checkpoint/state mismatch bugs on restart.
+  
+  ChannelProjection({
+    required String projectionId,
+    required EventStore eventStore,
+    required ReadModelStorage storage,
+  })  : _storage = storage,
+        _projectionId = projectionId,
+        super();
+  
+  @override
+  String get projectionId => _projectionId;
+  
+  @override
+  void get readModel => null; // Storage is the read model, query it directly
+  
+  @override
+  List<Type> get interestedEventTypes => [
+        ChannelRequestedEvent,
+        ChannelAcceptedEvent,
+        ChannelRejectedEvent,
+        RefundBuiltEvent,
+        RefundCountersignedEvent,
+        ChannelOpenedEvent,
+        PaymentRecordedEvent,
+        PaymentAcknowledgedEvent,
+        ChannelClosingEvent,
+        ChannelClosedEvent,
+        RefundClaimedEvent,
+      ];
+  
+  @override
+  Future<int> getCheckpoint() async {
+    // Checkpoint persistence is now handled automatically by ProjectionManager
+    // This is only used as a fallback if ProjectionManager doesn't have Isar
+    return _checkpoint;
+  }
+  
+  @override
+  Future<void> updateCheckpoint(int checkpoint) async {
+    // Checkpoint persistence is now handled automatically by ProjectionManager
+    // We just maintain an in-memory checkpoint for backward compatibility
+    _checkpoint = checkpoint;
+  }
+  
+  @override
+  Future<void> reset() async {
+    // Reset is handled by clearing projection checkpoint in ProjectionManager
+    // The read model (Isar) can be cleared if needed, but typically we just replay events
+    _checkpoint = 0;
+  }
+  
+  @override
+  Future<void> rebuild() async {
+    await reset();
+    // Projection manager will replay events after rebuild
+  }
+  
+  @override
+  Future<bool> handle(Event event) async {
+    if (event is! ChannelEvent) return false;
+    
+    try {
+      switch (event.runtimeType) {
+        case ChannelRequestedEvent:
+          await _handleChannelRequested(event as ChannelRequestedEvent);
+          return true;
+        case ChannelAcceptedEvent:
+          await _handleChannelAccepted(event as ChannelAcceptedEvent);
+          return true;
+        case ChannelRejectedEvent:
+          await _handleChannelRejected(event as ChannelRejectedEvent);
+          return true;
+        case RefundBuiltEvent:
+          await _handleRefundBuilt(event as RefundBuiltEvent);
+          return true;
+        case RefundCountersignedEvent:
+          await _handleRefundCountersigned(event as RefundCountersignedEvent);
+          return true;
+        case ChannelOpenedEvent:
+          await _handleChannelOpened(event as ChannelOpenedEvent);
+          return true;
+        case PaymentRecordedEvent:
+          await _handlePaymentRecorded(event as PaymentRecordedEvent);
+          return true;
+        case PaymentAcknowledgedEvent:
+          await _handlePaymentAcknowledged(event as PaymentAcknowledgedEvent);
+          return true;
+        case ChannelClosingEvent:
+          await _handleChannelClosing(event as ChannelClosingEvent);
+          return true;
+        case ChannelClosedEvent:
+          await _handleChannelClosed(event as ChannelClosedEvent);
+          return true;
+        case RefundClaimedEvent:
+          await _handleRefundClaimed(event as RefundClaimedEvent);
+          return true;
+        default:
+          return false;
+      }
+    } catch (e, stack) {
+      print('[ChannelProjection] Error handling event ${event.runtimeType}: $e');
+      print('[ChannelProjection] Stack trace: $stack');
+      rethrow;
+    }
+  }
+  
+  // ==========================================================================
+  // EVENT HANDLERS
+  // ==========================================================================
+  
+  Future<void> _handleChannelRequested(ChannelRequestedEvent event) async {
+    print('[ChannelProjection] 🆕 Processing ChannelRequestedEvent: ${event.channelId}');
+    print('[ChannelProjection]    Wallet ID: ${event.walletId}');
+    print('[ChannelProjection]    Role: client');
+    print('[ChannelProjection]    Funding: ${event.fundingAmountSats} sats');
+    
+    // Create new channel entity
+    final entity = PaymentChannelEntity()
+      ..channelId = event.channelId
+      ..walletId = event.walletId
+      ..role = 'client'
+      ..clientPeerId = event.clientPeerId
+      ..serverPeerId = event.serverPeerId
+      ..clientPubKeyHex = event.clientPubKeyHex
+      ..clientAddressB58 = event.clientAddressB58
+      ..serverPubKeyHex = '' // Will be set on accept
+      ..serverAddressB58 = '' // Will be set on accept
+      ..fundingAmountSats = event.fundingAmountSats.toString()
+      ..fundingTxId = '' // Will be set on open
+      ..fundingTxHex = '' // Will be set on open
+      ..fundingOutputIndex = 0 // Will be set on open
+      ..lockTimeUnix = event.lockTimeUnix
+      ..state = 'opening' // ChannelStatus.pending → 'opening'
+      ..clientBalanceSats = event.fundingAmountSats.toString()
+      ..serverBalanceSats = '0'
+      ..latestSequenceNumber = 0
+      ..fundingAncestorTxids = []
+      ..context = event.context
+      ..createdAt = event.timestamp
+      ..hasFundingMerkleProof = false;
+    
+    await _storage.storePaymentChannel(entity);
+    print('[ChannelProjection]    ✅ Channel entity created in Isar');
+  }
+  
+  Future<void> _handleChannelAccepted(ChannelAcceptedEvent event) async {
+    print('[ChannelProjection] ✅ Processing ChannelAcceptedEvent: ${event.channelId}');
+    
+    final existing = await _storage.getPaymentChannel(event.channelId);
+    if (existing == null) {
+      print('[ChannelProjection]    ⚠️ Channel ${event.channelId} not found, creating new entity as server');
+      // Server side: create entity on accept if it doesn't exist
+      final entity = PaymentChannelEntity()
+        ..channelId = event.channelId
+        ..walletId = event.walletId
+        ..role = 'server'
+        ..clientPeerId = '' // Will be set from request
+        ..serverPeerId = '' // Will be set from request
+        ..clientPubKeyHex = '' // Will be set from request
+        ..clientAddressB58 = '' // Will be set from request
+        ..serverPubKeyHex = event.serverPubKeyHex
+        ..serverAddressB58 = event.serverAddressB58
+        ..fundingAmountSats = '0' // Will be set from request
+        ..fundingTxId = ''
+        ..fundingTxHex = ''
+        ..fundingOutputIndex = 0
+        ..lockTimeUnix = 0 // Will be set from request
+        ..state = 'opening' // ChannelStatus.accepted → 'opening'
+        ..clientBalanceSats = '0'
+        ..serverBalanceSats = '0'
+        ..latestSequenceNumber = 0
+        ..fundingAncestorTxids = []
+        ..createdAt = event.timestamp
+        ..hasFundingMerkleProof = false;
+      
+      await _storage.storePaymentChannel(entity);
+    } else {
+      // Client side: update existing entity with server info
+      final entity = existing as PaymentChannelEntity;
+      entity.serverPubKeyHex = event.serverPubKeyHex;
+      entity.serverAddressB58 = event.serverAddressB58;
+      entity.state = 'opening'; // ChannelStatus.accepted → 'opening'
+      
+      await _storage.storePaymentChannel(entity);
+      print('[ChannelProjection]    ✅ Channel entity updated with server keys');
+    }
+  }
+  
+  Future<void> _handleChannelRejected(ChannelRejectedEvent event) async {
+    print('[ChannelProjection] ❌ Processing ChannelRejectedEvent: ${event.channelId}');
+    print('[ChannelProjection]    Reason: ${event.reason}');
+    
+    await _storage.updatePaymentChannelState(event.channelId, 'closed');
+    print('[ChannelProjection]    ✅ Channel marked as rejected/closed');
+  }
+  
+  Future<void> _handleRefundBuilt(RefundBuiltEvent event) async {
+    print('[ChannelProjection] 🔐 Processing RefundBuiltEvent: ${event.channelId}');
+    
+    final existing = await _storage.getPaymentChannel(event.channelId);
+    if (existing == null) {
+      print('[ChannelProjection]    ⚠️ Channel ${event.channelId} not found');
+      return;
+    }
+    
+    final entity = existing as PaymentChannelEntity;
+    entity.fundingTxId = event.fundingTxId;
+    entity.fundingOutputIndex = event.fundingOutputIndex;
+    entity.fundingTxHex = event.fundingTxHex;
+    entity.refundTxHex = event.refundTxHex;
+    entity.refundClientSigHex = event.clientSignatureHex;
+    
+    await _storage.storePaymentChannel(entity);
+    print('[ChannelProjection]    ✅ Refund transaction data stored');
+  }
+  
+  Future<void> _handleRefundCountersigned(RefundCountersignedEvent event) async {
+    print('[ChannelProjection] ✍️ Processing RefundCountersignedEvent: ${event.channelId}');
+    
+    final existing = await _storage.getPaymentChannel(event.channelId);
+    if (existing == null) {
+      print('[ChannelProjection]    ⚠️ Channel ${event.channelId} not found');
+      return;
+    }
+    
+    final entity = existing as PaymentChannelEntity;
+    entity.refundServerSigHex = event.serverSignatureHex;
+    entity.state = 'opening'; // ChannelStatus.refundSigned → 'opening'
+    
+    await _storage.storePaymentChannel(entity);
+    print('[ChannelProjection]    ✅ Refund countersigned, ready to open');
+  }
+  
+  Future<void> _handleChannelOpened(ChannelOpenedEvent event) async {
+    print('[ChannelProjection] 🚀 Processing ChannelOpenedEvent: ${event.channelId}');
+    print('[ChannelProjection]    Funding TX: ${event.fundingTxId}');
+    print('[ChannelProjection]    Initial balances: client=${event.initialClientBalanceSats}, server=${event.initialServerBalanceSats}');
+    
+    final existing = await _storage.getPaymentChannel(event.channelId);
+    if (existing == null) {
+      print('[ChannelProjection]    ⚠️ Channel ${event.channelId} not found');
+      return;
+    }
+    
+    final entity = existing as PaymentChannelEntity;
+    entity.state = 'open'; // ChannelStatus.open → 'open'
+    entity.fundingTxId = event.fundingTxId;
+    entity.fundingOutputIndex = event.fundingOutputIndex;
+    entity.fundingTxHex = event.fundingTxHex;
+    entity.fundingAncestorTxids = event.fundingAncestorTxids;
+    entity.clientBalanceSats = event.initialClientBalanceSats.toString();
+    entity.serverBalanceSats = event.initialServerBalanceSats.toString();
+    
+    await _storage.storePaymentChannel(entity);
+    print('[ChannelProjection]    ✅ Channel opened and ready for payments');
+  }
+  
+  Future<void> _handlePaymentRecorded(PaymentRecordedEvent event) async {
+    print('[ChannelProjection] 💸 Processing PaymentRecordedEvent: ${event.channelId}');
+    print('[ChannelProjection]    Payment: ${event.amountSats} sats (seq: ${event.sequenceNumber})');
+    print('[ChannelProjection]    New balances: client=${event.newClientBalanceSats}, server=${event.newServerBalanceSats}');
+    
+    final existing = await _storage.getPaymentChannel(event.channelId);
+    if (existing == null) {
+      print('[ChannelProjection]    ⚠️ Channel ${event.channelId} not found');
+      return;
+    }
+    
+    final entity = existing as PaymentChannelEntity;
+    entity.clientBalanceSats = event.newClientBalanceSats.toString();
+    entity.serverBalanceSats = event.newServerBalanceSats.toString();
+    entity.latestSequenceNumber = event.sequenceNumber;
+    entity.latestPaymentTxHex = event.paymentTxHex;
+    
+    await _storage.storePaymentChannel(entity);
+    print('[ChannelProjection]    ✅ Payment recorded in read model');
+  }
+  
+  Future<void> _handlePaymentAcknowledged(PaymentAcknowledgedEvent event) async {
+    print('[ChannelProjection] ✓ Processing PaymentAcknowledgedEvent: ${event.channelId}');
+    print('[ChannelProjection]    Sequence: ${event.sequenceNumber}');
+    print('[ChannelProjection]    Balances: client=${event.newClientBalanceSats}, server=${event.newServerBalanceSats}');
+    
+    final existing = await _storage.getPaymentChannel(event.channelId);
+    if (existing == null) {
+      print('[ChannelProjection]    ⚠️ Channel ${event.channelId} not found');
+      return;
+    }
+    
+    final entity = existing as PaymentChannelEntity;
+    entity.clientBalanceSats = event.newClientBalanceSats.toString();
+    entity.serverBalanceSats = event.newServerBalanceSats.toString();
+    entity.latestSequenceNumber = event.sequenceNumber;
+    entity.latestPaymentTxHex = event.fullySignedPaymentTxHex;
+    
+    await _storage.storePaymentChannel(entity);
+    print('[ChannelProjection]    ✅ Payment acknowledged with full signatures');
+  }
+  
+  Future<void> _handleChannelClosing(ChannelClosingEvent event) async {
+    print('[ChannelProjection] 🔒 Processing ChannelClosingEvent: ${event.channelId}');
+    print('[ChannelProjection]    Reason: ${event.reason ?? "cooperative close"}');
+    
+    await _storage.updatePaymentChannelState(event.channelId, 'closing');
+    print('[ChannelProjection]    ✅ Channel marked as closing');
+  }
+  
+  Future<void> _handleChannelClosed(ChannelClosedEvent event) async {
+    print('[ChannelProjection] 🏁 Processing ChannelClosedEvent: ${event.channelId}');
+    print('[ChannelProjection]    Settlement TX: ${event.settlementTxId}');
+    print('[ChannelProjection]    Final balances: client=${event.finalClientBalanceSats}, server=${event.finalServerBalanceSats}');
+    
+    final existing = await _storage.getPaymentChannel(event.channelId);
+    if (existing == null) {
+      print('[ChannelProjection]    ⚠️ Channel ${event.channelId} not found');
+      return;
+    }
+    
+    final entity = existing as PaymentChannelEntity;
+    entity.state = 'closed'; // ChannelStatus.closed → 'closed'
+    entity.clientBalanceSats = event.finalClientBalanceSats.toString();
+    entity.serverBalanceSats = event.finalServerBalanceSats.toString();
+    entity.closedAt = event.timestamp;
+    
+    await _storage.storePaymentChannel(entity);
+    print('[ChannelProjection]    ✅ Channel closed with final settlement');
+  }
+  
+  Future<void> _handleRefundClaimed(RefundClaimedEvent event) async {
+    print('[ChannelProjection] ⏰ Processing RefundClaimedEvent: ${event.channelId}');
+    print('[ChannelProjection]    Refund TX: ${event.refundTxId}');
+    print('[ChannelProjection]    Amount: ${event.refundAmountSats} sats');
+    
+    final existing = await _storage.getPaymentChannel(event.channelId);
+    if (existing == null) {
+      print('[ChannelProjection]    ⚠️ Channel ${event.channelId} not found');
+      return;
+    }
+    
+    final entity = existing as PaymentChannelEntity;
+    entity.state = 'expired'; // ChannelStatus.expired → 'expired'
+    entity.closedAt = event.timestamp;
+    
+    await _storage.storePaymentChannel(entity);
+    print('[ChannelProjection]    ✅ Channel expired, refund claimed');
+  }
+}
+

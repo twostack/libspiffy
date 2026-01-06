@@ -163,6 +163,21 @@ void main() {
       expect(utxos.first.status, equals('available'),
         reason: 'Transaction WITH merkle proof should be marked as AVAILABLE');
       
+      // Also verify transaction status
+      final transaction = await bobIsar.bitcoinTransactionEntitys
+          .filter()
+          .walletIdEqualTo(bobWalletId)
+          .txidEqualTo(realTx['txid'] as String)
+          .findFirst();
+      
+      print('\nDatabase Transaction:');
+      print('  Status: ${transaction?.status}');
+      print('  Confirmations: ${transaction?.confirmations}');
+      
+      expect(transaction, isNotNull, reason: 'Transaction should exist in database');
+      expect(transaction!.status, equals('confirmed'),
+        reason: 'Transaction WITH merkle proof should be marked as CONFIRMED');
+      
       print('\n✅ PASS: Confirmed transaction (with proof) correctly marked as available');
     });
 
@@ -241,13 +256,29 @@ void main() {
       expect(utxos, isNotEmpty, reason: 'Should have UTXOs in database');
       
       // Verify the UTXO status is correctly set to pending
-      print('\n🔍 Status verification:');
+      print('\n🔍 UTXO Status verification:');
       print('   Current status: ${utxos.first.status}');
       print('   Expected status: pending');
       
       expect(utxos.first.status, equals('pending'),
         reason: 'Transaction WITHOUT merkle proof should be marked as PENDING. '
                 'ARCActor will upgrade status to "available" when proof is obtained from ARC.');
+      
+      // Also verify transaction status
+      final transaction = await bobIsar.bitcoinTransactionEntitys
+          .filter()
+          .walletIdEqualTo(bobWalletId)
+          .txidEqualTo(realTx['txid'] as String)
+          .findFirst();
+      
+      print('\n🔍 Transaction Status verification:');
+      print('   Current status: ${transaction?.status}');
+      print('   Expected status: pending');
+      
+      expect(transaction, isNotNull, reason: 'Transaction should exist in database');
+      expect(transaction!.status, equals('pending'),
+        reason: 'Transaction WITHOUT merkle proof should be marked as PENDING. '
+                'ARCActor will upgrade status to "confirmed" when proof is obtained from ARC.');
       
       print('\n✅ PASS: Unconfirmed transaction (no proof) correctly marked as pending');
     });

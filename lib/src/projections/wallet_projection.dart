@@ -598,13 +598,21 @@ class WalletProjection extends Projection<void> {
       // Net amount: positive for receives, negative for sends
       final netAmount = walletReceivedSats; // For receives this is positive
       
+      // CRITICAL: Determine status based on whether we have merkle proof in hand
+      // If we have the proof, transaction is confirmed and can be trusted
+      // If we don't have the proof yet, transaction is pending until proof is obtained
+      final hasMerkleProof = event.bumpProof.isNotEmpty;
+      final transactionStatus = hasMerkleProof ? TransactionStatus.confirmed : TransactionStatus.pending;
+      
+      print('[WalletProjection]    → Transaction status: ${hasMerkleProof ? "CONFIRMED (has merkle proof)" : "PENDING (no merkle proof yet)"}');
+      
       // Create BitcoinTransaction with complete wallet-aware data from BEEF
       final transaction = BitcoinTransaction(
         txid: event.txid,
         rawHex: event.rawHex,
-        status: TransactionStatus.confirmed,
-        blockHeight: event.blockHeight,
-        confirmations: 6, // Assume sufficient confirmations for imported txs
+        status: transactionStatus,
+        blockHeight: hasMerkleProof ? event.blockHeight : null,
+        confirmations: hasMerkleProof ? 6 : 0, // Only confirmed if we have the proof
         inputValue: totalInput,
         outputValue: totalOutput,
         fee: fee,

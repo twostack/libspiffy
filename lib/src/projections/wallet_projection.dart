@@ -87,7 +87,12 @@ class WalletProjection extends Projection<void> {
   
   @override
   Future<bool> handle(Event event) async {
-    if (event is! WalletEvent) return false;
+    if (event is! WalletEvent) {
+      print('[WalletProjection] ⚠️  Ignoring non-WalletEvent: ${event.runtimeType}');
+      return false;
+    }
+    
+    print('[WalletProjection] 🎯 Processing event: ${event.runtimeType}');
     
     try {
       switch (event.runtimeType) {

@@ -167,17 +167,21 @@ class WalletImportStartedEvent extends WalletEvent {
 class WalletImportProgressEvent extends WalletEvent {
   final String phase;
   final String message;
-  final int currentStep;
-  final int totalSteps;
   final double progress;
+  final int addressesFound;
+  final int totalAddresses;
+  final int transactionsProcessed;
+  final int totalTransactions;
 
   WalletImportProgressEvent({
     required String walletId,
     required this.phase,
     required this.message,
-    required this.currentStep,
-    required this.totalSteps,
     required this.progress,
+    required this.addressesFound,
+    required this.totalAddresses,
+    required this.transactionsProcessed,
+    required this.totalTransactions,
     String? eventId,
     DateTime? timestamp,
     int? version,
@@ -195,9 +199,11 @@ class WalletImportProgressEvent extends WalletEvent {
     return {
       'phase': phase,
       'message': message,
-      'currentStep': currentStep,
-      'totalSteps': totalSteps,
       'progress': progress,
+      'addressesFound': addressesFound,
+      'totalAddresses': totalAddresses,
+      'transactionsProcessed': transactionsProcessed,
+      'totalTransactions': totalTransactions,
     };
   }
 
@@ -206,9 +212,11 @@ class WalletImportProgressEvent extends WalletEvent {
       walletId: map['walletId'] as String,
       phase: map['phase'] as String,
       message: map['message'] as String,
-      currentStep: map['currentStep'] as int,
-      totalSteps: map['totalSteps'] as int,
       progress: (map['progress'] as num).toDouble(),
+      addressesFound: map['addressesFound'] as int,
+      totalAddresses: map['totalAddresses'] as int,
+      transactionsProcessed: map['transactionsProcessed'] as int,
+      totalTransactions: map['totalTransactions'] as int,
       eventId: map['eventId'] as String?,
       timestamp: map['timestamp'] != null
           ? (map['timestamp'] is String

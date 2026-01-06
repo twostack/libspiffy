@@ -40,6 +40,7 @@ class ChannelProjection extends Projection<void> {
         ChannelRequestedEvent,
         ChannelAcceptedEvent,
         ChannelRejectedEvent,
+        ServerAcceptanceRecordedEvent,
         RefundBuiltEvent,
         RefundCountersignedEvent,
         ChannelOpenedEvent,
@@ -91,6 +92,9 @@ class ChannelProjection extends Projection<void> {
           return true;
         case ChannelRejectedEvent:
           await _handleChannelRejected(event as ChannelRejectedEvent);
+          return true;
+        case ServerAcceptanceRecordedEvent:
+          await _handleServerAcceptanceRecorded(event as ServerAcceptanceRecordedEvent);
           return true;
         case RefundBuiltEvent:
           await _handleRefundBuilt(event as RefundBuiltEvent);
@@ -217,6 +221,26 @@ class ChannelProjection extends Projection<void> {
     
     await _storage.updatePaymentChannelState(event.channelId, 'closed');
     print('[ChannelProjection]    ✅ Channel marked as rejected/closed');
+  }
+  
+  Future<void> _handleServerAcceptanceRecorded(ServerAcceptanceRecordedEvent event) async {
+    print('[ChannelProjection] 🤝 Processing ServerAcceptanceRecordedEvent: ${event.channelId}');
+    print('[ChannelProjection]    Server pubkey: ${event.serverPubKeyHex.substring(0, 16)}...');
+    print('[ChannelProjection]    Server address: ${event.serverAddressB58}');
+    
+    final existing = await _storage.getPaymentChannel(event.channelId);
+    if (existing == null) {
+      print('[ChannelProjection]    ⚠️ Channel ${event.channelId} not found');
+      return;
+    }
+    
+    // Client side: update entity with server info
+    final entity = existing as PaymentChannelEntity;
+    entity.serverPubKeyHex = event.serverPubKeyHex;
+    entity.serverAddressB58 = event.serverAddressB58;
+    
+    await _storage.storePaymentChannel(entity);
+    print('[ChannelProjection]    ✅ Client channel updated with server keys');
   }
   
   Future<void> _handleRefundBuilt(RefundBuiltEvent event) async {

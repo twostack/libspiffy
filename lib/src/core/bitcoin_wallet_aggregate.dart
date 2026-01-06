@@ -157,6 +157,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
           address: event.address,
           derivationIndex: event.derivationIndex,
           success: true,
+          publicKeyHex: event.publicKeyHex, // Include public key if requested
           metadata: event.metadata, // Pass through metadata (e.g., invoiceId)
         ));
       } else if (event is TransactionCreatedEvent) {

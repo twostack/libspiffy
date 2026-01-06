@@ -601,6 +601,10 @@ class LibSpiffyActorSystem {
     // This enables SPVActor to trigger Arc status checks when new block headers arrive
     _spvActor!.tell(SetArcActorForSPVMessage(_arcActor!));
     
+    // Wire up HeaderSync actor reference in SPVActor for opportunistic header fetching
+    // This enables SPVActor to fetch missing block headers from P2P network during BEEF validation
+    _spvActor!.tell(SetHeaderSyncActorMessage(_headerSyncActor!));
+    
     // Spawn TransactionLifecycleCoordinator for transaction monitoring recovery
     _transactionLifecycleCoordinator = await _actorSystem.spawn(
       'transaction-lifecycle-coordinator',

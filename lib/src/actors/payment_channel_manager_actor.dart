@@ -18,7 +18,6 @@ import '../core/payment_channel_aggregate.dart';
 import '../core/channel_commands.dart';
 import '../core/channel_events.dart';
 import '../core/wallet_commands.dart';
-import '../core/wallet_events.dart';
 import '../services/crypto_service.dart';
 import '../services/payment_channel_builder.dart';
 import 'payment_channel_messages.dart';
@@ -154,30 +153,31 @@ class PaymentChannelManagerActor extends Actor {
         metadata: {'context': msg.context ?? 'payment-channel'},
       );
       
-      _walletManager.tell(
+      // Use ask() pattern to wait for actual response
+      print('[PaymentChannelManager]   Sending GenerateAddressCommand and waiting for response...');
+      final addressResponse = await _walletManager.ask(
         WalletCommandMessage(msg.walletId, addressCmd),
-        sender: context.self,
       );
       
-      // Wait for address generation to complete and events to be persisted
-      // Note: In Phase 2 with projections, this will query the read model instead
-      await _waitForAggregateResponse();
+      print('[PaymentChannelManager]   Received response type: ${addressResponse.runtimeType}');
       
-      // Query the event store for the address generation event
-      final walletEvents = await _eventStore.getEvents('BitcoinWallet_${msg.walletId}');
-      final addressEvent = walletEvents.whereType<AddressGeneratedEvent>().lastWhere(
-        (e) => e.getCorrelationId() == msg.channelId,
-        orElse: () => throw StateError('Address generation event not found'),
-      );
+      // Handle AddressGeneratedResponse from WalletManager
+      if (addressResponse is! AddressGeneratedResponse) {
+        throw StateError('Unexpected response type: ${addressResponse.runtimeType}');
+      }
       
-      if (addressEvent.publicKeyHex == null) {
-        throw StateError('Public key not included in address generation event');
+      if (!addressResponse.success) {
+        throw StateError('Address generation failed: ${addressResponse.error}');
+      }
+      
+      if (addressResponse.publicKeyHex == null) {
+        throw StateError('Public key not included in address generation response');
       }
       
       print('[PaymentChannelManager]   ✓ Client address generated');
-      print('[PaymentChannelManager]     Address: ${addressEvent.address}');
-      print('[PaymentChannelManager]     PubKey: ${addressEvent.publicKeyHex}');
-      print('[PaymentChannelManager]     Index: ${addressEvent.derivationIndex}');
+      print('[PaymentChannelManager]     Address: ${addressResponse.address}');
+      print('[PaymentChannelManager]     PubKey: ${addressResponse.publicKeyHex}');
+      print('[PaymentChannelManager]     Index: ${addressResponse.derivationIndex}');
       
       // Step 2: Get or spawn channel aggregate
       final aggregateRef = await _getOrSpawnChannelAggregate(msg.channelId);
@@ -193,9 +193,9 @@ class PaymentChannelManagerActor extends Actor {
         walletId: msg.walletId,
         clientPeerId: msg.clientPeerId,
         serverPeerId: msg.serverPeerId,
-        clientPubKeyHex: addressEvent.publicKeyHex!,
-        clientAddressB58: addressEvent.address,
-        derivationIndex: addressEvent.derivationIndex,
+        clientPubKeyHex: addressResponse.publicKeyHex!,
+        clientAddressB58: addressResponse.address,
+        derivationIndex: addressResponse.derivationIndex,
         fundingAmountSats: msg.fundingAmountSats,
         lockTimeDurationSeconds: msg.lockTimeDurationSeconds,
         context: msg.context,
@@ -217,9 +217,9 @@ class PaymentChannelManagerActor extends Actor {
       // Send success response
       originalSender?.tell(ChannelInitiatedResponse(
         channelId: msg.channelId,
-        clientPubKeyHex: addressEvent.publicKeyHex!,
-        clientAddressB58: addressEvent.address,
-        derivationIndex: addressEvent.derivationIndex,
+        clientPubKeyHex: addressResponse.publicKeyHex!,
+        clientAddressB58: addressResponse.address,
+        derivationIndex: addressResponse.derivationIndex,
         lockTimeUnix: lockTimeUnix,
         success: true,
       ));
@@ -260,28 +260,30 @@ class PaymentChannelManagerActor extends Actor {
         metadata: {'context': msg.context ?? 'payment-channel'},
       );
       
-      _walletManager.tell(
+      // Use ask() pattern to wait for actual response
+      print('[PaymentChannelManager]   Sending GenerateAddressCommand and waiting for response...');
+      final addressResponse = await _walletManager.ask(
         WalletCommandMessage(msg.walletId, addressCmd),
-        sender: context.self,
       );
       
-      // Wait for address generation
-      await _waitForAggregateResponse();
+      print('[PaymentChannelManager]   Received response type: ${addressResponse.runtimeType}');
       
-      // Query the event store for the address generation event
-      final walletEvents = await _eventStore.getEvents('BitcoinWallet_${msg.walletId}');
-      final addressEvent = walletEvents.whereType<AddressGeneratedEvent>().lastWhere(
-        (e) => e.getCorrelationId() == msg.channelId,
-        orElse: () => throw StateError('Address generation event not found'),
-      );
+      // Handle AddressGeneratedResponse from WalletManager
+      if (addressResponse is! AddressGeneratedResponse) {
+        throw StateError('Unexpected response type: ${addressResponse.runtimeType}');
+      }
       
-      if (addressEvent.publicKeyHex == null) {
-        throw StateError('Public key not included in address generation event');
+      if (!addressResponse.success) {
+        throw StateError('Address generation failed: ${addressResponse.error}');
+      }
+      
+      if (addressResponse.publicKeyHex == null) {
+        throw StateError('Public key not included in address generation response');
       }
       
       print('[PaymentChannelManager]   ✓ Server address generated');
-      print('[PaymentChannelManager]     Address: ${addressEvent.address}');
-      print('[PaymentChannelManager]     PubKey: ${addressEvent.publicKeyHex}');
+      print('[PaymentChannelManager]     Address: ${addressResponse.address}');
+      print('[PaymentChannelManager]     PubKey: ${addressResponse.publicKeyHex}');
       
       // Step 2: Get or spawn channel aggregate
       final aggregateRef = await _getOrSpawnChannelAggregate(msg.channelId);
@@ -294,9 +296,9 @@ class PaymentChannelManagerActor extends Actor {
         clientPeerId: msg.clientPeerId,
         clientPubKeyHex: msg.clientPubKeyHex,
         clientAddressB58: msg.clientAddressB58,
-        serverPubKeyHex: addressEvent.publicKeyHex!,
-        serverAddressB58: addressEvent.address,
-        derivationIndex: addressEvent.derivationIndex,
+        serverPubKeyHex: addressResponse.publicKeyHex!,
+        serverAddressB58: addressResponse.address,
+        derivationIndex: addressResponse.derivationIndex,
         fundingAmountSats: msg.fundingAmountSats,
         lockTimeUnix: msg.lockTimeUnix,
         context: msg.context,
@@ -319,9 +321,9 @@ class PaymentChannelManagerActor extends Actor {
       // Refund TX building and signing happens in separate steps
       originalSender?.tell(ChannelAcceptedResponse(
         channelId: msg.channelId,
-        serverPubKeyHex: addressEvent.publicKeyHex!,
-        serverAddressB58: addressEvent.address,
-        derivationIndex: addressEvent.derivationIndex,
+        serverPubKeyHex: addressResponse.publicKeyHex!,
+        serverAddressB58: addressResponse.address,
+        derivationIndex: addressResponse.derivationIndex,
         success: true,
       ));
       
@@ -903,7 +905,7 @@ class PaymentChannelManagerActor extends Actor {
       final correlationId = 'payment-${msg.channelId}-$newSequence';
       
       final signCmd = SignMultisigTransactionCommand(
-        walletId: msg.walletId,
+        walletId: stateResponse.walletId, // Use wallet ID from channel state, not from message
         transactionId: correlationId, // Correlation ID encoded in transaction ID
         rawTransaction: paymentTxResult.transactionHex,
         inputIndex: 0,
@@ -928,7 +930,7 @@ class PaymentChannelManagerActor extends Actor {
       );
       
       _walletManager.tell(
-        WalletCommandMessage(msg.walletId, signCmd),
+        WalletCommandMessage(stateResponse.walletId, signCmd), // Use wallet ID from channel state
         sender: context.self,
       );
       
@@ -997,7 +999,7 @@ class PaymentChannelManagerActor extends Actor {
       final correlationId = 'ack-${msg.channelId}-${msg.proposedSequence}';
       
       final signCmd = SignMultisigTransactionCommand(
-        walletId: msg.walletId,
+        walletId: stateResponse.walletId, // Use wallet ID from channel state, not from message
         transactionId: correlationId, // Correlation ID encoded in transaction ID
         rawTransaction: msg.paymentTxHex,
         inputIndex: 0,
@@ -1022,7 +1024,7 @@ class PaymentChannelManagerActor extends Actor {
       );
       
       _walletManager.tell(
-        WalletCommandMessage(msg.walletId, signCmd),
+        WalletCommandMessage(stateResponse.walletId, signCmd), // Use wallet ID from channel state
         sender: context.self,
       );
       
@@ -1123,12 +1125,6 @@ class PaymentChannelManagerActor extends Actor {
     return aggregateRef;
   }
 
-  /// Wait for aggregate response (simplified - just a delay for event propagation)
-  Future<void> _waitForAggregateResponse() async {
-    // Simple delay to allow events to propagate and be persisted
-    // In production with projections, this would query the read model
-    await Future.delayed(Duration(milliseconds: 100));
-  }
 
   /// Send generic error response based on message type
   void _sendErrorResponse(dynamic message, String error) {
@@ -1186,4 +1182,5 @@ class _PaymentSignatureContext {
     this.isAcknowledgment = false,
   });
 }
+
 

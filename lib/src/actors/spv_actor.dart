@@ -32,6 +32,9 @@ class SPVActor extends Actor {
   /// Optional reference to ARCActor for triggering pending UTXO checks
   ActorRef? _arcActor;
   
+  /// Optional reference to HeaderSyncActor for opportunistic header fetching
+  ActorRef? _headerSyncActor;
+  
   int _currentHeight = 0;
   dynamic _currentTip;
 
@@ -40,20 +43,33 @@ class SPVActor extends Actor {
     required ActorRef invoiceCoordinator,
     required ReadModelStorage storage,
     ActorRef? arcActor,
+    ActorRef? headerSyncActor,
   }) : _walletManager = walletManager,
        _invoiceCoordinator = invoiceCoordinator,
        _storage = storage,
-       _arcActor = arcActor;
+       _arcActor = arcActor,
+       _headerSyncActor = headerSyncActor;
   
   /// Set the ARC actor reference (called after actor system initialization)
   void setArcActor(ActorRef arcActor) {
     _arcActor = arcActor;
   }
   
+  /// Set the HeaderSync actor reference (called after actor system initialization)
+  void setHeaderSyncActor(ActorRef headerSyncActor) {
+    _headerSyncActor = headerSyncActor;
+  }
+  
   /// Handle SetArcActorForSPVMessage
   void _handleSetArcActor(SetArcActorForSPVMessage msg) {
     _arcActor = msg.arcActor;
     print('SPVActor: ARCActor reference set successfully');
+  }
+  
+  /// Handle SetHeaderSyncActorMessage
+  void _handleSetHeaderSyncActor(SetHeaderSyncActorMessage msg) {
+    _headerSyncActor = msg.headerSyncActor;
+    print('SPVActor: HeaderSyncActor reference set successfully');
   }
 
   @override
@@ -80,6 +96,10 @@ class SPVActor extends Actor {
           
         case SetArcActorForSPVMessage:
           _handleSetArcActor(message as SetArcActorForSPVMessage);
+          break;
+          
+        case SetHeaderSyncActorMessage:
+          _handleSetHeaderSyncActor(message as SetHeaderSyncActorMessage);
           break;
           
         case ValidateBEEFMessage:
@@ -168,16 +188,45 @@ class SPVActor extends Actor {
     }
   }
 
-  /// Retrieve Block header from storage (populated by SpiffyNode)
+  /// Retrieve Block header from storage with opportunistic P2P fetch fallback
+  /// 
+  /// First tries to retrieve the header from local storage. If not found and
+  /// HeaderSyncActor is available, attempts to fetch the header from the Bitcoin
+  /// P2P network. This enables SPV validation to succeed even when the counterparty
+  /// references block headers we haven't synced yet.
   Future<BlockHeader> _getBlockHeader(int blockHeight) async {
     try {
+      // Try local storage first
       final header = await _storage.getBlockHeaderByHeight(blockHeight);
       
-      if (header == null) {
-        throw Exception('Block header not found at height $blockHeight');
+      if (header != null) {
+        return header;
       }
       
-      return header;
+      // Header not found locally - try opportunistic fetch from P2P network
+      print('⚠️  Block header not found at height $blockHeight, attempting opportunistic P2P fetch...');
+      
+      if (_headerSyncActor == null) {
+        throw Exception('Block header not found at height $blockHeight and HeaderSyncActor not available for opportunistic fetch');
+      }
+      
+      // Request specific header from HeaderSyncActor
+      print('📡 Requesting header at height $blockHeight from HeaderSyncActor...');
+      final response = await _headerSyncActor!.ask<SpecificHeaderResponseMessage>(
+        RequestSpecificHeaderMessage(
+          blockHeight: blockHeight,
+          timeout: Duration(seconds: 10),
+        ),
+        Duration(seconds: 15),
+      );
+      
+      if (response.success && response.header != null) {
+        print('✅ Successfully fetched block header at height $blockHeight from P2P network');
+        return response.header!;
+      } else {
+        throw Exception('Failed to fetch block header from P2P network: ${response.error}');
+      }
+      
     } catch (e) {
       throw Exception('Failed to retrieve block header at height $blockHeight: $e');
     }

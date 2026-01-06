@@ -238,8 +238,10 @@ class ImportActor extends Actor {
     _reportProgress(
       'Wallet created',
       0.1,
-      0,
-      0,
+      0, // addressesFound
+      0, // totalAddresses (not known yet)
+      0, // transactionsProcessed
+      0, // totalTransactions (not known yet)
     );
   }
 
@@ -277,8 +279,10 @@ class ImportActor extends Actor {
           _reportProgress(
             'Scanning addresses: $usedCount found',
             0.1 + (0.3 * (scannedCount / (usedCount + message.addressGapLimit))),
-            0,
-            0,
+            usedCount, // addressesFound
+            usedCount, // totalAddresses (estimate during discovery)
+            0, // transactionsProcessed
+            0, // totalTransactions (not known yet)
           );
         }
       },
@@ -303,8 +307,8 @@ class ImportActor extends Actor {
         break;
       }
 
-      _logger.info('      → [${commandsSent + 1}/${discoveryResult.usedAddresses.length}] Registering: ${address.address}');
-      _logger.info('         (index: ${address.derivationIndex}, change: ${address.isChange}, txs: ${address.transactionCount})');
+      _logger.fine('      → [${commandsSent + 1}/${discoveryResult.usedAddresses.length}] Registering: ${address.address}');
+      _logger.fine('         (index: ${address.derivationIndex}, change: ${address.isChange}, txs: ${address.transactionCount})');
       
       final command = RegisterDiscoveredAddressCommand(
         walletId: message.walletId,
@@ -314,13 +318,13 @@ class ImportActor extends Actor {
         transactionCount: address.transactionCount,
       );
       
-      _logger.info('         📤 Sending command to WalletManagerActor...');
+      _logger.fine('         📤 Sending command to WalletManagerActor...');
       _walletManagerActor.tell(
         WalletCommandMessage(message.walletId, command),
         sender: context.self,
       );
       commandsSent++;
-      _logger.info('         ✅ Command sent (#$commandsSent)');
+      _logger.fine('         ✅ Command sent (#$commandsSent)');
       
       // Small delay to prevent command queue overload (commands processed sequentially)
       await Future.delayed(const Duration(milliseconds: 10));
@@ -339,8 +343,10 @@ class ImportActor extends Actor {
     _reportProgress(
       'Found ${discoveryResult.usedAddresses.length} addresses with $_totalTransactions transactions',
       0.4,
-      0,
-      _totalTransactions,
+      discoveryResult.usedAddresses.length, // addressesFound
+      discoveryResult.usedAddresses.length, // totalAddresses
+      0, // transactionsProcessed
+      _totalTransactions, // totalTransactions
     );
 
     return discoveryResult.usedAddresses;
@@ -368,8 +374,10 @@ class ImportActor extends Actor {
     _reportProgress(
       'Checking address history...',
       0.2,
-      0,
-      0,
+      0, // addressesFound (WIF is single address)
+      1, // totalAddresses (WIF has 1 address)
+      0, // transactionsProcessed
+      0, // totalTransactions (not known yet)
     );
     
     // Fetch transaction history for this single address
@@ -415,8 +423,10 @@ class ImportActor extends Actor {
     _reportProgress(
       'Found 1 address with $_totalTransactions transactions',
       0.4,
-      0,
-      _totalTransactions,
+      1, // addressesFound (WIF has 1 address)
+      1, // totalAddresses
+      0, // transactionsProcessed
+      _totalTransactions, // totalTransactions
     );
     
     return [discoveredAddress];
@@ -444,13 +454,13 @@ class ImportActor extends Actor {
       final address = addresses[i];
       if (_isCancelled) break;
 
-      _logger.info('   → [${i+1}/${addresses.length}] Fetching transactions for: ${address.address}');
+      _logger.fine('   → [${i+1}/${addresses.length}] Fetching transactions for: ${address.address}');
       
       // Import transactions but don't process yet - just collect them
       await _importService.importAddressTransactions(
         address,
         onProgress: (completed, total) {
-          _logger.info('      Progress: $completed/$total transactions fetched');
+          _logger.fine('      Progress: $completed/$total transactions fetched');
         },
         onTransactionImported: (tx) async {
           if (_isCancelled) return;
@@ -459,9 +469,9 @@ class ImportActor extends Actor {
           if (!allTransactions.any((t) => t.txid == tx.txid)) {
             allTransactions.add(tx);
             addressMap[tx.txid] = address;
-            _logger.info('      📦 Collected: ${tx.txid} (block: ${tx.blockHeight})');
+            _logger.fine('      📦 Collected: ${tx.txid} (block: ${tx.blockHeight})');
           } else {
-            _logger.info('      ⏭️ Skipping duplicate: ${tx.txid}');
+            _logger.fine('      ⏭️ Skipping duplicate: ${tx.txid}');
           }
         },
       );
@@ -471,7 +481,14 @@ class ImportActor extends Actor {
     
     if (allTransactions.isEmpty) {
       _logger.info('   ℹ️ No transactions found to import');
-      _reportProgress('Import complete: 0 transactions', 0.9, 0, 0);
+      _reportProgress(
+        'Import complete: 0 transactions', 
+        0.9, 
+        _totalAddresses, // addressesFound
+        _totalAddresses, // totalAddresses
+        0, // transactionsProcessed
+        0, // totalTransactions
+      );
       return;
     }
     
@@ -498,8 +515,10 @@ class ImportActor extends Actor {
       _reportProgress(
         'Processing transactions: $_processedTransactions/$_totalTransactions',
         0.4 + (0.5 * (_processedTransactions / _totalTransactions)),
-        _processedTransactions,
-        _totalTransactions,
+        _totalAddresses, // addressesFound
+        _totalAddresses, // totalAddresses
+        _processedTransactions, // transactionsProcessed
+        _totalTransactions, // totalTransactions
       );
       
       final currentAddress = addressMap[tx.txid]!;
@@ -521,8 +540,10 @@ class ImportActor extends Actor {
     _reportProgress(
       'Import complete: $_processedTransactions transactions, $totalUtxosFound UTXOs',
       0.9,
-      _processedTransactions,
-      _totalTransactions,
+      _totalAddresses, // addressesFound
+      _totalAddresses, // totalAddresses
+      _processedTransactions, // transactionsProcessed
+      _totalTransactions, // totalTransactions
     );
   }
 
@@ -559,9 +580,17 @@ class ImportActor extends Actor {
         final prevTxid = input.prevTxnId.toString();
         final prevVout = input.prevTxnOutputIndex;
         
-        // Fetch parent transaction
-        final parentRawHex = await _dataSource.getRawTransaction(prevTxid);
-        final parentTx = dartsv.Transaction.fromHex(parentRawHex);
+        // Fetch parent transaction - check database cache first
+        dartsv.Transaction parentTx;
+        final cachedTx = await _storage.getTransaction(prevTxid);
+        if (cachedTx != null && cachedTx.rawHex.isNotEmpty) {
+          parentTx = dartsv.Transaction.fromHex(cachedTx.rawHex);
+          _logger.fine('      ✓ Cache hit for parent tx: $prevTxid');
+        } else {
+          final parentRawHex = await _dataSource.getRawTransaction(prevTxid);
+          parentTx = dartsv.Transaction.fromHex(parentRawHex);
+          _logger.fine('      ✗ Cache miss, fetched from API: $prevTxid');
+        }
         
         // Get the output being spent
         if (prevVout >= parentTx.outputs.length) {
@@ -625,11 +654,11 @@ class ImportActor extends Actor {
     if (spentUtxos.isNotEmpty) {
       _logger.info('      → Transaction spends ${spentUtxos.length} wallet UTXO(s)');
       
+      // Send all spend commands in batch
       for (final spentUtxo in spentUtxos) {
         final utxoKey = '${spentUtxo['txid']}:${spentUtxo['vout']}';
         _logger.info('         Marking UTXO as spent: $utxoKey');
 
-        // Send command to mark UTXO as spent
         final spendCommand = SpendUTXOCommand(
           walletId: message.walletId,
           utxoKey: utxoKey,
@@ -641,12 +670,8 @@ class ImportActor extends Actor {
           WalletCommandMessage(message.walletId, spendCommand),
           sender: context.self,
         );
-
-        // Wait for UTXO to be marked as spent in storage
-        // This ensures that UTXOs are properly tracked before proceeding
-        await _waitForUtxoSpent(message.walletId, spentUtxo['txid'], spentUtxo['vout']);
-        _logger.info('         ✅ SpendUTXOCommand sent and UTXO marked as spent');
       }
+      _logger.info('         ✅ ${spentUtxos.length} SpendUTXOCommand(s) sent');
     } else {
       _logger.info('      ℹ️  Transaction does not spend any wallet UTXOs');
     }
@@ -658,9 +683,9 @@ class ImportActor extends Actor {
       
       // Log raw script info
       final scriptHex = output.script.toHex();
-      _logger.info('         Output $vout: ${output.satoshis} sats');
-      _logger.info('            Script (hex): ${scriptHex.substring(0, scriptHex.length > 50 ? 50 : scriptHex.length)}${scriptHex.length > 50 ? "..." : ""}');
-      _logger.info('            Script length: ${output.script.chunks.length} chunks');
+      _logger.fine('         Output $vout: ${output.satoshis} sats');
+      _logger.fine('            Script (hex): ${scriptHex.substring(0, scriptHex.length > 50 ? 50 : scriptHex.length)}${scriptHex.length > 50 ? "..." : ""}');
+      _logger.fine('            Script length: ${output.script.chunks.length} chunks');
       
       // Step 1: Identify script type
       final scriptRegistry = ScriptTypeRegistry(
@@ -669,7 +694,7 @@ class ImportActor extends Actor {
           : dartsv.NetworkType.TEST,
       );
       final scriptType = scriptRegistry.identifyScriptType(output.script);
-      _logger.info('            Script type: $scriptType');
+      _logger.fine('            Script type: $scriptType');
       
       // Step 2: Use appropriate builder based on script type
       bool belongsToWallet = false;
@@ -684,7 +709,7 @@ class ImportActor extends Actor {
               : dartsv.NetworkType.TEST,
           );
           outputAddress = locker.address?.toBase58();
-          _logger.info('            Decoded P2PKH address: $outputAddress');
+          _logger.fine('            Decoded P2PKH address: $outputAddress');
           
           if (outputAddress != null) {
             belongsToWallet = await _storage.isWalletAddress(message.walletId, outputAddress);
@@ -715,7 +740,7 @@ class ImportActor extends Actor {
                 final derivedAddress = dartsv.Address.fromPublicKey(pubKey, network).toBase58();
                 
                 if (await _storage.isWalletAddress(message.walletId, derivedAddress)) {
-                  _logger.info('            ✅ Wallet owns multisig key: $derivedAddress');
+                  _logger.fine('            ✅ Wallet owns multisig key: $derivedAddress');
                   belongsToWallet = true;
                   // Use the first matching address for UTXO tracking
                   outputAddress = derivedAddress;
@@ -748,7 +773,7 @@ class ImportActor extends Actor {
       }
       
       if (outputAddress != null && !belongsToWallet) {
-        _logger.info('            → Address $outputAddress NOT in wallet');
+        _logger.fine('            → Address $outputAddress NOT in wallet');
       }
 
       if (belongsToWallet && outputAddress != null) {
@@ -777,13 +802,6 @@ class ImportActor extends Actor {
           WalletCommandMessage(message.walletId, receiveCommand),
           sender: context.self,
         );
-
-        // Wait for UTXO to be persisted to storage before proceeding
-        // This ensures subsequent transactions can correctly identify spent UTXOs
-        final utxoKey = '${tx.txid}:$vout';
-        _logger.info('            → Waiting for UTXO $utxoKey to be persisted...');
-        await _waitForUtxoPersisted(message.walletId, tx.txid, vout);
-        _logger.info('            ✅ ReceiveUTXOCommand sent and UTXO persisted');
 
         importedUtxos.add({
           'txid': tx.txid,
@@ -819,9 +837,16 @@ class ImportActor extends Actor {
       sender: context.self,
     );
     
-    // WORKAROUND: Delay to prevent concurrency exceptions
-    await Future.delayed(const Duration(milliseconds: 50));
-    _logger.info('         ✅ RecordImportedTransactionCommand sent');
+    // Batch wait for all UTXO commands (spent + received) to be persisted
+    // This replaces individual waits per UTXO for better performance
+    final totalUtxoCommands = spentUtxos.length + importedUtxos.length;
+    if (totalUtxoCommands > 0) {
+      await Future.delayed(const Duration(milliseconds: 150));
+      _logger.info('         ✅ Transaction and $totalUtxoCommands UTXO command(s) processed');
+    } else {
+      await Future.delayed(const Duration(milliseconds: 50));
+      _logger.info('         ✅ RecordImportedTransactionCommand sent');
+    }
 
     return importedUtxos;
   }
@@ -840,8 +865,10 @@ class ImportActor extends Actor {
     _reportProgress(
       'Import complete',
       1.0,
-      _processedTransactions,
-      _totalTransactions,
+      _totalAddresses, // addressesFound
+      _totalAddresses, // totalAddresses
+      _processedTransactions, // transactionsProcessed
+      _totalTransactions, // totalTransactions
     );
 
     // Notify original sender via logging (actor messages handled by _reportProgress)
@@ -865,7 +892,14 @@ class ImportActor extends Actor {
     _logger.fine('Event: ${event.runtimeType} for wallet $walletId');
   }
 
-  void _reportProgress(String message, double progress, int completed, int total) {
+  void _reportProgress(
+    String message, 
+    double progress,
+    int addressesFound,
+    int totalAddresses,
+    int transactionsProcessed,
+    int totalTransactions,
+  ) {
     _logger.info(message);
     
     // Broadcast progress event for UI subscribers
@@ -886,9 +920,11 @@ class ImportActor extends Actor {
         walletId: _currentImportWalletId!,
         phase: phase,
         message: message,
-        currentStep: completed,
-        totalSteps: total,
         progress: progress,
+        addressesFound: addressesFound,
+        totalAddresses: totalAddresses,
+        transactionsProcessed: transactionsProcessed,
+        totalTransactions: totalTransactions,
       ));
     }
   }
@@ -949,7 +985,7 @@ class ImportActor extends Actor {
             'txid': prevTxId,
             'vout': prevVout,
           });
-          _logger.info('         ✓ Wallet owns UTXO $utxoKey - will mark as spent');
+          _logger.fine('         ✓ Wallet owns UTXO $utxoKey - will mark as spent');
         } else {
           _logger.fine('         ✗ Wallet does NOT own UTXO $utxoKey');
         }
@@ -963,71 +999,6 @@ class ImportActor extends Actor {
     return spentUTXOs;
   }
 
-  /// Wait for a UTXO to be persisted to storage
-  /// 
-  /// This ensures that when processing transactions sequentially,
-  /// we can correctly identify which UTXOs are spent by later transactions.
-  /// Without this wait, a race condition occurs where TX2 might be processed
-  /// before TX1's UTXO is persisted, causing TX1's UTXO to not be marked as spent.
-  Future<void> _waitForUtxoPersisted(String walletId, String txid, int vout) async {
-    const maxAttempts = 20; // 20 attempts * 100ms = 2 seconds max
-    const delayBetweenAttempts = Duration(milliseconds: 100);
-    
-    for (int attempt = 0; attempt < maxAttempts; attempt++) {
-      try {
-        final utxos = await _storage.getUTXOs(walletId, includeSpent: false);
-        final utxoExists = utxos.any((u) => u.txid == txid && u.vout == vout);
-        
-        if (utxoExists) {
-          if (attempt > 0) {
-            _logger.fine('            UTXO $txid:$vout persisted after ${attempt * delayBetweenAttempts.inMilliseconds}ms');
-          }
-          return;
-        }
-        
-        // Wait before next attempt
-        await Future.delayed(delayBetweenAttempts);
-      } catch (e) {
-        _logger.warning('            ⚠️  Error checking UTXO persistence: $e');
-        await Future.delayed(delayBetweenAttempts);
-      }
-    }
-    
-    _logger.warning('            ⚠️  UTXO $txid:$vout not found in storage after ${maxAttempts * delayBetweenAttempts.inMilliseconds}ms');
-  }
-
-  /// Wait for a UTXO to be marked as spent in storage
-  /// 
-  /// This ensures that spent UTXOs are properly tracked and won't appear
-  /// as available in subsequent queries.
-  Future<void> _waitForUtxoSpent(String walletId, String txid, int vout) async {
-    const maxAttempts = 20; // 20 attempts * 100ms = 2 seconds max
-    const delayBetweenAttempts = Duration(milliseconds: 100);
-    
-    for (int attempt = 0; attempt < maxAttempts; attempt++) {
-      try {
-        // Check if UTXO is marked as spent (not in available list)
-        final availableUtxos = await _storage.getUTXOs(walletId, includeSpent: false);
-        final isStillAvailable = availableUtxos.any((u) => u.txid == txid && u.vout == vout);
-        
-        if (!isStillAvailable) {
-          // UTXO is no longer available, meaning it was marked as spent
-          if (attempt > 0) {
-            _logger.fine('            UTXO $txid:$vout marked as spent after ${attempt * delayBetweenAttempts.inMilliseconds}ms');
-          }
-          return;
-        }
-        
-        // Wait before next attempt
-        await Future.delayed(delayBetweenAttempts);
-      } catch (e) {
-        _logger.warning('            ⚠️  Error checking UTXO spent status: $e');
-        await Future.delayed(delayBetweenAttempts);
-      }
-    }
-    
-    _logger.warning('            ⚠️  UTXO $txid:$vout still available after ${maxAttempts * delayBetweenAttempts.inMilliseconds}ms');
-  }
 }
 
 // =============================================================================

@@ -106,13 +106,13 @@ class WalletCreatedResponse implements Message {
 }
 
 /// Response from BitcoinWalletAggregate after processing GenerateAddressCommand
-class AddressGeneratedResponse implements Message {
+class AddressGeneratedResponse extends LocalMessage {
   final String walletId;
   final String address;
   final int derivationIndex;
   final bool success;
   final String? error;
-  final Map<String, dynamic> _metadata;
+  final String? publicKeyHex; // Included when GenerateAddressCommand.includePublicKey is true
 
   AddressGeneratedResponse({
     required this.walletId,
@@ -120,21 +120,23 @@ class AddressGeneratedResponse implements Message {
     required this.derivationIndex,
     required this.success,
     this.error,
+    this.publicKeyHex,
     Map<String, dynamic>? metadata,
-  }) : _metadata = metadata ?? {};
-
+  }) : super(
+          payload: null, // payload getter is overridden below
+          metadata: {
+            'walletId': walletId,
+            'address': address,
+            'derivationIndex': derivationIndex,
+            'success': success,
+            if (publicKeyHex != null) 'publicKeyHex': publicKeyHex,
+            ...?metadata,
+          },
+        );
+  
+  /// Override payload to return this object for DActor's ask() pattern
   @override
-  String get correlationId => 'address-generated-response-$walletId-$derivationIndex';
-  @override
-  Map<String, dynamic> get metadata => {
-    'walletId': walletId,
-    'address': address,
-    ..._metadata, // Merge passed metadata
-  };
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
+  dynamic get payload => this;
 }
 
 
@@ -804,6 +806,22 @@ class SetArcActorForSPVMessage implements Message {
   String get correlationId => 'set-arc-actor-spv-${DateTime.now().millisecondsSinceEpoch}';
   @override
   Map<String, dynamic> get metadata => {'arcActorRef': arcActor.toString()};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+/// Message to set HeaderSyncActor reference in SPVActor
+class SetHeaderSyncActorMessage implements Message {
+  final ActorRef headerSyncActor;
+
+  SetHeaderSyncActorMessage(this.headerSyncActor);
+
+  @override
+  String get correlationId => 'set-header-sync-actor-${DateTime.now().millisecondsSinceEpoch}';
+  @override
+  Map<String, dynamic> get metadata => {'headerSyncActorRef': headerSyncActor.toString()};
   @override
   ActorRef? get replyTo => null;
   @override

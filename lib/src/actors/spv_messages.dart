@@ -520,4 +520,76 @@ class SPVConfigMessage implements SPVMessage {
   @override
   String toString() => 'SPVConfigMessage(headerValidation: $enableHeaderValidation, '
       'proofValidation: $enableMerkleProofValidation)';
+}
+
+/// Request a specific block header by height (for opportunistic fetching)
+class RequestSpecificHeaderMessage implements SPVMessage, Message {
+  final int blockHeight;
+  final Duration timeout;
+  final String _correlationId;
+  final ActorRef? _replyTo;
+  final Map<String, dynamic> _metadata;
+
+  RequestSpecificHeaderMessage({
+    required this.blockHeight,
+    this.timeout = const Duration(seconds: 30),
+    String? correlationId,
+    ActorRef? replyTo,
+    Map<String, dynamic>? metadata,
+  }) : _correlationId = correlationId ?? 'req_header_${DateTime.now().millisecondsSinceEpoch}',
+       _replyTo = replyTo,
+       _metadata = metadata ?? {};
+
+  @override
+  String get correlationId => _correlationId;
+
+  @override
+  ActorRef? get replyTo => _replyTo;
+
+  @override
+  DateTime get timestamp => DateTime.now();
+
+  @override
+  Map<String, dynamic> get metadata => _metadata;
+
+  @override
+  String toString() => 'RequestSpecificHeaderMessage(height: $blockHeight, timeout: $timeout)';
+}
+
+/// Response with requested block header
+class SpecificHeaderResponseMessage implements SPVMessage, Message {
+  final int blockHeight;
+  final BlockHeader? header;
+  final bool success;
+  final String? error;
+  final String _correlationId;
+  final ActorRef? _replyTo;
+  final Map<String, dynamic> _metadata;
+
+  SpecificHeaderResponseMessage({
+    required this.blockHeight,
+    this.header,
+    required this.success,
+    this.error,
+    String? correlationId,
+    ActorRef? replyTo,
+    Map<String, dynamic>? metadata,
+  }) : _correlationId = correlationId ?? 'resp_header_${DateTime.now().millisecondsSinceEpoch}',
+       _replyTo = replyTo,
+       _metadata = metadata ?? {};
+
+  @override
+  String get correlationId => _correlationId;
+
+  @override
+  ActorRef? get replyTo => _replyTo;
+
+  @override
+  DateTime get timestamp => DateTime.now();
+
+  @override
+  Map<String, dynamic> get metadata => _metadata;
+
+  @override
+  String toString() => 'SpecificHeaderResponseMessage(height: $blockHeight, success: $success)';
 } 

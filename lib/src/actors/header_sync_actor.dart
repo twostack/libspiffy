@@ -101,6 +101,8 @@ class HeaderSyncActor extends Actor {
         await _handleChainTipEvent(message);
       } else if (message is RequestHeaderSyncMessage) {
         await _handleHeaderSyncRequest(message);
+      } else if (message is RequestSpecificHeaderMessage) {
+        await _handleSpecificHeaderRequest(message);
       } else if (message is GetSPVStatusMessage) {
         await _handleGetSPVStatus(message);
       } else {
@@ -428,6 +430,127 @@ class HeaderSyncActor extends Actor {
       context.sender?.tell(SPVErrorMessage(
         operation: 'get_spv_status',
         error: e.toString(),
+      ) as dynamic);
+    }
+  }
+
+  /// Handle request for a specific block header by height (opportunistic fetching)
+  /// 
+  /// This enables SPV validation to succeed even when the counterparty references
+  /// block headers we haven't synced yet. The method will:
+  /// 1. Check if header already exists locally
+  /// 2. If not, trigger P2P sync to fetch missing headers
+  /// 3. Wait for the header to arrive (with timeout)
+  /// 4. Return the header to the requesting actor
+  Future<void> _handleSpecificHeaderRequest(RequestSpecificHeaderMessage msg) async {
+    _logger.info('📡 Received request for specific block header at height ${msg.blockHeight}');
+    
+    try {
+      // Check if we already have this header
+      final existingHeader = await _headerChain.getHeaderByHeight(msg.blockHeight);
+      
+      if (existingHeader != null) {
+        _logger.info('✅ Header at height ${msg.blockHeight} already available locally');
+        context.sender?.tell(SpecificHeaderResponseMessage(
+          blockHeight: msg.blockHeight,
+          header: existingHeader,
+          success: true,
+          correlationId: msg.correlationId,
+        ) as dynamic);
+        return;
+      }
+      
+      // Check if we have P2P connectivity
+      if (_peerManager == null) {
+        throw Exception('PeerManager not available for header fetch');
+      }
+      
+      final peers = _peerManager.getPeers();
+      if (peers.isEmpty) {
+        throw Exception('No peers available for header fetch');
+      }
+      
+      // Determine the range to fetch
+      final currentHeight = _headerChain.bestHeight;
+      
+      if (msg.blockHeight <= currentHeight) {
+        // We should have this header but don't - database issue?
+        throw Exception('Header at height ${msg.blockHeight} should exist (current height: $currentHeight) but not found in storage');
+      }
+      
+      _logger.info('⚠️  Requested height ${msg.blockHeight} is ahead of current height $currentHeight');
+      _logger.info('📡 Triggering header sync to fetch missing headers...');
+      
+      // Build block locator starting from current tip
+      final blockLocators = <Hash>[];
+      final tipHeader = await _headerChain.getHeaderByHeight(currentHeight);
+      if (tipHeader != null) {
+        blockLocators.add(tipHeader.blockHash());
+      } else {
+        blockLocators.add(Hash.zero());
+      }
+      
+      // Send getHeaders request
+      final getHeadersMsg = MsgGetHeaders(
+        protocolVersion: 70016,
+        blockLocatorHashes: blockLocators,
+        hashStop: Hash.zero(),
+      );
+      
+      // Send to first available peer
+      var sent = false;
+      for (final peer in peers) {
+        try {
+          peer.sendMessage(getHeadersMsg);
+          _logger.info('✉️  Sent getHeaders request to peer ${peer.toString()}');
+          sent = true;
+          break;
+        } catch (e) {
+          _logger.warning('Failed to send getHeaders to peer: $e');
+        }
+      }
+      
+      if (!sent) {
+        throw Exception('Failed to send getHeaders request to any peer');
+      }
+      
+      // Wait for headers to arrive (with timeout)
+      // Poll for the header with exponential backoff
+      final startTime = DateTime.now();
+      var pollInterval = 500; // Start with 500ms
+      const maxPollInterval = 2000; // Max 2 seconds between polls
+      
+      while (DateTime.now().difference(startTime) < msg.timeout) {
+        await Future.delayed(Duration(milliseconds: pollInterval));
+        
+        final header = await _headerChain.getHeaderByHeight(msg.blockHeight);
+        if (header != null) {
+          _logger.info('✅ Successfully fetched header at height ${msg.blockHeight}');
+          
+          context.sender?.tell(SpecificHeaderResponseMessage(
+            blockHeight: msg.blockHeight,
+            header: header,
+            success: true,
+            correlationId: msg.correlationId,
+          ) as dynamic);
+          return;
+        }
+        
+        // Exponential backoff
+        pollInterval = (pollInterval * 1.5).toInt().clamp(500, maxPollInterval);
+      }
+      
+      // Timeout reached
+      throw Exception('Timeout waiting for header at height ${msg.blockHeight} after ${msg.timeout.inSeconds}s');
+      
+    } catch (e) {
+      _logger.severe('❌ Failed to fetch specific header at height ${msg.blockHeight}: $e');
+      
+      context.sender?.tell(SpecificHeaderResponseMessage(
+        blockHeight: msg.blockHeight,
+        success: false,
+        error: e.toString(),
+        correlationId: msg.correlationId,
       ) as dynamic);
     }
   }

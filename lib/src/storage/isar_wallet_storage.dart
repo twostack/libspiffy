@@ -274,9 +274,9 @@ class IsarWalletStorage implements ReadModelStorage {
     await _isar.writeTxn(() async {
       // Find existing entity by address (unique index)
       final existing = await _isar.addressEntitys
-          .where()
-          .addressEqualTo(metadata.address)
           .filter()
+          .addressEqualTo(metadata.address)
+          .and()
           .walletIdEqualTo(walletId)
           .findFirst();
       
@@ -291,6 +291,14 @@ class IsarWalletStorage implements ReadModelStorage {
     });
     print('[IsarWalletStorage]    ✅ Address persisted to Isar');
   }
+  
+  @override
+  Future<int> getAddressCount(String walletId) async {
+    return await _isar.addressEntitys
+        .where()
+        .walletIdEqualTo(walletId)
+        .count();
+  }
 
   @override
   Future<void> updateAddressUsage(
@@ -301,9 +309,9 @@ class IsarWalletStorage implements ReadModelStorage {
   }) async {
     await _isar.writeTxn(() async {
       final entity = await _isar.addressEntitys
-          .where()
-          .addressEqualTo(address)
           .filter()
+          .addressEqualTo(address)
+          .and()
           .walletIdEqualTo(walletId)
           .findFirst();
       

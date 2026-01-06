@@ -451,10 +451,17 @@ class WalletManagerActor extends Actor {
         return;
       }
 
+      // CRITICAL: Check if we have the merkle proof IN HAND (not just whether it could be fetched)
+      // bumpProof is populated when the BEEF contains the merkle proof for this transaction
+      final bumpProof = result.transactionData?['bumpProof'] as String? ?? '';
+      final hasMerkleProof = bumpProof.isNotEmpty;
+      final blockHeight = result.transactionData?['blockHeight'] as int? ?? 0;
+      
+      print('SPV Transaction ${result.txid}: hasMerkleProof=$hasMerkleProof (bumpProof: ${bumpProof.isEmpty ? "none" : "${bumpProof.length} chars"}, blockHeight=$blockHeight)');
+
       // Process new spendable UTXOs
-      // This code path only executes when result.isValid == true, meaning
-      // the merkle proof was verified. All UTXOs from SPV-validated transactions
-      // are immediately available for spending.
+      // If we have the merkle proof in hand, UTXOs are immediately available
+      // If we don't have the proof yet, UTXOs start as pending until proof is obtained
       for (final utxoData in result.spendableUTXOs) {
         final command = ReceiveUTXOCommand(
           walletId: walletId,
@@ -463,13 +470,16 @@ class WalletManagerActor extends Actor {
           satoshis: BigInt.tryParse(utxoData['satoshis'].toString()) ?? BigInt.zero,
           scriptPubKey: utxoData['script'] ?? '',
           address: utxoData['address'],
-          blockHeight: utxoData['blockHeight'] as int?,
-          confirmations: utxoData['confirmations'] ?? 0,
-          initialStatus: UTXOStatus.available, // SPV validated = merkle proof verified
+          blockHeight: hasMerkleProof ? blockHeight : null,
+          confirmations: hasMerkleProof ? 1 : 0,
+          // CRITICAL FIX: Set initial status based on WHETHER WE HAVE THE PROOF
+          // - Have proof: immediately available (SPV validated with proof in hand)
+          // - No proof: pending (will be upgraded by ARCActor when proof is fetched)
+          initialStatus: hasMerkleProof ? UTXOStatus.available : UTXOStatus.pending,
         );
         
         walletActor.tell(command);
-        print('Sent ReceiveUTXO command to wallet $walletId');
+        print('Sent ReceiveUTXO command to wallet $walletId (status: ${hasMerkleProof ? "available" : "pending"})');
       }
 
       // Register received UTXOs with ARC actor for status tracking

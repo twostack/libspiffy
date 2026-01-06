@@ -756,6 +756,12 @@ class InMemoryWalletStorage implements WalletStorage {
   }
   
   @override
+  Future<int> getAddressCount(String walletId) async {
+    // Stub implementation for in-memory storage
+    return 0;
+  }
+  
+  @override
   Future<void> updateAddressUsage(
     String walletId,
     String address, {

@@ -333,11 +333,44 @@ class ImportActor extends Actor {
     _logger.info('   ✅ All $commandsSent RegisterDiscoveredAddressCommands sent');
 
     
-    // Give projection a moment to process the address registration events
-    // This is much shorter than before because we're now using proper CQRS flow
-    _logger.info('   → Waiting for projection to process ${discoveryResult.usedAddresses.length} address events (500ms)...');
-    await Future.delayed(const Duration(milliseconds: 500));
-    _logger.info('   ✅ Address registration complete');
+    // CRITICAL: Wait for projection to actually persist addresses to Isar storage
+    // The projection processes AddressDiscoveredEvents and writes AddressEntity records
+    // We MUST wait until these are queryable in Isar before proceeding with transaction import
+    _logger.info('   → Waiting for projection to persist ${discoveryResult.usedAddresses.length} addresses to Isar...');
+    
+    final expectedCount = discoveryResult.usedAddresses.length;
+    int persistedCount = 0;
+    int attempts = 0;
+    const maxAttempts = 100; // 100 attempts * 200ms = 20 seconds max
+    const pollInterval = Duration(milliseconds: 200);
+    
+    while (persistedCount < expectedCount && attempts < maxAttempts) {
+      attempts++;
+      
+      // Query actual address count from storage
+      persistedCount = await _storage.getAddressCount(message.walletId);
+      
+      if (persistedCount >= expectedCount) {
+        _logger.info('   ✅ All $expectedCount addresses confirmed persisted to Isar! (took ${attempts * 200}ms)');
+        break;
+      }
+      
+      // Log progress every 5 attempts (every second)
+      if (attempts % 5 == 0) {
+        _logger.info('      Progress: $persistedCount/$expectedCount addresses persisted (${attempts * 200}ms elapsed)');
+      }
+      
+      await Future.delayed(pollInterval);
+    }
+    
+    if (persistedCount < expectedCount) {
+      _logger.severe('   ❌ TIMEOUT: Only $persistedCount/$expectedCount addresses persisted after ${maxAttempts * 200}ms!');
+      _logger.severe('   This will cause transaction import to fail because addresses won\'t be found in database.');
+      throw StateError('Address persistence timeout: expected $expectedCount, got $persistedCount. '
+          'Projection may be lagging or event processing is blocked.');
+    }
+    
+    _logger.info('   ✅ Address registration complete - all addresses confirmed in Isar storage');
 
     _totalTransactions = discoveryResult.totalTransactions;
     _reportProgress(
@@ -414,10 +447,39 @@ class ImportActor extends Actor {
       WalletCommandMessage(message.walletId, command),
       sender: context.self,
     );
-    _logger.info('   ✅ WIF address registered');
+    _logger.info('   ✅ WIF address registration command sent');
     
-    // Give projection time to process
-    await Future.delayed(const Duration(milliseconds: 500));
+    // Wait for projection to persist the address to Isar
+    _logger.info('   → Waiting for projection to persist WIF address to Isar...');
+    
+    int attempts = 0;
+    const maxAttempts = 50; // 50 attempts * 200ms = 10 seconds max
+    const pollInterval = Duration(milliseconds: 200);
+    bool addressPersisted = false;
+    
+    while (!addressPersisted && attempts < maxAttempts) {
+      attempts++;
+      
+      // Query address from storage using the interface method
+      final addr = await _storage.getAddressMetadata(message.walletId, address);
+      addressPersisted = addr != null;
+      
+      if (addressPersisted) {
+        _logger.info('   ✅ WIF address confirmed in Isar! (took ${attempts * 200}ms)');
+        break;
+      }
+      
+      if (attempts % 5 == 0) {
+        _logger.info('      Waiting for address persistence... (${attempts * 200}ms elapsed)');
+      }
+      
+      await Future.delayed(pollInterval);
+    }
+    
+    if (!addressPersisted) {
+      _logger.severe('   ❌ TIMEOUT: WIF address not persisted after ${maxAttempts * 200}ms!');
+      throw StateError('WIF address persistence timeout. Projection may be lagging.');
+    }
     
     _totalTransactions = history.length;
     _reportProgress(
@@ -456,6 +518,16 @@ class ImportActor extends Actor {
 
       _logger.fine('   → [${i+1}/${addresses.length}] Fetching transactions for: ${address.address}');
       
+      // Report progress during collection phase
+      _reportProgress(
+        'Collecting transactions from address ${i+1}/${addresses.length}',
+        0.4 + (0.15 * (i / addresses.length)), // Progress from 0.4 to 0.55
+        _totalAddresses, // addressesFound
+        _totalAddresses, // totalAddresses
+        0, // transactionsProcessed (not processing yet, just collecting)
+        _totalTransactions, // totalTransactions (known from discovery)
+      );
+      
       // Import transactions but don't process yet - just collect them
       await _importService.importAddressTransactions(
         address,
@@ -492,6 +564,16 @@ class ImportActor extends Actor {
       return;
     }
     
+    // Report progress after collection completes
+    _reportProgress(
+      'Collected ${allTransactions.length} transactions, preparing to process',
+      0.55, 
+      _totalAddresses, // addressesFound
+      _totalAddresses, // totalAddresses
+      0, // transactionsProcessed
+      allTransactions.length, // totalTransactions (now we know the exact count)
+    );
+    
     // PHASE 2: Sort by block height (ascending - oldest first)
     // This ensures parent transactions are processed before transactions that spend their outputs
     _logger.info('   🔄 Phase 2: Sorting ${allTransactions.length} transactions by block height...');
@@ -514,7 +596,7 @@ class ImportActor extends Actor {
       _processedTransactions++;
       _reportProgress(
         'Processing transactions: $_processedTransactions/$_totalTransactions',
-        0.4 + (0.5 * (_processedTransactions / _totalTransactions)),
+        0.55 + (0.35 * (_processedTransactions / _totalTransactions)), // Adjusted from 0.4-0.9 to 0.55-0.9
         _totalAddresses, // addressesFound
         _totalAddresses, // totalAddresses
         _processedTransactions, // transactionsProcessed
@@ -538,7 +620,7 @@ class ImportActor extends Actor {
     _logger.info('   📊 Summary: $_processedTransactions transactions, $totalUtxosFound UTXOs');
     
     _reportProgress(
-      'Import complete: $_processedTransactions transactions, $totalUtxosFound UTXOs',
+      'Finalizing import: $_processedTransactions transactions, $totalUtxosFound UTXOs',
       0.9,
       _totalAddresses, // addressesFound
       _totalAddresses, // totalAddresses

@@ -67,6 +67,9 @@ abstract class ReadModelStorage {
 
   /// Store or update address metadata
   Future<void> upsertAddress(String walletId, AddressMetadata metadata);
+  
+  /// Get the count of addresses for a wallet (for verification during import)
+  Future<int> getAddressCount(String walletId);
 
   /// Update address usage statistics
   Future<void> updateAddressUsage(

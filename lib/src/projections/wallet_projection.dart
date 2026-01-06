@@ -995,5 +995,11 @@ class WalletProjection extends Projection<void> {
     // (If you need to rebuild, clear the storage separately.)
     _checkpoint = 0;
   }
+
+  @override
+  Future<void> onError(dynamic error, StackTrace stackTrace) async {
+    print('[WalletProjection] ❌ ERROR processing event: $error');
+    print('[WalletProjection] Stack trace: $stackTrace');
+  }
 }
 

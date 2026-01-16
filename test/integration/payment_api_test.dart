@@ -80,6 +80,18 @@ class MockBlockchainDataSource implements BlockchainDataSource {
     // Not implemented for this test
     throw UnimplementedError('submitTransaction not needed for this test');
   }
+
+  @override
+  Future<List<AddressScriptInfo>> getAddressScripts(String address) {
+    // TODO: implement getAddressScripts
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<List<TransactionInfo>> getScriptHistory(String scriptHash, {int? limit, int? offset}) {
+    // TODO: implement getScriptHistory
+    throw UnimplementedError();
+  }
 }
 
 // Private key in WIF format for testnet address n49CCQFuncaXbtBoNm39gSP9dvRP2eFFSw

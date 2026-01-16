@@ -214,6 +214,18 @@ class MockTestnetDataSource implements BlockchainDataSource {
   void setAddressHistory(String address, List<TransactionInfo> history) {
     _addressHistory[address] = history;
   }
+
+  @override
+  Future<List<AddressScriptInfo>> getAddressScripts(String address) {
+    // TODO: implement getAddressScripts
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<List<TransactionInfo>> getScriptHistory(String scriptHash, {int? limit, int? offset}) {
+    // TODO: implement getScriptHistory
+    throw UnimplementedError();
+  }
 }
 
 // =============================================================================

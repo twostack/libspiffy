@@ -41,6 +41,7 @@ class CreateWalletMessage implements Message {
   final String? mnemonic;
   final String? wif;
   final String? xpriv;
+  final String? xpub;
   final Map<String, dynamic>? walletMetadata;
 
   CreateWalletMessage(
@@ -49,6 +50,7 @@ class CreateWalletMessage implements Message {
     this.mnemonic,
     this.wif,
     this.xpriv,
+    this.xpub,
     this.walletMetadata,
   });
 
@@ -264,6 +266,32 @@ class FundingTransactionBuiltResponse implements Message {
   String get correlationId => 'funding-tx-response-$correlationId_';
   @override
   Map<String, dynamic> get metadata => {'walletId': walletId, 'correlationId': correlationId_, 'channelId': channelId};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+/// Response from BenfordCoordinatorActor or BitcoinWalletAggregate for SplitUTXOsToBenfordCommand
+class SplitUTXOsResponse implements Message {
+  final String walletId;
+  final bool success;
+  final String? error;
+  final int? splitCount; // Number of UTXOs created
+  final List<String>? txids; // Transaction IDs of split transactions
+
+  SplitUTXOsResponse({
+    required this.walletId,
+    required this.success,
+    this.error,
+    this.splitCount,
+    this.txids,
+  });
+
+  @override
+  String get correlationId => 'split-utxos-response-$walletId';
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId};
   @override
   ActorRef? get replyTo => null;
   @override

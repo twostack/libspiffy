@@ -11,6 +11,10 @@ enum WalletType {
   /// Wallet created from WIF (Wallet Import Format) private key
   /// Single address only - no address derivation supported
   wif,
+
+  /// Watch-only wallet from extended public key (xpub)
+  /// Can generate addresses but CANNOT sign transactions
+  xpub,
 }
 
 extension WalletTypeExtension on WalletType {
@@ -22,6 +26,8 @@ extension WalletTypeExtension on WalletType {
         return 'xpriv';
       case WalletType.wif:
         return 'wif';
+      case WalletType.xpub:
+        return 'xpub';
     }
   }
   
@@ -33,6 +39,8 @@ extension WalletTypeExtension on WalletType {
         return WalletType.xpriv;
       case 'wif':
         return WalletType.wif;
+      case 'xpub':
+        return WalletType.xpub;
       default:
         throw ArgumentError('Unknown wallet type: $value');
     }

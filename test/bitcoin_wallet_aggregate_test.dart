@@ -125,6 +125,482 @@ void main() {
       });
     });
 
+    group('XPub Watch-Only Wallet', () {
+      test('should create xpub watch-only wallet', () async {
+        // Generate a valid xpub for testing
+        final mnemonic = await cryptoService.generateMnemonic();
+        final hdPriv = await cryptoService.mnemonicToHDPrivateKey(
+          mnemonic,
+          network: dartsv.NetworkType.TEST,
+        );
+        final hdPub = cryptoService.deriveHDPublicKey(hdPriv);
+        final xpub = hdPub.xpubkey;
+
+        final wallet = BitcoinWalletAggregate(
+          aggregateId: 'xpub-wallet-123',
+          aggregateType: 'Wallet',
+          eventStore: eventStore,
+          cryptoService: cryptoService,
+          secureStorage: secureStorage,
+        );
+
+        wallet.preStart();
+        await Future.delayed(Duration(milliseconds: 100));
+
+        // Create xpub wallet
+        final createCommand = CreateWalletCommand(
+          walletId: 'xpub-wallet-123',
+          walletName: 'Watch Only Wallet',
+          xpub: xpub,
+          walletMetadata: {'type': 'watch-only'},
+        );
+
+        await wallet.commandHandler(createCommand);
+
+        expect(wallet.isInitialized, isTrue);
+        expect(wallet.currentState.name, equals('Watch Only Wallet'));
+        expect(wallet.currentState.isCreated, isTrue);
+        expect(wallet.currentState.walletType, equals(WalletType.xpub));
+        expect(wallet.currentState.rootAddress, isNotEmpty);
+        expect(wallet.currentState.version, equals(1));
+      });
+
+      test('should reject invalid xpub format', () async {
+        final wallet = BitcoinWalletAggregate(
+          aggregateId: 'xpub-wallet-invalid',
+          aggregateType: 'Wallet',
+          eventStore: eventStore,
+          cryptoService: cryptoService,
+          secureStorage: secureStorage,
+        );
+
+        wallet.preStart();
+        await Future.delayed(Duration(milliseconds: 100));
+
+        // Try to create wallet with invalid xpub
+        final createCommand = CreateWalletCommand(
+          walletId: 'xpub-wallet-invalid',
+          walletName: 'Invalid Wallet',
+          xpub: 'invalid-xpub-format',
+        );
+
+        // dartsv throws AddressFormatException for invalid xpub format
+        expect(
+          () => wallet.commandHandler(createCommand),
+          throwsException,
+        );
+      });
+
+      test('should reject testnet xpub for mainnet wallet', () async {
+        // Generate a testnet xpub
+        final mnemonic = await cryptoService.generateMnemonic();
+        final hdPriv = await cryptoService.mnemonicToHDPrivateKey(
+          mnemonic,
+          network: dartsv.NetworkType.TEST,
+        );
+        final hdPub = cryptoService.deriveHDPublicKey(hdPriv);
+        final testnetXpub = hdPub.xpubkey;
+
+        final wallet = BitcoinWalletAggregate(
+          aggregateId: 'xpub-wallet-mismatch',
+          aggregateType: 'Wallet',
+          eventStore: eventStore,
+          cryptoService: cryptoService,
+          secureStorage: secureStorage,
+        );
+
+        wallet.preStart();
+        await Future.delayed(Duration(milliseconds: 100));
+
+        // Try to create mainnet wallet with testnet xpub (should fail)
+        // Explicitly specify mainnet in metadata
+        final createCommand = CreateWalletCommand(
+          walletId: 'xpub-wallet-mismatch',
+          walletName: 'Mismatched Wallet',
+          xpub: testnetXpub,
+          walletMetadata: {'network': 'mainnet'},
+        );
+
+        expect(
+          () => wallet.commandHandler(createCommand),
+          throwsA(isA<ArgumentError>()),
+        );
+      });
+
+      test('should generate multiple addresses with incrementing indices', () async {
+        // Generate a valid xpub
+        final mnemonic = await cryptoService.generateMnemonic();
+        final hdPriv = await cryptoService.mnemonicToHDPrivateKey(
+          mnemonic,
+          network: dartsv.NetworkType.TEST,
+        );
+        final hdPub = cryptoService.deriveHDPublicKey(hdPriv);
+        final xpub = hdPub.xpubkey;
+
+        final wallet = BitcoinWalletAggregate(
+          aggregateId: 'xpub-wallet-multi-addr',
+          aggregateType: 'Wallet',
+          eventStore: eventStore,
+          cryptoService: cryptoService,
+          secureStorage: secureStorage,
+        );
+
+        wallet.preStart();
+        await Future.delayed(Duration(milliseconds: 100));
+
+        // Create xpub wallet
+        await wallet.commandHandler(CreateWalletCommand(
+          walletId: 'xpub-wallet-multi-addr',
+          walletName: 'Multi Address Wallet',
+          xpub: xpub,
+        ));
+
+        // Initial state: root address at index 0
+        expect(wallet.currentState.nextDerivationIndex, equals(1));
+        expect(wallet.currentState.addresses, hasLength(1));
+
+        // Generate first address
+        await wallet.commandHandler(GenerateAddressCommand(
+          walletId: 'xpub-wallet-multi-addr',
+          label: 'Address 1',
+        ));
+
+        expect(wallet.currentState.nextDerivationIndex, equals(2));
+        expect(wallet.currentState.addresses, hasLength(2));
+
+        // Generate second address
+        await wallet.commandHandler(GenerateAddressCommand(
+          walletId: 'xpub-wallet-multi-addr',
+          label: 'Address 2',
+        ));
+
+        expect(wallet.currentState.nextDerivationIndex, equals(3));
+        expect(wallet.currentState.addresses, hasLength(3));
+
+        // Generate third address
+        await wallet.commandHandler(GenerateAddressCommand(
+          walletId: 'xpub-wallet-multi-addr',
+          label: 'Address 3',
+        ));
+
+        expect(wallet.currentState.nextDerivationIndex, equals(4));
+        expect(wallet.currentState.addresses, hasLength(4));
+      });
+
+      test('should store xpub in secure storage', () async {
+        // Generate a valid xpub
+        final mnemonic = await cryptoService.generateMnemonic();
+        final hdPriv = await cryptoService.mnemonicToHDPrivateKey(
+          mnemonic,
+          network: dartsv.NetworkType.TEST,
+        );
+        final hdPub = cryptoService.deriveHDPublicKey(hdPriv);
+        final xpub = hdPub.xpubkey;
+
+        final wallet = BitcoinWalletAggregate(
+          aggregateId: 'xpub-wallet-storage',
+          aggregateType: 'Wallet',
+          eventStore: eventStore,
+          cryptoService: cryptoService,
+          secureStorage: secureStorage,
+        );
+
+        wallet.preStart();
+        await Future.delayed(Duration(milliseconds: 100));
+
+        // Create xpub wallet
+        await wallet.commandHandler(CreateWalletCommand(
+          walletId: 'xpub-wallet-storage',
+          walletName: 'Storage Test Wallet',
+          xpub: xpub,
+        ));
+
+        // Verify storage
+        final storedXpub = await secureStorage.getXPub('xpub-wallet-storage');
+        expect(storedXpub, equals(xpub));
+
+        // Also verify hdpubkey storage (used for address generation)
+        final storedHdPubKey = await secureStorage.getString('wallet_hdpubkey_xpub-wallet-storage');
+        expect(storedHdPubKey, equals(xpub));
+      });
+
+      test('should retrieve xpub after wallet creation', () async {
+        // Generate a valid xpub
+        final mnemonic = await cryptoService.generateMnemonic();
+        final hdPriv = await cryptoService.mnemonicToHDPrivateKey(
+          mnemonic,
+          network: dartsv.NetworkType.TEST,
+        );
+        final hdPub = cryptoService.deriveHDPublicKey(hdPriv);
+        final xpub = hdPub.xpubkey;
+
+        final wallet = BitcoinWalletAggregate(
+          aggregateId: 'xpub-wallet-retrieve',
+          aggregateType: 'Wallet',
+          eventStore: eventStore,
+          cryptoService: cryptoService,
+          secureStorage: secureStorage,
+        );
+
+        wallet.preStart();
+        await Future.delayed(Duration(milliseconds: 100));
+
+        // Create xpub wallet
+        await wallet.commandHandler(CreateWalletCommand(
+          walletId: 'xpub-wallet-retrieve',
+          walletName: 'Retrieve Test Wallet',
+          xpub: xpub,
+        ));
+
+        // Retrieve and verify
+        final retrievedXpub = await secureStorage.getXPub('xpub-wallet-retrieve');
+        expect(retrievedXpub, isNotNull);
+        expect(retrievedXpub, equals(xpub));
+      });
+
+      test('should recover xpub wallet type from events', () async {
+        // Generate a valid xpub
+        final mnemonic = await cryptoService.generateMnemonic();
+        final hdPriv = await cryptoService.mnemonicToHDPrivateKey(
+          mnemonic,
+          network: dartsv.NetworkType.TEST,
+        );
+        final hdPub = cryptoService.deriveHDPublicKey(hdPriv);
+        final xpub = hdPub.xpubkey;
+
+        // Create wallet and persist events
+        final wallet1 = BitcoinWalletAggregate(
+          aggregateId: 'xpub-wallet-recovery',
+          aggregateType: 'Wallet',
+          eventStore: eventStore,
+          cryptoService: cryptoService,
+          secureStorage: secureStorage,
+        );
+
+        wallet1.preStart();
+        await Future.delayed(Duration(milliseconds: 100));
+
+        await wallet1.commandHandler(CreateWalletCommand(
+          walletId: 'xpub-wallet-recovery',
+          walletName: 'Recovery Test Wallet',
+          xpub: xpub,
+        ));
+
+        // Generate an address to create more events
+        await wallet1.commandHandler(GenerateAddressCommand(
+          walletId: 'xpub-wallet-recovery',
+          label: 'Test Address',
+        ));
+
+        expect(wallet1.currentState.walletType, equals(WalletType.xpub));
+        expect(wallet1.currentState.addresses, hasLength(2));
+
+        // Create new wallet instance with same ID - should recover from events
+        final wallet2 = BitcoinWalletAggregate(
+          aggregateId: 'xpub-wallet-recovery',
+          aggregateType: 'Wallet',
+          eventStore: eventStore,
+          cryptoService: cryptoService,
+          secureStorage: secureStorage,
+        );
+
+        wallet2.preStart();
+        await Future.delayed(Duration(milliseconds: 200)); // Wait for recovery
+
+        // Verify recovered state
+        expect(wallet2.isInitialized, isTrue);
+        expect(wallet2.currentState.walletType, equals(WalletType.xpub));
+        expect(wallet2.currentState.name, equals('Recovery Test Wallet'));
+        expect(wallet2.currentState.addresses, hasLength(2));
+        expect(wallet2.currentState.nextDerivationIndex, equals(2));
+      });
+
+      test('should reject SignTransactionCommand for xpub wallet', () async {
+        // Generate a valid xpub
+        final mnemonic = await cryptoService.generateMnemonic();
+        final hdPriv = await cryptoService.mnemonicToHDPrivateKey(
+          mnemonic,
+          network: dartsv.NetworkType.TEST,
+        );
+        final hdPub = cryptoService.deriveHDPublicKey(hdPriv);
+        final xpub = hdPub.xpubkey;
+
+        final wallet = BitcoinWalletAggregate(
+          aggregateId: 'xpub-wallet-sign',
+          aggregateType: 'Wallet',
+          eventStore: eventStore,
+          cryptoService: cryptoService,
+          secureStorage: secureStorage,
+        );
+
+        wallet.preStart();
+        await Future.delayed(Duration(milliseconds: 100));
+
+        await wallet.commandHandler(CreateWalletCommand(
+          walletId: 'xpub-wallet-sign',
+          walletName: 'Sign Test Wallet',
+          xpub: xpub,
+        ));
+
+        // Try to sign transaction - should fail
+        final signCommand = SignTransactionCommand(
+          walletId: 'xpub-wallet-sign',
+          transactionId: 'test-tx',
+          rawTransaction: '0100000000000000',
+          utxoKeys: ['dummy:0'],
+          publicKeys: ['pubkey'],
+        );
+
+        expect(
+          () => wallet.commandHandler(signCommand),
+          throwsA(isA<StateError>().having(
+            (e) => e.message,
+            'message',
+            contains('watch-only'),
+          )),
+        );
+      });
+
+      test('should reject SignMultisigTransactionCommand for xpub wallet', () async {
+        // Generate a valid xpub
+        final mnemonic = await cryptoService.generateMnemonic();
+        final hdPriv = await cryptoService.mnemonicToHDPrivateKey(
+          mnemonic,
+          network: dartsv.NetworkType.TEST,
+        );
+        final hdPub = cryptoService.deriveHDPublicKey(hdPriv);
+        final xpub = hdPub.xpubkey;
+
+        final wallet = BitcoinWalletAggregate(
+          aggregateId: 'xpub-wallet-multisig',
+          aggregateType: 'Wallet',
+          eventStore: eventStore,
+          cryptoService: cryptoService,
+          secureStorage: secureStorage,
+        );
+
+        wallet.preStart();
+        await Future.delayed(Duration(milliseconds: 100));
+
+        await wallet.commandHandler(CreateWalletCommand(
+          walletId: 'xpub-wallet-multisig',
+          walletName: 'Multisig Test Wallet',
+          xpub: xpub,
+        ));
+
+        // Try to sign multisig transaction - should fail
+        final signCommand = SignMultisigTransactionCommand(
+          walletId: 'xpub-wallet-multisig',
+          transactionId: 'test-tx',
+          rawTransaction: '0100000000000000',
+          derivationIndex: 0,
+          inputIndex: 0,
+          prevOutValue: 100000,
+          redeemScriptHex: 'script',
+        );
+
+        expect(
+          () => wallet.commandHandler(signCommand),
+          throwsA(isA<StateError>().having(
+            (e) => e.message,
+            'message',
+            contains('watch-only'),
+          )),
+        );
+      });
+
+      test('should reject BuildFundingTransactionCommand for xpub wallet', () async {
+        // Generate a valid xpub
+        final mnemonic = await cryptoService.generateMnemonic();
+        final hdPriv = await cryptoService.mnemonicToHDPrivateKey(
+          mnemonic,
+          network: dartsv.NetworkType.TEST,
+        );
+        final hdPub = cryptoService.deriveHDPublicKey(hdPriv);
+        final xpub = hdPub.xpubkey;
+
+        final wallet = BitcoinWalletAggregate(
+          aggregateId: 'xpub-wallet-funding',
+          aggregateType: 'Wallet',
+          eventStore: eventStore,
+          cryptoService: cryptoService,
+          secureStorage: secureStorage,
+        );
+
+        wallet.preStart();
+        await Future.delayed(Duration(milliseconds: 100));
+
+        await wallet.commandHandler(CreateWalletCommand(
+          walletId: 'xpub-wallet-funding',
+          walletName: 'Funding Test Wallet',
+          xpub: xpub,
+        ));
+
+        // Try to build funding transaction - should fail
+        final fundingCommand = BuildFundingTransactionCommand(
+          walletId: 'xpub-wallet-funding',
+          correlationId: 'test-corr',
+          channelId: 'test-channel',
+          clientPubKeyHex: 'client-key',
+          serverPubKeyHex: 'server-key',
+          fundingAmountSats: 100000,
+          changeAddressBase58: 'change-addr',
+        );
+
+        expect(
+          () => wallet.commandHandler(fundingCommand),
+          throwsA(isA<StateError>().having(
+            (e) => e.message,
+            'message',
+            contains('watch-only'),
+          )),
+        );
+      });
+
+      test('should reject SplitUTXOsToBenfordCommand for xpub wallet', () async {
+        // Generate a valid xpub
+        final mnemonic = await cryptoService.generateMnemonic();
+        final hdPriv = await cryptoService.mnemonicToHDPrivateKey(
+          mnemonic,
+          network: dartsv.NetworkType.TEST,
+        );
+        final hdPub = cryptoService.deriveHDPublicKey(hdPriv);
+        final xpub = hdPub.xpubkey;
+
+        final wallet = BitcoinWalletAggregate(
+          aggregateId: 'xpub-wallet-split',
+          aggregateType: 'Wallet',
+          eventStore: eventStore,
+          cryptoService: cryptoService,
+          secureStorage: secureStorage,
+        );
+
+        wallet.preStart();
+        await Future.delayed(Duration(milliseconds: 100));
+
+        await wallet.commandHandler(CreateWalletCommand(
+          walletId: 'xpub-wallet-split',
+          walletName: 'Split Test Wallet',
+          xpub: xpub,
+        ));
+
+        // Try to split UTXOs - should fail
+        final splitCommand = SplitUTXOsToBenfordCommand(
+          walletId: 'xpub-wallet-split',
+          targetUtxoCount: 5,
+        );
+
+        expect(
+          () => wallet.commandHandler(splitCommand),
+          throwsA(isA<StateError>().having(
+            (e) => e.message,
+            'message',
+            contains('watch-only'),
+          )),
+        );
+      });
+    });
+
     group('Address Management', () {
       late BitcoinWalletAggregate wallet;
 

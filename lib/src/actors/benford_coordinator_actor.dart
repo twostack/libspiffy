@@ -62,6 +62,21 @@ class BenfordCoordinatorActor extends Actor {
   Future<void> _handleSplitCommand(SplitUTXOsToBenfordCommand command) async {
     print('[BenfordCoordinatorActor] Handling SplitUTXOsToBenfordCommand');
     
+    // Get wallet info to check wallet type
+    final wallet = await _storage.getWallet(command.walletId);
+    if (wallet == null) {
+      print('[BenfordCoordinatorActor] Wallet not found: ${command.walletId}');
+      _sendErrorResponse(command, 'Wallet not found: ${command.walletId}');
+      return;
+    }
+    
+    // Business rule: Watch-only (xpub) wallets cannot sign transactions
+    if (wallet['walletType'] == 'xpub') {
+      print('[BenfordCoordinatorActor] Cannot split UTXOs for watch-only wallet');
+      _sendErrorResponse(command, 'Signing (split) not supported for watch-only wallets');
+      return;
+    }
+    
     // Get available UTXOs from read model
     final utxos = await _storage.getUTXOs(command.walletId);
     final availableUtxos = utxos
@@ -70,6 +85,7 @@ class BenfordCoordinatorActor extends Actor {
 
     if (availableUtxos.isEmpty) {
       print('[BenfordCoordinatorActor] No available UTXOs to split');
+      _sendErrorResponse(command, 'No available UTXOs to split');
       return;
     }
 
@@ -474,6 +490,18 @@ class BenfordCoordinatorActor extends Actor {
     final addr = dartsv.Address.fromBase58(address);
     final script = dartsv.P2PKHLockBuilder.fromAddress(addr).getScriptPubkey();
     return script.toHex();
+  }
+  
+  /// Send error response back to the sender
+  void _sendErrorResponse(SplitUTXOsToBenfordCommand command, String error) {
+    final sender = context.sender;
+    if (sender != null) {
+      sender.tell(SplitUTXOsResponse(
+        walletId: command.walletId,
+        success: false,
+        error: error,
+      ));
+    }
   }
 }
 

@@ -212,6 +212,7 @@ class WalletManagerActor extends Actor {
         mnemonic: msg.mnemonic,
         wif: msg.wif,
         xpriv: msg.xpriv,
+        xpub: msg.xpub,
         walletMetadata: msg.walletMetadata,
       );
 

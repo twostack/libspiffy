@@ -150,6 +150,16 @@ class InMemorySecureStorage implements SecureStorage {
   Future<void> setXPriv(String walletId, String xpriv) async {
     await setString('wallet_xpriv_$walletId', xpriv);
   }
+
+  @override
+  Future<String?> getXPub(String walletId) async {
+    return await getString('wallet_xpub_$walletId');
+  }
+
+  @override
+  Future<void> setXPub(String walletId, String xpub) async {
+    await setString('wallet_xpub_$walletId', xpub);
+  }
   
   // ========================================
   // Identity Operations (inherited implementations)
@@ -254,6 +264,7 @@ class InMemorySecureStorage implements SecureStorage {
     await delete('wallet_mnemonic_$walletId');
     await delete('wallet_wif_$walletId');
     await delete('wallet_xpriv_$walletId');
+    await delete('wallet_xpub_$walletId');
     await deleteAccountMetadata(walletId);
   }
 } 

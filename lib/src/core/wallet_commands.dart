@@ -35,6 +35,7 @@ class CreateWalletCommand extends WalletCommand {
   final String? mnemonic; // For HD wallets - will generate if null
   final String? wif; // For WIF wallets
   final String? xpriv; // For XPRIV wallets
+  final String? xpub; // For watch-only XPUB wallets [NEW]
   final String? passphrase; // Optional passphrase for mnemonic
   final Map<String, dynamic>? walletMetadata; // Additional wallet metadata
 
@@ -44,6 +45,7 @@ class CreateWalletCommand extends WalletCommand {
     this.mnemonic,
     this.wif,
     this.xpriv,
+    this.xpub,
     this.passphrase,
     this.walletMetadata,
     String? commandId,
@@ -60,11 +62,12 @@ class CreateWalletCommand extends WalletCommand {
       mnemonic != null && mnemonic!.isNotEmpty,
       wif != null && wif!.isNotEmpty,
       xpriv != null && xpriv!.isNotEmpty,
+      xpub != null && xpub!.isNotEmpty,
     ].where((x) => x).length;
     
     if (specified > 1) {
       throw ArgumentError(
-        'Only one of mnemonic, wif, or xpriv can be specified'
+        'Only one of mnemonic, wif, xpriv, or xpub can be specified'
       );
     }
   }

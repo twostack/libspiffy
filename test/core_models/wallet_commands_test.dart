@@ -94,6 +94,67 @@ void main() {
         expect(command.walletMetadata, isNull);
       });
 
+      test('should create watch-only xpub wallet command', () {
+        const walletId = 'xpub_wallet_123';
+        const walletName = 'Watch Only Wallet';
+        const xpub = 'xpub6C...'; // Truncated for test
+
+        final command = CreateWalletCommand(
+          walletId: walletId,
+          walletName: walletName,
+          xpub: xpub,
+        );
+
+        expect(command.walletId, equals(walletId));
+        expect(command.xpub, equals(xpub));
+        expect(command.mnemonic, isNull);
+        expect(command.wif, isNull);
+        expect(command.xpriv, isNull);
+      });
+
+      test('should throw if multiple key types are provided', () {
+        expect(() => CreateWalletCommand(
+          walletId: 'invalid_wallet',
+          walletName: 'Invalid',
+          mnemonic: 'abandon...',
+          xpub: 'xpub...',
+        ), throwsArgumentError);
+
+        expect(() => CreateWalletCommand(
+          walletId: 'invalid_wallet',
+          walletName: 'Invalid',
+          wif: 'L1...',
+          xpub: 'xpub...',
+        ), throwsArgumentError);
+      });
+
+      test('should accept empty xpub string', () {
+        // Empty xpub should be allowed by command constructor
+        // (validation happens in aggregate)
+        final command = CreateWalletCommand(
+          walletId: 'wallet_empty_xpub',
+          walletName: 'Empty XPub Wallet',
+          xpub: '',
+        );
+
+        expect(command.xpub, equals(''));
+        expect(command.walletId, equals('wallet_empty_xpub'));
+      });
+
+      test('should accept xpub with whitespace', () {
+        // Whitespace xpub should be allowed by command constructor
+        // (validation happens in aggregate)
+        const xpubWithWhitespace = '  xpub6C...  ';
+        final command = CreateWalletCommand(
+          walletId: 'wallet_whitespace_xpub',
+          walletName: 'Whitespace XPub Wallet',
+          xpub: xpubWithWhitespace,
+        );
+
+        expect(command.xpub, equals(xpubWithWhitespace));
+        expect(command.walletId, equals('wallet_whitespace_xpub'));
+      });
+
       test('should handle empty wallet metadata', () {
         final command = CreateWalletCommand(
           walletId: 'wallet_123',

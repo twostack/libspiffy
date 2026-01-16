@@ -164,6 +164,16 @@ abstract class SecureStorage {
   Future<void> setXPriv(String walletId, String xpriv) async {
     await setString('wallet_xpriv_$walletId', xpriv);
   }
+
+  /// Get the extended public key (xpub) for a watch-only wallet.
+  Future<String?> getXPub(String walletId) async {
+    return await getString('wallet_xpub_$walletId');
+  }
+
+  /// Store the extended public key (xpub) for a watch-only wallet.
+  Future<void> setXPub(String walletId, String xpub) async {
+    await setString('wallet_xpub_$walletId', xpub);
+  }
   
   // ========================================
   // Identity Operations

@@ -194,12 +194,19 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     await super.onCommandFailure(command, error);
     
     // Only send responses if we're running in an actor system
-    if (!_isInActorSystem()) return;
+    if (!_isInActorSystem()) {
+      print('[BitcoinWalletAggregate] Not in actor system, skipping response');
+      return;
+    }
     
     // Use captured sender keyed by command ID (same reasoning as onCommandProcessed)
     final sender = _capturedSenders[command.commandId];
-    if (sender == null) return;
+    if (sender == null) {
+      print('[BitcoinWalletAggregate] ⚠️ No sender found for command ${command.commandId}');
+      return;
+    }
     
+    print('[BitcoinWalletAggregate] Sending error response for ${command.runtimeType}');
     final errorMessage = error.toString();
 
     if (command is CreateWalletCommand) {
@@ -237,6 +244,40 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         success: false,
         error: errorMessage,
       ));
+    } else if (command is SignTransactionCommand) {
+      sender.tell(TransactionSignedResponse(
+        walletId: command.walletId,
+        txid: command.transactionId,
+        signedHex: '',
+        success: false,
+        error: errorMessage,
+      ));
+    } else if (command is SignMultisigTransactionCommand) {
+      print('[BitcoinWalletAggregate] Sending MultisigTransactionSignedResponse with error');
+      sender.tell(MultisigTransactionSignedResponse(
+        walletId: command.walletId,
+        txid: '',
+        originalTransactionId: command.transactionId,
+        signedHex: '',
+        signatureHex: '',
+        success: false,
+        error: errorMessage,
+      ));
+    } else if (command is SplitUTXOsToBenfordCommand) {
+      sender.tell(SplitUTXOsResponse(
+        walletId: command.walletId,
+        success: false,
+        error: errorMessage,
+      ));
+    } else {
+      // Fallback for any unhandled command - send a generic error response
+      print('[BitcoinWalletAggregate] ⚠️ onCommandFailure: No specific handler for ${command.runtimeType}');
+      sender.tell(LocalMessage(
+        payload: {
+          'error': errorMessage,
+          'command': command.runtimeType.toString(),
+        },
+      ));
     }
   }
 
@@ -262,6 +303,14 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
   /// required for wallet operations. All calling code must await this method.
   @override
   Future<List<Event>> handleCommand(WalletState currentState, Command command) async {
+    // DEBUG: Log command routing information
+    print('[BitcoinWalletAggregate] handleCommand routing:');
+    print('   command.runtimeType: ${command.runtimeType}');
+    print('   command is SignMultisigTransactionCommand: ${command is SignMultisigTransactionCommand}');
+    print('   command is SignTransactionCommand: ${command is SignTransactionCommand}');
+    print('   command.runtimeType == SignMultisigTransactionCommand: ${command.runtimeType == SignMultisigTransactionCommand}');
+    print('   command.runtimeType == SignTransactionCommand: ${command.runtimeType == SignTransactionCommand}');
+    
     switch (command.runtimeType) {
       case CreateWalletCommand:
         return await _handleCreateWallet(currentState, command as CreateWalletCommand);
@@ -290,8 +339,10 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       case CreateTransactionCommand:
         return await _handleCreateTransaction(currentState, command as CreateTransactionCommand);
       case SignTransactionCommand:
+        print('[BitcoinWalletAggregate] ⚠️ ROUTING TO SignTransactionCommand handler');
         return await _handleSignTransaction(currentState, command as SignTransactionCommand);
       case SignMultisigTransactionCommand:
+        print('[BitcoinWalletAggregate] ✅ ROUTING TO SignMultisigTransactionCommand handler');
         return await _handleSignMultisigTransaction(currentState, command as SignMultisigTransactionCommand);
       case BuildFundingTransactionCommand:
         return await _handleBuildFundingTransaction(currentState, command as BuildFundingTransactionCommand);
@@ -499,6 +550,39 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       );
       
       print('[BitcoinWalletAggregate]   ✓ XPRIV wallet created with root address: $rootAddress');
+      
+    } else if (command.xpub != null && command.xpub!.isNotEmpty) {
+      // XPUB WALLET: Watch-only from extended public key
+      print('[BitcoinWalletAggregate]   Creating XPUB (watch-only) wallet...');
+      walletType = WalletType.xpub;
+      
+      // Parse and validate XPUB
+      final hdPublicKey = dartsv.HDPublicKey.fromXpub(command.xpub!);
+      
+      // Verify network type matches
+      if (hdPublicKey.networkType != networkType) {
+        throw ArgumentError(
+          'XPUB network type does not match wallet network type'
+        );
+      }
+      
+      // Generate root address
+      rootAddress = cryptoService.generateReceivingAddress(
+        hdPublicKey,
+        0,
+        network: networkType,
+      );
+      
+      // Store XPUB securely
+      await secureStorage.setXPub(command.walletId, command.xpub!);
+      
+      // Also store as generic hdpubkey for address generation reuse
+      await secureStorage.setString(
+        'wallet_hdpubkey_${command.walletId}',
+        command.xpub!,
+      );
+      
+      print('[BitcoinWalletAggregate]   ✓ XPUB wallet created with root address: $rootAddress');
       
     } else {
       // HD WALLET: Generate or validate mnemonic
@@ -1281,6 +1365,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         throw StateError('WIF not found for wallet $walletId');
       }
       return dartsv.SVPrivateKey.fromWIF(wif);
+    } else if (currentState.walletType == WalletType.xpub) {
+      throw StateError('Cannot retrieve private key: Wallet is watch-only (XPUB)');
     } else if (currentState.walletType == WalletType.xpriv || 
                currentState.walletType == WalletType.hd) {
       // HD/XPRIV wallet: derive key for specific address
@@ -1339,14 +1425,19 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     WalletState currentState,
     SignTransactionCommand command,
   ) async {
-    // Business rule: Wallet must exist
-    if (!currentState.isCreated) {
-      throw StateError('Cannot sign transaction for non-existent wallet');
-    }
-
     dartsv.Transaction? signedTx;
 
     try {
+      // Business rule: Wallet must exist
+      if (!currentState.isCreated) {
+        throw StateError('Cannot sign transaction for non-existent wallet');
+      }
+
+      // Business rule: Watch-only wallets cannot sign
+      if (currentState.walletType == WalletType.xpub) {
+        throw StateError('Signing not supported for watch-only wallets');
+      }
+
       // Parse unsigned transaction
       final unsignedTx = dartsv.Transaction.fromHex(command.rawTransaction);
       
@@ -1472,8 +1563,12 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
           success: false,
           error: e.toString(),
         ));
+        // Return empty list - we've already sent the error response
+        // Don't rethrow or onCommandFailure will send a duplicate response
+        return [];
       }
       
+      // Only rethrow if not in actor system (for unit tests that expect exceptions)
       throw StateError('Failed to sign transaction: $e');
     }
   }
@@ -1487,12 +1582,17 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     WalletState currentState,
     SignMultisigTransactionCommand command,
   ) async {
-    // Business rule: Wallet must exist
-    if (!currentState.isCreated) {
-      throw StateError('Cannot sign multisig transaction for non-existent wallet');
-    }
-
     try {
+      // Business rule: Wallet must exist
+      if (!currentState.isCreated) {
+        throw StateError('Cannot sign multisig transaction for non-existent wallet');
+      }
+
+      // Business rule: Watch-only wallets cannot sign
+      if (currentState.walletType == WalletType.xpub) {
+        throw StateError('Signing not supported for watch-only wallets');
+      }
+
       print('[BitcoinWalletAggregate] 🔏 Signing multisig transaction (using TransactionSigner)');
       print('[BitcoinWalletAggregate]    Input index: ${command.inputIndex}');
       print('[BitcoinWalletAggregate]    Prev out value: ${command.prevOutValue} sats');
@@ -1598,8 +1698,12 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
           success: false,
           error: e.toString(),
         ));
+        // Return empty list - we've already sent the error response
+        // Don't rethrow or onCommandFailure will send a duplicate response
+        return [];
       }
       
+      // Only rethrow if not in actor system (for unit tests that expect exceptions)
       throw StateError('Failed to sign multisig transaction: $e');
     }
   }
@@ -1612,11 +1716,16 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     WalletState currentState,
     BuildFundingTransactionCommand command,
   ) async {
-    if (!currentState.isCreated) {
-      throw StateError('Cannot build funding transaction for non-existent wallet');
-    }
-
     try {
+      if (!currentState.isCreated) {
+        throw StateError('Cannot build funding transaction for non-existent wallet');
+      }
+
+      // Business rule: Watch-only wallets cannot sign
+      if (currentState.walletType == WalletType.xpub) {
+        throw StateError('Signing (funding) not supported for watch-only wallets');
+      }
+
       print('[BitcoinWalletAggregate] Building funding TX for channel ${command.channelId}');
       print('[BitcoinWalletAggregate]   UTXOs in wallet state: ${currentState.utxos.length}');
       
@@ -1836,8 +1945,12 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
           success: false,
           error: e.toString(),
         ));
+        // Return empty list - we've already sent the error response
+        // Don't rethrow or onCommandFailure will send a duplicate response
+        return [];
       }
       
+      // Only rethrow if not in actor system (for unit tests that expect exceptions)
       throw StateError('Failed to build funding transaction: $e');
     }
   }
@@ -2523,6 +2636,11 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     // Business rule: Wallet must exist
     if (!currentState.isCreated) {
       throw StateError('Cannot split UTXOs for non-existent wallet');
+    }
+
+    // Business rule: Watch-only wallets cannot sign
+    if (currentState.walletType == WalletType.xpub) {
+      throw StateError('Signing (split) not supported for watch-only wallets');
     }
 
     // Get all available UTXOs

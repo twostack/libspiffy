@@ -1,0 +1,23 @@
+# Test configuration for libspiffy
+#
+# Run all tests:
+#   dart test
+#
+# Run PostgreSQL tests only (requires running PostgreSQL):
+#   dart test --tags=postgres
+#
+# Skip PostgreSQL tests:
+#   dart test --exclude-tags=postgres
+#
+# Run integration tests:
+#   dart test --tags=integration
+
+tags:
+  postgres:
+    # PostgreSQL integration tests - require a running PostgreSQL instance
+    # See test/storage/postgres/postgres_integration_test.dart for setup instructions
+  integration:
+    # Integration tests that may require external services or longer execution time
+
+# Increase timeout for slow tests
+timeout: 2m

@@ -16,7 +16,7 @@ export 'src/models/invoice_read_model.dart';    // Read model for invoice querie
 export 'src/models/address_metadata.dart';      // Address metadata with script type support
 export 'src/models/transaction_address_link.dart'; // Transaction-address junction models
 
-// ✅ STORAGE INTERFACES - Platform-agnostic storage abstraction  
+// ✅ STORAGE INTERFACES - Platform-agnostic storage abstraction
 export 'src/storage/event_storage.dart';        // Event storage interface
 export 'src/storage/read_model_storage.dart';   // Read model storage interface
 export 'src/storage/wallet_storage.dart';       // Combined interface (backward compat)
@@ -26,6 +26,13 @@ export 'src/storage/in_memory_secure_storage.dart';  // Development implementati
 export 'src/storage/isar_config.dart';          // Isolate configuration
 export 'src/storage/libspiffy_schemas.dart';    // Isar schemas for host integration
 export 'src/storage/isar_wallet_storage.dart';  // Production Isar storage
+export 'src/storage/storage_backend.dart';      // Storage backend enum and factory
+
+// ✅ POSTGRESQL STORAGE - Server-side deployment support
+export 'src/storage/postgres/postgres_config.dart';        // PostgreSQL connection configuration
+export 'src/storage/postgres/postgres_wallet_storage.dart'; // PostgreSQL read model storage
+export 'src/storage/postgres/postgres_event_store.dart';   // PostgreSQL event store
+export 'src/storage/postgres/postgres_migrations.dart';    // Schema migration infrastructure
 
 // ✅ CORE WALLET SYSTEM - Production-ready event-sourced wallet
 export 'src/core/wallet_commands.dart';         // 13 wallet commands extending eventador.Command

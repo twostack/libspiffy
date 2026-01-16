@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:dactor/dactor.dart';
 import 'package:eventador/eventador.dart';
+import 'package:eventador/src/storage/event_stream.dart';
 import 'package:isar/isar.dart';
 import 'package:libspiffy/libspiffy.dart';
 import 'package:logging/logging.dart';
@@ -11,6 +12,11 @@ import '../storage/in_memory_wallet_storage.dart';
 import '../storage/isar_wallet_storage.dart';
 import '../storage/isar_config.dart';
 import '../storage/secure_storage.dart';
+import '../storage/storage_backend.dart';
+import '../storage/postgres/postgres_config.dart';
+import '../storage/postgres/postgres_wallet_storage.dart';
+import '../storage/postgres/postgres_event_store.dart';
+import '../storage/postgres/postgres_migrations.dart';
 import '../storage/in_memory_secure_storage.dart';
 import '../services/crypto_service.dart';
 import '../services/dartsv_crypto_service.dart';
@@ -39,7 +45,9 @@ class LibSpiffyActorSystem {
   late ActorSystem _actorSystem;
   bool _ownsActorSystem = false;
   bool _ownsIsar = false; // Track if we created the Isar instance
-  late IsarEventStore _eventStore;
+  StorageBackend _storageBackend = StorageBackend.isar;
+  late EventStore _eventStore;
+  late EventStream _eventStream; // Separate reference for LSP compliance
   late ReadModelStorage _walletStorage;
   late ReadModelStorage _actorStorage; // For actors (headers, UTXOs, etc.)
   late SecureStorage _secureStorage;
@@ -145,6 +153,8 @@ class LibSpiffyActorSystem {
     List<String>? peerAddresses,
     String? userAgent,
     dynamic blockchainDataSource, // For wallet imports (WhatsOnChainDataSource, etc.)
+    StorageBackend storageBackend = StorageBackend.isar, // NEW: Storage backend selection
+    PostgresConfig? postgresConfig, // NEW: PostgreSQL configuration
   }) async {
     print('Initializing LibSpiffy Actor System...');
     
@@ -159,45 +169,96 @@ class LibSpiffyActorSystem {
       _ownsActorSystem = true;
     }
     
-    // 2. Initialize Eventador storage
-    if (isar != null) {
-      // Use provided Isar instance for event store
-      print('Using provided Isar instance for event store');
-      _eventStore = IsarEventStore(isar);
-      _ownsIsar = false; // Isar instance owned by host application
-    } else {
-      // Create separate Isar instance for Eventador
-      print('Creating Isar instance for event store');
-      await Isar.initializeIsarCore(download: true);
-      _eventStore = await IsarEventStore.create(directory: dataDirectory ?? './data');
-      _ownsIsar = true; // We created and own this Isar instance
-    }
-    
-    // 3. Initialize read model storage (use provided or create based on Isar)
-    if (readModelStorage != null) {
-      print('Using provided read model storage');
-      _walletStorage = readModelStorage;
-      // For actors: if the provided storage is already WalletStorage, use it
-      // Otherwise create a separate InMemoryWalletStorage for actors
-      if (readModelStorage is WalletStorage) {
-        _actorStorage = readModelStorage;
-        print('Using same storage instance for actors (implements WalletStorage)');
-      } else {
-        _actorStorage = InMemoryWalletStorage();
-        print('Using separate InMemoryWalletStorage for actors');
-      }
-    } else if (isar != null) {
-      print('Creating Isar wallet storage with provided Isar instance');
-      final isarStorage = IsarWalletStorage(isar, config: isolateConfig);
-      _walletStorage = isarStorage;
-      // Block headers MUST be persisted to Isar for SPV validation!
-      // Use Isar storage for actors that need persistent storage (headers, etc.)
-      _actorStorage = isarStorage;
-    } else {
-      print('Using in-memory wallet storage (development mode)');
-      final inMemoryStorage = InMemoryWalletStorage();
-      _walletStorage = inMemoryStorage;
-      _actorStorage = inMemoryStorage;
+    // 2. Store the selected storage backend
+    _storageBackend = storageBackend;
+
+    // 3. Initialize storage based on selected backend
+    switch (storageBackend) {
+      case StorageBackend.postgres:
+        if (postgresConfig == null) {
+          throw ArgumentError(
+            'postgresConfig is required when using StorageBackend.postgres',
+          );
+        }
+        print('Initializing PostgreSQL storage backend...');
+
+        // Run migrations first
+        print('Running PostgreSQL migrations...');
+        final migrations = PostgresMigrations(postgresConfig);
+        await migrations.migrate();
+        print('PostgreSQL migrations completed');
+
+        // Initialize PostgreSQL event store (implements both EventStore AND EventStream)
+        print('Creating PostgreSQL event store');
+        final postgresEventStore = PostgresEventStore(postgresConfig);
+        await postgresEventStore.initialize();
+        _eventStore = postgresEventStore;
+        _eventStream = postgresEventStore; // Same instance, LSP-compliant
+
+        // Initialize PostgreSQL wallet storage
+        print('Creating PostgreSQL wallet storage');
+        final postgresWalletStorage = PostgresWalletStorage(postgresConfig);
+        await postgresWalletStorage.initialize();
+        _walletStorage = postgresWalletStorage;
+        _actorStorage = postgresWalletStorage;
+
+        _ownsIsar = false; // Not using Isar
+        break;
+
+      case StorageBackend.isar:
+        // Original Isar initialization logic
+        if (isar != null) {
+          print('Using provided Isar instance for event store');
+          final isarEventStore = IsarEventStore(isar);
+          _eventStore = isarEventStore;
+          _eventStream = isarEventStore; // Same instance, LSP-compliant
+          _ownsIsar = false;
+        } else {
+          print('Creating Isar instance for event store');
+          await Isar.initializeIsarCore(download: true);
+          final isarEventStore = await IsarEventStore.create(directory: dataDirectory ?? './data');
+          _eventStore = isarEventStore;
+          _eventStream = isarEventStore; // Same instance, LSP-compliant
+          _ownsIsar = true;
+        }
+
+        // Initialize read model storage
+        if (readModelStorage != null) {
+          print('Using provided read model storage');
+          _walletStorage = readModelStorage;
+          if (readModelStorage is WalletStorage) {
+            _actorStorage = readModelStorage;
+            print('Using same storage instance for actors (implements WalletStorage)');
+          } else {
+            _actorStorage = InMemoryWalletStorage();
+            print('Using separate InMemoryWalletStorage for actors');
+          }
+        } else if (isar != null) {
+          print('Creating Isar wallet storage with provided Isar instance');
+          final isarStorage = IsarWalletStorage(isar, config: isolateConfig);
+          _walletStorage = isarStorage;
+          _actorStorage = isarStorage;
+        } else {
+          print('Using in-memory wallet storage (development mode)');
+          final inMemoryStorage = InMemoryWalletStorage();
+          _walletStorage = inMemoryStorage;
+          _actorStorage = inMemoryStorage;
+        }
+        break;
+
+      case StorageBackend.inMemory:
+        print('Using in-memory storage (development/testing mode)');
+        // Create Isar event store for in-memory mode (events need persistence)
+        await Isar.initializeIsarCore(download: true);
+        final inMemoryEventStore = await IsarEventStore.create(directory: dataDirectory ?? './data');
+        _eventStore = inMemoryEventStore;
+        _eventStream = inMemoryEventStore; // Same instance, LSP-compliant
+        _ownsIsar = true;
+
+        final inMemoryStorage = InMemoryWalletStorage();
+        _walletStorage = inMemoryStorage;
+        _actorStorage = inMemoryStorage;
+        break;
     }
     
     // 4. Initialize secure storage (use provided or default to in-memory)
@@ -502,7 +563,8 @@ class LibSpiffyActorSystem {
         : null;
     
     // Create ProjectionManager with EventStream and optional Isar for automatic checkpoint persistence
-    _projectionManager = ProjectionManager(_eventStore, isar: isar);
+    // _eventStream is set during initialization (no casting needed - LSP compliant)
+    _projectionManager = ProjectionManager(_eventStream, isar: isar);
     
     // Create and register WalletProjection
     _walletProjection = WalletProjection(
@@ -1184,14 +1246,27 @@ class LibSpiffyActorSystem {
         print('Actor system owned by host application - not shutting down');
       }
       
-      // 4. Close event store only if we own the Isar instance
-      if (_ownsIsar) {
-        print('Closing LibSpiffy-owned Isar instance');
-        await _eventStore.close();
-      } else {
-        print('Isar instance owned by host application - not closing event store');
-        // Note: We cannot close the event stream controller without closing Isar
-        // This is acceptable since the host owns the Isar instance and will close it
+      // 4. Close storage based on backend type
+      switch (_storageBackend) {
+        case StorageBackend.postgres:
+          print('Closing PostgreSQL storage connections');
+          // Close event store (includes connection pool)
+          await _eventStore.close();
+          // Close wallet storage if it has a close method
+          if (_walletStorage is PostgresWalletStorage) {
+            await (_walletStorage as PostgresWalletStorage).close();
+          }
+          break;
+
+        case StorageBackend.isar:
+        case StorageBackend.inMemory:
+          if (_ownsIsar) {
+            print('Closing LibSpiffy-owned Isar instance');
+            await _eventStore.close();
+          } else {
+            print('Isar instance owned by host application - not closing event store');
+          }
+          break;
       }
       
       // 5. Close event broadcasters

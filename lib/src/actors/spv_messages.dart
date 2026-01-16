@@ -557,14 +557,14 @@ class RequestSpecificHeaderMessage implements SPVMessage, Message {
 }
 
 /// Response with requested block header
-class SpecificHeaderResponseMessage implements SPVMessage, Message {
+/// 
+/// This message extends LocalMessage to support the ask pattern properly.
+/// The payload getter returns this instance itself for proper type casting.
+class SpecificHeaderResponseMessage extends LocalMessage implements SPVMessage {
   final int blockHeight;
   final BlockHeader? header;
   final bool success;
   final String? error;
-  final String _correlationId;
-  final ActorRef? _replyTo;
-  final Map<String, dynamic> _metadata;
 
   SpecificHeaderResponseMessage({
     required this.blockHeight,
@@ -574,21 +574,16 @@ class SpecificHeaderResponseMessage implements SPVMessage, Message {
     String? correlationId,
     ActorRef? replyTo,
     Map<String, dynamic>? metadata,
-  }) : _correlationId = correlationId ?? 'resp_header_${DateTime.now().millisecondsSinceEpoch}',
-       _replyTo = replyTo,
-       _metadata = metadata ?? {};
+  }) : super(
+         payload: null,  // Will be overridden by getter below
+         correlationId: correlationId ?? 'resp_header_${DateTime.now().millisecondsSinceEpoch}',
+         replyTo: replyTo,
+         metadata: metadata ?? {},
+       );
 
+  /// Override payload to return this instance for proper ask pattern support
   @override
-  String get correlationId => _correlationId;
-
-  @override
-  ActorRef? get replyTo => _replyTo;
-
-  @override
-  DateTime get timestamp => DateTime.now();
-
-  @override
-  Map<String, dynamic> get metadata => _metadata;
+  dynamic get payload => this;
 
   @override
   String toString() => 'SpecificHeaderResponseMessage(height: $blockHeight, success: $success)';

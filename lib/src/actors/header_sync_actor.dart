@@ -456,7 +456,7 @@ class HeaderSyncActor extends Actor {
           header: existingHeader,
           success: true,
           correlationId: msg.correlationId,
-        ) as dynamic);
+        ));
         return;
       }
       
@@ -501,7 +501,7 @@ class HeaderSyncActor extends Actor {
       var sent = false;
       for (final peer in peers) {
         try {
-          peer.sendMessage(getHeadersMsg);
+          await peer.writeMessage(getHeadersMsg);
           _logger.info('✉️  Sent getHeaders request to peer ${peer.toString()}');
           sent = true;
           break;
@@ -532,7 +532,7 @@ class HeaderSyncActor extends Actor {
             header: header,
             success: true,
             correlationId: msg.correlationId,
-          ) as dynamic);
+          ));
           return;
         }
         
@@ -551,7 +551,7 @@ class HeaderSyncActor extends Actor {
         success: false,
         error: e.toString(),
         correlationId: msg.correlationId,
-      ) as dynamic);
+      ));
     }
   }
 

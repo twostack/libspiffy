@@ -99,15 +99,36 @@ class BenfordCoordinatorActor extends Actor {
       print('[BenfordCoordinatorActor]   Keeping ${availableUtxos.length - utxosToSplit.length} UTXOs available for transactions');
     }
 
-    // Process each UTXO
+    // Process each UTXO and track results
+    final txids = <String>[];
+    int successfulSplits = 0;
+    
     for (final sourceUtxo in utxosToSplit) {
-      await _splitSingleUtxo(
+      final txid = await _splitSingleUtxo(
         walletId: command.walletId,
         sourceUtxo: sourceUtxo,
         targetCount: command.targetUtxoCount,
         feeRate: command.feeRate ?? BigInt.one,
       );
+      
+      if (txid != null) {
+        txids.add(txid);
+        successfulSplits++;
+      }
     }
+    
+    // Send success response
+    final sender = context.sender;
+    if (sender != null) {
+      sender.tell(SplitUTXOsResponse(
+        walletId: command.walletId,
+        success: true,
+        splitCount: successfulSplits * command.targetUtxoCount,
+        txids: txids,
+      ));
+    }
+    
+    print('[BenfordCoordinatorActor] Split operation completed: $successfulSplits/${utxosToSplit.length} UTXOs split successfully');
   }
 
   /// Handle UTXOSplitInitiatedEvent from aggregate
@@ -138,7 +159,8 @@ class BenfordCoordinatorActor extends Actor {
   }
 
   /// Split a single UTXO into multiple outputs following Benford distribution
-  Future<void> _splitSingleUtxo({
+  /// Returns the transaction ID if successful, null otherwise
+  Future<String?> _splitSingleUtxo({
     required String walletId,
     required BitcoinUtxo sourceUtxo,
     required int targetCount,
@@ -155,7 +177,7 @@ class BenfordCoordinatorActor extends Actor {
       final minTotalNeeded = BigInt.from(targetCount) + estimatedFee;
       if (sourceUtxo.satoshis < minTotalNeeded) {
         print('[BenfordCoordinatorActor]   ⚠️ UTXO too small (${sourceUtxo.satoshis} < $minTotalNeeded), skipping');
-        return;
+        return null;
       }
 
       // 2. Calculate Benford distribution
@@ -182,7 +204,7 @@ class BenfordCoordinatorActor extends Actor {
 
       if (txResult == null) {
         print('[BenfordCoordinatorActor]   ✗ Failed to build transaction');
-        return;
+        return null;
       }
 
       final txid = txResult['txid'] as String;
@@ -262,10 +284,13 @@ class BenfordCoordinatorActor extends Actor {
       ));
 
       print('[BenfordCoordinatorActor]   ✓ Split completed for ${sourceUtxo.key}');
+      
+      return txid;
 
     } catch (e, stackTrace) {
       print('[BenfordCoordinatorActor]   ✗ Error splitting UTXO: $e');
       print('[BenfordCoordinatorActor]   Stack trace: $stackTrace');
+      return null;
     }
   }
 
@@ -312,21 +337,31 @@ class BenfordCoordinatorActor extends Actor {
       final completer = Completer<String>();
       
       // Spawn temporary actor to receive response
+      final receiverName = 'benford-addr-receiver-$i-${DateTime.now().millisecondsSinceEpoch}';
+      print('[BenfordCoordinatorActor]   Spawning receiver actor: $receiverName');
       final receiver = await context.system.spawn(
-        'benford-addr-receiver-$i-${DateTime.now().millisecondsSinceEpoch}',
+        receiverName,
         () => _AddressReceiverActor(completer),
       );
 
+      // Create command with UNIQUE commandId to prevent sender overwriting
+      // Each command needs its own ID so BitcoinWalletAggregate can track senders separately
+      final command = GenerateAddressCommand(
+        walletId: walletId,
+        commandId: 'benford-addr-gen-$i-${DateTime.now().microsecondsSinceEpoch}',
+      );
+      
       // Send command WITH sender for response routing
+      print('[BenfordCoordinatorActor]   Sending GenerateAddressCommand #$i (${command.commandId}) with sender: $receiverName');
       _walletManager.tell(
-        WalletCommandMessage(
-          walletId,
-          GenerateAddressCommand(walletId: walletId),
-        ),
+        WalletCommandMessage(walletId, command),
         sender: receiver,
       );
 
       futures.add(completer.future);
+      
+      // Small delay to ensure unique timestamps for commandId
+      await Future.delayed(const Duration(microseconds: 10));
     }
 
     // Wait for ALL addresses to be generated and persisted
@@ -510,17 +545,30 @@ class _AddressReceiverActor extends Actor {
   final Completer<String> completer;
 
   _AddressReceiverActor(this.completer);
+  
+  @override
+  void preStart() {
+    print('[_AddressReceiverActor] Started');
+  }
 
   @override
   Future<void> onMessage(dynamic message) async {
+    print('[_AddressReceiverActor] Received message: ${message.runtimeType}');
     if (message is AddressGeneratedResponse && !completer.isCompleted) {
+      print('[_AddressReceiverActor] Processing AddressGeneratedResponse: success=${message.success}, address=${message.address}');
       if (message.success) {
         completer.complete(message.address);
+        print('[_AddressReceiverActor] Completer completed with address: ${message.address}');
       } else {
         completer.completeError(
           Exception(message.error ?? 'Address generation failed'),
         );
+        print('[_AddressReceiverActor] Completer completed with error');
       }
+    } else if (message is AddressGeneratedResponse) {
+      print('[_AddressReceiverActor] Ignoring message - completer already completed');
+    } else {
+      print('[_AddressReceiverActor] Ignoring message - unexpected type: ${message.runtimeType}');
     }
   }
 }

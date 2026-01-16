@@ -33,6 +33,10 @@ export 'src/storage/postgres/postgres_config.dart';        // PostgreSQL connect
 export 'src/storage/postgres/postgres_wallet_storage.dart'; // PostgreSQL read model storage
 export 'src/storage/postgres/postgres_event_store.dart';   // PostgreSQL event store
 export 'src/storage/postgres/postgres_migrations.dart';    // Schema migration infrastructure
+export 'src/storage/postgres/postgres_secure_storage.dart'; // Encrypted xpub storage for server-side
+
+// ✅ CRYPTOGRAPHY - Encryption services for secure storage
+export 'src/crypto/encryption_service.dart';               // AES-256-GCM encryption with HKDF
 
 // ✅ CORE WALLET SYSTEM - Production-ready event-sourced wallet
 export 'src/core/wallet_commands.dart';         // 13 wallet commands extending eventador.Command

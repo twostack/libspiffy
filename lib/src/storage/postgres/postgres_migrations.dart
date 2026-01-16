@@ -8,6 +8,7 @@ import 'package:postgres/postgres.dart';
 
 import 'postgres_config.dart';
 import 'migrations/v001_initial_schema.dart';
+import 'migrations/v002_secure_secrets.dart';
 
 /// Base class for database migrations.
 ///
@@ -35,6 +36,7 @@ class PostgresMigrations {
   /// All registered migrations, in version order.
   final List<Migration> _migrations = [
     V001InitialSchema(),
+    V002SecureSecrets(),
   ];
 
   /// Creates a new migration manager with the given configuration.

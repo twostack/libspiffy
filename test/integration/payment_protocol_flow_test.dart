@@ -33,6 +33,7 @@ import 'package:libspiffy/src/core/wallet_commands.dart';
 import 'package:libspiffy/src/models/bitcoin_utxo.dart';
 import 'package:libspiffy/src/models/bitcoin_transaction.dart';
 import 'package:libspiffy/src/utils/beef.dart';
+import 'package:dartsv/dartsv.dart' as dartsv;
 import 'p2p_test_helpers.dart';
 
 // Use the same funding data as p2p_test_helpers.dart
@@ -421,6 +422,282 @@ void main() {
       expect(response.error, contains('Insufficient funds'));
 
       print('Correctly failed with: ${response.error}');
+    });
+
+    test('Payment protocol flow with xpub-only (watch-only) recipient wallet', () async {
+      print('\n=== Payment Protocol Flow with XPub-Only Recipient ===');
+      print('This test validates SPV payments where the recipient is a watch-only wallet.');
+      print('Alice (sender): Full wallet with xpriv - can sign transactions');
+      print('Bob (recipient): XPub-only wallet - can receive but cannot sign\n');
+
+      // First, we need to create a separate xpub-only wallet for Bob
+      // Generate an xpub from a temporary mnemonic
+      final cryptoService = DartSVCryptoService();
+      final bobMnemonic = await cryptoService.generateMnemonic();
+      final bobHdPriv = await cryptoService.mnemonicToHDPrivateKey(bobMnemonic, network: dartsv.NetworkType.TEST);
+      final bobHdPub = cryptoService.deriveHDPublicKey(bobHdPriv);
+      final bobXpub = bobHdPub.xpubkey;
+      print('Generated xpub for Bob (watch-only): ${bobXpub.substring(0, 20)}...');
+
+      // Create Bob's xpub-only wallet
+      final xpubBobWalletId = 'bob-xpub-wallet-${DateTime.now().millisecondsSinceEpoch}';
+      final bobCreateCompleter = Completer<WalletCreatedMessage>();
+      final bobCreateReceiver = await bobActorSystem.spawn(
+        'bob-xpub-create-receiver',
+        () => TestReceiverActor<WalletCreatedMessage>(bobCreateCompleter),
+      );
+
+      bobLibSpiffy.walletManager.tell(
+        CreateWalletMessage(xpubBobWalletId, 'Bob XPub Wallet', xpub: bobXpub),
+        sender: bobCreateReceiver,
+      );
+
+      final bobWalletCreated = await bobCreateCompleter.future.timeout(Duration(seconds: 5));
+      expect(bobWalletCreated.success, isTrue, reason: 'Bob xpub wallet creation should succeed');
+      expect(bobWalletCreated.rootAddress, isNotEmpty);
+
+      final bobRootAddress = bobWalletCreated.rootAddress;
+      print('Bob xpub-only wallet created: $xpubBobWalletId');
+      print('Bob root address: $bobRootAddress');
+
+      print('\n=== STEP 1: Bob (xpub-only) creates invoice ===');
+
+      final bobInvoiceCompleter = Completer<InvoiceCreatedMessage>();
+      final bobInvoiceReceiver = await bobActorSystem.spawn(
+        'bob-xpub-invoice-receiver',
+        () => TestReceiverActor<InvoiceCreatedMessage>(bobInvoiceCompleter),
+      );
+
+      final paymentAmount = BigInt.from(50000); // 50,000 satoshis
+
+      bobLibSpiffy.invoiceCoordinator.tell(
+        CreateInvoiceMessage(
+          walletId: xpubBobWalletId,
+          amount: paymentAmount,
+          description: 'XPub-only wallet payment test',
+        ),
+        sender: bobInvoiceReceiver,
+      );
+
+      final bobInvoice = await bobInvoiceCompleter.future.timeout(Duration(seconds: 5));
+      expect(bobInvoice.success, isTrue, reason: 'Invoice creation should succeed for xpub wallet');
+      expect(bobInvoice.addresses.length, equals(1));
+
+      final invoiceId = bobInvoice.invoiceId;
+      final paymentAddress = bobInvoice.addresses.first;
+
+      print('Bob (xpub-only) created invoice: $invoiceId');
+      print('  Payment address: $paymentAddress');
+      print('  Amount: ${bobInvoice.amount} satoshis');
+
+      // Verify invoice is pending in Bob's database
+      await verifyInvoiceInDatabase(
+        isar: bobIsar,
+        invoiceId: invoiceId,
+        expectedStatus: InvoiceStatus.pending,
+      );
+
+      print('\n=== STEP 2: Alice pays to Bob\'s xpub-only wallet via BEEF ===');
+
+      final paymentCompleter = Completer<BEEFPaymentResponse>();
+      final paymentReceiver = await aliceActorSystem.spawn(
+        'alice-xpub-payment-receiver',
+        () => TestReceiverActor<BEEFPaymentResponse>(paymentCompleter),
+      );
+
+      aliceLibSpiffy.paymentCoordinator.tell(
+        PayInvoiceMessage(
+          walletId: aliceWalletId,
+          invoiceId: invoiceId,
+          addresses: [paymentAddress],
+          amount: paymentAmount,
+        ),
+        sender: paymentReceiver,
+      );
+
+      final beefResponse = await paymentCompleter.future.timeout(Duration(seconds: 10));
+
+      expect(beefResponse.success, isTrue, reason: 'BEEF creation should succeed: ${beefResponse.error}');
+      expect(beefResponse.beefBytes.isNotEmpty, isTrue);
+      expect(beefResponse.txid.isNotEmpty, isTrue);
+
+      print('Alice created BEEF payment to xpub-only wallet:');
+      print('  Transaction ID: ${beefResponse.txid}');
+      print('  BEEF size: ${beefResponse.beefBytes.length} bytes');
+      print('  Amount paid: ${beefResponse.amountPaid} satoshis');
+      print('  Change amount: ${beefResponse.changeAmount} satoshis');
+
+      // Parse and validate BEEF structure
+      final beef = BEEF.parse(beefResponse.beefBytes);
+      expect(beef.txs.length, greaterThanOrEqualTo(2));
+      expect(beef.bumps.isNotEmpty, isTrue);
+
+      // Wait for Alice's projection to process
+      await Future.delayed(Duration(milliseconds: 500));
+
+      print('\n=== STEP 3: Verify Alice\'s database state after sending ===');
+
+      final aliceStorage = aliceLibSpiffy.walletStorage as IsarWalletStorage;
+
+      // Verify Alice's original UTXO is now spent
+      await verifyUTXOStatus(
+        storage: aliceStorage,
+        walletId: aliceWalletId,
+        txid: fundingTxid,
+        vout: fundingVout,
+        expectedStatus: UTXOStatus.spent,
+      );
+      print('Alice\'s original UTXO is marked as spent');
+
+      // Verify Alice's outgoing transaction is pending
+      await verifyTransactionStatus(
+        storage: aliceStorage,
+        walletId: aliceWalletId,
+        txid: beefResponse.txid,
+        expectedStatus: TransactionStatus.pending,
+      );
+      print('Alice\'s outgoing transaction is marked as pending');
+
+      print('\n=== STEP 4: Bob (xpub-only) receives and records the payment ===');
+
+      // Bob receives the UTXO as pending
+      bobLibSpiffy.walletManager.tell(
+        WalletCommandMessage(
+          xpubBobWalletId,
+          ReceiveUTXOCommand(
+            walletId: xpubBobWalletId,
+            txid: beefResponse.txid,
+            vout: 0,
+            satoshis: paymentAmount,
+            scriptPubKey: '76a914000000000000000000000000000000000000000088ac',
+            address: paymentAddress,
+            blockHeight: null,
+            confirmations: 0,
+            initialStatus: UTXOStatus.pending,
+          ),
+        ),
+      );
+
+      // Bob records the incoming transaction as pending
+      bobLibSpiffy.walletManager.tell(
+        WalletCommandMessage(
+          xpubBobWalletId,
+          RecordImportedTransactionCommand(
+            walletId: xpubBobWalletId,
+            txid: beefResponse.txid,
+            rawHex: hex.encode(beef.txs.last),
+            blockHeight: 0,
+            bumpProofHex: '',
+            totalOutputSats: beefResponse.amountPaid.toInt() + beefResponse.changeAmount.toInt(),
+            numInputs: 1,
+            numOutputs: 2,
+            txVersion: 2,
+            txLockTime: 0,
+            walletReceivingAddresses: [paymentAddress],
+            walletReceivedSats: paymentAmount.toInt(),
+            totalInputSats: fundingSatoshis,
+            sendingAddresses: [],
+          ),
+        ),
+      );
+
+      print('Bob (xpub-only) received and recorded the payment transaction');
+
+      // Wait for Bob's projection to process
+      await Future.delayed(Duration(milliseconds: 500));
+
+      print('\n=== STEP 5: Verify Bob\'s (xpub-only) database state ===');
+
+      final bobStorage = bobLibSpiffy.walletStorage as IsarWalletStorage;
+
+      // Verify Bob's new UTXO is pending
+      await verifyUTXOStatus(
+        storage: bobStorage,
+        walletId: xpubBobWalletId,
+        txid: beefResponse.txid,
+        vout: 0,
+        expectedStatus: UTXOStatus.pending,
+      );
+      print('Bob\'s (xpub-only) new UTXO is marked as pending');
+
+      // Verify Bob's incoming transaction is pending
+      await verifyTransactionStatus(
+        storage: bobStorage,
+        walletId: xpubBobWalletId,
+        txid: beefResponse.txid,
+        expectedStatus: TransactionStatus.pending,
+      );
+      print('Bob\'s (xpub-only) incoming transaction is marked as pending');
+
+      print('\n=== STEP 6: Mark invoice as paid ===');
+
+      final bobPaidCompleter = Completer<InvoiceStatusMessage>();
+      final bobPaidReceiver = await bobActorSystem.spawn(
+        'bob-xpub-paid-receiver',
+        () => TestReceiverActor<InvoiceStatusMessage>(bobPaidCompleter),
+      );
+
+      bobLibSpiffy.invoiceCoordinator.tell(
+        MarkInvoicePaidMessage(
+          invoiceId: invoiceId,
+          txid: beefResponse.txid,
+          amountReceived: paymentAmount,
+          addressesPaidTo: [paymentAddress],
+        ),
+        sender: bobPaidReceiver,
+      );
+
+      final paidStatus = await bobPaidCompleter.future.timeout(Duration(seconds: 5));
+      expect(paidStatus.status, equals(InvoiceStatus.paid));
+      print('Invoice marked as paid');
+
+      // Verify invoice is paid in Bob's database
+      await verifyInvoiceInDatabase(
+        isar: bobIsar,
+        invoiceId: invoiceId,
+        expectedStatus: InvoiceStatus.paid,
+      );
+
+      print('\n=== STEP 7: Verify xpub-only wallet cannot spend received funds ===');
+
+      // Attempt to sign a transaction with Bob's xpub-only wallet
+      // This should fail because xpub wallets cannot sign
+      final signCompleter = Completer<TransactionSignedResponse>();
+      final signReceiver = await bobActorSystem.spawn(
+        'bob-xpub-sign-receiver',
+        () => TestReceiverActor<TransactionSignedResponse>(signCompleter),
+      );
+
+      bobLibSpiffy.walletManager.tell(
+        WalletCommandMessage(
+          xpubBobWalletId,
+          SignTransactionCommand(
+            walletId: xpubBobWalletId,
+            transactionId: 'tx-attempt',
+            rawTransaction: '01000000000000000000',
+            utxoKeys: ['${beefResponse.txid}:0'],
+            publicKeys: ['pubkey'],
+          ),
+        ),
+        sender: signReceiver,
+      );
+
+      final signResponse = await signCompleter.future.timeout(Duration(seconds: 5));
+      expect(signResponse.success, isFalse);
+      expect(signResponse.error, contains('watch-only'));
+      print('Correctly rejected signing attempt on xpub-only wallet: ${signResponse.error}');
+
+      print('\n=== XPub-Only Recipient Payment Protocol Flow Complete ===');
+      print('Summary:');
+      print('  Alice (full wallet):');
+      print('    - Original UTXO: spent');
+      print('    - Outgoing transaction: pending');
+      print('  Bob (xpub-only wallet):');
+      print('    - New UTXO: pending');
+      print('    - Incoming transaction: pending');
+      print('    - Invoice: paid');
+      print('    - Signing: correctly rejected (watch-only)');
+      print('==============================================\n');
     });
   });
 }

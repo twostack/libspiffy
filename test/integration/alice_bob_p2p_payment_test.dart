@@ -27,7 +27,11 @@ import 'package:eventador/eventador.dart';
 import 'package:libspiffy/libspiffy.dart';
 import 'package:libspiffy/src/actors/libspiffy_actor_system.dart';
 import 'package:libspiffy/src/actors/invoice_messages.dart';
+import 'package:libspiffy/src/actors/wallet_messages.dart';
 import 'package:libspiffy/src/storage/isar_wallet_storage.dart';
+import 'package:libspiffy/src/core/wallet_commands.dart';
+import 'package:libspiffy/src/models/bitcoin_utxo.dart';
+import 'package:libspiffy/src/models/bitcoin_transaction.dart';
 import '../mocks/mock_arc_service.dart';
 import 'p2p_test_helpers.dart';
 
@@ -749,6 +753,223 @@ void main() {
       print('========================\n');
       
       print('✓ Complete CQRS Event Sourcing Flow Verified\n');
+    });
+
+    test('Validates UTXO and Transaction database state after P2P payment', () async {
+      print('\n=== STEP 1: Verify Alice has funded UTXO ===');
+
+      final aliceStorage = aliceLibSpiffy.walletStorage as IsarWalletStorage;
+      final bobStorage = bobLibSpiffy.walletStorage as IsarWalletStorage;
+
+      // Verify Alice has her initial funded UTXO (from setUp)
+      final aliceInitialUtxos = await aliceStorage.getUTXOs(aliceWalletId);
+      expect(aliceInitialUtxos, isNotEmpty, reason: 'Alice should have funded UTXOs');
+      print('✓ Alice has ${aliceInitialUtxos.length} UTXO(s)');
+
+      // Get the funding UTXO details (from the fundWallet helper)
+      final fundingTxid = 'dd6e7547df0fe893a9a19f66f0377eca72fdcd18fd9f6185fde9c91461a8e8a9';
+      final fundingVout = 0;
+
+      print('\n=== STEP 2: Bob creates invoice ===');
+
+      final bobCreateCompleter = Completer<InvoiceCreatedMessage>();
+      final bobCreateReceiver = await bobActorSystem.spawn(
+        'bob-utxo-test-receiver',
+        () => TestReceiverActor<InvoiceCreatedMessage>(bobCreateCompleter),
+      );
+
+      bobLibSpiffy.invoiceCoordinator.tell(
+        CreateInvoiceMessage(
+          walletId: bobWalletId,
+          amount: BigInt.from(50000), // 50,000 satoshis
+          description: 'UTXO state validation test',
+        ),
+        sender: bobCreateReceiver,
+      );
+
+      final bobInvoice = await bobCreateCompleter.future.timeout(Duration(seconds: 5));
+      expect(bobInvoice.success, isTrue);
+      final invoiceId = bobInvoice.invoiceId;
+      final paymentAddress = bobInvoice.addresses.first;
+
+      print('✓ Bob created invoice: $invoiceId');
+      print('  Payment address: $paymentAddress');
+
+      print('\n=== STEP 3: Alice creates and records outgoing transaction ===');
+
+      // Create a simulated spending transaction
+      // In reality, this would be built using transaction builder
+      // For this test, we're simulating the flow after a transaction is created
+      final spendingTxid = 'test_spending_txid_${DateTime.now().millisecondsSinceEpoch}';
+      final paymentAmount = BigInt.from(50000);
+      final feeAmount = 500;
+      final inputAmount = 1000000; // Alice's funded amount
+      final outputAmount = inputAmount - feeAmount;
+
+      // Use a valid (minimal) transaction hex to avoid parsing errors in projections
+      // This is a simplified but valid-format transaction hex
+      final spendingTxHex = '0200000001a9e8a86114c9e9fd85619ffd18cdfd72ca7e37f0669fa1a993e80fdf47756edd000000006a47304402200000000000000000000000000000000000000000000000000000000000000000022000000000000000000000000000000000000000000000000000000000000000000121000000000000000000000000000000000000000000000000000000000000000000ffffffff0250c30000000000001976a914000000000000000000000000000000000000000088ac10270000000000001976a914000000000000000000000000000000000000000088ac00000000';
+
+      // Record Alice's outgoing transaction (status: PENDING)
+      aliceLibSpiffy.walletManager.tell(
+        WalletCommandMessage(
+          aliceWalletId,
+          RecordOutgoingTransactionCommand(
+            walletId: aliceWalletId,
+            txid: spendingTxid,
+            rawHex: spendingTxHex,
+            totalInputSats: inputAmount,
+            totalOutputSats: outputAmount,
+            fee: feeAmount,
+            numInputs: 1,
+            numOutputs: 2, // Payment + change
+            txVersion: 2,
+            txLockTime: 0,
+            spentUtxoKeys: ['$fundingTxid:$fundingVout'],
+            recipientAddresses: [paymentAddress],
+            paymentAmount: paymentAmount,
+            changeAddress: 'alice_change_address',
+            changeAmount: BigInt.from(outputAmount - paymentAmount.toInt()),
+          ),
+        ),
+      );
+
+      print('✓ Alice recorded outgoing transaction: $spendingTxid');
+
+      print('\n=== STEP 4: Bob receives payment (simulated SPV validation) ===');
+
+      // Use valid scriptPubKey format (P2PKH with placeholder hash)
+      final bobScriptPubKey = '76a914000000000000000000000000000000000000000088ac';
+
+      // Bob's wallet receives the payment UTXO as pending
+      bobLibSpiffy.walletManager.tell(
+        WalletCommandMessage(
+          bobWalletId,
+          ReceiveUTXOCommand(
+            walletId: bobWalletId,
+            txid: spendingTxid,
+            vout: 0,
+            satoshis: paymentAmount,
+            scriptPubKey: bobScriptPubKey,
+            address: paymentAddress,
+            blockHeight: null, // No confirmation yet
+            confirmations: 0,
+            initialStatus: UTXOStatus.pending,
+          ),
+        ),
+      );
+
+      print('✓ Bob received UTXO as pending');
+
+      // Bob records the incoming transaction (pending - no merkle proof)
+      bobLibSpiffy.walletManager.tell(
+        WalletCommandMessage(
+          bobWalletId,
+          RecordImportedTransactionCommand(
+            walletId: bobWalletId,
+            txid: spendingTxid,
+            rawHex: spendingTxHex, // Use same valid hex
+            blockHeight: 0, // Pending - not yet in a block
+            bumpProofHex: '', // No merkle proof yet
+            totalOutputSats: outputAmount,
+            numInputs: 1,
+            numOutputs: 2,
+            txVersion: 2,
+            txLockTime: 0,
+            walletReceivingAddresses: [paymentAddress],
+            walletReceivedSats: paymentAmount.toInt(),
+            totalInputSats: inputAmount,
+            sendingAddresses: [],
+          ),
+        ),
+      );
+
+      print('✓ Bob recorded incoming transaction as pending');
+
+      // Wait for projections to process
+      await Future.delayed(Duration(milliseconds: 500));
+
+      print('\n=== STEP 5: Validate Alice\'s database state ===');
+
+      // Verify Alice's original UTXO is now spent
+      await verifyUTXOStatus(
+        storage: aliceStorage,
+        walletId: aliceWalletId,
+        txid: fundingTxid,
+        vout: fundingVout,
+        expectedStatus: UTXOStatus.spent,
+      );
+      print('✓ Alice\'s original UTXO is marked as spent');
+
+      // Verify Alice's outgoing transaction is pending
+      await verifyTransactionStatus(
+        storage: aliceStorage,
+        walletId: aliceWalletId,
+        txid: spendingTxid,
+        expectedStatus: TransactionStatus.pending,
+      );
+      print('✓ Alice\'s outgoing transaction is marked as pending');
+
+      print('\n=== STEP 6: Validate Bob\'s database state ===');
+
+      // Verify Bob's new UTXO is pending
+      await verifyUTXOStatus(
+        storage: bobStorage,
+        walletId: bobWalletId,
+        txid: spendingTxid,
+        vout: 0,
+        expectedStatus: UTXOStatus.pending,
+      );
+      print('✓ Bob\'s new UTXO is marked as pending');
+
+      // Verify Bob's incoming transaction is pending
+      await verifyTransactionStatus(
+        storage: bobStorage,
+        walletId: bobWalletId,
+        txid: spendingTxid,
+        expectedStatus: TransactionStatus.pending,
+      );
+      print('✓ Bob\'s incoming transaction is marked as pending');
+
+      print('\n=== STEP 7: Mark invoice as paid ===');
+
+      final bobPaidCompleter = Completer<InvoiceStatusMessage>();
+      final bobPaidReceiver = await bobActorSystem.spawn(
+        'bob-paid-utxo-test',
+        () => TestReceiverActor<InvoiceStatusMessage>(bobPaidCompleter),
+      );
+
+      bobLibSpiffy.invoiceCoordinator.tell(
+        MarkInvoicePaidMessage(
+          invoiceId: invoiceId,
+          txid: spendingTxid,
+          amountReceived: paymentAmount,
+          addressesPaidTo: [paymentAddress],
+        ),
+        sender: bobPaidReceiver,
+      );
+
+      final paidStatus = await bobPaidCompleter.future.timeout(Duration(seconds: 5));
+      expect(paidStatus.status, equals(InvoiceStatus.paid));
+      print('✓ Invoice marked as paid');
+
+      // Final verification
+      await verifyInvoiceInDatabase(
+        isar: bobIsar,
+        invoiceId: invoiceId,
+        expectedStatus: InvoiceStatus.paid,
+      );
+
+      print('\n=== UTXO and Transaction database state validation complete ===');
+      print('Summary:');
+      print('  Alice:');
+      print('    - Original UTXO: spent');
+      print('    - Outgoing transaction: pending');
+      print('  Bob:');
+      print('    - New UTXO: pending');
+      print('    - Incoming transaction: pending');
+      print('    - Invoice: paid');
+      print('==========================================================\n');
     });
   });
 }

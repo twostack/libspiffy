@@ -17,6 +17,7 @@ import 'package:postgres/postgres.dart';
 
 import '../../crypto/encryption_service.dart';
 import '../secure_storage.dart';
+import 'package:convert/convert.dart';
 
 /// PostgreSQL-based secure storage that ONLY supports xpub storage.
 ///
@@ -132,6 +133,7 @@ class PostgresSecureStorage implements SecureStorage {
       final encryptedValue = row[0] as Uint8List;
       final nonce = row[1] as Uint8List;
 
+
       return await _encryptionService.decrypt(
         ciphertext: encryptedValue,
         nonce: nonce,
@@ -154,6 +156,7 @@ class PostgresSecureStorage implements SecureStorage {
       );
 
       // Upsert the encrypted value
+      // Note: Must use TypedValue.bytea() for Uint8List to ensure proper BYTEA encoding
       await _pool.execute(
         Sql.named('''
           INSERT INTO secure_secrets (key_name, encrypted_value, nonce, key_version, updated_at)
@@ -167,8 +170,8 @@ class PostgresSecureStorage implements SecureStorage {
         '''),
         parameters: {
           'key_name': key,
-          'encrypted_value': result.ciphertext,
-          'nonce': result.nonce,
+          'encrypted_value': TypedValue(Type.byteArray, result.ciphertext),
+          'nonce': TypedValue(Type.byteArray, result.nonce),
           'key_version': _encryptionService.keyVersion,
         },
       );

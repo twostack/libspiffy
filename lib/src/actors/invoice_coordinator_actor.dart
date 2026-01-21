@@ -196,9 +196,14 @@ class InvoiceCoordinatorActor extends Actor {
       aggregateActor.tell(command, sender: context.self);
       
       print('Created InvoiceAggregate and sent CreateInvoiceCommand for $invoiceId');
-      
+
       // Send success response to original sender
       if (pendingRequest.originalSender != null) {
+        print('[InvoiceCoordinator] Sending InvoiceCreatedMessage to original sender');
+        print('[InvoiceCoordinator]   Original sender: ${pendingRequest.originalSender}');
+        print('[InvoiceCoordinator]   Invoice ID: $invoiceId');
+        print('[InvoiceCoordinator]   Addresses: ${[msg.address]}');
+
         pendingRequest.originalSender!.tell(InvoiceCreatedMessage(
           invoiceId: invoiceId,
           walletId: pendingRequest.walletId,
@@ -209,7 +214,12 @@ class InvoiceCoordinatorActor extends Actor {
           expiresAt: pendingRequest.expiresAt,
           success: true,
           error: null,
+          customMetadata: pendingRequest.metadata,
         ));
+
+        print('[InvoiceCoordinator] ✅ InvoiceCreatedMessage sent successfully');
+      } else {
+        print('[InvoiceCoordinator] ⚠️ No original sender to respond to!');
       }
       
     } catch (e) {

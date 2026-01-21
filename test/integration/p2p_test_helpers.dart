@@ -6,12 +6,15 @@ import 'package:isar/isar.dart';
 import 'package:test/test.dart';
 import 'package:convert/convert.dart';
 import 'package:spiffynode/spiffy_node.dart';
+import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:libspiffy/libspiffy.dart';
 import 'package:libspiffy/src/actors/libspiffy_actor_system.dart';
 import 'package:libspiffy/src/actors/wallet_messages.dart';
 import 'package:libspiffy/src/actors/invoice_messages.dart';
 import 'package:libspiffy/src/core/wallet_commands.dart';
 import 'package:libspiffy/src/utils/crypto_utils.dart';
+import 'package:libspiffy/src/models/bitcoin_utxo.dart';
+import 'package:libspiffy/src/models/bitcoin_transaction.dart';
 import '../mocks/mock_arc_service.dart';
 import '../mocks/mock_peer_manager.dart';
 
@@ -106,10 +109,16 @@ Future<String> createWallet({
   return response.walletId;
 }
 
+/// Test xpriv with real testnet history - use this when creating wallets for payment tests
+const kTestXpriv = 'tprv8ZgxMBicQKsPeMiDjtXBGAyFY1wEMGgomjwf54ZmiZfKTNYvVdBa6GqWUwnvtHm6NKVkQkhCKxaobd9JPxNEXgDfVgJ5RNHJ3ivogSG3V1R';
+
+/// Root address (m/0/0) derived from test xpriv
+const kTestRootAddress = 'mqCnSf8i6kmaQaJ54HjQ8EUJnuK4AnCv12';
+
 /// Fund a wallet with UTXOs for testing
-/// 
-/// Uses real testnet transaction data (from full_spv_validation_test.dart)
-/// to create a complete transaction with valid merkle proof.
+///
+/// Uses real testnet transaction data linked to kTestXpriv.
+/// IMPORTANT: The wallet MUST be created with kTestXpriv for this to work!
 /// This is required for BEEF creation which needs the full ancestor chain.
 Future<void> fundWallet({
   required ActorRef walletManager,
@@ -118,29 +127,29 @@ Future<void> fundWallet({
   required BigInt amount,
   String? address,
 }) async {
-  // Generate an address if not provided
-  String targetAddress = address ?? await generateAddress(
-    walletManager: walletManager,
-    actorSystem: actorSystem,
-    walletId: walletId,
-  );
-  
-  // Use real testnet transaction data from block 1641074
-  // This transaction has a valid merkle proof that can be used for BEEF
-  final fundingTxid = 'dd6e7547df0fe893a9a19f66f0377eca72fdcd18fd9f6185fde9c91461a8e8a9';
-  final fundingTxHex = '02000000013706d29b641d2061b0b7b22c81ec6a5670104826bee4472a7513619f4fc298df000000006a473044022021fb2500cfd69bf3d7eee8f16d2e1d6d49528dbe23e9105744202bd9e5b5789102204ff801667c156b97e92209c19dce9bbdd955ee35cea7b815cf9e3b0c1b6727174121022036646b3fd79dee41351f727f0a6e10d0e7f98585961bc14e7aadaf5f4b66ab0100000002a0443b00000000001976a914f82d58dd8487044d8d0879c15a2a3516a425de2a88ac96000000000000001976a914f82d58dd8487044d8d0879c15a2a3516a425de2a88ac00000000';
-  final blockHeight = 1641074;
-  
-  // Real TSC proof for this transaction
+  // Use the known root address from the test xpriv
+  // The wallet MUST be created with kTestXpriv for signing to work
+  String targetAddress = address ?? kTestRootAddress;
+
+  // Use real testnet transaction data from block 1239645
+  // This transaction pays 200,000,000 sats to mqCnSf8i6kmaQaJ54HjQ8EUJnuK4AnCv12 at vout 1
+  // This is the root address (m/0/0) derived from kTestXpriv
+  final fundingTxid = 'a05924fcc63712d3e4b94b0c88baad234c2c8ad3d369704f53765e21a53a2101';
+  final fundingTxHex = '020000000165b6c06790c23623c4988ee51b3f27c76bfb6a0c9e5bab3432968c51379af66a000000006b483045022100b735fb60adca4fa42e37746aa602c3206bf98572ae83e396da4fd11cb716b26d022017bf9955bd8fc4d60f2829236c7864d5b5540062c88113daef137c0ee441736c41210222824a8530bc570b7bae7c7600529b450a65eab1203c5f561d8082cd97b3dba1feffffff02872ec735150000001976a9149d02ce72bbdc1713d5537a0705d8ec7d9702c81088ac00c2eb0b000000001976a9146a418bf9e2e2b670e1aa7b7da59391e212b4ba1988ac5cea1200';
+  final blockHeight = 1239645;
+
+  // Real TSC proof for this transaction (position 2 in block 1239645)
   final tscProof = {
-    'index': 6,
+    'index': 2,
     'txOrId': fundingTxid,
-    'target': '00000000cf9e8013b71e0c1c454208ad60a639adba6b6d7fcf6426da1e1efdb2',
+    'target': '0000000014ba177afc3977062d2709ff4f289462b18189a381ad3cbf244d1c3b',
     'nodes': [
-      'f4d4fc63094d73b31e13da814ec4556865f53c329c53020e56ad71464e6f85fe',
-      'bdcde417243f95840bd6fcfddbad0b198285f9f38d38093dc8826c3a3a7666f0',
-      '9304304659a72e3e17ad1a447fecb4b082c8340683249a2cfa8ea3d411ad5c76',
-      '5d2528dae0d0992da93f485ccbef24f06ef62ebf055bcc9d43b05dbdbe897dc2',
+      '2bb617ed9b7950dcc9ddd952364a5d039742b40b786d3ef8a3984a5cf5495640',
+      'e0c82744e0d7c7a1e72102b82fa37ae09f4e6018ebb18773f888617b83250e75',
+      '9991c11c2ecb5087a29032a279d926bfe03c926c582a30743c902b57a3d98039',
+      '9d54821a3821713dadeeb3a614921f8c63866f82686cbcf019ed7a6c20a36d2b',
+      'a1e33369efb20fa5a1311ddfed20747de1996fdc814aa19691106eafe28b3e5d',
+      '5a2f7dcc9b1fddc64f57157e7c59082729622050a76cb6956ae6b15f1a9ff0c4',
     ],
   };
   
@@ -156,11 +165,11 @@ Future<void> fundWallet({
     () => TestReceiverActor<dynamic>(importCompleter),
   );
   
-  // Real transaction has 2 outputs, both to the same address
-  // Output 0: 3883936 sats
-  // Output 1: 150 sats
-  final output0Amount = 3883936;
-  final output1Amount = 150;
+  // Real transaction has 2 outputs:
+  // Output 0: 91096559239 sats to muq9kAb9ri62VChAMRkuwK5bTve4iDLWBg (not ours)
+  // Output 1: 200000000 sats (2 BSV) to mqCnSf8i6kmaQaJ54HjQ8EUJnuK4AnCv12 (our root address)
+  final output0Amount = 91096559239;
+  final output1Amount = 200000000;
   
   walletManager.tell(
     WalletCommandMessage(
@@ -188,33 +197,35 @@ Future<void> fundWallet({
   // Wait for import to complete
   await Future.delayed(Duration(milliseconds: 300));
   
-  // Now send the UTXO (using output 0 which has enough funds)
+  // Now send the UTXO (using output 1 which pays to our root address)
   final utxoCompleter = Completer<dynamic>();
   final utxoReceiver = await actorSystem.spawn(
     'fund-receiver-$walletId-${DateTime.now().microsecondsSinceEpoch}',
     () => TestReceiverActor<dynamic>(utxoCompleter),
   );
-  
-  // Create UTXO from the real transaction's output
-  final scriptPubKey = '76a914f82d58dd8487044d8d0879c15a2a3516a425de2a88ac'; // From real tx
-  
+
+  // Use the exact scriptPubKey from the real transaction for vout 1
+  // This is the P2PKH script for mqCnSf8i6kmaQaJ54HjQ8EUJnuK4AnCv12
+  const scriptPubKey = '76a9146a418bf9e2e2b670e1aa7b7da59391e212b4ba1988ac';
+
   walletManager.tell(
     WalletCommandMessage(
       walletId,
       ReceiveUTXOCommand(
         walletId: walletId,
         txid: fundingTxid,
-        vout: 0, // Use first output
+        vout: 1, // Use output 1 which pays to our root address
         satoshis: amount,
         scriptPubKey: scriptPubKey,
         address: targetAddress,
         blockHeight: blockHeight,
         confirmations: 10,
+        initialStatus: UTXOStatus.available, // Must be available for spending
       ),
     ),
     sender: utxoReceiver,
   );
-  
+
   // Give it time to process
   await Future.delayed(Duration(milliseconds: 300));
 }
@@ -251,6 +262,21 @@ Future<String> generateAddress({
 /// Setup test block headers from existing test data
 /// Idempotent - skips headers that already exist
 Future<void> setupTestHeaders(IsarWalletStorage storage) async {
+  // Block 1239645 - Real testnet data (used by fundWallet with kTestXpriv)
+  // Transaction a05924fcc63712d3e4b94b0c88baad234c2c8ad3d369704f53765e21a53a2101
+  final existingHeader0 = await storage.getBlockHeaderByHeight(1239645);
+  if (existingHeader0 == null) {
+    final header0 = BlockHeader(
+      version: 536870912,
+      prevBlock: Hash.fromHex('000000001539f91cede66262caa22d1b504d09aa1dc3221f7fac5b30c2f7d65d'),
+      merkleRoot: Hash.fromHex('5a2f7dcc9b1fddc64f57157e7c59082729622050a76cb6956ae6b15f1a9ff0c4'),
+      timestamp: DateTime.fromMillisecondsSinceEpoch(1528803530 * 1000),
+      bits: 0x1d00ffff,
+      nonce: 12345, // Placeholder - actual nonce not needed for merkle validation
+    );
+    await storage.storeBlockHeader(header0, 1239645);
+  }
+
   // Block 1291860 - Real testnet data
   final existingHeader1 = await storage.getBlockHeaderByHeight(1291860);
   if (existingHeader1 == null) {
@@ -386,9 +412,9 @@ Future<void> verifyDatabaseIsolation({
       .filter()
       .walletIdEqualTo(aliceWalletId)
       .count();
-  expect(bobHasAliceInvoices, equals(0), 
+  expect(bobHasAliceInvoices, equals(0),
       reason: 'Bob\'s database should not contain Alice\'s invoices');
-  
+
   // Alice's DB should not have Bob's wallet invoices
   final aliceHasBobInvoices = await aliceIsar.invoiceEntitys
       .filter()
@@ -396,5 +422,98 @@ Future<void> verifyDatabaseIsolation({
       .count();
   expect(aliceHasBobInvoices, equals(0),
       reason: 'Alice\'s database should not contain Bob\'s invoices');
+}
+
+/// Verify UTXO exists with expected status (with retry for async projection)
+Future<void> verifyUTXOStatus({
+  required IsarWalletStorage storage,
+  required String walletId,
+  required String txid,
+  required int vout,
+  required UTXOStatus expectedStatus,
+  Duration timeout = const Duration(seconds: 5),
+  Duration retryInterval = const Duration(milliseconds: 100),
+}) async {
+  final startTime = DateTime.now();
+  final expectedStatusStr = expectedStatus.toString().split('.').last;
+  int attempts = 0;
+
+  while (DateTime.now().difference(startTime) < timeout) {
+    attempts++;
+    final utxos = await storage.getUTXOs(walletId, includeSpent: true);
+
+    try {
+      final utxo = utxos.firstWhere(
+        (u) => u.txid == txid && u.vout == vout,
+      );
+
+      if (utxo.status == expectedStatus) {
+        print('✓ UTXO $txid:$vout verified with status $expectedStatusStr after $attempts attempts');
+        return; // Success!
+      }
+
+      if (attempts % 10 == 0) {
+        print('  Waiting for UTXO status: current is "${utxo.status}", expecting "$expectedStatus" (attempt $attempts)');
+      }
+    } catch (e) {
+      // UTXO not found yet, keep waiting
+      if (attempts % 10 == 0) {
+        print('  Waiting for UTXO $txid:$vout to appear (attempt $attempts)');
+      }
+    }
+
+    await Future.delayed(retryInterval);
+  }
+
+  // Timeout reached - provide detailed error
+  final utxos = await storage.getUTXOs(walletId, includeSpent: true);
+  final utxo = utxos.where((u) => u.txid == txid && u.vout == vout).firstOrNull;
+
+  if (utxo == null) {
+    fail('UTXO $txid:$vout not found in wallet $walletId after ${DateTime.now().difference(startTime).inMilliseconds}ms ($attempts attempts)');
+  } else {
+    fail('UTXO $txid:$vout has status ${utxo.status}, expected $expectedStatus after ${DateTime.now().difference(startTime).inMilliseconds}ms ($attempts attempts)');
+  }
+}
+
+/// Verify transaction exists with expected status (with retry for async projection)
+Future<void> verifyTransactionStatus({
+  required IsarWalletStorage storage,
+  required String walletId,
+  required String txid,
+  required TransactionStatus expectedStatus,
+  Duration timeout = const Duration(seconds: 5),
+  Duration retryInterval = const Duration(milliseconds: 100),
+}) async {
+  final startTime = DateTime.now();
+  final expectedStatusStr = expectedStatus.toString().split('.').last;
+  int attempts = 0;
+
+  while (DateTime.now().difference(startTime) < timeout) {
+    attempts++;
+    final tx = await storage.getTransaction(txid);
+
+    if (tx != null && tx.status == expectedStatus) {
+      print('✓ Transaction $txid verified with status $expectedStatusStr after $attempts attempts');
+      return; // Success!
+    }
+
+    if (tx != null && attempts % 10 == 0) {
+      print('  Waiting for transaction status: current is "${tx.status}", expecting "$expectedStatus" (attempt $attempts)');
+    } else if (tx == null && attempts % 10 == 0) {
+      print('  Waiting for transaction $txid to appear (attempt $attempts)');
+    }
+
+    await Future.delayed(retryInterval);
+  }
+
+  // Timeout reached - provide detailed error
+  final tx = await storage.getTransaction(txid);
+
+  if (tx == null) {
+    fail('Transaction $txid not found after ${DateTime.now().difference(startTime).inMilliseconds}ms ($attempts attempts)');
+  } else {
+    fail('Transaction $txid has status ${tx.status}, expected $expectedStatus after ${DateTime.now().difference(startTime).inMilliseconds}ms ($attempts attempts)');
+  }
 }
 

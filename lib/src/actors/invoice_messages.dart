@@ -100,6 +100,7 @@ class InvoiceCreatedMessage implements Message {
   final DateTime? expiresAt;
   final bool success;
   final String? error;
+  final Map<String, dynamic>? customMetadata;
 
   InvoiceCreatedMessage({
     required this.invoiceId,
@@ -111,13 +112,18 @@ class InvoiceCreatedMessage implements Message {
     this.expiresAt,
     required this.success,
     this.error,
+    this.customMetadata,
   });
 
   @override
   String get correlationId => 'invoice-created-$invoiceId';
-  
+
   @override
-  Map<String, dynamic> get metadata => {'invoiceId': invoiceId, 'walletId': walletId};
+  Map<String, dynamic> get metadata => {
+    'invoiceId': invoiceId,
+    'walletId': walletId,
+    ...?customMetadata,
+  };
   
   @override
   ActorRef? get replyTo => null;

@@ -904,10 +904,23 @@ class InvoiceEntity {
   /// Invoice metadata (serialized as JSON)
   String? metadataJson;
 
+  /// Structured output specifications (serialized as JSON)
+  /// Contains P2PKH and P2MS output specs for multi-output invoices
+  String? outputsJson;
+
   InvoiceEntity();
 
   /// Create from Invoice domain model
   factory InvoiceEntity.fromDomain(dynamic invoice) {
+    // Serialize outputs if present
+    String? outputsJsonStr;
+    if (invoice.outputs != null) {
+      final outputsList = (invoice.outputs as List)
+          .map((o) => o.toMap())
+          .toList();
+      outputsJsonStr = jsonEncode(outputsList);
+    }
+
     return InvoiceEntity()
       ..invoiceId = invoice.invoiceId
       ..walletId = invoice.walletId
@@ -920,9 +933,10 @@ class InvoiceEntity {
       ..paidAt = invoice.paidAt
       ..paymentTxid = invoice.paymentTxid
       ..amountReceived = invoice.amountReceived?.toString()
-      ..metadataJson = invoice.metadata != null 
+      ..metadataJson = invoice.metadata != null
           ? _encodeJson(invoice.metadata!)
-          : null;
+          : null
+      ..outputsJson = outputsJsonStr;
   }
 
   /// Convert to Invoice domain model
@@ -940,12 +954,13 @@ class InvoiceEntity {
       'expiresAt': expiresAt,
       'paidAt': paidAt,
       'paymentTxid': paymentTxid,
-      'amountReceived': amountReceived != null 
+      'amountReceived': amountReceived != null
           ? BigInt.parse(amountReceived!)
           : null,
-      'metadata': metadataJson != null 
+      'metadata': metadataJson != null
           ? _decodeJson(metadataJson!)
           : null,
+      'outputsJson': outputsJson, // Raw JSON for caller to deserialize
     };
   }
 
@@ -964,6 +979,7 @@ class InvoiceEntity {
       'paymentTxid': paymentTxid,
       'amountReceived': amountReceived,
       'metadataJson': metadataJson,
+      'outputsJson': outputsJson,
     };
   }
 
@@ -981,7 +997,8 @@ class InvoiceEntity {
       ..paidAt = json['paidAt'] != null ? DateTime.parse(json['paidAt'] as String) : null
       ..paymentTxid = json['paymentTxid'] as String?
       ..amountReceived = json['amountReceived'] as String?
-      ..metadataJson = json['metadataJson'] as String?;
+      ..metadataJson = json['metadataJson'] as String?
+      ..outputsJson = json['outputsJson'] as String?;
   }
 }
 

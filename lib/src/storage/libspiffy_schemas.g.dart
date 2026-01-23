@@ -19582,23 +19582,28 @@ const InvoiceEntitySchema = CollectionSchema(
       name: r'metadataJson',
       type: IsarType.string,
     ),
-    r'paidAt': PropertySchema(
+    r'outputsJson': PropertySchema(
       id: 8,
+      name: r'outputsJson',
+      type: IsarType.string,
+    ),
+    r'paidAt': PropertySchema(
+      id: 9,
       name: r'paidAt',
       type: IsarType.dateTime,
     ),
     r'paymentTxid': PropertySchema(
-      id: 9,
+      id: 10,
       name: r'paymentTxid',
       type: IsarType.string,
     ),
     r'status': PropertySchema(
-      id: 10,
+      id: 11,
       name: r'status',
       type: IsarType.string,
     ),
     r'walletId': PropertySchema(
-      id: 11,
+      id: 12,
       name: r'walletId',
       type: IsarType.string,
     )
@@ -19698,6 +19703,12 @@ int _invoiceEntityEstimateSize(
     }
   }
   {
+    final value = object.outputsJson;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
+  {
     final value = object.paymentTxid;
     if (value != null) {
       bytesCount += 3 + value.length * 3;
@@ -19722,10 +19733,11 @@ void _invoiceEntitySerialize(
   writer.writeDateTime(offsets[5], object.expiresAt);
   writer.writeString(offsets[6], object.invoiceId);
   writer.writeString(offsets[7], object.metadataJson);
-  writer.writeDateTime(offsets[8], object.paidAt);
-  writer.writeString(offsets[9], object.paymentTxid);
-  writer.writeString(offsets[10], object.status);
-  writer.writeString(offsets[11], object.walletId);
+  writer.writeString(offsets[8], object.outputsJson);
+  writer.writeDateTime(offsets[9], object.paidAt);
+  writer.writeString(offsets[10], object.paymentTxid);
+  writer.writeString(offsets[11], object.status);
+  writer.writeString(offsets[12], object.walletId);
 }
 
 InvoiceEntity _invoiceEntityDeserialize(
@@ -19744,10 +19756,11 @@ InvoiceEntity _invoiceEntityDeserialize(
   object.id = id;
   object.invoiceId = reader.readString(offsets[6]);
   object.metadataJson = reader.readStringOrNull(offsets[7]);
-  object.paidAt = reader.readDateTimeOrNull(offsets[8]);
-  object.paymentTxid = reader.readStringOrNull(offsets[9]);
-  object.status = reader.readString(offsets[10]);
-  object.walletId = reader.readString(offsets[11]);
+  object.outputsJson = reader.readStringOrNull(offsets[8]);
+  object.paidAt = reader.readDateTimeOrNull(offsets[9]);
+  object.paymentTxid = reader.readStringOrNull(offsets[10]);
+  object.status = reader.readString(offsets[11]);
+  object.walletId = reader.readString(offsets[12]);
   return object;
 }
 
@@ -19775,12 +19788,14 @@ P _invoiceEntityDeserializeProp<P>(
     case 7:
       return (reader.readStringOrNull(offset)) as P;
     case 8:
-      return (reader.readDateTimeOrNull(offset)) as P;
-    case 9:
       return (reader.readStringOrNull(offset)) as P;
+    case 9:
+      return (reader.readDateTimeOrNull(offset)) as P;
     case 10:
-      return (reader.readString(offset)) as P;
+      return (reader.readStringOrNull(offset)) as P;
     case 11:
+      return (reader.readString(offset)) as P;
+    case 12:
       return (reader.readString(offset)) as P;
     default:
       throw IsarError('Unknown property with id $propertyId');
@@ -21229,6 +21244,160 @@ extension InvoiceEntityQueryFilter
   }
 
   QueryBuilder<InvoiceEntity, InvoiceEntity, QAfterFilterCondition>
+      outputsJsonIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'outputsJson',
+      ));
+    });
+  }
+
+  QueryBuilder<InvoiceEntity, InvoiceEntity, QAfterFilterCondition>
+      outputsJsonIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'outputsJson',
+      ));
+    });
+  }
+
+  QueryBuilder<InvoiceEntity, InvoiceEntity, QAfterFilterCondition>
+      outputsJsonEqualTo(
+    String? value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'outputsJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<InvoiceEntity, InvoiceEntity, QAfterFilterCondition>
+      outputsJsonGreaterThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'outputsJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<InvoiceEntity, InvoiceEntity, QAfterFilterCondition>
+      outputsJsonLessThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'outputsJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<InvoiceEntity, InvoiceEntity, QAfterFilterCondition>
+      outputsJsonBetween(
+    String? lower,
+    String? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'outputsJson',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<InvoiceEntity, InvoiceEntity, QAfterFilterCondition>
+      outputsJsonStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'outputsJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<InvoiceEntity, InvoiceEntity, QAfterFilterCondition>
+      outputsJsonEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'outputsJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<InvoiceEntity, InvoiceEntity, QAfterFilterCondition>
+      outputsJsonContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'outputsJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<InvoiceEntity, InvoiceEntity, QAfterFilterCondition>
+      outputsJsonMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'outputsJson',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<InvoiceEntity, InvoiceEntity, QAfterFilterCondition>
+      outputsJsonIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'outputsJson',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<InvoiceEntity, InvoiceEntity, QAfterFilterCondition>
+      outputsJsonIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'outputsJson',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<InvoiceEntity, InvoiceEntity, QAfterFilterCondition>
       paidAtIsNull() {
     return QueryBuilder.apply(this, (query) {
       return query.addFilterCondition(const FilterCondition.isNull(
@@ -21843,6 +22012,19 @@ extension InvoiceEntityQuerySortBy
     });
   }
 
+  QueryBuilder<InvoiceEntity, InvoiceEntity, QAfterSortBy> sortByOutputsJson() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'outputsJson', Sort.asc);
+    });
+  }
+
+  QueryBuilder<InvoiceEntity, InvoiceEntity, QAfterSortBy>
+      sortByOutputsJsonDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'outputsJson', Sort.desc);
+    });
+  }
+
   QueryBuilder<InvoiceEntity, InvoiceEntity, QAfterSortBy> sortByPaidAt() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'paidAt', Sort.asc);
@@ -22014,6 +22196,19 @@ extension InvoiceEntityQuerySortThenBy
     });
   }
 
+  QueryBuilder<InvoiceEntity, InvoiceEntity, QAfterSortBy> thenByOutputsJson() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'outputsJson', Sort.asc);
+    });
+  }
+
+  QueryBuilder<InvoiceEntity, InvoiceEntity, QAfterSortBy>
+      thenByOutputsJsonDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'outputsJson', Sort.desc);
+    });
+  }
+
   QueryBuilder<InvoiceEntity, InvoiceEntity, QAfterSortBy> thenByPaidAt() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'paidAt', Sort.asc);
@@ -22123,6 +22318,13 @@ extension InvoiceEntityQueryWhereDistinct
     });
   }
 
+  QueryBuilder<InvoiceEntity, InvoiceEntity, QDistinct> distinctByOutputsJson(
+      {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'outputsJson', caseSensitive: caseSensitive);
+    });
+  }
+
   QueryBuilder<InvoiceEntity, InvoiceEntity, QDistinct> distinctByPaidAt() {
     return QueryBuilder.apply(this, (query) {
       return query.addDistinctBy(r'paidAt');
@@ -22207,6 +22409,12 @@ extension InvoiceEntityQueryProperty
       metadataJsonProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'metadataJson');
+    });
+  }
+
+  QueryBuilder<InvoiceEntity, String?, QQueryOperations> outputsJsonProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'outputsJson');
     });
   }
 

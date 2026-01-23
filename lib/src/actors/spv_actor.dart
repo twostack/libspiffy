@@ -8,6 +8,7 @@ import 'package:spiffynode/spiffy_node.dart';
 
 import '../storage/wallet_storage.dart';
 import '../utils/beef.dart';
+import '../models/invoice_output_spec.dart';
 import 'spv_messages.dart' hide ValidateBEEFMessage, BEEFValidationResult;
 import 'wallet_messages.dart';
 import 'invoice_messages.dart';
@@ -535,8 +536,31 @@ class SPVActor extends Actor {
             }
             break;
           case 'p2ms':
-            // Multi-sig handling would require more complex logic
-            // Skip for now
+            // Multi-sig handling: extract public keys and match against invoice
+            final pubKeys = scriptInfo['pubKeys'] as List<Uint8List>?;
+            final threshold = scriptInfo['threshold'] as int?;
+            if (pubKeys != null && threshold != null && invoice?.outputs != null) {
+              // Check if this P2MS output matches any P2MSOutputSpec in the invoice
+              final pubKeyHexList = pubKeys.map((pk) => hex.encode(pk)).toList();
+              final matchesInvoice = _matchesP2MSInvoiceOutput(
+                pubKeyHexList,
+                threshold,
+                invoice!.outputs!,
+              );
+
+              if (matchesInvoice) {
+                spendableUTXOs.add({
+                  'txid': transaction.id,
+                  'vout': outputIndex,
+                  'satoshis': output.satoshis.toInt(),
+                  'script': output.script.toHex(),
+                  'scriptType': scriptType,
+                  'address': 'p2ms:${threshold}-of-${pubKeys.length}', // Pseudo-address for P2MS
+                  'publicKeys': pubKeyHexList,
+                  'threshold': threshold,
+                });
+              }
+            }
             continue;
           default:
             // Skip unknown script types
@@ -955,10 +979,12 @@ class SPVActor extends Actor {
     }
     
     // Check if amount meets or exceeds invoice amount
-    if (totalReceived < invoice.amount) {
+    // Use effectiveAmount to handle both legacy and multi-output invoices
+    final expectedAmount = invoice.effectiveAmount;
+    if (totalReceived < expectedAmount) {
       return _InvoiceValidationResult(
         isValid: false,
-        error: 'Payment amount ($totalReceived sats) is less than invoice amount (${invoice.amount} sats)',
+        error: 'Payment amount ($totalReceived sats) is less than invoice amount ($expectedAmount sats)',
         totalReceived: totalReceived,
       );
     }
@@ -1099,6 +1125,38 @@ class SPVActor extends Actor {
         'sendingAddresses': <String>[],
       };
     }
+  }
+
+  /// Check if a P2MS output matches any P2MSOutputSpec in the invoice outputs
+  ///
+  /// Compares by matching public keys (as sets) and threshold
+  bool _matchesP2MSInvoiceOutput(
+    List<String> txPubKeys,
+    int txThreshold,
+    List<InvoiceOutputSpec> invoiceOutputs,
+  ) {
+    // Normalize public keys to lowercase for comparison
+    final txPubKeySet = txPubKeys.map((pk) => pk.toLowerCase()).toSet();
+
+    for (final output in invoiceOutputs) {
+      if (output is P2MSOutputSpec) {
+        // Check threshold matches
+        if (output.threshold != txThreshold) continue;
+
+        // Check public key count matches
+        if (output.publicKeys.length != txPubKeys.length) continue;
+
+        // Compare public keys as sets (order independent)
+        final invoicePubKeySet =
+            output.publicKeys.map((pk) => pk.toLowerCase()).toSet();
+
+        if (txPubKeySet.containsAll(invoicePubKeySet) &&
+            invoicePubKeySet.containsAll(txPubKeySet)) {
+          return true;
+        }
+      }
+    }
+    return false;
   }
 }
 

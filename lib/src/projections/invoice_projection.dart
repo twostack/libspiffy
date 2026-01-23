@@ -91,6 +91,7 @@ class InvoiceProjection extends Projection<InvoiceReadModel> {
       walletId: event.walletId,
       addresses: List.from(event.addresses),
       amount: event.amount,
+      outputs: event.outputs,
       description: event.description,
       status: InvoiceStatus.pending,
       createdAt: event.timestamp,
@@ -101,7 +102,7 @@ class InvoiceProjection extends Projection<InvoiceReadModel> {
       lastUpdated: event.timestamp,
       metadata: event.invoiceMetadata ?? {},
     );
-    
+
     // Check if invoice already exists (for idempotent projection replay)
     final existing = await _storage.getInvoice(event.invoiceId);
 

@@ -69,7 +69,6 @@ class PostgresMigrations {
       // Apply pending migrations
       for (final migration in _migrations) {
         if (migration.version > currentVersion) {
-          print('Applying migration ${migration.version}: ${migration.name}');
 
           // Run migration in a transaction
           await pool.runTx((session) async {
@@ -89,7 +88,6 @@ class PostgresMigrations {
             );
           });
 
-          print('Migration ${migration.version} applied successfully');
         }
       }
     } finally {
@@ -111,7 +109,6 @@ class PostgresMigrations {
       );
 
       if (result.isEmpty) {
-        print('No migrations to roll back');
         return false;
       }
 
@@ -125,7 +122,6 @@ class PostgresMigrations {
         ),
       );
 
-      print('Rolling back migration ${migration.version}: ${migration.name}');
 
       // Run rollback in a transaction
       await pool.runTx((session) async {
@@ -139,7 +135,6 @@ class PostgresMigrations {
         );
       });
 
-      print('Migration ${migration.version} rolled back successfully');
       return true;
     } finally {
       if (ownPool) {

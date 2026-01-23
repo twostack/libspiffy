@@ -63,18 +63,15 @@ class SPVActor extends Actor {
   /// Handle SetArcActorForSPVMessage
   void _handleSetArcActor(SetArcActorForSPVMessage msg) {
     _arcActor = msg.arcActor;
-    print('SPVActor: ARCActor reference set successfully');
   }
   
   /// Handle SetHeaderSyncActorMessage
   void _handleSetHeaderSyncActor(SetHeaderSyncActorMessage msg) {
     _headerSyncActor = msg.headerSyncActor;
-    print('SPVActor: HeaderSyncActor reference set successfully');
   }
 
   @override
   void preStart() {
-    print('SPVActor started - True SPV Mode');
     _loadInitialState();
   }
 
@@ -107,10 +104,8 @@ class SPVActor extends Actor {
           break;
           
         default:
-          print('SPVActor received unknown message: ${message.runtimeType}');
       }
     } catch (e) {
-      print('Error in SPVActor: $e');
       
       // Send error response for validation messages
       if (context.sender != null) {
@@ -124,15 +119,10 @@ class SPVActor extends Actor {
   /// Note: Block header synchronization is handled by SpiffyNode, not the SPV actor.
   /// The SPV actor only consumes headers that SpiffyNode has already stored.
   void _loadInitialState() {
-    print('Loading initial SPV state from storage...');
     
     // Load current chain state from storage (async)
     _loadCurrentChainState().then((_) {
-      print('SPV Actor ready - current height: $_currentHeight');
-      print('Ready to validate transactions using stored block headers');
     }).catchError((e) {
-      print('Failed to load initial SPV state: $e');
-      print('SPV Actor will start with empty state');
     });
   }
   
@@ -142,9 +132,7 @@ class SPVActor extends Actor {
       _currentHeight = await _storage.getBestHeight();
       final tip = await _storage.getChainTip();
       _currentTip = tip;
-      print('Loaded chain state: height $_currentHeight');
     } catch (e) {
-      print('Failed to load chain state: $e');
       _currentHeight = 0;
       _currentTip = null;
     }
@@ -152,7 +140,6 @@ class SPVActor extends Actor {
 
   /// Handle transaction received directly from counterparty (CORE SPV)
   Future<void> _handleReceiveTransaction(ReceiveTransactionMessage msg) async {
-    print('Validating transaction from ${msg.fromCounterparty} for wallet ${msg.targetWalletId}${msg.invoiceId != null ? ' (invoice: ${msg.invoiceId})' : ''}');
     
     try {
       // This is the core SPV process
@@ -171,10 +158,8 @@ class SPVActor extends Actor {
         context.sender!.tell(validationResult);
       }
       
-      print('Transaction validation complete: ${validationResult.isValid ? 'VALID' : 'INVALID'}');
       
     } catch (e) {
-      print('Error validating transaction: $e');
       
       final errorResult = SPVValidationResult(
         txid: msg.transactionId, // Placeholder
@@ -204,14 +189,12 @@ class SPVActor extends Actor {
       }
       
       // Header not found locally - try opportunistic fetch from P2P network
-      print('⚠️  Block header not found at height $blockHeight, attempting opportunistic P2P fetch...');
       
       if (_headerSyncActor == null) {
         throw Exception('Block header not found at height $blockHeight and HeaderSyncActor not available for opportunistic fetch');
       }
       
       // Request specific header from HeaderSyncActor
-      print('📡 Requesting header at height $blockHeight from HeaderSyncActor...');
       final response = await _headerSyncActor!.ask<SpecificHeaderResponseMessage>(
         RequestSpecificHeaderMessage(
           blockHeight: blockHeight,
@@ -221,7 +204,6 @@ class SPVActor extends Actor {
       );
       
       if (response.success && response.header != null) {
-        print('✅ Successfully fetched block header at height $blockHeight from P2P network');
         return response.header!;
       } else {
         throw Exception('Failed to fetch block header from P2P network: ${response.error}');
@@ -241,14 +223,11 @@ class SPVActor extends Actor {
     String? walletId,
     String? invoiceId, // Invoice ID for payment matching
   )   async {
-    print('Performing SPV validation${invoiceId != null ? ' for invoice $invoiceId' : ''}...');
 
     // CRITICAL: beef.validateTransactionWithBlockHeader() expects TXID in display format (big-endian)
     // It handles the internal conversion to BUMP's internal format internally
     final txid = Uint8List.fromList(hex.decode(txidHex));
 
-    print('Debug: Looking for TXID: $txidHex');
-    print('Debug: BEEF has ${beef.txs.length} transaction(s)');
 
     try {
       // Step 1: Validate each input UTXO has valid merkle proof
@@ -258,10 +237,8 @@ class SPVActor extends Actor {
 
       // Debug: Print what TXIDs are actually in the BEEF
       if (txMap == null) {
-        print('Debug: Transaction not found. TXIDs in BEEF:');
         for (int i = 0; i < beef.txs.length; i++) {
           final calculatedTxid = beef.calculateTxid(beef.txs[i]);
-          print('  [$i]: ${hex.encode(calculatedTxid)}');
         }
       }
 
@@ -274,7 +251,6 @@ class SPVActor extends Actor {
         
         if (hasProof) {
           // This transaction has a proof - validate it directly via SPV
-          print('Debug: Transaction has merkle proof - performing direct SPV validation');
           
           // Calculate BUMP index by counting how many transactions before this have proofs
           int bumpIndex = 0;
@@ -287,15 +263,11 @@ class SPVActor extends Actor {
           final bump = beef.bumps[bumpIndex];
           final blockHeader = await _getBlockHeader(bump.blockHeight);
           
-          print('Debug: BUMP block height: ${bump.blockHeight}');
-          print('Debug: Block header merkle root: ${hex.encode(blockHeader.merkleRoot.bytes)}');
-          print('Debug: Bump Merkle Root ${hex.encode(bump.computeMerkleRoot(Uint8List.fromList(hex.decode(txidHex))))}');
 
           // Validate this transaction's merkle proof
           final isValidTx = await beef.validateTransactionWithBlockHeader(txid, blockHeader);
 
           if (!isValidTx) {
-            print('Debug: Merkle proof validation FAILED');
             return SPVValidationResult(
               txid: txidHex,
               isValid: false,
@@ -304,13 +276,10 @@ class SPVActor extends Actor {
             );
           }
           
-          print('Debug: Merkle proof validation PASSED');
           
         } else {
           // This transaction has NO proof (unconfirmed payment transaction)
           // Validate that all its ancestors (inputs) have valid merkle proofs
-          print('Debug: Transaction has no merkle proof (unconfirmed)');
-          print('Debug: Validating all ancestor transactions have valid proofs...');
           
           // Validate ALL transactions in BEEF that have proofs
           for (int i = 0; i < beef.txs.length; i++) {
@@ -330,12 +299,10 @@ class SPVActor extends Actor {
             final bump = beef.bumps[bumpIndex];
             final blockHeader = await _getBlockHeader(bump.blockHeight);
             
-            print('Debug: Validating ancestor $i (txid: ${hex.encode(ancestorTxid)})');
             
             final isValid = await beef.validateTransactionWithBlockHeader(ancestorTxid, blockHeader);
             
             if (!isValid) {
-              print('Debug: Ancestor $i merkle proof validation FAILED');
               return SPVValidationResult(
                 txid: txidHex,
                 isValid: false,
@@ -345,7 +312,6 @@ class SPVActor extends Actor {
             }
           }
           
-          print('Debug: All ancestor merkle proofs validated successfully');
         }
 
         // Step 2: Validate transaction structure and scripts
@@ -360,7 +326,6 @@ class SPVActor extends Actor {
           );
         }
         
-        print('Debug: Transaction spends correctly');
 
         // Step 3: Extract spendable UTXOs for the target wallet
         // If invoice ID is provided, validate outputs match invoice addresses
@@ -372,7 +337,6 @@ class SPVActor extends Actor {
         if (spentUTXOs.isNotEmpty) {
           transactionFee = await _calculateTransactionFee(transaction, beef);
           if (transactionFee != null) {
-            print('Transaction fee calculated: $transactionFee satoshis');
           }
         }
 
@@ -397,7 +361,6 @@ class SPVActor extends Actor {
           ), sender: context.self);
         }
 
-        print('SPV Validation SUCCESS: ${spendableUTXOs.length} new UTXOs, ${spentUTXOs.length} spent UTXOs');
 
         // Build complete transaction data for recording in transaction history
         final transactionData = await _buildTransactionData(
@@ -488,7 +451,6 @@ class SPVActor extends Actor {
         return true;
 
       } on dartsv.ScriptException catch (ex) {
-        print(ex);
         return false;
       }
     }
@@ -515,7 +477,6 @@ class SPVActor extends Actor {
     if (invoiceId != null) {
       invoice = await _getInvoiceDetails(invoiceId);
       if (invoice == null || !invoice.found) {
-        print('Warning: Invoice $invoiceId not found for transaction ${transaction.id}');
         return spendableUTXOs;
       }
     }
@@ -550,7 +511,6 @@ class SPVActor extends Actor {
                 // Create Address from pubkeyhash
                 address = dartsv.Address.fromPubkeyHash(hex.encode(pubkeyHash), dartsv.NetworkType.TEST).toBase58();
               } catch (e) {
-                print('Could not create address from pubkey hash: $e');
               }
             }
             break;
@@ -562,7 +522,6 @@ class SPVActor extends Actor {
                 final pubKeyObj = dartsv.SVPublicKey.fromHex(pubkey);
                 address = dartsv.Address.fromPublicKey(pubKeyObj, dartsv.NetworkType.TEST).toBase58();
               } catch (e) {
-                print('Could not derive address from P2PK pubkey: $e');
               }
             }
             break;
@@ -601,7 +560,6 @@ class SPVActor extends Actor {
         }
       }
     } catch (e) {
-      print('Error extracting spendable UTXOs: $e');
     }
 
     return spendableUTXOs;
@@ -626,7 +584,6 @@ class SPVActor extends Actor {
         final parentTxInfo = beef.findTransactionByTxid(prevTxidBytes);
         
         if (parentTxInfo == null) {
-          print('Warning: Parent transaction $prevTxid not found in BEEF');
           return null; // Can't calculate fee without all inputs
         }
         
@@ -634,7 +591,6 @@ class SPVActor extends Actor {
         final parentTx = dartsv.Transaction.fromHex(hex.encode(parentTxInfo['txData'] as Uint8List));
         
         if (prevVout >= parentTx.outputs.length) {
-          print('Warning: Invalid vout index $prevVout for parent tx $prevTxid');
           return null;
         }
         
@@ -652,13 +608,11 @@ class SPVActor extends Actor {
       final fee = totalInputValue - totalOutputValue;
       
       if (fee < BigInt.zero) {
-        print('Warning: Calculated negative fee: $fee');
         return null;
       }
       
       return fee;
     } catch (e) {
-      print('Error calculating transaction fee: $e');
       return null;
     }
   }
@@ -675,24 +629,19 @@ class SPVActor extends Actor {
     if (invoice != null) {
       final matchesInvoice = invoice.addresses.contains(address);
       if (matchesInvoice) {
-        print('✅ Address $address matches invoice address');
       }
       return matchesInvoice;
     }
     
     // Fallback: Query wallet storage to check if address belongs to wallet
     // This handles cases where invoice is not found or not provided
-    print('⚠️  No invoice provided - checking wallet storage for address $address');
     try {
       final belongsToWallet = await _storage.isWalletAddress(walletId, address);
       if (belongsToWallet) {
-        print('✅ Address $address belongs to wallet $walletId');
       } else {
-        print('❌ Address $address does NOT belong to wallet $walletId');
       }
       return belongsToWallet;
     } catch (e) {
-      print('Error checking wallet address ownership: $e');
       return false;
     }
   }
@@ -726,7 +675,6 @@ class SPVActor extends Actor {
       
       return response;
     } catch (e) {
-      print('Error querying invoice $invoiceId: $e');
       return null;
     }
   }
@@ -752,7 +700,6 @@ class SPVActor extends Actor {
       // Build a set of UTXO keys for O(1) lookup
       final walletUtxoKeys = walletUtxos.map((utxo) => '${utxo.txid}:${utxo.vout}').toSet();
       
-      print('Debug: Wallet $walletId has ${walletUtxoKeys.length} UTXOs');
       
       // Check each transaction input to see if it belongs to this wallet
       for (int inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex++) {
@@ -768,13 +715,10 @@ class SPVActor extends Actor {
             'vout': prevOutputIndex,
             'inputIndex': inputIndex,
           });
-          print('Debug: Wallet owns UTXO $utxoKey being spent in this transaction');
         }
       }
       
-      print('Debug: Found ${spentUTXOs.length} UTXOs owned by wallet $walletId being spent (out of ${transaction.inputs.length} total inputs)');
     } catch (e) {
-      print('Error extracting spent UTXOs: $e');
     }
 
     return spentUTXOs;
@@ -800,7 +744,6 @@ class SPVActor extends Actor {
 
   /// Handle block header updates from SpiffyNode
   Future<void> _handleBlockHeaderUpdate(BlockHeaderUpdateMessage msg) async {
-    print('Updating block header chain: height ${msg.height}, reorg: ${msg.isReorganization}');
 
     //NOTE: BlockHeader-specific work is done by SpiffyNode. We handle
     //Transaction-related and wallet-related mitigations
@@ -816,10 +759,8 @@ class SPVActor extends Actor {
         _currentTip = msg.blockHeader;
       }
       
-      print('Block header chain updated: current height $_currentHeight');
       
     } catch (e) {
-      print('Error updating block header chain: $e');
     }
   }
 
@@ -829,7 +770,6 @@ class SPVActor extends Actor {
   /// 1. Update our chain height tracking
   /// 2. Trigger checking of pending UTXOs to see if they've been mined
   Future<void> _handleBlockHeaderStored(BlockHeaderStoredMessage msg) async {
-    print('Block header stored notification: height ${msg.height}, reorg: ${msg.isReorg}');
 
     try {
       // Handle reorganization if this was part of a reorg
@@ -841,29 +781,24 @@ class SPVActor extends Actor {
       if (msg.height > _currentHeight) {
         _currentHeight = msg.height;
         _currentTip = msg.header;
-        print('SPVActor chain tip updated to height $_currentHeight');
       }
       
       // CRITICAL: Trigger check of pending UTXOs with Arc
       // This is the key link between receiving block headers and checking
       // if pending UTXOs have been mined
       if (_arcActor != null) {
-        print('Triggering pending UTXO check with Arc for block ${msg.height}');
         _arcActor!.tell(CheckStoragePendingUTXOsMessage(
           triggerBlockHeight: msg.height,
         ));
       } else {
-        print('WARNING: ARCActor reference not set - cannot check pending UTXOs');
       }
       
     } catch (e) {
-      print('Error handling block header stored: $e');
     }
   }
 
   /// Handle blockchain reorganization
   Future<void> _handleBlockchainReorganization(List<dynamic> orphanedHeaders) async {
-    print('Handling blockchain reorganization: ${orphanedHeaders.length} orphaned headers');
 
     //NOTE: BlockHeader-specific work is done by SpiffyNode. We handle
     //Transaction-related and wallet-related mitigations.
@@ -878,7 +813,6 @@ class SPVActor extends Actor {
     // The SPVActor's role here is coordination and notification at the actor layer.
     
     if (orphanedHeaders.isEmpty) {
-      print('No orphaned headers to process');
       return;
     }
     
@@ -889,12 +823,10 @@ class SPVActor extends Actor {
       newHeight: _currentHeight,
     ));
     
-    print('Blockchain reorganization handled: notified WalletManager about ${orphanedHeaders.length} orphaned headers');
   }
 
   /// Handle BEEF validation (enhanced transaction format)
   Future<void> _handleValidateBEEF(ValidateBEEFMessage msg) async {
-    print('Validating BEEF data: ${msg.beefData.length} bytes');
     
     try {
       final beef = BEEF.parse(Uint8List.fromList(hex.decode(msg.beefData)));
@@ -948,10 +880,8 @@ class SPVActor extends Actor {
       
       context.sender?.tell(result);
       
-      print('BEEF validation result: VALID (${extractedTransactions.length} transactions extracted)');
       
     } catch (e) {
-      print('BEEF validation error: $e');
       context.sender?.tell(BEEFValidationResult(
         isValid: false,
         error: e.toString(),
@@ -985,7 +915,6 @@ class SPVActor extends Actor {
 
   @override
   void postStop() {
-    print('SPVActor stopped');
     // No cleanup needed - SPV actor doesn't manage any subscriptions
   }
 
@@ -1114,7 +1043,6 @@ class SPVActor extends Actor {
             }
           } catch (e) {
             // If we can't extract address (e.g., non-standard script), skip
-            print('Could not extract address from input $prevTxid:$prevVout: $e');
           }
         }
       }
@@ -1155,7 +1083,6 @@ class SPVActor extends Actor {
         'sendingAddresses': sendingAddresses,
       };
     } catch (e) {
-      print('Error building transaction data: $e');
       // Return minimal data on error
       return {
         'rawHex': hex.encode(beef.txs[txIndex]),

@@ -65,16 +65,9 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState> {
   void _handleStateQuery(ChannelStateQuery query) {
     final sender = context.sender;
     if (sender == null) {
-      print('[PaymentChannelAggregate] State query with no sender');
       return;
     }
     
-    print('[PaymentChannelAggregate] State query for ${query.channelId}');
-    print('[PaymentChannelAggregate]   Status: ${currentState.status}');
-    print('[PaymentChannelAggregate]   clientPubKeyHex: ${currentState.clientPubKeyHex?.substring(0, 10) ?? 'null'}...');
-    print('[PaymentChannelAggregate]   serverPubKeyHex: ${currentState.serverPubKeyHex?.substring(0, 10) ?? 'null'}...');
-    print('[PaymentChannelAggregate]   fundingTxId: ${currentState.fundingTxId ?? 'null'}');
-    print('[PaymentChannelAggregate]   derivationIndex: ${currentState.derivationIndex}');
     
     sender.tell(FullChannelStateResponse(
       channelId: currentState.channelId,

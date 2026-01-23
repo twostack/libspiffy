@@ -431,7 +431,6 @@ class PostgresEventStore implements EventStore, EventStream {
         final event = CborSerializer.deserializeEvent(eventData, eventType);
         yield event;
       } catch (e) {
-        print('Error deserializing event: $e');
       }
     }
 
@@ -469,7 +468,6 @@ class PostgresEventStore implements EventStore, EventStream {
         lastSeenId = id;
         yield (event, id);
       } catch (e) {
-        print('Error deserializing event: $e');
       }
     }
 
@@ -541,7 +539,6 @@ class PostgresEventStore implements EventStore, EventStream {
         final event = CborSerializer.deserializeEvent(eventData, eventType);
         yield event;
       } catch (e) {
-        print('Error deserializing event: $e');
       }
     }
 

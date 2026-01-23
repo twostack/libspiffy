@@ -156,15 +156,12 @@ class LibSpiffyActorSystem {
     StorageBackend storageBackend = StorageBackend.isar, // NEW: Storage backend selection
     PostgresConfig? postgresConfig, // NEW: PostgreSQL configuration
   }) async {
-    print('Initializing LibSpiffy Actor System...');
     
     // 1. Initialize Dactor system (use provided or create new)
     if (actorSystem != null) {
-      print('Using provided actor system');
       _actorSystem = actorSystem;
       _ownsActorSystem = false;
     } else {
-      print('Creating new actor system');
       _actorSystem = LocalActorSystem(config ?? ActorSystemConfig());
       _ownsActorSystem = true;
     }
@@ -180,23 +177,18 @@ class LibSpiffyActorSystem {
             'postgresConfig is required when using StorageBackend.postgres',
           );
         }
-        print('Initializing PostgreSQL storage backend...');
 
         // Run migrations first
-        print('Running PostgreSQL migrations...');
         final migrations = PostgresMigrations(postgresConfig);
         await migrations.migrate();
-        print('PostgreSQL migrations completed');
 
         // Initialize PostgreSQL event store (implements both EventStore AND EventStream)
-        print('Creating PostgreSQL event store');
         final postgresEventStore = PostgresEventStore(postgresConfig);
         await postgresEventStore.initialize();
         _eventStore = postgresEventStore;
         _eventStream = postgresEventStore; // Same instance, LSP-compliant
 
         // Initialize PostgreSQL wallet storage
-        print('Creating PostgreSQL wallet storage');
         final postgresWalletStorage = PostgresWalletStorage(postgresConfig);
         await postgresWalletStorage.initialize();
         _walletStorage = postgresWalletStorage;
@@ -208,13 +200,11 @@ class LibSpiffyActorSystem {
       case StorageBackend.isar:
         // Original Isar initialization logic
         if (isar != null) {
-          print('Using provided Isar instance for event store');
           final isarEventStore = IsarEventStore(isar);
           _eventStore = isarEventStore;
           _eventStream = isarEventStore; // Same instance, LSP-compliant
           _ownsIsar = false;
         } else {
-          print('Creating Isar instance for event store');
           await Isar.initializeIsarCore(download: true);
           final isarEventStore = await IsarEventStore.create(directory: dataDirectory ?? './data');
           _eventStore = isarEventStore;
@@ -224,22 +214,17 @@ class LibSpiffyActorSystem {
 
         // Initialize read model storage
         if (readModelStorage != null) {
-          print('Using provided read model storage');
           _walletStorage = readModelStorage;
           if (readModelStorage is WalletStorage) {
             _actorStorage = readModelStorage;
-            print('Using same storage instance for actors (implements WalletStorage)');
           } else {
             _actorStorage = InMemoryWalletStorage();
-            print('Using separate InMemoryWalletStorage for actors');
           }
         } else if (isar != null) {
-          print('Creating Isar wallet storage with provided Isar instance');
           final isarStorage = IsarWalletStorage(isar, config: isolateConfig);
           _walletStorage = isarStorage;
           _actorStorage = isarStorage;
         } else {
-          print('Using in-memory wallet storage (development mode)');
           final inMemoryStorage = InMemoryWalletStorage();
           _walletStorage = inMemoryStorage;
           _actorStorage = inMemoryStorage;
@@ -247,7 +232,6 @@ class LibSpiffyActorSystem {
         break;
 
       case StorageBackend.inMemory:
-        print('Using in-memory storage (development/testing mode)');
         // Create Isar event store for in-memory mode (events need persistence)
         await Isar.initializeIsarCore(download: true);
         final inMemoryEventStore = await IsarEventStore.create(directory: dataDirectory ?? './data');
@@ -290,7 +274,6 @@ class LibSpiffyActorSystem {
     
     // 10. Transaction import service will be created on-demand by ImportActor
     // No longer initialized here - uses dependency injection via BlockchainDataSource
-    print('✓ Transaction import service ready (on-demand)');
     
     // 11. Initialize P2P if enabled
     if (enableP2P) {
@@ -302,7 +285,6 @@ class LibSpiffyActorSystem {
       );
     }
     
-    print('LibSpiffy Actor System initialized successfully');
   }
   
   /// Register all LibSpiffy event types with Eventador's EventRegistry
@@ -317,7 +299,6 @@ class LibSpiffyActorSystem {
   /// MUST be called before _initializeProjections() because projections may
   /// need to deserialize events when catching up on startup.
   Future<void> _registerEventTypes() async {
-    print('Registering event types with Eventador EventRegistry...');
     
     // =================================================================
     // WALLET EVENTS (17 total)
@@ -546,7 +527,6 @@ class LibSpiffyActorSystem {
       (map) => RefundClaimedEvent.fromMap(map),
     );
     
-    print('✓ Registered 36 event types for deserialization');
   }
   
   /// Initialize CQRS projections for read-side persistence
@@ -555,7 +535,6 @@ class LibSpiffyActorSystem {
   /// read models in Isar for efficient queries. This separates write concerns
   /// (aggregates) from read concerns (queries).
   Future<void> _initializeProjections() async {
-    print('Initializing CQRS projections...');
     
     // Get Isar instance for checkpoint persistence (if using IsarWalletStorage)
     final Isar? isar = _walletStorage is IsarWalletStorage 
@@ -593,12 +572,10 @@ class LibSpiffyActorSystem {
     // Start streaming events to projections
     await _projectionManager!.start();
     
-    print('✓ ProjectionManager started with 3 projections');
   }
 
   /// Spawn all coordination actors
   Future<void> _spawnActors() async {
-    print('Spawning LibSpiffy actors...');
     
     // Spawn WalletManagerActor first
     _walletManager = await _actorSystem.spawn('wallet-manager', () => WalletManagerActor(
@@ -676,7 +653,6 @@ class LibSpiffyActorSystem {
         eventStream: _walletEventBroadcaster.stream,
       ),
     );
-    print('✓ TransactionLifecycleCoordinator spawned');
     
     // Spawn Benford coordinator for privacy-focused UTXO splitting
     _benfordCoordinator = await _actorSystem.spawn('benford-coordinator', () => BenfordCoordinatorActor(
@@ -696,7 +672,6 @@ class LibSpiffyActorSystem {
       cryptoService: _cryptoService,
       eventBroadcaster: broadcastChannelEvent,
     ));
-    print('✓ PaymentChannelManagerActor spawned');
     
     // Spawn ImportActor if blockchain data source is provided
     if (_blockchainDataSource != null) {
@@ -712,10 +687,8 @@ class LibSpiffyActorSystem {
         dataSource: _blockchainDataSource,
       );
       
-      print('✓ ImportActor spawned with blockchain data source');
     }
     
-    print('All LibSpiffy actors spawned successfully');
     
     // Preload all wallet aggregates to eliminate race conditions
     await _preloadWalletAggregates();
@@ -727,17 +700,14 @@ class LibSpiffyActorSystem {
   /// arrive for a wallet before it finishes loading.
   Future<void> _preloadWalletAggregates() async {
     try {
-      print('🚀 Preloading wallet aggregates...');
       
       // Query all wallet IDs from storage
       final walletIds = await _walletStorage.listWallets();
       
       if (walletIds.isEmpty) {
-        print('   No wallets found to preload');
         return;
       }
       
-      print('   Found ${walletIds.length} wallet(s) to preload');
       
       // Send PreloadWalletCommand for each wallet
       for (final walletId in walletIds) {
@@ -752,9 +722,7 @@ class LibSpiffyActorSystem {
       final waitMs = (200 * walletIds.length).clamp(500, 5000);
       await Future.delayed(Duration(milliseconds: waitMs));
       
-      print('✅ Wallet aggregates preloaded (${walletIds.length} wallets)');
     } catch (e) {
-      print('⚠️ Error preloading wallet aggregates: $e');
       // Non-fatal - wallets will load on-demand if preload fails
     }
   }
@@ -772,12 +740,10 @@ class LibSpiffyActorSystem {
     List<String>? peerAddresses,
     String? userAgent,
   }) async {
-    print('Initializing P2P connectivity...');
     
     try {
       // 1. Initialize SpiffyNode message types
       initializeMessages();
-      print('✓ SpiffyNode message types initialized');
       
       // 2. Map network type to BitcoinNetwork enum
       final network = networkType == 'main' 
@@ -789,7 +755,6 @@ class LibSpiffyActorSystem {
         network: network,
         logger: Logger('LibSpiffy-SpiffyNode'),
       );
-      print('✓ PeerManager created for ${networkType == 'main' ? 'mainnet' : 'testnet'}');
       
       // 4. Create and initialize SpiffyNodeBridge (before adding peers)
       _spiffyNodeBridge = SpiffyNodeBridge(
@@ -798,7 +763,6 @@ class LibSpiffyActorSystem {
       );
       
       await _spiffyNodeBridge!.initialize();
-      print('✓ SpiffyNodeBridge initialized');
       
       // 5. Create LibSpiffyPeerHandler with BlockHeaderChain and HeaderSyncActor references
       // Handler will query actual bestHeight dynamically for each batch
@@ -808,14 +772,12 @@ class LibSpiffyActorSystem {
         headerChain: _headerChain, // Pass BlockHeaderChain for dynamic height queries
         headerSyncActor: _headerSyncActor, // Pass HeaderSyncActor for triggering sync on block announcements
       );
-      print('✓ LibSpiffyPeerHandler created for header capture and block announcement handling');
       
       // 6. Get peer addresses (use provided or defaults)
       final peers = peerAddresses ?? _getDefaultPeers(networkType);
       
       // 7. Connect to peers WITH handler to capture headers
       // Try ALL peers, only fail if ALL are unreachable
-      print('🌐 Attempting to connect to ${peers.length} Bitcoin P2P node(s)...');
       
       int successCount = 0;
       final failures = <String, String>{}; // peer -> error
@@ -823,7 +785,6 @@ class LibSpiffyActorSystem {
       for (final peerAddr in peers) {
         final parts = peerAddr.split(':');
         if (parts.length != 2) {
-          print('⚠️  Invalid peer address format: $peerAddr (expected host:port)');
           failures[peerAddr] = 'Invalid format (expected host:port)';
           continue;
         }
@@ -831,7 +792,6 @@ class LibSpiffyActorSystem {
         final host = parts[0];
         final port = int.tryParse(parts[1]);
         if (port == null) {
-          print('⚠️  Invalid port in peer address: $peerAddr');
           failures[peerAddr] = 'Invalid port number';
           continue;
         }
@@ -847,7 +807,6 @@ class LibSpiffyActorSystem {
         
         // Try to connect to this peer
         try {
-          print('   → Connecting to $peerAddr...');
           await _peerManager!.addPeerByAddress(
             host,
             port,
@@ -855,9 +814,7 @@ class LibSpiffyActorSystem {
             handler: peerHandler, // ✨ NEW: Custom handler for header capture!
           );
           successCount++;
-          print('   ✅ Connected to peer: $peerAddr with header capture enabled');
         } catch (e) {
-          print('   ⚠️  Failed to connect to $peerAddr: $e');
           failures[peerAddr] = e.toString();
           // Don't throw - try the next peer
         }
@@ -865,10 +822,7 @@ class LibSpiffyActorSystem {
       
       // Check if we connected to at least one peer
       if (successCount == 0) {
-        print('❌ Failed to connect to ANY Bitcoin P2P nodes');
-        print('Attempted ${peers.length} peer(s):');
         failures.forEach((peer, error) {
-          print('   • $peer: $error');
         });
         _peerManager = null;
         _spiffyNodeBridge = null;
@@ -879,11 +833,8 @@ class LibSpiffyActorSystem {
       }
       
       // Log summary
-      print('✅ P2P connectivity established: $successCount/${peers.length} peer(s) connected');
       if (failures.isNotEmpty) {
-        print('⚠️  Failed to connect to ${failures.length} peer(s):');
         failures.forEach((peer, error) {
-          print('   • $peer: $error');
         });
       }
       
@@ -897,12 +848,8 @@ class LibSpiffyActorSystem {
       // 10. Trigger initial header sync (PeerManager and handler are set)
       _headerSyncActorInstance?.initiateSyncAfterP2PSetup();
       
-      print('✓ Custom handler installed: LibSpiffyPeerHandler will capture MsgHeaders');
-      print('Bridge statistics: ${_spiffyNodeBridge!.statistics}');
       
     } catch (e, stackTrace) {
-      print('Failed to initialize P2P connectivity: $e');
-      print('Stack trace: $stackTrace');
       _peerManager = null;
       _spiffyNodeBridge = null;
       rethrow;
@@ -1208,11 +1155,9 @@ class LibSpiffyActorSystem {
   /// Disconnect from SpiffyNode
   Future<void> disconnectFromSpiffyNode() async {
     if (_spiffyNodeBridge != null) {
-      print('Disconnecting from SpiffyNode...');
       await _spiffyNodeBridge!.shutdown();
       _spiffyNodeBridge = null;
       _peerManager = null;
-      print('Disconnected from SpiffyNode');
     }
   }
 
@@ -1227,7 +1172,6 @@ class LibSpiffyActorSystem {
   /// If the host application provided its own actor system, it remains
   /// the host's responsibility to shut it down.
   Future<void> shutdown() async {
-    print('Shutting down LibSpiffy Actor System...');
     
     try {
       // 1. Disconnect from SpiffyNode first
@@ -1240,16 +1184,13 @@ class LibSpiffyActorSystem {
       
       // 3. Shutdown actor system only if we own it
       if (_ownsActorSystem) {
-        print('Shutting down LibSpiffy-owned actor system');
         await _actorSystem.shutdown();
       } else {
-        print('Actor system owned by host application - not shutting down');
       }
       
       // 4. Close storage based on backend type
       switch (_storageBackend) {
         case StorageBackend.postgres:
-          print('Closing PostgreSQL storage connections');
           // Close event store (includes connection pool)
           await _eventStore.close();
           // Close wallet storage if it has a close method
@@ -1261,10 +1202,8 @@ class LibSpiffyActorSystem {
         case StorageBackend.isar:
         case StorageBackend.inMemory:
           if (_ownsIsar) {
-            print('Closing LibSpiffy-owned Isar instance');
             await _eventStore.close();
           } else {
-            print('Isar instance owned by host application - not closing event store');
           }
           break;
       }
@@ -1273,9 +1212,7 @@ class LibSpiffyActorSystem {
       await _walletEventBroadcaster.close();
       await _channelEventBroadcaster.close();
       
-      print('LibSpiffy Actor System shutdown complete');
     } catch (e) {
-      print('Error during shutdown: $e');
       rethrow;
     }
   }

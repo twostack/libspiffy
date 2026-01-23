@@ -227,7 +227,6 @@ class WalletBalanceService {
 
   /// Handle blockchain reorganization  
   Future<void> _handleReorganization(ChainTipEvent event) async {
-    print('WalletBalanceService: Handling reorganization from ${event.oldTip?.height} to ${event.newTip.height}');
     
     _reorganizationsHandled++;
     _lastReorgAt = DateTime.now();
@@ -269,9 +268,7 @@ class WalletBalanceService {
       // Update validation status
       tracked.lastValidated = DateTime.now();
       
-      print('WalletBalanceService: Revalidated UTXO ${tracked.utxo.txid}:${tracked.utxo.vout}');
     } catch (e) {
-      print('WalletBalanceService: Error revalidating UTXO ${tracked.utxo.txid}: $e');
     }
   }
 
@@ -286,9 +283,7 @@ class WalletBalanceService {
       tracked.validationResult = newBeef != null ? await spvService.validateBEEF(newBeef, tracked.transaction.txid) : null;
       tracked.lastValidated = DateTime.now();
       
-      print('WalletBalanceService: Revalidated transaction ${tracked.transaction.txid}');
     } catch (e) {
-      print('WalletBalanceService: Error revalidating transaction ${tracked.transaction.txid}: $e');
     }
   }
 
@@ -414,7 +409,6 @@ class WalletBalanceService {
         lastUpdated: DateTime.now(),
       );
     } catch (e) {
-      print('WalletBalanceService: Error getting transaction details for $txid: $e');
       return null;
     }
   }
@@ -424,7 +418,6 @@ class WalletBalanceService {
     try {
       return await spvService.createBEEF([txid]);
     } catch (e) {
-      print('WalletBalanceService: Error creating BEEF for $txid: $e');
       return null;
     }
   }

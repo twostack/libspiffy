@@ -264,7 +264,6 @@ class PostgresSecureStorage implements SecureStorage {
           secrets[keyName] = decrypted;
         } catch (e) {
           // Skip secrets that fail to decrypt (e.g., wrong key version)
-          print('Warning: Failed to decrypt secret $keyName: $e');
         }
       }
 

@@ -38,7 +38,6 @@ class BenfordCoordinatorActor extends Actor {
 
   @override
   void preStart() {
-    print('[BenfordCoordinatorActor] Started');
   }
 
   @override
@@ -50,29 +49,23 @@ class BenfordCoordinatorActor extends Actor {
         // Command can be sent directly to coordinator
         await _handleSplitCommand(message);
       } else {
-        print('[BenfordCoordinatorActor] Unknown message type: ${message.runtimeType}');
       }
     } catch (e, stackTrace) {
-      print('[BenfordCoordinatorActor] Error: $e');
-      print('[BenfordCoordinatorActor] Stack trace: $stackTrace');
     }
   }
 
   /// Handle SplitUTXOsToBenfordCommand sent directly to coordinator
   Future<void> _handleSplitCommand(SplitUTXOsToBenfordCommand command) async {
-    print('[BenfordCoordinatorActor] Handling SplitUTXOsToBenfordCommand');
     
     // Get wallet info to check wallet type
     final wallet = await _storage.getWallet(command.walletId);
     if (wallet == null) {
-      print('[BenfordCoordinatorActor] Wallet not found: ${command.walletId}');
       _sendErrorResponse(command, 'Wallet not found: ${command.walletId}');
       return;
     }
     
     // Business rule: Watch-only (xpub) wallets cannot sign transactions
     if (wallet['walletType'] == 'xpub') {
-      print('[BenfordCoordinatorActor] Cannot split UTXOs for watch-only wallet');
       _sendErrorResponse(command, 'Signing (split) not supported for watch-only wallets');
       return;
     }
@@ -84,7 +77,6 @@ class BenfordCoordinatorActor extends Actor {
         .toList();
 
     if (availableUtxos.isEmpty) {
-      print('[BenfordCoordinatorActor] No available UTXOs to split');
       _sendErrorResponse(command, 'No available UTXOs to split');
       return;
     }
@@ -94,9 +86,7 @@ class BenfordCoordinatorActor extends Actor {
         ? availableUtxos.take(command.maxUtxosToSplit!).toList()
         : availableUtxos;
 
-    print('[BenfordCoordinatorActor] Splitting ${utxosToSplit.length} of ${availableUtxos.length} available UTXOs');
     if (command.maxUtxosToSplit != null) {
-      print('[BenfordCoordinatorActor]   Keeping ${availableUtxos.length - utxosToSplit.length} UTXOs available for transactions');
     }
 
     // Process each UTXO and track results
@@ -128,14 +118,10 @@ class BenfordCoordinatorActor extends Actor {
       ));
     }
     
-    print('[BenfordCoordinatorActor] Split operation completed: $successfulSplits/${utxosToSplit.length} UTXOs split successfully');
   }
 
   /// Handle UTXOSplitInitiatedEvent from aggregate
   Future<void> _handleSplitInitiated(UTXOSplitInitiatedEvent event) async {
-    print('[BenfordCoordinatorActor] Handling UTXOSplitInitiatedEvent');
-    print('[BenfordCoordinatorActor]   Wallet: ${event.walletId}');
-    print('[BenfordCoordinatorActor]   UTXOs to split: ${event.utxoKeysToSplit.length}');
     
     // Fetch UTXO details from read model
     final allUtxos = await _storage.getUTXOs(event.walletId);
@@ -145,7 +131,6 @@ class BenfordCoordinatorActor extends Actor {
     for (final utxoKey in event.utxoKeysToSplit) {
       final sourceUtxo = utxoMap[utxoKey];
       if (sourceUtxo == null) {
-        print('[BenfordCoordinatorActor]   ⚠️ UTXO $utxoKey not found in read model');
         continue;
       }
 
@@ -166,7 +151,6 @@ class BenfordCoordinatorActor extends Actor {
     required int targetCount,
     required BigInt feeRate,
   }) async {
-    print('[BenfordCoordinatorActor] Splitting UTXO: ${sourceUtxo.key}');
     
     try {
       // 1. Estimate fee
@@ -176,7 +160,6 @@ class BenfordCoordinatorActor extends Actor {
       // Check if UTXO is large enough
       final minTotalNeeded = BigInt.from(targetCount) + estimatedFee;
       if (sourceUtxo.satoshis < minTotalNeeded) {
-        print('[BenfordCoordinatorActor]   ⚠️ UTXO too small (${sourceUtxo.satoshis} < $minTotalNeeded), skipping');
         return null;
       }
 
@@ -203,7 +186,6 @@ class BenfordCoordinatorActor extends Actor {
       );
 
       if (txResult == null) {
-        print('[BenfordCoordinatorActor]   ✗ Failed to build transaction');
         return null;
       }
 
@@ -211,10 +193,8 @@ class BenfordCoordinatorActor extends Actor {
       final txHex = txResult['txHex'] as String;
       final actualFee = txResult['actualFee'] as BigInt;
 
-      print('[BenfordCoordinatorActor]   ✓ Transaction built: $txid');
 
       // 5. Broadcast via ARCActor
-      print('[BenfordCoordinatorActor]   Broadcasting transaction...');
       _arcActor.tell(BroadcastTransactionMessage(
         walletId,
         txHex,
@@ -283,13 +263,10 @@ class BenfordCoordinatorActor extends Actor {
         vouts: List.generate(outputAmounts.length, (i) => i),
       ));
 
-      print('[BenfordCoordinatorActor]   ✓ Split completed for ${sourceUtxo.key}');
       
       return txid;
 
     } catch (e, stackTrace) {
-      print('[BenfordCoordinatorActor]   ✗ Error splitting UTXO: $e');
-      print('[BenfordCoordinatorActor]   Stack trace: $stackTrace');
       return null;
     }
   }
@@ -310,7 +287,6 @@ class BenfordCoordinatorActor extends Actor {
       throw StateError('Wallet not found: $walletId');
     }
 
-    print('[BenfordCoordinatorActor] Generating $count addresses for wallet type: ${wallet['walletType']}');
 
     // For WIF wallets, all outputs go to the same address
     if (wallet['walletType'] == 'wif') {
@@ -338,7 +314,6 @@ class BenfordCoordinatorActor extends Actor {
       
       // Spawn temporary actor to receive response
       final receiverName = 'benford-addr-receiver-$i-${DateTime.now().millisecondsSinceEpoch}';
-      print('[BenfordCoordinatorActor]   Spawning receiver actor: $receiverName');
       final receiver = await context.system.spawn(
         receiverName,
         () => _AddressReceiverActor(completer),
@@ -352,7 +327,6 @@ class BenfordCoordinatorActor extends Actor {
       );
       
       // Send command WITH sender for response routing
-      print('[BenfordCoordinatorActor]   Sending GenerateAddressCommand #$i (${command.commandId}) with sender: $receiverName');
       _walletManager.tell(
         WalletCommandMessage(walletId, command),
         sender: receiver,
@@ -369,12 +343,9 @@ class BenfordCoordinatorActor extends Actor {
       final generatedAddresses = await Future.wait(futures)
           .timeout(const Duration(seconds: 30));
       addresses.addAll(generatedAddresses);
-      print('[BenfordCoordinatorActor] Generated ${addresses.length} addresses (persisted)');
     } on TimeoutException {
-      print('[BenfordCoordinatorActor] Timeout waiting for address generation');
       throw StateError('Address generation timed out after 30 seconds');
     } catch (e) {
-      print('[BenfordCoordinatorActor] Error generating addresses: $e');
       rethrow;
     }
 
@@ -454,7 +425,6 @@ class BenfordCoordinatorActor extends Actor {
         'actualFee': actualFee,
       };
     } catch (e) {
-      print('[BenfordCoordinatorActor] Error building transaction: $e');
       return null;
     }
   }
@@ -470,7 +440,6 @@ class BenfordCoordinatorActor extends Actor {
       throw StateError('Wallet not found: $walletId');
     }
 
-    print('[BenfordCoordinatorActor] Getting private key for wallet type: ${wallet['walletType']}');
 
     // For WIF wallets
     if (wallet['walletType'] == 'wif') {
@@ -501,20 +470,17 @@ class BenfordCoordinatorActor extends Actor {
       final addressMeta = await _storage.getAddressMetadata(walletId, address);
       if (addressMeta != null) {
         derivationIndex = addressMeta.derivationIndex;
-        print('[BenfordCoordinatorActor]    → Using derivation index from address metadata: $derivationIndex');
       }
     }
     
     // Default to 0 only if still unknown (shouldn't happen for properly imported wallets)
     if (derivationIndex == null) {
-      print('[BenfordCoordinatorActor]    ⚠️ Warning: No derivation index found for address $address, defaulting to 0');
       derivationIndex = 0;
     }
 
     // Derive the private key using derivation index
     final hdPrivateKey = dartsv.HDPrivateKey.fromXpriv(xpriv);
     final derivationPath = 'm/0/$derivationIndex';
-    print('[BenfordCoordinatorActor]    → Deriving key at path: $derivationPath');
     final derivedKey = hdPrivateKey.deriveChildKey(derivationPath);
     
     return derivedKey.privateKey;
@@ -548,27 +514,20 @@ class _AddressReceiverActor extends Actor {
   
   @override
   void preStart() {
-    print('[_AddressReceiverActor] Started');
   }
 
   @override
   Future<void> onMessage(dynamic message) async {
-    print('[_AddressReceiverActor] Received message: ${message.runtimeType}');
     if (message is AddressGeneratedResponse && !completer.isCompleted) {
-      print('[_AddressReceiverActor] Processing AddressGeneratedResponse: success=${message.success}, address=${message.address}');
       if (message.success) {
         completer.complete(message.address);
-        print('[_AddressReceiverActor] Completer completed with address: ${message.address}');
       } else {
         completer.completeError(
           Exception(message.error ?? 'Address generation failed'),
         );
-        print('[_AddressReceiverActor] Completer completed with error');
       }
     } else if (message is AddressGeneratedResponse) {
-      print('[_AddressReceiverActor] Ignoring message - completer already completed');
     } else {
-      print('[_AddressReceiverActor] Ignoring message - unexpected type: ${message.runtimeType}');
     }
   }
 }

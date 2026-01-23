@@ -267,7 +267,6 @@ class BlockHeaderService {
     BlockHeader newHeader,
     String peerId,
   ) async {
-    print('BlockHeaderService: Potential reorganization at height $height');
     
     // Move existing header to orphaned list
     _orphanedHeaders.putIfAbsent(height, () => []).add(existingHeader);
@@ -297,7 +296,6 @@ class BlockHeaderService {
 
   /// Handle chain reorganization from ChainTipTracker
   Future<void> _handleChainReorganization(ChainTipEvent event) async {
-    print('BlockHeaderService: Handling chain reorganization from ${event.oldTip?.height} to ${event.newTip.height}');
     
     // If the new tip is lower, we might need to rollback some headers
     if (event.oldTip != null && event.newTip.height < event.oldTip!.height) {

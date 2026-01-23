@@ -71,7 +71,6 @@ class TxUtils {
 
         var signedTx = builder.build(true); //skip txn sanity checks
 
-        print("Signed Tx : " + signedTx.serialize());
         return signedTx;
 
         //verify that the signedTx correctly spends it's inputs
@@ -87,7 +86,6 @@ class TxUtils {
     // var signingKey = hdPrivateKey.deriveChildNumber(1).privateKey;
     var ownerAddress = Address.fromPublicKey(signingKey.publicKey, _networkType == "test" ? NetworkType.TEST : NetworkType.MAIN);
     var ownerPkh = ownerAddress.pubkeyHash160;
-    // print(transactionHex);
 
     var lockingTxn = Transaction.fromHex(transactionHex);
 
@@ -121,12 +119,10 @@ class TxUtils {
 
     var interp = Interpreter();
     // if (kDebugMode) {
-    //   print(txSpend?.serialize());
     // }
     try {
       interp.correctlySpends(scriptSig, contractScript, txSpend, 0, scriptFlags, Coin.ofSat(lockedValue));
     } on Exception catch (ex) {
-      print("ERROR: Unlocking transaction failed validation check : $ex");
       return null;
     }
     return txSpend;
@@ -210,7 +206,6 @@ class TxUtils {
       var fee = BigInt.two; //builder.estimateFee();
       return (builder.spendToLockBuilder(lockingScriptBuilder, lockedValue - fee).build(true), fee);
     } on TransactionFeeException catch (e) {
-      print(e.cause);
       rethrow;
     }
   }

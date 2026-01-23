@@ -32,22 +32,18 @@ class TransactionLifecycleCoordinator extends Actor {
 
   @override
   void preStart() {
-    print('[TransactionLifecycleCoordinator] Starting...');
     _recoverPendingTransactions();
     _subscribeToEvents();
-    print('[TransactionLifecycleCoordinator] Started');
   }
 
   @override
   Future<void> onMessage(dynamic message) async {
     // This actor primarily reacts to events via subscription
     // Could handle manual recovery requests in the future
-    print('[TransactionLifecycleCoordinator] Received message: ${message.runtimeType}');
   }
 
   /// Subscribe to wallet events from event stream
   void _subscribeToEvents() {
-    print('[TransactionLifecycleCoordinator] Subscribing to wallet events...');
     
     _eventSubscription = _eventStream.listen((event) {
       if (event is TransactionBroadcastEvent) {
@@ -60,8 +56,6 @@ class TransactionLifecycleCoordinator extends Actor {
 
   /// Handle TransactionBroadcastEvent - register with ARCActor
   void _handleTransactionBroadcast(TransactionBroadcastEvent event) {
-    print('[TransactionLifecycleCoordinator] Transaction broadcast: ${event.txid}');
-    print('[TransactionLifecycleCoordinator]   → Registering with ARCActor for monitoring');
     
     // Note: We need to get the vouts from storage
     // The TransactionBroadcastEvent doesn't include output details
@@ -70,8 +64,6 @@ class TransactionLifecycleCoordinator extends Actor {
 
   /// Handle TransactionConfirmedEvent - unregister from ARCActor
   void _handleTransactionConfirmed(TransactionConfirmedEvent event) {
-    print('[TransactionLifecycleCoordinator] Transaction confirmed: ${event.txid}');
-    print('[TransactionLifecycleCoordinator]   → ARCActor will stop monitoring automatically');
     // ARCActor handles this internally via status checks
   }
 
@@ -84,7 +76,6 @@ class TransactionLifecycleCoordinator extends Actor {
       // Get transaction from storage to find our output indices
       final tx = await _storage.getTransaction(txid);
       if (tx == null) {
-        print('[TransactionLifecycleCoordinator] ⚠️  Transaction $txid not found in storage');
         return;
       }
 
@@ -98,15 +89,12 @@ class TransactionLifecycleCoordinator extends Actor {
         vouts: [], // Empty list means monitor the whole transaction
       ));
       
-      print('[TransactionLifecycleCoordinator]   ✓ Registered $txid for monitoring');
     } catch (e) {
-      print('[TransactionLifecycleCoordinator] ❌ Failed to register $txid: $e');
     }
   }
 
   /// Recover pending transactions on startup
   Future<void> _recoverPendingTransactions() async {
-    print('[TransactionLifecycleCoordinator] 🔄 Starting recovery of pending transactions...');
     
     try {
       // Query all pending transactions across all wallets
@@ -115,37 +103,29 @@ class TransactionLifecycleCoordinator extends Actor {
       );
       
       if (pendingTxs.isEmpty) {
-        print('[TransactionLifecycleCoordinator]   ✓ No pending transactions to recover');
         return;
       }
       
-      print('[TransactionLifecycleCoordinator]   Found ${pendingTxs.length} pending transaction(s)');
       
       // Re-register each pending transaction with ARCActor
       for (final tx in pendingTxs) {
         // Get wallet ID from transaction
         final walletId = tx.walletId;
         if (walletId == null || walletId.isEmpty) {
-          print('[TransactionLifecycleCoordinator]   ⚠️  Could not find wallet for tx ${tx.txid}');
           continue;
         }
         
         await _registerTransactionForMonitoring(walletId, tx.txid);
       }
       
-      print('[TransactionLifecycleCoordinator]   ✓ Recovery complete: ${pendingTxs.length} transaction(s) re-registered');
       
     } catch (e, stackTrace) {
-      print('[TransactionLifecycleCoordinator] ❌ Recovery failed: $e');
-      print('[TransactionLifecycleCoordinator] Stack trace: $stackTrace');
     }
   }
 
   @override
   void postStop() {
-    print('[TransactionLifecycleCoordinator] Stopping...');
     _eventSubscription?.cancel();
-    print('[TransactionLifecycleCoordinator] Stopped');
   }
 }
 

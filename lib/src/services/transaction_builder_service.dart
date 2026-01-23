@@ -362,7 +362,6 @@ class TransactionBuilderService {
             bumpCount++;
             
           } catch (e) {
-            print('Warning: Error processing merkle proof for UTXO ${utxo.txid}: $e');
             // Continue without this merkle proof
           }
         }

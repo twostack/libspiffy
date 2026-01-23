@@ -43,7 +43,6 @@ class InvoiceCoordinatorActor extends Actor {
 
   @override
   void preStart() {
-    print('InvoiceCoordinatorActor started');
     _startExpirationTimer();
   }
 
@@ -76,11 +75,8 @@ class InvoiceCoordinatorActor extends Actor {
           break;
           
         default:
-          print('InvoiceCoordinatorActor received unknown message: ${message.runtimeType}');
       }
     } catch (e, stackTrace) {
-      print('Error in InvoiceCoordinatorActor: $e');
-      print('Stack trace: $stackTrace');
       
       // Send error response to sender if applicable
       if (context.sender != null) {
@@ -91,7 +87,6 @@ class InvoiceCoordinatorActor extends Actor {
 
   /// Handle invoice creation request - Step 1: Request addresses
   Future<void> _handleCreateInvoice(CreateInvoiceMessage msg) async {
-    print('Creating invoice for wallet ${msg.walletId}, amount: ${msg.amount}');
     
     try {
       // Generate invoice ID
@@ -131,10 +126,8 @@ class InvoiceCoordinatorActor extends Actor {
         sender: context.self,
       );
       
-      print('Requested address for invoice $invoiceId');
       
     } catch (e) {
-      print('Failed to create invoice: $e');
       if (context.sender != null) {
         context.sender!.tell(InvoiceCreatedMessage(
           invoiceId: '',
@@ -156,13 +149,11 @@ class InvoiceCoordinatorActor extends Actor {
     // Find the pending invoice request
     final invoiceId = msg.metadata['invoiceId'] as String?;
     if (invoiceId == null) {
-      print('AddressGeneratedResponse missing invoiceId in metadata');
       return;
     }
     
     final pendingRequest = _pendingRequests.remove(invoiceId);
     if (pendingRequest == null) {
-      print('No pending invoice request found for $invoiceId');
       return;
     }
     
@@ -195,14 +186,9 @@ class InvoiceCoordinatorActor extends Actor {
       
       aggregateActor.tell(command, sender: context.self);
       
-      print('Created InvoiceAggregate and sent CreateInvoiceCommand for $invoiceId');
 
       // Send success response to original sender
       if (pendingRequest.originalSender != null) {
-        print('[InvoiceCoordinator] Sending InvoiceCreatedMessage to original sender');
-        print('[InvoiceCoordinator]   Original sender: ${pendingRequest.originalSender}');
-        print('[InvoiceCoordinator]   Invoice ID: $invoiceId');
-        print('[InvoiceCoordinator]   Addresses: ${[msg.address]}');
 
         pendingRequest.originalSender!.tell(InvoiceCreatedMessage(
           invoiceId: invoiceId,
@@ -217,13 +203,10 @@ class InvoiceCoordinatorActor extends Actor {
           customMetadata: pendingRequest.metadata,
         ));
 
-        print('[InvoiceCoordinator] ✅ InvoiceCreatedMessage sent successfully');
       } else {
-        print('[InvoiceCoordinator] ⚠️ No original sender to respond to!');
       }
       
     } catch (e) {
-      print('Failed to create InvoiceAggregate: $e');
       if (pendingRequest.originalSender != null) {
         pendingRequest.originalSender!.tell(InvoiceCreatedMessage(
           invoiceId: invoiceId,
@@ -278,7 +261,6 @@ class InvoiceCoordinatorActor extends Actor {
       ));
       
     } catch (e) {
-      print('Error checking invoice: $e');
       context.sender?.tell(InvoiceDetailsResponse(
         invoiceId: msg.invoiceId,
         addresses: [],
@@ -293,7 +275,6 @@ class InvoiceCoordinatorActor extends Actor {
 
   /// Handle mark invoice paid - Route to aggregate
   Future<void> _handleMarkInvoicePaid(MarkInvoicePaidMessage msg) async {
-    print('Marking invoice ${msg.invoiceId} as paid');
     
     // Get or spawn the aggregate
     ActorRef? aggregateActor = _invoiceAggregates[msg.invoiceId];
@@ -315,7 +296,6 @@ class InvoiceCoordinatorActor extends Actor {
         // This prevents commands from being dropped during recovery
         await Future.delayed(Duration(milliseconds: 200));
       } catch (e) {
-        print('Failed to spawn InvoiceAggregate: $e');
         context.sender?.tell(InvoiceStatusMessage(
           invoiceId: msg.invoiceId,
           status: InvoiceStatus.pending,
@@ -348,7 +328,6 @@ class InvoiceCoordinatorActor extends Actor {
 
   /// Handle cancel invoice - Route to aggregate
   Future<void> _handleCancelInvoice(CancelInvoiceMessage msg) async {
-    print('Cancelling invoice ${msg.invoiceId}');
     
     // Get or spawn the aggregate
     ActorRef? aggregateActor = _invoiceAggregates[msg.invoiceId];
@@ -368,7 +347,6 @@ class InvoiceCoordinatorActor extends Actor {
         // Wait for recovery to complete before sending commands
         await Future.delayed(Duration(milliseconds: 200));
       } catch (e) {
-        print('Failed to spawn InvoiceAggregate: $e');
         context.sender?.tell(InvoiceStatusMessage(
           invoiceId: msg.invoiceId,
           status: InvoiceStatus.pending,
@@ -428,7 +406,6 @@ class InvoiceCoordinatorActor extends Actor {
       context.sender?.tell(InvoicesListMessage(invoices));
       
     } catch (e) {
-      print('Error listing invoices: $e');
       context.sender?.tell(InvoicesListMessage([]));
     }
   }
@@ -452,7 +429,6 @@ class InvoiceCoordinatorActor extends Actor {
         
         // Check if expired
         if (invoice.expiresAt != null && now.isAfter(invoice.expiresAt!)) {
-          print('Expiring invoice ${invoice.invoiceId}');
           
           // Get or spawn the aggregate
           ActorRef? aggregateActor = _invoiceAggregates[invoice.invoiceId];
@@ -472,7 +448,6 @@ class InvoiceCoordinatorActor extends Actor {
               // Wait for recovery to complete before sending commands
               await Future.delayed(Duration(milliseconds: 200));
             } catch (e) {
-              print('Failed to spawn InvoiceAggregate for expiration: $e');
               continue;
             }
           }
@@ -483,7 +458,6 @@ class InvoiceCoordinatorActor extends Actor {
         }
       }
     } catch (e) {
-      print('Error checking expired invoices: $e');
     }
   }
 
@@ -553,7 +527,6 @@ class InvoiceCoordinatorActor extends Actor {
   @override
   void postStop() {
     _expirationTimer?.cancel();
-    print('InvoiceCoordinatorActor stopped');
   }
 
   /// Get invoice by ID - Query read model
@@ -563,7 +536,6 @@ class InvoiceCoordinatorActor extends Actor {
       if (invoiceData == null) return null;
       return _invoiceFromMap(invoiceData);
     } catch (e) {
-      print('Error getting invoice: $e');
       return null;
     }
   }

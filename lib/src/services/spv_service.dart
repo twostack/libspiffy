@@ -110,7 +110,6 @@ class SPVService {
 
   /// Handle blockchain reorganization
   Future<void> _handleReorganization(ChainTipEvent event) async {
-    print('SPVService: Handling reorganization from ${event.oldTip?.height} to ${event.newTip.height}');
     
     // Re-validate all tracked transactions
     final revalidationTasks = <Future>[];
@@ -172,7 +171,6 @@ class SPVService {
         ));
       }
     } catch (e) {
-      print('SPVService: Error revalidating transaction $txid: $e');
     }
   }
 
@@ -224,7 +222,6 @@ class SPVService {
           failedTxids.add(txidHex);
         }
       } catch (e) {
-        print('SPVService: Error validating transaction $txidHex: $e');
         failedTxids.add(txidHex);
       }
     }
@@ -257,7 +254,6 @@ class SPVService {
       
       return computedMerkleRootHex == blockMerkleRoot;
     } catch (e) {
-      print('SPVService: Error validating transaction $txidHex: $e');
       return false;
     }
   }
@@ -331,7 +327,6 @@ class SPVService {
       
       return true;
     } catch (e) {
-      print('SPVService: Error verifying transaction inclusion: $e');
       throw SPVException('Failed to verify transaction inclusion: $e');
     }
   }
@@ -386,7 +381,6 @@ class SPVService {
         bumpIndex: bumpIndex,
       );
     } catch (e) {
-      print('SPVService: Error creating BEEF: $e');
       return null;
     }
   }

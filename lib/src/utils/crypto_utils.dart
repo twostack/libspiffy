@@ -126,11 +126,8 @@ class CryptoUtils {
           }
         }
       } else {
-        print('Warning: TSC proof does not contain nodes array: $tscProof');
       }
     } catch (e) {
-      print('Error converting merkle proof: $e');
-      print('Proof data: $tscProof');
     }
 
     // Create the BRC-71 format object according to spec
@@ -179,8 +176,6 @@ class CryptoUtils {
       // Write each leaf (32 bytes each)
       for (final leaf in path) {
         if (leaf.length != 64) {
-          print(
-              'Warning: Invalid leaf hash length: ${leaf.length}, expected 64. Hash: $leaf');
           continue;
         }
 
@@ -198,8 +193,6 @@ class CryptoUtils {
       // Create a Uint8List with the exact size needed
       return Uint8List.view(buffer.buffer, 0, offset);
     } catch (e) {
-      print('Error converting merkle proof to binary: $e');
-      print('Proof data: $tscProof');
       // Return empty array in case of error
       return Uint8List(0);
     }
@@ -440,7 +433,6 @@ class CryptoUtils {
       // Use the updated computeMerkleRootFromBrc71 method which handles byte reversal
       return computeMerkleRootFromBrc71(txid, brc71Path);
     } catch (e) {
-      print('Error extracting merkle root from BUMP: $e');
       return null;
     }
   }

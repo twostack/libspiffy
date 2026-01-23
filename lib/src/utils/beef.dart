@@ -367,7 +367,6 @@ class BEEF {
       // All checks passed, the transaction is valid
       return true;
     } catch (e) {
-      print('Error validating transaction with block header: $e');
       return false;
     }
   }

@@ -138,9 +138,7 @@ class PaymentChannelBuilder {
         dartsv.Coin.ofSat(inputValueSats),
       );
 
-      print('[PaymentChannelBuilder] ✓ Multisig script verification passed');
     } on dartsv.ScriptException catch (e) {
-      print('[PaymentChannelBuilder] ✗ Multisig script verification failed: $e');
       throw ScriptVerificationException(
         'Multisig script verification failed: $e',
         code: 'SCRIPT_EXECUTION_FAILED',
@@ -179,7 +177,6 @@ class PaymentChannelBuilder {
           dartsv.Coin.ofSat(inputValues[i]),
         );
       } on dartsv.ScriptException catch (e) {
-        print('[PaymentChannelBuilder] ✗ P2PKH script verification failed for input $i: $e');
         throw ScriptVerificationException(
           'P2PKH script verification failed for input $i: $e',
           code: 'SCRIPT_EXECUTION_FAILED',
@@ -187,7 +184,6 @@ class PaymentChannelBuilder {
       }
     }
 
-    print('[PaymentChannelBuilder] ✓ P2PKH script verification passed for ${signedTx.inputs.length} inputs');
   }
 
   /// Build multisig redeem script for verification
@@ -543,37 +539,24 @@ class PaymentChannelBuilder {
     required dartsv.SVPublicKey clientPubKey,
     required dartsv.SVPublicKey serverPubKey,
   }) {
-    print('[PaymentChannelBuilder] 🔏 Applying multisig signatures');
-    print('[PaymentChannelBuilder]    Client pubkey: ${clientPubKey.toHex()}');
-    print('[PaymentChannelBuilder]    Server pubkey: ${serverPubKey.toHex()}');
-    print('[PaymentChannelBuilder]    Client sig (txFormat): ${clientSignature.toTxFormat()}');
-    print('[PaymentChannelBuilder]    Server sig (txFormat): ${serverSignature.toTxFormat()}');
     
     final sortedPubKeys = [clientPubKey, serverPubKey]
       ..sort((a, b) => a.toString().compareTo(b.toString()));
 
-    print('[PaymentChannelBuilder]    Sorted order:');
-    print('[PaymentChannelBuilder]      [0]: ${sortedPubKeys[0].toHex()}');
-    print('[PaymentChannelBuilder]      [1]: ${sortedPubKeys[1].toHex()}');
     
     final List<dartsv.SVSignature> orderedSigs;
     if (sortedPubKeys[0].toString() == clientPubKey.toString()) {
       orderedSigs = [clientSignature, serverSignature];
-      print('[PaymentChannelBuilder]    Sig order: [client, server]');
     } else {
       orderedSigs = [serverSignature, clientSignature];
-      print('[PaymentChannelBuilder]    Sig order: [server, client]');
     }
 
     final unlockBuilder = dartsv.P2MSUnlockBuilder.fromSignatures(orderedSigs);
     final scriptSig = unlockBuilder.getScriptSig();
 
-    print('[PaymentChannelBuilder]    ScriptSig hex: ${scriptSig.toHex()}');
-    print('[PaymentChannelBuilder]    ScriptSig: ${scriptSig.toString()}');
     
     transaction.inputs[inputIndex].script = scriptSig;
 
-    print('[PaymentChannelBuilder] ✅ Signatures applied');
     return transaction;
   }
 
@@ -628,11 +611,6 @@ class PaymentChannelBuilder {
     required List<BitcoinTransaction> fundingAncestors,
     required List<MerkleProof> ancestorProofs,
   }) async {
-    print('  📦 Building payment with ancestry BEEF');
-    print('    Payment TX: ${paymentTx.txid}');
-    print('    Funding TX: ${fundingTransaction.txid}');
-    print('    Ancestors: ${fundingAncestors.length}');
-    print('    Proofs: ${ancestorProofs.length}');
 
     // 1. Order transactions correctly:
     //    - Ancestors (with proofs) first
@@ -684,11 +662,6 @@ class PaymentChannelBuilder {
       }
     }
 
-    print('  📊 BEEF structure:');
-    print('    Total transactions: ${txBytes.length}');
-    print('    Total BUMPs: ${bumps.length}');
-    print('    hasMerkle flags: $hasMerkle');
-    print('    bumpIndex: $bumpIndex');
 
     // 5. Create BEEF
     final beef = BEEF.create(
@@ -700,16 +673,11 @@ class PaymentChannelBuilder {
 
     // 6. Serialize
     final serialized = beef.serialize();
-    print('  ✓ BEEF created: ${serialized.length} bytes');
 
     // 7. Verify
     try {
       final parsed = BEEF.parse(serialized);
-      print('  ✓ BEEF verification passed');
-      print('    Parsed ${parsed.txs.length} transactions');
-      print('    Parsed ${parsed.bumps.length} proofs');
     } catch (e) {
-      print('  ❌ BEEF verification failed: $e');
       throw Exception('Created BEEF is invalid: $e');
     }
 

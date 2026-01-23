@@ -43,7 +43,6 @@ class PaymentCoordinatorActor extends Actor {
 
   @override
   void preStart() {
-    print('PaymentCoordinatorActor started');
   }
 
   @override
@@ -52,11 +51,8 @@ class PaymentCoordinatorActor extends Actor {
       if (message is PayInvoiceMessage) {
         await _handlePayInvoice(message);
       } else {
-        print('PaymentCoordinatorActor: Unknown message type: ${message.runtimeType}');
       }
     } catch (e, stackTrace) {
-      print('PaymentCoordinatorActor error: $e');
-      print('Stack trace: $stackTrace');
       
       if (message is PayInvoiceMessage) {
         _sendError(message.invoiceId, 'Internal error: $e');
@@ -66,10 +62,6 @@ class PaymentCoordinatorActor extends Actor {
 
   /// Handle payment invoice request
   Future<void> _handlePayInvoice(PayInvoiceMessage msg) async {
-    print('Processing PayInvoiceMessage for invoice ${msg.invoiceId}');
-    print('  Wallet: ${msg.walletId}');
-    print('  Amount: ${msg.amount} satoshis');
-    print('  Addresses: ${msg.addresses}');
 
     // 1. Get available UTXOs
     final utxos = await _storage.getAvailableUTXOs(msg.walletId);
@@ -77,7 +69,6 @@ class PaymentCoordinatorActor extends Actor {
       _sendError(msg.invoiceId, 'Insufficient funds');
       return;
     }
-    print('  Found ${utxos.length} available UTXOs');
 
     // 2. Select UTXOs for payment
     final selectedUtxos = _selectUTXOs(utxos, msg.amount);
@@ -92,10 +83,8 @@ class PaymentCoordinatorActor extends Actor {
       );
       return;
     }
-    print('  Selected ${selectedUtxos.length} UTXOs for payment');
 
     // 3. CRITICAL: Validate complete ancestor chain using AncestorChainService
-    print('  Collecting and validating ancestor chain...');
     final ancestorResult = await _ancestorService.collectAncestorChainForUtxos(
       selectedUtxos.map((u) => u.txid).toList(),
     );
@@ -106,13 +95,11 @@ class PaymentCoordinatorActor extends Actor {
       );
       return;
     }
-    print('  ✓ Ancestor chain validated: ${ancestorResult.ancestorTransactions.length} transactions, ${ancestorResult.merkleProofs.length} proofs');
 
 
     final publicKeys = await _getPublicKeysForUTXOs(msg.walletId, selectedUtxos);
 
     // 4. Build payment transaction
-    print('  Building payment transaction...');
     final paymentTx = await _buildPaymentTransaction(
       selectedUtxos: selectedUtxos,
       outputAddresses: msg.addresses,
@@ -126,10 +113,8 @@ class PaymentCoordinatorActor extends Actor {
       _sendError(msg.invoiceId, 'Failed to build payment transaction');
       return;
     }
-    print('  ✓ Unsigned transaction built: ${paymentTx.txid}');
 
     // 4b. Sign the transaction
-    print('  Signing transaction...');
     final utxoKeys = selectedUtxos.map((u) => '${u.txid}:${u.vout}').toList();
     final signedTxHex = await _signTransaction(
       walletId: msg.walletId,
@@ -166,16 +151,13 @@ class PaymentCoordinatorActor extends Actor {
       version: paymentTx.version,
     );
 
-    print('  ✓ Transaction signed: ${signedPaymentTx.txid}');
 
     // 4c. Record the outgoing transaction in PENDING state
-    print('  Recording outgoing transaction...');
     
     // CRITICAL: Use the actual change address (same logic as _buildPaymentTransaction)
     // If no changeAddress was provided, we use the first UTXO's address as change destination
     final actualChangeAddress = msg.changeAddress ?? selectedUtxos.first.address;
 
-    print('  Change address for outgoing transaction is [$actualChangeAddress]');
     
     await _recordOutgoingTransaction(
       walletId: msg.walletId,
@@ -185,15 +167,11 @@ class PaymentCoordinatorActor extends Actor {
       paymentAmount: msg.amount,
       changeAddress: actualChangeAddress,
     );
-    print('  ✓ Transaction recorded in wallet history (status: PENDING)');
 
     // 5. Get block headers for validation
-    print('  Retrieving block headers...');
     final blockHeaders = await _getBlockHeaders(ancestorResult.blockHeights);
-    print('  ✓ Retrieved ${blockHeaders.length} block headers');
 
     // 6. Create BEEF package
-    print('  Creating BEEF package...');
     try {
       final beef = await _createBEEF(
         paymentTransaction: signedPaymentTx,
@@ -202,7 +180,6 @@ class PaymentCoordinatorActor extends Actor {
         blockHeaders: blockHeaders,
       );
 
-      print('  ✓ BEEF package created: ${beef.length} bytes');
 
       // Calculate change amount
       final totalInput = selectedUtxos.fold<BigInt>(
@@ -213,7 +190,6 @@ class PaymentCoordinatorActor extends Actor {
 
       // 7. Return BEEF to caller (does NOT broadcast)
       final sender = context.sender;
-      print('  📤 Sending response to sender: ${sender != null ? "YES" : "NULL"}');
       if (sender != null) {
         final response = BEEFPaymentResponse(
           invoiceId: msg.invoiceId,
@@ -224,14 +200,10 @@ class PaymentCoordinatorActor extends Actor {
           ancestorCount: ancestorResult.ancestorTransactions.length,
           success: true,
         );
-        print('  📤 Response: invoiceId=${response.invoiceId}, txid=${response.txid}, success=${response.success}');
         sender.tell(response);
-        print('  ✅ Response sent to sender');
       } else {
-        print('  ⚠️  WARNING: sender is null, cannot send response!');
       }
 
-      print('✓ Payment BEEF ready for invoice ${msg.invoiceId}');
     } catch (e) {
       _sendError(msg.invoiceId, 'Failed to create BEEF: $e');
     }
@@ -272,7 +244,6 @@ class PaymentCoordinatorActor extends Actor {
     required List<dartsv.SVPublicKey> publicKeys,
   }) async {
     try {
-      print('    Building transaction with ${selectedUtxos.length} inputs');
       
       
       // Calculate total input
@@ -338,9 +309,6 @@ class PaymentCoordinatorActor extends Actor {
       );
       final fee = totalInput - totalOutput;
       
-      print('    ✓ Transaction built: $txid (${rawHex.length ~/ 2} bytes)');
-      print('      Total input: $totalInput, Total output: $totalOutput, Fee: $fee');
-      print('      Outputs: ${unsignedTx.outputs.length}');
       
       // Create transaction record
       return BitcoinTransaction(
@@ -359,8 +327,6 @@ class PaymentCoordinatorActor extends Actor {
         version: 2,
       );
     } catch (e, stackTrace) {
-      print('Error building payment transaction: $e');
-      print('Stack trace: $stackTrace');
       return null;
     }
   }
@@ -434,7 +400,6 @@ class PaymentCoordinatorActor extends Actor {
     required List<String> utxoKeys,
     required List<dartsv.SVPublicKey> publicKeys,
   }) async {
-    print('    Requesting signature from wallet...');
     
     final completer = Completer<TransactionSignedResponse>();
     final receiver = await context.system.spawn(
@@ -461,7 +426,6 @@ class PaymentCoordinatorActor extends Actor {
     final response = await completer.future.timeout(
       Duration(seconds: 10),
       onTimeout: () {
-        print('    ⚠️ Signing timeout after 10 seconds');
         return TransactionSignedResponse(
           walletId: walletId,
           txid: txid,
@@ -473,11 +437,9 @@ class PaymentCoordinatorActor extends Actor {
     );
     
     if (!response.success) {
-      print('    ❌ Signing failed: ${response.error}');
       return null;
     }
     
-    print('    ✓ Transaction signed successfully');
     return response.signedHex;
   }
 
@@ -503,16 +465,9 @@ class PaymentCoordinatorActor extends Actor {
     required List<spiffy.BlockHeader> blockHeaders,
   }) async {
     try {
-      print('  📥 _createBEEF inputs:');
-      print('    Payment transaction: ${paymentTransaction.txid}');
-      print('      Raw hex length: ${paymentTransaction.rawHex.length} chars');
-      print('    Ancestor transactions: ${ancestorTransactions.length}');
       for (final ancestor in ancestorTransactions) {
-        print('      - ${ancestor.txid} (${ancestor.rawHex.length} chars)');
       }
-      print('    Merkle proofs: ${merkleProofs.length}');
       for (final proof in merkleProofs) {
-        print('      - ${proof.txid} at height ${proof.blockHeight}, position ${proof.position}');
       }
       
       // 1. Convert all transactions to raw bytes
@@ -521,7 +476,6 @@ class PaymentCoordinatorActor extends Actor {
       // Add ancestor transactions first (in order they were collected)
       for (final tx in ancestorTransactions) {
         txBytes.add(Uint8List.fromList(hex.decode(tx.rawHex)));
-        print('  Ancestor Transaction: ${tx.rawHex}');
       }
       
       // Add payment transaction last (the new transaction being created)
@@ -555,16 +509,9 @@ class PaymentCoordinatorActor extends Actor {
       }
       
       // Debug: Log what we're passing to BEEF.create()
-      print('  📊 BEEF.create() inputs:');
-      print('    txBytes: ${txBytes.length} transactions');
       for (int i = 0; i < txBytes.length; i++) {
-        print('      [$i] ${txBytes[i].length} bytes');
       }
-      print('    bumps: ${bumps.length} merkle proofs');
-      print('    hasMerkle: ${hasMerkle.length} flags = $hasMerkle');
-      print('    bumpIndex: ${bumpIndex.length} indices = $bumpIndex');
 
-      print('  Payment Transaction: ${paymentTransaction.rawHex}');
 
       // 5. Create BEEF using the existing BEEF.create() method
       final beef = BEEF.create(
@@ -576,25 +523,17 @@ class PaymentCoordinatorActor extends Actor {
       
       // 6. Serialize BEEF
       final serialized = beef.serialize();
-      print('  ✓ BEEF serialized: ${serialized.length} bytes');
-      print('    BEEF HEX: ${hex.encode(serialized)}');
       Future.delayed(Duration(seconds: 1)); //debug delay so BEEF hex can dump to console
       
       // 7. Verify BEEF can be parsed (sanity check)
       try {
         final parsed = BEEF.parse(serialized);
-        print('  ✓ BEEF parse verification passed');
-        print('    Parsed ${parsed.txs.length} transactions');
-        print('    Parsed ${parsed.bumps.length} merkle proofs');
       } catch (e, stackTrace) {
-        print('  ❌ BEEF parse verification FAILED: $e');
-        print('  Stack trace: $stackTrace');
         throw Exception('Created BEEF is invalid: $e');
       }
       
       return serialized;
     } catch (e) {
-      print('Error creating BEEF: $e');
       rethrow;
     }
   }
@@ -613,14 +552,11 @@ class PaymentCoordinatorActor extends Actor {
     // or a list of sibling hashes (each exactly 64 chars for a 32-byte hash)
     if (proof.merkleProof.length == 1 && proof.merkleProof[0].length > 64) {
       // This is a raw BUMP hex string - parse it directly
-      print('  [PaymentCoordinator] Detected raw BUMP format in storage, parsing directly...');
       try {
         final bumpBytes = Uint8List.fromList(hex.decode(proof.merkleProof[0]));
         final bump = BUMP.fromBytes(bumpBytes);
-        print('  [PaymentCoordinator] ✓ Parsed BUMP: height=${bump.blockHeight}, levels=${bump.path.length}');
         return bump;
       } catch (e) {
-        print('  [PaymentCoordinator] ❌ Failed to parse raw BUMP: $e');
         rethrow;
       }
     }
@@ -693,7 +629,6 @@ class PaymentCoordinatorActor extends Actor {
 
   /// Send error response to caller
   void _sendError(String invoiceId, String error) {
-    print('PaymentCoordinatorActor error: $error');
     context.sender?.tell(BEEFPaymentResponse.error(
       invoiceId: invoiceId,
       error: error,
@@ -738,7 +673,6 @@ class PaymentCoordinatorActor extends Actor {
 
   @override
   Future<void> postStop() async {
-    print('PaymentCoordinatorActor stopped');
   }
 }
 

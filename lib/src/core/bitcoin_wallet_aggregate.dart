@@ -34,7 +34,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     required this.secureStorage,
     this.transactionBuilder,
   }) : super(aggregateId: aggregateId, aggregateType: aggregateType, eventStore: eventStore) {
-    print('[BitcoinWalletAggregate] Constructor called for: $aggregateId');
     // Register handlers immediately upon construction
     registerHandlers();
   }
@@ -46,18 +45,12 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
   
   @override
   void preStart() {
-    print('[BitcoinWalletAggregate] preStart() called for: $aggregateId');
-    print('[BitcoinWalletAggregate]   Starting recovery process...');
     super.preStart();
-    print('[BitcoinWalletAggregate]   preStart() completed (recovery is async)');
   }
   
   @override
   Future<void> onRecoveryComplete() async {
     await super.onRecoveryComplete();
-    print('[BitcoinWalletAggregate] ✓ Recovery complete for: $aggregateId');
-    print('[BitcoinWalletAggregate]   isInitialized: $isInitialized');
-    print('[BitcoinWalletAggregate]   Ready to process commands');
   }
   
   @override
@@ -73,34 +66,20 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     
     try {
       if (message is Command) {
-        print('[BitcoinWalletAggregate] 📨 Command received: ${message.runtimeType}');
-        print('   commandId: ${message.commandId}');
-        print('   sender: ${context.sender?.toString() ?? "null"}');
         
         // Check if this is a duplicate command
         if (message is CreateWalletCommand) {
-          print('   walletName: ${message.walletName}');
-          print('   isInitialized: $isInitialized');
           try {
-            print('   currentState.isCreated: ${currentState.isCreated}');
-            print('   currentState.name: ${currentState.name}');
             if (currentState.isCreated) {
-              print('   ⚠️  WARNING: Wallet already created, ignoring duplicate CreateWalletCommand');
               return;
             }
           } catch (e) {
-            print('   ⚠️  Error accessing currentState: $e');
           }
         }
       } else {
-        print('[BitcoinWalletAggregate] onMessage called: ${message.runtimeType}');
       }
-      print('[BitcoinWalletAggregate] → Calling super.onMessage()...');
       await super.onMessage(message);
-      print('[BitcoinWalletAggregate] ✓ super.onMessage() completed');
     } catch (e, stack) {
-      print('[BitcoinWalletAggregate] ❌ FATAL ERROR in onMessage: $e');
-      print('[BitcoinWalletAggregate] Stack trace: $stack');
       rethrow;
     } finally {
       // Clean up the captured sender for this specific command
@@ -131,8 +110,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
   /// Only active when aggregate is used as an actor in the actor system
   @override
   Future<void> onCommandProcessed(Command command, List<Event> events) async {
-    print('[BitcoinWalletAggregate] ✅ Command processed: ${command.runtimeType}');
-    print('   Emitted ${events.length} event(s): ${events.map((e) => e.runtimeType).join(", ")}');
     await super.onCommandProcessed(command, events);
     
     // Only send responses if we're running in an actor system
@@ -188,25 +165,19 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
   /// Only active when aggregate is used as an actor in the actor system
   @override
   Future<void> onCommandFailure(Command command, dynamic error) async {
-    print('[BitcoinWalletAggregate] ❌ Command failed: ${command.runtimeType}');
-    print('   Error: $error');
-    print('   Stack trace: ${StackTrace.current}');
     await super.onCommandFailure(command, error);
     
     // Only send responses if we're running in an actor system
     if (!_isInActorSystem()) {
-      print('[BitcoinWalletAggregate] Not in actor system, skipping response');
       return;
     }
     
     // Use captured sender keyed by command ID (same reasoning as onCommandProcessed)
     final sender = _capturedSenders[command.commandId];
     if (sender == null) {
-      print('[BitcoinWalletAggregate] ⚠️ No sender found for command ${command.commandId}');
       return;
     }
     
-    print('[BitcoinWalletAggregate] Sending error response for ${command.runtimeType}');
     final errorMessage = error.toString();
 
     if (command is CreateWalletCommand) {
@@ -253,7 +224,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         error: errorMessage,
       ));
     } else if (command is SignMultisigTransactionCommand) {
-      print('[BitcoinWalletAggregate] Sending MultisigTransactionSignedResponse with error');
       sender.tell(MultisigTransactionSignedResponse(
         walletId: command.walletId,
         txid: '',
@@ -271,7 +241,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       ));
     } else {
       // Fallback for any unhandled command - send a generic error response
-      print('[BitcoinWalletAggregate] ⚠️ onCommandFailure: No specific handler for ${command.runtimeType}');
       sender.tell(LocalMessage(
         payload: {
           'error': errorMessage,
@@ -304,12 +273,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
   @override
   Future<List<Event>> handleCommand(WalletState currentState, Command command) async {
     // DEBUG: Log command routing information
-    print('[BitcoinWalletAggregate] handleCommand routing:');
-    print('   command.runtimeType: ${command.runtimeType}');
-    print('   command is SignMultisigTransactionCommand: ${command is SignMultisigTransactionCommand}');
-    print('   command is SignTransactionCommand: ${command is SignTransactionCommand}');
-    print('   command.runtimeType == SignMultisigTransactionCommand: ${command.runtimeType == SignMultisigTransactionCommand}');
-    print('   command.runtimeType == SignTransactionCommand: ${command.runtimeType == SignTransactionCommand}');
     
     switch (command.runtimeType) {
       case CreateWalletCommand:
@@ -339,10 +302,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       case CreateTransactionCommand:
         return await _handleCreateTransaction(currentState, command as CreateTransactionCommand);
       case SignTransactionCommand:
-        print('[BitcoinWalletAggregate] ⚠️ ROUTING TO SignTransactionCommand handler');
         return await _handleSignTransaction(currentState, command as SignTransactionCommand);
       case SignMultisigTransactionCommand:
-        print('[BitcoinWalletAggregate] ✅ ROUTING TO SignMultisigTransactionCommand handler');
         return await _handleSignMultisigTransaction(currentState, command as SignMultisigTransactionCommand);
       case BuildFundingTransactionCommand:
         return await _handleBuildFundingTransaction(currentState, command as BuildFundingTransactionCommand);
@@ -475,11 +436,9 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
   // ==========================================================================
 
   Future<List<Event>> _handleCreateWallet(WalletState currentState, CreateWalletCommand command) async {
-    print('[BitcoinWalletAggregate] _handleCreateWallet called for: ${command.walletId}');
     
     // Business rule: Cannot create wallet that already exists
     if (currentState.isCreated) {
-      print('[BitcoinWalletAggregate]   ERROR: Wallet already exists');
       throw StateError('Wallet ${command.walletId} already exists');
     }
 
@@ -494,7 +453,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
 
     if (command.wif != null && command.wif!.isNotEmpty) {
       // WIF WALLET: Single address from private key
-      print('[BitcoinWalletAggregate]   Creating WIF wallet...');
       walletType = WalletType.wif;
       
       // Parse and validate WIF
@@ -515,11 +473,9 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       // Store WIF securely
       await secureStorage.setWIF(command.walletId, command.wif!);
       
-      print('[BitcoinWalletAggregate]   ✓ WIF wallet created with address: $rootAddress');
       
     } else if (command.xpriv != null && command.xpriv!.isNotEmpty) {
       // XPRIV WALLET: HD derivation from extended private key
-      print('[BitcoinWalletAggregate]   Creating XPRIV wallet...');
       walletType = WalletType.xpriv;
       
       // Parse and validate XPRIV
@@ -549,11 +505,9 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         hdPublicKey.xpubkey,
       );
       
-      print('[BitcoinWalletAggregate]   ✓ XPRIV wallet created with root address: $rootAddress');
       
     } else if (command.xpub != null && command.xpub!.isNotEmpty) {
       // XPUB WALLET: Watch-only from extended public key
-      print('[BitcoinWalletAggregate]   Creating XPUB (watch-only) wallet...');
       walletType = WalletType.xpub;
       
       // Parse and validate XPUB
@@ -582,11 +536,9 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         command.xpub!,
       );
       
-      print('[BitcoinWalletAggregate]   ✓ XPUB wallet created with root address: $rootAddress');
       
     } else {
       // HD WALLET: Generate or validate mnemonic
-      print('[BitcoinWalletAggregate]   Creating HD wallet...');
       walletType = WalletType.hd;
       
       String mnemonic = command.mnemonic ?? '';
@@ -621,7 +573,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         hdPublicKey.xpubkey,
       );
       
-      print('[BitcoinWalletAggregate]   ✓ HD wallet created with root address: $rootAddress');
     }
 
     // Create WalletCreatedEvent with wallet type
@@ -681,7 +632,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         throw StateError('WIF wallet has no root address');
       }
       
-      print('[BitcoinWalletAggregate] WIF wallet - returning root address: ${currentState.rootAddress}');
       
       // Get public key if requested
       String? publicKeyHex;
@@ -795,23 +745,17 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
   }
 
   List<Event> _handleRegisterDiscoveredAddress(WalletState currentState, RegisterDiscoveredAddressCommand command) {
-    print('[BitcoinWalletAggregate] 📍 Handling RegisterDiscoveredAddressCommand for: ${command.address}');
-    print('[BitcoinWalletAggregate]    Wallet: ${command.walletId}');
-    print('[BitcoinWalletAggregate]    Index: ${command.derivationIndex}, Change: ${command.isChange}');
     
     // Business rule: Wallet must exist
     if (!currentState.isCreated) {
-      print('[BitcoinWalletAggregate]    ❌ ERROR: Wallet not created yet!');
       throw StateError('Cannot register discovered address for non-existent wallet');
     }
 
     // If address already exists in state, this is idempotent (no-op)
     if (currentState.addresses.containsKey(command.address)) {
-      print('[BitcoinWalletAggregate]    ℹ️  Address ${command.address} already registered, skipping (idempotent)');
       return [];
     }
 
-    print('[BitcoinWalletAggregate]    ✅ Creating AddressDiscoveredEvent...');
     final event = AddressDiscoveredEvent(
       eventId: const Uuid().v4(),
       walletId: command.walletId,
@@ -823,7 +767,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       transactionCount: command.transactionCount,
     );
 
-    print('[BitcoinWalletAggregate]    ✅ AddressDiscoveredEvent created, returning to aggregate for persistence');
     return [event];
   }
 
@@ -832,11 +775,9 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
   // ==========================================================================
 
   List<Event> _handleReceiveUTXO(WalletState currentState, ReceiveUTXOCommand command) {
-    print('[BitcoinWalletAggregate] 📥 Handling ReceiveUTXOCommand: ${command.txid}:${command.vout} (${command.satoshis} sats)');
 
     // Business rule: Wallet must exist
     if (!currentState.isCreated) {
-      print('[BitcoinWalletAggregate]    ❌ Wallet not created yet');
       throw StateError('Cannot receive UTXO for non-existent wallet');
     }
 
@@ -844,13 +785,11 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
 
     // Business rule: Cannot receive duplicate UTXO
     if (currentState.utxos.containsKey(utxoKey)) {
-      print('[BitcoinWalletAggregate]    ⚠️  UTXO $utxoKey already exists, skipping');
       throw StateError('UTXO $utxoKey already exists in wallet');
     }
 
     // Business rule: Amount must be positive
     if (command.satoshis <= BigInt.zero) {
-      print('[BitcoinWalletAggregate]    ❌ Invalid amount: ${command.satoshis}');
       throw ArgumentError('UTXO amount must be positive');
     }
 
@@ -859,7 +798,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     // for determining the appropriate status based on merkle proof verification
     final initialStatus = command.initialStatus;
 
-    print('[BitcoinWalletAggregate]    ✅ Creating UTXOReceivedEvent (status: $initialStatus, confirmations: ${command.confirmations})');
     final event = UTXOReceivedEvent(
       walletId: command.walletId,
       txid: command.txid,
@@ -878,7 +816,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
   }
 
   List<Event> _handleMarkUTXOAvailable(WalletState currentState, MarkUTXOAvailableCommand command) {
-    print('[BitcoinWalletAggregate] ✅ Handling MarkUTXOAvailableCommand: ${command.txid}:${command.vout}');
     
     // Business rule: Wallet must exist
     if (!currentState.isCreated) {
@@ -894,11 +831,9 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     
     if (utxo.status != UTXOStatus.pending) {
       // Already available or spent, no-op
-      print('[BitcoinWalletAggregate]    ⚠️  UTXO $utxoKey is not pending (status: ${utxo.status}), skipping');
       return [];
     }
     
-    print('[BitcoinWalletAggregate]    ✅ Creating UTXOMarkedAvailableEvent');
     return [UTXOMarkedAvailableEvent(
       walletId: command.walletId,
       txid: command.txid,
@@ -978,14 +913,12 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
   }
 
   List<Event> _handleRecordImportedTransaction(WalletState currentState, RecordImportedTransactionCommand command) {
-    print('[BitcoinWalletAggregate] 📥 Handling RecordImportedTransactionCommand: ${command.txid}');
     
     // Business rule: Wallet must exist
     if (!currentState.isCreated) {
       throw StateError('Cannot record transaction for non-existent wallet');
     }
 
-    print('[BitcoinWalletAggregate]    ✅ Creating TransactionImportedEvent');
     
     // Emit TransactionImportedEvent with all the pre-calculated data from ImportActor
     final event = TransactionImportedEvent(
@@ -1012,7 +945,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
 
   /// Handle recording an outgoing transaction (payment created by this wallet)
   List<Event> _handleRecordOutgoingTransaction(WalletState currentState, RecordOutgoingTransactionCommand command) {
-    print('[BitcoinWalletAggregate] 📤 Handling RecordOutgoingTransactionCommand: ${command.txid}');
     
     // Business rule: Wallet must exist
     if (!currentState.isCreated) {
@@ -1021,7 +953,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
 
     final events = <Event>[];
     
-    print('[BitcoinWalletAggregate]    ✅ Creating TransactionRecordedEvent (status: PENDING)');
     
     // Emit TransactionRecordedEvent
     final transactionEvent = TransactionRecordedEvent(
@@ -1047,21 +978,17 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
 
     // CRITICAL: Mark all spent UTXOs as spent to prevent double-spending
     // This must happen when the outgoing transaction is recorded, not later
-    print('[BitcoinWalletAggregate]    💸 Marking ${command.spentUtxoKeys.length} UTXOs as spent');
     for (final utxoKey in command.spentUtxoKeys) {
       final parts = utxoKey.split(':');
       if (parts.length != 2) {
-        print('[BitcoinWalletAggregate]    ⚠️  Invalid UTXO key format: $utxoKey');
         continue;
       }
       final utxoTxid = parts[0];
       final utxoVout = int.tryParse(parts[1]);
       if (utxoVout == null) {
-        print('[BitcoinWalletAggregate]    ⚠️  Invalid vout in UTXO key: $utxoKey');
         continue;
       }
       
-      print('[BitcoinWalletAggregate]       → Emitting UTXOSpentEvent for $utxoKey');
       final spentEvent = UTXOSpentEvent(
         walletId: command.walletId,
         txid: utxoTxid,
@@ -1072,7 +999,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       );
       events.add(spentEvent);
     }
-    print('[BitcoinWalletAggregate]    ✅ Emitted ${command.spentUtxoKeys.length} UTXOSpentEvent(s)');
 
     // SCAN ALL OUTPUTS: Create UTXOs for any outputs that belong to wallet addresses
     // This handles change outputs, settlement outputs, self-transfers, and any other
@@ -1084,8 +1010,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
           ? dartsv.NetworkType.MAIN 
           : dartsv.NetworkType.TEST;
       
-      print('[BitcoinWalletAggregate]    🔍 Scanning ${tx.outputs.length} output(s) for wallet membership');
-      print('[BitcoinWalletAggregate]       Wallet has ${walletAddresses.length} address(es)');
       
       // Use ScriptTypeRegistry to identify output types and extract addresses
       final scriptRegistry = ScriptTypeRegistry(networkType: network);
@@ -1095,7 +1019,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         final satoshis = output.satoshis.toInt();
         
         if (satoshis <= 0) {
-          print('[BitcoinWalletAggregate]       Output $i: SKIP (zero satoshis)');
           continue;
         }
         
@@ -1115,7 +1038,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
                 belongsToWallet = true;
               }
             } catch (e) {
-              print('[BitcoinWalletAggregate]       Output $i: Error extracting P2PKH address: $e');
             }
             break;
             
@@ -1131,7 +1053,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
                 }
               }
             } catch (e) {
-              print('[BitcoinWalletAggregate]       Output $i: Error extracting P2PK address: $e');
             }
             break;
             
@@ -1151,32 +1072,24 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
                       break;
                     }
                   } catch (e) {
-                    print('[BitcoinWalletAggregate]       Output $i: Error deriving address from P2MS pubkey: $e');
                   }
                 }
               }
             } catch (e) {
-              print('[BitcoinWalletAggregate]       Output $i: Error processing P2MS output: $e');
             }
             break;
             
           case 'opreturn':
           case 'op_return':
             // OP_RETURN outputs don't belong to anyone
-            print('[BitcoinWalletAggregate]       Output $i: SKIP (OP_RETURN)');
             continue;
             
           default:
-            print('[BitcoinWalletAggregate]       Output $i: SKIP (unsupported script type: $scriptType)');
             continue;
         }
         
         // If output belongs to wallet, create a UTXO for it
         if (belongsToWallet && outputAddress != null) {
-          print('[BitcoinWalletAggregate]       Output $i: ✅ BELONGS TO WALLET');
-          print('[BitcoinWalletAggregate]          Address: $outputAddress');
-          print('[BitcoinWalletAggregate]          Amount: $satoshis sats');
-          print('[BitcoinWalletAggregate]          Script type: $scriptType');
           
           final utxoEvent = UTXOReceivedEvent(
             walletId: command.walletId,
@@ -1193,16 +1106,12 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
           );
           events.add(utxoEvent);
         } else {
-          print('[BitcoinWalletAggregate]       Output $i: ❌ External (to: ${outputAddress ?? 'unknown'}, $satoshis sats)');
         }
       }
       
       final walletOutputsCount = events.length - 1 - command.spentUtxoKeys.length;
-      print('[BitcoinWalletAggregate]    ✅ Output scan complete: found $walletOutputsCount wallet output(s)');
       
     } catch (e, stackTrace) {
-      print('[BitcoinWalletAggregate]    ⚠️  Error scanning transaction outputs: $e');
-      print('[BitcoinWalletAggregate]    Stack trace: $stackTrace');
       // Continue without creating UTXOs - better than crashing
     }
 
@@ -1211,14 +1120,12 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
 
   /// Handle confirming a pending transaction
   List<Event> _handleConfirmTransaction(WalletState currentState, ConfirmTransactionCommand command) {
-    print('[BitcoinWalletAggregate] ✅ Handling ConfirmTransactionCommand: ${command.txid}');
     
     // Business rule: Wallet must exist
     if (!currentState.isCreated) {
       throw StateError('Cannot confirm transaction for non-existent wallet');
     }
 
-    print('[BitcoinWalletAggregate]    ✅ Creating TransactionConfirmedEvent');
     
     // Emit TransactionConfirmedEvent
     final event = TransactionConfirmedEvent(
@@ -1550,8 +1457,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
 
       return [event];
     } catch (e, stackTrace) {
-      print('Error signing transaction: $e');
-      print('Stack trace: $stackTrace');
       
       // Send error response if in actor system
       final sender = _capturedSenders[command.commandId];
@@ -1593,16 +1498,9 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         throw StateError('Signing not supported for watch-only wallets');
       }
 
-      print('[BitcoinWalletAggregate] 🔏 Signing multisig transaction (using TransactionSigner)');
-      print('[BitcoinWalletAggregate]    Input index: ${command.inputIndex}');
-      print('[BitcoinWalletAggregate]    Prev out value: ${command.prevOutValue} sats');
-      print('[BitcoinWalletAggregate]    Sighash type: 0x${command.sighashType.toRadixString(16)}');
       
       // Parse the transaction to sign
       final txToSign = dartsv.Transaction.fromHex(command.rawTransaction);
-      print('[BitcoinWalletAggregate]    TX inputs: ${txToSign.inputs.length}');
-      print('[BitcoinWalletAggregate]    TX outputs: ${txToSign.outputs.length}');
-      print('[BitcoinWalletAggregate]    TX hex being signed: ${command.rawTransaction}');
       
       // Get private key at the specified derivation index
       final privateKey = await _getPrivateKeyAtIndex(
@@ -1610,12 +1508,9 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         command.derivationIndex,
         currentState,
       );
-      print('[BitcoinWalletAggregate]    Private key derived at index ${command.derivationIndex}');
-      print('[BitcoinWalletAggregate]    Public key: ${privateKey.publicKey.toHex()}');
       
       // Parse the redeem script (2-of-2 multisig locking script)
       final redeemScript = dartsv.SVScript.fromHex(command.redeemScriptHex);
-      print('[BitcoinWalletAggregate]    Redeem script: ${command.redeemScriptHex}');
       
       // Create the UTXO that we're spending from (multisig output)
       final utxo = dartsv.TransactionOutput(
@@ -1650,8 +1545,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       final ourSignature = unlockBuilder.signatures.last;
       final signatureHex = ourSignature.toTxFormat();
       
-      print('[BitcoinWalletAggregate]    Signature (txFormat): $signatureHex');
-      print('[BitcoinWalletAggregate]    Signature length: ${signatureHex.length ~/ 2} bytes');
       
       // NOTE: Individual signature verification is not possible here because:
       // - The signature is created for a 2-of-2 multisig (sighash includes full redeem script)
@@ -1659,7 +1552,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       // The full 2-of-2 verification happens in PaymentChannelCoordinator after both signatures
       // are combined using Interpreter.correctlySpends()
       
-      print('[BitcoinWalletAggregate] ✅ Multisig signature created successfully');
       
       // Return the unsigned transaction hex (coordinator applies signatures)
       final txHex = dartsv.Transaction.fromHex(command.rawTransaction).serialize();
@@ -1683,8 +1575,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       return [];
       
     } catch (e, stackTrace) {
-      print('[BitcoinWalletAggregate] ❌ Error signing multisig transaction: $e');
-      print(stackTrace);
       
       // Send error response if in actor system
       final sender = _capturedSenders[command.commandId];
@@ -1726,8 +1616,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         throw StateError('Signing (funding) not supported for watch-only wallets');
       }
 
-      print('[BitcoinWalletAggregate] Building funding TX for channel ${command.channelId}');
-      print('[BitcoinWalletAggregate]   UTXOs in wallet state: ${currentState.utxos.length}');
       
       // Parse public keys
       final clientPubKey = dartsv.SVPublicKey.fromHex(command.clientPubKeyHex);
@@ -1740,7 +1628,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
           .toList()
         ..sort((a, b) => b.value.getValue().compareTo(a.value.getValue()));
       
-      print('[BitcoinWalletAggregate]   Available UTXOs: ${availableUtxos.length}');
       
       if (availableUtxos.isEmpty) {
         throw StateError('No available UTXOs for funding');
@@ -1785,7 +1672,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         throw StateError('Insufficient funds: need ${fundingAmount + fee}, have $selectedTotal');
       }
       
-      print('[BitcoinWalletAggregate]   Selected ${selectedUtxos.length} UTXOs (total: $selectedTotal sats)');
       
       final changeAmount = selectedTotal - fundingAmount - fee;
       
@@ -1847,10 +1733,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       
       final fundingTxHex = signedTx.serialize();
 
-      print('Funding TX Hex: $fundingTxHex');
       final fundingTxId = signedTx.id;
       
-      print('[BitcoinWalletAggregate] Funding TX built: $fundingTxId');
       
       // Capture spent UTXO keys for proper wallet bookkeeping
       final spentUtxoKeys = selectedUtxos.map((u) => '${u.txid}:${u.vout}').toList();
@@ -1873,7 +1757,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         );
       }).toList();
       
-      print('[BitcoinWalletAggregate]   Reserved ${reserveEvents.length} UTXOs for funding TX');
       
       // CRITICAL: Find the actual multisig output index
       // TransactionBuilder.sendChangeToPKH() may reorder outputs, putting change at index 0
@@ -1885,10 +1768,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         final output = signedTx.outputs[i];
         if (output.satoshis == fundingAmount) {
           multisigOutputIndex = i;
-          print('[BitcoinWalletAggregate]   Found multisig output at index $i (${output.satoshis} sats)');
         } else {
           actualChangeOutputIdx = i;
-          print('[BitcoinWalletAggregate]   Found change output at index $i (${output.satoshis} sats)');
         }
       }
       
@@ -1930,8 +1811,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       return reserveEvents;
       
     } catch (e, stackTrace) {
-      print('[BitcoinWalletAggregate] Error building funding transaction: $e');
-      print(stackTrace);
       
       final sender = _capturedSenders[command.commandId];
       if (_isInActorSystem() && sender != null) {
@@ -2631,7 +2510,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     WalletState currentState,
     SplitUTXOsToBenfordCommand command,
   ) async {
-    print('[BitcoinWalletAggregate] Handling SplitUTXOsToBenfordCommand');
     
     // Business rule: Wallet must exist
     if (!currentState.isCreated) {
@@ -2649,7 +2527,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       throw StateError('No available UTXOs to split');
     }
 
-    print('[BitcoinWalletAggregate] Found ${availableUtxos.length} available UTXOs to split');
 
     // Emit single event - BenfordCoordinatorActor will handle orchestration
     return [

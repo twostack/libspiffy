@@ -60,7 +60,6 @@ class PaymentChannelManagerActor extends Actor {
 
   @override
   void preStart() {
-    print('[PaymentChannelManager] Started');
   }
 
   /// Broadcast events to external subscribers (e.g., P2P adapters)
@@ -80,7 +79,6 @@ class PaymentChannelManagerActor extends Actor {
 
   @override
   Future<void> onMessage(dynamic message) async {
-    print('[PaymentChannelManager] Received: ${message.runtimeType}');
     
     try {
       switch (message.runtimeType) {
@@ -121,11 +119,8 @@ class PaymentChannelManagerActor extends Actor {
           await _handleQueryChannelState(message as QueryChannelStateMessage);
           break;
         default:
-          print('[PaymentChannelManager] Unknown message type: ${message.runtimeType}');
       }
     } catch (e, stack) {
-      print('[PaymentChannelManager] Error handling message: $e');
-      print('[PaymentChannelManager] Stack: $stack');
       
       // Send error response to sender if available
       if (context.sender != null) {
@@ -136,14 +131,12 @@ class PaymentChannelManagerActor extends Actor {
 
   /// Client initiates a new payment channel
   Future<void> _handleInitiateChannel(InitiateChannelMessage msg) async {
-    print('[PaymentChannelManager] Initiating channel: ${msg.channelId}');
     
     // Capture sender immediately (context.sender changes with each new message)
     final originalSender = context.sender;
     
     try {
       // Step 1: Ask WalletManager to generate channel address (with public key)
-      print('[PaymentChannelManager]   Step 1: Requesting client address from WalletManager');
       final addressCmd = GenerateAddressCommand(
         walletId: msg.walletId,
         purpose: 'receive',
@@ -154,12 +147,10 @@ class PaymentChannelManagerActor extends Actor {
       );
       
       // Use ask() pattern to wait for actual response
-      print('[PaymentChannelManager]   Sending GenerateAddressCommand and waiting for response...');
       final addressResponse = await _walletManager.ask(
         WalletCommandMessage(msg.walletId, addressCmd),
       );
       
-      print('[PaymentChannelManager]   Received response type: ${addressResponse.runtimeType}');
       
       // Handle AddressGeneratedResponse from WalletManager
       if (addressResponse is! AddressGeneratedResponse) {
@@ -174,10 +165,6 @@ class PaymentChannelManagerActor extends Actor {
         throw StateError('Public key not included in address generation response');
       }
       
-      print('[PaymentChannelManager]   ✓ Client address generated');
-      print('[PaymentChannelManager]     Address: ${addressResponse.address}');
-      print('[PaymentChannelManager]     PubKey: ${addressResponse.publicKeyHex}');
-      print('[PaymentChannelManager]     Index: ${addressResponse.derivationIndex}');
       
       // Step 2: Get or spawn channel aggregate
       final aggregateRef = await _getOrSpawnChannelAggregate(msg.channelId);
@@ -187,7 +174,6 @@ class PaymentChannelManagerActor extends Actor {
           msg.lockTimeDurationSeconds;
       
       // Step 4: Send RequestChannelCommand with pre-computed keys
-      print('[PaymentChannelManager]   Step 2: Sending RequestChannelCommand to aggregate');
       final requestCmd = RequestChannelCommand(
         channelId: msg.channelId,
         walletId: msg.walletId,
@@ -212,7 +198,6 @@ class PaymentChannelManagerActor extends Actor {
       // Broadcast events to external subscribers (P2P adapter)
       _broadcastEvents(response);
       
-      print('[PaymentChannelManager]   ✓ Channel request recorded');
       
       // Send success response
       originalSender?.tell(ChannelInitiatedResponse(
@@ -224,10 +209,7 @@ class PaymentChannelManagerActor extends Actor {
         success: true,
       ));
       
-      print('[PaymentChannelManager] ✓ Channel initiated: ${msg.channelId}');
     } catch (e, stack) {
-      print('[PaymentChannelManager] ✗ Failed to initiate channel: $e');
-      print('[PaymentChannelManager] Stack: $stack');
       
       originalSender?.tell(ChannelInitiatedResponse(
         channelId: msg.channelId,
@@ -243,14 +225,12 @@ class PaymentChannelManagerActor extends Actor {
 
   /// Server accepts a channel request
   Future<void> _handleAcceptChannel(AcceptChannelMessage msg) async {
-    print('[PaymentChannelManager] Accepting channel: ${msg.channelId}');
     
     // Capture sender immediately (context.sender changes with each new message)
     final originalSender = context.sender;
     
     try{
       // Step 1: Ask WalletManager to generate server's channel address (with public key)
-      print('[PaymentChannelManager]   Step 1: Requesting server address from WalletManager');
       final addressCmd = GenerateAddressCommand(
         walletId: msg.walletId,
         purpose: 'receive',
@@ -261,12 +241,10 @@ class PaymentChannelManagerActor extends Actor {
       );
       
       // Use ask() pattern to wait for actual response
-      print('[PaymentChannelManager]   Sending GenerateAddressCommand and waiting for response...');
       final addressResponse = await _walletManager.ask(
         WalletCommandMessage(msg.walletId, addressCmd),
       );
       
-      print('[PaymentChannelManager]   Received response type: ${addressResponse.runtimeType}');
       
       // Handle AddressGeneratedResponse from WalletManager
       if (addressResponse is! AddressGeneratedResponse) {
@@ -281,15 +259,11 @@ class PaymentChannelManagerActor extends Actor {
         throw StateError('Public key not included in address generation response');
       }
       
-      print('[PaymentChannelManager]   ✓ Server address generated');
-      print('[PaymentChannelManager]     Address: ${addressResponse.address}');
-      print('[PaymentChannelManager]     PubKey: ${addressResponse.publicKeyHex}');
       
       // Step 2: Get or spawn channel aggregate
       final aggregateRef = await _getOrSpawnChannelAggregate(msg.channelId);
       
       // Step 3: Send AcceptChannelCommand with pre-computed keys
-      print('[PaymentChannelManager]   Step 2: Sending AcceptChannelCommand to aggregate');
       final acceptCmd = AcceptChannelCommand(
         channelId: msg.channelId,
         walletId: msg.walletId,
@@ -315,7 +289,6 @@ class PaymentChannelManagerActor extends Actor {
       // Broadcast events to external subscribers (P2P adapter)
       _broadcastEvents(acceptResponse);
       
-      print('[PaymentChannelManager]   ✓ Channel accepted');
       
       // Return server's public key and address
       // Refund TX building and signing happens in separate steps
@@ -327,10 +300,7 @@ class PaymentChannelManagerActor extends Actor {
         success: true,
       ));
       
-      print('[PaymentChannelManager] ✓ Channel accepted: ${msg.channelId}');
     } catch (e, stack) {
-      print('[PaymentChannelManager] ✗ Failed to accept channel: $e');
-      print('[PaymentChannelManager] Stack: $stack');
       
       originalSender?.tell(ChannelAcceptedResponse(
         channelId: msg.channelId,
@@ -345,7 +315,6 @@ class PaymentChannelManagerActor extends Actor {
 
   /// Client records server's acceptance (stores server pubkey/address in aggregate)
   Future<void> _handleRecordServerAcceptance(RecordServerAcceptanceMessage msg) async {
-    print('[PaymentChannelManager] Recording server acceptance for: ${msg.channelId}');
     
     try {
       // Get or spawn the channel aggregate
@@ -368,16 +337,12 @@ class PaymentChannelManagerActor extends Actor {
       // Broadcast events
       _broadcastEvents(response);
       
-      print('[PaymentChannelManager] ✓ Server acceptance recorded: ${msg.channelId}');
     } catch (e, stack) {
-      print('[PaymentChannelManager] ✗ Failed to record server acceptance: $e');
-      print('[PaymentChannelManager] Stack: $stack');
     }
   }
 
   /// Build refund transaction (client side, step 3)
   Future<void> _handleBuildRefundTransaction(BuildRefundTransactionMessage msg) async {
-    print('[PaymentChannelManager] Building refund transaction for: ${msg.channelId}');
     
     // Capture sender immediately
     final originalSender = context.sender;
@@ -390,7 +355,6 @@ class PaymentChannelManagerActor extends Actor {
       }
       
       // Step 2: Build the refund transaction using PaymentChannelBuilder
-      print('[PaymentChannelManager]   Building refund TX...');
       final builder = PaymentChannelBuilder(
         cryptoService: _cryptoService,
         networkType: _networkType,
@@ -411,8 +375,6 @@ class PaymentChannelManagerActor extends Actor {
         lockTimeUnix: msg.lockTimeUnix,
       );
       
-      print('[PaymentChannelManager]   ✓ Refund TX built');
-      print('[PaymentChannelManager]     TX ID: ${refundTxResult.transaction.id}');
       
       // Step 3: Send RequestRefundSignatureCommand to aggregate
       // Note: We don't have the server signature yet - that comes from P2P
@@ -424,10 +386,7 @@ class PaymentChannelManagerActor extends Actor {
         success: true,
       ));
       
-      print('[PaymentChannelManager] ✓ Refund transaction built: ${msg.channelId}');
     } catch (e, stack) {
-      print('[PaymentChannelManager] ✗ Failed to build refund transaction: $e');
-      print('[PaymentChannelManager] Stack: $stack');
       
       originalSender?.tell(RefundTransactionBuiltResponse(
         channelId: msg.channelId,
@@ -440,7 +399,6 @@ class PaymentChannelManagerActor extends Actor {
 
   /// Sign refund transaction (server side, step 4)
   Future<void> _handleSignRefundTransaction(SignRefundTransactionMessage msg) async {
-    print('[PaymentChannelManager] Signing refund transaction for: ${msg.channelId}');
     
     // Capture sender immediately
     final originalSender = context.sender;
@@ -453,7 +411,6 @@ class PaymentChannelManagerActor extends Actor {
       }
       
       // Step 2: Build the redeem script (2-of-2 multisig)
-      print('[PaymentChannelManager]   Building multisig redeem script...');
       final clientPubKey = dartsv.SVPublicKey.fromHex(msg.clientPubKeyHex);
       final serverPubKey = dartsv.SVPublicKey.fromHex(msg.serverPubKeyHex);
       
@@ -464,10 +421,8 @@ class PaymentChannelManagerActor extends Actor {
       );
       final redeemScript = lockBuilder.getScriptPubkey();
       
-      print('[PaymentChannelManager]   Redeem script: ${redeemScript.toHex()}');
       
       // Step 3: Ask WalletManager to sign the refund transaction
-      print('[PaymentChannelManager]   Requesting signature from WalletManager...');
       
       final signCmd = SignMultisigTransactionCommand(
         walletId: msg.walletId,
@@ -493,10 +448,7 @@ class PaymentChannelManagerActor extends Actor {
         sender: context.self,
       );
       
-      print('[PaymentChannelManager]   Signature request sent to WalletManager');
     } catch (e, stack) {
-      print('[PaymentChannelManager] ✗ Failed to sign refund transaction: $e');
-      print('[PaymentChannelManager] Stack: $stack');
       
       originalSender?.tell(RefundTransactionSignedResponse(
         channelId: msg.channelId,
@@ -509,7 +461,6 @@ class PaymentChannelManagerActor extends Actor {
 
   /// Handle multisig signature response from WalletManager
   Future<void> _handleMultisigSignedResponse(MultisigTransactionSignedResponse response) async {
-    print('[PaymentChannelManager] Received multisig signature response');
     
     final transactionId = response.originalTransactionId ?? '';
     
@@ -537,21 +488,18 @@ class PaymentChannelManagerActor extends Actor {
       }
     }
     
-    print('[PaymentChannelManager] ✗ Unknown signature response: $transactionId');
   }
   
   /// Handle refund signature response
   Future<void> _handleRefundSignatureResponse(MultisigTransactionSignedResponse response) async {
     final channelId = response.originalTransactionId?.replaceFirst('refund-', '');
     if (channelId == null || channelId.isEmpty) {
-      print('[PaymentChannelManager] ✗ Invalid refund transaction ID in response');
       return;
     }
     
     // Look up pending refund signature request
     final pending = _pendingRefundSignatures.remove(channelId);
     if (pending == null) {
-      print('[PaymentChannelManager] ✗ No pending refund signature found for channel: $channelId');
       return;
     }
     
@@ -560,7 +508,6 @@ class PaymentChannelManagerActor extends Actor {
         throw StateError(response.error ?? 'Signature failed');
       }
       
-      print('[PaymentChannelManager]   ✓ Refund signature received: ${response.signatureHex}');
       
       // Get channel aggregate and events
       final aggregateRef = _channelAggregates[channelId];
@@ -591,10 +538,7 @@ class PaymentChannelManagerActor extends Actor {
         success: true,
       ));
       
-      print('[PaymentChannelManager] ✓ Refund transaction signed: $channelId');
     } catch (e, stack) {
-      print('[PaymentChannelManager] ✗ Failed to complete refund signing: $e');
-      print('[PaymentChannelManager] Stack: $stack');
       
       pending.sender?.tell(RefundTransactionSignedResponse(
         channelId: channelId,
@@ -615,7 +559,6 @@ class PaymentChannelManagerActor extends Actor {
         throw StateError(response.error ?? 'Payment signature failed');
       }
       
-      print('[PaymentChannelManager]   ✓ Payment signature received: ${response.signatureHex}');
       
       final aggregateRef = _channelAggregates[pending.channelId];
       if (aggregateRef == null) {
@@ -624,7 +567,6 @@ class PaymentChannelManagerActor extends Actor {
       
       if (pending.isAcknowledgment) {
         // Server acknowledging payment - combine signatures and send command
-        print('[PaymentChannelManager]   Server acknowledging payment...');
         
         final ackCmd = AcknowledgePaymentCommand(
           channelId: pending.channelId,
@@ -649,10 +591,8 @@ class PaymentChannelManagerActor extends Actor {
           success: true,
         ));
         
-        print('[PaymentChannelManager] ✓ Payment acknowledged: ${pending.channelId}');
       } else {
         // Client recording payment - send command with signature
-        print('[PaymentChannelManager]   Client recording payment...');
         
         final recordCmd = RecordPaymentCommand(
           channelId: pending.channelId,
@@ -681,11 +621,8 @@ class PaymentChannelManagerActor extends Actor {
           success: true,
         ));
         
-        print('[PaymentChannelManager] ✓ Payment recorded: ${pending.channelId}');
       }
     } catch (e, stack) {
-      print('[PaymentChannelManager] ✗ Failed to process payment signature: $e');
-      print('[PaymentChannelManager] Stack: $stack');
       
       if (pending.isAcknowledgment) {
         pending.originalSender?.tell(PaymentAcknowledgedResponse(
@@ -711,7 +648,6 @@ class PaymentChannelManagerActor extends Actor {
 
   /// Record server's refund signature (client receives via P2P)
   Future<void> _handleRecordRefundSignature(RecordRefundSignatureMessage msg) async {
-    print('[PaymentChannelManager] Recording refund signature for channel: ${msg.channelId}');
     
     // Capture sender immediately
     final originalSender = context.sender;
@@ -749,9 +685,7 @@ class PaymentChannelManagerActor extends Actor {
         success: true,
       ));
       
-      print('[PaymentChannelManager] ✓ Refund signature recorded: ${msg.channelId}');
     } catch (e) {
-      print('[PaymentChannelManager] ✗ Failed to record refund signature: $e');
       
       originalSender?.tell(RefundSignatureRecordedResponse(
         channelId: msg.channelId,
@@ -763,7 +697,6 @@ class PaymentChannelManagerActor extends Actor {
 
   /// Finalize channel opening after funding TX is broadcast
   Future<void> _handleOpenChannel(OpenChannelMessage msg) async {
-    print('[PaymentChannelManager] Opening channel: ${msg.channelId}');
     
     // Capture sender immediately (context.sender changes with each new message)
     final originalSender = context.sender;
@@ -802,9 +735,7 @@ class PaymentChannelManagerActor extends Actor {
         success: true,
       ));
       
-      print('[PaymentChannelManager] ✓ Channel opened: ${msg.channelId}');
     } catch (e) {
-      print('[PaymentChannelManager] ✗ Failed to open channel: $e');
       
       originalSender?.tell(ChannelOpenedResponse(
         channelId: msg.channelId,
@@ -816,8 +747,6 @@ class PaymentChannelManagerActor extends Actor {
 
   /// Client records a payment
   Future<void> _handleRecordPayment(RecordPaymentMessage msg) async {
-    print('[PaymentChannelManager] Recording payment on channel: ${msg.channelId}');
-    print('[PaymentChannelManager]   Amount: ${msg.amountSats} sats');
     
     final originalSender = context.sender;
     
@@ -829,7 +758,6 @@ class PaymentChannelManagerActor extends Actor {
       }
       
       // Step 2: Query current channel state
-      print('[PaymentChannelManager]   Querying channel state...');
       final stateResponse = await aggregateRef.ask(ChannelStateQuery(channelId: msg.channelId));
       
       if (stateResponse is! FullChannelStateResponse || !stateResponse.success) {
@@ -846,11 +774,8 @@ class PaymentChannelManagerActor extends Actor {
         throw StateError('Insufficient balance: ${stateResponse.clientBalanceSats} < ${msg.amountSats}');
       }
       
-      print('[PaymentChannelManager]   Current balance: ${stateResponse.clientBalanceSats} sats');
-      print('[PaymentChannelManager]   Sequence: ${stateResponse.latestSequenceNumber}');
       
       // Step 3: Build payment transaction
-      print('[PaymentChannelManager]   Building payment TX...');
       
       // Validate required state fields are present
       if (stateResponse.clientPubKeyHex == null) {
@@ -896,10 +821,8 @@ class PaymentChannelManagerActor extends Actor {
         sequenceNumber: newSequence,
       );
       
-      print('[PaymentChannelManager]   Payment TX built: ${paymentTxResult.txid}');
       
       // Step 4: Sign payment transaction using WalletManager
-      print('[PaymentChannelManager]   Signing payment TX...');
       
       // Use correlation ID as transaction ID for response matching
       final correlationId = 'payment-${msg.channelId}-$newSequence';
@@ -934,10 +857,8 @@ class PaymentChannelManagerActor extends Actor {
         sender: context.self,
       );
       
-      print('[PaymentChannelManager]   Signature request sent');
       
     } catch (e) {
-      print('[PaymentChannelManager] ✗ Failed to record payment: $e');
       
       originalSender?.tell(PaymentRecordedResponse(
         channelId: msg.channelId,
@@ -955,9 +876,6 @@ class PaymentChannelManagerActor extends Actor {
 
   /// Server acknowledges a payment
   Future<void> _handleAcknowledgePayment(AcknowledgePaymentMessage msg) async {
-    print('[PaymentChannelManager] Acknowledging payment on channel: ${msg.channelId}');
-    print('[PaymentChannelManager]   Proposed sequence: ${msg.proposedSequence}');
-    print('[PaymentChannelManager]   Proposed balances: client=${msg.proposedClientBalance}, server=${msg.proposedServerBalance}');
     
     final originalSender = context.sender;
     
@@ -969,7 +887,6 @@ class PaymentChannelManagerActor extends Actor {
       }
       
       // Step 2: Query current channel state for validation
-      print('[PaymentChannelManager]   Querying channel state...');
       final stateResponse = await aggregateRef.ask(ChannelStateQuery(channelId: msg.channelId));
       
       if (stateResponse is! FullChannelStateResponse || !stateResponse.success) {
@@ -987,7 +904,6 @@ class PaymentChannelManagerActor extends Actor {
       }
       
       // Step 3: Sign the payment TX as server
-      print('[PaymentChannelManager]   Signing payment TX as server...');
       
       // Build redeem script for signing
       final clientPubKey = dartsv.SVPublicKey.fromHex(stateResponse.clientPubKeyHex!);
@@ -1028,10 +944,8 @@ class PaymentChannelManagerActor extends Actor {
         sender: context.self,
       );
       
-      print('[PaymentChannelManager]   Signature request sent');
       
     } catch (e) {
-      print('[PaymentChannelManager] ✗ Failed to acknowledge payment: $e');
       
       originalSender?.tell(PaymentAcknowledgedResponse(
         channelId: msg.channelId,
@@ -1043,7 +957,6 @@ class PaymentChannelManagerActor extends Actor {
 
   /// Close a channel
   Future<void> _handleCloseChannel(CloseChannelMessage msg) async {
-    print('[PaymentChannelManager] Closing channel: ${msg.channelId}');
     
     // Capture sender immediately (context.sender changes with each new message)
     final originalSender = context.sender;
@@ -1080,9 +993,7 @@ class PaymentChannelManagerActor extends Actor {
         success: true,
       ));
       
-      print('[PaymentChannelManager] ✓ Channel closed: ${msg.channelId}');
     } catch (e) {
-      print('[PaymentChannelManager] ✗ Failed to close channel: $e');
       
       originalSender?.tell(ChannelClosedResponse(
         channelId: msg.channelId,
@@ -1094,7 +1005,6 @@ class PaymentChannelManagerActor extends Actor {
 
   /// Query channel state
   Future<void> _handleQueryChannelState(QueryChannelStateMessage msg) async {
-    print('[PaymentChannelManager] Querying channel state: ${msg.channelId}');
     
     // For Phase 1, this is simplified - full implementation requires projections
     throw UnimplementedError(
@@ -1106,11 +1016,9 @@ class PaymentChannelManagerActor extends Actor {
   /// Get or spawn a channel aggregate actor
   Future<ActorRef> _getOrSpawnChannelAggregate(String channelId) async {
     if (_channelAggregates.containsKey(channelId)) {
-      print('[PaymentChannelManager]   Using existing aggregate for: $channelId');
       return _channelAggregates[channelId]!;
     }
     
-    print('[PaymentChannelManager]   Spawning new aggregate for: $channelId');
     final aggregateRef = await context.system.spawn(
       'channel-$channelId',
       () => PaymentChannelAggregate(

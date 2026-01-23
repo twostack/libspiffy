@@ -20,7 +20,6 @@ import 'blockchain_data_source.dart';
 ///   hdPublicKey: hdPubKey,
 ///   gapLimit: 20,
 /// );
-/// print('Found ${result.usedAddresses.length} used addresses');
 /// ```
 class AddressDiscoveryService {
   final Logger _logger = Logger('AddressDiscoveryService');

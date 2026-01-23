@@ -41,7 +41,6 @@ class ARCActor extends Actor {
 
   @override
   void preStart() {
-    print('ARCActor started');
     _initializeARCService();
     _startStatusMonitoring();
   }
@@ -83,11 +82,9 @@ class ARCActor extends Actor {
           break;
           
         default:
-          print('ARCActor received unknown message: ${message.runtimeType}');
       }
     } catch (e) {
-      print('Error in ARCActor: $e');
-      
+
       // Send error response for messages that expect responses
       if (context.sender != null) {
         _sendErrorResponse(message, e.toString());
@@ -99,19 +96,13 @@ class ARCActor extends Actor {
   void _initializeARCService() {
     // Skip if ARC service was already provided (e.g., mock for testing)
     if (_arcService != null) {
-      print('ARC service already provided (using injected instance)');
       return;
     }
     
-    print('Initializing ARC service integration...');
-    
     if (_arcConfig != null) {
       _arcService = ArcService.fromConfig(_arcConfig);
-      print('ARC service initialized with endpoint: ${_arcConfig.baseUrl}');
     } else {
-      print('WARNING: ARC service not configured - using TAAL testnet default');
       _arcService = ArcService.fromConfig(ArcServiceConfig.taalTestnet);
-      print('ARC service initialized with TAAL testnet (with API key)');
     }
   }
 
@@ -121,15 +112,12 @@ class ARCActor extends Actor {
       _checkPendingTransactions();
     });
     
-    print('Transaction status monitoring started');
   }
 
   /// Handle transaction broadcast requests
   Future<void> _handleBroadcastTransaction(BroadcastTransactionMessage msg) async {
-    print('Broadcasting transaction ${msg.txid} for wallet ${msg.walletId}');
-    
+
     if (_arcService == null) {
-      print('ERROR: ARC service not initialized');
       context.sender?.tell(BroadcastFailedMessage(msg.txid, 'ARC service not available'));
       return;
     }
@@ -153,20 +141,16 @@ class ARCActor extends Actor {
       // Send success response
       context.sender?.tell(BroadcastSuccessMessage(msg.txid, response.txid));
       
-      print('Transaction ${msg.txid} broadcast successfully with status: ${response.status}');
-      
+
     } catch (e) {
-      print('Error broadcasting transaction ${msg.txid}: $e');
       context.sender?.tell(BroadcastFailedMessage(msg.txid, e.toString()));
     }
   }
 
   /// Handle BEEF broadcast requests
   Future<void> _handleBroadcastBEEF(BroadcastBEEFMessage msg) async {
-    print('Broadcasting BEEF transaction ${msg.txid} for wallet ${msg.walletId}');
-    
+
     if (_arcService == null) {
-      print('ERROR: ARC service not initialized');
       context.sender?.tell(BroadcastFailedMessage(msg.txid, 'ARC service not available'));
       return;
     }
@@ -184,8 +168,6 @@ class ARCActor extends Actor {
       final paymentTxHex = hex.encode(paymentTxData);
       final paymentTx = dartsv.Transaction.fromHex(paymentTxHex);
       
-      print('Extracted payment transaction: ${msg.txid}');
-      print('  Inputs: ${paymentTx.inputs.length}, Outputs: ${paymentTx.outputs.length}');
       
       // 2. Build a map of ancestor transactions for UTXO lookup
       final ancestorTxMap = <String, dartsv.Transaction>{};
@@ -196,7 +178,6 @@ class ARCActor extends Actor {
         ancestorTxMap[ancestorTxid] = ancestorTx;
       }
       
-      print('Built ancestor map with ${ancestorTxMap.length} transactions');
       
       // // 3. Convert payment transaction to Extended Format (EF)
       // final extendedFormatTxHex = _convertToExtendedFormat(
@@ -204,7 +185,6 @@ class ARCActor extends Actor {
       //   ancestorTxMap,
       // );
       //
-      // print('Converted to Extended Format: ${extendedFormatTxHex.length} chars');
       
       // 4a (deferred) Broadcast Extended Format transaction via ARC service
       // 4b (deferred) Broadcast Raw Format transaction via ARC service. Extended format seems still not supported by Arc API
@@ -222,20 +202,16 @@ class ARCActor extends Actor {
       _walletManager.tell(WalletCommandMessage(msg.walletId, command));
       
       context.sender?.tell(BroadcastSuccessMessage(msg.txid, response.txid));
-      print('Transaction ${msg.txid} broadcast successfully with status: ${response.status}');
       
     } catch (e) {
-      print('Error broadcasting transaction ${msg.txid}: $e');
       context.sender?.tell(BroadcastFailedMessage(msg.txid, e.toString()));
     }
   }
 
   /// Handle transaction status check requests
   Future<void> _handleCheckTransactionStatus(CheckTransactionStatusMessage msg) async {
-    print('Checking status for transaction ${msg.txid}');
     
     if (_arcService == null) {
-      print('ERROR: ARC service not initialized');
       context.sender?.tell(TransactionStatusMessage(
         txid: msg.txid,
         status: 'error',
@@ -263,7 +239,6 @@ class ARCActor extends Actor {
       ));
       
     } catch (e) {
-      print('Error checking status for ${msg.txid}: $e');
       context.sender?.tell(TransactionStatusMessage(
         txid: msg.txid,
         status: 'error',
@@ -273,10 +248,8 @@ class ARCActor extends Actor {
 
   /// Handle merkle proof retrieval requests (NEW for SPV)
   Future<void> _handleRetrieveMerkleProof(RetrieveMerkleProofMessage msg) async {
-    print('Retrieving merkle proof for transaction ${msg.txid}');
     
     if (_arcService == null) {
-      print('ERROR: ARC service not initialized');
       context.sender?.tell(MerkleProofMessage(
         txid: msg.txid,
         success: false,
@@ -305,7 +278,6 @@ class ARCActor extends Actor {
           success: true,
         ));
         
-        print('Merkle proof retrieved successfully for ${msg.txid}');
       } else {
         context.sender?.tell(MerkleProofMessage(
           txid: msg.txid,
@@ -313,11 +285,9 @@ class ARCActor extends Actor {
           error: 'Transaction not confirmed yet - proof not available',
         ));
         
-        print('Merkle proof not available for ${msg.txid}');
       }
       
     } catch (e) {
-      print('Error retrieving merkle proof for ${msg.txid}: $e');
       context.sender?.tell(MerkleProofMessage(
         txid: msg.txid,
         success: false,
@@ -328,7 +298,6 @@ class ARCActor extends Actor {
 
   /// Handle fee quote requests
   Future<void> _handleGetFeeQuote(GetFeeQuoteMessage msg) async {
-    print('Getting fee quote from ARC service');
     
     if (_arcService == null) {
       context.sender?.tell(FeeQuoteMessage({'error': 'ARC service not available'}));
@@ -354,14 +323,12 @@ class ARCActor extends Actor {
       context.sender?.tell(FeeQuoteMessage(feeData));
       
     } catch (e) {
-      print('Error getting fee quote: $e');
       context.sender?.tell(FeeQuoteMessage({'error': e.toString()}));
     }
   }
 
   /// Handle fee estimation requests
   Future<void> _handleEstimateFee(EstimateFeeMessage msg) async {
-    print('Estimating fee for ${msg.inputCount} inputs, ${msg.outputCount} outputs');
     
     try {
       // Estimate transaction size (P2PKH inputs: ~148 bytes, outputs: ~34 bytes, overhead: ~10 bytes)
@@ -374,10 +341,8 @@ class ARCActor extends Actor {
         if (_arcService != null) {
           final policy = await _arcService!.getPolicy();
           feeRatePerKb = policy.standardFeePerKb;
-          print('Using Arc policy fee rate: $feeRatePerKb sat/KB');
         }
       } catch (e) {
-        print('Could not fetch Arc policy, using default fee rate: $feeRatePerKb sat/KB');
       }
       
       // Calculate fee: (size_in_bytes * fee_rate_per_kb) / 1000
@@ -386,7 +351,6 @@ class ARCActor extends Actor {
       context.sender?.tell(FeeEstimateMessage(estimatedFee));
       
     } catch (e) {
-      print('Error estimating fee: $e');
       context.sender?.tell(FeeEstimateMessage(BigInt.zero));
     }
   }
@@ -404,7 +368,6 @@ class ARCActor extends Actor {
     
     if (pendingTxids.isEmpty) return;
     
-    print('Checking status of ${pendingTxids.length} pending transactions');
     
     for (final txid in pendingTxids) {
       _checkAndUpdateTransactionStatus(txid);
@@ -424,7 +387,6 @@ class ARCActor extends Actor {
       
       if (newStatus != previousStatus) {
         _transactionStatus[txid] = newStatus;
-        print('Transaction $txid status changed: $previousStatus -> $newStatus');
         
         final walletId = _transactionToWallet[txid];
         if (walletId != null) {
@@ -432,7 +394,6 @@ class ARCActor extends Actor {
           if (response.status == ArcTransactionStatus.seenOnNetwork) {
             final outputs = _transactionOutputs[txid];
             if (outputs != null) {
-              print('Transaction $txid SEEN_ON_NETWORK - marking ${outputs.length} outputs as available');
               for (final vout in outputs) {
                 final command = MarkUTXOAvailableCommand(
                   walletId: walletId,
@@ -447,7 +408,6 @@ class ARCActor extends Actor {
           // MINED: Update transaction status and confirmations
           if (response.status == ArcTransactionStatus.mined && response.blockHeight != null) {
             // First, confirm the transaction itself
-            print('Transaction $txid MINED at height ${response.blockHeight} - confirming transaction');
             final confirmTxCommand = ConfirmTransactionCommand(
               walletId: walletId,
               txid: txid,
@@ -460,7 +420,6 @@ class ARCActor extends Actor {
             if (response.merklePath != null && 
                 response.merklePath!.isNotEmpty && 
                 response.blockHash != null) {
-              print('Transaction $txid - storing merkle proof (${response.merklePath!.length} elements)');
               final merkleProof = MerkleProof(
                 txid: txid,
                 blockHash: response.blockHash!,
@@ -471,16 +430,13 @@ class ARCActor extends Actor {
               
               try {
                 await _storage.storeMerkleProof(txid, merkleProof);
-                print('  ✅ Merkle proof stored for transaction $txid');
               } catch (e) {
-                print('  ⚠️  Failed to store merkle proof for $txid: $e');
               }
             }
             
             // Then update confirmations for each registered output
             final outputs = _transactionOutputs[txid];
             if (outputs != null) {
-              print('Transaction $txid MINED - updating confirmations for ${outputs.length} outputs');
               for (final vout in outputs) {
                 final utxoKey = '$txid:$vout';
                 final command = UpdateUTXOConfirmationsCommand(
@@ -498,13 +454,11 @@ class ARCActor extends Actor {
       }
       
     } catch (e) {
-      print('Error checking status for transaction $txid: $e');
     }
   }
 
   /// Handle registration of transaction outputs for tracking
   void _handleRegisterOutputs(RegisterTransactionOutputsMessage msg) {
-    print('Registering outputs for tracking: ${msg.txid} -> ${msg.vouts}');
     _transactionOutputs[msg.txid] = msg.vouts;
     
     // Also ensure we're tracking this transaction's wallet mapping
@@ -516,7 +470,6 @@ class ARCActor extends Actor {
     // This is especially important for recovery scenarios where transactions are re-registered
     if (!_transactionStatus.containsKey(msg.txid)) {
       _transactionStatus[msg.txid] = 'pending';
-      print('  → Initialized status to pending for monitoring');
     }
   }
 
@@ -525,10 +478,8 @@ class ARCActor extends Actor {
   /// This is triggered when new block headers are received, to check if any
   /// pending UTXOs have been mined and need merkle proofs fetched.
   Future<void> _handleCheckStoragePendingUTXOs(CheckStoragePendingUTXOsMessage msg) async {
-    print('Checking pending UTXOs from storage (triggered by block ${msg.triggerBlockHeight})');
     
     if (_arcService == null) {
-      print('ERROR: ARC service not initialized - cannot check pending UTXOs');
       return;
     }
     
@@ -537,7 +488,6 @@ class ARCActor extends Actor {
       final walletIds = await _storage.getWalletIds();
       
       if (walletIds.isEmpty) {
-        print('No wallets in storage - nothing to check');
         return;
       }
       
@@ -577,21 +527,17 @@ class ARCActor extends Actor {
       }
       
       if (pendingTxidsToCheck.isEmpty) {
-        print('No pending UTXOs found in storage');
         return;
       }
       
-      print('Found ${pendingTxidsToCheck.length} pending transaction(s) to check with Arc');
       
       // Check each pending transaction with Arc
       for (final txid in pendingTxidsToCheck.keys) {
         await _checkAndUpdateTransactionStatus(txid);
       }
       
-      print('Completed checking pending UTXOs from storage');
       
     } catch (e) {
-      print('Error checking pending UTXOs from storage: $e');
     }
   }
 
@@ -654,7 +600,6 @@ class ARCActor extends Actor {
 
   @override
   void postStop() {
-    print('ARCActor stopped');
     _statusCheckTimer?.cancel();
   }
 

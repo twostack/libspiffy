@@ -170,9 +170,7 @@ class IsarWalletStorage implements ReadModelStorage {
           .where()
           .walletIdEqualTo(walletId)
           .count();
-      print('[IsarWalletStorage] Address lookup: $address NOT found (wallet has $totalAddresses addresses)');
     } else {
-      print('[IsarWalletStorage] Address lookup: $address FOUND in wallet');
     }
     
     return count > 0;
@@ -270,7 +268,6 @@ class IsarWalletStorage implements ReadModelStorage {
 
   @override
   Future<void> upsertAddress(String walletId, AddressMetadata metadata) async {
-    print('[IsarWalletStorage] 💾 Upserting address: ${metadata.address} for wallet $walletId');
     await _isar.writeTxn(() async {
       // Find existing entity by address (unique index)
       final existing = await _isar.addressEntitys
@@ -289,7 +286,6 @@ class IsarWalletStorage implements ReadModelStorage {
       
       await _isar.addressEntitys.put(entity);
     });
-    print('[IsarWalletStorage]    ✅ Address persisted to Isar');
   }
   
   @override
@@ -537,10 +533,7 @@ class IsarWalletStorage implements ReadModelStorage {
       
       if (existingEntity != null) {
         // Update existing
-        print('[IsarWalletStorage] Updating existing UTXO ${utxo.txid.substring(0,8)}:${utxo.vout} - status: ${utxo.status.name}');
         if (existingEntity.status == 'spent' && utxo.status != UTXOStatus.spent) {
-          print('[IsarWalletStorage]   ⚠️  WARNING: Overwriting SPENT status with ${utxo.status.name}!');
-          print('[IsarWalletStorage]   Stack trace: ${StackTrace.current}');
         }
         existingEntity
           ..satoshis = utxo.satoshis.toString()
@@ -556,7 +549,6 @@ class IsarWalletStorage implements ReadModelStorage {
         }
         
         await _isar.bitcoinUtxoEntitys.put(existingEntity);
-        print('[IsarWalletStorage]   ✅ UTXO updated in Isar with status: ${utxo.status.name}');
       } else {
         // Insert new
         final entity = BitcoinUtxoEntity.fromDomain(utxo);
@@ -1105,7 +1097,6 @@ class IsarWalletStorage implements ReadModelStorage {
     try {
       return jsonEncode(data);
     } catch (e) {
-      print('Error encoding JSON: $e');
       return '{}';
     }
   }
@@ -1115,7 +1106,6 @@ class IsarWalletStorage implements ReadModelStorage {
       if (jsonString.isEmpty) return {};
       return jsonDecode(jsonString) as Map<String, dynamic>;
     } catch (e) {
-      print('Error decoding JSON: $e');
       return {};
     }
   }

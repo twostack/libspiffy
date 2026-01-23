@@ -124,8 +124,6 @@ class ChannelProjection extends Projection<void> {
           return false;
       }
     } catch (e, stack) {
-      print('[ChannelProjection] Error handling event ${event.runtimeType}: $e');
-      print('[ChannelProjection] Stack trace: $stack');
       rethrow;
     }
   }
@@ -135,10 +133,6 @@ class ChannelProjection extends Projection<void> {
   // ==========================================================================
   
   Future<void> _handleChannelRequested(ChannelRequestedEvent event) async {
-    print('[ChannelProjection] 🆕 Processing ChannelRequestedEvent: ${event.channelId}');
-    print('[ChannelProjection]    Wallet ID: ${event.walletId}');
-    print('[ChannelProjection]    Role: client');
-    print('[ChannelProjection]    Funding: ${event.fundingAmountSats} sats');
     
     // Create new channel entity
     final entity = PaymentChannelEntity()
@@ -166,15 +160,12 @@ class ChannelProjection extends Projection<void> {
       ..hasFundingMerkleProof = false;
     
     await _storage.storePaymentChannel(entity);
-    print('[ChannelProjection]    ✅ Channel entity created in Isar');
   }
   
   Future<void> _handleChannelAccepted(ChannelAcceptedEvent event) async {
-    print('[ChannelProjection] ✅ Processing ChannelAcceptedEvent: ${event.channelId}');
     
     final existing = await _storage.getPaymentChannel(event.channelId);
     if (existing == null) {
-      print('[ChannelProjection]    ⚠️ Channel ${event.channelId} not found, creating new entity as server');
       // Server side: create entity on accept if it doesn't exist
       // Event now includes all necessary data from AcceptChannelCommand
       final entity = PaymentChannelEntity()
@@ -202,7 +193,6 @@ class ChannelProjection extends Projection<void> {
         ..hasFundingMerkleProof = false;
       
       await _storage.storePaymentChannel(entity);
-      print('[ChannelProjection]    ✅ Server channel entity created (funding: ${event.fundingAmountSats} sats)');
     } else {
       // Client side: update existing entity with server info
       final entity = existing as PaymentChannelEntity;
@@ -211,26 +201,18 @@ class ChannelProjection extends Projection<void> {
       entity.state = 'opening'; // ChannelStatus.accepted → 'opening'
       
       await _storage.storePaymentChannel(entity);
-      print('[ChannelProjection]    ✅ Channel entity updated with server keys');
     }
   }
   
   Future<void> _handleChannelRejected(ChannelRejectedEvent event) async {
-    print('[ChannelProjection] ❌ Processing ChannelRejectedEvent: ${event.channelId}');
-    print('[ChannelProjection]    Reason: ${event.reason}');
     
     await _storage.updatePaymentChannelState(event.channelId, 'closed');
-    print('[ChannelProjection]    ✅ Channel marked as rejected/closed');
   }
   
   Future<void> _handleServerAcceptanceRecorded(ServerAcceptanceRecordedEvent event) async {
-    print('[ChannelProjection] 🤝 Processing ServerAcceptanceRecordedEvent: ${event.channelId}');
-    print('[ChannelProjection]    Server pubkey: ${event.serverPubKeyHex.substring(0, 16)}...');
-    print('[ChannelProjection]    Server address: ${event.serverAddressB58}');
     
     final existing = await _storage.getPaymentChannel(event.channelId);
     if (existing == null) {
-      print('[ChannelProjection]    ⚠️ Channel ${event.channelId} not found');
       return;
     }
     
@@ -240,15 +222,12 @@ class ChannelProjection extends Projection<void> {
     entity.serverAddressB58 = event.serverAddressB58;
     
     await _storage.storePaymentChannel(entity);
-    print('[ChannelProjection]    ✅ Client channel updated with server keys');
   }
   
   Future<void> _handleRefundBuilt(RefundBuiltEvent event) async {
-    print('[ChannelProjection] 🔐 Processing RefundBuiltEvent: ${event.channelId}');
     
     final existing = await _storage.getPaymentChannel(event.channelId);
     if (existing == null) {
-      print('[ChannelProjection]    ⚠️ Channel ${event.channelId} not found');
       return;
     }
     
@@ -260,15 +239,12 @@ class ChannelProjection extends Projection<void> {
     entity.refundClientSigHex = event.clientSignatureHex;
     
     await _storage.storePaymentChannel(entity);
-    print('[ChannelProjection]    ✅ Refund transaction data stored');
   }
   
   Future<void> _handleRefundCountersigned(RefundCountersignedEvent event) async {
-    print('[ChannelProjection] ✍️ Processing RefundCountersignedEvent: ${event.channelId}');
     
     final existing = await _storage.getPaymentChannel(event.channelId);
     if (existing == null) {
-      print('[ChannelProjection]    ⚠️ Channel ${event.channelId} not found');
       return;
     }
     
@@ -277,17 +253,12 @@ class ChannelProjection extends Projection<void> {
     entity.state = 'opening'; // ChannelStatus.refundSigned → 'opening'
     
     await _storage.storePaymentChannel(entity);
-    print('[ChannelProjection]    ✅ Refund countersigned, ready to open');
   }
   
   Future<void> _handleChannelOpened(ChannelOpenedEvent event) async {
-    print('[ChannelProjection] 🚀 Processing ChannelOpenedEvent: ${event.channelId}');
-    print('[ChannelProjection]    Funding TX: ${event.fundingTxId}');
-    print('[ChannelProjection]    Initial balances: client=${event.initialClientBalanceSats}, server=${event.initialServerBalanceSats}');
     
     final existing = await _storage.getPaymentChannel(event.channelId);
     if (existing == null) {
-      print('[ChannelProjection]    ⚠️ Channel ${event.channelId} not found');
       return;
     }
     
@@ -301,17 +272,12 @@ class ChannelProjection extends Projection<void> {
     entity.serverBalanceSats = event.initialServerBalanceSats.toString();
     
     await _storage.storePaymentChannel(entity);
-    print('[ChannelProjection]    ✅ Channel opened and ready for payments');
   }
   
   Future<void> _handlePaymentRecorded(PaymentRecordedEvent event) async {
-    print('[ChannelProjection] 💸 Processing PaymentRecordedEvent: ${event.channelId}');
-    print('[ChannelProjection]    Payment: ${event.amountSats} sats (seq: ${event.sequenceNumber})');
-    print('[ChannelProjection]    New balances: client=${event.newClientBalanceSats}, server=${event.newServerBalanceSats}');
     
     final existing = await _storage.getPaymentChannel(event.channelId);
     if (existing == null) {
-      print('[ChannelProjection]    ⚠️ Channel ${event.channelId} not found');
       return;
     }
     
@@ -322,17 +288,12 @@ class ChannelProjection extends Projection<void> {
     entity.latestPaymentTxHex = event.paymentTxHex;
     
     await _storage.storePaymentChannel(entity);
-    print('[ChannelProjection]    ✅ Payment recorded in read model');
   }
   
   Future<void> _handlePaymentAcknowledged(PaymentAcknowledgedEvent event) async {
-    print('[ChannelProjection] ✓ Processing PaymentAcknowledgedEvent: ${event.channelId}');
-    print('[ChannelProjection]    Sequence: ${event.sequenceNumber}');
-    print('[ChannelProjection]    Balances: client=${event.newClientBalanceSats}, server=${event.newServerBalanceSats}');
     
     final existing = await _storage.getPaymentChannel(event.channelId);
     if (existing == null) {
-      print('[ChannelProjection]    ⚠️ Channel ${event.channelId} not found');
       return;
     }
     
@@ -343,25 +304,17 @@ class ChannelProjection extends Projection<void> {
     entity.latestPaymentTxHex = event.fullySignedPaymentTxHex;
     
     await _storage.storePaymentChannel(entity);
-    print('[ChannelProjection]    ✅ Payment acknowledged with full signatures');
   }
   
   Future<void> _handleChannelClosing(ChannelClosingEvent event) async {
-    print('[ChannelProjection] 🔒 Processing ChannelClosingEvent: ${event.channelId}');
-    print('[ChannelProjection]    Reason: ${event.reason ?? "cooperative close"}');
     
     await _storage.updatePaymentChannelState(event.channelId, 'closing');
-    print('[ChannelProjection]    ✅ Channel marked as closing');
   }
   
   Future<void> _handleChannelClosed(ChannelClosedEvent event) async {
-    print('[ChannelProjection] 🏁 Processing ChannelClosedEvent: ${event.channelId}');
-    print('[ChannelProjection]    Settlement TX: ${event.settlementTxId}');
-    print('[ChannelProjection]    Final balances: client=${event.finalClientBalanceSats}, server=${event.finalServerBalanceSats}');
     
     final existing = await _storage.getPaymentChannel(event.channelId);
     if (existing == null) {
-      print('[ChannelProjection]    ⚠️ Channel ${event.channelId} not found');
       return;
     }
     
@@ -372,17 +325,12 @@ class ChannelProjection extends Projection<void> {
     entity.closedAt = event.timestamp;
     
     await _storage.storePaymentChannel(entity);
-    print('[ChannelProjection]    ✅ Channel closed with final settlement');
   }
   
   Future<void> _handleRefundClaimed(RefundClaimedEvent event) async {
-    print('[ChannelProjection] ⏰ Processing RefundClaimedEvent: ${event.channelId}');
-    print('[ChannelProjection]    Refund TX: ${event.refundTxId}');
-    print('[ChannelProjection]    Amount: ${event.refundAmountSats} sats');
     
     final existing = await _storage.getPaymentChannel(event.channelId);
     if (existing == null) {
-      print('[ChannelProjection]    ⚠️ Channel ${event.channelId} not found');
       return;
     }
     
@@ -391,7 +339,6 @@ class ChannelProjection extends Projection<void> {
     entity.closedAt = event.timestamp;
     
     await _storage.storePaymentChannel(entity);
-    print('[ChannelProjection]    ✅ Channel expired, refund claimed');
   }
 }
 

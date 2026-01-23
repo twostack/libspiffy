@@ -189,10 +189,6 @@ class AncestorChainService {
     required List<MerkleProof> merkleProofs,
   }) async {
     try {
-      print('  📥 createBeefWithAncestry:');
-      print('    New transaction: ${newTransaction.txid}');
-      print('    Ancestor transactions: ${ancestorTransactions.length}');
-      print('    Merkle proofs: ${merkleProofs.length}');
 
       // 1. Convert all transactions to raw bytes
       final txBytes = <Uint8List>[];
@@ -233,11 +229,6 @@ class AncestorChainService {
         }
       }
 
-      print('  📊 BEEF.create() inputs:');
-      print('    txBytes: ${txBytes.length} transactions');
-      print('    bumps: ${bumps.length} merkle proofs');
-      print('    hasMerkle: ${hasMerkle.length} flags = $hasMerkle');
-      print('    bumpIndex: ${bumpIndex.length} indices = $bumpIndex');
 
       // 5. Create BEEF using the existing BEEF.create() method
       final beef = BEEF.create(
@@ -249,17 +240,11 @@ class AncestorChainService {
 
       // 6. Serialize BEEF
       final serialized = beef.serialize();
-      print('  ✓ BEEF serialized: ${serialized.length} bytes');
 
       // 7. Verify BEEF can be parsed (sanity check)
       try {
         final parsed = BEEF.parse(serialized);
-        print('  ✓ BEEF parse verification passed');
-        print('    Parsed ${parsed.txs.length} transactions');
-        print('    Parsed ${parsed.bumps.length} merkle proofs');
       } catch (e, stackTrace) {
-        print('  ❌ BEEF parse verification FAILED: $e');
-        print('  Stack trace: $stackTrace');
         throw Exception('Created BEEF is invalid: $e');
       }
 
@@ -269,8 +254,6 @@ class AncestorChainService {
         proofCount: merkleProofs.length,
       );
     } catch (e, stackTrace) {
-      print('Error creating BEEF with ancestry: $e');
-      print('Stack trace: $stackTrace');
       return BEEFWithAncestryResult.error('Failed to create BEEF: $e');
     }
   }
@@ -282,10 +265,6 @@ class AncestorChainService {
     required List<MerkleProof> merkleProofs,
   }) async {
     try {
-      print('  📥 createBeefWithMultipleNewTransactions:');
-      print('    New transactions: ${newTransactions.length}');
-      print('    Ancestor transactions: ${ancestorTransactions.length}');
-      print('    Merkle proofs: ${merkleProofs.length}');
 
       // 1. Convert all transactions to raw bytes
       final txBytes = <Uint8List>[];
@@ -332,11 +311,6 @@ class AncestorChainService {
         }
       }
 
-      print('  📊 BEEF.create() inputs:');
-      print('    txBytes: ${txBytes.length} transactions');
-      print('    bumps: ${bumps.length} merkle proofs');
-      print('    hasMerkle: $hasMerkle');
-      print('    bumpIndex: $bumpIndex');
 
       // 5. Create and serialize BEEF
       final beef = BEEF.create(
@@ -347,15 +321,11 @@ class AncestorChainService {
       );
 
       final serialized = beef.serialize();
-      print('  ✓ BEEF serialized: ${serialized.length} bytes');
 
       // 6. Verify
       try {
         final parsed = BEEF.parse(serialized);
-        print('  ✓ BEEF parse verification passed');
-        print('    Parsed ${parsed.txs.length} transactions');
       } catch (e) {
-        print('  ❌ BEEF parse verification FAILED: $e');
         throw Exception('Created BEEF is invalid: $e');
       }
 
@@ -365,8 +335,6 @@ class AncestorChainService {
         proofCount: merkleProofs.length,
       );
     } catch (e, stackTrace) {
-      print('Error creating BEEF: $e');
-      print('Stack trace: $stackTrace');
       return BEEFWithAncestryResult.error('Failed to create BEEF: $e');
     }
   }
@@ -381,15 +349,11 @@ class AncestorChainService {
     // Check if merkleProof contains a raw BUMP serialization
     if (proof.merkleProof.length == 1 && proof.merkleProof[0].length > 64) {
       // This is a raw BUMP hex string - parse it directly
-      print('  [AncestorChain] Detected raw BUMP format, parsing directly...');
       try {
         final bumpBytes = Uint8List.fromList(hex.decode(proof.merkleProof[0]));
         final bump = BUMP.fromBytes(bumpBytes);
-        print(
-            '  [AncestorChain] ✓ Parsed BUMP: height=${bump.blockHeight}, levels=${bump.path.length}');
         return bump;
       } catch (e) {
-        print('  [AncestorChain] ❌ Failed to parse raw BUMP: $e');
         rethrow;
       }
     }

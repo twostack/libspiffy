@@ -53,7 +53,6 @@ class WalletManagerActor extends Actor {
 
   @override
   void preStart() {
-    print('WalletManagerActor started');
     _startReservationCleanupTimer();
   }
 
@@ -64,12 +63,10 @@ class WalletManagerActor extends Actor {
       const Duration(minutes: 5),
       (_) => _cleanupExpiredReservations(),
     );
-    print('UTXO reservation cleanup timer started (runs every 5 minutes)');
   }
 
   /// Clean up expired UTXO reservations across all active wallets
   Future<void> _cleanupExpiredReservations() async {
-    print('Running automated UTXO reservation cleanup...');
     
     int walletsProcessed = 0;
     for (final entry in _walletActors.entries) {
@@ -86,18 +83,15 @@ class WalletManagerActor extends Actor {
         walletRef.tell(WalletCommandMessage(walletId, cleanupCommand));
         walletsProcessed++;
       } catch (e) {
-        print('Warning: Failed to cleanup reservations for wallet $walletId: $e');
       }
     }
     
     if (walletsProcessed > 0) {
-      print('Sent cleanup commands to $walletsProcessed wallets');
     }
   }
 
   @override
   Future<void> onMessage(dynamic message) async {
-    print('[WalletManagerActor] Received message: ${message.runtimeType}');
     try {
       switch (message.runtimeType) {
         case CreateWalletMessage:
@@ -134,26 +128,21 @@ class WalletManagerActor extends Actor {
         case SetInvoiceManagerMessage:
           // Internal message to set invoice manager reference
           _invoiceManager = (message as SetInvoiceManagerMessage).invoiceManager;
-          print('InvoiceManager reference set in WalletManager');
           break;
           
         case SetArcActorMessage:
           // Internal message to set ARC actor reference
           _arcActor = (message as SetArcActorMessage).arcActor;
-          print('ARC actor reference set in WalletManager');
           break;
           
         case SetBenfordCoordinatorMessage:
           // Internal message to set Benford coordinator reference
           _benfordCoordinator = (message as SetBenfordCoordinatorMessage).benfordCoordinator;
-          print('Benford coordinator reference set in WalletManager');
           break;
           
         default:
-          print('WalletManagerActor received unknown message: ${message.runtimeType}');
       }
     } catch (e) {
-      print('Error in WalletManagerActor: $e');
       
       if (context.sender != null) {
         context.sender!.tell(LocalMessage(
@@ -165,11 +154,7 @@ class WalletManagerActor extends Actor {
 
   /// Handle wallet creation requests
   Future<void> _handleCreateWallet(CreateWalletMessage msg) async {
-    print('[WalletManagerActor] 🔧 _handleCreateWallet called for: ${msg.walletId}');
-    print('[WalletManagerActor]    Name: ${msg.name}');
-    print('[WalletManagerActor]    Has xpriv: ${msg.xpriv != null && msg.xpriv!.isNotEmpty}');
     try {
-      print('Creating wallet: ${msg.walletId}');
       
       // Check if wallet already exists
       if (_walletActors.containsKey(msg.walletId)) {
@@ -219,10 +204,8 @@ class WalletManagerActor extends Actor {
       // Send command directly - AggregateRoot handles Command objects directly
       walletActor.tell(createCommand, sender: context.self);
 
-      print('Wallet creation command sent to aggregate: ${msg.walletId}');
 
     } catch (e) {
-      print('Error creating wallet ${msg.walletId}: $e');
       context.sender?.tell(WalletCreatedMessage(
         msg.walletId,
         '',
@@ -236,14 +219,9 @@ class WalletManagerActor extends Actor {
   /// Handle wallet creation response from BitcoinWalletAggregate
   /// This receives the actual root address from the WalletCreatedEvent
   Future<void> _handleWalletCreatedResponse(WalletCreatedResponse response) async {
-    print('[WalletManagerActor] Received wallet creation response for: ${response.walletId}');
-    print('[WalletManagerActor]   Success: ${response.success}');
-    print('[WalletManagerActor]   Root address: ${response.rootAddress}');
-    print('[WalletManagerActor]   Error: ${response.error}');
     
     // Get the original sender who requested the wallet creation
     final originalSender = _pendingWalletCreations.remove(response.walletId);
-    print('[WalletManagerActor]   Original sender exists: ${originalSender != null}');
     
     if (originalSender != null) {
       // Forward the response with real root address to the original caller
@@ -254,20 +232,14 @@ class WalletManagerActor extends Actor {
         error: response.error,
       );
       
-      print('[WalletManagerActor]   Sending WalletCreatedMessage to original sender...');
       originalSender.tell(message);
       
-      print('[WalletManagerActor] ✓ Wallet created successfully: ${response.walletId} with root address: ${response.rootAddress}');
     } else {
-      print('[WalletManagerActor] ⚠️ Warning: No pending request found for wallet ${response.walletId}');
     }
   }
 
   /// Route commands to specific wallet aggregates
   Future<void> _handleWalletCommand(WalletCommandMessage msg) async {
-    print('[WalletManagerActor] Handling command for wallet: ${msg.walletId}');
-    print('[WalletManagerActor] Command type: ${msg.command.runtimeType}');
-    print('[WalletManagerActor] Wallets in memory: ${_walletActors.keys.toList()}');
     
     // Handle PreloadWalletCommand - just loads the wallet without forwarding to aggregate
     if (msg.command is PreloadWalletCommand) {
@@ -278,12 +250,10 @@ class WalletManagerActor extends Actor {
     // Route Benford split commands directly to BenfordCoordinatorActor
     // The coordinator will handle orchestration (building, signing, broadcasting)
     if (msg.command is SplitUTXOsToBenfordCommand) {
-      print('[WalletManagerActor] → Routing ${msg.command.runtimeType} to BenfordCoordinatorActor');
       if (_benfordCoordinator != null) {
         _benfordCoordinator!.tell(msg.command, sender: context.sender);
         return; // Don't send to aggregate
       } else {
-        print('[WalletManagerActor] ⚠️ Warning: BenfordCoordinator not available, cannot process split command');
         context.sender?.tell(LocalMessage(
           payload: {'error': 'Benford coordinator not available'},
         ));
@@ -296,24 +266,19 @@ class WalletManagerActor extends Actor {
       
       // Check if wallet is already loaded
       if (walletActor != null) {
-        print('[WalletManagerActor] ✓ Wallet found in memory');
         // Forward command directly
-        print('[WalletManagerActor] → Forwarding ${msg.command.runtimeType} to wallet aggregate');
         walletActor.tell(msg.command, sender: context.sender);
-        print('[WalletManagerActor] ✓ Command forwarded');
         return;
       }
       
       // Check if wallet is currently being loaded (race condition prevention)
       if (_loadingWallets.contains(msg.walletId)) {
-        print('[WalletManagerActor] ⏳ Wallet is currently loading, queuing command: ${msg.command.runtimeType}');
         _pendingCommands.putIfAbsent(msg.walletId, () => []);
         _pendingCommands[msg.walletId]!.add(_PendingCommand(msg.command, context.sender));
         return;
       }
       
       // Start loading the wallet
-      print('[WalletManagerActor] Wallet not in memory, starting load from event store...');
       _loadingWallets.add(msg.walletId);
       
       // Queue the current command to be processed after loading
@@ -328,20 +293,15 @@ class WalletManagerActor extends Actor {
       
       if (walletActor != null) {
         _walletActors[msg.walletId] = walletActor;
-        print('[WalletManagerActor] ✓ Wallet loaded from event store');
         
         // Process all queued commands for this wallet
         final queuedCommands = _pendingCommands.remove(msg.walletId) ?? [];
-        print('[WalletManagerActor] 📬 Processing ${queuedCommands.length} queued command(s)');
         
         for (final pending in queuedCommands) {
-          print('[WalletManagerActor] → Forwarding queued ${pending.command.runtimeType} to wallet aggregate');
           walletActor.tell(pending.command, sender: pending.sender);
         }
-        print('[WalletManagerActor] ✓ All queued commands processed');
         
       } else {
-        print('[WalletManagerActor] ❌ Wallet not found: ${msg.walletId}');
         
         // Notify all waiting senders that wallet was not found
         final queuedCommands = _pendingCommands.remove(msg.walletId) ?? [];
@@ -353,7 +313,6 @@ class WalletManagerActor extends Actor {
       }
 
     } catch (e) {
-      print('Error handling wallet command for ${msg.walletId}: $e');
       
       // Clean up loading state on error
       _loadingWallets.remove(msg.walletId);
@@ -381,18 +340,15 @@ class WalletManagerActor extends Actor {
   Future<void> _handlePreloadWallet(String walletId) async {
     // Already loaded?
     if (_walletActors.containsKey(walletId)) {
-      print('[WalletManagerActor] ✓ Wallet $walletId already loaded (preload skipped)');
       return;
     }
     
     // Already being loaded?
     if (_loadingWallets.contains(walletId)) {
-      print('[WalletManagerActor] ⏳ Wallet $walletId already loading (preload skipped)');
       return;
     }
     
     // Load the wallet
-    print('[WalletManagerActor] 🚀 Preloading wallet aggregate: $walletId');
     _loadingWallets.add(walletId);
     
     try {
@@ -402,23 +358,18 @@ class WalletManagerActor extends Actor {
       
       if (walletActor != null) {
         _walletActors[walletId] = walletActor;
-        print('[WalletManagerActor] ✅ Wallet $walletId preloaded successfully');
       } else {
-        print('[WalletManagerActor] ⚠️ Failed to preload wallet $walletId (not found)');
       }
     } catch (e) {
       _loadingWallets.remove(walletId);
-      print('[WalletManagerActor] ❌ Error preloading wallet $walletId: $e');
     }
   }
 
   /// Handle SPV validation results from SPVActor (NEW for correct SPV)
   Future<void> _handleSPVValidationResult(SPVValidationResult result) async {
-    print('Processing SPV validation result for transaction ${result.txid}: ${result.isValid ? 'VALID' : 'INVALID'}');
     
     try {
       if (!result.isValid) {
-        print('SPV validation failed: ${result.validationError}');
         // Could notify relevant parties of validation failure
         return;
       }
@@ -428,12 +379,10 @@ class WalletManagerActor extends Actor {
         await _processSPVResultForWallet(result.targetWalletId!, result);
       } else {
         // If no specific wallet, might need to determine which wallet(s) this affects
-        print('SPV result has no target wallet - processing for all wallets');
         await _processSPVResultForAllWallets(result);
       }
       
     } catch (e) {
-      print('Error processing SPV validation result: $e');
     }
   }
 
@@ -448,7 +397,6 @@ class WalletManagerActor extends Actor {
       }
 
       if (walletActor == null) {
-        print('Cannot process SPV result - wallet $walletId not found');
         return;
       }
 
@@ -458,7 +406,6 @@ class WalletManagerActor extends Actor {
       final hasMerkleProof = bumpProof.isNotEmpty;
       final blockHeight = result.transactionData?['blockHeight'] as int? ?? 0;
       
-      print('SPV Transaction ${result.txid}: hasMerkleProof=$hasMerkleProof (bumpProof: ${bumpProof.isEmpty ? "none" : "${bumpProof.length} chars"}, blockHeight=$blockHeight)');
 
       // Process new spendable UTXOs
       // If we have the merkle proof in hand, UTXOs are immediately available
@@ -480,7 +427,6 @@ class WalletManagerActor extends Actor {
         );
         
         walletActor.tell(command);
-        print('Sent ReceiveUTXO command to wallet $walletId (status: ${hasMerkleProof ? "available" : "pending"})');
       }
 
       // Register received UTXOs with ARC actor for status tracking
@@ -497,7 +443,6 @@ class WalletManagerActor extends Actor {
         );
         
         _arcActor!.tell(registerMsg);
-        print('✅ Registered ${vouts.length} received output(s) with ARC actor for status tracking: $txid');
       }
 
     // Process spent UTXOs
@@ -516,7 +461,6 @@ class WalletManagerActor extends Actor {
       );
       
       walletActor.tell(command);
-      print('Sent SpendUTXO command to wallet $walletId (fee: $fee satoshis)');
     }
 
     // ✨ NEW: Record the transaction in transaction history
@@ -543,20 +487,16 @@ class WalletManagerActor extends Actor {
       );
       
       walletActor.tell(command);
-      print('✅ Sent RecordImportedTransaction command to wallet $walletId for transaction ${result.txid}');
     } else {
-      print('⚠️ Warning: SPV result missing transaction data - cannot record in history');
     }
 
   } catch (e) {
-    print('Error processing SPV result for wallet $walletId: $e');
   }
 }
 
   /// Process SPV validation result for all wallets (when target not specified)
   Future<void> _processSPVResultForAllWallets(SPVValidationResult result) async {
     // This might happen with BEEF bundles or when we can't determine the target wallet
-    print('Processing SPV result for all wallets - this is unusual and might need investigation');
     
     // For now, we could iterate through all wallets, but this should be rare
     // In a proper implementation, we'd have better ways to route transactions
@@ -582,35 +522,28 @@ class WalletManagerActor extends Actor {
         ),
       );
 
-      print('[WalletManagerActor] Wallet actor spawned: $walletId');
       
       // IMPORTANT: Wait for aggregate recovery to complete before returning
       // Use RecoveryStatusQuery to reliably wait for recovery completion
       // instead of an arbitrary delay that might not be sufficient
       try {
-        print('[WalletManagerActor] ⏳ Waiting for recovery to complete...');
         final recoveryResponse = await walletActor.ask<RecoveryStatusResponse>(
           RecoveryStatusQuery(),
           Duration(seconds: 30), // 30 second timeout for recovery
         );
         
         if (recoveryResponse.isRecovered) {
-          print('[WalletManagerActor] ✓ Wallet recovery complete: $walletId (seq: ${recoveryResponse.sequenceNumber})');
         } else {
-          print('[WalletManagerActor] ⚠️ Wallet recovery incomplete: $walletId');
         }
       } on TimeoutException {
-        print('[WalletManagerActor] ⚠️ Recovery status query timed out for $walletId');
         // Continue anyway - the wallet might still work
       } catch (e) {
-        print('[WalletManagerActor] ⚠️ Recovery status query failed for $walletId: $e');
         // Continue anyway - the wallet might still work
       }
       
       return walletActor;
 
     } catch (e) {
-      print('[WalletManagerActor] Error loading wallet $walletId: $e');
       return null;
     }
   }
@@ -628,7 +561,6 @@ class WalletManagerActor extends Actor {
     
     // Check if currently being loaded - wait for it
     if (_loadingWallets.contains(walletId)) {
-      print('[WalletManagerActor] ⏳ Waiting for wallet $walletId to finish loading...');
       // Poll until loading completes (with timeout)
       const maxWaitMs = 5000;
       const pollIntervalMs = 50;
@@ -642,11 +574,9 @@ class WalletManagerActor extends Actor {
       // Check if loaded now
       walletActor = _walletActors[walletId];
       if (walletActor != null) {
-        print('[WalletManagerActor] ✓ Wallet $walletId loaded (waited ${waitedMs}ms)');
         return walletActor;
       }
       
-      print('[WalletManagerActor] ⚠️ Wallet $walletId still not available after waiting');
       return null;
     }
     
@@ -671,7 +601,6 @@ class WalletManagerActor extends Actor {
   Future<void> _handleCreateInvoice(CreateInvoiceMessage msg) async {
     try {
       if (_invoiceManager == null) {
-        print('Error: InvoiceManager not initialized');
         context.sender?.tell(InvoiceCreatedMessage(
           invoiceId: '',
           walletId: msg.walletId,
@@ -684,12 +613,10 @@ class WalletManagerActor extends Actor {
         return;
       }
       
-      print('Creating invoice for wallet ${msg.walletId}, amount: ${msg.amount}');
       
       // Ensure wallet is loaded (with race condition protection)
       final walletActor = await _getOrLoadWallet(msg.walletId);
       if (walletActor == null) {
-        print('Wallet ${msg.walletId} not found');
         context.sender?.tell(InvoiceCreatedMessage(
           invoiceId: '',
           walletId: msg.walletId,
@@ -706,7 +633,6 @@ class WalletManagerActor extends Actor {
       _invoiceManager!.tell(msg, sender: context.sender);
       
     } catch (e) {
-      print('Error creating invoice: $e');
       context.sender?.tell(InvoiceCreatedMessage(
         invoiceId: '',
         walletId: msg.walletId,
@@ -722,7 +648,6 @@ class WalletManagerActor extends Actor {
   @override
   void postStop() {
     _reservationCleanupTimer?.cancel();
-    print('WalletManagerActor stopped');
   }
 }
 

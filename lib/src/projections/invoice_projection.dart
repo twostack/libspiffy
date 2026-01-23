@@ -81,7 +81,6 @@ class InvoiceProjection extends Projection<InvoiceReadModel> {
           return false;
       }
     } catch (e) {
-      print('Error handling event ${event.runtimeType} in InvoiceProjection: $e');
       rethrow;
     }
   }

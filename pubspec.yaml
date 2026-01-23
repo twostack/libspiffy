@@ -36,11 +36,11 @@ dependencies:
     path: /Users/stephanfeb/IdeaProjects/agentic/duraq  # Operational workflows
 
   eventador:
-    path: /Users/stephanfeb/IdeaProjects/bsv_apps/eventador  # Event sourcing
+    path: /Users/stephanfeb/IdeaProjects/agentic/eventador  # Event sourcing
 
   # SPV and P2P networking
   spiffynode:
-    path: /Users/stephanfeb/IdeaProjects/bsv_apps/spiffynode  # SPV chain tracking
+    path: /Users/stephanfeb/IdeaProjects/agentic/spiffynode  # SPV chain tracking
 
   # Bitcoin SV operations
   dartsv:

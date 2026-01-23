@@ -79,9 +79,7 @@ void main() {
       aliceDbName = 'alice_db_${DateTime.now().microsecondsSinceEpoch}';
       aliceIsar = await Isar.open(
         [
-          ...LibSpiffySchemas.walletSchemas,
-          EventEnvelopeSchema,
-          SnapshotEnvelopeSchema,
+          ...LibSpiffySchemas.allSchemas,
         ],
         directory: aliceTestDir.path,
         name: aliceDbName,
@@ -119,9 +117,7 @@ void main() {
       bobDbName = 'bob_db_${DateTime.now().microsecondsSinceEpoch}';
       bobIsar = await Isar.open(
         [
-          ...LibSpiffySchemas.walletSchemas,
-          EventEnvelopeSchema,
-          SnapshotEnvelopeSchema,
+          ...LibSpiffySchemas.allSchemas,
         ],
         directory: bobTestDir.path,
         name: bobDbName,
@@ -670,9 +666,7 @@ void main() {
       print('  Reopening Isar database...');
       bobIsar = await Isar.open(
         [
-          ...LibSpiffySchemas.walletSchemas,
-          EventEnvelopeSchema,
-          SnapshotEnvelopeSchema,
+          ...LibSpiffySchemas.allSchemas,
         ],
         directory: bobTestDir.path,
         name: bobDbName, // Same name as original

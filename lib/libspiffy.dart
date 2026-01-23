@@ -15,6 +15,7 @@ export 'src/models/invoice_state.dart';         // Write model for invoice aggre
 export 'src/models/invoice_read_model.dart';    // Read model for invoice queries (CQRS)
 export 'src/models/address_metadata.dart';      // Address metadata with script type support
 export 'src/models/transaction_address_link.dart'; // Transaction-address junction models
+export 'src/models/invoice_output_spec.dart';   // Multi-output invoice specifications (P2PKH, P2MS)
 
 // ✅ STORAGE INTERFACES - Platform-agnostic storage abstraction
 export 'src/storage/event_storage.dart';        // Event storage interface

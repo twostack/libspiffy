@@ -1,5 +1,6 @@
 import 'package:eventador/eventador.dart';
 import '../actors/invoice_messages.dart';
+import 'invoice_output_spec.dart';
 
 /// Represents the current state of an invoice aggregate (write model)
 /// 
@@ -13,6 +14,11 @@ class InvoiceState extends State {
   String walletId;
   List<String> addresses;
   BigInt amount;
+
+  /// Structured output specifications (P2PKH, P2MS, etc.)
+  /// When present, this takes precedence over addresses/amount for payment construction
+  List<InvoiceOutputSpec>? outputs;
+
   String? description;
   InvoiceStatus status;
   DateTime createdAt;
@@ -35,6 +41,7 @@ class InvoiceState extends State {
     required this.walletId,
     required this.addresses,
     required this.amount,
+    this.outputs,
     this.description,
     required this.status,
     required this.createdAt,
@@ -86,6 +93,18 @@ class InvoiceState extends State {
     return status == InvoiceStatus.pending;
   }
   
+  /// Get total amount from outputs or fallback to amount field
+  BigInt get totalAmount =>
+      outputs?.fold<BigInt>(BigInt.zero, (sum, o) => sum + o.amount) ?? amount;
+
+  /// Get all P2PKH addresses from outputs or fallback to addresses field
+  List<String> get allAddresses =>
+      outputs
+          ?.whereType<P2PKHOutputSpec>()
+          .map((o) => o.address)
+          .toList() ??
+      addresses;
+
   @override
   InvoiceState copyWith({int? version, DateTime? lastModified}) {
     return InvoiceState(
@@ -94,6 +113,7 @@ class InvoiceState extends State {
       walletId: walletId,
       addresses: addresses,
       amount: amount,
+      outputs: outputs,
       description: description,
       status: status,
       createdAt: createdAt,

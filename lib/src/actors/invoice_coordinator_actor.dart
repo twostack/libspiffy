@@ -6,6 +6,7 @@ import '../storage/read_model_storage.dart';
 import '../core/invoice_aggregate.dart';
 import '../core/invoice_commands.dart';
 import '../core/wallet_commands.dart';
+import '../models/invoice_output_spec.dart';
 import 'invoice_messages.dart';
 import 'wallet_messages.dart';
 
@@ -85,58 +86,179 @@ class InvoiceCoordinatorActor extends Actor {
     }
   }
 
-  /// Handle invoice creation request - Step 1: Request addresses
+  /// Handle invoice creation request - Step 1: Check if addresses needed
   Future<void> _handleCreateInvoice(CreateInvoiceMessage msg) async {
-    
     try {
       // Generate invoice ID
       final invoiceId = _uuid.v4();
-      
+
       // Calculate expiration
       final expiresAt = msg.expiresIn != null
           ? DateTime.now().add(msg.expiresIn!)
           : null;
-      
-      // Store the pending request
-      _pendingRequests[invoiceId] = _PendingInvoiceRequest(
-        invoiceId: invoiceId,
-        walletId: msg.walletId,
-        amount: msg.amount,
-        description: msg.description,
-        expiresIn: msg.expiresIn,
-        expiresAt: expiresAt,
-        originalSender: context.sender,
-        metadata: msg.metadata,
-      );
-      
-      // Request address generation from WalletManager
-      // The number of addresses could be configurable, using 1 for now
-      _walletManager.tell(
-        WalletCommandMessage(
-          msg.walletId,
-          GenerateAddressCommand(
-            walletId: msg.walletId,
-            label: 'invoice-$invoiceId',
-            metadata: {
-              'invoiceId': invoiceId,
-              'purpose': 'invoice',
-            },
+
+      // Check if we have outputs with all addresses filled in (or P2MS outputs)
+      final outputs = msg.outputs;
+      final needsAddressGeneration = _needsAddressGeneration(outputs, msg.numberOfAddresses);
+
+      if (needsAddressGeneration) {
+        // Store the pending request - will complete when addresses arrive
+        _pendingRequests[invoiceId] = _PendingInvoiceRequest(
+          invoiceId: invoiceId,
+          walletId: msg.walletId,
+          amount: msg.effectiveAmount,
+          outputs: outputs,
+          description: msg.description,
+          expiresIn: msg.expiresIn,
+          expiresAt: expiresAt,
+          originalSender: context.sender,
+          metadata: msg.metadata,
+          numberOfAddressesNeeded: _countAddressesNeeded(outputs, msg.numberOfAddresses),
+        );
+
+        // Request address generation from WalletManager
+        _walletManager.tell(
+          WalletCommandMessage(
+            msg.walletId,
+            GenerateAddressCommand(
+              walletId: msg.walletId,
+              label: 'invoice-$invoiceId',
+              metadata: {
+                'invoiceId': invoiceId,
+                'purpose': 'invoice',
+              },
+            ),
           ),
-        ),
-        sender: context.self,
-      );
-      
-      
+          sender: context.self,
+        );
+      } else {
+        // All outputs have addresses (or are P2MS) - create invoice directly
+        await _createInvoiceDirectly(
+          invoiceId: invoiceId,
+          walletId: msg.walletId,
+          outputs: outputs!,
+          description: msg.description,
+          expiresIn: msg.expiresIn,
+          expiresAt: expiresAt,
+          metadata: msg.metadata,
+          originalSender: context.sender,
+        );
+      }
     } catch (e) {
       if (context.sender != null) {
         context.sender!.tell(InvoiceCreatedMessage(
           invoiceId: '',
           walletId: msg.walletId,
           addresses: [],
-          amount: msg.amount,
+          amount: msg.effectiveAmount,
           description: msg.description,
           createdAt: DateTime.now(),
           expiresAt: null,
+          success: false,
+          error: e.toString(),
+        ));
+      }
+    }
+  }
+
+  /// Check if we need to generate addresses for this invoice
+  bool _needsAddressGeneration(List<InvoiceOutputSpec>? outputs, int legacyAddressCount) {
+    if (outputs == null || outputs.isEmpty) {
+      // Legacy mode - always need to generate addresses
+      return true;
+    }
+    // Check if any P2PKH output lacks an address
+    for (final output in outputs) {
+      if (output is P2PKHOutputSpec && output.address.isEmpty) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /// Count how many addresses we need to generate
+  int _countAddressesNeeded(List<InvoiceOutputSpec>? outputs, int legacyAddressCount) {
+    if (outputs == null || outputs.isEmpty) {
+      return legacyAddressCount;
+    }
+    return outputs.whereType<P2PKHOutputSpec>().where((o) => o.address.isEmpty).length;
+  }
+
+  /// Create invoice directly when all outputs are ready
+  Future<void> _createInvoiceDirectly({
+    required String invoiceId,
+    required String walletId,
+    required List<InvoiceOutputSpec> outputs,
+    required String? description,
+    required Duration? expiresIn,
+    required DateTime? expiresAt,
+    required Map<String, dynamic>? metadata,
+    required ActorRef? originalSender,
+  }) async {
+    try {
+      // Spawn the InvoiceAggregate actor
+      final aggregateActor = await context.system.spawn(
+        'invoice-aggregate-$invoiceId',
+        () => InvoiceAggregate(
+          aggregateId: invoiceId,
+          aggregateType: 'Invoice',
+          eventStore: _eventStore,
+        ),
+      );
+
+      _invoiceAggregates[invoiceId] = aggregateActor;
+
+      // Allow recovery to complete
+      await Future.delayed(const Duration(milliseconds: 200));
+
+      // Extract P2PKH addresses for legacy compatibility
+      final addresses = outputs
+          .whereType<P2PKHOutputSpec>()
+          .map((o) => o.address)
+          .toList();
+      final totalAmount = outputs.fold(BigInt.zero, (sum, o) => sum + o.amount);
+
+      // Send CreateInvoiceCommand to the aggregate
+      final command = CreateInvoiceCommand(
+        invoiceId: invoiceId,
+        walletId: walletId,
+        addresses: addresses,
+        amount: totalAmount,
+        outputs: outputs,
+        description: description,
+        expiresIn: expiresIn,
+        invoiceMetadata: metadata,
+      );
+
+      aggregateActor.tell(command, sender: context.self);
+
+      // Send success response
+      if (originalSender != null) {
+        originalSender.tell(InvoiceCreatedMessage(
+          invoiceId: invoiceId,
+          walletId: walletId,
+          addresses: addresses,
+          amount: totalAmount,
+          outputs: outputs,
+          description: description,
+          createdAt: DateTime.now(),
+          expiresAt: expiresAt,
+          success: true,
+          error: null,
+          customMetadata: metadata,
+        ));
+      }
+    } catch (e) {
+      if (originalSender != null) {
+        originalSender.tell(InvoiceCreatedMessage(
+          invoiceId: invoiceId,
+          walletId: walletId,
+          addresses: [],
+          amount: outputs.fold(BigInt.zero, (sum, o) => sum + o.amount),
+          outputs: outputs,
+          description: description,
+          createdAt: DateTime.now(),
+          expiresAt: expiresAt,
           success: false,
           error: e.toString(),
         ));
@@ -151,13 +273,42 @@ class InvoiceCoordinatorActor extends Actor {
     if (invoiceId == null) {
       return;
     }
-    
-    final pendingRequest = _pendingRequests.remove(invoiceId);
+
+    final pendingRequest = _pendingRequests[invoiceId];
     if (pendingRequest == null) {
       return;
     }
-    
+
+    // Add the generated address to collected addresses
+    pendingRequest.collectedAddresses.add(msg.address);
+
+    // Check if we have all addresses we need
+    if (pendingRequest.collectedAddresses.length < pendingRequest.numberOfAddressesNeeded) {
+      // Request more addresses
+      _walletManager.tell(
+        WalletCommandMessage(
+          pendingRequest.walletId,
+          GenerateAddressCommand(
+            walletId: pendingRequest.walletId,
+            label: 'invoice-$invoiceId-${pendingRequest.collectedAddresses.length}',
+            metadata: {
+              'invoiceId': invoiceId,
+              'purpose': 'invoice',
+            },
+          ),
+        ),
+        sender: context.self,
+      );
+      return;
+    }
+
+    // All addresses collected - remove from pending
+    _pendingRequests.remove(invoiceId);
+
     try {
+      // Build final outputs with addresses filled in
+      final finalOutputs = _buildFinalOutputs(pendingRequest);
+
       // Spawn the InvoiceAggregate actor
       final aggregateActor = await context.system.spawn(
         'invoice-aggregate-$invoiceId',
@@ -167,34 +318,40 @@ class InvoiceCoordinatorActor extends Actor {
           eventStore: _eventStore,
         ),
       );
-      
+
       _invoiceAggregates[invoiceId] = aggregateActor;
-      
+
       // Allow recovery to complete before sending commands
-      await Future.delayed(Duration(milliseconds: 200));
-      
+      await Future.delayed(const Duration(milliseconds: 200));
+
+      // Extract addresses for legacy compatibility
+      final addresses = finalOutputs
+          .whereType<P2PKHOutputSpec>()
+          .map((o) => o.address)
+          .toList();
+
       // Send CreateInvoiceCommand to the aggregate
       final command = CreateInvoiceCommand(
         invoiceId: invoiceId,
         walletId: pendingRequest.walletId,
-        addresses: [msg.address], // Use the generated address
+        addresses: addresses,
         amount: pendingRequest.amount,
+        outputs: finalOutputs,
         description: pendingRequest.description,
         expiresIn: pendingRequest.expiresIn,
         invoiceMetadata: pendingRequest.metadata,
       );
-      
+
       aggregateActor.tell(command, sender: context.self);
-      
 
       // Send success response to original sender
       if (pendingRequest.originalSender != null) {
-
         pendingRequest.originalSender!.tell(InvoiceCreatedMessage(
           invoiceId: invoiceId,
           walletId: pendingRequest.walletId,
-          addresses: [msg.address],
+          addresses: addresses,
           amount: pendingRequest.amount,
+          outputs: finalOutputs,
           description: pendingRequest.description,
           createdAt: DateTime.now(),
           expiresAt: pendingRequest.expiresAt,
@@ -202,16 +359,13 @@ class InvoiceCoordinatorActor extends Actor {
           error: null,
           customMetadata: pendingRequest.metadata,
         ));
-
-      } else {
       }
-      
     } catch (e) {
       if (pendingRequest.originalSender != null) {
         pendingRequest.originalSender!.tell(InvoiceCreatedMessage(
           invoiceId: invoiceId,
           walletId: pendingRequest.walletId,
-          addresses: [msg.address],
+          addresses: pendingRequest.collectedAddresses,
           amount: pendingRequest.amount,
           description: pendingRequest.description,
           createdAt: DateTime.now(),
@@ -221,6 +375,32 @@ class InvoiceCoordinatorActor extends Actor {
         ));
       }
     }
+  }
+
+  /// Build final outputs by filling in generated addresses
+  List<InvoiceOutputSpec> _buildFinalOutputs(_PendingInvoiceRequest request) {
+    if (request.outputs == null || request.outputs!.isEmpty) {
+      // Legacy mode - create P2PKH outputs from addresses
+      final amountPerAddress = request.amount ~/ BigInt.from(request.collectedAddresses.length);
+      return request.collectedAddresses
+          .map((addr) => P2PKHOutputSpec(address: addr, amount: amountPerAddress))
+          .toList();
+    }
+
+    // Fill in empty addresses in P2PKH outputs
+    final addressIterator = request.collectedAddresses.iterator;
+    return request.outputs!.map((output) {
+      if (output is P2PKHOutputSpec && output.address.isEmpty) {
+        if (addressIterator.moveNext()) {
+          return P2PKHOutputSpec(
+            address: addressIterator.current,
+            amount: output.amount,
+            label: output.label,
+          );
+        }
+      }
+      return output;
+    }).toList();
   }
 
   /// Handle check invoice request - Query read model
@@ -499,7 +679,7 @@ class InvoiceCoordinatorActor extends Actor {
         invoiceId: '',
         walletId: message.walletId,
         addresses: [],
-        amount: message.amount,
+        amount: message.effectiveAmount,
         description: message.description,
         createdAt: DateTime.now(),
         success: false,
@@ -546,21 +726,26 @@ class _PendingInvoiceRequest {
   final String invoiceId;
   final String walletId;
   final BigInt amount;
+  final List<InvoiceOutputSpec>? outputs;
   final String? description;
   final Duration? expiresIn;
   final DateTime? expiresAt;
   final ActorRef? originalSender;
   final Map<String, dynamic>? metadata;
+  final int numberOfAddressesNeeded;
+  final List<String> collectedAddresses = [];
 
   _PendingInvoiceRequest({
     required this.invoiceId,
     required this.walletId,
     required this.amount,
+    this.outputs,
     this.description,
     this.expiresIn,
     this.expiresAt,
     this.originalSender,
     this.metadata,
+    this.numberOfAddressesNeeded = 1,
   });
 }
 

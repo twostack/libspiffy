@@ -474,7 +474,7 @@ class _MockInvoiceManagerActor extends Actor {
         invoiceId: invoiceId,
         walletId: message.walletId,
         addresses: addresses,
-        amount: message.amount,
+        amount: message.amount ?? BigInt.zero,
         description: message.description,
         status: InvoiceStatus.pending,
         createdAt: DateTime.now(),

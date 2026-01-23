@@ -1,6 +1,7 @@
 import 'package:eventador/eventador.dart';
 import 'package:uuid/uuid.dart';
 import '../actors/invoice_messages.dart';
+import '../models/invoice_output_spec.dart';
 
 const _uuid = Uuid();
 
@@ -48,8 +49,16 @@ abstract class InvoiceEvent extends AggregateEventBase with SerializableEvent {
 
 /// Event fired when an invoice is created
 class InvoiceCreatedEvent extends InvoiceEvent {
+  /// Legacy: P2PKH addresses for the invoice
   final List<String> addresses;
+
+  /// Legacy: Total amount for the invoice
   final BigInt amount;
+
+  /// Structured output specifications (P2PKH, P2MS, etc.)
+  /// When present, this takes precedence over addresses/amount
+  final List<InvoiceOutputSpec>? outputs;
+
   final String? description;
   final DateTime? expiresAt;
   final Map<String, dynamic>? invoiceMetadata;
@@ -59,6 +68,7 @@ class InvoiceCreatedEvent extends InvoiceEvent {
     required String walletId,
     required this.addresses,
     required this.amount,
+    this.outputs,
     this.description,
     this.expiresAt,
     this.invoiceMetadata,
@@ -80,6 +90,7 @@ class InvoiceCreatedEvent extends InvoiceEvent {
     return {
       'addresses': addresses,
       'amount': amount.toString(),
+      if (outputs != null) 'outputs': outputs!.map((o) => o.toMap()).toList(),
       'description': description,
       'expiresAt': expiresAt?.toIso8601String(),
       'invoiceMetadata': invoiceMetadata,
@@ -92,6 +103,11 @@ class InvoiceCreatedEvent extends InvoiceEvent {
       walletId: map['walletId'] as String,
       addresses: List<String>.from(map['addresses']),
       amount: BigInt.parse(map['amount'] as String),
+      outputs: map['outputs'] != null
+          ? (map['outputs'] as List)
+              .map((o) => InvoiceOutputSpec.fromMap(o as Map<String, dynamic>))
+              .toList()
+          : null,
       description: map['description'] as String?,
       expiresAt: map['expiresAt'] != null
           ? (map['expiresAt'] is String

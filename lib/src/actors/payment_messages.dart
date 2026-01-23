@@ -1,26 +1,31 @@
 import 'dart:typed_data';
 import 'package:dactor/dactor.dart';
+import '../models/invoice_output_spec.dart';
 
 /// Request to pay an invoice with BEEF-formatted transaction
-/// 
+///
 /// This message triggers automatic UTXO selection, transaction building,
 /// ancestor chain collection, and BEEF package construction.
 class PayInvoiceMessage implements Message {
   /// Payer's wallet ID
   final String walletId;
-  
+
   /// Invoice identifier for correlation
   final String invoiceId;
-  
-  /// Payment addresses from invoice (one or more)
+
+  /// Legacy: Payment addresses from invoice (P2PKH only)
   final List<String> addresses;
-  
-  /// Amount to pay in satoshis
+
+  /// Legacy: Total amount to pay in satoshis
   final BigInt amount;
-  
+
+  /// Structured output specifications (P2PKH, P2MS, etc.)
+  /// When provided, this takes precedence over addresses/amount
+  final List<InvoiceOutputSpec>? outputs;
+
   /// Optional change address (auto-generated if null)
   final String? changeAddress;
-  
+
   /// Optional payment metadata for correlation
   final Map<String, dynamic>? paymentMetadata;
 
@@ -29,24 +34,33 @@ class PayInvoiceMessage implements Message {
     required this.invoiceId,
     required this.addresses,
     required this.amount,
+    this.outputs,
     this.changeAddress,
     this.paymentMetadata,
   });
 
+  /// Get effective total amount to pay
+  BigInt get effectiveAmount {
+    if (outputs != null && outputs!.isNotEmpty) {
+      return outputs!.fold(BigInt.zero, (sum, o) => sum + o.amount);
+    }
+    return amount;
+  }
+
   @override
   String get correlationId => 'pay-invoice-$invoiceId-${DateTime.now().millisecondsSinceEpoch}';
-  
+
   @override
   Map<String, dynamic> get metadata => {
-    'walletId': walletId,
-    'invoiceId': invoiceId,
-    'amount': amount.toString(),
-    ...?paymentMetadata,
-  };
-  
+        'walletId': walletId,
+        'invoiceId': invoiceId,
+        'amount': effectiveAmount.toString(),
+        ...?paymentMetadata,
+      };
+
   @override
   ActorRef? get replyTo => null;
-  
+
   @override
   DateTime get timestamp => DateTime.now();
 }

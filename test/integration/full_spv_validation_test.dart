@@ -531,7 +531,7 @@ class _MockInvoiceManagerActor extends Actor {
       _pendingCreations[invoiceId] = _PendingInvoiceCreation(
         invoiceId: invoiceId,
         walletId: message.walletId,
-        amount: message.amount,
+        amount: message.amount ?? BigInt.zero,
         description: message.description,
         expiresIn: message.expiresIn,
         originalSender: context.sender,

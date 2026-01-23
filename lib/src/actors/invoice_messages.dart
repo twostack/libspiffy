@@ -1,4 +1,5 @@
 import 'package:dactor/dactor.dart';
+import '../models/invoice_output_spec.dart';
 
 /// Messages for invoice/payment request management
 
@@ -16,6 +17,10 @@ class Invoice {
   final String walletId;
   final List<String> addresses;
   final BigInt amount;
+
+  /// Structured output specifications (P2PKH, P2MS, etc.)
+  final List<InvoiceOutputSpec>? outputs;
+
   final String? description;
   final InvoiceStatus status;
   final DateTime createdAt;
@@ -24,12 +29,13 @@ class Invoice {
   final String? paymentTxid;
   final BigInt? amountReceived;
   final Map<String, dynamic>? metadata;
-  
+
   Invoice({
     required this.invoiceId,
     required this.walletId,
     required this.addresses,
     required this.amount,
+    this.outputs,
     this.description,
     required this.status,
     required this.createdAt,
@@ -39,13 +45,18 @@ class Invoice {
     this.amountReceived,
     this.metadata,
   });
-  
+
+  /// Get total amount from outputs or fallback to amount field
+  BigInt get totalAmount =>
+      outputs?.fold<BigInt>(BigInt.zero, (sum, o) => sum + o.amount) ?? amount;
+
   Map<String, dynamic> toMap() {
     return {
       'invoiceId': invoiceId,
       'walletId': walletId,
       'addresses': addresses,
       'amount': amount.toString(),
+      if (outputs != null) 'outputs': outputs!.map((o) => o.toMap()).toList(),
       'description': description,
       'status': status,
       'createdAt': createdAt.toIso8601String(),
@@ -61,30 +72,50 @@ class Invoice {
 /// Request to create a new invoice/payment request
 class CreateInvoiceMessage implements Message {
   final String walletId;
-  final BigInt amount;
+
+  /// Legacy: Total amount for the invoice (used when outputs is null)
+  final BigInt? amount;
+
+  /// Structured output specifications (P2PKH, P2MS, etc.)
+  /// When provided, this takes precedence over amount/numberOfAddresses
+  final List<InvoiceOutputSpec>? outputs;
+
   final String? description;
   final Duration? expiresIn;
   final Map<String, dynamic>? invoiceMetadata;
-  final int numberOfAddresses; // How many addresses to generate for this invoice
+
+  /// Legacy: How many addresses to generate for this invoice (used when outputs is null)
+  final int numberOfAddresses;
 
   CreateInvoiceMessage({
     required this.walletId,
-    required this.amount,
+    this.amount,
+    this.outputs,
     this.description,
     this.expiresIn = const Duration(hours: 24),
     this.invoiceMetadata,
     this.numberOfAddresses = 1,
-  });
+  }) : assert(
+            outputs != null || amount != null,
+            'Either outputs or amount must be provided');
+
+  /// Get the effective total amount
+  BigInt get effectiveAmount {
+    if (outputs != null && outputs!.isNotEmpty) {
+      return outputs!.fold(BigInt.zero, (sum, o) => sum + o.amount);
+    }
+    return amount ?? BigInt.zero;
+  }
 
   @override
   String get correlationId => 'create-invoice-$walletId-${DateTime.now().millisecondsSinceEpoch}';
-  
+
   @override
   Map<String, dynamic> get metadata => invoiceMetadata ?? {};
-  
+
   @override
   ActorRef? get replyTo => null;
-  
+
   @override
   DateTime get timestamp => DateTime.now();
 }
@@ -93,8 +124,16 @@ class CreateInvoiceMessage implements Message {
 class InvoiceCreatedMessage implements Message {
   final String invoiceId;
   final String walletId;
-  final List<String> addresses; // Addresses to pay to
+
+  /// Legacy: P2PKH addresses to pay to (for backward compatibility)
+  final List<String> addresses;
+
+  /// Legacy: Total amount for the invoice
   final BigInt amount;
+
+  /// Structured output specifications (P2PKH, P2MS, etc.)
+  final List<InvoiceOutputSpec>? outputs;
+
   final String? description;
   final DateTime createdAt;
   final DateTime? expiresAt;
@@ -107,6 +146,7 @@ class InvoiceCreatedMessage implements Message {
     required this.walletId,
     required this.addresses,
     required this.amount,
+    this.outputs,
     this.description,
     required this.createdAt,
     this.expiresAt,
@@ -115,19 +155,27 @@ class InvoiceCreatedMessage implements Message {
     this.customMetadata,
   });
 
+  /// Get effective total amount
+  BigInt get effectiveAmount {
+    if (outputs != null && outputs!.isNotEmpty) {
+      return outputs!.fold(BigInt.zero, (sum, o) => sum + o.amount);
+    }
+    return amount;
+  }
+
   @override
   String get correlationId => 'invoice-created-$invoiceId';
 
   @override
   Map<String, dynamic> get metadata => {
-    'invoiceId': invoiceId,
-    'walletId': walletId,
-    ...?customMetadata,
-  };
-  
+        'invoiceId': invoiceId,
+        'walletId': walletId,
+        ...?customMetadata,
+      };
+
   @override
   ActorRef? get replyTo => null;
-  
+
   @override
   DateTime get timestamp => createdAt;
 }
@@ -157,6 +205,10 @@ class InvoiceDetailsResponse implements Message {
   final String? walletId;
   final List<String> addresses;
   final BigInt amount;
+
+  /// Structured output specifications (P2PKH, P2MS, etc.)
+  final List<InvoiceOutputSpec>? outputs;
+
   final String? description;
   final InvoiceStatus status;
   final DateTime createdAt;
@@ -171,6 +223,7 @@ class InvoiceDetailsResponse implements Message {
     this.walletId,
     this.addresses = const [],
     required this.amount,
+    this.outputs,
     this.description,
     required this.status,
     required this.createdAt,
@@ -181,15 +234,23 @@ class InvoiceDetailsResponse implements Message {
     this.error,
   });
 
+  /// Get effective total amount
+  BigInt get effectiveAmount {
+    if (outputs != null && outputs!.isNotEmpty) {
+      return outputs!.fold(BigInt.zero, (sum, o) => sum + o.amount);
+    }
+    return amount;
+  }
+
   @override
   String get correlationId => 'invoice-details-$invoiceId';
-  
+
   @override
   Map<String, dynamic> get metadata => {'invoiceId': invoiceId};
-  
+
   @override
   ActorRef? get replyTo => null;
-  
+
   @override
   DateTime get timestamp => DateTime.now();
 }

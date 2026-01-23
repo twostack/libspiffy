@@ -30,7 +30,7 @@ class WalletManagerActor extends Actor {
   
   // Invoice manager reference for invoice-based payments
   ActorRef? _invoiceManager;
-  
+
   // ARC actor reference for transaction status tracking
   ActorRef? _arcActor;
   
@@ -605,7 +605,7 @@ class WalletManagerActor extends Actor {
           invoiceId: '',
           walletId: msg.walletId,
           addresses: [],
-          amount: msg.amount,
+          amount: msg.amount ?? BigInt.zero,
           createdAt: DateTime.now(),
           success: false,
           error: 'InvoiceManager not available',
@@ -621,7 +621,7 @@ class WalletManagerActor extends Actor {
           invoiceId: '',
           walletId: msg.walletId,
           addresses: [],
-          amount: msg.amount,
+          amount: msg.amount ?? BigInt.zero,
           createdAt: DateTime.now(),
           success: false,
           error: 'Wallet ${msg.walletId} not found',
@@ -637,7 +637,7 @@ class WalletManagerActor extends Actor {
         invoiceId: '',
         walletId: msg.walletId,
         addresses: [],
-        amount: msg.amount,
+        amount: msg.amount ?? BigInt.zero,
         createdAt: DateTime.now(),
         success: false,
         error: e.toString(),

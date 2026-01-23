@@ -7,6 +7,7 @@ import 'package:convert/convert.dart';
 
 import '../models/bitcoin_utxo.dart';
 import '../models/bitcoin_transaction.dart';
+import '../models/invoice_output_spec.dart';
 import '../storage/read_model_storage.dart';
 import '../storage/secure_storage.dart';
 import '../services/ancestor_chain_service.dart';
@@ -62,6 +63,8 @@ class PaymentCoordinatorActor extends Actor {
 
   /// Handle payment invoice request
   Future<void> _handlePayInvoice(PayInvoiceMessage msg) async {
+    // Calculate effective amount (from outputs or legacy amount)
+    final effectiveAmount = msg.effectiveAmount;
 
     // 1. Get available UTXOs
     final utxos = await _storage.getAvailableUTXOs(msg.walletId);
@@ -71,7 +74,7 @@ class PaymentCoordinatorActor extends Actor {
     }
 
     // 2. Select UTXOs for payment
-    final selectedUtxos = _selectUTXOs(utxos, msg.amount);
+    final selectedUtxos = _selectUTXOs(utxos, effectiveAmount);
     if (selectedUtxos == null) {
       final totalBalance = utxos.fold<BigInt>(
         BigInt.zero,
@@ -79,7 +82,7 @@ class PaymentCoordinatorActor extends Actor {
       );
       _sendError(
         msg.invoiceId,
-        'Insufficient funds: need ${msg.amount} satoshis, have $totalBalance',
+        'Insufficient funds: need $effectiveAmount satoshis, have $totalBalance',
       );
       return;
     }
@@ -96,19 +99,19 @@ class PaymentCoordinatorActor extends Actor {
       return;
     }
 
-
     final publicKeys = await _getPublicKeysForUTXOs(msg.walletId, selectedUtxos);
 
-    // 4. Build payment transaction
-    final paymentTx = await _buildPaymentTransaction(
+    // 4. Build payment transaction (with outputs if provided)
+    final paymentTx = await _buildPaymentTransactionWithOutputs(
       selectedUtxos: selectedUtxos,
-      outputAddresses: msg.addresses,
-      outputAmount: msg.amount,
+      outputs: msg.outputs,
+      legacyAddresses: msg.addresses,
+      legacyAmount: msg.amount,
       changeAddress: msg.changeAddress,
       walletId: msg.walletId,
       publicKeys: publicKeys,
     );
-    
+
     if (paymentTx == null) {
       _sendError(msg.invoiceId, 'Failed to build payment transaction');
       return;
@@ -134,7 +137,7 @@ class PaymentCoordinatorActor extends Actor {
     // We must recalculate TXID from the signed transaction
     final signedDartsvTx = dartsv.Transaction.fromHex(signedTxHex);
     final signedTxid = signedDartsvTx.id;
-    
+
     final signedPaymentTx = BitcoinTransaction(
       txid: signedTxid, // Recalculated from signed transaction
       rawHex: signedTxHex,
@@ -151,20 +154,21 @@ class PaymentCoordinatorActor extends Actor {
       version: paymentTx.version,
     );
 
-
     // 4c. Record the outgoing transaction in PENDING state
-    
+
     // CRITICAL: Use the actual change address (same logic as _buildPaymentTransaction)
     // If no changeAddress was provided, we use the first UTXO's address as change destination
     final actualChangeAddress = msg.changeAddress ?? selectedUtxos.first.address;
 
-    
+    // Get recipient addresses for recording
+    final recipientAddresses = _getRecipientAddresses(msg.outputs, msg.addresses);
+
     await _recordOutgoingTransaction(
       walletId: msg.walletId,
       transaction: signedPaymentTx,
       spentUtxoKeys: utxoKeys,
-      recipientAddresses: msg.addresses,
-      paymentAmount: msg.amount,
+      recipientAddresses: recipientAddresses,
+      paymentAmount: effectiveAmount,
       changeAddress: actualChangeAddress,
     );
 
@@ -180,13 +184,12 @@ class PaymentCoordinatorActor extends Actor {
         blockHeaders: blockHeaders,
       );
 
-
       // Calculate change amount
       final totalInput = selectedUtxos.fold<BigInt>(
         BigInt.zero,
         (sum, utxo) => sum + utxo.satoshis,
       );
-      final changeAmount = totalInput - msg.amount - BigInt.from(1000); // Rough fee estimate
+      final changeAmount = totalInput - effectiveAmount - BigInt.from(1000); // Rough fee estimate
 
       // 7. Return BEEF to caller (does NOT broadcast)
       final sender = context.sender;
@@ -195,18 +198,32 @@ class PaymentCoordinatorActor extends Actor {
           invoiceId: msg.invoiceId,
           beefBytes: beef,
           txid: signedPaymentTx.txid, // Use signed transaction's txid
-          amountPaid: msg.amount,
+          amountPaid: effectiveAmount,
           changeAmount: changeAmount > BigInt.zero ? changeAmount : BigInt.zero,
           ancestorCount: ancestorResult.ancestorTransactions.length,
           success: true,
         );
         sender.tell(response);
-      } else {
       }
-
     } catch (e) {
       _sendError(msg.invoiceId, 'Failed to create BEEF: $e');
     }
+  }
+
+  /// Extract recipient addresses from outputs or legacy addresses
+  List<String> _getRecipientAddresses(List<InvoiceOutputSpec>? outputs, List<String> legacyAddresses) {
+    if (outputs == null || outputs.isEmpty) {
+      return legacyAddresses;
+    }
+    // For P2PKH outputs, return addresses; for P2MS, return "multisig" placeholder
+    return outputs.map((o) {
+      if (o is P2PKHOutputSpec) {
+        return o.address;
+      } else if (o is P2MSOutputSpec) {
+        return 'multisig:${o.threshold}-of-${o.totalKeys}';
+      }
+      return 'unknown';
+    }).toList();
   }
 
   // Ancestor collection methods removed - now using AncestorChainService
@@ -233,7 +250,134 @@ class PaymentCoordinatorActor extends Actor {
     return null; // Insufficient funds
   }
 
-  /// Build payment transaction from selected UTXOs
+  /// Build payment transaction with support for multiple output types (P2PKH, P2MS)
+  Future<BitcoinTransaction?> _buildPaymentTransactionWithOutputs({
+    required List<BitcoinUtxo> selectedUtxos,
+    List<InvoiceOutputSpec>? outputs,
+    required List<String> legacyAddresses,
+    required BigInt legacyAmount,
+    String? changeAddress,
+    required String walletId,
+    required List<dartsv.SVPublicKey> publicKeys,
+  }) async {
+    try {
+      // Calculate total input
+      final totalInput = selectedUtxos.fold<BigInt>(
+        BigInt.zero,
+        (sum, utxo) => sum + utxo.satoshis,
+      );
+
+      // Build transaction using TransactionBuilder pattern
+      final txBuilder = dartsv.TransactionBuilder();
+
+      // Track receiving addresses for record
+      final receivingAddresses = <String>[];
+      BigInt totalOutputAmount = BigInt.zero;
+
+      // Add payment outputs based on outputs or legacy addresses
+      if (outputs != null && outputs.isNotEmpty) {
+        // New multi-output mode
+        for (final output in outputs) {
+          totalOutputAmount += output.amount;
+
+          switch (output) {
+            case P2PKHOutputSpec p2pkh:
+              final toAddress = dartsv.Address.fromBase58(p2pkh.address);
+              final recipientBuilder = dartsv.P2PKHLockBuilder.fromAddress(toAddress);
+              txBuilder.spendToLockBuilder(recipientBuilder, p2pkh.amount);
+              receivingAddresses.add(p2pkh.address);
+
+            case P2MSOutputSpec p2ms:
+              // Build multisig output
+              final pubKeys = p2ms.publicKeys
+                  .map((hex) => dartsv.SVPublicKey.fromHex(hex))
+                  .toList();
+              final msLockBuilder = dartsv.P2MSLockBuilder(
+                pubKeys,
+                p2ms.threshold,
+                sorting: true, // BIP67 lexicographical sorting for determinism
+              );
+              txBuilder.spendToLockBuilder(msLockBuilder, p2ms.amount);
+              receivingAddresses.add('multisig:${p2ms.threshold}-of-${p2ms.totalKeys}');
+          }
+        }
+      } else {
+        // Legacy mode - split amount across addresses
+        totalOutputAmount = legacyAmount;
+        for (final address in legacyAddresses) {
+          final toAddress = dartsv.Address.fromBase58(address);
+          final amountPerAddress = legacyAmount ~/ BigInt.from(legacyAddresses.length);
+
+          final recipientBuilder = dartsv.P2PKHLockBuilder.fromAddress(toAddress);
+          txBuilder.spendToLockBuilder(recipientBuilder, amountPerAddress);
+          receivingAddresses.add(address);
+        }
+      }
+
+      // Add change address (proven pattern)
+      final changeAddr = changeAddress ?? selectedUtxos.first.address;
+      final changeAddress_ = dartsv.Address.fromBase58(changeAddr);
+      txBuilder.sendChangeToPKH(changeAddress_);
+
+      // Add inputs from selected UTXOs with public keys
+      for (int i = 0; i < selectedUtxos.length; i++) {
+        final utxo = selectedUtxos[i];
+        final publicKey = publicKeys[i];
+
+        final lockedAddress = dartsv.Address.fromBase58(utxo.address);
+        final lockingScript = dartsv.P2PKHLockBuilder.fromAddress(lockedAddress).getScriptPubkey();
+
+        final outpoint = dartsv.TransactionOutpoint(
+          utxo.txid,
+          utxo.vout,
+          utxo.satoshis,
+          lockingScript,
+        );
+
+        // Prime the scriptSig with the public key for this UTXO
+        final unlockBuilder = dartsv.P2PKHUnlockBuilder(publicKey);
+        txBuilder.spendFromOutpoint(outpoint, dartsv.TransactionInput.MAX_SEQ_NUMBER, unlockBuilder);
+      }
+
+      // Apply transaction settings (proven pattern)
+      txBuilder
+          .withFeePerKb(1) // Low fee rate valid for BSV network
+          .withOption(dartsv.TransactionOption.DISABLE_DUST_OUTPUTS);
+
+      // Build unsigned transaction (skip sanity checks for flexibility)
+      final unsignedTx = txBuilder.build(false);
+      final rawHex = unsignedTx.serialize();
+      final txid = unsignedTx.id;
+
+      // Calculate actual fee and change from built transaction
+      final totalOutput = unsignedTx.outputs.fold<BigInt>(
+        BigInt.zero,
+        (sum, output) => sum + output.satoshis,
+      );
+      final fee = totalInput - totalOutput;
+
+      // Create transaction record
+      return BitcoinTransaction(
+        txid: txid,
+        rawHex: rawHex,
+        status: TransactionStatus.created,
+        inputValue: totalInput,
+        outputValue: totalOutput,
+        fee: fee,
+        receivingAddresses: receivingAddresses,
+        sendingAddresses: selectedUtxos.map((u) => u.address).toList(),
+        netAmount: -(totalOutputAmount + fee),
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+        lockTime: 0,
+        version: 2,
+      );
+    } catch (e, stackTrace) {
+      return null;
+    }
+  }
+
+  /// Build payment transaction from selected UTXOs (legacy - for backward compatibility)
   /// Using proven patterns from transaction_builder_service.dart
   Future<BitcoinTransaction?> _buildPaymentTransaction({
     required List<BitcoinUtxo> selectedUtxos,
@@ -243,92 +387,15 @@ class PaymentCoordinatorActor extends Actor {
     required String walletId,
     required List<dartsv.SVPublicKey> publicKeys,
   }) async {
-    try {
-      
-      
-      // Calculate total input
-      final totalInput = selectedUtxos.fold<BigInt>(
-        BigInt.zero,
-        (sum, utxo) => sum + utxo.satoshis,
-      );
-      
-      // Build transaction using proven TransactionBuilder pattern
-      final txBuilder = dartsv.TransactionBuilder();
-      
-      // Add payment outputs first (proven pattern from transaction_builder_service.dart)
-      for (final address in outputAddresses) {
-        final toAddress = dartsv.Address.fromBase58(address);
-        final amountPerAddress = outputAmount ~/ BigInt.from(outputAddresses.length);
-        
-        final recipientBuilder = dartsv.P2PKHLockBuilder.fromAddress(toAddress);
-        txBuilder.spendToLockBuilder(recipientBuilder, amountPerAddress);
-      }
-      
-      // Add change address (proven pattern)
-      final changeAddr = changeAddress ?? selectedUtxos.first.address;
-      final changeAddress_ = dartsv.Address.fromBase58(changeAddr);
-      txBuilder.sendChangeToPKH(changeAddress_);
-      
-      // Add inputs from selected UTXOs with public keys
-      for (int i = 0; i < selectedUtxos.length; i++) {
-        final utxo = selectedUtxos[i];
-        final publicKey = publicKeys[i];
-        
-        final lockedAddress = dartsv.Address.fromBase58(utxo.address);
-        final lockingScript = dartsv.P2PKHLockBuilder.fromAddress(lockedAddress).getScriptPubkey();
-        
-        final outpoint = dartsv.TransactionOutpoint(
-          utxo.txid,
-          utxo.vout,
-          utxo.satoshis,
-          lockingScript,
-        );
-
-        // Prime the scriptSig with the public key for this UTXO
-        // Signing will populate the signature later
-        final unlockBuilder = dartsv.P2PKHUnlockBuilder(publicKey);
-        txBuilder.spendFromOutpoint(outpoint, dartsv.TransactionInput.MAX_SEQ_NUMBER, unlockBuilder);
-      }
-
-      // txBuilder.sendChangeToPKH(changeAddress);
-
-      // Apply transaction settings (proven pattern)
-      txBuilder
-          .withFeePerKb(1) // Low fee rate (proven from transaction_builder_service.dart) valid for BSV network
-          .withOption(dartsv.TransactionOption.DISABLE_DUST_OUTPUTS);
-      
-      // Build unsigned transaction (proven pattern: skip sanity checks for flexibility)
-      final unsignedTx = txBuilder.build(false);
-      final rawHex = unsignedTx.serialize();
-      final txid = unsignedTx.id;
-      
-      // Calculate actual fee and change from built transaction
-      final totalOutput = unsignedTx.outputs.fold<BigInt>(
-        BigInt.zero,
-        (sum, output) => sum + output.satoshis,
-      );
-      final fee = totalInput - totalOutput;
-      
-      
-      // Create transaction record
-      return BitcoinTransaction(
-        txid: txid,
-        rawHex: rawHex,
-        status: TransactionStatus.created,
-        inputValue: totalInput,
-        outputValue: totalOutput,
-        fee: fee,
-        receivingAddresses: outputAddresses,
-        sendingAddresses: selectedUtxos.map((u) => u.address).toList(),
-        netAmount: -(outputAmount + fee),
-        createdAt: DateTime.now(),
-        updatedAt: DateTime.now(),
-        lockTime: 0,
-        version: 2,
-      );
-    } catch (e, stackTrace) {
-      return null;
-    }
+    return _buildPaymentTransactionWithOutputs(
+      selectedUtxos: selectedUtxos,
+      outputs: null,
+      legacyAddresses: outputAddresses,
+      legacyAmount: outputAmount,
+      changeAddress: changeAddress,
+      walletId: walletId,
+      publicKeys: publicKeys,
+    );
   }
 
   /// Get public keys for all UTXOs being spent

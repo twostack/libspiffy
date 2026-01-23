@@ -1,4 +1,5 @@
 import '../actors/invoice_messages.dart';
+import 'invoice_output_spec.dart';
 
 /// Read model for invoice queries - optimized for UI/query needs
 /// 
@@ -10,6 +11,11 @@ class InvoiceReadModel {
   final String walletId;
   final List<String> addresses;
   final BigInt amount;
+
+  /// Structured output specifications (P2PKH, P2MS, etc.)
+  /// When present, this takes precedence over addresses/amount for payment construction
+  final List<InvoiceOutputSpec>? outputs;
+
   final String? description;
   final InvoiceStatus status;
   final DateTime createdAt;
@@ -25,6 +31,7 @@ class InvoiceReadModel {
     required this.walletId,
     required this.addresses,
     required this.amount,
+    this.outputs,
     this.description,
     required this.status,
     required this.createdAt,
@@ -35,6 +42,18 @@ class InvoiceReadModel {
     required this.lastUpdated,
     required this.metadata,
   });
+
+  /// Get total amount from outputs or fallback to amount field
+  BigInt get totalAmount =>
+      outputs?.fold<BigInt>(BigInt.zero, (sum, o) => sum + o.amount) ?? amount;
+
+  /// Get all P2PKH addresses from outputs or fallback to addresses field
+  List<String> get allAddresses =>
+      outputs
+          ?.whereType<P2PKHOutputSpec>()
+          .map((o) => o.address)
+          .toList() ??
+      addresses;
   
   /// Create an empty read model
   factory InvoiceReadModel.empty(String invoiceId) {
@@ -61,6 +80,7 @@ class InvoiceReadModel {
     String? walletId,
     List<String>? addresses,
     BigInt? amount,
+    List<InvoiceOutputSpec>? outputs,
     String? description,
     InvoiceStatus? status,
     DateTime? createdAt,
@@ -76,6 +96,7 @@ class InvoiceReadModel {
       walletId: walletId ?? this.walletId,
       addresses: addresses ?? this.addresses,
       amount: amount ?? this.amount,
+      outputs: outputs ?? this.outputs,
       description: description ?? this.description,
       status: status ?? this.status,
       createdAt: createdAt ?? this.createdAt,
@@ -101,6 +122,7 @@ class InvoiceReadModel {
       'walletId': walletId,
       'addresses': addresses,
       'amount': amount.toString(),
+      if (outputs != null) 'outputs': outputs!.map((o) => o.toMap()).toList(),
       'description': description,
       'status': status.name,
       'createdAt': createdAt.toIso8601String(),
@@ -120,6 +142,11 @@ class InvoiceReadModel {
       walletId: map['walletId'] as String,
       addresses: List<String>.from(map['addresses'] as List),
       amount: BigInt.parse(map['amount'] as String),
+      outputs: map['outputs'] != null
+          ? (map['outputs'] as List)
+              .map((o) => InvoiceOutputSpec.fromMap(o as Map<String, dynamic>))
+              .toList()
+          : null,
       description: map['description'] as String?,
       status: InvoiceStatus.values.firstWhere(
         (s) => s.name == map['status'],

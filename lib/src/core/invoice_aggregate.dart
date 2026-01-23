@@ -1,5 +1,6 @@
 import 'package:eventador/eventador.dart';
 import '../models/invoice_state.dart';
+import '../models/invoice_output_spec.dart';
 import '../actors/invoice_messages.dart';
 import 'invoice_commands.dart';
 import 'invoice_events.dart';
@@ -84,33 +85,90 @@ class InvoiceAggregate extends AggregateRoot<InvoiceState> {
     if (currentState.isCreated) {
       throw StateError('Invoice ${command.invoiceId} already exists');
     }
-    
-    // Business rule: Must have at least one address
-    if (command.addresses.isEmpty) {
-      throw ArgumentError('Invoice must have at least one address');
+
+    // Validate outputs if provided
+    if (command.outputs != null && command.outputs!.isNotEmpty) {
+      _validateOutputs(command.outputs!);
+    } else {
+      // Legacy validation for addresses/amount
+      // Business rule: Must have at least one address
+      if (command.addresses.isEmpty) {
+        throw ArgumentError('Invoice must have at least one address');
+      }
+
+      // Business rule: Amount must be positive
+      if (command.amount <= BigInt.zero) {
+        throw ArgumentError('Invoice amount must be positive');
+      }
     }
-    
-    // Business rule: Amount must be positive
-    if (command.amount <= BigInt.zero) {
-      throw ArgumentError('Invoice amount must be positive');
-    }
-    
+
     final now = DateTime.now();
     final expiresAt = command.expiresIn != null ? now.add(command.expiresIn!) : null;
-    
+
     final event = InvoiceCreatedEvent(
       invoiceId: command.invoiceId,
       walletId: command.walletId,
       addresses: command.addresses,
       amount: command.amount,
+      outputs: command.outputs,
       description: command.description,
       expiresAt: expiresAt,
       invoiceMetadata: command.invoiceMetadata,
       version: currentState.version + 1,
       timestamp: now,
     );
-    
+
     return [event];
+  }
+
+  /// Validate output specifications
+  void _validateOutputs(List<InvoiceOutputSpec> outputs) {
+    if (outputs.isEmpty) {
+      throw ArgumentError('Invoice must have at least one output');
+    }
+
+    for (int i = 0; i < outputs.length; i++) {
+      final output = outputs[i];
+
+      // Validate amount is positive
+      if (output.amount <= BigInt.zero) {
+        throw ArgumentError('Output $i: amount must be positive');
+      }
+
+      // Type-specific validation
+      switch (output) {
+        case P2PKHOutputSpec p2pkh:
+          if (p2pkh.address.isEmpty) {
+            throw ArgumentError('Output $i: P2PKH address cannot be empty');
+          }
+        case P2MSOutputSpec p2ms:
+          if (!p2ms.isValid) {
+            throw ArgumentError(
+                'Output $i: Invalid P2MS configuration - '
+                'threshold: ${p2ms.threshold}, totalKeys: ${p2ms.totalKeys}');
+          }
+          if (p2ms.threshold < 1) {
+            throw ArgumentError('Output $i: P2MS threshold must be at least 1');
+          }
+          if (p2ms.threshold > p2ms.totalKeys) {
+            throw ArgumentError(
+                'Output $i: P2MS threshold (${p2ms.threshold}) cannot exceed '
+                'total keys (${p2ms.totalKeys})');
+          }
+          if (p2ms.totalKeys > 16) {
+            throw ArgumentError(
+                'Output $i: P2MS cannot have more than 16 keys (has ${p2ms.totalKeys})');
+          }
+          for (int j = 0; j < p2ms.publicKeys.length; j++) {
+            final pk = p2ms.publicKeys[j];
+            if (pk.length != 66 && pk.length != 130) {
+              throw ArgumentError(
+                  'Output $i: Public key $j has invalid length ${pk.length} '
+                  '(expected 66 for compressed or 130 for uncompressed)');
+            }
+          }
+      }
+    }
   }
   
   List<Event> _handleMarkInvoicePaid(InvoiceState currentState, MarkInvoicePaidCommand command) {
@@ -220,6 +278,7 @@ class InvoiceAggregate extends AggregateRoot<InvoiceState> {
     currentState.walletId = event.walletId;
     currentState.addresses = List.from(event.addresses);
     currentState.amount = event.amount;
+    currentState.outputs = event.outputs != null ? List.from(event.outputs!) : null;
     currentState.description = event.description;
     currentState.status = InvoiceStatus.pending;
     currentState.createdAt = event.timestamp;

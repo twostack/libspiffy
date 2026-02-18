@@ -267,46 +267,50 @@ class LibSpiffyActorSystem {
     _headerChain = BlockHeaderChain(_actorStorage);
     await _headerChain.initialize();
 
-    // 7.1. CDN-based fast header sync (before actors and P2P)
+    // 7.1. Start CDN header sync concurrently with actor setup (independent operations)
+    Future<void> cdnFuture = Future.value();
     if (cdnBaseUrl != null) {
       final cdnLogger = Logger('LibSpiffy-CDNSync');
-      try {
-        final cdnConfig = CdnHeaderSyncConfig(
-          baseUrl: cdnBaseUrl,
-          network: networkType == 'main' ? 'mainnet' : 'testnet',
-          onProgress: onHeaderSyncProgress,
-          cacheDirectory: dataDirectory,
-        );
-        final cdnSyncService = CdnHeaderSyncService(
-          config: cdnConfig,
-          headerChain: _headerChain,
-        );
-        final result = await cdnSyncService.synchronize();
-        if (result.success) {
-          cdnLogger.info('CDN sync complete: ${result.headersImported} headers, '
-              'final height: ${result.finalHeight}, '
-              'elapsed: ${result.elapsed.inSeconds}s');
-        } else {
-          cdnLogger.warning('CDN sync failed (will fall back to P2P): ${result.error}');
+      cdnFuture = () async {
+        try {
+          final cdnConfig = CdnHeaderSyncConfig(
+            baseUrl: cdnBaseUrl,
+            network: networkType == 'main' ? 'mainnet' : 'testnet',
+            onProgress: onHeaderSyncProgress,
+            cacheDirectory: dataDirectory,
+          );
+          final cdnSyncService = CdnHeaderSyncService(
+            config: cdnConfig,
+            headerChain: _headerChain,
+          );
+          final result = await cdnSyncService.synchronize();
+          if (result.success) {
+            cdnLogger.info('CDN sync complete: ${result.headersImported} headers, '
+                'final height: ${result.finalHeight}, '
+                'elapsed: ${result.elapsed.inSeconds}s');
+          } else {
+            cdnLogger.warning('CDN sync failed (will fall back to P2P): ${result.error}');
+          }
+        } catch (e) {
+          cdnLogger.warning('CDN header sync failed, will fall back to P2P: $e');
         }
-      } catch (e) {
-        cdnLogger.warning('CDN header sync failed, will fall back to P2P: $e');
-      }
+      }();
     }
 
     // 7.5. Register event types for deserialization (BEFORE projections!)
+    // Runs concurrently with CDN sync
     await _registerEventTypes();
-    
+
     // 8. Initialize CQRS projections (read-side event handlers)
     await _initializeProjections();
-    
+
     // 9. Spawn coordination actors
     await _spawnActors();
-    
-    // 10. Transaction import service will be created on-demand by ImportActor
-    // No longer initialized here - uses dependency injection via BlockchainDataSource
-    
-    // 11. Initialize P2P if enabled
+
+    // 10. Wait for CDN sync to finish before P2P (P2P header sync starts from chain tip)
+    await cdnFuture;
+
+    // 11. Initialize P2P if enabled (needs actors from step 9)
     if (enableP2P) {
       await _initializeP2P(
         networkType: networkType,
@@ -748,10 +752,8 @@ class LibSpiffyActorSystem {
         ));
       }
       
-      // Wait briefly for wallet aggregates to load
-      // 200ms per wallet with minimum of 500ms
-      final waitMs = (200 * walletIds.length).clamp(500, 5000);
-      await Future.delayed(Duration(milliseconds: waitMs));
+      // Brief yield to let the actor message pump process preload commands
+      await Future.delayed(const Duration(milliseconds: 100));
       
     } catch (e) {
       // Non-fatal - wallets will load on-demand if preload fails
@@ -807,49 +809,50 @@ class LibSpiffyActorSystem {
       // 6. Get peer addresses (use provided or defaults)
       final peers = peerAddresses ?? _getDefaultPeers(networkType);
       
-      // 7. Connect to peers WITH handler to capture headers
-      // Try ALL peers, only fail if ALL are unreachable
-      
-      int successCount = 0;
+      // 7. Connect to peers IN PARALLEL with handler to capture headers
+      // Try ALL peers concurrently, only fail if ALL are unreachable
+
       final failures = <String, String>{}; // peer -> error
-      
-      for (final peerAddr in peers) {
+
+      final peerConfig = startHeight != null
+          ? PeerConfig(
+              startHeight: startHeight,
+              userAgent: userAgent ?? '/LibSpiffy:1.0/',
+            )
+          : PeerConfig(
+              userAgent: userAgent ?? '/LibSpiffy:1.0/',
+            );
+
+      final connectionFutures = peers.map((peerAddr) async {
         final parts = peerAddr.split(':');
         if (parts.length != 2) {
           failures[peerAddr] = 'Invalid format (expected host:port)';
-          continue;
+          return false;
         }
-        
+
         final host = parts[0];
         final port = int.tryParse(parts[1]);
         if (port == null) {
           failures[peerAddr] = 'Invalid port number';
-          continue;
+          return false;
         }
-        
-        final peerConfig = startHeight != null
-            ? PeerConfig(
-                startHeight: startHeight,
-                userAgent: userAgent ?? '/LibSpiffy:1.0/',
-              )
-            : PeerConfig(
-                userAgent: userAgent ?? '/LibSpiffy:1.0/',
-              );
-        
-        // Try to connect to this peer
+
         try {
           await _peerManager!.addPeerByAddress(
             host,
             port,
             peerConfig: peerConfig,
-            handler: peerHandler, // ✨ NEW: Custom handler for header capture!
+            handler: peerHandler,
           );
-          successCount++;
+          return true;
         } catch (e) {
           failures[peerAddr] = e.toString();
-          // Don't throw - try the next peer
+          return false;
         }
-      }
+      }).toList();
+
+      final results = await Future.wait(connectionFutures);
+      final successCount = results.where((r) => r).length;
       
       // Check if we connected to at least one peer
       if (successCount == 0) {

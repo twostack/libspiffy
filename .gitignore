@@ -10,4 +10,4 @@ docs
 
 *.iml
 .idea
-
+test/cdn/

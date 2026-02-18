@@ -221,6 +221,19 @@ abstract class ReadModelStorage {
   /// - [height]: Block height
   Future<void> storeBlockHeader(BlockHeader header, int height);
 
+  /// Bulk store block headers for fast initial sync (CDN import).
+  ///
+  /// Parameters:
+  /// - [headers]: List of (BlockHeader, height) pairs to store
+  ///
+  /// Implementations should use batch/transaction writes for performance.
+  /// Default implementation falls back to sequential storeBlockHeader calls.
+  Future<void> storeBlockHeadersBulk(List<(BlockHeader, int)> headers) async {
+    for (final (header, height) in headers) {
+      await storeBlockHeader(header, height);
+    }
+  }
+
   /// Get block header by hash
   ///
   /// Parameters:

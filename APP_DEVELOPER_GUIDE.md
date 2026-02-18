@@ -11,6 +11,7 @@
 2. [Quick Start](#quick-start)
 3. [🟢 Public APIs](#-public-apis)
    - [System Initialization](#system-initialization)
+   - [CDN Block Header Sync](#cdn-block-header-sync)
    - [Wallet Management](#wallet-management)
    - [Invoice Management](#invoice-management)
    - [SPV Payments with BEEF](#spv-payments-with-beef)
@@ -149,6 +150,9 @@ Future<void> initialize({
   int? startHeight,                 // Optional SPV start height
   List<String>? peerAddresses,      // Optional custom peers ('host:port')
   String? userAgent,                // Optional user agent
+  // CDN Header Sync (fast initial setup)
+  String? cdnBaseUrl,               // CDN URL for fast initial header sync
+  CdnSyncProgressCallback? onHeaderSyncProgress, // Progress callback
 })
 
 // 🟢 PUBLIC: Clean shutdown (always call this!)
@@ -163,6 +167,117 @@ Future<void> disconnectFromSpiffyNode()
 - No need to import or configure SpiffyNode directly - it's handled internally
 - Custom peers can be specified with `peerAddresses: ['host:port']`
 - To disable P2P (e.g., using alternative header sources), set `enableP2P: false`
+
+**CDN Header Sync Notes:**
+- When `cdnBaseUrl` is provided, LibSpiffy downloads pre-built binary header files on first setup
+- CDN sync runs before actors and P2P, so the system starts with headers already populated
+- P2P then handles only the small delta of recent blocks
+- If CDN is unavailable, initialization continues normally with P2P handling the full sync
+- See [CDN Block Header Sync](#cdn-block-header-sync) for full details
+
+---
+
+## CDN Block Header Sync
+
+**Description:** Fast initial block header synchronization via pre-built binary files on a CDN, replacing the slow P2P `getheaders` protocol for first-time wallet setup.
+
+### Why CDN Sync?
+
+A fresh wallet needs all block headers for SPV validation. The Bitcoin P2P protocol limits responses to 2,000 headers per request, requiring ~860 sequential round-trips for testnet (~1.7M headers). This takes 30+ minutes. CDN sync downloads the same data as compact binary files in parallel, completing in under 2 minutes.
+
+### 🟢 Quick Start
+
+```dart
+final libspiffy = LibSpiffyActorSystem();
+await libspiffy.initialize(
+  actorSystem: actorSystem,
+  isar: isar,
+  dataDirectory: './data',
+  networkType: 'test',
+  enableP2P: true,
+  // Add CDN sync for fast initial setup
+  cdnBaseUrl: 'https://your-cdn.com',
+  onHeaderSyncProgress: (current, total, phase) {
+    print('Header sync: $phase - $current/$total');
+  },
+);
+```
+
+That's it. CDN sync runs automatically during `initialize()` before actors and P2P start. If the CDN is unreachable or validation fails, P2P takes over transparently.
+
+### How It Works
+
+1. Fetches `manifest.json` from `{cdnBaseUrl}/testnet/` (or `mainnet/`)
+2. Determines which binary header chunks are needed (skips already-synced ranges)
+3. Downloads chunks in parallel (4 concurrent by default)
+4. Validates each chunk: SHA-256 integrity, chain continuity, checkpoint hashes
+5. Bulk-inserts into storage (Isar or PostgreSQL)
+6. P2P then syncs only the small delta of recent blocks
+
+### 🟢 Progress Monitoring
+
+The `onHeaderSyncProgress` callback reports phases:
+
+```dart
+onHeaderSyncProgress: (int current, int total, CdnSyncPhase phase) {
+  switch (phase) {
+    case CdnSyncPhase.fetchingManifest:
+      print('Fetching manifest...');
+    case CdnSyncPhase.downloadingChunks:
+      print('Downloading: $current/$total headers');
+    case CdnSyncPhase.validatingChunks:
+      print('Validating chain integrity...');
+    case CdnSyncPhase.importingHeaders:
+      print('Importing: $current/$total headers');
+    case CdnSyncPhase.complete:
+      print('CDN sync complete!');
+    case CdnSyncPhase.fallbackToP2P:
+      print('CDN unavailable, using P2P sync');
+  }
+}
+```
+
+### 🟢 Advanced Configuration
+
+For fine-grained control, use `CdnHeaderSyncService` directly:
+
+```dart
+import 'package:libspiffy/libspiffy.dart';
+
+final config = CdnHeaderSyncConfig(
+  baseUrl: 'https://your-cdn.com',
+  network: 'testnet',
+  concurrentDownloads: 4,           // Parallel HTTP connections (default: 4)
+  downloadTimeout: Duration(seconds: 30),
+  validateProofOfWork: false,       // Per-header PoW check (default: false)
+  verifyCheckpoints: true,          // Verify block hashes at known heights (default: true)
+  onProgress: (current, total, phase) { ... },
+);
+
+final service = CdnHeaderSyncService(
+  config: config,
+  headerChain: libspiffy.headerChain,
+);
+
+final result = await service.synchronize();
+print('Imported ${result.headersImported} headers in ${result.elapsed.inSeconds}s');
+```
+
+### Generating CDN Data
+
+CDN header files are generated from a block headers backup using the export tool:
+
+```bash
+dart run tool/export_headers_to_cdn.dart \
+  --source /path/to/block_headers.json \
+  --output /path/to/cdn/testnet \
+  --network testnet \
+  --chunk-size 50000
+```
+
+This produces binary chunk files (50,000 headers x 80 bytes = 4MB each) and a `manifest.json`. Host them on any static file server or CDN.
+
+See [`docs/cdn-header-sync-guide.md`](docs/cdn-header-sync-guide.md) for the complete generation and hosting guide.
 
 ---
 

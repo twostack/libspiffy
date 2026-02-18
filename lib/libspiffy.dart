@@ -77,6 +77,11 @@ export 'src/services/arc_service.dart';         // Complete ARC API with BEEF su
 // 🚀 SCRIPT ANALYSIS - Universal Bitcoin script support
 export 'src/services/script_type_registry.dart'; // Script type identification and categorization
 
+// 🚀 CDN HEADER SYNC - Fast initial block header synchronization via CDN
+export 'src/spv/cdn_header_sync_config.dart';
+export 'src/spv/cdn_header_sync_service.dart';
+export 'src/spv/cdn_manifest.dart';
+
 // 🚀 SPV VALIDATION - BEEF/BUMP utilities for SPV transaction validation
 export 'src/utils/bump.dart';                   // BSV Universal Merkle Path (BUMP) implementation
 export 'src/utils/beef.dart';                   // Background Evaluation Extended Format (BEEF) implementation

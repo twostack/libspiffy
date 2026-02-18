@@ -22,6 +22,8 @@ import '../services/crypto_service.dart';
 import '../services/dartsv_crypto_service.dart';
 import '../services/arc_service_config.dart';
 import '../spv/block_header_chain.dart';
+import '../spv/cdn_header_sync_config.dart';
+import '../spv/cdn_header_sync_service.dart';
 import '../integration/spiffynode_bridge.dart';
 import '../projections/wallet_projection.dart';
 import '../projections/invoice_projection.dart';
@@ -155,6 +157,8 @@ class LibSpiffyActorSystem {
     dynamic blockchainDataSource, // For wallet imports (WhatsOnChainDataSource, etc.)
     StorageBackend storageBackend = StorageBackend.isar, // NEW: Storage backend selection
     PostgresConfig? postgresConfig, // NEW: PostgreSQL configuration
+    String? cdnBaseUrl, // CDN URL for fast initial header sync
+    CdnSyncProgressCallback? onHeaderSyncProgress, // CDN sync progress callback
   }) async {
     
     // 1. Initialize Dactor system (use provided or create new)
@@ -262,7 +266,33 @@ class LibSpiffyActorSystem {
     // IMPORTANT: BlockHeaderChain uses _actorStorage which now points to Isar
     _headerChain = BlockHeaderChain(_actorStorage);
     await _headerChain.initialize();
-    
+
+    // 7.1. CDN-based fast header sync (before actors and P2P)
+    if (cdnBaseUrl != null) {
+      final cdnLogger = Logger('LibSpiffy-CDNSync');
+      try {
+        final cdnConfig = CdnHeaderSyncConfig(
+          baseUrl: cdnBaseUrl,
+          network: networkType == 'main' ? 'mainnet' : 'testnet',
+          onProgress: onHeaderSyncProgress,
+        );
+        final cdnSyncService = CdnHeaderSyncService(
+          config: cdnConfig,
+          headerChain: _headerChain,
+        );
+        final result = await cdnSyncService.synchronize();
+        if (result.success) {
+          cdnLogger.info('CDN sync complete: ${result.headersImported} headers, '
+              'final height: ${result.finalHeight}, '
+              'elapsed: ${result.elapsed.inSeconds}s');
+        } else {
+          cdnLogger.warning('CDN sync failed (will fall back to P2P): ${result.error}');
+        }
+      } catch (e) {
+        cdnLogger.warning('CDN header sync failed, will fall back to P2P: $e');
+      }
+    }
+
     // 7.5. Register event types for deserialization (BEFORE projections!)
     await _registerEventTypes();
     
@@ -981,6 +1011,8 @@ class LibSpiffyActorSystem {
   /// 
   /// External components (like P2P adapters) can subscribe to this stream
   /// to receive payment channel events for protocol message translation.
+  Stream<WalletEvent> get walletEvents => _walletEventBroadcaster.stream;
+
   Stream<ChannelEvent> get channelEvents => _channelEventBroadcaster.stream;
 
   /// Broadcast a channel event to external subscribers

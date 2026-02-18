@@ -709,6 +709,17 @@ class IsarWalletStorage implements ReadModelStorage {
   }
 
   @override
+  Future<void> storeBlockHeadersBulk(List<(BlockHeader, int)> headers) async {
+    final entities = headers
+        .map((pair) => BlockHeaderEntity.fromBlockHeader(pair.$1, pair.$2))
+        .toList();
+
+    await _isar.writeTxn(() async {
+      await _isar.blockHeaderEntitys.putAll(entities);
+    });
+  }
+
+  @override
   Future<BlockHeader?> getBlockHeaderByHash(String hash) async {
     final entity = await _isar.blockHeaderEntitys
         .where()

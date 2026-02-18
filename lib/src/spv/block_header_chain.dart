@@ -229,6 +229,46 @@ class BlockHeaderChain {
     }
   }
 
+  /// Bulk import pre-validated headers from CDN sync.
+  ///
+  /// These headers have already been validated for chain continuity,
+  /// checkpoint verification, and chunk integrity by CdnHeaderSyncService.
+  /// This method skips individual validation and writes directly in bulk.
+  ///
+  /// Parameters:
+  /// - [headers]: Pre-validated block headers in order
+  /// - [startHeight]: Height of the first header in the list
+  Future<void> bulkImportHeaders(List<BlockHeader> headers, int startHeight) async {
+    if (headers.isEmpty) return;
+
+    _logger.info('Bulk importing ${headers.length} headers starting at height $startHeight');
+
+    // Write in batches of 1000 for performance
+    const batchSize = 1000;
+    for (var i = 0; i < headers.length; i += batchSize) {
+      final end = (i + batchSize).clamp(0, headers.length);
+      final batch = <(BlockHeader, int)>[];
+      for (var j = i; j < end; j++) {
+        batch.add((headers[j], startHeight + j));
+      }
+      await _storage.storeBlockHeadersBulk(batch);
+    }
+
+    // Update chain state
+    final lastHeight = startHeight + headers.length - 1;
+    if (lastHeight >= _bestHeight) {
+      _bestHeight = lastHeight;
+      _chainTip = headers.last;
+    }
+
+    // Refresh cache with most recent headers
+    _headerCache.clear();
+    _heightToHash.clear();
+    await _loadRecentHeadersIntoCache();
+
+    _logger.info('Bulk import complete: ${headers.length} headers, tip at height $_bestHeight');
+  }
+
   /// Get recent headers for caching/display
   Future<List<BlockHeader>> getRecentHeaders(int count) async {
     try {

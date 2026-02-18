@@ -440,10 +440,22 @@ class InMemoryWalletStorage implements WalletStorage {
   Future<void> storeBlockHeader(BlockHeader header, int height) async {
     await _withGlobalLock(() async {
       final hash = header.blockHash().toString();
-      
+
       _blockHeaders[height] = header;
       _hashToHeight[hash] = height;
       _totalHeaders++;
+    });
+  }
+
+  @override
+  Future<void> storeBlockHeadersBulk(List<(BlockHeader, int)> headers) async {
+    await _withGlobalLock(() async {
+      for (final (header, height) in headers) {
+        final hash = header.blockHash().toString();
+        _blockHeaders[height] = header;
+        _hashToHeight[hash] = height;
+        _totalHeaders++;
+      }
     });
   }
 

@@ -931,6 +931,39 @@ class PostgresWalletStorage implements ReadModelStorage {
   }
 
   @override
+  Future<void> storeBlockHeadersBulk(List<(BlockHeader, int)> headers) async {
+    _ensureInitialized();
+    if (headers.isEmpty) return;
+
+    final now = DateTime.now();
+    final buffer = StringBuffer();
+    buffer.write('''
+      INSERT INTO block_headers (
+        height, hash, prev_block_hash, merkle_root, timestamp,
+        version, bits, nonce, is_orphaned, stored_at
+      ) VALUES
+    ''');
+
+    for (var i = 0; i < headers.length; i++) {
+      final (header, height) = headers[i];
+      final hash = header.blockHash().toString().replaceAll("'", "''");
+      final prevHash = header.prevBlock.toString().replaceAll("'", "''");
+      final merkle = header.merkleRoot.toString().replaceAll("'", "''");
+      final ts = header.timestamp.millisecondsSinceEpoch ~/ 1000;
+
+      if (i > 0) buffer.write(',');
+      buffer.write('''
+        ($height, '$hash', '$prevHash', '$merkle', $ts,
+         ${header.version}, ${header.bits}, ${header.nonce}, false, '${now.toIso8601String()}')
+      ''');
+    }
+
+    buffer.write(' ON CONFLICT (hash) DO NOTHING');
+
+    await _pool!.execute(buffer.toString());
+  }
+
+  @override
   Future<BlockHeader?> getBlockHeaderByHash(String hash) async {
     _ensureInitialized();
 

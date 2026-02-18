@@ -275,6 +275,7 @@ class LibSpiffyActorSystem {
           baseUrl: cdnBaseUrl,
           network: networkType == 'main' ? 'mainnet' : 'testnet',
           onProgress: onHeaderSyncProgress,
+          cacheDirectory: dataDirectory,
         );
         final cdnSyncService = CdnHeaderSyncService(
           config: cdnConfig,

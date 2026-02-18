@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
@@ -16,6 +17,10 @@ import 'cdn_manifest.dart';
 /// This service is used during first wallet setup to bypass the slow P2P
 /// header sync (2,000 headers per round-trip). It downloads pre-built binary
 /// header chunks from a CDN, validates them, and bulk-inserts into storage.
+///
+/// Chunks are processed one at a time (download → validate → import) to
+/// minimize memory usage and enable resumability. Optional disk caching
+/// allows crash-resilient sync across app restarts.
 class CdnHeaderSyncService {
   final CdnHeaderSyncConfig config;
   final BlockHeaderChain headerChain;
@@ -32,11 +37,17 @@ class CdnHeaderSyncService {
 
   /// Main entry point - downloads and imports CDN headers.
   ///
+  /// Processes chunks one at a time to minimize memory usage (~8MB peak
+  /// instead of ~270MB). Each chunk is validated and imported before the
+  /// next is downloaded, so progress is durable across restarts.
+  ///
   /// Returns a [CdnSyncResult] with the outcome. On failure, returns
   /// a result with [success] = false so the caller can fall back to P2P.
   Future<CdnSyncResult> synchronize() async {
     final stopwatch = Stopwatch()..start();
-    var headersImported = 0;
+    var headersImportedThisRun = 0;
+    // progressOffset tracks already-imported headers for accurate UI progress
+    var progressOffset = 0;
 
     try {
       // Phase 1: Fetch manifest
@@ -62,67 +73,102 @@ class CdnHeaderSyncService {
       _logger.info(
           'Need ${neededChunks.length} chunks (current height: $currentHeight)');
 
-      // Phase 3: Download chunks with concurrency control
-      _reportProgress(0, manifest.totalHeaders, CdnSyncPhase.downloadingChunks);
-      final chunkDataList = await _downloadChunks(neededChunks, manifest.totalHeaders);
+      // Ensure cache directory exists
+      if (config.cacheDirectory != null) {
+        await Directory(config.cacheDirectory!).create(recursive: true);
+      }
 
-      // Phase 4: Parse, validate, and import each chunk in order
-      _reportProgress(0, manifest.totalHeaders, CdnSyncPhase.validatingChunks);
+      // Use manifest.totalHeaders as the denominator so progress reflects
+      // the full sync. progressOffset accounts for already-imported headers
+      // so the UI resumes from the right point instead of starting at 0.
+      final totalNeeded = manifest.totalHeaders;
+      progressOffset = totalNeeded -
+          neededChunks.fold<int>(0, (sum, c) => sum + c.headerCount);
 
-      // Collect all headers for chain continuity validation
-      final allHeaders = <BlockHeader>[];
-      var firstChunkStartHeight = neededChunks.first.startHeight;
+      // Track the last header's hash for chain continuity across chunks.
+      // For the first chunk, use the DB chain tip.
+      String? previousBlockHash = headerChain.chainTip?.blockHash().toString();
 
-      for (var i = 0; i < neededChunks.length; i++) {
-        final chunk = neededChunks[i];
-        final data = chunkDataList[i];
+      // Phase 3-5: Process each chunk sequentially (download → validate → import)
+      for (var chunkIndex = 0; chunkIndex < neededChunks.length; chunkIndex++) {
+        final chunk = neededChunks[chunkIndex];
 
-        // Verify SHA-256 integrity
+        final progressCurrent = progressOffset + headersImportedThisRun;
+
+        // Download (or load from cache)
+        _reportProgress(progressCurrent, totalNeeded, CdnSyncPhase.downloadingChunks);
+        final data = await _loadOrDownloadChunk(chunk);
+
+        // Validate integrity
+        _reportProgress(progressCurrent, totalNeeded, CdnSyncPhase.validatingChunks);
         if (!_validateChunkIntegrity(data, chunk.sha256)) {
-          throw Exception(
-              'Chunk integrity check failed for ${chunk.filename}');
+          // Delete corrupted cache file if present
+          await _deleteCachedChunk(chunk);
+          throw Exception('Chunk integrity check failed for ${chunk.filename}');
         }
 
         // Parse binary headers
-        final headers = _parseChunkHeaders(data);
+        var headers = _parseChunkHeaders(data);
         if (headers.length != chunk.headerCount) {
           throw Exception(
               'Header count mismatch in ${chunk.filename}: '
               'expected ${chunk.headerCount}, got ${headers.length}');
         }
 
-        allHeaders.addAll(headers);
+        // Handle partially-imported chunks on resume: if the chunk's start
+        // is at or below the current DB height, trim already-imported headers.
+        // After trimming, the chain tip hash correctly links to headers[0].
+        var importStartHeight = chunk.startHeight;
+        if (chunk.startHeight <= currentHeight) {
+          final skipCount = currentHeight - chunk.startHeight + 1;
+          if (skipCount >= headers.length) {
+            // Entire chunk already imported — skip it
+            _logger.fine('Skipping fully imported chunk ${chunk.filename}');
+            previousBlockHash = headers.last.blockHash().toString();
+            await _deleteCachedChunk(chunk);
+            continue;
+          }
+          _logger.info(
+              'Resuming chunk ${chunk.filename}: skipping $skipCount '
+              'already-imported headers');
+          headers = headers.sublist(skipCount);
+          importStartHeight = currentHeight + 1;
+        }
+
+        // Validate chain continuity against the previous chunk (or DB tip)
+        if (!_validateChunkContinuity(
+            headers, importStartHeight, previousBlockHash)) {
+          throw Exception(
+              'Chain continuity validation failed at chunk ${chunk.filename}');
+        }
+
+        // Verify checkpoints within this chunk's range
+        if (config.verifyCheckpoints && manifest.checkpoints.isNotEmpty) {
+          _verifyCheckpoints(headers, importStartHeight, manifest.checkpoints);
+        }
+
+        // Import into DB
+        _reportProgress(progressCurrent, totalNeeded, CdnSyncPhase.importingHeaders);
+        await headerChain.bulkImportHeaders(headers, importStartHeight);
+        headersImportedThisRun += headers.length;
+
+        // Track last header hash for next chunk's continuity check
+        previousBlockHash = headers.last.blockHash().toString();
+
+        // Clean up cache file after successful import
+        await _deleteCachedChunk(chunk);
+
+        _logger.fine(
+            'Chunk ${chunkIndex + 1}/${neededChunks.length} imported: '
+            '${chunk.filename} (${headers.length} headers)');
       }
 
-      // Validate chain continuity across all chunks
-      if (!_validateChainContinuity(allHeaders, firstChunkStartHeight)) {
-        throw Exception('Chain continuity validation failed');
-      }
-
-      // Verify checkpoints
-      if (config.verifyCheckpoints && manifest.checkpoints.isNotEmpty) {
-        _verifyCheckpoints(allHeaders, firstChunkStartHeight, manifest.checkpoints);
-      }
-
-      // Phase 5: Bulk import
-      _reportProgress(0, allHeaders.length, CdnSyncPhase.importingHeaders);
-
-      // Import in chunks to report progress
-      const importBatchSize = 50000;
-      for (var i = 0; i < allHeaders.length; i += importBatchSize) {
-        final end = (i + importBatchSize).clamp(0, allHeaders.length);
-        final batch = allHeaders.sublist(i, end);
-        await headerChain.bulkImportHeaders(batch, firstChunkStartHeight + i);
-        headersImported += batch.length;
-        _reportProgress(headersImported, allHeaders.length, CdnSyncPhase.importingHeaders);
-      }
-
-      _reportProgress(headersImported, headersImported, CdnSyncPhase.complete);
+      _reportProgress(totalNeeded, totalNeeded, CdnSyncPhase.complete);
 
       stopwatch.stop();
       final result = CdnSyncResult(
         success: true,
-        headersImported: headersImported,
+        headersImported: headersImportedThisRun,
         finalHeight: headerChain.bestHeight,
         elapsed: stopwatch.elapsed,
       );
@@ -133,10 +179,10 @@ class CdnHeaderSyncService {
     } catch (e) {
       stopwatch.stop();
       _logger.warning('CDN header sync failed: $e');
-      _reportProgress(headersImported, 0, CdnSyncPhase.fallbackToP2P);
+      _reportProgress(headersImportedThisRun, 0, CdnSyncPhase.fallbackToP2P);
       return CdnSyncResult(
         success: false,
-        headersImported: headersImported,
+        headersImported: headersImportedThisRun,
         finalHeight: headerChain.bestHeight,
         elapsed: stopwatch.elapsed,
         error: e.toString(),
@@ -170,25 +216,29 @@ class CdnHeaderSyncService {
       ..sort((a, b) => a.startHeight.compareTo(b.startHeight));
   }
 
-  /// Download chunks with concurrency control.
-  Future<List<Uint8List>> _downloadChunks(
-      List<CdnChunkInfo> chunks, int totalHeaders) async {
-    final results = List<Uint8List?>.filled(chunks.length, null);
-    var downloadedHeaders = 0;
+  /// Load a chunk from disk cache or download it with retry logic.
+  Future<Uint8List> _loadOrDownloadChunk(CdnChunkInfo chunk) async {
+    // Check disk cache first
+    if (config.cacheDirectory != null) {
+      final cachedFile = File('${config.cacheDirectory}/${chunk.filename}');
+      if (await cachedFile.exists()) {
+        final data = await cachedFile.readAsBytes();
+        if (_validateChunkIntegrity(data, chunk.sha256)) {
+          _logger.fine('Using cached chunk ${chunk.filename}');
+          return data;
+        }
+        _logger.warning('Cached chunk ${chunk.filename} failed integrity check, re-downloading');
+        await cachedFile.delete();
+      }
+    }
 
-    // Process chunks with a concurrency pool
-    final semaphore = _Semaphore(config.concurrentDownloads);
-
-    final futures = <Future<void>>[];
-    for (var i = 0; i < chunks.length; i++) {
-      final index = i;
-      final chunk = chunks[i];
-
-      futures.add(semaphore.run(() async {
-        _logger.fine('Downloading ${chunk.filename} '
-            '(${chunk.sizeBytes} bytes)');
-
+    // Download with retry
+    for (var attempt = 1; attempt <= config.maxRetries; attempt++) {
+      try {
         final url = '${config.baseUrl}/${config.network}/${chunk.filename}';
+        _logger.fine('Downloading ${chunk.filename} '
+            '(${chunk.sizeBytes} bytes, attempt $attempt/${config.maxRetries})');
+
         final response = await _httpClient
             .get(Uri.parse(url))
             .timeout(config.downloadTimeout);
@@ -198,23 +248,33 @@ class CdnHeaderSyncService {
               'Failed to download ${chunk.filename}: HTTP ${response.statusCode}');
         }
 
-        results[index] = response.bodyBytes;
-        downloadedHeaders += chunk.headerCount;
-        _reportProgress(
-            downloadedHeaders, totalHeaders, CdnSyncPhase.downloadingChunks);
-      }));
-    }
+        final data = response.bodyBytes;
 
-    await Future.wait(futures);
+        // Cache to disk for crash resilience
+        if (config.cacheDirectory != null) {
+          await File('${config.cacheDirectory}/${chunk.filename}')
+              .writeAsBytes(data);
+        }
 
-    // Verify all chunks were downloaded
-    for (var i = 0; i < results.length; i++) {
-      if (results[i] == null) {
-        throw Exception('Chunk ${chunks[i].filename} was not downloaded');
+        return data;
+      } catch (e) {
+        if (attempt == config.maxRetries) rethrow;
+        _logger.warning(
+            'Chunk ${chunk.filename} attempt $attempt/${config.maxRetries} failed: $e');
+        await Future.delayed(Duration(seconds: attempt)); // linear backoff
       }
     }
+    throw StateError('unreachable'); // all retry paths either return or rethrow
+  }
 
-    return results.cast<Uint8List>();
+  /// Delete a cached chunk file if disk caching is enabled.
+  Future<void> _deleteCachedChunk(CdnChunkInfo chunk) async {
+    if (config.cacheDirectory != null) {
+      final cachedFile = File('${config.cacheDirectory}/${chunk.filename}');
+      if (await cachedFile.exists()) {
+        await cachedFile.delete();
+      }
+    }
   }
 
   /// Verify SHA-256 hash of a chunk matches the expected value.
@@ -249,10 +309,27 @@ class CdnHeaderSyncService {
     return headers;
   }
 
-  /// Validate that headers form a continuous chain.
-  bool _validateChainContinuity(List<BlockHeader> headers, int startHeight) {
+  /// Validate chain continuity within a chunk, and linkage to previous chunk.
+  ///
+  /// [previousBlockHash] is the block hash of the last header from the
+  /// previous chunk, or the DB chain tip for the first chunk. If null
+  /// (no previous data), only intra-chunk continuity is validated.
+  bool _validateChunkContinuity(
+      List<BlockHeader> headers, int startHeight, String? previousBlockHash) {
     if (headers.isEmpty) return true;
 
+    // Validate linkage to previous chunk / DB tip
+    if (previousBlockHash != null) {
+      final firstPrevHash = headers[0].prevBlock.toString();
+      if (firstPrevHash != previousBlockHash) {
+        _logger.warning(
+            'Chain continuity break at height $startHeight: '
+            'expected prevBlock $previousBlockHash, got $firstPrevHash');
+        return false;
+      }
+    }
+
+    // Validate intra-chunk continuity
     for (var i = 1; i < headers.length; i++) {
       final prevHash = headers[i - 1].blockHash().toString();
       final headerPrevHash = headers[i].prevBlock.toString();
@@ -277,7 +354,8 @@ class CdnHeaderSyncService {
     }
 
     _logger.fine(
-        'Chain continuity validated for ${headers.length} headers');
+        'Chain continuity validated for ${headers.length} headers '
+        'starting at height $startHeight');
     return true;
   }
 
@@ -343,42 +421,5 @@ class CdnHeaderSyncService {
 
   void _reportProgress(int current, int total, CdnSyncPhase phase) {
     config.onProgress?.call(current, total, phase);
-  }
-}
-
-/// Simple concurrency limiter for parallel downloads.
-class _Semaphore {
-  final int _maxConcurrency;
-  int _running = 0;
-  final _waiting = <Completer<void>>[];
-
-  _Semaphore(this._maxConcurrency);
-
-  Future<T> run<T>(Future<T> Function() task) async {
-    await _acquire();
-    try {
-      return await task();
-    } finally {
-      _release();
-    }
-  }
-
-  Future<void> _acquire() async {
-    if (_running < _maxConcurrency) {
-      _running++;
-      return;
-    }
-    final completer = Completer<void>();
-    _waiting.add(completer);
-    await completer.future;
-  }
-
-  void _release() {
-    if (_waiting.isNotEmpty) {
-      final next = _waiting.removeAt(0);
-      next.complete();
-    } else {
-      _running--;
-    }
   }
 }

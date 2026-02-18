@@ -38,6 +38,14 @@ class CdnHeaderSyncConfig {
   /// Progress callback: (downloadedHeaders, totalHeaders, phase)
   final CdnSyncProgressCallback? onProgress;
 
+  /// Optional directory for caching downloaded chunks to disk.
+  /// Enables crash-resilient sync — cached chunks survive app restarts.
+  /// When null, chunks are held in memory only.
+  final String? cacheDirectory;
+
+  /// Max retry attempts per chunk download (default: 3)
+  final int maxRetries;
+
   const CdnHeaderSyncConfig({
     required this.baseUrl,
     required this.network,
@@ -46,5 +54,7 @@ class CdnHeaderSyncConfig {
     this.validateProofOfWork = false,
     this.verifyCheckpoints = true,
     this.onProgress,
+    this.cacheDirectory,
+    this.maxRetries = 3,
   });
 }

@@ -320,6 +320,7 @@ void main() {
       final config = CdnHeaderSyncConfig(
         baseUrl: 'http://localhost',
         network: 'testnet',
+        maxRetries: 1, // Skip retries for faster test
       );
 
       final service = CdnHeaderSyncService(
@@ -379,6 +380,7 @@ void main() {
         baseUrl: 'http://localhost',
         network: 'testnet',
         verifyCheckpoints: false,
+        maxRetries: 1, // Skip retries for faster test
       );
 
       final service = CdnHeaderSyncService(

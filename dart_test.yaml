@@ -21,3 +21,7 @@ tags:
 
 # Increase timeout for slow tests
 timeout: 2m
+
+# Run test suites sequentially to avoid Isar native library concurrency issues.
+# Isar's initializeIsarCore is not safe for concurrent calls across isolates.
+concurrency: 1

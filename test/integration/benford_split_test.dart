@@ -9,6 +9,7 @@ import 'package:libspiffy/libspiffy.dart';
 import 'package:libspiffy/src/storage/isar_wallet_storage.dart';
 
 import '../mocks/mock_arc_service.dart';
+import 'isar_test_helper.dart';
 
 /// Integration tests for Benford UTXO Splitting
 /// 
@@ -80,7 +81,7 @@ class BenfordTestContext {
 
 /// Setup test infrastructure for Benford splitting
 Future<BenfordTestContext> setupBenfordTestContext() async {
-  await Isar.initializeIsarCore(download: true);
+  await ensureIsarInitialized();
 
   final testDir = Directory.systemTemp.createTempSync('benford-split-test-');
   final actorSystem = LocalActorSystem(ActorSystemConfig());

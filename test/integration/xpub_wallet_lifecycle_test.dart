@@ -11,14 +11,16 @@ import 'package:libspiffy/libspiffy.dart';
 import 'package:libspiffy/src/actors/libspiffy_actor_system.dart';
 import 'package:libspiffy/src/actors/wallet_messages.dart';
 import 'package:libspiffy/src/storage/isar_wallet_storage.dart';
+import 'isar_test_helper.dart';
 
 void main() {
   group('XPub Wallet Integration Tests', () {
+    setUpAll(() async {
+      await ensureIsarInitialized();
+    });
+
     test('XPub Wallet Lifecycle Test', () async {
     print('\n=== XPub Wallet Lifecycle Test ===');
-
-    // Setup: Initialize Isar and Actor System
-    await Isar.initializeIsarCore(download: true);
     final testDir = await Directory.systemTemp.createTemp('xpub_test_');
     final dbName = 'xpub_test_${DateTime.now().microsecondsSinceEpoch}';
     
@@ -133,7 +135,7 @@ void main() {
       print('\n=== XPub Wallet Multiple Address Generation Test ===');
 
       // Setup: Initialize Isar and Actor System
-      await Isar.initializeIsarCore(download: true);
+      await ensureIsarInitialized();
       final testDir = await Directory.systemTemp.createTemp('xpub_multi_addr_test_');
       final dbName = 'xpub_multi_addr_test_${DateTime.now().microsecondsSinceEpoch}';
       
@@ -235,7 +237,7 @@ void main() {
       print('\n=== XPub Wallet UTXO Reception Test ===');
 
       // Setup: Initialize Isar and Actor System
-      await Isar.initializeIsarCore(download: true);
+      await ensureIsarInitialized();
       final testDir = await Directory.systemTemp.createTemp('xpub_utxo_test_');
       final dbName = 'xpub_utxo_test_${DateTime.now().microsecondsSinceEpoch}';
       
@@ -324,7 +326,7 @@ void main() {
       print('\n=== XPub Wallet Rejects All Signing Operations Test ===');
 
       // Setup: Initialize Isar and Actor System
-      await Isar.initializeIsarCore(download: true);
+      await ensureIsarInitialized();
       final testDir = await Directory.systemTemp.createTemp('xpub_signing_test_');
       final dbName = 'xpub_signing_test_${DateTime.now().microsecondsSinceEpoch}';
       

@@ -21,6 +21,7 @@ import 'package:libspiffy/src/storage/isar_wallet_storage.dart';
 import 'package:libspiffy/src/utils/beef.dart';
 import 'package:libspiffy/src/utils/crypto_utils.dart';
 import 'p2p_test_helpers.dart';
+import 'isar_test_helper.dart';
 
 void main() {
   group('SPV Confirmed vs Unconfirmed Status Tests', () {
@@ -30,11 +31,13 @@ void main() {
     late Directory bobTestDir;
     late String bobWalletId;
     late String bobDbName;
-    
+
+    setUpAll(() async {
+      await ensureIsarInitialized();
+    });
+
     setUp(() async {
       print('\n--- Setting up Bob (receiver) system ---');
-      
-      await Isar.initializeIsarCore(download: true);
       
       bobTestDir = await Directory.systemTemp.createTemp('bob_confirm_test_');
       print('Bob DB: ${bobTestDir.path}');

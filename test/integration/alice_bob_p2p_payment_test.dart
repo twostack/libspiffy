@@ -33,6 +33,7 @@ import 'package:libspiffy/src/core/wallet_commands.dart';
 import 'package:libspiffy/src/models/bitcoin_utxo.dart';
 import 'package:libspiffy/src/models/bitcoin_transaction.dart';
 import '../mocks/mock_arc_service.dart';
+import 'isar_test_helper.dart';
 import 'p2p_test_helpers.dart';
 
 void main() {
@@ -58,12 +59,13 @@ void main() {
     late String aliceDbName;
     late String bobDbName;
     
+    setUpAll(() async {
+      await ensureIsarInitialized();
+    });
+
     setUp(() async {
       print('\n--- Setting up Alice and Bob systems ---');
-      
-      // Initialize Isar core (downloads native library if needed)
-      await Isar.initializeIsarCore(download: true);
-      
+
       // Initialize mocks
       mockArc = MockArcService();
       

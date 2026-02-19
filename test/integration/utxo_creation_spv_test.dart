@@ -26,6 +26,7 @@ import 'package:libspiffy/src/actors/wallet_messages.dart';
 import 'package:libspiffy/src/storage/isar_wallet_storage.dart';
 import 'package:libspiffy/src/utils/beef.dart';
 import 'package:libspiffy/src/utils/crypto_utils.dart';
+import 'isar_test_helper.dart';
 import 'p2p_test_helpers.dart';
 
 void main() {
@@ -38,12 +39,13 @@ void main() {
     late String bobWalletId;
     late String bobDbName;
     
+    setUpAll(() async {
+      await ensureIsarInitialized();
+    });
+
     setUp(() async {
       print('\n--- Setting up Bob (receiver) system ---');
-      
-      // Initialize Isar core
-      await Isar.initializeIsarCore(download: true);
-      
+
       // Create temporary directory for Bob
       bobTestDir = await Directory.systemTemp.createTemp('bob_utxo_test_');
       print('Bob DB: ${bobTestDir.path}');

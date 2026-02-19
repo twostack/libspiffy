@@ -3,6 +3,7 @@ import 'package:test/test.dart';
 import 'package:isar/isar.dart';
 import 'package:eventador/eventador.dart';
 import 'package:libspiffy/libspiffy.dart';
+import 'isar_test_helper.dart';
 
 /// Basic integration test to verify wallet functionality
 void main() {
@@ -14,11 +15,11 @@ void main() {
     late SecureStorage secureStorage;
 
     setUpAll(() async {
+      await ensureIsarInitialized();
       tempDir = await Directory.systemTemp.createTemp('libspiffy_basic_test_');
     });
 
     setUp(() async {
-      await Isar.initializeIsarCore(download: true);
       isar = await Isar.open(
         [EventEnvelopeSchema, SnapshotEnvelopeSchema],
         directory: tempDir.path,

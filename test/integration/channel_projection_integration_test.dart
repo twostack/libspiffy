@@ -17,6 +17,7 @@ import 'package:libspiffy/src/actors/payment_channel_manager_actor.dart';
 import 'package:libspiffy/src/actors/wallet_messages.dart';
 import 'package:libspiffy/src/storage/payment_channel_entity.dart';
 import 'package:libspiffy/src/core/channel_events.dart';
+import 'isar_test_helper.dart';
 
 void main() {
   group('Channel Projection Integration Tests', () {
@@ -28,8 +29,11 @@ void main() {
     late String walletId;
     late String dbName;
 
+    setUpAll(() async {
+      await ensureIsarInitialized();
+    });
+
     setUp(() async {
-      await Isar.initializeIsarCore(download: true);
       testDir = await Directory.systemTemp.createTemp('channel_projection_test_');
       dbName = 'channel_test_${DateTime.now().microsecondsSinceEpoch}';
       isar = await Isar.open(

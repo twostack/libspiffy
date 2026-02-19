@@ -16,6 +16,7 @@ import 'package:libspiffy/libspiffy.dart';
 import 'package:libspiffy/src/actors/libspiffy_actor_system.dart';
 import 'package:libspiffy/src/actors/invoice_messages.dart';
 import 'package:libspiffy/src/actors/wallet_messages.dart';
+import 'isar_test_helper.dart';
 
 void main() {
   group('Invoice Persistence Tests', () {
@@ -26,10 +27,11 @@ void main() {
     late String walletId;
     late String dbName;
 
+    setUpAll(() async {
+      await ensureIsarInitialized();
+    });
+
     setUp(() async {
-      // Initialize Isar
-      await Isar.initializeIsarCore(download: true);
-      
       // Create test directory
       testDir = await Directory.systemTemp.createTemp('invoice_persist_test_');
       

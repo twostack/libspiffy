@@ -8,6 +8,7 @@ import 'package:libspiffy/libspiffy.dart';
 import 'package:libspiffy/src/storage/isar_wallet_storage.dart';
 
 import '../mocks/mock_arc_service.dart';
+import 'isar_test_helper.dart';
 
 /// Integration tests for TransactionLifecycleCoordinator
 /// 
@@ -55,7 +56,7 @@ class TransactionLifecycleTestContext {
 
 /// Setup test infrastructure
 Future<TransactionLifecycleTestContext> setupTestContext() async {
-  await Isar.initializeIsarCore(download: true);
+  await ensureIsarInitialized();
 
   final testDir = Directory.systemTemp.createTempSync('tx-lifecycle-test-');
   final actorSystem = LocalActorSystem(ActorSystemConfig());

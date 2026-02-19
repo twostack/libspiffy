@@ -4,9 +4,10 @@ import 'package:isar/isar.dart';
 import 'package:eventador/eventador.dart';
 
 import 'package:libspiffy/libspiffy.dart';
+import 'isar_test_helper.dart';
 
 /// Integration tests for address management and entity features
-/// 
+///
 /// These tests verify:
 /// - RegisterDiscoveredAddressCommand CQRS flow
 /// - AddressEntity persistence and retrieval
@@ -26,12 +27,11 @@ void main() {
     late ReadModelStorage storage;
 
     setUpAll(() async {
+      await ensureIsarInitialized();
       tempDir = await Directory.systemTemp.createTemp('address_integration_');
     });
 
     setUp(() async {
-      await Isar.initializeIsarCore(download: true);
-      
       // Create separate Isar instances for event store and wallet storage
       eventIsar = await Isar.open(
         [EventEnvelopeSchema, SnapshotEnvelopeSchema],

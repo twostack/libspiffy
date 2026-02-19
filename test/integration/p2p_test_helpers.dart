@@ -17,6 +17,7 @@ import 'package:libspiffy/src/models/bitcoin_utxo.dart';
 import 'package:libspiffy/src/models/bitcoin_transaction.dart';
 import '../mocks/mock_arc_service.dart';
 import '../mocks/mock_peer_manager.dart';
+import 'isar_test_helper.dart';
 
 /// Test receiver actor that completes a future when it receives a specific message type
 class TestReceiverActor<T> extends Actor {
@@ -40,7 +41,7 @@ Future<LibSpiffyActorSystem> initializeTestSystem({
   required MockPeerManager mockPeerManager,
 }) async {
   // Initialize Isar core if not already done
-  await Isar.initializeIsarCore(download: true);
+  await ensureIsarInitialized();
   
   // Create Isar database
   final isar = await Isar.open(

@@ -4,12 +4,13 @@ import 'package:isar/isar.dart';
 import 'package:eventador/eventador.dart';
 
 import 'package:libspiffy/libspiffy.dart';
+import 'isar_test_helper.dart';
 
 /// Integration tests for LibSpiffy wallet functionality
-/// 
+///
 /// These tests verify:
 /// - Wallet creation and initialization
-/// - Address generation and management  
+/// - Address generation and management
 /// - UTXO tracking and balance calculation
 /// - Event sourcing consistency
 /// - Transaction workflows (where implemented)
@@ -22,11 +23,11 @@ void main() {
     late SecureStorage secureStorage;
 
     setUpAll(() async {
+      await ensureIsarInitialized();
       tempDir = await Directory.systemTemp.createTemp('libspiffy_integration_');
     });
 
     setUp(() async {
-      await Isar.initializeIsarCore(download: true);
       isar = await Isar.open(
         [EventEnvelopeSchema, SnapshotEnvelopeSchema],
         directory: tempDir.path,

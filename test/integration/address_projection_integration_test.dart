@@ -16,6 +16,7 @@ import 'package:eventador/eventador.dart';
 import 'package:libspiffy/libspiffy.dart';
 import 'package:libspiffy/src/actors/libspiffy_actor_system.dart';
 import 'package:libspiffy/src/actors/wallet_messages.dart';
+import 'isar_test_helper.dart';
 
 void main() {
   group('Address Projection Integration Tests', () {
@@ -26,13 +27,14 @@ void main() {
     late String walletId;
     late String dbName; // Store DB name for restart test
 
+    setUpAll(() async {
+      await ensureIsarInitialized();
+    });
+
     setUp(() async {
-      // Initialize Isar
-      await Isar.initializeIsarCore(download: true);
-      
       // Create test directory
       testDir = await Directory.systemTemp.createTemp('address_projection_test_');
-      
+
       // Open Isar with required schemas (unique name per test run)
       dbName = 'address_test_${DateTime.now().microsecondsSinceEpoch}';
       isar = await Isar.open(

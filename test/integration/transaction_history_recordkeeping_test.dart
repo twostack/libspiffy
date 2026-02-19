@@ -15,6 +15,7 @@ import 'package:libspiffy/src/storage/libspiffy_schemas.dart';
 import 'package:libspiffy/src/utils/crypto_utils.dart';
 import 'package:spiffynode/spiffy_node.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
+import 'isar_test_helper.dart';
 
 /// Integration test for transaction record-keeping after payment creation
 /// 
@@ -30,14 +31,15 @@ void main() {
     late LibSpiffyActorSystem libspiffy;
     late IsarWalletStorage storage;
     
+    setUpAll(() async {
+      await ensureIsarInitialized();
+    });
+
     setUp(() async {
       print('\n═══════════════════════════════════════════════');
       print('Setting up Transaction History Record-Keeping Test');
       print('═══════════════════════════════════════════════\n');
-      
-      // Initialize Isar
-      await Isar.initializeIsarCore(download: true);
-      
+
       // Create temporary directory for test database
       testDir = await Directory.systemTemp.createTemp('tx_history_test_');
       print('✓ Test directory created: ${testDir.path}');

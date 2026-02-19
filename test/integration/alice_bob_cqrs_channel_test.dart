@@ -32,6 +32,7 @@ import 'package:libspiffy/src/core/channel_events.dart';
 import 'package:libspiffy/src/core/wallet_events.dart';
 import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 import 'package:libspiffy/src/storage/in_memory_secure_storage.dart';
+import 'isar_test_helper.dart';
 
 void main() {
   group('Alice-to-Bob CQRS Payment Channel Integration', () {
@@ -58,11 +59,12 @@ void main() {
     // Shared crypto service
     late DartSVCryptoService cryptoService;
 
+    setUpAll(() async {
+      await ensureIsarInitialized();
+    });
+
     setUp(() async {
       print('\n--- Setting up Alice and Bob CQRS systems ---');
-
-      // Initialize Isar core
-      await Isar.initializeIsarCore(download: true);
 
       cryptoService = DartSVCryptoService();
 

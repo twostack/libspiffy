@@ -11,13 +11,15 @@ import 'package:libspiffy/libspiffy.dart';
 import 'package:libspiffy/src/actors/libspiffy_actor_system.dart';
 import 'package:libspiffy/src/actors/wallet_messages.dart';
 import 'package:libspiffy/src/storage/isar_wallet_storage.dart';
+import 'isar_test_helper.dart';
 
 void main() {
+  setUpAll(() async {
+    await ensureIsarInitialized();
+  });
+
   test('Simple wallet creation test', () async {
     print('\n=== Simple Wallet Creation Test ===');
-    
-    // Initialize Isar
-    await Isar.initializeIsarCore(download: true);
     
     // Create test directory
     final testDir = await Directory.systemTemp.createTemp('simple_test_');

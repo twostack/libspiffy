@@ -167,6 +167,12 @@ class InvoiceAggregate extends AggregateRoot<InvoiceState> {
                   '(expected 66 for compressed or 130 for uncompressed)');
             }
           }
+        case OPReturnOutputSpec opReturn:
+          if (!opReturn.isValid) {
+            throw ArgumentError(
+                'Output $i: Invalid OP_RETURN configuration - '
+                'must have non-empty data within ${OPReturnOutputSpec.maxTotalDataSize} bytes');
+          }
       }
     }
   }

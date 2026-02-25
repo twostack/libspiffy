@@ -404,6 +404,59 @@ void main() {
         expect(output1.hashCode, equals(output2.hashCode));
       });
 
+      test('separateOutputs defaults to false', () {
+        final output = OPReturnOutputSpec(
+          dataChunks: [testData1],
+        );
+
+        expect(output.separateOutputs, isFalse);
+      });
+
+      test('separateOutputs can be set to true', () {
+        final output = OPReturnOutputSpec(
+          dataChunks: [testData1, testData2],
+          separateOutputs: true,
+        );
+
+        expect(output.separateOutputs, isTrue);
+      });
+
+      test('separateOutputs roundtrip serialization', () {
+        final original = OPReturnOutputSpec(
+          dataChunks: [testData1],
+          separateOutputs: true,
+        );
+
+        final map = original.toMap();
+        expect(map['separateOutputs'], isTrue);
+
+        final restored = InvoiceOutputSpec.fromMap(map) as OPReturnOutputSpec;
+        expect(restored.separateOutputs, isTrue);
+      });
+
+      test('separateOutputs=false is omitted from map', () {
+        final output = OPReturnOutputSpec(
+          dataChunks: [testData1],
+          separateOutputs: false,
+        );
+
+        final map = output.toMap();
+        expect(map.containsKey('separateOutputs'), isFalse);
+      });
+
+      test('equality distinguishes separateOutputs', () {
+        final concat = OPReturnOutputSpec(
+          dataChunks: [testData1],
+          separateOutputs: false,
+        );
+        final separate = OPReturnOutputSpec(
+          dataChunks: [testData1],
+          separateOutputs: true,
+        );
+
+        expect(concat, isNot(equals(separate)));
+      });
+
       test('toString provides readable output', () {
         final output = OPReturnOutputSpec(
           dataChunks: [testData1, testData2],

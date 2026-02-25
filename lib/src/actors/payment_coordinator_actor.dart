@@ -304,10 +304,19 @@ class PaymentCoordinatorActor extends Actor {
               receivingAddresses.add('multisig:${p2ms.threshold}-of-${p2ms.totalKeys}');
 
             case OPReturnOutputSpec opReturn:
-              // Build OP_RETURN data carrier output (zero satoshis, unspendable)
-              final lockBuilder = OpReturnLockBuilder(opReturn.dataChunks);
-              txBuilder.spendToLockBuilder(lockBuilder, BigInt.zero);
-              receivingAddresses.add('op_return');
+              if (opReturn.separateOutputs) {
+                // One transaction output per data chunk
+                for (final chunk in opReturn.dataChunks) {
+                  final lockBuilder = OpReturnLockBuilder([chunk]);
+                  txBuilder.spendToLockBuilder(lockBuilder, BigInt.zero);
+                  receivingAddresses.add('op_return');
+                }
+              } else {
+                // All chunks in a single transaction output (default)
+                final lockBuilder = OpReturnLockBuilder(opReturn.dataChunks);
+                txBuilder.spendToLockBuilder(lockBuilder, BigInt.zero);
+                receivingAddresses.add('op_return');
+              }
           }
         }
       } else {

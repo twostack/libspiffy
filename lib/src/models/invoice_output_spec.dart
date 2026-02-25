@@ -157,11 +157,17 @@ class OPReturnOutputSpec extends InvoiceOutputSpec {
   /// OP_FALSE OP_RETURN <chunk1> <chunk2> ...
   final List<List<int>> dataChunks;
 
+  /// When true, each data chunk becomes its own separate transaction output
+  /// (one OP_RETURN output per chunk). When false (default), all chunks are
+  /// concatenated into a single OP_RETURN output.
+  final bool separateOutputs;
+
   /// Maximum total data size (100KB script limit minus overhead)
   static const int maxTotalDataSize = 99000;
 
   OPReturnOutputSpec({
     required this.dataChunks,
+    this.separateOutputs = false,
     super.label,
   }) : super(amount: BigInt.zero);
 
@@ -179,6 +185,7 @@ class OPReturnOutputSpec extends InvoiceOutputSpec {
   Map<String, dynamic> toMap() => {
         'type': 'op_return',
         'dataChunks': dataChunks.map((chunk) => hex.encode(chunk)).toList(),
+        if (separateOutputs) 'separateOutputs': true,
         if (label != null) 'label': label,
       };
 
@@ -187,6 +194,7 @@ class OPReturnOutputSpec extends InvoiceOutputSpec {
         dataChunks: (map['dataChunks'] as List)
             .map<List<int>>((chunk) => hex.decode(chunk as String))
             .toList(),
+        separateOutputs: map['separateOutputs'] as bool? ?? false,
         label: map['label'] as String?,
       );
 
@@ -196,18 +204,20 @@ class OPReturnOutputSpec extends InvoiceOutputSpec {
       other is OPReturnOutputSpec &&
           runtimeType == other.runtimeType &&
           _deepListEquals(dataChunks, other.dataChunks) &&
+          separateOutputs == other.separateOutputs &&
           label == other.label;
 
   @override
   int get hashCode => Object.hash(
         Object.hashAll(dataChunks.map((c) => Object.hashAll(c))),
+        separateOutputs,
         label,
       );
 
   @override
   String toString() {
     final totalSize = dataChunks.fold<int>(0, (sum, c) => sum + c.length);
-    return 'OPReturnOutputSpec(chunks: ${dataChunks.length}, totalBytes: $totalSize, label: $label)';
+    return 'OPReturnOutputSpec(chunks: ${dataChunks.length}, totalBytes: $totalSize, separateOutputs: $separateOutputs, label: $label)';
   }
 }
 

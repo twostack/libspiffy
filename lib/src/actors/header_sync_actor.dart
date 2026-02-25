@@ -6,6 +6,58 @@ import 'package:spiffynode/spiffy_node.dart';
 
 import '../spv/block_header_chain.dart';
 
+// =============================================================================
+// HEADER SYNC ACTOR MESSAGES
+// =============================================================================
+
+/// Message to set the SpiffyNode bridge reference after P2P initialization
+class SetSpiffyNodeBridgeMessage implements Message {
+  final dynamic bridge;
+
+  SetSpiffyNodeBridgeMessage(this.bridge);
+
+  @override
+  String get correlationId => 'set-bridge-${DateTime.now().millisecondsSinceEpoch}';
+  @override
+  Map<String, dynamic> get metadata => {};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+/// Message to set the PeerManager reference after P2P initialization
+class SetPeerManagerMessage implements Message {
+  final dynamic peerManager;
+
+  SetPeerManagerMessage(this.peerManager);
+
+  @override
+  String get correlationId => 'set-peer-manager-${DateTime.now().millisecondsSinceEpoch}';
+  @override
+  Map<String, dynamic> get metadata => {};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+/// Message to initiate header sync after P2P setup is complete
+class InitiateHeaderSyncMessage implements Message {
+  final int? startHeight;
+
+  InitiateHeaderSyncMessage({this.startHeight});
+
+  @override
+  String get correlationId => 'initiate-sync-${DateTime.now().millisecondsSinceEpoch}';
+  @override
+  Map<String, dynamic> get metadata => {};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
 /// Actor responsible for managing block header synchronization and storage
 /// 
 /// This actor:
@@ -54,24 +106,9 @@ class HeaderSyncActor extends Actor {
        _startHeight = startHeight,
        _logger = logger ?? Logger('HeaderSyncActor');
 
-  /// Set the SpiffyNode bridge reference (called after bridge is initialized)
-  void setSpiffyNodeBridge(dynamic bridge) {
-    _spiffyNodeBridge = bridge;
-  }
-  
-  /// Set the PeerManager reference (called after P2P initialization)
-  void setPeerManager(dynamic peerManager) {
-    _peerManager = peerManager;
-  }
-  
-  /// Set the start height for header sync
-  set startHeight(int? height) {
-    _startHeight = height;
-  }
-  
   /// Initiate header sync after P2P setup is complete
-  /// This is called by LibSpiffyActorSystem after PeerManager and startHeight are set
-  void initiateSyncAfterP2PSetup() {
+  /// Called internally via InitiateHeaderSyncMessage
+  void _initiateSyncAfterP2PSetup() {
     if (!_isInitialized) {
       _logger.warning('Cannot initiate sync: HeaderSyncActor not initialized yet');
       return;
@@ -95,7 +132,16 @@ class HeaderSyncActor extends Actor {
   @override
   Future<void> onMessage(dynamic message) async {
     try {
-      if (message is BlockHeadersReceivedMessage) {
+      if (message is SetSpiffyNodeBridgeMessage) {
+        _spiffyNodeBridge = message.bridge;
+        _logger.info('SpiffyNode bridge set via message');
+      } else if (message is SetPeerManagerMessage) {
+        _peerManager = message.peerManager;
+        _logger.info('PeerManager set via message');
+      } else if (message is InitiateHeaderSyncMessage) {
+        _startHeight = message.startHeight;
+        _initiateSyncAfterP2PSetup();
+      } else if (message is BlockHeadersReceivedMessage) {
         await _handleBlockHeadersReceived(message);
       } else if (message is ChainTipEventMessage) {
         await _handleChainTipEvent(message);

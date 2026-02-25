@@ -867,15 +867,12 @@ class LibSpiffyActorSystem {
         });
       }
       
-      // 8. Set bridge reference in HeaderSyncActor
-      _headerSyncActorInstance?.setSpiffyNodeBridge(_spiffyNodeBridge);
-      
-      // 9. Set PeerManager reference and startHeight in HeaderSyncActor
-      _headerSyncActorInstance?.setPeerManager(_peerManager);
-      _headerSyncActorInstance?.startHeight = startHeight;
-      
-      // 10. Trigger initial header sync (PeerManager and handler are set)
-      _headerSyncActorInstance?.initiateSyncAfterP2PSetup();
+      // 8. Set bridge reference in HeaderSyncActor (via mailbox)
+      _headerSyncActor?.tell(SetSpiffyNodeBridgeMessage(_spiffyNodeBridge));
+
+      // 9. Set PeerManager and trigger initial header sync (via mailbox)
+      _headerSyncActor?.tell(SetPeerManagerMessage(_peerManager));
+      _headerSyncActor?.tell(InitiateHeaderSyncMessage(startHeight: startHeight));
       
       
     } catch (e, stackTrace) {

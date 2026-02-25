@@ -1,3 +1,4 @@
+import 'package:dactor/dactor.dart';
 import 'package:eventador/eventador.dart';
 import '../models/invoice_state.dart';
 import '../models/invoice_output_spec.dart';
@@ -6,12 +7,15 @@ import 'invoice_commands.dart';
 import 'invoice_events.dart';
 
 /// Invoice aggregate root implementing event sourcing
-/// 
+///
 /// This aggregate manages invoice lifecycle through events:
 /// pending → paid/expired/cancelled
-/// 
+///
 /// Follows Eventador's AggregateRoot pattern with imperative state management.
 class InvoiceAggregate extends AggregateRoot<InvoiceState> {
+  // Capture sender at start of message processing for use in onCommandProcessed
+  final Map<String, ActorRef> _capturedSenders = {};
+
   InvoiceAggregate({
     required String aggregateId,
     required String aggregateType,
@@ -19,21 +23,105 @@ class InvoiceAggregate extends AggregateRoot<InvoiceState> {
   }) : super(aggregateId: aggregateId, aggregateType: aggregateType, eventStore: eventStore) {
     registerHandlers();
   }
-  
+
+  @override
+  Future<void> onMessage(dynamic message) async {
+    // Capture sender keyed by command ID for response routing
+    String? commandKey;
+    if (message is Command && _isInActorSystem()) {
+      final sender = context.sender;
+      if (sender != null) {
+        commandKey = message.commandId;
+        _capturedSenders[commandKey] = sender;
+      }
+    }
+
+    try {
+      await super.onMessage(message);
+    } finally {
+      if (commandKey != null) {
+        _capturedSenders.remove(commandKey);
+      }
+    }
+  }
+
   @override
   InvoiceState createInitialState() {
     return InvoiceState.empty(aggregateId);
   }
-  
+
   @override
   void registerHandlers() {
     // Intentionally empty - using override pattern instead of registry pattern
   }
-  
+
+  /// Send response after successful command processing
+  @override
+  Future<void> onCommandProcessed(Command command, List<Event> events) async {
+    await super.onCommandProcessed(command, events);
+
+    if (!_isInActorSystem()) return;
+
+    final sender = _capturedSenders[command.commandId];
+    if (sender == null) return;
+
+    for (final event in events) {
+      if (event is InvoicePaidEvent) {
+        sender.tell(InvoiceStatusMessage(
+          invoiceId: event.invoiceId,
+          status: InvoiceStatus.paid,
+          paidAt: event.paidAt,
+          txid: event.txid,
+          statusMessage: 'Invoice marked as paid',
+        ));
+      } else if (event is InvoiceCancelledEvent) {
+        sender.tell(InvoiceStatusMessage(
+          invoiceId: event.invoiceId,
+          status: InvoiceStatus.cancelled,
+          statusMessage: 'Invoice cancelled',
+        ));
+      } else if (event is InvoiceExpiredEvent) {
+        sender.tell(InvoiceStatusMessage(
+          invoiceId: event.invoiceId,
+          status: InvoiceStatus.expired,
+          statusMessage: 'Invoice expired',
+        ));
+      }
+    }
+  }
+
+  /// Send error response when command processing fails
+  @override
+  Future<void> onCommandFailure(Command command, dynamic error) async {
+    await super.onCommandFailure(command, error);
+
+    if (!_isInActorSystem()) return;
+
+    final sender = _capturedSenders[command.commandId];
+    if (sender == null) return;
+
+    final invoiceId = command is InvoiceCommand ? command.invoiceId : aggregateId;
+    sender.tell(InvoiceStatusMessage(
+      invoiceId: invoiceId,
+      status: InvoiceStatus.pending, // Status unchanged on failure
+      statusMessage: 'Command failed: $error',
+    ));
+  }
+
+  /// Check if we're running in an actor system
+  bool _isInActorSystem() {
+    try {
+      final _ = context;
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
   // ==========================================================================
   // EVENTADOR AGGREGATE ROOT IMPLEMENTATION
   // ==========================================================================
-  
+
   @override
   Future<List<Event>> handleCommand(InvoiceState currentState, Command command) async {
     return switch (command.runtimeType) {

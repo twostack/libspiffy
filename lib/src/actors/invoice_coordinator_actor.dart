@@ -488,6 +488,7 @@ class InvoiceCoordinatorActor extends Actor {
     }
     
     // Send MarkInvoicePaidCommand to aggregate
+    // The aggregate will respond directly to the original sender via onCommandProcessed
     final command = MarkInvoicePaidCommand(
       invoiceId: msg.invoiceId,
       txid: msg.txid,
@@ -495,22 +496,8 @@ class InvoiceCoordinatorActor extends Actor {
       addressesPaidTo: msg.addressesPaidTo,
       paidAt: msg.paidAt,
     );
-    
-    // Capture sender before async gap
-    final originalSender = context.sender;
 
-    aggregateActor.tell(command, sender: context.self);
-
-    // TODO: This responds before aggregate confirms the state change.
-    // If the aggregate rejects (e.g., invoice already paid/expired), the caller
-    // has already been told success. Should use ask pattern or deferred response.
-    originalSender?.tell(InvoiceStatusMessage(
-      invoiceId: msg.invoiceId,
-      status: InvoiceStatus.paid,
-      paidAt: msg.paidAt,
-      txid: msg.txid,
-      statusMessage: 'Invoice marked as paid',
-    ));
+    aggregateActor.tell(command, sender: context.sender);
   }
 
   /// Handle cancel invoice - Route to aggregate
@@ -544,19 +531,13 @@ class InvoiceCoordinatorActor extends Actor {
     }
     
     // Send CancelInvoiceCommand to aggregate
+    // The aggregate will respond directly to the original sender via onCommandProcessed
     final command = CancelInvoiceCommand(
       invoiceId: msg.invoiceId,
       reason: msg.reason,
     );
-    
-    aggregateActor.tell(command, sender: context.self);
-    
-    // Send confirmation response
-    context.sender?.tell(InvoiceStatusMessage(
-      invoiceId: msg.invoiceId,
-      status: InvoiceStatus.cancelled,
-      statusMessage: 'Invoice cancelled',
-    ));
+
+    aggregateActor.tell(command, sender: context.sender);
   }
 
   /// Handle list invoices - Query read model

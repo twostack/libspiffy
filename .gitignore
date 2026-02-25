@@ -10,4 +10,7 @@ docs
 
 *.iml
 .idea
+.DS_Store
+build/
 test/cdn/
+test/data/cdn/

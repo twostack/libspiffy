@@ -184,9 +184,11 @@ class BUMP {
     return buffer.toBytes();
   }
 
-  /// Validate the merkle path for a given transaction ID
-  /// Returns true if the path is valid, false otherwise
-  bool validateMerklePath(Uint8List txid) {
+  /// Validate the merkle path for a given transaction ID.
+  /// Returns true if the path can be traversed successfully.
+  /// If [expectedMerkleRoot] is provided, also verifies the computed root matches.
+  /// Without [expectedMerkleRoot], this only validates path traversal, not correctness.
+  bool validateMerklePath(Uint8List txid, {Uint8List? expectedMerkleRoot}) {
     if (path.isEmpty) {
       return false;
     }
@@ -296,8 +298,11 @@ class BUMP {
     }
     
     // The final hash should be the merkle root
-    // In a full implementation, we would verify this against the block header
-    return currentHash != null;
+    if (currentHash == null) return false;
+    if (expectedMerkleRoot != null) {
+      return listEquals(currentHash, expectedMerkleRoot);
+    }
+    return true;
   }
   
   /// Compute the merkle root for a given transaction ID

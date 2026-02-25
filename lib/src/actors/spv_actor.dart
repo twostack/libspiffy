@@ -4,6 +4,7 @@ import 'package:convert/convert.dart';
 import 'package:crypto/crypto.dart';
 import 'package:dactor/dactor.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
+import 'package:logging/logging.dart';
 import 'package:spiffynode/spiffy_node.dart';
 
 import '../storage/wallet_storage.dart';
@@ -26,6 +27,7 @@ import 'invoice_messages.dart';
 /// Note: Block header synchronization is handled by SpiffyNode, which stores
 /// headers in storage. This actor consumes those stored headers for validation.
 class SPVActor extends Actor {
+  final _log = Logger('SPVActor');
   final ActorRef _walletManager;
   final ActorRef _invoiceCoordinator;
   final ReadModelStorage _storage;
@@ -427,8 +429,8 @@ class SPVActor extends Actor {
       try {
         final broadcastTxn = txToBeValidated;
 
+        var inputIndex = 0;
         for (final input in broadcastTxn.inputs) {
-          var inputIndex = 0;
           final scriptSig = input.script;
 
           final fundingTxMap = beef.findTransactionByTxid(Uint8List.fromList(hex.decode(input.prevTxnId)));
@@ -512,6 +514,7 @@ class SPVActor extends Actor {
                 // Create Address from pubkeyhash
                 address = dartsv.Address.fromPubkeyHash(hex.encode(pubkeyHash), dartsv.NetworkType.TEST).toBase58();
               } catch (e) {
+                _log.warning('Failed to derive P2PKH address from pubkey hash: $e');
               }
             }
             break;
@@ -523,6 +526,7 @@ class SPVActor extends Actor {
                 final pubKeyObj = dartsv.SVPublicKey.fromHex(pubkey);
                 address = dartsv.Address.fromPublicKey(pubKeyObj, dartsv.NetworkType.TEST).toBase58();
               } catch (e) {
+                _log.warning('Failed to derive P2PK address from public key: $e');
               }
             }
             break;
@@ -584,6 +588,7 @@ class SPVActor extends Actor {
         }
       }
     } catch (e) {
+      _log.warning('Failed to extract spendable UTXOs: $e');
     }
 
     return spendableUTXOs;
@@ -699,6 +704,7 @@ class SPVActor extends Actor {
       
       return response;
     } catch (e) {
+      _log.warning('Failed to get invoice details: $e');
       return null;
     }
   }
@@ -743,6 +749,7 @@ class SPVActor extends Actor {
       }
       
     } catch (e) {
+      _log.warning('Failed to extract spent UTXOs: $e');
     }
 
     return spentUTXOs;
@@ -785,6 +792,7 @@ class SPVActor extends Actor {
       
       
     } catch (e) {
+      _log.warning('Failed to handle block header update: $e');
     }
   }
 
@@ -818,6 +826,7 @@ class SPVActor extends Actor {
       }
       
     } catch (e) {
+      _log.warning('Failed to handle block header stored: $e');
     }
   }
 

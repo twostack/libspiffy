@@ -132,6 +132,11 @@ class InMemoryWalletStorage implements WalletStorage {
   
   @override
   Future<void> deleteWallet(String walletId) async {
+    // Read associations BEFORE removing maps
+    final txids = _walletTransactions[walletId];
+    final invoiceIds = _walletInvoices[walletId];
+
+    // Remove wallet data
     _events.remove(walletId);
     _utxos.remove(walletId);
     _walletTransactions.remove(walletId);
@@ -139,17 +144,15 @@ class InMemoryWalletStorage implements WalletStorage {
     _walletMetadata.remove(walletId);
     _walletIds.remove(walletId);
     _walletInvoices.remove(walletId);
-    
-    // Remove transactions belonging to this wallet
-    final txids = _walletTransactions[walletId];
+
+    // Clean up associated transactions
     if (txids != null) {
       for (final txid in txids) {
         _transactions.remove(txid);
       }
     }
-    
-    // Remove invoices belonging to this wallet
-    final invoiceIds = _walletInvoices[walletId];
+
+    // Clean up associated invoices
     if (invoiceIds != null) {
       for (final invoiceId in invoiceIds) {
         _invoices.remove(invoiceId);

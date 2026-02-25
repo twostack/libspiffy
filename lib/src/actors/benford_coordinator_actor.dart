@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:dactor/dactor.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
+import 'package:logging/logging.dart';
 
 import '../core/wallet_commands.dart';
 import '../core/wallet_events.dart';
@@ -21,6 +22,7 @@ import 'wallet_messages.dart';
 /// 5. Broadcasts via ARCActor
 /// 6. Sends CQRS commands to update wallet state
 class BenfordCoordinatorActor extends Actor {
+  final _log = Logger('BenfordCoordinatorActor');
   final ActorRef _walletManager;
   final ActorRef _arcActor;
   final SecureStorage _secureStorage;
@@ -51,6 +53,7 @@ class BenfordCoordinatorActor extends Actor {
       } else {
       }
     } catch (e, stackTrace) {
+      _log.warning('Failed to handle message: $e');
     }
   }
 
@@ -267,6 +270,7 @@ class BenfordCoordinatorActor extends Actor {
       return txid;
 
     } catch (e, stackTrace) {
+      _log.warning('Failed to build and broadcast Benford split transaction: $e');
       return null;
     }
   }
@@ -308,16 +312,18 @@ class BenfordCoordinatorActor extends Actor {
 
     // For HD wallets, generate addresses and WAIT for persistence
     final futures = <Future<String>>[];
+    final receivers = <ActorRef>[];
 
     for (int i = 0; i < count; i++) {
       final completer = Completer<String>();
-      
+
       // Spawn temporary actor to receive response
       final receiverName = 'benford-addr-receiver-$i-${DateTime.now().millisecondsSinceEpoch}';
       final receiver = await context.system.spawn(
         receiverName,
         () => _AddressReceiverActor(completer),
       );
+      receivers.add(receiver);
 
       // Create command with UNIQUE commandId to prevent sender overwriting
       // Each command needs its own ID so BitcoinWalletAggregate can track senders separately
@@ -325,7 +331,7 @@ class BenfordCoordinatorActor extends Actor {
         walletId: walletId,
         commandId: 'benford-addr-gen-$i-${DateTime.now().microsecondsSinceEpoch}',
       );
-      
+
       // Send command WITH sender for response routing
       _walletManager.tell(
         WalletCommandMessage(walletId, command),
@@ -333,7 +339,7 @@ class BenfordCoordinatorActor extends Actor {
       );
 
       futures.add(completer.future);
-      
+
       // Small delay to ensure unique timestamps for commandId
       await Future.delayed(const Duration(microseconds: 10));
     }
@@ -347,6 +353,11 @@ class BenfordCoordinatorActor extends Actor {
       throw StateError('Address generation timed out after 30 seconds');
     } catch (e) {
       rethrow;
+    } finally {
+      // Clean up temporary receiver actors to prevent resource leaks
+      for (final receiver in receivers) {
+        await context.system.stop(receiver);
+      }
     }
 
     return addresses;

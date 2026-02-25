@@ -13,6 +13,7 @@ import '../storage/secure_storage.dart';
 import '../services/ancestor_chain_service.dart';
 import '../utils/beef.dart';
 import '../utils/bump.dart';
+import '../utils/crypto_utils.dart';
 import '../core/wallet_commands.dart';
 import '../services/transaction/builder/op_return_lockbuilder.dart';
 import 'payment_messages.dart';
@@ -64,13 +65,17 @@ class PaymentCoordinatorActor extends Actor {
 
   /// Handle payment invoice request
   Future<void> _handlePayInvoice(PayInvoiceMessage msg) async {
+    // Capture sender before any async gaps to avoid stale references
+    final originalSender = context.sender;
     // Calculate effective amount (from outputs or legacy amount)
     final effectiveAmount = msg.effectiveAmount;
+    // Fee estimate from message or default
+    final feeEstimate = msg.feeEstimateSats ?? BigInt.from(1000);
 
     // 1. Get available UTXOs
     final utxos = await _storage.getAvailableUTXOs(msg.walletId);
     if (utxos.isEmpty) {
-      _sendError(msg.invoiceId, 'Insufficient funds');
+      _sendError(msg.invoiceId, 'Insufficient funds', sender: originalSender);
       return;
     }
 
@@ -84,6 +89,7 @@ class PaymentCoordinatorActor extends Actor {
       _sendError(
         msg.invoiceId,
         'Insufficient funds: need $effectiveAmount satoshis, have $totalBalance',
+        sender: originalSender,
       );
       return;
     }
@@ -96,6 +102,7 @@ class PaymentCoordinatorActor extends Actor {
       _sendError(
         msg.invoiceId,
         'Incomplete transaction chain: ${ancestorResult.error}',
+        sender: originalSender,
       );
       return;
     }
@@ -114,7 +121,7 @@ class PaymentCoordinatorActor extends Actor {
     );
 
     if (paymentTx == null) {
-      _sendError(msg.invoiceId, 'Failed to build payment transaction');
+      _sendError(msg.invoiceId, 'Failed to build payment transaction', sender: originalSender);
       return;
     }
 
@@ -129,7 +136,7 @@ class PaymentCoordinatorActor extends Actor {
     );
 
     if (signedTxHex == null) {
-      _sendError(msg.invoiceId, 'Failed to sign transaction');
+      _sendError(msg.invoiceId, 'Failed to sign transaction', sender: originalSender);
       return;
     }
 
@@ -190,11 +197,10 @@ class PaymentCoordinatorActor extends Actor {
         BigInt.zero,
         (sum, utxo) => sum + utxo.satoshis,
       );
-      final changeAmount = totalInput - effectiveAmount - BigInt.from(1000); // Rough fee estimate
+      final changeAmount = totalInput - effectiveAmount - feeEstimate;
 
       // 7. Return BEEF to caller (does NOT broadcast)
-      final sender = context.sender;
-      if (sender != null) {
+      if (originalSender != null) {
         final response = BEEFPaymentResponse(
           invoiceId: msg.invoiceId,
           beefBytes: beef,
@@ -204,10 +210,10 @@ class PaymentCoordinatorActor extends Actor {
           ancestorCount: ancestorResult.ancestorTransactions.length,
           success: true,
         );
-        sender.tell(response);
+        originalSender.tell(response);
       }
     } catch (e) {
-      _sendError(msg.invoiceId, 'Failed to create BEEF: $e');
+      _sendError(msg.invoiceId, 'Failed to create BEEF: $e', sender: originalSender);
     }
   }
 
@@ -244,8 +250,8 @@ class PaymentCoordinatorActor extends Actor {
       selected.add(utxo);
       total += utxo.satoshis;
 
-      // Add some buffer for fees (rough estimate: 1000 sats)
-      if (total >= targetAmount + BigInt.from(1000)) {
+      // Add buffer for fees
+      if (total >= targetAmount + BigInt.from(1000)) { // Note: fee buffer in UTXO selection
         return selected;
       }
     }
@@ -427,10 +433,10 @@ class PaymentCoordinatorActor extends Actor {
     List<BitcoinUtxo> utxos,
   ) async {
     final publicKeys = <dartsv.SVPublicKey>[];
-    
+
     // Get the wallet's extended private key
-    dartsv.HDPrivateKey hdPrivateKey;
-    
+    dartsv.HDPrivateKey? hdPrivateKey;
+
     final xpriv = await _secureStorage.getXPriv(walletId);
     if (xpriv != null) {
       // Parse the extended private key directly
@@ -438,41 +444,54 @@ class PaymentCoordinatorActor extends Actor {
     } else {
       // Try mnemonic if xpriv not available (e.g., wallet created from seed phrase)
       final mnemonic = await _secureStorage.getMnemonic(walletId);
-      if (mnemonic == null) {
-        throw Exception('Wallet xpriv or mnemonic not found in secure storage');
+      if (mnemonic != null) {
+        // Get wallet network type from storage
+        final walletData = await _storage.getWallet(walletId);
+        final networkStr = walletData?['network'] as String? ?? 'test';
+        final networkType = networkStr == 'main'
+            ? dartsv.NetworkType.MAIN
+            : dartsv.NetworkType.TEST;
+
+        // Derive HD private key from mnemonic
+        hdPrivateKey = dartsv.HDPrivateKey.fromSeed(
+          dartsv.Mnemonic().toSeedHex(mnemonic, ''),
+          networkType,
+        );
       }
-      
-      // Get wallet network type from storage
-      final walletData = await _storage.getWallet(walletId);
-      final networkStr = walletData?['network'] as String? ?? 'test';
-      final networkType = networkStr == 'main' 
-          ? dartsv.NetworkType.MAIN 
-          : dartsv.NetworkType.TEST;
-      
-      // Derive HD private key from mnemonic
-      hdPrivateKey = dartsv.HDPrivateKey.fromSeed(
-        dartsv.Mnemonic().toSeedHex(mnemonic, ''),
-        networkType,
-      );
     }
-    
-    // For each UTXO, derive its public key
+
+    // WIF wallet: single private key, no HD derivation
+    if (hdPrivateKey == null) {
+      final wif = await _secureStorage.getWIF(walletId);
+      if (wif == null) {
+        throw Exception('Wallet xpriv, mnemonic, or WIF not found in secure storage');
+      }
+      final privateKey = dartsv.SVPrivateKey.fromWIF(wif);
+      final publicKey = privateKey.publicKey;
+      // All UTXOs in a WIF wallet belong to the same key
+      for (final _ in utxos) {
+        publicKeys.add(publicKey);
+      }
+      return publicKeys;
+    }
+
+    // HD wallet: derive public key per UTXO using derivation path
     for (final utxo in utxos) {
       // Get address metadata to find derivation index
       final addressMetadata = await _storage.getAddressMetadata(walletId, utxo.address);
       if (addressMetadata == null) {
         throw Exception('Address metadata not found for ${utxo.address}');
       }
-      
+
       final derivationPath = "m/0/${addressMetadata.derivationIndex}";
-      
+
       final derivedHdKey = hdPrivateKey.deriveChildKey(derivationPath);
       final privateKey = derivedHdKey.privateKey;
       final publicKey = privateKey.publicKey;
-      
+
       publicKeys.add(publicKey);
     }
-    
+
     return publicKeys;
   }
 
@@ -508,24 +527,29 @@ class PaymentCoordinatorActor extends Actor {
     );
     
     // Wait for signing response
-    final response = await completer.future.timeout(
-      Duration(seconds: 10),
-      onTimeout: () {
-        return TransactionSignedResponse(
-          walletId: walletId,
-          txid: txid,
-          signedHex: '',
-          success: false,
-          error: 'Signing timeout',
-        );
-      },
-    );
-    
-    if (!response.success) {
-      return null;
+    try {
+      final response = await completer.future.timeout(
+        Duration(seconds: 10),
+        onTimeout: () {
+          return TransactionSignedResponse(
+            walletId: walletId,
+            txid: txid,
+            signedHex: '',
+            success: false,
+            error: 'Signing timeout',
+          );
+        },
+      );
+
+      if (!response.success) {
+        return null;
+      }
+
+      return response.signedHex;
+    } finally {
+      // Clean up temporary receiver actor to prevent resource leak
+      await context.system.stop(receiver);
     }
-    
-    return response.signedHex;
   }
 
   /// Get block headers for validation
@@ -569,7 +593,7 @@ class PaymentCoordinatorActor extends Actor {
       // 2. Build BUMPs from merkle proofs
       final bumps = <BUMP>[];
       for (final proof in merkleProofs) {
-        bumps.add(_buildBUMPFromMerkleProof(proof));
+        bumps.add(CryptoUtils.buildBUMPFromMerkleProof(proof));
       }
       
       // 3. Set hasMerkle flags - only ancestors with proofs have true
@@ -608,8 +632,6 @@ class PaymentCoordinatorActor extends Actor {
       
       // 6. Serialize BEEF
       final serialized = beef.serialize();
-      Future.delayed(Duration(seconds: 1)); //debug delay so BEEF hex can dump to console
-      
       // 7. Verify BEEF can be parsed (sanity check)
       try {
         final parsed = BEEF.parse(serialized);
@@ -624,97 +646,10 @@ class PaymentCoordinatorActor extends Actor {
   }
 
 
-  /// Build a BUMP from a MerkleProof
-  /// 
-  /// Converts our MerkleProof storage format to the BUMP structure needed for BEEF.
-  /// Based on CryptoUtils.createBumpFromTscProof() implementation.
-  /// 
-  /// Supports two storage formats:
-  /// 1. Raw BUMP hex string (single element > 64 chars) - parse directly
-  /// 2. List of sibling hashes (each 64 chars) - build BUMP from scratch
-  BUMP _buildBUMPFromMerkleProof(MerkleProof proof) {
-    // Check if merkleProof contains a raw BUMP serialization (single element > 64 chars)
-    // or a list of sibling hashes (each exactly 64 chars for a 32-byte hash)
-    if (proof.merkleProof.length == 1 && proof.merkleProof[0].length > 64) {
-      // This is a raw BUMP hex string - parse it directly
-      try {
-        final bumpBytes = Uint8List.fromList(hex.decode(proof.merkleProof[0]));
-        final bump = BUMP.fromBytes(bumpBytes);
-        return bump;
-      } catch (e) {
-        rethrow;
-      }
-    }
-    
-    // Otherwise, build BUMP from sibling hashes (original logic)
-    final levels = <Level>[];
-    
-    // Level 0: Transaction ID at its position in the block
-    // This matches CryptoUtils.createBumpFromTscProof() implementation
-    // CRITICAL: proof.txid is in display format (big-endian) from database
-    // but BUMP stores txids in internal format (little-endian)
-    final reversedTxid = _reverseHexBytes(proof.txid);
-    levels.add(Level(leaves: [
-      Leaf(
-        offset: proof.position,
-        duplicate: false,
-        isTxid: true,
-        hash: Uint8List.fromList(hex.decode(reversedTxid)),
-      ),
-    ]));
-    
-    // Subsequent levels: merkle path siblings with calculated offsets
-    // Each hash in the merkleProof list is a sibling at the next level up
-    // Sibling offset calculation matches CryptoUtils.createBumpFromTscProof()
-    for (int i = 0; i < proof.merkleProof.length; i++) {
-      // Calculate sibling offset using bit manipulation
-      // In a Merkle tree, if index bit at level i is 0, then sibling is at (index | (1 << i))
-      // If index bit at level i is 1, then sibling is at (index & ~(1 << i))
-      final indexBit = (proof.position >> i) & 1;
-      final siblingOffset = indexBit == 0 
-          ? (proof.position | (1 << i)) 
-          : (proof.position & ~(1 << i));
-      
-      // CRITICAL: proof.merkleProof[i] is in display format (big-endian) from database
-      // but BUMP stores hashes in internal format (little-endian)
-      // We must reverse the bytes when converting
-      final siblingHashHex = proof.merkleProof[i];
-      final reversedHash = _reverseHexBytes(siblingHashHex);
-      
-      levels.add(Level(leaves: [
-        Leaf(
-          offset: siblingOffset,
-          duplicate: false,
-          isTxid: false,
-          hash: Uint8List.fromList(hex.decode(reversedHash)),
-        ),
-      ]));
-    }
-    
-    return BUMP(
-      blockHeight: proof.blockHeight,
-      path: levels,
-    );
-  }
-
-  /// Reverse bytes in a hex string (for Bitcoin's little-endian format)
-  /// 
-  /// Converts between display format (big-endian) and internal format (little-endian)
-  String _reverseHexBytes(String hexString) {
-    if (hexString.length % 2 != 0) {
-      throw Exception('Hex string must have an even number of characters: $hexString');
-    }
-
-    final result = StringBuffer();
-    for (int i = hexString.length - 2; i >= 0; i -= 2) {
-      result.write(hexString.substring(i, i + 2));
-    }
-    return result.toString();
-  }
-
   /// Send error response to caller
-  void _sendError(String invoiceId, String error) {
-    context.sender?.tell(BEEFPaymentResponse.error(
+  void _sendError(String invoiceId, String error, {ActorRef? sender}) {
+    final target = sender ?? context.sender;
+    target?.tell(BEEFPaymentResponse.error(
       invoiceId: invoiceId,
       error: error,
     ));

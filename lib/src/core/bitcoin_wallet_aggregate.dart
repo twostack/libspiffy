@@ -1,5 +1,6 @@
 
 import 'package:eventador/eventador.dart';
+import 'package:logging/logging.dart';
 import 'package:uuid/uuid.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:dactor/dactor.dart';
@@ -22,6 +23,7 @@ import 'wallet_events.dart';
 /// ensuring consistency and providing full audit trail for all operations.
 /// Follows the Eventador AggregateRoot pattern with functional state management.
 class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
+  final _log = Logger('BitcoinWalletAggregate');
   final CryptoService cryptoService;
   final SecureStorage secureStorage;
   final TransactionBuilderService? transactionBuilder;
@@ -74,6 +76,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
               return;
             }
           } catch (e) {
+            _log.warning('Failed to check duplicate CreateWalletCommand: $e');
           }
         }
       } else {
@@ -1038,6 +1041,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
                 belongsToWallet = true;
               }
             } catch (e) {
+              _log.warning('Failed to extract P2PKH address from output: $e');
             }
             break;
             
@@ -1053,9 +1057,10 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
                 }
               }
             } catch (e) {
+              _log.warning('Failed to extract P2PK address from output: $e');
             }
             break;
-            
+
           case 'p2ms':
             // For P2MS (multisig), check if any of the public keys belong to wallet addresses
             try {
@@ -1072,10 +1077,12 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
                       break;
                     }
                   } catch (e) {
+                    _log.warning('Failed to derive P2MS address from public key: $e');
                   }
                 }
               }
             } catch (e) {
+              _log.warning('Failed to extract P2MS script metadata: $e');
             }
             break;
             
@@ -1216,21 +1223,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         .map((utxo) => utxo.address)
         .toList();
 
-    // Reserve selected UTXOs
-    final reserveEvents = selectedUtxos.map((utxo) {
-      return UTXOReservedEvent(
-        walletId: command.walletId,
-        txid: utxo.txid,
-        vout: utxo.vout,
-        reservedByTxId: command.transactionId,
-        reservationReason: 'Transaction creation',
-        expiresAt: DateTime.now().add(Duration(hours: 1)),
-        priority: 10, // High priority
-        version: currentState.version + 1,
-        timestamp: DateTime.now(),
-      );
-    }).toList();
-
     // Create transaction event with all required fields
     final transactionEvent = TransactionCreatedEvent(
       walletId: command.walletId,
@@ -1249,6 +1241,21 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       version: currentState.version + 1,
       timestamp: DateTime.now(),
     );
+
+    // Reserve selected UTXOs with sequential version numbers
+    final reserveEvents = selectedUtxos.asMap().entries.map((entry) {
+      return UTXOReservedEvent(
+        walletId: command.walletId,
+        txid: entry.value.txid,
+        vout: entry.value.vout,
+        reservedByTxId: command.transactionId,
+        reservationReason: 'Transaction creation',
+        expiresAt: DateTime.now().add(Duration(hours: 1)),
+        priority: 10, // High priority
+        version: currentState.version + 2 + entry.key,
+        timestamp: DateTime.now(),
+      );
+    }).toList();
 
     // Return both transaction creation and UTXO reservation events
     return [transactionEvent, ...reserveEvents];

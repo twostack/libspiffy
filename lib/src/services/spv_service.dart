@@ -1,17 +1,20 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:logging/logging.dart';
 import 'package:spiffynode/src/spv/chain_tip_tracker.dart';
 
 import '../actors/wallet_messages.dart';
 import '../utils/beef.dart';
 import '../utils/bump.dart';
+import '../utils/hex_utils.dart' as hex_utils;
 import 'arc_service.dart';
 import 'block_header_service.dart';
 
 /// Enhanced SPV service with ChainTipTracker and BlockHeaderService integration
 /// Provides real-time blockchain monitoring, confirmation tracking, and BEEF/BUMP validation
 class SPVService {
+  final _log = Logger('SPVService');
   final ArcService arcService;
   final ChainTipTracker chainTipTracker;
   final BlockHeaderService blockHeaderService;
@@ -171,6 +174,7 @@ class SPVService {
         ));
       }
     } catch (e) {
+      _log.warning('Failed to check transaction confirmations: $e');
     }
   }
 
@@ -198,7 +202,7 @@ class SPVService {
     // Validate each transaction with merkle proof
     for (final tx in verifiedTxs) {
       final txid = tx['txid'] as Uint8List;
-      final txidHex = _bytesToHex(txid);
+      final txidHex = hex_utils.bytesToHex(txid);
       final blockHeight = tx['blockHeight'] as int;
       final bumpIdx = tx['bumpIndex'] as int;
 
@@ -213,7 +217,7 @@ class SPVService {
 
         // Compute merkle root from BUMP
         final computedMerkleRoot = beef.bumps[bumpIdx].computeMerkleRoot(txid);
-        final computedMerkleRootHex = _bytesToHex(computedMerkleRoot.reversed.toList());
+        final computedMerkleRootHex = hex_utils.bytesToHex(computedMerkleRoot.reversed.toList());
 
         // Compare merkle roots
         if (computedMerkleRootHex == blockMerkleRoot) {
@@ -222,13 +226,14 @@ class SPVService {
           failedTxids.add(txidHex);
         }
       } catch (e) {
+        _log.warning('Failed to validate BEEF transaction $txidHex: $e');
         failedTxids.add(txidHex);
       }
     }
 
     return SPVValidationResult(
       txid: txId,
-      isValid: false,
+      isValid: failedTxids.isEmpty,
       validationError: failedTxids.isEmpty ? null : 'Failed to validate ${failedTxids.length} transactions'
     );
 
@@ -237,7 +242,7 @@ class SPVService {
   /// Validate a single transaction using its merkle proof
   Future<bool> validateTransaction(String txidHex, BUMP merkleProof) async {
     try {
-      final txidBytes = _hexToBytes(txidHex);
+      final txidBytes = hex_utils.hexToBytes(txidHex);
       
       // Get block height from merkle proof
       final blockHeight = merkleProof.blockHeight;
@@ -250,7 +255,7 @@ class SPVService {
       
       // Compute merkle root from BUMP
       final computedMerkleRoot = merkleProof.computeMerkleRoot(txidBytes);
-      final computedMerkleRootHex = _bytesToHex(computedMerkleRoot.reversed.toList());
+      final computedMerkleRootHex = hex_utils.bytesToHex(computedMerkleRoot.reversed.toList());
       
       return computedMerkleRootHex == blockMerkleRoot;
     } catch (e) {
@@ -361,7 +366,7 @@ class SPVService {
         final rawTx = await arcService.getRawTransaction(txid);
         if (rawTx.isEmpty) continue;
 
-        final txBytes = _hexToBytes(rawTx);
+        final txBytes = hex_utils.hexToBytes(rawTx);
         txs.add(txBytes);
 
         final hasProof = proofs.any((p) => p.txid == txid);
@@ -442,31 +447,18 @@ class SPVService {
 
   /// Create BUMP from ARC merkle proof response
   Future<BUMP> _createBUMPFromArcProof(ArcMerkleProofResponse proof) async {
-    // This is a simplified implementation
-    // Real implementation would need to parse the merkle path from ARC
-    return BUMP.fromBytes(Uint8List(0)); // Placeholder
+    throw UnimplementedError(
+      'ARC merkle proof to BUMP conversion not yet implemented. '
+      'Use WhatsOnChain TSC proofs via CryptoUtils.convertTscProofToBrc71Binary instead.');
   }
 
   /// Create BUMP from multiple ARC proofs for the same block
   Future<BUMP> _createBUMPFromArcProofs(List<ArcMerkleProofResponse> proofs) async {
-    // This is a simplified implementation
-    // Real implementation would need to construct the merkle tree properly
-    return BUMP.fromBytes(Uint8List(0)); // Placeholder
+    throw UnimplementedError(
+      'ARC merkle proofs to BUMP conversion not yet implemented. '
+      'Use WhatsOnChain TSC proofs via CryptoUtils.convertTscProofToBrc71Binary instead.');
   }
 
-  /// Convert hex string to bytes
-  Uint8List _hexToBytes(String hex) {
-    final bytes = <int>[];
-    for (int i = 0; i < hex.length; i += 2) {
-      bytes.add(int.parse(hex.substring(i, i + 2), radix: 16));
-    }
-    return Uint8List.fromList(bytes);
-  }
-
-  /// Convert bytes to hex string
-  String _bytesToHex(List<int> bytes) {
-    return bytes.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join('');
-  }
 
   /// Shutdown the service
   Future<void> shutdown() async {

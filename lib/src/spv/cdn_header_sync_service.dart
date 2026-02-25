@@ -8,6 +8,7 @@ import 'package:http/http.dart' as http;
 import 'package:logging/logging.dart';
 import 'package:spiffynode/spiffy_node.dart';
 
+import '../utils/hex_utils.dart' as hex_utils;
 import 'block_header_chain.dart';
 import 'cdn_header_sync_config.dart';
 import 'cdn_manifest.dart';
@@ -385,7 +386,7 @@ class CdnHeaderSyncService {
     final blockHash = header.blockHash();
     final target = _bitsToTarget(header.bits);
 
-    final hashBytes = _hexToBytes(blockHash.toString());
+    final hashBytes = hex_utils.hexToBytes(blockHash.toString());
     final hashBigInt = _bytesToBigInt(hashBytes.reversed.toList());
 
     return hashBigInt <= target;
@@ -400,15 +401,6 @@ class CdnHeaderSyncService {
     } else {
       return BigInt.from(mantissa) << (8 * (exponent - 3));
     }
-  }
-
-  Uint8List _hexToBytes(String hex) {
-    final cleanHex = hex.replaceAll('0x', '');
-    final bytes = <int>[];
-    for (var i = 0; i < cleanHex.length; i += 2) {
-      bytes.add(int.parse(cleanHex.substring(i, i + 2), radix: 16));
-    }
-    return Uint8List.fromList(bytes);
   }
 
   BigInt _bytesToBigInt(List<int> bytes) {

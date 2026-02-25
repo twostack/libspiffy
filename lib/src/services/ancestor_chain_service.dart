@@ -15,6 +15,7 @@ import '../models/bitcoin_transaction.dart';
 import '../storage/read_model_storage.dart';
 import '../utils/beef.dart';
 import '../utils/bump.dart';
+import '../utils/crypto_utils.dart';
 
 /// Result of ancestor chain collection
 class AncestorChainResult {
@@ -204,7 +205,7 @@ class AncestorChainService {
       // 2. Build BUMPs from merkle proofs
       final bumps = <BUMP>[];
       for (final proof in merkleProofs) {
-        bumps.add(_buildBUMPFromMerkleProof(proof));
+        bumps.add(CryptoUtils.buildBUMPFromMerkleProof(proof));
       }
 
       // 3. Set hasMerkle flags - only ancestors with proofs have true
@@ -282,7 +283,7 @@ class AncestorChainService {
       // 2. Build BUMPs from merkle proofs
       final bumps = <BUMP>[];
       for (final proof in merkleProofs) {
-        bumps.add(_buildBUMPFromMerkleProof(proof));
+        bumps.add(CryptoUtils.buildBUMPFromMerkleProof(proof));
       }
 
       // 3. Set hasMerkle flags
@@ -339,84 +340,6 @@ class AncestorChainService {
     }
   }
 
-  /// Build a BUMP from a MerkleProof
-  ///
-  /// Converts our MerkleProof storage format to the BUMP structure needed for BEEF.
-  /// Supports two storage formats:
-  /// 1. Raw BUMP hex string (single element > 64 chars) - parse directly
-  /// 2. List of sibling hashes (each 64 chars) - build BUMP from scratch
-  BUMP _buildBUMPFromMerkleProof(MerkleProof proof) {
-    // Check if merkleProof contains a raw BUMP serialization
-    if (proof.merkleProof.length == 1 && proof.merkleProof[0].length > 64) {
-      // This is a raw BUMP hex string - parse it directly
-      try {
-        final bumpBytes = Uint8List.fromList(hex.decode(proof.merkleProof[0]));
-        final bump = BUMP.fromBytes(bumpBytes);
-        return bump;
-      } catch (e) {
-        rethrow;
-      }
-    }
-
-    // Build BUMP from sibling hashes
-    final levels = <Level>[];
-
-    // Level 0: Transaction ID at its position in the block
-    // CRITICAL: proof.txid is in display format (big-endian) from database
-    // but BUMP stores txids in internal format (little-endian)
-    final reversedTxid = _reverseHexBytes(proof.txid);
-    levels.add(Level(leaves: [
-      Leaf(
-        offset: proof.position,
-        duplicate: false,
-        isTxid: true,
-        hash: Uint8List.fromList(hex.decode(reversedTxid)),
-      ),
-    ]));
-
-    // Subsequent levels: merkle path siblings with calculated offsets
-    for (int i = 0; i < proof.merkleProof.length; i++) {
-      // Calculate sibling offset using bit manipulation
-      final indexBit = (proof.position >> i) & 1;
-      final siblingOffset =
-          indexBit == 0 ? (proof.position | (1 << i)) : (proof.position & ~(1 << i));
-
-      // CRITICAL: proof.merkleProof[i] is in display format (big-endian)
-      // but BUMP stores hashes in internal format (little-endian)
-      final siblingHashHex = proof.merkleProof[i];
-      final reversedHash = _reverseHexBytes(siblingHashHex);
-
-      levels.add(Level(leaves: [
-        Leaf(
-          offset: siblingOffset,
-          duplicate: false,
-          isTxid: false,
-          hash: Uint8List.fromList(hex.decode(reversedHash)),
-        ),
-      ]));
-    }
-
-    return BUMP(
-      blockHeight: proof.blockHeight,
-      path: levels,
-    );
-  }
-
-  /// Reverse bytes in a hex string (for Bitcoin's little-endian format)
-  ///
-  /// Converts between display format (big-endian) and internal format (little-endian)
-  String _reverseHexBytes(String hexString) {
-    if (hexString.length % 2 != 0) {
-      throw Exception(
-          'Hex string must have an even number of characters: $hexString');
-    }
-
-    final result = StringBuffer();
-    for (int i = hexString.length - 2; i >= 0; i -= 2) {
-      result.write(hexString.substring(i, i + 2));
-    }
-    return result.toString();
-  }
 }
 
 /// Internal helper for recursion step result

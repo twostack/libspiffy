@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:collection';
 
+import 'package:logging/logging.dart';
 import 'package:spiffynode/src/spv/chain_tip_tracker.dart';
 
 import '../actors/wallet_messages.dart';
@@ -14,6 +15,7 @@ import 'arc_service.dart';
 /// Comprehensive wallet balance service with BEEF-based confirmation logic
 /// Provides multi-tier balance tracking, reorganization handling, and real-time updates
 class WalletBalanceService {
+  final _log = Logger('WalletBalanceService');
   final SPVService spvService;
   final BlockHeaderService blockHeaderService;
   final ChainTipTracker chainTipTracker;
@@ -269,6 +271,7 @@ class WalletBalanceService {
       tracked.lastValidated = DateTime.now();
       
     } catch (e) {
+      _log.warning('Failed to revalidate UTXO ${tracked.utxo.txid}: $e');
     }
   }
 
@@ -284,6 +287,7 @@ class WalletBalanceService {
       tracked.lastValidated = DateTime.now();
       
     } catch (e) {
+      _log.warning('Failed to revalidate transaction ${tracked.transaction.txid}: $e');
     }
   }
 

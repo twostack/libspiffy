@@ -13,6 +13,7 @@ import 'dart:async';
 import 'package:dactor/dactor.dart';
 import 'package:eventador/eventador.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
+import 'package:logging/logging.dart';
 
 import '../core/payment_channel_aggregate.dart';
 import '../core/channel_commands.dart';
@@ -25,6 +26,7 @@ import 'wallet_messages.dart';
 
 /// Payment Channel Manager - Orchestrates all channel operations
 class PaymentChannelManagerActor extends Actor {
+  final _log = Logger('PaymentChannelManagerActor');
   final ActorRef _walletManager;
   final EventStore _eventStore;
   final CryptoService _cryptoService;
@@ -338,6 +340,7 @@ class PaymentChannelManagerActor extends Actor {
       _broadcastEvents(response);
       
     } catch (e, stack) {
+      _log.warning('Failed to record server acceptance: $e');
     }
   }
 

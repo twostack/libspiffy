@@ -5,6 +5,7 @@ import 'package:logging/logging.dart';
 import 'package:spiffynode/spiffy_node.dart';
 
 import '../storage/read_model_storage.dart';
+import '../utils/hex_utils.dart' as hex_utils;
 
 /// Manages the block header chain for SPV validation
 /// 
@@ -324,7 +325,7 @@ class BlockHeaderChain {
       final target = _bitsToTarget(header.bits);
       
       // Convert block hash to big integer for comparison
-      final hashBytes = _hexToBytes(blockHash.toString());
+      final hashBytes = hex_utils.hexToBytes(blockHash.toString());
       final hashBigInt = _bytesToBigInt(hashBytes.reversed.toList()); // Little-endian
       
       return hashBigInt <= target;
@@ -373,8 +374,8 @@ class BlockHeaderChain {
 
   /// Hash a pair of hashes (double SHA256)
   String _hashPair(String left, String right) {
-    final leftBytes = _hexToBytes(left);
-    final rightBytes = _hexToBytes(right);
+    final leftBytes = hex_utils.hexToBytes(left);
+    final rightBytes = hex_utils.hexToBytes(right);
     final combined = Uint8List.fromList([...leftBytes, ...rightBytes]);
 
     // Double SHA256
@@ -382,17 +383,6 @@ class BlockHeaderChain {
     final secondHash = sha256.convert(firstHash.bytes);
 
     return secondHash.toString();
-  }
-
-  /// Convert hex string to bytes
-  Uint8List _hexToBytes(String hex) {
-    final cleanHex = hex.replaceAll('0x', '');
-    final bytes = <int>[];
-    for (var i = 0; i < cleanHex.length; i += 2) {
-      final byte = int.parse(cleanHex.substring(i, i + 2), radix: 16);
-      bytes.add(byte);
-    }
-    return Uint8List.fromList(bytes);
   }
 
   /// Convert bytes to big integer

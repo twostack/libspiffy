@@ -75,14 +75,13 @@ class DartSVCryptoService implements CryptoService {
     dartsv.HDPrivateKey hdPrivateKey,
     int accountIndex,
     int addressIndex, {
-    int coinType = 0, //we ignore this for now and follow the bitcoin-cash 236' as L2
+    int coinType = 0,
     bool isChange = false,
   }) async {
-    // BIP44 path: m/44'/${cointype}'/${accountIndex}'/${isChange ? 1 : 0}/${addressIndex}
-    // Only purpose, coin_type, and account are hardened
-
-    final changeType = isChange ? 1 : 0;
-    // final privKey = hdPrivateKey.deriveChildKey("m/44'/236'/${accountIndex}'/${changeType}/${addressIndex}");
+    // Simplified derivation path: m/{accountIndex}/{addressIndex}
+    // This intentionally uses a simplified path rather than full BIP44
+    // (m/44'/236'/{account}'/{change}/{index}) for compatibility with
+    // the current wallet infrastructure.
     final privKey = hdPrivateKey.deriveChildKey("m/${accountIndex}/${addressIndex}");
 
     return privKey.privateKey;

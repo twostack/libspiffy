@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:dactor/dactor.dart';
 import 'package:eventador/eventador.dart';
+import 'package:logging/logging.dart';
 import 'package:uuid/uuid.dart';
 import '../storage/read_model_storage.dart';
 import '../core/invoice_aggregate.dart';
@@ -21,6 +22,7 @@ import 'wallet_messages.dart';
 /// NOTE: This actor does NOT write to storage directly.
 /// Projections handle read-model persistence by listening to events.
 class InvoiceCoordinatorActor extends Actor {
+  final _log = Logger('InvoiceCoordinatorActor');
   final ActorRef _walletManager;
   final ReadModelStorage _storage;
   final EventStore _eventStore;
@@ -494,10 +496,15 @@ class InvoiceCoordinatorActor extends Actor {
       paidAt: msg.paidAt,
     );
     
+    // Capture sender before async gap
+    final originalSender = context.sender;
+
     aggregateActor.tell(command, sender: context.self);
-    
-    // Send confirmation response
-    context.sender?.tell(InvoiceStatusMessage(
+
+    // TODO: This responds before aggregate confirms the state change.
+    // If the aggregate rejects (e.g., invoice already paid/expired), the caller
+    // has already been told success. Should use ask pattern or deferred response.
+    originalSender?.tell(InvoiceStatusMessage(
       invoiceId: msg.invoiceId,
       status: InvoiceStatus.paid,
       paidAt: msg.paidAt,
@@ -638,6 +645,7 @@ class InvoiceCoordinatorActor extends Actor {
         }
       }
     } catch (e) {
+      _log.warning('Failed to check expired invoices: $e');
     }
   }
 

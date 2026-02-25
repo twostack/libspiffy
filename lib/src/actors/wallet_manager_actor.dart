@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:dactor/dactor.dart';
 import 'package:eventador/eventador.dart';
+import 'package:logging/logging.dart';
 
 import '../core/bitcoin_wallet_aggregate.dart';
 import '../core/wallet_commands.dart';
@@ -13,6 +14,7 @@ import 'libspiffy_actor_system.dart';
 
 /// Central coordinator that manages multiple wallet aggregates and routes commands
 class WalletManagerActor extends Actor {
+  final _log = Logger('WalletManagerActor');
   final EventStore _eventStore;
   final CryptoService _cryptoService;
   final SecureStorage _secureStorage;
@@ -83,9 +85,10 @@ class WalletManagerActor extends Actor {
         walletRef.tell(WalletCommandMessage(walletId, cleanupCommand));
         walletsProcessed++;
       } catch (e) {
+        _log.warning('Failed to cleanup expired reservations for wallet $walletId: $e');
       }
     }
-    
+
     if (walletsProcessed > 0) {
     }
   }
@@ -361,6 +364,7 @@ class WalletManagerActor extends Actor {
       } else {
       }
     } catch (e) {
+      _log.warning('Failed to preload wallet $walletId: $e');
       _loadingWallets.remove(walletId);
     }
   }
@@ -383,6 +387,7 @@ class WalletManagerActor extends Actor {
       }
       
     } catch (e) {
+      _log.warning('Failed to handle SPV validation result: $e');
     }
   }
 
@@ -491,6 +496,7 @@ class WalletManagerActor extends Actor {
     }
 
   } catch (e) {
+    _log.warning('Failed to process SPV result for wallet: $e');
   }
 }
 

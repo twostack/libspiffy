@@ -55,6 +55,7 @@ class TransactionAnalyzer {
     required List<String> walletAddresses,
     required Map<String, int> transactionHeights,
     required Map<String, DateTime> transactionTimestamps,
+    dartsv.NetworkType networkType = dartsv.NetworkType.TEST,
   }) {
     // Phase 1: Identify ALL wallet outputs
     final utxos = <String, Map<int, _OutputInfo>>{}; // txid -> {vout -> outputInfo}
@@ -64,7 +65,7 @@ class TransactionAnalyzer {
         final output = tx.outputs[i];
         
         // Check if output belongs to wallet (P2PKH address check)
-        final outputInfo = _analyzeOutput(output, walletAddresses);
+        final outputInfo = _analyzeOutput(output, walletAddresses, networkType: networkType);
         if (outputInfo != null) {
           utxos[tx.id] ??= {};
           utxos[tx.id]![i] = outputInfo;
@@ -129,13 +130,14 @@ class TransactionAnalyzer {
   /// Returns OutputInfo if it's a wallet output, null otherwise
   static _OutputInfo? _analyzeOutput(
     dartsv.TransactionOutput output,
-    List<String> walletAddresses,
-  ) {
+    List<String> walletAddresses, {
+    dartsv.NetworkType networkType = dartsv.NetworkType.TEST,
+  }) {
     try {
       // Parse P2PKH script to get address
       final locker = dartsv.P2PKHLockBuilder.fromScript(
         output.script,
-        networkType: dartsv.NetworkType.TEST, // TODO: Make configurable
+        networkType: networkType,
       );
       final address = locker.address?.toBase58();
       

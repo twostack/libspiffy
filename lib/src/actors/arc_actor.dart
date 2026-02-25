@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:dactor/dactor.dart';
 import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
+import 'package:logging/logging.dart';
 
 import '../core/wallet_commands.dart';
 import '../models/bitcoin_utxo.dart';
@@ -14,6 +15,7 @@ import 'wallet_messages.dart';
 
 /// Actor that handles ARC service integration for transaction broadcasting and monitoring
 class ARCActor extends Actor {
+  final _log = Logger('ARCActor');
   final ActorRef _walletManager;
   final ArcServiceConfig? _arcConfig;
   final ReadModelStorage _storage;
@@ -102,7 +104,7 @@ class ARCActor extends Actor {
     if (_arcConfig != null) {
       _arcService = ArcService.fromConfig(_arcConfig);
     } else {
-      _arcService = ArcService.fromConfig(ArcServiceConfig.taalTestnet);
+      _arcService = ArcService.fromConfig(ArcServiceConfig.taalMainnet);
     }
   }
 
@@ -343,8 +345,9 @@ class ARCActor extends Actor {
           feeRatePerKb = policy.standardFeePerKb;
         }
       } catch (e) {
+        _log.warning('Failed to get fee rate from Arc policy: $e');
       }
-      
+
       // Calculate fee: (size_in_bytes * fee_rate_per_kb) / 1000
       final estimatedFee = BigInt.from((estimatedSize * feeRatePerKb) ~/ 1000);
       
@@ -431,6 +434,7 @@ class ARCActor extends Actor {
               try {
                 await _storage.storeMerkleProof(txid, merkleProof);
               } catch (e) {
+                _log.warning('Failed to store merkle proof for $txid: $e');
               }
             }
             
@@ -454,6 +458,7 @@ class ARCActor extends Actor {
       }
       
     } catch (e) {
+      _log.warning('Failed to check pending transactions: $e');
     }
   }
 
@@ -538,6 +543,7 @@ class ARCActor extends Actor {
       
       
     } catch (e) {
+      _log.warning('Failed to check storage pending UTXOs: $e');
     }
   }
 

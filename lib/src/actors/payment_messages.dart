@@ -29,6 +29,9 @@ class PayInvoiceMessage implements Message {
   /// Optional payment metadata for correlation
   final Map<String, dynamic>? paymentMetadata;
 
+  /// Fee estimate in satoshis (defaults to 1000 sats if not specified)
+  final BigInt? feeEstimateSats;
+
   PayInvoiceMessage({
     required this.walletId,
     required this.invoiceId,
@@ -37,6 +40,7 @@ class PayInvoiceMessage implements Message {
     this.outputs,
     this.changeAddress,
     this.paymentMetadata,
+    this.feeEstimateSats,
   });
 
   /// Get effective total amount to pay

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:dactor/dactor.dart';
+import 'package:logging/logging.dart';
 import '../core/wallet_events.dart';
 import '../models/bitcoin_transaction.dart';
 import '../models/wallet_event.dart';
@@ -15,6 +16,7 @@ import 'wallet_messages.dart';
 /// 
 /// This ensures ARCActor maintains proper monitoring state even after app restarts.
 class TransactionLifecycleCoordinator extends Actor {
+  final _log = Logger('TransactionLifecycleCoordinator');
   final ActorRef _arcActor;
   final ReadModelStorage _storage;
   final Stream<WalletEvent> _eventStream;
@@ -90,6 +92,7 @@ class TransactionLifecycleCoordinator extends Actor {
       ));
       
     } catch (e) {
+      _log.warning('Failed to register transaction for monitoring: $e');
     }
   }
 
@@ -120,6 +123,7 @@ class TransactionLifecycleCoordinator extends Actor {
       
       
     } catch (e, stackTrace) {
+      _log.warning('Failed to recover pending transactions: $e');
     }
   }
 

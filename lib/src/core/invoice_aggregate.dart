@@ -130,8 +130,8 @@ class InvoiceAggregate extends AggregateRoot<InvoiceState> {
     for (int i = 0; i < outputs.length; i++) {
       final output = outputs[i];
 
-      // Validate amount is positive
-      if (output.amount <= BigInt.zero) {
+      // Validate amount is positive (skip for data-only outputs like OP_RETURN)
+      if (output is! OPReturnOutputSpec && output.amount <= BigInt.zero) {
         throw ArgumentError('Output $i: amount must be positive');
       }
 

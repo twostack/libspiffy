@@ -8,6 +8,7 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:eventador/eventador.dart';
+import 'package:logging/logging.dart';
 import 'package:eventador/src/storage/event_stream.dart';
 import 'package:postgres/postgres.dart';
 
@@ -21,10 +22,12 @@ import 'postgres_config.dart';
 /// - Saga state management
 /// - Event streaming for projections
 class PostgresEventStore implements EventStore, EventStream {
+  final _log = Logger('PostgresEventStore');
   final PostgresConfig _config;
   Pool? _pool;
   final StreamController<Event> _eventStreamController =
       StreamController<Event>.broadcast();
+  final Map<String, StreamController<Event>> _pidStreamControllers = {};
   bool _isInitialized = false;
   bool _isClosed = false;
 
@@ -101,8 +104,9 @@ class PostgresEventStore implements EventStore, EventStream {
       );
     });
 
-    // Emit to local stream for in-process listeners
+    // Emit to local streams for in-process listeners
     _eventStreamController.add(event);
+    (_pidStreamControllers[persistenceId] ??= StreamController<Event>.broadcast()).add(event);
   }
 
   @override
@@ -159,9 +163,10 @@ class PostgresEventStore implements EventStore, EventStream {
       }
     });
 
-    // Emit to local stream
+    // Emit to local streams
     for (final event in events) {
       _eventStreamController.add(event);
+      (_pidStreamControllers[persistenceId] ??= StreamController<Event>.broadcast()).add(event);
     }
   }
 
@@ -397,6 +402,10 @@ class PostgresEventStore implements EventStore, EventStream {
   Future<void> close() async {
     _isClosed = true;
     await _eventStreamController.close();
+    for (final controller in _pidStreamControllers.values) {
+      await controller.close();
+    }
+    _pidStreamControllers.clear();
     await _pool?.close();
     _pool = null;
     _isInitialized = false;
@@ -431,6 +440,7 @@ class PostgresEventStore implements EventStore, EventStream {
         final event = CborSerializer.deserializeEvent(eventData, eventType);
         yield event;
       } catch (e) {
+        _log.warning('Failed to deserialize event in allEvents: $e');
       }
     }
 
@@ -468,6 +478,7 @@ class PostgresEventStore implements EventStore, EventStream {
         lastSeenId = id;
         yield (event, id);
       } catch (e) {
+        _log.warning('Failed to deserialize event in allEventsWithSequence: $e');
       }
     }
 
@@ -539,12 +550,13 @@ class PostgresEventStore implements EventStore, EventStream {
         final event = CborSerializer.deserializeEvent(eventData, eventType);
         yield event;
       } catch (e) {
+        _log.warning('Failed to deserialize event in eventsByPersistenceId: $e');
       }
     }
 
-    // Live mode - filter stream by persistence ID (simplified)
+    // Live mode - filter stream by persistence ID
     if (live) {
-      yield* _eventStreamController.stream;
+      yield* (_pidStreamControllers[persistenceId] ??= StreamController<Event>.broadcast()).stream;
     }
   }
 

@@ -3,6 +3,7 @@ import 'package:convert/convert.dart';
 import 'package:eventador/eventador.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:libspiffy/src/services/script_type_registry.dart';
+import 'package:logging/logging.dart';
 import '../core/wallet_events.dart';
 import '../models/wallet_event.dart';
 import '../models/wallet_type.dart';
@@ -24,6 +25,7 @@ import '../utils/bump.dart';
 /// have been processed, but all state is read from/written to storage.
 /// This design survives app restarts correctly - no checkpoint/state mismatch.
 class WalletProjection extends Projection<void> {
+  final _log = Logger('WalletProjection');
   final ReadModelStorage _storage;
   final String _projectionId;
   int _checkpoint = 0;
@@ -628,6 +630,7 @@ class WalletProjection extends Projection<void> {
       
       await _storage.storeTransaction(event.walletId, transaction);
     } catch (e, stackTrace) {
+      _log.warning('Failed to handle transaction recorded event: $e');
     }
   }
 
@@ -652,8 +655,9 @@ class WalletProjection extends Projection<void> {
       
       // Store the updated transaction
       await _storage.storeTransaction(event.walletId, confirmedTx);
-      
+
     } catch (e, stackTrace) {
+      _log.warning('Failed to handle transaction confirmed event: $e');
     }
   }
 

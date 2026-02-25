@@ -17,6 +17,7 @@ import '../models/bitcoin_utxo.dart';
 import '../storage/read_model_storage.dart';
 import '../utils/beef.dart';
 import '../utils/bump.dart';
+import '../utils/crypto_utils.dart';
 import 'crypto_service.dart';
 import 'transaction_builder_service.dart';
 
@@ -632,7 +633,7 @@ class PaymentChannelBuilder {
     // 2. Build BUMPs from merkle proofs
     final bumps = <BUMP>[];
     for (final proof in ancestorProofs) {
-      bumps.add(_buildBUMPFromMerkleProof(proof));
+      bumps.add(CryptoUtils.buildBUMPFromMerkleProof(proof));
     }
 
     // 3. Set hasMerkle flags
@@ -689,65 +690,6 @@ class PaymentChannelBuilder {
     );
   }
 
-  /// Build BUMP from MerkleProof (helper method)
-  BUMP _buildBUMPFromMerkleProof(MerkleProof proof) {
-    // Check if raw BUMP format
-    if (proof.merkleProof.length == 1 && proof.merkleProof[0].length > 64) {
-      final bumpBytes = Uint8List.fromList(hex.decode(proof.merkleProof[0]));
-      return BUMP.fromBytes(bumpBytes);
-    }
-
-    // Build from sibling hashes
-    final levels = <Level>[];
-
-    // Level 0: Transaction ID
-    final reversedTxid = _reverseHexBytes(proof.txid);
-    levels.add(Level(leaves: [
-      Leaf(
-        offset: proof.position,
-        duplicate: false,
-        isTxid: true,
-        hash: Uint8List.fromList(hex.decode(reversedTxid)),
-      ),
-    ]));
-
-    // Subsequent levels
-    for (int i = 0; i < proof.merkleProof.length; i++) {
-      final indexBit = (proof.position >> i) & 1;
-      final siblingOffset =
-          indexBit == 0 ? (proof.position | (1 << i)) : (proof.position & ~(1 << i));
-
-      final siblingHashHex = proof.merkleProof[i];
-      final reversedHash = _reverseHexBytes(siblingHashHex);
-
-      levels.add(Level(leaves: [
-        Leaf(
-          offset: siblingOffset,
-          duplicate: false,
-          isTxid: false,
-          hash: Uint8List.fromList(hex.decode(reversedHash)),
-        ),
-      ]));
-    }
-
-    return BUMP(
-      blockHeight: proof.blockHeight,
-      path: levels,
-    );
-  }
-
-  /// Reverse hex bytes for Bitcoin's little-endian format
-  String _reverseHexBytes(String hexString) {
-    if (hexString.length % 2 != 0) {
-      throw Exception('Hex string must have even number of characters');
-    }
-
-    final result = StringBuffer();
-    for (int i = hexString.length - 2; i >= 0; i -= 2) {
-      result.write(hexString.substring(i, i + 2));
-    }
-    return result.toString();
-  }
 }
 
 /// Result of building a payment transaction with BEEF ancestry

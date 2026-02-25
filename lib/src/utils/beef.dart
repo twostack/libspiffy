@@ -5,6 +5,7 @@ import 'package:dartsv/dartsv.dart' as dartsv hide BlockHeader;
 import 'package:spiffynode/spiffy_node.dart';
 import '../services/block_header_service.dart';
 import 'bump.dart';
+import 'hex_utils.dart' as hex_utils;
 
 /// BeefMagicAndVersion is the magic bytes and version for BEEF format (0100BEEF)
 const int beefMagicAndVersion = 0x0100BEEF;
@@ -337,8 +338,12 @@ class BEEF {
 
     final bump = bumps[bumpIdx];
 
+    // Convert TXID from display format (big-endian) to internal format (little-endian)
+    // to match how BUMP stores TXIDs, consistent with validateTransactionWithBlockHeader
+    final txidInternal = Uint8List.fromList(txid.reversed.toList());
+
     // Validate the merkle path for this transaction
-    if (!bump.validateMerklePath(txid)) {
+    if (!bump.validateMerklePath(txidInternal)) {
       return false; // Invalid merkle path
     }
 
@@ -348,16 +353,16 @@ class BEEF {
     try {
       // Get the header at this specific height
       final blockHeader = await blockHeaderService.getHeader(blockHeight);
-      
+
       if (blockHeader == null) {
         return false; // No header found at this height
       }
-      
+
       // Compute the merkle root from the transaction and its merkle path
-      final computedMerkleRoot = bump.computeMerkleRoot(txid);
+      final computedMerkleRoot = bump.computeMerkleRoot(txidInternal);
       
       // Convert the computed merkle root to a hex string for comparison
-      final computedMerkleRootHex = bytesToHex(computedMerkleRoot);
+      final computedMerkleRootHex = hex_utils.bytesToHex(computedMerkleRoot);
       
       // Compare with the merkle root in the block header
       if (computedMerkleRootHex != hex.encode(blockHeader.merkleRoot.bytes)) {
@@ -369,12 +374,6 @@ class BEEF {
     } catch (e) {
       return false;
     }
-  }
-  
-  /// Helper method to convert bytes to hex string
-  /// This is made public for testing purposes
-  String bytesToHex(Uint8List bytes) {
-    return bytes.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join('');
   }
   
   /// Get all transactions that have been validated against the block header database

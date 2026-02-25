@@ -1013,30 +1013,10 @@ List<String> _decodeList(String json) {
 }
 
 String _encodeJson(Map<String, dynamic> map) {
-  // Simple JSON encoding for metadata
-  // For production, consider using dart:convert
-  final entries = map.entries.map((e) => '"${e.key}":"${e.value}"').join(',');
-  return '{$entries}';
+  return jsonEncode(map);
 }
 
 Map<String, dynamic> _decodeJson(String json) {
-  // Simple JSON decoding for metadata
-  // For production, consider using dart:convert
   if (json.isEmpty || json == '{}') return {};
-  
-  // This is a simplified parser - for production use dart:convert
-  final cleaned = json.substring(1, json.length - 1);
-  final pairs = cleaned.split(',');
-  final result = <String, dynamic>{};
-  
-  for (final pair in pairs) {
-    final parts = pair.split(':');
-    if (parts.length == 2) {
-      final key = parts[0].replaceAll('"', '').trim();
-      final value = parts[1].replaceAll('"', '').trim();
-      result[key] = value;
-    }
-  }
-  
-  return result;
+  return Map<String, dynamic>.from(jsonDecode(json) as Map);
 } 

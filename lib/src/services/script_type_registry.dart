@@ -22,20 +22,24 @@ class ScriptTypeRegistry {
   static final ScriptTypeRegistry _instance = ScriptTypeRegistry._internal();
 
   NetworkType _networkType = NetworkType.TEST;
-
-
-  set networkType(NetworkType value) {
-    _networkType = value;
-  } // Private constructor
+  bool _initialized = false;
 
   ScriptTypeRegistry._internal() {
     // Initialize the template registry with standard templates
     TemplateRegistry.initialize();
   }
 
-  /// Returns the singleton instance of the registry
+  /// Returns the singleton instance of the registry.
+  /// Once initialized with a network type, re-initialization with a different
+  /// type will throw a [StateError] to prevent silent misconfiguration.
   factory ScriptTypeRegistry({NetworkType networkType = NetworkType.TEST}) {
-    _instance.networkType = networkType;
+    if (_instance._initialized && _instance._networkType != networkType) {
+      throw StateError(
+        'ScriptTypeRegistry already initialized with ${_instance._networkType}, '
+        'cannot reinitialize with $networkType');
+    }
+    _instance._networkType = networkType;
+    _instance._initialized = true;
     return _instance;
   }
 

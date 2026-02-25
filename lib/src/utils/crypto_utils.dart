@@ -6,9 +6,14 @@ import 'dart:typed_data';
 import 'package:convert/convert.dart';
 import 'package:cryptography/cryptography.dart' as cryptography;
 import 'package:dartsv/dartsv.dart';
+import 'package:logging/logging.dart' hide Level;
 import 'package:unorm_dart/unorm_dart.dart';
 import 'package:crypto/crypto.dart' as crypto;
+import '../storage/read_model_storage.dart' show MerkleProof;
 import 'bump.dart'; // Correct import for BUMP class
+import 'hex_utils.dart' as hex_utils;
+
+final _cryptoLog = Logger('CryptoUtils');
 
 class CryptoUtils {
   static Future<String> Function(Wordlist? wordlist, String wordListName)
@@ -128,6 +133,7 @@ class CryptoUtils {
       } else {
       }
     } catch (e) {
+      _cryptoLog.warning('Failed to convert TSC proof to BRC-71 path: $e');
     }
 
     // Create the BRC-71 format object according to spec
@@ -193,6 +199,7 @@ class CryptoUtils {
       // Create a Uint8List with the exact size needed
       return Uint8List.view(buffer.buffer, 0, offset);
     } catch (e) {
+      _cryptoLog.warning('Failed to convert TSC proof to BRC-71 binary: $e');
       // Return empty array in case of error
       return Uint8List(0);
     }
@@ -433,6 +440,7 @@ class CryptoUtils {
       // Use the updated computeMerkleRootFromBrc71 method which handles byte reversal
       return computeMerkleRootFromBrc71(txid, brc71Path);
     } catch (e) {
+      _cryptoLog.warning('Failed to extract merkle root from BUMP: $e');
       return null;
     }
   }
@@ -666,9 +674,79 @@ class CryptoUtils {
     );
   }
 
+  /// Build a BUMP from a MerkleProof.
+  ///
+  /// Converts the [MerkleProof] storage format to the BUMP structure needed
+  /// for BEEF packaging.
+  ///
+  /// Supports two storage formats:
+  /// 1. Raw BUMP hex string (single element > 64 chars) - parse directly
+  /// 2. List of sibling hashes (each 64 chars) - build BUMP from scratch
+  static BUMP buildBUMPFromMerkleProof(MerkleProof proof) {
+    // Check if merkleProof contains a raw BUMP serialization (single element > 64 chars)
+    // or a list of sibling hashes (each exactly 64 chars for a 32-byte hash)
+    if (proof.merkleProof.length == 1 && proof.merkleProof[0].length > 64) {
+      // This is a raw BUMP hex string - parse it directly
+      try {
+        final bumpBytes = Uint8List.fromList(hex.decode(proof.merkleProof[0]));
+        final bump = BUMP.fromBytes(bumpBytes);
+        return bump;
+      } catch (e) {
+        rethrow;
+      }
+    }
+
+    // Otherwise, build BUMP from sibling hashes (original logic)
+    final levels = <Level>[];
+
+    // Level 0: Transaction ID at its position in the block
+    // CRITICAL: proof.txid is in display format (big-endian) from database
+    // but BUMP stores txids in internal format (little-endian)
+    final reversedTxid = hex_utils.reverseHexBytes(proof.txid);
+    levels.add(Level(leaves: [
+      Leaf(
+        offset: proof.position,
+        duplicate: false,
+        isTxid: true,
+        hash: Uint8List.fromList(hex.decode(reversedTxid)),
+      ),
+    ]));
+
+    // Subsequent levels: merkle path siblings with calculated offsets
+    // Each hash in the merkleProof list is a sibling at the next level up
+    for (int i = 0; i < proof.merkleProof.length; i++) {
+      // Calculate sibling offset using bit manipulation
+      // In a Merkle tree, if index bit at level i is 0, then sibling is at (index | (1 << i))
+      // If index bit at level i is 1, then sibling is at (index & ~(1 << i))
+      final indexBit = (proof.position >> i) & 1;
+      final siblingOffset = indexBit == 0
+          ? (proof.position | (1 << i))
+          : (proof.position & ~(1 << i));
+
+      // CRITICAL: proof.merkleProof[i] is in display format (big-endian) from database
+      // but BUMP stores hashes in internal format (little-endian)
+      final siblingHashHex = proof.merkleProof[i];
+      final reversedHash = hex_utils.reverseHexBytes(siblingHashHex);
+
+      levels.add(Level(leaves: [
+        Leaf(
+          offset: siblingOffset,
+          duplicate: false,
+          isTxid: false,
+          hash: Uint8List.fromList(hex.decode(reversedHash)),
+        ),
+      ]));
+    }
+
+    return BUMP(
+      blockHeight: proof.blockHeight,
+      path: levels,
+    );
+  }
+
   /// Compute a merkle root from a TSC proof for verification
   ///
-  /// This method manually calculates the merkle root by walking up the merkle tree 
+  /// This method manually calculates the merkle root by walking up the merkle tree
   /// using the transaction hash and the sibling hashes provided in the proof.
   /// This is useful for verifying that a proof is valid by comparing the computed
   /// root with the one in the block header.

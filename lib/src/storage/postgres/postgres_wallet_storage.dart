@@ -7,6 +7,7 @@ library;
 import 'dart:convert';
 
 import 'package:dartsv/dartsv.dart' as dartsv;
+import 'package:logging/logging.dart';
 import 'package:postgres/postgres.dart';
 import 'package:spiffynode/spiffy_node.dart';
 
@@ -25,6 +26,7 @@ import 'postgres_config.dart';
 /// Provides read model storage for wallets, UTXOs, transactions, addresses,
 /// invoices, payment channels, and SPV data (block headers, merkle proofs).
 class PostgresWalletStorage implements ReadModelStorage {
+  final _log = Logger('PostgresWalletStorage');
   final PostgresConfig _config;
   Pool? _pool;
   bool _isInitialized = false;
@@ -872,7 +874,9 @@ class PostgresWalletStorage implements ReadModelStorage {
         if (decoded is List) {
           return decoded.cast<String>();
         }
-      } catch (_) {}
+      } catch (e) {
+        _log.warning('Failed to parse JSON string list: $e');
+      }
     }
     return [];
   }
@@ -892,7 +896,9 @@ class PostgresWalletStorage implements ReadModelStorage {
         if (decoded is Map) {
           return Map<String, dynamic>.from(decoded);
         }
-      } catch (_) {}
+      } catch (e) {
+        _log.warning('Failed to parse JSON map: $e');
+      }
     }
     return null;
   }
@@ -936,31 +942,32 @@ class PostgresWalletStorage implements ReadModelStorage {
     if (headers.isEmpty) return;
 
     final now = DateTime.now();
-    final buffer = StringBuffer();
-    buffer.write('''
-      INSERT INTO block_headers (
-        height, hash, prev_block_hash, merkle_root, timestamp,
-        version, bits, nonce, is_orphaned, stored_at
-      ) VALUES
-    ''');
 
-    for (var i = 0; i < headers.length; i++) {
-      final (header, height) = headers[i];
-      final hash = header.blockHash().toString().replaceAll("'", "''");
-      final prevHash = header.prevBlock.toString().replaceAll("'", "''");
-      final merkle = header.merkleRoot.toString().replaceAll("'", "''");
-      final ts = header.timestamp.millisecondsSinceEpoch ~/ 1000;
-
-      if (i > 0) buffer.write(',');
-      buffer.write('''
-        ($height, '$hash', '$prevHash', '$merkle', $ts,
-         ${header.version}, ${header.bits}, ${header.nonce}, false, '${now.toIso8601String()}')
-      ''');
+    // Use parameterized inserts to prevent SQL injection
+    for (final (header, height) in headers) {
+      await _pool!.execute(
+        Sql.named('''
+          INSERT INTO block_headers (
+            height, hash, prev_block_hash, merkle_root, timestamp,
+            version, bits, nonce, is_orphaned, stored_at
+          ) VALUES (
+            @height, @hash, @prevHash, @merkle, @ts,
+            @version, @bits, @nonce, false, @storedAt
+          ) ON CONFLICT (hash) DO NOTHING
+        '''),
+        parameters: {
+          'height': height,
+          'hash': header.blockHash().toString(),
+          'prevHash': header.prevBlock.toString(),
+          'merkle': header.merkleRoot.toString(),
+          'ts': header.timestamp.millisecondsSinceEpoch ~/ 1000,
+          'version': header.version,
+          'bits': header.bits,
+          'nonce': header.nonce,
+          'storedAt': now,
+        },
+      );
     }
-
-    buffer.write(' ON CONFLICT (hash) DO NOTHING');
-
-    await _pool!.execute(buffer.toString());
   }
 
   @override

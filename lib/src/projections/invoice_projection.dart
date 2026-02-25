@@ -5,32 +5,29 @@ import '../actors/invoice_messages.dart';
 import '../storage/read_model_storage.dart';
 
 /// Invoice projection that builds read models from invoice events
-/// 
+///
 /// This projection subscribes to invoice events from the EventStore and
-/// maintains denormalized read models in Isar for fast queries.
+/// maintains denormalized read models in storage for fast queries.
 /// Separates write concerns (aggregate) from read concerns (queries).
 class InvoiceProjection extends Projection<InvoiceReadModel> {
   final ReadModelStorage _storage;
   final String _projectionId;
-  late InvoiceReadModel _readModel;
   int _checkpoint = 0;
-  
+
   InvoiceProjection({
     required String projectionId,
     required EventStore eventStore,
     required ReadModelStorage storage,
   })  : _storage = storage,
         _projectionId = projectionId,
-        super() {
-    _readModel = InvoiceReadModel.empty(projectionId);
-  }
-  
+        super();
+
   @override
   String get projectionId => _projectionId;
-  
+
   @override
-  InvoiceReadModel get readModel => _readModel;
-  
+  InvoiceReadModel get readModel => InvoiceReadModel.empty(projectionId);
+
   @override
   List<Type> get interestedEventTypes => [
         InvoiceCreatedEvent,
@@ -39,27 +36,27 @@ class InvoiceProjection extends Projection<InvoiceReadModel> {
         InvoiceExpiredEvent,
         InvoiceCancelledEvent,
       ];
-  
+
   @override
   Future<int> getCheckpoint() async {
     return _checkpoint;
   }
-  
+
   @override
   Future<void> updateCheckpoint(int checkpoint) async {
     _checkpoint = checkpoint;
   }
-  
+
   @override
   Future<void> rebuild() async {
     await reset();
     // Projection manager will replay events after rebuild
   }
-  
+
   @override
   Future<bool> handle(Event event) async {
     if (event is! InvoiceEvent) return false;
-    
+
     try {
       switch (event.runtimeType) {
         case InvoiceCreatedEvent:
@@ -84,9 +81,9 @@ class InvoiceProjection extends Projection<InvoiceReadModel> {
       rethrow;
     }
   }
-  
+
   Future<void> _handleInvoiceCreated(InvoiceCreatedEvent event) async {
-    _readModel = InvoiceReadModel(
+    final readModel = InvoiceReadModel(
       invoiceId: event.invoiceId,
       walletId: event.walletId,
       addresses: List.from(event.addresses),
@@ -108,33 +105,20 @@ class InvoiceProjection extends Projection<InvoiceReadModel> {
 
     if (existing == null) {
       // Store the InvoiceReadModel we just created
-      await _storage.storeInvoice(_readModel);
+      await _storage.storeInvoice(readModel);
     }
     // If invoice already exists, skip insert (idempotent replay)
     // The invoice will be updated by subsequent events (paid, expired, etc.)
   }
-  
+
   Future<void> _handleInvoiceStatusChanged(InvoiceStatusChangedEvent event) async {
-    _readModel = _readModel.copyWith(
-      status: event.newStatus,
-      lastUpdated: event.timestamp,
-    );
-    
     await _storage.updateInvoiceStatus(
       event.invoiceId,
       event.newStatus,
     );
   }
-  
+
   Future<void> _handleInvoicePaid(InvoicePaidEvent event) async {
-    _readModel = _readModel.copyWith(
-      status: InvoiceStatus.paid,
-      paymentTxid: event.txid,
-      amountReceived: event.amountReceived,
-      paidAt: event.paidAt,
-      lastUpdated: event.timestamp,
-    );
-    
     await _storage.updateInvoiceStatus(
       event.invoiceId,
       InvoiceStatus.paid,
@@ -143,34 +127,30 @@ class InvoiceProjection extends Projection<InvoiceReadModel> {
       paidAt: event.paidAt,
     );
   }
-  
+
   Future<void> _handleInvoiceExpired(InvoiceExpiredEvent event) async {
-    _readModel = _readModel.copyWith(
-      status: InvoiceStatus.expired,
-      lastUpdated: event.timestamp,
-    );
-    
     await _storage.updateInvoiceStatus(
       event.invoiceId,
       InvoiceStatus.expired,
     );
   }
-  
+
   Future<void> _handleInvoiceCancelled(InvoiceCancelledEvent event) async {
-    _readModel = _readModel.copyWith(
-      status: InvoiceStatus.cancelled,
-      lastUpdated: event.timestamp,
-    );
-    
     await _storage.updateInvoiceStatus(
       event.invoiceId,
       InvoiceStatus.cancelled,
     );
   }
-  
+
+  /// Get an invoice read model by ID from storage
+  Future<InvoiceReadModel?> getInvoice(String invoiceId) async {
+    final result = await _storage.getInvoice(invoiceId);
+    if (result is InvoiceReadModel) return result;
+    return null;
+  }
+
   @override
   Future<void> reset() async {
-    _readModel = InvoiceReadModel.empty(projectionId);
+    _checkpoint = 0;
   }
 }
-

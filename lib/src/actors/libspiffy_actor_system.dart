@@ -209,7 +209,7 @@ class LibSpiffyActorSystem {
           _eventStream = isarEventStore; // Same instance, LSP-compliant
           _ownsIsar = false;
         } else {
-          try { await Isar.initializeIsarCore(download: true); } catch (_) {}
+          try { await Isar.initializeIsarCore(download: true); } catch (e) { Logger('LibSpiffyActorSystem').fine('Isar core init skipped (may already be initialized): $e'); }
           final isarEventStore = await IsarEventStore.create(directory: dataDirectory ?? './data');
           _eventStore = isarEventStore;
           _eventStream = isarEventStore; // Same instance, LSP-compliant
@@ -237,7 +237,7 @@ class LibSpiffyActorSystem {
 
       case StorageBackend.inMemory:
         // Create Isar event store for in-memory mode (events need persistence)
-        try { await Isar.initializeIsarCore(download: true); } catch (_) {}
+        try { await Isar.initializeIsarCore(download: true); } catch (e) { Logger('LibSpiffyActorSystem').fine('Isar core init skipped (may already be initialized): $e'); }
         final inMemoryEventStore = await IsarEventStore.create(directory: dataDirectory ?? './data');
         _eventStore = inMemoryEventStore;
         _eventStream = inMemoryEventStore; // Same instance, LSP-compliant

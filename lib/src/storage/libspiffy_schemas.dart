@@ -6,7 +6,6 @@ import 'package:eventador/eventador.dart';
 import 'read_model_storage.dart';
 import '../models/bitcoin_utxo.dart';
 import '../models/bitcoin_transaction.dart';
-
 part 'libspiffy_schemas.g.dart';
 
 /// LibSpiffy's Isar schemas that developers can add to their Isar instance.

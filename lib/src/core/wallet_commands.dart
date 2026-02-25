@@ -566,37 +566,6 @@ class CleanupExpiredReservationsCommand extends WalletCommand {
 // TRANSACTION MANAGEMENT COMMANDS
 // =============================================================================
 
-/// Command to create a new transaction
-class CreateTransactionCommand extends WalletCommand {
-  final String transactionId;
-  final List<TransactionOutput> outputs;
-  final BigInt? feeRate; // Satoshis per KB
-  final String? changeAddress; // null = auto-generate
-  final bool allowDust; // Allow dust outputs
-  final Map<String, dynamic>? transactionMetadata; // Additional transaction metadata
-
-  CreateTransactionCommand({
-    required String walletId,
-    required this.transactionId,
-    required this.outputs,
-    this.feeRate,
-    this.changeAddress,
-    this.allowDust = false,
-    this.transactionMetadata,
-    String? commandId,
-    DateTime? timestamp,
-    Map<String, dynamic>? metadata,
-  }) : super(
-          walletId: walletId,
-          commandId: commandId,
-          timestamp: timestamp,
-          metadata: metadata,
-        );
-
-  @override
-  String get commandType => 'CreateTransactionCommand';
-}
-
 /// Command to sign a transaction
 class SignTransactionCommand extends WalletCommand {
   final String transactionId;
@@ -864,38 +833,3 @@ class PreloadWalletCommand extends WalletCommand {
   }
 }
 
-// =============================================================================
-// SUPPORTING CLASSES
-// =============================================================================
-
-/// Represents a transaction output for CreateTransactionCommand
-class TransactionOutput {
-  final String address;
-  final BigInt satoshis;
-  final String? script; // Optional custom script (null = P2PKH)
-
-  const TransactionOutput({
-    required this.address,
-    required this.satoshis,
-    this.script,
-  });
-
-  @override
-  String toString() {
-    return 'TransactionOutput(address: $address, satoshis: $satoshis, script: $script)';
-  }
-
-  @override
-  bool operator ==(Object other) {
-    if (identical(this, other)) return true;
-    return other is TransactionOutput &&
-        other.address == address &&
-        other.satoshis == satoshis &&
-        other.script == script;
-  }
-
-  @override
-  int get hashCode {
-    return address.hashCode ^ satoshis.hashCode ^ script.hashCode;
-  }
-} 

@@ -142,32 +142,6 @@ class AddressGeneratedResponse extends LocalMessage {
 }
 
 
-/// Response from BitcoinWalletAggregate after processing CreateTransactionCommand
-class TransactionCreatedResponse implements Message {
-  final String walletId;
-  final String txid;
-  final String rawHex;
-  final bool success;
-  final String? error;
-
-  TransactionCreatedResponse({
-    required this.walletId,
-    required this.txid,
-    required this.rawHex,
-    required this.success,
-    this.error,
-  });
-
-  @override
-  String get correlationId => 'transaction-created-response-$txid';
-  @override
-  Map<String, dynamic> get metadata => {'walletId': walletId, 'txid': txid};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
-}
-
 /// Response from BitcoinWalletAggregate after signing transaction
 class TransactionSignedResponse implements Message {
   final String walletId;

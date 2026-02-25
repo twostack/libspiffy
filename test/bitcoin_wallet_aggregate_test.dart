@@ -857,64 +857,6 @@ void main() {
         ));
       });
 
-      test('should create transaction', () async {
-        final createTxCommand = CreateTransactionCommand(
-          walletId: 'wallet-123',
-          transactionId: 'tx456',
-          outputs: [
-            TransactionOutput(
-              address: '1RecipientAddress',
-              satoshis: BigInt.from(50000),
-            ),
-          ],
-          transactionMetadata: {'purpose': 'payment'},
-        );
-
-        await wallet.commandHandler(createTxCommand);
-
-        expect(wallet.currentState.version, equals(5)); // +1 for UTXO confirmation in setUp
-        // Transaction creation is a placeholder in current implementation
-        // In Phase 1D, this will integrate with actual transaction building
-      });
-
-      test('should sign transaction', () async {
-        // Create transaction first
-        await wallet.commandHandler(CreateTransactionCommand(
-          walletId: 'wallet-123',
-          transactionId: 'tx456',
-          outputs: [
-            TransactionOutput(
-              address: '1RecipientAddress',
-              satoshis: BigInt.from(50000),
-            ),
-          ],
-        ));
-
-        // A minimal valid unsigned transaction hex (version 1, 1 input, 1 output, locktime 0)
-        const validUnsignedTxHex = '0100000001'  // version + input count
-            '0000000000000000000000000000000000000000000000000000000000000000'  // prev txid (32 bytes)
-            '00000000'  // prev vout
-            '00'  // empty script
-            'ffffffff'  // sequence
-            '01'  // output count
-            '50c3000000000000'  // 50000 satoshis (little endian)
-            '00'  // empty output script
-            '00000000';  // locktime
-
-        final signCommand = SignTransactionCommand(
-          walletId: 'wallet-123',
-          transactionId: 'tx456',
-          rawTransaction: validUnsignedTxHex,
-          utxoKeys: ['0000000000000000000000000000000000000000000000000000000000000123:0'],
-          publicKeys: []
-        );
-
-        await wallet.commandHandler(signCommand);
-
-        expect(wallet.currentState.version, equals(6)); // setUp(4) + create(1 with UTXOReserved counted together) + sign(1) = 6
-        // Signing logic is placeholder - will be implemented in Phase 1D
-      });
-
       test('should broadcast transaction', () async {
         // A minimal valid transaction hex
         const validTxHex = '0100000001'
@@ -927,26 +869,6 @@ void main() {
             '00'
             '00000000';
 
-        // Create and sign transaction first
-        await wallet.commandHandler(CreateTransactionCommand(
-          walletId: 'wallet-123',
-          transactionId: 'tx456',
-          outputs: [
-            TransactionOutput(
-              address: '1RecipientAddress',
-              satoshis: BigInt.from(50000),
-            ),
-          ],
-        ));
-
-        await wallet.commandHandler(SignTransactionCommand(
-          walletId: 'wallet-123',
-          transactionId: 'tx456',
-          rawTransaction: validTxHex,
-          utxoKeys: ['0000000000000000000000000000000000000000000000000000000000000123:0'],
-          publicKeys: []
-        ));
-
         final broadcastCommand = BroadcastTransactionCommand(
           walletId: 'wallet-123',
           transactionId: 'tx456',
@@ -955,8 +877,7 @@ void main() {
 
         await wallet.commandHandler(broadcastCommand);
 
-        expect(wallet.currentState.version, equals(7)); // setUp(4) + create(1) + sign(1) + broadcast(1)
-        // Broadcasting logic is placeholder - will be implemented in Phase 1D
+        expect(wallet.currentState.version, equals(5)); // setUp(4) + broadcast(1)
       });
     });
 
@@ -1072,21 +993,17 @@ void main() {
         );
       });
 
-      test('should reject transaction operations on non-existent wallet', () async {
-        // Try to create transaction without creating wallet
-        final createTxCommand = CreateTransactionCommand(
+      test('should reject sign operations on non-existent wallet', () async {
+        final signCommand = SignTransactionCommand(
           walletId: 'wallet-123',
           transactionId: 'tx456',
-          outputs: [
-            TransactionOutput(
-              address: '1RecipientAddress',  
-              satoshis: BigInt.from(50000),
-            ),
-          ],
+          rawTransaction: '0100000001',
+          utxoKeys: [],
+          publicKeys: [],
         );
 
         expect(
-          () => wallet.commandHandler(createTxCommand),
+          () => wallet.commandHandler(signCommand),
           throwsA(isA<StateError>()),
         );
       });
@@ -1669,10 +1586,6 @@ void _registerWalletEvents() {
   EventRegistry.register<UTXOConfirmationUpdatedEvent>(
     'UTXOConfirmationUpdatedEvent',
     UTXOConfirmationUpdatedEvent.fromMap,
-  );
-  EventRegistry.register<TransactionCreatedEvent>(
-    'TransactionCreatedEvent',
-    TransactionCreatedEvent.fromMap,
   );
   EventRegistry.register<TransactionSignedEvent>(
     'TransactionSignedEvent',

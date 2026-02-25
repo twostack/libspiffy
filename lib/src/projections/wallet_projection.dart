@@ -64,7 +64,6 @@ class WalletProjection extends Projection<void> {
         TransactionImportedEvent,
         TransactionRecordedEvent,
         TransactionConfirmedEvent,
-        TransactionCreatedEvent,
       ];
   
   @override
@@ -140,9 +139,6 @@ class WalletProjection extends Projection<void> {
           return true;
         case TransactionConfirmedEvent:
           await _handleTransactionConfirmed(event as TransactionConfirmedEvent);
-          return true;
-        case TransactionCreatedEvent:
-          await _handleTransactionCreated(event as TransactionCreatedEvent);
           return true;
         default:
           return false;
@@ -658,59 +654,6 @@ class WalletProjection extends Projection<void> {
 
     } catch (e, stackTrace) {
       _log.warning('Failed to handle transaction confirmed event: $e');
-    }
-  }
-
-  Future<void> _handleTransactionCreated(TransactionCreatedEvent event) async {
-    
-    try {
-      // Use pre-calculated values from the event (no need to re-parse!)
-      final totalInput = BigInt.from(event.totalInput);
-      final totalOutput = BigInt.from(event.totalOutput);
-      final fee = BigInt.from(event.fee);
-      
-      
-      // Use pre-calculated addresses from event (no parsing needed!)
-      
-      // Net amount calculation:
-      // - For outgoing: we're spending, so negative (we lose the inputs we spent)
-      // - For incoming: we're receiving, so positive
-      // Note: The aggregate should calculate this, but for created txs it's typically outgoing
-      final netAmount = event.isOutgoing 
-          ? -(totalInput - totalOutput) // We spent totalInput, got totalOutput change back (if any)
-          : totalOutput; // We received
-      
-      // Create BitcoinTransaction with complete data from event (no parsing!)
-      final transaction = BitcoinTransaction(
-        txid: event.txid,
-        rawHex: event.rawHex,
-        status: TransactionStatus.pending,
-        blockHeight: null, // Created transactions are unconfirmed
-        confirmations: 0,
-        inputValue: totalInput,
-        outputValue: totalOutput,
-        fee: fee,
-        receivingAddresses: event.receivingAddresses, // From event
-        sendingAddresses: event.sendingAddresses, // From event
-        netAmount: netAmount,
-        createdAt: DateTime.now(),
-        updatedAt: DateTime.now(),
-        lockTime: event.txLockTime, // From event
-        version: event.txVersion, // From event
-      );
-      
-      await _storage.storeTransaction(event.walletId, transaction);
-      
-      // Create junction table records
-      await _createTransactionAddressJunctions(
-        event.walletId,
-        event.txid,
-        event.receivingAddresses,
-        event.sendingAddresses,
-        transaction,
-      );
-    } catch (e, stackTrace) {
-      rethrow;
     }
   }
 

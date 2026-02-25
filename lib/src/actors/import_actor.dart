@@ -228,8 +228,6 @@ class ImportActor extends Actor {
     // Notify import started
     await _notifyEvent(message.walletId, WalletImportStartedEvent(
       walletId: message.walletId,
-      xpriv: message.xpriv,
-      wif: message.wif,
       walletName: message.walletName,
       addressGapLimit: message.addressGapLimit,
     ));

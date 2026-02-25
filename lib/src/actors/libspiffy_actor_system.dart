@@ -420,11 +420,6 @@ class LibSpiffyActorSystem {
     );
     
     // Transaction Management
-    EventRegistry.register<TransactionCreatedEvent>(
-      'TransactionCreatedEvent',
-      (map) => TransactionCreatedEvent.fromMap(map),
-    );
-    
     EventRegistry.register<TransactionSignedEvent>(
       'TransactionSignedEvent',
       (map) => TransactionSignedEvent.fromMap(map),

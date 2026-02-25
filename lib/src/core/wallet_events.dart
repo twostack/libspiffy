@@ -13,6 +13,7 @@ class WalletCreatedEvent extends WalletEvent {
   final String rootAddress; // Initial address generated from mnemonic/wif/xpriv
   final WalletType walletType; // Type of wallet (hd, wif, xpriv)
   final Map<String, dynamic>? walletMetadata;
+  final String? hdPublicKeyXpub; // HD public key xpub string (safe public data for post-persistence storage)
 
   WalletCreatedEvent({
     required String walletId,
@@ -20,6 +21,7 @@ class WalletCreatedEvent extends WalletEvent {
     required this.rootAddress,
     required this.walletType,
     this.walletMetadata,
+    this.hdPublicKeyXpub,
     String? eventId,
     DateTime? timestamp,
     int? version,
@@ -39,6 +41,7 @@ class WalletCreatedEvent extends WalletEvent {
       'rootAddress': rootAddress,
       'walletType': walletType.toStorageString(),
       'walletMetadata': walletMetadata,
+      if (hdPublicKeyXpub != null) 'hdPublicKeyXpub': hdPublicKeyXpub,
     };
   }
 
@@ -51,9 +54,10 @@ class WalletCreatedEvent extends WalletEvent {
         map['walletType'] as String? ?? 'hd', // Default to HD for backwards compatibility
       ),
       walletMetadata: map['walletMetadata'] as Map<String, dynamic>?,
+      hdPublicKeyXpub: map['hdPublicKeyXpub'] as String?,
       eventId: map['eventId'] as String?,
       timestamp: map['timestamp'] != null
-          ? (map['timestamp'] is String 
+          ? (map['timestamp'] is String
               ? DateTime.parse(map['timestamp'] as String)
               : map['timestamp'] as DateTime)
           : null,
@@ -111,15 +115,11 @@ class WalletConfigurationUpdatedEvent extends WalletEvent {
 
 /// Event fired when wallet import starts
 class WalletImportStartedEvent extends WalletEvent {
-  final String? xpriv;
-  final String? wif;
   final String walletName;
   final int addressGapLimit;
 
   WalletImportStartedEvent({
     required String walletId,
-    this.xpriv,
-    this.wif,
     required this.walletName,
     required this.addressGapLimit,
     String? eventId,
@@ -137,8 +137,6 @@ class WalletImportStartedEvent extends WalletEvent {
   @override
   Map<String, dynamic> getWalletEventData() {
     return {
-      'xpriv': xpriv,
-      'wif': wif,
       'walletName': walletName,
       'addressGapLimit': addressGapLimit,
     };
@@ -147,8 +145,6 @@ class WalletImportStartedEvent extends WalletEvent {
   static WalletImportStartedEvent fromMap(Map<String, dynamic> map) {
     return WalletImportStartedEvent(
       walletId: map['walletId'] as String,
-      xpriv: map['xpriv'] as String?,
-      wif: map['wif'] as String?,
       walletName: map['walletName'] as String,
       addressGapLimit: map['addressGapLimit'] as int,
       eventId: map['eventId'] as String?,
@@ -1028,91 +1024,6 @@ class UTXOReservationRenewedEvent extends WalletEvent {
 // =============================================================================
 
 /// Event fired when a transaction is created
-class TransactionCreatedEvent extends WalletEvent {
-  final String txid;
-  final String rawHex;
-  final int totalInput;
-  final int totalOutput;
-  final int fee;
-  final bool isIncoming;
-  final bool isOutgoing;
-  final List<String> receivingAddresses;
-  final List<String> sendingAddresses;
-  final int txVersion;
-  final int txLockTime;
-  final Map<String, dynamic>? transactionMetadata;
-
-  TransactionCreatedEvent({
-    required String walletId,
-    required this.txid,
-    required this.rawHex,
-    required this.totalInput,
-    required this.totalOutput,
-    required this.fee,
-    required this.isIncoming,
-    required this.isOutgoing,
-    required this.receivingAddresses,
-    required this.sendingAddresses,
-    required this.txVersion,
-    required this.txLockTime,
-    this.transactionMetadata,
-    String? eventId,
-    DateTime? timestamp,
-    int? version,
-    Map<String, dynamic>? metadata,
-  }) : super(
-          walletId: walletId,
-          eventId: eventId,
-          timestamp: timestamp,
-          version: version,
-          metadata: metadata,
-        );
-
-  @override
-  Map<String, dynamic> getWalletEventData() {
-    return {
-      'txid': txid,
-      'rawHex': rawHex,
-      'totalInput': totalInput,
-      'totalOutput': totalOutput,
-      'fee': fee,
-      'isIncoming': isIncoming,
-      'isOutgoing': isOutgoing,
-      'receivingAddresses': receivingAddresses,
-      'sendingAddresses': sendingAddresses,
-      'txVersion': txVersion,
-      'txLockTime': txLockTime,
-      'transactionMetadata': transactionMetadata,
-    };
-  }
-
-  static TransactionCreatedEvent fromMap(Map<String, dynamic> map) {
-    return TransactionCreatedEvent(
-      walletId: map['walletId'] as String,
-      txid: map['txid'] as String,
-      rawHex: map['rawHex'] as String,
-      totalInput: map['totalInput'] as int,
-      totalOutput: map['totalOutput'] as int,
-      fee: map['fee'] as int,
-      isIncoming: map['isIncoming'] as bool,
-      isOutgoing: map['isOutgoing'] as bool,
-      receivingAddresses: (map['receivingAddresses'] as List<dynamic>).cast<String>(),
-      sendingAddresses: (map['sendingAddresses'] as List<dynamic>).cast<String>(),
-      txVersion: map['txVersion'] as int,
-      txLockTime: map['txLockTime'] as int,
-      transactionMetadata: map['transactionMetadata'] as Map<String, dynamic>?,
-      eventId: map['eventId'] as String?,
-      timestamp: map['timestamp'] != null
-          ? (map['timestamp'] is String 
-              ? DateTime.parse(map['timestamp'] as String)
-              : map['timestamp'] as DateTime)
-          : null,
-      version: map['version'] as int?,
-      metadata: map['metadata'] as Map<String, dynamic>?,
-    );
-  }
-}
-
 /// Event fired when a transaction is signed
 class TransactionSignedEvent extends WalletEvent {
   final String txid;

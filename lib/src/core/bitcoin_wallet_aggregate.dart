@@ -114,52 +114,86 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
   @override
   Future<void> onCommandProcessed(Command command, List<Event> events) async {
     await super.onCommandProcessed(command, events);
-    
-    // Only send responses if we're running in an actor system
-    // (context is initialized by the actor system when spawned)
-    if (!_isInActorSystem()) return;
-    
-    // Use captured sender (captured at start of onMessage) keyed by command ID
-    // This handles concurrent message processing correctly
-    final sender = _capturedSenders[command.commandId];
-    if (sender == null) return;
-    
-    for (final event in events) {
-      if (event is WalletCreatedEvent) {
-        sender.tell(WalletCreatedResponse(
-          walletId: event.walletId,
-          rootAddress: event.rootAddress,
-          success: true,
-        ));
-      } else if (event is AddressGeneratedEvent) {
-        sender.tell(AddressGeneratedResponse(
-          walletId: event.walletId,
-          address: event.address,
-          derivationIndex: event.derivationIndex,
-          success: true,
-          publicKeyHex: event.publicKeyHex, // Include public key if requested
-          metadata: event.metadata, // Pass through metadata (e.g., invoiceId)
-        ));
-      } else if (event is TransactionCreatedEvent) {
-        sender.tell(TransactionCreatedResponse(
-          walletId: event.walletId,
-          txid: event.txid,
-          rawHex: event.rawHex,
-          success: true,
-        ));
-      } else if (event is UTXOReceivedEvent) {
-        sender.tell(UTXOReceivedResponse(
-          walletId: event.walletId,
-          txid: event.txid,
-          vout: event.vout,
-          success: true,
-        ));
-      } else if (event is TransactionImportedEvent) {
-        sender.tell(TransactionRecordedResponse(
-          walletId: event.walletId,
-          txid: event.txid,
-          success: true,
-        ));
+
+    // Send actor system responses FIRST (non-blocking) so callers don't timeout
+    // waiting for secure storage writes to complete.
+    if (_isInActorSystem()) {
+      final sender = _capturedSenders[command.commandId];
+      if (sender != null) {
+        for (final event in events) {
+          if (event is WalletCreatedEvent) {
+            sender.tell(WalletCreatedResponse(
+              walletId: event.walletId,
+              rootAddress: event.rootAddress,
+              success: true,
+            ));
+          } else if (event is AddressGeneratedEvent) {
+            sender.tell(AddressGeneratedResponse(
+              walletId: event.walletId,
+              address: event.address,
+              derivationIndex: event.derivationIndex,
+              success: true,
+              publicKeyHex: event.publicKeyHex,
+              metadata: event.metadata,
+            ));
+          } else if (event is UTXOReceivedEvent) {
+            sender.tell(UTXOReceivedResponse(
+              walletId: event.walletId,
+              txid: event.txid,
+              vout: event.vout,
+              success: true,
+            ));
+          } else if (event is TransactionImportedEvent) {
+            sender.tell(TransactionRecordedResponse(
+              walletId: event.walletId,
+              txid: event.txid,
+              success: true,
+            ));
+          }
+        }
+      }
+    }
+
+    // Store key material AFTER events are persisted AND response is sent.
+    // Events are the source of truth; keys in secure storage are a side effect.
+    // This maintains CQRS atomicity without blocking the caller.
+    if (command is CreateWalletCommand && events.isNotEmpty) {
+      await _storeKeyMaterial(command, events);
+    }
+  }
+
+  /// Store key material in secure storage AFTER events are persisted.
+  /// This ensures CQRS atomicity: keys are only stored if the creation event
+  /// was successfully persisted to the event store.
+  Future<void> _storeKeyMaterial(CreateWalletCommand command, List<Event> events) async {
+    final walletId = command.walletId;
+
+    // Find the WalletCreatedEvent to get hdPublicKeyXpub
+    final createdEvent = events.whereType<WalletCreatedEvent>().firstOrNull;
+
+    if (command.wif != null && command.wif!.isNotEmpty) {
+      await secureStorage.setWIF(walletId, command.wif!);
+    } else if (command.xpriv != null && command.xpriv!.isNotEmpty) {
+      await secureStorage.setXPriv(walletId, command.xpriv!);
+      if (createdEvent?.hdPublicKeyXpub != null) {
+        await secureStorage.setString(
+          'wallet_hdpubkey_$walletId',
+          createdEvent!.hdPublicKeyXpub!,
+        );
+      }
+    } else if (command.xpub != null && command.xpub!.isNotEmpty) {
+      await secureStorage.setXPub(walletId, command.xpub!);
+      await secureStorage.setString(
+        'wallet_hdpubkey_$walletId',
+        command.xpub!,
+      );
+    } else if (command.mnemonic != null && command.mnemonic!.isNotEmpty) {
+      await secureStorage.setMnemonic(walletId, command.mnemonic!);
+      if (createdEvent?.hdPublicKeyXpub != null) {
+        await secureStorage.setString(
+          'wallet_hdpubkey_$walletId',
+          createdEvent!.hdPublicKeyXpub!,
+        );
       }
     }
   }
@@ -198,14 +232,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         success: false,
         error: errorMessage,
         metadata: command.metadata, // Pass through metadata even on error
-      ));
-    } else if (command is CreateTransactionCommand) {
-      sender.tell(TransactionCreatedResponse(
-        walletId: command.walletId,
-        txid: '',
-        rawHex: '',
-        success: false,
-        error: errorMessage,
       ));
     } else if (command is BuildFundingTransactionCommand) {
       sender.tell(FundingTransactionBuiltResponse(
@@ -302,8 +328,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         return _handleSpendUTXO(currentState, command as SpendUTXOCommand);
       case UpdateUTXOConfirmationsCommand:
         return _handleUpdateUTXOConfirmations(currentState, command as UpdateUTXOConfirmationsCommand);
-      case CreateTransactionCommand:
-        return await _handleCreateTransaction(currentState, command as CreateTransactionCommand);
       case SignTransactionCommand:
         return await _handleSignTransaction(currentState, command as SignTransactionCommand);
       case SignMultisigTransactionCommand:
@@ -371,9 +395,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         break;
       case UTXOConfirmationUpdatedEvent:
         _applyUTXOConfirmationUpdated(event as UTXOConfirmationUpdatedEvent);
-        break;
-      case TransactionCreatedEvent:
-        _applyTransactionCreated(event as TransactionCreatedEvent);
         break;
       case TransactionSignedEvent:
         _applyTransactionSigned(event as TransactionSignedEvent);
@@ -454,96 +475,81 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     final networkTypeStr = metadata['network'] as String? ?? 'testnet';
     final networkType = networkTypeStr == 'mainnet' ? dartsv.NetworkType.MAIN : dartsv.NetworkType.TEST;
 
+    // Track HD public key xpub for inclusion in the event (public data, safe to persist)
+    String? hdPublicKeyXpub;
+
     if (command.wif != null && command.wif!.isNotEmpty) {
       // WIF WALLET: Single address from private key
       walletType = WalletType.wif;
-      
+
       // Parse and validate WIF
       final privateKey = dartsv.SVPrivateKey.fromWIF(command.wif!);
-      
+
       // Verify network type matches
       if (privateKey.networkType != networkType) {
         throw ArgumentError(
           'WIF network type does not match wallet network type'
         );
       }
-      
+
       // Derive address from WIF key
       final publicKey = privateKey.publicKey;
       final address = publicKey.toAddress(networkType);
       rootAddress = address.toBase58();
-      
-      // Store WIF securely
-      await secureStorage.setWIF(command.walletId, command.wif!);
-      
-      
+
     } else if (command.xpriv != null && command.xpriv!.isNotEmpty) {
       // XPRIV WALLET: HD derivation from extended private key
       walletType = WalletType.xpriv;
-      
+
       // Parse and validate XPRIV
       final hdPrivateKey = dartsv.HDPrivateKey.fromXpriv(command.xpriv!);
-      
+
       // Verify network type matches
       if (hdPrivateKey.networkType != networkType) {
         throw ArgumentError(
           'XPRIV network type does not match wallet network type'
         );
       }
-      
+
       // Derive HD public key
       final hdPublicKey = cryptoService.deriveHDPublicKey(hdPrivateKey);
-      
+      hdPublicKeyXpub = hdPublicKey.xpubkey;
+
       // Generate root address (first receiving address at index 0)
       rootAddress = cryptoService.generateReceivingAddress(
         hdPublicKey,
         0,
         network: networkType,
       );
-      
-      // Store XPRIV and HD public key securely
-      await secureStorage.setXPriv(command.walletId, command.xpriv!);
-      await secureStorage.setString(
-        'wallet_hdpubkey_${command.walletId}',
-        hdPublicKey.xpubkey,
-      );
-      
-      
+
     } else if (command.xpub != null && command.xpub!.isNotEmpty) {
       // XPUB WALLET: Watch-only from extended public key
       walletType = WalletType.xpub;
-      
+
       // Parse and validate XPUB
       final hdPublicKey = dartsv.HDPublicKey.fromXpub(command.xpub!);
-      
+
       // Verify network type matches
       if (hdPublicKey.networkType != networkType) {
         throw ArgumentError(
           'XPUB network type does not match wallet network type'
         );
       }
-      
+
       // Generate root address
       rootAddress = cryptoService.generateReceivingAddress(
         hdPublicKey,
         0,
         network: networkType,
       );
-      
-      // Store XPUB securely
-      await secureStorage.setXPub(command.walletId, command.xpub!);
-      
-      // Also store as generic hdpubkey for address generation reuse
-      await secureStorage.setString(
-        'wallet_hdpubkey_${command.walletId}',
-        command.xpub!,
-      );
-      
-      
+
+      // For XPUB wallets, the xpub itself is the HD public key
+      hdPublicKeyXpub = command.xpub!;
+
     } else {
       // HD WALLET: Generate or validate mnemonic
       walletType = WalletType.hd;
-      
+
       String mnemonic = command.mnemonic ?? '';
 
       //Force the caller to provide the mnemonic. Mnemonic validation
@@ -551,32 +557,30 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       if (mnemonic.isEmpty) {
         throw ArgumentError('Invalid mnemonic phrase provided. Mnemonic is empty');
       }
-      
+
       // Derive HD private key from mnemonic
       final hdPrivateKey = await cryptoService.mnemonicToHDPrivateKey(
         mnemonic,
         passphrase: command.passphrase ?? '',
         network: networkType,
       );
-      
+
       // Derive HD public key
       final hdPublicKey = cryptoService.deriveHDPublicKey(hdPrivateKey);
-      
+      hdPublicKeyXpub = hdPublicKey.xpubkey;
+
       // Generate root address
       rootAddress = cryptoService.generateReceivingAddress(
         hdPublicKey,
         0,
         network: networkType,
       );
-      
-      // Store mnemonic and HD public key securely
-      await secureStorage.setMnemonic(command.walletId, mnemonic);
-      await secureStorage.setString(
-        'wallet_hdpubkey_${command.walletId}',
-        hdPublicKey.xpubkey,
-      );
-      
+
     }
+
+    // NOTE: secureStorage writes are deferred to onCommandProcessed()
+    // to ensure they only happen AFTER events are successfully persisted.
+    // This maintains CQRS event sourcing atomicity.
 
     // Create WalletCreatedEvent with wallet type
     final event = WalletCreatedEvent(
@@ -584,6 +588,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       walletName: command.walletName,
       rootAddress: rootAddress,
       walletType: walletType,
+      hdPublicKeyXpub: hdPublicKeyXpub,
       walletMetadata: {
         ...?command.walletMetadata,
         'network': networkTypeStr,
@@ -1150,116 +1155,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
   // ==========================================================================
   // TRANSACTION MANAGEMENT COMMAND HANDLERS
   // ==========================================================================
-
-  Future<List<Event>> _handleCreateTransaction(WalletState currentState, CreateTransactionCommand command) async {
-    // Business rule: Wallet must exist
-    if (!currentState.isCreated) {
-      throw StateError('Cannot create transaction for non-existent wallet');
-    }
-
-    // Business rule: Must have outputs
-    if (command.outputs.isEmpty) {
-      throw ArgumentError('Transaction must have at least one output');
-    }
-
-    // Calculate total output amount
-    final totalOutput = command.outputs.fold<BigInt>(
-      BigInt.zero,
-      (sum, output) => sum + output.satoshis,
-    );
-
-    // Get available UTXOs for spending
-    final availableUtxos = currentState.utxos.values
-        .where((utxo) => utxo.status == UTXOStatus.available)
-        .toList();
-
-    if (availableUtxos.isEmpty) {
-      throw StateError('No available UTXOs for transaction');
-    }
-
-    // Simple UTXO selection: largest-first strategy
-    availableUtxos.sort((a, b) => b.value.getValue().compareTo(a.value.getValue()));
-    
-    final selectedUtxos = <BitcoinUtxo>[];
-    BigInt totalInput = BigInt.zero;
-    final feeRate = command.feeRate ?? BigInt.one;
-    
-    // Estimate fee (approximately 180 bytes per input + 34 bytes per output + 10 bytes overhead)
-    int estimatedSize() {
-      return 10 + (selectedUtxos.length * 180) + (command.outputs.length * 34);
-    }
-    
-    // Select UTXOs until we have enough to cover outputs + estimated fee
-    for (final utxo in availableUtxos) {
-      selectedUtxos.add(utxo);
-      totalInput += utxo.value.getValue();
-      
-      final estimatedFee = feeRate * BigInt.from(estimatedSize());
-      if (totalInput >= totalOutput + estimatedFee) {
-        break;
-      }
-    }
-    
-    final fee = feeRate * BigInt.from(estimatedSize());
-    
-    // Check if we have enough to cover output + fee
-    if (totalInput < totalOutput + fee) {
-      throw StateError(
-        'Insufficient funds: need ${totalOutput + fee} satoshis, have $totalInput satoshis'
-      );
-    }
-
-    // For now, create a placeholder transaction hex
-    // In a real implementation, this would use TransactionBuilder to build the unsigned transaction
-    final rawTransaction = 'unsigned_tx_${command.transactionId}';
-
-    // Extract receiving addresses from outputs (where we're sending to)
-    final receivingAddresses = command.outputs
-        .map((output) => output.address)
-        .toList();
-
-    // Extract sending addresses from selected UTXOs (our addresses that we're spending from)
-    final sendingAddresses = selectedUtxos
-        .map((utxo) => utxo.address)
-        .toList();
-
-    // Create transaction event with all required fields
-    final transactionEvent = TransactionCreatedEvent(
-      walletId: command.walletId,
-      txid: command.transactionId,
-      rawHex: rawTransaction,
-      totalInput: totalInput.toInt(),
-      totalOutput: totalOutput.toInt(),
-      fee: fee.toInt(),
-      isIncoming: false, // Created transactions are outgoing
-      isOutgoing: true,
-      receivingAddresses: receivingAddresses, // Where we're sending to
-      sendingAddresses: sendingAddresses, // Our addresses we're spending from
-      txVersion: 1, // Standard Bitcoin transaction version
-      txLockTime: 0, // No time lock by default
-      transactionMetadata: command.metadata,
-      version: currentState.version + 1,
-      timestamp: DateTime.now(),
-    );
-
-    // Reserve selected UTXOs with sequential version numbers
-    final reserveEvents = selectedUtxos.asMap().entries.map((entry) {
-      return UTXOReservedEvent(
-        walletId: command.walletId,
-        txid: entry.value.txid,
-        vout: entry.value.vout,
-        reservedByTxId: command.transactionId,
-        reservationReason: 'Transaction creation',
-        expiresAt: DateTime.now().add(Duration(hours: 1)),
-        priority: 10, // High priority
-        version: currentState.version + 2 + entry.key,
-        timestamp: DateTime.now(),
-      );
-    }).toList();
-
-    // Return both transaction creation and UTXO reservation events
-    return [transactionEvent, ...reserveEvents];
-  }
 
   /// Retrieve the private key for a given address from secure storage
   /// Supports WIF, XPRIV, and HD wallets
@@ -2235,11 +2130,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     currentState.version = event.version;
     currentState.lastModified = event.timestamp;
     _recalculateBalances();
-  }
-
-  void _applyTransactionCreated(TransactionCreatedEvent event) {
-    // Transaction state is managed separately - just update version
-    currentState.version = event.version;
   }
 
   void _applyTransactionSigned(TransactionSignedEvent event) {

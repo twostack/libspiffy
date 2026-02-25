@@ -14,6 +14,7 @@ import '../services/ancestor_chain_service.dart';
 import '../utils/beef.dart';
 import '../utils/bump.dart';
 import '../core/wallet_commands.dart';
+import '../services/transaction/builder/op_return_lockbuilder.dart';
 import 'payment_messages.dart';
 import 'wallet_messages.dart';
 
@@ -221,6 +222,8 @@ class PaymentCoordinatorActor extends Actor {
         return o.address;
       } else if (o is P2MSOutputSpec) {
         return 'multisig:${o.threshold}-of-${o.totalKeys}';
+      } else if (o is OPReturnOutputSpec) {
+        return 'op_return';
       }
       return 'unknown';
     }).toList();
@@ -299,6 +302,12 @@ class PaymentCoordinatorActor extends Actor {
               );
               txBuilder.spendToLockBuilder(msLockBuilder, p2ms.amount);
               receivingAddresses.add('multisig:${p2ms.threshold}-of-${p2ms.totalKeys}');
+
+            case OPReturnOutputSpec opReturn:
+              // Build OP_RETURN data carrier output (zero satoshis, unspendable)
+              final lockBuilder = OpReturnLockBuilder(opReturn.dataChunks);
+              txBuilder.spendToLockBuilder(lockBuilder, BigInt.zero);
+              receivingAddresses.add('op_return');
           }
         }
       } else {

@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:test/test.dart';
 import 'package:libspiffy/src/models/invoice_output_spec.dart';
 import 'package:libspiffy/src/models/bitcoin_transaction.dart';
@@ -265,6 +267,156 @@ void main() {
       });
     });
 
+    group('OPReturnOutputSpec', () {
+      final testData1 = utf8.encode('Hello, blockchain!');
+      final testData2 = utf8.encode('Second chunk');
+
+      test('creates OP_RETURN output with data chunks', () {
+        final output = OPReturnOutputSpec(
+          dataChunks: [testData1, testData2],
+          label: 'Data carrier',
+        );
+
+        expect(output.dataChunks.length, equals(2));
+        expect(output.amount, equals(BigInt.zero));
+        expect(output.label, equals('Data carrier'));
+        expect(output.scriptType, equals(BitcoinScriptType.opReturn));
+      });
+
+      test('amount is always zero', () {
+        final output = OPReturnOutputSpec(
+          dataChunks: [testData1],
+        );
+
+        expect(output.amount, equals(BigInt.zero));
+      });
+
+      test('isValid returns true for valid data chunks', () {
+        final output = OPReturnOutputSpec(
+          dataChunks: [testData1],
+        );
+
+        expect(output.isValid, isTrue);
+      });
+
+      test('isValid returns false for empty data chunks list', () {
+        final output = OPReturnOutputSpec(
+          dataChunks: [],
+        );
+
+        expect(output.isValid, isFalse);
+      });
+
+      test('isValid returns false when all chunks are empty', () {
+        final output = OPReturnOutputSpec(
+          dataChunks: [[], []],
+        );
+
+        expect(output.isValid, isFalse);
+      });
+
+      test('isValid returns false when total data exceeds limit', () {
+        final largeChunk = List<int>.filled(OPReturnOutputSpec.maxTotalDataSize + 1, 0);
+        final output = OPReturnOutputSpec(
+          dataChunks: [largeChunk],
+        );
+
+        expect(output.isValid, isFalse);
+      });
+
+      test('serializes to map correctly', () {
+        final output = OPReturnOutputSpec(
+          dataChunks: [testData1, testData2],
+          label: 'Test OP_RETURN',
+        );
+
+        final map = output.toMap();
+
+        expect(map['type'], equals('op_return'));
+        expect(map['dataChunks'], isA<List>());
+        expect((map['dataChunks'] as List).length, equals(2));
+        expect(map['label'], equals('Test OP_RETURN'));
+        // Amount is not serialized (always zero)
+      });
+
+      test('deserializes from map correctly', () {
+        final map = {
+          'type': 'op_return',
+          'dataChunks': [
+            '48656c6c6f2c20626c6f636b636861696e21', // "Hello, blockchain!" in hex
+            '5365636f6e64206368756e6b',                // "Second chunk" in hex
+          ],
+          'label': 'Restored OP_RETURN',
+        };
+
+        final output = InvoiceOutputSpec.fromMap(map) as OPReturnOutputSpec;
+
+        expect(output.dataChunks.length, equals(2));
+        expect(utf8.decode(output.dataChunks[0]), equals('Hello, blockchain!'));
+        expect(utf8.decode(output.dataChunks[1]), equals('Second chunk'));
+        expect(output.amount, equals(BigInt.zero));
+        expect(output.label, equals('Restored OP_RETURN'));
+      });
+
+      test('roundtrip serialization preserves data', () {
+        final original = OPReturnOutputSpec(
+          dataChunks: [testData1, testData2],
+          label: 'Roundtrip',
+        );
+
+        final map = original.toMap();
+        final restored = InvoiceOutputSpec.fromMap(map) as OPReturnOutputSpec;
+
+        expect(utf8.decode(restored.dataChunks[0]), equals(utf8.decode(testData1)));
+        expect(utf8.decode(restored.dataChunks[1]), equals(utf8.decode(testData2)));
+        expect(restored.amount, equals(original.amount));
+        expect(restored.label, equals(original.label));
+      });
+
+      test('handles null label in serialization', () {
+        final output = OPReturnOutputSpec(
+          dataChunks: [testData1],
+        );
+
+        final map = output.toMap();
+        expect(map.containsKey('label'), isFalse);
+
+        final restored = InvoiceOutputSpec.fromMap(map) as OPReturnOutputSpec;
+        expect(restored.label, isNull);
+      });
+
+      test('equality works correctly', () {
+        final output1 = OPReturnOutputSpec(
+          dataChunks: [testData1, testData2],
+          label: 'Same',
+        );
+        final output2 = OPReturnOutputSpec(
+          dataChunks: [testData1, testData2],
+          label: 'Same',
+        );
+        final output3 = OPReturnOutputSpec(
+          dataChunks: [testData1], // Different chunks
+          label: 'Same',
+        );
+
+        expect(output1, equals(output2));
+        expect(output1, isNot(equals(output3)));
+        expect(output1.hashCode, equals(output2.hashCode));
+      });
+
+      test('toString provides readable output', () {
+        final output = OPReturnOutputSpec(
+          dataChunks: [testData1, testData2],
+          label: 'Test',
+        );
+
+        final str = output.toString();
+        expect(str, contains('chunks: 2'));
+        expect(str, contains('totalBytes:'));
+        expect(str, contains('label: Test'));
+      });
+    });
+
     group('Mixed outputs', () {
       final validPubKey1 =
           '0335cd55d33889f942e8c445cf4d9e9488a3be4bc4d4e91ccc9b57dcaa49c0f7a8';
@@ -340,6 +492,9 @@ void main() {
             threshold: 2,
             amount: BigInt.from(2000),
           ),
+          OPReturnOutputSpec(
+            dataChunks: [utf8.encode('test data')],
+          ),
         ];
 
         final results = <String>[];
@@ -350,11 +505,14 @@ void main() {
               results.add('P2PKH: ${p2pkh.address}');
             case P2MSOutputSpec p2ms:
               results.add('P2MS: ${p2ms.threshold}-of-${p2ms.totalKeys}');
+            case OPReturnOutputSpec opReturn:
+              results.add('OP_RETURN: ${opReturn.dataChunks.length} chunks');
           }
         }
 
         expect(results[0], equals('P2PKH: mAddr'));
         expect(results[1], equals('P2MS: 2-of-2'));
+        expect(results[2], equals('OP_RETURN: 1 chunks'));
       });
     });
 

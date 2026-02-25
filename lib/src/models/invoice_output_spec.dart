@@ -1,3 +1,4 @@
+import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart';
 
 import 'bitcoin_transaction.dart';
@@ -28,6 +29,7 @@ sealed class InvoiceOutputSpec {
     return switch (type) {
       'p2pkh' => P2PKHOutputSpec.fromMap(map),
       'p2ms' => P2MSOutputSpec.fromMap(map),
+      'op_return' => OPReturnOutputSpec.fromMap(map),
       _ => throw ArgumentError('Unknown output type: $type'),
     };
   }
@@ -145,6 +147,76 @@ class P2MSOutputSpec extends InvoiceOutputSpec {
   @override
   String toString() =>
       'P2MSOutputSpec(threshold: $threshold, totalKeys: $totalKeys, amount: $amount, label: $label)';
+}
+
+/// OP_RETURN (data carrier) output specification
+/// OP_RETURN outputs are unspendable and carry arbitrary data on-chain
+class OPReturnOutputSpec extends InvoiceOutputSpec {
+  /// Data chunks to embed in the OP_RETURN output.
+  /// Each chunk becomes a separate data push in the script:
+  /// OP_FALSE OP_RETURN <chunk1> <chunk2> ...
+  final List<List<int>> dataChunks;
+
+  /// Maximum total data size (100KB script limit minus overhead)
+  static const int maxTotalDataSize = 99000;
+
+  OPReturnOutputSpec({
+    required this.dataChunks,
+    super.label,
+  }) : super(amount: BigInt.zero);
+
+  @override
+  BitcoinScriptType get scriptType => BitcoinScriptType.opReturn;
+
+  /// Validate the OP_RETURN configuration
+  bool get isValid {
+    if (dataChunks.isEmpty) return false;
+    final totalSize = dataChunks.fold<int>(0, (sum, chunk) => sum + chunk.length);
+    return totalSize > 0 && totalSize <= maxTotalDataSize;
+  }
+
+  @override
+  Map<String, dynamic> toMap() => {
+        'type': 'op_return',
+        'dataChunks': dataChunks.map((chunk) => hex.encode(chunk)).toList(),
+        if (label != null) 'label': label,
+      };
+
+  factory OPReturnOutputSpec.fromMap(Map<String, dynamic> map) =>
+      OPReturnOutputSpec(
+        dataChunks: (map['dataChunks'] as List)
+            .map<List<int>>((chunk) => hex.decode(chunk as String))
+            .toList(),
+        label: map['label'] as String?,
+      );
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is OPReturnOutputSpec &&
+          runtimeType == other.runtimeType &&
+          _deepListEquals(dataChunks, other.dataChunks) &&
+          label == other.label;
+
+  @override
+  int get hashCode => Object.hash(
+        Object.hashAll(dataChunks.map((c) => Object.hashAll(c))),
+        label,
+      );
+
+  @override
+  String toString() {
+    final totalSize = dataChunks.fold<int>(0, (sum, c) => sum + c.length);
+    return 'OPReturnOutputSpec(chunks: ${dataChunks.length}, totalBytes: $totalSize, label: $label)';
+  }
+}
+
+bool _deepListEquals(List<List<int>> a, List<List<int>> b) {
+  if (a.length != b.length) return false;
+  for (int i = 0; i < a.length; i++) {
+    if (!_listEquals(a[i], b[i])) return false;
+  }
+  return true;
 }
 
 bool _listEquals<T>(List<T> a, List<T> b) {

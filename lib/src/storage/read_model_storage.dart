@@ -188,6 +188,19 @@ abstract class ReadModelStorage {
   /// Returns: Transaction if found, null if not found
   Future<BitcoinTransaction?> getTransaction(String txid);
 
+  /// Batch get transactions by txid list
+  ///
+  /// Returns a map of txid → transaction for all found transactions.
+  /// Default implementation loops over single-item getTransaction.
+  Future<Map<String, BitcoinTransaction>> getTransactionsBatch(List<String> txids) async {
+    final result = <String, BitcoinTransaction>{};
+    for (final txid in txids) {
+      final tx = await getTransaction(txid);
+      if (tx != null) result[txid] = tx;
+    }
+    return result;
+  }
+
   /// Get transactions by status
   /// 
   /// Parameters:
@@ -309,6 +322,19 @@ abstract class ReadModelStorage {
   ///
   /// Returns: Merkle proof if found, null if not found
   Future<MerkleProof?> getMerkleProof(String txid);
+
+  /// Batch get merkle proofs by txid list
+  ///
+  /// Returns a map of txid → proof for all txids that have proofs.
+  /// Default implementation loops over single-item getMerkleProof.
+  Future<Map<String, MerkleProof>> getMerkleProofsBatch(List<String> txids) async {
+    final result = <String, MerkleProof>{};
+    for (final txid in txids) {
+      final proof = await getMerkleProof(txid);
+      if (proof != null) result[txid] = proof;
+    }
+    return result;
+  }
 
   /// Get all merkle proofs for a block
   ///

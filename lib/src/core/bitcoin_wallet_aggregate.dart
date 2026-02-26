@@ -1161,8 +1161,9 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
   Future<dartsv.SVPrivateKey> _getPrivateKeyForAddress(
     String address,
     String walletId,
-    WalletState currentState,
-  ) async {
+    WalletState currentState, {
+    int? derivationIndex,
+  }) async {
     final networkType = currentState.networkType == 'mainnet' 
         ? dartsv.NetworkType.MAIN 
         : dartsv.NetworkType.TEST;
@@ -1179,20 +1180,20 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     } else if (currentState.walletType == WalletType.xpriv || 
                currentState.walletType == WalletType.hd) {
       // HD/XPRIV wallet: derive key for specific address
-      int derivationIndex;
-      
-      // Check if this is the root address (m/0/0)
-      if (address == currentState.rootAddress) {
-        derivationIndex = 0; // Root address is always at index 0
+      int effectiveIndex;
+
+      if (derivationIndex != null) {
+        // Use caller-provided index (from read model — avoids write/read model split)
+        effectiveIndex = derivationIndex;
+      } else if (address == currentState.rootAddress) {
+        effectiveIndex = 0; // Root address is always at index 0
       } else {
-        // Find the derivation index for generated addresses
+        // Fall back to aggregate state lookup
         final addressInfo = currentState.addresses[address];
         if (addressInfo == null) {
           throw StateError('Address $address not found in wallet state');
         }
-        
-        // Get derivation index from metadata (stored during address generation)
-        derivationIndex = currentState.metadata['address_indices']?[address] ?? 0;
+        effectiveIndex = currentState.metadata['address_indices']?[address] ?? 0;
       }
       
       // Retrieve xpriv or mnemonic
@@ -1202,12 +1203,12 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         return await cryptoService.derivePrivateKey(
           hdPrivateKey,
           0, // account index
-          derivationIndex,
+          effectiveIndex,
           coinType: 236,
           isChange: false,
         );
       }
-      
+
       // Try mnemonic if xpriv not available
       final mnemonic = await secureStorage.getMnemonic(walletId);
       if (mnemonic != null) {
@@ -1218,7 +1219,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         return await cryptoService.derivePrivateKey(
           hdPrivateKey,
           0,
-          derivationIndex,
+          effectiveIndex,
           coinType: 236,
           isChange: false,
         );
@@ -1235,6 +1236,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     SignTransactionCommand command,
   ) async {
     dartsv.Transaction? signedTx;
+
+    _log.info('Signing tx ${command.transactionId} with ${command.utxoKeys.length} UTXOs, walletType=${currentState.walletType}');
 
     try {
       // Business rule: Wallet must exist
@@ -1261,10 +1264,15 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         }
         
         // Get private key for this UTXO's address
+        // Use command-provided derivation index if available (from read model)
+        final cmdDerivationIndex = (i < command.derivationIndices.length)
+            ? command.derivationIndices[i]
+            : null;
         final privateKey = await _getPrivateKeyForAddress(
           utxo.address,
           command.walletId,
           currentState,
+          derivationIndex: cmdDerivationIndex,
         );
         
         // Create TransactionOutput for the UTXO being spent
@@ -1359,7 +1367,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
 
       return [event];
     } catch (e, stackTrace) {
-      
+      _log.warning('Sign transaction failed for ${command.transactionId}: $e');
+
       // Send error response if in actor system
       final sender = _capturedSenders[command.commandId];
       if (_isInActorSystem() && sender != null) {
@@ -1374,7 +1383,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         // Don't rethrow or onCommandFailure will send a duplicate response
         return [];
       }
-      
+
       // Only rethrow if not in actor system (for unit tests that expect exceptions)
       throw StateError('Failed to sign transaction: $e');
     }

@@ -390,6 +390,16 @@ class InMemoryWalletStorage implements WalletStorage {
   }
 
   @override
+  Future<Map<String, BitcoinTransaction>> getTransactionsBatch(List<String> txids) async {
+    final result = <String, BitcoinTransaction>{};
+    for (final txid in txids) {
+      final tx = _transactions[txid];
+      if (tx != null) result[txid] = tx;
+    }
+    return result;
+  }
+
+  @override
   Future<List<BitcoinTransaction>> getTransactionsByStatus(
     TransactionStatus status, {
     String? walletId,
@@ -548,6 +558,16 @@ class InMemoryWalletStorage implements WalletStorage {
   @override
   Future<MerkleProof?> getMerkleProof(String txid) async {
     return _merkleProofs[txid];
+  }
+
+  @override
+  Future<Map<String, MerkleProof>> getMerkleProofsBatch(List<String> txids) async {
+    final result = <String, MerkleProof>{};
+    for (final txid in txids) {
+      final proof = _merkleProofs[txid];
+      if (proof != null) result[txid] = proof;
+    }
+    return result;
   }
 
   @override

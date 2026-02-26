@@ -2,6 +2,7 @@ import 'dart:typed_data';
 import 'dart:async';
 import 'package:dactor/dactor.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
+import 'package:logging/logging.dart';
 import 'package:spiffynode/spiffy_node.dart' as spiffy;
 import 'package:convert/convert.dart';
 
@@ -29,6 +30,7 @@ import 'wallet_messages.dart';
 /// 5. Creating BEEF package with ancestors and proofs
 /// 6. Returning BEEF (does NOT broadcast - pure SPV model)
 class PaymentCoordinatorActor extends Actor {
+  static final _log = Logger('PaymentCoordinatorActor');
   final ReadModelStorage _storage;
   final SecureStorage _secureStorage;
   final ActorRef _walletManager;
@@ -65,6 +67,7 @@ class PaymentCoordinatorActor extends Actor {
 
   /// Handle payment invoice request
   Future<void> _handlePayInvoice(PayInvoiceMessage msg) async {
+    final totalSw = Stopwatch()..start();
     // Capture sender before any async gaps to avoid stale references
     final originalSender = context.sender;
     // Calculate effective amount (from outputs or legacy amount)
@@ -72,8 +75,12 @@ class PaymentCoordinatorActor extends Actor {
     // Fee estimate from message or default
     final feeEstimate = msg.feeEstimateSats ?? BigInt.from(1000);
 
+    _log.info('[pay ${msg.invoiceId}] Starting payment: amount=$effectiveAmount sats');
+
     // 1. Get available UTXOs
+    final utxoSw = Stopwatch()..start();
     final utxos = await _storage.getAvailableUTXOs(msg.walletId);
+    _log.info('[pay ${msg.invoiceId}] getUTXOs: ${utxoSw.elapsedMilliseconds}ms, count=${utxos.length}');
     if (utxos.isEmpty) {
       _sendError(msg.invoiceId, 'Insufficient funds', sender: originalSender);
       return;
@@ -94,10 +101,22 @@ class PaymentCoordinatorActor extends Actor {
       return;
     }
 
+    // 2b. Fast-fail if no block headers synced (can't construct valid BEEF)
+    final bestHeight = await _storage.getBestHeight();
+    if (bestHeight == 0) {
+      _log.warning('[pay ${msg.invoiceId}] No block headers synced yet - cannot construct BEEF payment');
+      _sendError(msg.invoiceId, 'No block headers synced yet - cannot construct BEEF payment', sender: originalSender);
+      return;
+    }
+
     // 3. CRITICAL: Validate complete ancestor chain using AncestorChainService
+    final ancestorSw = Stopwatch()..start();
     final ancestorResult = await _ancestorService.collectAncestorChainForUtxos(
       selectedUtxos.map((u) => u.txid).toList(),
     );
+    _log.info('[pay ${msg.invoiceId}] ancestorChain: ${ancestorSw.elapsedMilliseconds}ms, '
+        'ancestors=${ancestorResult.isValid ? ancestorResult.ancestorTransactions.length : "N/A"}, '
+        'proofs=${ancestorResult.isValid ? ancestorResult.merkleProofs.length : "N/A"}');
     if (!ancestorResult.isValid) {
       _sendError(
         msg.invoiceId,
@@ -107,9 +126,10 @@ class PaymentCoordinatorActor extends Actor {
       return;
     }
 
-    final publicKeys = await _getPublicKeysForUTXOs(msg.walletId, selectedUtxos);
+    final keyInfo = await _getPublicKeysForUTXOs(msg.walletId, selectedUtxos);
 
     // 4. Build payment transaction (with outputs if provided)
+    final buildSw = Stopwatch()..start();
     final paymentTx = await _buildPaymentTransactionWithOutputs(
       selectedUtxos: selectedUtxos,
       outputs: msg.outputs,
@@ -117,26 +137,31 @@ class PaymentCoordinatorActor extends Actor {
       legacyAmount: msg.amount,
       changeAddress: msg.changeAddress,
       walletId: msg.walletId,
-      publicKeys: publicKeys,
+      publicKeys: keyInfo.publicKeys,
     );
 
+    _log.info('[pay ${msg.invoiceId}] buildTx: ${buildSw.elapsedMilliseconds}ms');
     if (paymentTx == null) {
       _sendError(msg.invoiceId, 'Failed to build payment transaction', sender: originalSender);
       return;
     }
 
     // 4b. Sign the transaction
+    final signSw = Stopwatch()..start();
     final utxoKeys = selectedUtxos.map((u) => '${u.txid}:${u.vout}').toList();
-    final signedTxHex = await _signTransaction(
+    final (signedTxHex, signError) = await _signTransaction(
       walletId: msg.walletId,
       txid: paymentTx.txid,
       unsignedTxHex: paymentTx.rawHex,
       utxoKeys: utxoKeys,
-      publicKeys: publicKeys,
+      publicKeys: keyInfo.publicKeys,
+      addresses: keyInfo.addresses,
+      derivationIndices: keyInfo.derivationIndices,
     );
 
+    _log.info('[pay ${msg.invoiceId}] signing: ${signSw.elapsedMilliseconds}ms');
     if (signedTxHex == null) {
-      _sendError(msg.invoiceId, 'Failed to sign transaction', sender: originalSender);
+      _sendError(msg.invoiceId, 'Failed to sign transaction: $signError', sender: originalSender);
       return;
     }
 
@@ -181,10 +206,13 @@ class PaymentCoordinatorActor extends Actor {
     );
 
     // 5. Get block headers for validation
+    final headerSw = Stopwatch()..start();
     final blockHeaders = await _getBlockHeaders(ancestorResult.blockHeights);
+    _log.info('[pay ${msg.invoiceId}] getHeaders: ${headerSw.elapsedMilliseconds}ms');
 
     // 6. Create BEEF package
     try {
+      final beefSw = Stopwatch()..start();
       final beef = await _createBEEF(
         paymentTransaction: signedPaymentTx,
         ancestorTransactions: ancestorResult.ancestorTransactions,
@@ -192,12 +220,16 @@ class PaymentCoordinatorActor extends Actor {
         blockHeaders: blockHeaders,
       );
 
+      _log.info('[pay ${msg.invoiceId}] createBEEF: ${beefSw.elapsedMilliseconds}ms');
+
       // Calculate change amount
       final totalInput = selectedUtxos.fold<BigInt>(
         BigInt.zero,
         (sum, utxo) => sum + utxo.satoshis,
       );
       final changeAmount = totalInput - effectiveAmount - feeEstimate;
+
+      _log.info('[pay ${msg.invoiceId}] TOTAL: ${totalSw.elapsedMilliseconds}ms');
 
       // 7. Return BEEF to caller (does NOT broadcast)
       if (originalSender != null) {
@@ -425,14 +457,15 @@ class PaymentCoordinatorActor extends Actor {
   /// Get public keys for all UTXOs being spent
   /// 
   /// For each UTXO, this method:
-  /// 1. Retrieves the address metadata to find the derivation index
-  /// 2. Derives the private key for that address from the wallet's xpriv or mnemonic
-  /// 3. Extracts the public key from the private key
-  Future<List<dartsv.SVPublicKey>> _getPublicKeysForUTXOs(
+  /// Returns (publicKeys, addresses, derivationIndices) for UTXOs.
+  /// Derivation indices are from the read model and can be passed to SignTransactionCommand.
+  Future<({List<dartsv.SVPublicKey> publicKeys, List<String> addresses, List<int> derivationIndices})> _getPublicKeysForUTXOs(
     String walletId,
     List<BitcoinUtxo> utxos,
   ) async {
     final publicKeys = <dartsv.SVPublicKey>[];
+    final addresses = <String>[];
+    final derivationIndices = <int>[];
 
     // Get the wallet's extended private key
     dartsv.HDPrivateKey? hdPrivateKey;
@@ -469,10 +502,12 @@ class PaymentCoordinatorActor extends Actor {
       final privateKey = dartsv.SVPrivateKey.fromWIF(wif);
       final publicKey = privateKey.publicKey;
       // All UTXOs in a WIF wallet belong to the same key
-      for (final _ in utxos) {
+      for (final utxo in utxos) {
         publicKeys.add(publicKey);
+        addresses.add(utxo.address);
+        derivationIndices.add(0); // WIF has no derivation
       }
-      return publicKeys;
+      return (publicKeys: publicKeys, addresses: addresses, derivationIndices: derivationIndices);
     }
 
     // HD wallet: derive public key per UTXO using derivation path
@@ -490,27 +525,31 @@ class PaymentCoordinatorActor extends Actor {
       final publicKey = privateKey.publicKey;
 
       publicKeys.add(publicKey);
+      addresses.add(utxo.address);
+      derivationIndices.add(addressMetadata.derivationIndex ?? 0);
     }
 
-    return publicKeys;
+    return (publicKeys: publicKeys, addresses: addresses, derivationIndices: derivationIndices);
   }
 
   /// Request wallet to sign the transaction
-  /// Returns signed transaction hex or null on failure
-  Future<String?> _signTransaction({
+  /// Returns (signedHex, error) — signedHex is null on failure
+  Future<(String?, String?)> _signTransaction({
     required String walletId,
     required String txid,
     required String unsignedTxHex,
     required List<String> utxoKeys,
     required List<dartsv.SVPublicKey> publicKeys,
+    required List<String> addresses,
+    required List<int> derivationIndices,
   }) async {
-    
+
     final completer = Completer<TransactionSignedResponse>();
     final receiver = await context.system.spawn(
       'sign-receiver-$txid',
       () => _SigningReceiverActor(completer),
     );
-    
+
     // Send SignTransactionCommand to wallet
     _walletManager.tell(
       WalletCommandMessage(
@@ -521,6 +560,8 @@ class PaymentCoordinatorActor extends Actor {
           rawTransaction: unsignedTxHex,
           utxoKeys: utxoKeys,
           publicKeys: publicKeys.map((key) => key.toHex()).toList(),
+          addresses: addresses,
+          derivationIndices: derivationIndices,
         ),
       ),
       sender: receiver,
@@ -529,7 +570,7 @@ class PaymentCoordinatorActor extends Actor {
     // Wait for signing response
     try {
       final response = await completer.future.timeout(
-        Duration(seconds: 10),
+        Duration(seconds: 20),
         onTimeout: () {
           return TransactionSignedResponse(
             walletId: walletId,
@@ -542,10 +583,11 @@ class PaymentCoordinatorActor extends Actor {
       );
 
       if (!response.success) {
-        return null;
+        _log.warning('[sign] Failed: ${response.error}');
+        return (null, response.error ?? 'Unknown signing error');
       }
 
-      return response.signedHex;
+      return (response.signedHex, null);
     } finally {
       // Clean up temporary receiver actor to prevent resource leak
       await context.system.stop(receiver);

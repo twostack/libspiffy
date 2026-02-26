@@ -611,6 +611,16 @@ class IsarWalletStorage implements ReadModelStorage {
   }
 
   @override
+  Future<Map<String, BitcoinTransaction>> getTransactionsBatch(List<String> txids) async {
+    if (txids.isEmpty) return {};
+    final entities = await _isar.bitcoinTransactionEntitys
+        .where()
+        .anyOf(txids, (q, txid) => q.txidEqualTo(txid))
+        .findAll();
+    return {for (final e in entities) e.txid: e.toDomain()};
+  }
+
+  @override
   Future<List<BitcoinTransaction>> getTransactionsByStatus(
     TransactionStatus status, {
     String? walletId,
@@ -838,6 +848,16 @@ class IsarWalletStorage implements ReadModelStorage {
         .findFirst();
 
     return entity?.toMerkleProof();
+  }
+
+  @override
+  Future<Map<String, MerkleProof>> getMerkleProofsBatch(List<String> txids) async {
+    if (txids.isEmpty) return {};
+    final entities = await _isar.merkleProofEntitys
+        .where()
+        .anyOf(txids, (q, txid) => q.txidEqualTo(txid))
+        .findAll();
+    return {for (final e in entities) e.txid: e.toMerkleProof()};
   }
 
   @override

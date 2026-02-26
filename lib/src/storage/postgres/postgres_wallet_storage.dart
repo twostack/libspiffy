@@ -751,6 +751,39 @@ class PostgresWalletStorage implements ReadModelStorage {
   }
 
   @override
+  Future<Map<String, BitcoinTransaction>> getTransactionsBatch(List<String> txids) async {
+    if (txids.isEmpty) return {};
+    _ensureInitialized();
+
+    // Build parameterized IN clause
+    final params = <String, dynamic>{};
+    final placeholders = <String>[];
+    for (int i = 0; i < txids.length; i++) {
+      params['txid$i'] = txids[i];
+      placeholders.add('@txid$i');
+    }
+
+    final result = await _pool!.execute(
+      Sql.named('''
+        SELECT txid, raw_hex, block_height, block_hash, confirmations,
+               total_input, total_output, fee, net_amount, is_incoming,
+               is_outgoing, status, created_at, confirmed_at, broadcast_at,
+               counterparty, notes, receiving_addresses, sending_addresses
+        FROM bitcoin_transactions
+        WHERE txid IN (${placeholders.join(', ')})
+      '''),
+      parameters: params,
+    );
+
+    final map = <String, BitcoinTransaction>{};
+    for (final row in result) {
+      final tx = _rowToTransaction(row);
+      map[tx.txid] = tx;
+    }
+    return map;
+  }
+
+  @override
   Future<List<BitcoinTransaction>> getTransactionsByStatus(
     TransactionStatus status, {
     String? walletId,
@@ -1159,6 +1192,35 @@ class PostgresWalletStorage implements ReadModelStorage {
 
     if (result.isEmpty) return null;
     return _rowToMerkleProof(result.first);
+  }
+
+  @override
+  Future<Map<String, MerkleProof>> getMerkleProofsBatch(List<String> txids) async {
+    if (txids.isEmpty) return {};
+    _ensureInitialized();
+
+    final params = <String, dynamic>{};
+    final placeholders = <String>[];
+    for (int i = 0; i < txids.length; i++) {
+      params['txid$i'] = txids[i];
+      placeholders.add('@txid$i');
+    }
+
+    final result = await _pool!.execute(
+      Sql.named('''
+        SELECT block_hash, txid, merkle_proof_json, position, block_height, created_at
+        FROM merkle_proofs
+        WHERE txid IN (${placeholders.join(', ')})
+      '''),
+      parameters: params,
+    );
+
+    final map = <String, MerkleProof>{};
+    for (final row in result) {
+      final proof = _rowToMerkleProof(row);
+      map[proof.txid] = proof;
+    }
+    return map;
   }
 
   @override

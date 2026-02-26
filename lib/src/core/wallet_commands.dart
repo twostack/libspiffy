@@ -572,6 +572,11 @@ class SignTransactionCommand extends WalletCommand {
   final String rawTransaction; // Unsigned transaction hex
   final List<String> utxoKeys; // UTXOs being spent
   final List<String> publicKeys;
+  /// Addresses for each UTXO (parallel to utxoKeys). Used for key derivation.
+  final List<String> addresses;
+  /// Derivation indices for each UTXO (parallel to utxoKeys).
+  /// When provided, the aggregate uses these directly instead of looking up in state.
+  final List<int> derivationIndices;
 
   SignTransactionCommand({
     required String walletId,
@@ -579,9 +584,11 @@ class SignTransactionCommand extends WalletCommand {
     required this.rawTransaction,
     required this.utxoKeys,
     required this.publicKeys,
+    this.addresses = const [],
+    this.derivationIndices = const [],
     String? commandId,
     DateTime? timestamp,
-    Map<String, dynamic>? metadata, 
+    Map<String, dynamic>? metadata,
   }) : super(
           walletId: walletId,
           commandId: commandId,

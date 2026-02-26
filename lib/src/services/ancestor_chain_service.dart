@@ -10,6 +10,7 @@
 import 'dart:typed_data';
 import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
+import 'package:logging/logging.dart';
 
 import '../models/bitcoin_transaction.dart';
 import '../storage/read_model_storage.dart';
@@ -66,40 +67,93 @@ class BEEFWithAncestryResult {
 
 /// Service for collecting ancestor transaction chains and creating BEEFs
 class AncestorChainService {
+  static final _log = Logger('AncestorChainService');
   final ReadModelStorage _storage;
 
   AncestorChainService({
     required ReadModelStorage storage,
   }) : _storage = storage;
 
-  /// Collect ancestor chain for a list of UTXOs
+  /// Collect ancestor chain for a list of UTXOs using BFS with batch queries.
   ///
   /// Walks back through the transaction graph until merkle proofs are found.
-  /// This is critical for creating valid BEEFs when the immediate transaction
-  /// doesn't have a merkle proof yet (unconfirmed).
+  /// Uses batch DB queries per depth level for performance.
+  ///
+  /// Parameters:
+  /// - [maxDepth]: Maximum ancestor depth to traverse (default 20, BSV limit is 25)
+  /// - [timeout]: Maximum time for collection (default 15 seconds)
   Future<AncestorChainResult> collectAncestorChainForUtxos(
-    List<String> utxoTxids,
-  ) async {
+    List<String> utxoTxids, {
+    int maxDepth = 20,
+    Duration timeout = const Duration(seconds: 15),
+  }) async {
+    final sw = Stopwatch()..start();
+    final deadline = DateTime.now().add(timeout);
+    final visited = <String>{};
     final ancestorTxs = <BitcoinTransaction>[];
     final merkleProofs = <MerkleProof>[];
     final blockHeights = <int>{};
-    final visited = <String>{}; // Prevent infinite loops
 
-    for (final txid in utxoTxids) {
-      final result = await _collectAncestorsRecursive(
-        txid,
-        visited,
-        ancestorTxs,
-        merkleProofs,
-        blockHeights,
-      );
+    var frontier = utxoTxids.toSet();
+    int depth = 0;
 
-      if (!result.success) {
-        return AncestorChainResult.error(result.error!);
+    while (frontier.isNotEmpty && depth < maxDepth) {
+      if (DateTime.now().isAfter(deadline)) {
+        _log.warning('Ancestor collection timed out at depth $depth after ${sw.elapsedMilliseconds}ms '
+            '(visited ${visited.length} txs)');
+        return AncestorChainResult.error(
+          'Ancestor chain collection timed out after ${sw.elapsedMilliseconds}ms '
+          '(depth=$depth, visited=${visited.length})',
+        );
       }
+
+      final unvisited = frontier.difference(visited).toList();
+      if (unvisited.isEmpty) break;
+      visited.addAll(unvisited);
+
+      // Batch fetch transactions and proofs for this depth level
+      final txMap = await _storage.getTransactionsBatch(unvisited);
+      final proofMap = await _storage.getMerkleProofsBatch(unvisited);
+
+      final nextFrontier = <String>{};
+
+      for (final txid in unvisited) {
+        final tx = txMap[txid];
+        if (tx == null) {
+          _log.warning('Transaction $txid not found at depth $depth');
+          return AncestorChainResult.error(
+            'Transaction $txid not found in storage - may need to import historical transactions',
+          );
+        }
+
+        ancestorTxs.add(tx);
+
+        final proof = proofMap[txid];
+        if (proof != null) {
+          // Found merkle proof — this branch is complete
+          merkleProofs.add(proof);
+          blockHeights.add(proof.blockHeight);
+        } else {
+          // No proof — parse inputs to continue walking
+          try {
+            final dartsvTx = dartsv.Transaction.fromHex(tx.rawHex);
+            for (final input in dartsvTx.inputs) {
+              nextFrontier.add(input.prevTxnId);
+            }
+          } catch (e) {
+            return AncestorChainResult.error('Failed to parse transaction $txid: $e');
+          }
+        }
+      }
+
+      frontier = nextFrontier;
+      depth++;
     }
 
-    // Validate we have at least one merkle proof
+    _log.info('Ancestor collection: ${sw.elapsedMilliseconds}ms, '
+        'depth=$depth, visited=${visited.length}, '
+        'ancestors=${ancestorTxs.length}, proofs=${merkleProofs.length}');
+
     if (merkleProofs.isEmpty) {
       return AncestorChainResult.error(
         'No merkle proofs found in transaction chain - cannot create valid BEEF',
@@ -116,69 +170,6 @@ class AncestorChainService {
   /// Collect ancestor chain for a single transaction
   Future<AncestorChainResult> collectAncestorChain(String txid) async {
     return collectAncestorChainForUtxos([txid]);
-  }
-
-  /// Recursively collect ancestors until merkle proof found
-  Future<_CollectionStep> _collectAncestorsRecursive(
-    String txid,
-    Set<String> visited,
-    List<BitcoinTransaction> ancestorTxs,
-    List<MerkleProof> merkleProofs,
-    Set<int> blockHeights,
-  ) async {
-    // Skip if already processed
-    if (visited.contains(txid)) {
-      return _CollectionStep.success();
-    }
-    visited.add(txid);
-
-    // Get transaction from storage (must exist)
-    final tx = await _storage.getTransaction(txid);
-    if (tx == null) {
-      return _CollectionStep.error(
-        'Transaction $txid not found in storage - may need to import historical transactions',
-      );
-    }
-
-    // Check for merkle proof (stopping condition)
-    final proof = await _storage.getMerkleProof(txid);
-
-    if (proof != null) {
-      // Found merkle proof - chain complete for this branch
-      ancestorTxs.add(tx);
-      merkleProofs.add(proof);
-      blockHeights.add(proof.blockHeight);
-      return _CollectionStep.success();
-    }
-
-    // No merkle proof - must recurse to parents
-    ancestorTxs.add(tx);
-
-    // Parse transaction to get parent txids
-    try {
-      final dartsvTx = dartsv.Transaction.fromHex(tx.rawHex);
-
-      for (final input in dartsvTx.inputs) {
-        final parentTxid = input.prevTxnId;
-
-        // Recursively process parent
-        final result = await _collectAncestorsRecursive(
-          parentTxid,
-          visited,
-          ancestorTxs,
-          merkleProofs,
-          blockHeights,
-        );
-
-        if (!result.success) {
-          return result; // Propagate error
-        }
-      }
-    } catch (e) {
-      return _CollectionStep.error('Failed to parse transaction $txid: $e');
-    }
-
-    return _CollectionStep.success();
   }
 
   /// Create BEEF package from a new transaction and its ancestor chain
@@ -342,15 +333,4 @@ class AncestorChainService {
 
 }
 
-/// Internal helper for recursion step result
-class _CollectionStep {
-  final bool success;
-  final String? error;
-
-  _CollectionStep.success()
-      : success = true,
-        error = null;
-
-  _CollectionStep.error(this.error) : success = false;
-}
 

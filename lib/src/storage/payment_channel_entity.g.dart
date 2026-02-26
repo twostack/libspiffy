@@ -58,98 +58,113 @@ const PaymentChannelEntitySchema = CollectionSchema(
       name: r'createdAt',
       type: IsarType.dateTime,
     ),
-    r'fundingAmountSats': PropertySchema(
+    r'errorMessage': PropertySchema(
       id: 8,
+      name: r'errorMessage',
+      type: IsarType.string,
+    ),
+    r'fundingAmountSats': PropertySchema(
+      id: 9,
       name: r'fundingAmountSats',
       type: IsarType.string,
     ),
     r'fundingAncestorTxids': PropertySchema(
-      id: 9,
+      id: 10,
       name: r'fundingAncestorTxids',
       type: IsarType.stringList,
     ),
     r'fundingOutputIndex': PropertySchema(
-      id: 10,
+      id: 11,
       name: r'fundingOutputIndex',
       type: IsarType.long,
     ),
     r'fundingTxHex': PropertySchema(
-      id: 11,
+      id: 12,
       name: r'fundingTxHex',
       type: IsarType.string,
     ),
     r'fundingTxId': PropertySchema(
-      id: 12,
+      id: 13,
       name: r'fundingTxId',
       type: IsarType.string,
     ),
     r'hasFundingMerkleProof': PropertySchema(
-      id: 13,
+      id: 14,
       name: r'hasFundingMerkleProof',
       type: IsarType.bool,
     ),
     r'latestPaymentTxHex': PropertySchema(
-      id: 14,
+      id: 15,
       name: r'latestPaymentTxHex',
       type: IsarType.string,
     ),
+    r'latestPaymentTxId': PropertySchema(
+      id: 16,
+      name: r'latestPaymentTxId',
+      type: IsarType.string,
+    ),
     r'latestSequenceNumber': PropertySchema(
-      id: 15,
+      id: 17,
       name: r'latestSequenceNumber',
       type: IsarType.long,
     ),
     r'lockTimeUnix': PropertySchema(
-      id: 16,
+      id: 18,
       name: r'lockTimeUnix',
       type: IsarType.long,
     ),
     r'refundClientSigHex': PropertySchema(
-      id: 17,
+      id: 19,
       name: r'refundClientSigHex',
       type: IsarType.string,
     ),
     r'refundServerSigHex': PropertySchema(
-      id: 18,
+      id: 20,
       name: r'refundServerSigHex',
       type: IsarType.string,
     ),
     r'refundTxHex': PropertySchema(
-      id: 19,
+      id: 21,
       name: r'refundTxHex',
       type: IsarType.string,
     ),
     r'role': PropertySchema(
-      id: 20,
+      id: 22,
       name: r'role',
       type: IsarType.string,
     ),
     r'serverAddressB58': PropertySchema(
-      id: 21,
+      id: 23,
       name: r'serverAddressB58',
       type: IsarType.string,
     ),
     r'serverBalanceSats': PropertySchema(
-      id: 22,
+      id: 24,
       name: r'serverBalanceSats',
       type: IsarType.string,
     ),
     r'serverPeerId': PropertySchema(
-      id: 23,
+      id: 25,
       name: r'serverPeerId',
       type: IsarType.string,
     ),
     r'serverPubKeyHex': PropertySchema(
-      id: 24,
+      id: 26,
       name: r'serverPubKeyHex',
       type: IsarType.string,
     ),
+    r'settlementTxId': PropertySchema(
+      id: 27,
+      name: r'settlementTxId',
+      type: IsarType.string,
+    ),
     r'state': PropertySchema(
-      id: 25,
+      id: 28,
       name: r'state',
       type: IsarType.string,
     ),
     r'walletId': PropertySchema(
-      id: 26,
+      id: 29,
       name: r'walletId',
       type: IsarType.string,
     )
@@ -186,6 +201,32 @@ const PaymentChannelEntitySchema = CollectionSchema(
         )
       ],
     ),
+    r'clientPeerId': IndexSchema(
+      id: 9188496923513422730,
+      name: r'clientPeerId',
+      unique: false,
+      replace: false,
+      properties: [
+        IndexPropertySchema(
+          name: r'clientPeerId',
+          type: IndexType.hash,
+          caseSensitive: true,
+        )
+      ],
+    ),
+    r'serverPeerId': IndexSchema(
+      id: -272359649795454624,
+      name: r'serverPeerId',
+      unique: false,
+      replace: false,
+      properties: [
+        IndexPropertySchema(
+          name: r'serverPeerId',
+          type: IndexType.hash,
+          caseSensitive: true,
+        )
+      ],
+    ),
     r'state': IndexSchema(
       id: 7917036384617311412,
       name: r'state',
@@ -215,12 +256,23 @@ int _paymentChannelEntityEstimateSize(
 ) {
   var bytesCount = offsets.last;
   bytesCount += 3 + object.channelId.length * 3;
-  bytesCount += 3 + object.clientAddressB58.length * 3;
+  {
+    final value = object.clientAddressB58;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
   bytesCount += 3 + object.clientBalanceSats.length * 3;
   bytesCount += 3 + object.clientPeerId.length * 3;
   bytesCount += 3 + object.clientPubKeyHex.length * 3;
   {
     final value = object.context;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
+  {
+    final value = object.errorMessage;
     if (value != null) {
       bytesCount += 3 + value.length * 3;
     }
@@ -233,10 +285,26 @@ int _paymentChannelEntityEstimateSize(
       bytesCount += value.length * 3;
     }
   }
-  bytesCount += 3 + object.fundingTxHex.length * 3;
-  bytesCount += 3 + object.fundingTxId.length * 3;
+  {
+    final value = object.fundingTxHex;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
+  {
+    final value = object.fundingTxId;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
   {
     final value = object.latestPaymentTxHex;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
+  {
+    final value = object.latestPaymentTxId;
     if (value != null) {
       bytesCount += 3 + value.length * 3;
     }
@@ -260,10 +328,21 @@ int _paymentChannelEntityEstimateSize(
     }
   }
   bytesCount += 3 + object.role.length * 3;
-  bytesCount += 3 + object.serverAddressB58.length * 3;
+  {
+    final value = object.serverAddressB58;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
   bytesCount += 3 + object.serverBalanceSats.length * 3;
   bytesCount += 3 + object.serverPeerId.length * 3;
   bytesCount += 3 + object.serverPubKeyHex.length * 3;
+  {
+    final value = object.settlementTxId;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
   bytesCount += 3 + object.state.length * 3;
   bytesCount += 3 + object.walletId.length * 3;
   return bytesCount;
@@ -283,25 +362,28 @@ void _paymentChannelEntitySerialize(
   writer.writeDateTime(offsets[5], object.closedAt);
   writer.writeString(offsets[6], object.context);
   writer.writeDateTime(offsets[7], object.createdAt);
-  writer.writeString(offsets[8], object.fundingAmountSats);
-  writer.writeStringList(offsets[9], object.fundingAncestorTxids);
-  writer.writeLong(offsets[10], object.fundingOutputIndex);
-  writer.writeString(offsets[11], object.fundingTxHex);
-  writer.writeString(offsets[12], object.fundingTxId);
-  writer.writeBool(offsets[13], object.hasFundingMerkleProof);
-  writer.writeString(offsets[14], object.latestPaymentTxHex);
-  writer.writeLong(offsets[15], object.latestSequenceNumber);
-  writer.writeLong(offsets[16], object.lockTimeUnix);
-  writer.writeString(offsets[17], object.refundClientSigHex);
-  writer.writeString(offsets[18], object.refundServerSigHex);
-  writer.writeString(offsets[19], object.refundTxHex);
-  writer.writeString(offsets[20], object.role);
-  writer.writeString(offsets[21], object.serverAddressB58);
-  writer.writeString(offsets[22], object.serverBalanceSats);
-  writer.writeString(offsets[23], object.serverPeerId);
-  writer.writeString(offsets[24], object.serverPubKeyHex);
-  writer.writeString(offsets[25], object.state);
-  writer.writeString(offsets[26], object.walletId);
+  writer.writeString(offsets[8], object.errorMessage);
+  writer.writeString(offsets[9], object.fundingAmountSats);
+  writer.writeStringList(offsets[10], object.fundingAncestorTxids);
+  writer.writeLong(offsets[11], object.fundingOutputIndex);
+  writer.writeString(offsets[12], object.fundingTxHex);
+  writer.writeString(offsets[13], object.fundingTxId);
+  writer.writeBool(offsets[14], object.hasFundingMerkleProof);
+  writer.writeString(offsets[15], object.latestPaymentTxHex);
+  writer.writeString(offsets[16], object.latestPaymentTxId);
+  writer.writeLong(offsets[17], object.latestSequenceNumber);
+  writer.writeLong(offsets[18], object.lockTimeUnix);
+  writer.writeString(offsets[19], object.refundClientSigHex);
+  writer.writeString(offsets[20], object.refundServerSigHex);
+  writer.writeString(offsets[21], object.refundTxHex);
+  writer.writeString(offsets[22], object.role);
+  writer.writeString(offsets[23], object.serverAddressB58);
+  writer.writeString(offsets[24], object.serverBalanceSats);
+  writer.writeString(offsets[25], object.serverPeerId);
+  writer.writeString(offsets[26], object.serverPubKeyHex);
+  writer.writeString(offsets[27], object.settlementTxId);
+  writer.writeString(offsets[28], object.state);
+  writer.writeString(offsets[29], object.walletId);
 }
 
 PaymentChannelEntity _paymentChannelEntityDeserialize(
@@ -312,33 +394,36 @@ PaymentChannelEntity _paymentChannelEntityDeserialize(
 ) {
   final object = PaymentChannelEntity();
   object.channelId = reader.readString(offsets[0]);
-  object.clientAddressB58 = reader.readString(offsets[1]);
+  object.clientAddressB58 = reader.readStringOrNull(offsets[1]);
   object.clientBalanceSats = reader.readString(offsets[2]);
   object.clientPeerId = reader.readString(offsets[3]);
   object.clientPubKeyHex = reader.readString(offsets[4]);
   object.closedAt = reader.readDateTimeOrNull(offsets[5]);
   object.context = reader.readStringOrNull(offsets[6]);
   object.createdAt = reader.readDateTime(offsets[7]);
-  object.fundingAmountSats = reader.readString(offsets[8]);
-  object.fundingAncestorTxids = reader.readStringList(offsets[9]) ?? [];
-  object.fundingOutputIndex = reader.readLong(offsets[10]);
-  object.fundingTxHex = reader.readString(offsets[11]);
-  object.fundingTxId = reader.readString(offsets[12]);
-  object.hasFundingMerkleProof = reader.readBool(offsets[13]);
+  object.errorMessage = reader.readStringOrNull(offsets[8]);
+  object.fundingAmountSats = reader.readString(offsets[9]);
+  object.fundingAncestorTxids = reader.readStringList(offsets[10]) ?? [];
+  object.fundingOutputIndex = reader.readLongOrNull(offsets[11]);
+  object.fundingTxHex = reader.readStringOrNull(offsets[12]);
+  object.fundingTxId = reader.readStringOrNull(offsets[13]);
+  object.hasFundingMerkleProof = reader.readBool(offsets[14]);
   object.id = id;
-  object.latestPaymentTxHex = reader.readStringOrNull(offsets[14]);
-  object.latestSequenceNumber = reader.readLong(offsets[15]);
-  object.lockTimeUnix = reader.readLong(offsets[16]);
-  object.refundClientSigHex = reader.readStringOrNull(offsets[17]);
-  object.refundServerSigHex = reader.readStringOrNull(offsets[18]);
-  object.refundTxHex = reader.readStringOrNull(offsets[19]);
-  object.role = reader.readString(offsets[20]);
-  object.serverAddressB58 = reader.readString(offsets[21]);
-  object.serverBalanceSats = reader.readString(offsets[22]);
-  object.serverPeerId = reader.readString(offsets[23]);
-  object.serverPubKeyHex = reader.readString(offsets[24]);
-  object.state = reader.readString(offsets[25]);
-  object.walletId = reader.readString(offsets[26]);
+  object.latestPaymentTxHex = reader.readStringOrNull(offsets[15]);
+  object.latestPaymentTxId = reader.readStringOrNull(offsets[16]);
+  object.latestSequenceNumber = reader.readLong(offsets[17]);
+  object.lockTimeUnix = reader.readLong(offsets[18]);
+  object.refundClientSigHex = reader.readStringOrNull(offsets[19]);
+  object.refundServerSigHex = reader.readStringOrNull(offsets[20]);
+  object.refundTxHex = reader.readStringOrNull(offsets[21]);
+  object.role = reader.readString(offsets[22]);
+  object.serverAddressB58 = reader.readStringOrNull(offsets[23]);
+  object.serverBalanceSats = reader.readString(offsets[24]);
+  object.serverPeerId = reader.readString(offsets[25]);
+  object.serverPubKeyHex = reader.readString(offsets[26]);
+  object.settlementTxId = reader.readStringOrNull(offsets[27]);
+  object.state = reader.readString(offsets[28]);
+  object.walletId = reader.readString(offsets[29]);
   return object;
 }
 
@@ -352,7 +437,7 @@ P _paymentChannelEntityDeserializeProp<P>(
     case 0:
       return (reader.readString(offset)) as P;
     case 1:
-      return (reader.readString(offset)) as P;
+      return (reader.readStringOrNull(offset)) as P;
     case 2:
       return (reader.readString(offset)) as P;
     case 3:
@@ -366,42 +451,48 @@ P _paymentChannelEntityDeserializeProp<P>(
     case 7:
       return (reader.readDateTime(offset)) as P;
     case 8:
-      return (reader.readString(offset)) as P;
+      return (reader.readStringOrNull(offset)) as P;
     case 9:
-      return (reader.readStringList(offset) ?? []) as P;
+      return (reader.readString(offset)) as P;
     case 10:
-      return (reader.readLong(offset)) as P;
+      return (reader.readStringList(offset) ?? []) as P;
     case 11:
-      return (reader.readString(offset)) as P;
+      return (reader.readLongOrNull(offset)) as P;
     case 12:
-      return (reader.readString(offset)) as P;
+      return (reader.readStringOrNull(offset)) as P;
     case 13:
-      return (reader.readBool(offset)) as P;
+      return (reader.readStringOrNull(offset)) as P;
     case 14:
-      return (reader.readStringOrNull(offset)) as P;
+      return (reader.readBool(offset)) as P;
     case 15:
-      return (reader.readLong(offset)) as P;
+      return (reader.readStringOrNull(offset)) as P;
     case 16:
-      return (reader.readLong(offset)) as P;
+      return (reader.readStringOrNull(offset)) as P;
     case 17:
-      return (reader.readStringOrNull(offset)) as P;
+      return (reader.readLong(offset)) as P;
     case 18:
-      return (reader.readStringOrNull(offset)) as P;
+      return (reader.readLong(offset)) as P;
     case 19:
       return (reader.readStringOrNull(offset)) as P;
     case 20:
-      return (reader.readString(offset)) as P;
+      return (reader.readStringOrNull(offset)) as P;
     case 21:
-      return (reader.readString(offset)) as P;
+      return (reader.readStringOrNull(offset)) as P;
     case 22:
       return (reader.readString(offset)) as P;
     case 23:
-      return (reader.readString(offset)) as P;
+      return (reader.readStringOrNull(offset)) as P;
     case 24:
       return (reader.readString(offset)) as P;
     case 25:
       return (reader.readString(offset)) as P;
     case 26:
+      return (reader.readString(offset)) as P;
+    case 27:
+      return (reader.readStringOrNull(offset)) as P;
+    case 28:
+      return (reader.readString(offset)) as P;
+    case 29:
       return (reader.readString(offset)) as P;
     default:
       throw IsarError('Unknown property with id $propertyId');
@@ -650,6 +741,96 @@ extension PaymentChannelEntityQueryWhere
   }
 
   QueryBuilder<PaymentChannelEntity, PaymentChannelEntity, QAfterWhereClause>
+      clientPeerIdEqualTo(String clientPeerId) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'clientPeerId',
+        value: [clientPeerId],
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity, QAfterWhereClause>
+      clientPeerIdNotEqualTo(String clientPeerId) {
+    return QueryBuilder.apply(this, (query) {
+      if (query.whereSort == Sort.asc) {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'clientPeerId',
+              lower: [],
+              upper: [clientPeerId],
+              includeUpper: false,
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'clientPeerId',
+              lower: [clientPeerId],
+              includeLower: false,
+              upper: [],
+            ));
+      } else {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'clientPeerId',
+              lower: [clientPeerId],
+              includeLower: false,
+              upper: [],
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'clientPeerId',
+              lower: [],
+              upper: [clientPeerId],
+              includeUpper: false,
+            ));
+      }
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity, QAfterWhereClause>
+      serverPeerIdEqualTo(String serverPeerId) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'serverPeerId',
+        value: [serverPeerId],
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity, QAfterWhereClause>
+      serverPeerIdNotEqualTo(String serverPeerId) {
+    return QueryBuilder.apply(this, (query) {
+      if (query.whereSort == Sort.asc) {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'serverPeerId',
+              lower: [],
+              upper: [serverPeerId],
+              includeUpper: false,
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'serverPeerId',
+              lower: [serverPeerId],
+              includeLower: false,
+              upper: [],
+            ));
+      } else {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'serverPeerId',
+              lower: [serverPeerId],
+              includeLower: false,
+              upper: [],
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'serverPeerId',
+              lower: [],
+              upper: [serverPeerId],
+              includeUpper: false,
+            ));
+      }
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity, QAfterWhereClause>
       stateEqualTo(String state) {
     return QueryBuilder.apply(this, (query) {
       return query.addWhereClause(IndexWhereClause.equalTo(
@@ -836,8 +1017,26 @@ extension PaymentChannelEntityQueryFilter on QueryBuilder<PaymentChannelEntity,
   }
 
   QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+      QAfterFilterCondition> clientAddressB58IsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'clientAddressB58',
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+      QAfterFilterCondition> clientAddressB58IsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'clientAddressB58',
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
       QAfterFilterCondition> clientAddressB58EqualTo(
-    String value, {
+    String? value, {
     bool caseSensitive = true,
   }) {
     return QueryBuilder.apply(this, (query) {
@@ -851,7 +1050,7 @@ extension PaymentChannelEntityQueryFilter on QueryBuilder<PaymentChannelEntity,
 
   QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
       QAfterFilterCondition> clientAddressB58GreaterThan(
-    String value, {
+    String? value, {
     bool include = false,
     bool caseSensitive = true,
   }) {
@@ -867,7 +1066,7 @@ extension PaymentChannelEntityQueryFilter on QueryBuilder<PaymentChannelEntity,
 
   QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
       QAfterFilterCondition> clientAddressB58LessThan(
-    String value, {
+    String? value, {
     bool include = false,
     bool caseSensitive = true,
   }) {
@@ -883,8 +1082,8 @@ extension PaymentChannelEntityQueryFilter on QueryBuilder<PaymentChannelEntity,
 
   QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
       QAfterFilterCondition> clientAddressB58Between(
-    String lower,
-    String upper, {
+    String? lower,
+    String? upper, {
     bool includeLower = true,
     bool includeUpper = true,
     bool caseSensitive = true,
@@ -1674,6 +1873,162 @@ extension PaymentChannelEntityQueryFilter on QueryBuilder<PaymentChannelEntity,
   }
 
   QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+      QAfterFilterCondition> errorMessageIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'errorMessage',
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+      QAfterFilterCondition> errorMessageIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'errorMessage',
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+      QAfterFilterCondition> errorMessageEqualTo(
+    String? value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'errorMessage',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+      QAfterFilterCondition> errorMessageGreaterThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'errorMessage',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+      QAfterFilterCondition> errorMessageLessThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'errorMessage',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+      QAfterFilterCondition> errorMessageBetween(
+    String? lower,
+    String? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'errorMessage',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+      QAfterFilterCondition> errorMessageStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'errorMessage',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+      QAfterFilterCondition> errorMessageEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'errorMessage',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+          QAfterFilterCondition>
+      errorMessageContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'errorMessage',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+          QAfterFilterCondition>
+      errorMessageMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'errorMessage',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+      QAfterFilterCondition> errorMessageIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'errorMessage',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+      QAfterFilterCondition> errorMessageIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'errorMessage',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
       QAfterFilterCondition> fundingAmountSatsEqualTo(
     String value, {
     bool caseSensitive = true,
@@ -2041,7 +2396,25 @@ extension PaymentChannelEntityQueryFilter on QueryBuilder<PaymentChannelEntity,
   }
 
   QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
-      QAfterFilterCondition> fundingOutputIndexEqualTo(int value) {
+      QAfterFilterCondition> fundingOutputIndexIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'fundingOutputIndex',
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+      QAfterFilterCondition> fundingOutputIndexIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'fundingOutputIndex',
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+      QAfterFilterCondition> fundingOutputIndexEqualTo(int? value) {
     return QueryBuilder.apply(this, (query) {
       return query.addFilterCondition(FilterCondition.equalTo(
         property: r'fundingOutputIndex',
@@ -2052,7 +2425,7 @@ extension PaymentChannelEntityQueryFilter on QueryBuilder<PaymentChannelEntity,
 
   QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
       QAfterFilterCondition> fundingOutputIndexGreaterThan(
-    int value, {
+    int? value, {
     bool include = false,
   }) {
     return QueryBuilder.apply(this, (query) {
@@ -2066,7 +2439,7 @@ extension PaymentChannelEntityQueryFilter on QueryBuilder<PaymentChannelEntity,
 
   QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
       QAfterFilterCondition> fundingOutputIndexLessThan(
-    int value, {
+    int? value, {
     bool include = false,
   }) {
     return QueryBuilder.apply(this, (query) {
@@ -2080,8 +2453,8 @@ extension PaymentChannelEntityQueryFilter on QueryBuilder<PaymentChannelEntity,
 
   QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
       QAfterFilterCondition> fundingOutputIndexBetween(
-    int lower,
-    int upper, {
+    int? lower,
+    int? upper, {
     bool includeLower = true,
     bool includeUpper = true,
   }) {
@@ -2097,8 +2470,26 @@ extension PaymentChannelEntityQueryFilter on QueryBuilder<PaymentChannelEntity,
   }
 
   QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+      QAfterFilterCondition> fundingTxHexIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'fundingTxHex',
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+      QAfterFilterCondition> fundingTxHexIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'fundingTxHex',
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
       QAfterFilterCondition> fundingTxHexEqualTo(
-    String value, {
+    String? value, {
     bool caseSensitive = true,
   }) {
     return QueryBuilder.apply(this, (query) {
@@ -2112,7 +2503,7 @@ extension PaymentChannelEntityQueryFilter on QueryBuilder<PaymentChannelEntity,
 
   QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
       QAfterFilterCondition> fundingTxHexGreaterThan(
-    String value, {
+    String? value, {
     bool include = false,
     bool caseSensitive = true,
   }) {
@@ -2128,7 +2519,7 @@ extension PaymentChannelEntityQueryFilter on QueryBuilder<PaymentChannelEntity,
 
   QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
       QAfterFilterCondition> fundingTxHexLessThan(
-    String value, {
+    String? value, {
     bool include = false,
     bool caseSensitive = true,
   }) {
@@ -2144,8 +2535,8 @@ extension PaymentChannelEntityQueryFilter on QueryBuilder<PaymentChannelEntity,
 
   QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
       QAfterFilterCondition> fundingTxHexBetween(
-    String lower,
-    String upper, {
+    String? lower,
+    String? upper, {
     bool includeLower = true,
     bool includeUpper = true,
     bool caseSensitive = true,
@@ -2235,8 +2626,26 @@ extension PaymentChannelEntityQueryFilter on QueryBuilder<PaymentChannelEntity,
   }
 
   QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+      QAfterFilterCondition> fundingTxIdIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'fundingTxId',
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+      QAfterFilterCondition> fundingTxIdIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'fundingTxId',
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
       QAfterFilterCondition> fundingTxIdEqualTo(
-    String value, {
+    String? value, {
     bool caseSensitive = true,
   }) {
     return QueryBuilder.apply(this, (query) {
@@ -2250,7 +2659,7 @@ extension PaymentChannelEntityQueryFilter on QueryBuilder<PaymentChannelEntity,
 
   QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
       QAfterFilterCondition> fundingTxIdGreaterThan(
-    String value, {
+    String? value, {
     bool include = false,
     bool caseSensitive = true,
   }) {
@@ -2266,7 +2675,7 @@ extension PaymentChannelEntityQueryFilter on QueryBuilder<PaymentChannelEntity,
 
   QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
       QAfterFilterCondition> fundingTxIdLessThan(
-    String value, {
+    String? value, {
     bool include = false,
     bool caseSensitive = true,
   }) {
@@ -2282,8 +2691,8 @@ extension PaymentChannelEntityQueryFilter on QueryBuilder<PaymentChannelEntity,
 
   QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
       QAfterFilterCondition> fundingTxIdBetween(
-    String lower,
-    String upper, {
+    String? lower,
+    String? upper, {
     bool includeLower = true,
     bool includeUpper = true,
     bool caseSensitive = true,
@@ -2589,6 +2998,162 @@ extension PaymentChannelEntityQueryFilter on QueryBuilder<PaymentChannelEntity,
     return QueryBuilder.apply(this, (query) {
       return query.addFilterCondition(FilterCondition.greaterThan(
         property: r'latestPaymentTxHex',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+      QAfterFilterCondition> latestPaymentTxIdIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'latestPaymentTxId',
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+      QAfterFilterCondition> latestPaymentTxIdIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'latestPaymentTxId',
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+      QAfterFilterCondition> latestPaymentTxIdEqualTo(
+    String? value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'latestPaymentTxId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+      QAfterFilterCondition> latestPaymentTxIdGreaterThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'latestPaymentTxId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+      QAfterFilterCondition> latestPaymentTxIdLessThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'latestPaymentTxId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+      QAfterFilterCondition> latestPaymentTxIdBetween(
+    String? lower,
+    String? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'latestPaymentTxId',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+      QAfterFilterCondition> latestPaymentTxIdStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'latestPaymentTxId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+      QAfterFilterCondition> latestPaymentTxIdEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'latestPaymentTxId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+          QAfterFilterCondition>
+      latestPaymentTxIdContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'latestPaymentTxId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+          QAfterFilterCondition>
+      latestPaymentTxIdMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'latestPaymentTxId',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+      QAfterFilterCondition> latestPaymentTxIdIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'latestPaymentTxId',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+      QAfterFilterCondition> latestPaymentTxIdIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'latestPaymentTxId',
         value: '',
       ));
     });
@@ -3313,8 +3878,26 @@ extension PaymentChannelEntityQueryFilter on QueryBuilder<PaymentChannelEntity,
   }
 
   QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+      QAfterFilterCondition> serverAddressB58IsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'serverAddressB58',
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+      QAfterFilterCondition> serverAddressB58IsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'serverAddressB58',
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
       QAfterFilterCondition> serverAddressB58EqualTo(
-    String value, {
+    String? value, {
     bool caseSensitive = true,
   }) {
     return QueryBuilder.apply(this, (query) {
@@ -3328,7 +3911,7 @@ extension PaymentChannelEntityQueryFilter on QueryBuilder<PaymentChannelEntity,
 
   QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
       QAfterFilterCondition> serverAddressB58GreaterThan(
-    String value, {
+    String? value, {
     bool include = false,
     bool caseSensitive = true,
   }) {
@@ -3344,7 +3927,7 @@ extension PaymentChannelEntityQueryFilter on QueryBuilder<PaymentChannelEntity,
 
   QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
       QAfterFilterCondition> serverAddressB58LessThan(
-    String value, {
+    String? value, {
     bool include = false,
     bool caseSensitive = true,
   }) {
@@ -3360,8 +3943,8 @@ extension PaymentChannelEntityQueryFilter on QueryBuilder<PaymentChannelEntity,
 
   QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
       QAfterFilterCondition> serverAddressB58Between(
-    String lower,
-    String upper, {
+    String? lower,
+    String? upper, {
     bool includeLower = true,
     bool includeUpper = true,
     bool caseSensitive = true,
@@ -3865,6 +4448,162 @@ extension PaymentChannelEntityQueryFilter on QueryBuilder<PaymentChannelEntity,
   }
 
   QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+      QAfterFilterCondition> settlementTxIdIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'settlementTxId',
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+      QAfterFilterCondition> settlementTxIdIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'settlementTxId',
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+      QAfterFilterCondition> settlementTxIdEqualTo(
+    String? value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'settlementTxId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+      QAfterFilterCondition> settlementTxIdGreaterThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'settlementTxId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+      QAfterFilterCondition> settlementTxIdLessThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'settlementTxId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+      QAfterFilterCondition> settlementTxIdBetween(
+    String? lower,
+    String? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'settlementTxId',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+      QAfterFilterCondition> settlementTxIdStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'settlementTxId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+      QAfterFilterCondition> settlementTxIdEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'settlementTxId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+          QAfterFilterCondition>
+      settlementTxIdContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'settlementTxId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+          QAfterFilterCondition>
+      settlementTxIdMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'settlementTxId',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+      QAfterFilterCondition> settlementTxIdIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'settlementTxId',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+      QAfterFilterCondition> settlementTxIdIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'settlementTxId',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
       QAfterFilterCondition> stateEqualTo(
     String value, {
     bool caseSensitive = true,
@@ -4262,6 +5001,20 @@ extension PaymentChannelEntityQuerySortBy
   }
 
   QueryBuilder<PaymentChannelEntity, PaymentChannelEntity, QAfterSortBy>
+      sortByErrorMessage() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'errorMessage', Sort.asc);
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity, QAfterSortBy>
+      sortByErrorMessageDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'errorMessage', Sort.desc);
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity, QAfterSortBy>
       sortByFundingAmountSats() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'fundingAmountSats', Sort.asc);
@@ -4342,6 +5095,20 @@ extension PaymentChannelEntityQuerySortBy
       sortByLatestPaymentTxHexDesc() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'latestPaymentTxHex', Sort.desc);
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity, QAfterSortBy>
+      sortByLatestPaymentTxId() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'latestPaymentTxId', Sort.asc);
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity, QAfterSortBy>
+      sortByLatestPaymentTxIdDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'latestPaymentTxId', Sort.desc);
     });
   }
 
@@ -4482,6 +5249,20 @@ extension PaymentChannelEntityQuerySortBy
       sortByServerPubKeyHexDesc() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'serverPubKeyHex', Sort.desc);
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity, QAfterSortBy>
+      sortBySettlementTxId() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'settlementTxId', Sort.asc);
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity, QAfterSortBy>
+      sortBySettlementTxIdDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'settlementTxId', Sort.desc);
     });
   }
 
@@ -4629,6 +5410,20 @@ extension PaymentChannelEntityQuerySortThenBy
   }
 
   QueryBuilder<PaymentChannelEntity, PaymentChannelEntity, QAfterSortBy>
+      thenByErrorMessage() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'errorMessage', Sort.asc);
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity, QAfterSortBy>
+      thenByErrorMessageDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'errorMessage', Sort.desc);
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity, QAfterSortBy>
       thenByFundingAmountSats() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'fundingAmountSats', Sort.asc);
@@ -4723,6 +5518,20 @@ extension PaymentChannelEntityQuerySortThenBy
       thenByLatestPaymentTxHexDesc() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'latestPaymentTxHex', Sort.desc);
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity, QAfterSortBy>
+      thenByLatestPaymentTxId() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'latestPaymentTxId', Sort.asc);
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity, QAfterSortBy>
+      thenByLatestPaymentTxIdDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'latestPaymentTxId', Sort.desc);
     });
   }
 
@@ -4867,6 +5676,20 @@ extension PaymentChannelEntityQuerySortThenBy
   }
 
   QueryBuilder<PaymentChannelEntity, PaymentChannelEntity, QAfterSortBy>
+      thenBySettlementTxId() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'settlementTxId', Sort.asc);
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity, QAfterSortBy>
+      thenBySettlementTxIdDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'settlementTxId', Sort.desc);
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity, QAfterSortBy>
       thenByState() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'state', Sort.asc);
@@ -4957,6 +5780,13 @@ extension PaymentChannelEntityQueryWhereDistinct
   }
 
   QueryBuilder<PaymentChannelEntity, PaymentChannelEntity, QDistinct>
+      distinctByErrorMessage({bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'errorMessage', caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity, QDistinct>
       distinctByFundingAmountSats({bool caseSensitive = true}) {
     return QueryBuilder.apply(this, (query) {
       return query.addDistinctBy(r'fundingAmountSats',
@@ -5003,6 +5833,14 @@ extension PaymentChannelEntityQueryWhereDistinct
       distinctByLatestPaymentTxHex({bool caseSensitive = true}) {
     return QueryBuilder.apply(this, (query) {
       return query.addDistinctBy(r'latestPaymentTxHex',
+          caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity, QDistinct>
+      distinctByLatestPaymentTxId({bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'latestPaymentTxId',
           caseSensitive: caseSensitive);
     });
   }
@@ -5083,6 +5921,14 @@ extension PaymentChannelEntityQueryWhereDistinct
   }
 
   QueryBuilder<PaymentChannelEntity, PaymentChannelEntity, QDistinct>
+      distinctBySettlementTxId({bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'settlementTxId',
+          caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity, QDistinct>
       distinctByState({bool caseSensitive = true}) {
     return QueryBuilder.apply(this, (query) {
       return query.addDistinctBy(r'state', caseSensitive: caseSensitive);
@@ -5112,7 +5958,7 @@ extension PaymentChannelEntityQueryProperty on QueryBuilder<
     });
   }
 
-  QueryBuilder<PaymentChannelEntity, String, QQueryOperations>
+  QueryBuilder<PaymentChannelEntity, String?, QQueryOperations>
       clientAddressB58Property() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'clientAddressB58');
@@ -5161,6 +6007,13 @@ extension PaymentChannelEntityQueryProperty on QueryBuilder<
     });
   }
 
+  QueryBuilder<PaymentChannelEntity, String?, QQueryOperations>
+      errorMessageProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'errorMessage');
+    });
+  }
+
   QueryBuilder<PaymentChannelEntity, String, QQueryOperations>
       fundingAmountSatsProperty() {
     return QueryBuilder.apply(this, (query) {
@@ -5175,21 +6028,21 @@ extension PaymentChannelEntityQueryProperty on QueryBuilder<
     });
   }
 
-  QueryBuilder<PaymentChannelEntity, int, QQueryOperations>
+  QueryBuilder<PaymentChannelEntity, int?, QQueryOperations>
       fundingOutputIndexProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'fundingOutputIndex');
     });
   }
 
-  QueryBuilder<PaymentChannelEntity, String, QQueryOperations>
+  QueryBuilder<PaymentChannelEntity, String?, QQueryOperations>
       fundingTxHexProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'fundingTxHex');
     });
   }
 
-  QueryBuilder<PaymentChannelEntity, String, QQueryOperations>
+  QueryBuilder<PaymentChannelEntity, String?, QQueryOperations>
       fundingTxIdProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'fundingTxId');
@@ -5207,6 +6060,13 @@ extension PaymentChannelEntityQueryProperty on QueryBuilder<
       latestPaymentTxHexProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'latestPaymentTxHex');
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, String?, QQueryOperations>
+      latestPaymentTxIdProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'latestPaymentTxId');
     });
   }
 
@@ -5251,7 +6111,7 @@ extension PaymentChannelEntityQueryProperty on QueryBuilder<
     });
   }
 
-  QueryBuilder<PaymentChannelEntity, String, QQueryOperations>
+  QueryBuilder<PaymentChannelEntity, String?, QQueryOperations>
       serverAddressB58Property() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'serverAddressB58');
@@ -5276,6 +6136,13 @@ extension PaymentChannelEntityQueryProperty on QueryBuilder<
       serverPubKeyHexProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'serverPubKeyHex');
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, String?, QQueryOperations>
+      settlementTxIdProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'settlementTxId');
     });
   }
 

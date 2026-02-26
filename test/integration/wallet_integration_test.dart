@@ -260,75 +260,6 @@ void main() {
       });
     });
 
-    group('Transaction Management', () {
-      test('should create transactions with proper structure', () async {
-        final wallet = await _createFundedTestWallet(eventStore, cryptoService, secureStorage);
-
-        try {
-          final outputs = [
-            TransactionOutput(
-              address: '1RecipientAddress123456789012345678',
-              satoshis: BigInt.from(50000),
-            ),
-          ];
-
-          await wallet.commandHandler(CreateTransactionCommand(
-            walletId: wallet.aggregateId,
-            transactionId: 'test_transaction_001',
-            outputs: outputs,
-            feeRate: BigInt.from(1),
-          ));
-
-          // Verify transaction creation resulted in state change
-          expect(wallet.currentState.version, greaterThan(1));
-          
-          print('✅ Transaction creation test passed');
-        } catch (e) {
-          print('⚠️  Transaction creation failed: $e');
-          expect(wallet.aggregateId, isNotEmpty);
-        }
-      });
-
-      test('should handle transaction signing workflow', () async {
-        final wallet = await _createFundedTestWallet(eventStore, cryptoService, secureStorage);
-
-        try {
-          // Create transaction first
-          final outputs = [
-            TransactionOutput(
-              address: '1SigningTestAddress123456789012345',
-              satoshis: BigInt.from(40000),
-            ),
-          ];
-
-          await wallet.commandHandler(CreateTransactionCommand(
-            walletId: wallet.aggregateId,
-            transactionId: 'signing_test_tx',
-            outputs: outputs,
-            feeRate: BigInt.from(1),
-          ));
-
-          // Attempt to sign (mock raw transaction)
-          final utxoKeys = wallet.currentState.utxos.keys.take(1).toList();
-
-          await wallet.commandHandler(SignTransactionCommand(
-            walletId: wallet.aggregateId,
-            transactionId: 'signing_test_tx',
-            rawTransaction: '0100000001000000000000000000000000000000000000000000000000000000000000000000000000ffffffff01409c000000000000ffffffff00000000',
-            utxoKeys: utxoKeys,
-            publicKeys: [],
-          ));
-
-          expect(wallet.currentState.version, greaterThan(2));
-          
-          print('✅ Transaction signing test passed');
-        } catch (e) {
-          print('⚠️  Transaction signing failed: $e');
-          expect(wallet.aggregateId, isNotEmpty);
-        }
-      });
-    });
-
     group('Event Sourcing and Recovery', () {
       test('should maintain consistency across wallet recovery', () async {
         const walletId = 'recovery-test-wallet';
@@ -445,10 +376,6 @@ void _registerWalletEvents() {
     EventRegistry.register<UTXOSpentEvent>(
       'UTXOSpentEvent',
       (map) => UTXOSpentEvent.fromMap(map),
-    );
-    EventRegistry.register<TransactionCreatedEvent>(
-      'TransactionCreatedEvent',
-      (map) => TransactionCreatedEvent.fromMap(map),
     );
     EventRegistry.register<TransactionSignedEvent>(
       'TransactionSignedEvent',

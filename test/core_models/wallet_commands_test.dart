@@ -306,68 +306,6 @@ void main() {
       });
     });
 
-    group('CreateTransactionCommand', () {
-      test('should create transaction command', () {
-        const walletId = 'wallet_123';
-        const transactionId = 'tx_123';
-        final outputs = [
-          TransactionOutput(address: '1Address1', satoshis: BigInt.from(100000)),
-          TransactionOutput(address: '1Address2', satoshis: BigInt.from(50000)),
-        ];
-        final feeRate = BigInt.from(50); // sats per KB
-        final transactionMetadata = {'note': 'Test transaction'};
-
-        final command = CreateTransactionCommand(
-          walletId: walletId,
-          transactionId: transactionId,
-          outputs: outputs,
-          feeRate: feeRate,
-          transactionMetadata: transactionMetadata,
-        );
-
-        expect(command.walletId, equals(walletId));
-        expect(command.transactionId, equals(transactionId));
-        expect(command.outputs, equals(outputs));
-        expect(command.feeRate, equals(feeRate));
-        expect(command.transactionMetadata, equals(transactionMetadata));
-        expect(command.commandType, equals('CreateTransactionCommand'));
-      });
-
-      test('should handle optional fields', () {
-        const walletId = 'wallet_123';
-        const transactionId = 'tx_456';
-        final outputs = [
-          TransactionOutput(address: '1Address1', satoshis: BigInt.from(100000)),
-        ];
-
-        final command = CreateTransactionCommand(
-          walletId: walletId,
-          transactionId: transactionId,
-          outputs: outputs,
-        );
-
-        expect(command.outputs, equals(outputs));
-        expect(command.feeRate, isNull);
-        expect(command.transactionMetadata, isNull);
-        expect(command.changeAddress, isNull);
-        expect(command.allowDust, equals(false));
-      });
-
-      test('should handle empty outputs list', () {
-        const walletId = 'wallet_123';
-        const transactionId = 'tx_789';
-        final outputs = <TransactionOutput>[];
-
-        final command = CreateTransactionCommand(
-          walletId: walletId,
-          transactionId: transactionId,
-          outputs: outputs,
-        );
-
-        expect(command.outputs, isEmpty);
-      });
-    });
-
     group('SignTransactionCommand', () {
       test('should create sign transaction command', () {
         const walletId = 'wallet_123';
@@ -598,7 +536,6 @@ void main() {
           UpdateWalletConfigurationCommand(walletId: 'w1'),
           GenerateAddressCommand(walletId: 'w1'),
           UpdateAddressLabelCommand(walletId: 'w1', address: '1Addr'),
-          CreateTransactionCommand(walletId: 'w1', transactionId: 'tx1', outputs: []),
           SignTransactionCommand(walletId: 'w1', transactionId: 'tx1', rawTransaction: 'hex', utxoKeys: [], publicKeys: []),
           BroadcastTransactionCommand(walletId: 'w1', transactionId: 'tx1', signedTransaction: 'hex'),
         ];
@@ -634,23 +571,6 @@ void main() {
 
         expect(command.walletName, equals(longName));
         expect(command.walletName.length, greaterThan(100));
-      });
-
-      test('should handle very large amounts in transactions', () {
-        const walletId = 'wallet_123';
-        const transactionId = 'tx_large';
-        final largeAmount = BigInt.from(2100000000000000); // 21M BTC in satoshis
-        final outputs = [
-          TransactionOutput(address: '1Address1', satoshis: largeAmount),
-        ];
-
-        final command = CreateTransactionCommand(
-          walletId: walletId,
-          transactionId: transactionId,
-          outputs: outputs,
-        );
-
-        expect(command.outputs[0].satoshis, equals(largeAmount));
       });
 
       test('should handle zero amounts', () {

@@ -315,72 +315,6 @@ void main() {
       });
     });
 
-    group('TransactionCreatedEvent', () {
-      test('should create transaction created event', () {
-        const walletId = 'wallet_123';
-        const txid = 'transaction_123';
-        const rawHex = '0100000001abc123...';
-        const totalInput = 100000;
-        const totalOutput = 90000;
-        const fee = 10000;
-        const isIncoming = false;
-        const isOutgoing = true;
-        final transactionMetadata = {'type': 'payment', 'memo': 'Test transaction'};
-
-        final event = TransactionCreatedEvent(
-          walletId: walletId,
-          txid: txid,
-          rawHex: rawHex,
-          totalInput: totalInput,
-          totalOutput: totalOutput,
-          fee: fee,
-          isIncoming: isIncoming,
-          isOutgoing: isOutgoing,
-          receivingAddresses: ['1TestReceiveAddr123456789012345678'],
-          sendingAddresses: ['1TestSendAddr123456789012345678901'],
-          txVersion: 1,
-          txLockTime: 0,
-          transactionMetadata: transactionMetadata,
-        );
-
-        expect(event.walletId, equals(walletId));
-        expect(event.txid, equals(txid));
-        expect(event.rawHex, equals(rawHex));
-        expect(event.totalInput, equals(totalInput));
-        expect(event.totalOutput, equals(totalOutput));
-        expect(event.fee, equals(fee));
-        expect(event.isIncoming, equals(isIncoming));
-        expect(event.isOutgoing, equals(isOutgoing));
-        expect(event.transactionMetadata, equals(transactionMetadata));
-      });
-
-      test('should include transaction data in event data', () {
-        final event = TransactionCreatedEvent(
-          walletId: 'wallet_123',
-          txid: 'transaction_123',
-          rawHex: '0100000001abc123...',
-          totalInput: 100000,
-          totalOutput: 90000,
-          fee: 10000,
-          isIncoming: false,
-          isOutgoing: true,
-          receivingAddresses: ['1TestReceiveAddr123456789012345678'],
-          sendingAddresses: ['1TestSendAddr123456789012345678901'],
-          txVersion: 1,
-          txLockTime: 0,
-        );
-
-        final eventData = event.getWalletEventData();
-        expect(eventData['txid'], equals('transaction_123'));
-        expect(eventData['rawHex'], equals('0100000001abc123...'));
-        expect(eventData['totalInput'], equals(100000));
-        expect(eventData['totalOutput'], equals(90000));
-        expect(eventData['fee'], equals(10000));
-        expect(eventData['isIncoming'], equals(false));
-        expect(eventData['isOutgoing'], equals(true));
-      });
-    });
-
     group('Event Inheritance and Polymorphism', () {
       test('should work with WalletEvent base type', () {
         final events = <WalletEvent>[
@@ -433,32 +367,6 @@ void main() {
     });
 
     group('Edge Cases and Error Conditions', () {
-      test('should handle empty strings and zero values', () {
-        final event = TransactionCreatedEvent(
-          walletId: '',
-          txid: '',
-          rawHex: '',
-          totalInput: 0,
-          totalOutput: 0,
-          fee: 0,
-          isIncoming: false,
-          isOutgoing: false,
-          receivingAddresses: [],
-          sendingAddresses: [],
-          txVersion: 1,
-          txLockTime: 0,
-        );
-
-        expect(event.walletId, isEmpty);
-        expect(event.txid, isEmpty);
-        expect(event.rawHex, isEmpty);
-        expect(event.totalInput, equals(0));
-        expect(event.totalOutput, equals(0));
-        expect(event.fee, equals(0));
-        expect(event.isIncoming, isFalse);
-        expect(event.isOutgoing, isFalse);
-      });
-
       test('should handle very large amounts', () {
         const largeAmount = 2100000000000000; // 21M BTC in satoshis (int max safe range)
         final event = UTXOReceivedEvent(

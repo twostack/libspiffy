@@ -23,19 +23,21 @@ class PaymentChannelEntity {
   late String role;
 
   /// Peer ID of the client (funder)
+  @Index()
   late String clientPeerId;
 
   /// Peer ID of the server (receiver)
+  @Index()
   late String serverPeerId;
 
   /// Transaction ID of the funding transaction (T1)
-  late String fundingTxId;
+  String? fundingTxId;
 
   /// Raw hex of the funding transaction
-  late String fundingTxHex;
+  String? fundingTxHex;
 
   /// Output index in funding transaction
-  late int fundingOutputIndex;
+  int? fundingOutputIndex;
 
   /// Total amount locked in the channel (satoshis as string)
   late String fundingAmountSats;
@@ -47,10 +49,10 @@ class PaymentChannelEntity {
   late String serverPubKeyHex;
 
   /// Client's address for receiving funds on close
-  late String clientAddressB58;
+  String? clientAddressB58;
 
   /// Server's address for receiving funds on close
-  late String serverAddressB58;
+  String? serverAddressB58;
 
   /// Unix timestamp when refund (T2) becomes valid
   late int lockTimeUnix;
@@ -70,6 +72,9 @@ class PaymentChannelEntity {
 
   /// Raw hex of the latest payment transaction (T3)
   String? latestPaymentTxHex;
+
+  /// Latest payment transaction ID
+  String? latestPaymentTxId;
 
   /// Raw hex of the refund transaction (T2)
   String? refundTxHex;
@@ -91,6 +96,12 @@ class PaymentChannelEntity {
 
   /// When the channel was closed (null if still open)
   DateTime? closedAt;
+
+  /// Settlement transaction ID (set when channel closes cooperatively)
+  String? settlementTxId;
+
+  /// Error message if channel failed
+  String? errorMessage;
 
   /// Whether funding transaction has a merkle proof
   late bool hasFundingMerkleProof;
@@ -117,6 +128,7 @@ class PaymentChannelEntity {
       ..serverBalanceSats = channel.serverBalanceSats.toString()
       ..latestSequenceNumber = channel.latestSequenceNumber
       ..latestPaymentTxHex = channel.latestPaymentTxHex
+      ..latestPaymentTxId = channel.latestPaymentTxId
       ..refundTxHex = channel.refundTxHex
       ..refundClientSigHex = channel.refundClientSigHex
       ..refundServerSigHex = channel.refundServerSigHex
@@ -124,6 +136,8 @@ class PaymentChannelEntity {
       ..context = channel.context
       ..createdAt = channel.createdAt
       ..closedAt = channel.closedAt
+      ..settlementTxId = channel.settlementTxId
+      ..errorMessage = channel.errorMessage
       ..hasFundingMerkleProof = channel.hasFundingMerkleProof;
   }
 
@@ -138,33 +152,35 @@ class PaymentChannelEntity {
       ),
       clientPeerId: clientPeerId,
       serverPeerId: serverPeerId,
-      fundingTxId: fundingTxId,
-      fundingTxHex: fundingTxHex,
-      fundingOutputIndex: fundingOutputIndex,
-      fundingAmountSats: BigInt.parse(fundingAmountSats),
       clientPubKeyHex: clientPubKeyHex,
       serverPubKeyHex: serverPubKeyHex,
       clientAddressB58: clientAddressB58,
       serverAddressB58: serverAddressB58,
+      fundingAmountSats: BigInt.parse(fundingAmountSats),
       lockTimeUnix: lockTimeUnix,
       state: PaymentChannelState.values.firstWhere(
         (s) => s.name == state,
-        orElse: () => PaymentChannelState.opening,
+        orElse: () => PaymentChannelState.negotiating,
       ),
       clientBalanceSats: BigInt.parse(clientBalanceSats),
       serverBalanceSats: BigInt.parse(serverBalanceSats),
-      latestSequenceNumber: latestSequenceNumber,
-      latestPaymentTxHex: latestPaymentTxHex,
+      fundingTxId: fundingTxId,
+      fundingTxHex: fundingTxHex,
+      fundingOutputIndex: fundingOutputIndex,
       refundTxHex: refundTxHex,
       refundClientSigHex: refundClientSigHex,
       refundServerSigHex: refundServerSigHex,
+      latestSequenceNumber: latestSequenceNumber,
+      latestPaymentTxHex: latestPaymentTxHex,
+      latestPaymentTxId: latestPaymentTxId,
+      settlementTxId: settlementTxId,
       fundingAncestorTxids: List<String>.from(fundingAncestorTxids),
+      hasFundingMerkleProof: hasFundingMerkleProof,
       context: context,
       createdAt: createdAt,
       closedAt: closedAt,
+      errorMessage: errorMessage,
     );
-    channel.hasFundingMerkleProof = hasFundingMerkleProof;
     return channel;
   }
 }
-

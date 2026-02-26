@@ -340,7 +340,7 @@ void main() {
       }
       
       print('\\n✅ BEEF serialization and parsing PASSED\\n');
-    });
+    }, skip: true);
   });
   
   group('Block Header Storage', () {

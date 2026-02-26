@@ -50,7 +50,7 @@ class TransactionBuildConfig {
   final bool performSanityChecks;
 
   const TransactionBuildConfig({
-    this.feePerKb = 1, // Proven low fee rate from speculative code
+    this.feePerKb = 100, // Proven low fee rate from speculative code
     this.selectionStrategy = UTXOSelectionStrategy.optimalChange,
     this.minChangeAmount = 546,
     this.forceChange = false,

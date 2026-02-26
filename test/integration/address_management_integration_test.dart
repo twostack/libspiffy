@@ -718,7 +718,6 @@ void _registerWalletEvents() {
     EventRegistry.register<AddressDiscoveredEvent>('AddressDiscoveredEvent', (map) => AddressDiscoveredEvent.fromMap(map));
     EventRegistry.register<UTXOReceivedEvent>('UTXOReceivedEvent', (map) => UTXOReceivedEvent.fromMap(map));
     EventRegistry.register<UTXOSpentEvent>('UTXOSpentEvent', (map) => UTXOSpentEvent.fromMap(map));
-    EventRegistry.register<TransactionCreatedEvent>('TransactionCreatedEvent', (map) => TransactionCreatedEvent.fromMap(map));
     EventRegistry.register<TransactionImportedEvent>('TransactionImportedEvent', (map) => TransactionImportedEvent.fromMap(map));
   } catch (e) {
     print('⚠️  Event registration warning: $e');

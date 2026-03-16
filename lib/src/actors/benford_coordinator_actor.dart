@@ -387,7 +387,7 @@ class BenfordCoordinatorActor extends Actor {
           .getScriptPubkey();
 
       // Create signer
-      final signer = dartsv.TransactionSigner(
+      final signer = dartsv.DefaultTransactionSigner(
         dartsv.SighashType.SIGHASH_ALL.value | dartsv.SighashType.SIGHASH_FORKID.value,
         privateKey,
       );

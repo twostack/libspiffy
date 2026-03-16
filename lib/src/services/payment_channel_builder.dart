@@ -283,7 +283,7 @@ class PaymentChannelBuilder {
         lockingScript,
       );
 
-      final signer = dartsv.TransactionSigner(
+      final signer = dartsv.DefaultTransactionSigner(
         dartsv.SighashType.SIGHASH_ALL.value |
             dartsv.SighashType.SIGHASH_FORKID.value,
         clientPrivateKey,
@@ -515,7 +515,7 @@ class PaymentChannelBuilder {
     final utxo = dartsv.TransactionOutput(inputAmountSats, redeemScript);
     
     // Use TransactionSigner - this correctly computes sighash and signs
-    final signer = dartsv.TransactionSigner(sighashType, privateKey);
+    final signer = dartsv.DefaultTransactionSigner(sighashType, privateKey);
     signer.sign(transaction, utxo, inputIndex);
     
     // Extract our signature from the unlock builder

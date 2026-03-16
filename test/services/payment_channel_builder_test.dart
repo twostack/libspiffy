@@ -724,8 +724,8 @@ void main() {
         final sighashType = dartsv.SighashType.SIGHASH_ALL.value | 
                            dartsv.SighashType.SIGHASH_FORKID.value;
         
-        final clientSigner = dartsv.TransactionSigner(sighashType, clientPrivateKey);
-        final serverSigner = dartsv.TransactionSigner(sighashType, serverPrivateKey);
+        final clientSigner = dartsv.DefaultTransactionSigner(sighashType, clientPrivateKey);
+        final serverSigner = dartsv.DefaultTransactionSigner(sighashType, serverPrivateKey);
         
         final signedTx1 = clientSigner.sign(paymentTx, fundingUtxo, 0);
         final signedTx = serverSigner.sign(signedTx1, fundingUtxo, 0);

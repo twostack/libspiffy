@@ -53,7 +53,7 @@ class TxUtils {
       //create funding inputs
       var privKey = sendingAccount.privateKey;
       if (privKey != null) {
-        var signer = TransactionSigner( SighashType.SIGHASH_ALL.value | SighashType.SIGHASH_FORKID.value,   privKey);
+        var signer = DefaultTransactionSigner( SighashType.SIGHASH_ALL.value | SighashType.SIGHASH_FORKID.value,   privKey);
 
         fundingUtxos.forEach((outpoint) {
           builder.spendFromOutpointWithSigner(
@@ -102,7 +102,7 @@ class TxUtils {
     var txCreditPreImage = hasher.preImage ?? Uint8List(0);
     //assemble preimage <
 
-    var bobSpendingSig = TransactionSigner.signPreimage(signingKey, txCreditPreImage, sigHashType);
+    var bobSpendingSig = DefaultTransactionSigner.signPreimageWithKey(signingKey, txCreditPreImage, sigHashType);
 
     //create scriptSig with pre-image data
     var scriptSig = ScriptBuilder()
@@ -146,7 +146,7 @@ class TxUtils {
       //fund the transaction
       fundingOutpoints.forEach((outpoint) {
         var unlockingScript = P2PKHUnlockBuilder(signingKey.publicKey);
-        var txSigner = TransactionSigner(sighashType, signingKey);
+        var txSigner = DefaultTransactionSigner(sighashType, signingKey);
       });
 
       var signedTx = builder
@@ -191,7 +191,7 @@ class TxUtils {
 
     //assume bob has locked up
     var sighashType = SighashType.SIGHASH_ALL.value | SighashType.SIGHASH_FORKID.value;
-    var txSigner = TransactionSigner(sighashType, privateKey);
+    var txSigner = DefaultTransactionSigner(sighashType, privateKey);
     var lockingScriptBuilder = P2PKHLockBuilder.fromAddress(address);
 
     //we will need to do pre-image calc of unlock

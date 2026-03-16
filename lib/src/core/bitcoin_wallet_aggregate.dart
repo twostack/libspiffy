@@ -1306,7 +1306,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         }
 
         // Create signer and sign this input
-        final signer = dartsv.TransactionSigner(
+        final signer = dartsv.DefaultTransactionSigner(
           dartsv.SighashType.SIGHASH_ALL.value | dartsv.SighashType.SIGHASH_FORKID.value,
           privateKey,
         );
@@ -1445,7 +1445,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       
       // Use TransactionSigner - this handles sighash computation and signing correctly
       // This is the same method used in dartsv's multisig tests
-      final signer = dartsv.TransactionSigner(command.sighashType, privateKey);
+      final signer = dartsv.DefaultTransactionSigner(command.sighashType, privateKey);
       signer.sign(txToSign, utxo, command.inputIndex); // Signature added to unlockBuilder
       
       // Extract our signature from the unlock builder (TransactionSigner added it there)
@@ -1625,7 +1625,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
             ? await _getPrivateKeyAtIndex(command.walletId, utxo.derivationIndex!, currentState)
             : await _getPrivateKeyForAddress(utxo.address, command.walletId, currentState);
         
-        final signer = dartsv.TransactionSigner(sighashType, utxoPrivateKey);
+        final signer = dartsv.DefaultTransactionSigner(sighashType, utxoPrivateKey);
         
         txBuilder.spendFromOutpointWithSigner(
           signer,

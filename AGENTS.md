@@ -46,6 +46,12 @@ Code without tests is a hypothesis. If you add a feature, add a test that exerci
 
 Each commit does one thing and does it completely. The commit that adds a type also exports it, documents it, and tests it. The commit that moves code from one file to another updates every reference. Half-done work is not committable.
 
+## Finish What You Start
+
+Do not declare a task complete after implementing the easy part. If the requirement is an end-to-end flow with seven steps, delivering step one is not done — it is started. The hard work is in the state transitions, the multi-party handoffs, the steps where things actually break. A test that covers issuance but not transfer or burn is not an e2e test. It is a unit test with a misleading name.
+
+When the scope is clear — and especially when you were told to model after an existing test that covers the full lifecycle — implement the full lifecycle.
+
 ## Leave It Better
 
 Every session should leave the codebase cleaner than it started. Not just in the area you were asked to work on — everywhere your work touched. If you opened a file and saw something wrong, it should be fixed by the time you close it.

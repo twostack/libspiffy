@@ -46,10 +46,6 @@ dependencies:
   dartsv:
     path: /Users/stephanfeb/IdeaProjects/dartsv
 
-  # Token operations
-  tstokenlib:
-    path: /Users/stephanfeb/IdeaProjects/tstokenlib
-
   pointycastle: ^3.0.0
 
 dev_dependencies:
@@ -60,3 +56,12 @@ dev_dependencies:
   lints: ^5.0.0
   dactor_test:
     path: /Users/stephanfeb/IdeaProjects/agentic/dactor_test
+  # Token operations (dev-only: for integration tests, not a runtime dependency)
+  tstokenlib:
+    path: /Users/stephanfeb/IdeaProjects/agentic/tstokenlib
+
+dependency_overrides:
+  # tstokenlib declares dartsv from pub.dev; override to use local path
+  # so it resolves consistently with libspiffy's own dartsv path dependency
+  dartsv:
+    path: /Users/stephanfeb/IdeaProjects/dartsv

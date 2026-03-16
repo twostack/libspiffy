@@ -45,28 +45,28 @@ LibSpiffy implements a sophisticated Bitcoin wallet system using modern architec
 LibSpiffy implements a **CQRS (Command Query Responsibility Segregation)** architecture with complete separation between write operations (commands → events → EventStore) and read operations (queries → ReadModels).
 
 ```
-┌────────────────────────────────────────────────────────────────────────────┐
-│                        LibSpiffy CQRS Architecture                         │
-├────────────────────────────────────────────────────────────────────────────┤
-│                                                                            │
+┌───────────────────────────────────────────────────────────────────────────┐
+│                        LibSpiffy CQRS Architecture                        │
+├───────────────────────────────────────────────────────────────────────────┤
+│                                                                           │
 │  PUBLIC API (import 'package:libspiffy/coordinator.dart')                 │
 │  ┌────────────────────────────────────────────────────────────────────┐   │
-│  │  WalletCoordinatorActor (Unified Facade)                          │   │
-│  │  • Send: CreateWalletCommand, PayInvoiceCommand, GetBalanceQuery  │   │
-│  │  • Recv: WalletCreatedEvent, PaymentReadyEvent, BalanceResponse   │   │
-│  │  • Handles correlation tracking, error routing, channel P2P       │   │
-│  └──────────────────────────────┬─────────────────────────────────────┘   │
-│                                 │ Internal delegation                     │
-│  COMMAND SIDE (Write Operations)│                                         │
-│  ┌──────────────────┐      ┌───┴────────────────┐                         │
+│  │  WalletCoordinatorActor (Unified Facade)                           │   │
+│  │  • Send: CreateWalletCommand, PayInvoiceCommand, GetBalanceQuery   │   │
+│  │  • Recv: WalletCreatedEvent, PaymentReadyEvent, BalanceResponse    │   │
+│  │  • Handles correlation tracking, error routing, channel P2P        │   │
+│  └────────────────────────────────┬───────────────────────────────────┘   │
+│                                   │ Internal delegation                   │
+│  COMMAND SIDE (Write Operations)  │                                       │
+│  ┌──────────────────┐      ┌──────┴─────────────┐                         │
 │  │ Wallet Manager   │─────▶│ Invoice Coordinator│                         │
 │  │ Actor            │      │ Actor              │                         │
 │  │ • Routes cmds    │      │ • Routes invoice   │                         │
 │  │ • Spawns aggr.   │      │   commands         │                         │
 │  │ • Multi-wallet   │      │ • Spawns invoice   │                         │
 │  └────────┬─────────┘      │   aggregates       │                         │
-│           │                └──────────┬─────────┘                          │
-│           ▼                           ▼                                    │
+│           │                └──────────┬─────────┘                         │
+│           ▼                           ▼                                   │
 │  ┌────────────────┐        ┌────────────────┐                             │
 │  │ Wallet         │        │ Invoice        │                             │
 │  │ Aggregate      │        │ Aggregate      │                             │
@@ -86,23 +86,23 @@ LibSpiffy implements a **CQRS (Command Query Responsibility Segregation)** archi
 │              └────────┬────────┘                                          │
 │         ┌─────────────┴─────────────┐                                     │
 │         ▼                           ▼                                     │
-│  ┌──────────────┐          ┌──────────────┐                              │
-│  │   Wallet     │          │   Invoice    │                              │
-│  │  Projection  │          │  Projection  │                              │
-│  └──────┬───────┘          └──────┬───────┘                              │
-│         └────────────┬────────────┘                                      │
-│                      ▼                                                   │
-│           ┌─────────────────────┐                                        │
-│           │  Read Model Storage │  (Isar / PostgreSQL / In-Memory)       │
-│           └─────────────────────┘                                        │
-│                      ▲                                                   │
-│  QUERY SIDE (Read Operations)                                            │
-│  ┌──────────────────┐     ┌────────────────┐     ┌─────────────────┐     │
-│  │   SPV Actor      │     │   ARC Actor    │     │ Header Sync     │     │
-│  │ • BEEF/BUMP val. │     │ • Broadcast    │     │ • Block headers │     │
-│  │ • Invoice match  │     │ • Fee estimate │     │ • Merkle proofs │     │
-│  │ • Fee calc       │     │ • Policy query │     │ • Chain valid.  │     │
-│  └──────────────────┘     └────────────────┘     └─────────────────┘     │
+│  ┌──────────────┐          ┌──────────────┐                               │
+│  │   Wallet     │          │   Invoice    │                               │
+│  │  Projection  │          │  Projection  │                               │
+│  └──────┬───────┘          └──────┬───────┘                               │
+│         └────────────┬────────────┘                                       │
+│                      ▼                                                    │
+│           ┌─────────────────────┐                                         │
+│           │  Read Model Storage │  (Isar / PostgreSQL / In-Memory)        │
+│           └─────────────────────┘                                         │
+│                      ▲                                                    │
+│  QUERY SIDE (Read Operations)                                             │
+│  ┌──────────────────┐     ┌────────────────┐     ┌─────────────────┐      │
+│  │   SPV Actor      │     │   ARC Actor    │     │ Header Sync     │      │
+│  │ • BEEF/BUMP val. │     │ • Broadcast    │     │ • Block headers │      │
+│  │ • Invoice match  │     │ • Fee estimate │     │ • Merkle proofs │      │
+│  │ • Fee calc       │     │ • Policy query │     │ • Chain valid.  │      │
+│  └──────────────────┘     └────────────────┘     └─────────────────┘      │
 │                                                                           │
 └───────────────────────────────────────────────────────────────────────────┘
 ```

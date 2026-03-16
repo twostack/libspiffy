@@ -151,6 +151,24 @@ abstract class ReadModelStorage {
   /// - [vout]: Output index
   Future<void> deleteUTXO(String walletId, String txid, int vout);
 
+  /// Get UTXOs managed by a specific plugin.
+  ///
+  /// Filters UTXOs whose [BitcoinUtxo.pluginMetadata] contains a matching
+  /// 'pluginId'. Optionally filters further by additional metadata keys.
+  ///
+  /// Parameters:
+  /// - [walletId]: Unique identifier for the wallet
+  /// - [pluginId]: Plugin identifier to filter by
+  /// - [metadataFilter]: Optional additional key-value pairs that must match
+  ///   within pluginMetadata (e.g., {'scriptType': 'pp1_nft', 'tokenId': '...'})
+  ///
+  /// Returns: List of matching UTXOs
+  Future<List<BitcoinUtxo>> getUTXOsByPlugin(
+    String walletId,
+    String pluginId, {
+    Map<String, dynamic>? metadataFilter,
+  });
+
   /// Calculate the total balance for a wallet.
   ///
   /// This should return the sum of all available (unspent) UTXOs

@@ -233,6 +233,32 @@ class InMemoryWalletStorage implements WalletStorage {
   }
   
   @override
+  Future<List<BitcoinUtxo>> getUTXOsByPlugin(
+    String walletId,
+    String pluginId, {
+    Map<String, dynamic>? metadataFilter,
+  }) async {
+    return await _withLock(walletId, () async {
+      if (!_walletIds.contains(walletId)) {
+        throw StorageException('Wallet not found: $walletId');
+      }
+
+      final walletUtxos = _utxos[walletId] ?? <String, BitcoinUtxo>{};
+
+      return walletUtxos.values.where((utxo) {
+        final meta = utxo.pluginMetadata;
+        if (meta == null || meta['pluginId'] != pluginId) return false;
+        if (metadataFilter != null) {
+          for (final entry in metadataFilter.entries) {
+            if (meta[entry.key] != entry.value) return false;
+          }
+        }
+        return true;
+      }).toList();
+    });
+  }
+
+  @override
   Future<BigInt> getBalance(String walletId) async {
     return await _withLock(walletId, () async {
       if (!_walletIds.contains(walletId)) {

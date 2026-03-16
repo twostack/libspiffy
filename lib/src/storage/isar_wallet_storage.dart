@@ -510,6 +510,26 @@ class IsarWalletStorage implements ReadModelStorage {
   }
 
   @override
+  Future<List<BitcoinUtxo>> getUTXOsByPlugin(
+    String walletId,
+    String pluginId, {
+    Map<String, dynamic>? metadataFilter,
+  }) async {
+    // Isar doesn't natively filter on JSON map fields, so we filter in memory
+    final allUtxos = await getUTXOs(walletId);
+    return allUtxos.where((utxo) {
+      final meta = utxo.pluginMetadata;
+      if (meta == null || meta['pluginId'] != pluginId) return false;
+      if (metadataFilter != null) {
+        for (final entry in metadataFilter.entries) {
+          if (meta[entry.key] != entry.value) return false;
+        }
+      }
+      return true;
+    }).toList();
+  }
+
+  @override
   Future<BigInt> getBalance(String walletId) async {
     final utxos = await getAvailableUTXOs(walletId);
     return utxos.fold<BigInt>(

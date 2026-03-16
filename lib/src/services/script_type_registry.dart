@@ -3,6 +3,7 @@ import 'package:hex/hex.dart';
 import 'package:convert/convert.dart';
 
 import '../models/bitcoin_transaction.dart' as bitcointx;
+import '../plugin/plugin_registry.dart';
 
 // Import local models
 
@@ -88,6 +89,11 @@ class ScriptTypeRegistry {
       case 'custom':
         return bitcointx.BitcoinScriptType.custom;
       default:
+        // Plugin-identified types use 'pluginId:scriptType' format
+        if (scriptTypeIdentifier.contains(':') &&
+            PluginRegistry().isRegistered(scriptTypeIdentifier.split(':').first)) {
+          return bitcointx.BitcoinScriptType.custom;
+        }
         return bitcointx.BitcoinScriptType.unknown;
     }
   }
@@ -101,8 +107,17 @@ class ScriptTypeRegistry {
     final registry = ScriptTemplateRegistry();
     final scriptType = registry.identifyScriptType(script);
 
-    // Convert to lowercase for consistency
-    return scriptType?.toLowerCase();
+    if (scriptType != null) {
+      return scriptType.toLowerCase();
+    }
+
+    // Fall through to registered plugins
+    final pluginResult = PluginRegistry().identifyScript(script);
+    if (pluginResult != null) {
+      return '${pluginResult.pluginId}:${pluginResult.scriptType}'.toLowerCase();
+    }
+
+    return null;
   }
 
   /// Extract metadata from a script
@@ -113,7 +128,24 @@ class ScriptTypeRegistry {
     // Get the singleton instance of ScriptTemplateRegistry
     final registry = ScriptTemplateRegistry();
     final scriptType = registry.identifyScriptType(script);
-    if (scriptType == null) return null;
+
+    // If dartsv doesn't recognize it, try registered plugins
+    if (scriptType == null) {
+      final pluginResult = PluginRegistry().identifyScript(script);
+      if (pluginResult == null) return null;
+
+      final plugin = PluginRegistry().getPlugin(pluginResult.pluginId);
+      if (plugin == null) return null;
+
+      final pluginMeta = plugin.extractMetadata(script);
+      return <String, dynamic>{
+        'scriptType': '${pluginResult.pluginId}:${pluginResult.scriptType}'.toLowerCase(),
+        'bitcoinScriptType': 'custom',
+        'pluginId': pluginResult.pluginId,
+        'pluginScriptType': pluginResult.scriptType,
+        if (pluginMeta != null) ...pluginMeta,
+      };
+    }
 
     // Normalize the script type to lowercase
     final normalizedScriptType = scriptType.toLowerCase();

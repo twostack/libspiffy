@@ -261,6 +261,13 @@ class InvoiceAggregate extends AggregateRoot<InvoiceState> {
                 'Output $i: Invalid OP_RETURN configuration - '
                 'must have non-empty data within ${OPReturnOutputSpec.maxTotalDataSize} bytes');
           }
+        case PluginOutputSpec plugin:
+          if (plugin.pluginId.isEmpty) {
+            throw ArgumentError('Output $i: Plugin ID cannot be empty');
+          }
+          if (plugin.pluginScriptType.isEmpty) {
+            throw ArgumentError('Output $i: Plugin script type cannot be empty');
+          }
       }
     }
   }

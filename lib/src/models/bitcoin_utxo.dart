@@ -64,7 +64,15 @@ class BitcoinUtxo {
   
   /// Derivation index used to generate the address (for HD wallets)
   final int? derivationIndex;
-  
+
+  /// Plugin-provided metadata for token/custom script UTXOs.
+  ///
+  /// Populated by [ScriptPlugin.extractMetadata()] during UTXO indexing.
+  /// Contains plugin-specific data such as tokenId, token type, owner,
+  /// and amount. The 'pluginId' and 'scriptType' keys are always present
+  /// when this field is non-null.
+  final Map<String, dynamic>? pluginMetadata;
+
   const BitcoinUtxo({
     required this.txid,
     required this.vout,
@@ -81,6 +89,7 @@ class BitcoinUtxo {
     this.reservationPriority,
     this.reservationReason,
     this.derivationIndex,
+    this.pluginMetadata,
   });
   
   /// Create a new UTXO from transaction output
@@ -93,6 +102,7 @@ class BitcoinUtxo {
     int? blockHeight,
     int? confirmations,
     int? derivationIndex,
+    Map<String, dynamic>? pluginMetadata,
     UTXOStatus status = UTXOStatus.pending,
   }) {
     final now = DateTime.now();
@@ -108,6 +118,7 @@ class BitcoinUtxo {
       createdAt: now,
       updatedAt: now,
       derivationIndex: derivationIndex,
+      pluginMetadata: pluginMetadata,
     );
   }
   
@@ -146,6 +157,7 @@ class BitcoinUtxo {
     Object? reservationPriority = _sentinel,
     Object? reservationReason = _sentinel,
     int? derivationIndex,
+    Object? pluginMetadata = _sentinel,
   }) {
     return BitcoinUtxo(
       txid: txid ?? this.txid,
@@ -163,6 +175,7 @@ class BitcoinUtxo {
       reservationPriority: reservationPriority == _sentinel ? this.reservationPriority : reservationPriority as int?,
       reservationReason: reservationReason == _sentinel ? this.reservationReason : reservationReason as String?,
       derivationIndex: derivationIndex ?? this.derivationIndex,
+      pluginMetadata: pluginMetadata == _sentinel ? this.pluginMetadata : pluginMetadata as Map<String, dynamic>?,
     );
   }
   
@@ -287,6 +300,7 @@ class BitcoinUtxo {
       'updatedAt': updatedAt.toIso8601String(),
       'reservedByTxId': reservedByTxId,
       'derivationIndex': derivationIndex,
+      if (pluginMetadata != null) 'pluginMetadata': pluginMetadata,
     };
   }
   
@@ -308,6 +322,9 @@ class BitcoinUtxo {
       updatedAt: DateTime.parse(map['updatedAt'] as String),
       reservedByTxId: map['reservedByTxId'] as String?,
       derivationIndex: map['derivationIndex'] as int?,
+      pluginMetadata: map['pluginMetadata'] != null
+          ? Map<String, dynamic>.from(map['pluginMetadata'] as Map)
+          : null,
     );
   }
   

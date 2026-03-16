@@ -30,9 +30,74 @@ sealed class InvoiceOutputSpec {
       'p2pkh' => P2PKHOutputSpec.fromMap(map),
       'p2ms' => P2MSOutputSpec.fromMap(map),
       'op_return' => OPReturnOutputSpec.fromMap(map),
+      'plugin' => PluginOutputSpec.fromMap(map),
       _ => throw ArgumentError('Unknown output type: $type'),
     };
   }
+}
+
+/// Plugin-delegated output specification.
+///
+/// Represents an output whose locking script is built by a registered
+/// [ScriptPlugin]. This allows external token/script libraries to
+/// participate in libspiffy's payment flow without compile-time coupling.
+class PluginOutputSpec extends InvoiceOutputSpec {
+  /// ID of the registered plugin that handles this output.
+  final String pluginId;
+
+  /// Script type identifier within the plugin (e.g., 'pp1_nft', 'pp1_ft').
+  final String pluginScriptType;
+
+  /// Plugin-specific parameters for building the locking script
+  /// (e.g., tokenId, ownerPKH, recipientAddress).
+  final Map<String, dynamic> params;
+
+  const PluginOutputSpec({
+    required this.pluginId,
+    required this.pluginScriptType,
+    required this.params,
+    required super.amount,
+    super.label,
+  });
+
+  @override
+  BitcoinScriptType get scriptType => BitcoinScriptType.custom;
+
+  @override
+  Map<String, dynamic> toMap() => {
+        'type': 'plugin',
+        'pluginId': pluginId,
+        'pluginScriptType': pluginScriptType,
+        'params': params,
+        'amount': amount.toString(),
+        if (label != null) 'label': label,
+      };
+
+  factory PluginOutputSpec.fromMap(Map<String, dynamic> map) =>
+      PluginOutputSpec(
+        pluginId: map['pluginId'] as String,
+        pluginScriptType: map['pluginScriptType'] as String,
+        params: Map<String, dynamic>.from(map['params'] as Map),
+        amount: BigInt.parse(map['amount'] as String),
+        label: map['label'] as String?,
+      );
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PluginOutputSpec &&
+          runtimeType == other.runtimeType &&
+          pluginId == other.pluginId &&
+          pluginScriptType == other.pluginScriptType &&
+          amount == other.amount &&
+          label == other.label;
+
+  @override
+  int get hashCode => Object.hash(pluginId, pluginScriptType, amount, label);
+
+  @override
+  String toString() =>
+      'PluginOutputSpec(pluginId: $pluginId, pluginScriptType: $pluginScriptType, amount: $amount, label: $label)';
 }
 
 /// P2PKH (Pay-to-Public-Key-Hash) output specification

@@ -560,6 +560,8 @@ void main() {
               results.add('P2MS: ${p2ms.threshold}-of-${p2ms.totalKeys}');
             case OPReturnOutputSpec opReturn:
               results.add('OP_RETURN: ${opReturn.dataChunks.length} chunks');
+            case PluginOutputSpec plugin:
+              results.add('Plugin: ${plugin.pluginId}:${plugin.pluginScriptType}');
           }
         }
 

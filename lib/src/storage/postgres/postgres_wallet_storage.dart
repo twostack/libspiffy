@@ -658,6 +658,27 @@ class PostgresWalletStorage implements ReadModelStorage {
   }
 
   @override
+  Future<List<BitcoinUtxo>> getUTXOsByPlugin(
+    String walletId,
+    String pluginId, {
+    Map<String, dynamic>? metadataFilter,
+  }) async {
+    // TODO: Add plugin_metadata JSONB column to bitcoin_utxos table for
+    // native PostgreSQL filtering. For now, filter in memory.
+    final allUtxos = await getUTXOs(walletId);
+    return allUtxos.where((utxo) {
+      final meta = utxo.pluginMetadata;
+      if (meta == null || meta['pluginId'] != pluginId) return false;
+      if (metadataFilter != null) {
+        for (final entry in metadataFilter.entries) {
+          if (meta[entry.key] != entry.value) return false;
+        }
+      }
+      return true;
+    }).toList();
+  }
+
+  @override
   Future<BigInt> getBalance(String walletId) async {
     _ensureInitialized();
 

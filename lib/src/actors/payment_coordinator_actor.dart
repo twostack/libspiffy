@@ -9,6 +9,9 @@ import 'package:convert/convert.dart';
 import '../models/bitcoin_utxo.dart';
 import '../models/bitcoin_transaction.dart';
 import '../models/invoice_output_spec.dart';
+import '../plugin/plugin_registry.dart';
+import '../plugin/plugin_types.dart';
+import '../plugin/transaction_builder_plugin.dart';
 import '../storage/read_model_storage.dart';
 import '../storage/secure_storage.dart';
 import '../services/ancestor_chain_service.dart';
@@ -317,7 +320,44 @@ class PaymentCoordinatorActor extends Actor {
 
       // Add payment outputs based on outputs or legacy addresses
       if (outputs != null && outputs.isNotEmpty) {
-        // New multi-output mode
+        // Check if any PluginOutputSpec belongs to a TransactionBuilderPlugin.
+        // If so, delegate the entire transaction build to the plugin.
+        final pluginOutput = outputs.whereType<PluginOutputSpec>().firstOrNull;
+        if (pluginOutput != null) {
+          final pluginInstance = PluginRegistry().getPlugin(pluginOutput.pluginId);
+          if (pluginInstance is TransactionBuilderPlugin &&
+              pluginOutput.params.containsKey('action') &&
+              pluginInstance.supportedActions.contains(pluginOutput.params['action'])) {
+            final request = PluginTransactionRequest(
+              fundingUtxos: selectedUtxos,
+              signingKeys: publicKeys,
+              changeAddress: changeAddress ?? legacyAddresses.firstOrNull ?? '',
+              params: pluginOutput.params,
+            );
+
+            final pluginTx = await pluginInstance.buildTransaction(request);
+            final pluginValid = pluginInstance.validateTransactionStructure(
+                pluginTx, pluginOutput.params['action'] as String);
+            if (!pluginValid) {
+              throw Exception('Plugin transaction structure validation failed');
+            }
+
+            final outputValue = pluginTx.outputs.fold<BigInt>(
+                BigInt.zero, (sum, o) => sum + o.satoshis);
+
+            return BitcoinTransaction.fromDartSvTransaction(
+              walletId: walletId,
+              transaction: pluginTx,
+              status: TransactionStatus.pending,
+              receivingAddresses: ['${pluginOutput.pluginId}:${pluginOutput.pluginScriptType}'],
+              sendingAddresses: [],
+              inputValue: totalInput,
+              netAmount: -pluginOutput.amount,
+            );
+          }
+        }
+
+        // Standard multi-output mode (individual lock builders per output)
         for (final output in outputs) {
           totalOutputAmount += output.amount;
 
@@ -355,6 +395,21 @@ class PaymentCoordinatorActor extends Actor {
                 txBuilder.spendToLockBuilder(lockBuilder, BigInt.zero);
                 receivingAddresses.add('op_return');
               }
+
+            case PluginOutputSpec plugin:
+              final pluginInstance = PluginRegistry().getPlugin(plugin.pluginId);
+              if (pluginInstance == null) {
+                throw Exception('No plugin registered for "${plugin.pluginId}"');
+              }
+              final lockBuilder = pluginInstance.createLockBuilder(plugin);
+              if (lockBuilder == null) {
+                throw Exception(
+                  'Plugin "${plugin.pluginId}" cannot build lock for '
+                  'script type "${plugin.pluginScriptType}"',
+                );
+              }
+              txBuilder.spendToLockBuilder(lockBuilder, plugin.amount);
+              receivingAddresses.add('${plugin.pluginId}:${plugin.pluginScriptType}');
           }
         }
       } else {

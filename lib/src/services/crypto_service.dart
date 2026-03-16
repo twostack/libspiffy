@@ -31,13 +31,6 @@ abstract class CryptoService {
     bool isChange = false,
   });
 
-  /// Generate address from private key
-  /// Returns the Bitcoin address (P2PKH) for the given private key
-  String generateAddress(
-    dartsv.SVPrivateKey privateKey, {
-    dartsv.NetworkType network = dartsv.NetworkType.TEST,
-  });
-
   /// Generate public key from private key
   /// Returns the public key corresponding to the private key
   dartsv.SVPublicKey getPublicKey(dartsv.SVPrivateKey privateKey);

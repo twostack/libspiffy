@@ -7,7 +7,7 @@ import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 
 void main() {
   group('DartSVCryptoService Integration Tests', () {
-    late CryptoService cryptoService;
+    late DartSVCryptoService cryptoService;
 
     setUp(() {
       cryptoService = DartSVCryptoService();

@@ -8,7 +8,7 @@ import '../lib/src/services/dartsv_crypto_service.dart';
 
 void main() {
   group('DartSVCryptoService Tests', () {
-    late CryptoService cryptoService;
+    late DartSVCryptoService cryptoService;
 
     setUp(() {
       cryptoService = DartSVCryptoService(

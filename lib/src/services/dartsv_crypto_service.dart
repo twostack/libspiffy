@@ -87,7 +87,6 @@ class DartSVCryptoService implements CryptoService {
     return privKey.privateKey;
   }
 
-  @override
   String generateAddress(
     dartsv.SVPrivateKey privateKey, {
     dartsv.NetworkType network = dartsv.NetworkType.TEST,

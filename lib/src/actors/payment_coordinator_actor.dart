@@ -132,8 +132,9 @@ class PaymentCoordinatorActor extends Actor {
     final keyInfo = await _getPublicKeysForUTXOs(msg.walletId, selectedUtxos);
 
     // 4. Build payment transaction (with outputs if provided)
+    // Returns (transaction, preSigned) — plugin-built transactions are already signed.
     final buildSw = Stopwatch()..start();
-    final paymentTx = await _buildPaymentTransactionWithOutputs(
+    final (paymentTx, preSigned) = await _buildPaymentTransactionWithOutputs(
       selectedUtxos: selectedUtxos,
       outputs: msg.outputs,
       legacyAddresses: msg.addresses,
@@ -143,52 +144,57 @@ class PaymentCoordinatorActor extends Actor {
       publicKeys: keyInfo.publicKeys,
     );
 
-    _log.info('[pay ${msg.invoiceId}] buildTx: ${buildSw.elapsedMilliseconds}ms');
+    _log.info('[pay ${msg.invoiceId}] buildTx: ${buildSw.elapsedMilliseconds}ms, preSigned=$preSigned');
     if (paymentTx == null) {
       _sendError(msg.invoiceId, 'Failed to build payment transaction', sender: originalSender);
       return;
     }
 
-    // 4b. Sign the transaction
-    final signSw = Stopwatch()..start();
-    final utxoKeys = selectedUtxos.map((u) => '${u.txid}:${u.vout}').toList();
-    final (signedTxHex, signError) = await _signTransaction(
-      walletId: msg.walletId,
-      txid: paymentTx.txid,
-      unsignedTxHex: paymentTx.rawHex,
-      utxoKeys: utxoKeys,
-      publicKeys: keyInfo.publicKeys,
-      addresses: keyInfo.addresses,
-      derivationIndices: keyInfo.derivationIndices,
-    );
+    late final BitcoinTransaction signedPaymentTx;
 
-    _log.info('[pay ${msg.invoiceId}] signing: ${signSw.elapsedMilliseconds}ms');
-    if (signedTxHex == null) {
-      _sendError(msg.invoiceId, 'Failed to sign transaction: $signError', sender: originalSender);
-      return;
+    if (preSigned) {
+      // TransactionBuilderPlugin already built and signed the transaction
+      signedPaymentTx = paymentTx;
+    } else {
+      // 4b. Sign the transaction
+      final signSw = Stopwatch()..start();
+      final utxoKeys = selectedUtxos.map((u) => '${u.txid}:${u.vout}').toList();
+      final (signedTxHex, signError) = await _signTransaction(
+        walletId: msg.walletId,
+        txid: paymentTx.txid,
+        unsignedTxHex: paymentTx.rawHex,
+        utxoKeys: utxoKeys,
+        publicKeys: keyInfo.publicKeys,
+        addresses: keyInfo.addresses,
+        derivationIndices: keyInfo.derivationIndices,
+      );
+
+      _log.info('[pay ${msg.invoiceId}] signing: ${signSw.elapsedMilliseconds}ms');
+      if (signedTxHex == null) {
+        _sendError(msg.invoiceId, 'Failed to sign transaction: $signError', sender: originalSender);
+        return;
+      }
+
+      // IMPORTANT: TXID changes after signing because scriptSig changes the raw bytes
+      final signedDartsvTx = dartsv.Transaction.fromHex(signedTxHex);
+      final signedTxid = signedDartsvTx.id;
+
+      signedPaymentTx = BitcoinTransaction(
+        txid: signedTxid,
+        rawHex: signedTxHex,
+        status: paymentTx.status,
+        inputValue: paymentTx.inputValue,
+        outputValue: paymentTx.outputValue,
+        fee: paymentTx.fee,
+        receivingAddresses: paymentTx.receivingAddresses,
+        sendingAddresses: paymentTx.sendingAddresses,
+        netAmount: paymentTx.netAmount,
+        createdAt: paymentTx.createdAt,
+        updatedAt: DateTime.now(),
+        lockTime: paymentTx.lockTime,
+        version: paymentTx.version,
+      );
     }
-
-    // Update payment transaction with signed hex
-    // IMPORTANT: TXID DOES change after signing because scriptSig changes the raw bytes
-    // We must recalculate TXID from the signed transaction
-    final signedDartsvTx = dartsv.Transaction.fromHex(signedTxHex);
-    final signedTxid = signedDartsvTx.id;
-
-    final signedPaymentTx = BitcoinTransaction(
-      txid: signedTxid, // Recalculated from signed transaction
-      rawHex: signedTxHex,
-      status: paymentTx.status,
-      inputValue: paymentTx.inputValue,
-      outputValue: paymentTx.outputValue,
-      fee: paymentTx.fee,
-      receivingAddresses: paymentTx.receivingAddresses,
-      sendingAddresses: paymentTx.sendingAddresses,
-      netAmount: paymentTx.netAmount,
-      createdAt: paymentTx.createdAt,
-      updatedAt: DateTime.now(),
-      lockTime: paymentTx.lockTime,
-      version: paymentTx.version,
-    );
 
     // 4c. Record the outgoing transaction in PENDING state
 
@@ -199,10 +205,11 @@ class PaymentCoordinatorActor extends Actor {
     // Get recipient addresses for recording
     final recipientAddresses = _getRecipientAddresses(msg.outputs, msg.addresses);
 
+    final spentUtxoKeys = selectedUtxos.map((u) => '${u.txid}:${u.vout}').toList();
     await _recordOutgoingTransaction(
       walletId: msg.walletId,
       transaction: signedPaymentTx,
-      spentUtxoKeys: utxoKeys,
+      spentUtxoKeys: spentUtxoKeys,
       recipientAddresses: recipientAddresses,
       paymentAmount: effectiveAmount,
       changeAddress: actualChangeAddress,
@@ -295,7 +302,9 @@ class PaymentCoordinatorActor extends Actor {
   }
 
   /// Build payment transaction with support for multiple output types (P2PKH, P2MS)
-  Future<BitcoinTransaction?> _buildPaymentTransactionWithOutputs({
+  /// Returns (transaction, preSigned) — preSigned is true when a TransactionBuilderPlugin
+  /// built and signed the entire transaction.
+  Future<(BitcoinTransaction?, bool)> _buildPaymentTransactionWithOutputs({
     required List<BitcoinUtxo> selectedUtxos,
     List<InvoiceOutputSpec>? outputs,
     required List<String> legacyAddresses,
@@ -345,7 +354,7 @@ class PaymentCoordinatorActor extends Actor {
             final outputValue = pluginTx.outputs.fold<BigInt>(
                 BigInt.zero, (sum, o) => sum + o.satoshis);
 
-            return BitcoinTransaction.fromDartSvTransaction(
+            return (BitcoinTransaction.fromDartSvTransaction(
               walletId: walletId,
               transaction: pluginTx,
               status: TransactionStatus.pending,
@@ -353,7 +362,7 @@ class PaymentCoordinatorActor extends Actor {
               sendingAddresses: [],
               inputValue: totalInput,
               netAmount: -pluginOutput.amount,
-            );
+            ), true); // preSigned: plugin built and signed the tx
           }
         }
 
@@ -468,7 +477,7 @@ class PaymentCoordinatorActor extends Actor {
       final fee = totalInput - totalOutput;
 
       // Create transaction record
-      return BitcoinTransaction(
+      return (BitcoinTransaction(
         txid: txid,
         rawHex: rawHex,
         status: TransactionStatus.created,
@@ -482,9 +491,9 @@ class PaymentCoordinatorActor extends Actor {
         updatedAt: DateTime.now(),
         lockTime: 0,
         version: 2,
-      );
+      ), false); // preSigned: false — needs signing
     } catch (e, stackTrace) {
-      return null;
+      return (null, false);
     }
   }
 
@@ -498,7 +507,7 @@ class PaymentCoordinatorActor extends Actor {
     required String walletId,
     required List<dartsv.SVPublicKey> publicKeys,
   }) async {
-    return _buildPaymentTransactionWithOutputs(
+    final (tx, _) = await _buildPaymentTransactionWithOutputs(
       selectedUtxos: selectedUtxos,
       outputs: null,
       legacyAddresses: outputAddresses,
@@ -507,6 +516,7 @@ class PaymentCoordinatorActor extends Actor {
       walletId: walletId,
       publicKeys: publicKeys,
     );
+    return tx;
   }
 
   /// Get public keys for all UTXOs being spent

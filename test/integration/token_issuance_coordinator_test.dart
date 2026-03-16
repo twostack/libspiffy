@@ -334,40 +334,30 @@ void main() {
       ));
 
       final payment = await paymentReady;
+      expect(payment.success, isTrue,
+          reason: 'Token issuance payment should succeed: ${payment.error}');
+      expect(payment.beefBytes, isNotEmpty);
+      expect(payment.txid, isNotEmpty);
 
-      if (payment.success) {
-        // Token issuance succeeded — BEEF contains 5-output token tx
-        expect(payment.beefBytes, isNotEmpty);
-        expect(payment.txid, isNotEmpty);
+      // Parse the BEEF to verify it contains a valid token transaction
+      final beef = BEEF.parse(payment.beefBytes);
+      expect(beef.txs, isNotEmpty);
 
-        // Parse the BEEF to verify it contains a valid token transaction
-        final beef = BEEF.parse(payment.beefBytes);
-        expect(beef.txs, isNotEmpty);
+      // The last tx in BEEF is the payment (token issuance) tx
+      final tokenTx =
+          dartsv.Transaction.fromHex(hex.encode(beef.txs.last));
+      expect(tokenTx.outputs.length, equals(5),
+          reason: 'Token issuance must produce 5 outputs: '
+              'change, PP1, PP2, PartialWitness, Metadata');
 
-        // The last tx in BEEF is the payment (token issuance) tx
-        final tokenTx = dartsv.Transaction.fromHex(
-            hex.encode(beef.txs.last));
-        expect(tokenTx.outputs.length, equals(5),
-            reason: 'Token issuance must produce 5 outputs');
+      // Verify PP1 output contains a valid token lock
+      final pp1Script = tokenTx.outputs[1].script;
+      final pp1Lock = PP1NftLockBuilder.fromScript(pp1Script);
+      expect(pp1Lock.tokenId, isNotNull);
+      expect(pp1Lock.tokenId!.length, equals(32));
 
-        // Verify PP1 output contains a valid token lock
-        final pp1Script = tokenTx.outputs[1].script;
-        final pp1Lock = PP1NftLockBuilder.fromScript(pp1Script);
-        expect(pp1Lock.tokenId, isNotNull);
-        expect(pp1Lock.tokenId!.length, equals(32));
-      } else {
-        // Payment may fail due to ancestor chain requirements in test env.
-        // The important thing is the plugin was invoked and the error is
-        // about BEEF construction (ancestor chain), not about plugin dispatch.
-        expect(payment.error, isNotNull);
-        // If it fails, it should be an ancestor/UTXO issue, not a plugin issue
-        expect(
-            payment.error!.contains('plugin') == false ||
-                payment.error!.contains('Plugin') == false,
-            isTrue,
-            reason:
-                'Failure should be about BEEF/ancestors, not plugin dispatch');
-      }
+      // Verify the token is owned by Bob
+      expect(pp1Lock.recipientAddress?.toBase58(), equals(bobAddress.toBase58()));
     });
 
     test('plugin is registered and can identify scripts', () {

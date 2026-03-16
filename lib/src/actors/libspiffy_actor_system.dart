@@ -40,6 +40,8 @@ import 'payment_coordinator_actor.dart';
 import 'benford_coordinator_actor.dart';
 import 'payment_channel_manager_actor.dart';
 import 'import_actor.dart';
+import 'wallet_coordinator_actor.dart';
+import 'coordinator_messages.dart' show CoordinatorEvent;
 import '../services/transaction_import_service.dart';
 
 /// Initialization and management utilities for the LibSpiffy actor system
@@ -82,7 +84,9 @@ class LibSpiffyActorSystem {
   ActorRef? _headerSyncActor;
   ActorRef? _importActor;
   ActorRef? _transactionLifecycleCoordinator;
-  
+  ActorRef? _coordinatorActor;
+  WalletCoordinatorActor? _coordinatorInstance;
+
   // Actor instances (kept for configuration after spawn)
   HeaderSyncActor? _headerSyncActorInstance;
   
@@ -718,8 +722,54 @@ class LibSpiffyActorSystem {
       );
       
     }
-    
-    
+
+
+    // Spawn WalletCoordinatorActor as the unified public interface
+    _coordinatorInstance = WalletCoordinatorActor(
+      walletManager: _walletManager!,
+      invoiceCoordinator: _invoiceCoordinator!,
+      paymentCoordinator: _paymentCoordinator!,
+      spvActor: _spvActor!,
+      arcActor: _arcActor!,
+      headerSyncActor: _headerSyncActor!,
+      benfordCoordinator: _benfordCoordinator!,
+      channelManager: _channelManager!,
+      importActor: _importActor,
+      storage: _walletStorage,
+      channelEvents: _channelEventBroadcaster.stream,
+      broadcastWalletEvent: broadcastWalletEvent,
+      importWalletFromXpriv: _importActor != null ? ({
+        required String walletId,
+        required String xpriv,
+        required String walletName,
+        String networkType = 'test',
+        int addressGapLimit = 20,
+      }) {
+        importWalletFromXpriv(
+          walletId: walletId,
+          xpriv: xpriv,
+          walletName: walletName,
+          networkType: networkType,
+          addressGapLimit: addressGapLimit,
+        );
+      } : null,
+      importWalletFromWif: _importActor != null ? ({
+        required String walletId,
+        required String wif,
+        required String walletName,
+        String networkType = 'test',
+      }) {
+        importWalletFromWif(
+          walletId: walletId,
+          wif: wif,
+          walletName: walletName,
+          networkType: networkType,
+        );
+      } : null,
+      walletEventsStream: _walletEventBroadcaster.stream,
+    );
+    _coordinatorActor = await _actorSystem.spawn('wallet-coordinator', () => _coordinatorInstance!);
+
     // Preload all wallet aggregates to eliminate race conditions
     await _preloadWalletAggregates();
   }
@@ -1041,6 +1091,29 @@ class LibSpiffyActorSystem {
       'lastHeaderAt': stats['lastHeaderAt'],
     };
   }
+
+  /// THE canonical interface for third-party apps.
+  ///
+  /// Send coordinator commands to this actor:
+  /// ```dart
+  /// libspiffy.coordinator.tell(CreateWalletCommand(...));
+  /// ```
+  ActorRef get coordinator {
+    if (_coordinatorActor == null) {
+      throw StateError('LibSpiffy actor system not initialized');
+    }
+    return _coordinatorActor!;
+  }
+
+  /// Event stream from the coordinator. Subscribe for async results.
+  ///
+  /// ```dart
+  /// libspiffy.coordinatorEvents.listen((event) {
+  ///   if (event is WalletCreatedEvent) { ... }
+  /// });
+  /// ```
+  Stream<CoordinatorEvent>? get coordinatorEvents =>
+      _coordinatorInstance?.events;
 
   /// Get reference to the ProjectionManager (CQRS read-side)
   /// 

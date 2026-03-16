@@ -17,17 +17,18 @@ class ArcServiceConfig {
   });
 
   /// Configuration for the TAAL testnet ARC service
-  /// Requires an API key to be provided at runtime
-  static ArcServiceConfig taalTestnet({required String apiKey}) =>
+  static ArcServiceConfig taalTestnet({String? apiKey}) =>
       ArcServiceConfig(
         baseUrl: 'https://arc-test.taal.com/v1',
         apiKey: apiKey,
       );
 
   /// Configuration for the TAAL mainnet ARC service
-  static const ArcServiceConfig taalMainnet = ArcServiceConfig(
-    baseUrl: 'https://arc.taal.com/v1',
-  );
+  static ArcServiceConfig taalMainnet({String? apiKey}) =>
+      ArcServiceConfig(
+        baseUrl: 'https://arc.taal.com/v1',
+        apiKey: apiKey,
+      );
 
   /// Create a custom configuration
   static ArcServiceConfig custom({

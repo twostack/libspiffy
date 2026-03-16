@@ -104,7 +104,7 @@ class ARCActor extends Actor {
     if (_arcConfig != null) {
       _arcService = ArcService.fromConfig(_arcConfig);
     } else {
-      _arcService = ArcService.fromConfig(ArcServiceConfig.taalMainnet);
+      _arcService = ArcService.fromConfig(ArcServiceConfig.taalMainnet());
     }
   }
 

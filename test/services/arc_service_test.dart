@@ -59,8 +59,8 @@ void main() {
       });
 
       test('should use predefined config constants', () {
-        expect(ArcServiceConfig.taalTestnet(apiKey: 'test').baseUrl, equals('https://arc-test.taal.com/v1'));
-        expect(ArcServiceConfig.taalMainnet.baseUrl, equals('https://arc.taal.com/v1'));
+        expect(ArcServiceConfig.taalTestnet().baseUrl, equals('https://arc-test.taal.com/v1'));
+        expect(ArcServiceConfig.taalMainnet().baseUrl, equals('https://arc.taal.com/v1'));
       });
 
       test('should create custom config', () {

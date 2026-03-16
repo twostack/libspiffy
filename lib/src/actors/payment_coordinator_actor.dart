@@ -105,29 +105,45 @@ class PaymentCoordinatorActor extends Actor {
       return;
     }
 
-    // 2b. Fast-fail if no block headers synced (can't construct valid BEEF)
-    final bestHeight = await _storage.getBestHeight();
-    if (bestHeight == 0) {
-      _log.warning('[pay ${msg.invoiceId}] No block headers synced yet - cannot construct BEEF payment');
-      _sendError(msg.invoiceId, 'No block headers synced yet - cannot construct BEEF payment', sender: originalSender);
-      return;
-    }
+    // Check if this payment will be handled by a TransactionBuilderPlugin.
+    // Plugin-built transactions manage their own inputs — ancestor chain
+    // validation and BEEF construction are not applicable.
+    final isPluginTransaction = msg.outputs != null &&
+        msg.outputs!.whereType<PluginOutputSpec>().any((p) {
+          final plugin = PluginRegistry().getPlugin(p.pluginId);
+          return plugin is TransactionBuilderPlugin &&
+              p.params.containsKey('action') &&
+              plugin.supportedActions.contains(p.params['action']);
+        });
 
-    // 3. CRITICAL: Validate complete ancestor chain using AncestorChainService
-    final ancestorSw = Stopwatch()..start();
-    final ancestorResult = await _ancestorService.collectAncestorChainForUtxos(
-      selectedUtxos.map((u) => u.txid).toList(),
-    );
-    _log.info('[pay ${msg.invoiceId}] ancestorChain: ${ancestorSw.elapsedMilliseconds}ms, '
-        'ancestors=${ancestorResult.isValid ? ancestorResult.ancestorTransactions.length : "N/A"}, '
-        'proofs=${ancestorResult.isValid ? ancestorResult.merkleProofs.length : "N/A"}');
-    if (!ancestorResult.isValid) {
-      _sendError(
-        msg.invoiceId,
-        'Incomplete transaction chain: ${ancestorResult.error}',
-        sender: originalSender,
+    late final dynamic ancestorResult;
+    if (!isPluginTransaction) {
+      // 2b. Fast-fail if no block headers synced (can't construct valid BEEF)
+      final bestHeight = await _storage.getBestHeight();
+      if (bestHeight == 0) {
+        _log.warning('[pay ${msg.invoiceId}] No block headers synced yet - cannot construct BEEF payment');
+        _sendError(msg.invoiceId, 'No block headers synced yet - cannot construct BEEF payment', sender: originalSender);
+        return;
+      }
+
+      // 3. CRITICAL: Validate complete ancestor chain using AncestorChainService
+      final ancestorSw = Stopwatch()..start();
+      ancestorResult = await _ancestorService.collectAncestorChainForUtxos(
+        selectedUtxos.map((u) => u.txid).toList(),
       );
-      return;
+      _log.info('[pay ${msg.invoiceId}] ancestorChain: ${ancestorSw.elapsedMilliseconds}ms, '
+          'ancestors=${ancestorResult.isValid ? ancestorResult.ancestorTransactions.length : "N/A"}, '
+          'proofs=${ancestorResult.isValid ? ancestorResult.merkleProofs.length : "N/A"}');
+      if (!ancestorResult.isValid) {
+        _sendError(
+          msg.invoiceId,
+          'Incomplete transaction chain: ${ancestorResult.error}',
+          sender: originalSender,
+        );
+        return;
+      }
+    } else {
+      ancestorResult = null;
     }
 
     final keyInfo = await _getPublicKeysForUTXOs(msg.walletId, selectedUtxos);
@@ -216,47 +232,68 @@ class PaymentCoordinatorActor extends Actor {
       changeAddress: actualChangeAddress,
     );
 
-    // 5. Get block headers for validation
-    final headerSw = Stopwatch()..start();
-    final blockHeaders = await _getBlockHeaders(ancestorResult.blockHeights);
-    _log.info('[pay ${msg.invoiceId}] getHeaders: ${headerSw.elapsedMilliseconds}ms');
+    if (preSigned) {
+      // Plugin-built transaction — return raw tx bytes as a minimal BEEF.
+      // The plugin manages its own inputs; no ancestor chain or merkle proofs.
+      try {
+        final txBytes = hex.decode(signedPaymentTx.rawHex);
+        final beef = _createMinimalBEEF(Uint8List.fromList(txBytes));
 
-    // 6. Create BEEF package
-    try {
-      final beefSw = Stopwatch()..start();
-      final beef = await _createBEEF(
-        paymentTransaction: signedPaymentTx,
-        ancestorTransactions: ancestorResult.ancestorTransactions,
-        merkleProofs: ancestorResult.merkleProofs,
-        blockHeaders: blockHeaders,
-      );
+        _log.info('[pay ${msg.invoiceId}] plugin tx TOTAL: ${totalSw.elapsedMilliseconds}ms');
 
-      _log.info('[pay ${msg.invoiceId}] createBEEF: ${beefSw.elapsedMilliseconds}ms');
-
-      // Calculate change amount
-      final totalInput = selectedUtxos.fold<BigInt>(
-        BigInt.zero,
-        (sum, utxo) => sum + utxo.satoshis,
-      );
-      final changeAmount = totalInput - effectiveAmount - feeEstimate;
-
-      _log.info('[pay ${msg.invoiceId}] TOTAL: ${totalSw.elapsedMilliseconds}ms');
-
-      // 7. Return BEEF to caller (does NOT broadcast)
-      if (originalSender != null) {
-        final response = BEEFPaymentResponse(
-          invoiceId: msg.invoiceId,
-          beefBytes: beef,
-          txid: signedPaymentTx.txid, // Use signed transaction's txid
-          amountPaid: effectiveAmount,
-          changeAmount: changeAmount > BigInt.zero ? changeAmount : BigInt.zero,
-          ancestorCount: ancestorResult.ancestorTransactions.length,
-          success: true,
-        );
-        originalSender.tell(response);
+        if (originalSender != null) {
+          originalSender.tell(BEEFPaymentResponse(
+            invoiceId: msg.invoiceId,
+            beefBytes: beef,
+            txid: signedPaymentTx.txid,
+            amountPaid: effectiveAmount,
+            changeAmount: BigInt.zero,
+            ancestorCount: 0,
+            success: true,
+          ));
+        }
+      } catch (e) {
+        _sendError(msg.invoiceId, 'Failed to package plugin transaction: $e', sender: originalSender);
       }
-    } catch (e) {
-      _sendError(msg.invoiceId, 'Failed to create BEEF: $e', sender: originalSender);
+    } else {
+      // Standard transaction — full BEEF with ancestor chain and merkle proofs.
+      final headerSw = Stopwatch()..start();
+      final blockHeaders = await _getBlockHeaders(ancestorResult.blockHeights);
+      _log.info('[pay ${msg.invoiceId}] getHeaders: ${headerSw.elapsedMilliseconds}ms');
+
+      try {
+        final beefSw = Stopwatch()..start();
+        final beef = await _createBEEF(
+          paymentTransaction: signedPaymentTx,
+          ancestorTransactions: ancestorResult.ancestorTransactions,
+          merkleProofs: ancestorResult.merkleProofs,
+          blockHeaders: blockHeaders,
+        );
+
+        _log.info('[pay ${msg.invoiceId}] createBEEF: ${beefSw.elapsedMilliseconds}ms');
+
+        final totalInput = selectedUtxos.fold<BigInt>(
+          BigInt.zero,
+          (sum, utxo) => sum + utxo.satoshis,
+        );
+        final changeAmount = totalInput - effectiveAmount - feeEstimate;
+
+        _log.info('[pay ${msg.invoiceId}] TOTAL: ${totalSw.elapsedMilliseconds}ms');
+
+        if (originalSender != null) {
+          originalSender.tell(BEEFPaymentResponse(
+            invoiceId: msg.invoiceId,
+            beefBytes: beef,
+            txid: signedPaymentTx.txid,
+            amountPaid: effectiveAmount,
+            changeAmount: changeAmount > BigInt.zero ? changeAmount : BigInt.zero,
+            ancestorCount: ancestorResult.ancestorTransactions.length,
+            success: true,
+          ));
+        }
+      } catch (e) {
+        _sendError(msg.invoiceId, 'Failed to create BEEF: $e', sender: originalSender);
+      }
     }
   }
 
@@ -689,6 +726,26 @@ class PaymentCoordinatorActor extends Actor {
     }
 
     return headers;
+  }
+
+  /// Create a minimal BEEF wrapper containing a single transaction with no
+  /// ancestor chain. Used for plugin-built transactions where the plugin
+  /// manages its own inputs and the standard BEEF ancestor chain is not
+  /// applicable.
+  Uint8List _createMinimalBEEF(Uint8List rawTx) {
+    // BEEF format: version(4) + nBUMPs(varint) + nTxs(varint) + [hasBUMP(1) + tx]
+    final writer = BytesBuilder();
+    // Version 0100BEEF (little-endian)
+    writer.add([0x01, 0x00, 0xBE, 0xEF]);
+    // Number of BUMPs: 0
+    writer.addByte(0x00);
+    // Number of transactions: 1
+    writer.addByte(0x01);
+    // Has BUMP: false (0x00)
+    writer.addByte(0x00);
+    // Raw transaction
+    writer.add(rawTx);
+    return Uint8List.fromList(writer.toBytes());
   }
 
   /// Create BEEF package from transactions, proofs, and headers

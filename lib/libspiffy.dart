@@ -67,6 +67,9 @@ export 'src/plugin/plugin_registry.dart';            // Plugin registration sing
 export 'src/plugin/plugin_types.dart';               // PluginUnlockSpec, PluginTransactionRequest
 export 'src/plugin/transaction_builder_plugin.dart'; // Multi-output transaction builder interface
 
+// SECURE SIGNING - Callback-based transaction signing for plugin isolation
+export 'src/services/callback_transaction_signer.dart';
+
 // 🚀 CDN HEADER SYNC - Fast initial block header synchronization via CDN
 export 'src/spv/cdn_header_sync_config.dart';
 export 'src/spv/cdn_header_sync_service.dart';

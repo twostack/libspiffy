@@ -128,20 +128,15 @@ class TsTokenNftPlugin extends TransactionBuilderPlugin {
   Future<dartsv.Transaction> buildTransaction(
       PluginTransactionRequest request) async {
     final action = request.params['action'] as String;
-    final signerWif = request.params['signerWif'] as String;
-    final signerPubHex = request.params['signerPubHex'] as String;
     final ownerAddress = request.params['ownerAddress'] as String;
 
-    final signerPrivateKey = dartsv.SVPrivateKey.fromWIF(signerWif);
-    final signerPub = dartsv.SVPublicKey.fromHex(signerPubHex);
-    final sigHashAll = dartsv.SighashType.SIGHASH_FORKID.value |
-        dartsv.SighashType.SIGHASH_ALL.value;
-    final signer = dartsv.DefaultTransactionSigner(sigHashAll, signerPrivateKey);
+    // Use the signer provided by libspiffy — private key stays in the
+    // wallet aggregate, never exposed to this plugin.
+    final signer = request.signer;
+    final signerPub = request.publicKeys.first;
 
     switch (action) {
       case 'issuance':
-        // Build the funding transaction from the first UTXO
-        final utxo = request.fundingUtxos.first;
         final fundingTxHex = request.params['fundingTxHex'] as String;
         final fundingTx = dartsv.Transaction.fromHex(fundingTxHex);
         final address = dartsv.Address.fromBase58(ownerAddress);
@@ -323,8 +318,6 @@ void main() {
             pluginScriptType: 'pp1_nft',
             params: {
               'action': 'issuance',
-              'signerWif': bobWif,
-              'signerPubHex': bobPub.toHex(),
               'ownerAddress': bobAddress.toBase58(),
               'fundingTxHex': fundingTxHex,
             },

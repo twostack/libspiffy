@@ -12,6 +12,7 @@ import '../models/invoice_output_spec.dart';
 import '../plugin/plugin_registry.dart';
 import '../plugin/plugin_types.dart';
 import '../plugin/transaction_builder_plugin.dart';
+import '../services/callback_transaction_signer.dart';
 import '../storage/read_model_storage.dart';
 import '../storage/secure_storage.dart';
 import '../services/ancestor_chain_service.dart';
@@ -337,9 +338,47 @@ class PaymentCoordinatorActor extends Actor {
           if (pluginInstance is TransactionBuilderPlugin &&
               pluginOutput.params.containsKey('action') &&
               pluginInstance.supportedActions.contains(pluginOutput.params['action'])) {
+            // Retrieve the signing key from secure storage and create a
+            // CallbackTransactionSigner. The private key stays inside this
+            // closure — the plugin receives a TransactionSigner interface
+            // but cannot extract the key.
+            final xpriv = await _secureStorage.getXPriv(walletId);
+            final wif = await _secureStorage.getWIF(walletId);
+            final keyMaterial = xpriv ?? wif;
+            if (keyMaterial == null) {
+              throw Exception('No signing key available for wallet $walletId');
+            }
+
+            // Derive the private key for the funding UTXO's derivation index
+            final derivationIndex = selectedUtxos.first.derivationIndex ?? 0;
+            late dartsv.SVPrivateKey signingKey;
+            if (xpriv != null) {
+              final hdKey = dartsv.HDPrivateKey.fromXpriv(xpriv);
+              final derived = hdKey.deriveChildNumber(0).deriveChildNumber(derivationIndex);
+              signingKey = derived.privateKey;
+            } else {
+              signingKey = dartsv.SVPrivateKey.fromWIF(wif!);
+            }
+
+            final sigHashType = dartsv.SighashType.SIGHASH_ALL.value |
+                dartsv.SighashType.SIGHASH_FORKID.value;
+
+            // Create callback signer — key is captured in the closure, never
+            // exposed to the plugin through any accessible field or parameter.
+            final callbackSigner = CallbackTransactionSigner(
+              sigHashType: sigHashType,
+              onSign: (Uint8List sighash, int inputIndex) {
+                final sig = dartsv.SVSignature.fromPrivateKey(signingKey);
+                sig.nhashtype = sigHashType;
+                sig.sign(hex.encode(sighash));
+                return Uint8List.fromList(sig.toDER());
+              },
+            );
+
             final request = PluginTransactionRequest(
               fundingUtxos: selectedUtxos,
-              signingKeys: publicKeys,
+              signer: callbackSigner,
+              publicKeys: publicKeys,
               changeAddress: changeAddress ?? legacyAddresses.firstOrNull ?? '',
               params: pluginOutput.params,
             );
@@ -497,27 +536,6 @@ class PaymentCoordinatorActor extends Actor {
     }
   }
 
-  /// Build payment transaction from selected UTXOs (legacy - for backward compatibility)
-  /// Using proven patterns from transaction_builder_service.dart
-  Future<BitcoinTransaction?> _buildPaymentTransaction({
-    required List<BitcoinUtxo> selectedUtxos,
-    required List<String> outputAddresses,
-    required BigInt outputAmount,
-    String? changeAddress,
-    required String walletId,
-    required List<dartsv.SVPublicKey> publicKeys,
-  }) async {
-    final (tx, _) = await _buildPaymentTransactionWithOutputs(
-      selectedUtxos: selectedUtxos,
-      outputs: null,
-      legacyAddresses: outputAddresses,
-      legacyAmount: outputAmount,
-      changeAddress: changeAddress,
-      walletId: walletId,
-      publicKeys: publicKeys,
-    );
-    return tx;
-  }
 
   /// Get public keys for all UTXOs being spent
   /// 

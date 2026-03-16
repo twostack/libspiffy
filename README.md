@@ -49,8 +49,16 @@ LibSpiffy implements a **CQRS (Command Query Responsibility Segregation)** archi
 │                        LibSpiffy CQRS Architecture                         │
 ├────────────────────────────────────────────────────────────────────────────┤
 │                                                                            │
-│  COMMAND SIDE (Write Operations)                                          │
-│  ┌──────────────────┐      ┌────────────────────┐                         │
+│  PUBLIC API (import 'package:libspiffy/coordinator.dart')                 │
+│  ┌────────────────────────────────────────────────────────────────────┐   │
+│  │  WalletCoordinatorActor (Unified Facade)                          │   │
+│  │  • Send: CreateWalletCommand, PayInvoiceCommand, GetBalanceQuery  │   │
+│  │  • Recv: WalletCreatedEvent, PaymentReadyEvent, BalanceResponse   │   │
+│  │  • Handles correlation tracking, error routing, channel P2P       │   │
+│  └──────────────────────────────┬─────────────────────────────────────┘   │
+│                                 │ Internal delegation                     │
+│  COMMAND SIDE (Write Operations)│                                         │
+│  ┌──────────────────┐      ┌───┴────────────────┐                         │
 │  │ Wallet Manager   │─────▶│ Invoice Coordinator│                         │
 │  │ Actor            │      │ Actor              │                         │
 │  │ • Routes cmds    │      │ • Routes invoice   │                         │
@@ -58,7 +66,6 @@ LibSpiffy implements a **CQRS (Command Query Responsibility Segregation)** archi
 │  │ • Multi-wallet   │      │ • Spawns invoice   │                         │
 │  └────────┬─────────┘      │   aggregates       │                         │
 │           │                └──────────┬─────────┘                          │
-│           │                           │                                    │
 │           ▼                           ▼                                    │
 │  ┌────────────────┐        ┌────────────────┐                             │
 │  │ Wallet         │        │ Invoice        │                             │
@@ -66,48 +73,30 @@ LibSpiffy implements a **CQRS (Command Query Responsibility Segregation)** archi
 │  │ • Validates    │        │ • Validates    │                             │
 │  │ • Emits events │        │ • Emits events │                             │
 │  └────────┬───────┘        └────────┬───────┘                             │
-│           │                         │                                     │
 │           └────────────┬────────────┘                                     │
 │                        ▼                                                  │
 │              ┌─────────────────┐                                          │
 │              │   Event Store   │  (Write-Only from Aggregates)            │
 │              │   (Eventador)   │                                          │
-│              │ • Immutable log │                                          │
-│              │ • Event replay  │                                          │
-│              │ • CBOR storage  │                                          │
 │              └────────┬────────┘                                          │
-│                       │                                                   │
-│  ════════════════════════════════════════════════════════════════════     │
-│                       │  Event Stream                                     │
-│                       ▼                                                   │
+│  ═════════════════════╪═══════════════════════════════════════════════    │
+│                       ▼  Event Stream                                     │
 │              ┌─────────────────┐                                          │
-│              │ Projection      │  (Read-Only from EventStore)             │
-│              │ Manager         │                                          │
-│              │ • Event routing │                                          │
-│              │ • Checkpoints   │                                          │
+│              │ Projection Mgr  │  (Read-Only from EventStore)             │
 │              └────────┬────────┘                                          │
-│                       │                                                   │
 │         ┌─────────────┴─────────────┐                                     │
 │         ▼                           ▼                                     │
 │  ┌──────────────┐          ┌──────────────┐                              │
 │  │   Wallet     │          │   Invoice    │                              │
 │  │  Projection  │          │  Projection  │                              │
-│  │ • UTXO views │          │ • Status     │                              │
-│  │ • Balances   │          │ • Addresses  │                              │
 │  └──────┬───────┘          └──────┬───────┘                              │
-│         │                         │                                      │
 │         └────────────┬────────────┘                                      │
 │                      ▼                                                   │
 │           ┌─────────────────────┐                                        │
-│           │  Read Model Storage │  (Isar - Query Optimized)              │
-│           │      (Isar DB)      │                                        │
-│           │ • Denormalized      │                                        │
-│           │ • Fast queries      │                                        │
-│           │ • No joins needed   │                                        │
+│           │  Read Model Storage │  (Isar / PostgreSQL / In-Memory)       │
 │           └─────────────────────┘                                        │
 │                      ▲                                                   │
 │  QUERY SIDE (Read Operations)                                            │
-│                                                                           │
 │  ┌──────────────────┐     ┌────────────────┐     ┌─────────────────┐     │
 │  │   SPV Actor      │     │   ARC Actor    │     │ Header Sync     │     │
 │  │ • BEEF/BUMP val. │     │ • Broadcast    │     │ • Block headers │     │
@@ -192,39 +181,69 @@ dart pub get
 dart run example/bitcoin_wallet_example.dart
 ```
 
-### Basic Usage (Standalone)
+### Basic Usage (Coordinator API - Recommended)
+
+The **WalletCoordinatorActor** is the canonical public interface for third-party apps. It provides a unified command/event API that handles all internal actor orchestration, correlation tracking, and async response routing.
+
+```dart
+import 'package:libspiffy/libspiffy.dart';
+import 'package:libspiffy/coordinator.dart';
+
+// Initialize LibSpiffy
+final libspiffy = LibSpiffyActorSystem();
+await libspiffy.initialize(
+  dataDirectory: './wallet-data',
+  arcConfig: ArcServiceConfig.taalMainnet(),
+  enableP2P: true,
+);
+
+// Use the coordinator - THE single entry point
+final coordinator = libspiffy.coordinator;
+
+// Subscribe to events
+libspiffy.coordinatorEvents?.listen((event) {
+  if (event is WalletCreatedEvent) {
+    print('Wallet created: ${event.walletId}');
+  } else if (event is PaymentReadyEvent) {
+    print('BEEF ready to send: ${event.txid}');
+  } else if (event is BalanceResponse) {
+    print('Balance: ${event.totalBalance} sats');
+  }
+});
+
+// Send commands
+coordinator.tell(CreateWalletCommand(
+  walletId: 'my-wallet',
+  name: 'My Bitcoin Wallet',
+));
+
+coordinator.tell(CreateInvoiceCommand(
+  walletId: 'my-wallet',
+  amount: BigInt.from(100000),
+  description: 'Payment for services',
+));
+
+coordinator.tell(GetBalanceQuery(walletId: 'my-wallet'));
+
+// Cleanup
+await libspiffy.shutdown();
+```
+
+### Direct Actor Access (Advanced)
+
+For advanced use cases, you can access internal actors directly:
 
 ```dart
 import 'package:libspiffy/libspiffy.dart';
 
-// Initialize LibSpiffy with its own actor system
-await initializeLibSpiffy(
-  dataDirectory: './wallet-data',
-  arcConfig: ArcServiceConfig(
-    baseUrl: 'https://arc.taal.com',
-    network: 'mainnet',
-  ),
-);
+await initializeLibSpiffy(dataDirectory: './wallet-data');
 
-// Get actor references
+// Direct actor access (advanced - most apps should use the coordinator)
 final walletManager = getLibSpiffySystem().walletManager;
-final invoiceCoordinator = getLibSpiffySystem().invoiceCoordinator;
 final spvActor = getLibSpiffySystem().spvActor;
 
-// Create a wallet
-walletManager.tell(CreateWalletMessage(
-  walletId: 'my-wallet',
-  label: 'My Bitcoin Wallet',
-));
+walletManager.tell(CreateWalletMessage('my-wallet', 'My Wallet'));
 
-// Create an invoice
-invoiceCoordinator.tell(CreateInvoiceMessage(
-  walletId: 'my-wallet',
-  amount: BigInt.from(100000), // satoshis
-  description: 'Payment for services',
-));
-
-// Cleanup
 await shutdownLibSpiffy();
 ```
 
@@ -321,52 +340,34 @@ await app.shutdown();       // Host manages actor system shutdown
 
 **Best for:** Complex applications with multiple actor-based subsystems.
 
-### Pattern 3: Gateway Actor
+### Pattern 3: Coordinator (Built-in Gateway)
 
-Create a single gateway actor for controlled interaction:
+LibSpiffy provides a built-in `WalletCoordinatorActor` that serves as the canonical gateway. You no longer need to build your own:
 
 ```dart
-class WalletGatewayActor extends Actor {
-  final ActorRef _walletManager;
-  final ActorRef _invoiceCoordinator;
-  final ActorRef _spvActor;
-  
-  WalletGatewayActor() 
-      : _walletManager = getLibSpiffySystem().walletManager,
-        _invoiceCoordinator = getLibSpiffySystem().invoiceCoordinator,
-        _spvActor = getLibSpiffySystem().spvActor;
-  
-  @override
-  Future<void> onMessage(dynamic message) async {
-    if (message is WalletRequest) {
-      // Route to appropriate LibSpiffy actor
-      _walletManager.tell(
-        CreateWalletMessage(walletId: message.walletId),
-        sender: context.sender,
-      );
-    } else if (message is InvoiceRequest) {
-      _invoiceCoordinator.tell(
-        CreateInvoiceMessage(
-          walletId: message.walletId,
-          amount: message.amount,
-        ),
-        sender: context.sender,
-      );
-    }
+import 'package:libspiffy/coordinator.dart';
+
+// The coordinator IS the gateway - no custom actor needed
+final coordinator = getLibSpiffySystem().coordinator;
+
+// Send any command
+coordinator.tell(CreateWalletCommand(walletId: 'my-wallet', name: 'My Wallet'));
+coordinator.tell(PayInvoiceCommand(walletId: 'my-wallet', invoiceId: '...', ...));
+coordinator.tell(GetBalanceQuery(walletId: 'my-wallet'));
+
+// Subscribe to all events
+getLibSpiffySystem().coordinatorEvents?.listen((event) {
+  switch (event) {
+    case WalletCreatedEvent e: handleWalletCreated(e);
+    case PaymentReadyEvent e: handlePaymentReady(e);
+    case BEEFValidationResultEvent e: handleBEEFValidated(e);
+    case ErrorEvent e: handleError(e);
+    default: break;
   }
-}
-
-// Usage
-final gateway = await hostActorSystem.spawn(
-  'wallet-gateway',
-  () => WalletGatewayActor(),
-);
-
-// All wallet interactions go through gateway
-gateway.tell(WalletRequest(...));
+});
 ```
 
-**Best for:** Applications requiring controlled access to wallet functionality or additional business logic layers.
+**Best for:** All third-party integrations. This is the recommended pattern for most applications.
 
 ### Checking Integration Mode
 

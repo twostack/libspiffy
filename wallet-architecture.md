@@ -29,6 +29,60 @@ LibSpiffy implements a **script-centric, event-sourced Bitcoin SPV wallet** that
 - **ARC Service** handles transaction broadcasting and merkle proof retrieval
 - **BEEF/BUMP** integration for transaction packaging with proofs
 
+### 5. Unified Coordinator Interface
+- **WalletCoordinatorActor** is THE canonical public interface for third-party apps
+- Apps send commands (`CreateWalletCommand`, `PayInvoiceCommand`, etc.) and subscribe to events (`WalletCreatedEvent`, `PaymentReadyEvent`, etc.)
+- Coordinator handles all internal actor orchestration, correlation tracking, and async response routing
+- Separate import: `package:libspiffy/coordinator.dart` — clean names, no collisions with internal domain types
+- Transport-agnostic — works via direct calls, isolate message passing, or FFI
+
+## WalletCoordinatorActor
+
+The coordinator is the facade that sits between external clients and LibSpiffy's internal actor system. It eliminates the need for third-party apps to understand or orchestrate the 9+ internal actors.
+
+### Import Pattern
+
+```dart
+// Public API — clean command/event names
+import 'package:libspiffy/coordinator.dart';
+
+// Internal domain types — for advanced use
+import 'package:libspiffy/libspiffy.dart';
+```
+
+The two imports use different naming conventions to avoid collisions:
+- Coordinator: `CreateWalletCommand` / `WalletCreatedEvent` (Command/Event suffix)
+- Internal: `CreateWalletMessage` / `WalletCreatedMessage` (Message suffix)
+
+### Command/Event Flow
+
+```
+App sends:    CreateWalletCommand ──→ WalletCoordinatorActor
+                                          │
+Coordinator:  translates to ──→ CreateWalletMessage ──→ WalletManagerActor
+                                                               │
+Internal:     WalletManagerActor spawns aggregate, emits ──→ WalletCreatedMessage
+                                                               │
+Coordinator:  translates to ──→ WalletCreatedEvent ──→ Stream<CoordinatorEvent>
+                                                               │
+App receives: event on stream ◄────────────────────────────────┘
+```
+
+### Correlation Tracking
+
+The coordinator internalizes multi-step correlation that apps would otherwise need to manage:
+
+- **BEEF validation flow**: `ValidateBEEFCommand` → structural validation → SPV validation → broadcast → `BEEFValidationResultEvent`
+- **Payment flow**: `PayInvoiceCommand` → UTXO selection → ancestor chain → TX build → sign → BEEF → `PaymentReadyEvent`
+- **Timestamp archive flow**: `TimestampCommand` → OP_RETURN outputs → payment → broadcast → `TimestampCompleteEvent`
+
+### Channel P2P Adapter
+
+The `ChannelP2PAdapter` is composed inside the coordinator (not a separate actor). It translates between raw P2P messages and LibSpiffy's `PaymentChannelManagerActor`:
+
+- **Incoming**: `ChannelP2PReceived(messageType, payload)` → appropriate channel manager message
+- **Outgoing**: Channel events → `ChannelP2PMessageToSendEvent(toPeerId, messageType, payload)` — app transmits via its P2P layer
+
 ## System Architecture
 
 LibSpiffy uses a **CQRS-based layered architecture** combining **Dactor actors** (coordination layer) with **Eventador aggregates** (business logic layer) and **Projections** (read-side updates):
@@ -38,38 +92,55 @@ LibSpiffy uses a **CQRS-based layered architecture** combining **Dactor actors**
 │                     EXTERNAL CLIENTS                            │
 │              (Mobile App, CLI, Web Interface)                   │
 └─────────────────────────┬───────────────────────────────────────┘
-                          │
+                          │  import 'package:libspiffy/coordinator.dart'
+                          │  Commands (CreateWalletCommand, PayInvoiceCommand, ...)
                           ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│           DACTOR COORDINATION LAYER (Command Routers)           │
+│         WALLET COORDINATOR (Unified Public Interface)           │
 │                                                                 │
-│  ┌─────────────────────┐  ┌──────────────────────────────────┐  │
-│  │ WalletManagerActor  │  │  InvoiceCoordinatorActor         │  │
-│  │                     │  │                                  │  │
-│  │ • Multi-wallet mgmt │  │ • Invoice lifecycle routing      │  │
-│  │ • Command routing   │  │ • Address coordination           │  │
-│  │ • Wallet lifecycle  │  │ • Query read models             │  │
-│  │ • UTXO cleanup      │  │ • Expiration checks             │  │
-│  └─────────────────────┘  └──────────────────────────────────┘  │
-│                                                                 │
-│  ┌─────────────────────┐  ┌─────────────────────────────────────┐ │
-│  │      SPVActor       │  │          HeaderSyncActor            │ │
-│  │                     │  │                                     │ │
-│  │ • BEEF/BUMP valid.  │  │ • Block header management           │ │
-│  │ • Tx validation     │  │ • Chain tip events                  │ │
-│  │ • Merkle proofs     │  │ • Header storage                    │ │
-│  │ • Invoice matching  │  │ • SPV coordination                  │ │
-│  └─────────────────────┘  └─────────────────────────────────────┘ │
-│                                                                 │
-│  ┌─────────────────────┐  ┌─────────────────────────────────────┐ │
-│  │      ARCActor       │  │         SpiffyNodeBridge            │ │
-│  │                     │  │                                     │ │
-│  │ • Tx broadcasting   │  │ • SpiffyNode event translation      │ │
-│  │ • Fee estimation    │  │ • P2P message routing               │ │
-│  │ • Merkle retrieval  │  │ • Chain tip monitoring              │ │
-│  │ • Policy query      │  │ • Header forwarding                 │ │
-│  └─────────────────────┘  └─────────────────────────────────────┘ │
+│  ┌─────────────────────────────────────────────────────────────┐│
+│  │ WalletCoordinatorActor                                      ││
+│  │                                                             ││
+│  │ • THE single entry point for third-party apps               ││
+│  │ • Routes commands to internal actors                        ││
+│  │ • Tracks correlations (BEEF↔invoice, SPV↔tx, etc.)          ││
+│  │ • Emits events on Stream<CoordinatorEvent>                  ││
+│  │ • Composes ChannelP2PAdapter for payment channels           ││
+│  │ • Direct CQRS reads for balance/transaction queries         ││
+│  └─────────────────────────────────────────────────────────────┘│
 └─────────────────────────┬───────────────────────────────────────┘
+                          │  Internal Messages
+                          ▼
+┌──────────────────────────────────────────────────────────────────┐
+│           DACTOR COORDINATION LAYER (Internal Actors)            │
+│                                                                  │
+│  ┌─────────────────────┐  ┌──────────────────────────────────┐   │
+│  │ WalletManagerActor  │  │  InvoiceCoordinatorActor         │   │
+│  │                     │  │                                  │   │
+│  │ • Multi-wallet mgmt │  │ • Invoice lifecycle routing      │   │
+│  │ • Command routing   │  │ • Address coordination           │   │
+│  │ • Wallet lifecycle  │  │ • Query read models              │   │
+│  │ • UTXO cleanup      │  │ • Expiration checks              │   │
+│  └─────────────────────┘  └──────────────────────────────────┘   │
+│                                                                  │
+│  ┌─────────────────────┐  ┌─────────────────────────────────────┐│
+│  │      SPVActor       │  │          HeaderSyncActor            ││
+│  │                     │  │                                     ││
+│  │ • BEEF/BUMP valid.  │  │ • Block header management           ││
+│  │ • Tx validation     │  │ • Chain tip events                  ││
+│  │ • Merkle proofs     │  │ • Header storage                    ││
+│  │ • Invoice matching  │  │ • SPV coordination                  ││
+│  └─────────────────────┘  └─────────────────────────────────────┘│
+│                                                                  │
+│  ┌─────────────────────┐  ┌─────────────────────────────────────┐│
+│  │      ARCActor       │  │         SpiffyNodeBridge            ││
+│  │                     │  │                                     ││
+│  │ • Tx broadcasting   │  │ • SpiffyNode event translation      ││
+│  │ • Fee estimation    │  │ • P2P message routing               ││
+│  │ • Merkle retrieval  │  │ • Chain tip monitoring              ││
+│  │ • Policy query      │  │ • Header forwarding                 ││
+│  └─────────────────────┘  └─────────────────────────────────────┘│
+└─────────────────────────┬────────────────────────────────────────┘
                           │ Commands
                           ▼
 ┌─────────────────────────────────────────────────────────────────┐
@@ -91,31 +162,31 @@ LibSpiffy uses a **CQRS-based layered architecture** combining **Dactor actors**
                           ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                EVENT STORE (Write-Only by Aggregates)           │
-│                   (Eventador + Isar CBOR)                      │
+│                   (Eventador + Isar CBOR)                       │
 │                                                                 │
-│  Wallet Events: WalletCreatedEvent, UTXOReceivedEvent,         │
-│                 UTXOSpentEvent, TransactionCreatedEvent        │
-│  Invoice Events: InvoiceCreatedEvent, InvoicePaidEvent,        │
-│                  InvoiceExpiredEvent, InvoiceCancelledEvent    │
-│  Block Events: BlockHeaderStoredEvent, ChainTipEventMessage    │
+│  Wallet Events: WalletCreatedEvent, UTXOReceivedEvent,          │
+│                 UTXOSpentEvent, TransactionCreatedEvent         │
+│  Invoice Events: InvoiceCreatedEvent, InvoicePaidEvent,         │
+│                  InvoiceExpiredEvent, InvoiceCancelledEvent     │
+│  Block Events: BlockHeaderStoredEvent, ChainTipEventMessage     │
 └─────────────────────────┬───────────────────────────────────────┘
                           │ Event Stream
                           ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │              PROJECTION MANAGER (CQRS Orchestration)            │
 │                                                                 │
-│  • Streams events from EventStore                              │
-│  • Routes events to interested projections                     │
-│  • Manages checkpoints for each projection                     │
-│  • Ensures eventual consistency                                │
+│  • Streams events from EventStore                               │
+│  • Routes events to interested projections                      │
+│  • Manages checkpoints for each projection                      │
+│  • Ensures eventual consistency                                 │
 └─────────────────────────┬───────────────────────────────────────┘
                           │ Events by Type
                           ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│       CQRS PROJECTIONS (Read Side - Write to ReadModels)       │
+│       CQRS PROJECTIONS (Read Side - Write to ReadModels)        │
 │                                                                 │
 │  ┌───────────────────┐  ┌────────────────────────────────────┐  │
-│  │ WalletProjection  │  │      InvoiceProjection            │  │
+│  │ WalletProjection  │  │      InvoiceProjection             │  │
 │  │                   │  │                                    │  │
 │  │ • UTXO views      │  │ • Invoice status tracking          │  │
 │  │ • Balance updates │  │ • Address associations             │  │
@@ -123,19 +194,19 @@ LibSpiffy uses a **CQRS-based layered architecture** combining **Dactor actors**
 │  │ • Confirmations   │  │ • Expiration monitoring            │  │
 │  └───────────────────┘  └────────────────────────────────────┘  │
 │                                                                 │
-│  ┌─────────────────────────────────────────────────────────────┐ │
-│  │           Domain Projections (Optional)                     │ │
-│  │                                                             │ │
+│  ┌────────────────────────────────────────────────────────────┐ │
+│  │           Domain Projections (Optional)                    │ │
+│  │                                                            │ │
 │  │ • TokenProjection (NFT tracking)                           │ │
 │  │ • IdentityProjection (AIP signatures)                      │ │
 │  │ • SocialMediaProjection (BMAP content)                     │ │
 │  │ • Custom protocol views                                    │ │
-│  └─────────────────────────────────────────────────────────────┘ │
+│  └────────────────────────────────────────────────────────────┘ │
 └─────────────────────────┬───────────────────────────────────────┘
                           │ Writes
                           ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│      READ MODEL STORAGE (Isar - Query Optimized, Read-Only)    │
+│      READ MODEL STORAGE (Isar - Query Optimized, Read-Only)     │
 │                                                                 │
 │  ┌─────────────────────┐    ┌─────────────────────────────────┐ │
 │  │ ReadModelStorage    │    │      BlockHeaderChain           │ │

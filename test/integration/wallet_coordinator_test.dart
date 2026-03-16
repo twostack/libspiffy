@@ -5,19 +5,7 @@ import 'package:dactor/dactor.dart';
 import 'package:isar/isar.dart';
 import 'package:test/test.dart';
 
-import 'package:libspiffy/libspiffy.dart' hide
-    CreateWalletCommand,
-    CreateInvoiceCommand,
-    OpenChannelCommand,
-    CloseChannelCommand,
-    ReleaseUTXOsCommand,
-    WalletCreatedEvent,
-    InvoiceCreatedEvent,
-    InvoicePaidEvent,
-    TransactionConfirmedEvent,
-    TransactionImportedEvent,
-    ChannelOpenedEvent,
-    ChannelClosedEvent;
+import 'package:libspiffy/libspiffy.dart';
 import 'package:libspiffy/coordinator.dart';
 
 import 'isar_test_helper.dart';

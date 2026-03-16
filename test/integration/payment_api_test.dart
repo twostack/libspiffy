@@ -6,6 +6,7 @@ import 'package:eventador/eventador.dart';
 import 'package:isar/isar.dart';
 import 'package:convert/convert.dart';
 import 'package:libspiffy/libspiffy.dart';
+import 'package:libspiffy/internals.dart';
 import 'package:libspiffy/src/storage/isar_wallet_storage.dart';
 import 'package:libspiffy/src/utils/crypto_utils.dart';
 import 'package:libspiffy/src/services/blockchain_data_source.dart';

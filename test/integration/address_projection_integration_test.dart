@@ -14,6 +14,7 @@ import 'package:dactor/dactor.dart';
 import 'package:isar/isar.dart';
 import 'package:eventador/eventador.dart';
 import 'package:libspiffy/libspiffy.dart';
+import 'package:libspiffy/internals.dart';
 import 'package:libspiffy/src/actors/libspiffy_actor_system.dart';
 import 'package:libspiffy/src/actors/wallet_messages.dart';
 import 'isar_test_helper.dart';

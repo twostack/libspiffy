@@ -8,6 +8,7 @@ import 'package:http/http.dart' as http;
 
 import 'package:libspiffy/src/services/arc_service.dart';
 import 'package:libspiffy/src/services/arc_service_config.dart';
+import 'package:libspiffy/internals.dart';
 
 import 'arc_service_test.mocks.dart';
 
@@ -58,7 +59,7 @@ void main() {
       });
 
       test('should use predefined config constants', () {
-        expect(ArcServiceConfig.taalTestnet.baseUrl, equals('https://arc-test.taal.com/v1'));
+        expect(ArcServiceConfig.taalTestnet(apiKey: 'test').baseUrl, equals('https://arc-test.taal.com/v1'));
         expect(ArcServiceConfig.taalMainnet.baseUrl, equals('https://arc.taal.com/v1'));
       });
 

@@ -4,6 +4,7 @@ import 'package:eventador/eventador.dart';
 import 'package:eventador/src/storage/event_stream.dart';
 import 'package:isar/isar.dart';
 import 'package:libspiffy/libspiffy.dart';
+import '../core/wallet_commands.dart';
 import 'package:logging/logging.dart';
 import 'package:spiffynode/spiffy_node.dart';
 

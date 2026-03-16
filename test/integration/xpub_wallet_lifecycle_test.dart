@@ -8,6 +8,7 @@ import 'package:isar/isar.dart';
 import 'package:eventador/eventador.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:libspiffy/libspiffy.dart';
+import 'package:libspiffy/internals.dart';
 import 'package:libspiffy/src/actors/libspiffy_actor_system.dart';
 import 'package:libspiffy/src/actors/wallet_messages.dart';
 import 'package:libspiffy/src/storage/isar_wallet_storage.dart';

@@ -4,6 +4,7 @@ import 'package:isar/isar.dart';
 import 'package:eventador/eventador.dart';
 
 import 'package:libspiffy/libspiffy.dart';
+import 'package:libspiffy/internals.dart';
 import 'isar_test_helper.dart';
 
 /// Integration tests for address management and entity features

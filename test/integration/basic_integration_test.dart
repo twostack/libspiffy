@@ -3,6 +3,7 @@ import 'package:test/test.dart';
 import 'package:isar/isar.dart';
 import 'package:eventador/eventador.dart';
 import 'package:libspiffy/libspiffy.dart';
+import 'package:libspiffy/internals.dart';
 import 'isar_test_helper.dart';
 
 /// Basic integration test to verify wallet functionality

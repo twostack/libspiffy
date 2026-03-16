@@ -39,23 +39,7 @@ export 'src/storage/postgres/postgres_secure_storage.dart'; // Encrypted xpub st
 // ✅ CRYPTOGRAPHY - Encryption services for secure storage
 export 'src/crypto/encryption_service.dart';               // AES-256-GCM encryption with HKDF
 
-// ✅ CORE WALLET SYSTEM - Production-ready event-sourced wallet
-export 'src/core/wallet_commands.dart';         // 13 wallet commands extending eventador.Command
-export 'src/core/wallet_events.dart';           // 13 wallet events extending AggregateEventBase
-export 'src/core/bitcoin_wallet_aggregate.dart'; // Complete aggregate root with business logic
-
-// ✅ INVOICE SYSTEM - CQRS-based invoice management
-export 'src/core/invoice_commands.dart';        // Invoice commands for aggregate
-export 'src/core/invoice_events.dart';          // Invoice lifecycle events for CQRS pattern  
-export 'src/core/invoice_aggregate.dart';       // Invoice aggregate root with business logic
-
-// ✅ PAYMENT CHANNEL SYSTEM - CQRS-based payment channel management
-export 'src/core/channel_commands.dart';        // Channel commands for aggregate
-export 'src/core/channel_events.dart';          // Channel lifecycle events for CQRS pattern  
-export 'src/core/channel_state.dart';           // Channel state model
-export 'src/core/payment_channel_aggregate.dart'; // Channel aggregate root with business logic
-export 'src/actors/payment_channel_messages.dart'; // High-level channel manager messages
-export 'src/actors/payment_channel_manager_actor.dart'; // Channel manager actor
+// ✅ PAYMENT CHANNEL READ MODEL - Channel entity for queries
 export 'src/storage/payment_channel_entity.dart'; // Channel read model entity
 
 // ✅ PROJECTIONS - Read-side event handlers for CQRS
@@ -76,6 +60,12 @@ export 'src/services/arc_service.dart';         // Complete ARC API with BEEF su
 
 // 🚀 SCRIPT ANALYSIS - Universal Bitcoin script support
 export 'src/services/script_type_registry.dart'; // Script type identification and categorization
+
+// 🔌 PLUGIN SYSTEM - Extensible script/token integration
+export 'src/plugin/script_plugin.dart';              // Core plugin interface
+export 'src/plugin/plugin_registry.dart';            // Plugin registration singleton
+export 'src/plugin/plugin_types.dart';               // PluginUnlockSpec, PluginTransactionRequest
+export 'src/plugin/transaction_builder_plugin.dart'; // Multi-output transaction builder interface
 
 // 🚀 CDN HEADER SYNC - Fast initial block header synchronization via CDN
 export 'src/spv/cdn_header_sync_config.dart';

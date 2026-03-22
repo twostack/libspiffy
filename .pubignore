@@ -1,0 +1,9 @@
+AGENTS.md
+spv-understanding.md
+projections-guide.md
+wallet-architecture.md
+libspiffy.code-workspace
+libspiffy.iml
+data/
+tool/
+.beads/

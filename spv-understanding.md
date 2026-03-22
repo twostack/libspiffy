@@ -78,208 +78,199 @@ LibSpiffy must maintain:
    - Kept in sync via SpiffyNode integration
    - Used for merkle proof validation
 
-## Architecture Implications
+## Current Architecture (Implemented)
 
-### SPVActor Responsibilities
+### Public API: WalletCoordinatorActor
 
-**✅ Correct Responsibilities:**
-- Block header synchronization (via SpiffyNode)
-- Merkle proof validation for received transactions
-- BEEF/BUMP proof validation
-- Transaction broadcasting coordination
+All third-party interaction flows through a single unified facade — **WalletCoordinatorActor**. Applications send commands via `coordinator.tell(command)` and receive results on `coordinator.events` (a broadcast stream of `CoordinatorEvent`).
 
-**❌ Incorrect Assumptions (Previous):**
-- ~~Address monitoring~~ - Transactions come directly from counterparties
-- ~~Block scanning~~ - We don't scan blocks for transactions
-- ~~Transaction discovery~~ - Transactions are handed to us
+**Key Commands:**
+- `CreateWalletCommand`, `ImportWalletCommand`
+- `GetBalanceQuery`, `GetTransactionsQuery`, `GetTransactionDetailQuery`
+- `CreateInvoiceCommand`, `PayInvoiceCommand`
+- `ReceiveTransactionCommand` (BEEF from counterparty)
+- `ValidateBEEFCommand`, `RecordOutgoingCommand`
+- `StoreHeadersCommand`, `SplitUTXOsCommand`, `TimestampCommand`
+- `OpenChannelCommand`, `ChannelPayCommand`, `CloseChannelCommand`
+
+**Key Events (emitted on stream):**
+- `WalletCreatedEvent`, `BalanceResponse`, `TransactionsResponse`
+- `InvoiceCreatedEvent`, `PaymentReadyEvent` (BEEF ready for transmission)
+- `SPVValidationResultEvent`, `TransactionReceivedEvent`, `TransactionConfirmedEvent`
+- `UTXOSplitCompleteEvent`, `TimestampCompleteEvent`
+- `ChannelOpenedEvent`, `ChannelPaymentEvent`, `ChannelClosedEvent`
+
+### Actor Responsibilities
+
+| Actor | Responsibility |
+|-------|---------------|
+| **WalletCoordinatorActor** | Public API facade; command dispatch; event emission; correlation tracking |
+| **WalletManagerActor** | Multi-wallet routing; spawns BitcoinWalletAggregate per wallet |
+| **SPVActor** | BEEF/BUMP validation; merkle proof validation against block headers |
+| **ARCActor** | ARC service integration; transaction broadcast; fee estimation; status polling |
+| **HeaderSyncActor** | Block header synchronization via SpiffyNode P2P |
+| **PaymentCoordinatorActor** | UTXO selection; BEEF construction; does **NOT** broadcast |
+| **InvoiceCoordinatorActor** | Invoice lifecycle; spawns InvoiceAggregate per invoice |
+| **BenfordCoordinatorActor** | UTXO splitting with Benford's Law distribution |
+| **PaymentChannelManagerActor** | Payment channel operations (fund, pay, close) |
+| **ImportActor** | Wallet import from blockchain data sources |
+| **TransactionLifecycleCoordinatorActor** | Transaction lifecycle tracking |
+
+**What SPVActor does NOT do (corrected from earlier assumptions):**
+- ~~Address monitoring~~ — Transactions come directly from counterparties
+- ~~Block scanning~~ — We don't scan blocks for transactions
+- ~~Transaction discovery~~ — Transactions are handed to us
+- ~~Block header sync~~ — That's HeaderSyncActor's job
+- ~~Transaction broadcasting~~ — That's ARCActor's job
 
 ### Transaction Receipt Flow
 
 ```
-1. Counterparty sends transaction + proofs → SPVActor
-2. SPVActor validates merkle proofs against block headers
-3. SPVActor sends ValidatedTransactionMessage → WalletManagerActor  
-4. WalletManagerActor routes to appropriate wallet aggregate
-5. Wallet aggregate processes UTXO updates and events
+1. App sends ReceiveTransactionCommand (BEEF) → WalletCoordinatorActor
+2. Coordinator parses BEEF, extracts txid
+3. Coordinator sends ReceiveTransactionMessage → SPVActor
+4. SPVActor validates BEEF structure + merkle proofs against block headers
+5. If valid → SPVActor sends ReceiveUTXOCommand → WalletManagerActor
+6. WalletManagerActor routes to BitcoinWalletAggregate
+7. Aggregate emits UTXOReceivedEvent (event sourced)
+8. WalletProjection updates read model
+9. Coordinator emits TransactionReceivedEvent on public stream
 ```
 
-This understanding fundamentally changes the SPVActor implementation from a "scanning" model to a "validation" model, which is the correct SPV approach.
+### Payment Flow (Outgoing)
 
-## Storage Requirements for LibSpiffy
+```
+1. App sends PayInvoiceCommand → WalletCoordinatorActor
+2. Coordinator routes to PaymentCoordinatorActor
+3. PaymentCoordinator selects UTXOs, collects ancestor proofs, builds BEEF
+4. PaymentCoordinator returns BEEFPaymentResponse → Coordinator
+5. Coordinator emits PaymentReadyEvent (contains BEEF bytes)
+6. App transmits BEEF to counterparty (pure SPV peer-to-peer model)
+7. Optionally: App calls RecordOutgoingCommand to record in wallet
+8. Optionally: App triggers ARC broadcast for on-chain settlement
+```
 
-### Enhanced UTXO Storage
+**Key insight**: PaymentCoordinatorActor builds the BEEF but does **not** auto-broadcast. The app decides whether to transmit peer-to-peer, broadcast via ARC, or both.
 
-Each `BitcoinUtxo` must be enhanced to include SPV-specific data:
+### Confirmation Flow
+
+```
+1. HeaderSyncActor receives new block headers from SpiffyNode
+2. ARCActor periodic status check (every 30s) queries ARC for tx status
+3. On confirmation → WalletManagerActor receives update
+4. Aggregate emits TransactionConfirmedEvent
+5. WalletProjection updates UTXOs to confirmed status
+6. Coordinator emits TransactionConfirmedEvent on public stream
+```
+
+## Data Models (Current Implementation)
+
+### BitcoinUtxo
 
 ```dart
 class BitcoinUtxo {
-  // Existing core fields...
   final String txid;
   final int vout;
-  final BigInt satoshis;
+  final Coin value;                       // DartSV's Coin type
   final String scriptPubKey;
-  final String? address;
-  
-  // SPV Requirements - CRITICAL
-  final MerkleProof? merkleProof;      // Proof of inclusion in block
-  final int? blockHeight;              // Block containing this UTXO
-  final String? blockHash;             // Block hash for verification
-  final Transaction sourceTransaction; // Complete source transaction
-  
-  // Validation status
-  final bool spvValidated;             // Has merkle proof been validated
-  final DateTime? proofRetrievedAt;    // When proof was obtained
-  final String? proofSource;           // 'arc' | 'counterparty' | 'restored'
+  final String address;
+  final UTXOStatus status;                // pending, available, reserved, spent
+  final int? blockHeight;
+  final int? confirmations;
+  final DateTime createdAt, updatedAt;
+  final String? reservedByTxId;
+  final DateTime? reservationExpiresAt;
+  final int? reservationPriority;
+  final String? reservationReason;
+  final int? derivationIndex;
+  final Map<String, dynamic>? pluginMetadata;  // Plugin-specific data
 }
+
+enum UTXOStatus { pending, available, reserved, spent }
 ```
 
-### Transaction History Database
-
-LibSpiffy must maintain comprehensive transaction history:
+### BitcoinTransaction
 
 ```dart
-class WalletTransactionHistory {
-  // Complete transaction storage
-  final Map<String, Transaction> allTransactions;
-  
-  // Merkle proof storage - EVERY transaction needs its proof
-  final Map<String, MerkleProof> transactionProofs;
-  
-  // Transaction lifecycle tracking
-  final Map<String, TransactionStatus> transactionStatus;
-  final Map<String, DateTime> broadcastTimes;
-  final Map<String, DateTime> confirmationTimes;
-  
-  // Counterparty information
-  final Map<String, String> transactionCounterparties;
-  
-  // Block inclusion data
-  final Map<String, int> transactionBlockHeights;
-  final Map<String, String> transactionBlockHashes;
-}
-```
-
-### Block Header Chain Storage
-
-Similar to SpiffyNode's approach, LibSpiffy needs:
-
-```dart
-class BlockHeaderChain {
-  // Complete chain of block headers (~50MB total, grows ~4MB/year)
-  final Map<int, BlockHeader> headersByHeight;
-  final Map<String, BlockHeader> headersByHash;
-  
-  // Chain tip tracking
-  final BlockHeader currentTip;
-  final int currentHeight;
-  
-  // Reorganization handling
-  final List<BlockHeader> reorgBuffer;
-}
-```
-
-## New Message Types for Correct SPV
-
-### Direct Transaction Receipt
-
-```dart
-/// Receive transaction directly from counterparty with proofs
-class ReceiveTransactionMessage implements Message {
-  final Transaction transaction;
-  final List<MerkleProof> inputProofs;  // Proofs for all input UTXOs
-  final String fromCounterparty;
-  final DateTime receivedAt;
-}
-
-/// SPV validation result  
-class SPVValidationResult implements Message {
+class BitcoinTransaction {
+  final String? walletId;
   final String txid;
-  final bool isValid;
-  final String? validationError;
-  final List<UTXO> spendableUTXOs;     // UTXOs we can now spend
-  final List<UTXO> spentUTXOs;         // UTXOs that were spent
+  final String rawHex;
+  final TransactionStatus status;        // created, signed, broadcast, pending, confirmed, failed
+  final int? blockHeight;
+  final int? confirmations;
+  final BigInt inputValue, outputValue, fee;
+  final List<String> receivingAddresses, sendingAddresses;
+  final BigInt netAmount;
+  final DateTime createdAt;
 }
+
+enum TransactionStatus { created, signed, broadcast, pending, confirmed, failed }
 ```
 
-### Block Header Synchronization
+### Storage Architecture (CQRS + Event Sourcing)
+
+LibSpiffy uses **event sourcing** for the write model and **CQRS** for read/write separation:
+
+- **Write Side**: `BitcoinWalletAggregate` applies commands, emits domain events (`UTXOReceivedEvent`, `UTXOSpentEvent`, `TransactionConfirmedEvent`, etc.) persisted to an append-only `EventStore`
+- **Read Side**: `WalletProjection` listens to domain events, updates `ReadModelStorage` (denormalized `WalletReadModel` with balances, UTXO counts, etc.)
+- **Block Headers**: Stored via `ReadModelStorage.storeBlockHeader()` / `getBlockHeader()`
+- **Secure Storage**: `SecureStorage` interface for xpriv/WIF/mnemonic (never exposed to plugins)
+
+**Storage backends**: Isar (mobile/local), PostgreSQL (server), In-Memory (testing).
+
+## Plugin System
+
+LibSpiffy supports external token and script protocols through a plugin architecture:
+
+### ScriptPlugin (Interface)
+
+Allows external libraries to teach LibSpiffy about custom script types:
 
 ```dart
-/// Block header update from SpiffyNode
-class BlockHeaderUpdateMessage implements Message {
-  final BlockHeader newHeader;
-  final int height;
-  final bool isReorganization;
-  final List<BlockHeader>? orphanedHeaders; // If reorg
-}
-
-/// Request merkle proof retrieval from ARC
-class RetrieveMerkleProofMessage implements Message {
-  final String txid;
-  final int? knownBlockHeight;
-  final String walletId;
+abstract class ScriptPlugin {
+  String get pluginId;                    // 'tstoken', 'ordinals', etc.
+  String get displayName;
+  List<String> get scriptTypes;
+  String? identifyScript(SVScript script);
+  Map<String, dynamic>? extractMetadata(SVScript script);
+  LockingScriptBuilder? createLockBuilder(PluginOutputSpec spec);
+  UnlockingScriptBuilder? createUnlockBuilder(PluginUnlockSpec spec);
 }
 ```
 
-## Revised Actor Responsibilities
+### TransactionBuilderPlugin (Extended)
 
-### SPVActor (Corrected)
-
-**Primary Functions:**
-1. **Block Header Sync**: Maintain full header chain via SpiffyNode
-2. **Transaction Validation**: Validate received transactions using merkle proofs
-3. **BEEF/BUMP Processing**: Handle enhanced transaction formats
-4. **Proof Management**: Coordinate merkle proof retrieval from ARC
-
-**Key Methods:**
-```dart
-class SPVActor extends Actor {
-  // Block header management
-  Future<void> _handleBlockHeaderUpdate(BlockHeaderUpdateMessage msg);
-  Future<void> _handleReorganization(List<BlockHeader> orphanedHeaders);
-  
-  // Transaction validation (NOT discovery)
-  Future<void> _handleReceivedTransaction(ReceiveTransactionMessage msg);
-  Future<SPVValidationResult> _validateTransaction(Transaction tx, List<MerkleProof> proofs);
-  
-  // Proof validation
-  Future<bool> _validateMerkleProof(MerkleProof proof, String txid, BlockHeader header);
-  Future<void> _requestMerkleProofFromARC(String txid, int blockHeight);
-}
-```
-
-### WalletManagerActor (Enhanced)
-
-Must coordinate SPV validation with business logic:
+For multi-output transaction protocols (e.g., token issuance with 5-output structure):
 
 ```dart
-class WalletManagerActor extends Actor {
-  // Handle SPV validation results
-  Future<void> _handleSPVValidationResult(SPVValidationResult result);
-  
-  // Route validated transactions to appropriate wallet
-  Future<void> _routeValidatedTransaction(String walletId, SPVValidationResult result);
-  
-  // Coordinate proof retrieval for wallet transactions
-  Future<void> _ensureTransactionHasProof(String walletId, String txid);
+abstract class TransactionBuilderPlugin extends ScriptPlugin {
+  Future<Transaction> buildTransaction(PluginTransactionRequest request);
+  List<String> get supportedActions;  // 'issuance', 'transfer', 'burn', 'witness'
+  bool validateTransactionStructure(Transaction tx, String action);
 }
 ```
 
-### ARCActor (Enhanced)
+### Secure Signing via CallbackTransactionSigner
 
-Extended to handle merkle proof retrieval:
+Plugins **never** access private keys directly. Instead, they receive a `CallbackTransactionSigner` that signs on their behalf:
 
 ```dart
-class ARCActor extends Actor {
-  // Existing broadcast functionality...
-  
-  // New: Merkle proof retrieval
-  Future<void> _handleRetrieveMerkleProof(RetrieveMerkleProofMessage msg);
-  Future<MerkleProof?> _getMerkleProofFromARC(String txid);
-  
-  // Enhanced status monitoring with proof retrieval
-  Future<void> _checkTransactionAndRetrieveProof(String txid);
+class CallbackTransactionSigner extends TransactionSigner {
+  final SigningCallback _onSign;  // (sighash, inputIndex) → signature bytes
+  Transaction sign(Transaction unsignedTxn, TransactionOutput utxo, int inputIndex);
 }
 ```
+
+### PluginRegistry
+
+Singleton registry where plugins register themselves. The coordinator and payment actors consult the registry to handle custom script types in invoices and transactions:
+
+```dart
+PluginRegistry.instance.register(myTokenPlugin);
+```
+
+Plugins participate in the payment flow via `PluginOutputSpec` in invoices and `PluginTransactionRequest` for UTXO funding and signing.
 
 ## Critical Implementation Notes
 
@@ -316,4 +307,4 @@ LibSpiffy must enable:
 - Offline transaction signing  
 - Online transaction validation and broadcasting
 
-This document represents the corrected understanding of SPV and serves as the implementation guide for refactoring the current LibSpiffy actors to work correctly with the SPV model. 
+This document captures the SPV model and how it maps to LibSpiffy's current actor architecture, plugin system, and CQRS/event-sourced storage layer.

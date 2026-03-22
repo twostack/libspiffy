@@ -15,30 +15,42 @@ LibSpiffy implements a sophisticated Bitcoin wallet system using modern architec
 ## Key Features
 
 ### Core Wallet Functionality
--  HD wallet address generation and management
--  UTXO tracking with confirmation status
--  Transaction creation and signing
--  SPV transaction verification with merkle proofs (BEEF/BUMP)
--  Multi-wallet support with isolation
--  Event-sourced state with full audit trail
+- HD wallet address generation and management
+- Wallet import (xpub watch-only, WIF private key)
+- UTXO tracking with confirmation status
+- Transaction creation and signing
+- SPV transaction verification with merkle proofs (BEEF/BUMP)
+- Multi-wallet support with isolation
+- Event-sourced state with full audit trail
 
 ### Advanced Features
--  **Invoice-based payment system** for simplified SPV validation
--  UTXO holds and reservations
--  Funding requests for transaction preparation
--  Automatic cleanup of expired holds
--  Snapshot support for performance optimization
--  Real-time balance calculations
--  **ARC service integration** for transaction broadcasting and fee estimation
--  Transaction fee calculation from BEEF data
+- **Invoice-based payment system** for simplified SPV validation
+- **Multi-output invoices** (P2PKH, P2MS multisig, OP_RETURN metadata, Plugin-delegated outputs)
+- **Plugin system** for custom script types and token protocols (ScriptPlugin, TransactionBuilderPlugin)
+- **Payment channels** for off-chain micropayments with on-chain settlement
+- **Benford distribution** UTXO splitting for transaction privacy
+- UTXO holds and reservations with automatic cleanup
+- Transaction lifecycle management with pending transaction recovery
+- Snapshot support for performance optimization
+- Real-time balance calculations
+- **ARC (Authoritative Response Component)** service integration for broadcasting and fee estimation
+- Transaction fee calculation from BEEF data
+
+### Storage & Deployment
+- **Isar** embedded database for mobile/desktop
+- **PostgreSQL** backend for server-side deployments
+- **In-memory** storage for development and testing
+- AES-256-GCM encrypted key storage (xpub/xpriv)
+- Pluggable storage interfaces for custom backends
 
 ### Network Integration
--  Bitcoin P2P network connectivity
--  Block header synchronization and validation
--  **BEEF (Background Evaluation Extended Format)** transaction validation
--  **BUMP (BSV Universal Merkle Path)** merkle proof validation
--  Merkle proof validation against header chain
--  ARC (Authoritative Repository of Certificates) service integration
+- Bitcoin P2P network connectivity via SpiffyNode
+- Block header synchronization (P2P network and CDN-based fast sync)
+- **BEEF (Background Evaluation Extended Format)** transaction validation
+- **BUMP (BSV Universal Merkle Path)** merkle proof validation
+- Merkle proof validation against header chain
+- ARC (Authoritative Response Component) service integration
+- WhatsOnChain blockchain data source for wallet import
 
 ## System Architecture
 
@@ -599,7 +611,7 @@ final aggregate = InvoiceAggregate(
 
 ### Storage Separation
 
-LibSpiffy uses **two separate Isar databases with different schemas**:
+LibSpiffy uses **separate databases for events and read models**:
 
 **EventStore (Write-Only by Aggregates)**
 - Schema: `EventEnvelope`, `SnapshotEnvelope` (from Eventador)
@@ -608,16 +620,22 @@ LibSpiffy uses **two separate Isar databases with different schemas**:
 - Purpose: Immutable audit trail, recovery
 
 **ReadModelStorage (Write-Only by Projections, Read by App)**
-- Schema: `InvoiceEntity`, `BitcoinUtxoEntity`, `BitcoinTransactionEntity` (from LibSpiffy)
+- Schema: `InvoiceEntity`, `BitcoinUtxoEntity`, `BitcoinTransactionEntity`, `PaymentChannelEntity`
 - Format: Denormalized domain objects
 - Access: Projections write, application reads
 - Purpose: Fast queries, optimized for reads
+
+**Storage Backends:**
+- **Isar** (mobile/desktop) — embedded, zero-config
+- **PostgreSQL** (server) — connection pooling, migrations, SSL support
+- **In-memory** (development/testing)
 
 This separation ensures:
 - Clear CQRS boundaries
 - Independent scaling of read/write
 - No accidental EventStore queries
 - Optimized storage formats for each use case
+- Deployment flexibility across mobile, desktop, and server
 
 ## Invoice-Based SPV Payments
 
@@ -1007,6 +1025,63 @@ headerSync.tell(ValidateMerkleProofMessage(
   merkleProof: proof,
   txid: 'transaction-id',
 ));
+```
+
+### 10. Plugin System
+
+LibSpiffy provides an extensible plugin architecture for custom Bitcoin script types and token protocols. Plugins are decoupled from the core library — no compile-time dependency on token implementations.
+
+```dart
+// Register a plugin (e.g., tstokenlib for TSL1 tokens)
+final registry = PluginRegistry();
+registry.register(myTokenPlugin);
+
+// Plugins provide:
+// - Script identification: recognize custom script types in UTXOs
+// - Metadata extraction: parse protocol-specific data from scripts
+// - Lock/unlock builders: construct locking and unlocking scripts
+// - Transaction builders: build complete multi-output protocol transactions
+
+// Send a plugin-based payment via coordinator
+coordinator.tell(PayInvoiceCommand(
+  walletId: 'my-wallet',
+  invoiceId: 'invoice-123',
+  pluginOutputs: [PluginOutputSpec(pluginId: 'tsl1', params: {...})],
+));
+```
+
+The `CallbackTransactionSigner` enables plugins to sign transactions without exposing private keys — the wallet aggregate retains exclusive control of key material.
+
+See [Plugin API Guide](docs/script-plugin-api-guide.md) for the full interface reference.
+
+### 11. Payment Channels
+
+Off-chain micropayment channels with on-chain funding and settlement:
+
+```dart
+// Open a channel via coordinator
+coordinator.tell(OpenChannelCommand(
+  walletId: 'my-wallet',
+  counterpartyPubKey: counterpartyKey,
+  fundingAmount: BigInt.from(1000000),
+));
+
+// Make off-chain payments
+coordinator.tell(MakeChannelPaymentCommand(
+  channelId: 'channel-123',
+  amount: BigInt.from(1000),
+));
+
+// Close and settle on-chain
+coordinator.tell(CloseChannelCommand(channelId: 'channel-123'));
+```
+
+### 12. Additional Coordinators
+
+- **PaymentCoordinatorActor**: Orchestrates multi-step payment flows including plugin-based transactions
+- **BenfordCoordinatorActor**: UTXO splitting using Benford's Law distribution for transaction privacy
+- **TransactionLifecycleCoordinatorActor**: Tracks pending transactions and recovers them on restart
+- **ImportActor**: Wallet import from blockchain via address discovery
 
 ## Event Sourcing Flow
 
@@ -1066,7 +1141,13 @@ All events are persisted to EventStore and streamed to Projections for read-mode
 - **InvoiceExpiredEvent**: Invoice expired before payment
 - **InvoiceCancelledEvent**: Invoice cancelled by user
 
-**Note**: These are now proper domain events persisted to EventStore, not actor messages. InvoiceProjection subscribes to these events and updates the invoice read models in Isar.
+#### Payment Channel Events (PaymentChannelAggregate)
+- **ChannelOpenedEvent**: Channel created with funding parameters
+- **ChannelFundedEvent**: Funding transaction broadcast
+- **ChannelPaymentMadeEvent**: Off-chain payment within channel
+- **ChannelClosedEvent**: Channel closed and settled on-chain
+
+**Note**: All domain events are persisted to EventStore and streamed to their respective projections (WalletProjection, InvoiceProjection, ChannelProjection) for read model updates.
 
 ## Security Features
 
@@ -1098,21 +1179,24 @@ All events are persisted to EventStore and streamed to Projections for read-mode
 
 ## Configuration
 
-### Event Store Configuration
+### Storage Backend
 
 ```dart
-final eventStore = InMemoryEventStore(); // Development
-// or
-final eventStore = PostgreSQLEventStore(connectionString); // Production
-```
+// Mobile/Desktop — Isar embedded database
+final libspiffy = LibSpiffyActorSystem();
+await libspiffy.initialize(dataDirectory: './wallet-data');
 
-### Snapshot Configuration
+// Server — PostgreSQL
+await libspiffy.initialize(
+  storageBackend: StorageBackend.postgres,
+  postgresConfig: PostgresConfig.fromConnectionString(
+    'postgresql://user:pass@localhost:5432/wallets',
+  ),
+);
 
-```dart
-final snapshotConfig = SnapshotConfig(
-  snapshotFrequency: 100, // Every 100 events
-  retentionPolicy: RetentionPolicy.keepLast(10), // Keep 10 snapshots
-  compressionEnabled: true,
+// Development — In-memory
+await libspiffy.initialize(
+  storageBackend: StorageBackend.inMemory,
 );
 ```
 
@@ -1121,25 +1205,19 @@ final snapshotConfig = SnapshotConfig(
 ```dart
 // ARC Service (for transaction broadcasting)
 final arcConfig = ArcServiceConfig(
-  baseUrl: 'https://arc.taal.com', // or your preferred ARC endpoint
-  apiKey: 'your-api-key', // Optional, depending on provider
-  network: 'mainnet', // or 'testnet'
+  baseUrl: 'https://arc.taal.com',
+  apiKey: 'your-api-key',
+  network: 'mainnet',
 );
+// Or use presets:
+ArcServiceConfig.taalMainnet();
+ArcServiceConfig.taalTestnet();
 
-// Block Header Sync
-final headerSyncConfig = {
-  'startHeight': 0, // Start from genesis or latest known
-  'batchSize': 2000, // Headers per batch request
-  'maxRetries': 3,
-  'retryDelay': Duration(seconds: 5),
-};
-
-// Invoice Configuration
-final invoiceConfig = {
-  'defaultExpiration': Duration(hours: 24),
-  'cleanupInterval': Duration(hours: 1),
-  'maxAddressesPerInvoice': 10,
-};
+// CDN-based fast header sync
+final cdnConfig = CdnHeaderSyncConfig(
+  baseUrl: 'https://cdn.example.com/headers',
+  concurrentDownloads: 4,
+);
 ```
 
 ## Monitoring and Observability
@@ -1179,125 +1257,160 @@ final invoiceConfig = {
 
 ## Testing
 
-### Unit Tests
 ```bash
-# Run all unit tests
-dart test test/
+# Run all tests
+dart test
 
-# Test specific components
-dart test test/actors/invoice_manager_actor_test.dart
-dart test test/services/arc_service_test.dart
-dart test test/crypto/dartsv_crypto_integration_test.dart
+# Run by category
+dart test test/unit/                    # Unit tests
+dart test test/integration/             # Integration tests
+dart test test/services/                # Service tests
+dart test test/core_models/             # Domain model tests
 ```
 
-### Integration Tests
-```bash
-# Run all integration tests
-dart test test/integration/
+### Test Coverage (~67 test files)
 
-# Invoice-based SPV payment flow
-dart test test/integration/invoice_spv_integration_test.dart
-
-# Full SPV validation with real testnet data
-dart test test/integration/full_spv_validation_test.dart
-
-# Wallet operations
-dart test test/integration/wallet_integration_test.dart
-```
-
-### BEEF/BUMP Tests
-```bash
-# Test merkle proof validation
-dart test test/bump_test.dart
-dart test test/beef_test.dart
-```
-
-### Example Scenarios
-```bash
-dart run example/bitcoin_wallet_example.dart
-```
-
-### Test Coverage
-
-The test suite includes:
-- **Unit Tests**: Individual component testing (aggregates, actors, services)
-- **Integration Tests**: End-to-end flows including invoice creation and SPV validation
-- **Real Testnet Data**: Full SPV validation using actual Bitcoin testnet transactions
-- **Mock Services**: Comprehensive mocking for isolated testing
-- **Edge Cases**: Error handling, invalid proofs, expired invoices
+- **Integration tests** (~31): End-to-end flows including coordinator API, P2P payments, SPV validation, payment channels, token lifecycle, invoice persistence, wallet import, header sync
+- **Unit tests** (~8): Plugin registry, output specs, encryption, CDN sync, script builders
+- **Service tests** (~7): Transaction builder, block headers, SPV service, ARC service, payment channels
+- **Core model tests** (~5): UTXO, transaction, wallet state, commands, events
+- **Storage tests** (~3): Isar schemas, wallet storage, PostgreSQL integration
+- **Actor/aggregate tests** (~3): Header sync actor, channel aggregate, wallet aggregate
+- **Format tests** (~5): BEEF/BUMP parsing, format equivalence, SPV validation
+- **Crypto tests** (~2): DartSV crypto service, key derivation
 
 ## Development
 
 ### Project Structure
 ```
 lib/
-├── src/
-│   ├── actors/                      # CQRS Coordinators
-│   │   ├── libspiffy_actor_system.dart  # System initialization
-│   │   ├── wallet_manager_actor.dart    # Wallet coordinator
-│   │   ├── invoice_coordinator_actor.dart # Invoice coordinator (CQRS)
-│   │   ├── spv_actor.dart               # SPV validation with BEEF/BUMP
-│   │   ├── arc_actor.dart               # ARC service integration
-│   │   ├── header_sync_actor.dart       # Block header synchronization
-│   │   ├── wallet_messages.dart         # Wallet actor messages
-│   │   └── invoice_messages.dart        # Invoice actor messages
-│   ├── core/                        # Domain Aggregates (Write Side)
-│   │   ├── bitcoin_wallet_aggregate.dart # Event-sourced wallet
-│   │   ├── invoice_aggregate.dart       # Event-sourced invoices
-│   │   ├── wallet_commands.dart         # Wallet command definitions
-│   │   ├── wallet_events.dart           # Wallet event definitions
-│   │   ├── invoice_commands.dart        # Invoice command definitions
-│   │   └── invoice_events.dart          # Invoice event definitions
-│   ├── projections/                 # CQRS Read Side
-│   │   ├── wallet_projection.dart       # Wallet read model updates
-│   │   └── invoice_projection.dart      # Invoice read model updates
-│   ├── models/                      # Domain Models
-│   │   ├── wallet_state.dart            # Wallet aggregate state
-│   │   ├── invoice_state.dart           # Invoice aggregate state
-│   │   ├── wallet_read_model.dart       # Wallet query model
-│   │   ├── invoice_read_model.dart      # Invoice query model
-│   │   ├── bitcoin_transaction.dart     # Transaction model
-│   │   └── bitcoin_utxo.dart            # UTXO model
-│   ├── storage/                     # Persistence Layer
-│   │   ├── read_model_storage.dart      # Read model interface
-│   │   ├── isar_wallet_storage.dart     # Isar implementation
-│   │   ├── in_memory_wallet_storage.dart # In-memory for tests
-│   │   ├── libspiffy_schemas.dart       # Isar schemas (read models)
-│   │   └── secure_storage.dart          # Secure key storage
-│   ├── services/                    # Supporting Services
-│   │   ├── arc_service.dart             # ARC API client
-│   │   ├── spv_service.dart             # SPV validation logic
-│   │   ├── crypto_service.dart          # Cryptographic operations
-│   │   └── transaction_builder_service.dart
-│   ├── integration/                 # External Integrations
-│   │   └── spiffynode_bridge.dart       # SpiffyNode P2P bridge
-│   └── utils/                       # Utility Functions
-│       ├── beef.dart                    # BEEF format handling
-│       ├── bump.dart                    # BUMP merkle proofs
-│       └── crypto_utils.dart            # Crypto helpers
-├── example/                         # Usage Examples
-│   └── bitcoin_wallet_example.dart
-└── test/                            # Test Suites
-    ├── actors/                      # Actor unit tests
-    ├── integration/                 # Integration tests (CQRS flow)
-    │   ├── alice_bob_p2p_payment_test.dart # Full P2P payment flow
-    │   ├── invoice_persistence_test.dart    # Invoice CQRS test
-    │   ├── invoice_spv_integration_test.dart
-    │   └── full_spv_validation_test.dart
-    ├── services/                    # Service tests
-    ├── mocks/                       # Test mocks
-    │   ├── mock_arc_service.dart
-    │   └── mock_peer_manager.dart
-    ├── beef_test.dart               # BEEF validation tests
-    └── bump_test.dart               # BUMP validation tests
+├── libspiffy.dart                       # Primary barrel file (~100 exports)
+├── coordinator.dart                     # Public API (WalletCoordinatorActor)
+└── src/
+    ├── actors/                          # Actor System
+    │   ├── libspiffy_actor_system.dart      # System initialization & event registration
+    │   ├── wallet_coordinator_actor.dart     # Unified public API facade
+    │   ├── wallet_manager_actor.dart         # Wallet aggregate coordinator
+    │   ├── invoice_coordinator_actor.dart    # Invoice aggregate coordinator
+    │   ├── payment_coordinator_actor.dart    # Payment flow orchestration
+    │   ├── spv_actor.dart                    # SPV validation with BEEF/BUMP
+    │   ├── arc_actor.dart                    # ARC service integration
+    │   ├── header_sync_actor.dart            # Block header synchronization
+    │   ├── benford_coordinator_actor.dart    # Privacy-preserving UTXO splitting
+    │   ├── transaction_lifecycle_coordinator_actor.dart  # Pending tx recovery
+    │   ├── import_actor.dart                 # Wallet import from blockchain
+    │   ├── channel_p2p_adapter.dart          # Payment channel P2P communication
+    │   ├── coordinator_messages.dart         # Public API commands/events
+    │   ├── wallet_messages.dart              # Wallet actor messages
+    │   ├── invoice_messages.dart             # Invoice actor messages
+    │   ├── payment_messages.dart             # Payment flow messages
+    │   ├── payment_channel_messages.dart     # Channel protocol messages
+    │   └── spv_messages.dart                 # SPV validation messages
+    ├── core/                            # Domain Aggregates (Write Side)
+    │   ├── bitcoin_wallet_aggregate.dart     # Event-sourced wallet
+    │   ├── invoice_aggregate.dart            # Event-sourced invoices
+    │   ├── payment_channel_aggregate.dart    # Event-sourced payment channels
+    │   ├── wallet_commands.dart              # Wallet command definitions
+    │   ├── wallet_events.dart                # Wallet event definitions
+    │   ├── invoice_commands.dart             # Invoice command definitions
+    │   ├── invoice_events.dart               # Invoice event definitions
+    │   ├── channel_commands.dart             # Channel command definitions
+    │   ├── channel_events.dart               # Channel event definitions
+    │   └── channel_state.dart                # Channel aggregate state
+    ├── plugin/                          # Extensible Plugin System
+    │   ├── script_plugin.dart               # Base plugin interface
+    │   ├── transaction_builder_plugin.dart   # Multi-output transaction builder
+    │   ├── plugin_registry.dart             # Plugin discovery & management
+    │   └── plugin_types.dart                # Plugin data structures
+    ├── projections/                     # CQRS Read Side
+    │   ├── wallet_projection.dart           # Wallet read model updates
+    │   ├── invoice_projection.dart          # Invoice read model updates
+    │   └── channel_projection.dart          # Channel read model updates
+    ├── models/                          # Domain Models
+    │   ├── wallet_state.dart                # Wallet aggregate state
+    │   ├── wallet_read_model.dart           # Wallet query model
+    │   ├── invoice_state.dart               # Invoice aggregate state
+    │   ├── invoice_read_model.dart          # Invoice query model
+    │   ├── invoice_output_spec.dart         # Multi-output specs (P2PKH, P2MS, OP_RETURN, Plugin)
+    │   ├── bitcoin_utxo.dart                # UTXO model with plugin metadata
+    │   ├── bitcoin_transaction.dart         # Transaction model
+    │   ├── address_metadata.dart            # Address with script type and usage
+    │   ├── blockchain_data_models.dart      # Blockchain API response models
+    │   ├── payment_channel.dart             # Channel read model
+    │   ├── transaction_address_link.dart    # Transaction-address junction
+    │   └── wallet_type.dart                 # Enum: HD, WIF, XPRIV, XPUB
+    ├── spv/                             # SPV Validation
+    │   ├── beef.dart                        # BEEF format implementation
+    │   ├── bump.dart                        # BUMP merkle path implementation
+    │   ├── block_header_chain.dart          # Header chain management
+    │   ├── cdn_header_sync_service.dart     # Fast CDN-based header sync
+    │   ├── cdn_header_sync_config.dart      # CDN sync configuration
+    │   └── cdn_manifest.dart                # CDN manifest structures
+    ├── storage/                         # Persistence Layer
+    │   ├── read_model_storage.dart          # Read model interface
+    │   ├── event_storage.dart               # Event store interface
+    │   ├── secure_storage.dart              # Encrypted key storage interface
+    │   ├── storage_backend.dart             # Backend enum & factory
+    │   ├── isar_wallet_storage.dart         # Isar implementation (mobile/desktop)
+    │   ├── in_memory_wallet_storage.dart    # In-memory (dev/test)
+    │   ├── in_memory_secure_storage.dart    # In-memory key storage (dev/test)
+    │   ├── libspiffy_schemas.dart           # Isar schema definitions
+    │   ├── payment_channel_entity.dart      # Channel Isar entity
+    │   └── postgres/                        # PostgreSQL backend (server)
+    │       ├── postgres_config.dart             # Connection & pool config
+    │       ├── postgres_wallet_storage.dart      # Read model store
+    │       ├── postgres_event_store.dart         # Event sourcing store
+    │       ├── postgres_secure_storage.dart      # Encrypted key storage
+    │       ├── postgres_migrations.dart          # Migration infrastructure
+    │       └── migrations/                      # Schema versions
+    │           ├── v001_initial_schema.dart
+    │           └── v002_secure_secrets.dart
+    ├── services/                        # Business Logic Services
+    │   ├── crypto_service.dart              # Cryptographic interface (BIP32/39/44)
+    │   ├── dartsv_crypto_service.dart       # DartSV crypto implementation
+    │   ├── callback_transaction_signer.dart # Secure signer for plugins
+    │   ├── arc_service.dart                 # ARC API client
+    │   ├── arc_service_config.dart          # ARC configuration
+    │   ├── spv_service.dart                 # SPV validation logic
+    │   ├── block_header_service.dart        # Header management & reorgs
+    │   ├── wallet_balance_service.dart      # BEEF-based balance tracking
+    │   ├── ancestor_chain_service.dart      # Transaction ancestry chains
+    │   ├── transaction_builder_service.dart # Transaction construction
+    │   ├── payment_channel_builder.dart     # Channel transaction builder
+    │   ├── address_discovery_service.dart   # Hierarchical address discovery
+    │   ├── script_type_registry.dart        # Script type identification
+    │   ├── transaction_analyzer.dart        # Two-phase UTXO analysis
+    │   ├── transaction_import_service.dart  # Historical transaction import
+    │   ├── blockchain_data_source.dart      # Blockchain API interface
+    │   ├── whatsonchain_data_source.dart    # WhatsOnChain implementation
+    │   └── transaction/builder/             # Lock/unlock script builders
+    │       ├── p2pkh_lockbuilder.dart           # Standard P2PKH
+    │       ├── p2pkh_unlockbuilder.dart
+    │       ├── hodl_lockbuilder.dart            # Time-locked scripts
+    │       ├── hodl_unlockbuilder.dart
+    │       ├── op_return_lockbuilder.dart       # OP_RETURN metadata
+    │       └── ...                              # AIP, BMAP, B://, PP1, PP2
+    ├── crypto/                          # Encryption
+    │   └── encryption_service.dart          # AES-256-GCM with HKDF
+    ├── integration/                     # External System Bridges
+    │   └── spiffynode_bridge.dart           # SpiffyNode P2P bridge
+    └── utils/                           # Utilities
+        ├── beef.dart                        # BEEF format parsing
+        ├── bump.dart                        # BUMP merkle path utilities
+        ├── benford_distribution.dart        # Benford's Law splitting
+        ├── crypto_utils.dart                # Cryptographic helpers
+        ├── hex_utils.dart                   # Hex conversion
+        └── tsc_converter.dart               # Token/satoshi conversion
 ```
 
 **Key Architectural Layers:**
-- **actors/**: Long-lived coordinators that route commands
+- **actors/**: Long-lived coordinators that route commands; WalletCoordinatorActor is the single public entry point
 - **core/**: Event-sourced aggregates (write-side domain logic)
+- **plugin/**: Extensible system for custom script types and token protocols
 - **projections/**: Read-side event handlers (update read models)
 - **models/**: Separated into aggregate state (mutable) and read models (denormalized)
-- **storage/**: Read model persistence (Isar), EventStore managed by Eventador
+- **spv/**: BEEF/BUMP validation and block header synchronization
+- **storage/**: Read model persistence — Isar (mobile), PostgreSQL (server), in-memory (dev); EventStore managed by Eventador
 
 ### Adding New Features
 
@@ -1564,25 +1677,24 @@ Future<bool> handle(Event event) async {
 - Manually track UTXO state outside events
 - Modify UTXO state without commands/events
 
-## Contributing
+## Documentation
 
-1. Fork the repository
-2. Create a feature branch
-3. Add tests for new functionality
-4. Ensure all tests pass
-5. Submit a pull request
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
+- [Developer Guide](docs/developer-guide.md) — Public API reference and programming model
+- [Plugin API Guide](docs/script-plugin-api-guide.md) — Building custom script/token plugins
+- [Multi-Output Invoice Guide](docs/multi-output-invoice-guide.md) — P2PKH, P2MS, OP_RETURN, and plugin outputs
+- [CDN Header Sync Guide](docs/cdn-header-sync-guide.md) — Fast block header synchronization
+- [PostgreSQL Secure Storage Guide](docs/postgres-secure-storage-guide.md) — Server deployment with encrypted keys
+- [Projections Guide](projections-guide.md) — Building CQRS read models
+- [Wallet Architecture](wallet-architecture.md) — Detailed system architecture
+- [SPV Understanding](spv-understanding.md) — SPV concepts and implementation
 
 ## Acknowledgments
 
-- **Dactor**: Actor model framework for Dart
-- **Eventador**: Event sourcing and CQRS library
-- **DuraQ**: Operational workflow management
-- **DartSV**: Bitcoin SV library for Dart
-- **Bitcoin Community**: For the foundational protocols and specifications
+- **[Dactor](https://github.com/twostack/dactor)**: Actor model framework for Dart
+- **[Eventador](https://github.com/twostack/eventador)**: Event sourcing and CQRS library
+- **[DuraQ](https://github.com/twostack/duraq)**: Operational workflow management
+- **[DartSV](https://github.com/twostack/dartsv)**: Bitcoin SV library for Dart
+- **[SpiffyNode](https://github.com/twostack/spiffynode)**: SPV chain tracking and P2P connectivity
 
 ## Further Reading
 
@@ -1594,17 +1706,10 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ### Bitcoin & BSV
 - [SPV (Simplified Payment Verification)](https://bitcoin.org/bitcoin.pdf)
-- [Bitcoin Protocol Documentation](https://developer.bitcoin.org/)
 - [BEEF Specification](https://bsv.brc.dev/transactions/0062) - Background Evaluation Extended Format
 - [BUMP Specification](https://bsv.brc.dev/transactions/0058) - BSV Universal Merkle Path
 - [BRC-71 Standard](https://bsv.brc.dev/transactions/0071) - Merkle Path Format
-- [TSC Proof Format](https://tsc.bitcoinassociation.net/) - Teranode Storage Chain
 
-### Libraries & Frameworks
-- [Dactor](https://github.com/GunterO/dactor) - Actor framework for Dart
-- [Eventador](https://github.com/GunterO/eventador) - Event sourcing library
-- [DartSV](https://github.com/twostack/dartsv) - Bitcoin SV library for Dart
+## License
 
----
-
-**LibSpiffy** - Building the future of Bitcoin wallets with event sourcing and actor-based architecture. 
+This project is licensed under the MIT License - see the LICENSE file for details.

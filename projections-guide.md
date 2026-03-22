@@ -4,6 +4,8 @@ This guide explains how to create and manage projections to build real-time read
 
 ## 1. Introduction
 
+> **Package Note:** The base classes `Projection<TReadModel>` and `ProjectionManager` are provided by `package:eventador/eventador.dart`, not libspiffy. LibSpiffy provides concrete implementations that extend these base classes: **WalletProjection**, **InvoiceProjection**, and **ChannelProjection**.
+
 ### What are Projections?
 
 A projection is a process that listens to a stream of events and transforms them into a new representation, typically a denormalized read model. In a CQRS (Command Query Responsibility Segregation) architecture, projections are responsible for building the "read side" of your application.
@@ -43,7 +45,7 @@ Command → Aggregate → EventStore.persist()
 
 ## 2. Creating a Projection
 
-To create a projection, extend the `Projection` base class:
+To create a projection, extend the `Projection` base class (from `package:eventador/eventador.dart`):
 
 ```dart
 class AccountSummaryProjection extends Projection<Map<String, AccountSummary>> {
@@ -82,6 +84,18 @@ class AccountSummaryProjection extends Projection<Map<String, AccountSummary>> {
   }
 }
 ```
+
+> **LibSpiffy implementation note:** LibSpiffy's concrete projections differ from this generic example in several ways:
+> - **Generic type:** `WalletProjection` and `ChannelProjection` use `Projection<void>` (returning `null` from `readModel`) because they write to `ReadModelStorage` directly rather than exposing an in-memory read model. `InvoiceProjection` uses `Projection<InvoiceReadModel>`.
+> - **Constructor signature:** All three require `projectionId`, `eventStore`, and `storage` (a `ReadModelStorage` instance) as named parameters:
+>   ```dart
+>   WalletProjection({
+>     required String projectionId,
+>     required EventStore eventStore,
+>     required ReadModelStorage storage,
+>   })
+>   ```
+> - **Stateless design:** Projections do not cache state in memory. Storage (Isar via `ReadModelStorage`) is the sole source of truth, which prevents checkpoint/state mismatch bugs on restart.
 
 **Key Components**:
 
@@ -157,8 +171,8 @@ void main() async {
   // 2. Create projection
   final projection = AccountSummaryProjection(isar: isar);
 
-  // 3. Create ProjectionManager with EventStream
-  final projectionManager = ProjectionManager(eventStore);
+  // 3. Create ProjectionManager with EventStream (and optional Isar for automatic checkpointing)
+  final projectionManager = ProjectionManager(eventStore, isar: isar);
 
   // 4. Register projection - auto-subscribes to event stream
   await projectionManager.registerProjection(projection);
@@ -187,7 +201,8 @@ void main() async {
 
 **Key Points**:
 
-*   ProjectionManager accepts an `EventStream` (which EventStore implements)
+*   `ProjectionManager` is provided by `package:eventador/eventador.dart`
+*   ProjectionManager accepts an `EventStream` (which EventStore implements) and an optional `Isar` instance for automatic checkpoint persistence
 *   `registerProjection()` takes a projection instance
 *   `start()` begins streaming events to all registered projections
 *   Events automatically flow to projections - no manual routing!
@@ -195,30 +210,39 @@ void main() async {
 
 ## 5. Managing Checkpoints
 
-Projections track their progress using checkpoints:
+Projections track their progress using checkpoints. When `ProjectionManager` is created with an `Isar` instance, **checkpoint persistence is handled automatically** -- you do not need to implement storage logic in your projection:
 
 ```dart
+// Automatic checkpoint management (recommended):
+final projectionManager = ProjectionManager(eventStore, isar: isar);
+// ProjectionManager will:
+//   - Load checkpoints from Isar on startup
+//   - Persist checkpoints to Isar in batches (default: every 100 events)
+//   - Flush remaining checkpoints on stop
+```
+
+The `Projection` base class still defines `getCheckpoint()` and `updateCheckpoint()` as abstract methods, so projections must implement them. However, these serve as a **fallback** -- `ProjectionManager` only calls them if no Isar instance is provided. LibSpiffy's projections use a simple in-memory counter for this fallback:
+
+```dart
+int _checkpoint = 0;
+
 @override
 Future<int> getCheckpoint() async {
-  // Load checkpoint from persistent storage
-  // For in-memory: return 0
-  // For database: query and return last processed sequence
-  return 0;
+  return _checkpoint;
 }
 
 @override
-Future<void> updateCheckpoint(int sequenceNumber) async {
-  // Save checkpoint to persistent storage
-  // This allows resuming from the last processed event
+Future<void> updateCheckpoint(int checkpoint) async {
+  _checkpoint = checkpoint;
 }
 ```
 
 **Checkpoint Usage**:
 
-*   ProjectionManager loads the checkpoint when subscribing
+*   ProjectionManager loads the checkpoint from Isar when subscribing (falling back to `projection.getCheckpoint()` if Isar is unavailable)
 *   Events are replayed from the checkpoint position
 *   Prevents reprocessing all events on restart
-*   Should be persisted to survive application restarts
+*   Checkpoint batch size is configurable: `ProjectionManager(eventStore, isar: isar, checkpointBatchSize: 50)`
 
 ## 6. Persisting Read Models
 
@@ -294,6 +318,11 @@ See `example/bank_account_e2e_example.dart` for a complete working example featu
 - **ProjectionManager**: Automatic event streaming setup
 - **Full E2E Flow**: Commands → Events → Projections → Read Model queries
 
+LibSpiffy ships three concrete projections:
+- **WalletProjection** (`Projection<void>`): Builds UTXO, transaction, and address read models from wallet events
+- **InvoiceProjection** (`Projection<InvoiceReadModel>`): Builds invoice read models from invoice lifecycle events
+- **ChannelProjection** (`Projection<void>`): Builds payment channel read models from channel lifecycle events
+
 ### Key Excerpts:
 
 ```dart
@@ -350,7 +379,7 @@ class AccountSummaryProjection extends Projection<Map<String, AccountSummary>> {
 // Setup in main()
 final eventStore = await IsarEventStore.create(...);
 final projection = AccountSummaryProjection(isar: isar);
-final projectionManager = ProjectionManager(eventStore);
+final projectionManager = ProjectionManager(eventStore, isar: isar);
 
 await projectionManager.registerProjection(projection);
 await projectionManager.start();
@@ -416,7 +445,7 @@ Eventador's projection system is inspired by Akka Persistence Query:
 | Event Streaming | `eventsByTag()`, `allEvents()` | `EventStream` interface |
 | Projection Manager | Akka Projection | `ProjectionManager` |
 | Subscription | Pull-based streams | Pull-based Dart streams |
-| Checkpointing | Offset storage | `getCheckpoint()` / `updateCheckpoint()` |
+| Checkpointing | Offset storage | Automatic via Isar (fallback: `getCheckpoint()` / `updateCheckpoint()`) |
 | Read Model | User-defined | `Projection<TReadModel>` |
 
 Both systems follow the same principle: **projections subscribe to event streams rather than receiving manually routed events**.

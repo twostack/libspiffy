@@ -24,7 +24,7 @@ LibSpiffy implements a **script-centric, event-sourced Bitcoin SPV wallet** that
 - Clean separation allows protocol experts to build specialized views
 - Cross-protocol relationships tracked in projections
 
-### 4. SPV + ARC Integration
+### 4. SPV + ARC (Authoritative Response Component) Integration
 - **SpiffyNode** provides SPV block header tracking and P2P connectivity
 - **ARC Service** handles transaction broadcasting and merkle proof retrieval
 - **BEEF/BUMP** integration for transaction packaging with proofs
@@ -38,7 +38,7 @@ LibSpiffy implements a **script-centric, event-sourced Bitcoin SPV wallet** that
 
 ## WalletCoordinatorActor
 
-The coordinator is the facade that sits between external clients and LibSpiffy's internal actor system. It eliminates the need for third-party apps to understand or orchestrate the 9+ internal actors.
+The coordinator is the facade that sits between external clients and LibSpiffy's internal actor system. It eliminates the need for third-party apps to understand or orchestrate the 12 internal actors.
 
 ### Import Pattern
 
@@ -140,6 +140,32 @@ LibSpiffy uses a **CQRS-based layered architecture** combining **Dactor actors**
 │  │ • Merkle retrieval  │  │ • Chain tip monitoring              ││
 │  │ • Policy query      │  │ • Header forwarding                 ││
 │  └─────────────────────┘  └─────────────────────────────────────┘│
+│                                                                  │
+│  ┌──────────────────────────┐  ┌────────────────────────────────┐│
+│  │ PaymentCoordinatorActor  │  │ PaymentChannelManagerActor     ││
+│  │                          │  │                                ││
+│  │ • UTXO selection         │  │ • Payment channel lifecycle    ││
+│  │ • Ancestor proof coll.   │  │ • Channel state management    ││
+│  │ • BEEF construction      │  │ • P2P channel messages        ││
+│  │ • Does NOT broadcast     │  │ • Balance negotiation         ││
+│  └──────────────────────────┘  └────────────────────────────────┘│
+│                                                                  │
+│  ┌──────────────────────────┐  ┌────────────────────────────────┐│
+│  │ BenfordCoordinatorActor  │  │ TxLifecycleCoordinatorActor   ││
+│  │                          │  │                                ││
+│  │ • Benford's Law UTXO     │  │ • Pending tx tracking         ││
+│  │   splitting              │  │ • Restart recovery            ││
+│  │ • Privacy-compliant      │  │ • ARC registration            ││
+│  │   change outputs         │  │ • Status monitoring           ││
+│  └──────────────────────────┘  └────────────────────────────────┘│
+│                                                                  │
+│  ┌──────────────────────────┐                                    │
+│  │      ImportActor         │                                    │
+│  │                          │                                    │
+│  │ • Wallet import          │                                    │
+│  │ • Address discovery      │                                    │
+│  │ • Tx harvesting          │                                    │
+│  └──────────────────────────┘                                    │
 └─────────────────────────┬────────────────────────────────────────┘
                           │ Commands
                           ▼
@@ -524,7 +550,7 @@ class SPVActor extends Actor {
 
 ### HeaderSyncActor
 
-Manages block header synchronization and chain tip tracking:
+Manages block header synchronization and chain tip tracking. For fast initial sync, `CdnHeaderSyncService` provides an alternative path that bulk-downloads headers from a CDN before switching to P2P incremental sync.
 
 ```dart
 class HeaderSyncActor extends Actor {
@@ -857,6 +883,56 @@ class ARCActor extends Actor {
   }
 }
 ```
+
+### PaymentCoordinatorActor
+
+The PaymentCoordinatorActor orchestrates the construction of outbound payments without broadcasting them. It selects UTXOs from the wallet aggregate, collects ancestor proofs for each input, and assembles a complete BEEF envelope that the caller (typically the WalletCoordinatorActor) can then hand off to the ARCActor for broadcast. By separating construction from broadcast, the coordinator supports dry-run validation, multi-party signing flows, and payment channel funding.
+
+**Key Responsibilities:**
+- UTXO selection using the wallet aggregate's funding and special UTXO pools
+- Ancestor proof collection for each selected input (merkle paths back to confirmed headers)
+- BEEF envelope construction packaging the transaction with its ancestor proofs
+- Fee estimation coordination with ARCActor fee quotes
+- Does **not** broadcast -- returns the assembled BEEF to the caller
+
+### BenfordCoordinatorActor
+
+The BenfordCoordinatorActor applies Benford's Law statistical distribution to UTXO splitting decisions. When the wallet creates change outputs or consolidates UTXOs, this actor determines split amounts whose leading-digit distribution matches the natural logarithmic curve (digit 1 at ~30.1%, digit 9 at ~4.6%). This makes the wallet's on-chain footprint statistically indistinguishable from organic economic activity, resisting chain-analysis clustering.
+
+**Key Responsibilities:**
+- Generating Benford-compliant split amounts for change outputs
+- Advising the PaymentCoordinatorActor on privacy-optimal output structures
+- Periodic UTXO pool analysis and consolidation recommendations
+- Privacy score calculation and reporting
+
+### TransactionLifecycleCoordinatorActor
+
+The TransactionLifecycleCoordinatorActor tracks every outbound transaction from creation through final confirmation. It maintains a registry of pending transactions, registers callback URLs with the ARCActor for status webhooks, and on restart recovers incomplete transactions from the event store to resume monitoring.
+
+**Key Responsibilities:**
+- Tracking pending transaction state (created, broadcast, seen, confirmed)
+- Registering transactions with ARCActor for merkle proof callbacks
+- Recovering in-flight transactions on wallet restart
+- Emitting lifecycle events (broadcast success/failure, confirmation milestones)
+
+### ImportActor
+
+The ImportActor handles wallet import from the blockchain when a user restores from a mnemonic or xpub. It performs address discovery using the standard BIP-44 gap limit, queries transaction history for each discovered address, and feeds the recovered UTXOs and transactions back into the wallet aggregate via the normal command flow.
+
+**Key Responsibilities:**
+- BIP-44 address discovery with configurable gap limit
+- Transaction harvesting for discovered addresses
+- UTXO reconstruction from harvested transaction history
+- Progress reporting during long-running import operations
+
+## Plugin System
+
+LibSpiffy provides an extensible plugin system for custom script types and multi-output protocol transactions.
+
+- **ScriptPlugin**: Interface for registering custom script types. Implementations provide script identification, metadata extraction, and locking/unlocking script builders, which are registered with the `ScriptTemplateRegistry` at wallet initialization.
+- **TransactionBuilderPlugin**: Interface for plugins that need to add multiple outputs to a transaction (e.g., token protocols, OP_RETURN data protocols). The plugin receives the `TransactionBuilder` and appends its outputs before the transaction is finalized.
+- **PluginRegistry**: Singleton that manages all registered `ScriptPlugin` and `TransactionBuilderPlugin` instances. Actors query the registry to resolve script types and invoke builder plugins during transaction construction.
+- **CallbackTransactionSigner**: A signing adapter that lets plugins request transaction signing without direct access to private keys. The plugin provides unsigned inputs and receives signatures through a callback, keeping key material confined to the `CryptoService`.
 
 ## Core Components
 
@@ -1962,6 +2038,14 @@ abstract class SecureStorage {
   Future<String?> getIdentityKey(String identityId);
 }
 ```
+
+### Storage Backends
+
+LibSpiffy supports multiple storage backends behind the `WalletStorage` and `SecureStorage` interfaces:
+
+- **Isar** (mobile/desktop): The default backend for on-device use. Provides fast indexed queries, CBOR event serialization, and schema migration support via `LibSpiffySchemas`.
+- **PostgreSQL** (server): For server-side deployments. Includes SQL migrations for schema management and encrypted key storage columns for `SecureStorage` fields (mnemonic, root private key, identity keys).
+- **In-memory** (dev/test): `InMemoryWalletStorage` for unit tests and rapid prototyping. All data is ephemeral and lost on process exit.
 
 ## Service Integration
 

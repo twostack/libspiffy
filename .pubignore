@@ -6,4 +6,7 @@ libspiffy.code-workspace
 libspiffy.iml
 data/
 tool/
+build/
 .beads/
+test/data/
+test/cdn/

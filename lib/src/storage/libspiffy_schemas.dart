@@ -310,6 +310,9 @@ class BitcoinUtxoEntity {
   /// UTXO category ('funding', 'special', 'protocol')
   late String category;
 
+  /// Plugin metadata as JSON string (null for standard P2PKH UTXOs)
+  String? pluginMetadataJson;
+
   BitcoinUtxoEntity();
 
   /// Create from domain model BitcoinUtxo
@@ -330,7 +333,10 @@ class BitcoinUtxoEntity {
       ..spentInTxId = null // This info would come from spending transaction
       ..scriptType = 'p2pkh' // Default, could be enhanced
       ..isSpendable = utxo.status == UTXOStatus.available
-      ..category = 'funding'; // Default category
+      ..category = 'funding' // Default category
+      ..pluginMetadataJson = utxo.pluginMetadata != null
+          ? jsonEncode(utxo.pluginMetadata)
+          : null;
   }
 
   /// Convert back to domain model BitcoinUtxo
@@ -349,7 +355,10 @@ class BitcoinUtxoEntity {
       address: address ?? '',
       blockHeight: blockHeight,
       confirmations: confirmations,
-      status: utxoStatus,  // ← Include the status!
+      status: utxoStatus,
+      pluginMetadata: pluginMetadataJson != null
+          ? Map<String, dynamic>.from(jsonDecode(pluginMetadataJson!) as Map)
+          : null,
     );
   }
 
@@ -372,6 +381,7 @@ class BitcoinUtxoEntity {
       'scriptType': scriptType,
       'isSpendable': isSpendable,
       'category': category,
+      'pluginMetadataJson': pluginMetadataJson,
     };
   }
 
@@ -393,7 +403,8 @@ class BitcoinUtxoEntity {
       ..spentInTxId = json['spentInTxId'] as String?
       ..scriptType = json['scriptType'] as String
       ..isSpendable = json['isSpendable'] as bool
-      ..category = json['category'] as String;
+      ..category = json['category'] as String
+      ..pluginMetadataJson = json['pluginMetadataJson'] as String?;
   }
 }
 

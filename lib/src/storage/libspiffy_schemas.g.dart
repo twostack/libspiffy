@@ -4542,53 +4542,58 @@ const BitcoinUtxoEntitySchema = CollectionSchema(
       name: r'isSpendable',
       type: IsarType.bool,
     ),
-    r'satoshis': PropertySchema(
+    r'pluginMetadataJson': PropertySchema(
       id: 6,
+      name: r'pluginMetadataJson',
+      type: IsarType.string,
+    ),
+    r'satoshis': PropertySchema(
+      id: 7,
       name: r'satoshis',
       type: IsarType.string,
     ),
     r'scriptPubKey': PropertySchema(
-      id: 7,
+      id: 8,
       name: r'scriptPubKey',
       type: IsarType.string,
     ),
     r'scriptType': PropertySchema(
-      id: 8,
+      id: 9,
       name: r'scriptType',
       type: IsarType.string,
     ),
     r'spentAt': PropertySchema(
-      id: 9,
+      id: 10,
       name: r'spentAt',
       type: IsarType.dateTime,
     ),
     r'spentInTxId': PropertySchema(
-      id: 10,
+      id: 11,
       name: r'spentInTxId',
       type: IsarType.string,
     ),
     r'status': PropertySchema(
-      id: 11,
+      id: 12,
       name: r'status',
       type: IsarType.string,
     ),
     r'txid': PropertySchema(
-      id: 12,
+      id: 13,
       name: r'txid',
       type: IsarType.string,
     ),
     r'utxoKey': PropertySchema(
-      id: 13,
+      id: 14,
       name: r'utxoKey',
       type: IsarType.string,
     ),
     r'vout': PropertySchema(
-      id: 14,
+      id: 15,
       name: r'vout',
       type: IsarType.long,
     ),
     r'walletId': PropertySchema(
-      id: 15,
+      id: 16,
       name: r'walletId',
       type: IsarType.string,
     )
@@ -4673,6 +4678,12 @@ int _bitcoinUtxoEntityEstimateSize(
     }
   }
   bytesCount += 3 + object.category.length * 3;
+  {
+    final value = object.pluginMetadataJson;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
   bytesCount += 3 + object.satoshis.length * 3;
   bytesCount += 3 + object.scriptPubKey.length * 3;
   bytesCount += 3 + object.scriptType.length * 3;
@@ -4701,16 +4712,17 @@ void _bitcoinUtxoEntitySerialize(
   writer.writeLong(offsets[3], object.confirmations);
   writer.writeDateTime(offsets[4], object.createdAt);
   writer.writeBool(offsets[5], object.isSpendable);
-  writer.writeString(offsets[6], object.satoshis);
-  writer.writeString(offsets[7], object.scriptPubKey);
-  writer.writeString(offsets[8], object.scriptType);
-  writer.writeDateTime(offsets[9], object.spentAt);
-  writer.writeString(offsets[10], object.spentInTxId);
-  writer.writeString(offsets[11], object.status);
-  writer.writeString(offsets[12], object.txid);
-  writer.writeString(offsets[13], object.utxoKey);
-  writer.writeLong(offsets[14], object.vout);
-  writer.writeString(offsets[15], object.walletId);
+  writer.writeString(offsets[6], object.pluginMetadataJson);
+  writer.writeString(offsets[7], object.satoshis);
+  writer.writeString(offsets[8], object.scriptPubKey);
+  writer.writeString(offsets[9], object.scriptType);
+  writer.writeDateTime(offsets[10], object.spentAt);
+  writer.writeString(offsets[11], object.spentInTxId);
+  writer.writeString(offsets[12], object.status);
+  writer.writeString(offsets[13], object.txid);
+  writer.writeString(offsets[14], object.utxoKey);
+  writer.writeLong(offsets[15], object.vout);
+  writer.writeString(offsets[16], object.walletId);
 }
 
 BitcoinUtxoEntity _bitcoinUtxoEntityDeserialize(
@@ -4727,16 +4739,17 @@ BitcoinUtxoEntity _bitcoinUtxoEntityDeserialize(
   object.createdAt = reader.readDateTime(offsets[4]);
   object.id = id;
   object.isSpendable = reader.readBool(offsets[5]);
-  object.satoshis = reader.readString(offsets[6]);
-  object.scriptPubKey = reader.readString(offsets[7]);
-  object.scriptType = reader.readString(offsets[8]);
-  object.spentAt = reader.readDateTimeOrNull(offsets[9]);
-  object.spentInTxId = reader.readStringOrNull(offsets[10]);
-  object.status = reader.readString(offsets[11]);
-  object.txid = reader.readString(offsets[12]);
-  object.utxoKey = reader.readString(offsets[13]);
-  object.vout = reader.readLong(offsets[14]);
-  object.walletId = reader.readString(offsets[15]);
+  object.pluginMetadataJson = reader.readStringOrNull(offsets[6]);
+  object.satoshis = reader.readString(offsets[7]);
+  object.scriptPubKey = reader.readString(offsets[8]);
+  object.scriptType = reader.readString(offsets[9]);
+  object.spentAt = reader.readDateTimeOrNull(offsets[10]);
+  object.spentInTxId = reader.readStringOrNull(offsets[11]);
+  object.status = reader.readString(offsets[12]);
+  object.txid = reader.readString(offsets[13]);
+  object.utxoKey = reader.readString(offsets[14]);
+  object.vout = reader.readLong(offsets[15]);
+  object.walletId = reader.readString(offsets[16]);
   return object;
 }
 
@@ -4760,24 +4773,26 @@ P _bitcoinUtxoEntityDeserializeProp<P>(
     case 5:
       return (reader.readBool(offset)) as P;
     case 6:
-      return (reader.readString(offset)) as P;
+      return (reader.readStringOrNull(offset)) as P;
     case 7:
       return (reader.readString(offset)) as P;
     case 8:
       return (reader.readString(offset)) as P;
     case 9:
-      return (reader.readDateTimeOrNull(offset)) as P;
-    case 10:
-      return (reader.readStringOrNull(offset)) as P;
-    case 11:
       return (reader.readString(offset)) as P;
+    case 10:
+      return (reader.readDateTimeOrNull(offset)) as P;
+    case 11:
+      return (reader.readStringOrNull(offset)) as P;
     case 12:
       return (reader.readString(offset)) as P;
     case 13:
       return (reader.readString(offset)) as P;
     case 14:
-      return (reader.readLong(offset)) as P;
+      return (reader.readString(offset)) as P;
     case 15:
+      return (reader.readLong(offset)) as P;
+    case 16:
       return (reader.readString(offset)) as P;
     default:
       throw IsarError('Unknown property with id $propertyId');
@@ -5653,6 +5668,160 @@ extension BitcoinUtxoEntityQueryFilter
       return query.addFilterCondition(FilterCondition.equalTo(
         property: r'isSpendable',
         value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      pluginMetadataJsonIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'pluginMetadataJson',
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      pluginMetadataJsonIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'pluginMetadataJson',
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      pluginMetadataJsonEqualTo(
+    String? value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'pluginMetadataJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      pluginMetadataJsonGreaterThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'pluginMetadataJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      pluginMetadataJsonLessThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'pluginMetadataJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      pluginMetadataJsonBetween(
+    String? lower,
+    String? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'pluginMetadataJson',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      pluginMetadataJsonStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'pluginMetadataJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      pluginMetadataJsonEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'pluginMetadataJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      pluginMetadataJsonContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'pluginMetadataJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      pluginMetadataJsonMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'pluginMetadataJson',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      pluginMetadataJsonIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'pluginMetadataJson',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      pluginMetadataJsonIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'pluginMetadataJson',
+        value: '',
       ));
     });
   }
@@ -6987,6 +7156,20 @@ extension BitcoinUtxoEntityQuerySortBy
   }
 
   QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterSortBy>
+      sortByPluginMetadataJson() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'pluginMetadataJson', Sort.asc);
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterSortBy>
+      sortByPluginMetadataJsonDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'pluginMetadataJson', Sort.desc);
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterSortBy>
       sortBySatoshis() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'satoshis', Sort.asc);
@@ -7227,6 +7410,20 @@ extension BitcoinUtxoEntityQuerySortThenBy
   }
 
   QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterSortBy>
+      thenByPluginMetadataJson() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'pluginMetadataJson', Sort.asc);
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterSortBy>
+      thenByPluginMetadataJsonDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'pluginMetadataJson', Sort.desc);
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterSortBy>
       thenBySatoshis() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'satoshis', Sort.asc);
@@ -7412,6 +7609,14 @@ extension BitcoinUtxoEntityQueryWhereDistinct
   }
 
   QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QDistinct>
+      distinctByPluginMetadataJson({bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'pluginMetadataJson',
+          caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QDistinct>
       distinctBySatoshis({bool caseSensitive = true}) {
     return QueryBuilder.apply(this, (query) {
       return query.addDistinctBy(r'satoshis', caseSensitive: caseSensitive);
@@ -7527,6 +7732,13 @@ extension BitcoinUtxoEntityQueryProperty
       isSpendableProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'isSpendable');
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, String?, QQueryOperations>
+      pluginMetadataJsonProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'pluginMetadataJson');
     });
   }
 

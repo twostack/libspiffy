@@ -7,6 +7,7 @@ import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:logging/logging.dart';
 import 'package:spiffynode/spiffy_node.dart';
 
+import '../plugin/plugin_registry.dart';
 import '../storage/wallet_storage.dart';
 import '../utils/beef.dart';
 import '../models/invoice_output_spec.dart';
@@ -499,7 +500,29 @@ class SPVActor extends Actor {
         final scriptType = templateRegistry.identifyScriptType(script);
         
         if (scriptInfo == null || scriptType == null) {
-          // Skip unrecognized script types
+          // Fall back to registered plugins before skipping
+          final pluginResult = PluginRegistry().identifyScript(script);
+          if (pluginResult != null) {
+            final plugin = PluginRegistry().getPlugin(pluginResult.pluginId);
+            final metadata = plugin?.extractMetadata(script);
+            final ownerAddress = metadata?['ownerAddress'] as String?;
+            if (ownerAddress != null) {
+              final belongsToUs = await _checkOutputOwnership(
+                  ownerAddress, walletId, invoice);
+              if (belongsToUs) {
+                spendableUTXOs.add({
+                  'txid': transaction.id,
+                  'vout': outputIndex,
+                  'satoshis': output.satoshis.toInt(),
+                  'script': output.script.toHex(),
+                  'scriptType':
+                      '${pluginResult.pluginId}:${pluginResult.scriptType}',
+                  'address': ownerAddress,
+                  'pluginMetadata': metadata,
+                });
+              }
+            }
+          }
           continue;
         }
 

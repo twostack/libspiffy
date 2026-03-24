@@ -288,6 +288,23 @@ class WalletProjection extends Projection<void> {
     
     // Look up derivation index from address metadata
     int? derivationIndex;
+    Map<String, dynamic>? scriptMetadata;
+
+    // Extract script metadata for all received UTXOs (needed for plugin UTXO storage)
+    if (event.scriptPubKey.isNotEmpty) {
+      try {
+        final walletMeta = await _storage.getWallet(event.walletId);
+        final networkTypeStr = walletMeta?['network_type'] as String? ?? 'test';
+        final networkType = networkTypeStr == 'main'
+            ? dartsv.NetworkType.MAIN
+            : dartsv.NetworkType.TEST;
+
+        final script = dartsv.SVScript.fromHex(event.scriptPubKey);
+        final scriptRegistry = ScriptTypeRegistry(networkType: networkType);
+        scriptMetadata = scriptRegistry.extractScriptMetadata(script);
+      } catch (_) {}
+    }
+
     if (event.address.isNotEmpty) {
       final addressMeta = await _storage.getAddressMetadata(event.walletId, event.address);
       if (addressMeta != null) {
@@ -295,41 +312,15 @@ class WalletProjection extends Projection<void> {
       } else {
         // Address doesn't exist yet - create it!
         // This can happen for payment channel addresses or other externally generated addresses
-        
-        // Parse the scriptPubKey to determine actual script type (don't guess!)
-        String scriptType = 'unknown';
-        Map<String, dynamic>? scriptMetadata;
-        
-        try {
-          // Get wallet network type
-          final walletMeta = await _storage.getWallet(event.walletId);
-          final networkTypeStr = walletMeta?['network_type'] as String? ?? 'test';
-          final networkType = networkTypeStr == 'main' 
-              ? dartsv.NetworkType.MAIN 
-              : dartsv.NetworkType.TEST;
-          
-          // Parse script to identify type
-          final script = dartsv.SVScript.fromHex(event.scriptPubKey);
-          final scriptRegistry = ScriptTypeRegistry(networkType: networkType);
-          
-          final identifiedType = scriptRegistry.identifyScriptType(script);
-          if (identifiedType != null) {
-            scriptType = identifiedType.toLowerCase();
-            scriptMetadata = scriptRegistry.extractScriptMetadata(script);
-            if (scriptMetadata != null && scriptMetadata.isNotEmpty) {
-            }
-          }
-        } catch (e) {
-          // Fall back to unknown rather than guessing
-        }
-        
+        String scriptType = scriptMetadata?['scriptType'] as String? ?? 'unknown';
+
         final newAddressMeta = AddressMetadata(
           address: event.address,
-          scriptType: scriptType, // Actual script type from parsing
-          derivationPath: null, // Unknown for externally received addresses
-          derivationIndex: null, // Unknown for externally received addresses
-          isChange: false, // Assume not change for received UTXOs
-          label: 'Received UTXO ($scriptType)', // Include script type in label
+          scriptType: scriptType,
+          derivationPath: null,
+          derivationIndex: null,
+          isChange: false,
+          label: 'Received UTXO ($scriptType)',
           purpose: 'receive',
           firstUsedAt: event.timestamp,
           lastUsedAt: event.timestamp,
@@ -339,7 +330,7 @@ class WalletProjection extends Projection<void> {
           isWatched: true,
         );
         await _storage.upsertAddress(event.walletId, newAddressMeta);
-        
+
         // Update wallet address count since we just added a new address
         await _updateWalletAddressCount(event.walletId, event.timestamp);
       }
@@ -366,6 +357,7 @@ class WalletProjection extends Projection<void> {
       confirmations: event.confirmations ?? 0,
       status: event.initialStatus,
       derivationIndex: derivationIndex,
+      pluginMetadata: scriptMetadata,
     );
     await _storage.upsertUTXO(event.walletId, utxo);
     

@@ -562,7 +562,10 @@ class IsarWalletStorage implements ReadModelStorage {
           ..blockHeight = utxo.blockHeight
           ..confirmations = utxo.confirmations ?? 0
           ..status = utxo.status.name
-          ..isSpendable = utxo.status == UTXOStatus.available;
+          ..isSpendable = utxo.status == UTXOStatus.available
+          ..pluginMetadataJson = utxo.pluginMetadata != null
+              ? jsonEncode(utxo.pluginMetadata)
+              : existingEntity.pluginMetadataJson;
         
         if (utxo.status == UTXOStatus.spent) {
           existingEntity.spentAt = utxo.updatedAt;

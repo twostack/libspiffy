@@ -13,6 +13,7 @@
 
 import 'dart:async';
 import 'dart:convert';
+import 'package:convert/convert.dart';
 import 'dart:io';
 
 import 'package:dactor/dactor.dart';
@@ -226,7 +227,7 @@ void main() {
       // In production, Alice sends payment.beefBytes to Bob over P2P.
       // Bob feeds it to his coordinator for validation.
 
-      final beefHex = base64Encode(payment.beefBytes);
+      final beefHex = hex.encode(payment.beefBytes);
 
       final validation = ofType<BEEFValidationResultEvent>(bobEvents)
           .first

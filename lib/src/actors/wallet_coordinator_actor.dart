@@ -466,8 +466,7 @@ class WalletCoordinatorActor extends Actor {
     _log.info('Receiving transaction for wallet ${cmd.walletId}');
 
     try {
-      final beefBytes = Uint8List.fromList(
-          List<int>.from(base64Decode(cmd.beefHex).toList()));
+      final beefBytes = Uint8List.fromList(hex.decode(cmd.beefHex));
       final beef = BEEF.parse(beefBytes);
 
       // The last transaction in BEEF is typically the payment tx
@@ -858,7 +857,7 @@ class WalletCoordinatorActor extends Actor {
       final (beefHex, invoiceId) = beefData;
 
       try {
-        final beefBytes = Uint8List.fromList(base64Decode(beefHex).toList());
+        final beefBytes = Uint8List.fromList(hex.decode(beefHex));
         final beef = BEEF.parse(beefBytes);
         final txid = beef.txs.isNotEmpty
             ? beef.calculateTxid(beef.txs.last).map((b) => b.toRadixString(16).padLeft(2, '0')).join()

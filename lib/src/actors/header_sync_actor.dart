@@ -215,12 +215,12 @@ class HeaderSyncActor extends Actor {
       }
       
       final currentHeight = _headerChain.bestHeight;
-      _logger.info('Triggering header sync from height $currentHeight...');
-      
+
       // Mark sync as in progress
       _syncInProgress = true;
-      
+
       final peers = _peerManager.getPeers();
+      _logger.info('Triggering header sync from height $currentHeight... (${peers.length} peers, states: ${peers.map((p) => p.state).toList()})');
       if (peers.isEmpty) {
         _logger.warning('No peers available for header sync');
         return;
@@ -253,10 +253,12 @@ class HeaderSyncActor extends Actor {
         hashStop: Hash.zero(), // No stop hash - get all available
       );
       
-      // Send to first healthy peer (others will respond too, but we only need one)
+      // Send to first healthy peer
       var sentCount = 0;
+      _logger.info('getHeaders locators: ${getHeadersMsg.blockLocatorHashes.map((h) => h.toString().substring(0, 16)).toList()}');
       for (final peer in peers) {
         try {
+          _logger.info('Sending getHeaders to ${peer.toString()} (state: ${peer.state})');
           peer.writeMessage(getHeadersMsg);
           sentCount++;
           _logger.info('Sent getHeaders request to ${peer.toString()} from height $currentHeight');

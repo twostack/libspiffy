@@ -825,10 +825,13 @@ class LibSpiffyActorSystem {
       initializeMessages();
       
       // 2. Map network type to BitcoinNetwork enum
-      final network = networkType == 'main' 
-          ? BitcoinNetwork.mainnet 
-          : BitcoinNetwork.testnet;
-      
+      final network = networkType == 'main'
+          ? BitcoinNetwork.mainnet
+          : networkType == 'regtest'
+              ? BitcoinNetwork.regtest
+              : BitcoinNetwork.testnet;
+      print('[LibSpiffy] P2P network: $networkType → ${network.name} (magic: 0x${network.magic.toRadixString(16)})');
+
       // 3. Create PeerManager
       _peerManager = PeerManager(
         network: network,
@@ -935,9 +938,9 @@ class LibSpiffyActorSystem {
   
   /// Get default seed nodes for the specified network
   List<String> _getDefaultPeers(String networkType) {
-    return networkType == 'main'
-        ? ['seed.bitcoinsv.io:8333']
-        : ['testnet-seed.bitcoinsv.io:18333'];
+    if (networkType == 'main') return ['seed.bitcoinsv.io:8333'];
+    if (networkType == 'regtest') return []; // No default seeds for regtest
+    return ['testnet-seed.bitcoinsv.io:18333'];
   }
 
   /// Get reference to the WalletManager actor

@@ -244,6 +244,9 @@ class LibSpiffyPeerHandler implements PeerHandlerI {
 
   @override
   Future<void> handleHeaders(WireMessage message, PeerI peer) async {
+    if (message is MsgHeaders) {
+      _logger.info('📥 Received headers message: ${message.headers.length} headers from ${peer.toString()}');
+    }
     if (message is MsgHeaders && message.headers.isNotEmpty) {
       _logger.info('📥 Capturing ${message.headers.length} headers from ${peer.toString()}');
       

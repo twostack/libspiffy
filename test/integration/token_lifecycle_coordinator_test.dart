@@ -128,7 +128,7 @@ class TsTokenNftPlugin extends TransactionBuilderPlugin {
   dartsv.UnlockingScriptBuilder? createUnlockBuilder(PluginUnlockSpec spec) => null;
 
   @override
-  Future<dartsv.Transaction> buildTransaction(PluginTransactionRequest request) async {
+  Future<TransactionBuilderResult> buildTransaction(PluginTransactionRequest request) async {
     final action = request.params['action'] as String;
     final signer = request.signer;
     final signerPub = request.publicKeys.first;
@@ -138,11 +138,12 @@ class TsTokenNftPlugin extends TransactionBuilderPlugin {
         final fundingTxHex = request.params['fundingTxHex'] as String;
         final ownerAddress = request.params['ownerAddress'] as String;
         final fundingTx = dartsv.Transaction.fromHex(fundingTxHex);
-        return await _tokenTool.createTokenIssuanceTxn(
+        final tx = await _tokenTool.createTokenIssuanceTxn(
           fundingTx, signer, signerPub,
           dartsv.Address.fromBase58(ownerAddress),
           fundingTx.hash, rabinPubKeyHash,
         );
+        return TransactionBuilderResult(primaryTx: tx, primaryFeeSats: BigInt.zero);
 
       case 'witness':
         final fundingTxHex = request.params['fundingTxHex'] as String;
@@ -155,7 +156,7 @@ class TsTokenNftPlugin extends TransactionBuilderPlugin {
         final parentBytes = parentTokenTxHex != null
             ? hex.decode(parentTokenTxHex)
             : List<int>.empty();
-        return _tokenTool.createWitnessTxn(
+        final tx = _tokenTool.createWitnessTxn(
           signer, fundingTx, tokenTx, parentBytes,
           signerPub, tokenChangePKH,
           tokenAction == 'ISSUANCE' ? TokenAction.ISSUANCE : TokenAction.TRANSFER,
@@ -165,6 +166,7 @@ class TsTokenNftPlugin extends TransactionBuilderPlugin {
           identityTxId: tokenAction == 'ISSUANCE' ? identityTxId : null,
           ed25519PubKey: tokenAction == 'ISSUANCE' ? ed25519PubKey : null,
         );
+        return TransactionBuilderResult(primaryTx: tx, primaryFeeSats: BigInt.zero);
 
       case 'transfer':
         final fundingTxHex = request.params['fundingTxHex'] as String;
@@ -177,22 +179,24 @@ class TsTokenNftPlugin extends TransactionBuilderPlugin {
         final prevWitnessTx = dartsv.Transaction.fromHex(prevWitnessTxHex);
         final prevTokenTx = dartsv.Transaction.fromHex(prevTokenTxHex);
         final recipientFundingTx = dartsv.Transaction.fromHex(recipientWitnessFundingTxHex);
-        return _tokenTool.createTokenTransferTxn(
+        final tx = _tokenTool.createTokenTransferTxn(
           prevWitnessTx, prevTokenTx, signerPub,
           dartsv.Address.fromBase58(recipientAddress),
           fundingTx, signer, signerPub,
           recipientFundingTx.hash, hex.decode(tokenIdHex),
         );
+        return TransactionBuilderResult(primaryTx: tx, primaryFeeSats: BigInt.zero);
 
       case 'burn':
         final fundingTxHex = request.params['fundingTxHex'] as String;
         final tokenTxHex = request.params['tokenTxHex'] as String;
         final fundingTx = dartsv.Transaction.fromHex(fundingTxHex);
         final tokenTx = dartsv.Transaction.fromHex(tokenTxHex);
-        return _tokenTool.createBurnTokenTxn(
+        final tx = _tokenTool.createBurnTokenTxn(
           tokenTx, signer, signerPub,
           fundingTx, signer, signerPub,
         );
+        return TransactionBuilderResult(primaryTx: tx, primaryFeeSats: BigInt.zero);
 
       default:
         throw ArgumentError('Unsupported action: $action');

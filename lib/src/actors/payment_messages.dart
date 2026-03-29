@@ -98,6 +98,12 @@ class BEEFPaymentResponse implements Message {
   /// Error message if payment failed
   final String? error;
 
+  /// Witness transaction ID (null if no paired witness).
+  final String? witnessTxid;
+
+  /// Serialized BEEF for the witness transaction (null if no paired witness).
+  final Uint8List? witnessBeefBytes;
+
   BEEFPaymentResponse({
     required this.invoiceId,
     required this.beefBytes,
@@ -107,6 +113,8 @@ class BEEFPaymentResponse implements Message {
     required this.ancestorCount,
     required this.success,
     this.error,
+    this.witnessTxid,
+    this.witnessBeefBytes,
   });
 
   /// Constructor for error responses
@@ -118,7 +126,9 @@ class BEEFPaymentResponse implements Message {
         amountPaid = BigInt.zero,
         changeAmount = BigInt.zero,
         ancestorCount = 0,
-        success = false;
+        success = false,
+        witnessTxid = null,
+        witnessBeefBytes = null;
 
   @override
   String get correlationId => 'beef-payment-response-$invoiceId';

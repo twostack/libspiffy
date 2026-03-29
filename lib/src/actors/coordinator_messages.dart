@@ -862,6 +862,12 @@ class PaymentReadyEvent extends CoordinatorEvent {
   final bool success;
   final String? error;
 
+  /// Witness transaction ID (null if no paired witness).
+  final String? witnessTxid;
+
+  /// Serialized BEEF for the witness transaction (null if no paired witness).
+  final Uint8List? witnessBeefBytes;
+
   PaymentReadyEvent({
     this.walletId,
     required this.invoiceId,
@@ -872,6 +878,8 @@ class PaymentReadyEvent extends CoordinatorEvent {
     required this.ancestorCount,
     required this.success,
     this.error,
+    this.witnessTxid,
+    this.witnessBeefBytes,
   });
 
   PaymentReadyEvent.error({
@@ -884,7 +892,9 @@ class PaymentReadyEvent extends CoordinatorEvent {
         changeAmount = BigInt.zero,
         ancestorCount = 0,
         success = false,
-        error = errorMessage;
+        error = errorMessage,
+        witnessTxid = null,
+        witnessBeefBytes = null;
 
   @override
   DateTime get eventTimestamp => DateTime.now();

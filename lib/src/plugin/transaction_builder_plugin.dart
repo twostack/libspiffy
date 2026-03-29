@@ -23,12 +23,13 @@ abstract class TransactionBuilderPlugin extends ScriptPlugin {
   /// Build a complete transaction for this plugin's protocol.
   ///
   /// The [request] provides funding UTXOs, signing keys, change address,
-  /// and plugin-specific parameters. The plugin returns a fully constructed
-  /// (but potentially unsigned) [Transaction].
+  /// and plugin-specific parameters. Returns a [TransactionBuilderResult]
+  /// containing the primary transaction and, for paired actions (e.g.,
+  /// issuance + witness), an optional witness transaction.
   ///
   /// Signing may be handled by the plugin itself (if it needs protocol-specific
   /// sighash computation) or deferred to libspiffy for standard P2PKH inputs.
-  Future<Transaction> buildTransaction(PluginTransactionRequest request);
+  Future<TransactionBuilderResult> buildTransaction(PluginTransactionRequest request);
 
   /// List of transaction actions this plugin supports
   /// (e.g., ['issuance', 'transfer', 'burn', 'witness']).

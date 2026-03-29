@@ -821,6 +821,8 @@ class WalletCoordinatorActor extends Actor {
         ancestorCount: response.ancestorCount,
         success: response.success,
         error: response.error,
+        witnessTxid: response.witnessTxid,
+        witnessBeefBytes: response.witnessBeefBytes,
       ));
     }
   }

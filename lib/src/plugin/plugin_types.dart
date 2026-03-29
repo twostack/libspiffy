@@ -82,3 +82,53 @@ class PluginTransactionRequest {
     this.transactionLookup,
   });
 }
+
+/// Result of a plugin's [TransactionBuilderPlugin.buildTransaction] call.
+///
+/// For single-TX actions (transfer, burn), use the default constructor.
+/// For paired actions (issuance + witness), use [TransactionBuilderResult.paired]
+/// so the coordinator can record and broadcast both atomically from the same
+/// UTXO reservation.
+class TransactionBuilderResult {
+  /// The primary transaction (e.g., token issuance or transfer).
+  final Transaction primaryTx;
+
+  /// Fee paid by the primary transaction in satoshis.
+  final BigInt primaryFeeSats;
+
+  /// Optional paired witness transaction.
+  final Transaction? witnessTx;
+
+  /// Fee paid by the witness transaction in satoshis (zero if no witness).
+  final BigInt witnessFeeSats;
+
+  /// Single-TX result (no witness).
+  TransactionBuilderResult({
+    required this.primaryTx,
+    required this.primaryFeeSats,
+  })  : witnessTx = null,
+        witnessFeeSats = BigInt.zero;
+
+  /// Paired result with both primary and witness TX.
+  TransactionBuilderResult.paired({
+    required this.primaryTx,
+    required this.primaryFeeSats,
+    required Transaction this.witnessTx,
+    required this.witnessFeeSats,
+  });
+
+  /// Whether this result includes a paired witness TX.
+  bool get hasPairedWitness => witnessTx != null;
+
+  /// Primary transaction ID (hex).
+  String get txid => primaryTx.id;
+
+  /// Primary raw transaction hex.
+  String get rawHex => primaryTx.serialize();
+
+  /// Witness transaction ID (hex), or null.
+  String? get witnessTxid => witnessTx?.id;
+
+  /// Witness raw transaction hex, or null.
+  String? get witnessRawHex => witnessTx?.serialize();
+}

@@ -149,9 +149,9 @@ class PaymentCoordinatorActor extends Actor {
     final keyInfo = await _getPublicKeysForUTXOs(msg.walletId, selectedUtxos);
 
     // 4. Build payment transaction (with outputs if provided)
-    // Returns (transaction, preSigned) — plugin-built transactions are already signed.
+    // Returns (transaction, preSigned, witnessTx) — plugin-built transactions are already signed.
     final buildSw = Stopwatch()..start();
-    final (paymentTx, preSigned) = await _buildPaymentTransactionWithOutputs(
+    final (paymentTx, preSigned, witnessTx) = await _buildPaymentTransactionWithOutputs(
       selectedUtxos: selectedUtxos,
       outputs: msg.outputs,
       legacyAddresses: msg.addresses,
@@ -236,10 +236,39 @@ class PaymentCoordinatorActor extends Actor {
       // Plugin-built transaction — return raw tx bytes as a minimal BEEF.
       // The plugin manages its own inputs; no ancestor chain or merkle proofs.
       try {
+        // Record paired witness TX if present
+        if (witnessTx != null) {
+          // Identify which reserved UTXOs the witness TX spends
+          final witnessDartsvTx = dartsv.Transaction.fromHex(witnessTx.rawHex);
+          final witnessSpentKeys = <String>[];
+          for (final input in witnessDartsvTx.inputs) {
+            final key = '${input.prevTxnId}:${input.prevTxnOutputIndex}';
+            witnessSpentKeys.add(key);
+          }
+          await _recordOutgoingTransaction(
+            walletId: msg.walletId,
+            transaction: witnessTx,
+            spentUtxoKeys: witnessSpentKeys,
+            recipientAddresses: ['witness'],
+            paymentAmount: BigInt.zero,
+            changeAddress: actualChangeAddress,
+          );
+        }
+
         final txBytes = hex.decode(signedPaymentTx.rawHex);
         final beef = _createMinimalBEEF(Uint8List.fromList(txBytes));
 
-        _log.info('[pay ${msg.invoiceId}] plugin tx TOTAL: ${totalSw.elapsedMilliseconds}ms');
+        // Build witness BEEF if present
+        Uint8List? witnessBeef;
+        String? witnessTxid;
+        if (witnessTx != null) {
+          final witnessTxBytes = hex.decode(witnessTx.rawHex);
+          witnessBeef = _createMinimalBEEF(Uint8List.fromList(witnessTxBytes));
+          witnessTxid = witnessTx.txid;
+        }
+
+        _log.info('[pay ${msg.invoiceId}] plugin tx TOTAL: ${totalSw.elapsedMilliseconds}ms'
+            '${witnessTxid != null ? ', witnessTxid=$witnessTxid' : ''}');
 
         if (originalSender != null) {
           originalSender.tell(BEEFPaymentResponse(
@@ -250,6 +279,8 @@ class PaymentCoordinatorActor extends Actor {
             changeAmount: BigInt.zero,
             ancestorCount: 0,
             success: true,
+            witnessTxid: witnessTxid,
+            witnessBeefBytes: witnessBeef,
           ));
         }
       } catch (e) {
@@ -342,7 +373,7 @@ class PaymentCoordinatorActor extends Actor {
   /// Build payment transaction with support for multiple output types (P2PKH, P2MS)
   /// Returns (transaction, preSigned) — preSigned is true when a TransactionBuilderPlugin
   /// built and signed the entire transaction.
-  Future<(BitcoinTransaction?, bool)> _buildPaymentTransactionWithOutputs({
+  Future<(BitcoinTransaction?, bool, BitcoinTransaction?)> _buildPaymentTransactionWithOutputs({
     required List<BitcoinUtxo> selectedUtxos,
     List<InvoiceOutputSpec>? outputs,
     required List<String> legacyAddresses,
@@ -420,25 +451,49 @@ class PaymentCoordinatorActor extends Actor {
               params: pluginOutput.params,
             );
 
-            final pluginTx = await pluginInstance.buildTransaction(request);
-            final pluginValid = pluginInstance.validateTransactionStructure(
-                pluginTx, pluginOutput.params['action'] as String);
-            if (!pluginValid) {
+            final result = await pluginInstance.buildTransaction(request);
+
+            // Validate primary TX structure
+            final action = pluginOutput.params['action'] as String;
+            if (!pluginInstance.validateTransactionStructure(result.primaryTx, action)) {
               throw Exception('Plugin transaction structure validation failed');
             }
 
-            final outputValue = pluginTx.outputs.fold<BigInt>(
-                BigInt.zero, (sum, o) => sum + o.satoshis);
+            // Validate witness TX structure if present
+            if (result.hasPairedWitness) {
+              final witnessAction = pluginOutput.params['witnessAction'] as String? ?? 'witness';
+              if (!pluginInstance.validateTransactionStructure(result.witnessTx!, witnessAction)) {
+                throw Exception('Plugin witness transaction structure validation failed');
+              }
+            }
 
-            return (BitcoinTransaction.fromDartSvTransaction(
+            final primaryBtx = BitcoinTransaction.fromDartSvTransaction(
               walletId: walletId,
-              transaction: pluginTx,
+              transaction: result.primaryTx,
               status: TransactionStatus.pending,
               receivingAddresses: ['${pluginOutput.pluginId}:${pluginOutput.pluginScriptType}'],
               sendingAddresses: [],
               inputValue: totalInput,
               netAmount: -pluginOutput.amount,
-            ), true); // preSigned: plugin built and signed the tx
+            );
+
+            // Convert witness TX if present
+            BitcoinTransaction? witnessBtx;
+            if (result.hasPairedWitness) {
+              final witnessOutputValue = result.witnessTx!.outputs.fold<BigInt>(
+                  BigInt.zero, (sum, o) => sum + o.satoshis);
+              witnessBtx = BitcoinTransaction.fromDartSvTransaction(
+                walletId: walletId,
+                transaction: result.witnessTx!,
+                status: TransactionStatus.pending,
+                receivingAddresses: ['${pluginOutput.pluginId}:witness'],
+                sendingAddresses: [],
+                inputValue: result.witnessFeeSats + witnessOutputValue,
+                netAmount: -result.witnessFeeSats,
+              );
+            }
+
+            return (primaryBtx, true, witnessBtx); // preSigned: plugin built and signed the tx
           }
         }
 
@@ -567,9 +622,9 @@ class PaymentCoordinatorActor extends Actor {
         updatedAt: DateTime.now(),
         lockTime: 0,
         version: 2,
-      ), false); // preSigned: false — needs signing
+      ), false, null); // preSigned: false — needs signing, no witness
     } catch (e, stackTrace) {
-      return (null, false);
+      return (null, false, null);
     }
   }
 

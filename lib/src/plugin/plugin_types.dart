@@ -60,9 +60,6 @@ class PluginTransactionRequest {
   /// Public keys for the funding UTXOs (for building unlock scripts).
   final List<SVPublicKey> publicKeys;
 
-  /// Address for change output.
-  final String changeAddress;
-
   /// Plugin-specific parameters (e.g., tokenId, action, recipientAddress,
   /// rabinKeyPair, witnessData).
   final Map<String, dynamic> params;
@@ -77,7 +74,6 @@ class PluginTransactionRequest {
     required this.fundingUtxos,
     required this.signer,
     required this.publicKeys,
-    required this.changeAddress,
     required this.params,
     this.transactionLookup,
   });

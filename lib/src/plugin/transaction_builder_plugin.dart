@@ -22,8 +22,8 @@ import 'plugin_types.dart';
 abstract class TransactionBuilderPlugin extends ScriptPlugin {
   /// Build a complete transaction for this plugin's protocol.
   ///
-  /// The [request] provides funding UTXOs, signing keys, change address,
-  /// and plugin-specific parameters. Returns a [TransactionBuilderResult]
+  /// The [request] provides funding UTXOs, signing keys, and plugin-specific
+  /// parameters. Returns a [TransactionBuilderResult]
   /// containing the primary transaction and, for paired actions (e.g.,
   /// issuance + witness), an optional witness transaction.
   ///

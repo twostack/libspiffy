@@ -447,7 +447,6 @@ class PaymentCoordinatorActor extends Actor {
               fundingUtxos: selectedUtxos,
               signer: callbackSigner,
               publicKeys: publicKeys,
-              changeAddress: changeAddress ?? legacyAddresses.firstOrNull ?? '',
               params: pluginOutput.params,
             );
 

@@ -2,6 +2,7 @@ import 'package:dartsv/dartsv.dart';
 
 import 'script_plugin.dart';
 import 'plugin_types.dart';
+import 'provisioned_transaction.dart';
 
 /// Extended plugin interface for protocols that build complete multi-output
 /// transactions with protocol-specific structure.
@@ -40,4 +41,16 @@ abstract class TransactionBuilderPlugin extends ScriptPlugin {
   /// Returns true if the transaction has the expected output count,
   /// script types, and internal consistency for the given action.
   bool validateTransactionStructure(Transaction tx, String action);
+
+  /// Provision funding for a token lifecycle by building a tree of
+  /// transactions from a single large input UTXO.
+  ///
+  /// Returns an ordered list of [ProvisionedTransaction]s for sequential
+  /// broadcast (split TX first, then earmark TXs). Override in plugins
+  /// that support funding provisioning.
+  Future<List<ProvisionedTransaction>> provisionFunding(
+      PluginTransactionRequest request) async {
+    throw UnsupportedError(
+        'Provisioning not supported by plugin "$pluginId"');
+  }
 }

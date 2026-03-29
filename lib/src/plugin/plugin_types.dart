@@ -2,6 +2,14 @@ import 'package:dartsv/dartsv.dart';
 
 import '../models/bitcoin_utxo.dart';
 
+/// Callback for resolving raw transaction hex by txid from the wallet's
+/// append-only transaction log.
+///
+/// Plugins use this to look up parent or witness transactions without
+/// receiving external hex — all data flows through the wallet's read model.
+/// Returns the raw transaction hex, or null if not found.
+typedef TransactionLookup = String? Function(String txid);
+
 /// Parameters for building an unlocking script to spend a plugin-managed UTXO.
 class PluginUnlockSpec {
   /// Which plugin handles this script type.
@@ -59,11 +67,18 @@ class PluginTransactionRequest {
   /// rabinKeyPair, witnessData).
   final Map<String, dynamic> params;
 
+  /// Optional callback for resolving raw transaction hex by txid.
+  ///
+  /// When provided, plugins can look up parent or witness transactions
+  /// from the wallet's append-only log instead of receiving external hex.
+  final TransactionLookup? transactionLookup;
+
   const PluginTransactionRequest({
     required this.fundingUtxos,
     required this.signer,
     required this.publicKeys,
     required this.changeAddress,
     required this.params,
+    this.transactionLookup,
   });
 }

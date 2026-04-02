@@ -132,7 +132,7 @@ class BEEFPaymentResponse implements Message {
 
   @override
   String get correlationId => 'beef-payment-response-$invoiceId';
-  
+
   @override
   Map<String, dynamic> get metadata => {
     'invoiceId': invoiceId,
@@ -140,10 +140,65 @@ class BEEFPaymentResponse implements Message {
     'txid': txid,
     'ancestorCount': ancestorCount,
   };
-  
+
   @override
   ActorRef? get replyTo => null;
-  
+
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+/// Internal message forwarded to PaymentCoordinatorActor for funding provisioning.
+class ProvisionFundingMessage implements Message {
+  final String walletId;
+  final String pluginId;
+  final Map<String, dynamic> pluginParams;
+
+  ProvisionFundingMessage({
+    required this.walletId,
+    required this.pluginId,
+    required this.pluginParams,
+  });
+
+  @override
+  String get correlationId => 'provision-funding-$walletId';
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId, 'pluginId': pluginId};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+/// Response from PaymentCoordinatorActor after funding provisioning.
+class ProvisionFundingResponse implements Message {
+  final String walletId;
+  final int transactionCount;
+  final int earmarkCount;
+  final bool success;
+  final String? error;
+
+  ProvisionFundingResponse({
+    required this.walletId,
+    required this.transactionCount,
+    required this.earmarkCount,
+    required this.success,
+    this.error,
+  });
+
+  ProvisionFundingResponse.error({
+    required this.walletId,
+    required this.error,
+  })  : transactionCount = 0,
+        earmarkCount = 0,
+        success = false;
+
+  @override
+  String get correlationId => 'provision-funding-response-$walletId';
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId, 'success': success};
+  @override
+  ActorRef? get replyTo => null;
   @override
   DateTime get timestamp => DateTime.now();
 }

@@ -12,6 +12,7 @@ import '../models/invoice_output_spec.dart';
 import '../plugin/plugin_registry.dart';
 import '../plugin/plugin_types.dart';
 import '../plugin/transaction_builder_plugin.dart';
+import '../plugin/provisioned_transaction.dart';
 import '../services/callback_transaction_signer.dart';
 import '../storage/read_model_storage.dart';
 import '../storage/secure_storage.dart';
@@ -59,10 +60,12 @@ class PaymentCoordinatorActor extends Actor {
     try {
       if (message is PayInvoiceMessage) {
         await _handlePayInvoice(message);
+      } else if (message is ProvisionFundingMessage) {
+        await _handleProvisionFunding(message);
       } else {
       }
     } catch (e, stackTrace) {
-      
+
       if (message is PayInvoiceMessage) {
         _sendError(message.invoiceId, 'Internal error: $e');
       }
@@ -925,6 +928,150 @@ class PaymentCoordinatorActor extends Actor {
       WalletCommandMessage(walletId, command),
       sender: context.self,
     );
+  }
+
+  /// Handle funding provisioning request.
+  ///
+  /// Looks up the plugin, selects the largest available UTXO (or uses a
+  /// params-specified one), builds the provision tree, records each
+  /// transaction, and registers earmarked UTXOs in the wallet.
+  Future<void> _handleProvisionFunding(ProvisionFundingMessage msg) async {
+    final originalSender = context.sender;
+    final walletId = msg.walletId;
+
+    try {
+      // 1. Look up plugin
+      final plugin = PluginRegistry().getPlugin(msg.pluginId);
+      if (plugin is! TransactionBuilderPlugin) {
+        throw Exception('Plugin "${msg.pluginId}" is not a TransactionBuilderPlugin');
+      }
+
+      // 2. Get available UTXOs and select the largest
+      final availableUtxos = await _storage.getAvailableUTXOs(walletId);
+      if (availableUtxos.isEmpty) {
+        throw Exception('No available UTXOs for provisioning');
+      }
+      final sortedUtxos = List<BitcoinUtxo>.from(availableUtxos)
+        ..sort((a, b) => b.satoshis.compareTo(a.satoshis));
+      final selectedUtxo = sortedUtxos.first;
+      final derivationIndex = selectedUtxo.derivationIndex ?? 0;
+
+      // 3. Create callback signer (same pattern as plugin TX build path)
+      final xpriv = await _secureStorage.getXPriv(walletId);
+      final wif = await _secureStorage.getWIF(walletId);
+      final keyMaterial = xpriv ?? wif;
+      if (keyMaterial == null) {
+        throw Exception('No signing key available for wallet $walletId');
+      }
+
+      late dartsv.SVPrivateKey signingKey;
+      if (xpriv != null) {
+        final hdKey = dartsv.HDPrivateKey.fromXpriv(xpriv);
+        final derived = hdKey.deriveChildNumber(0).deriveChildNumber(derivationIndex);
+        signingKey = derived.privateKey;
+      } else {
+        signingKey = dartsv.SVPrivateKey.fromWIF(wif!);
+      }
+
+      final sigHashType = dartsv.SighashType.SIGHASH_ALL.value |
+          dartsv.SighashType.SIGHASH_FORKID.value;
+      final callbackSigner = CallbackTransactionSigner(
+        sigHashType: sigHashType,
+        onSign: (Uint8List sighash, int inputIndex) {
+          final sig = dartsv.SVSignature.fromPrivateKey(signingKey);
+          sig.nhashtype = sigHashType;
+          sig.sign(hex.encode(sighash));
+          return Uint8List.fromList(sig.toDER());
+        },
+      );
+
+      final publicKey = signingKey.publicKey;
+
+      // 4. Build plugin request and call provisionFunding
+      final request = PluginTransactionRequest(
+        fundingUtxos: [selectedUtxo],
+        signer: callbackSigner,
+        publicKeys: [publicKey],
+        params: msg.pluginParams,
+      );
+
+      final provisions = await plugin.provisionFunding(request);
+      _log.info('[provision $walletId] built ${provisions.length} TXs '
+          '(${provisions.where((p) => p.role == "earmark").length} earmarks)');
+
+      // 5. Record each provisioned transaction
+      for (final ptx in provisions) {
+        final tx = dartsv.Transaction.fromHex(ptx.rawHex);
+        final outputValue = tx.outputs.fold<BigInt>(
+            BigInt.zero, (sum, o) => sum + o.satoshis);
+
+        final btx = BitcoinTransaction.fromDartSvTransaction(
+          walletId: walletId,
+          transaction: tx,
+          status: TransactionStatus.pending,
+          receivingAddresses: [ptx.role == 'earmark' ? 'earmark:${ptx.purpose}' : 'split'],
+          sendingAddresses: [],
+          inputValue: outputValue + BigInt.from(ptx.feeSats),
+          netAmount: BigInt.from(-ptx.feeSats),
+        );
+
+        // Identify spent UTXOs for this TX
+        final spentKeys = <String>[];
+        for (final input in tx.inputs) {
+          spentKeys.add('${input.prevTxnId}:${input.prevTxnOutputIndex}');
+        }
+
+        await _recordOutgoingTransaction(
+          walletId: walletId,
+          transaction: btx,
+          spentUtxoKeys: spentKeys,
+          recipientAddresses: btx.receivingAddresses,
+          paymentAmount: BigInt.zero,
+        );
+      }
+
+      // 6. Register earmarked UTXOs in the wallet
+      final earmarks = provisions.where((p) => p.role == 'earmark').toList();
+      final changeAddress = selectedUtxo.address;
+      final scriptPubKey = selectedUtxo.scriptPubKey;
+
+      for (final earmark in earmarks) {
+        _walletManager.tell(
+          WalletCommandMessage(walletId, ReceiveUTXOCommand(
+            walletId: walletId,
+            txid: earmark.txid,
+            vout: earmark.fundingVout,
+            satoshis: BigInt.from(earmark.fundingSats),
+            scriptPubKey: scriptPubKey,
+            address: changeAddress,
+            initialStatus: UTXOStatus.available,
+            derivationIndex: derivationIndex,
+            pluginMetadata: {
+              'pluginId': 'funding-earmark',
+              'purpose': earmark.purpose,
+            },
+          )),
+        );
+      }
+
+      // 7. Send response
+      if (originalSender != null) {
+        originalSender.tell(ProvisionFundingResponse(
+          walletId: walletId,
+          transactionCount: provisions.length,
+          earmarkCount: earmarks.length,
+          success: true,
+        ));
+      }
+    } catch (e) {
+      _log.warning('[provision $walletId] failed: $e');
+      if (originalSender != null) {
+        originalSender.tell(ProvisionFundingResponse.error(
+          walletId: walletId,
+          error: e.toString(),
+        ));
+      }
+    }
   }
 
   @override

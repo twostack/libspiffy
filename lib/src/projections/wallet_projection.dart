@@ -50,6 +50,7 @@ class WalletProjection extends Projection<void> {
   @override
   List<Type> get interestedEventTypes => [
         WalletCreatedEvent,
+        WalletDeletedEvent,
         WalletConfigurationUpdatedEvent,
         AddressGeneratedEvent,
         AddressDiscoveredEvent,
@@ -97,6 +98,9 @@ class WalletProjection extends Projection<void> {
       switch (event.runtimeType) {
         case WalletCreatedEvent:
           await _handleWalletCreated(event as WalletCreatedEvent);
+          return true;
+        case WalletDeletedEvent:
+          await _handleWalletDeleted(event as WalletDeletedEvent);
           return true;
         case WalletConfigurationUpdatedEvent:
           await _handleWalletConfigurationUpdated(event as WalletConfigurationUpdatedEvent);
@@ -188,6 +192,10 @@ class WalletProjection extends Projection<void> {
     );
   }
   
+  Future<void> _handleWalletDeleted(WalletDeletedEvent event) async {
+    await _storage.deleteWallet(event.walletId);
+  }
+
   Future<void> _handleWalletConfigurationUpdated(WalletConfigurationUpdatedEvent event) async {
     // Read current wallet from storage
     final existingWallet = await _storage.getWallet(event.walletId);

@@ -76,6 +76,27 @@ class CreateWalletCommand extends WalletCommand {
   String get commandType => 'CreateWalletCommand';
 }
 
+/// Command to permanently delete a wallet
+class DeleteWalletCommand extends WalletCommand {
+  final String? reason;
+
+  DeleteWalletCommand({
+    required String walletId,
+    this.reason,
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          commandId: commandId,
+          timestamp: timestamp,
+          metadata: metadata,
+        );
+
+  @override
+  String get commandType => 'DeleteWalletCommand';
+}
+
 /// Command to update wallet configuration
 class UpdateWalletConfigurationCommand extends WalletCommand {
   final String? newName;
@@ -246,6 +267,8 @@ class ReceiveUTXOCommand extends WalletCommand {
   final int? blockHeight; // null for unconfirmed
   final int? confirmations;
   final UTXOStatus initialStatus; // Status to set when creating the UTXO
+  final int? derivationIndex;
+  final Map<String, dynamic>? pluginMetadata;
 
   ReceiveUTXOCommand({
     required String walletId,
@@ -257,6 +280,8 @@ class ReceiveUTXOCommand extends WalletCommand {
     this.blockHeight,
     this.confirmations,
     this.initialStatus = UTXOStatus.pending, // Default to pending for new receives
+    this.derivationIndex,
+    this.pluginMetadata,
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,

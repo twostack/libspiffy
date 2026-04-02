@@ -354,7 +354,12 @@ class LibSpiffyActorSystem {
       'WalletConfigurationUpdatedEvent',
       (map) => WalletConfigurationUpdatedEvent.fromMap(map),
     );
-    
+
+    EventRegistry.register<WalletDeletedEvent>(
+      'WalletDeletedEvent',
+      (map) => WalletDeletedEvent.fromMap(map),
+    );
+
     // Address Management
     EventRegistry.register<AddressGeneratedEvent>(
       'AddressGeneratedEvent',

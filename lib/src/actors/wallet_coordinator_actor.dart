@@ -165,6 +165,8 @@ class WalletCoordinatorActor extends Actor {
       // === COMMANDS FROM APP ===
       if (message is CreateWalletCommand) {
         await _handleCreateWallet(message);
+      } else if (message is DeleteWalletCommand) {
+        await _handleDeleteWallet(message);
       } else if (message is ImportWalletCommand) {
         await _handleImportWallet(message);
       } else if (message is GetBalanceQuery) {
@@ -193,6 +195,8 @@ class WalletCoordinatorActor extends Actor {
         await _handleReleaseUTXOs(message);
       } else if (message is SplitUTXOsCommand) {
         await _handleSplitUTXOs(message);
+      } else if (message is ProvisionFundingCommand) {
+        await _handleProvisionFunding(message);
       } else if (message is TimestampCommand) {
         await _handleTimestamp(message);
       } else if (message is RefreshWalletCommand) {
@@ -236,6 +240,8 @@ class WalletCoordinatorActor extends Actor {
         _handleUTXOReceivedResponse(message);
       } else if (message is wm.TransactionRecordedResponse) {
         _handleTransactionRecordedResponse(message);
+      } else if (message is pay.ProvisionFundingResponse) {
+        _handleProvisionFundingResponse(message);
       } else if (message is wm.FundingTransactionBuiltResponse) {
         _channelAdapter?.handleFundingTransactionBuilt(message);
       } else if (message is ch.RefundTransactionBuiltResponse) {
@@ -275,28 +281,58 @@ class WalletCoordinatorActor extends Actor {
     );
   }
 
+  Future<void> _handleDeleteWallet(DeleteWalletCommand cmd) async {
+    _log.info('Deleting wallet ${cmd.walletId}');
+    final deleteCommand = domain.DeleteWalletCommand(
+      walletId: cmd.walletId,
+      reason: cmd.reason,
+    );
+    _walletManager.tell(
+      wm.WalletCommandMessage(cmd.walletId, deleteCommand),
+      sender: context.self,
+    );
+  }
+
   Future<void> _handleImportWallet(ImportWalletCommand cmd) async {
     _log.info('Importing wallet ${cmd.walletId}');
 
     try {
-      if (cmd.xpriv != null && _importWalletFromXpriv != null) {
-        // Subscribe to wallet events for progress forwarding
-        if (_walletEventsStream != null) {
-          _eventSubscriptions[cmd.walletId] = _walletEventsStream!
-              .where((e) => e.walletId == cmd.walletId)
-              .listen((event) {
-            // Forward import progress events
-            if (event is domain_events.AddressDiscoveredEvent) {
-              _emitEvent(ImportProgressEvent(
-                walletId: cmd.walletId,
-                phase: 'discovering',
-                progress: 0.5,
-                message: 'Discovering addresses...',
-              ));
-            }
-          });
-        }
+      // Subscribe to wallet events for progress/completion forwarding
+      if (_walletEventsStream != null) {
+        _eventSubscriptions[cmd.walletId] = _walletEventsStream!
+            .where((e) => e.walletId == cmd.walletId)
+            .listen((event) {
+          if (event is domain_events.WalletImportProgressEvent) {
+            _emitEvent(ImportProgressEvent(
+              walletId: cmd.walletId,
+              phase: event.phase,
+              progress: event.progress,
+              message: event.message,
+              addressesFound: event.addressesFound,
+              totalAddresses: event.totalAddresses,
+              transactionsProcessed: event.transactionsProcessed,
+              totalTransactions: event.totalTransactions,
+            ));
+          } else if (event is domain_events.WalletImportCompletedEvent) {
+            _eventSubscriptions.remove(cmd.walletId)?.cancel();
+            _emitEvent(ImportCompleteEvent(
+              walletId: cmd.walletId,
+              success: true,
+              addressCount: event.totalAddresses,
+              transactionCount: event.totalTransactions,
+            ));
+          } else if (event is domain_events.WalletImportFailedEvent) {
+            _eventSubscriptions.remove(cmd.walletId)?.cancel();
+            _emitEvent(ImportCompleteEvent(
+              walletId: cmd.walletId,
+              success: false,
+              error: event.error,
+            ));
+          }
+        });
+      }
 
+      if (cmd.xpriv != null && _importWalletFromXpriv != null) {
         _importWalletFromXpriv!(
           walletId: cmd.walletId,
           xpriv: cmd.xpriv!,
@@ -941,6 +977,33 @@ class WalletCoordinatorActor extends Actor {
       transactionCount: response.splitCount ?? 0,
       newUtxoCount: response.splitCount ?? 0,
       totalFeePaid: BigInt.zero,
+      success: response.success,
+      error: response.error,
+    ));
+  }
+
+  Future<void> _handleProvisionFunding(ProvisionFundingCommand cmd) async {
+    _log.info('Provisioning funding for wallet ${cmd.walletId} via plugin ${cmd.pluginId}');
+
+    _paymentCoordinator.tell(
+      pay.ProvisionFundingMessage(
+        walletId: cmd.walletId,
+        pluginId: cmd.pluginId,
+        pluginParams: cmd.pluginParams,
+      ),
+      sender: context.self,
+    );
+  }
+
+  void _handleProvisionFundingResponse(pay.ProvisionFundingResponse response) {
+    _log.info('Provisioning response: wallet=${response.walletId} '
+        'success=${response.success} txs=${response.transactionCount} '
+        'earmarks=${response.earmarkCount}');
+
+    _emitEvent(ProvisioningCompleteEvent(
+      walletId: response.walletId,
+      transactionCount: response.transactionCount,
+      earmarkCount: response.earmarkCount,
       success: response.success,
       error: response.error,
     ));

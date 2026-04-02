@@ -235,8 +235,10 @@ class WalletManagerActor extends Actor {
         error: response.error,
       );
       
-      originalSender.tell(message);
-      
+      // Wrap in LocalMessage for ask() pattern compatibility:
+      // _TemporaryActorRef.tell() requires LocalMessage wrapping.
+      originalSender.tell(LocalMessage(payload: message));
+
     } else {
     }
   }

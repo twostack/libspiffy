@@ -306,6 +306,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     switch (command.runtimeType) {
       case CreateWalletCommand:
         return await _handleCreateWallet(currentState, command as CreateWalletCommand);
+      case DeleteWalletCommand:
+        return _handleDeleteWallet(currentState, command as DeleteWalletCommand);
       case UpdateWalletConfigurationCommand:
         return _handleUpdateConfiguration(currentState, command as UpdateWalletConfigurationCommand);
       case GenerateAddressCommand:
@@ -374,6 +376,9 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     switch (event.runtimeType) {
       case WalletCreatedEvent:
         _applyWalletCreated(event as WalletCreatedEvent);
+        break;
+      case WalletDeletedEvent:
+        _applyWalletDeleted(event as WalletDeletedEvent);
         break;
       case WalletConfigurationUpdatedEvent:
         _applyWalletConfigurationUpdated(event as WalletConfigurationUpdatedEvent);
@@ -816,6 +821,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       initialStatus: initialStatus,
       blockHeight: command.blockHeight,
       confirmations: command.confirmations,
+      derivationIndex: command.derivationIndex,
+      pluginMetadata: command.pluginMetadata,
       version: currentState.version + 1,
       timestamp: DateTime.now(),
     );
@@ -2054,6 +2061,30 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     }
   }
 
+  List<Event> _handleDeleteWallet(WalletState currentState, DeleteWalletCommand command) {
+    if (!currentState.isCreated) {
+      throw StateError('Cannot delete wallet ${command.walletId}: wallet does not exist');
+    }
+    if (currentState.isDeleted) {
+      throw StateError('Wallet ${command.walletId} is already deleted');
+    }
+
+    return [
+      WalletDeletedEvent(
+        walletId: command.walletId,
+        reason: command.reason,
+        version: currentState.version + 1,
+        timestamp: DateTime.now(),
+      ),
+    ];
+  }
+
+  void _applyWalletDeleted(WalletDeletedEvent event) {
+    currentState.isDeleted = true;
+    currentState.version = event.version;
+    currentState.lastModified = event.timestamp;
+  }
+
   void _applyWalletConfigurationUpdated(WalletConfigurationUpdatedEvent event) {
     if (event.newName != null) {
       currentState.name = event.newName!;
@@ -2094,6 +2125,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       blockHeight: event.blockHeight,
       confirmations: event.confirmations ?? 0,
       status: event.initialStatus, // Use the status from the event
+      derivationIndex: event.derivationIndex,
+      pluginMetadata: event.pluginMetadata,
     );
     
     currentState.utxos[utxoKey] = utxo;

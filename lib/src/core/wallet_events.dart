@@ -67,6 +67,48 @@ class WalletCreatedEvent extends WalletEvent {
   }
 }
 
+/// Event fired when a wallet is permanently deleted
+class WalletDeletedEvent extends WalletEvent {
+  final String? reason;
+
+  WalletDeletedEvent({
+    required String walletId,
+    this.reason,
+    String? eventId,
+    DateTime? timestamp,
+    int? version,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          eventId: eventId,
+          timestamp: timestamp,
+          version: version,
+          metadata: metadata,
+        );
+
+  @override
+  Map<String, dynamic> getWalletEventData() {
+    return {
+      if (reason != null) 'reason': reason,
+    };
+  }
+
+  static WalletDeletedEvent fromMap(Map<String, dynamic> map) {
+    return WalletDeletedEvent(
+      walletId: map['walletId'] as String,
+      reason: map['reason'] as String?,
+      eventId: map['eventId'] as String?,
+      timestamp: map['timestamp'] != null
+          ? (map['timestamp'] is String
+              ? DateTime.parse(map['timestamp'] as String)
+              : map['timestamp'] as DateTime)
+          : null,
+      version: map['version'] as int?,
+      metadata: map['metadata'] as Map<String, dynamic>?,
+    );
+  }
+}
+
 /// Event fired when wallet configuration is updated
 class WalletConfigurationUpdatedEvent extends WalletEvent {
   final String? newName;
@@ -607,6 +649,8 @@ class UTXOReceivedEvent extends WalletEvent {
   final int? blockHeight;
   final int? confirmations;
   final UTXOStatus initialStatus; // Initial status when creating the UTXO
+  final int? derivationIndex;
+  final Map<String, dynamic>? pluginMetadata;
 
   UTXOReceivedEvent({
     required String walletId,
@@ -618,6 +662,8 @@ class UTXOReceivedEvent extends WalletEvent {
     this.blockHeight,
     this.confirmations,
     this.initialStatus = UTXOStatus.pending, // Default to pending
+    this.derivationIndex,
+    this.pluginMetadata,
     String? eventId,
     DateTime? timestamp,
     int? version,
@@ -641,6 +687,8 @@ class UTXOReceivedEvent extends WalletEvent {
       'blockHeight': blockHeight,
       'confirmations': confirmations,
       'initialStatus': initialStatus.name,
+      'derivationIndex': derivationIndex,
+      'pluginMetadata': pluginMetadata,
     };
   }
 
@@ -665,6 +713,8 @@ class UTXOReceivedEvent extends WalletEvent {
       blockHeight: map['blockHeight'] as int?,
       confirmations: map['confirmations'] as int?,
       initialStatus: initialStatus,
+      derivationIndex: map['derivationIndex'] as int?,
+      pluginMetadata: map['pluginMetadata'] as Map<String, dynamic>?,
       eventId: map['eventId'] as String?,
       timestamp: map['timestamp'] != null
           ? (map['timestamp'] is String 

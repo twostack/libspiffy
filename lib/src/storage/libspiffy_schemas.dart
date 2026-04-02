@@ -633,6 +633,9 @@ class WalletMetadataEntity {
   /// Whether the wallet is created/initialized
   late bool isCreated;
 
+  /// Whether the wallet has been deleted (soft-delete for event replay safety)
+  bool isDeleted = false;
+
   /// When this wallet was created
   late DateTime createdAt;
 

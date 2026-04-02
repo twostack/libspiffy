@@ -53,6 +53,23 @@ class CreateWalletCommand implements Message {
   DateTime get timestamp => DateTime.now();
 }
 
+/// Delete a wallet permanently (event-sourced)
+class DeleteWalletCommand implements Message {
+  final String walletId;
+  final String? reason;
+
+  DeleteWalletCommand({required this.walletId, this.reason});
+
+  @override
+  String get correlationId => 'delete-wallet-$walletId';
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
 /// Import a wallet from extended private key or WIF
 class ImportWalletCommand implements Message {
   final String walletId;
@@ -208,6 +225,33 @@ class PayInvoiceCommand implements Message {
   String get correlationId => 'pay-invoice-$invoiceId';
   @override
   Map<String, dynamic> get metadata => {'walletId': walletId, 'invoiceId': invoiceId};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+/// Provision earmark-aware funding UTXOs for a token lifecycle.
+///
+/// Triggers a plugin's [provisionFunding] method, which builds a tree of
+/// transactions (split + earmarks) from a single large UTXO. The coordinator
+/// records each transaction, marks the original UTXO as spent, and registers
+/// the earmarked UTXOs in the wallet's read model.
+class ProvisionFundingCommand implements Message {
+  final String walletId;
+  final String pluginId;
+  final Map<String, dynamic> pluginParams;
+
+  ProvisionFundingCommand({
+    required this.walletId,
+    required this.pluginId,
+    required this.pluginParams,
+  });
+
+  @override
+  String get correlationId => 'provision-funding-${walletId}-${DateTime.now().millisecondsSinceEpoch}';
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId, 'pluginId': pluginId};
   @override
   ActorRef? get replyTo => null;
   @override
@@ -895,6 +939,35 @@ class PaymentReadyEvent extends CoordinatorEvent {
         error = errorMessage,
         witnessTxid = null,
         witnessBeefBytes = null;
+
+  @override
+  DateTime get eventTimestamp => DateTime.now();
+}
+
+/// Funding provisioning completed (earmarked UTXOs created).
+class ProvisioningCompleteEvent extends CoordinatorEvent {
+  @override
+  final String? walletId;
+  final int transactionCount;
+  final int earmarkCount;
+  final bool success;
+  final String? error;
+
+  ProvisioningCompleteEvent({
+    this.walletId,
+    required this.transactionCount,
+    required this.earmarkCount,
+    required this.success,
+    this.error,
+  });
+
+  ProvisioningCompleteEvent.error({
+    this.walletId,
+    required String errorMessage,
+  })  : transactionCount = 0,
+        earmarkCount = 0,
+        success = false,
+        error = errorMessage;
 
   @override
   DateTime get eventTimestamp => DateTime.now();

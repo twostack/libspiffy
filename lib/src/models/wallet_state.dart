@@ -22,7 +22,10 @@ class WalletState extends State {
   
   /// Whether the wallet has been created (initialized)
   bool isCreated;
-  
+
+  /// Whether the wallet has been deleted
+  bool isDeleted;
+
   /// Network type (mainnet, testnet)
   String networkType;
   
@@ -61,6 +64,7 @@ class WalletState extends State {
     required this.name,
     this.rootAddress,
     required this.isCreated,
+    this.isDeleted = false,
     required this.networkType,
     required this.walletType,
     required this.timestamp,
@@ -84,6 +88,7 @@ class WalletState extends State {
       name: '',
       rootAddress: null,
       isCreated: false,
+      isDeleted: false,
       networkType: 'mainnet',
       walletType: WalletType.hd, // Default to HD
       timestamp: now,
@@ -160,6 +165,7 @@ class WalletState extends State {
     String? name,
     String? rootAddress,
     bool? isCreated,
+    bool? isDeleted,
     String? networkType,
     WalletType? walletType,
     DateTime? timestamp,
@@ -178,6 +184,7 @@ class WalletState extends State {
       name: name ?? this.name,
       rootAddress: rootAddress ?? this.rootAddress,
       isCreated: isCreated ?? this.isCreated,
+      isDeleted: isDeleted ?? this.isDeleted,
       networkType: networkType ?? this.networkType,
       walletType: walletType ?? this.walletType,
       timestamp: timestamp ?? this.timestamp,
@@ -248,6 +255,7 @@ class WalletState extends State {
       'name': name,
       'rootAddress': rootAddress,
       'isCreated': isCreated,
+      'isDeleted': isDeleted,
       'networkType': networkType,
       'walletType': walletType.toStorageString(),
       'version': version,
@@ -278,6 +286,7 @@ class WalletState extends State {
       name: map['name'] as String,
       rootAddress: map['rootAddress'] as String?,
       isCreated: map['isCreated'] as bool,
+      isDeleted: map['isDeleted'] as bool? ?? false,
       networkType: map['networkType'] as String,
       walletType: WalletTypeExtension.fromStorageString(
         map['walletType'] as String? ?? 'hd', // Default to HD for backwards compatibility

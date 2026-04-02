@@ -136,8 +136,11 @@ class IsarWalletStorage implements ReadModelStorage {
         .where()
         .sortByCreatedAtDesc()
         .findAll();
-    
-    return entities.map((e) => e.walletId).toList();
+
+    return entities
+        .where((e) => !e.isDeleted)
+        .map((e) => e.walletId)
+        .toList();
   }
   
   @override
@@ -452,25 +455,39 @@ class IsarWalletStorage implements ReadModelStorage {
   @override
   Future<void> deleteWallet(String walletId) async {
     await _isar.writeTxn(() async {
+      // Soft-delete wallet metadata (survives projection replay race)
+      final entity = await _isar.walletMetadataEntitys
+          .where()
+          .walletIdEqualTo(walletId)
+          .findFirst();
+      if (entity != null) {
+        entity.isDeleted = true;
+        await _isar.walletMetadataEntitys.put(entity);
+      }
+
+      // Delete all addresses for this wallet
+      await _isar.addressEntitys
+          .where()
+          .walletIdEqualTo(walletId)
+          .deleteAll();
+
       // Delete all UTXOs for this wallet
       await _isar.bitcoinUtxoEntitys
           .where()
           .walletIdEqualTo(walletId)
           .deleteAll();
-      
+
       // Delete all transactions for this wallet
       await _isar.bitcoinTransactionEntitys
           .where()
           .walletIdEqualTo(walletId)
           .deleteAll();
-      
+
       // Delete all invoices for this wallet
       await _isar.invoiceEntitys
           .where()
           .walletIdEqualTo(walletId)
           .deleteAll();
-          
-      // Note: Events are managed by Eventador's EventStore, not deleted here
     });
   }
 

@@ -12005,48 +12005,53 @@ const WalletMetadataEntitySchema = CollectionSchema(
       name: r'isCreated',
       type: IsarType.bool,
     ),
-    r'lastAccessedAt': PropertySchema(
+    r'isDeleted': PropertySchema(
       id: 6,
+      name: r'isDeleted',
+      type: IsarType.bool,
+    ),
+    r'lastAccessedAt': PropertySchema(
+      id: 7,
       name: r'lastAccessedAt',
       type: IsarType.dateTime,
     ),
     r'metadataJson': PropertySchema(
-      id: 7,
+      id: 8,
       name: r'metadataJson',
       type: IsarType.string,
     ),
     r'name': PropertySchema(
-      id: 8,
+      id: 9,
       name: r'name',
       type: IsarType.string,
     ),
     r'network': PropertySchema(
-      id: 9,
+      id: 10,
       name: r'network',
       type: IsarType.string,
     ),
     r'publicKeysJson': PropertySchema(
-      id: 10,
+      id: 11,
       name: r'publicKeysJson',
       type: IsarType.string,
     ),
     r'rootAddress': PropertySchema(
-      id: 11,
+      id: 12,
       name: r'rootAddress',
       type: IsarType.string,
     ),
     r'unconfirmedBalance': PropertySchema(
-      id: 12,
+      id: 13,
       name: r'unconfirmedBalance',
       type: IsarType.string,
     ),
     r'walletId': PropertySchema(
-      id: 13,
+      id: 14,
       name: r'walletId',
       type: IsarType.string,
     ),
     r'walletType': PropertySchema(
-      id: 14,
+      id: 15,
       name: r'walletType',
       type: IsarType.string,
     )
@@ -12115,15 +12120,16 @@ void _walletMetadataEntitySerialize(
   writer.writeDateTime(offsets[3], object.createdAt);
   writer.writeLong(offsets[4], object.derivationIndex);
   writer.writeBool(offsets[5], object.isCreated);
-  writer.writeDateTime(offsets[6], object.lastAccessedAt);
-  writer.writeString(offsets[7], object.metadataJson);
-  writer.writeString(offsets[8], object.name);
-  writer.writeString(offsets[9], object.network);
-  writer.writeString(offsets[10], object.publicKeysJson);
-  writer.writeString(offsets[11], object.rootAddress);
-  writer.writeString(offsets[12], object.unconfirmedBalance);
-  writer.writeString(offsets[13], object.walletId);
-  writer.writeString(offsets[14], object.walletType);
+  writer.writeBool(offsets[6], object.isDeleted);
+  writer.writeDateTime(offsets[7], object.lastAccessedAt);
+  writer.writeString(offsets[8], object.metadataJson);
+  writer.writeString(offsets[9], object.name);
+  writer.writeString(offsets[10], object.network);
+  writer.writeString(offsets[11], object.publicKeysJson);
+  writer.writeString(offsets[12], object.rootAddress);
+  writer.writeString(offsets[13], object.unconfirmedBalance);
+  writer.writeString(offsets[14], object.walletId);
+  writer.writeString(offsets[15], object.walletType);
 }
 
 WalletMetadataEntity _walletMetadataEntityDeserialize(
@@ -12140,15 +12146,16 @@ WalletMetadataEntity _walletMetadataEntityDeserialize(
   object.derivationIndex = reader.readLong(offsets[4]);
   object.id = id;
   object.isCreated = reader.readBool(offsets[5]);
-  object.lastAccessedAt = reader.readDateTime(offsets[6]);
-  object.metadataJson = reader.readString(offsets[7]);
-  object.name = reader.readString(offsets[8]);
-  object.network = reader.readString(offsets[9]);
-  object.publicKeysJson = reader.readString(offsets[10]);
-  object.rootAddress = reader.readStringOrNull(offsets[11]);
-  object.unconfirmedBalance = reader.readString(offsets[12]);
-  object.walletId = reader.readString(offsets[13]);
-  object.walletType = reader.readString(offsets[14]);
+  object.isDeleted = reader.readBool(offsets[6]);
+  object.lastAccessedAt = reader.readDateTime(offsets[7]);
+  object.metadataJson = reader.readString(offsets[8]);
+  object.name = reader.readString(offsets[9]);
+  object.network = reader.readString(offsets[10]);
+  object.publicKeysJson = reader.readString(offsets[11]);
+  object.rootAddress = reader.readStringOrNull(offsets[12]);
+  object.unconfirmedBalance = reader.readString(offsets[13]);
+  object.walletId = reader.readString(offsets[14]);
+  object.walletType = reader.readString(offsets[15]);
   return object;
 }
 
@@ -12172,9 +12179,9 @@ P _walletMetadataEntityDeserializeProp<P>(
     case 5:
       return (reader.readBool(offset)) as P;
     case 6:
-      return (reader.readDateTime(offset)) as P;
+      return (reader.readBool(offset)) as P;
     case 7:
-      return (reader.readString(offset)) as P;
+      return (reader.readDateTime(offset)) as P;
     case 8:
       return (reader.readString(offset)) as P;
     case 9:
@@ -12182,12 +12189,14 @@ P _walletMetadataEntityDeserializeProp<P>(
     case 10:
       return (reader.readString(offset)) as P;
     case 11:
-      return (reader.readStringOrNull(offset)) as P;
-    case 12:
       return (reader.readString(offset)) as P;
+    case 12:
+      return (reader.readStringOrNull(offset)) as P;
     case 13:
       return (reader.readString(offset)) as P;
     case 14:
+      return (reader.readString(offset)) as P;
+    case 15:
       return (reader.readString(offset)) as P;
     default:
       throw IsarError('Unknown property with id $propertyId');
@@ -12898,6 +12907,16 @@ extension WalletMetadataEntityQueryFilter on QueryBuilder<WalletMetadataEntity,
     return QueryBuilder.apply(this, (query) {
       return query.addFilterCondition(FilterCondition.equalTo(
         property: r'isCreated',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<WalletMetadataEntity, WalletMetadataEntity,
+      QAfterFilterCondition> isDeletedEqualTo(bool value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'isDeleted',
         value: value,
       ));
     });
@@ -14175,6 +14194,20 @@ extension WalletMetadataEntityQuerySortBy
   }
 
   QueryBuilder<WalletMetadataEntity, WalletMetadataEntity, QAfterSortBy>
+      sortByIsDeleted() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'isDeleted', Sort.asc);
+    });
+  }
+
+  QueryBuilder<WalletMetadataEntity, WalletMetadataEntity, QAfterSortBy>
+      sortByIsDeletedDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'isDeleted', Sort.desc);
+    });
+  }
+
+  QueryBuilder<WalletMetadataEntity, WalletMetadataEntity, QAfterSortBy>
       sortByLastAccessedAt() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'lastAccessedAt', Sort.asc);
@@ -14402,6 +14435,20 @@ extension WalletMetadataEntityQuerySortThenBy
   }
 
   QueryBuilder<WalletMetadataEntity, WalletMetadataEntity, QAfterSortBy>
+      thenByIsDeleted() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'isDeleted', Sort.asc);
+    });
+  }
+
+  QueryBuilder<WalletMetadataEntity, WalletMetadataEntity, QAfterSortBy>
+      thenByIsDeletedDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'isDeleted', Sort.desc);
+    });
+  }
+
+  QueryBuilder<WalletMetadataEntity, WalletMetadataEntity, QAfterSortBy>
       thenByLastAccessedAt() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'lastAccessedAt', Sort.asc);
@@ -14575,6 +14622,13 @@ extension WalletMetadataEntityQueryWhereDistinct
   }
 
   QueryBuilder<WalletMetadataEntity, WalletMetadataEntity, QDistinct>
+      distinctByIsDeleted() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'isDeleted');
+    });
+  }
+
+  QueryBuilder<WalletMetadataEntity, WalletMetadataEntity, QDistinct>
       distinctByLastAccessedAt() {
     return QueryBuilder.apply(this, (query) {
       return query.addDistinctBy(r'lastAccessedAt');
@@ -14687,6 +14741,13 @@ extension WalletMetadataEntityQueryProperty on QueryBuilder<
       isCreatedProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'isCreated');
+    });
+  }
+
+  QueryBuilder<WalletMetadataEntity, bool, QQueryOperations>
+      isDeletedProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'isDeleted');
     });
   }
 

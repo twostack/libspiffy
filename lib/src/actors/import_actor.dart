@@ -44,9 +44,6 @@ class ImportActor extends Actor {
   int _totalTransactions = 0;
   int _processedTransactions = 0;
   
-  // Completer for waiting for wallet creation
-  Completer<WalletCreatedMessage>? _walletCreatedCompleter;
-
   ImportActor({
     required BlockchainDataSource dataSource,
     required ReadModelStorage storage,
@@ -73,17 +70,6 @@ class ImportActor extends Actor {
       } else if (message is ImportProgressQuery) {
         _logger.info('📊 Progress query received');
         _handleProgressQuery();
-      } else if (message is WalletCreatedMessage) {
-        if (message.success) {
-          _logger.info('✅ WalletCreatedMessage received: ${message.walletId}, root address: ${message.rootAddress}');
-        } else {
-          _logger.severe('❌ WalletCreatedMessage received with error: ${message.error}');
-        }
-        
-        // Complete the wallet creation completer if waiting
-        if (_walletCreatedCompleter != null && !_walletCreatedCompleter!.isCompleted) {
-          _walletCreatedCompleter!.complete(message);
-        }
       } else {
         _logger.warning('❓ Unknown message type: ${message.runtimeType}');
       }
@@ -188,40 +174,21 @@ class ImportActor extends Actor {
       _logger.info('   → Has wif: ${message.wif!.isNotEmpty}');
     }
     
-    _walletManagerActor.tell(createMessage, sender: context.self);
-    _logger.info('   → CreateWalletMessage sent to WalletManagerActor');
-    
-    // Wait for wallet actor to be spawned and initialized
-    // The WalletCreatedMessage will be received in onMessage and complete the completer
-    _logger.info('   → Waiting for WalletCreatedMessage (max 10 seconds)...');
-    _walletCreatedCompleter = Completer<WalletCreatedMessage>();
-    
-    try {
-      final walletCreatedMsg = await _walletCreatedCompleter!.future.timeout(
-        const Duration(seconds: 10),
-        onTimeout: () {
-          _logger.warning('   ⚠️  Timeout waiting for WalletCreatedMessage, proceeding anyway...');
-          // Return a fake success message to continue
-          return WalletCreatedMessage(
-            message.walletId,
-            '', // rootAddress
-            true, // success
-          );
-        },
-      );
-      
-      // Check if wallet creation succeeded
-      if (!walletCreatedMsg.success) {
-        throw StateError('Wallet creation failed: ${walletCreatedMsg.error}');
-      }
-      
-      _logger.info('   → Wallet aggregate confirmed spawned with root address: ${walletCreatedMsg.rootAddress}');
-    } catch (e) {
-      _logger.severe('   ❌ Error waiting for wallet creation: $e');
-      rethrow;
-    } finally {
-      _walletCreatedCompleter = null; // Clean up
+    _logger.info('   → Sending CreateWalletMessage via ask() to WalletManagerActor');
+
+    // Use ask() to avoid actor mailbox deadlock:
+    // ask() creates a temporary actor ref that receives the reply independently
+    // of ImportActor's mailbox, so the future resolves without blocking onMessage.
+    final walletCreatedMsg = await _walletManagerActor.ask<WalletCreatedMessage>(
+      createMessage,
+      const Duration(seconds: 30),
+    );
+
+    if (!walletCreatedMsg.success) {
+      throw StateError('Wallet creation failed: ${walletCreatedMsg.error}');
     }
+
+    _logger.info('   → Wallet aggregate confirmed spawned with root address: ${walletCreatedMsg.rootAddress}');
     
     _logger.info('   → Broadcasting WalletImportStartedEvent');
 
@@ -445,39 +412,7 @@ class ImportActor extends Actor {
       WalletCommandMessage(message.walletId, command),
       sender: context.self,
     );
-    _logger.info('   ✅ WIF address registration command sent');
-    
-    // Wait for projection to persist the address to Isar
-    _logger.info('   → Waiting for projection to persist WIF address to Isar...');
-    
-    int attempts = 0;
-    const maxAttempts = 50; // 50 attempts * 200ms = 10 seconds max
-    const pollInterval = Duration(milliseconds: 200);
-    bool addressPersisted = false;
-    
-    while (!addressPersisted && attempts < maxAttempts) {
-      attempts++;
-      
-      // Query address from storage using the interface method
-      final addr = await _storage.getAddressMetadata(message.walletId, address);
-      addressPersisted = addr != null;
-      
-      if (addressPersisted) {
-        _logger.info('   ✅ WIF address confirmed in Isar! (took ${attempts * 200}ms)');
-        break;
-      }
-      
-      if (attempts % 5 == 0) {
-        _logger.info('      Waiting for address persistence... (${attempts * 200}ms elapsed)');
-      }
-      
-      await Future.delayed(pollInterval);
-    }
-    
-    if (!addressPersisted) {
-      _logger.severe('   ❌ TIMEOUT: WIF address not persisted after ${maxAttempts * 200}ms!');
-      throw StateError('WIF address persistence timeout. Projection may be lagging.');
-    }
+    _logger.info('   ✅ WIF address registered (projection will persist to Isar asynchronously)');
     
     _totalTransactions = history.length;
     _reportProgress(
@@ -792,7 +727,9 @@ class ImportActor extends Actor {
           _logger.fine('            Decoded P2PKH address: $outputAddress');
           
           if (outputAddress != null) {
-            belongsToWallet = await _storage.isWalletAddress(message.walletId, outputAddress);
+            // Check against in-memory discovered addresses (not Isar)
+            // to avoid race with projection persistence.
+            belongsToWallet = allAddresses.any((a) => a.address == outputAddress);
           }
         } else if (scriptType?.toLowerCase() == 'p2ms') {
           // P2MS (multisig) - check if any of the public keys belong to wallet
@@ -819,7 +756,7 @@ class ImportActor extends Actor {
                 final pubKey = dartsv.SVPublicKey.fromHex(pubKeyHex.toString());
                 final derivedAddress = dartsv.Address.fromPublicKey(pubKey, network).toBase58();
                 
-                if (await _storage.isWalletAddress(message.walletId, derivedAddress)) {
+                if (allAddresses.any((a) => a.address == derivedAddress)) {
                   _logger.fine('            ✅ Wallet owns multisig key: $derivedAddress');
                   belongsToWallet = true;
                   // Use the first matching address for UTXO tracking

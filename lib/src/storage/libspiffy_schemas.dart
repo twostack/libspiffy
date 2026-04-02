@@ -3,6 +3,7 @@ import 'package:isar/isar.dart';
 import 'package:libspiffy/src/storage/payment_channel_entity.dart';
 import 'package:spiffynode/spiffy_node.dart';
 import 'package:eventador/eventador.dart';
+import 'package:duraq/duraq.dart' show IsarStorage;
 import 'read_model_storage.dart';
 import '../models/bitcoin_utxo.dart';
 import '../models/bitcoin_transaction.dart';
@@ -46,6 +47,7 @@ class LibSpiffySchemas {
     return [
       ...walletSchemas,
       ...IsarEventStore.allSchemas,
+      ...IsarStorage.requiredSchemas,
     ];
   }
 }

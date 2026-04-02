@@ -246,6 +246,13 @@ class WalletCoordinatorActor extends Actor {
         _channelAdapter?.handleFundingTransactionBuilt(message);
       } else if (message is ch.RefundTransactionBuiltResponse) {
         _channelAdapter?.handleRefundTransactionBuilt(message);
+      } else if (message is wm.BroadcastFailedMessage) {
+        _log.warning('Broadcast failed for ${message.txid}: ${message.error}');
+        _emitEvent(BroadcastFailureEvent(
+          txid: message.txid,
+          error: message.error,
+          willRetry: true,
+        ));
       } else {
         _log.fine('Unhandled message type: ${message.runtimeType}');
       }

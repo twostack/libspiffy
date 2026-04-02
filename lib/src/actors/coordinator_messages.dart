@@ -1021,6 +1021,25 @@ class SPVValidationResultEvent extends CoordinatorEvent {
   DateTime get eventTimestamp => DateTime.now();
 }
 
+/// Broadcast to Arc failed (transaction queued for retry via duraq)
+class BroadcastFailureEvent extends CoordinatorEvent {
+  @override
+  final String? walletId;
+  final String txid;
+  final String error;
+  final bool willRetry;
+
+  BroadcastFailureEvent({
+    this.walletId,
+    required this.txid,
+    required this.error,
+    this.willRetry = true,
+  });
+
+  @override
+  DateTime get eventTimestamp => DateTime.now();
+}
+
 /// Transaction imported into wallet
 class TransactionImportedEvent extends CoordinatorEvent {
   @override

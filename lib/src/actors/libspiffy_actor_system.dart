@@ -60,6 +60,7 @@ class LibSpiffyActorSystem {
   late BlockHeaderChain _headerChain;
   ArcServiceConfig? _arcConfig;
   dynamic _arcService;  // ← Mock service for testing (dynamic for test mocks)
+  Isar? _isarInstance; // Stored for duraq queue initialization in ARCActor
   
   // Transaction import service
   TransactionImportService? _transactionImportService;
@@ -209,6 +210,7 @@ class LibSpiffyActorSystem {
       case StorageBackend.isar:
         // Original Isar initialization logic
         if (isar != null) {
+          _isarInstance = isar;
           final isarEventStore = IsarEventStore(isar);
           _eventStore = isarEventStore;
           _eventStream = isarEventStore; // Same instance, LSP-compliant
@@ -671,6 +673,7 @@ class LibSpiffyActorSystem {
       storage: _walletStorage,
       arcConfig: _arcConfig,
       arcService: _arcService,  // ← Pass mock service for testing
+      isar: _isarInstance,  // For duraq broadcast retry queue
     ));
     
     // Wire up ARC actor reference in WalletManager

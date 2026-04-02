@@ -3,6 +3,8 @@ import 'dart:typed_data';
 import 'package:dactor/dactor.dart';
 import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
+import 'package:duraq/duraq.dart' as duraq;
+import 'package:isar/isar.dart';
 import 'package:logging/logging.dart';
 
 import '../core/wallet_commands.dart';
@@ -19,31 +21,38 @@ class ARCActor extends Actor {
   final ActorRef _walletManager;
   final ArcServiceConfig? _arcConfig;
   final ReadModelStorage _storage;
-  
+  final Isar? _isar;
+
   // ARC service client (dynamic to allow mock services in tests)
   dynamic _arcService;
-  
+
   // Transaction status tracking
   final Map<String, String> _transactionStatus = {}; // txid -> status
   final Map<String, String> _transactionToWallet = {}; // txid -> walletId
   final Map<String, List<int>> _transactionOutputs = {}; // txid -> [vout, vout, ...]
-  
+
   // Periodic status checking
   Timer? _statusCheckTimer;
+
+  // Durable broadcast retry queue (persisted via Isar)
+  duraq.Queue<Map<String, dynamic>>? _broadcastQueue;
 
   ARCActor({
     required ActorRef walletManager,
     required ReadModelStorage storage,
     ArcServiceConfig? arcConfig,
     dynamic arcService,  // ← Allow injecting mock service for testing (dynamic for test mocks)
+    Isar? isar,
   })  : _walletManager = walletManager,
         _storage = storage,
         _arcConfig = arcConfig,
-        _arcService = arcService;  // ← Use provided service if available (no cast needed)
+        _arcService = arcService,
+        _isar = isar;
 
   @override
   void preStart() {
     _initializeARCService();
+    _initializeBroadcastQueue();
     _startStatusMonitoring();
   }
 
@@ -54,35 +63,35 @@ class ARCActor extends Actor {
         case BroadcastTransactionMessage:
           await _handleBroadcastTransaction(message as BroadcastTransactionMessage);
           break;
-          
+
         case BroadcastBEEFMessage:
           await _handleBroadcastBEEF(message as BroadcastBEEFMessage);
           break;
-          
+
         case CheckTransactionStatusMessage:
           await _handleCheckTransactionStatus(message as CheckTransactionStatusMessage);
           break;
-          
+
         case RetrieveMerkleProofMessage:
           await _handleRetrieveMerkleProof(message as RetrieveMerkleProofMessage);
           break;
-          
+
         case GetFeeQuoteMessage:
           await _handleGetFeeQuote(message as GetFeeQuoteMessage);
           break;
-          
+
         case EstimateFeeMessage:
           await _handleEstimateFee(message as EstimateFeeMessage);
           break;
-          
+
         case RegisterTransactionOutputsMessage:
           _handleRegisterOutputs(message as RegisterTransactionOutputsMessage);
           break;
-          
+
         case CheckStoragePendingUTXOsMessage:
           await _handleCheckStoragePendingUTXOs(message as CheckStoragePendingUTXOsMessage);
           break;
-          
+
         default:
       }
     } catch (e) {
@@ -100,7 +109,7 @@ class ARCActor extends Actor {
     if (_arcService != null) {
       return;
     }
-    
+
     if (_arcConfig != null) {
       _arcService = ArcService.fromConfig(_arcConfig);
     } else {
@@ -108,12 +117,37 @@ class ARCActor extends Actor {
     }
   }
 
+  /// Initialize durable broadcast retry queue via duraq
+  void _initializeBroadcastQueue() {
+    if (_isar == null) {
+      _log.warning('No Isar instance provided — broadcast retry queue disabled');
+      return;
+    }
+
+    try {
+      final isarStorage = duraq.IsarStorage(_isar!);
+      _broadcastQueue = duraq.Queue<Map<String, dynamic>>(
+        'arc_broadcast_retry',
+        isarStorage,
+        retryPolicy: duraq.ExponentialBackoff(
+          baseDelay: Duration(seconds: 10),
+          maxDelay: Duration(minutes: 5),
+          maxAttempts: 10,
+        ),
+      );
+      _log.info('Broadcast retry queue initialized');
+    } catch (e) {
+      _log.warning('Failed to initialize broadcast retry queue: $e');
+    }
+  }
+
   /// Start periodic transaction status monitoring
   void _startStatusMonitoring() {
     _statusCheckTimer = Timer.periodic(Duration(seconds: 30), (timer) {
       _checkPendingTransactions();
+      _processRetryQueue();
     });
-    
+
   }
 
   /// Handle transaction broadcast requests
@@ -123,15 +157,15 @@ class ARCActor extends Actor {
       context.sender?.tell(BroadcastFailedMessage(msg.txid, 'ARC service not available'));
       return;
     }
-    
+
     try {
       // Broadcast transaction via ARC service
       final response = await _arcService!.submitTransaction(msg.txHex);
-      
+
       // Track transaction status
       _transactionStatus[msg.txid] = _arcStatusToString(response.status);
       _transactionToWallet[msg.txid] = msg.walletId;
-      
+
       // Notify wallet of successful broadcast
       final command = BroadcastTransactionCommand(
         walletId: msg.walletId,
@@ -139,12 +173,14 @@ class ARCActor extends Actor {
         signedTransaction: msg.txHex,
       );
       _walletManager.tell(WalletCommandMessage(msg.walletId, command));
-      
+
       // Send success response
       context.sender?.tell(BroadcastSuccessMessage(msg.txid, response.txid));
-      
+
 
     } catch (e) {
+      _log.warning('Broadcast failed for ${msg.txid}, queueing for retry: $e');
+      await _enqueueForRetry(msg.txid, msg.walletId, msg.txHex);
       context.sender?.tell(BroadcastFailedMessage(msg.txid, e.toString()));
     }
   }
@@ -156,21 +192,24 @@ class ARCActor extends Actor {
       context.sender?.tell(BroadcastFailedMessage(msg.txid, 'ARC service not available'));
       return;
     }
-    
+
+    // Extract raw payment tx hex before try block so it's available in catch
+    String? paymentTxHex;
+
     try {
       // 1. Extract the payment transaction (last tx) and ancestors from BEEF
       final beef = BEEF.parse(Uint8List.fromList(hex.decode(msg.beefHex)));
-      
+
       if (beef.txs.isEmpty) {
         throw Exception('BEEF contains no transactions');
       }
-      
+
       // The payment transaction is the last one in the BEEF
       final paymentTxData = beef.txs.last;
-      final paymentTxHex = hex.encode(paymentTxData);
+      paymentTxHex = hex.encode(paymentTxData);
       final paymentTx = dartsv.Transaction.fromHex(paymentTxHex);
-      
-      
+
+
       // 2. Build a map of ancestor transactions for UTXO lookup
       final ancestorTxMap = <String, dartsv.Transaction>{};
       for (int i = 0; i < beef.txs.length - 1; i++) {
@@ -179,40 +218,108 @@ class ARCActor extends Actor {
         final ancestorTxid = ancestorTx.id;
         ancestorTxMap[ancestorTxid] = ancestorTx;
       }
-      
-      
+
+
       // // 3. Convert payment transaction to Extended Format (EF)
       // final extendedFormatTxHex = _convertToExtendedFormat(
       //   paymentTx,
       //   ancestorTxMap,
       // );
       //
-      
+
       // 4a (deferred) Broadcast Extended Format transaction via ARC service
       // 4b (deferred) Broadcast Raw Format transaction via ARC service. Extended format seems still not supported by Arc API
 
       final response = await _arcService!.submitTransaction(paymentTxHex);
-      
+
       _transactionStatus[msg.txid] = _arcStatusToString(response.status);
       _transactionToWallet[msg.txid] = msg.walletId;
-      
+
       final command = BroadcastTransactionCommand(
         walletId: msg.walletId,
         transactionId: msg.txid,
         signedTransaction: msg.beefHex,
       );
       _walletManager.tell(WalletCommandMessage(msg.walletId, command));
-      
+
       context.sender?.tell(BroadcastSuccessMessage(msg.txid, response.txid));
-      
+
     } catch (e) {
+      _log.warning('BEEF broadcast failed for ${msg.txid}, queueing for retry: $e');
+      if (paymentTxHex != null) {
+        await _enqueueForRetry(msg.txid, msg.walletId, paymentTxHex);
+      }
       context.sender?.tell(BroadcastFailedMessage(msg.txid, e.toString()));
+    }
+  }
+
+  /// Enqueue a failed broadcast for durable retry
+  Future<void> _enqueueForRetry(String txid, String walletId, String rawTxHex) async {
+    if (_broadcastQueue == null) {
+      _log.warning('Broadcast retry queue not available — transaction $txid will not be retried');
+      return;
+    }
+
+    try {
+      await _broadcastQueue!.enqueue({
+        'txid': txid,
+        'walletId': walletId,
+        'rawTxHex': rawTxHex,
+      });
+      _log.info('Queued transaction $txid for broadcast retry');
+    } catch (e) {
+      _log.warning('Failed to enqueue transaction $txid for retry: $e');
+    }
+  }
+
+  /// Process the durable broadcast retry queue
+  ///
+  /// Called from the 30-second status check timer. Duraq handles backoff timing —
+  /// entries whose nextRetryAt hasn't arrived yet are skipped by processNext().
+  /// After maxAttempts, duraq moves entries to the dead letter queue.
+  Future<void> _processRetryQueue() async {
+    if (_broadcastQueue == null || _arcService == null) return;
+
+    try {
+      final queueLength = await _broadcastQueue!.length;
+      if (queueLength == 0) return;
+
+      // Process up to 5 entries per cycle to avoid blocking
+      for (int i = 0; i < 5; i++) {
+        final processed = await _broadcastQueue!.processNext((data) async {
+          final txid = data['txid'] as String;
+          final rawTxHex = data['rawTxHex'] as String;
+          final walletId = data['walletId'] as String;
+
+          _log.info('Retrying broadcast for transaction $txid');
+          final response = await _arcService!.submitTransaction(rawTxHex);
+
+          // Success — update tracking state
+          _transactionStatus[txid] = _arcStatusToString(response.status);
+          _transactionToWallet[txid] = walletId;
+
+          // Notify wallet aggregate of successful broadcast
+          _walletManager.tell(WalletCommandMessage(walletId, BroadcastTransactionCommand(
+            walletId: walletId,
+            transactionId: txid,
+            signedTransaction: rawTxHex,
+          )));
+
+          _log.info('Retry broadcast succeeded for $txid (status: ${_arcStatusToString(response.status)})');
+          // If this callback throws, duraq auto-retries with exponential backoff
+        });
+
+        // No more entries to process
+        if (!processed) break;
+      }
+    } catch (e) {
+      _log.warning('Error processing broadcast retry queue: $e');
     }
   }
 
   /// Handle transaction status check requests
   Future<void> _handleCheckTransactionStatus(CheckTransactionStatusMessage msg) async {
-    
+
     if (_arcService == null) {
       context.sender?.tell(TransactionStatusMessage(
         txid: msg.txid,
@@ -220,18 +327,18 @@ class ARCActor extends Actor {
       ));
       return;
     }
-    
+
     try {
       // Query ARC service for transaction status
       final response = await _arcService!.getTransaction(msg.txid);
-      
+
       final status = _arcStatusToString(response.status);
       _transactionStatus[msg.txid] = status; // Update cache
-      
+
       // Determine confirmations based on status and block height
       final confirmations = response.blockHeight != null ? 6 : 0; // Simplified
       final proofAvailable = response.status == ArcTransactionStatus.mined;
-      
+
       context.sender?.tell(TransactionStatusMessage(
         txid: msg.txid,
         status: status,
@@ -239,7 +346,7 @@ class ARCActor extends Actor {
         blockHeight: response.blockHeight,
         proofAvailable: proofAvailable,
       ));
-      
+
     } catch (e) {
       context.sender?.tell(TransactionStatusMessage(
         txid: msg.txid,
@@ -250,7 +357,7 @@ class ARCActor extends Actor {
 
   /// Handle merkle proof retrieval requests (NEW for SPV)
   Future<void> _handleRetrieveMerkleProof(RetrieveMerkleProofMessage msg) async {
-    
+
     if (_arcService == null) {
       context.sender?.tell(MerkleProofMessage(
         txid: msg.txid,
@@ -259,11 +366,11 @@ class ARCActor extends Actor {
       ));
       return;
     }
-    
+
     try {
       // Retrieve merkle proof from ARC service
       final proofResponse = await _arcService!.getMerkleProof(msg.txid);
-      
+
       if (proofResponse != null) {
         // Convert to proof map format
         final proof = {
@@ -273,22 +380,22 @@ class ARCActor extends Actor {
           'merklePath': proofResponse.merklePath,
           'blockHash': proofResponse.blockHash,
         };
-        
+
         context.sender?.tell(MerkleProofMessage(
           txid: msg.txid,
           merkleProof: proof,
           success: true,
         ));
-        
+
       } else {
         context.sender?.tell(MerkleProofMessage(
           txid: msg.txid,
           success: false,
           error: 'Transaction not confirmed yet - proof not available',
         ));
-        
+
       }
-      
+
     } catch (e) {
       context.sender?.tell(MerkleProofMessage(
         txid: msg.txid,
@@ -300,16 +407,16 @@ class ARCActor extends Actor {
 
   /// Handle fee quote requests
   Future<void> _handleGetFeeQuote(GetFeeQuoteMessage msg) async {
-    
+
     if (_arcService == null) {
       context.sender?.tell(FeeQuoteMessage({'error': 'ARC service not available'}));
       return;
     }
-    
+
     try {
       // Get policy from ARC service (includes fee rates)
       final policy = await _arcService!.getPolicy();
-      
+
       final feeData = {
         'mining': {
           'satoshis': policy.standardFeePerKb.toInt(),
@@ -321,9 +428,9 @@ class ARCActor extends Actor {
         },
         'timestamp': DateTime.now().toIso8601String(),
       };
-      
+
       context.sender?.tell(FeeQuoteMessage(feeData));
-      
+
     } catch (e) {
       context.sender?.tell(FeeQuoteMessage({'error': e.toString()}));
     }
@@ -331,14 +438,14 @@ class ARCActor extends Actor {
 
   /// Handle fee estimation requests
   Future<void> _handleEstimateFee(EstimateFeeMessage msg) async {
-    
+
     try {
       // Estimate transaction size (P2PKH inputs: ~148 bytes, outputs: ~34 bytes, overhead: ~10 bytes)
       final estimatedSize = (msg.inputCount * 148) + (msg.outputCount * 34) + 10;
-      
+
       // Try to get fee rate from Arc policy, fall back to 1 sat/KB default
       double feeRatePerKb = 1.0; // Default: 1 satoshi per kilobyte (current network standard)
-      
+
       try {
         if (_arcService != null) {
           final policy = await _arcService!.getPolicy();
@@ -350,9 +457,9 @@ class ARCActor extends Actor {
 
       // Calculate fee: (size_in_bytes * fee_rate_per_kb) / 1000
       final estimatedFee = BigInt.from((estimatedSize * feeRatePerKb) ~/ 1000);
-      
+
       context.sender?.tell(FeeEstimateMessage(estimatedFee));
-      
+
     } catch (e) {
       context.sender?.tell(FeeEstimateMessage(BigInt.zero));
     }
@@ -362,16 +469,16 @@ class ARCActor extends Actor {
   void _checkPendingTransactions() {
     // Check all transactions NOT in terminal states (mined/rejected)
     final pendingTxids = _transactionStatus.entries
-        .where((entry) => 
-            entry.value != 'mined' && 
+        .where((entry) =>
+            entry.value != 'mined' &&
             entry.value != 'rejected' &&
             entry.value != 'double_spend')
         .map((entry) => entry.key)
         .toList();
-    
+
     if (pendingTxids.isEmpty) return;
-    
-    
+
+
     for (final txid in pendingTxids) {
       _checkAndUpdateTransactionStatus(txid);
     }
@@ -380,17 +487,17 @@ class ARCActor extends Actor {
   /// Check and update status for a specific transaction
   Future<void> _checkAndUpdateTransactionStatus(String txid) async {
     if (_arcService == null) return;
-    
+
     try {
       // Query ARC service for transaction status
       final response = await _arcService!.getTransaction(txid);
-      
+
       final newStatus = _arcStatusToString(response.status);
       final previousStatus = _transactionStatus[txid];
-      
+
       if (newStatus != previousStatus) {
         _transactionStatus[txid] = newStatus;
-        
+
         final walletId = _transactionToWallet[txid];
         if (walletId != null) {
           // SEEN_ON_NETWORK: Mark outputs as available for spending
@@ -407,7 +514,7 @@ class ARCActor extends Actor {
               }
             }
           }
-          
+
           // MINED: Update transaction status and confirmations
           if (response.status == ArcTransactionStatus.mined && response.blockHeight != null) {
             // First, confirm the transaction itself
@@ -418,10 +525,10 @@ class ARCActor extends Actor {
               blockHash: response.blockHash,
             );
             _walletManager.tell(WalletCommandMessage(walletId, confirmTxCommand));
-            
+
             // Store merkle proof if available
-            if (response.merklePath != null && 
-                response.merklePath!.isNotEmpty && 
+            if (response.merklePath != null &&
+                response.merklePath!.isNotEmpty &&
                 response.blockHash != null) {
               final merkleProof = MerkleProof(
                 txid: txid,
@@ -430,14 +537,14 @@ class ARCActor extends Actor {
                 merkleProof: response.merklePath!,
                 position: 0, // Position is encoded in BUMP format, using 0 as default
               );
-              
+
               try {
                 await _storage.storeMerkleProof(txid, merkleProof);
               } catch (e) {
                 _log.warning('Failed to store merkle proof for $txid: $e');
               }
             }
-            
+
             // Then update confirmations for each registered output
             final outputs = _transactionOutputs[txid];
             if (outputs != null) {
@@ -449,14 +556,14 @@ class ARCActor extends Actor {
                   confirmations: 6, // Simplified - assume 6 confirmations when mined
                   blockHeight: response.blockHeight!,
                 );
-                
+
                 _walletManager.tell(WalletCommandMessage(walletId, command));
               }
             }
           }
         }
       }
-      
+
     } catch (e) {
       _log.warning('Failed to check pending transactions: $e');
     }
@@ -465,12 +572,12 @@ class ARCActor extends Actor {
   /// Handle registration of transaction outputs for tracking
   void _handleRegisterOutputs(RegisterTransactionOutputsMessage msg) {
     _transactionOutputs[msg.txid] = msg.vouts;
-    
+
     // Also ensure we're tracking this transaction's wallet mapping
     if (!_transactionToWallet.containsKey(msg.txid)) {
       _transactionToWallet[msg.txid] = msg.walletId;
     }
-    
+
     // CRITICAL: Initialize status to 'pending' so _checkPendingTransactions() will pick it up
     // This is especially important for recovery scenarios where transactions are re-registered
     if (!_transactionStatus.containsKey(msg.txid)) {
@@ -479,44 +586,44 @@ class ARCActor extends Actor {
   }
 
   /// Handle request to check all pending UTXOs from storage against Arc
-  /// 
+  ///
   /// This is triggered when new block headers are received, to check if any
   /// pending UTXOs have been mined and need merkle proofs fetched.
   Future<void> _handleCheckStoragePendingUTXOs(CheckStoragePendingUTXOsMessage msg) async {
-    
+
     if (_arcService == null) {
       return;
     }
-    
+
     try {
       // Get all wallet IDs from storage
       final walletIds = await _storage.getWalletIds();
-      
+
       if (walletIds.isEmpty) {
         return;
       }
-      
+
       // Collect all pending UTXOs across all wallets
       final pendingTxidsToCheck = <String, String>{}; // txid -> walletId
-      
+
       for (final walletId in walletIds) {
         // Get all UTXOs (including non-spent) for this wallet
         final utxos = await _storage.getUTXOs(walletId, includeSpent: false);
-        
+
         // Filter for pending UTXOs and collect unique txids
         for (final utxo in utxos) {
           if (utxo.status == UTXOStatus.pending) {
             // Only add if we don't already have this txid from another wallet
             if (!pendingTxidsToCheck.containsKey(utxo.txid)) {
               pendingTxidsToCheck[utxo.txid] = walletId;
-              
+
               // Also register outputs for this txid if not already tracked
               if (!_transactionOutputs.containsKey(utxo.txid)) {
                 _transactionOutputs[utxo.txid] = [utxo.vout];
               } else if (!_transactionOutputs[utxo.txid]!.contains(utxo.vout)) {
                 _transactionOutputs[utxo.txid]!.add(utxo.vout);
               }
-              
+
               // Ensure wallet mapping exists
               if (!_transactionToWallet.containsKey(utxo.txid)) {
                 _transactionToWallet[utxo.txid] = walletId;
@@ -530,18 +637,18 @@ class ARCActor extends Actor {
           }
         }
       }
-      
+
       if (pendingTxidsToCheck.isEmpty) {
         return;
       }
-      
-      
+
+
       // Check each pending transaction with Arc
       for (final txid in pendingTxidsToCheck.keys) {
         await _checkAndUpdateTransactionStatus(txid);
       }
-      
-      
+
+
     } catch (e) {
       _log.warning('Failed to check storage pending UTXOs: $e');
     }
@@ -612,4 +719,4 @@ class ARCActor extends Actor {
   // Helper methods
   int get trackedTransactionCount => _transactionStatus.length;
   String? getTransactionStatus(String txid) => _transactionStatus[txid];
-} 
+}

@@ -527,6 +527,26 @@ class IsarWalletStorage implements ReadModelStorage {
   }
 
   @override
+  Future<List<BitcoinUtxo>> getPaymentUTXOs(String walletId) async {
+    final entities = await _isar.bitcoinUtxoEntitys
+        .where()
+        .walletIdEqualTo(walletId)
+        .filter()
+        .statusEqualTo('available')
+        .findAll();
+
+    // Exclude UTXOs managed by token plugins (e.g., PP1/PP2/PP3 outputs).
+    // Standard P2PKH outputs may have script-analysis metadata (scriptType,
+    // address) but are still valid payment UTXOs — only exclude those with
+    // an explicit pluginId from a registered TransactionBuilderPlugin.
+    return entities.map((e) => e.toDomain()).where((utxo) {
+      final meta = utxo.pluginMetadata;
+      if (meta == null) return true;
+      return meta['pluginId'] == null;
+    }).toList();
+  }
+
+  @override
   Future<List<BitcoinUtxo>> getUTXOsByPlugin(
     String walletId,
     String pluginId, {
@@ -548,7 +568,7 @@ class IsarWalletStorage implements ReadModelStorage {
 
   @override
   Future<BigInt> getBalance(String walletId) async {
-    final utxos = await getAvailableUTXOs(walletId);
+    final utxos = await getPaymentUTXOs(walletId);
     return utxos.fold<BigInt>(
       BigInt.zero,
       (sum, utxo) => sum + utxo.satoshis,

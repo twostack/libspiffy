@@ -201,12 +201,21 @@ void main() {
       print('  totalValueReceived: ${importEvent.totalValueReceived}');
 
       // Step 4: Verify the UTXO exists in the read model
-      final utxos = await _retryUntil(
-        () => storage.getPaymentUTXOs(walletId),
+      // First check all UTXOs (any status) to understand what was persisted
+      final allUtxos = await _retryUntil(
+        () => storage.getUTXOs(walletId),
         (result) => result.isNotEmpty,
         timeout: Duration(seconds: 5),
-        description: 'getPaymentUTXOs returns non-empty',
+        description: 'getUTXOs returns non-empty',
       );
+      print('  All UTXOs: ${allUtxos.length}');
+      for (final u in allUtxos) {
+        print('    ${u.txid}:${u.vout} status=${u.status} sats=${u.satoshis} addr=${u.address} pluginMeta=${u.pluginMetadata}');
+      }
+
+      // Then check payment UTXOs (available, non-plugin)
+      final utxos = await storage.getPaymentUTXOs(walletId);
+      print('  Payment UTXOs: ${utxos.length}');
 
       expect(utxos, isNotEmpty,
           reason: 'Imported TX should create at least one UTXO in the read model');

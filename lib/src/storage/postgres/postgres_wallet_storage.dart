@@ -658,6 +658,14 @@ class PostgresWalletStorage implements ReadModelStorage {
   }
 
   @override
+  Future<List<BitcoinUtxo>> getPaymentUTXOs(String walletId) async {
+    // TODO: Add plugin_metadata column for native SQL filtering.
+    // For now, filter in memory.
+    final all = await getAvailableUTXOs(walletId);
+    return all.where((utxo) => !utxo.hasPluginMetadata).toList();
+  }
+
+  @override
   Future<List<BitcoinUtxo>> getUTXOsByPlugin(
     String walletId,
     String pluginId, {
@@ -680,19 +688,9 @@ class PostgresWalletStorage implements ReadModelStorage {
 
   @override
   Future<BigInt> getBalance(String walletId) async {
-    _ensureInitialized();
-
-    final result = await _pool!.execute(
-      Sql.named('''
-        SELECT COALESCE(SUM(satoshis), 0) as total
-        FROM bitcoin_utxos
-        WHERE wallet_id = @walletId AND status = 'available'
-      '''),
-      parameters: {'walletId': walletId},
-    );
-
-    final value = result.first[0];
-    return value is num ? BigInt.from(value) : BigInt.parse(value.toString());
+    // Use getPaymentUTXOs to exclude plugin-managed UTXOs from balance
+    final utxos = await getPaymentUTXOs(walletId);
+    return utxos.fold<BigInt>(BigInt.zero, (sum, utxo) => sum + utxo.satoshis);
   }
 
   BitcoinUtxo _rowToUtxo(ResultRow row) {

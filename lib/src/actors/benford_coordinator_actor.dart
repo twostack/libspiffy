@@ -74,7 +74,7 @@ class BenfordCoordinatorActor extends Actor {
     }
     
     // Get available UTXOs from read model
-    final availableUtxos = await _storage.getAvailableUTXOs(command.walletId);
+    final availableUtxos = await _storage.getPaymentUTXOs(command.walletId);
 
     if (availableUtxos.isEmpty) {
       _sendErrorResponse(command, 'No available UTXOs to split');

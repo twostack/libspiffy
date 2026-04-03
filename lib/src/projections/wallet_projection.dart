@@ -488,7 +488,9 @@ class WalletProjection extends Projection<void> {
         spentCount++;
         continue;
       }
-      
+      // Skip plugin-managed UTXOs (e.g. tokens) from balance calculation
+      if (utxo.hasPluginMetadata) continue;
+
       if (utxo.status == UTXOStatus.reserved) {
         reserved += utxo.satoshis;
         reservedCount++;

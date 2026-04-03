@@ -257,6 +257,10 @@ class BitcoinUtxo {
            (status == UTXOStatus.reserved && isReservationExpired);
   }
 
+  /// Whether this UTXO is managed by a script plugin (e.g. token protocol).
+  /// Plugin-managed UTXOs must not be selected for ordinary BSV payments.
+  bool get hasPluginMetadata => pluginMetadata != null;
+
   /// Get time remaining on reservation (null if not reserved or no expiry)
   Duration? get reservationTimeRemaining {
     if (status != UTXOStatus.reserved || reservationExpiresAt == null) {

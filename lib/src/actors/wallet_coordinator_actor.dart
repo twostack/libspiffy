@@ -382,7 +382,7 @@ class WalletCoordinatorActor extends Actor {
 
   Future<void> _handleGetBalance(GetBalanceQuery query) async {
     try {
-      final utxos = await _storage.getAvailableUTXOs(query.walletId);
+      final utxos = await _storage.getPaymentUTXOs(query.walletId);
       BigInt confirmed = BigInt.zero;
       BigInt unconfirmed = BigInt.zero;
 
@@ -991,8 +991,7 @@ class WalletCoordinatorActor extends Actor {
         spentUTXOs: result.spentUTXOs,
       ));
 
-      // Emit TransactionImportedEvent so callers waiting on it (e.g. overnode_v2
-      // _importBeefTransaction) get notified instead of timing out.
+      // Emit TransactionImportedEvent so callers waiting on it get notified.
       if (result.targetWalletId != null) {
         BigInt totalReceived = BigInt.zero;
         for (final utxo in result.spendableUTXOs) {

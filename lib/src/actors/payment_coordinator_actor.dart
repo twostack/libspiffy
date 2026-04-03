@@ -461,12 +461,39 @@ class PaymentCoordinatorActor extends Actor {
               },
             );
 
+            // Check if plugin needs more funding UTXOs than selected
+            final action = pluginOutput.params['action'] as String;
+            final requiredCount = pluginInstance.requiredFundingUtxoCount(action);
+
+            List<BitcoinUtxo> pluginFundingUtxos = selectedUtxos;
+            List<dartsv.SVPublicKey> pluginPublicKeys = publicKeys;
+            Map<String, String>? provisionTxLookup;
+
+            if (selectedUtxos.length < requiredCount) {
+              _log.info('[pay] plugin action "$action" needs $requiredCount funding UTXOs '
+                  'but only ${selectedUtxos.length} selected — auto-provisioning');
+              final provision = await _autoProvisionForPlugin(
+                sourceUtxo: selectedUtxos.first,
+                count: requiredCount,
+                signer: callbackSigner,
+                publicKey: publicKeys.first,
+                walletId: walletId,
+              );
+              pluginFundingUtxos = provision.earmarkUtxos;
+              pluginPublicKeys = List.filled(requiredCount, publicKeys.first);
+              provisionTxLookup = provision.txLookup;
+            }
+
             final request = PluginTransactionRequest(
-              fundingUtxos: selectedUtxos,
+              fundingUtxos: pluginFundingUtxos,
               signer: callbackSigner,
-              publicKeys: publicKeys,
+              publicKeys: pluginPublicKeys,
               params: pluginOutput.params,
               transactionLookup: (txid) async {
+                // Check inline provisioning TXs first (avoids async storage race)
+                if (provisionTxLookup != null && provisionTxLookup.containsKey(txid)) {
+                  return provisionTxLookup[txid];
+                }
                 final tx = await _storage.getTransaction(txid);
                 return tx?.rawHex;
               },
@@ -475,7 +502,6 @@ class PaymentCoordinatorActor extends Actor {
             final result = await pluginInstance.buildTransaction(request);
 
             // Validate primary TX structure
-            final action = pluginOutput.params['action'] as String;
             if (!pluginInstance.validateTransactionStructure(result.primaryTx, action)) {
               throw Exception('Plugin transaction structure validation failed');
             }
@@ -976,6 +1002,116 @@ class PaymentCoordinatorActor extends Actor {
         reservationId: reservationId,
       ),
     ));
+  }
+
+  /// Auto-provision earmark funding TXs for a plugin that needs multiple
+  /// separate funding UTXOs but the coordinator only selected one.
+  ///
+  /// Builds a two-level fan-out matching tstokenlib's FundingProvisionBuilder:
+  ///   Level 1 (split TX): source UTXO → N equal outputs
+  ///   Level 2 (earmark TXs): each split output → dust(546) + funding at vout=1
+  ///
+  /// Returns earmark [BitcoinUtxo]s (pointing to vout=1 of each earmark TX)
+  /// and a lookup map so the plugin can resolve intermediate TX hex without
+  /// waiting for async storage writes.
+  Future<({
+    List<BitcoinUtxo> earmarkUtxos,
+    Map<String, String> txLookup,
+  })> _autoProvisionForPlugin({
+    required BitcoinUtxo sourceUtxo,
+    required int count,
+    required dartsv.TransactionSigner signer,
+    required dartsv.SVPublicKey publicKey,
+    required String walletId,
+  }) async {
+    final address = dartsv.Address.fromBase58(sourceUtxo.address);
+
+    // Look up source TX from storage (needed by spendFromTxnWithSigner)
+    final sourceBtx = await _storage.getTransaction(sourceUtxo.txid);
+    if (sourceBtx == null) {
+      throw StateError('Cannot resolve source TX ${sourceUtxo.txid} for auto-provisioning');
+    }
+    final sourceTx = dartsv.Transaction.fromHex(sourceBtx.rawHex);
+
+    // Fee constants (1 sat/KB, ceiling division)
+    const earmarkTxSize = 226; // 10 + 148 + 2*34
+    final earmarkFee = BigInt.from((earmarkTxSize + 999) ~/ 1000);
+    final dust = BigInt.from(546);
+
+    // Size each split output to cover: dust + funding + earmark fee
+    final inputSats = sourceUtxo.satoshis;
+    final perEarmark = (inputSats - BigInt.one) ~/ BigInt.from(count); // ~1 sat split fee
+    final changeSats = inputSats - BigInt.one - perEarmark * BigInt.from(count);
+
+    // Level 1: Split TX
+    final splitBuilder = dartsv.TransactionBuilder()
+        .spendFromTxnWithSigner(signer, sourceTx, sourceUtxo.vout,
+            dartsv.TransactionInput.MAX_SEQ_NUMBER, dartsv.P2PKHUnlockBuilder(publicKey));
+
+    for (int i = 0; i < count; i++) {
+      splitBuilder.spendToLockBuilder(dartsv.P2PKHLockBuilder.fromAddress(address), perEarmark);
+    }
+    if (changeSats > dust) {
+      splitBuilder.spendToLockBuilder(dartsv.P2PKHLockBuilder.fromAddress(address), changeSats);
+    }
+
+    final splitTx = splitBuilder.build(false);
+    _log.info('[provision] split TX: ${splitTx.id}, $count earmark outputs');
+
+    // Level 2: Earmark TXs (dust at vout=0, funding at vout=1)
+    final earmarkUtxos = <BitcoinUtxo>[];
+    final txLookup = <String, String>{splitTx.id: splitTx.serialize()};
+
+    for (int i = 0; i < count; i++) {
+      final splitOutputSats = splitTx.outputs[i].satoshis;
+      final fundingSats = splitOutputSats - dust - earmarkFee;
+
+      // Fresh unlocker per TX — TransactionBuilder mutates during build
+      final earmarkBuilder = dartsv.TransactionBuilder()
+          .spendFromTxnWithSigner(signer, splitTx, i,
+              dartsv.TransactionInput.MAX_SEQ_NUMBER, dartsv.P2PKHUnlockBuilder(publicKey));
+
+      earmarkBuilder.spendToLockBuilder(
+          dartsv.P2PKHLockBuilder.fromAddress(address), dust);
+      earmarkBuilder.spendToLockBuilder(
+          dartsv.P2PKHLockBuilder.fromAddress(address), fundingSats);
+      earmarkBuilder.withOption(dartsv.TransactionOption.DISABLE_DUST_OUTPUTS);
+
+      final earmarkTx = earmarkBuilder.build(false);
+      txLookup[earmarkTx.id] = earmarkTx.serialize();
+
+      earmarkUtxos.add(BitcoinUtxo.create(
+        txid: earmarkTx.id,
+        vout: 1,
+        satoshis: fundingSats,
+        scriptPubKey: sourceUtxo.scriptPubKey,
+        address: sourceUtxo.address,
+        derivationIndex: sourceUtxo.derivationIndex,
+      ));
+
+      _log.info('[provision] earmark $i: ${earmarkTx.id}, funding=$fundingSats sats at vout=1');
+    }
+
+    // Record intermediate TXs for ARCActor broadcast (fire-and-forget)
+    final splitBtx = BitcoinTransaction.fromDartSvTransaction(
+      walletId: walletId,
+      transaction: splitTx,
+      status: TransactionStatus.pending,
+      receivingAddresses: List.filled(count, 'self:earmark'),
+      sendingAddresses: [],
+      inputValue: sourceUtxo.satoshis,
+      netAmount: BigInt.zero,
+    );
+    _recordOutgoingTransaction(
+      walletId: walletId,
+      transaction: splitBtx,
+      spentUtxoKeys: [sourceUtxo.key],
+      recipientAddresses: ['self:earmark-split'],
+      paymentAmount: BigInt.zero,
+      changeAddress: sourceUtxo.address,
+    );
+
+    return (earmarkUtxos: earmarkUtxos, txLookup: txLookup);
   }
 
   /// Record outgoing transaction in wallet history (in PENDING state)

@@ -233,6 +233,19 @@ class InMemoryWalletStorage implements WalletStorage {
   }
   
   @override
+  Future<List<BitcoinUtxo>> getPaymentUTXOs(String walletId) async {
+    return await _withLock(walletId, () async {
+      if (!_walletIds.contains(walletId)) {
+        throw StorageException('Wallet not found: $walletId');
+      }
+      final walletUtxos = _utxos[walletId] ?? <String, BitcoinUtxo>{};
+      return walletUtxos.values
+          .where((utxo) => utxo.isAvailable && !utxo.hasPluginMetadata)
+          .toList();
+    });
+  }
+
+  @override
   Future<List<BitcoinUtxo>> getUTXOsByPlugin(
     String walletId,
     String pluginId, {
@@ -270,10 +283,10 @@ class InMemoryWalletStorage implements WalletStorage {
         return _balanceCache[walletId]!;
       }
       
-      // Calculate balance from available UTXOs (avoid nested locking)
+      // Calculate balance from available payment UTXOs (exclude token UTXOs)
       final walletUtxos = _utxos[walletId] ?? <String, BitcoinUtxo>{};
       final availableUtxos = walletUtxos.values
-          .where((utxo) => utxo.isAvailable)
+          .where((utxo) => utxo.isAvailable && !utxo.hasPluginMetadata)
           .toList();
       
       final balance = availableUtxos.fold<BigInt>(

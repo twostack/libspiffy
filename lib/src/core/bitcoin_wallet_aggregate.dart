@@ -2414,10 +2414,10 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     return utxo != null && utxo.status == UTXOStatus.available;
   }
 
-  /// Get available UTXOs for spending
+  /// Get available UTXOs for spending (excludes plugin-managed UTXOs like tokens)
   List<BitcoinUtxo> getAvailableUTXOs(WalletState state) {
     return state.utxos.values
-        .where((utxo) => utxo.status == UTXOStatus.available)
+        .where((utxo) => utxo.status == UTXOStatus.available && !utxo.hasPluginMetadata)
         .toList();
   }
 

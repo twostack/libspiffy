@@ -36,6 +36,16 @@ abstract class TransactionBuilderPlugin extends ScriptPlugin {
   /// (e.g., ['issuance', 'transfer', 'burn', 'witness']).
   List<String> get supportedActions;
 
+  /// Number of distinct funding UTXOs required for [action].
+  ///
+  /// Each funding UTXO must be a separate transaction with the funding
+  /// amount at vout=1 (tstokenlib convention). Paired actions (e.g.,
+  /// issuance + witness) typically need 2; single-TX actions need 1.
+  ///
+  /// When the coordinator has fewer UTXOs than required, it will
+  /// auto-provision by splitting available funds into earmark TXs.
+  int requiredFundingUtxoCount(String action) => 1;
+
   /// Validate that a transaction conforms to this plugin's protocol structure.
   ///
   /// Returns true if the transaction has the expected output count,

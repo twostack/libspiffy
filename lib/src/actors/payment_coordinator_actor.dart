@@ -86,7 +86,7 @@ class PaymentCoordinatorActor extends Actor {
 
     // 1. Get available UTXOs
     final utxoSw = Stopwatch()..start();
-    final utxos = await _storage.getAvailableUTXOs(msg.walletId);
+    final utxos = await _storage.getPaymentUTXOs(msg.walletId);
     _log.info('[pay ${msg.invoiceId}] getUTXOs: ${utxoSw.elapsedMilliseconds}ms, count=${utxos.length}');
     if (utxos.isEmpty) {
       _sendError(msg.invoiceId, 'Insufficient funds', sender: originalSender);
@@ -466,6 +466,10 @@ class PaymentCoordinatorActor extends Actor {
               signer: callbackSigner,
               publicKeys: publicKeys,
               params: pluginOutput.params,
+              transactionLookup: (txid) async {
+                final tx = await _storage.getTransaction(txid);
+                return tx?.rawHex;
+              },
             );
 
             final result = await pluginInstance.buildTransaction(request);
@@ -1030,7 +1034,7 @@ class PaymentCoordinatorActor extends Actor {
       }
 
       // 2. Get available UTXOs and select the largest
-      final availableUtxos = await _storage.getAvailableUTXOs(walletId);
+      final availableUtxos = await _storage.getPaymentUTXOs(walletId);
       if (availableUtxos.isEmpty) {
         throw Exception('No available UTXOs for provisioning');
       }

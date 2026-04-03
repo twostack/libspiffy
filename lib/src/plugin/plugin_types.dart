@@ -8,7 +8,7 @@ import '../models/bitcoin_utxo.dart';
 /// Plugins use this to look up parent or witness transactions without
 /// receiving external hex — all data flows through the wallet's read model.
 /// Returns the raw transaction hex, or null if not found.
-typedef TransactionLookup = String? Function(String txid);
+typedef TransactionLookup = Future<String?> Function(String txid);
 
 /// Parameters for building an unlocking script to spend a plugin-managed UTXO.
 class PluginUnlockSpec {

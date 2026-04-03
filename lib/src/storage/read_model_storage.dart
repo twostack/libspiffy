@@ -132,6 +132,13 @@ abstract class ReadModelStorage {
   /// Returns: List of available UTXOs
   Future<List<BitcoinUtxo>> getAvailableUTXOs(String walletId);
 
+  /// Get available UTXOs suitable for BSV payments.
+  ///
+  /// Like [getAvailableUTXOs] but excludes UTXOs that carry plugin metadata
+  /// (e.g. token scripts). These UTXOs are managed by their respective
+  /// plugins and must not be selected as funding inputs for ordinary payments.
+  Future<List<BitcoinUtxo>> getPaymentUTXOs(String walletId);
+
   /// Upsert (insert or update) a UTXO in the read model.
   ///
   /// Used by projections to persist UTXO state changes.

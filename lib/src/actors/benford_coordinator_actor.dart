@@ -74,10 +74,7 @@ class BenfordCoordinatorActor extends Actor {
     }
     
     // Get available UTXOs from read model
-    final utxos = await _storage.getUTXOs(command.walletId);
-    final availableUtxos = utxos
-        .where((u) => u.status == UTXOStatus.available)
-        .toList();
+    final availableUtxos = await _storage.getAvailableUTXOs(command.walletId);
 
     if (availableUtxos.isEmpty) {
       _sendErrorResponse(command, 'No available UTXOs to split');
@@ -154,32 +151,39 @@ class BenfordCoordinatorActor extends Actor {
     required int targetCount,
     required BigInt feeRate,
   }) async {
-    
+    // 1. Estimate fee (before reservation to avoid reserving UTXOs we can't use)
+    final estimatedTxSize = 180 + (targetCount * 34) + 10;
+    final estimatedFee = feeRate * BigInt.from(estimatedTxSize);
+
+    // Check if UTXO is large enough
+    final minTotalNeeded = BigInt.from(targetCount) + estimatedFee;
+    if (sourceUtxo.satoshis < minTotalNeeded) {
+      return null;
+    }
+
+    // 2. Reserve the source UTXO to prevent double-spending
+    final reservationId = 'benford-split-${sourceUtxo.key}-${DateTime.now().millisecondsSinceEpoch}';
+    final reserved = await _reserveUTXO(walletId, sourceUtxo, reservationId);
+    if (!reserved) {
+      _log.info('UTXO ${sourceUtxo.key} could not be reserved, skipping');
+      return null;
+    }
+
     try {
-      // 1. Estimate fee
-      final estimatedTxSize = 180 + (targetCount * 34) + 10;
-      final estimatedFee = feeRate * BigInt.from(estimatedTxSize);
-
-      // Check if UTXO is large enough
-      final minTotalNeeded = BigInt.from(targetCount) + estimatedFee;
-      if (sourceUtxo.satoshis < minTotalNeeded) {
-        return null;
-      }
-
-      // 2. Calculate Benford distribution
+      // 3. Calculate Benford distribution
       final amountToDistribute = sourceUtxo.satoshis - estimatedFee;
       final outputAmounts = BenfordDistribution.distribute(
         amountToDistribute,
         targetCount,
       );
 
-      // 3. Generate new addresses
+      // 4. Generate new addresses
       final outputAddresses = await _generateAddresses(
         walletId: walletId,
         count: targetCount,
       );
 
-      // 4. Build and sign transaction
+      // 5. Build and sign transaction
       final txResult = await _buildAndSignTransaction(
         walletId: walletId,
         sourceUtxo: sourceUtxo,
@@ -189,6 +193,7 @@ class BenfordCoordinatorActor extends Actor {
       );
 
       if (txResult == null) {
+        _releaseReservation(walletId: walletId, reservationId: reservationId);
         return null;
       }
 
@@ -196,17 +201,17 @@ class BenfordCoordinatorActor extends Actor {
       final txHex = txResult['txHex'] as String;
       final actualFee = txResult['actualFee'] as BigInt;
 
-
-      // 5. Broadcast via ARCActor
+      // 6. Broadcast via ARCActor
       _arcActor.tell(BroadcastTransactionMessage(
         walletId,
         txHex,
         txid,
       ));
 
-      // 6. Send CQRS commands to update wallet state
-      
-      // 6a. Mark source UTXO as spent
+      // 7. Send CQRS commands to update wallet state
+      // SpendUTXOCommand supersedes the reservation — no explicit release needed
+
+      // 7a. Mark source UTXO as spent
       _walletManager.tell(WalletCommandMessage(
         walletId,
         SpendUTXOCommand(
@@ -217,7 +222,7 @@ class BenfordCoordinatorActor extends Actor {
         ),
       ));
 
-      // 6b. Register new UTXOs (pending status)
+      // 7b. Register new UTXOs (pending status)
       for (int i = 0; i < outputAmounts.length; i++) {
         _walletManager.tell(WalletCommandMessage(
           walletId,
@@ -233,7 +238,7 @@ class BenfordCoordinatorActor extends Actor {
         ));
       }
 
-      // 6c. Record transaction
+      // 7c. Record transaction
       _walletManager.tell(WalletCommandMessage(
         walletId,
         RecordOutgoingTransactionCommand(
@@ -259,18 +264,18 @@ class BenfordCoordinatorActor extends Actor {
         ),
       ));
 
-      // 7. Register outputs with ARCActor for status tracking
+      // 8. Register outputs with ARCActor for status tracking
       _arcActor.tell(RegisterTransactionOutputsMessage(
         txid: txid,
         walletId: walletId,
         vouts: List.generate(outputAmounts.length, (i) => i),
       ));
 
-      
       return txid;
 
     } catch (e, stackTrace) {
       _log.warning('Failed to build and broadcast Benford split transaction: $e');
+      _releaseReservation(walletId: walletId, reservationId: reservationId);
       return null;
     }
   }
@@ -504,6 +509,64 @@ class BenfordCoordinatorActor extends Actor {
     return script.toHex();
   }
   
+  /// Reserve a single UTXO via the wallet aggregate.
+  ///
+  /// Uses the timeout-as-success pattern: the aggregate sends a LocalMessage
+  /// with an error on failure, but sends nothing on success. A 2-second timeout
+  /// with no error means the reservation succeeded.
+  Future<bool> _reserveUTXO(String walletId, BitcoinUtxo utxo, String reservationId) async {
+    final completer = Completer<void>();
+    final receiverName = 'reserve-receiver-${utxo.key.replaceAll(':', '-')}-${DateTime.now().microsecondsSinceEpoch}';
+    final receiver = await context.system.spawn(
+      receiverName,
+      () => _ReservationReceiverActor(completer),
+    );
+
+    try {
+      _walletManager.tell(
+        WalletCommandMessage(
+          walletId,
+          ReserveUTXOCommand(
+            walletId: walletId,
+            utxoKey: utxo.key,
+            reservedByTxId: reservationId,
+            reservationReason: 'benford-split',
+            reservationDuration: const Duration(minutes: 2),
+          ),
+        ),
+        sender: receiver,
+      );
+
+      // Timeout = success (no error received), StateError = failure
+      await completer.future.timeout(const Duration(seconds: 2));
+      // If completer completes without error (shouldn't happen), treat as success
+      return true;
+    } on TimeoutException {
+      // No error received within timeout — reservation succeeded
+      return true;
+    } on StateError catch (e) {
+      _log.info('UTXO reservation failed for ${utxo.key}: $e');
+      return false;
+    } catch (e) {
+      _log.warning('UTXO reservation unexpected error for ${utxo.key}: $e');
+      return false;
+    } finally {
+      await context.system.stop(receiver);
+    }
+  }
+
+  /// Release a UTXO reservation (fire-and-forget).
+  /// The 2-minute expiry is a safety net if this fails.
+  void _releaseReservation({required String walletId, required String reservationId}) {
+    _walletManager.tell(WalletCommandMessage(
+      walletId,
+      ReleaseUTXOsCommand(
+        walletId: walletId,
+        reservationId: reservationId,
+      ),
+    ));
+  }
+
   /// Send error response back to the sender
   void _sendErrorResponse(SplitUTXOsToBenfordCommand command, String error) {
     final sender = context.sender;
@@ -513,6 +576,25 @@ class BenfordCoordinatorActor extends Actor {
         success: false,
         error: error,
       ));
+    }
+  }
+}
+
+/// Helper actor to receive UTXO reservation error responses.
+/// On success, the aggregate sends nothing — the completer times out (= success).
+/// On failure, the aggregate sends a LocalMessage with an error payload.
+class _ReservationReceiverActor extends Actor {
+  final Completer<void> completer;
+
+  _ReservationReceiverActor(this.completer);
+
+  @override
+  Future<void> onMessage(dynamic message) async {
+    if (message is LocalMessage && !completer.isCompleted) {
+      final payload = message.payload;
+      if (payload is Map && payload.containsKey('error')) {
+        completer.completeError(StateError(payload['error'].toString()));
+      }
     }
   }
 }

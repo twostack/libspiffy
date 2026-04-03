@@ -65,6 +65,7 @@ class WalletProjection extends Projection<void> {
         TransactionImportedEvent,
         TransactionRecordedEvent,
         TransactionConfirmedEvent,
+        TransactionStatusUpdatedEvent,
       ];
   
   @override
@@ -143,6 +144,9 @@ class WalletProjection extends Projection<void> {
           return true;
         case TransactionConfirmedEvent:
           await _handleTransactionConfirmed(event as TransactionConfirmedEvent);
+          return true;
+        case TransactionStatusUpdatedEvent:
+          await _handleTransactionStatusUpdated(event as TransactionStatusUpdatedEvent);
           return true;
         default:
           return false;
@@ -654,6 +658,24 @@ class WalletProjection extends Projection<void> {
 
     } catch (e, stackTrace) {
       _log.warning('Failed to handle transaction confirmed event: $e');
+    }
+  }
+
+  Future<void> _handleTransactionStatusUpdated(TransactionStatusUpdatedEvent event) async {
+    try {
+      final existingTx = await _storage.getTransaction(event.txid);
+      if (existingTx == null) {
+        return;
+      }
+
+      final updatedTx = existingTx.copyWith(
+        status: event.newStatus,
+        updatedAt: event.timestamp,
+      );
+
+      await _storage.storeTransaction(event.walletId, updatedTx);
+    } catch (e) {
+      _log.warning('Failed to handle transaction status updated event: $e');
     }
   }
 

@@ -853,7 +853,22 @@ class WalletCoordinatorActor extends Actor {
         ));
       }
     } else {
-      // Regular payment
+      // Regular payment — register inputs with ARCActor for deferred spend
+      // and independent sender-side monitoring
+      if (response.success && response.spentUtxoKeys.isNotEmpty && walletId != null) {
+        _arcActor.tell(wm.RegisterTransactionInputsMessage(
+          txid: response.txid,
+          walletId: walletId,
+          utxoKeys: response.spentUtxoKeys,
+        ));
+        // Also register outputs for status tracking
+        _arcActor.tell(wm.RegisterTransactionOutputsMessage(
+          txid: response.txid,
+          walletId: walletId,
+          vouts: [], // Output tracking will be populated by the receiver
+        ));
+      }
+
       _emitEvent(PaymentReadyEvent(
         walletId: walletId,
         invoiceId: response.invoiceId,
@@ -966,7 +981,7 @@ class WalletCoordinatorActor extends Actor {
         ));
       }
     } else {
-      // No correlation - emit as standalone SPV result
+      // No correlation - this is a standalone import (not a payment validation)
       _emitEvent(SPVValidationResultEvent(
         walletId: result.targetWalletId,
         txid: result.txid,
@@ -975,6 +990,25 @@ class WalletCoordinatorActor extends Actor {
         spendableUTXOs: result.spendableUTXOs,
         spentUTXOs: result.spentUTXOs,
       ));
+
+      // Emit TransactionImportedEvent so callers waiting on it (e.g. overnode_v2
+      // _importBeefTransaction) get notified instead of timing out.
+      if (result.targetWalletId != null) {
+        BigInt totalReceived = BigInt.zero;
+        for (final utxo in result.spendableUTXOs) {
+          final sat = utxo['satoshis'];
+          totalReceived += sat is BigInt ? sat : BigInt.from(sat ?? 0);
+        }
+
+        _emitEvent(TransactionImportedEvent(
+          walletId: result.targetWalletId!,
+          transactionId: result.txid,
+          success: result.isValid,
+          utxosCreated: result.spendableUTXOs.length,
+          totalValueReceived: totalReceived.toString(),
+          error: result.validationError,
+        ));
+      }
     }
   }
 

@@ -8,7 +8,8 @@ import 'package:isar/isar.dart';
 import 'package:logging/logging.dart';
 
 import '../core/wallet_commands.dart';
-import '../models/bitcoin_utxo.dart';
+import '../models/bitcoin_transaction.dart';
+
 import '../services/arc_service.dart';
 import '../services/arc_service_config.dart';
 import '../storage/read_model_storage.dart';
@@ -26,10 +27,9 @@ class ARCActor extends Actor {
   // ARC service client (dynamic to allow mock services in tests)
   dynamic _arcService;
 
-  // Transaction status tracking
-  final Map<String, String> _transactionStatus = {}; // txid -> status
-  final Map<String, String> _transactionToWallet = {}; // txid -> walletId
-  final Map<String, List<int>> _transactionOutputs = {}; // txid -> [vout, vout, ...]
+  // Orphan remediation tracking (transient — OK to lose on restart)
+  final Map<String, int> _orphanRemediationAttempts = {}; // txid -> attempt count
+  static const int _maxOrphanRemediationAttempts = 3;
 
   // Periodic status checking
   Timer? _statusCheckTimer;
@@ -88,6 +88,10 @@ class ARCActor extends Actor {
           _handleRegisterOutputs(message as RegisterTransactionOutputsMessage);
           break;
 
+        case RegisterTransactionInputsMessage:
+          _handleRegisterInputs(message as RegisterTransactionInputsMessage);
+          break;
+
         case CheckStoragePendingUTXOsMessage:
           await _handleCheckStoragePendingUTXOs(message as CheckStoragePendingUTXOsMessage);
           break;
@@ -144,7 +148,7 @@ class ARCActor extends Actor {
   /// Start periodic transaction status monitoring
   void _startStatusMonitoring() {
     _statusCheckTimer = Timer.periodic(Duration(seconds: 30), (timer) {
-      _checkPendingTransactions();
+      _checkNonTerminalTransactions();
       _processRetryQueue();
     });
 
@@ -162,10 +166,6 @@ class ARCActor extends Actor {
       // Broadcast transaction via ARC service
       final response = await _arcService!.submitTransaction(msg.txHex);
 
-      // Track transaction status
-      _transactionStatus[msg.txid] = _arcStatusToString(response.status);
-      _transactionToWallet[msg.txid] = msg.walletId;
-
       // Notify wallet of successful broadcast
       final command = BroadcastTransactionCommand(
         walletId: msg.walletId,
@@ -174,9 +174,11 @@ class ARCActor extends Actor {
       );
       _walletManager.tell(WalletCommandMessage(msg.walletId, command));
 
+      // Update transaction status based on ARC's initial response
+      _updateTransactionStatusFromArc(msg.walletId, msg.txid, response.status);
+
       // Send success response
       context.sender?.tell(BroadcastSuccessMessage(msg.txid, response.txid));
-
 
     } catch (e) {
       _log.warning('Broadcast failed for ${msg.txid}, queueing for retry: $e');
@@ -232,15 +234,15 @@ class ARCActor extends Actor {
 
       final response = await _arcService!.submitTransaction(paymentTxHex);
 
-      _transactionStatus[msg.txid] = _arcStatusToString(response.status);
-      _transactionToWallet[msg.txid] = msg.walletId;
-
       final command = BroadcastTransactionCommand(
         walletId: msg.walletId,
         transactionId: msg.txid,
         signedTransaction: msg.beefHex,
       );
       _walletManager.tell(WalletCommandMessage(msg.walletId, command));
+
+      // Update transaction status based on ARC's initial response
+      _updateTransactionStatusFromArc(msg.walletId, msg.txid, response.status);
 
       context.sender?.tell(BroadcastSuccessMessage(msg.txid, response.txid));
 
@@ -294,10 +296,6 @@ class ARCActor extends Actor {
           _log.info('Retrying broadcast for transaction $txid');
           final response = await _arcService!.submitTransaction(rawTxHex);
 
-          // Success — update tracking state
-          _transactionStatus[txid] = _arcStatusToString(response.status);
-          _transactionToWallet[txid] = walletId;
-
           // Notify wallet aggregate of successful broadcast
           _walletManager.tell(WalletCommandMessage(walletId, BroadcastTransactionCommand(
             walletId: walletId,
@@ -333,7 +331,6 @@ class ARCActor extends Actor {
       final response = await _arcService!.getTransaction(msg.txid);
 
       final status = _arcStatusToString(response.status);
-      _transactionStatus[msg.txid] = status; // Update cache
 
       // Determine confirmations based on status and block height
       final confirmations = response.blockHeight != null ? 6 : 0; // Simplified
@@ -465,124 +462,140 @@ class ARCActor extends Actor {
     }
   }
 
-  /// Periodically check status of pending transactions
-  void _checkPendingTransactions() {
-    // Check all transactions NOT in terminal states (mined/rejected)
-    final pendingTxids = _transactionStatus.entries
-        .where((entry) =>
-            entry.value != 'mined' &&
-            entry.value != 'rejected' &&
-            entry.value != 'double_spend')
-        .map((entry) => entry.key)
-        .toList();
-
-    if (pendingTxids.isEmpty) return;
-
-
-    for (final txid in pendingTxids) {
-      _checkAndUpdateTransactionStatus(txid);
-    }
-  }
-
-  /// Check and update status for a specific transaction
-  Future<void> _checkAndUpdateTransactionStatus(String txid) async {
+  /// Check all non-terminal transactions against ARC.
+  /// Queries storage for transactions in pending/broadcast/seenOnNetwork/orphaned states.
+  Future<void> _checkNonTerminalTransactions() async {
     if (_arcService == null) return;
 
     try {
-      // Query ARC service for transaction status
-      final response = await _arcService!.getTransaction(txid);
-
-      final newStatus = _arcStatusToString(response.status);
-      final previousStatus = _transactionStatus[txid];
-
-      if (newStatus != previousStatus) {
-        _transactionStatus[txid] = newStatus;
-
-        final walletId = _transactionToWallet[txid];
-        if (walletId != null) {
-          // SEEN_ON_NETWORK: Mark outputs as available for spending
-          if (response.status == ArcTransactionStatus.seenOnNetwork) {
-            final outputs = _transactionOutputs[txid];
-            if (outputs != null) {
-              for (final vout in outputs) {
-                final command = MarkUTXOAvailableCommand(
-                  walletId: walletId,
-                  txid: txid,
-                  vout: vout,
-                );
-                _walletManager.tell(WalletCommandMessage(walletId, command));
-              }
-            }
-          }
-
-          // MINED: Update transaction status and confirmations
-          if (response.status == ArcTransactionStatus.mined && response.blockHeight != null) {
-            // First, confirm the transaction itself
-            final confirmTxCommand = ConfirmTransactionCommand(
-              walletId: walletId,
-              txid: txid,
-              blockHeight: response.blockHeight,
-              blockHash: response.blockHash,
-            );
-            _walletManager.tell(WalletCommandMessage(walletId, confirmTxCommand));
-
-            // Store merkle proof if available
-            if (response.merklePath != null &&
-                response.merklePath!.isNotEmpty &&
-                response.blockHash != null) {
-              final merkleProof = MerkleProof(
-                txid: txid,
-                blockHash: response.blockHash!,
-                blockHeight: response.blockHeight!,
-                merkleProof: response.merklePath!,
-                position: 0, // Position is encoded in BUMP format, using 0 as default
-              );
-
-              try {
-                await _storage.storeMerkleProof(txid, merkleProof);
-              } catch (e) {
-                _log.warning('Failed to store merkle proof for $txid: $e');
-              }
-            }
-
-            // Then update confirmations for each registered output
-            final outputs = _transactionOutputs[txid];
-            if (outputs != null) {
-              for (final vout in outputs) {
-                final utxoKey = '$txid:$vout';
-                final command = UpdateUTXOConfirmationsCommand(
-                  walletId: walletId,
-                  utxoKey: utxoKey,
-                  confirmations: 6, // Simplified - assume 6 confirmations when mined
-                  blockHeight: response.blockHeight!,
-                );
-
-                _walletManager.tell(WalletCommandMessage(walletId, command));
-              }
-            }
-          }
-        }
+      // Query storage for all transactions that need monitoring
+      final transactions = <BitcoinTransaction>[];
+      for (final status in [
+        TransactionStatus.pending,
+        TransactionStatus.broadcast,
+        TransactionStatus.seenOnNetwork,
+        TransactionStatus.orphaned,
+      ]) {
+        transactions.addAll(await _storage.getTransactionsByStatus(status));
       }
+      if (transactions.isEmpty) return;
 
+      _log.info('Checking ${transactions.length} non-terminal transaction(s)');
+      for (final tx in transactions) {
+        final walletId = tx.walletId;
+        if (walletId == null || walletId.isEmpty) continue;
+        _log.info('  Checking tx ${tx.txid.substring(0, 8)}... stored=${tx.status.name} wallet=$walletId');
+        await _checkAndUpdateTransactionStatus(tx.txid, walletId, tx.status);
+      }
     } catch (e) {
-      _log.warning('Failed to check pending transactions: $e');
+      _log.warning('Failed to check non-terminal transactions: $e');
     }
   }
 
-  /// Handle registration of transaction outputs for tracking
+  /// Check and update status for a specific transaction.
+  /// Compares the current stored status with ARC's reported status and takes
+  /// appropriate action on transitions (deferred spend, confirmation, orphan remediation).
+  Future<void> _checkAndUpdateTransactionStatus(String txid, String walletId, TransactionStatus currentStatus) async {
+    if (_arcService == null) return;
+
+    try {
+      final response = await _arcService!.getTransaction(txid);
+      final arcTxStatus = _arcStatusToTransactionStatus(response.status);
+      _log.info('  ARC reports: ${response.status} (mapped: ${arcTxStatus?.name}) for ${txid.substring(0, 8)}... (stored: ${currentStatus.name})');
+
+      // SEEN_IN_ORPHAN_MEMPOOL: Attempt remediation on every poll cycle
+      if (response.status == ArcTransactionStatus.seenInOrphanMempool) {
+        if (currentStatus != TransactionStatus.orphaned) {
+          _updateTransactionStatusFromArc(walletId, txid, response.status);
+        }
+        _handleOrphanedTransaction(txid);
+        return;
+      }
+
+      // Only act on status changes (comparing stored status with ARC status)
+      if (arcTxStatus == null || arcTxStatus == currentStatus) return;
+
+      // Update the transaction status in the wallet
+      _updateTransactionStatusFromArc(walletId, txid, response.status);
+
+      // SEEN_ON_NETWORK: Parse tx to mark inputs as spent and outputs as available
+      if (response.status == ArcTransactionStatus.seenOnNetwork) {
+        _orphanRemediationAttempts.remove(txid);
+
+        final tx = await _storage.getTransaction(txid);
+        if (tx != null && tx.rawHex.isNotEmpty) {
+          final parsed = dartsv.Transaction.fromHex(tx.rawHex);
+
+          // Mark input UTXOs as spent (deferred spend)
+          for (final input in parsed.inputs) {
+            if (input.prevTxnId.isNotEmpty) {
+              final utxoKey = '${input.prevTxnId}:${input.prevTxnOutputIndex}';
+              _walletManager.tell(WalletCommandMessage(walletId, SpendUTXOCommand(
+                walletId: walletId,
+                utxoKey: utxoKey,
+                spendingTxId: txid,
+                fee: BigInt.zero,
+              )));
+            }
+          }
+
+          // Mark output UTXOs as available for spending
+          for (int i = 0; i < parsed.outputs.length; i++) {
+            _walletManager.tell(WalletCommandMessage(walletId, MarkUTXOAvailableCommand(
+              walletId: walletId,
+              txid: txid,
+              vout: i,
+            )));
+          }
+
+          _log.info('Transaction $txid seen on network: marked ${parsed.inputs.length} input(s) spent, '
+              '${parsed.outputs.length} output(s) available');
+        }
+      }
+
+      // MINED: Confirm transaction and store merkle proof
+      if (response.status == ArcTransactionStatus.mined && response.blockHeight != null) {
+        _orphanRemediationAttempts.remove(txid);
+
+        _walletManager.tell(WalletCommandMessage(walletId, ConfirmTransactionCommand(
+          walletId: walletId,
+          txid: txid,
+          blockHeight: response.blockHeight,
+          blockHash: response.blockHash,
+        )));
+
+        // Store merkle proof if available
+        if (response.merklePath != null &&
+            response.merklePath!.isNotEmpty &&
+            response.blockHash != null) {
+          try {
+            await _storage.storeMerkleProof(txid, MerkleProof(
+              txid: txid,
+              blockHash: response.blockHash!,
+              blockHeight: response.blockHeight!,
+              merkleProof: response.merklePath!,
+              position: 0,
+            ));
+          } catch (e) {
+            _log.warning('Failed to store merkle proof for $txid: $e');
+          }
+        }
+      }
+    } catch (e) {
+      _log.warning('Failed to check transaction $txid: $e');
+    }
+  }
+
+  /// Handle registration of transaction outputs for tracking.
+  /// Now a no-op — transaction monitoring is storage-backed.
   void _handleRegisterOutputs(RegisterTransactionOutputsMessage msg) {
-    _transactionOutputs[msg.txid] = msg.vouts;
+    // No-op: outputs are parsed on demand from rawHex when needed
+  }
 
-    // Also ensure we're tracking this transaction's wallet mapping
-    if (!_transactionToWallet.containsKey(msg.txid)) {
-      _transactionToWallet[msg.txid] = msg.walletId;
-    }
-
-    // CRITICAL: Initialize status to 'pending' so _checkPendingTransactions() will pick it up
-    // This is especially important for recovery scenarios where transactions are re-registered
-    if (!_transactionStatus.containsKey(msg.txid)) {
-      _transactionStatus[msg.txid] = 'pending';
-    }
+  /// Handle registration of transaction inputs for deferred spending.
+  /// Now a no-op — inputs are parsed on demand from rawHex when needed.
+  void _handleRegisterInputs(RegisterTransactionInputsMessage msg) {
+    // No-op: inputs are parsed on demand from rawHex when needed
   }
 
   /// Handle request to check all pending UTXOs from storage against Arc
@@ -591,67 +604,234 @@ class ARCActor extends Actor {
   /// pending UTXOs have been mined and need merkle proofs fetched.
   Future<void> _handleCheckStoragePendingUTXOs(CheckStoragePendingUTXOsMessage msg) async {
 
-    if (_arcService == null) {
-      return;
+    // Delegate to the storage-backed check which covers all non-terminal transactions
+    await _checkNonTerminalTransactions();
+  }
+
+  /// Map an ARC status to a TransactionStatus enum value (for comparison).
+  TransactionStatus? _arcStatusToTransactionStatus(ArcTransactionStatus arcStatus) {
+    switch (arcStatus) {
+      case ArcTransactionStatus.queued:
+      case ArcTransactionStatus.received:
+      case ArcTransactionStatus.stored:
+      case ArcTransactionStatus.announcedToNetwork:
+      case ArcTransactionStatus.requestedByNetwork:
+      case ArcTransactionStatus.sentToNetwork:
+      case ArcTransactionStatus.acceptedByNetwork:
+        return TransactionStatus.broadcast;
+      case ArcTransactionStatus.seenOnNetwork:
+        return TransactionStatus.seenOnNetwork;
+      case ArcTransactionStatus.mined:
+        return TransactionStatus.confirmed;
+      case ArcTransactionStatus.seenInOrphanMempool:
+        return TransactionStatus.orphaned;
+      case ArcTransactionStatus.rejected:
+      case ArcTransactionStatus.doubleSpendAttempted:
+        return TransactionStatus.failed;
+      default:
+        return null;
+    }
+  }
+
+  /// Map an ARC status to a TransactionStatus and send an update command to the wallet.
+  void _updateTransactionStatusFromArc(String walletId, String txid, ArcTransactionStatus arcStatus) {
+    final TransactionStatus? txStatus;
+    switch (arcStatus) {
+      case ArcTransactionStatus.queued:
+      case ArcTransactionStatus.received:
+      case ArcTransactionStatus.stored:
+      case ArcTransactionStatus.announcedToNetwork:
+      case ArcTransactionStatus.requestedByNetwork:
+      case ArcTransactionStatus.sentToNetwork:
+      case ArcTransactionStatus.acceptedByNetwork:
+        txStatus = TransactionStatus.broadcast;
+        break;
+      case ArcTransactionStatus.seenOnNetwork:
+        txStatus = TransactionStatus.seenOnNetwork;
+        break;
+      case ArcTransactionStatus.mined:
+        txStatus = TransactionStatus.confirmed;
+        break;
+      case ArcTransactionStatus.seenInOrphanMempool:
+        txStatus = TransactionStatus.orphaned;
+        break;
+      case ArcTransactionStatus.rejected:
+      case ArcTransactionStatus.doubleSpendAttempted:
+        txStatus = TransactionStatus.failed;
+        break;
+      default:
+        txStatus = null;
     }
 
-    try {
-      // Get all wallet IDs from storage
-      final walletIds = await _storage.getWalletIds();
+    if (txStatus != null) {
+      _walletManager.tell(WalletCommandMessage(walletId, UpdateTransactionStatusCommand(
+        walletId: walletId,
+        txid: txid,
+        newStatus: txStatus,
+      )));
+    }
+  }
 
-      if (walletIds.isEmpty) {
+  /// Handle an orphaned transaction by finding and rebroadcasting its missing parent(s),
+  /// then rebroadcasting the child once parents are accepted.
+  ///
+  /// When ARC reports SEEN_IN_ORPHAN_MEMPOOL, the child tx is valid but its parent
+  /// wasn't found by the node. We:
+  /// 1. Parse the child's inputs to discover parent txids
+  /// 2. Rebroadcast each parent and verify it reaches at least SEEN_ON_NETWORK
+  /// 3. Rebroadcast the child so ARC re-evaluates it with parents now available
+  Future<void> _handleOrphanedTransaction(String txid) async {
+    final attempts = _orphanRemediationAttempts[txid] ?? 0;
+    if (attempts >= _maxOrphanRemediationAttempts) {
+      _log.warning('Orphan remediation: giving up on $txid after $attempts attempts');
+      return;
+    }
+    _orphanRemediationAttempts[txid] = attempts + 1;
+
+    try {
+      // 1. Get the orphaned child transaction from storage
+      final childTx = await _storage.getTransaction(txid);
+      if (childTx == null || childTx.rawHex.isEmpty) {
+        _log.warning('Orphan remediation: child tx $txid not found in storage');
         return;
       }
 
-      // Collect all pending UTXOs across all wallets
-      final pendingTxidsToCheck = <String, String>{}; // txid -> walletId
-
-      for (final walletId in walletIds) {
-        // Get all UTXOs (including non-spent) for this wallet
-        final utxos = await _storage.getUTXOs(walletId, includeSpent: false);
-
-        // Filter for pending UTXOs and collect unique txids
-        for (final utxo in utxos) {
-          if (utxo.status == UTXOStatus.pending) {
-            // Only add if we don't already have this txid from another wallet
-            if (!pendingTxidsToCheck.containsKey(utxo.txid)) {
-              pendingTxidsToCheck[utxo.txid] = walletId;
-
-              // Also register outputs for this txid if not already tracked
-              if (!_transactionOutputs.containsKey(utxo.txid)) {
-                _transactionOutputs[utxo.txid] = [utxo.vout];
-              } else if (!_transactionOutputs[utxo.txid]!.contains(utxo.vout)) {
-                _transactionOutputs[utxo.txid]!.add(utxo.vout);
-              }
-
-              // Ensure wallet mapping exists
-              if (!_transactionToWallet.containsKey(utxo.txid)) {
-                _transactionToWallet[utxo.txid] = walletId;
-              }
-            } else {
-              // Same txid but different vout - add vout to outputs list
-              if (!_transactionOutputs[utxo.txid]!.contains(utxo.vout)) {
-                _transactionOutputs[utxo.txid]!.add(utxo.vout);
-              }
-            }
-          }
+      // 2. Parse to extract parent txids from inputs
+      final parsed = dartsv.Transaction.fromHex(childTx.rawHex);
+      final parentTxids = <String>{};
+      _log.info('Orphan remediation: $txid has ${parsed.inputs.length} input(s)');
+      for (int i = 0; i < parsed.inputs.length; i++) {
+        final input = parsed.inputs[i];
+        _log.info('Orphan remediation: $txid input[$i] = ${input.prevTxnId}:${input.prevTxnOutputIndex}');
+        if (input.prevTxnId.isNotEmpty) {
+          parentTxids.add(input.prevTxnId);
         }
       }
 
-      if (pendingTxidsToCheck.isEmpty) {
+      if (parentTxids.isEmpty) {
+        _log.warning('Orphan remediation: no parent txids found for $txid');
         return;
       }
 
+      _log.info('Orphan remediation: $txid (attempt ${attempts + 1}/$_maxOrphanRemediationAttempts) '
+          '— ${parentTxids.length} unique parent(s): $parentTxids');
 
-      // Check each pending transaction with Arc
-      for (final txid in pendingTxidsToCheck.keys) {
-        await _checkAndUpdateTransactionStatus(txid);
+      // 3. Check each parent's status; only broadcast if not yet accepted
+      bool allParentsAccepted = true;
+      for (final parentTxid in parentTxids) {
+        try {
+          // First check if parent is already accepted by the network
+          bool parentAlreadyAccepted = false;
+          try {
+            final parentStatus = await _arcService!.getTransaction(parentTxid);
+            _log.info('Orphan remediation: parent $parentTxid current status: '
+                '${_arcStatusToString(parentStatus.status)}');
+            if (_isAcceptedStatus(parentStatus.status)) {
+              parentAlreadyAccepted = true;
+              _log.info('Orphan remediation: parent $parentTxid already accepted — no rebroadcast needed');
+            }
+          } catch (e) {
+            _log.info('Orphan remediation: parent $parentTxid not known to ARC ($e)');
+          }
+
+          if (!parentAlreadyAccepted) {
+            // Parent not yet accepted — look up rawHex and broadcast
+            final parentTx = await _storage.getTransaction(parentTxid);
+            if (parentTx == null || parentTx.rawHex.isEmpty) {
+              _log.info('Orphan remediation: parent $parentTxid not in local storage — skipping');
+              allParentsAccepted = false;
+              continue;
+            }
+
+            try {
+              final submitResponse = await _arcService!.submitTransaction(parentTx.rawHex);
+              _log.info('Orphan remediation: broadcast parent $parentTxid — '
+                  'response: ${_arcStatusToString(submitResponse.status)}');
+            } catch (e) {
+              _log.warning('Orphan remediation: parent $parentTxid broadcast error: $e');
+            }
+
+            // Poll parent status until accepted or timeout
+            final parentAccepted = await _waitForParentAcceptance(parentTxid);
+            if (!parentAccepted) {
+              _log.warning('Orphan remediation: parent $parentTxid not yet accepted by network');
+              allParentsAccepted = false;
+            }
+          }
+        } catch (e) {
+          _log.warning('Orphan remediation: failed processing parent $parentTxid: $e');
+          allParentsAccepted = false;
+        }
       }
 
+      // 4. Rebroadcast the child once all parents are accepted
+      if (allParentsAccepted) {
+        _log.info('Orphan remediation: all parents accepted, rebroadcasting child $txid');
+        try {
+          final response = await _arcService!.submitTransaction(childTx.rawHex);
+          final newStatus = _arcStatusToString(response.status);
+          _log.info('Orphan remediation: child $txid submit response — '
+              'status: $newStatus, txid: ${response.txid}, message: ${response.message}');
 
+          if (response.status != ArcTransactionStatus.seenInOrphanMempool) {
+            _orphanRemediationAttempts.remove(txid);
+            _log.info('Orphan remediation: $txid resolved');
+          }
+        } catch (e) {
+          _log.warning('Orphan remediation: child $txid submit threw — $e');
+          // Submit threw but parent is accepted; check child status directly
+          try {
+            final statusResp = await _arcService!.getTransaction(txid);
+            final fallbackStatus = _arcStatusToString(statusResp.status);
+            _log.info('Orphan remediation: child $txid status query — '
+                'status: $fallbackStatus, blockHeight: ${statusResp.blockHeight}');
+            if (_isAcceptedStatus(statusResp.status)) {
+              _orphanRemediationAttempts.remove(txid);
+              _log.info('Orphan remediation: $txid resolved via status check');
+            }
+          } catch (e2) {
+            _log.warning('Orphan remediation: child $txid status query also failed — $e2');
+          }
+        }
+      } else {
+        _log.warning('Orphan remediation: not all parents accepted for $txid — '
+            'deferring child rebroadcast to next cycle');
+      }
     } catch (e) {
-      _log.warning('Failed to check storage pending UTXOs: $e');
+      _log.warning('Orphan remediation failed for $txid: $e');
     }
+  }
+
+  /// Poll ARC for a parent transaction's status until it reaches at least SEEN_ON_NETWORK.
+  ///
+  /// Returns true if parent is accepted (seen_on_network or mined), false on timeout.
+  /// Polls up to 5 times with 2-second intervals (10 seconds max).
+  Future<bool> _waitForParentAcceptance(String parentTxid) async {
+    const maxPolls = 5;
+    const pollInterval = Duration(seconds: 2);
+
+    for (int i = 0; i < maxPolls; i++) {
+      try {
+        final response = await _arcService!.getTransaction(parentTxid);
+        if (_isAcceptedStatus(response.status)) {
+          _log.info('Orphan remediation: parent $parentTxid accepted (${response.status})');
+          return true;
+        }
+        _log.info('Orphan remediation: parent $parentTxid status: ${response.status}, '
+            'waiting... (${i + 1}/$maxPolls)');
+      } catch (e) {
+        _log.warning('Orphan remediation: failed to check parent $parentTxid status: $e');
+      }
+      await Future.delayed(pollInterval);
+    }
+    return false;
+  }
+
+  /// Whether a status indicates the transaction is accepted by the network
+  bool _isAcceptedStatus(ArcTransactionStatus status) {
+    return status == ArcTransactionStatus.seenOnNetwork ||
+           status == ArcTransactionStatus.mined ||
+           status == ArcTransactionStatus.acceptedByNetwork;
   }
 
   /// Convert ARC transaction status to string
@@ -671,10 +851,14 @@ class ARCActor extends Actor {
         return 'sent';
       case ArcTransactionStatus.acceptedByNetwork:
         return 'accepted';
+      case ArcTransactionStatus.seenInOrphanMempool:
+        return 'seen_in_orphan_mempool';
       case ArcTransactionStatus.seenOnNetwork:
         return 'seen_on_network';
       case ArcTransactionStatus.mined:
         return 'mined';
+      case ArcTransactionStatus.minedInStaleBlock:
+        return 'mined_in_stale_block';
       case ArcTransactionStatus.rejected:
         return 'rejected';
       case ArcTransactionStatus.doubleSpendAttempted:
@@ -716,7 +900,4 @@ class ARCActor extends Actor {
     _statusCheckTimer?.cancel();
   }
 
-  // Helper methods
-  int get trackedTransactionCount => _transactionStatus.length;
-  String? getTransactionStatus(String txid) => _transactionStatus[txid];
 }

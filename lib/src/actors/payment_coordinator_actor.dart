@@ -108,6 +108,14 @@ class PaymentCoordinatorActor extends Actor {
       return;
     }
 
+    // 2a. Reserve selected UTXOs to prevent double-spending
+    final reservationId = 'payment-${msg.invoiceId}-${DateTime.now().millisecondsSinceEpoch}';
+    final reserved = await _reserveUTXOs(msg.walletId, selectedUtxos, reservationId);
+    if (!reserved) {
+      _sendError(msg.invoiceId, 'Failed to reserve UTXOs — they may already be in use', sender: originalSender);
+      return;
+    }
+
     // Check if this payment will be handled by a TransactionBuilderPlugin.
     // Plugin-built transactions manage their own inputs — ancestor chain
     // validation and BEEF construction are not applicable.
@@ -125,6 +133,7 @@ class PaymentCoordinatorActor extends Actor {
       final bestHeight = await _storage.getBestHeight();
       if (bestHeight == 0) {
         _log.warning('[pay ${msg.invoiceId}] No block headers synced yet - cannot construct BEEF payment');
+        _releaseReservation(walletId: msg.walletId, reservationId: reservationId);
         _sendError(msg.invoiceId, 'No block headers synced yet - cannot construct BEEF payment', sender: originalSender);
         return;
       }
@@ -138,6 +147,7 @@ class PaymentCoordinatorActor extends Actor {
           'ancestors=${ancestorResult.isValid ? ancestorResult.ancestorTransactions.length : "N/A"}, '
           'proofs=${ancestorResult.isValid ? ancestorResult.merkleProofs.length : "N/A"}');
       if (!ancestorResult.isValid) {
+        _releaseReservation(walletId: msg.walletId, reservationId: reservationId);
         _sendError(
           msg.invoiceId,
           'Incomplete transaction chain: ${ancestorResult.error}',
@@ -166,6 +176,7 @@ class PaymentCoordinatorActor extends Actor {
 
     _log.info('[pay ${msg.invoiceId}] buildTx: ${buildSw.elapsedMilliseconds}ms, preSigned=$preSigned');
     if (paymentTx == null) {
+      _releaseReservation(walletId: msg.walletId, reservationId: reservationId);
       _sendError(msg.invoiceId, 'Failed to build payment transaction', sender: originalSender);
       return;
     }
@@ -191,6 +202,7 @@ class PaymentCoordinatorActor extends Actor {
 
       _log.info('[pay ${msg.invoiceId}] signing: ${signSw.elapsedMilliseconds}ms');
       if (signedTxHex == null) {
+        _releaseReservation(walletId: msg.walletId, reservationId: reservationId);
         _sendError(msg.invoiceId, 'Failed to sign transaction: $signError', sender: originalSender);
         return;
       }
@@ -233,6 +245,7 @@ class PaymentCoordinatorActor extends Actor {
       recipientAddresses: recipientAddresses,
       paymentAmount: effectiveAmount,
       changeAddress: actualChangeAddress,
+      deferSpend: true, // UTXOs stay reserved; ARCActor marks spent on SEEN_ON_NETWORK
     );
 
     if (preSigned) {
@@ -284,6 +297,7 @@ class PaymentCoordinatorActor extends Actor {
             success: true,
             witnessTxid: witnessTxid,
             witnessBeefBytes: witnessBeef,
+            spentUtxoKeys: spentUtxoKeys,
           ));
         }
       } catch (e) {
@@ -323,6 +337,7 @@ class PaymentCoordinatorActor extends Actor {
             changeAmount: changeAmount > BigInt.zero ? changeAmount : BigInt.zero,
             ancestorCount: ancestorResult.ancestorTransactions.length,
             success: true,
+            spentUtxoKeys: spentUtxoKeys,
           ));
         }
       } catch (e) {
@@ -894,6 +909,71 @@ class PaymentCoordinatorActor extends Actor {
     ));
   }
 
+  /// Reserve multiple UTXOs via the wallet aggregate.
+  ///
+  /// Uses the timeout-as-success pattern: the aggregate sends a LocalMessage
+  /// with an error on failure, but sends nothing on success. A 2-second timeout
+  /// with no error means the reservation succeeded.
+  Future<bool> _reserveUTXOs(String walletId, List<BitcoinUtxo> utxos, String reservationId) async {
+    final receivers = <ActorRef>[];
+    final futures = <Future<void>>[];
+
+    try {
+      for (final utxo in utxos) {
+        final completer = Completer<void>();
+        final receiverName = 'reserve-receiver-${utxo.key.replaceAll(':', '-')}-${DateTime.now().microsecondsSinceEpoch}';
+        final receiver = await context.system.spawn(
+          receiverName,
+          () => _ReservationReceiverActor(completer),
+        );
+        receivers.add(receiver);
+
+        _walletManager.tell(
+          WalletCommandMessage(
+            walletId,
+            ReserveUTXOCommand(
+              walletId: walletId,
+              utxoKey: utxo.key,
+              reservedByTxId: reservationId,
+              reservationReason: 'payment',
+              reservationDuration: const Duration(minutes: 2),
+            ),
+          ),
+          sender: receiver,
+        );
+
+        futures.add(completer.future);
+      }
+
+      // Timeout = success (no errors received), any StateError = failure
+      await Future.wait(futures).timeout(const Duration(seconds: 2));
+      return true;
+    } on TimeoutException {
+      // No errors received within timeout — all reservations succeeded
+      return true;
+    } catch (e) {
+      _log.info('UTXO reservation failed: $e');
+      _releaseReservation(walletId: walletId, reservationId: reservationId);
+      return false;
+    } finally {
+      for (final receiver in receivers) {
+        await context.system.stop(receiver);
+      }
+    }
+  }
+
+  /// Release a UTXO reservation (fire-and-forget).
+  /// The 2-minute expiry is a safety net if this fails.
+  void _releaseReservation({required String walletId, required String reservationId}) {
+    _walletManager.tell(WalletCommandMessage(
+      walletId,
+      ReleaseUTXOsCommand(
+        walletId: walletId,
+        reservationId: reservationId,
+      ),
+    ));
+  }
+
   /// Record outgoing transaction in wallet history (in PENDING state)
   Future<void> _recordOutgoingTransaction({
     required String walletId,
@@ -902,10 +982,11 @@ class PaymentCoordinatorActor extends Actor {
     required List<String> recipientAddresses,
     required BigInt paymentAmount,
     String? changeAddress,
+    bool deferSpend = false,
   }) async {
     // Calculate change amount
     final changeAmount = transaction.outputValue - paymentAmount;
-    
+
     final command = RecordOutgoingTransactionCommand(
       walletId: walletId,
       txid: transaction.txid,
@@ -922,6 +1003,7 @@ class PaymentCoordinatorActor extends Actor {
       paymentAmount: paymentAmount,
       changeAddress: changeAddress,
       changeAmount: changeAmount > BigInt.zero ? changeAmount : null,
+      deferSpend: deferSpend,
     );
     
     _walletManager.tell(
@@ -939,6 +1021,7 @@ class PaymentCoordinatorActor extends Actor {
     final originalSender = context.sender;
     final walletId = msg.walletId;
 
+    String? reservationId;
     try {
       // 1. Look up plugin
       final plugin = PluginRegistry().getPlugin(msg.pluginId);
@@ -955,6 +1038,13 @@ class PaymentCoordinatorActor extends Actor {
         ..sort((a, b) => b.satoshis.compareTo(a.satoshis));
       final selectedUtxo = sortedUtxos.first;
       final derivationIndex = selectedUtxo.derivationIndex ?? 0;
+
+      // 2a. Reserve the selected UTXO to prevent double-spending
+      reservationId = 'provision-$walletId-${DateTime.now().millisecondsSinceEpoch}';
+      final reserved = await _reserveUTXOs(walletId, [selectedUtxo], reservationId);
+      if (!reserved) {
+        throw Exception('Failed to reserve UTXO for provisioning — it may already be in use');
+      }
 
       // 3. Create callback signer (same pattern as plugin TX build path)
       final xpriv = await _secureStorage.getXPriv(walletId);
@@ -1065,6 +1155,9 @@ class PaymentCoordinatorActor extends Actor {
       }
     } catch (e) {
       _log.warning('[provision $walletId] failed: $e');
+      if (reservationId != null) {
+        _releaseReservation(walletId: walletId, reservationId: reservationId);
+      }
       if (originalSender != null) {
         originalSender.tell(ProvisionFundingResponse.error(
           walletId: walletId,
@@ -1076,6 +1169,25 @@ class PaymentCoordinatorActor extends Actor {
 
   @override
   Future<void> postStop() async {
+  }
+}
+
+/// Helper actor to receive UTXO reservation error responses.
+/// On success, the aggregate sends nothing — the completer times out (= success).
+/// On failure, the aggregate sends a LocalMessage with an error payload.
+class _ReservationReceiverActor extends Actor {
+  final Completer<void> completer;
+
+  _ReservationReceiverActor(this.completer);
+
+  @override
+  Future<void> onMessage(dynamic message) async {
+    if (message is LocalMessage && !completer.isCompleted) {
+      final payload = message.payload;
+      if (payload is Map && payload.containsKey('error')) {
+        completer.completeError(StateError(payload['error'].toString()));
+      }
+    }
   }
 }
 

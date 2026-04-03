@@ -1,4 +1,5 @@
 import 'package:eventador/eventador.dart';
+import '../models/bitcoin_transaction.dart'; // For TransactionStatus
 import '../models/bitcoin_utxo.dart'; // For UTXOStatus
 
 /// Base class for all wallet commands
@@ -381,6 +382,10 @@ class RecordOutgoingTransactionCommand extends WalletCommand {
   final BigInt paymentAmount;
   final String? changeAddress;
   final BigInt? changeAmount;
+  /// When true, do NOT emit UTXOSpentEvents for spentUtxoKeys.
+  /// The spent marking is deferred to ARCActor when the tx reaches SEEN_ON_NETWORK.
+  /// UTXOs should already be in 'reserved' status from prior reservation.
+  final bool deferSpend;
 
   RecordOutgoingTransactionCommand({
     required String walletId,
@@ -398,6 +403,7 @@ class RecordOutgoingTransactionCommand extends WalletCommand {
     required this.paymentAmount,
     this.changeAddress,
     this.changeAmount,
+    this.deferSpend = false,
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,
@@ -435,6 +441,29 @@ class ConfirmTransactionCommand extends WalletCommand {
 
   @override
   String get commandType => 'ConfirmTransactionCommand';
+}
+
+/// Command to update a transaction's status (e.g., from ARC status transitions)
+class UpdateTransactionStatusCommand extends WalletCommand {
+  final String txid;
+  final TransactionStatus newStatus;
+
+  UpdateTransactionStatusCommand({
+    required String walletId,
+    required this.txid,
+    required this.newStatus,
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          commandId: commandId,
+          timestamp: timestamp,
+          metadata: metadata,
+        );
+
+  @override
+  String get commandType => 'UpdateTransactionStatusCommand';
 }
 
 /// Command to spend a UTXO

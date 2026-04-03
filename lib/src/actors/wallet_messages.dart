@@ -30,6 +30,30 @@ class RegisterTransactionOutputsMessage implements Message {
   DateTime get timestamp => DateTime.now();
 }
 
+/// Register transaction inputs (spent UTXOs) for deferred spending.
+/// When the transaction reaches SEEN_ON_NETWORK, ARCActor will issue
+/// SpendUTXOCommand for each registered input.
+class RegisterTransactionInputsMessage implements Message {
+  final String txid;
+  final String walletId;
+  final List<String> utxoKeys; // Format: "txid:vout"
+
+  RegisterTransactionInputsMessage({
+    required this.txid,
+    required this.walletId,
+    required this.utxoKeys,
+  });
+
+  @override
+  String get correlationId => 'register-inputs-$txid';
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
 // ==========================================================================
 // WALLET MANAGER MESSAGES
 // ==========================================================================

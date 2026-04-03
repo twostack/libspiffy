@@ -1,3 +1,4 @@
+import 'package:libspiffy/src/models/bitcoin_transaction.dart';
 import 'package:libspiffy/src/models/bitcoin_utxo.dart';
 
 import '../models/wallet_event.dart';
@@ -1301,6 +1302,55 @@ class TransactionConfirmedEvent extends WalletEvent {
       eventId: map['eventId'] as String?,
       timestamp: map['timestamp'] != null
           ? (map['timestamp'] is String 
+              ? DateTime.parse(map['timestamp'] as String)
+              : map['timestamp'] as DateTime)
+          : null,
+      version: map['version'] as int?,
+      metadata: map['metadata'] as Map<String, dynamic>?,
+    );
+  }
+}
+
+/// Event fired when a transaction's status is updated (e.g., from ARC status transitions)
+class TransactionStatusUpdatedEvent extends WalletEvent {
+  final String txid;
+  final TransactionStatus newStatus;
+
+  TransactionStatusUpdatedEvent({
+    required String walletId,
+    required this.txid,
+    required this.newStatus,
+    String? eventId,
+    DateTime? timestamp,
+    int? version,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          eventId: eventId,
+          timestamp: timestamp,
+          version: version,
+          metadata: metadata,
+        );
+
+  @override
+  Map<String, dynamic> getWalletEventData() {
+    return {
+      'txid': txid,
+      'newStatus': newStatus.name,
+    };
+  }
+
+  static TransactionStatusUpdatedEvent fromMap(Map<String, dynamic> map) {
+    return TransactionStatusUpdatedEvent(
+      walletId: map['walletId'] as String,
+      txid: map['txid'] as String,
+      newStatus: TransactionStatus.values.firstWhere(
+        (s) => s.name == map['newStatus'],
+        orElse: () => TransactionStatus.pending,
+      ),
+      eventId: map['eventId'] as String?,
+      timestamp: map['timestamp'] != null
+          ? (map['timestamp'] is String
               ? DateTime.parse(map['timestamp'] as String)
               : map['timestamp'] as DateTime)
           : null,

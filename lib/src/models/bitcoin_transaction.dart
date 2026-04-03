@@ -44,14 +44,18 @@ enum TransactionStatus {
   created,
   /// Transaction has been signed but not yet broadcast
   signed,
-  /// Transaction has been broadcast to the network
+  /// Transaction has been broadcast to the network (submitted to ARC)
   broadcast,
   /// Transaction is pending confirmation (0 confirmations)
   pending,
-  /// Transaction has been confirmed (1+ confirmations)
+  /// Transaction has been seen on the network (ARC: SEEN_ON_NETWORK — in mempool)
+  seenOnNetwork,
+  /// Transaction has been confirmed (1+ confirmations, mined in a block)
   confirmed,
   /// Transaction has failed or been rejected
   failed,
+  /// Transaction is in the orphan mempool (ARC: SEEN_IN_ORPHAN_MEMPOOL — missing parent)
+  orphaned,
 }
 
 /// Represents a Bitcoin transaction in the wallet.

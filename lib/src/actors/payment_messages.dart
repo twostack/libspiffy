@@ -104,6 +104,10 @@ class BEEFPaymentResponse implements Message {
   /// Serialized BEEF for the witness transaction (null if no paired witness).
   final Uint8List? witnessBeefBytes;
 
+  /// UTXO keys spent by this transaction (for deferred spend tracking).
+  /// Format: ["txid:vout", ...]
+  final List<String> spentUtxoKeys;
+
   BEEFPaymentResponse({
     required this.invoiceId,
     required this.beefBytes,
@@ -115,6 +119,7 @@ class BEEFPaymentResponse implements Message {
     this.error,
     this.witnessTxid,
     this.witnessBeefBytes,
+    this.spentUtxoKeys = const [],
   });
 
   /// Constructor for error responses
@@ -128,7 +133,8 @@ class BEEFPaymentResponse implements Message {
         ancestorCount = 0,
         success = false,
         witnessTxid = null,
-        witnessBeefBytes = null;
+        witnessBeefBytes = null,
+        spentUtxoKeys = const [];
 
   @override
   String get correlationId => 'beef-payment-response-$invoiceId';

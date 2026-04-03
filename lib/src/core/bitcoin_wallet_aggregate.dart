@@ -326,6 +326,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         return _handleRecordOutgoingTransaction(currentState, command as RecordOutgoingTransactionCommand);
       case ConfirmTransactionCommand:
         return _handleConfirmTransaction(currentState, command as ConfirmTransactionCommand);
+      case UpdateTransactionStatusCommand:
+        return _handleUpdateTransactionStatus(currentState, command as UpdateTransactionStatusCommand);
       case SpendUTXOCommand:
         return _handleSpendUTXO(currentState, command as SpendUTXOCommand);
       case UpdateUTXOConfirmationsCommand:
@@ -439,6 +441,9 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         break;
       case TransactionConfirmedEvent:
         _applyTransactionConfirmed(event as TransactionConfirmedEvent);
+        break;
+      case TransactionStatusUpdatedEvent:
+        // Status update is projection-only — no aggregate state change needed
         break;
       case WalletImportCompletedEvent:
         _applyWalletImportCompleted(event as WalletImportCompletedEvent);
@@ -991,9 +996,12 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     );
     events.add(transactionEvent);
 
-    // CRITICAL: Mark all spent UTXOs as spent to prevent double-spending
-    // This must happen when the outgoing transaction is recorded, not later
-    for (final utxoKey in command.spentUtxoKeys) {
+    // Mark spent UTXOs — unless deferSpend is true (UTXOs stay reserved,
+    // ARCActor will issue SpendUTXOCommand when tx reaches SEEN_ON_NETWORK)
+    if (command.deferSpend) {
+      _log.fine('Deferred spend for ${command.txid}: ${command.spentUtxoKeys.length} UTXO(s) stay reserved');
+    }
+    for (final utxoKey in command.deferSpend ? <String>[] : command.spentUtxoKeys) {
       final parts = utxoKey.split(':');
       if (parts.length != 2) {
         continue;
@@ -1157,6 +1165,20 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     );
 
     return [event];
+  }
+
+  List<Event> _handleUpdateTransactionStatus(WalletState currentState, UpdateTransactionStatusCommand command) {
+    if (!currentState.isCreated) {
+      throw StateError('Cannot update transaction status for non-existent wallet');
+    }
+
+    return [TransactionStatusUpdatedEvent(
+      walletId: command.walletId,
+      txid: command.txid,
+      newStatus: command.newStatus,
+      version: currentState.version + 1,
+      timestamp: DateTime.now(),
+    )];
   }
 
   // ==========================================================================

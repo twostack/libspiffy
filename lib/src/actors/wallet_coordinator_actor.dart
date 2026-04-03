@@ -382,7 +382,7 @@ class WalletCoordinatorActor extends Actor {
 
   Future<void> _handleGetBalance(GetBalanceQuery query) async {
     try {
-      final utxos = await _storage.getAvailableUTXOs(query.walletId);
+      final utxos = await _storage.getPaymentUTXOs(query.walletId);
       BigInt confirmed = BigInt.zero;
       BigInt unconfirmed = BigInt.zero;
 
@@ -606,8 +606,8 @@ class WalletCoordinatorActor extends Actor {
 
         final header = BlockHeader(
           version: headerData['version'] as int,
-          prevBlock: Hash.fromBytes(Uint8List.fromList(hex.decode(prevBlockHashStr))),
-          merkleRoot: Hash.fromBytes(Uint8List.fromList(hex.decode(merkleRootStr))),
+          prevBlock: Hash.fromHex(prevBlockHashStr),
+          merkleRoot: Hash.fromHex(merkleRootStr),
           timestamp: DateTime.fromMillisecondsSinceEpoch(timestampInt * 1000),
           bits: headerData['bits'] as int,
           nonce: headerData['nonce'] as int,

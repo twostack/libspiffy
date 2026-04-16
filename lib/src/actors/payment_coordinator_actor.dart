@@ -694,7 +694,7 @@ class PaymentCoordinatorActor extends Actor {
 
       // Apply transaction settings (proven pattern)
       txBuilder
-          .withFeePerKb(1) // Low fee rate valid for BSV network
+          .withFeePerKb(100) // Low fee rate valid for BSV network
           .withOption(dartsv.TransactionOption.DISABLE_DUST_OUTPUTS);
 
       // Build unsigned transaction (skip sanity checks for flexibility)
@@ -1127,15 +1127,20 @@ class PaymentCoordinatorActor extends Actor {
     }
     final sourceTx = dartsv.Transaction.fromHex(sourceBtx.rawHex);
 
-    // Fee constants (1 sat/KB, ceiling division)
+    // Fee constants — BSV standard relay rate is 0.25 sats/byte (250 sats/kB).
+    // ARC enforces this as a minimum; anything lower triggers error 465.
+    const feePerKb = 100;
     const earmarkTxSize = 226; // 10 + 148 + 2*34
-    final earmarkFee = BigInt.from((earmarkTxSize + 999) ~/ 1000);
+    final earmarkFee = BigInt.from((earmarkTxSize * feePerKb + 999) ~/ 1000);
     final dust = BigInt.from(546);
+
+    // Estimate split TX fee: 10 + 148 (1 input) + 34 * (count + 1 change) bytes
+    final splitTxSize = 10 + 148 + 34 * (count + 1);
+    final splitFee = BigInt.from((splitTxSize * feePerKb + 999) ~/ 1000);
 
     // Size each split output to cover: dust + funding + earmark fee
     final inputSats = sourceUtxo.satoshis;
-    final perEarmark = (inputSats - BigInt.one) ~/ BigInt.from(count); // ~1 sat split fee
-    final changeSats = inputSats - BigInt.one - perEarmark * BigInt.from(count);
+    final perEarmark = (inputSats - splitFee) ~/ BigInt.from(count);
 
     // Level 1: Split TX
     final splitBuilder = dartsv.TransactionBuilder()
@@ -1145,6 +1150,7 @@ class PaymentCoordinatorActor extends Actor {
     for (int i = 0; i < count; i++) {
       splitBuilder.spendToLockBuilder(dartsv.P2PKHLockBuilder.fromAddress(address), perEarmark);
     }
+    final changeSats = inputSats - splitFee - perEarmark * BigInt.from(count);
     if (changeSats > dust) {
       splitBuilder.spendToLockBuilder(dartsv.P2PKHLockBuilder.fromAddress(address), changeSats);
     }

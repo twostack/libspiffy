@@ -66,7 +66,7 @@ class TxUtils {
 
         builder.spendToPKH(toAddress, BigInt.from(amount))
             .sendChangeToPKH(changeAddress)
-            .withFeePerKb(1)
+            .withFeePerKb(100)
             .withOption(TransactionOption.DISABLE_DUST_OUTPUTS);
 
         var signedTx = builder.build(true); //skip txn sanity checks
@@ -152,7 +152,7 @@ class TxUtils {
       var signedTx = builder
           .spendToLockBuilder(lockBuilder, BigInt.parse(amount))
           .sendChangeToPKH(ownerAddress)
-          .withFeePerKb(1)
+          .withFeePerKb(100)
           .build(true);
 
       return (signedTx, fundingOutpoints);
@@ -200,7 +200,7 @@ class TxUtils {
       var builder = TransactionBuilder()
           .spendFromTxnWithSigner(txSigner, locktimeTxn, 0, 1, DefaultUnlockBuilder.fromScript(scriptSig));
 
-      builder.withFeePerKb(1);
+      builder.withFeePerKb(100);
 
       //deduct sats for fee
       var fee = BigInt.two; //builder.estimateFee();

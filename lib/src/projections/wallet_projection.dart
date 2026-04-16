@@ -488,8 +488,10 @@ class WalletProjection extends Projection<void> {
         spentCount++;
         continue;
       }
-      // Skip plugin-managed UTXOs (e.g. tokens) from balance calculation
-      if (utxo.hasPluginMetadata) continue;
+      // Skip plugin-managed UTXOs (e.g. tokens) from balance calculation.
+      // Only exclude UTXOs with an explicit pluginId — standard P2PKH outputs
+      // have script-analysis metadata (scriptType, address) but no pluginId.
+      if (utxo.pluginMetadata?['pluginId'] != null) continue;
 
       if (utxo.status == UTXOStatus.reserved) {
         reserved += utxo.satoshis;

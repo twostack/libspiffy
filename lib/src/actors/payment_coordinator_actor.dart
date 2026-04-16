@@ -164,7 +164,8 @@ class PaymentCoordinatorActor extends Actor {
     // 4. Build payment transaction (with outputs if provided)
     // Returns (transaction, preSigned, witnessTx) — plugin-built transactions are already signed.
     final buildSw = Stopwatch()..start();
-    final (paymentTx, preSigned, witnessTx) = await _buildPaymentTransactionWithOutputs(
+    final (paymentTx, preSigned, witnessTx, ancestorTxLookup) =
+        await _buildPaymentTransactionWithOutputs(
       selectedUtxos: selectedUtxos,
       outputs: msg.outputs,
       legacyAddresses: msg.addresses,
@@ -271,15 +272,40 @@ class PaymentCoordinatorActor extends Actor {
           );
         }
 
-        final txBytes = hex.decode(signedPaymentTx.rawHex);
-        final beef = _createMinimalBEEF(Uint8List.fromList(txBytes));
+        // Package the primary plugin TX with any auto-provisioned ancestors
+        // into a BEEF. Ancestors come from `ancestorTxLookup` (populated by
+        // `_autoProvisionForPlugin`); they don't exist on chain yet so they
+        // carry hasMerkle=false. The caller must settle this BEEF via ARC
+        // to push everything out (see SettleBEEFCommand handler in
+        // WalletCoordinatorActor). If no auto-provisioning happened (plugin
+        // consumed a wallet UTXO directly), `ancestorTxLookup` is null and
+        // the BEEF contains only the primary TX.
+        final txBytes = Uint8List.fromList(hex.decode(signedPaymentTx.rawHex));
+        final orderedAncestors = ancestorTxLookup != null
+            ? _orderedAncestorBytes(ancestorTxLookup, signedPaymentTx.txid)
+            : const <Uint8List>[];
+        final beef = _createPluginBEEF(
+          ancestors: orderedAncestors,
+          rawTx: txBytes,
+        );
 
-        // Build witness BEEF if present
+        // Build witness BEEF if present.
+        //
+        // The witness TX consumes earmark[1] (the second auto-provisioned
+        // output), whose parent chain (the split TX + earmark[1]) overlaps
+        // with what the primary BEEF already carries. We include the same
+        // ancestor set in the witness BEEF so a caller that settles ONLY
+        // the witness BEEF still has a complete chain. ARC dedupes
+        // repeated submissions of the same TX across both BEEFs —
+        // submitting split/earmark[1] a second time is a no-op.
         Uint8List? witnessBeef;
         String? witnessTxid;
         if (witnessTx != null) {
-          final witnessTxBytes = hex.decode(witnessTx.rawHex);
-          witnessBeef = _createMinimalBEEF(Uint8List.fromList(witnessTxBytes));
+          final witnessTxBytes = Uint8List.fromList(hex.decode(witnessTx.rawHex));
+          witnessBeef = _createPluginBEEF(
+            ancestors: orderedAncestors,
+            rawTx: witnessTxBytes,
+          );
           witnessTxid = witnessTx.txid;
         }
 
@@ -391,7 +417,17 @@ class PaymentCoordinatorActor extends Actor {
   /// Build payment transaction with support for multiple output types (P2PKH, P2MS)
   /// Returns (transaction, preSigned) — preSigned is true when a TransactionBuilderPlugin
   /// built and signed the entire transaction.
-  Future<(BitcoinTransaction?, bool, BitcoinTransaction?)> _buildPaymentTransactionWithOutputs({
+  /// Returns (paymentTx, preSigned, witnessTx, ancestorTxLookup).
+  ///
+  /// `ancestorTxLookup` is the dependency-ordered map of auto-provisioned
+  /// ancestor transactions (split TX → earmark TXs) that the plugin path
+  /// built in-memory. It is non-null only on the plugin path when
+  /// auto-provisioning was triggered; null otherwise. Callers include these
+  /// ancestors in the BEEF so the caller can later settle them via
+  /// `SettleBEEFCommand` — they have no on-chain existence yet, and the
+  /// primary plugin TX cannot be accepted by ARC without its parents.
+  Future<(BitcoinTransaction?, bool, BitcoinTransaction?, Map<String, String>?)>
+      _buildPaymentTransactionWithOutputs({
     required List<BitcoinUtxo> selectedUtxos,
     List<InvoiceOutputSpec>? outputs,
     required List<String> legacyAddresses,
@@ -435,12 +471,31 @@ class PaymentCoordinatorActor extends Actor {
               throw Exception('No signing key available for wallet $walletId');
             }
 
-            // Derive the private key for the funding UTXO's derivation index
-            final derivationIndex = selectedUtxos.first.derivationIndex ?? 0;
+            // Derive the private key for the funding UTXO's derivation index.
+            //
+            // SOURCE OF TRUTH: `addressMetadata.derivationIndex` (looked up
+            // by address). This is what `_getPublicKeysForUTXOs` uses to
+            // derive `publicKeys.first`, and therefore the key whose hash
+            // appears in the UTXO's P2PKH scriptPubKey.
+            //
+            // `selectedUtxos.first.derivationIndex` is a CACHED field on the
+            // UTXO entity. It can be null on freshly imported wallets or
+            // stale on legacy entries — falling back to `?? 0` silently
+            // signs with the wrong key, which CHECKSIG-fails with ARC 461
+            // (and cascades 460 to all downstream TXs in the chain).
             late dartsv.SVPrivateKey signingKey;
             if (xpriv != null) {
+              final addrMeta = await _storage.getAddressMetadata(
+                  walletId, selectedUtxos.first.address);
+              if (addrMeta == null) {
+                throw Exception(
+                    'No address metadata for ${selectedUtxos.first.address}');
+              }
+              final derivationIndex = addrMeta.derivationIndex ?? 0;
               final hdKey = dartsv.HDPrivateKey.fromXpriv(xpriv);
-              final derived = hdKey.deriveChildNumber(0).deriveChildNumber(derivationIndex);
+              final derived = hdKey
+                  .deriveChildNumber(0)
+                  .deriveChildNumber(derivationIndex);
               signingKey = derived.privateKey;
             } else {
               signingKey = dartsv.SVPrivateKey.fromWIF(wif!);
@@ -540,7 +595,7 @@ class PaymentCoordinatorActor extends Actor {
               );
             }
 
-            return (primaryBtx, true, witnessBtx); // preSigned: plugin built and signed the tx
+            return (primaryBtx, true, witnessBtx, provisionTxLookup); // preSigned: plugin built and signed the tx
           }
         }
 
@@ -669,9 +724,10 @@ class PaymentCoordinatorActor extends Actor {
         updatedAt: DateTime.now(),
         lockTime: 0,
         version: 2,
-      ), false, null); // preSigned: false — needs signing, no witness
+      ), false, null, null); // preSigned: false — needs signing, no witness, no auto-provisioned ancestors
     } catch (e, stackTrace) {
-      return (null, false, null);
+      _log.warning('[buildPaymentTx] failed: $e\n$stackTrace');
+      return (null, false, null, null);
     }
   }
 
@@ -834,20 +890,58 @@ class PaymentCoordinatorActor extends Actor {
   /// ancestor chain. Used for plugin-built transactions where the plugin
   /// manages its own inputs and the standard BEEF ancestor chain is not
   /// applicable.
-  Uint8List _createMinimalBEEF(Uint8List rawTx) {
-    // BEEF format: version(4) + nBUMPs(varint) + nTxs(varint) + [hasBUMP(1) + tx]
+  /// Build a BEEF for a plugin-built transaction, including any auto-provisioned
+  /// ancestors (split + earmark TXs) that were created in-memory and not yet
+  /// on chain.
+  ///
+  /// All ancestors AND the primary TX are marked `hasMerkle=false` — they
+  /// have no merkle proofs because they do not exist on chain yet. The
+  /// caller is expected to call `SettleBEEFCommand` on this BEEF to push
+  /// all `hasMerkle=false` entries through ARC in dependency order.
+  ///
+  /// Transaction order in the BEEF:
+  ///   1..N-1: ancestors from [ancestors] (in dependency order, split first)
+  ///   N:      the primary plugin-built [rawTx]
+  ///
+  /// Wire format matches BEEF.serialize / BEEF.parse in beef.dart:
+  ///   version(4) + nBUMPs(varint)=0 + nTxs(varint) +
+  ///     for each tx: [rawTx + hasBUMP(1)=0]
+  Uint8List _createPluginBEEF({
+    required List<Uint8List> ancestors,
+    required Uint8List rawTx,
+  }) {
     final writer = BytesBuilder();
-    // Version 0100BEEF (little-endian)
+    // Version 0100BEEF
     writer.add([0x01, 0x00, 0xBE, 0xEF]);
-    // Number of BUMPs: 0
+    // Number of BUMPs: 0 (no proofs; nothing on chain yet)
     writer.addByte(0x00);
-    // Number of transactions: 1
-    writer.addByte(0x01);
-    // Has BUMP: false (0x00)
-    writer.addByte(0x00);
-    // Raw transaction
+    // Number of transactions = ancestors + 1 primary
+    final nTxs = ancestors.length + 1;
+    writer.add(dartsv.VarInt.fromInt(nTxs).encode());
+    // Ancestors first, in dependency order, each followed by hasBUMP=0
+    for (final anc in ancestors) {
+      writer.add(anc);
+      writer.addByte(0x00);
+    }
+    // Primary TX last, followed by hasBUMP=0
     writer.add(rawTx);
+    writer.addByte(0x00);
     return Uint8List.fromList(writer.toBytes());
+  }
+
+  /// Order auto-provisioned ancestors by dependency. The split TX spends a
+  /// wallet UTXO and must be broadcast first; each earmark TX spends one of
+  /// the split TX's outputs and must come after. We rely on insertion order
+  /// of [provisionTxLookup] (split inserted first in _autoProvisionForPlugin)
+  /// but filter out any entries that happen to duplicate the primary TX.
+  List<Uint8List> _orderedAncestorBytes(
+      Map<String, String> provisionTxLookup, String primaryTxid) {
+    final ordered = <Uint8List>[];
+    for (final entry in provisionTxLookup.entries) {
+      if (entry.key == primaryTxid) continue; // defensive; shouldn't occur
+      ordered.add(Uint8List.fromList(hex.decode(entry.value)));
+    }
+    return ordered;
   }
 
   /// Create BEEF package from transactions, proofs, and headers

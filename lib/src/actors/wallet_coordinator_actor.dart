@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:convert/convert.dart';
 import 'package:dactor/dactor.dart';
+import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:logging/logging.dart';
 import 'package:spiffynode/spiffy_node.dart' show BlockHeader, Hash;
 
@@ -65,6 +66,12 @@ class WalletCoordinatorActor extends Actor {
   final Map<String, String> _timestampCorrelation = {}; // invoiceId → archiveId
   final Map<String, CreateWalletCommand> _pendingCreateWallet = {}; // walletId → original cmd
   final Map<String, StreamSubscription> _eventSubscriptions = {}; // walletId → subscription
+
+  // BEEF settlement correlation — tracks in-flight SettleBEEFCommand operations
+  // so we can aggregate per-tx BroadcastSuccess/Failed responses from ARCActor
+  // before emitting BEEFSettledEvent. See SettleBEEFCommand handler.
+  final Map<String, _PendingSettlement> _pendingSettlements = {}; // parentTxid → entry
+  final Map<String, String> _childToParentSettlement = {}; // childTxid → parentTxid
 
   // Wallet event broadcaster for import progress forwarding
   final void Function(wallet_event_model.WalletEvent)? _broadcastWalletEvent;
@@ -199,6 +206,8 @@ class WalletCoordinatorActor extends Actor {
         await _handleProvisionFunding(message);
       } else if (message is TimestampCommand) {
         await _handleTimestamp(message);
+      } else if (message is SettleBEEFCommand) {
+        await _handleSettleBEEF(message);
       } else if (message is RefreshWalletCommand) {
         await _handleRefreshWallet(message);
       } else if (message is ShutdownCommand) {
@@ -246,8 +255,33 @@ class WalletCoordinatorActor extends Actor {
         _channelAdapter?.handleFundingTransactionBuilt(message);
       } else if (message is ch.RefundTransactionBuiltResponse) {
         _channelAdapter?.handleRefundTransactionBuilt(message);
+      } else if (message is wm.BroadcastSuccessMessage) {
+        // Route to settlement tracking if this txid belongs to an in-flight
+        // SettleBEEFCommand; otherwise ignore (e.g., retries from duraq).
+        final parentTxid = _childToParentSettlement[message.txid];
+        if (parentTxid != null) {
+          final entry = _pendingSettlements[parentTxid];
+          if (entry != null) {
+            entry.pending.remove(message.txid);
+            _completeSettlementIfDone(parentTxid);
+          }
+        }
       } else if (message is wm.BroadcastFailedMessage) {
         _log.warning('Broadcast failed for ${message.txid}: ${message.error}');
+        // Route to settlement tracking if this txid belongs to an in-flight
+        // SettleBEEFCommand; otherwise emit the generic failure event as
+        // before (preserves behavior for duraq retries and any direct
+        // callers of BroadcastTransactionMessage outside the settle path).
+        final parentTxid = _childToParentSettlement[message.txid];
+        if (parentTxid != null) {
+          final entry = _pendingSettlements[parentTxid];
+          if (entry != null) {
+            entry.failures[message.txid] = message.error;
+            entry.pending.remove(message.txid);
+            _completeSettlementIfDone(parentTxid);
+            return;
+          }
+        }
         _emitEvent(BroadcastFailureEvent(
           txid: message.txid,
           error: message.error,
@@ -333,6 +367,21 @@ class WalletCoordinatorActor extends Actor {
             _emitEvent(ImportCompleteEvent(
               walletId: cmd.walletId,
               success: false,
+              error: event.error,
+            ));
+          } else if (event is domain_events.WalletImportUTXOConfirmedEvent) {
+            _emitEvent(ImportUTXOConfirmedEvent(
+              walletId: cmd.walletId,
+              txid: event.txid,
+              vout: event.vout,
+              success: event.success,
+              error: event.error,
+            ));
+          } else if (event is domain_events.WalletImportTransactionConfirmedEvent) {
+            _emitEvent(ImportTransactionConfirmedEvent(
+              walletId: cmd.walletId,
+              txid: event.txid,
+              success: event.success,
               error: event.error,
             ));
           }
@@ -885,6 +934,164 @@ class WalletCoordinatorActor extends Actor {
     }
   }
 
+  /// Settle a BEEF by broadcasting all unsettled TXs (hasMerkle=false) to ARC
+  /// in dependency order. TXs with merkle proofs are already on-chain and
+  /// skipped.
+  ///
+  /// This handler DOES NOT emit BEEFSettledEvent synchronously. Instead it
+  /// registers a pending settlement, tells ARCActor to broadcast each TX,
+  /// and waits for BroadcastSuccessMessage/BroadcastFailedMessage responses.
+  /// See `_completeSettlementIfDone` for the completion path. A 60s timeout
+  /// ensures we never hang forever if ARC responses are lost.
+  Future<void> _handleSettleBEEF(SettleBEEFCommand cmd) async {
+    _log.info('Settling BEEF: txid=${cmd.txid} walletId=${cmd.walletId}');
+
+    // Guard against duplicate in-flight settlements for the same parent txid
+    if (_pendingSettlements.containsKey(cmd.txid)) {
+      _log.warning('[settle] already in progress for ${cmd.txid}');
+      _emitEvent(BEEFSettledEvent(
+        walletId: cmd.walletId,
+        txid: cmd.txid,
+        success: false,
+        error: 'Settlement already in progress for txid ${cmd.txid}',
+      ));
+      return;
+    }
+
+    late final BEEF beef;
+    try {
+      final beefBytes = Uint8List.fromList(hex.decode(cmd.beefHex));
+      beef = BEEF.parse(beefBytes);
+    } catch (e) {
+      _log.warning('[settle] BEEF parse failed for txid=${cmd.txid}: $e');
+      _emitEvent(BEEFSettledEvent(
+        walletId: cmd.walletId,
+        txid: cmd.txid,
+        success: false,
+        error: 'BEEF parse failed: $e',
+      ));
+      return;
+    }
+
+    // Partition TXs into "already on chain (skip)" and "needs broadcast"
+    int skipped = 0;
+    final pending = <String, String>{}; // childTxid → txHex
+    for (int i = 0; i < beef.txs.length; i++) {
+      final hasMerkle = i < beef.hasMerkle.length && beef.hasMerkle[i];
+      if (hasMerkle) {
+        skipped++;
+        continue;
+      }
+      final txHex = hex.encode(beef.txs[i]);
+      final childTxid = dartsv.Transaction.fromHex(txHex).id;
+      pending[childTxid] = txHex;
+    }
+
+    // Degenerate case: nothing to broadcast (e.g., all ancestors already
+    // on chain). Emit success immediately.
+    if (pending.isEmpty) {
+      _log.info('[settle] nothing to broadcast for ${cmd.txid} '
+          '(skipped=$skipped)');
+      _emitEvent(BEEFSettledEvent(
+        walletId: cmd.walletId,
+        txid: cmd.txid,
+        success: true,
+        submittedCount: 0,
+        skippedCount: skipped,
+      ));
+      return;
+    }
+
+    // Register pending settlement + per-child routing
+    final entry = _PendingSettlement(
+      parentTxid: cmd.txid,
+      walletId: cmd.walletId,
+      pending: pending.keys.toSet(),
+      skippedCount: skipped,
+    );
+    _pendingSettlements[cmd.txid] = entry;
+    for (final childTxid in pending.keys) {
+      _childToParentSettlement[childTxid] = cmd.txid;
+    }
+
+    // Timeout safety net. 60s covers typical ARC latency with headroom.
+    entry.timeout = Timer(const Duration(seconds: 60), () {
+      if (_pendingSettlements[cmd.txid] != entry) return;
+      _log.warning('[settle] timeout for ${cmd.txid} — '
+          'still waiting on ${entry.pending}');
+      // Mark each still-pending child as failed-by-timeout
+      for (final stillPending in entry.pending.toList()) {
+        entry.failures[stillPending] = 'settlement timeout (60s)';
+      }
+      entry.pending.clear();
+      _completeSettlementIfDone(cmd.txid);
+    });
+
+    // Fire broadcasts. ARCActor processes its mailbox serially so these
+    // will be submitted in the order we .tell, which matches the BEEF's
+    // dependency order (split first, earmarks next, primary last).
+    //
+    // NOTE: we pass `sender: context.self` explicitly so ARCActor's
+    // responses (BroadcastSuccessMessage / BroadcastFailedMessage) route
+    // back to THIS coordinator. Without an explicit sender, dactor's
+    // tell() defaults to sender=null and ARCActor's
+    // `context.sender?.tell(...)` silently drops the response.
+    for (final entryTx in pending.entries) {
+      final childTxid = entryTx.key;
+      final txHex = entryTx.value;
+      _log.info('[settle] broadcasting txid=$childTxid '
+          '(${(txHex.length / 2).toInt()} bytes)');
+      _arcActor.tell(
+        wm.BroadcastTransactionMessage(cmd.walletId, txHex, childTxid),
+        sender: context.self,
+      );
+    }
+  }
+
+  /// Check whether a pending settlement has received all expected responses
+  /// and emit BEEFSettledEvent if so. Safe to call multiple times.
+  void _completeSettlementIfDone(String parentTxid) {
+    final entry = _pendingSettlements[parentTxid];
+    if (entry == null) return;
+    if (entry.pending.isNotEmpty) return;
+
+    entry.timeout?.cancel();
+
+    final submitted = entry.initialPendingCount - entry.failures.length;
+    final failedTxids = entry.failures.keys.toList();
+    final failureErrors = failedTxids.map((t) => entry.failures[t] ?? '').toList();
+
+    // Build aggregated error string if any failures occurred
+    String? aggregatedError;
+    if (entry.failures.isNotEmpty) {
+      aggregatedError = entry.failures.entries
+          .map((e) => 'tx ${e.key}: ${e.value}')
+          .join('; ');
+    }
+
+    _log.info('[settle] complete for $parentTxid: '
+        'submitted=$submitted failed=${entry.failures.length} '
+        'skipped=${entry.skippedCount}');
+
+    _emitEvent(BEEFSettledEvent(
+      walletId: entry.walletId,
+      txid: parentTxid,
+      success: entry.failures.isEmpty,
+      error: aggregatedError,
+      submittedCount: submitted,
+      skippedCount: entry.skippedCount,
+      failedCount: entry.failures.length,
+      failedTxids: failedTxids,
+      failureErrors: failureErrors,
+    ));
+
+    // Clean up routing tables
+    for (final childTxid in entry.initialPending) {
+      _childToParentSettlement.remove(childTxid);
+    }
+    _pendingSettlements.remove(parentTxid);
+  }
+
   Future<void> _handleBEEFValidationResult(wm.BEEFValidationResult result) async {
     _log.info('BEEF validation result: valid=${result.isValid} wallet=${result.targetWalletId}');
 
@@ -1070,4 +1277,28 @@ class WalletCoordinatorActor extends Actor {
       ));
     }
   }
+}
+
+/// Tracks an in-flight SettleBEEFCommand. One of these lives in
+/// [WalletCoordinatorActor._pendingSettlements] from the moment the settle
+/// command is accepted until either (a) every child TX has reported back
+/// via BroadcastSuccess/Failed, or (b) the timeout fires.
+class _PendingSettlement {
+  final String parentTxid;
+  final String walletId;
+  final Set<String> pending; // child txids still awaiting a response
+  final Set<String> initialPending; // snapshot at registration time (for cleanup)
+  final int initialPendingCount;
+  final Map<String, String> failures = {}; // child txid → error message
+  final int skippedCount;
+  Timer? timeout;
+
+  _PendingSettlement({
+    required this.parentTxid,
+    required this.walletId,
+    required Set<String> pending,
+    required this.skippedCount,
+  })  : pending = pending,
+        initialPending = Set.of(pending),
+        initialPendingCount = pending.length;
 }

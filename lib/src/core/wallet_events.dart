@@ -516,6 +516,114 @@ class WalletImportFailedEvent extends WalletEvent {
 }
 
 // =============================================================================
+// IMPORT CONFIRMATION EVENTS (from aggregate responses)
+// =============================================================================
+
+/// Event confirming a UTXO was recorded (or failed) by the aggregate
+class WalletImportUTXOConfirmedEvent extends WalletEvent {
+  final String txid;
+  final int vout;
+  final bool success;
+  final String? error;
+
+  WalletImportUTXOConfirmedEvent({
+    required String walletId,
+    required this.txid,
+    required this.vout,
+    required this.success,
+    this.error,
+    String? eventId,
+    DateTime? timestamp,
+    int? version,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          eventId: eventId,
+          timestamp: timestamp,
+          version: version,
+          metadata: metadata,
+        );
+
+  @override
+  Map<String, dynamic> getWalletEventData() {
+    return {
+      'txid': txid,
+      'vout': vout,
+      'success': success,
+      if (error != null) 'error': error,
+    };
+  }
+
+  static WalletImportUTXOConfirmedEvent fromMap(Map<String, dynamic> map) {
+    return WalletImportUTXOConfirmedEvent(
+      walletId: map['walletId'] as String,
+      txid: map['txid'] as String,
+      vout: map['vout'] as int,
+      success: map['success'] as bool,
+      error: map['error'] as String?,
+      eventId: map['eventId'] as String?,
+      timestamp: map['timestamp'] != null
+          ? (map['timestamp'] is String
+              ? DateTime.parse(map['timestamp'] as String)
+              : map['timestamp'] as DateTime)
+          : null,
+      version: map['version'] as int?,
+      metadata: map['metadata'] as Map<String, dynamic>?,
+    );
+  }
+}
+
+/// Event confirming a transaction was recorded (or failed) by the aggregate
+class WalletImportTransactionConfirmedEvent extends WalletEvent {
+  final String txid;
+  final bool success;
+  final String? error;
+
+  WalletImportTransactionConfirmedEvent({
+    required String walletId,
+    required this.txid,
+    required this.success,
+    this.error,
+    String? eventId,
+    DateTime? timestamp,
+    int? version,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          eventId: eventId,
+          timestamp: timestamp,
+          version: version,
+          metadata: metadata,
+        );
+
+  @override
+  Map<String, dynamic> getWalletEventData() {
+    return {
+      'txid': txid,
+      'success': success,
+      if (error != null) 'error': error,
+    };
+  }
+
+  static WalletImportTransactionConfirmedEvent fromMap(Map<String, dynamic> map) {
+    return WalletImportTransactionConfirmedEvent(
+      walletId: map['walletId'] as String,
+      txid: map['txid'] as String,
+      success: map['success'] as bool,
+      error: map['error'] as String?,
+      eventId: map['eventId'] as String?,
+      timestamp: map['timestamp'] != null
+          ? (map['timestamp'] is String
+              ? DateTime.parse(map['timestamp'] as String)
+              : map['timestamp'] as DateTime)
+          : null,
+      version: map['version'] as int?,
+      metadata: map['metadata'] as Map<String, dynamic>?,
+    );
+  }
+}
+
+// =============================================================================
 // ADDRESS MANAGEMENT EVENTS
 // =============================================================================
 

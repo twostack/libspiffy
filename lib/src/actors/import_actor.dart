@@ -70,6 +70,31 @@ class ImportActor extends Actor {
       } else if (message is ImportProgressQuery) {
         _logger.info('📊 Progress query received');
         _handleProgressQuery();
+      } else if (message is TransactionRecordedResponse) {
+        if (message.success) {
+          _logger.info('✅ Transaction recorded: ${message.txid}');
+        } else {
+          _logger.severe('❌ Transaction recording FAILED: ${message.txid} — ${message.error}');
+        }
+        _eventBroadcaster?.call(WalletImportTransactionConfirmedEvent(
+          walletId: message.walletId,
+          txid: message.txid,
+          success: message.success,
+          error: message.error,
+        ));
+      } else if (message is UTXOReceivedResponse) {
+        if (message.success) {
+          _logger.info('✅ UTXO received: ${message.txid}:${message.vout}');
+        } else {
+          _logger.severe('❌ UTXO receive FAILED: ${message.txid}:${message.vout} — ${message.error}');
+        }
+        _eventBroadcaster?.call(WalletImportUTXOConfirmedEvent(
+          walletId: message.walletId,
+          txid: message.txid,
+          vout: message.vout,
+          success: message.success,
+          error: message.error,
+        ));
       } else {
         _logger.warning('❓ Unknown message type: ${message.runtimeType}');
       }
@@ -412,8 +437,8 @@ class ImportActor extends Actor {
       WalletCommandMessage(message.walletId, command),
       sender: context.self,
     );
-    _logger.info('   ✅ WIF address registered (projection will persist to Isar asynchronously)');
-    
+    _logger.info('   ✅ WIF address registered');
+
     _totalTransactions = history.length;
     _reportProgress(
       'Found 1 address with $_totalTransactions transactions',
@@ -551,7 +576,7 @@ class ImportActor extends Actor {
 
     _logger.info('   ✅ All transactions processed');
     _logger.info('   📊 Summary: $_processedTransactions transactions, $totalUtxosFound UTXOs');
-    
+
     _reportProgress(
       'Finalizing import: $_processedTransactions transactions, $totalUtxosFound UTXOs',
       0.9,
@@ -870,7 +895,7 @@ class ImportActor extends Actor {
 
   Future<void> _completeImport(ImportWalletMessage message) async {
     _logger.info('   → Broadcasting WalletImportCompletedEvent');
-    
+
     // Send completion event
     await _notifyEvent(message.walletId, WalletImportCompletedEvent(
       walletId: message.walletId,

@@ -502,6 +502,34 @@ class RefreshWalletCommand implements Message {
   DateTime get timestamp => DateTime.now();
 }
 
+/// Settle a BEEF by broadcasting all unsettled transactions (hasMerkle=false)
+/// to ARC in dependency order.
+///
+/// Classic SPV payments (P2P transfer) don't need this — the recipient
+/// settles when they choose to bank the cheque. Self-pay operations
+/// (token issuance, identity anchor) must settle immediately because
+/// there is no counterparty to hand the cheque to.
+class SettleBEEFCommand implements Message {
+  final String walletId;
+  final String beefHex;
+  final String txid;
+
+  SettleBEEFCommand({
+    required this.walletId,
+    required this.beefHex,
+    required this.txid,
+  });
+
+  @override
+  String get correlationId => 'settle-$txid';
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId, 'txid': txid};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
 /// Gracefully shutdown the coordinator
 class ShutdownCommand implements Message {
   ShutdownCommand();
@@ -723,6 +751,46 @@ class ImportCompleteEvent extends CoordinatorEvent {
     this.error,
     this.addressCount = 0,
     this.transactionCount = 0,
+  });
+
+  @override
+  DateTime get eventTimestamp => DateTime.now();
+}
+
+/// UTXO confirmed by aggregate during import
+class ImportUTXOConfirmedEvent extends CoordinatorEvent {
+  @override
+  final String walletId;
+  final String txid;
+  final int vout;
+  final bool success;
+  final String? error;
+
+  ImportUTXOConfirmedEvent({
+    required this.walletId,
+    required this.txid,
+    required this.vout,
+    required this.success,
+    this.error,
+  });
+
+  @override
+  DateTime get eventTimestamp => DateTime.now();
+}
+
+/// Transaction confirmed by aggregate during import
+class ImportTransactionConfirmedEvent extends CoordinatorEvent {
+  @override
+  final String walletId;
+  final String txid;
+  final bool success;
+  final String? error;
+
+  ImportTransactionConfirmedEvent({
+    required this.walletId,
+    required this.txid,
+    required this.success,
+    this.error,
   });
 
   @override
@@ -1034,6 +1102,42 @@ class BroadcastFailureEvent extends CoordinatorEvent {
     required this.txid,
     required this.error,
     this.willRetry = true,
+  });
+
+  @override
+  DateTime get eventTimestamp => DateTime.now();
+}
+
+/// Result of settling a BEEF via ARC.
+///
+/// `submittedCount` is the number of TXs successfully accepted by ARC.
+/// `skippedCount` is the number of TXs skipped because they were already on
+/// chain (hasMerkle=true). `failedCount` is the number of TXs that ARC
+/// rejected; their txids and per-tx error messages are in `failedTxids`
+/// and `failureErrors` (same length, same index). `error` is an
+/// aggregated summary for display.
+class BEEFSettledEvent extends CoordinatorEvent {
+  @override
+  final String? walletId;
+  final String txid;
+  final bool success;
+  final String? error;
+  final int submittedCount;
+  final int skippedCount;
+  final int failedCount;
+  final List<String> failedTxids;
+  final List<String> failureErrors;
+
+  BEEFSettledEvent({
+    this.walletId,
+    required this.txid,
+    required this.success,
+    this.error,
+    this.submittedCount = 0,
+    this.skippedCount = 0,
+    this.failedCount = 0,
+    this.failedTxids = const [],
+    this.failureErrors = const [],
   });
 
   @override

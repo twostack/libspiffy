@@ -2,9 +2,12 @@ import 'dart:typed_data';
 import 'dart:async';
 import 'package:dactor/dactor.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
+import 'package:eventador/eventador.dart';
 import 'package:logging/logging.dart';
 import 'package:spiffynode/spiffy_node.dart' as spiffy;
 import 'package:convert/convert.dart';
+
+import '../core/wallet_events.dart' as wevent;
 
 import '../models/bitcoin_utxo.dart';
 import '../models/bitcoin_transaction.dart';
@@ -39,15 +42,22 @@ class PaymentCoordinatorActor extends Actor {
   final ReadModelStorage _storage;
   final SecureStorage _secureStorage;
   final ActorRef _walletManager;
+  final ActorRef _walletProjection;
   late final AncestorChainService _ancestorService;
+
+  /// Default time we wait for the wallet projection to apply a recorded
+  /// transaction event before treating the recording as failed.
+  static const _recordPersistTimeout = Duration(seconds: 30);
 
   PaymentCoordinatorActor({
     required ActorRef walletManager,
+    required ActorRef walletProjection,
     required ReadModelStorage storage,
     required SecureStorage secureStorage,
   })  : _storage = storage,
         _secureStorage = secureStorage,
-        _walletManager = walletManager {
+        _walletManager = walletManager,
+        _walletProjection = walletProjection {
     _ancestorService = AncestorChainService(storage: storage);
   }
 
@@ -164,7 +174,7 @@ class PaymentCoordinatorActor extends Actor {
     // 4. Build payment transaction (with outputs if provided)
     // Returns (transaction, preSigned, witnessTx) — plugin-built transactions are already signed.
     final buildSw = Stopwatch()..start();
-    final (paymentTx, preSigned, witnessTx, ancestorTxLookup) =
+    final (paymentTx, preSigned, witnessTx, ancestorTxids) =
         await _buildPaymentTransactionWithOutputs(
       selectedUtxos: selectedUtxos,
       outputs: msg.outputs,
@@ -273,16 +283,18 @@ class PaymentCoordinatorActor extends Actor {
         }
 
         // Package the primary plugin TX with any auto-provisioned ancestors
-        // into a BEEF. Ancestors come from `ancestorTxLookup` (populated by
-        // `_autoProvisionForPlugin`); they don't exist on chain yet so they
-        // carry hasMerkle=false. The caller must settle this BEEF via ARC
-        // to push everything out (see SettleBEEFCommand handler in
+        // into a BEEF. Ancestors come from `ancestorTxids` (populated by
+        // `_autoProvisionForPlugin`); their rawHex is loaded from the wallet
+        // read model since `_autoProvisionForPlugin` persists every entry
+        // before returning. They don't exist on chain yet so they carry
+        // hasMerkle=false. The caller must settle this BEEF via ARC to push
+        // everything out (see SettleBEEFCommand handler in
         // WalletCoordinatorActor). If no auto-provisioning happened (plugin
-        // consumed a wallet UTXO directly), `ancestorTxLookup` is null and
-        // the BEEF contains only the primary TX.
+        // consumed a wallet UTXO directly), `ancestorTxids` is null and the
+        // BEEF contains only the primary TX.
         final txBytes = Uint8List.fromList(hex.decode(signedPaymentTx.rawHex));
-        final orderedAncestors = ancestorTxLookup != null
-            ? _orderedAncestorBytes(ancestorTxLookup, signedPaymentTx.txid)
+        final orderedAncestors = ancestorTxids != null
+            ? await _orderedAncestorBytes(ancestorTxids, signedPaymentTx.txid)
             : const <Uint8List>[];
         final beef = _createPluginBEEF(
           ancestors: orderedAncestors,
@@ -417,16 +429,15 @@ class PaymentCoordinatorActor extends Actor {
   /// Build payment transaction with support for multiple output types (P2PKH, P2MS)
   /// Returns (transaction, preSigned) — preSigned is true when a TransactionBuilderPlugin
   /// built and signed the entire transaction.
-  /// Returns (paymentTx, preSigned, witnessTx, ancestorTxLookup).
+  /// Returns (paymentTx, preSigned, witnessTx, ancestorTxids).
   ///
-  /// `ancestorTxLookup` is the dependency-ordered map of auto-provisioned
-  /// ancestor transactions (split TX → earmark TXs) that the plugin path
-  /// built in-memory. It is non-null only on the plugin path when
-  /// auto-provisioning was triggered; null otherwise. Callers include these
-  /// ancestors in the BEEF so the caller can later settle them via
-  /// `SettleBEEFCommand` — they have no on-chain existence yet, and the
-  /// primary plugin TX cannot be accepted by ARC without its parents.
-  Future<(BitcoinTransaction?, bool, BitcoinTransaction?, Map<String, String>?)>
+  /// `ancestorTxids` is the dependency-ordered list of auto-provisioned
+  /// ancestor transaction ids (split TX first, then its earmark children)
+  /// that the plugin path produced. It is non-null only on the plugin path
+  /// when auto-provisioning was triggered; null otherwise. Every txid in
+  /// this list is already persisted in the wallet read model when this
+  /// function returns — callers should resolve their rawHex via storage.
+  Future<(BitcoinTransaction?, bool, BitcoinTransaction?, List<String>?)>
       _buildPaymentTransactionWithOutputs({
     required List<BitcoinUtxo> selectedUtxos,
     List<InvoiceOutputSpec>? outputs,
@@ -522,7 +533,7 @@ class PaymentCoordinatorActor extends Actor {
 
             List<BitcoinUtxo> pluginFundingUtxos = selectedUtxos;
             List<dartsv.SVPublicKey> pluginPublicKeys = publicKeys;
-            Map<String, String>? provisionTxLookup;
+            List<String>? ancestorTxids;
 
             if (selectedUtxos.length < requiredCount) {
               _log.info('[pay] plugin action "$action" needs $requiredCount funding UTXOs '
@@ -536,7 +547,7 @@ class PaymentCoordinatorActor extends Actor {
               );
               pluginFundingUtxos = provision.earmarkUtxos;
               pluginPublicKeys = List.filled(requiredCount, publicKeys.first);
-              provisionTxLookup = provision.txLookup;
+              ancestorTxids = provision.ancestorTxids;
             }
 
             final request = PluginTransactionRequest(
@@ -545,10 +556,9 @@ class PaymentCoordinatorActor extends Actor {
               publicKeys: pluginPublicKeys,
               params: pluginOutput.params,
               transactionLookup: (txid) async {
-                // Check inline provisioning TXs first (avoids async storage race)
-                if (provisionTxLookup != null && provisionTxLookup.containsKey(txid)) {
-                  return provisionTxLookup[txid];
-                }
+                // All auto-provisioned ancestors are persisted before
+                // _autoProvisionForPlugin returns, so a single storage read
+                // is authoritative. No in-memory shortcut.
                 final tx = await _storage.getTransaction(txid);
                 return tx?.rawHex;
               },
@@ -595,7 +605,7 @@ class PaymentCoordinatorActor extends Actor {
               );
             }
 
-            return (primaryBtx, true, witnessBtx, provisionTxLookup); // preSigned: plugin built and signed the tx
+            return (primaryBtx, true, witnessBtx, ancestorTxids); // preSigned: plugin built and signed the tx
           }
         }
 
@@ -931,15 +941,25 @@ class PaymentCoordinatorActor extends Actor {
 
   /// Order auto-provisioned ancestors by dependency. The split TX spends a
   /// wallet UTXO and must be broadcast first; each earmark TX spends one of
-  /// the split TX's outputs and must come after. We rely on insertion order
-  /// of [provisionTxLookup] (split inserted first in _autoProvisionForPlugin)
-  /// but filter out any entries that happen to duplicate the primary TX.
-  List<Uint8List> _orderedAncestorBytes(
-      Map<String, String> provisionTxLookup, String primaryTxid) {
+  /// the split TX's outputs and must come after. [ancestorTxids] is already
+  /// in dependency order (split first, earmarks following) — we just load
+  /// the rawHex for each from the wallet read model. By the time this runs,
+  /// `_autoProvisionForPlugin` has awaited every recording, so the storage
+  /// reads are guaranteed to find each row.
+  Future<List<Uint8List>> _orderedAncestorBytes(
+      List<String> ancestorTxids, String primaryTxid) async {
     final ordered = <Uint8List>[];
-    for (final entry in provisionTxLookup.entries) {
-      if (entry.key == primaryTxid) continue; // defensive; shouldn't occur
-      ordered.add(Uint8List.fromList(hex.decode(entry.value)));
+    for (final txid in ancestorTxids) {
+      if (txid == primaryTxid) continue; // defensive; shouldn't occur
+      final tx = await _storage.getTransaction(txid);
+      if (tx == null) {
+        throw StateError(
+          'Auto-provisioned ancestor $txid not found in wallet read model. '
+          'This should not happen — _autoProvisionForPlugin awaits projection '
+          'persistence for every ancestor before returning.',
+        );
+      }
+      ordered.add(Uint8List.fromList(hex.decode(tx.rawHex)));
     }
     return ordered;
   }
@@ -1105,12 +1125,20 @@ class PaymentCoordinatorActor extends Actor {
   ///   Level 1 (split TX): source UTXO → N equal outputs
   ///   Level 2 (earmark TXs): each split output → dust(546) + funding at vout=1
   ///
+  /// Both the split TX and every earmark child are recorded through the
+  /// canonical CQRS path (`_recordOutgoingTransaction` → projection applied)
+  /// with `deferSpend: true`, so the source UTXO and every intermediate
+  /// remain `reserved` (not yet `spent`) until ARC reports `SEEN_ON_NETWORK`
+  /// for the broader payment. If the payment flow fails before broadcast,
+  /// the reservation on the source UTXO can be released by the caller.
+  ///
   /// Returns earmark [BitcoinUtxo]s (pointing to vout=1 of each earmark TX)
-  /// and a lookup map so the plugin can resolve intermediate TX hex without
-  /// waiting for async storage writes.
+  /// and the dependency-ordered list of ancestor txids (split first, then
+  /// earmarks). Callers resolve the rawHex for these txids via the
+  /// read-model storage — no in-memory shortcut.
   Future<({
     List<BitcoinUtxo> earmarkUtxos,
-    Map<String, String> txLookup,
+    List<String> ancestorTxids,
   })> _autoProvisionForPlugin({
     required BitcoinUtxo sourceUtxo,
     required int count,
@@ -1158,9 +1186,11 @@ class PaymentCoordinatorActor extends Actor {
     final splitTx = splitBuilder.build(false);
     _log.info('[provision] split TX: ${splitTx.id}, $count earmark outputs');
 
-    // Level 2: Earmark TXs (dust at vout=0, funding at vout=1)
+    // Level 2: build all earmark TXs in memory before recording, so we can
+    // record the split first and have it queryable by the time each earmark
+    // references it.
+    final earmarkTxs = <dartsv.Transaction>[];
     final earmarkUtxos = <BitcoinUtxo>[];
-    final txLookup = <String, String>{splitTx.id: splitTx.serialize()};
 
     for (int i = 0; i < count; i++) {
       final splitOutputSats = splitTx.outputs[i].satoshis;
@@ -1178,7 +1208,7 @@ class PaymentCoordinatorActor extends Actor {
       earmarkBuilder.withOption(dartsv.TransactionOption.DISABLE_DUST_OUTPUTS);
 
       final earmarkTx = earmarkBuilder.build(false);
-      txLookup[earmarkTx.id] = earmarkTx.serialize();
+      earmarkTxs.add(earmarkTx);
 
       earmarkUtxos.add(BitcoinUtxo.create(
         txid: earmarkTx.id,
@@ -1192,7 +1222,12 @@ class PaymentCoordinatorActor extends Actor {
       _log.info('[provision] earmark $i: ${earmarkTx.id}, funding=$fundingSats sats at vout=1');
     }
 
-    // Record intermediate TXs for ARCActor broadcast (fire-and-forget)
+    // Record the split TX. `deferSpend: true` keeps the source UTXO in the
+    // `reserved` state — ARCActor will flip it to `spent` on SEEN_ON_NETWORK
+    // for the broader payment. If anything downstream fails, the caller's
+    // _releaseReservation restores the source UTXO to `available`. Awaited
+    // so the row is queryable for the earmark recordings that follow and
+    // for the plugin's `transactionLookup` afterwards.
     final splitBtx = BitcoinTransaction.fromDartSvTransaction(
       walletId: walletId,
       transaction: splitTx,
@@ -1202,19 +1237,64 @@ class PaymentCoordinatorActor extends Actor {
       inputValue: sourceUtxo.satoshis,
       netAmount: BigInt.zero,
     );
-    _recordOutgoingTransaction(
+    await _recordOutgoingTransaction(
       walletId: walletId,
       transaction: splitBtx,
       spentUtxoKeys: [sourceUtxo.key],
       recipientAddresses: ['self:earmark-split'],
       paymentAmount: BigInt.zero,
       changeAddress: sourceUtxo.address,
+      deferSpend: true,
     );
 
-    return (earmarkUtxos: earmarkUtxos, txLookup: txLookup);
+    // Record each earmark child. `deferSpend: true` so the split-output
+    // UTXOs that each earmark consumes stay `pending` (not `spent`) until
+    // ARC confirms the broader payment. The earmarks' own outputs are
+    // picked up automatically by the aggregate's output scan and registered
+    // as wallet UTXOs in `pending` state — making the funding output at
+    // vout=1 visible to recovery flows if anything fails before broadcast.
+    final ancestorTxids = <String>[splitTx.id];
+    for (int i = 0; i < count; i++) {
+      final earmarkTx = earmarkTxs[i];
+      final fundingSats = earmarkUtxos[i].satoshis;
+      final splitOutputSats = splitTx.outputs[i].satoshis;
+      final earmarkBtx = BitcoinTransaction.fromDartSvTransaction(
+        walletId: walletId,
+        transaction: earmarkTx,
+        status: TransactionStatus.pending,
+        receivingAddresses: ['self:earmark-$i'],
+        sendingAddresses: [],
+        inputValue: splitOutputSats,
+        netAmount: BigInt.zero,
+      );
+      await _recordOutgoingTransaction(
+        walletId: walletId,
+        transaction: earmarkBtx,
+        spentUtxoKeys: ['${splitTx.id}:$i'],
+        recipientAddresses: ['self:earmark-$i'],
+        paymentAmount: BigInt.zero,
+        changeAddress: sourceUtxo.address,
+        deferSpend: true,
+      );
+      ancestorTxids.add(earmarkTx.id);
+      _log.fine('[provision] recorded earmark ${earmarkTx.id} '
+          '(funding=$fundingSats sats, deferred-spend on ${splitTx.id}:$i)');
+    }
+
+    return (earmarkUtxos: earmarkUtxos, ancestorTxids: ancestorTxids);
   }
 
-  /// Record outgoing transaction in wallet history (in PENDING state)
+  /// Record outgoing transaction in wallet history (in PENDING state) and
+  /// wait until the wallet projection has applied the resulting event.
+  ///
+  /// Returns only after `bitcoinTransactionEntitys.get(txid)` is guaranteed
+  /// to return the row — meaning the rawHex is queryable through
+  /// [ReadModelStorage.getTransaction]. This is what makes the helper safe
+  /// to call from flows that immediately need to look the row up (e.g., the
+  /// plugin's `transactionLookup` after auto-provisioning).
+  ///
+  /// Throws [StateError] if the projection fails to apply the event within
+  /// [_recordPersistTimeout] or the projection actor stops while waiting.
   Future<void> _recordOutgoingTransaction({
     required String walletId,
     required BitcoinTransaction transaction,
@@ -1245,11 +1325,33 @@ class PaymentCoordinatorActor extends Actor {
       changeAmount: changeAmount > BigInt.zero ? changeAmount : null,
       deferSpend: deferSpend,
     );
-    
+
+    // Register the awaiter BEFORE telling the command, so we cannot miss the
+    // event if the projection processes it very fast. The projection actor's
+    // mailbox serializes our AwaitEventApplied message against the
+    // _EventReceived dispatches from the event stream, so as long as the
+    // ask is enqueued before the event lands in the same mailbox, ordering
+    // is guaranteed by dactor.
+    final txid = transaction.txid;
+    final applied = _walletProjection.ask<dynamic>(
+      AwaitEventApplied(
+        (e) => e is wevent.TransactionRecordedEvent && e.txid == txid,
+        timeout: _recordPersistTimeout,
+      ),
+    );
+
     _walletManager.tell(
       WalletCommandMessage(walletId, command),
       sender: context.self,
     );
+
+    final response = await applied;
+    if (response is AwaitFailed) {
+      throw StateError(
+        'Failed to persist outgoing transaction $txid in wallet read model: '
+        '${response.reason}',
+      );
+    }
   }
 
   /// Handle funding provisioning request.

@@ -575,16 +575,6 @@ class MockEventStore implements EventStore {
   }
 
   @override
-  Future<void> saveSagaState(SagaStateEnvelope envelope) async {
-    // Mock implementation
-  }
-
-  @override
-  Future<SagaStateEnvelope?> loadSagaState(String persistenceId) async {
-    return null;
-  }
-
-  @override
   Future<void> close() async {
     // Mock implementation
   }

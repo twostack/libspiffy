@@ -70,10 +70,17 @@ class LibSpiffyActorSystem {
   PeerManager? _peerManager;
   
   // CQRS Projections (read-side event handlers)
-  ProjectionManager? _projectionManager;
+  //
+  // Each projection runs inside a ProjectionActor (eventador 2.1.0+) so
+  // coordinators can `ask` the actor to confirm when the read model has
+  // applied an event (via AwaitEventApplied). The actor system itself is
+  // the registry — there is no separate ProjectionManager.
   WalletProjection? _walletProjection;
   InvoiceProjection? _invoiceProjection;
   ChannelProjection? _channelProjection;
+  ActorRef? _walletProjectionRef;
+  ActorRef? _invoiceProjectionRef;
+  ActorRef? _channelProjectionRef;
   
   // Actor references
   ActorRef? _walletManager;
@@ -582,43 +589,47 @@ class LibSpiffyActorSystem {
   /// read models in Isar for efficient queries. This separates write concerns
   /// (aggregates) from read concerns (queries).
   Future<void> _initializeProjections() async {
-    
+
     // Get Isar instance for checkpoint persistence (if using IsarWalletStorage)
-    final Isar? isar = _walletStorage is IsarWalletStorage 
-        ? (_walletStorage as IsarWalletStorage).isar 
+    final Isar? isar = _walletStorage is IsarWalletStorage
+        ? (_walletStorage as IsarWalletStorage).isar
         : null;
-    
-    // Create ProjectionManager with EventStream and optional Isar for automatic checkpoint persistence
-    // _eventStream is set during initialization (no casting needed - LSP compliant)
-    _projectionManager = ProjectionManager(_eventStream, isar: isar);
-    
-    // Create and register WalletProjection
+
+    // Each projection runs inside a ProjectionActor. Spawning IS the
+    // registration (Pekko-style); there is no ProjectionManager. The actor
+    // owns the event-stream subscription and serves AwaitEventApplied queries
+    // so coordinators can wait for the read model to reflect a command's
+    // outcome before returning.
+
     _walletProjection = WalletProjection(
       projectionId: 'wallet-projection',
       eventStore: _eventStore,
       storage: _walletStorage,
     );
-    await _projectionManager!.registerProjection(_walletProjection!);
-    
-    // Create and register InvoiceProjection
+    _walletProjectionRef = await _actorSystem.spawn(
+      'projection-wallet-projection',
+      () => ProjectionActor(_walletProjection!, _eventStream, isar: isar),
+    );
+
     _invoiceProjection = InvoiceProjection(
       projectionId: 'invoice-projection',
       eventStore: _eventStore,
       storage: _walletStorage,
     );
-    await _projectionManager!.registerProjection(_invoiceProjection!);
-    
-    // Create and register ChannelProjection
+    _invoiceProjectionRef = await _actorSystem.spawn(
+      'projection-invoice-projection',
+      () => ProjectionActor(_invoiceProjection!, _eventStream, isar: isar),
+    );
+
     _channelProjection = ChannelProjection(
       projectionId: 'channel-projection',
       eventStore: _eventStore,
       storage: _walletStorage,
     );
-    await _projectionManager!.registerProjection(_channelProjection!);
-    
-    // Start streaming events to projections
-    await _projectionManager!.start();
-    
+    _channelProjectionRef = await _actorSystem.spawn(
+      'projection-channel-projection',
+      () => ProjectionActor(_channelProjection!, _eventStream, isar: isar),
+    );
   }
 
   /// Spawn all coordination actors
@@ -646,6 +657,7 @@ class LibSpiffyActorSystem {
     // Spawn PaymentCoordinatorActor for BEEF-based payments
     _paymentCoordinator = await _actorSystem.spawn('payment-coordinator', () => PaymentCoordinatorActor(
       walletManager: _walletManager!,
+      walletProjection: _walletProjectionRef!,
       storage: _walletStorage,
       secureStorage: _secureStorage,
     ));
@@ -1132,11 +1144,18 @@ class LibSpiffyActorSystem {
   Stream<CoordinatorEvent>? get coordinatorEvents =>
       _coordinatorInstance?.events;
 
-  /// Get reference to the ProjectionManager (CQRS read-side)
-  /// 
-  /// The ProjectionManager routes events from the EventStore to registered
-  /// projections which build denormalized read models for queries.
-  ProjectionManager? get projectionManager => _projectionManager;
+  /// Reference to the wallet projection actor (CQRS read-side).
+  ///
+  /// Coordinators can `ask` this actor `AwaitEventApplied(predicate, timeout)`
+  /// to be notified once the projection has applied a matching event — the
+  /// canonical command-to-read-model bridge.
+  ActorRef? get walletProjectionRef => _walletProjectionRef;
+
+  /// Reference to the invoice projection actor (CQRS read-side).
+  ActorRef? get invoiceProjectionRef => _invoiceProjectionRef;
+
+  /// Reference to the channel projection actor (CQRS read-side).
+  ActorRef? get channelProjectionRef => _channelProjectionRef;
 
   /// Get reference to the WalletProjection
   /// 
@@ -1280,24 +1299,48 @@ class LibSpiffyActorSystem {
   }
 
   /// Shutdown the LibSpiffy actor system
-  /// 
+  ///
   /// This will:
   /// - Disconnect from SpiffyNode if connected
-  /// - Stop projection manager
+  /// - Stop projection actors (flushes their checkpoints, cancels subscriptions)
   /// - Close the event store
   /// - Shutdown the actor system ONLY if LibSpiffy created it (not provided by host)
-  /// 
+  ///
   /// If the host application provided its own actor system, it remains
   /// the host's responsibility to shut it down.
   Future<void> shutdown() async {
-    
+
     try {
       // 1. Disconnect from SpiffyNode first
       await disconnectFromSpiffyNode();
-      
-      // 2. Stop projection manager
-      if (_projectionManager != null) {
-        await _projectionManager!.stop();
+
+      // 2. Stop projection actors via the canonical StopProjection protocol.
+      //    Each actor cancels its event-stream subscription, flushes any
+      //    pending checkpoint, replies with StoppedAck, and then terminates
+      //    itself. Done in parallel since the three projections are
+      //    independent.
+      final stopFutures = <Future<StoppedAck>>[];
+      for (final ref in [
+        _walletProjectionRef,
+        _invoiceProjectionRef,
+        _channelProjectionRef,
+      ]) {
+        if (ref != null) {
+          stopFutures.add(
+            ref.ask<StoppedAck>(StopProjection(), const Duration(seconds: 5)),
+          );
+        }
+      }
+      if (stopFutures.isNotEmpty) {
+        try {
+          await Future.wait(stopFutures);
+        } catch (e) {
+          // Best-effort: a projection that fails to ack within the timeout
+          // shouldn't block the rest of shutdown. The actor's postStop is
+          // a safety net for checkpoint flushing.
+          Logger('LibSpiffyActorSystem')
+              .warning('Projection shutdown ack failed: $e');
+        }
       }
       
       // 3. Shutdown actor system only if we own it

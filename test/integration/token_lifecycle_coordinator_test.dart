@@ -53,11 +53,19 @@ Future<void> addSyntheticUtxo({
   await Future.delayed(const Duration(milliseconds: 100));
 }
 
-/// Extract the raw transaction bytes from a minimal BEEF wrapper.
-/// Format: version(4) + nBUMPs(1) + nTxs(1) + hasBUMP(1) + rawTx
+/// Extract the primary transaction bytes from a BEEF wrapper.
+///
+/// The primary TX is the LAST transaction in the BEEF — earlier entries are
+/// ancestors (split TX, earmark children) that the coordinator may auto-
+/// provision for plugin-built actions. The previous implementation assumed
+/// a fixed 7-byte prefix followed by a single TX, which only worked when no
+/// ancestors were present.
 Uint8List _extractTxFromMinimalBeef(Uint8List beef) {
-  // Skip: 4 bytes version + 1 byte nBUMPs + 1 byte nTxs + 1 byte hasBUMP = 7 bytes
-  return Uint8List.fromList(beef.sublist(7));
+  final parsed = BEEF.parse(beef);
+  if (parsed.txs.isEmpty) {
+    throw StateError('BEEF contained no transactions');
+  }
+  return Uint8List.fromList(parsed.txs.last);
 }
 
 Stream<T> ofType<T extends CoordinatorEvent>(Stream<CoordinatorEvent> stream) {
@@ -395,6 +403,30 @@ void main() {
         'ownerAddress': bobAddress.toBase58(),
       });
       expect(issuanceResult.success, isTrue, reason: 'Issuance failed: ${issuanceResult.error}');
+
+      // CQRS read-model reproduction check.
+      //
+      // After PaymentReadyEvent returns success, the issuance TX rawHex must be
+      // queryable from the wallet read model — this is the property that
+      // TokenLifecycleService.transferP2P() (in overnode_v2) relies on when it
+      // looks up `prevTokenTxHex` for the next operation. If this expectation
+      // fails, we've reproduced the originating bug at its source in libspiffy.
+      // See docs/tokens/plugin-cqrs-alignment-plan.md (overnode_v2).
+      final issuanceStored = await bobSystem.walletStorage.getTransaction(issuanceResult.txid);
+      expect(issuanceStored, isNotNull,
+          reason: 'Issuance TX ${issuanceResult.txid} should be persisted in bitcoinTransactionEntitys '
+              'by the time PaymentReadyEvent is delivered.');
+      expect(issuanceStored!.rawHex, isNotEmpty,
+          reason: 'Issuance TX entity exists but rawHex is empty.');
+
+      if (issuanceResult.witnessTxid != null) {
+        final witnessStored = await bobSystem.walletStorage.getTransaction(issuanceResult.witnessTxid!);
+        expect(witnessStored, isNotNull,
+            reason: 'Issuance witness TX ${issuanceResult.witnessTxid} should be persisted '
+                'in bitcoinTransactionEntitys by the time PaymentReadyEvent is delivered.');
+        expect(witnessStored!.rawHex, isNotEmpty,
+            reason: 'Issuance witness TX entity exists but rawHex is empty.');
+      }
 
       final issuanceTx = dartsv.Transaction.fromHex(hex.encode(_extractTxFromMinimalBeef(issuanceResult.beefBytes)));
       expect(issuanceTx.outputs.length, equals(5));

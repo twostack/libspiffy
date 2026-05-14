@@ -1556,6 +1556,149 @@ void main() {
       });
     });
 
+    group('RecordOutgoingTransaction - preSigned Audit Trail (Phase 4)', () {
+      late BitcoinWalletAggregate wallet;
+      late String walletAddress1;
+      late String externalAddress;
+
+      setUp(() async {
+        wallet = BitcoinWalletAggregate(
+          aggregateId: 'wallet-presigned',
+          aggregateType: 'Wallet',
+          eventStore: eventStore,
+          cryptoService: cryptoService,
+          secureStorage: secureStorage,
+        );
+        wallet.preStart();
+        await Future.delayed(Duration(milliseconds: 100));
+
+        await wallet.commandHandler(CreateWalletCommand(
+          walletId: 'wallet-presigned',
+          walletName: 'PreSigned Audit Test Wallet',
+          mnemonic:
+              'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+        ));
+        await wallet.commandHandler(GenerateAddressCommand(
+          walletId: 'wallet-presigned',
+          label: 'Address 1',
+        ));
+        walletAddress1 = wallet.currentState.addresses.keys.first;
+        externalAddress = 'n4VQ5YdHf7hLQ2gWQYYrcxoE5B7nWuDFNF';
+      });
+
+      /// Build a minimal P2PKH TX paying to externalAddress; returns (rawHex, txid).
+      (String rawHex, String txid) _makeTx(String prevTxid) {
+        final tx = dartsv.Transaction();
+        tx.version = 1;
+        tx.nLockTime = 0;
+        tx.inputs.add(dartsv.TransactionInput(
+          prevTxid,
+          0,
+          dartsv.TransactionInput.MAX_SEQ_NUMBER,
+        ));
+        final addr = dartsv.Address.fromBase58(externalAddress);
+        final script = dartsv.P2PKHLockBuilder.fromAddress(addr).getScriptPubkey();
+        tx.outputs.add(dartsv.TransactionOutput(BigInt.from(99000), script));
+        return (tx.serialize(), tx.id);
+      }
+
+      test(
+          'preSigned=true emits TransactionSignedEvent before TransactionRecordedEvent with signer metadata',
+          () async {
+        final (rawHex, txid) = _makeTx(
+            'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee');
+
+        // Capture events emitted to the event store.
+        await wallet.commandHandler(RecordOutgoingTransactionCommand(
+          walletId: 'wallet-presigned',
+          txid: txid,
+          rawHex: rawHex,
+          totalInputSats: 100000,
+          totalOutputSats: 99000,
+          fee: 1000,
+          numInputs: 1,
+          numOutputs: 1,
+          txVersion: 1,
+          txLockTime: 0,
+          spentUtxoKeys: const [],
+          recipientAddresses: [externalAddress],
+          paymentAmount: BigInt.from(99000),
+          changeAddress: null,
+          changeAmount: null,
+          preSigned: true,
+          signerMetadata: {
+            'signerType': 'plugin-callback',
+            'role': 'primary',
+            'derivationIndex': 0,
+            'pluginId': 'fake',
+          },
+        ));
+
+        // Read all events for this aggregate from the event store.
+        final events = await eventStore.getEvents('Wallet_wallet-presigned');
+        final txEvents = events
+            .where((e) =>
+                e is TransactionSignedEvent || e is TransactionRecordedEvent)
+            .toList();
+
+        expect(txEvents, hasLength(2),
+            reason:
+                'preSigned=true should emit both TransactionSignedEvent and TransactionRecordedEvent');
+        expect(txEvents[0], isA<TransactionSignedEvent>(),
+            reason: 'TransactionSignedEvent should be emitted first');
+        expect(txEvents[1], isA<TransactionRecordedEvent>());
+
+        final signedEvent = txEvents[0] as TransactionSignedEvent;
+        expect(signedEvent.txid, equals(txid));
+        expect(signedEvent.signedRawHex, equals(rawHex));
+        expect(signedEvent.metadata, isNotNull);
+        expect(signedEvent.metadata!['signerType'], equals('plugin-callback'));
+        expect(signedEvent.metadata!['role'], equals('primary'));
+        expect(signedEvent.metadata!['derivationIndex'], equals(0));
+        expect(signedEvent.metadata!['pluginId'], equals('fake'));
+      });
+
+      test(
+          'preSigned=false (default, internal flow) does NOT emit TransactionSignedEvent',
+          () async {
+        // Regression guard: internal flows go through SignTransactionCommand
+        // separately; recording must not double-emit.
+        final (rawHex, txid) = _makeTx(
+            'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff');
+
+        await wallet.commandHandler(RecordOutgoingTransactionCommand(
+          walletId: 'wallet-presigned',
+          txid: txid,
+          rawHex: rawHex,
+          totalInputSats: 100000,
+          totalOutputSats: 99000,
+          fee: 1000,
+          numInputs: 1,
+          numOutputs: 1,
+          txVersion: 1,
+          txLockTime: 0,
+          spentUtxoKeys: const [],
+          recipientAddresses: [externalAddress],
+          paymentAmount: BigInt.from(99000),
+          changeAddress: null,
+          changeAmount: null,
+          // preSigned defaults to false
+        ));
+
+        final events = await eventStore.getEvents('Wallet_wallet-presigned');
+        final signedEvents =
+            events.whereType<TransactionSignedEvent>().toList();
+        final recordedEvents =
+            events.whereType<TransactionRecordedEvent>().toList();
+
+        expect(signedEvents, isEmpty,
+            reason:
+                'Internal recording flow must not emit TransactionSignedEvent — '
+                'it is emitted by _handleSignTransaction in the SignTransactionCommand path');
+        expect(recordedEvents, hasLength(1));
+      });
+    });
+
     group('RecordOutgoingTransaction - Plugin-Aware Output Scanning', () {
       late BitcoinWalletAggregate wallet;
       late String walletAddress1;

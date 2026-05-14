@@ -249,6 +249,9 @@ class PaymentCoordinatorActor extends Actor {
     final recipientAddresses = _getRecipientAddresses(msg.outputs, msg.addresses);
 
     final spentUtxoKeys = selectedUtxos.map((u) => '${u.txid}:${u.vout}').toList();
+    // Phase 4: when this TX was signed by a plugin's CallbackTransactionSigner
+    // (preSigned=true), emit a TransactionSignedEvent alongside the recording
+    // for audit-trail parity with the SignTransactionCommand path.
     await _recordOutgoingTransaction(
       walletId: msg.walletId,
       transaction: signedPaymentTx,
@@ -257,6 +260,16 @@ class PaymentCoordinatorActor extends Actor {
       paymentAmount: effectiveAmount,
       changeAddress: actualChangeAddress,
       deferSpend: true, // UTXOs stay reserved; ARCActor marks spent on SEEN_ON_NETWORK
+      preSigned: preSigned,
+      signerMetadata: preSigned
+          ? {
+              'signerType': 'plugin-callback',
+              'role': 'primary',
+              'derivationIndex': keyInfo.derivationIndices.isNotEmpty
+                  ? keyInfo.derivationIndices.first
+                  : null,
+            }
+          : null,
     );
 
     if (preSigned) {
@@ -279,6 +292,14 @@ class PaymentCoordinatorActor extends Actor {
             recipientAddresses: ['witness'],
             paymentAmount: BigInt.zero,
             changeAddress: actualChangeAddress,
+            preSigned: true,
+            signerMetadata: {
+              'signerType': 'plugin-callback',
+              'role': 'witness',
+              'derivationIndex': keyInfo.derivationIndices.isNotEmpty
+                  ? keyInfo.derivationIndices.first
+                  : null,
+            },
           );
         }
 
@@ -1245,6 +1266,12 @@ class PaymentCoordinatorActor extends Actor {
       paymentAmount: BigInt.zero,
       changeAddress: sourceUtxo.address,
       deferSpend: true,
+      preSigned: true,
+      signerMetadata: {
+        'signerType': 'plugin-callback',
+        'role': 'provisioning-split',
+        'derivationIndex': sourceUtxo.derivationIndex,
+      },
     );
 
     // Record each earmark child. `deferSpend: true` so the split-output
@@ -1275,6 +1302,13 @@ class PaymentCoordinatorActor extends Actor {
         paymentAmount: BigInt.zero,
         changeAddress: sourceUtxo.address,
         deferSpend: true,
+        preSigned: true,
+        signerMetadata: {
+          'signerType': 'plugin-callback',
+          'role': 'provisioning-earmark',
+          'earmarkIndex': i,
+          'derivationIndex': sourceUtxo.derivationIndex,
+        },
       );
       ancestorTxids.add(earmarkTx.id);
       _log.fine('[provision] recorded earmark ${earmarkTx.id} '
@@ -1303,6 +1337,8 @@ class PaymentCoordinatorActor extends Actor {
     required BigInt paymentAmount,
     String? changeAddress,
     bool deferSpend = false,
+    bool preSigned = false,
+    Map<String, dynamic>? signerMetadata,
   }) async {
     // Calculate change amount
     final changeAmount = transaction.outputValue - paymentAmount;
@@ -1324,6 +1360,8 @@ class PaymentCoordinatorActor extends Actor {
       changeAddress: changeAddress,
       changeAmount: changeAmount > BigInt.zero ? changeAmount : null,
       deferSpend: deferSpend,
+      preSigned: preSigned,
+      signerMetadata: signerMetadata,
     );
 
     // Register the awaiter BEFORE telling the command, so we cannot miss the
@@ -1459,6 +1497,15 @@ class PaymentCoordinatorActor extends Actor {
           spentUtxoKeys: spentKeys,
           recipientAddresses: btx.receivingAddresses,
           paymentAmount: BigInt.zero,
+          preSigned: true,
+          signerMetadata: {
+            'signerType': 'plugin-callback',
+            'role': ptx.role == 'earmark'
+                ? 'provisioning-earmark'
+                : 'provisioning-split',
+            'pluginId': msg.pluginId,
+            'derivationIndex': derivationIndex,
+          },
         );
       }
 

@@ -387,6 +387,18 @@ class RecordOutgoingTransactionCommand extends WalletCommand {
   /// UTXOs should already be in 'reserved' status from prior reservation.
   final bool deferSpend;
 
+  /// When true, this transaction was signed externally (e.g., by a plugin's
+  /// `CallbackTransactionSigner`) without going through [SignTransactionCommand].
+  /// The aggregate emits a [TransactionSignedEvent] alongside the
+  /// [TransactionRecordedEvent] to keep the audit trail symmetric with
+  /// wallet-internal signing.
+  final bool preSigned;
+
+  /// Optional signer provenance: derivation index, plugin id, role, signer
+  /// type — anything the coordinator wants captured for forensic replay.
+  /// Propagated to [TransactionSignedEvent.metadata] when [preSigned] is true.
+  final Map<String, dynamic>? signerMetadata;
+
   RecordOutgoingTransactionCommand({
     required String walletId,
     required this.txid,
@@ -404,6 +416,8 @@ class RecordOutgoingTransactionCommand extends WalletCommand {
     this.changeAddress,
     this.changeAmount,
     this.deferSpend = false,
+    this.preSigned = false,
+    this.signerMetadata,
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,

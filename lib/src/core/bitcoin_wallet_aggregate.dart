@@ -973,8 +973,23 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     }
 
     final events = <Event>[];
-    
-    
+
+    // Phase 4: when the TX was signed externally (plugin's
+    // CallbackTransactionSigner or similar), emit a TransactionSignedEvent
+    // here to fill the audit-trail gap. Wallet-internal flows that came
+    // through SignTransactionCommand already emitted this event; plugin
+    // flows had no canonical signing record until now.
+    if (command.preSigned) {
+      events.add(TransactionSignedEvent(
+        walletId: command.walletId,
+        txid: command.txid,
+        signedRawHex: command.rawHex,
+        version: currentState.version + events.length + 1,
+        timestamp: DateTime.now(),
+        metadata: command.signerMetadata,
+      ));
+    }
+
     // Emit TransactionRecordedEvent
     final transactionEvent = TransactionRecordedEvent(
       walletId: command.walletId,
@@ -992,7 +1007,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       paymentAmount: command.paymentAmount.toString(),
       changeAddress: command.changeAddress,
       changeAmount: command.changeAmount?.toString(),
-      version: currentState.version + 1,
+      version: currentState.version + events.length + 1,
       timestamp: DateTime.now(),
     );
     events.add(transactionEvent);

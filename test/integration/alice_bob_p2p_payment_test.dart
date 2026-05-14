@@ -762,9 +762,13 @@ void main() {
       expect(aliceInitialUtxos, isNotEmpty, reason: 'Alice should have funded UTXOs');
       print('✓ Alice has ${aliceInitialUtxos.length} UTXO(s)');
 
-      // Get the funding UTXO details (from the fundWallet helper)
-      final fundingTxid = 'dd6e7547df0fe893a9a19f66f0377eca72fdcd18fd9f6185fde9c91461a8e8a9';
-      final fundingVout = 0;
+      // Get the funding UTXO details — must match what `fundWallet` in
+      // p2p_test_helpers.dart actually creates. The helper imports the real
+      // testnet transaction `a05924fc…2101` and registers vout=1 (the
+      // 200,000,000-sat output to the test xpriv's root address) as the
+      // wallet's funded UTXO.
+      final fundingTxid = 'a05924fcc63712d3e4b94b0c88baad234c2c8ad3d369704f53765e21a53a2101';
+      final fundingVout = 1;
 
       print('\n=== STEP 2: Bob creates invoice ===');
 

@@ -1555,7 +1555,199 @@ void main() {
         print('   - Total UTXO count correct: ${wallet.currentState.utxos.length}');
       });
     });
+
+    group('RecordOutgoingTransaction - Plugin-Aware Output Scanning', () {
+      late BitcoinWalletAggregate wallet;
+      late String walletAddress1;
+      late _FakeScriptPlugin fakePlugin;
+
+      setUp(() async {
+        // Plugin must be registered before scan runs.
+        PluginRegistry().clear();
+        fakePlugin = _FakeScriptPlugin();
+        PluginRegistry().register(fakePlugin);
+
+        wallet = BitcoinWalletAggregate(
+          aggregateId: 'wallet-plugin',
+          aggregateType: 'Wallet',
+          eventStore: eventStore,
+          cryptoService: cryptoService,
+          secureStorage: secureStorage,
+        );
+        wallet.preStart();
+        await Future.delayed(Duration(milliseconds: 100));
+
+        await wallet.commandHandler(CreateWalletCommand(
+          walletId: 'wallet-plugin',
+          walletName: 'Plugin Scan Test Wallet',
+          mnemonic:
+              'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
+        ));
+
+        await wallet.commandHandler(GenerateAddressCommand(
+          walletId: 'wallet-plugin',
+          label: 'Address 1',
+        ));
+
+        walletAddress1 = wallet.currentState.addresses.keys.first;
+      });
+
+      tearDown(() {
+        PluginRegistry().clear();
+      });
+
+      test(
+          'creates a UTXO for a plugin-identified output owned by the wallet',
+          () async {
+        // Build a TX with a single plugin-locked output to a wallet address.
+        // The fake plugin recognizes scripts starting with OP_1 (0x51) and
+        // returns ownerAddress = walletAddress1 — mirroring how tstoken's
+        // PP1_NFT returns the recipient address.
+        final tx = dartsv.Transaction();
+        tx.version = 1;
+        tx.nLockTime = 0;
+        tx.inputs.add(dartsv.TransactionInput(
+          'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+          0,
+          dartsv.TransactionInput.MAX_SEQ_NUMBER,
+        ));
+
+        fakePlugin.ownerAddressForNextScript = walletAddress1;
+        final pluginScript = _FakeScriptPlugin.makeRecognizedScript();
+        tx.outputs.add(dartsv.TransactionOutput(BigInt.from(546), pluginScript));
+
+        final txHex = tx.serialize();
+        final txid = tx.id;
+
+        final recordCommand = RecordOutgoingTransactionCommand(
+          walletId: 'wallet-plugin',
+          txid: txid,
+          rawHex: txHex,
+          totalInputSats: 1000,
+          totalOutputSats: 546,
+          fee: 454,
+          numInputs: 1,
+          numOutputs: 1,
+          txVersion: 1,
+          txLockTime: 0,
+          spentUtxoKeys: [
+            'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc:0'
+          ],
+          recipientAddresses: [walletAddress1],
+          paymentAmount: BigInt.from(546),
+          changeAddress: null,
+          changeAmount: null,
+        );
+
+        await wallet.commandHandler(recordCommand);
+
+        final utxo = wallet.currentState.utxos['$txid:0'];
+        expect(utxo, isNotNull,
+            reason:
+                'Plugin-identified output owned by wallet should create a UTXO');
+        expect(utxo!.address, equals(walletAddress1));
+        expect(utxo.satoshis, equals(BigInt.from(546)));
+        expect(utxo.status, equals(UTXOStatus.pending));
+      });
+
+      test(
+          'skips plugin output whose ownerAddress is not in the wallet',
+          () async {
+        // Plugin recognizes the script and returns an ownerAddress that the
+        // wallet does NOT know about. Aggregate must not create a UTXO.
+        final tx = dartsv.Transaction();
+        tx.version = 1;
+        tx.nLockTime = 0;
+        tx.inputs.add(dartsv.TransactionInput(
+          'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+          0,
+          dartsv.TransactionInput.MAX_SEQ_NUMBER,
+        ));
+
+        fakePlugin.ownerAddressForNextScript =
+            'mzBc4XEFSdzCDcTxAgf6EZXgsZWpztRhef'; // external testnet address
+        tx.outputs.add(dartsv.TransactionOutput(
+            BigInt.from(546), _FakeScriptPlugin.makeRecognizedScript()));
+
+        final txHex = tx.serialize();
+        final txid = tx.id;
+
+        final recordCommand = RecordOutgoingTransactionCommand(
+          walletId: 'wallet-plugin',
+          txid: txid,
+          rawHex: txHex,
+          totalInputSats: 1000,
+          totalOutputSats: 546,
+          fee: 454,
+          numInputs: 1,
+          numOutputs: 1,
+          txVersion: 1,
+          txLockTime: 0,
+          spentUtxoKeys: [
+            'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd:0'
+          ],
+          recipientAddresses: [],
+          paymentAmount: BigInt.zero,
+          changeAddress: null,
+          changeAmount: null,
+        );
+
+        await wallet.commandHandler(recordCommand);
+
+        expect(wallet.currentState.utxos['$txid:0'], isNull,
+            reason:
+                'Plugin output owned by an external address should not become a wallet UTXO');
+      });
+    });
   });
+}
+
+/// Test fake plugin that recognizes a sentinel script and returns a
+/// caller-controlled ownerAddress. Used by Phase 3 plugin-aware scanner tests.
+class _FakeScriptPlugin implements ScriptPlugin {
+  String? ownerAddressForNextScript;
+
+  /// Sentinel script: OP_1 followed by a single byte (0x42). Won't match any
+  /// built-in script template, so it forces the aggregate's scanner into the
+  /// plugin-aware default branch.
+  static dartsv.SVScript makeRecognizedScript() {
+    return dartsv.SVScript.fromHex('5101' '42');
+  }
+
+  @override
+  String get pluginId => 'fake';
+
+  @override
+  String get displayName => 'Fake Test Plugin';
+
+  @override
+  List<String> get scriptTypes => ['fake_lock'];
+
+  @override
+  String? identifyScript(dartsv.SVScript script) {
+    if (script.toHex() == makeRecognizedScript().toHex()) {
+      return 'fake_lock';
+    }
+    return null;
+  }
+
+  @override
+  Map<String, dynamic>? extractMetadata(dartsv.SVScript script) {
+    if (identifyScript(script) == null) return null;
+    return {
+      'pluginId': pluginId,
+      'scriptType': 'fake_lock',
+      if (ownerAddressForNextScript != null)
+        'ownerAddress': ownerAddressForNextScript,
+    };
+  }
+
+  @override
+  dartsv.LockingScriptBuilder? createLockBuilder(PluginOutputSpec spec) => null;
+
+  @override
+  dartsv.UnlockingScriptBuilder? createUnlockBuilder(PluginUnlockSpec spec) =>
+      null;
 }
 
 /// Register all wallet event types for deserialization during testing

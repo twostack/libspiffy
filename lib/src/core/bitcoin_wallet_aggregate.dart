@@ -10,6 +10,7 @@ import '../models/wallet_state.dart';
 import '../models/bitcoin_utxo.dart';
 import '../models/wallet_type.dart';
 import '../services/crypto_service.dart';
+import '../plugin/plugin_registry.dart';
 import '../services/script_type_registry.dart';
 import '../storage/secure_storage.dart';
 import '../services/transaction_builder_service.dart';
@@ -1047,10 +1048,11 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         
         // Identify script type
         final scriptType = scriptRegistry.identifyScriptType(output.script)?.toLowerCase() ?? 'unknown';
-        
+
         String? outputAddress;
         bool belongsToWallet = false;
-        
+        Map<String, dynamic>? outputPluginMetadata;
+
         // Extract address based on script type
         switch (scriptType) {
           case 'p2pkh':
@@ -1110,9 +1112,26 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
           case 'op_return':
             // OP_RETURN outputs don't belong to anyone
             continue;
-            
+
           default:
-            continue;
+            // Plugin-aware fallback: ScriptTypeRegistry.identifyScriptType
+            // already consulted PluginRegistry for unknown templates and
+            // returned `pluginId:scriptType` when a plugin claimed the script.
+            // Mirror the SPV inbound path (spv_actor.dart:504-525) so the
+            // aggregate that *built* a plugin-locked output represents it
+            // immediately, without waiting for SPV rediscovery.
+            if (scriptType.contains(':')) {
+              final pluginId = scriptType.split(':').first;
+              final plugin = PluginRegistry().getPlugin(pluginId);
+              final metadata = plugin?.extractMetadata(output.script);
+              final ownerAddress = metadata?['ownerAddress'] as String?;
+              if (ownerAddress != null && walletAddresses.contains(ownerAddress)) {
+                outputAddress = ownerAddress;
+                belongsToWallet = true;
+                outputPluginMetadata = metadata;
+              }
+            }
+            break;
         }
         
         // If output belongs to wallet, create a UTXO for it
@@ -1128,6 +1147,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
             blockHeight: null, // Not confirmed yet
             confirmations: 0,
             initialStatus: UTXOStatus.pending, // Starts as pending until confirmed
+            pluginMetadata: outputPluginMetadata,
             version: currentState.version + events.length + 1,
             timestamp: DateTime.now(),
           );

@@ -760,6 +760,7 @@ class LibSpiffyActorSystem {
       headerSyncActor: _headerSyncActor!,
       benfordCoordinator: _benfordCoordinator!,
       channelManager: _channelManager!,
+      walletProjection: _walletProjectionRef!,
       importActor: _importActor,
       storage: _walletStorage,
       channelEvents: _channelEventBroadcaster.stream,

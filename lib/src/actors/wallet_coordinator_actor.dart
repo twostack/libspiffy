@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:convert/convert.dart';
 import 'package:dactor/dactor.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
+import 'package:eventador/eventador.dart';
 import 'package:logging/logging.dart';
 import 'package:spiffynode/spiffy_node.dart' show BlockHeader, Hash;
 
@@ -45,6 +46,7 @@ class WalletCoordinatorActor extends Actor {
   final ActorRef _benfordCoordinator;
   final ActorRef _channelManager;
   final ActorRef? _importActor;
+  final ActorRef _walletProjection;
 
   // Direct storage access for CQRS read queries
   final ReadModelStorage _storage;
@@ -109,6 +111,7 @@ class WalletCoordinatorActor extends Actor {
     required ActorRef headerSyncActor,
     required ActorRef benfordCoordinator,
     required ActorRef channelManager,
+    required ActorRef walletProjection,
     ActorRef? importActor,
     required ReadModelStorage storage,
     Stream<ChannelEvent>? channelEvents,
@@ -138,6 +141,7 @@ class WalletCoordinatorActor extends Actor {
         _headerSyncActor = headerSyncActor,
         _benfordCoordinator = benfordCoordinator,
         _channelManager = channelManager,
+        _walletProjection = walletProjection,
         _importActor = importActor,
         _storage = storage,
         _peerId = peerId,
@@ -1199,6 +1203,17 @@ class WalletCoordinatorActor extends Actor {
       ));
 
       // Emit TransactionImportedEvent so callers waiting on it get notified.
+      //
+      // WalletManagerActor processes the same SPVValidationResult in parallel
+      // and dispatches RecordImportedTransactionCommand to the wallet aggregate,
+      // which ultimately produces the aggregate-level TransactionImportedEvent
+      // that the projection persists into bitcoinTransactionEntitys. If we
+      // emitted this coord-level event immediately, callers (e.g., overnode's
+      // `_handleWalletImportTokenBeef` waiting on `_waitForWalletEvent
+      // <TransactionImportedEvent>`) could be told "success" before the read
+      // model contained the txid — exactly the gap Phase 1 closed for outbound
+      // recording. We close it here for inbound by waiting on the wallet
+      // projection actor before emitting.
       if (result.targetWalletId != null) {
         BigInt totalReceived = BigInt.zero;
         for (final utxo in result.spendableUTXOs) {
@@ -1206,13 +1221,39 @@ class WalletCoordinatorActor extends Actor {
           totalReceived += sat is BigInt ? sat : BigInt.from(sat ?? 0);
         }
 
+        String? awaitError;
+        if (result.isValid) {
+          try {
+            final txid = result.txid;
+            final response = await _walletProjection.ask<dynamic>(
+              AwaitEventApplied(
+                (e) =>
+                    e is domain_events.TransactionImportedEvent &&
+                    e.txid == txid,
+                timeout: const Duration(seconds: 30),
+              ),
+            );
+            if (response is AwaitFailed) {
+              awaitError =
+                  'Imported transaction $txid was validated but the wallet '
+                  'read model failed to apply it: ${response.reason}';
+              _log.warning(awaitError);
+            }
+          } catch (e) {
+            awaitError =
+                'Unexpected error awaiting projection persistence for '
+                '${result.txid}: $e';
+            _log.warning(awaitError);
+          }
+        }
+
         _emitEvent(TransactionImportedEvent(
           walletId: result.targetWalletId!,
           transactionId: result.txid,
-          success: result.isValid,
+          success: result.isValid && awaitError == null,
           utxosCreated: result.spendableUTXOs.length,
           totalValueReceived: totalReceived.toString(),
-          error: result.validationError,
+          error: awaitError ?? result.validationError,
         ));
       }
     }

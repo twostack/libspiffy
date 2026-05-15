@@ -224,6 +224,8 @@ class WalletCoordinatorActor extends Actor {
         _channelAdapter?.handleMakePayment(message);
       } else if (message is CloseChannelCommand) {
         _channelAdapter?.handleCloseChannel(message);
+      } else if (message is ExpireChannelCommand) {
+        _channelAdapter?.handleExpireChannel(message);
       } else if (message is AcceptChannelCommand) {
         _channelAdapter?.handleAcceptRequest(message);
       } else if (message is RejectChannelCommand) {

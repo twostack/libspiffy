@@ -588,7 +588,12 @@ class LibSpiffyActorSystem {
       'RefundClaimedEvent',
       (map) => RefundClaimedEvent.fromMap(map),
     );
-    
+
+    EventRegistry.register<ChannelExpiredEvent>(
+      'ChannelExpiredEvent',
+      (map) => ChannelExpiredEvent.fromMap(map),
+    );
+
   }
   
   /// Initialize CQRS projections for read-side persistence

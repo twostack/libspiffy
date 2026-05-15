@@ -384,6 +384,38 @@ class FinalizeCloseCommand extends ChannelCommand {
   String get commandType => 'FinalizeCloseCommand';
 }
 
+/// Record that a channel has expired (lockTime elapsed).
+///
+/// Issued by the expiry monitor when the channel passes its lockTime.
+/// Emits [ChannelExpiredEvent]. The aggregate enforces that the channel
+/// is genuinely past its lockTime and not already terminated.
+///
+/// This is distinct from [ClaimRefundCommand] (which broadcasts the refund TX
+/// and emits [RefundClaimedEvent]); the expiry monitor uses [ExpireChannelCommand]
+/// to update the read model in lock-step with the event store regardless of
+/// whether a refund/settlement TX was broadcast.
+class ExpireChannelCommand extends ChannelCommand {
+  final String observedBy; // 'client' or 'server'
+  final String? settlementOrRefundTxId;
+
+  ExpireChannelCommand({
+    required String channelId,
+    required this.observedBy,
+    this.settlementOrRefundTxId,
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          channelId: channelId,
+          commandId: commandId,
+          timestamp: timestamp,
+          metadata: metadata,
+        );
+
+  @override
+  String get commandType => 'ExpireChannelCommand';
+}
+
 /// Claim refund after channel expiry (non-cooperative close)
 class ClaimRefundCommand extends ChannelCommand {
   ClaimRefundCommand({

@@ -406,6 +406,42 @@ class CloseChannelMessage extends LocalMessage {
   dynamic get payload => this;
 }
 
+/// Request to record that a channel has expired (lockTime elapsed).
+///
+/// Sent by the expiry monitor when it detects a channel past its lockTime.
+/// Routes to `PaymentChannelAggregate` via [ExpireChannelCommand], emitting
+/// [ChannelExpiredEvent] so the read model picks up the transition.
+class ExpireChannelMessage extends LocalMessage {
+  final String channelId;
+  final String observedBy; // 'client' or 'server'
+  final String? settlementOrRefundTxId;
+
+  ExpireChannelMessage({
+    required this.channelId,
+    required this.observedBy,
+    this.settlementOrRefundTxId,
+  }) : super(payload: null);
+
+  @override
+  dynamic get payload => this;
+}
+
+/// Response to channel expiry recording
+class ChannelExpiredResponse extends LocalMessage {
+  final String channelId;
+  final bool success;
+  final String? error;
+
+  ChannelExpiredResponse({
+    required this.channelId,
+    required this.success,
+    this.error,
+  }) : super(payload: null);
+
+  @override
+  dynamic get payload => this;
+}
+
 /// Response to channel close
 class ChannelClosedResponse extends LocalMessage {
   final String channelId;

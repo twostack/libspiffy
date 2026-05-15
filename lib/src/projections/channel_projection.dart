@@ -49,6 +49,7 @@ class ChannelProjection extends Projection<void> {
         ChannelClosingEvent,
         ChannelClosedEvent,
         RefundClaimedEvent,
+        ChannelExpiredEvent,
       ];
   
   @override
@@ -119,6 +120,9 @@ class ChannelProjection extends Projection<void> {
           return true;
         case RefundClaimedEvent:
           await _handleRefundClaimed(event as RefundClaimedEvent);
+          return true;
+        case ChannelExpiredEvent:
+          await _handleChannelExpired(event as ChannelExpiredEvent);
           return true;
         default:
           return false;
@@ -328,16 +332,29 @@ class ChannelProjection extends Projection<void> {
   }
   
   Future<void> _handleRefundClaimed(RefundClaimedEvent event) async {
-    
+
     final existing = await _storage.getPaymentChannel(event.channelId);
     if (existing == null) {
       return;
     }
-    
+
     final entity = existing as PaymentChannelEntity;
     entity.state = 'expired'; // ChannelStatus.expired → 'expired'
     entity.closedAt = event.timestamp;
-    
+
+    await _storage.storePaymentChannel(entity);
+  }
+
+  Future<void> _handleChannelExpired(ChannelExpiredEvent event) async {
+    final existing = await _storage.getPaymentChannel(event.channelId);
+    if (existing == null) {
+      return;
+    }
+
+    final entity = existing as PaymentChannelEntity;
+    entity.state = 'expired';
+    entity.closedAt = event.timestamp;
+
     await _storage.storePaymentChannel(entity);
   }
 }

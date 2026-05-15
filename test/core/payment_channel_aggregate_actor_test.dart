@@ -423,6 +423,69 @@ void main() {
       final events = await eventStore.getEvents('PaymentChannel_channel-validation-test');
       expect(events.length, 0);
     });
+
+    test('ExpireChannelCommand emits ChannelExpiredEvent after lockTime elapses',
+        () async {
+      final aggregateRef = await actorSystem.spawn(
+        'channel-expire-test',
+        () => PaymentChannelAggregate(
+          aggregateId: 'channel-expire-test',
+          eventStore: eventStore,
+          cryptoService: cryptoService,
+          networkType: dartsv.NetworkType.TEST,
+        ),
+      );
+
+      // Open with a 1-second lockTime so the aggregate is past its lockTime
+      // shortly after we issue the expire command.
+      final clientKeys = await PrecomputedKeys.generate(cryptoService);
+      final requestCmd = RequestChannelCommand(
+        channelId: 'channel-expire-test',
+        walletId: 'wallet-123',
+        clientPeerId: 'peer-client',
+        serverPeerId: 'peer-server',
+        clientPubKeyHex: clientKeys.publicKeyHex,
+        clientAddressB58: clientKeys.addressB58,
+        derivationIndex: clientKeys.derivationIndex,
+        fundingAmountSats: BigInt.from(1000),
+        lockTimeDurationSeconds: 1,
+      );
+      aggregateRef.tell(requestCmd, sender: probe.ref);
+      await probe.expectMsgType<List<Event>>(timeout: Duration(seconds: 3));
+
+      // Wait past lockTime.
+      await Future.delayed(Duration(milliseconds: 1100));
+
+      final expireCmd = ExpireChannelCommand(
+        channelId: 'channel-expire-test',
+        observedBy: 'client',
+        settlementOrRefundTxId: 'refund-tx-abc',
+      );
+      aggregateRef.tell(expireCmd, sender: probe.ref);
+
+      final response =
+          await probe.expectMsgType<List<Event>>(timeout: Duration(seconds: 3));
+      expect(response.length, 1);
+      expect(response[0], isA<ChannelExpiredEvent>());
+
+      final event = response[0] as ChannelExpiredEvent;
+      expect(event.channelId, 'channel-expire-test');
+      expect(event.observedBy, 'client');
+      expect(event.settlementOrRefundTxId, 'refund-tx-abc');
+
+      // Re-issuing should fail (already terminated). No response is sent on
+      // failure, so just verify only the original ChannelExpiredEvent was
+      // persisted.
+      aggregateRef.tell(expireCmd, sender: probe.ref);
+      await Future.delayed(Duration(milliseconds: 200));
+
+      final events =
+          await eventStore.getEvents('PaymentChannel_channel-expire-test');
+      final expiredEvents =
+          events.whereType<ChannelExpiredEvent>().toList();
+      expect(expiredEvents.length, 1,
+          reason: 'ExpireChannelCommand must be idempotent once terminated');
+    });
   });
 }
 
@@ -471,6 +534,10 @@ void _registerChannelEvents() {
   EventRegistry.register(
     'RefundClaimedEvent',
     (map) => RefundClaimedEvent.fromMap(map),
+  );
+  EventRegistry.register(
+    'ChannelExpiredEvent',
+    (map) => ChannelExpiredEvent.fromMap(map),
   );
 }
 

@@ -133,6 +133,9 @@ class PaymentChannelManagerActor extends Actor {
         case CloseChannelMessage:
           await _handleCloseChannel(message as CloseChannelMessage);
           break;
+        case ExpireChannelMessage:
+          await _handleExpireChannel(message as ExpireChannelMessage);
+          break;
         case QueryChannelStateMessage:
           await _handleQueryChannelState(message as QueryChannelStateMessage);
           break;
@@ -1042,6 +1045,68 @@ class PaymentChannelManagerActor extends Actor {
     } catch (e) {
       
       originalSender?.tell(ChannelClosedResponse(
+        channelId: msg.channelId,
+        success: false,
+        error: e.toString(),
+      ));
+    }
+  }
+
+  /// Record that a channel has expired (lockTime elapsed).
+  ///
+  /// Issues [ExpireChannelCommand] to the channel aggregate so the read model
+  /// transitions to `expired` via the projection rather than direct Isar
+  /// mutation (closes overnode_v2-m4t).
+  Future<void> _handleExpireChannel(ExpireChannelMessage msg) async {
+    final originalSender = context.sender;
+
+    try {
+      // Spawn aggregate if it hasn't been hydrated this session (the expiry
+      // monitor runs against persisted channels that may not have an active
+      // aggregate actor yet).
+      final aggregateRef = await _getOrSpawnChannelAggregate(msg.channelId);
+
+      final expireCmd = ExpireChannelCommand(
+        channelId: msg.channelId,
+        observedBy: msg.observedBy,
+        settlementOrRefundTxId: msg.settlementOrRefundTxId,
+      );
+
+      // Register projection-applied awaiter BEFORE telling the aggregate
+      // (same pattern as _handleOpenChannel — closes the read-after-write race).
+      final applied = _channelProjection?.ask<dynamic>(
+        AwaitEventApplied(
+          (e) => e is ChannelExpiredEvent && e.channelId == msg.channelId,
+          timeout: const Duration(seconds: 10),
+        ),
+      );
+
+      final response = await aggregateRef.ask(expireCmd);
+
+      if (response is Map && response['success'] == false) {
+        throw StateError(response['error'] ?? 'Command failed');
+      }
+
+      if (response is! List || response.isEmpty) {
+        throw StateError('Command failed: no events emitted');
+      }
+
+      _broadcastEvents(response);
+
+      if (applied != null) {
+        final result = await applied;
+        if (result is AwaitFailed) {
+          _log.warning(
+              'ChannelProjection apply timeout for ${msg.channelId}: ${result.reason}');
+        }
+      }
+
+      originalSender?.tell(ChannelExpiredResponse(
+        channelId: msg.channelId,
+        success: true,
+      ));
+    } catch (e) {
+      originalSender?.tell(ChannelExpiredResponse(
         channelId: msg.channelId,
         success: false,
         error: e.toString(),

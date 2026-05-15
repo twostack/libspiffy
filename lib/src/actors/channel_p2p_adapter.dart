@@ -637,6 +637,15 @@ class ChannelP2PAdapter {
     ));
   }
 
+  /// Handle a request to record channel expiry (lockTime elapsed).
+  void handleExpireChannel(coord.ExpireChannelCommand command) {
+    _channelManager.tell(ExpireChannelMessage(
+      channelId: command.channelId,
+      observedBy: command.observedBy,
+      settlementOrRefundTxId: command.settlementOrRefundTxId,
+    ));
+  }
+
   /// Handle acceptance of an incoming channel request (we are server).
   void handleAcceptRequest(coord.AcceptChannelCommand command) {
     final pending = _pendingRequests.remove(command.channelId);

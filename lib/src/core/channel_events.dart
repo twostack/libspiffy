@@ -645,6 +645,61 @@ class ChannelClosedEvent extends ChannelEvent {
   }
 }
 
+/// Channel has expired (lockTime elapsed).
+///
+/// Emitted when a channel's lockTime has passed and the periodic expiry
+/// monitor records the expiry through the aggregate. Distinct from:
+/// - [ChannelClosedEvent]: cooperative close via settlement TX.
+/// - [RefundClaimedEvent]: client successfully reclaimed funding via refund TX.
+///
+/// This event captures the read-model transition to `expired` regardless of
+/// whether a refund/settlement TX was broadcast. The optional [settlementOrRefundTxId]
+/// records the broadcast txid if any (best-effort — the broadcast itself is
+/// handled out-of-band by the expiry manager).
+class ChannelExpiredEvent extends ChannelEvent {
+  /// Optional txid of refund (client) or settlement (server) TX broadcast
+  /// in response to the expiry. Null when nothing was broadcast (e.g., no
+  /// refund TX available, or server received no payments).
+  final String? settlementOrRefundTxId;
+
+  /// 'client' or 'server' — captures which side observed and recorded the expiry.
+  final String observedBy;
+
+  ChannelExpiredEvent({
+    required String channelId,
+    required this.observedBy,
+    this.settlementOrRefundTxId,
+    String? eventId,
+    DateTime? timestamp,
+    int? version,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          channelId: channelId,
+          eventId: eventId,
+          timestamp: timestamp,
+          version: version,
+          metadata: metadata,
+        );
+
+  @override
+  Map<String, dynamic> getChannelEventData() => {
+        'observedBy': observedBy,
+        'settlementOrRefundTxId': settlementOrRefundTxId,
+      };
+
+  factory ChannelExpiredEvent.fromMap(Map<String, dynamic> map) {
+    return ChannelExpiredEvent(
+      channelId: map['channelId'] as String,
+      observedBy: map['observedBy'] as String,
+      settlementOrRefundTxId: map['settlementOrRefundTxId'] as String?,
+      eventId: map['eventId'] as String?,
+      timestamp: ChannelEvent._parseTimestamp(map['timestamp']),
+      version: map['version'] as int?,
+      metadata: map['metadata'] as Map<String, dynamic>?,
+    );
+  }
+}
+
 /// Refund has been claimed after channel expiry
 class RefundClaimedEvent extends ChannelEvent {
   final String refundTxId;

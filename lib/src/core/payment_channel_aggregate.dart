@@ -149,6 +149,8 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState> {
       return _handleFinalizeClose(currentState, command);
     } else if (command is ClaimRefundCommand) {
       return _handleClaimRefund(currentState, command);
+    } else if (command is ExpireChannelCommand) {
+      return _handleExpireChannel(currentState, command);
     }
     throw ArgumentError('Unknown command type: ${command.runtimeType}');
   }
@@ -198,6 +200,9 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState> {
         break;
       case RefundClaimedEvent:
         _applyRefundClaimed(event as RefundClaimedEvent);
+        break;
+      case ChannelExpiredEvent:
+        _applyChannelExpired(event as ChannelExpiredEvent);
         break;
       default:
         throw ArgumentError('Unknown event type: ${event.runtimeType}');
@@ -507,6 +512,32 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState> {
     ];
   }
 
+  List<Event> _handleExpireChannel(
+    ChannelState currentState,
+    ExpireChannelCommand cmd,
+  ) {
+    // Business rule: Channel must be past its lockTime.
+    if (!currentState.isExpired) {
+      throw StateError('Channel not yet past lockTime');
+    }
+
+    // Business rule: Don't re-emit expiry for already-terminated channels.
+    if (currentState.status == ChannelStatus.expired ||
+        currentState.status == ChannelStatus.closed ||
+        currentState.status == ChannelStatus.rejected) {
+      throw StateError('Channel already terminated (status=${currentState.status.name})');
+    }
+
+    return [
+      ChannelExpiredEvent(
+        channelId: cmd.channelId,
+        observedBy: cmd.observedBy,
+        settlementOrRefundTxId: cmd.settlementOrRefundTxId,
+        version: currentState.version + 1,
+      ),
+    ];
+  }
+
   List<Event> _handleClaimRefund(
     ChannelState currentState,
     ClaimRefundCommand cmd,
@@ -662,6 +693,13 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState> {
   }
 
   void _applyRefundClaimed(RefundClaimedEvent event) {
+    currentState.status = ChannelStatus.expired;
+    currentState.closedAt = event.timestamp;
+    currentState.version = event.version;
+    currentState.lastModified = event.timestamp;
+  }
+
+  void _applyChannelExpired(ChannelExpiredEvent event) {
     currentState.status = ChannelStatus.expired;
     currentState.closedAt = event.timestamp;
     currentState.version = event.version;

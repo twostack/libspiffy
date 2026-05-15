@@ -617,6 +617,33 @@ class CloseChannelCommand implements Message {
   DateTime get timestamp => DateTime.now();
 }
 
+/// Record that a payment channel has expired (lockTime elapsed).
+///
+/// Issued by the expiry monitor on either side. Routes to PCMA via the
+/// channel adapter and ultimately emits [ChannelExpiredEvent] through the
+/// aggregate so the read model picks up the transition. Distinct from
+/// [CloseChannelCommand] which is the cooperative-close pathway.
+class ExpireChannelCommand implements Message {
+  final String channelId;
+  final String observedBy; // 'client' or 'server'
+  final String? settlementOrRefundTxId;
+
+  ExpireChannelCommand({
+    required this.channelId,
+    required this.observedBy,
+    this.settlementOrRefundTxId,
+  });
+
+  @override
+  String get correlationId => 'expire-channel-$channelId';
+  @override
+  Map<String, dynamic> get metadata => {'channelId': channelId};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
 /// Accept an incoming channel request
 class AcceptChannelCommand implements Message {
   final String channelId;

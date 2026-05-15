@@ -32,17 +32,31 @@ class PaymentChannelManagerActor extends Actor {
   final CryptoService _cryptoService;
   final dartsv.NetworkType _networkType;
   late final PaymentChannelBuilder _channelBuilder;
-  
+
   /// Optional callback to broadcast channel events to external subscribers
-  /// (e.g., P2P adapters that need to react to channel state changes)
+  /// (e.g., P2P adapters that need to react to channel state changes).
+  ///
+  /// In production (via LibSpiffyActorSystem), this is left null: the
+  /// channel-event broadcaster is fed by the channel projection's
+  /// `appliedEvents` stream, so consumers see events only after the read
+  /// model has been updated. Tests may still pass a broadcaster directly
+  /// if they don't run a projection.
   final void Function(ChannelEvent)? _eventBroadcaster;
-  
+
+  /// Optional reference to the channel ProjectionActor. When supplied,
+  /// command handlers register `AwaitEventApplied` against this projection
+  /// before responding to the original sender, so callers that synchronously
+  /// query the read model after the response see the updated row. Without
+  /// this, the response can race the projection's async Isar write
+  /// (overnode_v2-8gh).
+  final ActorRef? _channelProjection;
+
   /// Map of active channel aggregates: channelId -> ActorRef
   final Map<String, ActorRef> _channelAggregates = {};
-  
+
   /// Track pending refund signing requests: channelId -> context
   final Map<String, ({ActorRef? sender, String refundTxHex, int lockTimeUnix})> _pendingRefundSignatures = {};
-  
+
   /// Track pending payment signing requests: correlationId -> context
   final Map<String, _PaymentSignatureContext> _pendingPaymentSignatures = {};
 
@@ -52,11 +66,13 @@ class PaymentChannelManagerActor extends Actor {
     required CryptoService cryptoService,
     dartsv.NetworkType networkType = dartsv.NetworkType.TEST,
     void Function(ChannelEvent)? eventBroadcaster,
+    ActorRef? channelProjection,
   })  : _walletManager = walletManager,
         _eventStore = eventStore,
         _cryptoService = cryptoService,
         _networkType = networkType,
-        _eventBroadcaster = eventBroadcaster {
+        _eventBroadcaster = eventBroadcaster,
+        _channelProjection = channelProjection {
     _channelBuilder = PaymentChannelBuilder(cryptoService: cryptoService);
   }
 
@@ -700,44 +716,71 @@ class PaymentChannelManagerActor extends Actor {
 
   /// Finalize channel opening after funding TX is broadcast
   Future<void> _handleOpenChannel(OpenChannelMessage msg) async {
-    
+
     // Capture sender immediately (context.sender changes with each new message)
     final originalSender = context.sender;
-    
+
     try {
       final aggregateRef = _channelAggregates[msg.channelId];
       if (aggregateRef == null) {
         throw StateError('Channel aggregate not found: ${msg.channelId}');
       }
-      
+
       final openCmd = OpenChannelCommand(
         channelId: msg.channelId,
         fundingTxId: msg.fundingTxId,
         fundingOutputIndex: msg.fundingOutputIndex,
         fundingTxHex: msg.fundingTxHex,
       );
-      
+
+      // Register projection-applied awaiter BEFORE telling the aggregate.
+      // Same pattern as PaymentCoordinatorActor._recordOutgoingTransaction:
+      // if the projection processes the event very fast, registering after
+      // would miss the resolution window.
+      final applied = _channelProjection?.ask<dynamic>(
+        AwaitEventApplied(
+          (e) => e is ChannelOpenedEvent && e.channelId == msg.channelId,
+          timeout: const Duration(seconds: 10),
+        ),
+      );
+
       // Send command and wait for response
       final response = await aggregateRef.ask(openCmd);
-      
+
       // Check if command failed (aggregate sends Map with error on failure)
       if (response is Map && response['success'] == false) {
         throw StateError(response['error'] ?? 'Command failed');
       }
-      
+
       // Check if command succeeded (aggregate sends List<Event> on success)
       if (response is! List || response.isEmpty) {
         throw StateError('Command failed: no events emitted');
       }
-      
-      // Broadcast events to external subscribers (P2P adapter)
+
+      // Broadcast events to external subscribers (P2P adapter).
+      // In production wiring this is a no-op (eventBroadcaster is null —
+      // the channel-event stream is fed from the projection's appliedEvents).
+      // Tests that supply their own broadcaster still get events here.
       _broadcastEvents(response);
-      
+
+      // Wait for the channel projection to apply the ChannelOpenedEvent
+      // before responding, so a caller that synchronously queries the
+      // read model after receiving ChannelOpenedResponse sees the updated
+      // row (closes overnode_v2-8gh). If no projection was wired (legacy
+      // test setup), this is skipped.
+      if (applied != null) {
+        final result = await applied;
+        if (result is AwaitFailed) {
+          _log.warning(
+              'ChannelProjection apply timeout for ${msg.channelId}: ${result.reason}');
+        }
+      }
+
       originalSender?.tell(ChannelOpenedResponse(
         channelId: msg.channelId,
         success: true,
       ));
-      
+
     } catch (e) {
       
       originalSender?.tell(ChannelOpenedResponse(

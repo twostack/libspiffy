@@ -81,6 +81,14 @@ class LibSpiffyActorSystem {
   ActorRef? _walletProjectionRef;
   ActorRef? _invoiceProjectionRef;
   ActorRef? _channelProjectionRef;
+
+  /// Direct reference to the channel ProjectionActor instance (in addition
+  /// to the ActorRef above). Needed because subscribing to
+  /// [ProjectionActor.appliedEvents] requires the instance — the actor ref
+  /// only exposes message-based operations. Used by the channel-event
+  /// broadcaster wiring to re-broadcast post-applied events.
+  ProjectionActor? _channelProjectionActor;
+  StreamSubscription<ChannelEvent>? _channelProjectionAppliedSub;
   
   // Actor references
   ActorRef? _walletManager;
@@ -628,8 +636,31 @@ class LibSpiffyActorSystem {
     );
     _channelProjectionRef = await _actorSystem.spawn(
       'projection-channel-projection',
-      () => ProjectionActor(_channelProjection!, _eventStream, isar: isar),
+      () {
+        _channelProjectionActor =
+            ProjectionActor(_channelProjection!, _eventStream, isar: isar);
+        return _channelProjectionActor!;
+      },
     );
+
+    // Re-broadcast the channel projection's applied-events stream as the
+    // sole source of truth for channel-event consumers (ChannelP2PAdapter
+    // and external listeners via the `channelEvents` getter). This closes
+    // the projection-race issue (overnode_v2-8gh): consumers that fire on
+    // these events were previously racing the projection's async Isar
+    // write because the broadcaster was fed directly from
+    // PaymentChannelManagerActor's `_eventBroadcaster` callback. Now the
+    // events are only re-broadcast AFTER `ChannelProjection.handle()`
+    // completes, so any downstream read of `paymentChannelEntitys` is
+    // guaranteed to see the row.
+    _channelProjectionAppliedSub = _channelProjectionActor!.appliedEvents
+        .where((e) => e is ChannelEvent)
+        .cast<ChannelEvent>()
+        .listen((event) {
+      if (!_channelEventBroadcaster.isClosed) {
+        _channelEventBroadcaster.add(event);
+      }
+    });
   }
 
   /// Spawn all coordination actors
@@ -725,12 +756,20 @@ class LibSpiffyActorSystem {
     // Wire up Benford coordinator reference in WalletManager
     _walletManager!.tell(SetBenfordCoordinatorMessage(_benfordCoordinator!));
     
-    // Spawn PaymentChannelManagerActor for payment channel operations
-    _channelManager = await _actorSystem.spawn('payment-channel-manager', () => PaymentChannelManagerActor(
+    // Spawn PaymentChannelManagerActor for payment channel operations.
+    //
+    // Note: `eventBroadcaster` is intentionally NOT supplied. The channel-event
+    // broadcaster is now fed exclusively by the channel projection's
+    // `appliedEvents` stream (see _channelProjectionAppliedSub above), so
+    // downstream consumers see events only after the projection's Isar write
+    // has completed. Wiring PCMA's pre-projection callback in here would
+    // double-emit and re-introduce the projection-race window.
+    _channelManager =
+        await _actorSystem.spawn('payment-channel-manager', () => PaymentChannelManagerActor(
       walletManager: _walletManager!,
       eventStore: _eventStore,
       cryptoService: _cryptoService,
-      eventBroadcaster: broadcastChannelEvent,
+      channelProjection: _channelProjectionRef!,
     ));
     
     // Spawn ImportActor if blockchain data source is provided
@@ -1091,10 +1130,17 @@ class LibSpiffyActorSystem {
 
   Stream<ChannelEvent> get channelEvents => _channelEventBroadcaster.stream;
 
-  /// Broadcast a channel event to external subscribers
-  /// 
-  /// This should be called by PaymentChannelManagerActor when channel events
-  /// are emitted, allowing external components (like P2P adapters) to react.
+  /// Broadcast a channel event to external subscribers.
+  ///
+  /// Deprecated: the channel-event broadcaster is now fed exclusively by the
+  /// channel projection's `appliedEvents` stream (see the `_channelProjectionAppliedSub`
+  /// wiring in `_initializeProjections`). Calling this method out-of-band
+  /// would re-introduce the projection-race window (overnode_v2-8gh) by
+  /// surfacing channel events to consumers before the read model has been
+  /// updated. Retained for binary compatibility with external callers; should
+  /// not be invoked by libspiffy internals.
+  @Deprecated('Channel events are now broadcast post-projection-apply. '
+      'Do not call this directly from internal code.')
   void broadcastChannelEvent(ChannelEvent event) {
     _channelEventBroadcaster.add(event);
   }
@@ -1370,7 +1416,9 @@ class LibSpiffyActorSystem {
           break;
       }
       
-      // 5. Close event broadcasters
+      // 5. Close event broadcasters and projection re-broadcast subscription
+      await _channelProjectionAppliedSub?.cancel();
+      _channelProjectionAppliedSub = null;
       await _walletEventBroadcaster.close();
       await _channelEventBroadcaster.close();
       

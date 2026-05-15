@@ -33,7 +33,7 @@ dependencies:
   duraq: ^1.0.0
 
   # Event sourcing
-  eventador: ^2.1.0
+  eventador: ^2.2.0
 
   # SPV and P2P networking
   spiffynode: ^1.1.0
@@ -52,3 +52,9 @@ dev_dependencies:
   dactor_test: ^1.0.0
   # Token operations (dev-only: for integration tests, not a runtime dependency)
   tstokenlib: ^1.4.0
+
+# Local path override for eventador 2.2.0 (not yet on pub.dev).
+# Revert when eventador 2.2.0 is published.
+dependency_overrides:
+  eventador:
+    path: ../eventador

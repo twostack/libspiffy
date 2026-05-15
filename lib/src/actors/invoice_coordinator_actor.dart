@@ -6,6 +6,7 @@ import 'package:uuid/uuid.dart';
 import '../storage/read_model_storage.dart';
 import '../core/invoice_aggregate.dart';
 import '../core/invoice_commands.dart';
+import '../core/invoice_events.dart';
 import '../core/wallet_commands.dart';
 import '../models/invoice_output_spec.dart';
 import 'invoice_messages.dart';
@@ -26,13 +27,23 @@ class InvoiceCoordinatorActor extends Actor {
   final ActorRef _walletManager;
   final ReadModelStorage _storage;
   final EventStore _eventStore;
-  
+
+  /// Optional reference to the invoice ProjectionActor. When supplied,
+  /// command handlers register `AwaitEventApplied` against this projection
+  /// before responding to the original sender, so callers that
+  /// synchronously query the read model after the response (via
+  /// `CheckInvoiceMessage` → `_storage.getInvoice`) see the row.
+  /// Without this, the response races the projection's async write —
+  /// see overnode_v2-dmx.
+  final ActorRef? _invoiceProjection;
+
   // Track spawned aggregate actors (invoiceId → ActorRef)
   final Map<String, ActorRef> _invoiceAggregates = {};
-  
+
   // Track pending address generation requests
   final Map<String, _PendingInvoiceRequest> _pendingRequests = {};
-  
+
+
   final Uuid _uuid = const Uuid();
   Timer? _expirationTimer;
 
@@ -40,9 +51,11 @@ class InvoiceCoordinatorActor extends Actor {
     required ActorRef walletManager,
     required ReadModelStorage storage,
     required EventStore eventStore,
+    ActorRef? invoiceProjection,
   })  : _walletManager = walletManager,
         _storage = storage,
-        _eventStore = eventStore;
+        _eventStore = eventStore,
+        _invoiceProjection = invoiceProjection;
 
   @override
   void preStart() {
@@ -56,11 +69,11 @@ class InvoiceCoordinatorActor extends Actor {
         case CreateInvoiceMessage:
           await _handleCreateInvoice(message as CreateInvoiceMessage);
           break;
-          
+
         case CheckInvoiceMessage:
           await _handleCheckInvoice(message as CheckInvoiceMessage);
           break;
-          
+
         case MarkInvoicePaidMessage:
           await _handleMarkInvoicePaid(message as MarkInvoicePaidMessage);
           break;
@@ -220,6 +233,17 @@ class InvoiceCoordinatorActor extends Actor {
           .toList();
       final totalAmount = outputs.fold(BigInt.zero, (sum, o) => sum + o.amount);
 
+      // Register projection-applied awaiter BEFORE telling the aggregate.
+      // Resolves only after the InvoiceProjection has written the row to
+      // _storage, so callers that synchronously query via CheckInvoiceMessage
+      // after receiving InvoiceCreatedMessage see the row.
+      final applied = _invoiceProjection?.ask<dynamic>(
+        AwaitEventApplied(
+          (e) => e is InvoiceCreatedEvent && e.invoiceId == invoiceId,
+          timeout: const Duration(seconds: 10),
+        ),
+      );
+
       // Send CreateInvoiceCommand to the aggregate
       final command = CreateInvoiceCommand(
         invoiceId: invoiceId,
@@ -233,6 +257,17 @@ class InvoiceCoordinatorActor extends Actor {
       );
 
       aggregateActor.tell(command, sender: context.self);
+
+      // Wait for the projection to apply InvoiceCreatedEvent before
+      // responding. If no projection was wired (legacy test setup), this
+      // is skipped — same back-compat shape as PaymentChannelManagerActor.
+      if (applied != null) {
+        final result = await applied;
+        if (result is AwaitFailed) {
+          _log.warning(
+              'InvoiceProjection apply timeout for $invoiceId: ${result.reason}');
+        }
+      }
 
       // Send success response
       if (originalSender != null) {
@@ -332,6 +367,14 @@ class InvoiceCoordinatorActor extends Actor {
           .map((o) => o.address)
           .toList();
 
+      // Register projection-applied awaiter BEFORE telling the aggregate.
+      final applied = _invoiceProjection?.ask<dynamic>(
+        AwaitEventApplied(
+          (e) => e is InvoiceCreatedEvent && e.invoiceId == invoiceId,
+          timeout: const Duration(seconds: 10),
+        ),
+      );
+
       // Send CreateInvoiceCommand to the aggregate
       final command = CreateInvoiceCommand(
         invoiceId: invoiceId,
@@ -345,6 +388,15 @@ class InvoiceCoordinatorActor extends Actor {
       );
 
       aggregateActor.tell(command, sender: context.self);
+
+      // Wait for the projection to apply InvoiceCreatedEvent before responding.
+      if (applied != null) {
+        final result = await applied;
+        if (result is AwaitFailed) {
+          _log.warning(
+              'InvoiceProjection apply timeout for $invoiceId: ${result.reason}');
+        }
+      }
 
       // Send success response to original sender
       if (pendingRequest.originalSender != null) {
@@ -457,10 +509,11 @@ class InvoiceCoordinatorActor extends Actor {
 
   /// Handle mark invoice paid - Route to aggregate
   Future<void> _handleMarkInvoicePaid(MarkInvoicePaidMessage msg) async {
-    
+    final originalSender = context.sender;
+
     // Get or spawn the aggregate
     ActorRef? aggregateActor = _invoiceAggregates[msg.invoiceId];
-    
+
     if (aggregateActor == null) {
       // Aggregate not in memory, spawn it (it will recover from event store)
       try {
@@ -473,12 +526,12 @@ class InvoiceCoordinatorActor extends Actor {
           ),
         );
         _invoiceAggregates[msg.invoiceId] = aggregateActor;
-        
+
         // Wait for recovery to complete before sending commands
         // This prevents commands from being dropped during recovery
         await Future.delayed(Duration(milliseconds: 200));
       } catch (e) {
-        context.sender?.tell(InvoiceStatusMessage(
+        originalSender?.tell(InvoiceStatusMessage(
           invoiceId: msg.invoiceId,
           status: InvoiceStatus.pending,
           statusMessage: 'Failed to load invoice: $e',
@@ -486,9 +539,7 @@ class InvoiceCoordinatorActor extends Actor {
         return;
       }
     }
-    
-    // Send MarkInvoicePaidCommand to aggregate
-    // The aggregate will respond directly to the original sender via onCommandProcessed
+
     final command = MarkInvoicePaidCommand(
       invoiceId: msg.invoiceId,
       txid: msg.txid,
@@ -497,7 +548,56 @@ class InvoiceCoordinatorActor extends Actor {
       paidAt: msg.paidAt,
     );
 
-    aggregateActor.tell(command, sender: context.sender);
+    if (_invoiceProjection == null) {
+      // Legacy path: aggregate replies directly to original sender.
+      // No projection wired → no race to coordinate against.
+      aggregateActor.tell(command, sender: originalSender);
+      return;
+    }
+
+    // Register projection-applied awaiter BEFORE telling the aggregate.
+    // We can't await the aggregate's own InvoiceStatusMessage reply here
+    // because that would deadlock (the coordinator's mailbox is blocked
+    // inside this handler; the aggregate's reply can only be processed
+    // once this handler returns). Instead we await on the InvoicePaidEvent
+    // matched by the projection — same data, post-applied, no deadlock.
+    final applied = _invoiceProjection!.ask<dynamic>(
+      AwaitEventApplied(
+        (e) => e is InvoicePaidEvent && e.invoiceId == msg.invoiceId,
+        timeout: const Duration(seconds: 10),
+      ),
+    );
+
+    // Tell aggregate with a null/no sender so its onCommandProcessed reply
+    // is dropped (we synthesise our own from the matched event below).
+    // We intentionally do not pass `sender: originalSender` either: the
+    // aggregate would race ahead and reply before the projection has
+    // applied, re-introducing the bug we're fixing.
+    aggregateActor.tell(command);
+
+    final result = await applied;
+    if (result is AwaitFailed) {
+      _log.warning(
+          'InvoiceProjection apply timeout for ${msg.invoiceId}: ${result.reason}');
+      originalSender?.tell(InvoiceStatusMessage(
+        invoiceId: msg.invoiceId,
+        status: InvoiceStatus.pending,
+        statusMessage: 'Mark-paid projection timeout: ${result.reason}',
+      ));
+      return;
+    }
+
+    // Construct the response from the matched event — same fields the
+    // aggregate's onCommandProcessed would have populated.
+    final paidEvent = (result as EventAppliedResponse).matchedEvent
+        as InvoicePaidEvent;
+    originalSender?.tell(InvoiceStatusMessage(
+      invoiceId: paidEvent.invoiceId,
+      status: InvoiceStatus.paid,
+      paidAt: paidEvent.paidAt,
+      txid: paidEvent.txid,
+      statusMessage: 'Invoice marked as paid',
+    ));
   }
 
   /// Handle cancel invoice - Route to aggregate

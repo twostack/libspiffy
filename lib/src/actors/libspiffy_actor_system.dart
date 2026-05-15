@@ -673,12 +673,16 @@ class LibSpiffyActorSystem {
       secureStorage: _secureStorage,
     ));
     
-    // Spawn InvoiceCoordinatorActor (needed for invoice-based payments)
-    // Coordinator routes commands to InvoiceAggregate instances
+    // Spawn InvoiceCoordinatorActor (needed for invoice-based payments).
+    // Coordinator routes commands to InvoiceAggregate instances and uses
+    // _invoiceProjectionRef to await projection apply before responding,
+    // so callers querying via CheckInvoiceMessage immediately after see the
+    // updated read model (closes overnode_v2-dmx).
     _invoiceCoordinator = await _actorSystem.spawn('invoice-coordinator', () => InvoiceCoordinatorActor(
       walletManager: _walletManager!,
       storage: _walletStorage,
       eventStore: _eventStore,
+      invoiceProjection: _invoiceProjectionRef!,
     ));
     
     // Wire up InvoiceCoordinator reference in WalletManager

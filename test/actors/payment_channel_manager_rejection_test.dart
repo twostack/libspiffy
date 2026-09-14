@@ -16,6 +16,7 @@ import 'dart:async';
 import 'package:dactor/dactor.dart';
 import 'package:dactor_test/dactor_test.dart';
 import 'package:dartsv/dartsv.dart' show NetworkType;
+import 'package:eventador/eventador.dart' show Event;
 import 'package:test/test.dart';
 
 import 'package:libspiffy/src/actors/channel_p2p_adapter.dart';
@@ -47,6 +48,7 @@ void main() {
   late _SigningWalletManager walletStub;
   late List<ChannelEvent> broadcast;
   late StreamController<ChannelEvent> channelEvents;
+  late _ReadCountingEventStore eventStore;
 
   late String clientPubKeyHex;
   late String clientAddressB58;
@@ -81,7 +83,7 @@ void main() {
         await actorSystem.spawn('wallet-manager', () => walletStub);
     manager = PaymentChannelManagerActor(
       walletManager: walletRef,
-      eventStore: InMemoryEventStore(),
+      eventStore: eventStore = _ReadCountingEventStore(),
       cryptoService: cryptoService,
       networkType: NetworkType.TEST,
       eventBroadcaster: (event) {
@@ -265,6 +267,27 @@ void main() {
       await expectState('open', sequence: 1, client: 99000, server: 1000);
     });
 
+    test('a rejected command costs no journal recovery: the same channel '
+        'aggregate serves the next command (libspiffy-201)', () async {
+      await openServerChannel();
+      final aggregate = actorSystem.getActor('channel-$_channelId');
+      final recoveries = eventStore.reads('PaymentChannel_$_channelId');
+      expect(recoveries, equals(1));
+
+      final rejected =
+          await acknowledge(sequence: 1, client: 100000, server: 1000);
+      expect(rejected.success, isFalse);
+      final valid = await acknowledge(sequence: 1, client: 99000, server: 1000);
+      expect(valid.success, isTrue, reason: valid.error);
+
+      // 14d1b52 stopped the aggregate on every rejection and recovered a new
+      // one from the journal for the next command.
+      expect(eventStore.reads('PaymentChannel_$_channelId'), equals(recoveries),
+          reason: 'a rejection must not trigger a journal recovery');
+      expect(identical(actorSystem.getActor('channel-$_channelId'), aggregate),
+          isTrue);
+    });
+
     test('client: recording a payment the aggregate rejects fails, and the '
         'channel still closes', () async {
       // A lock time of "now": the channel is expired as soon as it exists.
@@ -385,6 +408,9 @@ void main() {
       expect(initiated.success, isFalse);
       expect(initiated.error, contains('Funding amount must be positive'));
       expect(broadcast, isEmpty);
+      // A rejected aggregate keeps running (libspiffy-201); one that holds no
+      // channel is not kept, or every rejected request would leave an actor.
+      expect(actorSystem.getActor('channel-$_channelId'), isNull);
 
       final paid = await managerRef.ask<PaymentRecordedResponse>(
         RecordPaymentMessage(
@@ -532,5 +558,20 @@ class _SigningWalletManager extends Actor {
         success: true,
       ));
     }
+  }
+}
+
+/// In-memory journal that counts event reads (one per aggregate recovery).
+class _ReadCountingEventStore extends InMemoryEventStore {
+  final Map<String, int> _reads = {};
+
+  int reads(String persistenceId) => _reads[persistenceId] ?? 0;
+
+  @override
+  Future<List<Event>> getEvents(String persistenceId,
+      {int fromSequence = 0, int? toSequence}) {
+    _reads[persistenceId] = reads(persistenceId) + 1;
+    return super.getEvents(persistenceId,
+        fromSequence: fromSequence, toSequence: toSequence);
   }
 }

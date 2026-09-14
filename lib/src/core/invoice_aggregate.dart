@@ -5,6 +5,7 @@ import '../models/invoice_output_spec.dart';
 import '../actors/invoice_messages.dart';
 import 'invoice_commands.dart';
 import 'invoice_events.dart';
+import 'aggregate_command_failures.dart';
 
 /// Invoice aggregate root implementing event sourcing
 ///
@@ -12,7 +13,8 @@ import 'invoice_events.dart';
 /// pending → paid/expired/cancelled
 ///
 /// Follows Eventador's AggregateRoot pattern with imperative state management.
-class InvoiceAggregate extends AggregateRoot<InvoiceState> {
+class InvoiceAggregate extends AggregateRoot<InvoiceState>
+    with CommandFailureContainment<InvoiceState> {
   // Capture sender at start of message processing for use in onCommandProcessed
   final Map<String, ActorRef> _capturedSenders = {};
 
@@ -182,7 +184,10 @@ class InvoiceAggregate extends AggregateRoot<InvoiceState> {
 
     if (!_isInActorSystem()) return;
 
-    final sender = _capturedSenders[command.commandId];
+    // Removed on first use: eventador calls onCommandFailure twice for one
+    // failed command (AggregateRoot and PersistentActor), and the caller
+    // got every failure reply twice.
+    final sender = _capturedSenders.remove(command.commandId);
     if (sender == null) return;
 
     final invoiceId = command is InvoiceCommand ? command.invoiceId : aggregateId;

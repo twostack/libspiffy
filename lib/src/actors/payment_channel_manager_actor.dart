@@ -183,10 +183,11 @@ class PaymentChannelManagerActor extends Actor {
   /// M10). Every command goes through here, so a rejection is never forwarded
   /// to a caller as success or broadcast (libspiffy-lhd).
   ///
-  /// A rejection also ends the aggregate actor: eventador rethrows the
-  /// handler's error after replying and dactor stops the unsupervised actor.
-  /// The cached ref is therefore dropped here, and the next operation on the
-  /// channel recovers a fresh aggregate from the journal.
+  /// A rejection leaves the aggregate running with its state untouched
+  /// (libspiffy-201), so an existing channel keeps its aggregate and a bad
+  /// command costs no journal recovery. An aggregate that rejected the
+  /// command creating its channel holds no channel and is forgotten, so the
+  /// channel keeps reading as not found.
   Future<List<dynamic>> _askAggregate(
     String channelId,
     ActorRef aggregateRef,
@@ -194,7 +195,7 @@ class PaymentChannelManagerActor extends Actor {
   ) async {
     final response = await aggregateRef.ask(command);
     if (response is Map && response['success'] == false) {
-      await _dropChannelAggregate(channelId, aggregateRef);
+      await _forgetAggregateWithoutJournal(channelId, aggregateRef);
       throw StateError(response['error']?.toString() ?? 'Command failed');
     }
     if (response is! List || response.isEmpty) {
@@ -203,10 +204,14 @@ class PaymentChannelManagerActor extends Actor {
     return response;
   }
 
-  /// Forgets [aggregateRef] for [channelId] and makes sure it is stopped, so
-  /// the channel's next operation spawns (and recovers) a new aggregate.
-  Future<void> _dropChannelAggregate(
+  /// Forgets and stops [aggregateRef] when [channelId] has no journal (the
+  /// command that would have created the channel was rejected). An aggregate
+  /// of an existing channel is kept.
+  Future<void> _forgetAggregateWithoutJournal(
       String channelId, ActorRef aggregateRef) async {
+    if (await _eventStore.getHighestSequenceNumber('PaymentChannel_$channelId') > 0) {
+      return;
+    }
     if (identical(_channelAggregates[channelId], aggregateRef)) {
       _channelAggregates.remove(channelId);
     }
@@ -1287,7 +1292,7 @@ class PaymentChannelManagerActor extends Actor {
   }
 
   /// Get or spawn a channel aggregate actor. A cached aggregate that is no
-  /// longer alive (a rejected command stops it) is replaced.
+  /// longer alive (it stops itself when a journal write fails) is replaced.
   Future<ActorRef> _getOrSpawnChannelAggregate(String channelId) async {
     final cached = _channelAggregates[channelId];
     if (cached != null) {

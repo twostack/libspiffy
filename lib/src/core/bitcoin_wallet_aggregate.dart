@@ -18,13 +18,15 @@ import '../actors/wallet_messages.dart';
 import 'wallet_commands.dart';
 import 'wallet_events.dart';
 import '../utils/network_name.dart';
+import 'aggregate_command_failures.dart';
 
 /// Bitcoin wallet aggregate root implementing event sourcing
 /// 
 /// This aggregate manages all wallet state changes through events,
 /// ensuring consistency and providing full audit trail for all operations.
 /// Follows the Eventador AggregateRoot pattern with functional state management.
-class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
+class BitcoinWalletAggregate extends AggregateRoot<WalletState>
+    with CommandFailureContainment<WalletState> {
   final _log = Logger('BitcoinWalletAggregate');
   final CryptoService cryptoService;
   final SecureStorage secureStorage;

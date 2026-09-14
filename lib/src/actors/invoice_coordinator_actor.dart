@@ -562,29 +562,16 @@ class InvoiceCoordinatorActor extends Actor {
   Future<void> _handleMarkInvoicePaid(MarkInvoicePaidMessage msg) async {
     final originalSender = context.sender;
 
-    // Get or spawn the aggregate
-    ActorRef? aggregateActor = _invoiceAggregates[msg.invoiceId];
-
-    if (aggregateActor == null) {
-      // Aggregate not in memory, spawn it (it will recover from event store)
-      try {
-        aggregateActor = await context.system.spawn(
-          'invoice-aggregate-${msg.invoiceId}',
-          () => InvoiceAggregate(
-            aggregateId: msg.invoiceId,
-            aggregateType: 'Invoice',
-            eventStore: _eventStore,
-          ),
-        );
-        _invoiceAggregates[msg.invoiceId] = aggregateActor;
-      } catch (e) {
-        originalSender?.tell(InvoiceStatusMessage(
-          invoiceId: msg.invoiceId,
-          status: InvoiceStatus.pending,
-          statusMessage: 'Failed to load invoice: $e',
-        ));
-        return;
-      }
+    final ActorRef aggregateActor;
+    try {
+      aggregateActor = await _invoiceAggregate(msg.invoiceId);
+    } catch (e) {
+      originalSender?.tell(InvoiceStatusMessage(
+        invoiceId: msg.invoiceId,
+        status: InvoiceStatus.pending,
+        statusMessage: 'Failed to load invoice: $e',
+      ));
+      return;
     }
 
     final command = MarkInvoicePaidCommand(
@@ -653,28 +640,16 @@ class InvoiceCoordinatorActor extends Actor {
   /// Handle cancel invoice - Route to aggregate
   Future<void> _handleCancelInvoice(CancelInvoiceMessage msg) async {
     
-    // Get or spawn the aggregate
-    ActorRef? aggregateActor = _invoiceAggregates[msg.invoiceId];
-    
-    if (aggregateActor == null) {
-      try {
-        aggregateActor = await context.system.spawn(
-          'invoice-aggregate-${msg.invoiceId}',
-          () => InvoiceAggregate(
-            aggregateId: msg.invoiceId,
-            aggregateType: 'Invoice',
-            eventStore: _eventStore,
-          ),
-        );
-        _invoiceAggregates[msg.invoiceId] = aggregateActor;
-      } catch (e) {
-        context.sender?.tell(InvoiceStatusMessage(
-          invoiceId: msg.invoiceId,
-          status: InvoiceStatus.pending,
-          statusMessage: 'Failed to load invoice: $e',
-        ));
-        return;
-      }
+    final ActorRef aggregateActor;
+    try {
+      aggregateActor = await _invoiceAggregate(msg.invoiceId);
+    } catch (e) {
+      context.sender?.tell(InvoiceStatusMessage(
+        invoiceId: msg.invoiceId,
+        status: InvoiceStatus.pending,
+        statusMessage: 'Failed to load invoice: $e',
+      ));
+      return;
     }
     
     // Send CancelInvoiceCommand to aggregate
@@ -742,23 +717,11 @@ class InvoiceCoordinatorActor extends Actor {
   Future<void> _expireInvoices(List<String> invoiceIds) async {
     try {
       for (final invoiceId in invoiceIds) {
-        // Get or spawn the aggregate
-        ActorRef? aggregateActor = _invoiceAggregates[invoiceId];
-
-        if (aggregateActor == null) {
-          try {
-            aggregateActor = await context.system.spawn(
-              'invoice-aggregate-$invoiceId',
-              () => InvoiceAggregate(
-                aggregateId: invoiceId,
-                aggregateType: 'Invoice',
-                eventStore: _eventStore,
-              ),
-            );
-            _invoiceAggregates[invoiceId] = aggregateActor;
-          } catch (e) {
-            continue;
-          }
+        final ActorRef aggregateActor;
+        try {
+          aggregateActor = await _invoiceAggregate(invoiceId);
+        } catch (e) {
+          continue;
         }
 
         // Send ExpireInvoiceCommand
@@ -770,6 +733,33 @@ class InvoiceCoordinatorActor extends Actor {
     } finally {
       _expirySweepInFlight = false;
     }
+  }
+
+  /// The loaded aggregate of an existing invoice, or one recovered from its
+  /// journal now. An aggregate stops itself when a journal write fails (a
+  /// rejected command leaves it running, libspiffy-201), so a cached ref that
+  /// is no longer alive is replaced rather than told commands that would go
+  /// to dead letters. An invoice with no journal is a [StateError]: no
+  /// aggregate is spawned (and kept running) for an unknown id.
+  Future<ActorRef> _invoiceAggregate(String invoiceId) async {
+    final cached = _invoiceAggregates[invoiceId];
+    if (cached != null) {
+      if (cached.isAlive) return cached;
+      _invoiceAggregates.remove(invoiceId);
+    }
+    if (await _eventStore.getHighestSequenceNumber('Invoice_$invoiceId') == 0) {
+      throw StateError('Invoice $invoiceId not found');
+    }
+    final aggregateActor = await context.system.spawn(
+      'invoice-aggregate-$invoiceId',
+      () => InvoiceAggregate(
+        aggregateId: invoiceId,
+        aggregateType: 'Invoice',
+        eventStore: _eventStore,
+      ),
+    );
+    _invoiceAggregates[invoiceId] = aggregateActor;
+    return aggregateActor;
   }
 
   /// Build the query reply for a stored invoice read model.

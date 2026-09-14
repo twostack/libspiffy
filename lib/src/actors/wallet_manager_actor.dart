@@ -87,6 +87,20 @@ class WalletManagerActor extends Actor {
     _lastUsed[walletId] = DateTime.now();
   }
 
+  /// The loaded aggregate for [walletId], or null when none is loaded.
+  ///
+  /// An aggregate stops itself when a journal write fails (a rejected command
+  /// leaves it running, libspiffy-201); a cached ref that is no longer alive
+  /// is forgotten here so the caller loads a replacement from the journal
+  /// instead of telling a dead actor (whose messages go to dead letters).
+  ActorRef? _loadedWallet(String walletId) {
+    final ref = _walletActors[walletId];
+    if (ref == null || ref.isAlive) return ref;
+    _walletActors.remove(walletId);
+    _lastUsed.remove(walletId);
+    return null;
+  }
+
   /// Stops aggregates idle for longer than [_aggregateIdleTimeout].
   Future<void> _evictIdleAggregates() async {
     final idleTimeout = _aggregateIdleTimeout;
@@ -222,9 +236,12 @@ class WalletManagerActor extends Actor {
   Future<void> _handleCreateWallet(CreateWalletMessage msg) async {
     try {
       
-      // Check if wallet already exists: loaded, or evicted/not yet loaded
-      // but present in the journal.
-      if (_walletActors.containsKey(msg.walletId) ||
+      // Check if wallet already exists: being created, or present in the
+      // journal (loaded or not). A loaded aggregate with no journal is left
+      // over from a creation it rejected and is reused below; it used to
+      // make every retry answer "Wallet already exists".
+      final loaded = _loadedWallet(msg.walletId);
+      if (_pendingWalletCreations.containsKey(msg.walletId) ||
           await _eventStore.getHighestSequenceNumber(
                   'BitcoinWallet_${msg.walletId}') >
               0) {
@@ -240,7 +257,7 @@ class WalletManagerActor extends Actor {
       }
 
       // Spawn wallet aggregate as actor (AggregateRoot extends Actor)
-      final walletActor = await context.system.spawn(
+      final walletActor = loaded ?? await context.system.spawn(
         'wallet-${msg.walletId}',
         () => BitcoinWalletAggregate(
           aggregateId: msg.walletId,
@@ -338,7 +355,7 @@ class WalletManagerActor extends Actor {
     }
     
     try {
-      var walletActor = _walletActors[msg.walletId];
+      var walletActor = _loadedWallet(msg.walletId);
       
       // Check if wallet is already loaded
       if (walletActor != null) {
@@ -419,7 +436,7 @@ class WalletManagerActor extends Actor {
   /// before real commands arrive, eliminating race conditions.
   Future<void> _handlePreloadWallet(String walletId) async {
     // Already loaded?
-    if (_walletActors.containsKey(walletId)) {
+    if (_loadedWallet(walletId) != null) {
       return;
     }
     
@@ -476,12 +493,8 @@ class WalletManagerActor extends Actor {
   /// Process SPV validation result for a specific wallet
   Future<void> _processSPVResultForWallet(String walletId, SPVValidationResult result) async {
     try {
-      var walletActor = _walletActors[walletId];
-      
-      // Load wallet if not in memory (with race condition protection)
-      if (walletActor == null) {
-        walletActor = await _getOrLoadWallet(walletId);
-      }
+      // Loaded, or loaded now (with race condition protection)
+      final walletActor = await _getOrLoadWallet(walletId);
 
       if (walletActor == null) {
         return;
@@ -611,7 +624,7 @@ class WalletManagerActor extends Actor {
   /// If a load is already in progress, this method waits for it to complete.
   Future<ActorRef?> _getOrLoadWallet(String walletId) async {
     // Check if already loaded
-    var walletActor = _walletActors[walletId];
+    var walletActor = _loadedWallet(walletId);
     if (walletActor != null) {
       _touch(walletId);
       return walletActor;
@@ -630,7 +643,7 @@ class WalletManagerActor extends Actor {
       }
       
       // Check if loaded now
-      walletActor = _walletActors[walletId];
+      walletActor = _loadedWallet(walletId);
       if (walletActor != null) {
         _touch(walletId);
         return walletActor;

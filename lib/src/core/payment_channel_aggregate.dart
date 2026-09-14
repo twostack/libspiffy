@@ -8,12 +8,14 @@ import '../services/crypto_service.dart';
 import 'channel_commands.dart';
 import 'channel_events.dart';
 import 'channel_state.dart';
+import 'aggregate_command_failures.dart';
 
 /// Payment Channel Aggregate Root
 /// 
 /// One instance per payment channel, identified by channelId.
 /// Handles all channel commands and emits events as the source of truth.
-class PaymentChannelAggregate extends AggregateRoot<ChannelState> {
+class PaymentChannelAggregate extends AggregateRoot<ChannelState>
+    with CommandFailureContainment<ChannelState> {
   late final PaymentChannelBuilder _channelBuilder;
   final dartsv.NetworkType _networkType;
   

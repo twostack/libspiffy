@@ -851,6 +851,7 @@ class LibSpiffyActorSystem {
       // Initialize transaction import service
       _transactionImportService = TransactionImportService(
         dataSource: _blockchainDataSource,
+        headerAtHeight: _walletStorage.getBlockHeaderByHeight,
       );
       
     }

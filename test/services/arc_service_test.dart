@@ -11,6 +11,7 @@ import 'package:libspiffy/src/services/arc_service_config.dart';
 import 'package:libspiffy/internals.dart';
 
 import 'arc_service_test.mocks.dart';
+import '../spv/testnet_proof_fixture.dart';
 
 @GenerateMocks([http.Client])
 void main() {
@@ -299,10 +300,10 @@ void main() {
           expect(results[2].status, equals(ArcTransactionStatus.stored));
 
           verify(mockClient.post(
-            Uri.parse('$baseUrl/tx/batch'),
+            Uri.parse('$baseUrl/txs'),
             headers: anyNamed('headers'),
             body: argThat(
-              contains('"rawTxs":["tx1","tx2","tx3"]'),
+              equals('[{"rawTx":"tx1"},{"rawTx":"tx2"},{"rawTx":"tx3"}]'),
               named: 'body',
             ),
           ));
@@ -331,22 +332,17 @@ void main() {
 
       group('getBatchTransactions', () {
         test('should get batch transactions successfully', () async {
-          const txids = ['txid1', 'txid2'];
-          const responseJson = [
-            {'txid': 'txid1', 'txStatus': 'MINED', 'blockHeight': 100},
-            {'txid': 'txid2', 'txStatus': 'SEEN_ON_NETWORK'},
-          ];
-
-          when(mockClient.post(
+          when(mockClient.get(
             any,
             headers: anyNamed('headers'),
-            body: anyNamed('body'),
-          )).thenAnswer((_) async => http.Response(
-            jsonEncode(responseJson),
-            200,
-          ));
+          )).thenAnswer((invocation) async {
+            final uri = invocation.positionalArguments.first as Uri;
+            return uri.path.endsWith('txid1')
+                ? http.Response(jsonEncode({'txid': 'txid1', 'txStatus': 'MINED', 'blockHeight': 100}), 200)
+                : http.Response(jsonEncode({'txid': 'txid2', 'txStatus': 'SEEN_ON_NETWORK'}), 200);
+          });
 
-          final results = await arcService.getBatchTransactions(txids);
+          final results = await arcService.getBatchTransactions(['txid1', 'txid2']);
 
           expect(results, hasLength(2));
           expect(results[0].txid, equals('txid1'));
@@ -355,14 +351,10 @@ void main() {
           expect(results[1].txid, equals('txid2'));
           expect(results[1].status, equals(ArcTransactionStatus.seenOnNetwork));
 
-          verify(mockClient.post(
-            Uri.parse('$baseUrl/tx/batch'),
-            headers: anyNamed('headers'),
-            body: argThat(
-              contains('"txids":["txid1","txid2"]'),
-              named: 'body',
-            ),
-          ));
+          // ARC has no batch status endpoint: one GET /tx/{txid} each.
+          verify(mockClient.get(Uri.parse('$baseUrl/tx/txid1'), headers: anyNamed('headers')));
+          verify(mockClient.get(Uri.parse('$baseUrl/tx/txid2'), headers: anyNamed('headers')));
+          verifyNever(mockClient.post(any, headers: anyNamed('headers'), body: anyNamed('body')));
         });
       });
     });
@@ -370,12 +362,12 @@ void main() {
     group('Merkle Proof Operations', () {
       group('getMerkleProof', () {
         test('should get merkle proof successfully', () async {
-          const responseJson = {
-            'txid': testTxId,
-            'merklePath': ['proof1', 'proof2', 'proof3'],
-            'merkleRoot': 'merkle-root-123',
-            'blockHeight': 123456,
-            'blockHash': 'block-hash-123',
+          final responseJson = {
+            'txid': kFixtureTxid,
+            'txStatus': 'MINED',
+            'merklePath': fixtureBumpHex(),
+            'blockHeight': kFixtureHeight,
+            'blockHash': kFixtureBlockHash,
           };
 
           when(mockClient.get(
@@ -386,17 +378,17 @@ void main() {
             200,
           ));
 
-          final result = await arcService.getMerkleProof(testTxId);
+          final result = await arcService.getMerkleProof(kFixtureTxid);
 
           expect(result, isNotNull);
-          expect(result!.txid, equals(testTxId));
-          expect(result.merklePath, equals(['proof1', 'proof2', 'proof3']));
-          expect(result.merkleRoot, equals('merkle-root-123'));
-          expect(result.blockHeight, equals(123456));
-          expect(result.blockHash, equals('block-hash-123'));
+          expect(result!.txid, equals(kFixtureTxid));
+          expect(result.merklePath, equals([fixtureBumpHex()]));
+          expect(result.merkleRoot, equals(fixtureHeader().merkleRoot.toString()));
+          expect(result.blockHeight, equals(kFixtureHeight));
+          expect(result.blockHash, equals(kFixtureBlockHash));
 
           verify(mockClient.get(
-            Uri.parse('$baseUrl/tx/$testTxId/proof'),
+            Uri.parse('$baseUrl/tx/$kFixtureTxid'),
             headers: anyNamed('headers'),
           ));
         });
@@ -428,68 +420,42 @@ void main() {
       });
 
       group('getBatchMerkleProofs', () {
-        test('should get batch merkle proofs successfully', () async {
-          const txids = ['txid1', 'txid2'];
-          const responseJson = [
-            {
-              'txid': 'txid1',
-              'merklePath': ['proof1'],
-              'merkleRoot': 'root1',
-              'blockHeight': 100,
-            },
-            {
-              'txid': 'txid2',
-              'merklePath': ['proof2'],
-              'merkleRoot': 'root2',
-              'blockHeight': 101,
-            },
-          ];
-
-          when(mockClient.post(
+        test('should collect proofs of mined transactions via GET /tx/{txid}', () async {
+          when(mockClient.get(
             any,
             headers: anyNamed('headers'),
-            body: anyNamed('body'),
-          )).thenAnswer((_) async => http.Response(
-            jsonEncode(responseJson),
-            200,
-          ));
+          )).thenAnswer((invocation) async {
+            final uri = invocation.positionalArguments.first as Uri;
+            if (uri.path.endsWith(kFixtureTxid)) {
+              return http.Response(
+                  jsonEncode({
+                    'txid': kFixtureTxid,
+                    'txStatus': 'MINED',
+                    'blockHeight': kFixtureHeight,
+                    'merklePath': fixtureBumpHex(),
+                  }),
+                  200);
+            }
+            return http.Response('{"txid":"x","txStatus":"SEEN_ON_NETWORK"}', 200);
+          });
 
-          final results = await arcService.getBatchMerkleProofs(txids);
+          final results = await arcService.getBatchMerkleProofs([kFixtureTxid, 'txid2']);
 
-          expect(results, hasLength(2));
-          expect(results[0].txid, equals('txid1'));
-          expect(results[0].blockHeight, equals(100));
-          expect(results[1].txid, equals('txid2'));
-          expect(results[1].blockHeight, equals(101));
-
-          verify(mockClient.post(
-            Uri.parse('$baseUrl/tx/proofs'),
-            headers: anyNamed('headers'),
-            body: argThat(
-              contains('"txids":["txid1","txid2"]'),
-              named: 'body',
-            ),
-          ));
+          expect(results, hasLength(1));
+          expect(results[0].txid, equals(kFixtureTxid));
+          expect(results[0].blockHeight, equals(kFixtureHeight));
         });
 
-        test('should handle batch merkle proof error', () async {
-          when(mockClient.post(
+        test('should omit transactions whose status request fails', () async {
+          when(mockClient.get(
             any,
             headers: anyNamed('headers'),
-            body: anyNamed('body'),
           )).thenAnswer((_) async => http.Response(
             'Service unavailable',
             503,
           ));
 
-          expect(
-            () => arcService.getBatchMerkleProofs(['txid1']),
-            throwsA(isA<ArcException>().having(
-              (e) => e.message,
-              'message',
-              contains('Failed to get batch merkle proofs'),
-            )),
-          );
+          expect(await arcService.getBatchMerkleProofs(['txid1']), isEmpty);
         });
       });
     });
@@ -498,10 +464,14 @@ void main() {
       group('getPolicy', () {
         test('should get policy successfully', () async {
           const responseJson = {
-            'maxTxSize': 100000000,
-            'minFeePerKb': 0.5,
-            'standardFeePerKb': 0.5,
-            'dataFeePerKb': 0.25,
+            'timestamp': '2026-09-14T08:00:00Z',
+            'policy': {
+              'maxscriptsizepolicy': 500000,
+              'maxtxsigopscountspolicy': 4294967295,
+              'maxtxsizepolicy': 100000000,
+              'miningFee': {'satoshis': 1, 'bytes': 2000},
+              'standardFormatSupported': true,
+            },
           };
 
           when(mockClient.get(
@@ -515,9 +485,9 @@ void main() {
           final result = await arcService.getPolicy();
 
           expect(result.maxTxSize, equals(100000000));
-          expect(result.minFeePerKb, equals(0.5));
           expect(result.standardFeePerKb, equals(0.5));
-          expect(result.dataFeePerKb, equals(0.25));
+          expect(result.minFeePerKb, equals(0.5));
+          expect(result.dataFeePerKb, equals(0.5));
 
           verify(mockClient.get(
             Uri.parse('$baseUrl/policy'),
@@ -525,7 +495,7 @@ void main() {
           ));
         });
 
-        test('should use default values for missing policy fields', () async {
+        test('should reject a policy without miningFee', () async {
           const responseJson = {}; // Empty response
 
           when(mockClient.get(
@@ -536,12 +506,7 @@ void main() {
             200,
           ));
 
-          final result = await arcService.getPolicy();
-
-          expect(result.maxTxSize, equals(100000000));
-          expect(result.minFeePerKb, equals(0.5));
-          expect(result.standardFeePerKb, equals(0.5));
-          expect(result.dataFeePerKb, equals(0.5));
+          await expectLater(arcService.getPolicy(), throwsA(isA<ArcException>()));
         });
 
         test('should handle policy error', () async {
@@ -629,12 +594,15 @@ void main() {
       });
 
       group('estimateFee', () {
-        test('should estimate fee correctly', () async {
+        test('should estimate fee from miningFee', () async {
           const policyJson = {
-            'maxTxSize': 100000000,
-            'minFeePerKb': 0.5,
-            'standardFeePerKb': 1.0,
-            'dataFeePerKb': 0.5,
+            'timestamp': '2026-09-14T08:00:00Z',
+            'policy': {
+              'maxscriptsizepolicy': 500000,
+              'maxtxsigopscountspolicy': 4294967295,
+              'maxtxsizepolicy': 10000000,
+              'miningFee': {'satoshis': 1, 'bytes': 1000},
+            },
           };
 
           when(mockClient.get(
@@ -651,15 +619,19 @@ void main() {
             dataSize: 100,
           );
 
-          // Expected calculation:
-          // Size = 25 + (2 * 148) + (3 * 34) + 100 = 521 bytes = 0.521 KB
-          // Fee = 0.521 * 1.0 = 0.521 satoshis, rounded up to 1
+          // Size = 25 + (2 * 148) + (3 * 34) + 100 = 523 bytes
+          // Fee = 523 * 1 / 1000 = 0.523 satoshis, rounded up to 1
           expect(fee, equals(BigInt.from(1)));
         });
 
         test('should estimate fee with larger transaction', () async {
           const policyJson = {
-            'standardFeePerKb': 0.5,
+            'policy': {
+              'maxscriptsizepolicy': 500000,
+              'maxtxsigopscountspolicy': 4294967295,
+              'maxtxsizepolicy': 10000000,
+              'miningFee': {'satoshis': 5, 'bytes': 100},
+            },
           };
 
           when(mockClient.get(
@@ -675,10 +647,9 @@ void main() {
             outputCount: 5,
           );
 
-          // Expected calculation:
-          // Size = 25 + (10 * 148) + (5 * 34) = 1675 bytes = 1.675 KB
-          // Fee = 1.675 * 0.5 = 0.8375 satoshis, rounded up to 1
-          expect(fee, equals(BigInt.from(1)));
+          // Size = 25 + (10 * 148) + (5 * 34) = 1675 bytes
+          // Fee = 1675 * 5 / 100 = 83.75 satoshis, rounded up to 84
+          expect(fee, equals(BigInt.from(84)));
         });
       });
     });
@@ -981,6 +952,157 @@ void main() {
             .requestTimeout,
         equals(const Duration(seconds: 30)),
       );
+    });
+  });
+
+  // Audit finding SPV-11 (remainder, libspiffy-98l). The client called
+  // `/tx/{txid}/proof`, `/tx/proofs` and `/tx/batch`, none of which exist,
+  // and parsed a flat `standardFeePerKb` policy that ARC never returns.
+  //
+  // Shapes below are ARC's OpenAPI spec (bitcoin-sv/arc, pkg/api/arc.yaml):
+  //   GET  /v1/tx/{txid} -> TransactionStatus {timestamp, txid, txStatus,
+  //        blockHash, blockHeight, merklePath (BRC-74 hex), extraInfo,
+  //        competingTxs}; 404 when unknown.
+  //   GET  /v1/policy    -> {timestamp, policy: {maxscriptsizepolicy,
+  //        maxtxsigopscountspolicy, maxtxsizepolicy,
+  //        miningFee: {satoshis, bytes}, standardFormatSupported}}
+  //   POST /v1/txs       -> body: JSON array of {rawTx}
+  group('ArcService against the real ARC API shapes (SPV-11)', () {
+    const baseUrl = 'https://arc-test.taal.com/v1';
+    late MockClient client;
+    late ArcService arc;
+    late List<Uri> requested;
+
+    /// Serves [routes] (path -> body) with 200 and everything else with 404,
+    /// the way ARC does.
+    void serveGet(Map<String, Object> routes) {
+      when(client.get(any, headers: anyNamed('headers'))).thenAnswer((invocation) async {
+        final uri = invocation.positionalArguments.first as Uri;
+        requested.add(uri);
+        final body = routes[uri.toString()];
+        if (body == null) return http.Response('{"status":404,"title":"Not found"}', 404);
+        return http.Response(jsonEncode(body), 200);
+      });
+    }
+
+    const policyBody = {
+      'timestamp': '2026-09-14T08:00:00Z',
+      'policy': {
+        'maxscriptsizepolicy': 500000,
+        'maxtxsigopscountspolicy': 4294967295,
+        'maxtxsizepolicy': 10000000,
+        'miningFee': {'satoshis': 50, 'bytes': 1000},
+        'standardFormatSupported': true,
+      },
+    };
+
+    setUp(() {
+      client = MockClient();
+      arc = ArcService(baseUrl: baseUrl, client: client);
+      requested = [];
+    });
+
+    test('getMerkleProof returns the BRC-74 merklePath from GET /tx/{txid}', () async {
+      serveGet({
+        '$baseUrl/tx/$kFixtureTxid': {
+          'timestamp': '2026-09-14T08:00:00Z',
+          'txid': kFixtureTxid,
+          'txStatus': 'MINED',
+          'blockHash': kFixtureBlockHash,
+          'blockHeight': kFixtureHeight,
+          'merklePath': fixtureBumpHex(),
+          'extraInfo': '',
+          'competingTxs': null,
+        },
+      });
+
+      final proof = await arc.getMerkleProof(kFixtureTxid);
+
+      expect(requested.map((u) => u.path), everyElement('/v1/tx/$kFixtureTxid'));
+      expect(proof, isNotNull, reason: 'a MINED transaction has a proof');
+      expect(proof!.merklePath, equals([fixtureBumpHex()]));
+      expect(proof.blockHeight, equals(kFixtureHeight));
+      expect(proof.blockHash, equals(kFixtureBlockHash));
+      // Root computed from the BUMP, equal to the real header's root.
+      expect(proof.merkleRoot, equals(fixtureHeader().merkleRoot.toString()));
+    });
+
+    test('getMerkleProof is null for a transaction that is not mined yet', () async {
+      serveGet({
+        '$baseUrl/tx/$kFixtureTxid': {
+          'timestamp': '2026-09-14T08:00:00Z',
+          'txid': kFixtureTxid,
+          'txStatus': 'SEEN_ON_NETWORK',
+        },
+      });
+      expect(await arc.getMerkleProof(kFixtureTxid), isNull);
+    });
+
+    test('getBatchMerkleProofs uses GET /tx/{txid} per transaction', () async {
+      serveGet({
+        '$baseUrl/tx/$kFixtureTxid': {
+          'txid': kFixtureTxid,
+          'txStatus': 'MINED',
+          'blockHash': kFixtureBlockHash,
+          'blockHeight': kFixtureHeight,
+          'merklePath': fixtureBumpHex(),
+        },
+      });
+      final proofs = await arc.getBatchMerkleProofs([kFixtureTxid, 'b' * 64]);
+      expect(proofs.map((p) => p.txid), equals([kFixtureTxid]));
+      verifyNever(client.post(any, headers: anyNamed('headers'), body: anyNamed('body')));
+    });
+
+    test('policy parsing takes the fee from policy.miningFee', () async {
+      serveGet({'$baseUrl/policy': policyBody});
+
+      final policy = await arc.getPolicy();
+
+      expect(policy.standardFeePerKb, equals(50.0));
+      expect(policy.maxTxSize, equals(10000000));
+      expect(policy.miningFee.satoshis, equals(50));
+      expect(policy.miningFee.bytes, equals(1000));
+      expect(policy.maxScriptSize, equals(500000));
+      expect(policy.maxTxSigopsCount, equals(4294967295));
+      expect(policy.standardFormatSupported, isTrue);
+      expect(policy.timestamp, equals('2026-09-14T08:00:00Z'));
+    });
+
+    test('estimateFee uses the miningFee rate', () async {
+      serveGet({'$baseUrl/policy': policyBody});
+      // 25 + 2*148 + 3*34 = 423 bytes at 50 sat / 1000 bytes = 21.15 -> 22
+      final fee = await arc.estimateFee(inputCount: 2, outputCount: 3);
+      expect(fee, equals(BigInt.from(22)));
+    });
+
+    test('a policy without miningFee is an error, not a silent default', () async {
+      serveGet({
+        '$baseUrl/policy': {'timestamp': 'x', 'policy': {'maxtxsizepolicy': 1}},
+      });
+      await expectLater(arc.getPolicy(), throwsA(isA<ArcException>()));
+    });
+
+    test('submitBatchTransactions posts a JSON array of {rawTx} to /txs', () async {
+      when(client.post(any, headers: anyNamed('headers'), body: anyNamed('body')))
+          .thenAnswer((_) async => http.Response(
+              jsonEncode([
+                {'txid': 't1', 'txStatus': 'SEEN_ON_NETWORK'},
+                {'txid': 't2', 'txStatus': 'STORED'},
+              ]),
+              200));
+
+      final results = await arc.submitBatchTransactions(['aa', 'bb']);
+
+      expect(results.map((r) => r.status),
+          equals([ArcTransactionStatus.seenOnNetwork, ArcTransactionStatus.stored]));
+      final captured = verify(client.post(captureAny,
+              headers: anyNamed('headers'), body: captureAnyNamed('body')))
+          .captured;
+      expect((captured[0] as Uri).toString(), equals('$baseUrl/txs'));
+      expect(jsonDecode(captured[1] as String), equals([
+        {'rawTx': 'aa'},
+        {'rawTx': 'bb'},
+      ]));
     });
   });
 }

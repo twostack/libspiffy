@@ -1,6 +1,11 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
+
+import 'package:convert/convert.dart';
 import 'package:http/http.dart' as http;
+
+import '../utils/bump.dart';
 
 import 'arc_service_config.dart';
 
@@ -116,8 +121,16 @@ class ArcTransactionResponse {
   final String? timestamp;  // date-time string, not integer
   final List<String>? doubleSpendTxids;
   final String? rawTx;
+  /// ARC's `merklePath`: the BRC-74 BUMP as hex, wrapped in a one-element
+  /// list (the same `[rawBumpHex]` form `MerkleProof.merkleProof` stores).
   final List<String>? merklePath;
   final String? merkleRoot;
+
+  /// The BUMP hex when ARC returned a merkle path, else null.
+  String? get merklePathHex =>
+      (merklePath != null && merklePath!.length == 1 && merklePath!.single.isNotEmpty)
+          ? merklePath!.single
+          : null;
 
   ArcTransactionResponse({
     required this.txid,
@@ -210,34 +223,90 @@ class ArcTransactionResponse {
   }
 }
 
-/// Policy settings response from ARC
-class ArcPolicyResponse {
-  final int maxTxSize;
-  final double minFeePerKb;
-  final double standardFeePerKb;
-  final double dataFeePerKb;
+/// `miningFee` of an ARC policy: [satoshis] per [bytes].
+class ArcFeeAmount {
+  final int satoshis;
+  final int bytes;
 
-  ArcPolicyResponse({
+  const ArcFeeAmount({required this.satoshis, required this.bytes});
+
+  /// Satoshis per 1000 bytes.
+  double get satoshisPerKb => bytes <= 0 ? 0 : satoshis * 1000 / bytes;
+
+  /// Fee for a transaction of [sizeBytes], rounded up.
+  BigInt feeFor(int sizeBytes) =>
+      bytes <= 0 ? BigInt.zero : BigInt.from((sizeBytes * satoshis + bytes - 1) ~/ bytes);
+}
+
+/// Policy returned by `GET /v1/policy`.
+///
+/// Shape (ARC OpenAPI spec, bitcoin-sv/arc `pkg/api/arc.yaml`, schemas
+/// `PolicyResponse`, `Policy`, `FeeAmount`):
+///
+/// ```json
+/// {
+///   "timestamp": "2023-01-01T00:00:00Z",
+///   "policy": {
+///     "maxscriptsizepolicy": 500000,
+///     "maxtxsigopscountspolicy": 4294967295,
+///     "maxtxsizepolicy": 10000000,
+///     "miningFee": {"satoshis": 1, "bytes": 1000},
+///     "standardFormatSupported": true
+///   }
+/// }
+/// ```
+///
+/// `miningFee`, `maxscriptsizepolicy`, `maxtxsigopscountspolicy` and
+/// `maxtxsizepolicy` are required by the spec; a response without a usable
+/// `miningFee` is rejected with [ArcException] rather than silently priced
+/// with a default. A flat object (the `policy` members at top level) is
+/// accepted too.
+class ArcPolicyResponse {
+  final String? timestamp;
+  final int maxScriptSize;
+  final int maxTxSigopsCount;
+  final int maxTxSize;
+  final ArcFeeAmount miningFee;
+  final bool standardFormatSupported;
+
+  const ArcPolicyResponse({
+    this.timestamp,
+    required this.maxScriptSize,
+    required this.maxTxSigopsCount,
     required this.maxTxSize,
-    required this.minFeePerKb,
-    required this.standardFeePerKb,
-    required this.dataFeePerKb,
+    required this.miningFee,
+    this.standardFormatSupported = false,
   });
 
+  /// Mining fee rate in satoshis per 1000 bytes.
+  double get standardFeePerKb => miningFee.satoshisPerKb;
+
+  /// ARC publishes a single mining fee; there is no separate relay fee.
+  double get minFeePerKb => miningFee.satoshisPerKb;
+
+  /// ARC publishes a single mining fee; data outputs are priced the same.
+  double get dataFeePerKb => miningFee.satoshisPerKb;
+
   factory ArcPolicyResponse.fromJson(Map<String, dynamic> json) {
+    final policy = json['policy'] is Map ? Map<String, dynamic>.from(json['policy'] as Map) : json;
+
+    int? asInt(dynamic v) =>
+        v is int ? v : (v is num ? v.toInt() : (v is String ? int.tryParse(v) : null));
+
+    final fee = policy['miningFee'];
+    final satoshis = fee is Map ? asInt(fee['satoshis']) : null;
+    final bytes = fee is Map ? asInt(fee['bytes']) : null;
+    if (satoshis == null || bytes == null || bytes <= 0 || satoshis < 0) {
+      throw ArcException('ARC policy has no valid miningFee {satoshis, bytes}: ${jsonEncode(json)}');
+    }
+
     return ArcPolicyResponse(
-      maxTxSize: json['maxTxSize'] is String 
-          ? int.tryParse(json['maxTxSize']) ?? 100000000
-          : (json['maxTxSize'] as int?) ?? 100000000,
-      minFeePerKb: json['minFeePerKb'] is String 
-          ? double.tryParse(json['minFeePerKb']) ?? 0.5
-          : (json['minFeePerKb'] as double?) ?? 0.5,
-      standardFeePerKb: json['standardFeePerKb'] is String 
-          ? double.tryParse(json['standardFeePerKb']) ?? 0.5
-          : (json['standardFeePerKb'] as double?) ?? 0.5,
-      dataFeePerKb: json['dataFeePerKb'] is String 
-          ? double.tryParse(json['dataFeePerKb']) ?? 0.5
-          : (json['dataFeePerKb'] as double?) ?? 0.5,
+      timestamp: json['timestamp']?.toString(),
+      maxScriptSize: asInt(policy['maxscriptsizepolicy']) ?? 0,
+      maxTxSigopsCount: asInt(policy['maxtxsigopscountspolicy']) ?? 0,
+      maxTxSize: asInt(policy['maxtxsizepolicy']) ?? 0,
+      miningFee: ArcFeeAmount(satoshis: satoshis, bytes: bytes),
+      standardFormatSupported: policy['standardFormatSupported'] == true,
     );
   }
 }
@@ -255,12 +324,18 @@ class ArcHealthResponse {
   factory ArcHealthResponse.fromJson(Map<String, dynamic> json) {
     return ArcHealthResponse(
       healthy: json['healthy'] ?? false,
-      message: json['message'],
+      // ARC's Health schema names it `reason`.
+      message: json['reason'] ?? json['message'],
     );
   }
 }
 
-/// Merkle proof response for BEEF format support
+/// Merkle proof of a mined transaction, taken from `GET /v1/tx/{txid}`.
+///
+/// [merklePath] is `[bumpHex]`: ARC's `merklePath` field, a BRC-74 BUMP.
+/// [merkleRoot] is computed from that BUMP (display hex); it is what the
+/// proof claims, not something ARC vouches for. Compare it with a local
+/// block header before trusting it.
 class ArcMerkleProofResponse {
   final String txid;
   final List<String> merklePath;
@@ -399,12 +474,17 @@ class ArcService {
     }
   }
 
-  /// Get the raw transaction data
-  /// 
+  /// Get the raw transaction data.
+  ///
+  /// Note: `GET /tx/{txid}/raw` is not part of ARC's published API
+  /// (bitcoin-sv/arc `pkg/api/arc.yaml` lists `/policy`, `/health`,
+  /// `/tx/{txid}`, `/tx` and `/txs`); ARC deployments that follow the spec
+  /// answer 404.
+  ///
   /// [txid] - The transaction ID
   Future<String> getRawTransaction(String txid) async {
     final url = '$baseUrl/tx/$txid/raw';
-    
+
     final response = await _client.get(
       Uri.parse(url),
       headers: _headers,
@@ -418,48 +498,54 @@ class ArcService {
     }
   }
 
-  /// Get merkle proof for a transaction (BEEF support)
-  /// 
-  /// [txid] - The transaction ID
+  /// Merkle proof of a mined transaction.
+  ///
+  /// ARC has no proof endpoint; the proof is the `merklePath` (BRC-74 hex)
+  /// of `GET /v1/tx/{txid}`, present once the transaction is `MINED`.
+  /// Returns null when the transaction is unknown (404), not mined yet, or
+  /// the request fails.
   Future<ArcMerkleProofResponse?> getMerkleProof(String txid) async {
-    final url = '$baseUrl/tx/$txid/proof';
-    
+    final ArcTransactionResponse status;
     try {
-      final response = await _client.get(
-        Uri.parse(url),
-        headers: _headers,
-      ).timeout(requestTimeout);
-
-      if (response.statusCode == 200) {
-        return ArcMerkleProofResponse.fromJson(jsonDecode(response.body));
-      } else {
-        return null; // Proof not available yet
-      }
+      status = await getTransaction(txid);
     } catch (e) {
-      return null; // Proof not available
+      return null;
     }
+    return _proofFrom(txid, status);
   }
 
-  /// Get merkle proofs for multiple transactions (BEEF support)
-  /// 
-  /// [txids] - List of transaction IDs
-  Future<List<ArcMerkleProofResponse>> getBatchMerkleProofs(List<String> txids) async {
-    final url = '$baseUrl/tx/proofs';
-    
-    final response = await _client.post(
-      Uri.parse(url),
-      headers: _headers,
-      body: jsonEncode({
-        'txids': txids,
-      }),
-    ).timeout(requestTimeout);
+  ArcMerkleProofResponse? _proofFrom(String txid, ArcTransactionResponse status) {
+    final bumpHex = status.merklePathHex;
+    if (status.status != ArcTransactionStatus.mined || bumpHex == null) return null;
 
-    if (response.statusCode == 200) {
-      final List<dynamic> data = jsonDecode(response.body);
-      return data.map((item) => ArcMerkleProofResponse.fromJson(item)).toList();
-    } else {
-      throw ArcException('Failed to get batch merkle proofs: ${response.body}');
+    final BUMP bump;
+    try {
+      bump = BUMP.fromHex(bumpHex);
+    } catch (_) {
+      return null;
     }
+    var root = '';
+    try {
+      root = bump.computeMerkleRootForBlockHeader(
+          Uint8List.fromList(hex.decode(txid).reversed.toList()));
+    } catch (_) {
+      // txid not in the path: leave the root empty; a header check rejects it.
+    }
+    return ArcMerkleProofResponse(
+      txid: txid,
+      merklePath: [bumpHex],
+      merkleRoot: root,
+      blockHeight: status.blockHeight ?? bump.blockHeight,
+      blockHash: status.blockHash,
+    );
+  }
+
+  /// Merkle proofs for several transactions: one `GET /v1/tx/{txid}` each
+  /// (ARC has no batch proof endpoint). Transactions without a proof are
+  /// omitted.
+  Future<List<ArcMerkleProofResponse>> getBatchMerkleProofs(List<String> txids) async {
+    final proofs = await Future.wait(txids.map(getMerkleProof));
+    return proofs.whereType<ArcMerkleProofResponse>().toList();
   }
 
   /// Get the policy settings
@@ -494,58 +580,51 @@ class ArcService {
     }
   }
 
-  /// Submit multiple transactions in a batch
-  /// 
+  /// Submit multiple transactions in one request: `POST /v1/txs` with a
+  /// JSON array of `{rawTx}` (ARC OpenAPI spec). The response is an array
+  /// of transaction responses; a `{transactions: [...]}` envelope is
+  /// accepted too.
+  ///
   /// [rawTxs] - List of raw transactions in hex format
   /// [callbackUrl] - Optional callback URL to receive transaction status updates
   Future<List<ArcSubmitResponse>> submitBatchTransactions(
-    List<String> rawTxs, 
+    List<String> rawTxs,
     {String? callbackUrl}
   ) async {
-    final url = '$baseUrl/tx/batch';
-    
+    final url = '$baseUrl/txs';
+
     final headers = Map<String, String>.from(_headers);
     if (callbackUrl != null) {
       headers['X-CallbackUrl'] = callbackUrl;
     }
-    
+
     final response = await _client.post(
       Uri.parse(url),
       headers: headers,
-      body: jsonEncode({
-        'rawTxs': rawTxs,
-      }),
+      body: jsonEncode([
+        for (final rawTx in rawTxs) {'rawTx': rawTx},
+      ]),
     ).timeout(requestTimeout);
 
     if (response.statusCode == 200 || response.statusCode == 201) {
-      final List<dynamic> data = jsonDecode(response.body);
-      return data.map((item) => ArcSubmitResponse.fromJson(item)).toList();
+      final decoded = jsonDecode(response.body);
+      final List<dynamic> data = decoded is Map && decoded['transactions'] is List
+          ? decoded['transactions'] as List
+          : decoded as List;
+      return data
+          .map((item) => ArcSubmitResponse.fromJson(Map<String, dynamic>.from(item as Map)))
+          .toList();
     } else {
       throw ArcException('Failed to submit batch transactions: ${response.body}');
     }
   }
 
-  /// Get the status of multiple transactions
-  /// 
+  /// Status of several transactions: one `GET /v1/tx/{txid}` each (ARC has
+  /// no batch status endpoint). Throws if any request fails.
+  ///
   /// [txids] - List of transaction IDs
-  Future<List<ArcTransactionResponse>> getBatchTransactions(List<String> txids) async {
-    final url = '$baseUrl/tx/batch';
-    
-    final response = await _client.post(
-      Uri.parse(url),
-      headers: _headers,
-      body: jsonEncode({
-        'txids': txids,
-      }),
-    ).timeout(requestTimeout);
-
-    if (response.statusCode == 200) {
-      final List<dynamic> data = jsonDecode(response.body);
-      return data.map((item) => ArcTransactionResponse.fromJson(item)).toList();
-    } else {
-      throw ArcException('Failed to get batch transactions: ${response.body}');
-    }
-  }
+  Future<List<ArcTransactionResponse>> getBatchTransactions(List<String> txids) =>
+      Future.wait(txids.map(getTransaction));
 
   /// Estimate fee for a transaction based on ARC policy
   /// 
@@ -562,12 +641,9 @@ class ArcService {
     // Estimate transaction size (rough calculation)
     // Input: ~148 bytes (P2PKH), Output: ~34 bytes (P2PKH), ~25 bytes base
     final estimatedSize = 25 + (inputCount * 148) + (outputCount * 34) + dataSize;
-    final estimatedSizeKb = estimatedSize / 1000.0;
     
-    // Use standard fee rate
-    final feeInSatoshis = (estimatedSizeKb * policy.standardFeePerKb).ceil();
-    
-    return BigInt.from(feeInSatoshis);
+    // ARC's miningFee: satoshis per bytes, rounded up
+    return policy.miningFee.feeFor(estimatedSize);
   }
 
   /// Close the HTTP client

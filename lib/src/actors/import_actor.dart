@@ -79,7 +79,11 @@ class ImportActor extends Actor {
     Duration ackTimeout = const Duration(seconds: 30),
   })  : _dataSource = dataSource,
         _discoveryService = AddressDiscoveryService(dataSource),
-        _importService = TransactionImportService(dataSource: dataSource),
+        _importService = TransactionImportService(
+          dataSource: dataSource,
+          // SPV-09: imported proofs are checked against the stored headers.
+          headerAtHeight: storage.getBlockHeaderByHeight,
+        ),
         _storage = storage,
         _walletManagerActor = walletManagerActor,
         _walletProjection = walletProjection,

@@ -160,10 +160,115 @@ class AncestorChainService {
       );
     }
 
+    // The walk runs from the UTXOs back to the proofs (children first);
+    // BRC-62 wants parents before the children that spend them.
+    final ordered = orderParentsFirst(ancestorTxs);
     return AncestorChainResult.success(
-      ancestorTransactions: ancestorTxs,
-      merkleProofs: merkleProofs,
+      ancestorTransactions: ordered,
+      merkleProofs: _proofsInTransactionOrder(ordered, merkleProofs),
       blockHeights: blockHeights.toList(),
+    );
+  }
+
+  /// [transactions] in topological order: every transaction after the ones
+  /// in the list it spends (BRC-62). Otherwise the input order is kept.
+  ///
+  /// A transaction whose raw hex does not parse is treated as having no
+  /// in-list parents.
+  static List<BitcoinTransaction> orderParentsFirst(List<BitcoinTransaction> transactions) {
+    final byId = <String, BitcoinTransaction>{};
+    for (final tx in transactions) {
+      byId.putIfAbsent(tx.txid, () => tx);
+    }
+    final parents = <String, List<String>>{};
+    for (final tx in byId.values) {
+      final inList = <String>[];
+      try {
+        for (final input in dartsv.Transaction.fromHex(tx.rawHex).inputs) {
+          if (byId.containsKey(input.prevTxnId) && input.prevTxnId != tx.txid) {
+            inList.add(input.prevTxnId);
+          }
+        }
+      } catch (e) {
+        _log.warning('Cannot parse ${tx.txid} while ordering ancestors: $e');
+      }
+      parents[tx.txid] = inList;
+    }
+
+    final ordered = <BitcoinTransaction>[];
+    final done = <String>{};
+    final inProgress = <String>{};
+    void visit(String txid) {
+      if (done.contains(txid) || !inProgress.add(txid)) return; // cycle guard
+      for (final parent in parents[txid]!) {
+        visit(parent);
+      }
+      inProgress.remove(txid);
+      done.add(txid);
+      ordered.add(byId[txid]!);
+    }
+
+    for (final txid in byId.keys) {
+      visit(txid);
+    }
+    return ordered;
+  }
+
+  /// [proofs] reordered to follow the proven transactions in [ordered], so
+  /// the k-th transaction with a proof uses the k-th BUMP. Proofs for
+  /// transactions not in [ordered] keep their relative order at the end.
+  static List<MerkleProof> _proofsInTransactionOrder(
+      List<BitcoinTransaction> ordered, List<MerkleProof> proofs) {
+    final byTxid = <String, MerkleProof>{};
+    for (final proof in proofs) {
+      byTxid.putIfAbsent(proof.txid, () => proof);
+    }
+    final result = <MerkleProof>[];
+    for (final tx in ordered) {
+      final proof = byTxid.remove(tx.txid);
+      if (proof != null) result.add(proof);
+    }
+    result.addAll(proofs.where((p) => byTxid.remove(p.txid) != null));
+    return result;
+  }
+
+  /// Raw transactions, BUMPs, has-BUMP flags and BUMP indices for a BEEF of
+  /// [ancestors] (reordered parents first) followed by [unproven], in order.
+  static BEEF _buildBeef(
+    List<BitcoinTransaction> ancestors,
+    List<BitcoinTransaction> unproven,
+    List<MerkleProof> merkleProofs,
+  ) {
+    final ordered = orderParentsFirst(ancestors);
+    final proofs = _proofsInTransactionOrder(ordered, merkleProofs);
+    final proofIndex = <String, int>{};
+    final bumps = <BUMP>[];
+    for (final proof in proofs) {
+      if (proofIndex.containsKey(proof.txid)) continue;
+      proofIndex[proof.txid] = bumps.length;
+      bumps.add(CryptoUtils.buildBUMPFromMerkleProof(proof));
+    }
+
+    final txBytes = <Uint8List>[];
+    final hasMerkle = <bool>[];
+    final bumpIndex = <int>[];
+    for (final tx in ordered) {
+      txBytes.add(Uint8List.fromList(hex.decode(tx.rawHex)));
+      final idx = proofIndex[tx.txid];
+      hasMerkle.add(idx != null);
+      if (idx != null) bumpIndex.add(idx);
+    }
+    // New transactions have no merkle proof yet (unconfirmed).
+    for (final tx in unproven) {
+      txBytes.add(Uint8List.fromList(hex.decode(tx.rawHex)));
+      hasMerkle.add(false);
+    }
+
+    return BEEF.create(
+      bumps: bumps,
+      txs: txBytes,
+      hasMerkle: hasMerkle,
+      bumpIndex: bumpIndex,
     );
   }
 
@@ -174,149 +279,20 @@ class AncestorChainService {
 
   /// Create BEEF package from a new transaction and its ancestor chain
   ///
-  /// Orders transactions correctly: ancestors (with proofs) → new transaction (no proof)
+  /// Orders transactions per BRC-62: ancestors parents first (whatever
+  /// order they are passed in), then the new transaction (no proof). BUMPs
+  /// follow the order of the proven transactions.
   Future<BEEFWithAncestryResult> createBeefWithAncestry({
     required BitcoinTransaction newTransaction,
     required List<BitcoinTransaction> ancestorTransactions,
     required List<MerkleProof> merkleProofs,
   }) async {
     try {
+      final serialized = _buildBeef(ancestorTransactions, [newTransaction], merkleProofs).serialize();
 
-      // 1. Convert all transactions to raw bytes
-      final txBytes = <Uint8List>[];
-
-      // Add ancestor transactions first (in order they were collected)
-      for (final tx in ancestorTransactions) {
-        txBytes.add(Uint8List.fromList(hex.decode(tx.rawHex)));
-      }
-
-      // Add new transaction last (no merkle proof yet)
-      txBytes.add(Uint8List.fromList(hex.decode(newTransaction.rawHex)));
-
-      // 2. Build BUMPs from merkle proofs
-      final bumps = <BUMP>[];
-      for (final proof in merkleProofs) {
-        bumps.add(CryptoUtils.buildBUMPFromMerkleProof(proof));
-      }
-
-      // 3. Set hasMerkle flags - only ancestors with proofs have true
-      final hasMerkle = <bool>[];
-      for (final ancestor in ancestorTransactions) {
-        final hasProof = merkleProofs.any((p) => p.txid == ancestor.txid);
-        hasMerkle.add(hasProof);
-      }
-      // New transaction doesn't have a merkle proof yet (unconfirmed)
-      hasMerkle.add(false);
-
-      // 4. Build bumpIndex array - maps transactions with proofs to their BUMP index
-      final bumpIndex = <int>[];
-      for (int i = 0; i < ancestorTransactions.length; i++) {
-        if (hasMerkle[i]) {
-          // Find which BUMP this transaction corresponds to
-          final proofIdx = merkleProofs
-              .indexWhere((p) => p.txid == ancestorTransactions[i].txid);
-          if (proofIdx != -1) {
-            bumpIndex.add(proofIdx);
-          }
-        }
-      }
-
-
-      // 5. Create BEEF using the existing BEEF.create() method
-      final beef = BEEF.create(
-        bumps: bumps,
-        txs: txBytes,
-        hasMerkle: hasMerkle,
-        bumpIndex: bumpIndex,
-      );
-
-      // 6. Serialize BEEF
-      final serialized = beef.serialize();
-
-      // 7. Verify BEEF can be parsed (sanity check)
+      // Sanity check: the BEEF must parse.
       try {
-        final parsed = BEEF.parse(serialized);
-      } catch (e, stackTrace) {
-        throw Exception('Created BEEF is invalid: $e');
-      }
-
-      return BEEFWithAncestryResult.success(
-        beefBytes: serialized,
-        ancestorCount: ancestorTransactions.length,
-        proofCount: merkleProofs.length,
-      );
-    } catch (e, stackTrace) {
-      return BEEFWithAncestryResult.error('Failed to create BEEF: $e');
-    }
-  }
-
-  /// Create BEEF from multiple new transactions (e.g., funding tx + payment tx)
-  Future<BEEFWithAncestryResult> createBeefWithMultipleNewTransactions({
-    required List<BitcoinTransaction> newTransactions,
-    required List<BitcoinTransaction> ancestorTransactions,
-    required List<MerkleProof> merkleProofs,
-  }) async {
-    try {
-
-      // 1. Convert all transactions to raw bytes
-      final txBytes = <Uint8List>[];
-
-      // Add ancestor transactions first
-      for (final tx in ancestorTransactions) {
-        txBytes.add(Uint8List.fromList(hex.decode(tx.rawHex)));
-      }
-
-      // Add new transactions (in order provided)
-      for (final tx in newTransactions) {
-        txBytes.add(Uint8List.fromList(hex.decode(tx.rawHex)));
-      }
-
-      // 2. Build BUMPs from merkle proofs
-      final bumps = <BUMP>[];
-      for (final proof in merkleProofs) {
-        bumps.add(CryptoUtils.buildBUMPFromMerkleProof(proof));
-      }
-
-      // 3. Set hasMerkle flags
-      final hasMerkle = <bool>[];
-      
-      // Ancestors with proofs
-      for (final ancestor in ancestorTransactions) {
-        final hasProof = merkleProofs.any((p) => p.txid == ancestor.txid);
-        hasMerkle.add(hasProof);
-      }
-      
-      // New transactions don't have proofs yet
-      for (int i = 0; i < newTransactions.length; i++) {
-        hasMerkle.add(false);
-      }
-
-      // 4. Build bumpIndex array
-      final bumpIndex = <int>[];
-      for (int i = 0; i < ancestorTransactions.length; i++) {
-        if (hasMerkle[i]) {
-          final proofIdx = merkleProofs
-              .indexWhere((p) => p.txid == ancestorTransactions[i].txid);
-          if (proofIdx != -1) {
-            bumpIndex.add(proofIdx);
-          }
-        }
-      }
-
-
-      // 5. Create and serialize BEEF
-      final beef = BEEF.create(
-        bumps: bumps,
-        txs: txBytes,
-        hasMerkle: hasMerkle,
-        bumpIndex: bumpIndex,
-      );
-
-      final serialized = beef.serialize();
-
-      // 6. Verify
-      try {
-        final parsed = BEEF.parse(serialized);
+        BEEF.parse(serialized);
       } catch (e) {
         throw Exception('Created BEEF is invalid: $e');
       }
@@ -326,11 +302,38 @@ class AncestorChainService {
         ancestorCount: ancestorTransactions.length,
         proofCount: merkleProofs.length,
       );
-    } catch (e, stackTrace) {
+    } catch (e) {
       return BEEFWithAncestryResult.error('Failed to create BEEF: $e');
     }
   }
 
+  /// Create BEEF from multiple new transactions (e.g., funding tx + payment tx)
+  ///
+  /// Ancestors are ordered parents first; [newTransactions] follow in the
+  /// order given (callers pass them parents first).
+  Future<BEEFWithAncestryResult> createBeefWithMultipleNewTransactions({
+    required List<BitcoinTransaction> newTransactions,
+    required List<BitcoinTransaction> ancestorTransactions,
+    required List<MerkleProof> merkleProofs,
+  }) async {
+    try {
+      final serialized = _buildBeef(ancestorTransactions, newTransactions, merkleProofs).serialize();
+
+      try {
+        BEEF.parse(serialized);
+      } catch (e) {
+        throw Exception('Created BEEF is invalid: $e');
+      }
+
+      return BEEFWithAncestryResult.success(
+        beefBytes: serialized,
+        ancestorCount: ancestorTransactions.length,
+        proofCount: merkleProofs.length,
+      );
+    } catch (e) {
+      return BEEFWithAncestryResult.error('Failed to create BEEF: $e');
+    }
+  }
 }
 
 

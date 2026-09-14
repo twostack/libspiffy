@@ -1,12 +1,10 @@
 import 'dart:async';
-import 'dart:typed_data';
-import 'package:crypto/crypto.dart' show sha256;
 import 'package:logging/logging.dart';
 import 'package:spiffynode/spiffy_node.dart';
 
 import '../storage/read_model_storage.dart';
-import '../utils/hex_utils.dart' as hex_utils;
 import 'difficulty_rules.dart';
+import 'merkle_proof_header_check.dart';
 import 'network_params.dart';
 
 /// The header a [BlockHeaderChain] is anchored to: normally the network
@@ -650,36 +648,38 @@ class BlockHeaderChain {
     return locator;
   }
 
-  /// Validate merkle proof against the header chain
+  /// Validate a stored merkle proof against the active header chain.
+  ///
+  /// Since SPV-06 `MerkleProof.merkleProof` is `[rawBumpHex]` (BRC-74); any
+  /// other shape (the old sibling list, several entries, empty) is rejected.
+  /// The BUMP is walked with `BUMP.computeMerkleRoot` and the root compared
+  /// with the active header at `proof.blockHeight`, which must also be the
+  /// BUMP's own height. `proof.blockHash` is not trusted: the header at that
+  /// height decides.
   Future<bool> validateMerkleProof(MerkleProof proof) async {
-    try {
-      final header = await getHeaderByHash(proof.blockHash);
-      if (header == null) {
-        _logger.warning('Block header not found for merkle proof: ${proof.blockHash}');
-        return false;
-      }
-
-      final computedRoot = _computeMerkleRoot(
-        proof.txid,
-        proof.merkleProof,
-        proof.position,
-      );
-
-      final headerMerkleRoot = header.merkleRoot.toString();
-      final isValid = computedRoot == headerMerkleRoot;
-
-      if (isValid) {
-        _logger.fine('✅ Merkle proof validated for tx ${proof.txid}');
-      } else {
-        _logger.warning('❌ Invalid merkle proof for tx ${proof.txid}');
-        _logger.fine('  Computed root: $computedRoot');
-        _logger.fine('  Header root:   $headerMerkleRoot');
-      }
-
-      return isValid;
-    } catch (e) {
-      _logger.warning('Merkle proof validation failed: $e');
+    if (proof.merkleProof.length != 1 || proof.merkleProof.single.length <= 64) {
+      _logger.warning('Merkle proof for ${proof.txid} is not a raw BUMP '
+          '(${proof.merkleProof.length} entries); rejected');
       return false;
+    }
+    final check = await checkBumpHexAgainstHeaders(
+      txid: proof.txid,
+      bumpHex: proof.merkleProof.single,
+      headerAt: getHeaderByHeight,
+      claimedHeight: proof.blockHeight,
+    );
+    switch (check.status) {
+      case ProofHeaderStatus.verified:
+        _logger.fine('Merkle proof validated for tx ${proof.txid}');
+        return true;
+      case ProofHeaderStatus.rootMismatch:
+        _logger.severe('Merkle proof for tx ${proof.txid} does not match the header at '
+            'height ${proof.blockHeight}: ${check.detail}');
+        return false;
+      case ProofHeaderStatus.headerUnknown:
+      case ProofHeaderStatus.malformed:
+        _logger.warning('Merkle proof for tx ${proof.txid} not validated: $check');
+        return false;
     }
   }
 
@@ -761,37 +761,6 @@ class BlockHeaderChain {
       _logger.warning('Failed to get recent headers: $e');
       return [];
     }
-  }
-
-  /// Compute merkle root from transaction ID and proof
-  String _computeMerkleRoot(String txid, List<String> merkleProof, int position) {
-    var current = txid;
-    var currentPos = position;
-
-    for (final proof in merkleProof) {
-      String left, right;
-      if (currentPos % 2 == 0) {
-        left = current;
-        right = proof;
-      } else {
-        left = proof;
-        right = current;
-      }
-      current = _hashPair(left, right);
-      currentPos = currentPos ~/ 2;
-    }
-
-    return current;
-  }
-
-  /// Hash a pair of hashes (double SHA256)
-  String _hashPair(String left, String right) {
-    final leftBytes = hex_utils.hexToBytes(left);
-    final rightBytes = hex_utils.hexToBytes(right);
-    final combined = Uint8List.fromList([...leftBytes, ...rightBytes]);
-    final firstHash = sha256.convert(combined);
-    final secondHash = sha256.convert(firstHash.bytes);
-    return secondHash.toString();
   }
 
   /// Load recent active headers into the cache, with their heights.

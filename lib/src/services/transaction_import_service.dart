@@ -2,6 +2,7 @@ import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:logging/logging.dart';
 
 import '../models/blockchain_data_models.dart';
+import '../spv/merkle_proof_header_check.dart';
 import 'blockchain_data_source.dart';
 import '../utils/tsc_converter.dart';
 import '../utils/bump.dart';
@@ -12,7 +13,17 @@ import '../utils/bump.dart';
 /// 1. Fetch raw transaction data
 /// 2. Retrieve merkle proof
 /// 3. Convert proof to BUMP format
-/// 4. Return validated transaction with proof
+/// 4. Check the proof against the local header chain
+/// 5. Return validated transaction with proof
+///
+/// Header check (SPV-09): with [headerAtHeight] wired (the importer passes
+/// the read-model storage's `getBlockHeaderByHeight`), the BUMP's merkle
+/// root must equal the root of the stored header at the proof's height.
+/// A mismatch, a proof that does not contain the txid, or a height that
+/// disagrees with the BUMP rejects the transaction. When no header is
+/// stored at that height yet the transaction is imported with
+/// [ImportedTransaction.headerVerified] false, unless
+/// [requireVerifiedHeader] is set.
 ///
 /// Example:
 /// ```dart
@@ -29,12 +40,20 @@ class TransactionImportService {
   final Logger _logger = Logger('TransactionImportService');
   final BlockchainDataSource _dataSource;
   final TscConverter _converter;
+  final HeaderAtHeight? _headerAtHeight;
+
+  /// Reject transactions whose block header is not known locally yet
+  /// (default: import them unverified).
+  final bool requireVerifiedHeader;
 
   TransactionImportService({
     required BlockchainDataSource dataSource,
     TscConverter? converter,
+    HeaderAtHeight? headerAtHeight,
+    this.requireVerifiedHeader = false,
   })  : _dataSource = dataSource,
-        _converter = converter ?? TscConverter();
+        _converter = converter ?? TscConverter(),
+        _headerAtHeight = headerAtHeight;
 
   /// Import a single transaction with merkle proof
   ///
@@ -52,6 +71,21 @@ class TransactionImportService {
       _logger.info('      → Fetching raw transaction for $txid...');
       final rawHex = await _dataSource.getRawTransaction(txid);
       _logger.info('      ✅ Raw TX fetched (${rawHex.length} bytes)');
+
+      // The data source is not trusted: the bytes must be the transaction
+      // that was asked for.
+      final String actualTxid;
+      try {
+        actualTxid = dartsv.Transaction.fromHex(rawHex).id;
+      } catch (e) {
+        throw TransactionImportException('Raw transaction does not parse: $e', txid: txid);
+      }
+      if (actualTxid != txid) {
+        throw TransactionImportException(
+          'Raw transaction hashes to $actualTxid, not the requested txid',
+          txid: txid,
+        );
+      }
 
       // Fetch merkle proof
       _logger.info('      → Fetching merkle proof for $txid...');
@@ -71,6 +105,35 @@ class TransactionImportService {
         );
       }
 
+      final check = await checkBumpAgainstHeaders(
+        txid: txid,
+        bump: bump,
+        headerAt: _headerAtHeight ?? (_) async => null,
+        claimedHeight: proofData.blockHeight,
+      );
+      switch (check.status) {
+        case ProofHeaderStatus.verified:
+          break;
+        case ProofHeaderStatus.rootMismatch:
+          _logger.severe('      ❌ Merkle proof for $txid does not match the stored block header '
+              'at height ${check.blockHeight}: ${check.detail}');
+          throw TransactionImportException(
+            'Merkle proof does not match the block header at height ${check.blockHeight}',
+            txid: txid,
+          );
+        case ProofHeaderStatus.malformed:
+          throw TransactionImportException('Merkle proof is invalid: ${check.detail}', txid: txid);
+        case ProofHeaderStatus.headerUnknown:
+          if (requireVerifiedHeader) {
+            throw TransactionImportException(
+              'No block header at height ${check.blockHeight} to verify the merkle proof',
+              txid: txid,
+            );
+          }
+          _logger.warning('      ⚠️ No block header at height ${check.blockHeight} yet; '
+              '$txid imported without header verification');
+      }
+
       _logger.info('      ✅ Transaction $txid fully imported and validated');
 
       return ImportedTransaction(
@@ -78,7 +141,10 @@ class TransactionImportService {
         rawHex: rawHex,
         blockHeight: proofData.blockHeight,
         bump: bump,
+        headerVerified: check.isVerified,
       );
+    } on TransactionImportException {
+      rethrow;
     } on DataSourceException catch (e) {
       _logger.severe('      ❌ Data source error for $txid: ${e.message}');
       throw TransactionImportException(
@@ -253,6 +319,10 @@ class ImportedTransaction {
   /// BUMP merkle proof
   final BUMP bump;
 
+  /// Whether [bump] was checked against a locally stored block header (its
+  /// root matched). False when no header was known at import time.
+  final bool headerVerified;
+
   /// Parsed transaction (lazy-loaded)
   dartsv.Transaction? _parsedTransaction;
 
@@ -261,6 +331,7 @@ class ImportedTransaction {
     required this.rawHex,
     required this.blockHeight,
     required this.bump,
+    this.headerVerified = false,
   });
 
   /// Get parsed DartSV transaction

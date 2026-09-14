@@ -13,11 +13,48 @@ import '../models/bitcoin_transaction.dart';
 
 import '../services/arc_service.dart';
 import '../services/arc_service_config.dart';
+import '../spv/merkle_proof_header_check.dart';
 import '../storage/read_model_storage.dart';
 import '../utils/beef.dart';
+import 'spv_messages.dart' show BlockHeaderStoredMessage;
 import 'wallet_messages.dart';
 
+/// A MINED report whose block header is not stored yet (SPV-09).
+class _PendingProof {
+  final String walletId;
+  final String bumpHex;
+  final int? claimedHeight;
+
+  _PendingProof(this.walletId, this.bumpHex, this.claimedHeight);
+}
+
+/// Back-off state of a pending transaction ARC does not report progress on.
+class _Backoff {
+  final DateTime due;
+  final int misses;
+
+  _Backoff(this.due, this.misses);
+}
+
+/// What one status check of a transaction found.
+enum _CheckOutcome { changed, unchanged, unknown }
+
 /// Actor that handles ARC service integration for transaction broadcasting and monitoring
+///
+/// Confirmation (SPV-09): a MINED report is only acted on after the BRC-74
+/// `merklePath` ARC returns walks to the merkle root of the locally stored
+/// header at that height. If no header is stored yet the proof is held and
+/// re-checked whenever headers arrive (CheckStoragePendingUTXOsMessage or
+/// BlockHeaderStoredMessage); a root mismatch is logged SEVERE and never
+/// confirmed. The stored proof carries the local header's hash and the
+/// transaction's real position.
+///
+/// Status monitoring (A-M3): one scan at a time. A timer tick that finds a
+/// scan running is skipped; header notifications are debounced by
+/// [headerTriggerDebounce] and, if a scan is running, fold into a single
+/// follow-up scan. Scans run outside the mailbox. Pending transactions that
+/// ARC does not know (or reports no progress on) are re-queried with
+/// exponential back-off instead of on every scan.
 class ARCActor extends Actor {
   final _log = Logger('ARCActor');
   final ActorRef _walletManager;
@@ -35,6 +72,39 @@ class ARCActor extends Actor {
   // Periodic status checking
   Timer? _statusCheckTimer;
 
+  /// Interval of the periodic status scan (and base of the pending back-off).
+  final Duration statusCheckInterval;
+
+  /// Header notifications within this window coalesce into one scan.
+  final Duration headerTriggerDebounce;
+
+  static const Duration _maxPendingBackoff = Duration(minutes: 30);
+  static const Duration _minReconfirmWindow = Duration(minutes: 2);
+
+  bool _scanInFlight = false;
+  bool _rescanRequested = false;
+  bool _stopped = false;
+  Timer? _headerDebounceTimer;
+  final Map<String, _Backoff> _pendingBackoff = {};
+
+  /// MINED reports waiting for their block header, by txid.
+  final Map<String, _PendingProof> _pendingProofs = {};
+
+  /// When this actor last confirmed a txid, so a scan racing a header
+  /// re-check does not confirm twice. Entries expire (the confirmation
+  /// command may have been lost; the projection moves a confirmed
+  /// transaction out of the scanned states anyway).
+  final Map<String, DateTime> _recentlyConfirmed = {};
+
+  bool _confirmedRecently(String txid) {
+    final at = _recentlyConfirmed[txid];
+    if (at == null) return false;
+    final window = statusCheckInterval * 2 > _minReconfirmWindow ? statusCheckInterval * 2 : _minReconfirmWindow;
+    if (DateTime.now().difference(at) < window) return true;
+    _recentlyConfirmed.remove(txid);
+    return false;
+  }
+
   // Durable broadcast retry queue (persisted via Isar)
   duraq.Queue<Map<String, dynamic>>? _broadcastQueue;
 
@@ -44,6 +114,8 @@ class ARCActor extends Actor {
     ArcServiceConfig? arcConfig,
     dynamic arcService,  // ← Allow injecting mock service for testing (dynamic for test mocks)
     Isar? isar,
+    this.statusCheckInterval = const Duration(seconds: 30),
+    this.headerTriggerDebounce = const Duration(milliseconds: 500),
   })  : _walletManager = walletManager,
         _storage = storage,
         _arcConfig = arcConfig,
@@ -97,6 +169,10 @@ class ARCActor extends Actor {
           await _handleCheckStoragePendingUTXOs(message as CheckStoragePendingUTXOsMessage);
           break;
 
+        case BlockHeaderStoredMessage:
+          await _onHeadersArrived();
+          break;
+
         default:
       }
     } catch (e) {
@@ -148,11 +224,45 @@ class ARCActor extends Actor {
 
   /// Start periodic transaction status monitoring
   void _startStatusMonitoring() {
-    _statusCheckTimer = Timer.periodic(Duration(seconds: 30), (timer) {
-      _checkNonTerminalTransactions();
-      _processRetryQueue();
+    _statusCheckTimer = Timer.periodic(statusCheckInterval, (timer) {
+      unawaited(_runScan(fromTimer: true));
     });
+  }
 
+  /// Run one status scan unless one is already running.
+  ///
+  /// A timer tick that finds a scan running is dropped (the next tick
+  /// comes soon enough). Any other trigger asks the running scan for one
+  /// follow-up pass, so N triggers during a scan cost one extra scan.
+  Future<void> _runScan({bool fromTimer = false}) async {
+    if (_stopped) return;
+    if (_scanInFlight) {
+      if (!fromTimer) _rescanRequested = true;
+      _log.fine('Status scan already running; ${fromTimer ? 'timer tick skipped' : 'follow-up scheduled'}');
+      return;
+    }
+    _scanInFlight = true;
+    try {
+      do {
+        _rescanRequested = false;
+        await _checkNonTerminalTransactions();
+        if (fromTimer) await _processRetryQueue();
+      } while (_rescanRequested && !_stopped);
+    } finally {
+      _scanInFlight = false;
+    }
+  }
+
+  /// Headers were stored: re-check held proofs now (storage only), and
+  /// schedule one debounced ARC scan for the whole batch.
+  Future<void> _onHeadersArrived() async {
+    await _recheckPendingProofs();
+    if (_stopped) return;
+    _headerDebounceTimer?.cancel();
+    _headerDebounceTimer = Timer(headerTriggerDebounce, () {
+      _headerDebounceTimer = null;
+      unawaited(_runScan());
+    });
   }
 
   /// Handle transaction broadcast requests
@@ -370,13 +480,33 @@ class ARCActor extends Actor {
       final proofResponse = await _arcService!.getMerkleProof(msg.txid);
 
       if (proofResponse != null) {
+        // Never hand out a proof that contradicts our own header chain.
+        final check = await checkBumpHexAgainstHeaders(
+          txid: msg.txid,
+          bumpHex: proofResponse.merklePath.length == 1 ? proofResponse.merklePath.single : '',
+          headerAt: _storage.getBlockHeaderByHeight,
+          claimedHeight: proofResponse.blockHeight,
+        );
+        if (check.status == ProofHeaderStatus.rootMismatch ||
+            check.status == ProofHeaderStatus.malformed) {
+          _log.severe('ARC proof for ${msg.txid} rejected: $check');
+          context.sender?.tell(MerkleProofMessage(
+            txid: msg.txid,
+            success: false,
+            error: 'Merkle proof from ARC does not match the local header chain: ${check.detail}',
+          ));
+          return;
+        }
+
         // Convert to proof map format
         final proof = {
           'txid': proofResponse.txid,
           'blockHeight': proofResponse.blockHeight,
           'merkleRoot': proofResponse.merkleRoot,
           'merklePath': proofResponse.merklePath,
-          'blockHash': proofResponse.blockHash,
+          'blockHash': check.blockHash ?? proofResponse.blockHash,
+          'position': check.txIndex,
+          'headerVerified': check.isVerified,
         };
 
         context.sender?.tell(MerkleProofMessage(
@@ -415,14 +545,16 @@ class ARCActor extends Actor {
       // Get policy from ARC service (includes fee rates)
       final policy = await _arcService!.getPolicy();
 
+      // ARC publishes a single miningFee {satoshis, bytes}; it serves as
+      // both the mining and the relay rate.
       final feeData = {
         'mining': {
-          'satoshis': policy.standardFeePerKb.toInt(),
-          'bytes': 1000
+          'satoshis': policy.miningFee.satoshis,
+          'bytes': policy.miningFee.bytes,
         },
         'relay': {
-          'satoshis': policy.minFeePerKb.toInt(),
-          'bytes': 1000
+          'satoshis': policy.miningFee.satoshis,
+          'bytes': policy.miningFee.bytes,
         },
         'timestamp': DateTime.now().toIso8601String(),
       };
@@ -441,20 +573,20 @@ class ARCActor extends Actor {
       // Estimate transaction size (P2PKH inputs: ~148 bytes, outputs: ~34 bytes, overhead: ~10 bytes)
       final estimatedSize = (msg.inputCount * 148) + (msg.outputCount * 34) + 10;
 
-      // Try to get fee rate from Arc policy, fall back to 1 sat/KB default
-      double feeRatePerKb = 1.0; // Default: 1 satoshi per kilobyte (current network standard)
+      // ARC policy miningFee; fall back to 1 sat per 1000 bytes
+      ArcFeeAmount fee = const ArcFeeAmount(satoshis: 1, bytes: 1000);
 
       try {
         if (_arcService != null) {
           final policy = await _arcService!.getPolicy();
-          feeRatePerKb = policy.standardFeePerKb;
+          fee = policy.miningFee;
         }
       } catch (e) {
-        _log.warning('Failed to get fee rate from Arc policy: $e');
+        _log.warning('Failed to get fee rate from Arc policy, using 1 sat/1000 bytes: $e');
       }
 
-      // Calculate fee: (size_in_bytes * fee_rate_per_kb) / 1000
-      final estimatedFee = BigInt.from((estimatedSize * feeRatePerKb) ~/ 1000);
+      // Rounded up: a truncated fee undercuts the policy.
+      final estimatedFee = fee.feeFor(estimatedSize);
 
       context.sender?.tell(FeeEstimateMessage(estimatedFee));
 
@@ -481,12 +613,43 @@ class ARCActor extends Actor {
       }
       if (transactions.isEmpty) return;
 
-      _log.info('Checking ${transactions.length} non-terminal transaction(s)');
+      final now = DateTime.now();
+      final pendingIds = <String>{};
+      var checked = 0;
       for (final tx in transactions) {
         final walletId = tx.walletId;
         if (walletId == null || walletId.isEmpty) continue;
-        _log.info('  Checking tx ${tx.txid.substring(0, 8)}... stored=${tx.status.name} wallet=$walletId');
-        await _checkAndUpdateTransactionStatus(tx.txid, walletId, tx.status);
+        if (_stopped) return;
+
+        // Incremental: a pending transaction ARC knows nothing about (never
+        // broadcast by us, or not yet by the counterparty) is re-queried
+        // with back-off, not on every scan.
+        final isPending = tx.status == TransactionStatus.pending;
+        if (isPending) {
+          pendingIds.add(tx.txid);
+          final backoff = _pendingBackoff[tx.txid];
+          if (backoff != null && now.isBefore(backoff.due)) continue;
+        }
+
+        checked++;
+        _log.fine('  Checking tx ${tx.txid.substring(0, 8)}... stored=${tx.status.name} wallet=$walletId');
+        final outcome = await _checkAndUpdateTransactionStatus(tx.txid, walletId, tx.status);
+
+        if (isPending) {
+          if (outcome == _CheckOutcome.changed) {
+            _pendingBackoff.remove(tx.txid);
+          } else {
+            final misses = (_pendingBackoff[tx.txid]?.misses ?? 0) + 1;
+            var wait = statusCheckInterval * (1 << (misses.clamp(1, 10)));
+            if (wait > _maxPendingBackoff) wait = _maxPendingBackoff;
+            _pendingBackoff[tx.txid] = _Backoff(DateTime.now().add(wait), misses);
+          }
+        }
+      }
+      // Forget back-off state of transactions that are no longer pending.
+      _pendingBackoff.removeWhere((txid, _) => !pendingIds.contains(txid));
+      if (checked > 0) {
+        _log.info('Checked $checked of ${transactions.length} non-terminal transaction(s)');
       }
     } catch (e) {
       _log.warning('Failed to check non-terminal transactions: $e');
@@ -496,11 +659,11 @@ class ARCActor extends Actor {
   /// Check and update status for a specific transaction.
   /// Compares the current stored status with ARC's reported status and takes
   /// appropriate action on transitions (deferred spend, confirmation, orphan remediation).
-  Future<void> _checkAndUpdateTransactionStatus(String txid, String walletId, TransactionStatus currentStatus) async {
-    if (_arcService == null) return;
+  Future<_CheckOutcome> _checkAndUpdateTransactionStatus(String txid, String walletId, TransactionStatus currentStatus) async {
+    if (_arcService == null) return _CheckOutcome.unknown;
 
     try {
-      final response = await _arcService!.getTransaction(txid);
+      final ArcTransactionResponse response = await _arcService!.getTransaction(txid);
       final arcTxStatus = _arcStatusToTransactionStatus(response.status);
       _log.info('  ARC reports: ${response.status} (mapped: ${arcTxStatus?.name}) for ${txid.substring(0, 8)}... (stored: ${currentStatus.name})');
 
@@ -510,11 +673,19 @@ class ARCActor extends Actor {
           _updateTransactionStatusFromArc(walletId, txid, response.status);
         }
         _handleOrphanedTransaction(txid);
-        return;
+        return _CheckOutcome.changed;
+      }
+
+      // MINED: confirm only once the proof checks out against our headers.
+      if (response.status == ArcTransactionStatus.mined) {
+        _orphanRemediationAttempts.remove(txid);
+        await _handleMinedReport(txid, walletId, response);
+        return _CheckOutcome.changed;
       }
 
       // Only act on status changes (comparing stored status with ARC status)
-      if (arcTxStatus == null || arcTxStatus == currentStatus) return;
+      if (arcTxStatus == null) return _CheckOutcome.unknown;
+      if (arcTxStatus == currentStatus) return _CheckOutcome.unchanged;
 
       // Update the transaction status in the wallet
       _updateTransactionStatusFromArc(walletId, txid, response.status);
@@ -554,36 +725,98 @@ class ARCActor extends Actor {
         }
       }
 
-      // MINED: Confirm transaction and store merkle proof
-      if (response.status == ArcTransactionStatus.mined && response.blockHeight != null) {
-        _orphanRemediationAttempts.remove(txid);
-
-        _walletManager.tell(WalletCommandMessage(walletId, ConfirmTransactionCommand(
-          walletId: walletId,
-          txid: txid,
-          blockHeight: response.blockHeight,
-          blockHash: response.blockHash,
-        )));
-
-        // Store merkle proof if available
-        if (response.merklePath != null &&
-            response.merklePath!.isNotEmpty &&
-            response.blockHash != null) {
-          try {
-            await _storage.storeMerkleProof(txid, MerkleProof(
-              txid: txid,
-              blockHash: response.blockHash!,
-              blockHeight: response.blockHeight!,
-              merkleProof: response.merklePath!,
-              position: 0,
-            ));
-          } catch (e) {
-            _log.warning('Failed to store merkle proof for $txid: $e');
-          }
-        }
-      }
+      return _CheckOutcome.changed;
     } catch (e) {
       _log.warning('Failed to check transaction $txid: $e');
+      return _CheckOutcome.unknown;
+    }
+  }
+
+  /// ARC says [txid] is MINED: verify its merkle path against the stored
+  /// header at that height before confirming (SPV-09).
+  Future<void> _handleMinedReport(String txid, String walletId, ArcTransactionResponse response) async {
+    if (_confirmedRecently(txid)) return;
+    final bumpHex = response.merklePathHex;
+    if (bumpHex == null) {
+      _log.warning('ARC reports $txid MINED without a merklePath; not confirming until a proof is available');
+      return;
+    }
+    await _applyProofCheck(txid, _PendingProof(walletId, bumpHex, response.blockHeight),
+        arcBlockHash: response.blockHash);
+  }
+
+  /// Check a held or fresh proof against the headers and act on the result.
+  Future<void> _applyProofCheck(String txid, _PendingProof proof, {String? arcBlockHash}) async {
+    final check = await checkBumpHexAgainstHeaders(
+      txid: txid,
+      bumpHex: proof.bumpHex,
+      headerAt: _storage.getBlockHeaderByHeight,
+      claimedHeight: proof.claimedHeight,
+    );
+    switch (check.status) {
+      case ProofHeaderStatus.verified:
+        if (arcBlockHash != null && arcBlockHash != check.blockHash) {
+          _log.warning('ARC block hash $arcBlockHash for $txid differs from the local header '
+              '${check.blockHash} at height ${check.blockHeight}; the local chain is used');
+        }
+        await _confirmVerified(txid, proof, check);
+        break;
+      case ProofHeaderStatus.headerUnknown:
+        if (!_pendingProofs.containsKey(txid)) {
+          _log.info('ARC reports $txid MINED at height ${check.blockHeight}; header not stored yet, '
+              'confirmation deferred until it arrives');
+        }
+        _pendingProofs[txid] = proof;
+        break;
+      case ProofHeaderStatus.rootMismatch:
+        _pendingProofs.remove(txid);
+        _log.severe('ARC proof for $txid does not match the local header at height '
+            '${check.blockHeight}: ${check.detail}. Not confirming.');
+        break;
+      case ProofHeaderStatus.malformed:
+        _pendingProofs.remove(txid);
+        _log.severe('ARC proof for $txid is invalid: ${check.detail}. Not confirming.');
+        break;
+    }
+  }
+
+  Future<void> _confirmVerified(String txid, _PendingProof proof, ProofHeaderCheck check) async {
+    // Claim the txid synchronously so a concurrent scan / re-check cannot
+    // confirm it a second time.
+    if (_confirmedRecently(txid)) return;
+    _recentlyConfirmed[txid] = DateTime.now();
+    _recentlyConfirmed.removeWhere((_, at) => DateTime.now().difference(at) > _minReconfirmWindow * 10);
+    _pendingProofs.remove(txid);
+
+    try {
+      await _storage.storeMerkleProof(txid, MerkleProof(
+        txid: txid,
+        blockHash: check.blockHash!,
+        blockHeight: check.blockHeight!,
+        merkleProof: [proof.bumpHex],
+        position: check.txIndex!,
+      ));
+    } catch (e) {
+      _log.warning('Failed to store merkle proof for $txid: $e');
+    }
+
+    _walletManager.tell(WalletCommandMessage(proof.walletId, ConfirmTransactionCommand(
+      walletId: proof.walletId,
+      txid: txid,
+      blockHeight: check.blockHeight,
+      blockHash: check.blockHash,
+    )));
+    _log.info('Transaction $txid confirmed at height ${check.blockHeight} (proof verified against local header)');
+  }
+
+  /// Re-check held MINED proofs against the headers stored since.
+  Future<void> _recheckPendingProofs() async {
+    if (_pendingProofs.isEmpty) return;
+    for (final entry in List.of(_pendingProofs.entries)) {
+      if (_stopped) return;
+      // Skip entries a concurrent scan already resolved.
+      if (!identical(_pendingProofs[entry.key], entry.value)) continue;
+      await _applyProofCheck(entry.key, entry.value);
     }
   }
 
@@ -603,10 +836,11 @@ class ARCActor extends Actor {
   ///
   /// This is triggered when new block headers are received, to check if any
   /// pending UTXOs have been mined and need merkle proofs fetched.
+  ///
+  /// SPVActor sends one per stored header; the scan is debounced and runs
+  /// outside the mailbox (A-M3).
   Future<void> _handleCheckStoragePendingUTXOs(CheckStoragePendingUTXOsMessage msg) async {
-
-    // Delegate to the storage-backed check which covers all non-terminal transactions
-    await _checkNonTerminalTransactions();
+    await _onHeadersArrived();
   }
 
   /// Map an ARC status to a TransactionStatus enum value (for comparison).
@@ -651,7 +885,10 @@ class ARCActor extends Actor {
         txStatus = TransactionStatus.seenOnNetwork;
         break;
       case ArcTransactionStatus.mined:
-        txStatus = TransactionStatus.confirmed;
+        // Not from ARC's word alone: confirmation goes through the verified
+        // merkle-path check (_handleMinedReport) on the next scan (SPV-09).
+        txStatus = null;
+        unawaited(_runScan());
         break;
       case ArcTransactionStatus.seenInOrphanMempool:
         txStatus = TransactionStatus.orphaned;
@@ -898,7 +1135,9 @@ class ARCActor extends Actor {
 
   @override
   void postStop() {
+    _stopped = true;
     _statusCheckTimer?.cancel();
+    _headerDebounceTimer?.cancel();
   }
 
 }

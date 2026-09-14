@@ -16,6 +16,7 @@ import '../models/wallet_event.dart';
 import '../core/wallet_commands.dart';
 import '../core/wallet_events.dart';
 import 'wallet_messages.dart';
+import '../utils/network_name.dart';
 
 /// Actor for handling long-running wallet import operations
 ///
@@ -384,9 +385,7 @@ class ImportActor extends Actor {
     final privateKey = dartsv.SVPrivateKey.fromWIF(message.wif!);
     
     // Determine network type
-    final network = message.networkType == 'main'
-        ? dartsv.NetworkType.MAIN
-        : dartsv.NetworkType.TEST;
+    final network = NetworkName.toDartsv(message.networkType);
     
     // Derive the single address
     final address = dartsv.Address.fromPublicKey(privateKey.publicKey, network).toBase58();
@@ -642,18 +641,14 @@ class ImportActor extends Actor {
         
         // Extract sending address from output script
         final scriptRegistry = ScriptTypeRegistry(
-          networkType: message.networkType == 'main' 
-            ? dartsv.NetworkType.MAIN 
-            : dartsv.NetworkType.TEST,
+          networkType: NetworkName.toDartsv(message.networkType),
         );
         final scriptType = scriptRegistry.identifyScriptType(spentOutput.script);
         
         if (scriptType?.toLowerCase() == 'p2pkh') {
           final locker = dartsv.P2PKHLockBuilder.fromScript(
             spentOutput.script,
-            networkType: message.networkType == 'main' 
-              ? dartsv.NetworkType.MAIN 
-              : dartsv.NetworkType.TEST,
+            networkType: NetworkName.toDartsv(message.networkType),
           );
           if (locker.address != null) {
             final senderAddress = locker.address!.toBase58();
@@ -728,9 +723,7 @@ class ImportActor extends Actor {
       
       // Step 1: Identify script type
       final scriptRegistry = ScriptTypeRegistry(
-        networkType: message.networkType == 'main' 
-          ? dartsv.NetworkType.MAIN 
-          : dartsv.NetworkType.TEST,
+        networkType: NetworkName.toDartsv(message.networkType),
       );
       final scriptType = scriptRegistry.identifyScriptType(output.script);
       _logger.fine('            Script type: $scriptType');
@@ -743,9 +736,7 @@ class ImportActor extends Actor {
           // Use P2PKH builder to extract address
           final locker = dartsv.P2PKHLockBuilder.fromScript(
             output.script,
-            networkType: message.networkType == 'main' 
-              ? dartsv.NetworkType.MAIN 
-              : dartsv.NetworkType.TEST,
+            networkType: NetworkName.toDartsv(message.networkType),
           );
           outputAddress = locker.address?.toBase58();
           _logger.fine('            Decoded P2PKH address: $outputAddress');
@@ -760,9 +751,7 @@ class ImportActor extends Actor {
           _logger.info('            P2MS (multisig) output detected');
           
           final scriptRegistry = ScriptTypeRegistry(
-            networkType: message.networkType == 'main' 
-              ? dartsv.NetworkType.MAIN 
-              : dartsv.NetworkType.TEST,
+            networkType: NetworkName.toDartsv(message.networkType),
           );
           final scriptInfo = scriptRegistry.extractScriptMetadata(output.script);
           final pubKeys = scriptInfo?['publicKeys'] as List?;
@@ -770,9 +759,7 @@ class ImportActor extends Actor {
           if (pubKeys != null && pubKeys.isNotEmpty) {
             _logger.info('            Multisig has ${pubKeys.length} public keys');
             
-            final network = message.networkType == 'main' 
-              ? dartsv.NetworkType.MAIN 
-              : dartsv.NetworkType.TEST;
+            final network = NetworkName.toDartsv(message.networkType);
             
             // Check if any public key derives to a wallet address
             for (final pubKeyHex in pubKeys) {

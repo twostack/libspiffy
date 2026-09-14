@@ -1,3 +1,27 @@
+## Unreleased
+
+Test-coverage and follow-up fixes for the 2.0.0 audit. Every finding marked
+fixed in `doc/audit-2026-09-14.md` now has a regression test that was shown
+to fail with the fix reverted and pass with it applied (report section 2,
+`Test` rows). Writing those tests found five more defects (report section
+11), all fixed here:
+
+- **Mainnet wallets could not sign after output scanning, and the wallet
+  projection threw on imported mainnet transactions.** Both sites built the
+  process-wide `ScriptTypeRegistry` with the testnet default (V-1).
+- **`networkType: 'mainnet'` still selected testnet** for the default ARC
+  endpoint, the CDN, P2P magic and seed peers, and for key derivation in
+  the importer and address discovery. All remaining literal `'main'`
+  comparisons go through `NetworkName` (V-2).
+- **An address generated without a label could not be signed for** via the
+  aggregate state lookup (V-3).
+- The Postgres test suite is re-runnable after the uint32-nonce test (V-4).
+
+API additions (no behaviour change): `PaymentCoordinatorActor(reservationReplyTimeout:)`
+(default 10 s), `LibSpiffyActorSystem.arcConfig`,
+`CdnHeaderSyncService.cacheFilePath` (`@visibleForTesting`),
+`PostgresEventStore.beforeReplayQuery` / `afterReplayQuery` (`@visibleForTesting`).
+
 ## 2.0.0
 
 Dependency upgrade and audit release. libspiffy now tracks **dactor 1.3.0**,

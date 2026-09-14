@@ -534,6 +534,80 @@ void main() {
       });
     });
     */
+
+    /// Audit 2026-09-14 C1: SpendUTXOCommand rejected any UTXO that was not
+    /// `available`, so a deferred spend of a UTXO reserved for that very
+    /// transaction never applied (and the reservation expiry later returned
+    /// an on-chain-spent coin to `available`).
+    group('SpendUTXOCommand after reservation (audit C1)', () {
+      const reservingTxId = 'payment_tx_X';
+      late WalletState reservedState;
+
+      setUp(() async {
+        // Reserve the UTXO through the aggregate, as the payment coordinator
+        // does, and build the post-reservation state from the emitted event.
+        final events = await aggregate.handleCommand(
+          initialState,
+          ReserveUTXOCommand(
+            walletId: 'test_wallet',
+            utxoKey: 'test_tx_1:0',
+            reservedByTxId: reservingTxId,
+            reservationReason: 'Deferred spend',
+          ),
+        );
+        final reservedEvent = events.single as UTXOReservedEvent;
+        reservedState = initialState.copyWithWallet(
+          utxos: {
+            ...initialState.utxos,
+            'test_tx_1:0': initialState.utxos['test_tx_1:0']!.copyWith(
+              status: UTXOStatus.reserved,
+              reservedByTxId: reservedEvent.reservedByTxId,
+              reservationReason: reservedEvent.reservationReason,
+              reservationExpiresAt: reservedEvent.expiresAt,
+            ),
+          },
+          version: reservedEvent.version,
+        );
+
+        final reserved = reservedState.utxos['test_tx_1:0']!;
+        expect(reserved.status, equals(UTXOStatus.reserved));
+        expect(reserved.reservedByTxId, equals(reservingTxId));
+      });
+
+      test('spending with the reserving txid emits UTXOSpentEvent', () async {
+        final events = await aggregate.handleCommand(
+          reservedState,
+          SpendUTXOCommand(
+            walletId: 'test_wallet',
+            utxoKey: 'test_tx_1:0',
+            spendingTxId: reservingTxId,
+            fee: BigInt.from(100),
+          ),
+        );
+
+        expect(events, hasLength(1));
+        expect(events.single, isA<UTXOSpentEvent>());
+        final spent = events.single as UTXOSpentEvent;
+        expect(spent.txid, equals('test_tx_1'));
+        expect(spent.vout, equals(0));
+        expect(spent.spentInTxId, equals(reservingTxId));
+      });
+
+      test('spending with a different txid is still rejected', () {
+        expect(
+          () => aggregate.handleCommand(
+            reservedState,
+            SpendUTXOCommand(
+              walletId: 'test_wallet',
+              utxoKey: 'test_tx_1:0',
+              spendingTxId: 'other_tx_Y',
+              fee: BigInt.from(100),
+            ),
+          ),
+          throwsA(isA<StateError>()),
+        );
+      });
+    });
   });
 }
 

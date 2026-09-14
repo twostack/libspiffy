@@ -51,17 +51,20 @@ class PaymentCoordinatorActor extends Actor {
   static const _recordPersistTimeout = Duration(seconds: 30);
 
   /// How long to wait for the aggregate's reply to a ReserveUTXOCommand.
-  static const _reservationReplyTimeout = Duration(seconds: 10);
+  /// Injectable so tests can exercise the no-reply path quickly.
+  final Duration _reservationReplyTimeout;
 
   PaymentCoordinatorActor({
     required ActorRef walletManager,
     required ActorRef walletProjection,
     required ReadModelStorage storage,
     required SecureStorage secureStorage,
+    Duration reservationReplyTimeout = const Duration(seconds: 10),
   })  : _storage = storage,
         _secureStorage = secureStorage,
         _walletManager = walletManager,
-        _walletProjection = walletProjection {
+        _walletProjection = walletProjection,
+        _reservationReplyTimeout = reservationReplyTimeout {
     _ancestorService = AncestorChainService(storage: storage);
   }
 

@@ -98,6 +98,34 @@ void main() {
         // Verify wallet is deleted
         expect(await storage.walletExists(walletId), isFalse);
       });
+
+      test('should keep network and rootAddress on a metadata-only update', () async {
+        // S-06: the in-memory backend used to overwrite the whole record, so
+        // a balance update that omitted networkType/rootAddress dropped them
+        // (the Isar and Postgres backends merge).
+        const walletId = 'net_wallet';
+
+        await storage.storeWallet(
+          walletId,
+          'Net Wallet',
+          rootAddress: 'root-addr',
+          networkType: 'testnet',
+          metadata: {'version': 1},
+        );
+        await storage.storeWallet(
+          walletId,
+          'Net Wallet',
+          metadata: {'confirmedBalance': '100'},
+        );
+
+        final wallet = await storage.getWallet(walletId);
+        expect(wallet, isNotNull);
+        expect(wallet!['network'], equals('testnet'));
+        expect(wallet['networkType'], equals('testnet'));
+        expect(wallet['rootAddress'], equals('root-addr'));
+        expect(wallet['metadata'],
+            equals({'version': 1, 'confirmedBalance': '100'}));
+      });
     });
 
     group('Event Store Operations', () {

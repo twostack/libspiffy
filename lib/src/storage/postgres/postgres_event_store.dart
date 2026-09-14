@@ -9,7 +9,7 @@ import 'dart:typed_data';
 
 import 'package:eventador/eventador.dart';
 import 'package:logging/logging.dart';
-
+import 'package:meta/meta.dart';
 import 'package:postgres/postgres.dart';
 
 import 'postgres_config.dart';
@@ -32,6 +32,16 @@ class PostgresEventStore implements EventStore, EventStream {
       StreamController<_PersistedEvent>.broadcast();
   bool _isInitialized = false;
   bool _isClosed = false;
+
+  /// Test hooks around a live stream's replay query: [beforeReplayQuery] is
+  /// awaited just before the journal SELECT is issued and [afterReplayQuery]
+  /// just after it returns, before any row is emitted. They let a test park
+  /// the replay and persist events at an exact point relative to the query's
+  /// snapshot, which is otherwise a timing race. Never set in production.
+  @visibleForTesting
+  Future<void> Function()? beforeReplayQuery;
+  @visibleForTesting
+  Future<void> Function()? afterReplayQuery;
 
   /// Creates a new PostgresEventStore with the given configuration.
   ///
@@ -401,6 +411,7 @@ class PostgresEventStore implements EventStore, EventStream {
 
   /// Every journal row with `id > fromId`, in id order.
   Stream<_PersistedEvent> _journalAfterId(int fromId) async* {
+    await beforeReplayQuery?.call();
     final result = await _pool!.execute(
       Sql.named('''
         SELECT id, persistence_id, sequence_number, event_data, event_type, event_id
@@ -410,6 +421,7 @@ class PostgresEventStore implements EventStore, EventStream {
       '''),
       parameters: {'fromId': fromId},
     );
+    await afterReplayQuery?.call();
     for (final row in result) {
       final p = _rowToPersisted(row);
       if (p != null) yield p;
@@ -421,6 +433,7 @@ class PostgresEventStore implements EventStore, EventStream {
     String persistenceId,
     int fromSequence,
   ) async* {
+    await beforeReplayQuery?.call();
     final result = await _pool!.execute(
       Sql.named('''
         SELECT id, persistence_id, sequence_number, event_data, event_type, event_id
@@ -434,6 +447,7 @@ class PostgresEventStore implements EventStore, EventStream {
         'fromSequence': fromSequence,
       },
     );
+    await afterReplayQuery?.call();
     for (final row in result) {
       final p = _rowToPersisted(row);
       if (p != null) yield p;

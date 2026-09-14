@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 import 'package:http/http.dart' as http;
 import 'package:logging/logging.dart';
+import 'package:meta/meta.dart';
 import 'package:spiffynode/spiffy_node.dart';
 
 import '../utils/hex_utils.dart' as hex_utils;
@@ -223,7 +224,8 @@ class CdnHeaderSyncService {
   /// only ever used as a single path segment inside [config.cacheDirectory];
   /// anything that could name another directory (separators, `..`, an
   /// absolute path) is rejected rather than joined.
-  String _cacheFilePath(CdnChunkInfo chunk) {
+  @visibleForTesting
+  String cacheFilePath(CdnChunkInfo chunk) {
     final name = chunk.filename;
     if (name.isEmpty ||
         name == '.' ||
@@ -240,7 +242,7 @@ class CdnHeaderSyncService {
   Future<Uint8List> _loadOrDownloadChunk(CdnChunkInfo chunk) async {
     // Check disk cache first
     if (config.cacheDirectory != null) {
-      final cachedFile = File(_cacheFilePath(chunk));
+      final cachedFile = File(cacheFilePath(chunk));
       if (await cachedFile.exists()) {
         final data = await cachedFile.readAsBytes();
         if (_validateChunkIntegrity(data, chunk.sha256)) {
@@ -272,7 +274,7 @@ class CdnHeaderSyncService {
 
         // Cache to disk for crash resilience
         if (config.cacheDirectory != null) {
-          await File(_cacheFilePath(chunk))
+          await File(cacheFilePath(chunk))
               .writeAsBytes(data);
         }
 
@@ -290,7 +292,7 @@ class CdnHeaderSyncService {
   /// Delete a cached chunk file if disk caching is enabled.
   Future<void> _deleteCachedChunk(CdnChunkInfo chunk) async {
     if (config.cacheDirectory != null) {
-      final cachedFile = File(_cacheFilePath(chunk));
+      final cachedFile = File(cacheFilePath(chunk));
       if (await cachedFile.exists()) {
         await cachedFile.delete();
       }

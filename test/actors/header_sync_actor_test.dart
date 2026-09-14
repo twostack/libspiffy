@@ -242,6 +242,29 @@ void main() {
       });
     });
 
+    group('Sync in-progress flag', () {
+      test('a sync attempt with no connected peers does not block later syncs', () async {
+        // First attempt: peer manager is set but has no connected peers.
+        final noPeers = _FakePeerManager(onGetHeaders: () {}, hasPeers: false);
+        headerSyncActor.tell(SetPeerManagerMessage(noPeers));
+        headerSyncActor.tell(InitiateHeaderSyncMessage());
+        await Future.delayed(Duration(milliseconds: 200));
+        expect(noPeers.getHeadersRequests, equals(0));
+
+        // A peer connects and sync is requested again. Before the fix the
+        // first attempt had already set _syncInProgress = true before it
+        // discovered there were no peers, so this (and every later) request
+        // was skipped as a "duplicate" and getHeaders was never sent.
+        final withPeer = _FakePeerManager(onGetHeaders: () {});
+        headerSyncActor.tell(SetPeerManagerMessage(withPeer));
+        headerSyncActor.tell(InitiateHeaderSyncMessage());
+        await Future.delayed(Duration(milliseconds: 200));
+
+        expect(withPeer.getHeadersRequests, equals(1),
+            reason: 'getHeaders must be sent once a peer is available');
+      });
+    });
+
     group('Error Handling', () {
       test('should handle invalid headers gracefully', () async {
         // Load real headers and create one invalid header
@@ -660,11 +683,12 @@ class _UnknownTestMessage implements Message {
 /// `dynamic`). [onGetHeaders] runs whenever a getHeaders message is written.
 class _FakePeerManager {
   final void Function() onGetHeaders;
+  final bool hasPeers;
   int getHeadersRequests = 0;
 
-  _FakePeerManager({required this.onGetHeaders});
+  _FakePeerManager({required this.onGetHeaders, this.hasPeers = true});
 
-  List<_FakePeer> getPeers() => [_FakePeer(this)];
+  List<_FakePeer> getPeers() => hasPeers ? [_FakePeer(this)] : [];
 }
 
 class _FakePeer {

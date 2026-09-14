@@ -3,6 +3,7 @@ import 'package:logging/logging.dart';
 
 import '../models/blockchain_data_models.dart';
 import 'blockchain_data_source.dart';
+import '../utils/network_name.dart';
 
 /// Service for discovering used addresses in an HD wallet
 ///
@@ -53,9 +54,7 @@ class AddressDiscoveryService {
     int totalTransactions = 0;
 
     // Determine network type
-    final network = networkType == 'main'
-        ? dartsv.NetworkType.MAIN
-        : dartsv.NetworkType.TEST;
+    final network = NetworkName.toDartsv(networkType);
     
     _logger.info('   Network type resolved to: ${network == dartsv.NetworkType.MAIN ? "MAINNET" : "TESTNET"}');
 
@@ -210,9 +209,7 @@ class AddressDiscoveryService {
       throw ArgumentError('Invalid index range: $startIndex to $endIndex');
     }
 
-    final network = networkType == 'main'
-        ? dartsv.NetworkType.MAIN
-        : dartsv.NetworkType.TEST;
+    final network = NetworkName.toDartsv(networkType);
 
     final usedAddresses = <DiscoveredAddress>[];
     final chainKey = hdPublicKey.deriveChildNumber(isChange ? 1 : 0);

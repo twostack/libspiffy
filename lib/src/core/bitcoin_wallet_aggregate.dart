@@ -1289,8 +1289,9 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         effectiveIndex = 0; // Root address is always at index 0
       } else {
         // Fall back to aggregate state lookup
-        final addressInfo = currentState.addresses[address];
-        if (addressInfo == null) {
+        // `addresses` maps address -> optional label, so presence must be
+        // checked with containsKey: an unlabelled address has a null value.
+        if (!currentState.addresses.containsKey(address)) {
           throw StateError('Address $address not found in wallet state');
         }
         effectiveIndex = currentState.metadata['address_indices']?[address] ?? 0;
@@ -1385,7 +1386,12 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
 
         //Create the placeholder Tx Input that will hold the signature
 
-        final registry = ScriptTypeRegistry();
+        // ScriptTypeRegistry is a singleton pinned to the first network it
+        // is built with; the default (testnet) threw for mainnet wallets
+        // once output scanning had initialised it for mainnet.
+        final registry = ScriptTypeRegistry(
+          networkType: NetworkName.toDartsv(currentState.networkType),
+        );
 
         final utxoScript = dartsv.SVScript.fromHex(utxo.scriptPubKey);
         final scriptType = registry.identifyScriptType(utxoScript);

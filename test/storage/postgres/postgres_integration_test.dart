@@ -19,9 +19,11 @@
 @Tags(['postgres', 'integration'])
 library;
 
+import 'dart:async';
 import 'dart:io';
 
 import 'package:dartsv/dartsv.dart' as dartsv;
+import 'package:eventador/eventador.dart';
 import 'package:spiffynode/spiffy_node.dart';
 import 'package:test/test.dart';
 
@@ -47,6 +49,75 @@ PostgresConfig getTestConfig() {
   );
 }
 
+/// Removes every stored block header.
+///
+/// The header tests store real mainnet headers whose nonce exceeds int32.
+/// Such rows make v003's `down` (narrowing back to INTEGER) fail, so they
+/// must be gone before the schema is reset and after the header group.
+Future<void> clearBlockHeaders(PostgresConfig config) async {
+  final pool = await config.createPool();
+  try {
+    await pool.execute('DELETE FROM block_headers');
+  } catch (_) {
+    // Table absent (schema not yet migrated): nothing to clear.
+  } finally {
+    await pool.close();
+  }
+}
+
+/// Minimal event for the event-stream tests.
+class StreamRaceEvent extends Event {
+  final String data;
+
+  /// Padding so a large journal makes the replay SELECT measurably slow.
+  final String padding;
+
+  StreamRaceEvent(
+    this.data, {
+    this.padding = '',
+    super.eventId,
+    super.timestamp,
+  });
+
+  @override
+  Map<String, dynamic> toMap() =>
+      {...super.toMap(), 'data': data, 'padding': padding};
+
+  static StreamRaceEvent fromMap(Map<String, dynamic> map) => StreamRaceEvent(
+        map['data'] as String,
+        padding: map['padding'] as String? ?? '',
+        eventId: map['eventId'] as String,
+        timestamp: map['timestamp'] is DateTime
+            ? map['timestamp'] as DateTime
+            : DateTime.parse(map['timestamp'] as String),
+      );
+}
+
+/// Polls until [condition] holds or [timeout] elapses.
+Future<void> waitUntil(
+  bool Function() condition, {
+  Duration timeout = const Duration(seconds: 10),
+}) async {
+  final deadline = DateTime.now().add(timeout);
+  while (!condition()) {
+    if (DateTime.now().isAfter(deadline)) return;
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+  }
+}
+
+/// A header for the block-header tests, unique per [seed].
+BlockHeader syntheticHeader(int seed) => BlockHeader(
+      version: 1,
+      prevBlock: Hash.fromHex(seed.toRadixString(16).padLeft(64, '0')),
+      merkleRoot: Hash.fromHex((seed + 1).toRadixString(16).padLeft(64, '0')),
+      timestamp: DateTime.fromMillisecondsSinceEpoch(
+        (1231469665 + seed) * 1000,
+        isUtc: true,
+      ),
+      bits: 0x1d00ffff,
+      nonce: seed,
+    );
+
 void main() {
   final config = getTestConfig();
 
@@ -55,6 +126,7 @@ void main() {
       final migrations = PostgresMigrations(config);
 
       // Reset to clean state
+      await clearBlockHeaders(config);
       await migrations.reset();
 
       // Run migrations
@@ -110,6 +182,10 @@ void main() {
       // Ensure migrations are run
       final migrations = PostgresMigrations(config);
       await migrations.migrate();
+      EventRegistry.register<StreamRaceEvent>(
+        'StreamRaceEvent',
+        StreamRaceEvent.fromMap,
+      );
     });
 
     setUp(() async {
@@ -121,6 +197,169 @@ void main() {
       await eventStore.close();
     });
 
+    // S-00: the live subscription used to be opened only after the historical
+    // replay finished, so anything persisted between the replay SELECT's
+    // snapshot and the end of the replay was never delivered to that
+    // subscriber. The store's replay hooks park the replay at exact points so
+    // the race is reproduced deterministically:
+    //   before the query  -> events land in the snapshot AND arrive live
+    //                        (must be delivered once, not twice);
+    //   after the query   -> events are not in the snapshot and arrive live
+    //                        while the replay is still running (must be
+    //                        buffered, not lost);
+    //   after the replay  -> ordinary live events.
+    test(
+        'live stream delivers events persisted during replay exactly once, in order',
+        () async {
+      final pid = 'stream-race-${DateTime.now().microsecondsSinceEpoch}';
+      const seeded = 10;
+      const beforeQuery = 3;
+      const afterQuery = 4;
+      const live = 3;
+
+      var version = 0;
+      Future<void> persist(String tag, int count) async {
+        for (var i = 0; i < count; i++) {
+          await eventStore.persistEvent(
+              pid, StreamRaceEvent('$tag-$i'), version++);
+        }
+      }
+
+      await persist('seed', seeded);
+      final baseline =
+          await eventStore.allEventsWithSequence(live: false).toList();
+      final firstId = baseline[baseline.length - seeded].$2;
+
+      final queryGate = Completer<void>();
+      final queryIssued = Completer<void>();
+      final rowsGate = Completer<void>();
+      final queryDone = Completer<void>();
+      eventStore.beforeReplayQuery = () {
+        queryIssued.complete();
+        return queryGate.future;
+      };
+      eventStore.afterReplayQuery = () {
+        queryDone.complete();
+        return rowsGate.future;
+      };
+
+      final received = <(Event, int)>[];
+      final sub = eventStore
+          .allEventsWithSequence(fromSequence: firstId - 1)
+          .listen(received.add);
+
+      // Replay parked before its SELECT: these commit into the snapshot and
+      // are also published live to the (already open) subscription.
+      await queryIssued.future;
+      await persist('before', beforeQuery);
+      expect(received, isEmpty, reason: 'nothing is emitted before the replay');
+      queryGate.complete();
+
+      // Replay parked after its SELECT returned, before any row is emitted:
+      // these are NOT in the snapshot and arrive live mid-replay.
+      await queryDone.future;
+      await persist('during', afterQuery);
+      expect(received, isEmpty, reason: 'nothing is emitted before the rows');
+      rowsGate.complete();
+
+      await waitUntil(
+          () => received.length >= seeded + beforeQuery + afterQuery);
+      await persist('live', live);
+      final total = seeded + beforeQuery + afterQuery + live;
+      await waitUntil(() => received.length >= total);
+      await sub.cancel();
+
+      expect(received.map((r) => r.$2), List.generate(total, (i) => firstId + i),
+          reason: 'envelope ids must be contiguous, strictly increasing, '
+              'and each delivered exactly once');
+      expect(
+        received.map((r) => (r.$1 as StreamRaceEvent).data),
+        [
+          for (var i = 0; i < seeded; i++) 'seed-$i',
+          for (var i = 0; i < beforeQuery; i++) 'before-$i',
+          for (var i = 0; i < afterQuery; i++) 'during-$i',
+          for (var i = 0; i < live; i++) 'live-$i',
+        ],
+      );
+    });
+
+    test('per-actor live stream buffers events persisted during replay',
+        () async {
+      final stamp = DateTime.now().microsecondsSinceEpoch;
+      final a = 'actor-a-$stamp';
+      final b = 'actor-b-$stamp';
+      var versionA = 0;
+      var versionB = 0;
+      Future<void> persistA(String tag) => eventStore.persistEvent(
+          a, StreamRaceEvent('a-$tag'), versionA++);
+      Future<void> persistB(String tag) => eventStore.persistEvent(
+          b, StreamRaceEvent('b-$tag'), versionB++);
+
+      await persistA('seed-0');
+      await persistA('seed-1');
+      await persistB('seed-0');
+
+      final rowsGate = Completer<void>();
+      final queryDone = Completer<void>();
+      eventStore.afterReplayQuery = () {
+        queryDone.complete();
+        return rowsGate.future;
+      };
+
+      final received = <String>[];
+      final sub = eventStore
+          .eventsByPersistenceId(a)
+          .listen((e) => received.add((e as StreamRaceEvent).data));
+
+      await queryDone.future;
+      await persistA('during-0');
+      await persistB('during-0');
+      await persistA('during-1');
+      rowsGate.complete();
+
+      await waitUntil(() => received.length >= 4);
+      await persistB('live-0');
+      await persistA('live-0');
+      await waitUntil(() => received.length >= 5);
+      await sub.cancel();
+
+      expect(received,
+          ['a-seed-0', 'a-seed-1', 'a-during-0', 'a-during-1', 'a-live-0']);
+    });
+
+    test('live stream stays gap-free without hooks while events are persisted',
+        () async {
+      // The unhooked path: subscribe while a batch of persists is in flight
+      // and check the property that matters (no gap, no duplicate, in order).
+      // Which persists land in the replay snapshot and which arrive live is
+      // timing-dependent, so this does not by itself prove the race.
+      final pid = 'stream-natural-${DateTime.now().microsecondsSinceEpoch}';
+      const seeded = 300;
+      const during = 10;
+      var version = 0;
+      for (var b = 0; b < seeded; b += 100) {
+        final batch = List.generate(
+            100, (i) => StreamRaceEvent('seed-${b + i}', padding: 'x' * 1024));
+        await eventStore.persistEvents(pid, batch, version);
+        version += batch.length;
+      }
+      final baseline =
+          await eventStore.allEventsWithSequence(live: false).toList();
+      final firstId = baseline[baseline.length - seeded].$2;
+
+      final received = <int>[];
+      final sub = eventStore
+          .allEventsWithSequence(fromSequence: firstId - 1)
+          .listen((r) => received.add(r.$2));
+      for (var i = 0; i < during; i++) {
+        await eventStore.persistEvent(
+            pid, StreamRaceEvent('during-$i'), version++);
+      }
+      await waitUntil(() => received.length >= seeded + during);
+      await sub.cancel();
+
+      expect(received, List.generate(seeded + during, (i) => firstId + i));
+    });
     test('should get highest sequence number for new persistence ID', () async {
       final seq = await eventStore.getHighestSequenceNumber('new-aggregate-id');
       expect(seq, equals(0));
@@ -188,6 +427,27 @@ void main() {
         final wallets = await storage.listWallets();
         expect(wallets, contains('wallet-1'));
         expect(wallets, contains('wallet-2'));
+      });
+
+      test('keeps the network on a metadata-only update', () async {
+        // S-06: a balance/metadata update passes no networkType; the old
+        // code bound `networkType ?? 'mainnet'`, so every such update reset
+        // a testnet wallet to mainnet.
+        await storage.storeWallet(
+          'net-wallet',
+          'Net Wallet',
+          networkType: 'testnet',
+          metadata: {'version': 1},
+        );
+        await storage.storeWallet(
+          'net-wallet',
+          'Net Wallet',
+          metadata: {'confirmedBalance': '100'},
+        );
+
+        final wallet = await storage.getWallet('net-wallet');
+        expect(wallet, isNotNull);
+        expect(wallet!['network'], equals('testnet'));
       });
     });
 
@@ -324,6 +584,39 @@ void main() {
     });
 
     group('Block Header Operations', () {
+      setUpAll(() => clearBlockHeaders(config));
+      // Leave no header behind whose nonce cannot be narrowed back to
+      // INTEGER, or the next run's schema reset (v003 down) fails.
+      tearDownAll(() => clearBlockHeaders(config));
+
+      test('stores a bulk batch atomically', () async {
+        // S-08: the batch used to be one autocommitted INSERT per header, so
+        // a failure part-way left the earlier headers stored. The third
+        // header's height does not fit the INTEGER height column.
+        final h1 = syntheticHeader(101);
+        final h2 = syntheticHeader(102);
+        final h3 = syntheticHeader(103);
+        const height1 = 700001;
+        const height2 = 700002;
+        const badHeight = 1 << 40;
+
+        await expectLater(
+          storage.storeBlockHeadersBulk([
+            (h1, height1),
+            (h2, height2),
+            (h3, badHeight),
+          ]),
+          throwsA(anything),
+        );
+
+        expect(await storage.getBlockHeaderByHeight(height1), isNull,
+            reason: 'a failed batch must not leave its first header stored');
+        expect(await storage.getBlockHeaderByHeight(height2), isNull,
+            reason: 'a failed batch must not leave its second header stored');
+        expect(await storage.getBlockHeaderByHash(h1.blockHash().toString()),
+            isNull);
+      });
+
       test('stores a header whose nonce exceeds int32', () async {
         // Block 1 on mainnet has nonce 2573394689 (> 2^31 - 1); with the
         // INTEGER column of v001 this insert failed as out of range.

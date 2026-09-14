@@ -921,4 +921,78 @@ void main() {
       });
     });
   });
+
+  // Audit finding SPV-11 (timeouts): every ARC request used to await the
+  // http.Client with no upper bound, so a stalled connection hung the caller
+  // (and the broadcast queue behind it) forever.
+  group('ArcService request timeouts (SPV-11)', () {
+    late _NeverRespondingClient hangingClient;
+    late ArcService arcService;
+
+    setUp(() {
+      hangingClient = _NeverRespondingClient();
+      arcService = ArcService(
+        baseUrl: 'https://arc-test.taal.com/v1',
+        apiKey: 'test-api-key',
+        client: hangingClient,
+        requestTimeout: const Duration(milliseconds: 200),
+      );
+    });
+
+    test('submitTransaction fails with TimeoutException when the server never answers',
+        () async {
+      final stopwatch = Stopwatch()..start();
+      await expectLater(
+        arcService.submitTransaction('00').timeout(const Duration(seconds: 3)),
+        throwsA(isA<TimeoutException>()
+            .having((e) => e.duration, 'duration',
+                const Duration(milliseconds: 200))),
+      );
+      stopwatch.stop();
+      expect(hangingClient.requests, equals(1));
+      expect(stopwatch.elapsedMilliseconds, lessThan(1000));
+    });
+
+    test('getTransaction fails with TimeoutException when the server never answers',
+        () async {
+      final stopwatch = Stopwatch()..start();
+      await expectLater(
+        arcService.getTransaction('a' * 64).timeout(const Duration(seconds: 3)),
+        throwsA(isA<TimeoutException>()
+            .having((e) => e.duration, 'duration',
+                const Duration(milliseconds: 200))),
+      );
+      stopwatch.stop();
+      expect(hangingClient.requests, equals(1));
+      expect(stopwatch.elapsedMilliseconds, lessThan(1000));
+    });
+
+    test('ArcService.fromConfig carries ArcServiceConfig.requestTimeout', () {
+      final service = ArcService.fromConfig(
+        const ArcServiceConfig(
+          baseUrl: 'https://arc-test.taal.com/v1',
+          requestTimeout: Duration(seconds: 7),
+        ),
+        client: hangingClient,
+      );
+      expect(service.requestTimeout, equals(const Duration(seconds: 7)));
+      expect(
+        ArcService(baseUrl: 'https://arc-test.taal.com/v1', client: hangingClient)
+            .requestTimeout,
+        equals(const Duration(seconds: 30)),
+      );
+    });
+  });
+}
+
+/// An [http.Client] whose requests are accepted and then never complete,
+/// like a TCP connection that stalls after the request is written.
+class _NeverRespondingClient extends http.BaseClient {
+  int requests = 0;
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) {
+    requests++;
+    return Completer<http.StreamedResponse>().future;
+  }
 }

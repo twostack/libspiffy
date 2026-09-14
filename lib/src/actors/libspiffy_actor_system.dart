@@ -5,6 +5,7 @@ import 'package:eventador/eventador.dart';
 import 'package:isar/isar.dart';
 import 'package:libspiffy/libspiffy.dart';
 import '../core/wallet_commands.dart';
+import '../utils/network_name.dart';
 import 'package:logging/logging.dart';
 import 'package:spiffynode/spiffy_node.dart';
 
@@ -320,7 +321,7 @@ class LibSpiffyActorSystem {
     // ARCActor used to fall back to TAAL *mainnet* whenever no config was
     // given, even though networkType defaults to 'test'.
     _arcConfig = arcConfig ??
-        (networkType == 'main'
+        (NetworkName.isMainnet(networkType)
             ? ArcServiceConfig.taalMainnet()
             : ArcServiceConfig.taalTestnet());
     _arcService = arcService;  // ← Store mock service for testing
@@ -341,7 +342,7 @@ class LibSpiffyActorSystem {
         try {
           final cdnConfig = CdnHeaderSyncConfig(
             baseUrl: cdnBaseUrl,
-            network: networkType == 'main' ? 'mainnet' : 'testnet',
+            network: NetworkName.canonical(networkType),
             onProgress: onHeaderSyncProgress,
             cacheDirectory: dataDirectory,
           );
@@ -943,7 +944,7 @@ class LibSpiffyActorSystem {
       initializeMessages();
       
       // 2. Map network type to BitcoinNetwork enum
-      final network = networkType == 'main'
+      final network = NetworkName.isMainnet(networkType)
           ? BitcoinNetwork.mainnet
           : networkType == 'regtest'
               ? BitcoinNetwork.regtest
@@ -1056,7 +1057,7 @@ class LibSpiffyActorSystem {
   
   /// Get default seed nodes for the specified network
   List<String> _getDefaultPeers(String networkType) {
-    if (networkType == 'main') return ['seed.bitcoinsv.io:8333'];
+    if (NetworkName.isMainnet(networkType)) return ['seed.bitcoinsv.io:8333'];
     if (networkType == 'regtest') return []; // No default seeds for regtest
     return ['testnet-seed.bitcoinsv.io:18333'];
   }
@@ -1296,6 +1297,10 @@ class LibSpiffyActorSystem {
   /// Returns true if LibSpiffy created its own actor system.
   /// Returns false if a host application provided the actor system.
   bool get ownsActorSystem => _ownsActorSystem;
+
+  /// The ARC configuration resolved by [initialize] (explicit [arcConfig],
+  /// otherwise the TAAL endpoint for [networkType]).
+  ArcServiceConfig? get arcConfig => _arcConfig;
 
   /// Broadcast a wallet event to UI subscribers
   /// 

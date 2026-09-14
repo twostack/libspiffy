@@ -1819,6 +1819,173 @@ void main() {
                 'Plugin output owned by an external address should not become a wallet UTXO');
       });
     });
+
+    group('Signing regressions (audit 2026-09-14)', () {
+      const mnemonic =
+          'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
+      const externalAddress = 'n4VQ5YdHf7hLQ2gWQYYrcxoE5B7nWuDFNF'; // testnet
+      const txidA = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1';
+      const txidB = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb2';
+
+      Future<BitcoinWalletAggregate> createWallet(String walletId, {String? passphrase}) async {
+        final wallet = BitcoinWalletAggregate(
+          aggregateId: walletId,
+          aggregateType: 'Wallet',
+          eventStore: eventStore,
+          cryptoService: cryptoService,
+          secureStorage: secureStorage,
+        );
+        await wallet.preStart();
+        await wallet.commandHandler(CreateWalletCommand(
+          walletId: walletId,
+          walletName: 'Signing wallet',
+          mnemonic: mnemonic,
+          passphrase: passphrase,
+        ));
+        return wallet;
+      }
+
+      /// Generates a fresh address, funds it with a confirmed (available)
+      /// P2PKH UTXO and returns the UTXO key.
+      Future<String> fundNewAddress(
+        BitcoinWalletAggregate wallet, {
+        required String txid,
+        required int vout,
+        required int satoshis,
+        String? label = 'funding',
+      }) async {
+        final before = wallet.currentState.addresses.keys.toSet();
+        await wallet.commandHandler(GenerateAddressCommand(
+          walletId: wallet.aggregateId,
+          label: label,
+        ));
+        final address = wallet.currentState.addresses.keys.firstWhere((a) => !before.contains(a));
+        final pubKeyHash = dartsv.Address.fromBase58(address).pubkeyHash160;
+
+        await wallet.commandHandler(ReceiveUTXOCommand(
+          walletId: wallet.aggregateId,
+          txid: txid,
+          vout: vout,
+          satoshis: BigInt.from(satoshis),
+          scriptPubKey: '76a914${pubKeyHash}88ac',
+          address: address,
+          confirmations: 0,
+        ));
+        final utxoKey = '$txid:$vout';
+        await wallet.commandHandler(UpdateUTXOConfirmationsCommand(
+          walletId: wallet.aggregateId,
+          utxoKey: utxoKey,
+          confirmations: 6,
+          blockHeight: 800000,
+        ));
+        expect(wallet.currentState.utxos[utxoKey]!.status, equals(UTXOStatus.available));
+        return utxoKey;
+      }
+
+      /// Unsigned transaction spending [utxoKeys] to one external output.
+      String unsignedTx(List<String> utxoKeys, int outputSats) {
+        final tx = dartsv.Transaction()
+          ..version = 1
+          ..nLockTime = 0;
+        for (final key in utxoKeys) {
+          final parts = key.split(':');
+          tx.inputs.add(dartsv.TransactionInput(
+            parts[0],
+            int.parse(parts[1]),
+            dartsv.TransactionInput.MAX_SEQ_NUMBER,
+          ));
+        }
+        final script = dartsv.P2PKHLockBuilder.fromAddress(
+          dartsv.Address.fromBase58(externalAddress),
+        ).getScriptPubkey();
+        tx.outputs.add(dartsv.TransactionOutput(BigInt.from(outputSats), script));
+        return tx.serialize();
+      }
+
+      /// Audit KM-2: the BIP39 passphrase was used to derive addresses at
+      /// creation but not when deriving keys for signing, so the signing
+      /// key never matched a passphrase-protected wallet's addresses.
+      test('signs with the BIP39 passphrase the wallet was created with', () async {
+        const passphrase = 'correct horse battery staple';
+        final wallet = await createWallet('wallet-passphrase', passphrase: passphrase);
+        final utxoKey = await fundNewAddress(wallet, txid: txidA, vout: 0, satoshis: 100000);
+        final address = wallet.currentState.utxos[utxoKey]!.address;
+        final index = (wallet.currentState.metadata['address_indices'] as Map)[address] as int;
+
+        // The address really does depend on the passphrase.
+        Future<String> addressAt(int i, String pass) async {
+          final hdPriv = await cryptoService.mnemonicToHDPrivateKey(
+            mnemonic,
+            passphrase: pass,
+            network: dartsv.NetworkType.TEST,
+          );
+          return cryptoService.generateReceivingAddress(
+            cryptoService.deriveHDPublicKey(hdPriv),
+            i,
+            network: dartsv.NetworkType.TEST,
+          );
+        }
+        expect(await addressAt(index, passphrase), equals(address));
+        expect(await addressAt(index, ''), isNot(equals(address)));
+
+        final versionBefore = wallet.currentState.version;
+        await wallet.commandHandler(SignTransactionCommand(
+          walletId: wallet.aggregateId,
+          transactionId: 'passphrase-spend',
+          rawTransaction: unsignedTx([utxoKey], 99000),
+          utxoKeys: [utxoKey],
+          publicKeys: const [],
+        ));
+        // The aggregate verifies each signed input against its UTXO before
+        // emitting TransactionSignedEvent, so reaching here proves the key
+        // derived for signing matches the address.
+        expect(wallet.currentState.version, equals(versionBefore + 1));
+      });
+
+      /// Audit KM-6 / H2: the post-signing sanity check verified input 0
+      /// against every UTXO, so any transaction whose inputs differ in
+      /// script or amount failed to sign.
+      test('signs a transaction with two inputs from different UTXOs', () async {
+        final wallet = await createWallet('wallet-multi-input');
+        final key1 = await fundNewAddress(wallet, txid: txidA, vout: 0, satoshis: 100000);
+        final key2 = await fundNewAddress(wallet, txid: txidB, vout: 1, satoshis: 250000);
+        final utxo1 = wallet.currentState.utxos[key1]!;
+        final utxo2 = wallet.currentState.utxos[key2]!;
+        expect(utxo1.address, isNot(equals(utxo2.address)));
+        expect(utxo1.scriptPubKey, isNot(equals(utxo2.scriptPubKey)));
+
+        final versionBefore = wallet.currentState.version;
+        await wallet.commandHandler(SignTransactionCommand(
+          walletId: wallet.aggregateId,
+          transactionId: 'two-input-spend',
+          rawTransaction: unsignedTx([key1, key2], 349000),
+          utxoKeys: [key1, key2],
+          publicKeys: const [],
+        ));
+        expect(wallet.currentState.version, equals(versionBefore + 1));
+      });
+
+      /// `WalletState.addresses` maps address -> optional label, and the
+      /// key lookup in `_getPrivateKeyForAddress` tested the value for null,
+      /// so an address generated without a label could not be signed for.
+      test('signs for an address that was generated without a label', () async {
+        final wallet = await createWallet('wallet-unlabelled');
+        final utxoKey = await fundNewAddress(wallet, txid: txidA, vout: 0, satoshis: 100000, label: null);
+        final address = wallet.currentState.utxos[utxoKey]!.address;
+        expect(wallet.currentState.addresses.containsKey(address), isTrue);
+        expect(wallet.currentState.addresses[address], isNull);
+
+        final versionBefore = wallet.currentState.version;
+        await wallet.commandHandler(SignTransactionCommand(
+          walletId: wallet.aggregateId,
+          transactionId: 'unlabelled-spend',
+          rawTransaction: unsignedTx([utxoKey], 99000),
+          utxoKeys: [utxoKey],
+          publicKeys: const [],
+        ));
+        expect(wallet.currentState.version, equals(versionBefore + 1));
+      });
+    });
   });
 }
 

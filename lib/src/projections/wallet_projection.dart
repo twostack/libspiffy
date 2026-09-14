@@ -704,9 +704,16 @@ class WalletProjection extends Projection<void> {
     BitcoinTransaction transaction,
   ) async {
     final links = <TransactionAddressLink>[];
-    
-    // Create registry once for all outputs
-    final scriptTypeRegistry = ScriptTypeRegistry();
+
+    // Create registry once for all outputs. ScriptTypeRegistry is a
+    // singleton pinned to the first network it is built with, so it must be
+    // built for the wallet's network; the testnet default threw for mainnet
+    // wallets (see _handleUTXOReceived for the metadata keys).
+    final walletMeta = await _storage.getWallet(walletId);
+    final scriptTypeRegistry = ScriptTypeRegistry(
+      networkType: NetworkName.toDartsv(
+          (walletMeta?['network'] ?? walletMeta?['networkType']) as String?),
+    );
     
     // Parse transaction to get exact amounts per address
     final parsedTx = dartsv.Transaction.fromHex(transaction.rawHex);

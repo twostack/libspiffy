@@ -189,11 +189,15 @@ class ChannelP2PAdapter {
     // it, so the client side never progressed past channel_accept. The
     // FundingTransactionBuiltResponse comes back to the coordinator, which
     // forwards it to handleFundingTransactionBuilt.
+    //
+    // The channel's own wallet funds it, not the adapter's last-created
+    // wallet: that is '' after a restart and another wallet once a second
+    // one is created (libspiffy-9fo).
     _walletManager.tell(
       WalletCommandMessage(
-        _walletId,
+        clientInfo.walletId,
         BuildFundingTransactionCommand(
-          walletId: _walletId,
+          walletId: clientInfo.walletId,
           correlationId: channelId,
           channelId: channelId,
           clientPubKeyHex: clientInfo.clientPubKeyHex,
@@ -225,8 +229,11 @@ class ChannelP2PAdapter {
     final fundingTxId = payload['fundingTxId'] as String;
     final fundingOutputIndex = payload['fundingOutputIndex'] as int;
     final fundingTxHex = payload['fundingTxHex'] as String;
-    // ignore: unused_local_variable
-    final clientSignatureHex = payload['clientSignatureHex'] as String;
+    // No clientSignatureHex is read: the client does not sign the refund
+    // before the server does (handleRefundTransactionBuilt sends none), and
+    // the server signs the refund on its own. Casting the absent field to
+    // String threw here, so the server never countersigned and every
+    // client-side open stalled after refund_sign_request (libspiffy-9fo).
 
     final serverInfo = _serverChannelInfo[channelId];
     if (serverInfo == null) {
@@ -253,7 +260,8 @@ class ChannelP2PAdapter {
 
     _channelManager.tell(SignRefundTransactionMessage(
       channelId: channelId,
-      walletId: _walletId,
+      // The accepting wallet's key signs (libspiffy-9fo).
+      walletId: serverInfo.walletId,
       refundTxHex: refundTxHex,
       clientPubKeyHex: serverInfo.clientPubKeyHex,
       serverPubKeyHex: serverInfo.serverPubKeyHex,
@@ -299,7 +307,7 @@ class ChannelP2PAdapter {
 
     _channelManager.tell(AcknowledgePaymentMessage(
       channelId: channelId,
-      walletId: _walletId,
+      walletId: _walletFor(channelId),
       amountSats: BigInt.from(amountSats),
       paymentTxHex: paymentTxHex,
       clientSignatureHex: clientSignatureHex,
@@ -333,11 +341,12 @@ class ChannelP2PAdapter {
   void _handleChannelClosed(String fromPeerId, Map<String, dynamic> payload) {
     final channelId = payload['channelId'] as String;
     final settlementTxId = payload['settlementTxId'] as String?;
+    final walletId = _walletFor(channelId);
 
     _cleanupChannel(channelId);
 
     _emitEvent(coord.ChannelClosedEvent(
-      walletId: _walletId,
+      walletId: walletId,
       channelId: channelId,
       settlementTxId: settlementTxId,
     ));
@@ -512,7 +521,7 @@ class ChannelP2PAdapter {
 
     // Emit coordinator event for both client and server
     _emitEvent(coord.ChannelOpenedEvent(
-      walletId: _walletId,
+      walletId: _walletFor(event.channelId),
       channelId: event.channelId,
       fundingTxId: event.fundingTxId,
       fundingAmountSats: event.initialClientBalanceSats.toInt() +
@@ -540,7 +549,7 @@ class ChannelP2PAdapter {
     });
 
     _emitEvent(coord.ChannelPaymentEvent(
-      walletId: _walletId,
+      walletId: _walletFor(event.channelId),
       channelId: event.channelId,
       amountSats: event.amountSats.toInt(),
       sequence: event.sequenceNumber,
@@ -563,7 +572,7 @@ class ChannelP2PAdapter {
     }
 
     _emitEvent(coord.ChannelPaymentEvent(
-      walletId: _walletId,
+      walletId: _walletFor(event.channelId),
       channelId: event.channelId,
       amountSats: event.amountSats.toInt(),
       sequence: event.sequenceNumber,
@@ -604,10 +613,11 @@ class ChannelP2PAdapter {
       }
     }
 
+    final walletId = _walletFor(event.channelId);
     _cleanupChannel(event.channelId);
 
     _emitEvent(coord.ChannelClosedEvent(
-      walletId: _walletId,
+      walletId: walletId,
       channelId: event.channelId,
       settlementTxId: event.settlementTxId,
     ));
@@ -742,7 +752,7 @@ class ChannelP2PAdapter {
     // handleRefundTransactionBuilt; without a sender it was dropped.
     _channelManager.tell(BuildRefundTransactionMessage(
       channelId: channelId,
-      walletId: _walletId,
+      walletId: clientInfo.walletId,
       fundingTxId: response.fundingTxId,
       fundingOutputIndex: response.fundingOutputIndex,
       fundingAmountSats: BigInt.from(clientInfo.fundingAmountSats),
@@ -800,11 +810,19 @@ class ChannelP2PAdapter {
         'Channel $channelId: $step failed: ${error ?? 'unknown error'}';
     _log.warning(message);
     _emitEvent(coord.ErrorEvent(
-      walletId: _walletId,
+      walletId: _walletFor(channelId),
       source: 'ChannelP2PAdapter',
       message: message,
     ));
   }
+
+  /// The wallet a channel belongs to (the one that requested or accepted
+  /// it), falling back to the last wallet set via [updateWalletId] for a
+  /// channel this adapter has no record of.
+  String _walletFor(String channelId) =>
+      _clientChannelInfo[channelId]?.walletId ??
+      _serverChannelInfo[channelId]?.walletId ??
+      _walletId;
 
   void _cleanupChannel(String channelId) {
     _channelPeers.remove(channelId);

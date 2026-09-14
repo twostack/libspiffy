@@ -527,7 +527,12 @@ class ValidateBEEFMessage implements Message {
   final String beefData;
   final String? targetWalletId;
 
-  ValidateBEEFMessage(this.beefData, {this.targetWalletId});
+  /// Caller-chosen id echoed on the [BEEFValidationResult], so a caller with
+  /// several validations in flight (for one wallet or many) can match each
+  /// result to its request.
+  final String? requestId;
+
+  ValidateBEEFMessage(this.beefData, {this.targetWalletId, this.requestId});
 
   @override
   String get correlationId => 'validate-beef-${DateTime.now().millisecondsSinceEpoch}';
@@ -547,12 +552,16 @@ class BEEFValidationResult implements Message {
   final String? targetWalletId;
   final List<Map<String, dynamic>>? extractedTransactions;
 
+  /// The [ValidateBEEFMessage.requestId] this result answers, if one was set.
+  final String? requestId;
+
   BEEFValidationResult({
     required this.isValid,
     this.merkleRoot,
     this.error,
     this.targetWalletId,
     this.extractedTransactions,
+    this.requestId,
   });
 
   @override

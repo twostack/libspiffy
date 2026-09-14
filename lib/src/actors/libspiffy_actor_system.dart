@@ -47,10 +47,14 @@ import 'wallet_coordinator_actor.dart';
 import 'coordinator_messages.dart' show CoordinatorEvent;
 import '../services/transaction_import_service.dart';
 
+/// Lifecycle of a [LibSpiffyActorSystem] instance.
+enum _Lifecycle { uninitialized, initializing, initialized, shutDown }
+
 /// Initialization and management utilities for the LibSpiffy actor system
 class LibSpiffyActorSystem {
   late ActorSystem _actorSystem;
   bool _ownsActorSystem = false;
+  _Lifecycle _lifecycle = _Lifecycle.uninitialized;
   bool _ownsIsar = false; // Track if we created the Isar instance
   StorageBackend _storageBackend = StorageBackend.isar;
   late EventStore _eventStore;
@@ -214,7 +218,76 @@ class LibSpiffyActorSystem {
     String? cdnBaseUrl, // CDN URL for fast initial header sync
     CdnSyncProgressCallback? onHeaderSyncProgress, // CDN sync progress callback
   }) async {
-    
+    // An instance is initialized once. A second call used to build a second
+    // actor system and storage stack over the first (A-M5).
+    switch (_lifecycle) {
+      case _Lifecycle.initializing:
+      case _Lifecycle.initialized:
+        throw StateError('LibSpiffyActorSystem is already initialized; '
+            'call shutdown() and create a new instance to restart.');
+      case _Lifecycle.shutDown:
+        throw StateError('LibSpiffyActorSystem has been shut down and cannot '
+            'be re-initialized; create a new instance.');
+      case _Lifecycle.uninitialized:
+        break;
+    }
+    _lifecycle = _Lifecycle.initializing;
+    try {
+      await _initialize(
+        actorSystem: actorSystem,
+        dataDirectory: dataDirectory,
+        config: config,
+        readModelStorage: readModelStorage,
+        secureStorage: secureStorage,
+        cryptoService: cryptoService,
+        arcConfig: arcConfig,
+        arcService: arcService,
+        isar: isar,
+        isolateConfig: isolateConfig,
+        networkType: networkType,
+        enableP2P: enableP2P,
+        startHeight: startHeight,
+        peerAddresses: peerAddresses,
+        userAgent: userAgent,
+        blockchainDataSource: blockchainDataSource,
+        storageBackend: storageBackend,
+        postgresConfig: postgresConfig,
+        cdnBaseUrl: cdnBaseUrl,
+        onHeaderSyncProgress: onHeaderSyncProgress,
+      );
+      _lifecycle = _Lifecycle.initialized;
+    } catch (_) {
+      // A failure after the actors are up (P2P could not connect) leaves a
+      // usable API-only system, as before; anything earlier may be retried.
+      _lifecycle = isInitialized
+          ? _Lifecycle.initialized
+          : _Lifecycle.uninitialized;
+      rethrow;
+    }
+  }
+
+  Future<void> _initialize({
+    required ActorSystem? actorSystem,
+    required String? dataDirectory,
+    required ActorSystemConfig? config,
+    required ReadModelStorage? readModelStorage,
+    required SecureStorage? secureStorage,
+    required CryptoService? cryptoService,
+    required ArcServiceConfig? arcConfig,
+    required dynamic arcService,
+    required Isar? isar,
+    required IsolateConfig? isolateConfig,
+    required String networkType,
+    required bool enableP2P,
+    required int? startHeight,
+    required List<String>? peerAddresses,
+    required String? userAgent,
+    required dynamic blockchainDataSource,
+    required StorageBackend storageBackend,
+    required PostgresConfig? postgresConfig,
+    required String? cdnBaseUrl,
+    required CdnSyncProgressCallback? onHeaderSyncProgress,
+  }) async {
     _networkType = networkType;
 
     // 1. Initialize Dactor system (use provided or create new)
@@ -1040,8 +1113,6 @@ class LibSpiffyActorSystem {
       if (successCount == 0) {
         failures.forEach((peer, error) {
         });
-        _peerManager = null;
-        _spiffyNodeBridge = null;
         throw StateError(
           'P2P initialization failed: Could not connect to any of ${peers.length} peer(s). '
           'LibSpiffy will fall back to API-only mode. Failures: ${failures.keys.join(", ")}'
@@ -1062,9 +1133,10 @@ class LibSpiffyActorSystem {
       _headerSyncActor?.tell(InitiateHeaderSyncMessage(startHeight: startHeight));
       
       
-    } catch (e, stackTrace) {
-      _peerManager = null;
-      _spiffyNodeBridge = null;
+    } catch (e) {
+      // The PeerManager runs a health-check timer and may hold peer sockets;
+      // dropping the reference without shutting it down leaked both (A-M5).
+      await disconnectFromSpiffyNode();
       rethrow;
     }
   }
@@ -1408,12 +1480,22 @@ class LibSpiffyActorSystem {
     _importActor!.tell(importMessage);
   }
 
-  /// Disconnect from SpiffyNode
+  /// Disconnect from SpiffyNode: shut down the bridge and the PeerManager
+  /// (its peer connections and health-check timer).
   Future<void> disconnectFromSpiffyNode() async {
-    if (_spiffyNodeBridge != null) {
-      await _spiffyNodeBridge!.shutdown();
-      _spiffyNodeBridge = null;
-      _peerManager = null;
+    final bridge = _spiffyNodeBridge;
+    final peerManager = _peerManager;
+    _spiffyNodeBridge = null;
+    _peerManager = null;
+    try {
+      await bridge?.shutdown();
+    } catch (e) {
+      Logger('LibSpiffyActorSystem').warning('SpiffyNode bridge shutdown failed: $e');
+    }
+    try {
+      await peerManager?.shutdown();
+    } catch (e) {
+      Logger('LibSpiffyActorSystem').warning('PeerManager shutdown failed: $e');
     }
   }
 
@@ -1428,6 +1510,14 @@ class LibSpiffyActorSystem {
   /// If the host application provided its own actor system, it remains
   /// the host's responsibility to shut it down.
   Future<void> shutdown() async {
+    if (_lifecycle == _Lifecycle.shutDown) return;
+    final wasStarted = _lifecycle != _Lifecycle.uninitialized;
+    _lifecycle = _Lifecycle.shutDown;
+    if (!wasStarted) {
+      await _walletEventBroadcaster.close();
+      await _channelEventBroadcaster.close();
+      return;
+    }
 
     try {
       // 1. Disconnect from SpiffyNode first
@@ -1462,10 +1552,37 @@ class LibSpiffyActorSystem {
         }
       }
       
-      // 3. Shutdown actor system only if we own it
+      // 3. Shutdown actor system only if we own it. In a host-owned system,
+      //    stop every actor libspiffy spawned instead (A-M5), public facade
+      //    first; the managers' postStop stops the aggregates they spawned.
       if (_ownsActorSystem) {
         await _actorSystem.shutdown();
       } else {
+        for (final ref in [
+          _coordinatorActor,
+          _importActor,
+          _channelManager,
+          _benfordCoordinator,
+          _transactionLifecycleCoordinator,
+          _arcActor,
+          _headerSyncActor,
+          _spvActor,
+          _paymentCoordinator,
+          _invoiceCoordinator,
+          _walletManager,
+          // Normally already stopped by StopProjection above.
+          _walletProjectionRef,
+          _invoiceProjectionRef,
+          _channelProjectionRef,
+        ]) {
+          if (ref == null || _actorSystem.getActor(ref.id) == null) continue;
+          try {
+            await _actorSystem.stop(ref);
+          } catch (e) {
+            Logger('LibSpiffyActorSystem')
+                .warning('Failed to stop actor ${ref.id}: $e');
+          }
+        }
       }
       
       // 4. Close storage based on backend type
@@ -1493,14 +1610,36 @@ class LibSpiffyActorSystem {
       _channelProjectionAppliedSub = null;
       await _walletEventBroadcaster.close();
       await _channelEventBroadcaster.close();
-      
-    } catch (e) {
-      rethrow;
+
+    } finally {
+      _clearActorRefs();
     }
   }
 
-  /// Check if the system is initialized
-  bool get isInitialized => _walletManager != null && _invoiceCoordinator != null && _spvActor != null && _arcActor != null && _headerSyncActor != null;
+  /// Drops every actor reference, so [isInitialized] is false and the
+  /// accessors throw after shutdown.
+  void _clearActorRefs() {
+    _walletManager = null;
+    _invoiceCoordinator = null;
+    _paymentCoordinator = null;
+    _benfordCoordinator = null;
+    _channelManager = null;
+    _spvActor = null;
+    _arcActor = null;
+    _headerSyncActor = null;
+    _importActor = null;
+    _transactionLifecycleCoordinator = null;
+    _coordinatorActor = null;
+    _coordinatorInstance = null;
+    _headerSyncActorInstance = null;
+    _walletProjectionRef = null;
+    _invoiceProjectionRef = null;
+    _channelProjectionRef = null;
+    _channelProjectionActor = null;
+  }
+
+  /// Check if the system is initialized (false again after [shutdown])
+  bool get isInitialized => _lifecycle != _Lifecycle.shutDown && _walletManager != null && _invoiceCoordinator != null && _spvActor != null && _arcActor != null && _headerSyncActor != null;
 }
 
 /// Global instance for easy access

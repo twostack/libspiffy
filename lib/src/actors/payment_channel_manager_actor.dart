@@ -60,6 +60,12 @@ class PaymentChannelManagerActor extends Actor {
   /// Track pending payment signing requests: correlationId -> context
   final Map<String, _PaymentSignatureContext> _pendingPaymentSignatures = {};
 
+  /// How long a multisig signing request may wait for WalletManager's reply
+  /// before the caller is failed and its pending entry dropped.
+  final Duration _signingTimeout;
+
+  int _signRequestSeq = 0;
+
   PaymentChannelManagerActor({
     required ActorRef walletManager,
     required EventStore eventStore,
@@ -67,17 +73,89 @@ class PaymentChannelManagerActor extends Actor {
     dartsv.NetworkType networkType = dartsv.NetworkType.TEST,
     void Function(ChannelEvent)? eventBroadcaster,
     ActorRef? channelProjection,
+    Duration signingTimeout = const Duration(seconds: 30),
   })  : _walletManager = walletManager,
         _eventStore = eventStore,
         _cryptoService = cryptoService,
         _networkType = networkType,
         _eventBroadcaster = eventBroadcaster,
-        _channelProjection = channelProjection {
+        _channelProjection = channelProjection,
+        _signingTimeout = signingTimeout {
     _channelBuilder = PaymentChannelBuilder(cryptoService: cryptoService);
   }
 
   @override
   void preStart() {
+  }
+
+  /// Number of signing requests (refund, payment, acknowledgment) still
+  /// awaiting WalletManager's reply. Every request leaves this map on
+  /// success, failure and timeout alike.
+  int get pendingSignatureCount =>
+      _pendingRefundSignatures.length + _pendingPaymentSignatures.length;
+
+  /// Stop the channel aggregates this manager spawned, so a host-owned actor
+  /// system does not keep them running after libspiffy shuts down.
+  @override
+  void postStop() {
+    final system = context.system;
+    for (final ref in _channelAggregates.values) {
+      unawaited(system.stop(ref));
+    }
+    _channelAggregates.clear();
+  }
+
+  /// Sends [command] to WalletManager and waits for its reply on a dedicated
+  /// receiver actor, so every outcome reaches this call: the signed response,
+  /// WalletManager's `{'error': ...}` map (unknown wallet, load failure), or
+  /// silence (timeout).
+  Future<MultisigTransactionSignedResponse> _requestMultisigSignature(
+    String walletId,
+    SignMultisigTransactionCommand command,
+  ) async {
+    final completer = Completer<MultisigTransactionSignedResponse>();
+    final receiver = await context.system.spawn(
+      'channel-sign-${++_signRequestSeq}-${DateTime.now().microsecondsSinceEpoch}',
+      () => _MultisigSignatureReceiver(completer),
+    );
+    try {
+      _walletManager.tell(
+        WalletCommandMessage(walletId, command),
+        sender: receiver,
+      );
+      return await completer.future.timeout(
+        _signingTimeout,
+        onTimeout: () => throw TimeoutException(
+          'Signing ${command.transactionId} timed out after '
+          '${_signingTimeout.inMilliseconds} ms',
+          _signingTimeout,
+        ),
+      );
+    } finally {
+      await context.system.stop(receiver);
+    }
+  }
+
+  /// Requests the signature and hands the reply to
+  /// [_handleMultisigSignedResponse], which consumes the pending entry. If
+  /// signing fails, or the reply does not consume the entry, the entry is
+  /// removed here and [onFailure] answers the caller.
+  Future<void> _signAndContinue({
+    required String walletId,
+    required SignMultisigTransactionCommand command,
+    required bool Function() removePending,
+    required void Function(String error) onFailure,
+  }) async {
+    try {
+      final response = await _requestMultisigSignature(walletId, command);
+      await _handleMultisigSignedResponse(response);
+      if (removePending()) {
+        onFailure('Signing reply for ${command.transactionId} did not match '
+            'the request (got ${response.originalTransactionId})');
+      }
+    } catch (e) {
+      if (removePending()) onFailure(e.toString());
+    }
   }
 
   /// Broadcast events to external subscribers (e.g., P2P adapters)
@@ -468,18 +546,31 @@ class PaymentChannelManagerActor extends Actor {
       );
       
       // Store pending signature context for when the response arrives
-      _pendingRefundSignatures[msg.channelId] = (
+      final pending = (
         sender: originalSender,
         refundTxHex: msg.refundTxHex,
         lockTimeUnix: msg.lockTimeUnix,
       );
-      
-      // Send signing command - response will arrive via MultisigTransactionSignedResponse
-      _walletManager.tell(
-        WalletCommandMessage(msg.walletId, signCmd),
-        sender: context.self,
+      _pendingRefundSignatures[msg.channelId] = pending;
+
+      await _signAndContinue(
+        walletId: msg.walletId,
+        command: signCmd,
+        removePending: () {
+          if (!identical(_pendingRefundSignatures[msg.channelId], pending)) {
+            return false;
+          }
+          _pendingRefundSignatures.remove(msg.channelId);
+          return true;
+        },
+        onFailure: (error) => originalSender?.tell(RefundTransactionSignedResponse(
+          channelId: msg.channelId,
+          serverSignatureHex: '',
+          success: false,
+          error: error,
+        )),
       );
-      
+
     } catch (e, stack) {
       
       originalSender?.tell(RefundTransactionSignedResponse(
@@ -901,7 +992,7 @@ class PaymentChannelManagerActor extends Actor {
       );
       
       // Store pending signature request
-      _pendingPaymentSignatures[correlationId] = _PaymentSignatureContext(
+      final pending = _PaymentSignatureContext(
         channelId: msg.channelId,
         originalSender: originalSender,
         paymentTxHex: paymentTxResult.transactionHex,
@@ -913,12 +1004,25 @@ class PaymentChannelManagerActor extends Actor {
         purpose: msg.purpose,
         invoiceId: msg.invoiceId,
       );
-      
-      _walletManager.tell(
-        WalletCommandMessage(stateResponse.walletId, signCmd), // Use wallet ID from channel state
-        sender: context.self,
+      _pendingPaymentSignatures[correlationId] = pending;
+
+      await _signAndContinue(
+        walletId: stateResponse.walletId, // Use wallet ID from channel state
+        command: signCmd,
+        removePending: () => _removePendingPayment(correlationId, pending),
+        onFailure: (error) => originalSender?.tell(PaymentRecordedResponse(
+          channelId: msg.channelId,
+          amountSats: msg.amountSats,
+          sequenceNumber: 0,
+          paymentTxHex: '',
+          clientSignatureHex: '',
+          newClientBalanceSats: BigInt.zero,
+          newServerBalanceSats: BigInt.zero,
+          success: false,
+          error: error,
+        )),
       );
-      
+
       
     } catch (e) {
       
@@ -988,7 +1092,7 @@ class PaymentChannelManagerActor extends Actor {
       );
       
       // Store pending signature request for acknowledgment
-      _pendingPaymentSignatures[correlationId] = _PaymentSignatureContext(
+      final pending = _PaymentSignatureContext(
         channelId: msg.channelId,
         originalSender: originalSender,
         paymentTxHex: msg.paymentTxHex,
@@ -1000,12 +1104,19 @@ class PaymentChannelManagerActor extends Actor {
         clientSignatureHex: msg.clientSignatureHex,
         isAcknowledgment: true,
       );
-      
-      _walletManager.tell(
-        WalletCommandMessage(stateResponse.walletId, signCmd), // Use wallet ID from channel state
-        sender: context.self,
+      _pendingPaymentSignatures[correlationId] = pending;
+
+      await _signAndContinue(
+        walletId: stateResponse.walletId, // Use wallet ID from channel state
+        command: signCmd,
+        removePending: () => _removePendingPayment(correlationId, pending),
+        onFailure: (error) => originalSender?.tell(PaymentAcknowledgedResponse(
+          channelId: msg.channelId,
+          success: false,
+          error: error,
+        )),
       );
-      
+
       
     } catch (e) {
       
@@ -1130,14 +1241,61 @@ class PaymentChannelManagerActor extends Actor {
     }
   }
 
-  /// Query channel state
+  /// Removes the pending payment/ack entry for [correlationId] if it is still
+  /// [pending]; returns whether it was.
+  bool _removePendingPayment(
+      String correlationId, _PaymentSignatureContext pending) {
+    if (!identical(_pendingPaymentSignatures[correlationId], pending)) {
+      return false;
+    }
+    _pendingPaymentSignatures.remove(correlationId);
+    return true;
+  }
+
+  /// Query channel state: asks the channel aggregate (recovered from the
+  /// journal if it is not loaded) and replies with [ChannelStateResponse].
+  /// A channel with no journal is answered `success: false` without spawning
+  /// an aggregate for it.
   Future<void> _handleQueryChannelState(QueryChannelStateMessage msg) async {
-    
-    // For Phase 1, this is simplified - full implementation requires projections
-    throw UnimplementedError(
-      'QueryChannelState requires projections. '
-      'Will be implemented in Phase 2.',
-    );
+    final originalSender = context.sender;
+
+    try {
+      var aggregateRef = _channelAggregates[msg.channelId];
+      if (aggregateRef == null) {
+        final journalLength = await _eventStore
+            .getHighestSequenceNumber('PaymentChannel_${msg.channelId}');
+        if (journalLength == 0) {
+          throw StateError('Channel not found: ${msg.channelId}');
+        }
+        aggregateRef = await _getOrSpawnChannelAggregate(msg.channelId);
+      }
+
+      final state = await aggregateRef.ask<dynamic>(
+        ChannelStateQuery(channelId: msg.channelId),
+        const Duration(seconds: 10),
+      );
+      if (state is! FullChannelStateResponse || !state.success) {
+        throw StateError(state is FullChannelStateResponse
+            ? (state.error ?? 'Channel state query failed')
+            : 'Unexpected response type: ${state.runtimeType}');
+      }
+
+      originalSender?.tell(ChannelStateResponse(
+        channelId: msg.channelId,
+        status: state.status,
+        clientBalanceSats: state.clientBalanceSats,
+        serverBalanceSats: state.serverBalanceSats,
+        latestSequenceNumber: state.latestSequenceNumber,
+        success: true,
+      ));
+    } catch (e) {
+      originalSender?.tell(ChannelStateResponse(
+        channelId: msg.channelId,
+        status: 'unknown',
+        success: false,
+        error: e.toString(),
+      ));
+    }
   }
 
   /// Get or spawn a channel aggregate actor
@@ -1184,6 +1342,27 @@ class PaymentChannelManagerActor extends Actor {
       ));
     }
     // Add other message types as needed
+  }
+}
+
+/// Receives WalletManager's reply to one multisig signing request.
+class _MultisigSignatureReceiver extends Actor {
+  final Completer<MultisigTransactionSignedResponse> completer;
+
+  _MultisigSignatureReceiver(this.completer);
+
+  @override
+  Future<void> onMessage(dynamic message) async {
+    if (completer.isCompleted) return;
+    if (message is MultisigTransactionSignedResponse) {
+      completer.complete(message);
+      return;
+    }
+    // WalletManager's failure shape: {'error': ..., 'walletId': ...}.
+    final payload = message is LocalMessage ? message.payload : message;
+    if (payload is Map && payload['error'] != null) {
+      completer.completeError(StateError(payload['error'].toString()));
+    }
   }
 }
 

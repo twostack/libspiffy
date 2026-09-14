@@ -953,6 +953,7 @@ class SPVActor extends Actor {
           isValid: false,
           error: 'BEEF data failed validation check',
           targetWalletId: msg.targetWalletId,
+          requestId: msg.requestId,
         ));
         return; // Early return for invalid BEEF
       }
@@ -992,6 +993,7 @@ class SPVActor extends Actor {
         error: null,
         targetWalletId: msg.targetWalletId,
         extractedTransactions: extractedTransactions,
+        requestId: msg.requestId,
       );
       
       context.sender?.tell(result);
@@ -1002,6 +1004,7 @@ class SPVActor extends Actor {
         isValid: false,
         error: e.toString(),
         targetWalletId: msg.targetWalletId,
+        requestId: msg.requestId,
       ));
     }
   }
@@ -1024,6 +1027,7 @@ class SPVActor extends Actor {
           isValid: false,
           error: error,
           targetWalletId: msg.targetWalletId,
+          requestId: msg.requestId,
         ));
         break;
     }

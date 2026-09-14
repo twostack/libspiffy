@@ -48,15 +48,25 @@ class InvoiceCoordinatorActor extends Actor {
   final Uuid _uuid = const Uuid();
   Timer? _expirationTimer;
 
+  /// How often pending invoices are checked for expiry.
+  final Duration _expirySweepInterval;
+
+  /// True from the moment a sweep starts querying storage until its
+  /// expirations have been dispatched from the mailbox; ticks that fire in
+  /// between are skipped (A-M10).
+  bool _expirySweepInFlight = false;
+
   InvoiceCoordinatorActor({
     required ActorRef walletManager,
     required ReadModelStorage storage,
     required EventStore eventStore,
     ActorRef? invoiceProjection,
+    Duration expirySweepInterval = const Duration(minutes: 5),
   })  : _walletManager = walletManager,
         _storage = storage,
         _eventStore = eventStore,
-        _invoiceProjection = invoiceProjection;
+        _invoiceProjection = invoiceProjection,
+        _expirySweepInterval = expirySweepInterval;
 
   @override
   void preStart() {
@@ -65,6 +75,10 @@ class InvoiceCoordinatorActor extends Actor {
 
   @override
   Future<void> onMessage(dynamic message) async {
+    if (message is _ExpireInvoices) {
+      await _expireInvoices(message.invoiceIds);
+      return;
+    }
     try {
       switch (message.runtimeType) {
         case CreateInvoiceMessage:
@@ -693,49 +707,68 @@ class InvoiceCoordinatorActor extends Actor {
 
   /// Start periodic expiration check
   void _startExpirationTimer() {
-    _expirationTimer = Timer.periodic(const Duration(minutes: 5), (_) {
-      _checkExpiredInvoices();
+    final self = context.self;
+    _expirationTimer = Timer.periodic(_expirySweepInterval, (_) {
+      _checkExpiredInvoices(self);
     });
   }
 
-  /// Check and expire old invoices
-  Future<void> _checkExpiredInvoices() async {
+  /// Timer tick: find expired invoices without blocking the mailbox, then
+  /// hand them to the mailbox ([_ExpireInvoices]) so spawning aggregates and
+  /// touching [_invoiceAggregates] stays serialized with the handlers. At
+  /// most one sweep is in flight; overlapping ticks are skipped.
+  Future<void> _checkExpiredInvoices(ActorRef self) async {
+    if (_expirySweepInFlight) return;
+    _expirySweepInFlight = true;
     try {
       // Query pending invoices from read model
       final pendingInvoices =
           await _storage.listInvoices(status: InvoiceStatus.pending);
       final now = DateTime.now();
-      
-      for (final invoice in pendingInvoices) {
-        // Check if expired
-        if (invoice.expiresAt != null && now.isAfter(invoice.expiresAt!)) {
-          
-          // Get or spawn the aggregate
-          ActorRef? aggregateActor = _invoiceAggregates[invoice.invoiceId];
-          
-          if (aggregateActor == null) {
-            try {
-              aggregateActor = await context.system.spawn(
-                'invoice-aggregate-${invoice.invoiceId}',
-                () => InvoiceAggregate(
-                  aggregateId: invoice.invoiceId,
-                  aggregateType: 'Invoice',
-                  eventStore: _eventStore,
-                ),
-              );
-              _invoiceAggregates[invoice.invoiceId] = aggregateActor;
-            } catch (e) {
-              continue;
-            }
-          }
-          
-          // Send ExpireInvoiceCommand
-          final command = ExpireInvoiceCommand(invoiceId: invoice.invoiceId);
-          aggregateActor.tell(command, sender: context.self);
-        }
-      }
+      final expired = [
+        for (final invoice in pendingInvoices)
+          if (invoice.expiresAt != null && now.isAfter(invoice.expiresAt!))
+            invoice.invoiceId,
+      ];
+      // The mailbox handler clears the in-flight flag.
+      self.tell(LocalMessage(payload: _ExpireInvoices(expired)));
     } catch (e) {
       _log.warning('Failed to check expired invoices: $e');
+      _expirySweepInFlight = false;
+    }
+  }
+
+  /// Mailbox half of the expiry sweep: expire each invoice via its aggregate.
+  Future<void> _expireInvoices(List<String> invoiceIds) async {
+    try {
+      for (final invoiceId in invoiceIds) {
+        // Get or spawn the aggregate
+        ActorRef? aggregateActor = _invoiceAggregates[invoiceId];
+
+        if (aggregateActor == null) {
+          try {
+            aggregateActor = await context.system.spawn(
+              'invoice-aggregate-$invoiceId',
+              () => InvoiceAggregate(
+                aggregateId: invoiceId,
+                aggregateType: 'Invoice',
+                eventStore: _eventStore,
+              ),
+            );
+            _invoiceAggregates[invoiceId] = aggregateActor;
+          } catch (e) {
+            continue;
+          }
+        }
+
+        // Send ExpireInvoiceCommand
+        final command = ExpireInvoiceCommand(invoiceId: invoiceId);
+        aggregateActor.tell(command, sender: context.self);
+      }
+    } catch (e) {
+      _log.warning('Failed to expire invoices: $e');
+    } finally {
+      _expirySweepInFlight = false;
     }
   }
 
@@ -793,6 +826,13 @@ class InvoiceCoordinatorActor extends Actor {
   @override
   void postStop() {
     _expirationTimer?.cancel();
+    // Stop the aggregates this coordinator spawned, so a host-owned actor
+    // system does not keep them running after libspiffy shuts down (A-M5).
+    final system = context.system;
+    for (final ref in _invoiceAggregates.values) {
+      unawaited(system.stop(ref));
+    }
+    _invoiceAggregates.clear();
   }
 
   /// Get invoice by ID - Query read model
@@ -803,6 +843,12 @@ class InvoiceCoordinatorActor extends Actor {
       return null;
     }
   }
+}
+
+/// Mailbox half of an expiry sweep: the invoices found expired.
+class _ExpireInvoices {
+  final List<String> invoiceIds;
+  const _ExpireInvoices(this.invoiceIds);
 }
 
 /// Tracks a pending invoice creation request while waiting for address generation

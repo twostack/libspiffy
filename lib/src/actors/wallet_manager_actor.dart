@@ -45,17 +45,71 @@ class WalletManagerActor extends Actor {
   // Timer for automated UTXO reservation cleanup
   Timer? _reservationCleanupTimer;
 
+  /// Idle eviction (A-M10): a loaded aggregate that has not been routed a
+  /// command for [_aggregateIdleTimeout] is stopped; the next command for
+  /// that wallet recovers it from the journal. Null disables eviction.
+  final Duration? _aggregateIdleTimeout;
+  final Duration _idleCheckInterval;
+  Timer? _idleCheckTimer;
+
+  /// Last time each loaded aggregate was created, loaded or routed a command.
+  final Map<String, DateTime> _lastUsed = {};
+
   WalletManagerActor({
     required EventStore eventStore,
     required CryptoService cryptoService,
     required SecureStorage secureStorage,
+    Duration? aggregateIdleTimeout = const Duration(minutes: 30),
+    Duration idleCheckInterval = const Duration(minutes: 1),
   })  : _eventStore = eventStore,
         _cryptoService = cryptoService,
-        _secureStorage = secureStorage;
+        _secureStorage = secureStorage,
+        _aggregateIdleTimeout = aggregateIdleTimeout,
+        _idleCheckInterval = idleCheckInterval;
 
   @override
   void preStart() {
     _startReservationCleanupTimer();
+    if (_aggregateIdleTimeout != null) {
+      // The sweep runs in the mailbox, serialized with command routing, so
+      // an aggregate cannot be stopped between being looked up and being
+      // told a command.
+      final self = context.self;
+      _idleCheckTimer = Timer.periodic(_idleCheckInterval, (_) {
+        self.tell(LocalMessage(payload: const _EvictIdleAggregates()));
+      });
+    }
+  }
+
+  void _touch(String walletId) {
+    _lastUsed[walletId] = DateTime.now();
+  }
+
+  /// Stops aggregates idle for longer than [_aggregateIdleTimeout].
+  Future<void> _evictIdleAggregates() async {
+    final idleTimeout = _aggregateIdleTimeout;
+    if (idleTimeout == null) return;
+    final cutoff = DateTime.now().subtract(idleTimeout);
+    final idle = [
+      for (final walletId in _walletActors.keys)
+        if (!_loadingWallets.contains(walletId) &&
+            !_pendingWalletCreations.containsKey(walletId) &&
+            !_pendingCommands.containsKey(walletId) &&
+            (_lastUsed[walletId] ?? DateTime.fromMillisecondsSinceEpoch(0))
+                .isBefore(cutoff))
+          walletId,
+    ];
+    for (final walletId in idle) {
+      final ref = _walletActors.remove(walletId);
+      _lastUsed.remove(walletId);
+      if (ref == null) continue;
+      try {
+        await context.system.stop(ref);
+        _log.fine('Evicted idle wallet aggregate $walletId');
+      } catch (e) {
+        _log.warning('Failed to stop idle wallet aggregate $walletId: $e');
+      }
+    }
   }
 
   /// Start periodic timer to clean up expired UTXO reservations
@@ -95,6 +149,10 @@ class WalletManagerActor extends Actor {
 
   @override
   Future<void> onMessage(dynamic message) async {
+    if (message is _EvictIdleAggregates) {
+      await _evictIdleAggregates();
+      return;
+    }
     try {
       switch (message.runtimeType) {
         case CreateWalletMessage:
@@ -159,8 +217,12 @@ class WalletManagerActor extends Actor {
   Future<void> _handleCreateWallet(CreateWalletMessage msg) async {
     try {
       
-      // Check if wallet already exists
-      if (_walletActors.containsKey(msg.walletId)) {
+      // Check if wallet already exists: loaded, or evicted/not yet loaded
+      // but present in the journal.
+      if (_walletActors.containsKey(msg.walletId) ||
+          await _eventStore.getHighestSequenceNumber(
+                  'BitcoinWallet_${msg.walletId}') >
+              0) {
         // Wrapped like the success path: dactor's ask() reply channel only
         // accepts LocalMessage, so a bare reply surfaced as a StateError.
         context.sender?.tell(LocalMessage(payload: WalletCreatedMessage(
@@ -186,6 +248,7 @@ class WalletManagerActor extends Actor {
 
       // Store reference
       _walletActors[msg.walletId] = walletActor;
+      _touch(msg.walletId);
 
       // Track the original sender so we can route the WalletCreatedResponse back to them
       _pendingWalletCreations[msg.walletId] = context.sender;
@@ -274,6 +337,7 @@ class WalletManagerActor extends Actor {
       // Check if wallet is already loaded
       if (walletActor != null) {
         // Forward command directly
+        _touch(msg.walletId);
         walletActor.tell(msg.command, sender: context.sender);
         return;
       }
@@ -300,7 +364,8 @@ class WalletManagerActor extends Actor {
       
       if (walletActor != null) {
         _walletActors[msg.walletId] = walletActor;
-        
+        _touch(msg.walletId);
+
         // Process all queued commands for this wallet
         final queuedCommands = _pendingCommands.remove(msg.walletId) ?? [];
         
@@ -365,6 +430,7 @@ class WalletManagerActor extends Actor {
       
       if (walletActor != null) {
         _walletActors[walletId] = walletActor;
+        _touch(walletId);
       } else {
       }
     } catch (e) {
@@ -561,6 +627,7 @@ class WalletManagerActor extends Actor {
     // Check if already loaded
     var walletActor = _walletActors[walletId];
     if (walletActor != null) {
+      _touch(walletId);
       return walletActor;
     }
     
@@ -579,6 +646,7 @@ class WalletManagerActor extends Actor {
       // Check if loaded now
       walletActor = _walletActors[walletId];
       if (walletActor != null) {
+        _touch(walletId);
         return walletActor;
       }
       
@@ -593,8 +661,9 @@ class WalletManagerActor extends Actor {
       
       if (walletActor != null) {
         _walletActors[walletId] = walletActor;
+        _touch(walletId);
       }
-      
+
       return walletActor;
       
     } finally {
@@ -653,7 +722,21 @@ class WalletManagerActor extends Actor {
   @override
   void postStop() {
     _reservationCleanupTimer?.cancel();
+    _idleCheckTimer?.cancel();
+    // Stop the aggregates this manager spawned, so a host-owned actor system
+    // does not keep them running after libspiffy shuts down (A-M5).
+    final system = context.system;
+    for (final ref in _walletActors.values) {
+      unawaited(system.stop(ref));
+    }
+    _walletActors.clear();
+    _lastUsed.clear();
   }
+}
+
+/// Internal tick for the idle-aggregate sweep.
+class _EvictIdleAggregates {
+  const _EvictIdleAggregates();
 }
 
 /// Helper class to store pending commands while wallet is loading

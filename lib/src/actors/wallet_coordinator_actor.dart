@@ -58,11 +58,19 @@ class WalletCoordinatorActor extends Actor {
       StreamController<CoordinatorEvent>.broadcast();
 
   // Correlation maps (absorbed from Overnode's WalletCoordinatorActor)
-  final Map<String, String> _beefValidationCorrelation = {}; // walletId → invoiceId
-  final Map<String, (String, String?)> _beefDataCorrelation =
-      {}; // walletId → (beefHex, invoiceId)
-  final Map<String, (String, String?, String)> _spvProcessingCorrelation =
-      {}; // txid → (beefHex, invoiceId, walletId)
+
+  /// In-flight structural BEEF validations, keyed by the per-request id sent
+  /// as [wm.ValidateBEEFMessage.requestId] and echoed by SPVActor. Keying by
+  /// walletId (as before) let two validations for one wallet overwrite each
+  /// other (A-M1).
+  final Map<String, _PendingBeefValidation> _beefValidations = {};
+  int _beefRequestSeq = 0;
+
+  /// Full-SPV stage of a BEEF validation, keyed by txid. SPVActor's
+  /// ReceiveTransaction reply carries only the txid, and it answers in
+  /// mailbox order, so several validations of one txid queue up FIFO.
+  final Map<String, List<(String, String?, String)>> _spvProcessingCorrelation =
+      {}; // txid → [(beefHex, invoiceId, walletId)]
   final Map<String, String> _paymentInvoiceCorrelation = {}; // invoiceId → walletId
   final Map<String, String> _timestampCorrelation = {}; // invoiceId → archiveId
   final Map<String, CreateWalletCommand> _pendingCreateWallet = {}; // walletId → original cmd
@@ -177,6 +185,26 @@ class WalletCoordinatorActor extends Actor {
     _channelAdapter?.updateReplyTo(context.self);
   }
 
+  /// Release subscriptions, timers and the event stream when the actor is
+  /// stopped without a [ShutdownCommand] (e.g. LibSpiffyActorSystem.shutdown
+  /// in a host-owned actor system).
+  @override
+  void postStop() {
+    for (final sub in _eventSubscriptions.values) {
+      unawaited(sub.cancel());
+    }
+    _eventSubscriptions.clear();
+    for (final entry in _pendingSettlements.values) {
+      entry.timeout?.cancel();
+    }
+    _pendingSettlements.clear();
+    _childToParentSettlement.clear();
+    _channelAdapter?.dispose();
+    if (!_eventStream.isClosed) {
+      unawaited(_eventStream.close());
+    }
+  }
+
   @override
   Future<void> onMessage(dynamic message) async {
     try {
@@ -255,7 +283,7 @@ class WalletCoordinatorActor extends Actor {
       } else if (message is wm.BEEFValidationResult) {
         await _handleBEEFValidationResult(message);
       } else if (message is wm.SPVValidationResult) {
-        await _handleSPVValidationResult(message);
+        _handleSPVValidationResult(message);
       } else if (message is wm.SplitUTXOsResponse) {
         _handleSplitUTXOsResponse(message);
       } else if (message is wm.UTXOReceivedResponse) {
@@ -555,14 +583,20 @@ class WalletCoordinatorActor extends Actor {
   Future<void> _handleValidateBEEF(ValidateBEEFCommand cmd) async {
     _log.info('Validating BEEF for wallet ${cmd.walletId}');
 
-    // Track correlations for the multi-step validation flow
-    if (cmd.invoiceId != null) {
-      _beefValidationCorrelation[cmd.walletId] = cmd.invoiceId!;
-    }
-    _beefDataCorrelation[cmd.walletId] = (cmd.beefHex, cmd.invoiceId);
+    // Track this request under its own id for the multi-step validation flow.
+    final requestId = 'beef-validation-${++_beefRequestSeq}';
+    _beefValidations[requestId] = _PendingBeefValidation(
+      walletId: cmd.walletId,
+      beefHex: cmd.beefHex,
+      invoiceId: cmd.invoiceId,
+    );
 
     _spvActor.tell(
-      wm.ValidateBEEFMessage(cmd.beefHex, targetWalletId: cmd.walletId),
+      wm.ValidateBEEFMessage(
+        cmd.beefHex,
+        targetWalletId: cmd.walletId,
+        requestId: requestId,
+      ),
       sender: context.self,
     );
   }
@@ -808,8 +842,7 @@ class WalletCoordinatorActor extends Actor {
     _channelAdapter?.dispose();
 
     // Clear correlation maps
-    _beefValidationCorrelation.clear();
-    _beefDataCorrelation.clear();
+    _beefValidations.clear();
     _spvProcessingCorrelation.clear();
     _paymentInvoiceCorrelation.clear();
     _timestampCorrelation.clear();
@@ -1110,23 +1143,25 @@ class WalletCoordinatorActor extends Actor {
   Future<void> _handleBEEFValidationResult(wm.BEEFValidationResult result) async {
     _log.info('BEEF validation result: valid=${result.isValid} wallet=${result.targetWalletId}');
 
-    final walletId = result.targetWalletId;
-    if (walletId == null) {
+    final requestId = result.requestId;
+    final pending =
+        requestId == null ? null : _beefValidations.remove(requestId);
+    if (pending == null) {
+      // Not one of ours (or already answered): report it uncorrelated.
       _emitEvent(BEEFValidationResultEvent(
+        walletId: result.targetWalletId,
         valid: result.isValid,
         error: result.error,
       ));
       return;
     }
+    final walletId = pending.walletId;
 
     if (!result.isValid) {
       // Structural validation failed
-      final invoiceId = _beefValidationCorrelation.remove(walletId);
-      _beefDataCorrelation.remove(walletId);
-
       _emitEvent(BEEFValidationResultEvent(
         walletId: walletId,
-        invoiceId: invoiceId,
+        invoiceId: pending.invoiceId,
         valid: false,
         error: result.error ?? 'BEEF structural validation failed',
       ));
@@ -1134,9 +1169,9 @@ class WalletCoordinatorActor extends Actor {
     }
 
     // Structural validation passed - continue to full SPV validation
-    final beefData = _beefDataCorrelation.remove(walletId);
-    if (beefData != null) {
-      final (beefHex, invoiceId) = beefData;
+    {
+      final beefHex = pending.beefHex;
+      final invoiceId = pending.invoiceId;
 
       try {
         final beefBytes = Uint8List.fromList(hex.decode(beefHex));
@@ -1146,7 +1181,9 @@ class WalletCoordinatorActor extends Actor {
             : 'unknown';
 
         // Track SPV processing correlation
-        _spvProcessingCorrelation[txid] = (beefHex, invoiceId, walletId);
+        _spvProcessingCorrelation
+            .putIfAbsent(txid, () => [])
+            .add((beefHex, invoiceId, walletId));
 
         _spvActor.tell(
           wm.ReceiveTransactionMessage(
@@ -1162,6 +1199,7 @@ class WalletCoordinatorActor extends Actor {
       } catch (e) {
         _emitEvent(BEEFValidationResultEvent(
           walletId: walletId,
+          invoiceId: invoiceId,
           valid: false,
           error: 'Failed to parse BEEF for SPV validation: $e',
         ));
@@ -1169,10 +1207,15 @@ class WalletCoordinatorActor extends Actor {
     }
   }
 
-  Future<void> _handleSPVValidationResult(wm.SPVValidationResult result) async {
+  void _handleSPVValidationResult(wm.SPVValidationResult result) {
     _log.info('SPV validation result: txid=${result.txid} valid=${result.isValid}');
 
-    final correlation = _spvProcessingCorrelation.remove(result.txid);
+    final queued = _spvProcessingCorrelation[result.txid];
+    final correlation =
+        queued == null || queued.isEmpty ? null : queued.removeAt(0);
+    if (queued != null && queued.isEmpty) {
+      _spvProcessingCorrelation.remove(result.txid);
+    }
 
     if (correlation != null) {
       final (beefHex, invoiceId, walletId) = correlation;
@@ -1225,52 +1268,100 @@ class WalletCoordinatorActor extends Actor {
       // model contained the txid — exactly the gap Phase 1 closed for outbound
       // recording. We close it here for inbound by waiting on the wallet
       // projection actor before emitting.
+      //
+      // The wait runs off the mailbox (A-M2): awaiting it inside onMessage
+      // blocked every other public command for up to 32 s.
       if (result.targetWalletId != null) {
-        BigInt totalReceived = BigInt.zero;
-        for (final utxo in result.spendableUTXOs) {
-          final sat = utxo['satoshis'];
-          totalReceived += sat is BigInt ? sat : BigInt.from(sat ?? 0);
-        }
-
-        String? awaitError;
-        if (result.isValid) {
-          try {
-            final txid = result.txid;
-            final response = await _walletProjection.ask<dynamic>(
-              AwaitEventApplied(
-                (e) =>
-                    e is domain_events.TransactionImportedEvent &&
-                    e.txid == txid,
-                timeout: const Duration(seconds: 30),
-              ),
-              // Ask timeout must outlast the awaiter's own window, otherwise dactor's
-              // default (5 s) fires first and a slow projection looks like a failure.
-              const Duration(seconds: 32),
-            );
-            if (response is AwaitFailed) {
-              awaitError =
-                  'Imported transaction $txid was validated but the wallet '
-                  'read model failed to apply it: ${response.reason}';
-              _log.warning(awaitError);
-            }
-          } catch (e) {
-            awaitError =
-                'Unexpected error awaiting projection persistence for '
-                '${result.txid}: $e';
-            _log.warning(awaitError);
-          }
-        }
-
-        _emitEvent(TransactionImportedEvent(
-          walletId: result.targetWalletId!,
-          transactionId: result.txid,
-          success: result.isValid && awaitError == null,
-          utxosCreated: result.spendableUTXOs.length,
-          totalValueReceived: totalReceived.toString(),
-          error: awaitError ?? result.validationError,
-        ));
+        unawaited(_emitTransactionImported(result));
       }
     }
+  }
+
+  /// Waits (off the mailbox) until the wallet read model holds [result]'s
+  /// transaction, then emits the coordinator-level TransactionImportedEvent.
+  Future<void> _emitTransactionImported(wm.SPVValidationResult result) async {
+    BigInt totalReceived = BigInt.zero;
+    for (final utxo in result.spendableUTXOs) {
+      final sat = utxo['satoshis'];
+      totalReceived += sat is BigInt ? sat : BigInt.from(sat ?? 0);
+    }
+
+    String? awaitError;
+    if (result.isValid) {
+      try {
+        final reason = await _awaitImportApplied(result.txid);
+        if (reason != null) {
+          awaitError =
+              'Imported transaction ${result.txid} was validated but the wallet '
+              'read model failed to apply it: $reason';
+          _log.warning(awaitError);
+        }
+      } catch (e) {
+        awaitError =
+            'Unexpected error awaiting projection persistence for '
+            '${result.txid}: $e';
+        _log.warning(awaitError);
+      }
+    }
+
+    _emitEvent(TransactionImportedEvent(
+      walletId: result.targetWalletId!,
+      transactionId: result.txid,
+      success: result.isValid && awaitError == null,
+      utxosCreated: result.spendableUTXOs.length,
+      totalValueReceived: totalReceived.toString(),
+      error: awaitError ?? result.validationError,
+    ));
+  }
+
+  /// Resolves with null once the wallet projection has applied the
+  /// TransactionImportedEvent for [txid], or with the failure reason.
+  ///
+  /// The SPV result reaches this coordinator after WalletManagerActor was
+  /// told to record the transaction, so the projection may already have
+  /// applied the event by the time an awaiter could be registered, and an
+  /// awaiter only matches events applied after it (A-M2). So:
+  /// 1. register the awaiter;
+  /// 2. send GetProjectionInfo behind it. The projection's mailbox is FIFO,
+  ///    so its reply proves the awaiter is registered: every event applied
+  ///    from then on resolves the awaiter, and every event applied before
+  ///    has finished its read-model write;
+  /// 3. then look for the row. Present means "already applied".
+  Future<String?> _awaitImportApplied(String txid) async {
+    final applied = _walletProjection.ask<dynamic>(
+      AwaitEventApplied(
+        (e) =>
+            e is domain_events.TransactionImportedEvent &&
+            e.txid == txid,
+        timeout: const Duration(seconds: 30),
+      ),
+      // Ask timeout must outlast the awaiter's own window, otherwise dactor's
+      // default (5 s) fires first and a slow projection looks like a failure.
+      const Duration(seconds: 32),
+    );
+    // Whichever branch loses must not surface as an unhandled error.
+    final appliedOutcome = applied.then<String?>(
+      (response) => response is AwaitFailed ? response.reason : null,
+      onError: (Object e) => e.toString(),
+    );
+
+    final alreadyApplied = () async {
+      try {
+        await _walletProjection.ask<dynamic>(
+            GetProjectionInfo(), const Duration(seconds: 30));
+        return await _storage.getTransaction(txid) != null;
+      } catch (_) {
+        return false; // No barrier answer: rely on the awaiter alone.
+      }
+    }();
+
+    final first = await Future.any<Object?>([
+      appliedOutcome.then((reason) => _AwaiterOutcome(reason)),
+      alreadyApplied,
+    ]);
+    if (first is _AwaiterOutcome) return first.reason;
+    if (first == true) return null;
+    return appliedOutcome;
   }
 
   void _handleSplitUTXOsResponse(wm.SplitUTXOsResponse response) {
@@ -1332,6 +1423,26 @@ class WalletCoordinatorActor extends Actor {
       ));
     }
   }
+}
+
+/// A structural BEEF validation awaiting SPVActor's reply (A-M1).
+class _PendingBeefValidation {
+  final String walletId;
+  final String beefHex;
+  final String? invoiceId;
+
+  _PendingBeefValidation({
+    required this.walletId,
+    required this.beefHex,
+    required this.invoiceId,
+  });
+}
+
+/// The awaiter's result, distinguished from the "already applied" check in
+/// [WalletCoordinatorActor._awaitImportApplied].
+class _AwaiterOutcome {
+  final String? reason;
+  const _AwaiterOutcome(this.reason);
 }
 
 /// Tracks an in-flight SettleBEEFCommand. One of these lives in

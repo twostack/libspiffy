@@ -482,6 +482,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         return _handleConfirmTransaction(currentState, command as ConfirmTransactionCommand);
       case UpdateTransactionStatusCommand:
         return _handleUpdateTransactionStatus(currentState, command as UpdateTransactionStatusCommand);
+      case RevertTransactionConfirmationCommand:
+        return _handleRevertTransactionConfirmation(currentState, command as RevertTransactionConfirmationCommand);
       case SpendUTXOCommand:
         return _handleSpendUTXO(currentState, command as SpendUTXOCommand);
       case UpdateUTXOConfirmationsCommand:
@@ -597,6 +599,9 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         break;
       case TransactionStatusUpdatedEvent:
         // Status update is projection-only — no aggregate state change needed
+        break;
+      case TransactionConfirmationRevertedEvent:
+        _applyTransactionConfirmationReverted(event as TransactionConfirmationRevertedEvent);
         break;
       case UTXOSplitInitiatedEvent:
         _applyUTXOSplitInitiated(event as UTXOSplitInitiatedEvent);
@@ -1374,6 +1379,25 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     );
 
     return [event];
+  }
+
+  /// Take back a confirmation whose block left the active chain or whose
+  /// proof does not match its block header (audit 3b0).
+  List<Event> _handleRevertTransactionConfirmation(
+      WalletState currentState, RevertTransactionConfirmationCommand command) {
+    if (!currentState.isCreated) {
+      throw StateError('Cannot revert a confirmation for non-existent wallet');
+    }
+    return [TransactionConfirmationRevertedEvent(
+      walletId: command.walletId,
+      txid: command.txid,
+      blockHeight: command.blockHeight,
+      blockHash: command.blockHash,
+      merkleProof: command.merkleProof,
+      reason: command.reason,
+      version: currentState.version + 1,
+      timestamp: DateTime.now(),
+    )];
   }
 
   List<Event> _handleUpdateTransactionStatus(WalletState currentState, UpdateTransactionStatusCommand command) {
@@ -2772,6 +2796,50 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       });
     } else {
       records[event.txid] = <String, dynamic>{...details, 'status': 'pending'};
+    }
+
+    currentState.version = event.version;
+    currentState.lastModified = event.timestamp;
+  }
+
+  /// The transaction is no longer confirmed: back to pending in the
+  /// transaction metadata, and its UTXOs lose their confirmations. A UTXO
+  /// that was spendable because of the proof becomes pending (a reserved one
+  /// returns to pending on release); spent UTXOs are left alone.
+  void _applyTransactionConfirmationReverted(TransactionConfirmationRevertedEvent event) {
+    final record = _transactionRecords(_outgoingTransactionsKey)[event.txid];
+    if (record is Map && record['status'] == 'confirmed') {
+      record['status'] = 'pending';
+      record.remove('blockHeight');
+      record.remove('blockHash');
+      record.remove('confirmedAt');
+    }
+
+    for (final entry in currentState.utxos.entries.toList()) {
+      final utxo = entry.value;
+      if (utxo.txid != event.txid || utxo.status == UTXOStatus.spent) continue;
+      _putUtxo(entry.key, BitcoinUtxo(
+        txid: utxo.txid,
+        vout: utxo.vout,
+        value: utxo.value,
+        scriptPubKey: utxo.scriptPubKey,
+        address: utxo.address,
+        status: utxo.status == UTXOStatus.available ? UTXOStatus.pending : utxo.status,
+        blockHeight: null,
+        confirmations: 0,
+        createdAt: utxo.createdAt,
+        updatedAt: event.timestamp,
+        reservedByTxId: utxo.reservedByTxId,
+        reservationExpiresAt: utxo.reservationExpiresAt,
+        reservationPriority: utxo.reservationPriority,
+        reservationReason: utxo.reservationReason,
+        derivationIndex: utxo.derivationIndex,
+        pluginMetadata: utxo.pluginMetadata,
+        statusBeforeReservation: utxo.statusBeforeReservation == UTXOStatus.available
+            ? UTXOStatus.pending
+            : utxo.statusBeforeReservation,
+        spentInTxId: utxo.spentInTxId,
+      ));
     }
 
     currentState.version = event.version;

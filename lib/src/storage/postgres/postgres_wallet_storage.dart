@@ -1285,6 +1285,22 @@ class PostgresWalletStorage implements ReadModelStorage {
   }
 
   @override
+  Future<bool> deleteMerkleProof(String txid, {List<String>? onlyIfMerkleProof}) async {
+    _ensureInitialized();
+
+    final result = await _pool!.execute(
+      Sql.named(onlyIfMerkleProof == null
+          ? 'DELETE FROM merkle_proofs WHERE txid = @txid'
+          : 'DELETE FROM merkle_proofs WHERE txid = @txid AND merkle_proof_json = @merkleProofJson'),
+      parameters: {
+        'txid': txid,
+        if (onlyIfMerkleProof != null) 'merkleProofJson': onlyIfMerkleProof.join(','),
+      },
+    );
+    return result.affectedRows > 0;
+  }
+
+  @override
   Future<MerkleProof?> getMerkleProof(String txid) async {
     _ensureInitialized();
 

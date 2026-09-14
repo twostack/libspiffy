@@ -230,47 +230,6 @@ void main() {
         });
       });
 
-      group('getRawTransaction', () {
-        test('should get raw transaction successfully', () async {
-          const responseJson = {
-            'rawTx': testRawTx,
-          };
-
-          when(mockClient.get(
-            any,
-            headers: anyNamed('headers'),
-          )).thenAnswer((_) async => http.Response(
-            jsonEncode(responseJson),
-            200,
-          ));
-
-          final result = await arcService.getRawTransaction(testTxId);
-
-          expect(result, equals(testRawTx));
-
-          verify(mockClient.get(
-            Uri.parse('$baseUrl/tx/$testTxId/raw'),
-            headers: anyNamed('headers'),
-          ));
-        });
-
-        test('should handle missing rawTx field', () async {
-          const responseJson = {};
-
-          when(mockClient.get(
-            any,
-            headers: anyNamed('headers'),
-          )).thenAnswer((_) async => http.Response(
-            jsonEncode(responseJson),
-            200,
-          ));
-
-          final result = await arcService.getRawTransaction(testTxId);
-
-          expect(result, equals(''));
-        });
-      });
-
       group('submitBatchTransactions', () {
         test('should submit batch transactions successfully', () async {
           const rawTxs = ['tx1', 'tx2', 'tx3'];

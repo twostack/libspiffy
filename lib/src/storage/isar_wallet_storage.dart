@@ -937,6 +937,20 @@ class IsarWalletStorage implements ReadModelStorage {
   }
 
   @override
+  Future<bool> deleteMerkleProof(String txid, {List<String>? onlyIfMerkleProof}) async {
+    return _isar.writeTxn(() async {
+      final entities = await _isar.merkleProofEntitys.where().txidEqualTo(txid).findAll();
+      if (entities.isEmpty) return false;
+      if (onlyIfMerkleProof != null) {
+        final current = entities.reduce((a, b) => a.id >= b.id ? a : b).toMerkleProof();
+        if (current.merkleProof.join(',') != onlyIfMerkleProof.join(',')) return false;
+      }
+      await _isar.merkleProofEntitys.deleteAll(entities.map((e) => e.id).toList());
+      return true;
+    });
+  }
+
+  @override
   Future<MerkleProof?> getMerkleProof(String txid) async {
     final entities = await _isar.merkleProofEntitys
         .where()

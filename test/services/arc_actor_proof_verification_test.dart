@@ -19,6 +19,7 @@ import 'package:libspiffy/src/actors/arc_actor.dart';
 import 'package:libspiffy/src/actors/wallet_messages.dart';
 import 'package:libspiffy/src/core/wallet_commands.dart';
 import 'package:libspiffy/src/models/bitcoin_transaction.dart';
+import 'package:libspiffy/src/models/bitcoin_utxo.dart';
 import 'package:libspiffy/src/services/arc_service.dart';
 import 'package:libspiffy/src/storage/in_memory_wallet_storage.dart';
 import 'package:test/test.dart';
@@ -162,6 +163,61 @@ void main() {
       final confirms = walletManager.commands.whereType<ConfirmTransactionCommand>().toList();
       expect(confirms, hasLength(1));
       expect(confirms.single.blockHash, kFixtureBlockHash);
+    });
+  });
+
+  // zvj part 3 (libspiffy-zvj): only SEEN_ON_NETWORK applied the deferred
+  // spend. A transaction ARC first reports as MINED (broadcast, then mined
+  // before the next scan) kept its inputs unspent and its outputs pending.
+  group('A transaction reported MINED straight from broadcast (zvj part 3)', () {
+    const fundingTxid = '6af69a37518c963234ab5b9e0c6afb6bc7273f1be58e98c42336c29067c0b665';
+
+    Future<void> storeUtxo(String txid, int vout, UTXOStatus status) => storage.upsertUTXO(
+          _wallet,
+          BitcoinUtxo.create(
+            txid: txid,
+            vout: vout,
+            satoshis: BigInt.from(1000),
+            scriptPubKey: '76a914${'00' * 20}88ac',
+            address: 'addr-$txid-$vout',
+            status: status,
+          ),
+        );
+
+    test('marks the wallet inputs spent and the wallet outputs available on confirmation', () async {
+      await storage.storeBlockHeader(fixtureHeader(), kFixtureHeight);
+      await storeTx(kFixtureTxid, TransactionStatus.broadcast, rawHex: kFixtureTxHex);
+      await storeUtxo(fundingTxid, 0, UTXOStatus.reserved); // the input it spends
+      await storeUtxo(kFixtureTxid, 1, UTXOStatus.pending); // change back to the wallet
+      arc.responses[kFixtureTxid] = mined();
+      await spawnActor();
+
+      headersArrived();
+      await settleAfterArcCalls(1);
+
+      expect(walletManager.commands.whereType<ConfirmTransactionCommand>(), hasLength(1));
+      final spends = walletManager.commands.whereType<SpendUTXOCommand>().toList();
+      expect(spends.map((c) => c.utxoKey), equals(['$fundingTxid:0']));
+      expect(spends.single.spendingTxId, kFixtureTxid);
+      final available = walletManager.commands.whereType<MarkUTXOAvailableCommand>().toList();
+      expect(available.map((c) => '${c.txid}:${c.vout}'), equals(['$kFixtureTxid:1']),
+          reason: 'output 0 is not a wallet UTXO; only wallet outputs are promoted');
+    });
+
+    test('an input already spent (SEEN_ON_NETWORK applied it) is not spent again', () async {
+      await storage.storeBlockHeader(fixtureHeader(), kFixtureHeight);
+      await storeTx(kFixtureTxid, TransactionStatus.seenOnNetwork, rawHex: kFixtureTxHex);
+      await storeUtxo(fundingTxid, 0, UTXOStatus.spent);
+      await storeUtxo(kFixtureTxid, 1, UTXOStatus.available);
+      arc.responses[kFixtureTxid] = mined();
+      await spawnActor();
+
+      headersArrived();
+      await settleAfterArcCalls(1);
+
+      expect(walletManager.commands.whereType<ConfirmTransactionCommand>(), hasLength(1));
+      expect(walletManager.commands.whereType<SpendUTXOCommand>(), isEmpty);
+      expect(walletManager.commands.whereType<MarkUTXOAvailableCommand>(), isEmpty);
     });
   });
 

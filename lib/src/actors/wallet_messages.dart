@@ -883,3 +883,72 @@ class SetHeaderSyncActorMessage implements Message {
   @override
   DateTime get timestamp => DateTime.now();
 }
+
+// ==========================================================================
+// HEADER CHAIN REORGANIZATION (3b0)
+// ==========================================================================
+
+/// Sent by HeaderSyncActor to SPVActor when accepting a batch of headers
+/// moved the active chain to another branch.
+///
+/// SPVActor re-checks every confirmation that may rest on a block that
+/// left the active chain and reverts those that no longer verify
+/// (RevertTransactionConfirmationCommand), then tells ARCActor
+/// ([TransactionConfirmationsRevertedMessage]) so the transactions are
+/// polled again.
+class HeaderChainReorganizedMessage implements Message {
+  /// Height of the common ancestor (the lowest fork point of the batch).
+  /// Blocks above it may have changed.
+  final int forkHeight;
+
+  /// Display hashes of the headers that left the active chain.
+  final List<String> orphanedBlockHashes;
+
+  /// Height of the active tip after the batch.
+  final int newTipHeight;
+
+  final DateTime _timestamp = DateTime.now();
+
+  HeaderChainReorganizedMessage({
+    required this.forkHeight,
+    required this.orphanedBlockHashes,
+    required this.newTipHeight,
+  });
+
+  @override
+  String get correlationId => 'header-chain-reorg-$forkHeight-$newTipHeight';
+  @override
+  Map<String, dynamic> get metadata => {
+        'forkHeight': forkHeight,
+        'orphanedBlockHashes': orphanedBlockHashes,
+        'newTipHeight': newTipHeight,
+      };
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => _timestamp;
+}
+
+/// Sent by SPVActor to ARCActor after it reverted the confirmation of
+/// [txids] (a reorganization orphaned their block, or a proof imported
+/// before its header was known turned out not to match it).
+///
+/// ARCActor forgets any recent confirmation or held proof of these
+/// transactions and schedules a status scan, so they are confirmed again
+/// once ARC reports them mined on the active chain.
+class TransactionConfirmationsRevertedMessage implements Message {
+  final List<String> txids;
+
+  final DateTime _timestamp = DateTime.now();
+
+  TransactionConfirmationsRevertedMessage(this.txids);
+
+  @override
+  String get correlationId => 'confirmations-reverted-${_timestamp.microsecondsSinceEpoch}';
+  @override
+  Map<String, dynamic> get metadata => {'txids': txids};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => _timestamp;
+}

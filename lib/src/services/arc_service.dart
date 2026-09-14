@@ -474,30 +474,6 @@ class ArcService {
     }
   }
 
-  /// Get the raw transaction data.
-  ///
-  /// Note: `GET /tx/{txid}/raw` is not part of ARC's published API
-  /// (bitcoin-sv/arc `pkg/api/arc.yaml` lists `/policy`, `/health`,
-  /// `/tx/{txid}`, `/tx` and `/txs`); ARC deployments that follow the spec
-  /// answer 404.
-  ///
-  /// [txid] - The transaction ID
-  Future<String> getRawTransaction(String txid) async {
-    final url = '$baseUrl/tx/$txid/raw';
-
-    final response = await _client.get(
-      Uri.parse(url),
-      headers: _headers,
-    ).timeout(requestTimeout);
-
-    if (response.statusCode == 200) {
-      final data = jsonDecode(response.body);
-      return data['rawTx'] ?? '';
-    } else {
-      throw ArcException('Failed to get raw transaction: ${response.body}');
-    }
-  }
-
   /// Merkle proof of a mined transaction.
   ///
   /// ARC has no proof endpoint; the proof is the `merklePath` (BRC-74 hex)

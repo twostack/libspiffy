@@ -7,6 +7,7 @@ import 'package:spiffynode/spiffy_node.dart';
 
 import 'package:libspiffy/src/actors/header_sync_actor.dart';
 import 'package:libspiffy/src/actors/spv_messages.dart';
+import 'package:libspiffy/src/actors/wallet_messages.dart' show HeaderChainReorganizedMessage;
 import 'package:libspiffy/src/spv/network_params.dart';
 import 'package:libspiffy/src/storage/wallet_storage.dart';
 import 'package:libspiffy/src/storage/in_memory_wallet_storage.dart';
@@ -468,6 +469,36 @@ void main() {
         final stored = spvInstance.receivedMessages.whereType<BlockHeaderStoredMessage>().toList();
         expect(stored.last.isReorg, isTrue);
         expect(stored.last.height, equals(4));
+      });
+
+      // A-L2 / 3b0: the reorganization used to stop at the header chain;
+      // SPVActor was only told `isReorg` and did nothing with it.
+      test('a reorganizing batch tells the SPV actor the fork height and the orphaned blocks, '
+          'before the stored-header notification', () async {
+        final a = RegtestMiner.mineChain(genesis, 3, seed: 'A'); // heights 1..3
+        headerSyncActor.tell(BlockHeadersReceivedMessage(
+          peerId: 'peer-a', headers: a, startHeight: 1) as dynamic);
+        await Future.delayed(Duration(milliseconds: 300));
+        expect(spvInstance.receivedMessages.whereType<HeaderChainReorganizedMessage>(), isEmpty,
+            reason: 'extending the chain is not a reorganization');
+
+        final b = RegtestMiner.mineChain(a[0], 3, seed: 'B'); // heights 2..4
+        headerSyncActor.tell(BlockHeadersReceivedMessage(
+          peerId: 'peer-b', headers: b, startHeight: 2) as dynamic);
+        await Future.delayed(Duration(milliseconds: 300));
+
+        final reorgs = spvInstance.receivedMessages.whereType<HeaderChainReorganizedMessage>().toList();
+        expect(reorgs, hasLength(1));
+        expect(reorgs.single.forkHeight, equals(1));
+        expect(reorgs.single.newTipHeight, equals(4));
+        expect(reorgs.single.orphanedBlockHashes.toSet(),
+            equals({a[1].blockHash().toString(), a[2].blockHash().toString()}));
+
+        final messages = spvInstance.receivedMessages;
+        final reorgAt = messages.indexOf(reorgs.single);
+        final storedAt = messages.lastIndexWhere((m) => m is BlockHeaderStoredMessage);
+        expect(reorgAt, lessThan(storedAt),
+            reason: 'confirmations are re-checked before ARC is prompted by the stored-header notification');
       });
 
       test('a lower-work competing branch delivered by a peer does not move the tip', () async {

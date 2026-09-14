@@ -971,3 +971,46 @@ class PreloadWalletCommand extends WalletCommand {
   }
 }
 
+
+/// Command to take back the confirmation of [txid] (audit 3b0).
+///
+/// Sent by SPVActor when the block the transaction was confirmed in left
+/// the active chain in a reorganization, or when a proof accepted before
+/// its block header was known does not match that header. The transaction
+/// returns to pending and needs a new proof; its UTXOs lose their
+/// confirmations and those that were spendable become pending. The dropped
+/// proof is identified by [merkleProof] (the stored BUMP hex) so the read
+/// model deletes exactly that proof and never a newer one.
+class RevertTransactionConfirmationCommand extends WalletCommand {
+  final String txid;
+
+  /// Height and hash of the block the dropped proof pointed at, when known.
+  final int? blockHeight;
+  final String? blockHash;
+
+  /// The stored proof being dropped (`MerkleProof.merkleProof`), if any.
+  final List<String>? merkleProof;
+
+  /// Why the confirmation was reverted (for the journal and logs).
+  final String reason;
+
+  RevertTransactionConfirmationCommand({
+    required String walletId,
+    required this.txid,
+    required this.reason,
+    this.blockHeight,
+    this.blockHash,
+    this.merkleProof,
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          commandId: commandId,
+          timestamp: timestamp,
+          metadata: metadata,
+        );
+
+  @override
+  String get commandType => 'RevertTransactionConfirmationCommand';
+}

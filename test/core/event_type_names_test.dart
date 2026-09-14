@@ -40,6 +40,7 @@ const goldenTypeNames = <String, String>{
   'TransactionRecordedEvent': 'wallet.transaction.recorded',
   'TransactionConfirmedEvent': 'wallet.transaction.confirmed',
   'TransactionStatusUpdatedEvent': 'wallet.transaction.status_updated',
+  'TransactionConfirmationRevertedEvent': 'wallet.transaction.confirmation_reverted',
   'UTXOSplitInitiatedEvent': 'wallet.utxo_split.initiated',
   'UTXOSplitCompletedEvent': 'wallet.utxo_split.completed',
   'AllUTXOsSplitCompletedEvent': 'wallet.utxo_split.all_completed',
@@ -147,6 +148,9 @@ Map<String, Event> sampleEvents() => <String, Event>{
       'TransactionStatusUpdatedEvent': TransactionStatusUpdatedEvent(
           walletId: _w, txid: _txid, newStatus: TransactionStatus.broadcast,
           timestamp: _t, version: 22),
+      'TransactionConfirmationRevertedEvent': TransactionConfirmationRevertedEvent(
+          walletId: _w, txid: _txid, blockHeight: 12, blockHash: 'h',
+          merkleProof: ['00'], reason: 'reorg', timestamp: _t, version: 100),
       'UTXOSplitInitiatedEvent': UTXOSplitInitiatedEvent(
           walletId: _w, utxoKeysToSplit: ['$_txid:0'], targetUtxoCount: 3,
           feeRate: BigInt.one, timestamp: _t, version: 23),

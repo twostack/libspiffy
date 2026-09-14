@@ -376,6 +376,15 @@ abstract class ReadModelStorage {
   /// - [proof]: Merkle proof data
   Future<void> storeMerkleProof(String txid, MerkleProof proof);
 
+  /// Delete the merkle proof of [txid] (audit 3b0: a proof whose block left
+  /// the active chain, or that does not match its block header).
+  ///
+  /// With [onlyIfMerkleProof] the proof is deleted only while its
+  /// `merkleProof` still equals that list, so a newer proof stored in the
+  /// meantime (the transaction re-mined on the active chain) survives.
+  /// Returns whether a proof was deleted.
+  Future<bool> deleteMerkleProof(String txid, {List<String>? onlyIfMerkleProof});
+
   /// Get merkle proof for a transaction
   ///
   /// Parameters:

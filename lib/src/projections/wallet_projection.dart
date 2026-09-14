@@ -67,6 +67,7 @@ class WalletProjection extends Projection<void> {
         TransactionRecordedEvent,
         TransactionConfirmedEvent,
         TransactionStatusUpdatedEvent,
+        TransactionConfirmationRevertedEvent,
       ];
   
   @override
@@ -159,6 +160,9 @@ class WalletProjection extends Projection<void> {
         return true;
       case TransactionStatusUpdatedEvent:
         await _handleTransactionStatusUpdated(event as TransactionStatusUpdatedEvent);
+        return true;
+      case TransactionConfirmationRevertedEvent:
+        await _handleTransactionConfirmationReverted(event as TransactionConfirmationRevertedEvent);
         return true;
       default:
         return false;
@@ -818,6 +822,77 @@ class WalletProjection extends Projection<void> {
 
     } catch (e) {
       _log.warning('Failed to handle transaction confirmed event: $e');
+    }
+  }
+
+  /// A confirmation was taken back (audit 3b0): the transaction row returns
+  /// to pending with no block, the transaction's UTXO rows lose their
+  /// confirmations (available ones become pending), and the stored proof is
+  /// deleted if it is still the one the event names. A newer proof (the
+  /// transaction re-mined on the active chain, stored by ARCActor) differs
+  /// and is kept. Idempotent.
+  Future<void> _handleTransactionConfirmationReverted(TransactionConfirmationRevertedEvent event) async {
+    final existingTx = await _storage.getTransaction(event.txid, walletId: event.walletId);
+    if (existingTx == null) {
+      _log.warning('TransactionConfirmationReverted for ${event.txid}: no transaction row in '
+          '${event.walletId}; UTXOs and proof still updated');
+    } else if (existingTx.status == TransactionStatus.confirmed ||
+        existingTx.blockHeight != null ||
+        (existingTx.confirmations ?? 0) > 0) {
+      await _storage.storeTransaction(event.walletId, BitcoinTransaction(
+        walletId: existingTx.walletId,
+        txid: existingTx.txid,
+        rawHex: existingTx.rawHex,
+        status: existingTx.status == TransactionStatus.confirmed ? TransactionStatus.pending : existingTx.status,
+        blockHeight: null,
+        confirmations: 0,
+        inputValue: existingTx.inputValue,
+        outputValue: existingTx.outputValue,
+        fee: existingTx.fee,
+        receivingAddresses: existingTx.receivingAddresses,
+        sendingAddresses: existingTx.sendingAddresses,
+        netAmount: existingTx.netAmount,
+        createdAt: existingTx.createdAt,
+        updatedAt: event.timestamp,
+        memo: existingTx.memo,
+        lockTime: existingTx.lockTime,
+        version: existingTx.version,
+      ));
+    }
+
+    var utxosChanged = false;
+    for (final utxo in await _storage.getUTXOs(event.walletId, includeSpent: false)) {
+      if (utxo.txid != event.txid) continue;
+      await _storage.upsertUTXO(event.walletId, BitcoinUtxo(
+        txid: utxo.txid,
+        vout: utxo.vout,
+        value: utxo.value,
+        scriptPubKey: utxo.scriptPubKey,
+        address: utxo.address,
+        status: utxo.status == UTXOStatus.available ? UTXOStatus.pending : utxo.status,
+        blockHeight: null,
+        confirmations: 0,
+        createdAt: utxo.createdAt,
+        updatedAt: event.timestamp,
+        reservedByTxId: utxo.reservedByTxId,
+        reservationExpiresAt: utxo.reservationExpiresAt,
+        reservationPriority: utxo.reservationPriority,
+        reservationReason: utxo.reservationReason,
+        derivationIndex: utxo.derivationIndex,
+        pluginMetadata: utxo.pluginMetadata,
+        statusBeforeReservation: utxo.statusBeforeReservation == UTXOStatus.available
+            ? UTXOStatus.pending
+            : utxo.statusBeforeReservation,
+      ));
+      utxosChanged = true;
+    }
+    if (utxosChanged) {
+      await _recalculateAndPersistForWallet(event.walletId, event.timestamp);
+    }
+
+    final dropped = event.merkleProof;
+    if (dropped != null) {
+      await _storage.deleteMerkleProof(event.txid, onlyIfMerkleProof: dropped);
     }
   }
 

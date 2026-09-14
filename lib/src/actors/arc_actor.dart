@@ -10,6 +10,7 @@ import 'package:logging/logging.dart';
 
 import '../core/wallet_commands.dart';
 import '../models/bitcoin_transaction.dart';
+import '../models/bitcoin_utxo.dart' show UTXOStatus;
 
 import '../services/arc_service.dart';
 import '../services/arc_service_config.dart';
@@ -165,6 +166,10 @@ class ARCActor extends Actor {
           await _onHeadersArrived();
           break;
 
+        case TransactionConfirmationsRevertedMessage:
+          _handleConfirmationsReverted(message as TransactionConfirmationsRevertedMessage);
+          break;
+
         default:
       }
     } catch (e) {
@@ -249,6 +254,26 @@ class ARCActor extends Actor {
   /// schedule one debounced ARC scan for the whole batch.
   Future<void> _onHeadersArrived() async {
     await _recheckPendingProofs();
+    if (_stopped) return;
+    _headerDebounceTimer?.cancel();
+    _headerDebounceTimer = Timer(headerTriggerDebounce, () {
+      _headerDebounceTimer = null;
+      unawaited(_runScan());
+    });
+  }
+
+  /// SPVActor took back these confirmations (reorganization, or a proof
+  /// that does not match its header): forget that they were confirmed or
+  /// held, and poll them again soon (audit 3b0). The read model moves them
+  /// back to pending once the revert is projected; the debounced scan, or
+  /// the next periodic one, picks them up from there.
+  void _handleConfirmationsReverted(TransactionConfirmationsRevertedMessage msg) {
+    for (final txid in msg.txids) {
+      _recentlyConfirmed.remove(txid);
+      _pendingProofs.remove(txid);
+      _pendingBackoff.remove(txid);
+    }
+    _log.info('${msg.txids.length} confirmation(s) reverted; re-polling ARC');
     if (_stopped) return;
     _headerDebounceTimer?.cancel();
     _headerDebounceTimer = Timer(headerTriggerDebounce, () {
@@ -799,6 +824,57 @@ class ARCActor extends Actor {
       blockHash: check.blockHash,
     )));
     _log.info('Transaction $txid confirmed at height ${check.blockHeight} (proof verified against local header)');
+
+    await _applyDeferredSpendOnMined(txid, proof.walletId);
+  }
+
+  /// A mined transaction has certainly reached the network. SEEN_ON_NETWORK
+  /// normally applies the deferred spend (inputs spent, outputs available),
+  /// but a transaction ARC first reports as MINED never passed through that
+  /// state, so its inputs stayed unspent and its outputs pending (zvj).
+  ///
+  /// Only wallet UTXOs still needing the transition are commanded: an input
+  /// already spent (SEEN_ON_NETWORK came first) or an output that is not the
+  /// wallet's is skipped, so the aggregate is not sent commands it rejects.
+  Future<void> _applyDeferredSpendOnMined(String txid, String walletId) async {
+    try {
+      final tx = await _storage.getTransaction(txid, walletId: walletId);
+      if (tx == null || tx.rawHex.isEmpty) return;
+      final parsed = dartsv.Transaction.fromHex(tx.rawHex);
+      final utxos = {
+        for (final u in await _storage.getUTXOs(walletId, includeSpent: true)) u.key: u,
+      };
+
+      var spent = 0;
+      for (final input in parsed.inputs) {
+        final utxo = utxos['${input.prevTxnId}:${input.prevTxnOutputIndex}'];
+        if (utxo == null || utxo.status == UTXOStatus.spent) continue;
+        _walletManager.tell(WalletCommandMessage(walletId, SpendUTXOCommand(
+          walletId: walletId,
+          utxoKey: utxo.key,
+          spendingTxId: txid,
+          fee: BigInt.zero,
+        )));
+        spent++;
+      }
+
+      var promoted = 0;
+      for (var vout = 0; vout < parsed.outputs.length; vout++) {
+        final utxo = utxos['$txid:$vout'];
+        if (utxo == null || utxo.status == UTXOStatus.spent || utxo.status == UTXOStatus.available) continue;
+        _walletManager.tell(WalletCommandMessage(walletId, MarkUTXOAvailableCommand(
+          walletId: walletId,
+          txid: txid,
+          vout: vout,
+        )));
+        promoted++;
+      }
+      if (spent > 0 || promoted > 0) {
+        _log.info('Transaction $txid mined: marked $spent input(s) spent, $promoted output(s) available');
+      }
+    } catch (e) {
+      _log.warning('Failed to apply the deferred spend of mined transaction $txid: $e');
+    }
   }
 
   /// Re-check held MINED proofs against the headers stored since.

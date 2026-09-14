@@ -5,6 +5,7 @@ import 'package:logging/logging.dart';
 import 'package:spiffynode/spiffy_node.dart';
 
 import '../spv/block_header_chain.dart';
+import 'wallet_messages.dart' show HeaderChainReorganizedMessage;
 
 // =============================================================================
 // HEADER SYNC ACTOR MESSAGES
@@ -85,9 +86,6 @@ class HeaderSyncActor extends Actor {
   int _headersProcessed = 0;
   int _reorgsHandled = 0;
   DateTime? _lastHeaderAt;
-  
-  // Pending messages queue (for messages received before initialization)
-  final List<BlockHeadersReceivedMessage> _pendingMessages = [];
   
   // Sync state guard to prevent concurrent header requests
   bool _syncInProgress = false;
@@ -182,15 +180,6 @@ class HeaderSyncActor extends Actor {
     _logger.info('HeaderSyncActor initialized successfully');
     _logger.info('Current chain state: height ${_headerChain.bestHeight}');
     
-    // Process any pending messages that arrived before initialization
-    if (_pendingMessages.isNotEmpty) {
-      _logger.info('Processing ${_pendingMessages.length} queued messages');
-      for (final msg in _pendingMessages) {
-        _handleBlockHeadersReceived(msg);
-      }
-      _pendingMessages.clear();
-    }
-    
     // Notify SPVActor that header chain is ready
     if (_spvActor != null) {
       _spvActor.tell(SPVStatusMessage(
@@ -278,18 +267,16 @@ class HeaderSyncActor extends Actor {
 
   /// Handle incoming block headers from SpiffyNode
   Future<void> _handleBlockHeadersReceived(BlockHeadersReceivedMessage msg) async {
-    if (!_isInitialized) {
-      _logger.warning('HeaderSyncActor not initialized, queuing headers from ${msg.peerId}');
-      _pendingMessages.add(msg);
-      return;
-    }
-
+    // preStart initializes the actor before its mailbox delivers anything,
+    // so there is no pre-initialization queue (audit A-L2).
     _logger.info('Processing ${msg.headers.length} headers from peer ${msg.peerId} '
         '(sender says start height ${msg.startHeight})');
 
     var successCount = 0;
     var failureCount = 0;
     var reorganized = false;
+    int? forkHeight;
+    final orphanedHashes = <String>{};
     var firstParentUnknown = false;
     BlockHeader? lastStored;
 
@@ -309,6 +296,9 @@ class HeaderSyncActor extends Actor {
           if (result.reorganized) {
             reorganized = true;
             _reorgsHandled++;
+            final fork = result.forkHeight ?? 0;
+            if (forkHeight == null || fork < forkHeight) forkHeight = fork;
+            orphanedHashes.addAll(result.orphaned.map((h) => h.blockHash().toString()));
             _logger.warning('Reorganization applied: fork at height ${result.forkHeight}, '
                 '${result.orphaned.length} header(s) orphaned, new tip at height ${result.height}');
           }
@@ -355,6 +345,17 @@ class HeaderSyncActor extends Actor {
         _triggerHeaderSync(); // Request next batch automatically
       } else if (successCount > 0) {
         _logger.info('✅ Sync complete: received ${successCount} headers (less than 2000)');
+      }
+
+      // A reorganization first: SPVActor takes back confirmations that rested
+      // on the orphaned blocks before the header notification below makes
+      // ARCActor poll again (audit 3b0).
+      if (_spvActor != null && reorganized) {
+        _spvActor.tell(HeaderChainReorganizedMessage(
+          forkHeight: forkHeight ?? 0,
+          orphanedBlockHashes: orphanedHashes.toList(),
+          newTipHeight: _headerChain.bestHeight,
+        ) as dynamic);
       }
 
       // Notify SPVActor of new headers (using the last header stored)

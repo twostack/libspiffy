@@ -17,18 +17,20 @@ class RegtestMiner {
 
   static const Duration spacing = Duration(minutes: 10);
 
-  /// Mine one header on [parent].
+  /// Mine one header on [parent]. [merkleRoot] defaults to one derived from
+  /// the parent and [seed]; pass a real root to put transactions in the block.
   static BlockHeader mine({
     required BlockHeader parent,
     int? bits,
     DateTime? timestamp,
     int version = 1,
     String seed = '',
+    Hash? merkleRoot,
   }) {
     final b = bits ?? NetworkParams.regtest.powLimitBits;
     final target = NetworkParams.bitsToTarget(b);
     final ts = timestamp ?? parent.timestamp.add(spacing);
-    final merkle = merkleRootFor('${parent.blockHash()}:$seed');
+    final merkle = merkleRoot ?? merkleRootFor('${parent.blockHash()}:$seed');
     var nonce = 0;
     while (true) {
       final h = BlockHeader(

@@ -544,6 +544,8 @@ class LibSpiffyActorSystem {
         aliases: const ['TransactionConfirmedEvent']);
     EventRegistry.register<TransactionStatusUpdatedEvent>(TransactionStatusUpdatedEvent.stableTypeName, TransactionStatusUpdatedEvent.fromMap,
         aliases: const ['TransactionStatusUpdatedEvent']);
+    EventRegistry.register<TransactionConfirmationRevertedEvent>(TransactionConfirmationRevertedEvent.stableTypeName, TransactionConfirmationRevertedEvent.fromMap,
+        aliases: const ['TransactionConfirmationRevertedEvent']);
     EventRegistry.register<UTXOSplitInitiatedEvent>(UTXOSplitInitiatedEvent.stableTypeName, UTXOSplitInitiatedEvent.fromMap,
         aliases: const ['UTXOSplitInitiatedEvent']);
     EventRegistry.register<UTXOSplitCompletedEvent>(UTXOSplitCompletedEvent.stableTypeName, UTXOSplitCompletedEvent.fromMap,
@@ -900,7 +902,7 @@ class LibSpiffyActorSystem {
       // 2. Map network type to BitcoinNetwork enum
       final network = NetworkName.isMainnet(networkType)
           ? BitcoinNetwork.mainnet
-          : networkType == 'regtest'
+          : NetworkName.isRegtest(networkType)
               ? BitcoinNetwork.regtest
               : BitcoinNetwork.testnet;
       print('[LibSpiffy] P2P network: $networkType → ${network.name} (magic: 0x${network.magic.toRadixString(16)})');
@@ -1011,7 +1013,7 @@ class LibSpiffyActorSystem {
   /// Get default seed nodes for the specified network
   List<String> _getDefaultPeers(String networkType) {
     if (NetworkName.isMainnet(networkType)) return ['seed.bitcoinsv.io:8333'];
-    if (networkType == 'regtest') return []; // No default seeds for regtest
+    if (NetworkName.isRegtest(networkType)) return []; // No default seeds for regtest
     return ['testnet-seed.bitcoinsv.io:18333'];
   }
 

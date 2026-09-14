@@ -9,6 +9,11 @@ import 'package:dartsv/dartsv.dart' as dartsv;
 /// depending on which component had written the value, which rejected
 /// mainnet key imports and made change outputs undetectable on mainnet.
 /// Every comparison now goes through these helpers, which accept both.
+///
+/// Regtest is its own network: its canonical name is `'regtest'` (it selects
+/// the regtest genesis and proof-of-work limit in `NetworkParams` and the
+/// `regtest` CDN directory), while keys and addresses use the testnet
+/// encoding ([toDartsv]).
 class NetworkName {
   NetworkName._();
 
@@ -24,12 +29,19 @@ class NetworkName {
     }
   }
 
+  /// True for any spelling of regtest.
+  static bool isRegtest(String? network) => network?.trim().toLowerCase() == 'regtest';
+
   /// dartsv network type for [network]; anything that is not mainnet
   /// (testnet, regtest, unknown, null) uses testnet address encoding.
   static dartsv.NetworkType toDartsv(String? network) =>
       isMainnet(network) ? dartsv.NetworkType.MAIN : dartsv.NetworkType.TEST;
 
-  /// The spelling persisted in wallet metadata and read models.
-  static String canonical(String? network) =>
-      isMainnet(network) ? 'mainnet' : 'testnet';
+  /// The spelling persisted in wallet metadata and read models:
+  /// `'mainnet'`, `'regtest'`, or `'testnet'` for everything else.
+  static String canonical(String? network) {
+    if (isMainnet(network)) return 'mainnet';
+    if (isRegtest(network)) return 'regtest';
+    return 'testnet';
+  }
 }

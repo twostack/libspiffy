@@ -107,7 +107,7 @@ class NetworkParams {
   /// (`main`, `mainnet`, `livenet`, `test`, `testnet`, `regtest`, null).
   /// Unknown or null names resolve to testnet, matching [NetworkName].
   static NetworkParams forNetwork(String? network) {
-    if (network == 'regtest') return regtest;
+    if (NetworkName.isRegtest(network)) return regtest;
     return NetworkName.isMainnet(network) ? mainnet : testnet;
   }
 

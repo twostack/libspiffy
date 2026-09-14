@@ -653,6 +653,33 @@ _balanceCache.remove(walletId);
   }
 
   @override
+  Future<bool> deleteMerkleProof(String txid, {List<String>? onlyIfMerkleProof}) async {
+    return _withGlobalLock(() async {
+      final previous = _merkleProofs[txid];
+      if (previous == null) return false;
+      if (onlyIfMerkleProof != null && !_sameProof(previous.merkleProof, onlyIfMerkleProof)) {
+        return false;
+      }
+      _merkleProofs.remove(txid);
+      final blockProofs = _blockToProofs[previous.blockHash];
+      blockProofs?.remove(txid);
+      if (blockProofs != null && blockProofs.isEmpty) {
+        _blockToProofs.remove(previous.blockHash);
+      }
+      _totalProofs--;
+      return true;
+    });
+  }
+
+  static bool _sameProof(List<String> a, List<String> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
+
+  @override
   Future<MerkleProof?> getMerkleProof(String txid) async {
     return _merkleProofs[txid];
   }

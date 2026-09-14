@@ -10,12 +10,16 @@ import 'package:spiffynode/spiffy_node.dart';
 import '../plugin/plugin_registry.dart';
 import '../storage/wallet_storage.dart';
 import '../utils/beef.dart';
+import '../utils/bump.dart';
 import '../models/invoice_output_spec.dart';
 import 'spv_messages.dart' hide ValidateBEEFMessage, BEEFValidationResult;
 import 'wallet_messages.dart';
 import 'invoice_messages.dart';
 import '../utils/network_name.dart';
 import '../utils/unique_id.dart';
+import '../core/wallet_commands.dart' show RevertTransactionConfirmationCommand;
+import '../models/bitcoin_transaction.dart' show TransactionStatus;
+import '../spv/merkle_proof_header_check.dart';
 
 /// Actor that handles true SPV validation - receives transactions from counterparties
 /// and validates them using merkle proofs against the block header chain
@@ -102,6 +106,10 @@ class SPVActor extends Actor {
           
         case BlockHeaderStoredMessage:
           await _handleBlockHeaderStored(message as BlockHeaderStoredMessage);
+          break;
+
+        case HeaderChainReorganizedMessage:
+          await _handleHeaderChainReorganized(message as HeaderChainReorganizedMessage);
           break;
           
         case SetArcActorForSPVMessage:
@@ -265,15 +273,7 @@ class SPVActor extends Actor {
         if (hasProof) {
           // This transaction has a proof - validate it directly via SPV
           
-          // Calculate BUMP index by counting how many transactions before this have proofs
-          int bumpIndex = 0;
-          for (int i = 0; i < txIndex; i++) {
-            if (beef.hasMerkle[i]) {
-              bumpIndex++;
-            }
-          }
-          
-          final bump = beef.bumps[bumpIndex];
+          final bump = _bumpFor(beef, txIndex);
           final blockHeader = await _getBlockHeader(bump.blockHeight);
           
 
@@ -301,16 +301,8 @@ class SPVActor extends Actor {
               continue; // Skip transactions without proofs (like this payment tx)
             }
             
-            // Calculate BUMP index for this ancestor
-            int bumpIndex = 0;
-            for (int j = 0; j < i; j++) {
-              if (beef.hasMerkle[j]) {
-                bumpIndex++;
-              }
-            }
-            
             final ancestorTxid = beef.calculateTxid(beef.txs[i]);
-            final bump = beef.bumps[bumpIndex];
+            final bump = _bumpFor(beef, i);
             final blockHeader = await _getBlockHeader(bump.blockHeight);
             
             
@@ -427,6 +419,29 @@ class SPVActor extends Actor {
         targetWalletId: walletId,
       );
     }
+  }
+
+  /// The BUMP proving the proven transaction at [txIndex].
+  ///
+  /// BRC-62 gives every proven transaction an explicit index into the BUMP
+  /// list (`beef.bumpIndex`, one entry per proven transaction in order).
+  /// BUMPs need not be listed in transaction order, and several
+  /// transactions of one block share a BUMP, so counting the proven
+  /// transactions before [txIndex] picked the wrong block's proof for
+  /// BEEFs not built by this library.
+  BUMP _bumpFor(BEEF beef, int txIndex) {
+    var ordinal = 0;
+    for (var i = 0; i < txIndex; i++) {
+      if (beef.hasMerkle[i]) ordinal++;
+    }
+    if (!beef.hasMerkle[txIndex] || ordinal >= beef.bumpIndex.length) {
+      throw StateError('Transaction $txIndex has no BUMP index in the BEEF');
+    }
+    final index = beef.bumpIndex[ordinal];
+    if (index < 0 || index >= beef.bumps.length) {
+      throw StateError('BUMP index $index of transaction $txIndex is out of range (${beef.bumps.length} BUMPs)');
+    }
+    return beef.bumps[index];
   }
 
   /// BRC-62 ancestor coverage: every input of an unproven transaction must
@@ -893,10 +908,11 @@ class SPVActor extends Actor {
   Future<void> _handleBlockHeaderStored(BlockHeaderStoredMessage msg) async {
 
     try {
-      // Handle reorganization if this was part of a reorg
-      if (msg.isReorg) {
-        await _handleBlockchainReorganization([]);
-      }
+      // Confirmations resting on orphaned blocks are handled by
+      // HeaderChainReorganizedMessage, which HeaderSyncActor sends before
+      // this notification. Proofs accepted before their header was known are
+      // checked now that headers have arrived (zvj).
+      await _recheckUnverifiedProofs(msg.height);
       
       // Update chain tip if this is a new highest block
       if (msg.height > _currentHeight) {
@@ -919,27 +935,169 @@ class SPVActor extends Actor {
     }
   }
 
-  /// Handle blockchain reorganization
+  /// Handle blockchain reorganization reported through the legacy
+  /// BlockHeaderUpdateMessage (no sender in the library emits it).
   Future<void> _handleBlockchainReorganization(List<dynamic> orphanedHeaders) async {
-
-    // Header-chain reorganization (chainwork fork choice, switching the
-    // active chain) is done by BlockHeaderChain via HeaderSyncActor.
-    // Nothing in the library currently invalidates merkle proofs, revalidates
-    // transactions or recalculates UTXOs that were confirmed in orphaned
-    // blocks: this method only sends BlockchainReorganizationNotification to
-    // the WalletManager, which does not handle that message yet.
-    
     if (orphanedHeaders.isEmpty) {
       return;
     }
-    
-    // Notify WalletManager about the reorganization so it can coordinate
-    // any wallet-specific actions if needed
     _walletManager.tell(BlockchainReorganizationNotification(
       orphanedHeaderCount: orphanedHeaders.length,
       newHeight: _currentHeight,
     ));
-    
+  }
+
+  /// The active header chain moved to another branch (audit 3b0).
+  ///
+  /// Every confirmed transaction whose block may have changed (its height is
+  /// above the fork point, or its stored proof names an orphaned block) has
+  /// its proof checked again against the active chain
+  /// (MerkleProofHeaderCheck). A proof that still verifies is kept (its block
+  /// hash refreshed if needed); otherwise the confirmation is reverted in
+  /// each wallet holding the transaction, which journals
+  /// TransactionConfirmationRevertedEvent: the transaction returns to
+  /// pending, its UTXOs lose their confirmations, and the read model drops
+  /// exactly that proof. Nothing else is deleted. ARCActor is then told to
+  /// poll the transactions again; a new proof it obtains is verified against
+  /// the active chain before the transaction is confirmed again.
+  Future<void> _handleHeaderChainReorganized(HeaderChainReorganizedMessage msg) async {
+    _currentHeight = msg.newTipHeight;
+    try {
+      final orphaned = msg.orphanedBlockHashes.toSet();
+      final onOrphanedBlocks = <String>{};
+      for (final hash in orphaned) {
+        for (final proof in await _storage.getMerkleProofsForBlock(hash)) {
+          onOrphanedBlocks.add(proof.txid);
+        }
+      }
+
+      final candidates = <String, List<String>>{}; // txid -> wallet ids
+      for (final tx in await _storage.getTransactionsByStatus(TransactionStatus.confirmed)) {
+        final walletId = tx.walletId;
+        if (walletId == null || walletId.isEmpty) continue;
+        final height = tx.blockHeight;
+        if (onOrphanedBlocks.contains(tx.txid) || height == null || height > msg.forkHeight) {
+          candidates.putIfAbsent(tx.txid, () => []).add(walletId);
+        }
+      }
+
+      final reverted = <String>[];
+      for (final entry in candidates.entries) {
+        final proof = await _storage.getMerkleProof(entry.key);
+        final String reason;
+        if (proof == null) {
+          // Nothing to re-verify. Only a confirmation recorded above the fork
+          // point can rest on a changed block; one with no height is left
+          // alone rather than reverted on every reorganization.
+          final heights = await _confirmedHeights(entry.key, entry.value);
+          if (!heights.any((h) => h > msg.forkHeight)) continue;
+          reason = 'reorganization at height ${msg.forkHeight}: confirmed above the fork point with no stored proof';
+        } else {
+          final outcome = await _recheckProof(proof);
+          if (outcome == null) continue; // still proven on the active chain
+          if (proof.blockHeight <= msg.forkHeight && !orphaned.contains(proof.blockHash) &&
+              outcome.status == ProofHeaderStatus.headerUnknown) {
+            continue;
+          }
+          reason = 'reorganization at height ${msg.forkHeight}: ${outcome.status.name}'
+              '${outcome.detail == null ? '' : ' (${outcome.detail})'}';
+        }
+        _revertConfirmation(entry.key, entry.value, proof, reason);
+        reverted.add(entry.key);
+      }
+
+      if (reverted.isNotEmpty) {
+        _log.warning('Reorganization at height ${msg.forkHeight} (${orphaned.length} block(s) orphaned): '
+            'reverted ${reverted.length} confirmation(s)');
+        _arcActor?.tell(TransactionConfirmationsRevertedMessage(reverted));
+      }
+    } catch (e, st) {
+      _log.severe('Failed to re-check confirmations after the reorganization at height ${msg.forkHeight}: $e', e, st);
+    }
+  }
+
+  /// Proofs stored before their block header was known carry the block hash
+  /// `'pending'` (WalletProjection). Once headers up to [upToHeight] are
+  /// stored they are checked (zvj part 1): a match records the real block
+  /// hash, a mismatch reverts the confirmation like a reorganization does.
+  /// Proofs whose header is still unknown stay as they are.
+  Future<void> _recheckUnverifiedProofs(int upToHeight) async {
+    try {
+      final unverified = await _storage.getMerkleProofsForBlock(_unverifiedBlockHash);
+      if (unverified.isEmpty) return;
+
+      final reverted = <String>[];
+      for (final proof in unverified) {
+        if (proof.blockHeight > upToHeight) continue;
+        final outcome = await _recheckProof(proof);
+        if (outcome == null || outcome.status == ProofHeaderStatus.headerUnknown) continue;
+
+        final wallets = [
+          for (final tx in await _storage.getTransactionsByStatus(TransactionStatus.confirmed))
+            if (tx.txid == proof.txid && tx.walletId != null && tx.walletId!.isNotEmpty) tx.walletId!,
+        ];
+        _revertConfirmation(proof.txid, wallets, proof,
+            'proof imported before its block header does not match header at height '
+            '${proof.blockHeight}: ${outcome.status.name}${outcome.detail == null ? '' : ' (${outcome.detail})'}');
+        reverted.add(proof.txid);
+      }
+      if (reverted.isNotEmpty) {
+        _log.severe('${reverted.length} imported proof(s) do not match the block headers that arrived; '
+            'confirmations reverted: $reverted');
+        _arcActor?.tell(TransactionConfirmationsRevertedMessage(reverted));
+      }
+    } catch (e, st) {
+      _log.warning('Failed to re-check unverified proofs: $e', e, st);
+    }
+  }
+
+  /// Block hash the projection stores for a proof whose header is unknown.
+  static const String _unverifiedBlockHash = 'pending';
+
+  /// Check a stored [proof] against the active header chain. Returns null
+  /// when it verifies (after recording the active block's hash on the proof
+  /// if it differed), otherwise the failed check.
+  Future<ProofHeaderCheck?> _recheckProof(MerkleProof proof) async {
+    // A proof that is not a single stored BUMP (pre-SPV-06 layout) does not
+    // parse and comes back malformed.
+    final check = await checkBumpHexAgainstHeaders(
+      txid: proof.txid,
+      bumpHex: proof.merkleProof.length == 1 ? proof.merkleProof.single : '',
+      headerAt: _storage.getBlockHeaderByHeight,
+    );
+    if (!check.isVerified) return check;
+    if (check.blockHash != proof.blockHash || check.txIndex != proof.position) {
+      await _storage.storeMerkleProof(proof.txid, MerkleProof(
+        txid: proof.txid,
+        blockHash: check.blockHash!,
+        blockHeight: check.blockHeight!,
+        merkleProof: proof.merkleProof,
+        position: check.txIndex!,
+      ));
+    }
+    return null;
+  }
+
+  Future<List<int>> _confirmedHeights(String txid, List<String> walletIds) async {
+    final heights = <int>[];
+    for (final walletId in walletIds) {
+      final height = (await _storage.getTransaction(txid, walletId: walletId))?.blockHeight;
+      if (height != null) heights.add(height);
+    }
+    return heights;
+  }
+
+  void _revertConfirmation(String txid, List<String> walletIds, MerkleProof? proof, String reason) {
+    for (final walletId in walletIds.toSet()) {
+      _walletManager.tell(WalletCommandMessage(walletId, RevertTransactionConfirmationCommand(
+        walletId: walletId,
+        txid: txid,
+        blockHeight: proof?.blockHeight,
+        blockHash: proof?.blockHash,
+        merkleProof: proof?.merkleProof,
+        reason: reason,
+      )));
+    }
   }
 
   /// Handle BEEF validation (enhanced transaction format)
@@ -1175,20 +1333,10 @@ class SPVActor extends Actor {
       String bumpProof = '';
       
       if (beef.hasMerkle[txIndex]) {
-        // Calculate BUMP index
-        int bumpIndex = 0;
-        for (int i = 0; i < txIndex; i++) {
-          if (beef.hasMerkle[i]) {
-            bumpIndex++;
-          }
-        }
-        
-        if (bumpIndex < beef.bumps.length) {
-          final bump = beef.bumps[bumpIndex];
-          blockHeight = bump.blockHeight;
-          // Serialize BUMP for storage
-          bumpProof = hex.encode(bump.serialize());
-        }
+        final bump = _bumpFor(beef, txIndex);
+        blockHeight = bump.blockHeight;
+        // Serialize BUMP for storage
+        bumpProof = hex.encode(bump.serialize());
       }
       
       return {

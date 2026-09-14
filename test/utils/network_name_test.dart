@@ -32,16 +32,30 @@ void main() {
       expect(NetworkName.toDartsv('livenet'), equals(dartsv.NetworkType.MAIN));
       expect(NetworkName.toDartsv('test'), equals(dartsv.NetworkType.TEST));
       expect(NetworkName.toDartsv('testnet'), equals(dartsv.NetworkType.TEST));
+      expect(NetworkName.toDartsv('regtest'), equals(dartsv.NetworkType.TEST),
+          reason: 'regtest keys and addresses use the testnet encoding');
       expect(NetworkName.toDartsv(null), equals(dartsv.NetworkType.TEST));
     });
 
-    test('canonical persists mainnet/testnet regardless of input spelling', () {
+    // x27: regtest used to be persisted as 'testnet', which selected the
+    // testnet genesis and CDN directory for a regtest wallet.
+    test('canonical persists mainnet/testnet/regtest regardless of input spelling', () {
       expect(NetworkName.canonical('main'), equals('mainnet'));
       expect(NetworkName.canonical('mainnet'), equals('mainnet'));
       expect(NetworkName.canonical('livenet'), equals('mainnet'));
       expect(NetworkName.canonical('test'), equals('testnet'));
       expect(NetworkName.canonical('testnet'), equals('testnet'));
       expect(NetworkName.canonical(null), equals('testnet'));
+      expect(NetworkName.canonical('regtest'), equals('regtest'));
+      expect(NetworkName.canonical(' RegTest '), equals('regtest'));
+    });
+
+    test('isRegtest accepts regtest in any case and nothing else', () {
+      expect(NetworkName.isRegtest('regtest'), isTrue);
+      expect(NetworkName.isRegtest(' REGTEST '), isTrue);
+      expect(NetworkName.isRegtest('testnet'), isFalse);
+      expect(NetworkName.isRegtest('test'), isFalse);
+      expect(NetworkName.isRegtest(null), isFalse);
     });
   });
 }

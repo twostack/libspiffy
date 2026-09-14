@@ -1809,3 +1809,72 @@ class WalletImportTransactionConfirmedEvent extends WalletImportNotification {
     super.metadata,
   });
 }
+
+/// Event fired when a transaction's confirmation is taken back (audit 3b0):
+/// its block left the active chain, or its proof does not match the block
+/// header at the proof's height.
+///
+/// Applying it returns the transaction to pending, sets the confirmations
+/// of its UTXOs to zero (spendable ones become pending) and, in the read
+/// model, deletes the stored proof if it is still [merkleProof].
+class TransactionConfirmationRevertedEvent extends WalletEvent {
+  static const String stableTypeName = 'wallet.transaction.confirmation_reverted';
+
+  @override
+  String get typeName => stableTypeName;
+
+  final String txid;
+  final int? blockHeight;
+  final String? blockHash;
+  final List<String>? merkleProof;
+  final String reason;
+
+  TransactionConfirmationRevertedEvent({
+    required String walletId,
+    required this.txid,
+    required this.reason,
+    this.blockHeight,
+    this.blockHash,
+    this.merkleProof,
+    String? eventId,
+    DateTime? timestamp,
+    int? version,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          eventId: eventId,
+          timestamp: timestamp,
+          version: version,
+          metadata: metadata,
+        );
+
+  @override
+  Map<String, dynamic> getWalletEventData() {
+    return {
+      'txid': txid,
+      'blockHeight': blockHeight,
+      'blockHash': blockHash,
+      'merkleProof': merkleProof,
+      'reason': reason,
+    };
+  }
+
+  static TransactionConfirmationRevertedEvent fromMap(Map<String, dynamic> map) {
+    return TransactionConfirmationRevertedEvent(
+      walletId: map['walletId'] as String,
+      txid: map['txid'] as String,
+      blockHeight: map['blockHeight'] as int?,
+      blockHash: map['blockHash'] as String?,
+      merkleProof: map['merkleProof'] == null ? null : List<String>.from(map['merkleProof'] as List),
+      reason: map['reason'] as String? ?? '',
+      eventId: map['eventId'] as String?,
+      timestamp: map['timestamp'] != null
+          ? (map['timestamp'] is String
+              ? DateTime.parse(map['timestamp'] as String)
+              : map['timestamp'] as DateTime)
+          : null,
+      version: map['version'] as int?,
+      metadata: map['metadata'] as Map<String, dynamic>?,
+    );
+  }
+}

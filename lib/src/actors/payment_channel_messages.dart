@@ -122,6 +122,23 @@ class RecordServerAcceptanceMessage extends LocalMessage {
   dynamic get payload => this;
 }
 
+/// Response to [RecordServerAcceptanceMessage]: `success: false` carries the
+/// channel aggregate's rejection (e.g. the channel is not pending).
+class ServerAcceptanceRecordedResponse extends LocalMessage {
+  final String channelId;
+  final bool success;
+  final String? error;
+
+  ServerAcceptanceRecordedResponse({
+    required this.channelId,
+    required this.success,
+    this.error,
+  }) : super(payload: null);
+
+  @override
+  dynamic get payload => this;
+}
+
 // =============================================================================
 // REFUND TRANSACTION MESSAGES
 // =============================================================================

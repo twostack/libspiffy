@@ -714,6 +714,12 @@ class ChannelP2PAdapter {
       return;
     }
 
+    // A failed build has no funding transaction to refund (libspiffy-lhd).
+    if (!response.success) {
+      _reportFailure(channelId, 'building the funding transaction', response.error);
+      return;
+    }
+
     // Update client info with funding tx details
     _clientChannelInfo[channelId] = ClientChannelInfo(
       channelId: channelId,
@@ -731,7 +737,9 @@ class ChannelP2PAdapter {
       fundingOutputIndex: response.fundingOutputIndex,
     );
 
-    // Now build the refund transaction
+    // Now build the refund transaction. The RefundTransactionBuiltResponse
+    // goes to the coordinator, which forwards it to
+    // handleRefundTransactionBuilt; without a sender it was dropped.
     _channelManager.tell(BuildRefundTransactionMessage(
       channelId: channelId,
       walletId: _walletId,
@@ -743,7 +751,7 @@ class ChannelP2PAdapter {
       serverPubKeyHex: clientInfo.serverPubKeyHex ?? '',
       serverAddressB58: clientInfo.serverAddressB58 ?? '',
       lockTimeUnix: clientInfo.lockTimeUnix,
-    ));
+    ), sender: _replyTo);
   }
 
   /// Handle a refund transaction that has been built.
@@ -754,6 +762,13 @@ class ChannelP2PAdapter {
 
     if (clientInfo == null || peers == null) {
       _log.warning('No client info or peers for channel $channelId');
+      return;
+    }
+
+    // The channel manager failed: there is no refund for the server to sign,
+    // so the peer is not asked to (libspiffy-lhd).
+    if (!response.success) {
+      _reportFailure(channelId, 'building the refund transaction', response.error);
       return;
     }
 
@@ -775,6 +790,19 @@ class ChannelP2PAdapter {
       toPeerId: targetPeerId,
       messageType: messageType,
       payload: payload,
+    ));
+  }
+
+  /// Logs a failed channel step and surfaces it as a coordinator
+  /// [coord.ErrorEvent].
+  void _reportFailure(String channelId, String step, String? error) {
+    final message =
+        'Channel $channelId: $step failed: ${error ?? 'unknown error'}';
+    _log.warning(message);
+    _emitEvent(coord.ErrorEvent(
+      walletId: _walletId,
+      source: 'ChannelP2PAdapter',
+      message: message,
     ));
   }
 

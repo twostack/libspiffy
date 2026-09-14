@@ -11,6 +11,7 @@ import 'package:test/test.dart';
 
 import 'package:libspiffy/src/actors/channel_p2p_adapter.dart';
 import 'package:libspiffy/src/actors/coordinator_messages.dart' as coord;
+import 'package:libspiffy/src/actors/payment_channel_messages.dart';
 import 'package:libspiffy/src/actors/wallet_messages.dart';
 import 'package:libspiffy/src/core/channel_events.dart' as ch;
 import 'package:libspiffy/src/core/wallet_commands.dart';
@@ -114,6 +115,105 @@ void main() {
     expect(channelMessages.whereType<BuildFundingTransactionCommand>(), isEmpty,
         reason: 'channel manager must not receive the wallet command');
     expect(channelMessages.whereType<WalletCommandMessage>(), isEmpty);
+  });
+
+  group('lhd: failed builds stop the client flow', () {
+    const channelId = 'chan-2';
+
+    /// Client side after channel_accept: client info and peers are known.
+    Future<void> acceptedClientChannel() async {
+      channelEvents.add(ch.ChannelRequestedEvent(
+        channelId: channelId,
+        walletId: 'client-wallet',
+        clientPeerId: 'client-peer',
+        serverPeerId: 'server-peer',
+        clientPubKeyHex: '02' * 33,
+        clientAddressB58: 'mqCnSf8i6kmaQaJ54HjQ8EUJnuK4AnCv12',
+        derivationIndex: 7,
+        fundingAmountSats: BigInt.from(50000),
+        lockTimeUnix: 1700000000,
+      ));
+      await Future.delayed(const Duration(milliseconds: 50));
+      adapter.handleP2PMessage('server-peer', 'channel_accept', {
+        'channelId': channelId,
+        'serverPubKey': '03' * 33,
+        'serverAddress': 'mkHS9ne12qx9pS9VojpwU5xtRd4T7X7ZUt',
+        'derivationIndex': 3,
+      });
+      await Future.delayed(const Duration(milliseconds: 50));
+      channelManagerProbe.received.clear();
+      emitted.clear();
+    }
+
+    FundingTransactionBuiltResponse funding({required bool success}) =>
+        FundingTransactionBuiltResponse(
+          walletId: 'client-wallet',
+          correlationId: channelId,
+          channelId: channelId,
+          fundingTxHex: success ? 'ab' * 40 : '',
+          fundingTxId: success ? 'f' * 64 : '',
+          fundingOutputIndex: 0,
+          success: success,
+          error: success ? null : 'Insufficient funds',
+        );
+
+    test('a built funding transaction asks the channel manager to build the '
+        'refund, with the coordinator as reply target', () async {
+      await acceptedClientChannel();
+
+      adapter.handleFundingTransactionBuilt(funding(success: true));
+      await Future.delayed(const Duration(milliseconds: 100));
+
+      final builds = channelManagerProbe.received
+          .where((r) => r.message is BuildRefundTransactionMessage)
+          .toList();
+      expect(builds, hasLength(1));
+      expect((builds.single.message as BuildRefundTransactionMessage).fundingTxId,
+          equals('f' * 64));
+      expect(builds.single.sender?.id, equals(replyTo.id),
+          reason: 'RefundTransactionBuiltResponse must reach the coordinator, '
+              'which forwards it to handleRefundTransactionBuilt');
+    });
+
+    test('a failed funding build builds no refund and reports the error',
+        () async {
+      await acceptedClientChannel();
+
+      adapter.handleFundingTransactionBuilt(funding(success: false));
+      await Future.delayed(const Duration(milliseconds: 100));
+
+      expect(
+          channelManagerProbe.received
+              .where((r) => r.message is BuildRefundTransactionMessage),
+          isEmpty);
+      final errors = emitted.whereType<coord.ErrorEvent>().toList();
+      expect(errors, hasLength(1));
+      expect(errors.single.message, contains('Insufficient funds'));
+    });
+
+    test('a failed refund build sends the server no refund_sign_request',
+        () async {
+      await acceptedClientChannel();
+      adapter.handleFundingTransactionBuilt(funding(success: true));
+      await Future.delayed(const Duration(milliseconds: 50));
+      emitted.clear();
+
+      adapter.handleRefundTransactionBuilt(RefundTransactionBuiltResponse(
+        channelId: channelId,
+        refundTxHex: '',
+        success: false,
+        error: 'Bad state: Channel aggregate not found: $channelId',
+      ));
+
+      expect(
+          emitted
+              .whereType<coord.ChannelP2PMessageToSendEvent>()
+              .where((e) => e.messageType == 'refund_sign_request'),
+          isEmpty);
+      final errors = emitted.whereType<coord.ErrorEvent>().toList();
+      expect(errors, hasLength(1));
+      expect(errors.single.message, contains('Channel aggregate not found'));
+    });
   });
 
   test('channel_accept for an unknown channel sends nothing', () async {

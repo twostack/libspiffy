@@ -174,6 +174,59 @@ class PaymentChannelManagerActor extends Actor {
     }
   }
 
+  /// Sends [command] to the channel aggregate and returns the events it
+  /// emitted, or throws a [StateError] carrying the aggregate's own error text
+  /// when it rejected the command.
+  ///
+  /// The aggregate answers a command with its `List<Event>`, or, when a
+  /// business rule throws, with `{'success': false, 'error': ...}` (audit
+  /// M10). Every command goes through here, so a rejection is never forwarded
+  /// to a caller as success or broadcast (libspiffy-lhd).
+  ///
+  /// A rejection also ends the aggregate actor: eventador rethrows the
+  /// handler's error after replying and dactor stops the unsupervised actor.
+  /// The cached ref is therefore dropped here, and the next operation on the
+  /// channel recovers a fresh aggregate from the journal.
+  Future<List<dynamic>> _askAggregate(
+    String channelId,
+    ActorRef aggregateRef,
+    Command command,
+  ) async {
+    final response = await aggregateRef.ask(command);
+    if (response is Map && response['success'] == false) {
+      await _dropChannelAggregate(channelId, aggregateRef);
+      throw StateError(response['error']?.toString() ?? 'Command failed');
+    }
+    if (response is! List || response.isEmpty) {
+      throw StateError('Command failed: no events emitted');
+    }
+    return response;
+  }
+
+  /// Forgets [aggregateRef] for [channelId] and makes sure it is stopped, so
+  /// the channel's next operation spawns (and recovers) a new aggregate.
+  Future<void> _dropChannelAggregate(
+      String channelId, ActorRef aggregateRef) async {
+    if (identical(_channelAggregates[channelId], aggregateRef)) {
+      _channelAggregates.remove(channelId);
+    }
+    if (aggregateRef.isAlive) {
+      await context.system.stop(aggregateRef);
+    }
+  }
+
+  /// The aggregate's answer to [ChannelStateQuery], or a [StateError] with
+  /// its error text (e.g. a channel with no journal, audit L3).
+  FullChannelStateResponse _stateOrThrow(dynamic state) {
+    if (state is! FullChannelStateResponse) {
+      throw StateError('Unexpected response type: ${state.runtimeType}');
+    }
+    if (!state.success) {
+      throw StateError(state.error ?? 'Channel state query failed');
+    }
+    return state;
+  }
+
   @override
   Future<void> onMessage(dynamic message) async {
     
@@ -292,14 +345,9 @@ class PaymentChannelManagerActor extends Actor {
         context: msg.context,
       );
       
-      // Send command and wait for response (events)
-      final response = await aggregateRef.ask(requestCmd);
-      
-      // Check if command succeeded
-      if (response is! List || response.isEmpty) {
-        throw StateError('Command failed: no events emitted');
-      }
-      
+      // Send command and wait for its events (a rejection throws)
+      final response = await _askAggregate(msg.channelId, aggregateRef, requestCmd);
+
       // Broadcast events to external subscribers (P2P adapter)
       _broadcastEvents(response);
       
@@ -388,14 +436,9 @@ class PaymentChannelManagerActor extends Actor {
         context: msg.context,
       );
       
-      // Send command and wait for response (events)
-      final acceptResponse = await aggregateRef.ask(acceptCmd);
-      
-      // Check if command succeeded
-      if (acceptResponse is! List || acceptResponse.isEmpty) {
-        throw StateError('Command failed: no events emitted');
-      }
-      
+      // Send command and wait for its events (a rejection throws)
+      final acceptResponse = await _askAggregate(msg.channelId, aggregateRef, acceptCmd);
+
       // Broadcast events to external subscribers (P2P adapter)
       _broadcastEvents(acceptResponse);
       
@@ -423,9 +466,12 @@ class PaymentChannelManagerActor extends Actor {
     }
   }
 
-  /// Client records server's acceptance (stores server pubkey/address in aggregate)
+  /// Client records server's acceptance (stores server pubkey/address in
+  /// aggregate). A sender, if any, gets [ServerAcceptanceRecordedResponse];
+  /// a rejection used to be logged only.
   Future<void> _handleRecordServerAcceptance(RecordServerAcceptanceMessage msg) async {
-    
+    final originalSender = context.sender;
+
     try {
       // Get or spawn the channel aggregate
       final aggregateRef = await _getOrSpawnChannelAggregate(msg.channelId);
@@ -437,18 +483,22 @@ class PaymentChannelManagerActor extends Actor {
         serverAddressB58: msg.serverAddressB58,
       );
       
-      final response = await aggregateRef.ask(cmd);
-      
-      // Check if command succeeded
-      if (response is Map && response['success'] == false) {
-        throw StateError(response['error'] ?? 'Command failed');
-      }
-      
+      final response = await _askAggregate(msg.channelId, aggregateRef, cmd);
+
       // Broadcast events
       _broadcastEvents(response);
-      
+
+      originalSender?.tell(ServerAcceptanceRecordedResponse(
+        channelId: msg.channelId,
+        success: true,
+      ));
     } catch (e, stackTrace) {
       _log.warning('Failed to record server acceptance: $e', e, stackTrace);
+      originalSender?.tell(ServerAcceptanceRecordedResponse(
+        channelId: msg.channelId,
+        success: false,
+        error: e.toString(),
+      ));
     }
   }
 
@@ -459,11 +509,8 @@ class PaymentChannelManagerActor extends Actor {
     final originalSender = context.sender;
     
     try {
-      // Step 1: Get the channel aggregate
-      final aggregateRef = _channelAggregates[msg.channelId];
-      if (aggregateRef == null) {
-        throw StateError('Channel aggregate not found: ${msg.channelId}');
-      }
+      // Step 1: The channel must exist (loaded, or recoverable from its journal)
+      await _channelAggregate(msg.channelId);
       
       // Step 2: Build the refund transaction using PaymentChannelBuilder
       final builder = PaymentChannelBuilder(
@@ -515,11 +562,8 @@ class PaymentChannelManagerActor extends Actor {
     final originalSender = context.sender;
     
     try {
-      // Step 1: Get the channel aggregate
-      final aggregateRef = _channelAggregates[msg.channelId];
-      if (aggregateRef == null) {
-        throw StateError('Channel aggregate not found: ${msg.channelId}');
-      }
+      // Step 1: The channel must exist (loaded, or recoverable from its journal)
+      await _channelAggregate(msg.channelId);
       
       // Step 2: Build the redeem script (2-of-2 multisig)
       final clientPubKey = dartsv.SVPublicKey.fromHex(msg.clientPubKeyHex);
@@ -634,10 +678,7 @@ class PaymentChannelManagerActor extends Actor {
       
       
       // Get channel aggregate and events
-      final aggregateRef = _channelAggregates[channelId];
-      if (aggregateRef == null) {
-        throw StateError('Channel aggregate not found: $channelId');
-      }
+      final aggregateRef = await _channelAggregate(channelId);
       
       // Send RequestRefundSignatureCommand to aggregate
       final requestRefundSigCmd = RequestRefundSignatureCommand(
@@ -649,9 +690,10 @@ class PaymentChannelManagerActor extends Actor {
         serverSignatureHex: response.signatureHex,
       );
       
-      // Use ask() to get the events back and broadcast them
-      final events = await aggregateRef.ask(requestRefundSigCmd);
-      
+      // Use ask() to get the events back and broadcast them. A rejection
+      // (e.g. the channel is no longer `accepted`) fails the caller.
+      final events = await _askAggregate(channelId, aggregateRef, requestRefundSigCmd);
+
       // Broadcast events to external subscribers (P2P adapter needs RefundCountersignedEvent)
       _broadcastEvents(events);
       
@@ -684,10 +726,7 @@ class PaymentChannelManagerActor extends Actor {
       }
       
       
-      final aggregateRef = _channelAggregates[pending.channelId];
-      if (aggregateRef == null) {
-        throw StateError('Channel aggregate not found: ${pending.channelId}');
-      }
+      final aggregateRef = await _channelAggregate(pending.channelId);
       
       if (pending.isAcknowledgment) {
         // Server acknowledging payment - combine signatures and send command
@@ -704,7 +743,7 @@ class PaymentChannelManagerActor extends Actor {
           proposedServerBalance: pending.newServerBalance,
         );
         
-        final events = await aggregateRef.ask(ackCmd);
+        final events = await _askAggregate(pending.channelId, aggregateRef, ackCmd);
         _broadcastEvents(events);
         
         pending.originalSender?.tell(PaymentAcknowledgedResponse(
@@ -731,7 +770,7 @@ class PaymentChannelManagerActor extends Actor {
           invoiceId: pending.invoiceId,
         );
         
-        final events = await aggregateRef.ask(recordCmd);
+        final events = await _askAggregate(pending.channelId, aggregateRef, recordCmd);
         _broadcastEvents(events);
         
         pending.originalSender?.tell(PaymentRecordedResponse(
@@ -777,10 +816,7 @@ class PaymentChannelManagerActor extends Actor {
     final originalSender = context.sender;
     
     try {
-      final aggregateRef = _channelAggregates[msg.channelId];
-      if (aggregateRef == null) {
-        throw StateError('Channel aggregate not found: ${msg.channelId}');
-      }
+      final aggregateRef = await _channelAggregate(msg.channelId);
       
       // Send ProvideRefundSignatureCommand to aggregate
       final provideCmd = ProvideRefundSignatureCommand(
@@ -788,19 +824,9 @@ class PaymentChannelManagerActor extends Actor {
         serverSignatureHex: msg.serverSignatureHex,
       );
       
-      // Send command and wait for response
-      final response = await aggregateRef.ask(provideCmd);
-      
-      // Check if command failed
-      if (response is Map && response['success'] == false) {
-        throw StateError(response['error'] ?? 'Command failed');
-      }
-      
-      // Check if command succeeded (aggregate sends List<Event> on success)
-      if (response is! List || response.isEmpty) {
-        throw StateError('Command failed: no events emitted');
-      }
-      
+      // Send command and wait for its events (a rejection throws)
+      final response = await _askAggregate(msg.channelId, aggregateRef, provideCmd);
+
       // Broadcast events to external subscribers (P2P adapter)
       _broadcastEvents(response);
       
@@ -826,10 +852,7 @@ class PaymentChannelManagerActor extends Actor {
     final originalSender = context.sender;
 
     try {
-      final aggregateRef = _channelAggregates[msg.channelId];
-      if (aggregateRef == null) {
-        throw StateError('Channel aggregate not found: ${msg.channelId}');
-      }
+      final aggregateRef = await _channelAggregate(msg.channelId);
 
       final openCmd = OpenChannelCommand(
         channelId: msg.channelId,
@@ -852,18 +875,8 @@ class PaymentChannelManagerActor extends Actor {
         const Duration(seconds: 12),
       );
 
-      // Send command and wait for response
-      final response = await aggregateRef.ask(openCmd);
-
-      // Check if command failed (aggregate sends Map with error on failure)
-      if (response is Map && response['success'] == false) {
-        throw StateError(response['error'] ?? 'Command failed');
-      }
-
-      // Check if command succeeded (aggregate sends List<Event> on success)
-      if (response is! List || response.isEmpty) {
-        throw StateError('Command failed: no events emitted');
-      }
+      // Send command and wait for its events (a rejection throws)
+      final response = await _askAggregate(msg.channelId, aggregateRef, openCmd);
 
       // Broadcast events to external subscribers (P2P adapter).
       // In production wiring this is a no-op (eventBroadcaster is null —
@@ -906,18 +919,12 @@ class PaymentChannelManagerActor extends Actor {
     
     try {
       // Step 1: Get aggregate reference
-      final aggregateRef = _channelAggregates[msg.channelId];
-      if (aggregateRef == null) {
-        throw StateError('Channel aggregate not found: ${msg.channelId}');
-      }
+      final aggregateRef = await _channelAggregate(msg.channelId);
       
       // Step 2: Query current channel state
-      final stateResponse = await aggregateRef.ask(ChannelStateQuery(channelId: msg.channelId));
-      
-      if (stateResponse is! FullChannelStateResponse || !stateResponse.success) {
-        throw StateError('Failed to query channel state');
-      }
-      
+      final stateResponse = _stateOrThrow(
+          await aggregateRef.ask(ChannelStateQuery(channelId: msg.channelId)));
+
       // Validate channel is open
       if (stateResponse.status != 'open') {
         throw StateError('Channel not open: ${stateResponse.status}');
@@ -1048,18 +1055,12 @@ class PaymentChannelManagerActor extends Actor {
     
     try {
       // Step 1: Get aggregate reference
-      final aggregateRef = _channelAggregates[msg.channelId];
-      if (aggregateRef == null) {
-        throw StateError('Channel aggregate not found: ${msg.channelId}');
-      }
+      final aggregateRef = await _channelAggregate(msg.channelId);
       
       // Step 2: Query current channel state for validation
-      final stateResponse = await aggregateRef.ask(ChannelStateQuery(channelId: msg.channelId));
-      
-      if (stateResponse is! FullChannelStateResponse || !stateResponse.success) {
-        throw StateError('Failed to query channel state');
-      }
-      
+      final stateResponse = _stateOrThrow(
+          await aggregateRef.ask(ChannelStateQuery(channelId: msg.channelId)));
+
       // Validate channel is open
       if (stateResponse.status != 'open') {
         throw StateError('Channel not open: ${stateResponse.status}');
@@ -1136,29 +1137,16 @@ class PaymentChannelManagerActor extends Actor {
     final originalSender = context.sender;
     
     try {
-      final aggregateRef = _channelAggregates[msg.channelId];
-      if (aggregateRef == null) {
-        throw StateError('Channel aggregate not found: ${msg.channelId}');
-      }
+      final aggregateRef = await _channelAggregate(msg.channelId);
       
       final closeCmd = CloseChannelCommand(
         channelId: msg.channelId,
         reason: msg.reason,
       );
       
-      // Send command and wait for response
-      final response = await aggregateRef.ask(closeCmd);
-      
-      // Check if command failed
-      if (response is Map && response['success'] == false) {
-        throw StateError(response['error'] ?? 'Command failed');
-      }
-      
-      // Check if command succeeded (aggregate sends List<Event> on success)
-      if (response is! List || response.isEmpty) {
-        throw StateError('Command failed: no events emitted');
-      }
-      
+      // Send command and wait for its events (a rejection throws)
+      final response = await _askAggregate(msg.channelId, aggregateRef, closeCmd);
+
       // Broadcast events to external subscribers (P2P adapter)
       _broadcastEvents(response);
       
@@ -1209,15 +1197,7 @@ class PaymentChannelManagerActor extends Actor {
         const Duration(seconds: 12),
       );
 
-      final response = await aggregateRef.ask(expireCmd);
-
-      if (response is Map && response['success'] == false) {
-        throw StateError(response['error'] ?? 'Command failed');
-      }
-
-      if (response is! List || response.isEmpty) {
-        throw StateError('Command failed: no events emitted');
-      }
+      final response = await _askAggregate(msg.channelId, aggregateRef, expireCmd);
 
       _broadcastEvents(response);
 
@@ -1262,25 +1242,13 @@ class PaymentChannelManagerActor extends Actor {
     final originalSender = context.sender;
 
     try {
-      var aggregateRef = _channelAggregates[msg.channelId];
-      if (aggregateRef == null) {
-        final journalLength = await _eventStore
-            .getHighestSequenceNumber('PaymentChannel_${msg.channelId}');
-        if (journalLength == 0) {
-          throw StateError('Channel not found: ${msg.channelId}');
-        }
-        aggregateRef = await _getOrSpawnChannelAggregate(msg.channelId);
-      }
+      final aggregateRef = await _channelAggregate(msg.channelId,
+          notFound: 'Channel not found');
 
-      final state = await aggregateRef.ask<dynamic>(
+      final state = _stateOrThrow(await aggregateRef.ask<dynamic>(
         ChannelStateQuery(channelId: msg.channelId),
         const Duration(seconds: 10),
-      );
-      if (state is! FullChannelStateResponse || !state.success) {
-        throw StateError(state is FullChannelStateResponse
-            ? (state.error ?? 'Channel state query failed')
-            : 'Unexpected response type: ${state.runtimeType}');
-      }
+      ));
 
       originalSender?.tell(ChannelStateResponse(
         channelId: msg.channelId,
@@ -1301,12 +1269,32 @@ class PaymentChannelManagerActor extends Actor {
     }
   }
 
-  /// Get or spawn a channel aggregate actor
-  Future<ActorRef> _getOrSpawnChannelAggregate(String channelId) async {
-    if (_channelAggregates.containsKey(channelId)) {
-      return _channelAggregates[channelId]!;
+  /// The aggregate of an existing channel: the loaded one while it is alive,
+  /// otherwise one recovered from the channel's journal. A channel that was
+  /// never loaded and has no journal is a [StateError] ('[notFound]: id').
+  Future<ActorRef> _channelAggregate(
+    String channelId, {
+    String notFound = 'Channel aggregate not found',
+  }) async {
+    if (!_channelAggregates.containsKey(channelId)) {
+      final journalLength = await _eventStore
+          .getHighestSequenceNumber('PaymentChannel_$channelId');
+      if (journalLength == 0) {
+        throw StateError('$notFound: $channelId');
+      }
     }
-    
+    return _getOrSpawnChannelAggregate(channelId);
+  }
+
+  /// Get or spawn a channel aggregate actor. A cached aggregate that is no
+  /// longer alive (a rejected command stops it) is replaced.
+  Future<ActorRef> _getOrSpawnChannelAggregate(String channelId) async {
+    final cached = _channelAggregates[channelId];
+    if (cached != null) {
+      if (cached.isAlive) return cached;
+      _channelAggregates.remove(channelId);
+    }
+
     final aggregateRef = await context.system.spawn(
       'channel-$channelId',
       () => PaymentChannelAggregate(

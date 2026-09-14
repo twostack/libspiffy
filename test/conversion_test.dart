@@ -259,9 +259,13 @@ void main() {
     final brc71Path = CryptoUtils.convertTscProofToBrc71Path(tscProof);
     final cUtilBump =
         CryptoUtils.convertBrc71PathToBump(brc71Path, blockHeight, txId);
+    // computeMerkleRoot returns internal byte order, which is what
+    // computeMerkleRootFromTsc returns too (it reverses its display result).
     final cUtilRoot =
         cUtilBump.computeMerkleRoot(Uint8List.fromList(hex.decode(txId)));
-    final cryptoUtilsRoot = hex.encode(cUtilRoot.reversed.toList());
+    final cryptoUtilsRoot = hex.encode(cUtilRoot);
+    expect(reverseBytes(cryptoUtilsRoot), equals(tscProof['target']),
+        reason: 'BUMP root must match the block merkle root');
 
     // Both implementations should produce the same result
     expect(myComputedRoot, equals(cryptoUtilsRoot),

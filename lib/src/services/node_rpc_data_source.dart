@@ -273,14 +273,15 @@ class NodeRpcDataSource implements BlockchainDataSource {
   /// Compute merkle proof sibling hashes from block txid list.
   ///
   /// Returns sibling hashes in big-endian display hex (matching TSC/WoC format
-  /// expected by [TscConverter]).
+  /// expected by [TscConverter]), with "*" where the sibling is a duplicate
+  /// of the working hash (odd-count padding).
   ///
-  /// For single-tx blocks, returns the txid itself as a self-sibling so that
-  /// downstream converters receive a non-empty nodes list.
+  /// For single-tx blocks the merkle root IS the txid, so the path is empty
+  /// (audit SPV-14: the txid must not be reported as its own sibling, which
+  /// would make the root hash(txid || txid)).
   List<String> _computeMerkleProof(List<String> txids, int targetIndex) {
     if (txids.length == 1) {
-      // Single-tx block: merkle root == txid. Provide txid as self-sibling.
-      return [txids[0]];
+      return const [];
     }
 
     // Convert display-format txids (big-endian) to internal byte arrays (little-endian)
@@ -290,13 +291,18 @@ class NodeRpcDataSource implements BlockchainDataSource {
 
     while (level.length > 1) {
       // If odd count, duplicate last element
-      if (level.length.isOdd) {
+      final wasOdd = level.length.isOdd;
+      if (wasOdd) {
         level.add(Uint8List.fromList(level.last));
       }
 
-      // Record sibling
+      // Record sibling; the padded copy of the last hash is a TSC "*"
       final siblingIdx = idx ^ 1;
-      siblings.add(_internalToDisplay(level[siblingIdx]));
+      if (wasOdd && siblingIdx == level.length - 1) {
+        siblings.add('*');
+      } else {
+        siblings.add(_internalToDisplay(level[siblingIdx]));
+      }
 
       // Build next level
       final nextLevel = <Uint8List>[];

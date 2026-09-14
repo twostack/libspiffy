@@ -808,59 +808,35 @@ class WalletProjection extends Projection<void> {
     }
   }
   
-  /// Convert hex-encoded BUMP data to MerkleProof and store it
-  /// 
-  /// This utility function:
-  /// 1. Decodes the hex-encoded BUMP bytes
-  /// 2. Parses the BUMP structure
-  /// 3. Extracts transaction position from sibling offsets
-  /// 4. Looks up the block hash from block headers (if available)
-  /// 5. Creates and stores a MerkleProof object
-  /// 
-  /// Note: BUMP proofs only contain sibling hashes, not the txid itself.
-  /// The transaction position is derived from the first level's sibling offset.
+  /// Store the hex-encoded BRC-74 BUMP for [txid] as a MerkleProof.
+  ///
+  /// The raw BUMP is stored verbatim as the single `merkleProof` element
+  /// (the same convention ARCActor uses; CryptoUtils.buildBUMPFromMerkleProof
+  /// parses it back), so multi-txid BUMPs and duplicate flags survive
+  /// storage and outgoing BEEFs carry the proof unchanged. The position is
+  /// the offset of the level-0 leaf whose hash is [txid] — a BRC-74 level 0
+  /// holds the txid AND its sibling, so "first leaf's offset" is wrong for
+  /// every even-positioned transaction (audit SPV-06).
   Future<void> _storeMerkleProofFromBump(
     String txid,
     String bumpHex,
     int blockHeight,
   ) async {
     try {
-      // Decode hex to bytes
-      final bumpBytes = Uint8List.fromList(hex.decode(bumpHex));
-      
-      // Parse BUMP
-      final bump = BUMP.fromBytes(bumpBytes);
-      
-      // CRITICAL: BUMP proofs only contain sibling hashes, not the txid
-      // The transaction position must be derived from the sibling offset at level 0
-      if (bump.path.isEmpty || bump.path[0].leaves.isEmpty) {
-        throw Exception('BUMP has no leaves at level 0');
+      final bump = BUMP.fromBytes(Uint8List.fromList(hex.decode(bumpHex)));
+
+      // Leaves are internal byte order; txid is display hex.
+      final txidInternal = Uint8List.fromList(hex.decode(txid).reversed.toList());
+      final txidLeaf = bump.findTxidLeaf(txidInternal);
+      if (txidLeaf == null) {
+        throw Exception('BUMP does not contain txid $txid');
       }
-      
-      // Get the sibling offset from the first level
-      final siblingOffset = bump.path[0].leaves[0].offset;
-      
-      // Derive transaction position from sibling offset
-      // If sibling is even, tx is at sibling + 1 (tx on right)
-      // If sibling is odd, tx is at sibling - 1 (tx on left)
-      final txPosition = (siblingOffset % 2 == 0) ? siblingOffset + 1 : siblingOffset - 1;
-      
-      
-      // Extract sibling hashes from BUMP path (all levels contain siblings)
-      final siblingHashes = <String>[];
-      for (int i = 0; i < bump.path.length; i++) {
-        for (final leaf in bump.path[i].leaves) {
-          if (!leaf.duplicate && leaf.hash != null) {
-            // Convert hash bytes to hex (reversed for display format)
-            final hashHex = leaf.hash!.reversed
-                .map((byte) => byte.toRadixString(16).padLeft(2, '0'))
-                .join('');
-            siblingHashes.add(hashHex);
-          }
-        }
+      if (!bump.validateMerklePath(txidInternal)) {
+        throw Exception('BUMP path for $txid cannot be walked to a root');
       }
-      
-      
+      final txPosition = txidLeaf.offset;
+      final siblingHashes = <String>[bumpHex];
+
       // Look up block header to get block hash
       String blockHash = '';
       try {
@@ -886,9 +862,10 @@ class WalletProjection extends Projection<void> {
       
       // Store to database
       await _storage.storeMerkleProof(txid, merkleProof);
-      
-    } catch (e, stackTrace) {
+
+    } catch (e) {
       // Don't rethrow - transaction is still valid without proof stored
+      _log.warning('Merkle proof for $txid not stored: $e');
     }
   }
   

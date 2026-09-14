@@ -1,5 +1,3 @@
-import 'dart:typed_data';
-import 'package:convert/convert.dart';
 import 'package:logging/logging.dart' hide Level;
 
 import '../models/blockchain_data_models.dart';
@@ -12,11 +10,11 @@ import 'bump.dart';
 ///   "index": <transaction position in block>,
 ///   "txOrId": "<transaction id>",
 ///   "target": "<merkle root>",
-///   "nodes": ["<hash1>", "<hash2>", ...] // Sibling hashes
+///   "nodes": ["<hash1>", "*", ...] // Sibling hashes bottom-up; "*" = duplicate
 /// }
 ///
-/// BUMP (BSV Universal Merkle Path) is LibSpiffy's compact binary format
-/// for merkle proofs, supporting SPV validation.
+/// BUMP (BSV Universal Merkle Path, BRC-74) is the binary merkle path format
+/// embedded in BEEF; see [BUMP] for the layout.
 class TscConverter {
   final Logger _logger = Logger('TscConverter');
 
@@ -35,108 +33,21 @@ class TscConverter {
   BUMP convertToBump(MerkleProofData proofData) {
     _logger.fine('Converting TSC proof for ${proofData.txid}');
 
-    if (proofData.nodes.isEmpty) {
-      throw TscConversionException(
-        'TSC proof has no sibling nodes',
+    // TSC nodes are display-format (big-endian) hex, bottom-up, with "*"
+    // marking a level where the working hash is paired with itself. An empty
+    // list is the single-transaction block (root == txid). BUMP.fromTscProof
+    // is the one BRC-74 builder in the library; it reverses the hashes into
+    // internal byte order and emits txid + sibling at level 0.
+    try {
+      return BUMP.fromTscProof(
+        blockHeight: proofData.blockHeight,
         txid: proofData.txid,
+        index: proofData.index,
+        nodes: proofData.nodes,
       );
+    } on BUMPException catch (e) {
+      throw TscConversionException(e.message, txid: proofData.txid, originalError: e);
     }
-
-    // Build merkle path from TSC nodes
-    final path = _buildMerklePath(
-      txIndex: proofData.index,
-      siblingHashes: proofData.nodes,
-    );
-
-    return BUMP(
-      blockHeight: proofData.blockHeight,
-      path: path,
-    );
-  }
-
-  /// Build merkle path from transaction index and sibling hashes
-  ///
-  /// The merkle path represents the route from the transaction (leaf) to the
-  /// merkle root. At each level, we need to know:
-  /// - The sibling hash (from TSC nodes)
-  /// - Whether our node is on the left or right
-  ///
-  /// The transaction index tells us the position at the leaf level.
-  /// We divide by 2 at each level to determine the parent position.
-  List<Level> _buildMerklePath({
-    required int txIndex,
-    required List<String> siblingHashes,
-  }) {
-    final path = <Level>[];
-    int currentPosition = txIndex;
-
-    for (int levelIndex = 0; levelIndex < siblingHashes.length; levelIndex++) {
-      final siblingHash = siblingHashes[levelIndex];
-
-      // Determine if we're on the left (even) or right (odd) at this level
-      final isRightSide = (currentPosition % 2) == 1;
-
-      // The sibling hash is always on the opposite side
-      // If we're on right (index odd), sibling is on left (offset = currentPosition - 1)
-      // If we're on left (index even), sibling is on right (offset = currentPosition + 1)
-      final siblingOffset = isRightSide ? currentPosition - 1 : currentPosition + 1;
-
-      // Convert sibling hash from hex to bytes
-      // IMPORTANT: WhatsOnChain returns hashes in DISPLAY format (big-endian)
-      // but BUMP stores them in INTERNAL format (little-endian)
-      // We must reverse the bytes when converting
-      Uint8List hashBytes;
-      try {
-        final reversedHash = _reverseBytes(siblingHash);
-        hashBytes = Uint8List.fromList(hex.decode(reversedHash));
-      } catch (e) {
-        throw TscConversionException(
-          'Invalid hex hash at level $levelIndex: $siblingHash',
-        );
-      }
-
-      if (hashBytes.length != 32) {
-        throw TscConversionException(
-          'Hash at level $levelIndex has invalid length ${hashBytes.length} (expected 32)',
-        );
-      }
-
-      // Create level with sibling leaf
-      final level = Level(
-        leaves: [
-          Leaf(
-            offset: siblingOffset,
-            hash: hashBytes,
-            isTxid: false, // Sibling hashes are never txids
-            duplicate: false,
-          ),
-        ],
-      );
-
-      path.add(level);
-
-      // Move to parent position for next level
-      currentPosition = currentPosition ~/ 2;
-    }
-
-    return path;
-  }
-
-  /// Reverse bytes in a hex string (for Bitcoin's little-endian format)
-  /// 
-  /// Converts between display format (big-endian) and internal format (little-endian)
-  String _reverseBytes(String hexString) {
-    if (hexString.length % 2 != 0) {
-      throw TscConversionException(
-        'Hex string must have an even number of characters: $hexString',
-      );
-    }
-
-    final result = StringBuffer();
-    for (int i = hexString.length - 2; i >= 0; i -= 2) {
-      result.write(hexString.substring(i, i + 2));
-    }
-    return result.toString();
   }
 
   /// Validate that a TSC proof has all required fields
@@ -163,14 +74,11 @@ class TscConverter {
       }
 
       final nodes = tscProof['nodes'] as List;
-      if (nodes.isEmpty) {
-        _logger.warning('TSC proof has empty nodes array');
-        return false;
-      }
 
-      // Validate all nodes are strings
-      if (nodes.any((node) => node is! String)) {
-        _logger.warning('TSC proof contains non-string node');
+      // Validate all nodes are 32-byte hex hashes or the "*" duplicate marker
+      // (an empty list is the single-transaction block)
+      if (nodes.any((node) => node is! String || (node != '*' && node.length != 64))) {
+        _logger.warning('TSC proof contains a node that is neither a hash nor "*"');
         return false;
       }
 

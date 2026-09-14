@@ -53,44 +53,6 @@ Uint8List doubleSha256(Uint8List data) {
   return Uint8List.fromList(secondHash.bytes);
 }
 
-/// Build BUMP from MerkleProof (working implementation from conversion_test.dart)
-BUMP buildBUMPFromMerkleProof(MerkleProof proof) {
-  final levels = <Level>[];
-
-  // Level 0: Transaction ID at its position in the block
-  // IMPORTANT: Reverse bytes from display format (big-endian) to internal format (little-endian)
-  levels.add(Level(leaves: [
-    Leaf(
-      offset: proof.position,
-      duplicate: false,
-      isTxid: true,
-      hash: Uint8List.fromList(hex.decode(reverseBytes(proof.txid))),
-    ),
-  ]));
-
-  // Subsequent levels: merkle path siblings with calculated offsets
-  for (int i = 0; i < proof.merkleProof.length; i++) {
-    final indexBit = (proof.position >> i) & 1;
-    final siblingOffset = indexBit == 0
-        ? (proof.position | (1 << i))
-        : (proof.position & ~(1 << i));
-
-    levels.add(Level(leaves: [
-      Leaf(
-        offset: siblingOffset,
-        duplicate: false,
-        isTxid: false,
-        hash: Uint8List.fromList(hex.decode(reverseBytes(proof.merkleProof[i]))),
-      ),
-    ]));
-  }
-
-  return BUMP(
-    blockHeight: proof.blockHeight,
-    path: levels,
-  );
-}
-
 void main() {
   group('SPV Merkle Proof Validation', () {
     // Real data from the failing validation
@@ -142,8 +104,8 @@ void main() {
       };
       final bumpFromCryptoUtils = CryptoUtils.createBumpFromTscProof(tscProof, blockHeight);
       
-      // Build BUMP using working implementation from conversion_test.dart
-      final bumpFromWorkingImpl = buildBUMPFromMerkleProof(merkleProof);
+      // Build BUMP from the storage model through the production builder
+      final bumpFromWorkingImpl = CryptoUtils.buildBUMPFromMerkleProof(merkleProof);
       
       print('\\n=== Comparing BUMP Structures ===');
       print('\\n--- CryptoUtils.createBumpFromTscProof ---');
@@ -181,11 +143,13 @@ void main() {
       print('CryptoUtils matches expected:    ${rootFromCryptoUtilsHex == expectedMerkleRoot}');
       print('Working impl matches expected:   ${rootFromWorkingImplHex == expectedMerkleRoot}');
       
-      // expect(rootFromWorkingImplHex, equals(expectedMerkleRoot),
-      //     reason: 'Working implementation should produce correct merkle root');
-      
-      print('\\n❌ Both BUMP implementations produce WRONG merkle root!');
-      print('   Problem is in BUMP.computeMerkleRoot() method!\\n');
+      expect(rootFromCryptoUtilsHex, equals(expectedMerkleRoot),
+          reason: 'TSC-built BUMP should produce the block merkle root');
+      expect(rootFromWorkingImplHex, equals(expectedMerkleRoot),
+          reason: 'Storage-built BUMP should produce the block merkle root');
+      expect(hex.encode(bumpFromWorkingImpl.serialize()),
+          equals(hex.encode(bumpFromCryptoUtils.serialize())),
+          reason: 'Both builders must emit the same BRC-74 bytes');
     });
 
     test('Direct TSC computation (without BUMP) - CONTROL TEST', () {

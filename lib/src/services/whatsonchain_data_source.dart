@@ -558,11 +558,7 @@ class WhatsOnChainDataSource implements BlockchainDataSource {
         standardizedProof['target'] = firstProof['target'] ?? '';
 
         if (firstProof.containsKey('nodes') && firstProof['nodes'] is List) {
-          List<dynamic> nodes = firstProof['nodes'];
-          standardizedProof['nodes'] = nodes
-              .where((node) => node is String && node != '*')
-              .cast<String>()
-              .toList();
+          standardizedProof['nodes'] = _tscNodes(firstProof['nodes'] as List);
         }
       } else {
         // Legacy array format [txid, merkleroot, nodes, index]
@@ -570,10 +566,7 @@ class WhatsOnChainDataSource implements BlockchainDataSource {
         standardizedProof['target'] = decoded.length > 1 ? decoded[1] : '';
 
         if (decoded.length > 2 && decoded[2] is List) {
-          standardizedProof['nodes'] = decoded[2]
-              .where((node) => node is String && node != '*')
-              .cast<String>()
-              .toList();
+          standardizedProof['nodes'] = _tscNodes(decoded[2] as List);
         }
 
         standardizedProof['index'] = decoded.length > 3 ? decoded[3] : 0;
@@ -590,11 +583,7 @@ class WhatsOnChainDataSource implements BlockchainDataSource {
           proofMap['target'] ?? proofMap['merkleroot'] ?? '';
 
       if (proofMap.containsKey('nodes') && proofMap['nodes'] is List) {
-        List<dynamic> nodes = proofMap['nodes'];
-        standardizedProof['nodes'] = nodes
-            .where((node) => node is String && node != '*')
-            .cast<String>()
-            .toList();
+        standardizedProof['nodes'] = _tscNodes(proofMap['nodes'] as List);
       }
     } else {
       throw DataSourceException('Unexpected merkle proof format', txid: txid);
@@ -602,6 +591,13 @@ class WhatsOnChainDataSource implements BlockchainDataSource {
 
     return standardizedProof;
   }
+
+  /// TSC nodes are the sibling hashes bottom-up; a "*" entry means the
+  /// working hash is paired with itself at that level (odd-count padding).
+  /// The "*" MUST be kept — dropping it shortens the path and yields a wrong
+  /// merkle root (audit SPV-08). [TscConverter] maps it to a duplicate leaf.
+  static List<String> _tscNodes(List<dynamic> nodes) =>
+      nodes.whereType<String>().toList();
 
   Future<T> _retryApiCall<T>(
     Future<T> Function() apiCall,

@@ -10,8 +10,7 @@ import 'package:logging/logging.dart' hide Level;
 import 'package:unorm_dart/unorm_dart.dart';
 import 'package:crypto/crypto.dart' as crypto;
 import '../storage/read_model_storage.dart' show MerkleProof;
-import 'bump.dart'; // Correct import for BUMP class
-import 'hex_utils.dart' as hex_utils;
+import 'bump.dart';
 
 final _cryptoLog = Logger('CryptoUtils');
 
@@ -123,10 +122,10 @@ class CryptoUtils {
       if (tscProof.containsKey('nodes')) {
         final nodes = tscProof['nodes'] as List<dynamic>;
 
-        // Convert the nodes to a path format (excluding duplicates marked with "*")
+        // Keep every node, including the "*" duplicate marker: dropping it
+        // shortens the path and yields a wrong root (audit SPV-08).
         for (final node in nodes) {
-          // Skip duplicated nodes (marked with "*" in TSC format)
-          if (node is String && node != "*") {
+          if (node is String) {
             path.add(node);
           }
         }
@@ -246,46 +245,13 @@ class CryptoUtils {
   /// @returns A BUMP instance that can be serialized
   static BUMP convertBrc71PathToBump(
       Map<String, dynamic> brc71Path, int blockHeight, String txid) {
-    final int index = brc71Path['index'] as int;
-    final List<String> path = brc71Path['path'].cast<String>();
-
-    // CRITICAL: BUMP stores hashes in internal format (little-endian)
-    // BRC-71 provides them in display format (big-endian), so we must reverse
-    
-    // Create leaves for level 0 (transaction level)
-    final List<Leaf> level0Leaves = [
-      Leaf(
-        offset: index,
-        duplicate: false,
-        isTxid: true,
-        hash: Uint8List.fromList(hex.decode(reverseBytes(txid))),
-      )
-    ];
-
-    // Create the levels array
-    final List<Level> levels = [Level(leaves: level0Leaves)];
-
-    // Add the path elements as additional levels
-    for (int i = 0; i < path.length; i++) {
-      // Calculate the offset for this level
-      // For a binary tree, the offset at level i+1 is index >> i
-      final int offset = (index >> i) ^ 1; // Sibling offset
-
-      final List<Leaf> levelLeaves = [
-        Leaf(
-          offset: offset,
-          duplicate: false,
-          isTxid: false,
-          hash: Uint8List.fromList(hex.decode(reverseBytes(path[i]))),
-        )
-      ];
-
-      levels.add(Level(leaves: levelLeaves));
-    }
-
-    return BUMP(
+    // Path hashes are display format (big-endian), "*" marks a duplicate;
+    // BUMP.fromTscProof is the single BRC-74 builder.
+    return BUMP.fromTscProof(
       blockHeight: blockHeight,
-      path: levels,
+      txid: txid,
+      index: brc71Path['index'] as int,
+      nodes: (brc71Path['path'] as List).cast<String>(),
     );
   }
 
@@ -295,40 +261,34 @@ class CryptoUtils {
   /// @param txid The transaction ID to extract the path for (in hex string format)
   /// @returns A Map containing the BRC-71 format merkle path
   static Map<String, dynamic> convertBumpToBrc71Path(BUMP bump, String txid) {
-    final txidBytes = Uint8List.fromList(hex.decode(txid));
-
-    // Find the txid in the first level of the BUMP
-    final level0 = bump.path[0];
-    int? index;
-
-    for (int i = 0; i < level0.leaves.length; i++) {
-      final leaf = level0.leaves[i];
-      if (leaf.isTxid && !leaf.duplicate && leaf.hash != null) {
-        if (_compareBytes(leaf.hash!, txidBytes)) {
-          index = leaf.offset;
-          break;
-        }
-      }
-    }
-
-    if (index == null) {
+    // Accepts the txid in display hex (internal order is matched as well).
+    final txidLeaf = bump.findTxidLeaf(Uint8List.fromList(hex.decode(reverseBytes(txid))));
+    if (txidLeaf == null) {
       throw Exception('Transaction ID not found in BUMP');
     }
+    final index = txidLeaf.offset;
 
-    // Extract the path for this txid
+    // Single-transaction block: no siblings, root == txid.
+    if (bump.path.length == 1 && bump.path[0].leaves.length == 1) {
+      return {'index': index, 'path': <String>[]};
+    }
+
+    // BRC-74 walk: the sibling at height h is at offset (index >> h) ^ 1.
+    // Path hashes are display format; "*" marks a duplicate.
     final List<String> path = [];
-
-    for (int i = 1; i < bump.path.length; i++) {
-      final level = bump.path[i];
-      final siblingOffset = (index >> (i - 1)) ^ 1;
-
-      // Find the sibling hash
-      for (final leaf in level.leaves) {
-        if (leaf.offset == siblingOffset && leaf.hash != null) {
-          path.add(hex.encode(leaf.hash!));
+    for (int h = 0; h < bump.path.length; h++) {
+      final siblingOffset = (index >> h) ^ 1;
+      Leaf? sibling;
+      for (final leaf in bump.path[h].leaves) {
+        if (leaf.offset == siblingOffset) {
+          sibling = leaf;
           break;
         }
       }
+      if (sibling == null) {
+        throw Exception('BUMP is missing the sibling at height $h for txid $txid');
+      }
+      path.add(sibling.duplicate ? '*' : hex.encode(sibling.hash!.reversed.toList()));
     }
 
     return {
@@ -374,15 +334,16 @@ class CryptoUtils {
     // Apply each proof step with byte reversal for Bitcoin's little-endian format
     for (int i = 0; i < path.length; i++) {
       final node = path[i];
-      
+
       // Determine if we need to concatenate left+right or right+left
       bool isLeftSide = (currentIndex % 2 == 0);
       String concatenated;
-      
+
       // First, reverse both hashes (to get little-endian format)
+      // A "*" node is a duplicate: the working hash is paired with itself.
       String reversedCurrentHash = reverseBytes(currentHash);
-      String reversedNode = reverseBytes(node);
-      
+      String reversedNode = node == '*' ? reversedCurrentHash : reverseBytes(node);
+
       if (isLeftSide) {
         // Our txid is on the left side, so concatenate with the right sibling
         concatenated = reversedCurrentHash + reversedNode;
@@ -411,11 +372,9 @@ class CryptoUtils {
   /// @param txid The transaction ID to compute the merkle root for (in hex string format)
   /// @returns The computed merkle root (in hex string format)
   static String computeMerkleRootFromBump(BUMP bump, String txid) {
-    // Convert BUMP to BRC-71 format
-    final brc71Path = convertBumpToBrc71Path(bump, txid);
-    
-    // Use the updated computeMerkleRootFromBrc71 method which handles byte reversal
-    return computeMerkleRootFromBrc71(txid, brc71Path);
+    // BRC-74 walk; result in display (block explorer) hex.
+    return bump.computeMerkleRootForBlockHeader(
+        Uint8List.fromList(hex.decode(reverseBytes(txid))));
   }
 
   /// Extract the merkle root from a BUMP object
@@ -429,35 +388,11 @@ class CryptoUtils {
   /// @returns The computed merkle root in hex string format, or null if computation fails
   static String? extractMerkleRootFromBump(BUMP bump, String txid) {
     try {
-      // Convert BUMP to BRC-71 format
-      final brc71Path = convertBumpToBrc71Path(bump, txid);
-      
-      // If conversion failed, return null
-      if (brc71Path.isEmpty) {
-        return null;
-      }
-      
-      // Use the updated computeMerkleRootFromBrc71 method which handles byte reversal
-      return computeMerkleRootFromBrc71(txid, brc71Path);
+      return computeMerkleRootFromBump(bump, txid);
     } catch (e) {
       _cryptoLog.warning('Failed to extract merkle root from BUMP: $e');
       return null;
     }
-  }
-
-  /// Helper function to compare two byte arrays
-  static bool _compareBytes(Uint8List a, Uint8List b) {
-    if (a.length != b.length) {
-      return false;
-    }
-
-    for (int i = 0; i < a.length; i++) {
-      if (a[i] != b[i]) {
-        return false;
-      }
-    }
-
-    return true;
   }
 
   /// Combine multiple BUMP objects into a single BUMP
@@ -466,77 +401,7 @@ class CryptoUtils {
   ///
   /// @param bumps List of BUMP objects to combine
   /// @returns A combined BUMP object
-  static BUMP combineBumps(List<BUMP> bumps) {
-    if (bumps.isEmpty) {
-      throw Exception('Cannot combine empty list of BUMPs');
-    }
-
-    final int blockHeight = bumps[0].blockHeight;
-
-    // Check that all BUMPs are for the same block height
-    for (final bump in bumps) {
-      if (bump.blockHeight != blockHeight) {
-        throw Exception('Cannot combine BUMPs with different block heights');
-      }
-    }
-
-    // Initialize the combined BUMP with the first BUMP's structure
-    final List<Level> combinedPath = [];
-    for (int h = 0; h < bumps[0].path.length; h++) {
-      combinedPath.add(Level(leaves: []));
-    }
-
-    // Merge all BUMPs
-    for (final bump in bumps) {
-      for (int h = 0; h < bump.path.length; h++) {
-        final level = bump.path[h];
-
-        for (final leaf in level.leaves) {
-          // Check if this leaf already exists in the combined BUMP
-          bool exists = false;
-          for (final existingLeaf in combinedPath[h].leaves) {
-            if (existingLeaf.offset == leaf.offset) {
-              exists = true;
-
-              // If the existing leaf doesn't have txid flag but the new one does,
-              // replace the existing leaf with a new one that has isTxid set to true
-              if (leaf.isTxid && !existingLeaf.isTxid) {
-                // Create a new leaf with the updated isTxid value
-                final updatedLeaf = Leaf(
-                  offset: existingLeaf.offset,
-                  duplicate: existingLeaf.duplicate,
-                  isTxid: true, // Set to true
-                  hash: existingLeaf.hash,
-                );
-
-                // Replace the existing leaf in the list
-                final int leafIndex =
-                    combinedPath[h].leaves.indexOf(existingLeaf);
-                combinedPath[h].leaves[leafIndex] = updatedLeaf;
-              }
-
-              break;
-            }
-          }
-
-          // If the leaf doesn't exist, add it
-          if (!exists) {
-            combinedPath[h].leaves.add(Leaf(
-                  offset: leaf.offset,
-                  duplicate: leaf.duplicate,
-                  isTxid: leaf.isTxid,
-                  hash: leaf.hash,
-                ));
-          }
-        }
-      }
-    }
-
-    return BUMP(
-      blockHeight: blockHeight,
-      path: combinedPath,
-    );
-  }
+  static BUMP combineBumps(List<BUMP> bumps) => BUMP.merge(bumps);
 
   /// Double SHA-256 hash of a hex string
   static String doubleSha256(String hexString) {
@@ -575,19 +440,20 @@ class CryptoUtils {
     String merkleRoot, 
     int index
   ) {
-    // Reverse bytes for Bitcoin's little-endian format
+    // Reverse bytes for Bitcoin's little-endian format ("*" = duplicate)
     String reversedTxid = reverseBytes(txid);
-    List<String> reversedNodes = merkleProof.map((node) => reverseBytes(node)).toList();
+    List<String> reversedNodes =
+        merkleProof.map((node) => node == '*' ? '*' : reverseBytes(node)).toList();
     String reversedMerkleRoot = reverseBytes(merkleRoot);
 
     // Start with the transaction hash
     String currentHash = reversedTxid;
     int currentIndex = index;
-    
+
     // Apply each proof step
     for (int i = 0; i < reversedNodes.length; i++) {
-      final node = reversedNodes[i];
-      
+      final node = reversedNodes[i] == '*' ? currentHash : reversedNodes[i];
+
       // Determine if we need to concatenate left+right or right+left
       bool isLeftSide = (currentIndex % 2 == 0);
       String concatenated;
@@ -620,57 +486,13 @@ class CryptoUtils {
   /// @param blockHeight The block height for the transaction
   /// @returns A BUMP instance that can be serialized
   static BUMP createBumpFromTscProof(Map<String, dynamic> tscProof, int blockHeight) {
-    // Extract data from the TSC proof - no need to reverse txOrId as it's already in display format
-    final txid = Uint8List.fromList(hex.decode(reverseBytes(tscProof['txOrId'] as String)));
-    
-    // Convert nodes to internal format (reversed from display format)
-    final nodesList = (tscProof['nodes'] as List<dynamic>).map(
-        (node) => Uint8List.fromList(hex.decode(reverseBytes(node as String)))
-    ).toList();
-    
-    // Calculate tree height based on number of nodes
-    final treeHeight = nodesList.length + 1;
-    
-    // Create path array with leaves
-    final path = <Level>[];
-    
-    // Level 0: Transaction ID
-    final level0 = Level(leaves: [
-      Leaf(
-        offset: tscProof['index'] as int,
-        duplicate: false,
-        isTxid: true,
-        hash: txid,
-      ),
-    ]);
-    path.add(level0);
-    
-    // Add nodes as subsequent levels
-    for (int i = 0; i < nodesList.length; i++) {
-      final nodeHash = nodesList[i];
-      
-      // Determine the position of this node based on the transaction index
-      // In a Merkle tree, if index bit at level i is 0, then sibling is at (index | (1 << i))
-      // If index bit at level i is 1, then sibling is at (index & ~(1 << i))
-      final indexBit = ((tscProof['index'] as int) >> i) & 1;
-      final siblingOffset = indexBit == 0 
-          ? ((tscProof['index'] as int) | (1 << i)) 
-          : ((tscProof['index'] as int) & ~(1 << i));
-      
-      final level = Level(leaves: [
-        Leaf(
-          offset: siblingOffset,
-          duplicate: false,
-          isTxid: false,
-          hash: nodeHash,
-        ),
-      ]);
-      path.add(level);
-    }
-    
-    return BUMP(
+    // txOrId and nodes are display format; "*" marks a duplicate sibling.
+    // BUMP.fromTscProof is the single BRC-74 builder.
+    return BUMP.fromTscProof(
       blockHeight: blockHeight,
-      path: path,
+      txid: tscProof['txOrId'] as String,
+      index: tscProof['index'] as int,
+      nodes: (tscProof['nodes'] as List<dynamic>).cast<String>(),
     );
   }
 
@@ -680,67 +502,21 @@ class CryptoUtils {
   /// for BEEF packaging.
   ///
   /// Supports two storage formats:
-  /// 1. Raw BUMP hex string (single element > 64 chars) - parse directly
-  /// 2. List of sibling hashes (each 64 chars) - build BUMP from scratch
+  /// 1. Raw BUMP hex string (single element > 64 chars) — parsed verbatim.
+  ///    This is what ARCActor and WalletProjection store; it preserves
+  ///    multi-txid BUMPs and duplicate flags exactly as received.
+  /// 2. List of sibling hashes (display hex, bottom-up, "*" = duplicate) with
+  ///    `position` as the index — built with the BRC-74 builder.
   static BUMP buildBUMPFromMerkleProof(MerkleProof proof) {
-    // Check if merkleProof contains a raw BUMP serialization (single element > 64 chars)
-    // or a list of sibling hashes (each exactly 64 chars for a 32-byte hash)
     if (proof.merkleProof.length == 1 && proof.merkleProof[0].length > 64) {
-      // This is a raw BUMP hex string - parse it directly
-      try {
-        final bumpBytes = Uint8List.fromList(hex.decode(proof.merkleProof[0]));
-        final bump = BUMP.fromBytes(bumpBytes);
-        return bump;
-      } catch (e) {
-        rethrow;
-      }
+      return BUMP.fromHex(proof.merkleProof[0]);
     }
 
-    // Otherwise, build BUMP from sibling hashes (original logic)
-    final levels = <Level>[];
-
-    // Level 0: Transaction ID at its position in the block
-    // CRITICAL: proof.txid is in display format (big-endian) from database
-    // but BUMP stores txids in internal format (little-endian)
-    final reversedTxid = hex_utils.reverseHexBytes(proof.txid);
-    levels.add(Level(leaves: [
-      Leaf(
-        offset: proof.position,
-        duplicate: false,
-        isTxid: true,
-        hash: Uint8List.fromList(hex.decode(reversedTxid)),
-      ),
-    ]));
-
-    // Subsequent levels: merkle path siblings with calculated offsets
-    // Each hash in the merkleProof list is a sibling at the next level up
-    for (int i = 0; i < proof.merkleProof.length; i++) {
-      // Calculate sibling offset using bit manipulation
-      // In a Merkle tree, if index bit at level i is 0, then sibling is at (index | (1 << i))
-      // If index bit at level i is 1, then sibling is at (index & ~(1 << i))
-      final indexBit = (proof.position >> i) & 1;
-      final siblingOffset = indexBit == 0
-          ? (proof.position | (1 << i))
-          : (proof.position & ~(1 << i));
-
-      // CRITICAL: proof.merkleProof[i] is in display format (big-endian) from database
-      // but BUMP stores hashes in internal format (little-endian)
-      final siblingHashHex = proof.merkleProof[i];
-      final reversedHash = hex_utils.reverseHexBytes(siblingHashHex);
-
-      levels.add(Level(leaves: [
-        Leaf(
-          offset: siblingOffset,
-          duplicate: false,
-          isTxid: false,
-          hash: Uint8List.fromList(hex.decode(reversedHash)),
-        ),
-      ]));
-    }
-
-    return BUMP(
+    return BUMP.fromTscProof(
       blockHeight: proof.blockHeight,
-      path: levels,
+      txid: proof.txid,
+      index: proof.position,
+      nodes: proof.merkleProof,
     );
   }
 
@@ -764,9 +540,9 @@ class CryptoUtils {
     int currentIndex = txIndex;
     
     for (int i = 0; i < nodes.length; i++) {
-      // Determine if sibling is left or right
+      // Determine if sibling is left or right ("*" = pair with self)
       final isRight = ((currentIndex >> i) & 1) == 0;
-      final siblingHash = nodes[i];
+      final siblingHash = nodes[i] == '*' ? currentHash : nodes[i];
       
       // Combine current hash with sibling hash in correct order
       String concatenated;

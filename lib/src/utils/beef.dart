@@ -247,9 +247,13 @@ class BEEF {
     if (bumpIdx >= bumps.length) {
       return false; // Invalid BUMP index
     }
-    
-    // Validate the merkle path for this transaction
-    return bumps[bumpIdx].validateMerklePath(txid);
+
+    // Walk the merkle path for this transaction. [txid] is display format
+    // (what calculateTxid returns); BUMP leaves are internal byte order.
+    // Without a block header this is a structural check only: the path must
+    // contain the txid and every sibling the walk needs.
+    final txidInternal = Uint8List.fromList(txid.reversed.toList());
+    return bumps[bumpIdx].validateMerklePath(txidInternal);
   }
   
   /// Get all transactions that have merkle proofs

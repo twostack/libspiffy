@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
+import 'package:libspiffy/src/storage/read_model_storage.dart' show MerkleProof;
 import 'package:libspiffy/src/utils/beef.dart';
 import 'package:libspiffy/src/utils/bump.dart';
 import 'package:libspiffy/src/utils/crypto_utils.dart';
@@ -63,9 +64,11 @@ void main() {
         workingMerkleProofEntity['blockHeight'] as int,
       );
 
-      // Verify basic structure
+      // Verify BRC-74 structure: 9 siblings -> tree height 9; the txid shares
+      // level 0 with its first sibling
       expect(bumpFromTsc.blockHeight, workingMerkleProofEntity['blockHeight']);
-      expect(bumpFromTsc.path.length, 10); // 9 siblings + 1 for txid level
+      expect(bumpFromTsc.path.length, 9);
+      expect(bumpFromTsc.path[0].leaves.length, 2);
 
       // Verify txid is in level 0 with correct position
       expect(bumpFromTsc.path[0].leaves.length, greaterThanOrEqualTo(1));
@@ -164,136 +167,55 @@ void main() {
       print('  From Hex: ${bytesToHex(merkleRootFromHex)}');
     });
 
-    test('Simulated PaymentCoordinator _buildBUMPFromMerkleProof with TSC format', () {
-      // Simulate MerkleProof from storage (TSC format - comma-separated)
+    test('PaymentCoordinator buildBUMPFromMerkleProof with TSC-format storage', () {
+      // MerkleProof from storage: comma-separated sibling hashes + position.
+      // The coordinator, AncestorChainService and PaymentChannelBuilder all
+      // go through CryptoUtils.buildBUMPFromMerkleProof, which must emit the
+      // same BRC-74 bytes as building straight from the TSC proof.
       final siblingHashes = (workingMerkleProofEntity['merkleProofJson'] as String).split(',');
-      final txPosition = workingMerkleProofEntity['position'] as int;
       final txid = workingMerkleProofEntity['txid'] as String;
       final blockHeight = workingMerkleProofEntity['blockHeight'] as int;
 
-      // Build BUMP using the same logic as _buildBUMPFromMerkleProof
-      final levels = <Level>[];
+      final builtBump = CryptoUtils.buildBUMPFromMerkleProof(MerkleProof(
+        txid: txid,
+        blockHash: workingMerkleProofEntity['blockHash'] as String,
+        blockHeight: blockHeight,
+        position: workingMerkleProofEntity['position'] as int,
+        merkleProof: siblingHashes,
+      ));
+      final referenceBump = CryptoUtils.createBumpFromTscProof(tscProof, blockHeight);
 
-      // Level 0: Transaction ID at its position
-      final reversedTxid = reverseHexBytes(txid);
-      levels.add(Level(leaves: [
-        Leaf(
-          offset: txPosition,
-          duplicate: false,
-          isTxid: true,
-          hash: hexToBytes(reversedTxid),
-        ),
-      ]));
-
-      // Subsequent levels: sibling hashes at calculated offsets
-      for (int i = 0; i < siblingHashes.length; i++) {
-        final indexBit = (txPosition >> i) & 1;
-        final siblingOffset = indexBit == 0
-            ? (txPosition | (1 << i))
-            : (txPosition & ~(1 << i));
-
-        final reversedHash = reverseHexBytes(siblingHashes[i]);
-
-        levels.add(Level(leaves: [
-          Leaf(
-            offset: siblingOffset,
-            duplicate: false,
-            isTxid: false,
-            hash: hexToBytes(reversedHash),
-          ),
-        ]));
-      }
-
-      final builtBump = BUMP(blockHeight: blockHeight, path: levels);
-
-      // Validate
-      final txidInternal = hexToBytes(reversedTxid);
+      final txidInternal = hexToBytes(reverseHexBytes(txid));
       expect(builtBump.validateMerklePath(txidInternal), true);
+      expect(bytesToHex(builtBump.serialize()), bytesToHex(referenceBump.serialize()),
+          reason: 'storage-built and TSC-built BUMPs must be byte-identical');
 
       print('✓ PaymentCoordinator-style BUMP from TSC format validates');
     });
 
-    test('Simulated PaymentCoordinator _buildBUMPFromMerkleProof with raw BUMP hex', () {
+    test('PaymentCoordinator buildBUMPFromMerkleProof with raw BUMP hex storage', () {
       // First create a reference BUMP from TSC
       final referenceBump = CryptoUtils.createBumpFromTscProof(
         tscProof,
         workingMerkleProofEntity['blockHeight'] as int,
       );
 
-      // Serialize to simulate raw BUMP from ARC
+      // Serialize to simulate raw BUMP from ARC, stored as a single element
       final rawBumpHex = bytesToHex(referenceBump.serialize());
-
-      // Simulate MerkleProof from storage with raw BUMP format
-      // (This is how ARC stores it - wrapped in a single-element list)
-      final merkleProofFromStorage = [rawBumpHex];
       final txid = workingMerkleProofEntity['txid'] as String;
 
-      // Detect raw BUMP format (single element > 64 chars)
-      expect(merkleProofFromStorage.length, 1);
-      expect(merkleProofFromStorage[0].length, greaterThan(64));
+      final rebuiltBump = CryptoUtils.buildBUMPFromMerkleProof(MerkleProof(
+        txid: txid,
+        blockHash: workingMerkleProofEntity['blockHash'] as String,
+        blockHeight: workingMerkleProofEntity['blockHeight'] as int,
+        position: workingMerkleProofEntity['position'] as int,
+        merkleProof: [rawBumpHex],
+      ));
 
-      // Parse the raw BUMP
-      final parsedBump = BUMP.fromBytes(hexToBytes(merkleProofFromStorage[0]));
+      // The stored BUMP comes back verbatim
+      expect(bytesToHex(rebuiltBump.serialize()), rawBumpHex);
 
-      // Extract sibling hashes and txPosition from parsed BUMP
-      final siblingHashes = <String>[];
-      int txPosition = 0;
-
-      for (int i = 0; i < parsedBump.path.length; i++) {
-        for (final leaf in parsedBump.path[i].leaves) {
-          if (leaf.isTxid && leaf.hash != null) {
-            txPosition = leaf.offset;
-          } else if (!leaf.duplicate && leaf.hash != null) {
-            // Convert back to display format
-            final hashHex = leaf.hash!.reversed
-                .map((byte) => byte.toRadixString(16).padLeft(2, '0'))
-                .join('');
-            siblingHashes.add(hashHex);
-          }
-        }
-      }
-
-      print('Extracted from raw BUMP:');
-      print('  TX Position: $txPosition');
-      print('  Sibling count: ${siblingHashes.length}');
-
-      // Now rebuild the BUMP using the standard logic
-      final levels = <Level>[];
-
-      // Level 0: Transaction ID at its position
-      final reversedTxid = reverseHexBytes(txid);
-      levels.add(Level(leaves: [
-        Leaf(
-          offset: txPosition,
-          duplicate: false,
-          isTxid: true,
-          hash: hexToBytes(reversedTxid),
-        ),
-      ]));
-
-      // Subsequent levels: sibling hashes at calculated offsets
-      for (int i = 0; i < siblingHashes.length; i++) {
-        final indexBit = (txPosition >> i) & 1;
-        final siblingOffset = indexBit == 0
-            ? (txPosition | (1 << i))
-            : (txPosition & ~(1 << i));
-
-        final reversedHash = reverseHexBytes(siblingHashes[i]);
-
-        levels.add(Level(leaves: [
-          Leaf(
-            offset: siblingOffset,
-            duplicate: false,
-            isTxid: false,
-            hash: hexToBytes(reversedHash),
-          ),
-        ]));
-      }
-
-      final rebuiltBump = BUMP(blockHeight: parsedBump.blockHeight, path: levels);
-
-      // Validate
-      final txidInternal = hexToBytes(reversedTxid);
+      final txidInternal = hexToBytes(reverseHexBytes(txid));
       expect(rebuiltBump.validateMerklePath(txidInternal), true,
           reason: 'Rebuilt BUMP from raw hex should validate');
 
@@ -424,27 +346,32 @@ void main() {
     });
 
     test('Verify txid format in calculateTxid matches BUMP expectations', () {
-      // This tests that calculateTxid produces display format (big-endian)
-      // which must then be reversed before BUMP validation
+      // calculateTxid produces display format (big-endian); BUMP leaves are
+      // internal (little-endian). The BUMP resolves a txid given in either
+      // byte order to the same leaf, so both validate and both compute the
+      // same root (computeMerkleRoot always accepted both; validateMerklePath
+      // now shares the lookup).
 
       // The stored txid is in display format
       final displayTxid = workingMerkleProofEntity['txid'] as String;
-      
+
       // Create BUMP from TSC
       final bump = CryptoUtils.createBumpFromTscProof(
         tscProof,
         workingMerkleProofEntity['blockHeight'] as int,
       );
 
-      // Test 1: Display format should NOT validate directly
       final displayTxidBytes = hexToBytes(displayTxid);
-      expect(bump.validateMerklePath(displayTxidBytes), false,
-          reason: 'Display format should NOT validate directly');
-
-      // Test 2: Internal format (reversed) SHOULD validate
       final internalTxidBytes = hexToBytes(reverseHexBytes(displayTxid));
       expect(bump.validateMerklePath(internalTxidBytes), true,
           reason: 'Internal format (reversed) SHOULD validate');
+      expect(bump.validateMerklePath(displayTxidBytes), true,
+          reason: 'Display format resolves to the same leaf');
+      expect(bytesToHex(bump.computeMerkleRoot(displayTxidBytes)),
+          bytesToHex(bump.computeMerkleRoot(internalTxidBytes)));
+
+      // A txid that is in neither order is rejected
+      expect(bump.validateMerklePath(Uint8List(32)), false);
 
       print('✓ TXID format requirements verified');
       print('  Display (big-endian): $displayTxid');
@@ -632,40 +559,24 @@ void main() {
       print('  TXID:  ${realArcResponse['txid']}');
     });
 
-    test('Document BUMP format differences between TSC-built and ARC compact', () {
-      // This test documents the structural differences between formats
-      // Both are valid BUMP representations, just different structures
-      
-      // TSC-built format: 1 leaf per level (txid separate from siblings)
+    test('TSC-built BUMP is byte-identical to the BRC-74 BUMP ARC emitted', () {
+      // Audit SPV-06: the library used to emit its own layout (txid alone at
+      // level 0, siblings one level up) that standard verifiers reject. The
+      // single BRC-74 builder now reproduces ARC's bytes exactly.
       final bumpFromTsc = CryptoUtils.createBumpFromTscProof(realTscProof, 1709615);
-      
-      // ARC compact format: multiple leaves per level
-      final bumpFromArc = BUMP.fromBytes(hexToBytes(realArcResponse['merklePath'] as String));
+      final arcHex = realArcResponse['merklePath'] as String;
+      final bumpFromArc = BUMP.fromBytes(hexToBytes(arcHex));
 
-      // TSC format has more levels (txid + each sibling gets its own level)
-      expect(bumpFromTsc.path.length, 4); // txid level + 3 sibling levels
-      
-      // ARC format is more compact (txid + sibling share level 0)
-      expect(bumpFromArc.path.length, 3); // 3 combined levels
+      expect(bytesToHex(bumpFromTsc.serialize()), arcHex);
 
-      // Both have same number of total leaves (1 txid + 3 siblings = 4 total)
-      int tscLeafCount = bumpFromTsc.path.fold(0, (sum, level) => sum + level.leaves.length);
-      int arcLeafCount = bumpFromArc.path.fold(0, (sum, level) => sum + level.leaves.length);
-      expect(tscLeafCount, 4); // 1 per level
-      expect(arcLeafCount, 4); // 2 + 1 + 1 = 4 (txid + 3 siblings)
-      
-      // ARC has: level 0 = 2 leaves (txid + sibling), level 1 = 1 leaf, level 2 = 1 leaf
+      // BRC-74: level 0 = txid + sibling, one sibling per level above
+      expect(bumpFromTsc.path.length, 3);
+      expect(bumpFromArc.path.length, 3);
       expect(bumpFromArc.path[0].leaves.length, 2);
       expect(bumpFromArc.path[1].leaves.length, 1);
       expect(bumpFromArc.path[2].leaves.length, 1);
 
-      print('✓ BUMP format differences documented');
-      print('  TSC-built: ${bumpFromTsc.path.length} levels, ${tscLeafCount} total leaves');
-      print('  ARC compact: ${bumpFromArc.path.length} levels, ${arcLeafCount} total leaves');
-      print('');
-      print('  NOTE: Different internal structures, but both valid for SPV validation');
-      print('  The PaymentCoordinator should use ARC format directly when available,');
-      print('  rather than rebuilding from TSC sibling hashes.');
+      print('✓ TSC-built BUMP matches ARC BUMP byte for byte');
     });
   });
 
@@ -790,13 +701,13 @@ void main() {
       // Now verify validation works with internal format
       final isValid = bump.validateMerklePath(internalTxidBytes);
       expect(isValid, true, reason: 'validateMerklePath should succeed with internal format txid');
-      
-      // And fails with display format (wrong byte order)
-      final isInvalidWithDisplayFormat = bump.validateMerklePath(displayTxidBytes);
-      expect(isInvalidWithDisplayFormat, false,
-          reason: 'validateMerklePath should fail with display format txid');
-      
-      print('✓ validateMerklePath correctly requires internal format txid');
+
+      // A display-format txid resolves to the same leaf (byte-order-agnostic
+      // lookup, as computeMerkleRoot always had); an unrelated txid does not.
+      expect(bump.validateMerklePath(displayTxidBytes), true);
+      expect(bump.validateMerklePath(Uint8List(32)), false);
+
+      print('✓ validateMerklePath resolves the txid in either byte order');
     });
 
     test('HYPOTHESIS: Block header merkle root format matches computed root', () {

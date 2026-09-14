@@ -269,9 +269,11 @@ void main() {
         transaction['blockheight'] as int
       );
       
-      // Verify basic structure
+      // Verify BRC-74 structure: tree height == number of siblings, and
+      // level 0 carries the txid together with its first sibling
       expect(bump.blockHeight, transaction['blockheight']);
-      expect(bump.path.length, (tscProof['nodes'] as List<dynamic>).length + 1);
+      expect(bump.path.length, (tscProof['nodes'] as List<dynamic>).length);
+      expect(bump.path[0].leaves.length, 2);
       
       // Verify TXID in the BUMP matches the transaction
       final txidBytes = hexToBytes(reverseHexBytes(txid));
@@ -315,9 +317,11 @@ void main() {
         transaction['blockheight'] as int
       );
       
-      // Verify basic structure
+      // Verify BRC-74 structure: tree height == number of siblings, and
+      // level 0 carries the txid together with its first sibling
       expect(bump.blockHeight, transaction['blockheight']);
-      expect(bump.path.length, (tscProof['nodes'] as List<dynamic>).length + 1);
+      expect(bump.path.length, (tscProof['nodes'] as List<dynamic>).length);
+      expect(bump.path[0].leaves.length, 2);
       
       // Verify TXID in the BUMP matches the transaction
       final txidBytes = hexToBytes(reverseHexBytes(txid));
@@ -577,13 +581,16 @@ void main() {
               hash: level1SiblingHash,
             ),
           ]),
-          // Level 2: Duplicate (from BEEF parsing)
+          // Level 2: sibling of the working hash (position 4 >> 2 = 1) at
+          // offset 0. (The original fixture put a duplicate at offset 1 here,
+          // i.e. at the working position itself; BRC-74 has no such leaf and
+          // the strict walk rightly rejects it — audit SPV-07.)
           Level(leaves: [
             Leaf(
-              offset: 1,
-              duplicate: true,
+              offset: 0,
+              duplicate: false,
               isTxid: false,
-              hash: null,
+              hash: Uint8List.fromList(List.generate(32, (i) => 0x10 + i)),
             ),
           ]),
         ],

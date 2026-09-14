@@ -3,22 +3,42 @@ import 'package:buffer/buffer.dart';
 import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart';
 
-
 class BUMPException implements Exception {
   final String message;
-  
+
   BUMPException(this.message);
-  
+
   @override
   String toString() => 'BUMPException: $message';
 }
 
-/// Represents a BSV Universal Merkle Path
+/// A BSV Universal Merkle Path (BRC-74).
+///
+/// Layout, as mandated by BRC-74:
+///
+/// * `path[0]` (level 0) holds every transaction being proved (flag `0x02`)
+///   AND, for each of them, its sibling at offset `index ^ 1` — either a
+///   32-byte hash, or a leaf flagged `0x01` ("duplicate": the working hash is
+///   paired with itself, which is how Bitcoin pads an odd level).
+/// * `path[h]` for `h >= 1` holds, for each proved transaction, the sibling
+///   of the working hash at offset `(index >> h) ^ 1`.
+/// * Transactions of the same block share the upper levels, so one BUMP can
+///   prove many txids; `path.length` is the tree height.
+/// * All hashes are stored in internal (little-endian) byte order.
+///
+/// The merkle root is computed by walking up: at every level the working
+/// hash is paired with the leaf at the sibling offset (hash on the left when
+/// the working position is odd, on the right when even, or with itself for a
+/// duplicate), and the position is halved.
+///
+/// Use [BUMP.fromMerklePath] / [BUMP.fromTscProof] to build one; every
+/// builder in the library funnels through them so all emitted BUMPs share
+/// this layout.
 class BUMP {
   /// The block height in which the transactions are encapsulated
   final int blockHeight;
-  
-  /// The path of levels in the merkle tree
+
+  /// The path of levels in the merkle tree (level 0 first)
   final List<Level> path;
 
   /// Creates a new BUMP instance
@@ -27,98 +47,178 @@ class BUMP {
     required this.path,
   });
 
+  // ---------------------------------------------------------------------------
+  // Builders
+  // ---------------------------------------------------------------------------
+
+  /// Build a BRC-74 BUMP proving one transaction.
+  ///
+  /// [txid] is the transaction hash in internal (little-endian) byte order,
+  /// [index] its position in the block, and [siblings] the merkle path from
+  /// the bottom up in internal byte order, `null` meaning "duplicate" (the
+  /// working hash is paired with itself at that level). An empty [siblings]
+  /// list is the single-transaction block, whose root is the txid itself.
+  factory BUMP.fromMerklePath({
+    required int blockHeight,
+    required Uint8List txid,
+    required int index,
+    required List<Uint8List?> siblings,
+  }) {
+    if (index < 0) {
+      throw BUMPException('Transaction index must not be negative: $index');
+    }
+    if (txid.length != 32) {
+      throw BUMPException('Transaction ID must be 32 bytes, got ${txid.length}');
+    }
+    final txidLeaf = Leaf(offset: index, duplicate: false, isTxid: true, hash: txid);
+
+    if (siblings.isEmpty) {
+      if (index != 0) {
+        throw BUMPException(
+            'A merkle path with no siblings is a single-transaction block; index must be 0, got $index');
+      }
+      return BUMP(blockHeight: blockHeight, path: [Level(leaves: [txidLeaf])]);
+    }
+
+    Leaf siblingLeaf(int height) {
+      final hash = siblings[height];
+      if (hash != null && hash.length != 32) {
+        throw BUMPException(
+            'Sibling at height $height must be 32 bytes, got ${hash.length}');
+      }
+      return Leaf(
+        offset: (index >> height) ^ 1,
+        duplicate: hash == null,
+        isTxid: false,
+        hash: hash,
+      );
+    }
+
+    final level0 = [txidLeaf, siblingLeaf(0)]..sort((a, b) => a.offset.compareTo(b.offset));
+    final path = <Level>[Level(leaves: level0)];
+    for (var height = 1; height < siblings.length; height++) {
+      path.add(Level(leaves: [siblingLeaf(height)]));
+    }
+    return BUMP(blockHeight: blockHeight, path: path);
+  }
+
+  /// Build a BRC-74 BUMP from a TSC-style proof: [txid] and [nodes] in
+  /// display (big-endian) hex, bottom-up, with `"*"` marking a duplicate.
+  factory BUMP.fromTscProof({
+    required int blockHeight,
+    required String txid,
+    required int index,
+    required List<String> nodes,
+  }) {
+    Uint8List internal(String displayHex, String what) {
+      final List<int> bytes;
+      try {
+        bytes = hex.decode(displayHex);
+      } catch (e) {
+        throw BUMPException('Invalid hex for $what: $displayHex');
+      }
+      return Uint8List.fromList(bytes.reversed.toList());
+    }
+
+    return BUMP.fromMerklePath(
+      blockHeight: blockHeight,
+      txid: internal(txid, 'txid'),
+      index: index,
+      siblings: [
+        for (var h = 0; h < nodes.length; h++)
+          nodes[h] == '*' ? null : internal(nodes[h], 'sibling at height $h'),
+      ],
+    );
+  }
+
+  /// Merge BUMPs of the same block into one BUMP proving all their txids.
+  ///
+  /// Leaves are unioned per level by offset; a leaf present in several BUMPs
+  /// must agree on its hash. Throws [BUMPException] when the block heights
+  /// or tree heights differ.
+  static BUMP merge(List<BUMP> bumps) {
+    if (bumps.isEmpty) {
+      throw BUMPException('Cannot merge an empty list of BUMPs');
+    }
+    final blockHeight = bumps.first.blockHeight;
+    final treeHeight = bumps.first.path.length;
+    for (final bump in bumps) {
+      if (bump.blockHeight != blockHeight) {
+        throw BUMPException('Cannot merge BUMPs of different blocks '
+            '($blockHeight vs ${bump.blockHeight})');
+      }
+      if (bump.path.length != treeHeight) {
+        throw BUMPException('Cannot merge BUMPs of different tree heights '
+            '($treeHeight vs ${bump.path.length})');
+      }
+    }
+
+    final merged = <Level>[];
+    for (var height = 0; height < treeHeight; height++) {
+      final byOffset = <int, Leaf>{};
+      for (final bump in bumps) {
+        for (final leaf in bump.path[height].leaves) {
+          final existing = byOffset[leaf.offset];
+          if (existing == null) {
+            byOffset[leaf.offset] = leaf;
+            continue;
+          }
+          if (!existing.duplicate &&
+              !leaf.duplicate &&
+              !_bytesEqual(existing.hash!, leaf.hash!)) {
+            throw BUMPException(
+                'Conflicting hashes at height $height offset ${leaf.offset}');
+          }
+          // Prefer the leaf carrying a hash; a txid flag from either wins.
+          final withHash = existing.duplicate ? leaf : existing;
+          byOffset[leaf.offset] = Leaf(
+            offset: leaf.offset,
+            duplicate: withHash.duplicate,
+            isTxid: existing.isTxid || leaf.isTxid,
+            hash: withHash.hash,
+          );
+        }
+      }
+      final leaves = byOffset.values.toList()..sort((a, b) => a.offset.compareTo(b.offset));
+      merged.add(Level(leaves: leaves));
+    }
+    return BUMP(blockHeight: blockHeight, path: merged);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Serialization
+  // ---------------------------------------------------------------------------
+
   /// Parse a BUMP from a list of bytes
   static BUMP fromBytes(Uint8List bytes) {
     try {
       final reader = ByteDataReader();
       reader.add(bytes);
-      
-      // Read block height
-      final blockHeight = readVarIntNum(reader);
-      
-      // Read tree height
-      final treeHeight = reader.readUint8();
-      
-      // Initialize path array
-      final path = <Level>[];
-      
-      // Parse each level
-      for (var h = 0; h < treeHeight; h++) {
-        final nLeaves = readVarIntNum(reader);
-        final leaves = <Leaf>[];
-        
-        // Parse each leaf in this level
-        for (var j = 0; j < nLeaves; j++) {
-          // Read offset
-          final offset = readVarIntNum(reader);
-          
-          // Read flags
-          final flags = reader.readUint8();
-          
-          // Parse flags
-          final duplicate = (flags & 0x01) != 0;
-          final isTxid = (flags & 0x02) != 0;
-          
-          // Read hash if not duplicate
-          Uint8List? hash;
-          if (!duplicate) {
-            hash = reader.read(32);
-          }
-          
-          leaves.add(Leaf(
-            offset: offset,
-            duplicate: duplicate,
-            isTxid: isTxid,
-            hash: hash,
-          ));
-        }
-        
-        path.add(Level(leaves: leaves));
-      }
-      
-      return BUMP(
-        blockHeight: blockHeight,
-        path: path,
-      );
+      return parse(reader);
     } catch (e) {
       throw BUMPException('Failed to parse BUMP: $e');
     }
   }
 
+  /// Parse a BUMP from its hex encoding
+  static BUMP fromHex(String bumpHex) => fromBytes(Uint8List.fromList(hex.decode(bumpHex)));
+
   /// Parse a BUMP from a reader
   static BUMP parse(ByteDataReader reader) {
-    // Read block height
     final blockHeight = readVarIntNum(reader);
-    
-    // Read tree height
     final treeHeight = reader.readUint8();
-    
-    // Initialize path array
     final path = <Level>[];
-    
-    // Parse each level
+
     for (var h = 0; h < treeHeight; h++) {
       final nLeaves = readVarIntNum(reader);
       final leaves = <Leaf>[];
-      
-      // Parse each leaf in this level
+
       for (var j = 0; j < nLeaves; j++) {
-        // Read offset
         final offset = readVarIntNum(reader);
-        
-        // Read flags
         final flags = reader.readUint8();
-        
-        // Parse flags
         final duplicate = (flags & 0x01) != 0;
         final isTxid = (flags & 0x02) != 0;
-        
-        // Read hash if not duplicate
-        Uint8List? hash;
-        if (!duplicate) {
-          hash = reader.read(32);
-        }
-        
+        final hash = duplicate ? null : reader.read(32);
         leaves.add(Leaf(
           offset: offset,
           duplicate: duplicate,
@@ -126,462 +226,170 @@ class BUMP {
           hash: hash,
         ));
       }
-      
+
       path.add(Level(leaves: leaves));
     }
-    
-    return BUMP(
-      blockHeight: blockHeight,
-      path: path,
-    );
+
+    return BUMP(blockHeight: blockHeight, path: path);
   }
 
   /// Serialize the BUMP to bytes
   Uint8List serialize() {
     final buffer = ByteDataWriter();
-    
-    // Write block height
+
     buffer.write(VarInt.fromInt(blockHeight).encode());
-    
-    // Write tree height
     buffer.writeUint8(path.length);
-    
-    // Write each level
+
     for (var h = 0; h < path.length; h++) {
       final level = path[h];
-      
-      // Write number of leaves
       buffer.write(VarInt.fromInt(level.leaves.length).encode());
-      
-      // Write each leaf
+
       for (var j = 0; j < level.leaves.length; j++) {
         final leaf = level.leaves[j];
-        
-        // Write offset
         buffer.write(VarInt.fromInt(leaf.offset).encode());
-        
-        // Write flags
+
         int flags = 0;
-        if (leaf.duplicate) {
-          flags |= 0x01;
-        }
-        if (leaf.isTxid) {
-          flags |= 0x02;
-        }
+        if (leaf.duplicate) flags |= 0x01;
+        if (leaf.isTxid) flags |= 0x02;
         buffer.writeUint8(flags);
-        
-        // Write hash if not duplicate
+
         if (!leaf.duplicate) {
           if (leaf.hash == null || leaf.hash!.length != 32) {
-            throw Exception('Invalid hash length for level $h leaf $j: expected 32, got ${leaf.hash?.length}');
+            throw Exception(
+                'Invalid hash length for level $h leaf $j: expected 32, got ${leaf.hash?.length}');
           }
-          // We need the null assertion operator here because writeBytes expects a non-nullable Uint8List
           buffer.write(leaf.hash!);
         }
       }
     }
-    
+
     return buffer.toBytes();
   }
 
-  /// Validate the merkle path for a given transaction ID.
-  /// Returns true if the path can be traversed successfully.
-  /// If [expectedMerkleRoot] is provided, also verifies the computed root matches.
-  /// Without [expectedMerkleRoot], this only validates path traversal, not correctness.
-  bool validateMerklePath(Uint8List txid, {Uint8List? expectedMerkleRoot}) {
+  /// Hex encoding of [serialize]
+  String toHex() => hex.encode(serialize());
+
+  // ---------------------------------------------------------------------------
+  // Root computation
+  // ---------------------------------------------------------------------------
+
+  /// The level-0 leaf carrying [txid], or null if this BUMP does not prove it.
+  ///
+  /// [txid] is matched in internal byte order first; the display (reversed)
+  /// order is accepted too, so callers holding a display-format txid resolve
+  /// to the same leaf.
+  Leaf? findTxidLeaf(Uint8List txid) {
+    if (path.isEmpty || txid.length != 32) return null;
+    final reversed = Uint8List.fromList(txid.reversed.toList());
+    for (final leaf in path[0].leaves) {
+      if (leaf.duplicate || leaf.hash == null) continue;
+      if (_bytesEqual(leaf.hash!, txid) || _bytesEqual(leaf.hash!, reversed)) {
+        return leaf;
+      }
+    }
+    return null;
+  }
+
+  /// Every txid this BUMP proves (level-0 leaves flagged as txids).
+  List<Leaf> get txidLeaves =>
+      path.isEmpty ? const [] : path[0].leaves.where((l) => l.isTxid && l.hash != null).toList();
+
+  /// Compute the merkle root for [txid] by the BRC-74 walk.
+  ///
+  /// Returns the root in internal byte order (compare directly with
+  /// `BlockHeader.merkleRoot.bytes`; reverse for the display form). Throws
+  /// [BUMPException] when the txid is not in the path or the path is missing
+  /// a sibling the walk needs.
+  Uint8List computeMerkleRoot(Uint8List txid) {
     if (path.isEmpty) {
+      throw BUMPException('Cannot compute merkle root: path is empty');
+    }
+    final txidLeaf = findTxidLeaf(txid);
+    if (txidLeaf == null) {
+      throw BUMPException('Transaction ID not found in merkle path');
+    }
+
+    final index = txidLeaf.offset;
+    var working = txidLeaf.hash!;
+
+    // Single-transaction block: the sole leaf is the root.
+    if (path.length == 1 && path[0].leaves.length == 1 && index == 0) {
+      return working;
+    }
+
+    for (var height = 0; height < path.length; height++) {
+      final position = index >> height;
+      final siblingOffset = position ^ 1;
+
+      Leaf? sibling;
+      for (final leaf in path[height].leaves) {
+        if (leaf.offset == siblingOffset) {
+          sibling = leaf;
+          break;
+        }
+      }
+      if (sibling == null) {
+        throw BUMPException(
+            'Missing sibling at height $height (offset $siblingOffset) for txid position $index');
+      }
+
+      if (sibling.duplicate) {
+        working = _hashPair(working, working);
+      } else {
+        final siblingHash = sibling.hash;
+        if (siblingHash == null || siblingHash.length != 32) {
+          throw BUMPException('Sibling at height $height offset $siblingOffset has no 32-byte hash');
+        }
+        working = position.isOdd ? _hashPair(siblingHash, working) : _hashPair(working, siblingHash);
+      }
+    }
+
+    return working;
+  }
+
+  /// Compute the merkle root for [txid] and return it as display-format hex
+  /// (the byte-reversed form shown by block explorers).
+  String computeMerkleRootForBlockHeader(Uint8List txid) =>
+      hex.encode(computeMerkleRoot(txid).reversed.toList());
+
+  /// Validate the merkle path for [txid].
+  ///
+  /// The path is walked to the root; a txid that is not in the BUMP, or a
+  /// level that lacks the sibling the walk needs, makes this false. With
+  /// [expectedMerkleRoot] (internal byte order) the computed root must also
+  /// match; without it only the structure is checked, which cannot detect a
+  /// tampered sibling hash — compare against a block header for that.
+  bool validateMerklePath(Uint8List txid, {Uint8List? expectedMerkleRoot}) {
+    final Uint8List root;
+    try {
+      root = computeMerkleRoot(txid);
+    } on BUMPException {
       return false;
     }
-    
-    // Find the txid in the first level
-    int? txidOffset;
-    for (int i = 0; i < path[0].leaves.length; i++) {
-      final leaf = path[0].leaves[i];
-      if (leaf.isTxid && !leaf.duplicate && leaf.hash != null) {
-        if (listEquals(leaf.hash!, txid)) {
-          // CRITICAL: Use leaf.offset (Merkle tree position), NOT array index i
-          txidOffset = leaf.offset;
-          break;
-        }
-      }
-    }
-    
-    // If txid not found, return false
-    if (txidOffset == null) {
-      return false;
-    }
-    
-    // Compute the merkle root by walking up the tree
-    Uint8List? currentHash = txid;
-    int currentIndex = txidOffset;
-    
-    for (int level = 0; level < path.length; level++) {
-      final leaves = path[level].leaves;
-      
-      // If this is a single node at this level, it's its own parent
-      if (leaves.length == 1) {
-        // If the single node is a duplicate, hash with itself
-        if (leaves[0].duplicate) {
-          currentHash = _hashPair(currentHash!, currentHash);
-        }
-        continue;
-      }
-      
-      // First check if we have a duplicate leaf at this currentIndex
-      bool hasDuplicate = false;
-      for (final leaf in leaves) {
-        if (leaf.offset == currentIndex && leaf.duplicate) {
-          // This is a duplicate node, so we hash with itself
-          currentHash = _hashPair(currentHash!, currentHash);
-          hasDuplicate = true;
-          break;
-        }
-      }
-      
-      // If we found a duplicate, move to the next level
-      if (hasDuplicate) {
-        currentIndex = currentIndex ~/ 2;
-        continue;
-      }
-      
-      // Find the sibling hash
-      Uint8List? siblingHash;
-      bool isLeftSibling = false;
-      
-      for (int i = 0; i < leaves.length; i++) {
-        final leaf = leaves[i];
-        
-        // Skip if this is the current node or a duplicate
-        if (leaf.offset == currentIndex || leaf.duplicate) {
-          continue;
-        }
-        
-        // Check if this is a sibling (nodes that would be combined in a merkle tree)
-        // Siblings have the same parent index, which means their indexes differ only in the least significant bit
-        if ((leaf.offset ^ currentIndex) == 1) {
-          siblingHash = leaf.hash;
-          isLeftSibling = leaf.offset < currentIndex;
-          break;
-        }
-      }
-      
-      // If no sibling found but we need one, check if any leaf is marked as duplicate
-      if (siblingHash == null) {
-        // In some cases, we might have a leaf that indicates we should duplicate the current hash
-        // This typically happens at the right edge of the tree
-        for (final leaf in leaves) {
-          if (leaf.duplicate && ((leaf.offset ^ currentIndex) == 1)) {
-            // This is a duplicate sibling, use the current hash as both inputs
-            currentHash = _hashPair(currentHash!, currentHash);
-            siblingHash = currentHash; // Just to pass the check below
-            break;
-          }
-        }
-      }
-      
-      // If still no sibling found, this is invalid
-      if (siblingHash == null) {
-        return false;
-      }
-      
-      // Compute parent hash if sibling is not a duplicate
-      if (!hasDuplicate) {
-        if (isLeftSibling) {
-          currentHash = _hashPair(siblingHash, currentHash!);
-        } else {
-          currentHash = _hashPair(currentHash!, siblingHash);
-        }
-      }
-      
-      // Update current index for next level
-      currentIndex = currentIndex ~/ 2;
-    }
-    
-    // The final hash should be the merkle root
-    if (currentHash == null) return false;
     if (expectedMerkleRoot != null) {
-      return listEquals(currentHash, expectedMerkleRoot);
+      return _bytesEqual(root, expectedMerkleRoot);
     }
     return true;
   }
-  
-  /// Compute the merkle root for a given transaction ID
-  /// Returns the merkle root as a Uint8List
-  /// The returned merkle root is in internal byte order and needs to be byte-reversed
-  /// to match the block header's merkle root display format.
-  Uint8List computeMerkleRoot(Uint8List txid) {
-    if (path.isEmpty) {
-      throw Exception('Cannot compute merkle root: path is empty');
-    }
-    
-    // CRITICAL: Try to find the txid in both formats (display and internal)
-    // since BUMP stores in internal format but callers might pass display format
-    int? txidIndex;
-    Uint8List? matchingTxid;
-    
-    for (int i = 0; i < path[0].leaves.length; i++) {
-      final leaf = path[0].leaves[i];
-      if (leaf.isTxid && !leaf.duplicate && leaf.hash != null) {
-        if (listEquals(leaf.hash!, txid)) {
-          txidIndex = leaf.offset;
-          matchingTxid = txid;
-          break;
-        }
-        // Try reversed format
-        final txidReversed = Uint8List.fromList(txid.reversed.toList());
-        if (listEquals(leaf.hash!, txidReversed)) {
-          txidIndex = leaf.offset;
-          matchingTxid = txidReversed;
-          break;
-        }
-      }
-    }
-    
-    // If txid not found, throw an exception
-    if (txidIndex == null || matchingTxid == null) {
-      throw Exception('Transaction ID not found in merkle path');
-    }
-    
-    // Convert BUMP to BRC-71 format for consistent calculation
-    // CRITICAL: matchingTxid is in internal format (little-endian) as stored in BUMP
-    // But BRC-71 calculation expects display format (big-endian), so we must reverse
-    final txidHex = matchingTxid.reversed.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join('');
-    
-    // Extract the path in BRC-71 format
-    // Each entry is either a sibling hash (String) or null (for duplicate - hash with self)
-    final List<String?> brc71Path = [];
-    
-    // CRITICAL FIX: ARC compact format puts sibling at level 0 alongside txid
-    // We need to extract sibling from level 0 FIRST (if present), then levels 1+
-    
-    // Check level 0 for sibling (ARC compact format)
-    for (final leaf in path[0].leaves) {
-      // Skip the txid leaf, we want the sibling
-      if (!leaf.isTxid) {
-        if (leaf.duplicate) {
-          // CRITICAL FIX: Duplicate sibling means hash with self
-          // We add null to indicate "use current hash as sibling"
-          brc71Path.add(null);
-        } else if (leaf.hash != null) {
-          // Regular sibling with hash
-          // CRITICAL: BUMP stores hashes in internal (little-endian) format
-          // We need to reverse them to display (big-endian) format for BRC-71 calculation
-          brc71Path.add(leaf.hash!.reversed.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join(''));
-        }
-      }
-    }
-    
-    // Then extract sibling hashes from levels 1+ (standard format)
-    for (int i = 1; i < path.length; i++) {
-      final level = path[i];
-      for (final leaf in level.leaves) {
-        if (leaf.duplicate) {
-          // CRITICAL FIX: Duplicate sibling means hash with self
-          brc71Path.add(null);
-        } else if (leaf.hash != null) {
-          // CRITICAL: BUMP stores hashes in internal (little-endian) format
-          // We need to reverse them to display (big-endian) format for BRC-71 calculation
-          brc71Path.add(leaf.hash!.reversed.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join(''));
-        }
-      }
-    }
-    
-    // Apply the BRC-71 style merkle path calculation
-    String currentHash = txidHex;
-    int currentIndex = txidIndex;
-    
-    // Apply each proof step with byte reversal for Bitcoin's little-endian format
-    for (int i = 0; i < brc71Path.length; i++) {
-      final node = brc71Path[i];
-      
-      // First, reverse current hash (to get little-endian format)
-      String reversedCurrentHash = "";
-      for (int j = currentHash.length - 2; j >= 0; j -= 2) {
-        reversedCurrentHash += currentHash.substring(j, j + 2);
-      }
-      
-      String concatenated;
-      
-      if (node == null) {
-        // CRITICAL FIX: Duplicate sibling - hash with self
-        // Both left and right are the same (current hash)
-        concatenated = reversedCurrentHash + reversedCurrentHash;
-      } else {
-        // Normal sibling - determine order based on position
-        bool isLeftSide = (currentIndex % 2 == 0);
-        
-        String reversedNode = "";
-        for (int j = node.length - 2; j >= 0; j -= 2) {
-          reversedNode += node.substring(j, j + 2);
-        }
-        
-        if (isLeftSide) {
-          // Our txid is on the left side, so concatenate with the right sibling
-          concatenated = reversedCurrentHash + reversedNode;
-        } else {
-          // Our txid is on the right side, so concatenate with the left sibling
-          concatenated = reversedNode + reversedCurrentHash;
-        }
-      }
-      
-      // Double-SHA256 hash the concatenated value
-      final bytes = <int>[];
-      for (int j = 0; j < concatenated.length; j += 2) {
-        bytes.add(int.parse(concatenated.substring(j, j + 2), radix: 16));
-      }
-      
-      final firstHash = sha256(bytes);
-      final secondHash = sha256(firstHash);
-      
-      // Convert back to big-endian format for the next round
-      // CRITICAL: Must hex-encode FIRST, then reverse the hex string
-      // (not reverse bytes then encode, as that produces different results with lazy iterables)
-      final hashHex = hex.encode(secondHash);
-      String reversedHashedValue = "";
-      for (int j = hashHex.length - 2; j >= 0; j -= 2) {
-        reversedHashedValue += hashHex.substring(j, j + 2);
-      }
 
-      currentHash = reversedHashedValue;
-      
-      // Update the index for the next level of the tree
-      currentIndex = currentIndex ~/ 2;
-    }
-    
-    // currentHash is now in display format (big-endian)
-    // Reverse it to internal format (little-endian) before returning
-    String internalFormat = "";
-    for (int i = currentHash.length - 2; i >= 0; i -= 2) {
-      internalFormat += currentHash.substring(i, i + 2);
-    }
-    
-    // Convert the final hash from hex string to bytes (internal format)
-    final resultBytes = <int>[];
-    for (int i = 0; i < internalFormat.length; i += 2) {
-      resultBytes.add(int.parse(internalFormat.substring(i, i + 2), radix: 16));
-    }
-    
-    return Uint8List.fromList(resultBytes);
-  }
-  
-  /// Compute the merkle root for a given transaction ID and return it in the block header format
-  /// (with reversed bytes for display)
-  /// Returns the merkle root as a hex string
-  String computeMerkleRootForBlockHeader(Uint8List txid) {
-    // Convert the TXID to hex string in internal format
-    final txidHex = txid.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join('');
-    
-    // Get the TSC proof format by extracting the sibling nodes from our BUMP structure
-    final List<String> siblingNodes = [];
-    int txidIndex = -1;
-    
-    // Find the txid in the first level to get its index
-    for (int i = 0; i < path[0].leaves.length; i++) {
-      final leaf = path[0].leaves[i];
-      if (leaf.isTxid && !leaf.duplicate && leaf.hash != null) {
-        if (listEquals(leaf.hash!, txid)) {
-          txidIndex = leaf.offset;
-          break;
-        }
-      }
-    }
-    
-    if (txidIndex == -1) {
-      throw Exception('Transaction ID not found in merkle path');
-    }
-    
-    // Extract sibling nodes from the BUMP tree structure
-    for (int level = 1; level < path.length; level++) {
-      for (final leaf in path[level].leaves) {
-        if (!leaf.duplicate && leaf.hash != null) {
-          // Convert to hex in internal format
-          final leafHex = leaf.hash!.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join('');
-          siblingNodes.add(leafHex);
-        }
-      }
-    }
-    
-    // Initialize with the txid
-    String currentHash = txidHex;
-    int currentIndex = txidIndex;
-    
-    // Calculate merkle root by walking up the tree
-    for (int i = 0; i < siblingNodes.length; i++) {
-      final siblingHash = siblingNodes[i];
-      
-      // Determine if sibling is left or right
-      final isRight = ((currentIndex >> i) & 1) == 0;
-      
-      // Combine current hash with sibling hash in correct order
-      String concatenated;
-      if (isRight) {
-        // Current hash is on left, sibling on right
-        concatenated = currentHash + siblingHash;
-      } else {
-        // Sibling on left, current hash on right
-        concatenated = siblingHash + currentHash;
-      }
-      
-      // Double-SHA256 hash the concatenated value
-      currentHash = _hashHexPair(concatenated);
-      
-      // Move to parent index
-      currentIndex = currentIndex >> 1;
-    }
-    
-    // Reverse bytes to match block header format
-    String blockHeaderFormat = '';
-    for (int i = currentHash.length - 2; i >= 0; i -= 2) {
-      blockHeaderFormat += currentHash.substring(i, i + 2);
-    }
-    
-    return blockHeaderFormat;
-  }
-  
-  /// Hash a hex string pair using double SHA-256
-  String _hashHexPair(String hexString) {
-    // Convert hex to bytes
-    final bytes = <int>[];
-    for (int i = 0; i < hexString.length; i += 2) {
-      bytes.add(int.parse(hexString.substring(i, i + 2), radix: 16));
-    }
-    
-    // Double SHA-256 hash
-    final firstHash = sha256(bytes);
-    final secondHash = sha256(firstHash);
-    
-    // Convert back to hex
-    return hex.encode(secondHash);
-  }
-  
   /// Hash a pair of hashes as per Bitcoin merkle tree algorithm
-  /// The output hash should be byte-reversed when comparing with block header merkle roots
   Uint8List _hashPair(Uint8List left, Uint8List right) {
     final combined = Uint8List(64);
     combined.setRange(0, 32, left);
     combined.setRange(32, 64, right);
-    
-    // Double SHA-256 hash
-    final firstHash = sha256(combined);
-    final secondHash = sha256(firstHash);
-    
-    return Uint8List.fromList(secondHash);
+    return Uint8List.fromList(sha256(sha256(combined)));
   }
-  
-  /// Compare two Uint8List for equality
-  bool listEquals(Uint8List a, Uint8List b) {
-    if (a.length != b.length) {
-      return false;
-    }
-    
+
+  static bool _bytesEqual(Uint8List a, Uint8List b) {
+    if (a.length != b.length) return false;
     for (int i = 0; i < a.length; i++) {
-      if (a[i] != b[i]) {
-        return false;
-      }
+      if (a[i] != b[i]) return false;
     }
-    
     return true;
   }
+
+  /// Compare two Uint8List for equality
+  bool listEquals(Uint8List a, Uint8List b) => _bytesEqual(a, b);
 }
 
 /// Represents a level in the merkle tree
@@ -599,13 +407,13 @@ class Level {
 class Leaf {
   /// Offset from left hand side within tree
   final int offset;
-  
+
   /// Whether to duplicate the working hash
   final bool duplicate;
-  
+
   /// Whether the hash is a relevant txid
   final bool isTxid;
-  
+
   /// A hash representing a txid, sibling hash, or a branch
   final Uint8List? hash;
 
@@ -617,7 +425,3 @@ class Leaf {
     this.hash,
   });
 }
-
-
-
-

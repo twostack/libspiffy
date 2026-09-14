@@ -58,18 +58,16 @@ class DartSVCryptoService implements CryptoService {
     return privKey;
   }
 
- /*
-   /// Derives a child private key at the specified index.
+  /// Derives the private key for an address produced by
+  /// [generateReceivingAddress] (m/0/{index}) or [generateChangeAddress]
+  /// (m/1/{index}).
   ///
-  /// This implements BIP32 key derivation, allowing access to any address
-  /// in the HD wallet hierarchy. The derivation follows the path:
-  /// m/44'/236'/0'/0/[index]
-  ///
-  /// Parameters:
-  /// - [index]: The index of the child key to derive (0 to 2^31-1)
-  ///
-  /// Returns the derived private key, or null if derivation fails.
-  */
+  /// This service uses a simplified two-level scheme, m/{chain}/{index},
+  /// rather than full BIP44; the first path component is the chain. The
+  /// chain is 1 when [isChange] is true, otherwise [accountIndex] (every
+  /// in-tree caller passes 0, so receive keys are m/0/{index}). Before the
+  /// 2026-09 audit (H3) [isChange] was ignored and change-chain keys could
+  /// never be derived. [coinType] is unused in this scheme.
   @override
   Future<dartsv.SVPrivateKey> derivePrivateKey(
     dartsv.HDPrivateKey hdPrivateKey,
@@ -78,11 +76,8 @@ class DartSVCryptoService implements CryptoService {
     int coinType = 0,
     bool isChange = false,
   }) async {
-    // Simplified derivation path: m/{accountIndex}/{addressIndex}
-    // This intentionally uses a simplified path rather than full BIP44
-    // (m/44'/236'/{account}'/{change}/{index}) for compatibility with
-    // the current wallet infrastructure.
-    final privKey = hdPrivateKey.deriveChildKey("m/${accountIndex}/${addressIndex}");
+    final chain = isChange ? 1 : accountIndex;
+    final privKey = hdPrivateKey.deriveChildKey("m/$chain/$addressIndex");
 
     return privKey.privateKey;
   }

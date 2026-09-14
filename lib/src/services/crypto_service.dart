@@ -21,8 +21,13 @@ abstract class CryptoService {
     dartsv.NetworkType network = dartsv.NetworkType.TEST,
   });
 
-  /// Derive a child private key from HD private key using BIP44 path
-  /// Standard Bitcoin path: m/44'/0'/0'/0/index
+  /// Derive a child private key from an HD private key.
+  ///
+  /// The key must correspond to the address produced by
+  /// [generateReceivingAddress] (when [isChange] is false) or
+  /// [generateChangeAddress] (when [isChange] is true) at [addressIndex].
+  /// Implementations must honour [isChange]; see [DartSVCryptoService] for
+  /// the path scheme in use.
   Future<dartsv.SVPrivateKey> derivePrivateKey(
     dartsv.HDPrivateKey hdPrivateKey,
     int accountIndex,

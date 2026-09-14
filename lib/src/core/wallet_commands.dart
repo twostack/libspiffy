@@ -645,6 +645,13 @@ class SignTransactionCommand extends WalletCommand {
   /// Derivation indices for each UTXO (parallel to utxoKeys).
   /// When provided, the aggregate uses these directly instead of looking up in state.
   final List<int> derivationIndices;
+  /// Derivation chain for each UTXO (parallel to utxoKeys): true when the
+  /// UTXO's address is on the change chain (m/1/{index}), false for the
+  /// receive chain (m/0/{index}). Entries beyond the list's length, or an
+  /// empty list, mean "resolve the chain from the aggregate's own address
+  /// records", which is correct for every address the aggregate generated
+  /// or discovered itself.
+  final List<bool> isChangeFlags;
 
   SignTransactionCommand({
     required String walletId,
@@ -654,6 +661,7 @@ class SignTransactionCommand extends WalletCommand {
     required this.publicKeys,
     this.addresses = const [],
     this.derivationIndices = const [],
+    this.isChangeFlags = const [],
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,
@@ -696,7 +704,10 @@ class BroadcastTransactionCommand extends WalletCommand {
 class SignMultisigTransactionCommand extends WalletCommand {
   final String transactionId;
   final String rawTransaction; // Unsigned transaction hex
-  final int derivationIndex; // Which key to use (m/0/{index})
+  final int derivationIndex; // Which key to use (m/{chain}/{index})
+  /// Whether [derivationIndex] is on the change chain (m/1/{index}) rather
+  /// than the receive chain (m/0/{index}).
+  final bool isChange;
   final int inputIndex; // Which input to sign
   final int prevOutValue; // Satoshi value of input being spent
   final String redeemScriptHex; // 2-of-2 multisig redeem script
@@ -707,6 +718,7 @@ class SignMultisigTransactionCommand extends WalletCommand {
     required this.transactionId,
     required this.rawTransaction,
     required this.derivationIndex,
+    this.isChange = false,
     required this.inputIndex,
     required this.prevOutValue,
     required this.redeemScriptHex,
@@ -737,6 +749,9 @@ class BuildFundingTransactionCommand extends WalletCommand {
   final int fundingAmountSats;
   final String changeAddressBase58;
   final int? derivationIndex; // If provided, use this key; otherwise use default
+  /// Whether [derivationIndex] is on the change chain (m/1/{index}) rather
+  /// than the receive chain (m/0/{index}).
+  final bool isChange;
 
   BuildFundingTransactionCommand({
     required String walletId,
@@ -747,6 +762,7 @@ class BuildFundingTransactionCommand extends WalletCommand {
     required this.fundingAmountSats,
     required this.changeAddressBase58,
     this.derivationIndex,
+    this.isChange = false,
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,

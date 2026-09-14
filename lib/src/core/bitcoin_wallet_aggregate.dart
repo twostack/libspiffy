@@ -75,6 +75,15 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         if (message is CreateWalletCommand) {
           try {
             if (currentState.isCreated) {
+              // Answer deterministically instead of dropping the message:
+              // a silent drop left an asking caller to time out.
+              final sender = commandKey == null ? null : _capturedSenders[commandKey];
+              sender?.tell(WalletCreatedResponse(
+                walletId: message.walletId,
+                rootAddress: currentState.rootAddress ?? '',
+                success: false,
+                error: 'Wallet ${message.walletId} already exists',
+              ));
               return;
             }
           } catch (e) {
@@ -117,8 +126,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
   Future<void> onCommandProcessed(Command command, List<Event> events) async {
     await super.onCommandProcessed(command, events);
 
-    // Send actor system responses FIRST (non-blocking) so callers don't timeout
-    // waiting for secure storage writes to complete.
+    // Send actor system responses. Key material is already in secure storage:
+    // _handleCreateWallet writes it before the event is persisted (audit H4).
     if (_isInActorSystem()) {
       final sender = _capturedSenders[command.commandId];
       if (sender != null) {
@@ -163,39 +172,48 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       }
     }
 
-    // Store key material AFTER events are persisted AND response is sent.
-    // Events are the source of truth; keys in secure storage are a side effect.
-    // This maintains CQRS atomicity without blocking the caller.
-    if (command is CreateWalletCommand && events.isNotEmpty) {
-      await _storeKeyMaterial(command, events);
+    // The WalletCreatedEvent is journaled, so the key material written in
+    // _handleCreateWallet is now committed: stop tracking it for rollback.
+    if (command is CreateWalletCommand) {
+      _keyMaterialAwaitingPersist.remove(command.commandId);
     }
   }
 
-  /// Store key material in secure storage AFTER events are persisted.
-  /// This ensures CQRS atomicity: keys are only stored if the creation event
-  /// was successfully persisted to the event store.
-  Future<void> _storeKeyMaterial(CreateWalletCommand command, List<Event> events) async {
-    final walletId = command.walletId;
+  /// Wallet ids whose key material has been written to secure storage for a
+  /// CreateWalletCommand (keyed by command id) whose WalletCreatedEvent has
+  /// not yet been persisted. If persistence fails the secrets are removed
+  /// again so a retried CreateWalletCommand starts from a clean slate.
+  final Map<String, String> _keyMaterialAwaitingPersist = {};
 
-    // Find the WalletCreatedEvent to get hdPublicKeyXpub
-    final createdEvent = events.whereType<WalletCreatedEvent>().firstOrNull;
+  /// Every secure-storage key that [_storeKeyMaterial] may write for a wallet.
+  static List<String> _keyMaterialKeys(String walletId) => [
+        'wallet_wif_$walletId',
+        'wallet_xpriv_$walletId',
+        'wallet_xpub_$walletId',
+        'wallet_mnemonic_$walletId',
+        _passphraseKey(walletId),
+        _hdPubKeyKey(walletId),
+      ];
+
+  /// Store key material in secure storage BEFORE the WalletCreatedEvent is
+  /// persisted (audit 2026-09-14 H4). Writing the secrets after the event
+  /// (and after the success reply) meant a failed secure-storage write left
+  /// a wallet whose events exist but that can never sign. Now a failed write
+  /// fails the command with no event journaled, and a failed persist removes
+  /// the secrets again (see [onCommandFailure]).
+  Future<void> _storeKeyMaterial(CreateWalletCommand command, String? hdPublicKeyXpub) async {
+    final walletId = command.walletId;
 
     if (command.wif != null && command.wif!.isNotEmpty) {
       await secureStorage.setWIF(walletId, command.wif!);
     } else if (command.xpriv != null && command.xpriv!.isNotEmpty) {
       await secureStorage.setXPriv(walletId, command.xpriv!);
-      if (createdEvent?.hdPublicKeyXpub != null) {
-        await secureStorage.setString(
-          'wallet_hdpubkey_$walletId',
-          createdEvent!.hdPublicKeyXpub!,
-        );
+      if (hdPublicKeyXpub != null) {
+        await secureStorage.setString(_hdPubKeyKey(walletId), hdPublicKeyXpub);
       }
     } else if (command.xpub != null && command.xpub!.isNotEmpty) {
       await secureStorage.setXPub(walletId, command.xpub!);
-      await secureStorage.setString(
-        'wallet_hdpubkey_$walletId',
-        command.xpub!,
-      );
+      await secureStorage.setString(_hdPubKeyKey(walletId), command.xpub!);
     } else if (command.mnemonic != null && command.mnemonic!.isNotEmpty) {
       await secureStorage.setMnemonic(walletId, command.mnemonic!);
       // The passphrase is part of the seed: addresses were derived with it
@@ -206,16 +224,29 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
           command.passphrase!,
         );
       }
-      if (createdEvent?.hdPublicKeyXpub != null) {
-        await secureStorage.setString(
-          'wallet_hdpubkey_$walletId',
-          createdEvent!.hdPublicKeyXpub!,
-        );
+      if (hdPublicKeyXpub != null) {
+        await secureStorage.setString(_hdPubKeyKey(walletId), hdPublicKeyXpub);
+      }
+    }
+  }
+
+  /// Best-effort removal of everything [_storeKeyMaterial] wrote for
+  /// [walletId]. Failures are logged, never thrown: this runs on an error
+  /// path and the original error must reach the caller.
+  Future<void> _removeKeyMaterial(String walletId, {required Object cause}) async {
+    for (final key in _keyMaterialKeys(walletId)) {
+      try {
+        await secureStorage.delete(key);
+      } catch (e) {
+        _log.severe(
+            'Wallet $walletId: could not remove $key from secure storage after '
+            'creation failed ($cause); remove it manually before retrying: $e');
       }
     }
   }
 
   static String _passphraseKey(String walletId) => 'wallet_passphrase_$walletId';
+  static String _hdPubKeyKey(String walletId) => 'wallet_hdpubkey_$walletId';
 
   /// BIP39 passphrase recorded at creation, or '' when none was given.
   Future<String> _mnemonicPassphrase(String walletId) async =>
@@ -226,7 +257,16 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
   @override
   Future<void> onCommandFailure(Command command, dynamic error) async {
     await super.onCommandFailure(command, error);
-    
+
+    // Key material was written before the WalletCreatedEvent; if the event
+    // could not be persisted, take the secrets back out (best effort).
+    final pendingWalletId = _keyMaterialAwaitingPersist.remove(command.commandId);
+    if (pendingWalletId != null) {
+      _log.warning('Wallet $pendingWalletId: creation failed after key material '
+          'was stored; removing it again: $error');
+      await _removeKeyMaterial(pendingWalletId, cause: error ?? 'unknown');
+    }
+
     // Only send responses if we're running in an actor system
     if (!_isInActorSystem()) {
       return;
@@ -621,9 +661,19 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
 
     }
 
-    // NOTE: secureStorage writes are deferred to onCommandProcessed()
-    // to ensure they only happen AFTER events are successfully persisted.
-    // This maintains CQRS event sourcing atomicity.
+    // Store the secrets BEFORE the event is persisted. If this throws the
+    // command fails and nothing is journaled; if the later persist fails,
+    // onCommandFailure removes what was written here.
+    _keyMaterialAwaitingPersist[command.commandId] = command.walletId;
+    try {
+      await _storeKeyMaterial(command, hdPublicKeyXpub);
+    } catch (e) {
+      // A partial write (e.g. mnemonic stored, passphrase not) must not
+      // survive: onCommandFailure removes it via the tracking entry.
+      _log.severe('Wallet ${command.walletId}: secure storage write failed; '
+          'wallet not created: $e');
+      rethrow;
+    }
 
     // Create WalletCreatedEvent with wallet type
     final event = WalletCreatedEvent(
@@ -731,7 +781,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     // Generate address based on purpose
     final String address;
     final int derivationPath; // 0 for receiving, 1 for change
-    if (command.purpose == 'change') {
+    if (command.purpose == changePurpose) {
       address = cryptoService.generateChangeAddress(
         hdPublicKey,
         derivationIndex,
@@ -1259,15 +1309,20 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
   // ==========================================================================
 
   /// Retrieve the private key for a given address from secure storage
-  /// Supports WIF, XPRIV, and HD wallets
+  /// Supports WIF, XPRIV, and HD wallets.
+  ///
+  /// [derivationIndex] and [isChange] let a caller that holds the derivation
+  /// path (e.g. from the read model) supply it directly. When [isChange] is
+  /// null the chain is resolved from the aggregate's own address records,
+  /// which is correct for every address the aggregate generated or
+  /// discovered; unknown addresses default to the receive chain.
   Future<dartsv.SVPrivateKey> _getPrivateKeyForAddress(
     String address,
     String walletId,
     WalletState currentState, {
     int? derivationIndex,
+    bool? isChange,
   }) async {
-    final networkType = NetworkName.toDartsv(currentState.networkType);
-
     if (currentState.walletType == WalletType.wif) {
       // WIF wallet: single private key
       final wif = await secureStorage.getWIF(walletId);
@@ -1294,40 +1349,20 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         if (!currentState.addresses.containsKey(address)) {
           throw StateError('Address $address not found in wallet state');
         }
-        effectiveIndex = currentState.metadata['address_indices']?[address] ?? 0;
-      }
-      
-      // Retrieve xpriv or mnemonic
-      final xprivStr = await secureStorage.getXPriv(walletId);
-      if (xprivStr != null) {
-        final hdPrivateKey = dartsv.HDPrivateKey.fromXpriv(xprivStr);
-        return await cryptoService.derivePrivateKey(
-          hdPrivateKey,
-          0, // account index
-          effectiveIndex,
-          coinType: 236,
-          isChange: false,
-        );
+        effectiveIndex = _addressIndices()[address] ?? 0;
       }
 
-      // Try mnemonic if xpriv not available
-      final mnemonic = await secureStorage.getMnemonic(walletId);
-      if (mnemonic != null) {
-        final hdPrivateKey = await cryptoService.mnemonicToHDPrivateKey(
-          mnemonic,
-          passphrase: await _mnemonicPassphrase(walletId),
-          network: networkType,
-        );
-        return await cryptoService.derivePrivateKey(
-          hdPrivateKey,
-          0,
-          effectiveIndex,
-          coinType: 236,
-          isChange: false,
-        );
-      }
-      
-      throw StateError('No private key material found for wallet $walletId');
+      // The chain: caller-supplied, else whatever the aggregate recorded when
+      // it generated/discovered the address (receive for the root address and
+      // for journals written before the chain was recorded).
+      final effectiveIsChange = isChange ?? _isChangeAddress(address);
+
+      return _getPrivateKeyAtIndex(
+        walletId,
+        effectiveIndex,
+        currentState,
+        isChange: effectiveIsChange,
+      );
     } else {
       throw StateError('Unsupported wallet type: ${currentState.walletType}');
     }
@@ -1370,11 +1405,16 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         final cmdDerivationIndex = (i < command.derivationIndices.length)
             ? command.derivationIndices[i]
             : null;
+        // Chain flag is optional: absent means "resolve from aggregate state".
+        final cmdIsChange = (i < command.isChangeFlags.length)
+            ? command.isChangeFlags[i]
+            : null;
         final privateKey = await _getPrivateKeyForAddress(
           utxo.address,
           command.walletId,
           currentState,
           derivationIndex: cmdDerivationIndex,
+          isChange: cmdIsChange,
         );
         
         // Create TransactionOutput for the UTXO being spent
@@ -1524,11 +1564,12 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       // Parse the transaction to sign
       final txToSign = dartsv.Transaction.fromHex(command.rawTransaction);
       
-      // Get private key at the specified derivation index
+      // Get private key at the specified derivation index and chain
       final privateKey = await _getPrivateKeyAtIndex(
         command.walletId,
         command.derivationIndex,
         currentState,
+        isChange: command.isChange,
       );
       
       // Parse the redeem script (2-of-2 multisig locking script)
@@ -1731,10 +1772,15 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
           lockingScript,
         );
         
-        // Get the correct private key for THIS specific UTXO's address
-        final utxoPrivateKey = utxo.derivationIndex != null
-            ? await _getPrivateKeyAtIndex(command.walletId, utxo.derivationIndex!, currentState)
-            : await _getPrivateKeyForAddress(utxo.address, command.walletId, currentState);
+        // Get the correct private key for THIS specific UTXO's address. The
+        // UTXO carries only the index; the chain comes from the aggregate's
+        // address records (change-chain UTXOs were unsignable before H3).
+        final utxoPrivateKey = await _getPrivateKeyForAddress(
+          utxo.address,
+          command.walletId,
+          currentState,
+          derivationIndex: utxo.derivationIndex,
+        );
         
         final signer = dartsv.DefaultTransactionSigner(sighashType, utxoPrivateKey);
         
@@ -1856,13 +1902,16 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     }
   }
 
-  /// Get private key at a specific derivation index
-  /// Used for multisig signing where we know the exact index
+  /// Get private key at a specific derivation index on the receive
+  /// ([isChange] false, m/0/{index}) or change ([isChange] true, m/1/{index})
+  /// chain. Used for multisig signing where we know the exact path, and by
+  /// [_getPrivateKeyForAddress] once it has resolved the path.
   Future<dartsv.SVPrivateKey> _getPrivateKeyAtIndex(
     String walletId,
     int derivationIndex,
-    WalletState currentState,
-  ) async {
+    WalletState currentState, {
+    bool isChange = false,
+  }) async {
     final networkType = NetworkName.toDartsv(currentState.networkType);
 
     if (currentState.walletType == WalletType.wif) {
@@ -1878,12 +1927,12 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       final xprivStr = await secureStorage.getXPriv(walletId);
       if (xprivStr != null) {
         final hdPrivateKey = dartsv.HDPrivateKey.fromXpriv(xprivStr);
-        // Use simple m/0/{index} path: accountIndex=0, addressIndex=derivationIndex
+        // m/{chain}/{index}: chain 0 = receive, 1 = change
         return await cryptoService.derivePrivateKey(
           hdPrivateKey,
           0, // accountIndex
           derivationIndex, // addressIndex
-          isChange: false,
+          isChange: isChange,
         );
       }
 
@@ -1895,12 +1944,12 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
           passphrase: await _mnemonicPassphrase(walletId),
           network: networkType,
         );
-        // Use simple m/0/{index} path: accountIndex=0, addressIndex=derivationIndex
+        // m/{chain}/{index}: chain 0 = receive, 1 = change
         return await cryptoService.derivePrivateKey(
           hdPrivateKey,
           0, // accountIndex
           derivationIndex, // addressIndex
-          isChange: false,
+          isChange: isChange,
         );
       }
 
@@ -2138,6 +2187,63 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
   // ==========================================================================
   // These methods mutate _currentState directly as required by Eventador's eventHandler pattern
 
+  // ==========================================================================
+  // ADDRESS DERIVATION RECORDS
+  // ==========================================================================
+  //
+  // Every address the aggregate generates or discovers is recorded with its
+  // derivation index (metadata['address_indices']: address -> int) AND its
+  // chain (metadata['address_chains']: address -> bool, true = change chain
+  // m/1/i, false = receive chain m/0/i). Both are rebuilt from the journal:
+  // AddressGeneratedEvent.purpose == 'change' and AddressDiscoveredEvent
+  // .isChange carry the chain; events without either are receive-chain.
+  // Before the 2026-09 audit (H3) only the index was kept and every signing
+  // path derived m/0/i, so change outputs were unspendable.
+
+  static const String _addressIndicesKey = 'address_indices';
+  static const String _addressChainsKey = 'address_chains';
+
+  /// Chain discriminator on [AddressGeneratedEvent.purpose] /
+  /// [GenerateAddressCommand.purpose].
+  static const String changePurpose = 'change';
+
+  Map<String, int> _addressIndices() {
+    final existing = currentState.metadata[_addressIndicesKey];
+    if (existing is Map<String, int>) return existing;
+    // A snapshot round-trip can hand back an untyped map; normalise it.
+    final map = <String, int>{};
+    if (existing is Map) {
+      existing.forEach((k, v) {
+        if (v is int) map[k.toString()] = v;
+      });
+    }
+    currentState.metadata[_addressIndicesKey] = map;
+    return map;
+  }
+
+  Map<String, bool> _addressChains() {
+    final existing = currentState.metadata[_addressChainsKey];
+    if (existing is Map<String, bool>) return existing;
+    final map = <String, bool>{};
+    if (existing is Map) {
+      existing.forEach((k, v) {
+        if (v is bool) map[k.toString()] = v;
+      });
+    }
+    currentState.metadata[_addressChainsKey] = map;
+    return map;
+  }
+
+  void _recordAddressDerivation(String address, int index, {required bool isChange}) {
+    _addressIndices()[address] = index;
+    _addressChains()[address] = isChange;
+  }
+
+  /// Whether [address] was derived on the change chain. Unknown addresses
+  /// (and the root address) are receive-chain, matching every journal
+  /// written before the chain was recorded.
+  bool _isChangeAddress(String address) => _addressChains()[address] ?? false;
+
   void _applyWalletCreated(WalletCreatedEvent event) {
     currentState.isCreated = true;
     currentState.name = event.walletName;
@@ -2150,17 +2256,18 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     if (event.walletMetadata != null) {
       currentState.metadata.addAll(event.walletMetadata!);
     }
-    
-    // Initialize address_indices map for tracking derivation indices
-    currentState.metadata['address_indices'] ??= <String, int>{};
-    
+
+    // Initialize the derivation records
+    _addressIndices();
+    _addressChains();
+
     currentState.version = event.version;
     currentState.lastModified = event.timestamp;
-    
-    // Add root address to addresses map with derivation index 0
+
+    // Add root address to addresses map with derivation index 0 (receive chain)
     if (event.rootAddress.isNotEmpty) {
       currentState.addresses[event.rootAddress] = null;
-      (currentState.metadata['address_indices'] as Map<String, int>)[event.rootAddress] = 0;
+      _recordAddressDerivation(event.rootAddress, 0, isChange: false);
     }
   }
 
@@ -2202,11 +2309,14 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
   void _applyAddressGenerated(AddressGeneratedEvent event) {
     currentState.addresses[event.address] = event.label;
     currentState.nextDerivationIndex = event.derivationIndex + 1;
-    
-    // Store the derivation index for key derivation during signing
-    currentState.metadata['address_indices'] ??= <String, int>{};
-    (currentState.metadata['address_indices'] as Map<String, int>)[event.address] = event.derivationIndex;
-    
+
+    // Store the derivation index and chain for key derivation during signing
+    _recordAddressDerivation(
+      event.address,
+      event.derivationIndex,
+      isChange: event.purpose == changePurpose,
+    );
+
     currentState.version = event.version;
     currentState.lastModified = event.timestamp;
   }
@@ -2371,10 +2481,9 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
   void _applyAddressDiscovered(AddressDiscoveredEvent event) {
     // Add discovered address to wallet
     currentState.addresses[event.address] = 'Imported (${event.isChange ? 'change' : 'receive'} #${event.derivationIndex})';
-    
-    // Store the derivation index for key derivation during signing
-    currentState.metadata['address_indices'] ??= <String, int>{};
-    (currentState.metadata['address_indices'] as Map<String, int>)[event.address] = event.derivationIndex;
+
+    // Store the derivation index and chain for key derivation during signing
+    _recordAddressDerivation(event.address, event.derivationIndex, isChange: event.isChange);
     
     // Update next derivation index if this is higher
     if (event.derivationIndex >= currentState.nextDerivationIndex) {

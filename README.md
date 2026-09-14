@@ -1272,7 +1272,7 @@ dart test test/core_models/             # Domain model tests
 
 - **Integration tests** (~31): End-to-end flows including coordinator API, P2P payments, SPV validation, payment channels, token lifecycle, invoice persistence, wallet import, header sync
 - **Unit tests** (~8): Plugin registry, output specs, encryption, CDN sync, script builders
-- **Service tests** (~7): Transaction builder, block headers, SPV service, ARC service, payment channels
+- **Service tests**: ARC service, payment channels, address discovery, node RPC merkle proofs, WhatsOnChain TSC proofs
 - **Core model tests** (~5): UTXO, transaction, wallet state, commands, events
 - **Storage tests** (~3): Isar schemas, wallet storage, PostgreSQL integration
 - **Actor/aggregate tests** (~3): Header sync actor, channel aggregate, wallet aggregate
@@ -1371,11 +1371,7 @@ lib/
     │   ├── callback_transaction_signer.dart # Secure signer for plugins
     │   ├── arc_service.dart                 # ARC API client
     │   ├── arc_service_config.dart          # ARC configuration
-    │   ├── spv_service.dart                 # SPV validation logic
-    │   ├── block_header_service.dart        # Header management & reorgs
-    │   ├── wallet_balance_service.dart      # BEEF-based balance tracking
     │   ├── ancestor_chain_service.dart      # Transaction ancestry chains
-    │   ├── transaction_builder_service.dart # Transaction construction
     │   ├── payment_channel_builder.dart     # Channel transaction builder
     │   ├── address_discovery_service.dart   # Hierarchical address discovery
     │   ├── script_type_registry.dart        # Script type identification

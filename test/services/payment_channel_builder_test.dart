@@ -4,7 +4,6 @@ import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:libspiffy/src/services/payment_channel_builder.dart';
 import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 import 'package:libspiffy/src/services/crypto_service.dart';
-import 'package:libspiffy/src/services/transaction_builder_service.dart';
 import 'package:libspiffy/src/models/bitcoin_utxo.dart';
 
 void main() {

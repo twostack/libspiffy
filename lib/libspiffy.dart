@@ -79,12 +79,8 @@ export 'src/spv/cdn_manifest.dart';
 export 'src/utils/bump.dart';                   // BSV Universal Merkle Path (BUMP) implementation
 export 'src/utils/beef.dart';                   // Background Evaluation Extended Format (BEEF) implementation
 export 'src/utils/benford_distribution.dart';   // Benford's Law distribution for privacy
-export 'src/services/block_header_service.dart'; // Block header management with reorganization handling
-export 'src/services/spv_service.dart';         // Enhanced SPV validation with ChainTipTracker integration
-export 'src/services/wallet_balance_service.dart'; // BEEF-based multi-tier balance tracking with reorganization handling
 
 // TRANSACTION BUILDING - Production-ready transaction construction
-export 'src/services/transaction_builder_service.dart'; // Comprehensive transaction building with UTXO selection
 export 'src/services/payment_channel_builder.dart'; // Payment channel transactions (funding, refund, payment)
 
 // 🎯 TRANSACTION IMPORT - Hybrid event sourcing for historical data

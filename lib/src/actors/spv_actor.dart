@@ -921,17 +921,12 @@ class SPVActor extends Actor {
   /// Handle blockchain reorganization
   Future<void> _handleBlockchainReorganization(List<dynamic> orphanedHeaders) async {
 
-    //NOTE: BlockHeader-specific work is done by SpiffyNode. We handle
-    //Transaction-related and wallet-related mitigations.
-    //
-    // The actual reorg handling (merkle proof invalidation, transaction revalidation,
-    // UTXO recalculation) is implemented in the service layer:
-    // - SPVService: Revalidates transactions and fetches fresh merkle proofs
-    // - WalletBalanceService: Revalidates UTXOs and recalculates balances
-    // - BlockHeaderService: Handles header chain reorganization
-    //
-    // These services listen to ChainTipEvents directly from SpiffyNode.
-    // The SPVActor's role here is coordination and notification at the actor layer.
+    // Header-chain reorganization (chainwork fork choice, switching the
+    // active chain) is done by BlockHeaderChain via HeaderSyncActor.
+    // Nothing in the library currently invalidates merkle proofs, revalidates
+    // transactions or recalculates UTXOs that were confirmed in orphaned
+    // blocks: this method only sends BlockchainReorganizationNotification to
+    // the WalletManager, which does not handle that message yet.
     
     if (orphanedHeaders.isEmpty) {
       return;

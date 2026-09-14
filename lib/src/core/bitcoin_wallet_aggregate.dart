@@ -13,7 +13,6 @@ import '../services/crypto_service.dart';
 import '../plugin/plugin_registry.dart';
 import '../services/script_type_registry.dart';
 import '../storage/secure_storage.dart';
-import '../services/transaction_builder_service.dart';
 import '../actors/wallet_messages.dart';
 import 'wallet_commands.dart';
 import 'wallet_events.dart';
@@ -28,7 +27,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
   final _log = Logger('BitcoinWalletAggregate');
   final CryptoService cryptoService;
   final SecureStorage secureStorage;
-  final TransactionBuilderService? transactionBuilder;
 
   BitcoinWalletAggregate({
     required String aggregateId,
@@ -36,7 +34,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     required EventStore eventStore,
     required this.cryptoService,
     required this.secureStorage,
-    this.transactionBuilder,
   }) : super(aggregateId: aggregateId, aggregateType: aggregateType, eventStore: eventStore) {
     // Register handlers immediately upon construction
     registerHandlers();

@@ -19,7 +19,18 @@ import '../utils/beef.dart';
 import '../utils/bump.dart';
 import '../utils/crypto_utils.dart';
 import 'crypto_service.dart';
-import 'transaction_builder_service.dart';
+
+/// Thrown when a payment channel transaction cannot be built (insufficient
+/// funds, invalid parameters, missing keys).
+class TransactionBuildException implements Exception {
+  final String message;
+  final String? code;
+
+  TransactionBuildException(this.message, {this.code});
+
+  @override
+  String toString() => 'TransactionBuildException${code != null ? ' ($code)' : ''}: $message';
+}
 
 /// Result of a payment channel transaction build
 class ChannelTransactionResult {

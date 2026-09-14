@@ -3,9 +3,7 @@ import 'package:buffer/buffer.dart';
 import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart' as dartsv hide BlockHeader;
 import 'package:spiffynode/spiffy_node.dart';
-import '../services/block_header_service.dart';
 import 'bump.dart';
-import 'hex_utils.dart' as hex_utils;
 
 /// BeefMagicAndVersion is the magic bytes and version for BEEF format (0100BEEF)
 const int beefMagicAndVersion = 0x0100BEEF;
@@ -322,87 +320,6 @@ class BEEF {
 
   }
 
-  /// Validate a transaction against the block header database
-  /// Returns a Future that resolves to true if the transaction is valid, false otherwise
-  Future<bool> validateTransactionWithBlockHeaderService(
-    Uint8List txid, 
-    BlockHeaderService blockHeaderService
-  ) async {
-    // First, check if the transaction is included in this BEEF
-    final txInfo = findTransactionByTxid(txid);
-    if (txInfo == null || !txInfo['hasMerkleProof']) {
-      return false; // Transaction not found or doesn't have a merkle proof
-    }
-
-    // Get the BUMP index and the corresponding BUMP
-    final bumpIdx = txInfo['bumpIndex'] as int;
-    if (bumpIdx >= bumps.length) {
-      return false; // Invalid BUMP index
-    }
-
-    final bump = bumps[bumpIdx];
-
-    // Convert TXID from display format (big-endian) to internal format (little-endian)
-    // to match how BUMP stores TXIDs, consistent with validateTransactionWithBlockHeader
-    final txidInternal = Uint8List.fromList(txid.reversed.toList());
-
-    // Validate the merkle path for this transaction
-    if (!bump.validateMerklePath(txidInternal)) {
-      return false; // Invalid merkle path
-    }
-
-    // Get the block header for the block height
-    final blockHeight = bump.blockHeight;
-
-    try {
-      // Get the header at this specific height
-      final blockHeader = await blockHeaderService.getHeader(blockHeight);
-
-      if (blockHeader == null) {
-        return false; // No header found at this height
-      }
-
-      // Compute the merkle root from the transaction and its merkle path
-      final computedMerkleRoot = bump.computeMerkleRoot(txidInternal);
-      
-      // Convert the computed merkle root to a hex string for comparison
-      final computedMerkleRootHex = hex_utils.bytesToHex(computedMerkleRoot);
-      
-      // Compare with the merkle root in the block header
-      if (computedMerkleRootHex != hex.encode(blockHeader.merkleRoot.bytes)) {
-          return false; // No matching merkle root found in any header at this height
-      }
-      
-      // All checks passed, the transaction is valid
-      return true;
-    } catch (e) {
-      return false;
-    }
-  }
-  
-  /// Get all transactions that have been validated against the block header database
-  /// Returns a Future that resolves to a list of validated transactions
-  Future<List<Map<String, dynamic>>> getBlockHeaderValidatedTransactions(
-    BlockHeaderService blockHeaderService
-  ) async {
-    final result = <Map<String, dynamic>>[];
-    final verifiedTxs = getVerifiedTransactions();
-    
-    for (final tx in verifiedTxs) {
-      final txid = tx['txid'] as Uint8List;
-      final isValid = await validateTransactionWithBlockHeaderService(txid, blockHeaderService);
-      
-      if (isValid) {
-        result.add({
-          ...tx,
-          'validatedWithBlockHeader': true,
-        });
-      }
-    }
-    
-    return result;
-  }
-  
   /// Compare two Uint8List for equality
   bool listEquals(Uint8List a, Uint8List b) {
     if (a.length != b.length) {

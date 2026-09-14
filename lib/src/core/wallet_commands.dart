@@ -1,6 +1,7 @@
 import 'package:eventador/eventador.dart';
 import '../models/bitcoin_transaction.dart'; // For TransactionStatus
 import '../models/bitcoin_utxo.dart'; // For UTXOStatus
+import 'wallet_events.dart' show BeefAncestor;
 
 /// Base class for all wallet commands
 abstract class WalletCommand extends Command {
@@ -336,6 +337,11 @@ class RecordImportedTransactionCommand extends WalletCommand {
   final int totalInputSats;
   final List<String> sendingAddresses;
 
+  /// For a transaction received unproven: the ancestors its BEEF carried
+  /// back to proven transactions, with their BUMPs, parents first (bead
+  /// libspiffy-zsh). Journaled on the TransactionImportedEvent.
+  final List<BeefAncestor> ancestors;
+
   RecordImportedTransactionCommand({
     required String walletId,
     required this.txid,
@@ -351,6 +357,7 @@ class RecordImportedTransactionCommand extends WalletCommand {
     required this.walletReceivedSats,
     required this.totalInputSats,
     required this.sendingAddresses,
+    this.ancestors = const [],
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,

@@ -464,6 +464,33 @@ abstract class ReadModelStorage {
   Future<List<MerkleProof>> getMerkleProofsForBlock(String blockHash);
 
   // ========================================
+  // Ancestor Transactions (SPV evidence)
+  // ========================================
+  //
+  // Audit bead libspiffy-zsh. A counterparty that pays us with a BEEF for a
+  // transaction that is not mined yet includes its ancestors back to mined
+  // ones (with their BUMPs). Spending the received output before the payment
+  // is mined needs those ancestors again, and nothing can supply them later
+  // (no block scanning, no indexer). They are not wallet transactions, so
+  // they live apart from the per-wallet transaction rows: keyed by txid only
+  // (the raw bytes of a txid are the same for everyone, like its merkle
+  // proofs), never listed in a wallet's history, status queries or balance,
+  // never returned by [getTransaction] or [getTransactionsBatch], and never
+  // deleted, not even by [deleteWallet]. Their BUMPs are stored as merkle
+  // proofs ([storeMerkleProof]).
+
+  /// Store the raw transaction [rawHex] of [txid] as ancestor evidence.
+  ///
+  /// Insert-if-absent: storing a txid that is already present changes
+  /// nothing (the row keeps its first `rawHex` and time). The caller checks
+  /// that [rawHex] hashes to [txid].
+  Future<void> storeAncestorTransaction(String txid, String rawHex);
+
+  /// The raw hex of every stored ancestor transaction among [txids], as a
+  /// map txid → rawHex (txids without a row are absent).
+  Future<Map<String, String>> getAncestorTransactionsBatch(List<String> txids);
+
+  // ========================================
   // Wallet Management
   // ========================================
 
@@ -486,7 +513,8 @@ abstract class ReadModelStorage {
   ///
   /// A hard delete of the wallet's metadata, addresses, UTXOs, transactions,
   /// transaction-address links, invoices and payment channels. Block
-  /// headers and merkle proofs are shared and stay. Use with caution.
+  /// headers, merkle proofs and ancestor transactions are shared and stay.
+  /// Use with caution.
   ///
   /// Parameters:
   /// - [walletId]: Unique identifier for the wallet

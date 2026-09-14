@@ -18,6 +18,7 @@ import 'invoice_messages.dart';
 import '../utils/network_name.dart';
 import '../utils/unique_id.dart';
 import '../core/wallet_commands.dart' show RevertTransactionConfirmationCommand;
+import '../core/wallet_events.dart' show BeefAncestor;
 import '../models/bitcoin_transaction.dart' show TransactionStatus;
 import '../spv/merkle_proof_header_check.dart';
 
@@ -269,7 +270,11 @@ class SPVActor extends Actor {
         
         // Check if this transaction has a merkle proof
         final hasProof = beef.hasMerkle[txIndex];
-        
+
+        // The ancestors (and their BUMPs) an unproven transaction's outputs
+        // cannot be spent without (bead zsh); none for a proven one.
+        var ancestors = const <BeefAncestor>[];
+
         if (hasProof) {
           // This transaction has a proof - validate it directly via SPV
           
@@ -332,6 +337,7 @@ class SPVActor extends Actor {
               targetWalletId: walletId,
             );
           }
+          ancestors = _ancestorsToRetain(beef, txidHex, provenTxids);
         }
 
         // Step 2: Validate transaction structure and scripts
@@ -389,6 +395,7 @@ class SPVActor extends Actor {
           txIndex,
           spendableUTXOs,
           spentUTXOs,
+          ancestors,
         );
 
         return SPVValidationResult(
@@ -474,6 +481,47 @@ class SPVActor extends Actor {
     }
 
     return visit(subjectTxid);
+  }
+
+  /// The transactions of [beef] that an outgoing BEEF spending outputs of the
+  /// unproven [subjectTxid] must carry (bead libspiffy-zsh): every in-BEEF
+  /// ancestor reached by walking inputs back from the subject, stopping at
+  /// proven transactions ([provenTxids], BUMPs validated), each proven one
+  /// with its BUMP. In the BEEF's order; transactions of the BEEF that the
+  /// subject does not descend from are left out. Call after
+  /// [_checkAncestorCoverage] accepted the subject.
+  ///
+  /// We cannot fetch these again (no block scanning, no indexer, and ARC
+  /// knows only transactions it mined or we broadcast), so they are
+  /// journaled with the received transaction.
+  List<BeefAncestor> _ancestorsToRetain(BEEF beef, String subjectTxid, Set<String> provenTxids) {
+    final indexByTxid = <String, int>{};
+    for (var i = 0; i < beef.txs.length; i++) {
+      indexByTxid.putIfAbsent(hex.encode(beef.calculateTxid(beef.txs[i])), () => i);
+    }
+
+    final needed = <String>{};
+    final pending = <String>[subjectTxid];
+    while (pending.isNotEmpty) {
+      final index = indexByTxid[pending.removeLast()];
+      if (index == null) continue;
+      final tx = dartsv.Transaction.fromHex(hex.encode(beef.txs[index]));
+      for (final input in tx.inputs) {
+        final parent = input.prevTxnId;
+        if (parent == subjectTxid || !indexByTxid.containsKey(parent) || !needed.add(parent)) continue;
+        if (!provenTxids.contains(parent)) pending.add(parent);
+      }
+    }
+
+    return [
+      for (final entry in indexByTxid.entries.toList()..sort((a, b) => a.value.compareTo(b.value)))
+        if (needed.contains(entry.key))
+          BeefAncestor(
+            txid: entry.key,
+            rawHex: hex.encode(beef.txs[entry.value]),
+            bumpHex: provenTxids.contains(entry.key) ? _bumpFor(beef, entry.value).toHex() : '',
+          ),
+    ];
   }
 
   ///validate that the transaction's inputs are spending properly from their corresponding UTXOs
@@ -1282,6 +1330,7 @@ class SPVActor extends Actor {
     int txIndex,
     List<Map<String, dynamic>> spendableUTXOs,
     List<Map<String, dynamic>> spentUTXOs,
+    List<BeefAncestor> ancestors,
   ) async {
     try {
       // Extract basic transaction info
@@ -1377,6 +1426,7 @@ class SPVActor extends Actor {
         'walletReceivedSats': walletReceivedSats.toInt(),
         'totalInputSats': totalInputSats.toInt(),
         'sendingAddresses': sendingAddresses,
+        'ancestors': ancestors,
       };
     } catch (e) {
       // Return minimal data on error
@@ -1393,6 +1443,7 @@ class SPVActor extends Actor {
         'walletReceivedSats': 0,
         'totalInputSats': 0,
         'sendingAddresses': <String>[],
+        'ancestors': ancestors,
       };
     }
   }

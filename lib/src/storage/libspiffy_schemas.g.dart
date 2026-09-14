@@ -3537,6 +3537,868 @@ extension MerkleProofEntityQueryProperty
 // coverage:ignore-file
 // ignore_for_file: duplicate_ignore, non_constant_identifier_names, constant_identifier_names, invalid_use_of_protected_member, unnecessary_cast, prefer_const_constructors, lines_longer_than_80_chars, require_trailing_commas, inference_failure_on_function_invocation, unnecessary_parenthesis, unnecessary_raw_strings, unnecessary_null_checks, join_return_with_assignment, prefer_final_locals, avoid_js_rounded_ints, avoid_positional_boolean_parameters, always_specify_types
 
+extension GetAncestorTransactionEntityCollection on Isar {
+  IsarCollection<AncestorTransactionEntity> get ancestorTransactionEntitys =>
+      this.collection();
+}
+
+const AncestorTransactionEntitySchema = CollectionSchema(
+  name: r'AncestorTransactionEntity',
+  id: 503236747888257451,
+  properties: {
+    r'createdAt': PropertySchema(
+      id: 0,
+      name: r'createdAt',
+      type: IsarType.dateTime,
+    ),
+    r'rawHex': PropertySchema(
+      id: 1,
+      name: r'rawHex',
+      type: IsarType.string,
+    ),
+    r'txid': PropertySchema(
+      id: 2,
+      name: r'txid',
+      type: IsarType.string,
+    )
+  },
+  estimateSize: _ancestorTransactionEntityEstimateSize,
+  serialize: _ancestorTransactionEntitySerialize,
+  deserialize: _ancestorTransactionEntityDeserialize,
+  deserializeProp: _ancestorTransactionEntityDeserializeProp,
+  idName: r'id',
+  indexes: {
+    r'txid': IndexSchema(
+      id: 7339874292043634331,
+      name: r'txid',
+      unique: true,
+      replace: false,
+      properties: [
+        IndexPropertySchema(
+          name: r'txid',
+          type: IndexType.hash,
+          caseSensitive: true,
+        )
+      ],
+    )
+  },
+  links: {},
+  embeddedSchemas: {},
+  getId: _ancestorTransactionEntityGetId,
+  getLinks: _ancestorTransactionEntityGetLinks,
+  attach: _ancestorTransactionEntityAttach,
+  version: '3.1.0+1',
+);
+
+int _ancestorTransactionEntityEstimateSize(
+  AncestorTransactionEntity object,
+  List<int> offsets,
+  Map<Type, List<int>> allOffsets,
+) {
+  var bytesCount = offsets.last;
+  bytesCount += 3 + object.rawHex.length * 3;
+  bytesCount += 3 + object.txid.length * 3;
+  return bytesCount;
+}
+
+void _ancestorTransactionEntitySerialize(
+  AncestorTransactionEntity object,
+  IsarWriter writer,
+  List<int> offsets,
+  Map<Type, List<int>> allOffsets,
+) {
+  writer.writeDateTime(offsets[0], object.createdAt);
+  writer.writeString(offsets[1], object.rawHex);
+  writer.writeString(offsets[2], object.txid);
+}
+
+AncestorTransactionEntity _ancestorTransactionEntityDeserialize(
+  Id id,
+  IsarReader reader,
+  List<int> offsets,
+  Map<Type, List<int>> allOffsets,
+) {
+  final object = AncestorTransactionEntity();
+  object.createdAt = reader.readDateTime(offsets[0]);
+  object.id = id;
+  object.rawHex = reader.readString(offsets[1]);
+  object.txid = reader.readString(offsets[2]);
+  return object;
+}
+
+P _ancestorTransactionEntityDeserializeProp<P>(
+  IsarReader reader,
+  int propertyId,
+  int offset,
+  Map<Type, List<int>> allOffsets,
+) {
+  switch (propertyId) {
+    case 0:
+      return (reader.readDateTime(offset)) as P;
+    case 1:
+      return (reader.readString(offset)) as P;
+    case 2:
+      return (reader.readString(offset)) as P;
+    default:
+      throw IsarError('Unknown property with id $propertyId');
+  }
+}
+
+Id _ancestorTransactionEntityGetId(AncestorTransactionEntity object) {
+  return object.id;
+}
+
+List<IsarLinkBase<dynamic>> _ancestorTransactionEntityGetLinks(
+    AncestorTransactionEntity object) {
+  return [];
+}
+
+void _ancestorTransactionEntityAttach(
+    IsarCollection<dynamic> col, Id id, AncestorTransactionEntity object) {
+  object.id = id;
+}
+
+extension AncestorTransactionEntityByIndex
+    on IsarCollection<AncestorTransactionEntity> {
+  Future<AncestorTransactionEntity?> getByTxid(String txid) {
+    return getByIndex(r'txid', [txid]);
+  }
+
+  AncestorTransactionEntity? getByTxidSync(String txid) {
+    return getByIndexSync(r'txid', [txid]);
+  }
+
+  Future<bool> deleteByTxid(String txid) {
+    return deleteByIndex(r'txid', [txid]);
+  }
+
+  bool deleteByTxidSync(String txid) {
+    return deleteByIndexSync(r'txid', [txid]);
+  }
+
+  Future<List<AncestorTransactionEntity?>> getAllByTxid(
+      List<String> txidValues) {
+    final values = txidValues.map((e) => [e]).toList();
+    return getAllByIndex(r'txid', values);
+  }
+
+  List<AncestorTransactionEntity?> getAllByTxidSync(List<String> txidValues) {
+    final values = txidValues.map((e) => [e]).toList();
+    return getAllByIndexSync(r'txid', values);
+  }
+
+  Future<int> deleteAllByTxid(List<String> txidValues) {
+    final values = txidValues.map((e) => [e]).toList();
+    return deleteAllByIndex(r'txid', values);
+  }
+
+  int deleteAllByTxidSync(List<String> txidValues) {
+    final values = txidValues.map((e) => [e]).toList();
+    return deleteAllByIndexSync(r'txid', values);
+  }
+
+  Future<Id> putByTxid(AncestorTransactionEntity object) {
+    return putByIndex(r'txid', object);
+  }
+
+  Id putByTxidSync(AncestorTransactionEntity object, {bool saveLinks = true}) {
+    return putByIndexSync(r'txid', object, saveLinks: saveLinks);
+  }
+
+  Future<List<Id>> putAllByTxid(List<AncestorTransactionEntity> objects) {
+    return putAllByIndex(r'txid', objects);
+  }
+
+  List<Id> putAllByTxidSync(List<AncestorTransactionEntity> objects,
+      {bool saveLinks = true}) {
+    return putAllByIndexSync(r'txid', objects, saveLinks: saveLinks);
+  }
+}
+
+extension AncestorTransactionEntityQueryWhereSort on QueryBuilder<
+    AncestorTransactionEntity, AncestorTransactionEntity, QWhere> {
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterWhere> anyId() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(const IdWhereClause.any());
+    });
+  }
+}
+
+extension AncestorTransactionEntityQueryWhere on QueryBuilder<
+    AncestorTransactionEntity, AncestorTransactionEntity, QWhereClause> {
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterWhereClause> idEqualTo(Id id) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IdWhereClause.between(
+        lower: id,
+        upper: id,
+      ));
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterWhereClause> idNotEqualTo(Id id) {
+    return QueryBuilder.apply(this, (query) {
+      if (query.whereSort == Sort.asc) {
+        return query
+            .addWhereClause(
+              IdWhereClause.lessThan(upper: id, includeUpper: false),
+            )
+            .addWhereClause(
+              IdWhereClause.greaterThan(lower: id, includeLower: false),
+            );
+      } else {
+        return query
+            .addWhereClause(
+              IdWhereClause.greaterThan(lower: id, includeLower: false),
+            )
+            .addWhereClause(
+              IdWhereClause.lessThan(upper: id, includeUpper: false),
+            );
+      }
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterWhereClause> idGreaterThan(Id id, {bool include = false}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(
+        IdWhereClause.greaterThan(lower: id, includeLower: include),
+      );
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterWhereClause> idLessThan(Id id, {bool include = false}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(
+        IdWhereClause.lessThan(upper: id, includeUpper: include),
+      );
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterWhereClause> idBetween(
+    Id lowerId,
+    Id upperId, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IdWhereClause.between(
+        lower: lowerId,
+        includeLower: includeLower,
+        upper: upperId,
+        includeUpper: includeUpper,
+      ));
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterWhereClause> txidEqualTo(String txid) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'txid',
+        value: [txid],
+      ));
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterWhereClause> txidNotEqualTo(String txid) {
+    return QueryBuilder.apply(this, (query) {
+      if (query.whereSort == Sort.asc) {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'txid',
+              lower: [],
+              upper: [txid],
+              includeUpper: false,
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'txid',
+              lower: [txid],
+              includeLower: false,
+              upper: [],
+            ));
+      } else {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'txid',
+              lower: [txid],
+              includeLower: false,
+              upper: [],
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'txid',
+              lower: [],
+              upper: [txid],
+              includeUpper: false,
+            ));
+      }
+    });
+  }
+}
+
+extension AncestorTransactionEntityQueryFilter on QueryBuilder<
+    AncestorTransactionEntity, AncestorTransactionEntity, QFilterCondition> {
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterFilterCondition> createdAtEqualTo(DateTime value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'createdAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterFilterCondition> createdAtGreaterThan(
+    DateTime value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'createdAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterFilterCondition> createdAtLessThan(
+    DateTime value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'createdAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterFilterCondition> createdAtBetween(
+    DateTime lower,
+    DateTime upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'createdAt',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+      ));
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterFilterCondition> idEqualTo(Id value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'id',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterFilterCondition> idGreaterThan(
+    Id value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'id',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterFilterCondition> idLessThan(
+    Id value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'id',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterFilterCondition> idBetween(
+    Id lower,
+    Id upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'id',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+      ));
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterFilterCondition> rawHexEqualTo(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'rawHex',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterFilterCondition> rawHexGreaterThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'rawHex',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterFilterCondition> rawHexLessThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'rawHex',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterFilterCondition> rawHexBetween(
+    String lower,
+    String upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'rawHex',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterFilterCondition> rawHexStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'rawHex',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterFilterCondition> rawHexEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'rawHex',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+          QAfterFilterCondition>
+      rawHexContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'rawHex',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+          QAfterFilterCondition>
+      rawHexMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'rawHex',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterFilterCondition> rawHexIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'rawHex',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterFilterCondition> rawHexIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'rawHex',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterFilterCondition> txidEqualTo(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'txid',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterFilterCondition> txidGreaterThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'txid',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterFilterCondition> txidLessThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'txid',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterFilterCondition> txidBetween(
+    String lower,
+    String upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'txid',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterFilterCondition> txidStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'txid',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterFilterCondition> txidEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'txid',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+          QAfterFilterCondition>
+      txidContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'txid',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+          QAfterFilterCondition>
+      txidMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'txid',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterFilterCondition> txidIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'txid',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterFilterCondition> txidIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'txid',
+        value: '',
+      ));
+    });
+  }
+}
+
+extension AncestorTransactionEntityQueryObject on QueryBuilder<
+    AncestorTransactionEntity, AncestorTransactionEntity, QFilterCondition> {}
+
+extension AncestorTransactionEntityQueryLinks on QueryBuilder<
+    AncestorTransactionEntity, AncestorTransactionEntity, QFilterCondition> {}
+
+extension AncestorTransactionEntityQuerySortBy on QueryBuilder<
+    AncestorTransactionEntity, AncestorTransactionEntity, QSortBy> {
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterSortBy> sortByCreatedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'createdAt', Sort.asc);
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterSortBy> sortByCreatedAtDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'createdAt', Sort.desc);
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterSortBy> sortByRawHex() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'rawHex', Sort.asc);
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterSortBy> sortByRawHexDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'rawHex', Sort.desc);
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterSortBy> sortByTxid() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'txid', Sort.asc);
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterSortBy> sortByTxidDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'txid', Sort.desc);
+    });
+  }
+}
+
+extension AncestorTransactionEntityQuerySortThenBy on QueryBuilder<
+    AncestorTransactionEntity, AncestorTransactionEntity, QSortThenBy> {
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterSortBy> thenByCreatedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'createdAt', Sort.asc);
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterSortBy> thenByCreatedAtDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'createdAt', Sort.desc);
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterSortBy> thenById() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'id', Sort.asc);
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterSortBy> thenByIdDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'id', Sort.desc);
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterSortBy> thenByRawHex() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'rawHex', Sort.asc);
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterSortBy> thenByRawHexDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'rawHex', Sort.desc);
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterSortBy> thenByTxid() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'txid', Sort.asc);
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity,
+      QAfterSortBy> thenByTxidDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'txid', Sort.desc);
+    });
+  }
+}
+
+extension AncestorTransactionEntityQueryWhereDistinct on QueryBuilder<
+    AncestorTransactionEntity, AncestorTransactionEntity, QDistinct> {
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity, QDistinct>
+      distinctByCreatedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'createdAt');
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity, QDistinct>
+      distinctByRawHex({bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'rawHex', caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, AncestorTransactionEntity, QDistinct>
+      distinctByTxid({bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'txid', caseSensitive: caseSensitive);
+    });
+  }
+}
+
+extension AncestorTransactionEntityQueryProperty on QueryBuilder<
+    AncestorTransactionEntity, AncestorTransactionEntity, QQueryProperty> {
+  QueryBuilder<AncestorTransactionEntity, int, QQueryOperations> idProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'id');
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, DateTime, QQueryOperations>
+      createdAtProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'createdAt');
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, String, QQueryOperations>
+      rawHexProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'rawHex');
+    });
+  }
+
+  QueryBuilder<AncestorTransactionEntity, String, QQueryOperations>
+      txidProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'txid');
+    });
+  }
+}
+
+// coverage:ignore-file
+// ignore_for_file: duplicate_ignore, non_constant_identifier_names, constant_identifier_names, invalid_use_of_protected_member, unnecessary_cast, prefer_const_constructors, lines_longer_than_80_chars, require_trailing_commas, inference_failure_on_function_invocation, unnecessary_parenthesis, unnecessary_raw_strings, unnecessary_null_checks, join_return_with_assignment, prefer_final_locals, avoid_js_rounded_ints, avoid_positional_boolean_parameters, always_specify_types
+
 extension GetBitcoinUtxoEntityCollection on Isar {
   IsarCollection<BitcoinUtxoEntity> get bitcoinUtxoEntitys => this.collection();
 }

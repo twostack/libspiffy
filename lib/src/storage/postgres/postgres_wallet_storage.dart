@@ -1516,6 +1516,43 @@ class PostgresWalletStorage implements ReadModelStorage {
     return result.map(_rowToMerkleProof).toList();
   }
 
+  // ========================================
+  // Ancestor Transactions (bead zsh)
+  // ========================================
+
+  @override
+  Future<void> storeAncestorTransaction(String txid, String rawHex) async {
+    _ensureInitialized();
+    await _pool!.execute(
+      Sql.named('''
+        INSERT INTO ancestor_transactions (txid, raw_hex)
+        VALUES (@txid, @rawHex)
+        ON CONFLICT (txid) DO NOTHING
+      '''),
+      parameters: {'txid': txid, 'rawHex': rawHex},
+    );
+  }
+
+  @override
+  Future<Map<String, String>> getAncestorTransactionsBatch(List<String> txids) async {
+    if (txids.isEmpty) return {};
+    _ensureInitialized();
+    final params = <String, dynamic>{};
+    final placeholders = <String>[];
+    for (int i = 0; i < txids.length; i++) {
+      params['txid$i'] = txids[i];
+      placeholders.add('@txid$i');
+    }
+    final result = await _pool!.execute(
+      Sql.named('''
+        SELECT txid, raw_hex FROM ancestor_transactions
+        WHERE txid IN (${placeholders.join(', ')})
+      '''),
+      parameters: params,
+    );
+    return {for (final row in result) row[0] as String: row[1] as String};
+  }
+
   @override
   Future<int> getMerkleProofCount({String? walletId}) async {
     _ensureInitialized();

@@ -736,13 +736,17 @@ class WalletProjection extends Projection<void> {
         version: event.txVersion,
       );
       
+      // The ancestors its BEEF carried, before the transaction that needs
+      // them (bead zsh).
+      await _storeAncestors(event);
+
       await _storage.storeTransaction(event.walletId, transaction);
 
       // Store Merkle proof from BUMP
       if (event.bumpProof.isNotEmpty) {
         await _storeMerkleProofFromBump(event.txid, event.bumpProof);
       }
-      
+
       // Create junction table records for efficient address-centric queries.
       // A transaction that cannot be parsed for them keeps its stored row;
       // throwing here would drop the event for good (audit M2).
@@ -762,6 +766,39 @@ class WalletProjection extends Projection<void> {
     }
   }
   
+  /// Stores the ancestors a received BEEF carried for an unproven transaction
+  /// (bead libspiffy-zsh), so that AncestorChainService can build a BEEF
+  /// spending its outputs before it is mined, also after a rebuild from the
+  /// journal.
+  ///
+  /// Ancestors are not wallet transactions: their raw transactions go to the
+  /// txid-keyed ancestor store (`storeAncestorTransaction`), never to the
+  /// wallet's transaction rows, history or balance. A proven ancestor's BUMP
+  /// is stored as a merkle proof under the same status rules as the
+  /// transaction's own ([_storeMerkleProofFromBump]: verified against the
+  /// stored header, else pendingHeader). An ancestor whose raw hex does not
+  /// hash to its txid is skipped with a warning. Idempotent: the ancestor
+  /// store ignores a txid it holds, and the same proof updates its own row.
+  Future<void> _storeAncestors(TransactionImportedEvent event) async {
+    for (final ancestor in event.ancestors) {
+      final String parsedTxid;
+      try {
+        parsedTxid = dartsv.Transaction.fromHex(ancestor.rawHex).id;
+      } catch (e) {
+        _log.warning('Ancestor ${ancestor.txid} of ${event.txid} does not parse; not stored: $e');
+        continue;
+      }
+      if (parsedTxid != ancestor.txid) {
+        _log.warning('Ancestor ${ancestor.txid} of ${event.txid} hashes to $parsedTxid; not stored');
+        continue;
+      }
+      await _storage.storeAncestorTransaction(ancestor.txid, ancestor.rawHex);
+      if (ancestor.isProven) {
+        await _storeMerkleProofFromBump(ancestor.txid, ancestor.bumpHex);
+      }
+    }
+  }
+
   Future<void> _handleTransactionRecorded(TransactionRecordedEvent event) async {
     
     try {

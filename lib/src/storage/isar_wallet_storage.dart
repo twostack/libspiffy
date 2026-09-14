@@ -928,6 +928,32 @@ class IsarWalletStorage implements ReadModelStorage {
   }
 
   // ========================================
+  // Ancestor Transactions (bead zsh)
+  // ========================================
+
+  @override
+  Future<void> storeAncestorTransaction(String txid, String rawHex) async {
+    await _isar.writeTxn(() async {
+      final existing = await _isar.ancestorTransactionEntitys.where().txidEqualTo(txid).findFirst();
+      if (existing != null) return;
+      await _isar.ancestorTransactionEntitys.put(AncestorTransactionEntity()
+        ..txid = txid
+        ..rawHex = rawHex
+        ..createdAt = DateTime.now());
+    });
+  }
+
+  @override
+  Future<Map<String, String>> getAncestorTransactionsBatch(List<String> txids) async {
+    if (txids.isEmpty) return {};
+    final entities = await _isar.ancestorTransactionEntitys
+        .where()
+        .anyOf(txids, (q, txid) => q.txidEqualTo(txid))
+        .findAll();
+    return {for (final e in entities) e.txid: e.rawHex};
+  }
+
+  // ========================================
   // Wallet Management
   // ========================================
 

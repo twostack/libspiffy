@@ -137,7 +137,12 @@ Map<String, Event> sampleEvents() => <String, Event>{
           bumpProof: 'bump', totalOutputSats: 10, numInputs: 1, numOutputs: 1,
           txVersion: 1, txLockTime: 0, walletReceivingAddresses: ['addr'],
           walletReceivedSats: 10, totalInputSats: 11,
-          sendingAddresses: ['other'], timestamp: _t, version: 19),
+          sendingAddresses: ['other'],
+          ancestors: const [
+            BeefAncestor(txid: _txid, rawHex: '02', bumpHex: 'fe00'),
+            BeefAncestor(txid: _txid, rawHex: '03'),
+          ],
+          timestamp: _t, version: 19),
       'TransactionRecordedEvent': TransactionRecordedEvent(
           walletId: _w, txid: _txid, rawHex: '01', totalInputSats: 11,
           totalOutputSats: 10, fee: 1, numInputs: 1, numOutputs: 1,

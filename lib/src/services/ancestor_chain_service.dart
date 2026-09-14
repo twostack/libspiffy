@@ -111,8 +111,17 @@ class AncestorChainService {
       if (unvisited.isEmpty) break;
       visited.addAll(unvisited);
 
-      // Batch fetch transactions and proofs for this depth level
-      final txMap = await _storage.getTransactionsBatch(unvisited);
+      // Batch fetch transactions and proofs for this depth level. A txid
+      // that is no wallet's transaction may be an ancestor a received BEEF
+      // carried (bead zsh).
+      final txMap = {...await _storage.getTransactionsBatch(unvisited)};
+      final missing = [for (final txid in unvisited) if (!txMap.containsKey(txid)) txid];
+      if (missing.isNotEmpty) {
+        final ancestors = await _storage.getAncestorTransactionsBatch(missing);
+        for (final entry in ancestors.entries) {
+          txMap[entry.key] = _ancestorRecord(entry.key, entry.value);
+        }
+      }
       final proofMap = await _storage.getMerkleProofsBatch(unvisited);
 
       final nextFrontier = <String>{};
@@ -167,6 +176,27 @@ class AncestorChainService {
       ancestorTransactions: ordered,
       merkleProofs: _proofsInTransactionOrder(ordered, merkleProofs),
       blockHeights: blockHeights.toList(),
+    );
+  }
+
+  /// A stored ancestor transaction (no wallet row) as the record the BEEF
+  /// builders use: only [BitcoinTransaction.txid] and `rawHex` are read.
+  static BitcoinTransaction _ancestorRecord(String txid, String rawHex) {
+    final epoch = DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
+    return BitcoinTransaction(
+      txid: txid,
+      rawHex: rawHex,
+      status: TransactionStatus.pending,
+      inputValue: BigInt.zero,
+      outputValue: BigInt.zero,
+      fee: BigInt.zero,
+      receivingAddresses: const [],
+      sendingAddresses: const [],
+      netAmount: BigInt.zero,
+      createdAt: epoch,
+      updatedAt: epoch,
+      lockTime: 0,
+      version: 1,
     );
   }
 

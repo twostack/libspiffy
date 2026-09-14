@@ -35,6 +35,7 @@ class LibSpiffySchemas {
     return [
       BlockHeaderEntitySchema,
       MerkleProofEntitySchema,
+      AncestorTransactionEntitySchema,
       BitcoinUtxoEntitySchema,
       BitcoinTransactionEntitySchema,
       WalletMetadataEntitySchema,
@@ -263,6 +264,26 @@ class MerkleProofEntity {
       ..status = json['status'] as String?
       ..statusChangedAt = changedAt == null ? null : DateTime.parse(changedAt);
   }
+}
+
+/// A transaction a received BEEF carried as an ancestor of the paid
+/// transaction (bead libspiffy-zsh): SPV evidence needed to spend the
+/// received outputs before they are mined, not a wallet transaction.
+/// Keyed by txid only; rows are never deleted.
+@collection
+class AncestorTransactionEntity {
+  Id id = Isar.autoIncrement;
+
+  @Index(unique: true)
+  late String txid;
+
+  /// The raw transaction.
+  late String rawHex;
+
+  /// When the row was first stored.
+  late DateTime createdAt;
+
+  AncestorTransactionEntity();
 }
 
 /// Bitcoin UTXO storage entity

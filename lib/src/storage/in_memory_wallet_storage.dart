@@ -64,6 +64,10 @@ class InMemoryWalletStorage implements WalletStorage {
   // Block hash to merkle proofs mapping: blockHash -> txids with a row
   // naming that block (filtered by status on read).
   final Map<String, Set<String>> _blockToProofs = {};
+
+  // Ancestor transactions (bead zsh): txid -> raw hex. Not wallet rows;
+  // never removed by deleteWallet.
+  final Map<String, String> _ancestorTransactions = {};
   
   // Balance cache: walletId -> balance
   final Map<String, BigInt> _balanceCache = {};
@@ -719,6 +723,23 @@ _balanceCache.remove(walletId);
   }
 
   // ========================================
+  // Ancestor Transactions (bead zsh)
+  // ========================================
+
+  @override
+  Future<void> storeAncestorTransaction(String txid, String rawHex) async {
+    _ancestorTransactions.putIfAbsent(txid, () => rawHex);
+  }
+
+  @override
+  Future<Map<String, String>> getAncestorTransactionsBatch(List<String> txids) async {
+    return {
+      for (final txid in txids)
+        if (_ancestorTransactions.containsKey(txid)) txid: _ancestorTransactions[txid]!,
+    };
+  }
+
+  // ========================================
   // Transaction Management Methods (Internal)
   // ========================================
 
@@ -1038,6 +1059,7 @@ _balanceCache.remove(walletId);
     _orphanedHeaders.clear();
     _merkleProofs.clear();
     _blockToProofs.clear();
+    _ancestorTransactions.clear();
     _balanceCache.clear();
     _walletIds.clear();
     _invoices.clear();

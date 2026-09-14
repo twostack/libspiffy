@@ -5,6 +5,7 @@ import 'package:logging/logging.dart';
 
 import '../core/bitcoin_wallet_aggregate.dart';
 import '../core/wallet_commands.dart';
+import '../core/wallet_events.dart' show BeefAncestor;
 import '../models/bitcoin_utxo.dart' show UTXOStatus;
 import '../services/crypto_service.dart';
 import '../storage/secure_storage.dart';
@@ -568,6 +569,7 @@ class WalletManagerActor extends Actor {
         walletReceivedSats: txData['walletReceivedSats'] ?? 0,
         totalInputSats: txData['totalInputSats'] ?? 0,
         sendingAddresses: List<String>.from(txData['sendingAddresses'] ?? []),
+        ancestors: List<BeefAncestor>.from(txData['ancestors'] ?? const <BeefAncestor>[]),
       );
       
       walletActor.tell(command);

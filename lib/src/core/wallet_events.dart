@@ -253,6 +253,51 @@ class AddressDiscoveredEvent extends WalletEvent {
   }
 }
 
+/// A transaction a received BEEF carried as an ancestor of the paid
+/// transaction, with its BUMP when it is proven (bead libspiffy-zsh).
+///
+/// Journaled on [TransactionImportedEvent.ancestors] so that the received
+/// outputs can be spent before the paid transaction is mined: an outgoing
+/// BEEF must carry the paid transaction's ancestors back to proven ones, and
+/// nothing can supply them later.
+class BeefAncestor {
+  /// Display-order txid of [rawHex].
+  final String txid;
+
+  /// The raw transaction.
+  final String rawHex;
+
+  /// Hex of the BRC-74 BUMP proving [txid]; empty for an unproven ancestor
+  /// (one whose own parents are further ancestors).
+  final String bumpHex;
+
+  const BeefAncestor({required this.txid, required this.rawHex, this.bumpHex = ''});
+
+  bool get isProven => bumpHex.isNotEmpty;
+
+  Map<String, dynamic> toMap() => {
+        'txid': txid,
+        'rawHex': rawHex,
+        if (bumpHex.isNotEmpty) 'bumpHex': bumpHex,
+      };
+
+  factory BeefAncestor.fromMap(Map<dynamic, dynamic> map) => BeefAncestor(
+        txid: map['txid'] as String,
+        rawHex: map['rawHex'] as String,
+        bumpHex: map['bumpHex'] as String? ?? '',
+      );
+
+  @override
+  bool operator ==(Object other) =>
+      other is BeefAncestor && other.txid == txid && other.rawHex == rawHex && other.bumpHex == bumpHex;
+
+  @override
+  int get hashCode => Object.hash(txid, rawHex, bumpHex);
+
+  @override
+  String toString() => 'BeefAncestor($txid${isProven ? ', proven' : ''})';
+}
+
 /// Event fired when a transaction is imported
 class TransactionImportedEvent extends WalletEvent {
   /// Journal identifier of this event type. Stored with every event and
@@ -282,6 +327,13 @@ class TransactionImportedEvent extends WalletEvent {
   final int totalInputSats; // Total value of all inputs (from parent tx outputs)
   final List<String> sendingAddresses; // Addresses that inputs are spending from
 
+  /// For a transaction received unproven (empty [bumpProof]): the ancestors
+  /// its BEEF carried back to proven transactions, with their BUMPs, parents
+  /// first (bead libspiffy-zsh). Empty for a proven transaction and for rows
+  /// journaled before the field existed (the key is written only when not
+  /// empty, so such rows and events without ancestors serialize as before).
+  final List<BeefAncestor> ancestors;
+
   TransactionImportedEvent({
     required String walletId,
     required this.txid,
@@ -297,6 +349,7 @@ class TransactionImportedEvent extends WalletEvent {
     required this.walletReceivedSats,
     required this.totalInputSats,
     required this.sendingAddresses,
+    this.ancestors = const [],
     String? eventId,
     DateTime? timestamp,
     int? version,
@@ -325,6 +378,7 @@ class TransactionImportedEvent extends WalletEvent {
       'walletReceivedSats': walletReceivedSats,
       'totalInputSats': totalInputSats,
       'sendingAddresses': sendingAddresses,
+      if (ancestors.isNotEmpty) 'ancestors': [for (final a in ancestors) a.toMap()],
     };
   }
 
@@ -344,6 +398,10 @@ class TransactionImportedEvent extends WalletEvent {
       walletReceivedSats: map['walletReceivedSats'] as int,
       totalInputSats: map['totalInputSats'] as int,
       sendingAddresses: (map['sendingAddresses'] as List<dynamic>).cast<String>(),
+      ancestors: [
+        for (final a in (map['ancestors'] as List<dynamic>? ?? const []))
+          BeefAncestor.fromMap(a as Map<dynamic, dynamic>),
+      ],
       eventId: map['eventId'] as String?,
       timestamp: map['timestamp'] != null
           ? (map['timestamp'] is String

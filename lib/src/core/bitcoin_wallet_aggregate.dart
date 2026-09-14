@@ -1133,6 +1133,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
       walletReceivedSats: command.walletReceivedSats,
       totalInputSats: command.totalInputSats,
       sendingAddresses: command.sendingAddresses,
+      ancestors: command.ancestors,
       version: currentState.version + 1,
       timestamp: DateTime.now(),
     );

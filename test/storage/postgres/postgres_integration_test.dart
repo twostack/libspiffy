@@ -145,15 +145,16 @@ void main() {
       // Verify version: v001 initial schema, v002 secure secrets,
       // v003 header ints + plugin metadata, v004 channel columns +
       // invoice outputs, v005 wallet-scoped keys + unique proofs,
-      // v007 nullable channel server key, v008 journal tx id, v009 merkle proof status
+      // v007 nullable channel server key, v008 journal tx id, v009 merkle proof status,
+      // v010 ancestor transactions
       final version = await migrations.getCurrentVersion();
-      expect(version, equals(9));
+      expect(version, equals(10));
 
       // Verify applied migrations
       final applied = await migrations.getAppliedMigrations();
-      expect(applied, hasLength(9));
+      expect(applied, hasLength(10));
       expect(applied.first.name, equals('initial_schema'));
-      expect(applied.last.name, equals('merkle_proof_status'));
+      expect(applied.last.name, equals('ancestor_transactions'));
     });
 
     test('should handle re-running migrations idempotently', () async {
@@ -164,13 +165,16 @@ void main() {
       await migrations.migrate();
 
       final version = await migrations.getCurrentVersion();
-      expect(version, equals(9));
+      expect(version, equals(10));
     });
 
     test('should rollback migrations one at a time', () async {
       final migrations = PostgresMigrations(config);
 
       await migrations.migrate();
+      expect(await migrations.getCurrentVersion(), equals(10));
+
+      expect(await migrations.rollback(), isTrue);
       expect(await migrations.getCurrentVersion(), equals(9));
 
       expect(await migrations.rollback(), isTrue);
@@ -208,7 +212,7 @@ void main() {
         () async {
       final migrations = PostgresMigrations(config);
       await migrations.migrate();
-      expect(await migrations.getCurrentVersion(), equals(9));
+      expect(await migrations.getCurrentVersion(), equals(10));
 
       final storage = PostgresWalletStorage(config);
       await storage.initialize();
@@ -247,8 +251,9 @@ void main() {
         await storage.close();
       }
 
-      // v009, v008, v007 and v006 first; then v005's down keeps the first-stored
-      // row so the global keys can be restored.
+      // v010, v009, v008, v007 and v006 first; then v005's down keeps the
+      // first-stored row so the global keys can be restored.
+      expect(await migrations.rollback(), isTrue); // v010
       expect(await migrations.rollback(), isTrue); // v009
       expect(await migrations.rollback(), isTrue); // v008
       expect(await migrations.rollback(), isTrue); // v007
@@ -271,7 +276,7 @@ void main() {
 
         // Up again, and leave the database at the latest version.
         await migrations.migrate();
-        expect(await migrations.getCurrentVersion(), equals(9));
+        expect(await migrations.getCurrentVersion(), equals(10));
         await pool.execute(
           Sql.named('DELETE FROM bitcoin_transactions WHERE txid = @txid'),
           parameters: {'txid': txid},
@@ -317,6 +322,7 @@ void main() {
         expect(await serverKeyColumn(), isNull);
 
         // Down restores NOT NULL with the old '' placeholder.
+        expect(await migrations.rollback(), isTrue); // v010
         expect(await migrations.rollback(), isTrue); // v009
         expect(await migrations.rollback(), isTrue); // v008
         expect(await migrations.rollback(), isTrue);
@@ -325,7 +331,7 @@ void main() {
 
         // Up turns the placeholder back into NULL.
         await migrations.migrate();
-        expect(await migrations.getCurrentVersion(), equals(9));
+        expect(await migrations.getCurrentVersion(), equals(10));
         expect(await serverKeyColumn(), isNull);
         expect((await storage.getPaymentChannel(channelId))!.serverPubKeyHex,
             isNull);

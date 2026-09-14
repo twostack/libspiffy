@@ -13,6 +13,7 @@ import 'package:libspiffy/src/storage/postgres/postgres_migrations.dart';
 import 'package:libspiffy/src/storage/postgres/postgres_wallet_storage.dart';
 import 'package:libspiffy/src/storage/read_model_storage.dart';
 
+import '../ancestor_transaction_contract.dart';
 import '../merkle_proof_retention_contract.dart';
 
 void main() {
@@ -45,6 +46,7 @@ void main() {
     });
 
     defineMerkleProofRetentionContract(() => storage, unique: () => 'p$run-${counter++}');
+    defineAncestorTransactionContract(() => storage, unique: () => 'p$run-${counter++}');
   });
 
   test('v009 turns pending placeholders into pendingHeader, keeps orphaned rows, and rolls back', () async {
@@ -80,6 +82,7 @@ void main() {
 
     try {
       // --- the pre-v009 shape, with a 'pending' placeholder row ----------
+      expect(await migrations.rollback(), isTrue); // v010
       expect(await migrations.rollback(), isTrue); // v009
       expect(await migrations.getCurrentVersion(), equals(8));
       await pool.execute(
@@ -92,7 +95,7 @@ void main() {
 
       // --- up -------------------------------------------------------------
       await migrations.migrate();
-      expect(await migrations.getCurrentVersion(), equals(9));
+      expect(await migrations.getCurrentVersion(), equals(10));
       expect(await rawRows(pendingTx, 'block_hash, status'), [
         [null, 'pendingHeader']
       ]);
@@ -135,6 +138,7 @@ void main() {
       await expectRejected(orphanOnlyTx, null, 'bogus', 'fe07'); // unknown status
 
       // --- down -----------------------------------------------------------
+      expect(await migrations.rollback(), isTrue); // v010
       expect(await migrations.rollback(), isTrue); // v009
       expect(await migrations.getCurrentVersion(), equals(8));
       expect(await rawRows(pendingTx, 'block_hash'), [
@@ -150,7 +154,7 @@ void main() {
 
       // --- up again, leaving the database at the latest version ----------
       await migrations.migrate();
-      expect(await migrations.getCurrentVersion(), equals(9));
+      expect(await migrations.getCurrentVersion(), equals(10));
       expect((await storage.getMerkleProof(pendingTx))!.status, MerkleProofStatus.pendingHeader);
     } finally {
       await migrations.migrate();

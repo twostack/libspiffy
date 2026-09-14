@@ -37,6 +37,16 @@ class ArcSubmitResponse {
   final String? timestamp;  // date-time string, not integer
   final List<String>? doubleSpendTxids;
 
+  /// ARC's `merklePath` when the submission is already MINED: the BRC-74
+  /// BUMP as hex in a one-element list, as in [ArcTransactionResponse].
+  final List<String>? merklePath;
+
+  /// The BUMP hex when ARC returned a merkle path, else null.
+  String? get merklePathHex =>
+      (merklePath != null && merklePath!.length == 1 && merklePath!.single.isNotEmpty)
+          ? merklePath!.single
+          : null;
+
   ArcSubmitResponse({
     required this.txid,
     required this.status,
@@ -45,6 +55,7 @@ class ArcSubmitResponse {
     this.blockHash,
     this.timestamp,
     this.doubleSpendTxids,
+    this.merklePath,
   });
 
   factory ArcSubmitResponse.fromJson(Map<String, dynamic> json) {
@@ -107,6 +118,11 @@ class ArcSubmitResponse {
       doubleSpendTxids: json['doubleSpendTxids'] != null
           ? List<String>.from(json['doubleSpendTxids'])
           : null,
+      merklePath: switch (json['merklePath']) {
+        final List<dynamic> list => [for (final e in list) e.toString()],
+        final String s when s.isNotEmpty => [s],
+        _ => null,
+      },
     );
   }
 }

@@ -304,7 +304,7 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 
 ### Follow-ups before wave 4
 
-Defects found by the wave 3 lanes (report section 11, V-8 to V-12), each with
+Defects found by the wave 3 lanes and this batch (report section 11, V-8 to V-16), each with
 a regression test shown to fail on the previous code.
 
 - **Rejected commands (V-8, V-11).** A command an aggregate rejects is
@@ -340,6 +340,14 @@ a regression test shown to fail on the previous code.
   BUMPs of a received unproven payment are journaled and stored (outside
   wallet history and balance), so its output can be spent before it is
   mined (**Postgres migration v010**).
+- **Deferred spend on submit (V-16).** When ARC answers a broadcast with
+  SEEN_ON_NETWORK or MINED, the transaction's inputs are marked spent and
+  its change becomes spendable at once, also for BEEF broadcasts, the
+  durable retry queue and channel funding. Previously this waited for ARC
+  to report MINED with a verified proof, and an input's reservation could
+  expire in the meantime. Every SEEN_ON_NETWORK or MINED report applies the
+  spend exactly once, including after a restart; a MINED answer carrying a
+  merkle path confirms the transaction after the header check.
 
 #### Breaking changes
 
@@ -372,7 +380,8 @@ Additive API: `MerkleProofStatus`, `MerkleProof.status` / `statusChangedAt`,
 `PaymentChannelManagerActor(arcActor:,
 walletProjection:, broadcastTimeout:)`, `TransactionConfirmedEvent.bumpHex`,
 `ConfirmTransactionCommand.bumpHex`, `BeefAncestor`,
-`TransactionImportedEvent.ancestors`.
+`TransactionImportedEvent.ancestors`, `ArcSubmitResponse.merklePath` /
+`merklePathHex`.
 
 ## 2.0.0
 

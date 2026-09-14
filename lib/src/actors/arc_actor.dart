@@ -105,14 +105,34 @@ class ARCActor extends Actor {
   /// anyway).
   final Map<(String, String), DateTime> _recentlyConfirmed = {};
 
+  Duration get _reconfirmWindow =>
+      statusCheckInterval * 2 > _minReconfirmWindow ? statusCheckInterval * 2 : _minReconfirmWindow;
+
   bool _confirmedRecently(String walletId, String txid) {
     final key = (walletId, txid);
     final at = _recentlyConfirmed[key];
     if (at == null) return false;
-    final window = statusCheckInterval * 2 > _minReconfirmWindow ? statusCheckInterval * 2 : _minReconfirmWindow;
-    if (DateTime.now().difference(at) < window) return true;
+    if (DateTime.now().difference(at) < _reconfirmWindow) return true;
     _recentlyConfirmed.remove(key);
     return false;
+  }
+
+  /// Deferred-spend commands this actor sent recently, keyed by wallet and
+  /// `spend:<utxoKey>` / `available:<utxoKey>` (bead libspiffy-09k). The
+  /// read model lags the commands; this keeps a submit response, a status
+  /// scan and a MINED report arriving close together from sending the same
+  /// command twice. Entries expire after [_reconfirmWindow]: a command the
+  /// read model still does not reflect by then is sent again (the aggregate
+  /// ignores a UTXO already made available and refuses to spend one twice).
+  final Map<(String, String), DateTime> _deferredSpendIssued = {};
+
+  /// Claims [action] on [utxoKey] in [walletId]; false if it was sent recently.
+  bool _claimDeferredSpend(String walletId, String action, String utxoKey, DateTime now) {
+    final key = (walletId, '$action:$utxoKey');
+    final at = _deferredSpendIssued[key];
+    if (at != null && now.difference(at) < _reconfirmWindow) return false;
+    _deferredSpendIssued[key] = now;
+    return true;
   }
 
   // Durable broadcast retry queue (persisted via Isar)
@@ -314,6 +334,7 @@ class ARCActor extends Actor {
 
       // Update transaction status based on ARC's initial response
       _updateTransactionStatusFromArc(msg.walletId, msg.txid, response.status);
+      await _onSubmitResponse(msg.walletId, msg.txid, msg.txHex, response);
 
       // Send success response
       context.sender?.tell(BroadcastSuccessMessage(msg.txid, response.txid));
@@ -381,6 +402,7 @@ class ARCActor extends Actor {
 
       // Update transaction status based on ARC's initial response
       _updateTransactionStatusFromArc(msg.walletId, msg.txid, response.status);
+      await _onSubmitResponse(msg.walletId, msg.txid, paymentTxHex, response);
 
       context.sender?.tell(BroadcastSuccessMessage(msg.txid, response.txid));
 
@@ -442,6 +464,10 @@ class ARCActor extends Actor {
           )));
 
           _log.info('Retry broadcast succeeded for $txid (status: ${_arcStatusToString(response.status)})');
+          // As for a first submission: record ARC's answer and apply the
+          // deferred spend if the transaction is already on the network.
+          _updateTransactionStatusFromArc(walletId, txid, response.status);
+          await _onSubmitResponse(walletId, txid, rawTxHex, response);
           // If this callback throws, duraq auto-retries with exponential backoff
         });
 
@@ -703,56 +729,33 @@ class ARCActor extends Actor {
         return _CheckOutcome.changed;
       }
 
-      // MINED: confirm only once the proof checks out against our headers.
+      // MINED: the transaction is on the network, so its deferred spend
+      // applies now; confirm only once the proof checks out against our
+      // headers.
       if (response.status == ArcTransactionStatus.mined) {
         _orphanRemediationAttempts.remove(txid);
+        await _applyDeferredSpend(txid, walletId);
         await _handleMinedReport(txid, walletId, response);
         return _CheckOutcome.changed;
       }
 
-      // Only act on status changes (comparing stored status with ARC status)
       if (arcTxStatus == null) return _CheckOutcome.unknown;
-      if (arcTxStatus == currentStatus) return _CheckOutcome.unchanged;
-
-      // Update the transaction status in the wallet
-      _updateTransactionStatusFromArc(walletId, txid, response.status);
-
-      // SEEN_ON_NETWORK: Parse tx to mark inputs as spent and outputs as available
-      if (response.status == ArcTransactionStatus.seenOnNetwork) {
-        _orphanRemediationAttempts.remove(txid);
-
-        final tx = await _storage.getTransaction(txid);
-        if (tx != null && tx.rawHex.isNotEmpty) {
-          final parsed = dartsv.Transaction.fromHex(tx.rawHex);
-
-          // Mark input UTXOs as spent (deferred spend)
-          for (final input in parsed.inputs) {
-            if (input.prevTxnId.isNotEmpty) {
-              final utxoKey = '${input.prevTxnId}:${input.prevTxnOutputIndex}';
-              _walletManager.tell(WalletCommandMessage(walletId, SpendUTXOCommand(
-                walletId: walletId,
-                utxoKey: utxoKey,
-                spendingTxId: txid,
-                fee: BigInt.zero,
-              )));
-            }
-          }
-
-          // Mark output UTXOs as available for spending
-          for (int i = 0; i < parsed.outputs.length; i++) {
-            _walletManager.tell(WalletCommandMessage(walletId, MarkUTXOAvailableCommand(
-              walletId: walletId,
-              txid: txid,
-              vout: i,
-            )));
-          }
-
-          _log.info('Transaction $txid seen on network: marked ${parsed.inputs.length} input(s) spent, '
-              '${parsed.outputs.length} output(s) available');
-        }
+      final changed = arcTxStatus != currentStatus;
+      if (changed) {
+        // Update the transaction status in the wallet
+        _updateTransactionStatusFromArc(walletId, txid, response.status);
       }
 
-      return _CheckOutcome.changed;
+      // SEEN_ON_NETWORK: mark inputs spent and outputs available. Also when
+      // the stored status already is SEEN_ON_NETWORK (the submit response
+      // said so, 09k): the spend is applied from what the read model still
+      // shows outstanding, not from a status transition.
+      if (response.status == ArcTransactionStatus.seenOnNetwork) {
+        _orphanRemediationAttempts.remove(txid);
+        await _applyDeferredSpend(txid, walletId);
+      }
+
+      return changed ? _CheckOutcome.changed : _CheckOutcome.unchanged;
     } catch (e) {
       _log.warning('Failed to check transaction $txid: $e');
       return _CheckOutcome.unknown;
@@ -761,15 +764,44 @@ class ARCActor extends Actor {
 
   /// ARC says [txid] is MINED: verify its merkle path against the stored
   /// header at that height before confirming (SPV-09).
-  Future<void> _handleMinedReport(String txid, String walletId, ArcTransactionResponse response) async {
+  Future<void> _handleMinedReport(String txid, String walletId, ArcTransactionResponse response) =>
+      _handleMinedProof(txid, walletId, response.merklePathHex, response.blockHeight, response.blockHash);
+
+  Future<void> _handleMinedProof(
+      String txid, String walletId, String? bumpHex, int? blockHeight, String? blockHash) async {
     if (_confirmedRecently(walletId, txid)) return;
-    final bumpHex = response.merklePathHex;
     if (bumpHex == null) {
       _log.warning('ARC reports $txid MINED without a merklePath; not confirming until a proof is available');
       return;
     }
-    await _applyProofCheck(txid, _PendingProof({walletId}, bumpHex, response.blockHeight),
-        arcBlockHash: response.blockHash);
+    await _applyProofCheck(txid, _PendingProof({walletId}, bumpHex, blockHeight), arcBlockHash: blockHash);
+  }
+
+  /// ARC answered a submission of [txid] (raw [txHex]) for [walletId] with
+  /// [response]; the status command is already sent.
+  ///
+  /// SEEN_ON_NETWORK or MINED: the transaction is on the network, so its
+  /// deferred spend applies now (09k). The status scan acts on transitions
+  /// of the stored status, and a submit answer of SEEN_ON_NETWORK already
+  /// set it. A MINED answer carrying a merkle path is checked against the
+  /// headers like a MINED status report; without one the scan that
+  /// [_updateTransactionStatusFromArc] scheduled fetches the proof.
+  /// Any other status (rejected, double spend, orphan, still in flight)
+  /// spends nothing.
+  Future<void> _onSubmitResponse(String walletId, String txid, String txHex, ArcSubmitResponse response) async {
+    switch (response.status) {
+      case ArcTransactionStatus.seenOnNetwork:
+        await _applyDeferredSpend(txid, walletId, rawHex: txHex);
+        break;
+      case ArcTransactionStatus.mined:
+        await _applyDeferredSpend(txid, walletId, rawHex: txHex);
+        if (response.merklePathHex != null) {
+          await _handleMinedProof(txid, walletId, response.merklePathHex, response.blockHeight, response.blockHash);
+        }
+        break;
+      default:
+        break;
+    }
   }
 
   /// Check a held or fresh proof against the headers and act on the result.
@@ -842,33 +874,43 @@ class ARCActor extends Actor {
       _log.info('Transaction $txid confirmed in wallet $walletId at height ${check.blockHeight} '
           '(proof verified against local header)');
     }
-
-    for (final walletId in walletIds) {
-      await _applyDeferredSpendOnMined(txid, walletId);
-    }
+    // The deferred spend was applied when the MINED report arrived (the
+    // scan or the submit response that carried this proof).
   }
 
-  /// A mined transaction has certainly reached the network. SEEN_ON_NETWORK
-  /// normally applies the deferred spend (inputs spent, outputs available),
-  /// but a transaction ARC first reports as MINED never passed through that
-  /// state, so its inputs stayed unspent and its outputs pending (zvj).
+  /// The deferred spend of [txid] in [walletId]: once a transaction is on
+  /// the network (ARC reports SEEN_ON_NETWORK or MINED, on submit or in a
+  /// status scan) its wallet inputs are spent and its wallet outputs become
+  /// available. The one path for every such report (zvj part 3, 09k).
   ///
-  /// Only wallet UTXOs still needing the transition are commanded: an input
-  /// already spent (SEEN_ON_NETWORK came first) or an output that is not the
-  /// wallet's is skipped, so the aggregate is not sent commands it rejects.
-  Future<void> _applyDeferredSpendOnMined(String txid, String walletId) async {
+  /// Driven by what the read model still shows outstanding, not by a status
+  /// transition, so it may run on every report: an input no longer unspent
+  /// (or not the wallet's) and an output already available (or not the
+  /// wallet's) are skipped, and a command sent within the last
+  /// [_reconfirmWindow] is not repeated while the read model catches up.
+  /// [rawHex] is the submitted transaction; otherwise the stored one is used.
+  /// Nothing is deleted: spending is a status change of the UTXO row.
+  Future<void> _applyDeferredSpend(String txid, String walletId, {String? rawHex}) async {
     try {
-      final tx = await _storage.getTransaction(txid, walletId: walletId);
-      if (tx == null || tx.rawHex.isEmpty) return;
-      final parsed = dartsv.Transaction.fromHex(tx.rawHex);
-      final utxos = {
-        for (final u in await _storage.getUTXOs(walletId, includeSpent: true)) u.key: u,
+      var txHex = rawHex;
+      if (txHex == null || txHex.isEmpty) {
+        txHex = (await _storage.getTransaction(txid, walletId: walletId))?.rawHex;
+      }
+      if (txHex == null || txHex.isEmpty) return;
+      final parsed = dartsv.Transaction.fromHex(txHex);
+      // Unspent UTXOs only: a spent row needs nothing, and the unspent set
+      // stays small while the spent history grows without bound.
+      final unspent = {
+        for (final u in await _storage.getUTXOs(walletId)) u.key: u,
       };
+      final now = DateTime.now();
+      _deferredSpendIssued.removeWhere((_, at) => now.difference(at) >= _reconfirmWindow);
 
       var spent = 0;
       for (final input in parsed.inputs) {
-        final utxo = utxos['${input.prevTxnId}:${input.prevTxnOutputIndex}'];
+        final utxo = unspent['${input.prevTxnId}:${input.prevTxnOutputIndex}'];
         if (utxo == null || utxo.status == UTXOStatus.spent) continue;
+        if (!_claimDeferredSpend(walletId, 'spend', utxo.key, now)) continue;
         _walletManager.tell(WalletCommandMessage(walletId, SpendUTXOCommand(
           walletId: walletId,
           utxoKey: utxo.key,
@@ -880,8 +922,9 @@ class ARCActor extends Actor {
 
       var promoted = 0;
       for (var vout = 0; vout < parsed.outputs.length; vout++) {
-        final utxo = utxos['$txid:$vout'];
+        final utxo = unspent['$txid:$vout'];
         if (utxo == null || utxo.status == UTXOStatus.spent || utxo.status == UTXOStatus.available) continue;
+        if (!_claimDeferredSpend(walletId, 'available', utxo.key, now)) continue;
         _walletManager.tell(WalletCommandMessage(walletId, MarkUTXOAvailableCommand(
           walletId: walletId,
           txid: txid,
@@ -890,10 +933,11 @@ class ARCActor extends Actor {
         promoted++;
       }
       if (spent > 0 || promoted > 0) {
-        _log.info('Transaction $txid mined: marked $spent input(s) spent, $promoted output(s) available');
+        _log.info('Transaction $txid on the network: marked $spent input(s) spent, '
+            '$promoted output(s) available in wallet $walletId');
       }
     } catch (e) {
-      _log.warning('Failed to apply the deferred spend of mined transaction $txid: $e');
+      _log.warning('Failed to apply the deferred spend of transaction $txid: $e');
     }
   }
 

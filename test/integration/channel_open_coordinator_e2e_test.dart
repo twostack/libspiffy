@@ -246,7 +246,7 @@ class _RecordingArc extends ArcService {
   String? failWith;
 
   /// What a submission reports.
-  ArcTransactionStatus submitStatus = ArcTransactionStatus.stored;
+  ArcTransactionStatus submitStatus = ArcTransactionStatus.seenOnNetwork;
 
   /// What status queries report, by txid (unknown txids fail).
   final Map<String, ArcTransactionStatus> statuses = {};
@@ -794,7 +794,10 @@ void main() {
       final changeUtxo = utxos.singleWhere(
           (u) => u.txid == row.fundingTxId && u.vout == changeVout);
       expect(changeUtxo.satoshis, BigInt.from(change));
-      expect(changeUtxo.status, UTXOStatus.pending);
+      // Pending, or already available: ARC answered the submission
+      // SEEN_ON_NETWORK, which applies the deferred spend (libspiffy-09k).
+      expect(changeUtxo.status,
+          isIn([UTXOStatus.pending, UTXOStatus.available]));
       final channelUtxo = utxos.where((u) =>
           u.txid == row.fundingTxId && u.vout == row.fundingOutputIndex);
       expect(channelUtxo.where((u) => u.status == UTXOStatus.available),

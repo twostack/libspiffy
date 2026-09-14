@@ -21,6 +21,7 @@ import '../core/wallet_commands.dart' show RevertTransactionConfirmationCommand;
 import '../core/wallet_events.dart' show BeefAncestor;
 import '../models/bitcoin_transaction.dart' show TransactionStatus;
 import '../spv/merkle_proof_header_check.dart';
+import '../core/wallet_output_ownership.dart' show BareMultisigScript;
 
 /// Actor that handles true SPV validation - receives transactions from counterparties
 /// and validates them using merkle proofs against the block header chain
@@ -355,7 +356,10 @@ class SPVActor extends Actor {
 
         // Step 3: Extract spendable UTXOs for the target wallet
         // If invoice ID is provided, validate outputs match invoice addresses
-        final spendableUTXOs = await _extractSpendableUTXOs(transaction, walletId, invoiceId);
+        // The wallet's UTXOs, and the outputs that pay the invoice: an
+        // invoice's multisig output the wallet cannot spend alone pays the
+        // invoice but is no wallet UTXO (bead libspiffy-n0p).
+        final (:spendableUTXOs, :invoiceOutputs) = await _extractSpendableUTXOs(transaction, walletId, invoiceId);
         final spentUTXOs = await _extractSpentUTXOs(transaction, walletId);
         
         // Step 3.5: Calculate transaction fee (if there are spent UTXOs)
@@ -367,8 +371,8 @@ class SPVActor extends Actor {
         }
 
         // Step 4: If invoice-based, verify payment matches invoice expectations
-        if (invoiceId != null && spendableUTXOs.isNotEmpty) {
-          final invoiceValidation = await _validateInvoicePayment(invoiceId, spendableUTXOs);
+        if (invoiceId != null && invoiceOutputs.isNotEmpty) {
+          final invoiceValidation = await _validateInvoicePayment(invoiceId, invoiceOutputs);
           if (!invoiceValidation.isValid) {
             return SPVValidationResult(
               txid: txidHex,
@@ -383,7 +387,7 @@ class SPVActor extends Actor {
             invoiceId: invoiceId,
             txid: txidHex,
             amountReceived: invoiceValidation.totalReceived,
-            addressesPaidTo: spendableUTXOs.map((u) => u['address'] as String).toList(),
+            addressesPaidTo: invoiceOutputs.map((u) => u['address'] as String).toList(),
           ), sender: context.self);
         }
 
@@ -591,18 +595,27 @@ class SPVActor extends Actor {
   }
 
   /// Extract UTXOs we can spend from this transaction
-  /// 
+  ///
   /// This method analyzes transaction outputs to identify those that belong
   /// to the specified wallet (via invoice matching if invoiceId provided).
-  Future<List<Map<String, dynamic>>> _extractSpendableUTXOs(
-    dartsv.Transaction transaction, 
+  ///
+  /// [spendableUTXOs] are the wallet's UTXOs. [invoiceOutputs] are the
+  /// outputs that pay the invoice: the wallet UTXOs among them plus any
+  /// invoice multisig output the wallet cannot spend alone (bead
+  /// libspiffy-n0p), which is attributed to a 'p2ms:m-of-n' descriptor.
+  /// Without an invoice both lists hold the wallet UTXOs.
+  Future<({List<Map<String, dynamic>> spendableUTXOs, List<Map<String, dynamic>> invoiceOutputs})>
+      _extractSpendableUTXOs(
+    dartsv.Transaction transaction,
     String? walletId,
     String? invoiceId,
   ) async {
     final spendableUTXOs = <Map<String, dynamic>>[];
-    
+    final invoiceOutputs = <Map<String, dynamic>>[];
+    final result = (spendableUTXOs: spendableUTXOs, invoiceOutputs: invoiceOutputs);
+
     if (walletId == null) {
-      return spendableUTXOs;
+      return result;
     }
 
     // Get invoice details if invoice-based payment
@@ -610,8 +623,13 @@ class SPVActor extends Actor {
     if (invoiceId != null) {
       invoice = await _getInvoiceDetails(invoiceId);
       if (invoice == null || !invoice.found) {
-        return spendableUTXOs;
+        return result;
       }
+    }
+
+    void addWalletUtxo(Map<String, dynamic> utxo) {
+      spendableUTXOs.add(utxo);
+      invoiceOutputs.add(utxo);
     }
 
     try {
@@ -639,7 +657,7 @@ class SPVActor extends Actor {
               final belongsToUs = await _checkOutputOwnership(
                   ownerAddress, walletId, invoice);
               if (belongsToUs) {
-                spendableUTXOs.add({
+                addWalletUtxo({
                   'txid': transaction.id,
                   'vout': outputIndex,
                   'satoshis': output.satoshis.toInt(),
@@ -692,30 +710,50 @@ class SPVActor extends Actor {
             }
             break;
           case 'p2ms':
-            // Multi-sig handling: extract public keys and match against invoice
-            final pubKeys = scriptInfo['pubKeys'] as List<Uint8List>?;
-            final threshold = scriptInfo['threshold'] as int?;
-            if (pubKeys != null && threshold != null && invoice?.outputs != null) {
-              // Check if this P2MS output matches any P2MSOutputSpec in the invoice
-              final pubKeyHexList = pubKeys.map((pk) => hex.encode(pk)).toList();
-              final matchesInvoice = _matchesP2MSInvoiceOutput(
-                pubKeyHexList,
-                threshold,
-                invoice!.outputs!,
-              );
-
-              if (matchesInvoice) {
-                spendableUTXOs.add({
+            // A bare multisig output. Parsed here, not from dartsv's script
+            // info: that names the keys 'publicKeys' (as SVPublicKey), so
+            // reading 'pubKeys' never matched and an invoice paid with its
+            // multisig output went unrecognised.
+            final multisig = BareMultisigScript.parse(script);
+            if (multisig == null) continue;
+            // With an invoice only its outputs count, as for P2PKH.
+            if (invoice != null &&
+                !_matchesP2MSInvoiceOutput(multisig.publicKeysHex, multisig.threshold, invoice.outputs ?? const [])) {
+              continue;
+            }
+            // One ownership rule for every path (beads viy, n0p): the output
+            // is a wallet UTXO only when the wallet holds at least m of its
+            // keys. An escrow the wallet cannot spend alone still pays the
+            // invoice; the transaction is recorded whole either way.
+            final network = NetworkName.toDartsv(_networkType);
+            final walletKeyAddresses = <String>{};
+            for (final keyAddress in multisig.keyAddresses(network)) {
+              if (keyAddress != null && await _isWalletAddress(walletId, keyAddress)) {
+                walletKeyAddresses.add(keyAddress);
+              }
+            }
+            final owner = multisig.spendableAloneBy(walletKeyAddresses.contains, network);
+            Map<String, dynamic> entry(String address) => {
                   'txid': transaction.id,
                   'vout': outputIndex,
                   'satoshis': output.satoshis.toInt(),
                   'script': output.script.toHex(),
                   'scriptType': scriptType,
-                  'address': 'p2ms:${threshold}-of-${pubKeys.length}', // Pseudo-address for P2MS
-                  'publicKeys': pubKeyHexList,
-                  'threshold': threshold,
-                });
-              }
+                  'address': address,
+                  'publicKeys': multisig.publicKeysHex,
+                  'threshold': multisig.threshold,
+                };
+            // The invoice is paid to its multisig output, named by shape;
+            // a wallet UTXO is attributed to the first wallet key, as on
+            // every other path.
+            if (owner != null) spendableUTXOs.add(entry(owner));
+            if (invoice != null) {
+              invoiceOutputs.add(entry('p2ms:${multisig.threshold}-of-${multisig.publicKeysHex.length}'));
+            } else if (owner != null) {
+              invoiceOutputs.add(entry(owner));
+            } else {
+              _log.info('Multisig output ${transaction.id}:$outputIndex is not spendable by '
+                  'wallet $walletId alone; not a wallet UTXO');
             }
             continue;
           default:
@@ -728,7 +766,7 @@ class SPVActor extends Actor {
           final belongsToUs = await _checkOutputOwnership(address, walletId, invoice);
           
           if (belongsToUs) {
-            spendableUTXOs.add({
+            addWalletUtxo({
               'txid': transaction.id,
               'vout': outputIndex,  // Use 'vout' to match WalletManagerActor expectation
               'satoshis': output.satoshis.toInt(),
@@ -743,7 +781,7 @@ class SPVActor extends Actor {
       _log.warning('Failed to extract spendable UTXOs: $e');
     }
 
-    return spendableUTXOs;
+    return result;
   }
   
   /// Calculate the transaction fee from BEEF data
@@ -816,12 +854,14 @@ class SPVActor extends Actor {
     
     // Fallback: Query wallet storage to check if address belongs to wallet
     // This handles cases where invoice is not found or not provided
+    return _isWalletAddress(walletId, address);
+  }
+
+  /// Whether [address] is one of [walletId]'s addresses; false when the
+  /// read model cannot answer.
+  Future<bool> _isWalletAddress(String walletId, String address) async {
     try {
-      final belongsToWallet = await _storage.isWalletAddress(walletId, address);
-      if (belongsToWallet) {
-      } else {
-      }
-      return belongsToWallet;
+      return await _storage.isWalletAddress(walletId, address);
     } catch (e) {
       return false;
     }

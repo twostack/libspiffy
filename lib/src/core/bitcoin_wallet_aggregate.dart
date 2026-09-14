@@ -978,10 +978,10 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
       throw ArgumentError('UTXO amount must be positive');
     }
 
-    // Business rule: a bare multisig output attributed to one of the
-    // wallet's addresses (by one of its keys) is a wallet UTXO only when the
-    // wallet can spend it alone (bead libspiffy-viy).
-    _rejectMultisigNotSpendableAlone(currentState, command.scriptPubKey, command.address, utxoKey);
+    // Business rule: a bare multisig output is a wallet UTXO only when the
+    // wallet can spend it alone, whatever address it is attributed to
+    // (beads libspiffy-viy, libspiffy-n0p).
+    _rejectMultisigNotSpendableAlone(currentState, command.scriptPubKey, utxoKey);
 
     // Use the initialStatus provided by the caller (defaults to pending)
     // The caller (e.g., wallet_manager_actor for SPV-validated UTXOs) is responsible
@@ -1420,13 +1420,12 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
     return events;
   }
 
-  /// Throws when [scriptPubKey] is a bare multisig script, [address] is one
-  /// of the wallet's addresses, and the wallet holds fewer of the script's
-  /// keys than it requires. Outputs attributed some other way (an invoice's
-  /// multisig output under a 'p2ms:' pseudo-address) are not affected.
-  void _rejectMultisigNotSpendableAlone(
-      WalletState currentState, String scriptPubKey, String address, String utxoKey) {
-    if (!currentState.addresses.containsKey(address)) return;
+  /// Throws when [scriptPubKey] is a bare multisig script and the wallet
+  /// holds fewer of the script's keys than it requires, however the output
+  /// is attributed: an invoice's multisig output under a 'p2ms:m-of-n'
+  /// pseudo-address was exempt and could be credited as spendable balance
+  /// (bead libspiffy-n0p).
+  void _rejectMultisigNotSpendableAlone(WalletState currentState, String scriptPubKey, String utxoKey) {
     final BareMultisigScript? multisig;
     try {
       multisig = BareMultisigScript.parse(dartsv.SVScript.fromHex(scriptPubKey));

@@ -281,6 +281,87 @@ void main() {
     });
   });
 
+  group("n0p: a multisig output attributed to a 'p2ms:' pseudo-address", () {
+    // SPVActor attributes an invoice's multisig output to 'p2ms:m-of-n'.
+    // The aggregate exempted such outputs from the viy rule, so a
+    // ReceiveUTXOCommand for an escrow the wallet cannot spend alone
+    // credited it as spendable balance.
+    ReceiveUTXOCommand receiveMultisig(String txid, dartsv.SVScript script, String pseudoAddress) =>
+        ReceiveUTXOCommand(
+          walletId: _walletId,
+          txid: txid,
+          vout: 0,
+          satoshis: BigInt.from(100000),
+          scriptPubKey: script.toHex(),
+          address: pseudoAddress,
+          initialStatus: UTXOStatus.available,
+        );
+
+    final other = dartsv.SVPrivateKey.fromHex('22' * 32, dartsv.NetworkType.TEST).publicKey;
+
+    for (final (label, keys, pseudo) in [
+      ('2-of-2', () => [walletKey, _serverKey.publicKey], 'p2ms:2-of-2'),
+      ('2-of-3', () => [_serverKey.publicKey, walletKey, other], 'p2ms:2-of-3'),
+    ]) {
+      test('a $label holding one wallet key is rejected, not credited as balance', () async {
+        final before = store.allEvents.length;
+        await expectLater(
+          wallet.commandHandler(receiveMultisig(_txid('b'), multisig(keys(), 2), pseudo)),
+          throwsA(isA<StateError>()),
+        );
+        expect(wallet.currentState.balance, BigInt.zero);
+        expect(wallet.currentState.utxos, isEmpty);
+        expect(store.allEvents.length, before, reason: 'nothing journaled');
+      });
+    }
+
+    test('a 2-of-3 holding two wallet keys is a wallet UTXO', () async {
+      await wallet.commandHandler(
+          receiveMultisig(_txid('b'), multisig([walletKey, _serverKey.publicKey, walletKey2], 2), 'p2ms:2-of-3'));
+      expect(wallet.currentState.utxos.containsKey('${_txid('b')}:0'), isTrue);
+      expect(wallet.currentState.balance, BigInt.from(100000));
+    });
+
+    test(
+        'a journal written before the fix (an escrow received under a p2ms: '
+        'pseudo-address) replays as written; new ones are refused', () async {
+      // Events are facts: replay does not re-run command rules, so the
+      // output stays a UTXO and in the balance of a journal that holds it
+      // until a corrective event takes it out (bead libspiffy-0k8). No
+      // silent change on load.
+      final escrow = multisig([walletKey, _serverKey.publicKey], 2);
+      await store.persistEvents(store.journal.keys.single, [
+        UTXOReceivedEvent(
+          walletId: _walletId,
+          txid: _txid('7'),
+          vout: 0,
+          satoshis: 100000,
+          scriptPubKey: escrow.toHex(),
+          address: 'p2ms:2-of-2',
+          confirmations: 1,
+          blockHeight: 900,
+          initialStatus: UTXOStatus.available,
+          version: wallet.currentState.version + 1,
+          timestamp: DateTime.utc(2026, 9, 1),
+        ),
+      ], 0);
+
+      final replayed = newAggregate();
+      await replayed.preStart();
+      expect(replayed.currentState.utxos['${_txid('7')}:0']?.address, 'p2ms:2-of-2');
+      expect(replayed.currentState.balance, BigInt.from(100000));
+      final storage = await project();
+      expect((await storage.getUTXOs(_walletId)).map((u) => u.key), ['${_txid('7')}:0']);
+      expect(await storage.getBalance(_walletId), BigInt.from(100000));
+
+      await expectLater(
+        replayed.commandHandler(receiveMultisig(_txid('6'), escrow, 'p2ms:2-of-2')),
+        throwsA(isA<StateError>()),
+      );
+      expect(replayed.currentState.balance, BigInt.from(100000));
+    });
+  });
+
   group('viy part 2: recording the same outgoing transaction again', () {
     test(
         'a record re-sent after a restart journals nothing and leaves the '

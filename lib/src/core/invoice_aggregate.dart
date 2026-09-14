@@ -383,8 +383,16 @@ class InvoiceAggregate extends AggregateRoot<InvoiceState>
       throw ArgumentError('Payment amount ${command.amountReceived} is less than invoice amount ${currentState.amount}');
     }
     
-    // Business rule: Payment must be to one of the invoice addresses
-    final validAddress = command.addressesPaidTo.any((addr) => currentState.addresses.contains(addr));
+    // Business rule: Payment must be to one of the invoice addresses, or to
+    // one of its multisig outputs: SPVActor matches a multisig output
+    // against the invoice's keys and threshold and reports it as
+    // 'p2ms:m-of-n' (bead libspiffy-n0p).
+    final multisigPaidTo = {
+      for (final output in currentState.outputs ?? const <InvoiceOutputSpec>[])
+        if (output is P2MSOutputSpec) 'p2ms:${output.threshold}-of-${output.totalKeys}',
+    };
+    final validAddress = command.addressesPaidTo
+        .any((addr) => currentState.addresses.contains(addr) || multisigPaidTo.contains(addr));
     if (!validAddress) {
       throw ArgumentError('Payment was not made to any of the invoice addresses');
     }

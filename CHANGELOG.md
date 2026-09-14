@@ -107,6 +107,99 @@ Additive API: `BlockHeaderChain({params, anchor, clock})`, `acceptHeader`, `buil
 `BUMP.fromMerklePath` / `fromTscProof` / `merge` / `fromHex` / `toHex`,
 `CdnHeaderSyncConfig.checkBaseUrl()`, `CdnHeaderSyncService.networkParams`.
 
+### Audit backlog, wave 2
+
+Every fix below has a regression test shown to fail on the previous code
+(report `Test` rows).
+
+- **Signing moved into the wallet aggregate (A-H8, KM-4, KM-5).** The
+  payment and Benford coordinators no longer read secure storage or derive
+  keys. Plugin payments funded from several addresses now sign each input
+  with its own key; mnemonic wallets with a passphrase can pay, provision
+  and split; change-address UTXOs sign with the change key.
+- **Wallet-scoped storage keys (S-05).** Two wallets in one store can both
+  record the same transaction and outpoint. **Postgres migration v005**.
+- **Storage consistency (S-12, S-13, S-17, S-18, reorg re-activation).**
+  Header stores are upserts, so a reorg back onto a previously orphaned
+  branch persists; one merkle proof per transaction; Postgres junction
+  rows no longer duplicate on replay; the in-memory backend implements the
+  address APIs.
+- **UTXO status (M1, M3, M4, M9).** Group reserve/release commands work;
+  releasing a reservation restores the previous status (a pending UTXO
+  stays pending) in the aggregate and the read model; confirmations no
+  longer reset reserved or spent UTXOs; an already-known outpoint is never
+  overwritten.
+- **Replies after persistence (M5).** Signed and funding transaction
+  replies are sent only after their events are journaled.
+- **Projection robustness (M2).** Missing read-model rows are logged and
+  skipped instead of stopping the projection; replay is idempotent
+  (address balances are recomputed from UTXO rows).
+- **Proofs checked against the local header chain (SPV-09).** Imports and
+  ARC confirmations compare the BUMP's merkle root with the stored header
+  at that height; mismatches are rejected and unknown headers deferred.
+- **BRC-62 order (SPV-10).** Library-built BEEFs list parents before
+  children.
+- **Real ARC API (SPV-11).** Merkle proofs come from `GET /v1/tx/{txid}`;
+  the fee comes from `policy.miningFee`; batch submit posts to `/txs`.
+- **Actors (A-M1, A-M2, A-M3, A-M5, A-M6, A-M7, A-M10).** Concurrent BEEF
+  validations for one wallet are correlated per request; the coordinator
+  no longer misses projection events or blocks its mailbox while waiting;
+  ARC status scans do not overlap; `LibSpiffyActorSystem` refuses a second
+  `initialize`, reports `isInitialized` false after shutdown, stops its
+  actors on a host-owned system and closes P2P sockets; channel signing
+  failures reach the caller and `QueryChannelState` works; reservations
+  are released on every payment failure; idle wallet aggregates are
+  evicted and reloaded on demand.
+- **Dead code removed (SPV-12).** The unused parallel SPV, balance and
+  transaction-builder services are gone.
+
+#### Breaking changes in wave 2
+
+- Removed from the package exports: `SPVService`, `BlockHeaderService`,
+  `WalletBalanceService`, `TransactionBuilderService` and their companion
+  types (`TrackedTransaction`, `StoredBlockHeader`, `WalletBalance`,
+  `TransactionBuildConfig`, `UTXOSelectionStrategy`, ...);
+  `BEEF.validateTransactionWithBlockHeaderService` and
+  `BEEF.getBlockHeaderValidatedTransactions`;
+  `BitcoinWalletAggregate.transactionBuilder`. `TransactionBuildException`
+  is still exported.
+- `ReadModelStorage.getTransaction(txid, {walletId})`; without `walletId`
+  it returns the first wallet's row. Isar's generated `getByTxid`,
+  `putByTxid`, `getByUtxoKey` and `getByAddress` are gone.
+- Postgres v005 replaces the global unique keys on transactions and UTXOs
+  with wallet-scoped ones; its down migration keeps only the first-stored
+  row per txid / outpoint.
+- `ArcPolicyResponse` takes `miningFee` and the real policy fields;
+  `standardFeePerKb` / `minFeePerKb` / `dataFeePerKb` are derived getters;
+  `getPolicy` throws when `miningFee` is absent.
+- Imports are rejected when the proof's root does not match the stored
+  header, or the raw transaction does not hash to the txid. ARC
+  confirmations wait until the header at that height is stored.
+- `LibSpiffyActorSystem.initialize` throws `StateError` when called twice
+  or after `shutdown`.
+- Wallet aggregates idle for 30 minutes are stopped
+  (`WalletManagerActor(aggregateIdleTimeout:)`, `null` disables); a
+  `CreateWalletMessage` for a wallet that exists in the journal is refused
+  even if it is not loaded.
+- `PaymentCoordinatorActor` / `BenfordCoordinatorActor` `secureStorage` is
+  deprecated and unused. A plugin's `buildTransaction` /
+  `provisionFunding` may be called several times per payment and must be
+  side-effect free; the plugin signer's `signPreimage` throws
+  `UnsupportedError`.
+- Group reserve/release commands now change UTXO status; release restores
+  the pre-reservation status.
+
+Additive API: `BitcoinUtxo.statusBeforeReservation`,
+`UTXOReleasedEvent.restoredStatus`, `ValidateBEEFMessage.requestId`,
+`BEEFValidationResult.requestId`, `TransactionImportService({headerAtHeight,
+requireVerifiedHeader})`, `ImportedTransaction.headerVerified`,
+`AncestorChainService.orderParentsFirst`, `ARCActor(statusCheckInterval:,
+headerTriggerDebounce:)`, `PaymentChannelManagerActor(signingTimeout:)`,
+`WalletManagerActor(aggregateIdleTimeout:, idleCheckInterval:)`,
+`InvoiceCoordinatorActor(expirySweepInterval:)`,
+`PaymentCoordinatorActor(signingReplyTimeout:)`, `ArcFeeAmount`,
+`ArcTransactionResponse.merklePathHex`.
+
 ## 2.0.0
 
 Dependency upgrade and audit release. libspiffy now tracks **dactor 1.3.0**,

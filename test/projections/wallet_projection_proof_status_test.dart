@@ -135,6 +135,70 @@ void main() {
     expect(shape(history), [(newBlock, MerkleProofStatus.verified), (null, MerkleProofStatus.orphaned)]);
     expect(history.last.merkleProof, [bumpHex]);
   });
+
+  // 9ek (libspiffy-9ek): a confirmation from ARC journals the proof that
+  // backs it; the projection stores that proof from the event.
+  group('9ek: TransactionConfirmedEvent carries its proof', () {
+    TransactionConfirmedEvent confirmed({String? bump}) => TransactionConfirmedEvent(
+          walletId: walletId,
+          txid: kFixtureTxid,
+          blockHeight: kFixtureHeight,
+          blockHash: kFixtureBlockHash,
+          bumpHex: bump,
+          version: 3,
+          timestamp: DateTime.utc(2026, 9, 3),
+        );
+
+    List<(String?, MerkleProofStatus, String, int)> rows(List<MerkleProof> history) =>
+        [for (final p in history) (p.blockHash, p.status, p.merkleProof.join(), p.position)];
+
+    test('with its header stored the proof is verified, bound to that block at the txid position', () async {
+      await storage.storeBlockHeader(fixtureHeader(), kFixtureHeight);
+      await projection.handle(confirmed(bump: bumpHex));
+
+      final proof = (await storage.getMerkleProof(kFixtureTxid))!;
+      expect((proof.blockHash, proof.status), (kFixtureBlockHash, MerkleProofStatus.verified));
+      expect(proof.merkleProof, [bumpHex]);
+      expect(proof.position, kFixtureIndex, reason: 'position is the txid offset in the block');
+      expect(proof.blockHeight, kFixtureHeight);
+    });
+
+    test('without its header the proof is pendingHeader, for SPVActor to verify when the header arrives', () async {
+      await projection.handle(confirmed(bump: bumpHex));
+
+      final proof = (await storage.getMerkleProof(kFixtureTxid))!;
+      expect((proof.blockHash, proof.status), (null, MerkleProofStatus.pendingHeader));
+    });
+
+    test('replaying the journal twice yields the same proof rows and statuses', () async {
+      await storage.storeBlockHeader(fixtureHeader(), kFixtureHeight);
+      final journal = [imported(), reverted(), confirmed(bump: bumpHex)];
+      for (final e in journal) {
+        await projection.handle(e);
+      }
+      final once = rows(await storage.getMerkleProofHistory(kFixtureTxid));
+      expect(once, [(kFixtureBlockHash, MerkleProofStatus.verified, bumpHex, kFixtureIndex)]);
+
+      for (final e in journal) {
+        await projection.handle(e);
+      }
+      expect(rows(await storage.getMerkleProofHistory(kFixtureTxid)), once);
+    });
+
+    test('a row journaled before the BUMP was carried replays: no proof, no error', () async {
+      await storage.storeBlockHeader(fixtureHeader(), kFixtureHeight);
+      final legacy = confirmed().toMap();
+      expect(legacy.containsKey('bumpHex'), isFalse, reason: 'an event without a BUMP writes the old row shape');
+
+      final event = TransactionConfirmedEvent.fromMap(legacy);
+      expect(event.bumpHex, isNull);
+      await projection.handle(event);
+      expect(await storage.getMerkleProofHistory(kFixtureTxid), isEmpty);
+
+      final roundTrip = TransactionConfirmedEvent.fromMap(confirmed(bump: bumpHex).toMap());
+      expect(roundTrip.bumpHex, bumpHex);
+    });
+  });
 }
 
 /// WalletProjection takes an EventStore but never reads from it; handle() is

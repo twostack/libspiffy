@@ -799,8 +799,22 @@ class WalletProjection extends Projection<void> {
     }
   }
 
+  /// A confirmation, with the proof that backs it (bead libspiffy-9ek).
+  ///
+  /// The proof is stored from the event's BUMP under the same status rules
+  /// as an imported proof ([_storeMerkleProofFromBump]): verified when its
+  /// root matches the stored header at its height, else pendingHeader; a
+  /// replayed proof that contradicts the active chain never displaces a
+  /// different verified current proof. It is stored even without a
+  /// transaction row: proofs are keyed by txid, not wallet. Rows journaled
+  /// before the BUMP was carried have none and store no proof. Replaying the
+  /// event again writes the same row.
   Future<void> _handleTransactionConfirmed(TransactionConfirmedEvent event) async {
-    
+    final bumpHex = event.bumpHex;
+    if (bumpHex != null && bumpHex.isNotEmpty) {
+      await _storeMerkleProofFromBump(event.txid, bumpHex);
+    }
+
     try {
       // Fetch the existing transaction from storage
       final existingTx = await _storage.getTransaction(event.txid, walletId: event.walletId);
@@ -831,7 +845,8 @@ class WalletProjection extends Projection<void> {
   /// confirmations (available ones become pending), and the stored proof is
   /// marked orphaned (never deleted, bead mny) if it is still the current one
   /// the event names. A newer proof (the transaction re-mined on the active
-  /// chain, stored by ARCActor) differs and stays current. Idempotent: a
+  /// chain, journaled by a later TransactionConfirmedEvent) differs and stays
+  /// current. Idempotent: a
   /// replay finds nothing left to mark.
   Future<void> _handleTransactionConfirmationReverted(TransactionConfirmationRevertedEvent event) async {
     final existingTx = await _storage.getTransaction(event.txid, walletId: event.walletId);
@@ -1036,7 +1051,7 @@ class WalletProjection extends Projection<void> {
   /// Store the hex-encoded BRC-74 BUMP for [txid] as a MerkleProof.
   ///
   /// The raw BUMP is stored verbatim as the single `merkleProof` element
-  /// (the same convention ARCActor uses; CryptoUtils.buildBUMPFromMerkleProof
+  /// (CryptoUtils.buildBUMPFromMerkleProof
   /// parses it back), so multi-txid BUMPs and duplicate flags survive
   /// storage and outgoing BEEFs carry the proof unchanged. The position is
   /// the offset of the level-0 leaf whose hash is [txid] — a BRC-74 level 0
@@ -1070,7 +1085,8 @@ class WalletProjection extends Projection<void> {
       // reject a proof that contradicts a stored header before this event;
       // a replay after its block left the active chain can still meet one.
       // Such a proof never displaces a different, verified current proof
-      // (ARCActor's, after the reorganization): it is kept as orphaned.
+      // (ARC's, journaled by a later confirmation, after the
+      // reorganization): it is kept as orphaned.
       final check = await checkBumpAgainstHeaders(
         txid: txid,
         bump: bump,

@@ -438,11 +438,17 @@ class ConfirmTransactionCommand extends WalletCommand {
   final int? blockHeight;
   final String? blockHash;
 
+  /// The hex-encoded BRC-74 BUMP proving the transaction is in the block
+  /// (ARC's `merklePath`), journaled with the confirmation so a read model
+  /// rebuilt from the journal keeps the proof (bead libspiffy-9ek).
+  final String? bumpHex;
+
   ConfirmTransactionCommand({
     required String walletId,
     required this.txid,
     this.blockHeight,
     this.blockHash,
+    this.bumpHex,
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,

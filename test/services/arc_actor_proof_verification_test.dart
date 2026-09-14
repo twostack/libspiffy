@@ -16,12 +16,14 @@ import 'dart:async';
 
 import 'package:dactor/dactor.dart';
 import 'package:libspiffy/src/actors/arc_actor.dart';
+import 'package:libspiffy/src/actors/spv_messages.dart' show BlockHeaderStoredMessage;
 import 'package:libspiffy/src/actors/wallet_messages.dart';
 import 'package:libspiffy/src/core/wallet_commands.dart';
 import 'package:libspiffy/src/models/bitcoin_transaction.dart';
 import 'package:libspiffy/src/models/bitcoin_utxo.dart';
 import 'package:libspiffy/src/services/arc_service.dart';
 import 'package:libspiffy/src/storage/in_memory_wallet_storage.dart';
+import 'package:libspiffy/src/storage/read_model_storage.dart' show MerkleProof;
 import 'package:test/test.dart';
 
 import '../spv/testnet_proof_fixture.dart';
@@ -30,16 +32,16 @@ const _wallet = 'w';
 
 void main() {
   late LocalActorSystem system;
-  late InMemoryWalletStorage storage;
+  late _ProofWriteRecordingStorage storage;
   late _RecordingWalletManager walletManager;
   late _FakeArc arc;
   late ActorRef arcActor;
 
-  Future<void> storeTx(String txid, TransactionStatus status, {String rawHex = ''}) =>
+  Future<void> storeTx(String txid, TransactionStatus status, {String rawHex = '', String wallet = _wallet}) =>
       storage.storeTransaction(
-        _wallet,
+        wallet,
         BitcoinTransaction(
-          walletId: _wallet,
+          walletId: wallet,
           txid: txid,
           rawHex: rawHex,
           status: status,
@@ -88,7 +90,7 @@ void main() {
 
   setUp(() {
     system = LocalActorSystem(ActorSystemConfig());
-    storage = InMemoryWalletStorage();
+    storage = _ProofWriteRecordingStorage();
     walletManager = _RecordingWalletManager();
     arc = _FakeArc();
   });
@@ -109,11 +111,65 @@ void main() {
       expect(confirms, hasLength(1));
       expect(confirms.single.blockHeight, kFixtureHeight);
       expect(confirms.single.blockHash, kFixtureBlockHash);
+    });
 
-      final proof = await storage.getMerkleProof(kFixtureTxid);
-      expect(proof, isNotNull);
-      expect(proof!.merkleProof, equals([fixtureBumpHex()]));
-      expect(proof.position, kFixtureIndex, reason: 'position is the txid offset in the block');
+    // 9ek (libspiffy-9ek): the actor stored the proof straight into the read
+    // model and journaled only txid, height and hash, so a read model rebuilt
+    // from the journal had no proof. The verified BUMP now travels in the
+    // command (and so the event); the actor writes no proof itself.
+    test('9ek: the verified BUMP goes to the wallet in the command; the actor writes no proof to the read model',
+        () async {
+      await storage.storeBlockHeader(fixtureHeader(), kFixtureHeight);
+      await storeTx(kFixtureTxid, TransactionStatus.seenOnNetwork);
+      arc.responses[kFixtureTxid] = mined();
+      await spawnActor();
+
+      headersArrived();
+      await settleAfterArcCalls(1);
+
+      final confirms = walletManager.commands.whereType<ConfirmTransactionCommand>().toList();
+      expect(confirms, hasLength(1));
+      expect(storage.proofWrites, isEmpty, reason: 'proofs reach the read model only through the journal');
+      expect(await storage.getMerkleProof(kFixtureTxid), isNull);
+      expect(confirms.single.bumpHex, fixtureBumpHex());
+    });
+
+    test('9ek: every wallet holding the transaction gets its own confirmation with the BUMP', () async {
+      await storage.storeBlockHeader(fixtureHeader(), kFixtureHeight);
+      await storeTx(kFixtureTxid, TransactionStatus.seenOnNetwork);
+      await storeTx(kFixtureTxid, TransactionStatus.broadcast, wallet: 'w2');
+      arc.responses[kFixtureTxid] = mined();
+      await spawnActor();
+
+      headersArrived();
+      await settleAfterArcCalls(2);
+
+      final confirms = walletManager.commands.whereType<ConfirmTransactionCommand>().toList();
+      expect([for (final c in confirms) c.walletId]..sort(), ['w', 'w2'],
+          reason: 'one command per wallet, in the same scan');
+      expect(confirms.map((c) => c.bumpHex).toSet(), {fixtureBumpHex()});
+      expect(storage.proofWrites, isEmpty);
+    });
+
+    test('9ek: a MINED report held for its header confirms every wallet that met it once the header arrives',
+        () async {
+      await storeTx(kFixtureTxid, TransactionStatus.seenOnNetwork);
+      await storeTx(kFixtureTxid, TransactionStatus.seenOnNetwork, wallet: 'w2');
+      arc.responses[kFixtureTxid] = mined();
+      await spawnActor();
+
+      headersArrived();
+      await settleAfterArcCalls(2);
+      expect(walletManager.commands.whereType<ConfirmTransactionCommand>(), isEmpty);
+
+      arc.responses.remove(kFixtureTxid); // ARC unreachable: only the held reports can confirm
+      await storage.storeBlockHeader(fixtureHeader(), kFixtureHeight);
+      arcActor.tell(BlockHeaderStoredMessage(height: kFixtureHeight, header: fixtureHeader()));
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+
+      final confirms = walletManager.commands.whereType<ConfirmTransactionCommand>().toList();
+      expect([for (final c in confirms) c.walletId]..sort(), ['w', 'w2']);
+      expect(confirms.map((c) => c.bumpHex).toSet(), {fixtureBumpHex()});
     });
 
     test('a proof whose root does not match the header at that height does not confirm', () async {
@@ -300,6 +356,25 @@ void main() {
       expect(arc.getTransactionCalls, 1, reason: 'unknown-to-ARC pending transactions back off');
     });
   });
+}
+
+/// Records every proof write the actor makes to the read model.
+class _ProofWriteRecordingStorage extends InMemoryWalletStorage {
+  final List<String> proofWrites = [];
+
+  @override
+  Future<void> storeMerkleProof(String txid, MerkleProof proof) async {
+    proofWrites.add(txid);
+    await super.storeMerkleProof(txid, proof);
+  }
+
+  @override
+  Future<bool> markMerkleProofOrphaned(String txid,
+      {String? blockHash, List<String>? onlyIfMerkleProof, DateTime? at}) async {
+    proofWrites.add('orphaned:$txid');
+    return super.markMerkleProofOrphaned(txid,
+        blockHash: blockHash, onlyIfMerkleProof: onlyIfMerkleProof, at: at);
+  }
 }
 
 class _RecordingWalletManager extends Actor {

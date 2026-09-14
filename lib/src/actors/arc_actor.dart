@@ -20,13 +20,14 @@ import '../utils/beef.dart';
 import 'spv_messages.dart' show BlockHeaderStoredMessage;
 import 'wallet_messages.dart';
 
-/// A MINED report whose block header is not stored yet (SPV-09).
+/// A MINED report whose block header is not stored yet (SPV-09), with every
+/// wallet whose scan met it (each is confirmed once the header arrives).
 class _PendingProof {
-  final String walletId;
+  final Set<String> walletIds;
   final String bumpHex;
   final int? claimedHeight;
 
-  _PendingProof(this.walletId, this.bumpHex, this.claimedHeight);
+  _PendingProof(this.walletIds, this.bumpHex, this.claimedHeight);
 }
 
 /// Back-off state of a pending transaction ARC does not report progress on.
@@ -47,8 +48,13 @@ enum _CheckOutcome { changed, unchanged, unknown }
 /// header at that height. If no header is stored yet the proof is held and
 /// re-checked whenever headers arrive (CheckStoragePendingUTXOsMessage or
 /// BlockHeaderStoredMessage); a root mismatch is logged SEVERE and never
-/// confirmed. The stored proof carries the local header's hash and the
-/// transaction's real position.
+/// confirmed.
+///
+/// Proof retention (bead libspiffy-9ek): the actor never writes proofs to the
+/// read model. The verified BUMP travels in ConfirmTransactionCommand (one
+/// per wallet holding the transaction) and is journaled in
+/// TransactionConfirmedEvent; WalletProjection stores the proof from the
+/// event, so a read model rebuilt from the journal has it.
 ///
 /// Status monitoring (A-M3): one scan at a time. A timer tick that finds a
 /// scan running is skipped; header notifications are debounced by
@@ -91,18 +97,21 @@ class ARCActor extends Actor {
   /// MINED reports waiting for their block header, by txid.
   final Map<String, _PendingProof> _pendingProofs = {};
 
-  /// When this actor last confirmed a txid, so a scan racing a header
-  /// re-check does not confirm twice. Entries expire (the confirmation
-  /// command may have been lost; the projection moves a confirmed
-  /// transaction out of the scanned states anyway).
-  final Map<String, DateTime> _recentlyConfirmed = {};
+  /// When this actor last confirmed a txid in a wallet, so a scan racing a
+  /// header re-check does not confirm twice. Keyed per wallet: another
+  /// wallet holding the same transaction still gets its own confirmation.
+  /// Entries expire (the confirmation command may have been lost; the
+  /// projection moves a confirmed transaction out of the scanned states
+  /// anyway).
+  final Map<(String, String), DateTime> _recentlyConfirmed = {};
 
-  bool _confirmedRecently(String txid) {
-    final at = _recentlyConfirmed[txid];
+  bool _confirmedRecently(String walletId, String txid) {
+    final key = (walletId, txid);
+    final at = _recentlyConfirmed[key];
     if (at == null) return false;
     final window = statusCheckInterval * 2 > _minReconfirmWindow ? statusCheckInterval * 2 : _minReconfirmWindow;
     if (DateTime.now().difference(at) < window) return true;
-    _recentlyConfirmed.remove(txid);
+    _recentlyConfirmed.remove(key);
     return false;
   }
 
@@ -268,8 +277,9 @@ class ARCActor extends Actor {
   /// back to pending once the revert is projected; the debounced scan, or
   /// the next periodic one, picks them up from there.
   void _handleConfirmationsReverted(TransactionConfirmationsRevertedMessage msg) {
-    for (final txid in msg.txids) {
-      _recentlyConfirmed.remove(txid);
+    final txids = msg.txids.toSet();
+    _recentlyConfirmed.removeWhere((key, _) => txids.contains(key.$2));
+    for (final txid in txids) {
       _pendingProofs.remove(txid);
       _pendingBackoff.remove(txid);
     }
@@ -752,13 +762,13 @@ class ARCActor extends Actor {
   /// ARC says [txid] is MINED: verify its merkle path against the stored
   /// header at that height before confirming (SPV-09).
   Future<void> _handleMinedReport(String txid, String walletId, ArcTransactionResponse response) async {
-    if (_confirmedRecently(txid)) return;
+    if (_confirmedRecently(walletId, txid)) return;
     final bumpHex = response.merklePathHex;
     if (bumpHex == null) {
       _log.warning('ARC reports $txid MINED without a merklePath; not confirming until a proof is available');
       return;
     }
-    await _applyProofCheck(txid, _PendingProof(walletId, bumpHex, response.blockHeight),
+    await _applyProofCheck(txid, _PendingProof({walletId}, bumpHex, response.blockHeight),
         arcBlockHash: response.blockHash);
   }
 
@@ -779,9 +789,14 @@ class ARCActor extends Actor {
         await _confirmVerified(txid, proof, check);
         break;
       case ProofHeaderStatus.headerUnknown:
-        if (!_pendingProofs.containsKey(txid)) {
+        final held = _pendingProofs[txid];
+        if (held == null) {
           _log.info('ARC reports $txid MINED at height ${check.blockHeight}; header not stored yet, '
               'confirmation deferred until it arrives');
+        } else if (!identical(held, proof)) {
+          // Another wallet's scan met the same transaction: confirm every
+          // wallet once the header arrives, with the latest report.
+          proof.walletIds.addAll(held.walletIds);
         }
         _pendingProofs[txid] = proof;
         break;
@@ -798,37 +813,39 @@ class ARCActor extends Actor {
   }
 
   Future<void> _confirmVerified(String txid, _PendingProof proof, ProofHeaderCheck check) async {
-    // Claim the txid synchronously so a concurrent scan / re-check cannot
-    // confirm it a second time.
-    if (_confirmedRecently(txid)) return;
-    _recentlyConfirmed[txid] = DateTime.now();
-    _recentlyConfirmed.removeWhere((_, at) => DateTime.now().difference(at) > _minReconfirmWindow * 10);
+    // Claim each (wallet, txid) synchronously so a concurrent scan / re-check
+    // cannot confirm it a second time.
+    final walletIds = [
+      for (final walletId in proof.walletIds)
+        if (!_confirmedRecently(walletId, txid)) walletId,
+    ];
+    final now = DateTime.now();
+    for (final walletId in walletIds) {
+      _recentlyConfirmed[(walletId, txid)] = now;
+    }
+    _recentlyConfirmed.removeWhere((_, at) => now.difference(at) > _minReconfirmWindow * 10);
     _pendingProofs.remove(txid);
 
-    try {
-      // Checked against the local header just now. A proof of an earlier
-      // block (orphaned by a reorganization) stays stored as orphaned.
-      await _storage.storeMerkleProof(txid, MerkleProof(
+    // The proof checked out against the local header just now. It is not
+    // written to the read model here: it is journaled with the confirmation
+    // (TransactionConfirmedEvent.bumpHex) and WalletProjection stores it from
+    // the event, so the journal holds it (bead libspiffy-9ek). A proof of an
+    // earlier block (orphaned by a reorganization) stays stored as orphaned.
+    for (final walletId in walletIds) {
+      _walletManager.tell(WalletCommandMessage(walletId, ConfirmTransactionCommand(
+        walletId: walletId,
         txid: txid,
-        blockHash: check.blockHash!,
-        blockHeight: check.blockHeight!,
-        merkleProof: [proof.bumpHex],
-        position: check.txIndex!,
-        status: MerkleProofStatus.verified,
-      ));
-    } catch (e) {
-      _log.warning('Failed to store merkle proof for $txid: $e');
+        blockHeight: check.blockHeight,
+        blockHash: check.blockHash,
+        bumpHex: proof.bumpHex,
+      )));
+      _log.info('Transaction $txid confirmed in wallet $walletId at height ${check.blockHeight} '
+          '(proof verified against local header)');
     }
 
-    _walletManager.tell(WalletCommandMessage(proof.walletId, ConfirmTransactionCommand(
-      walletId: proof.walletId,
-      txid: txid,
-      blockHeight: check.blockHeight,
-      blockHash: check.blockHash,
-    )));
-    _log.info('Transaction $txid confirmed at height ${check.blockHeight} (proof verified against local header)');
-
-    await _applyDeferredSpendOnMined(txid, proof.walletId);
+    for (final walletId in walletIds) {
+      await _applyDeferredSpendOnMined(txid, walletId);
+    }
   }
 
   /// A mined transaction has certainly reached the network. SEEN_ON_NETWORK

@@ -1376,6 +1376,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
       txid: command.txid,
       blockHeight: command.blockHeight,
       blockHash: command.blockHash,
+      bumpHex: command.bumpHex,
       version: currentState.version + 1,
       timestamp: DateTime.now(),
     );

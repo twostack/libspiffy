@@ -1209,11 +1209,19 @@ class TransactionConfirmedEvent extends WalletEvent {
   final int? blockHeight;
   final String? blockHash;
 
+  /// The hex-encoded BRC-74 BUMP that proved the confirmation (ARC's
+  /// `merklePath`, checked against the local header before the command was
+  /// sent). WalletProjection stores the merkle proof from it, so the journal,
+  /// not the read model alone, holds the proof (bead libspiffy-9ek). Null in
+  /// rows journaled before it existed; those replay without a proof.
+  final String? bumpHex;
+
   TransactionConfirmedEvent({
     required String walletId,
     required this.txid,
     this.blockHeight,
     this.blockHash,
+    this.bumpHex,
     String? eventId,
     DateTime? timestamp,
     int? version,
@@ -1232,6 +1240,7 @@ class TransactionConfirmedEvent extends WalletEvent {
       'txid': txid,
       'blockHeight': blockHeight,
       'blockHash': blockHash,
+      if (bumpHex != null) 'bumpHex': bumpHex,
     };
   }
 
@@ -1241,6 +1250,7 @@ class TransactionConfirmedEvent extends WalletEvent {
       txid: map['txid'] as String,
       blockHeight: map['blockHeight'] as int?,
       blockHash: map['blockHash'] as String?,
+      bumpHex: map['bumpHex'] as String?,
       eventId: map['eventId'] as String?,
       timestamp: map['timestamp'] != null
           ? (map['timestamp'] is String 

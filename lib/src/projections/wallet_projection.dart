@@ -89,94 +89,107 @@ class WalletProjection extends Projection<void> {
     // Projection manager will replay events after rebuild
   }
   
+  /// Applies [event] to the read model.
+  ///
+  /// Contract (audit M2):
+  /// - **Tolerant.** Under eventador's ProjectionActor a handler that throws
+  ///   has its event skipped for good (the checkpoint later moves past it and
+  ///   awaiters never resolve), so a missing read-model row must never throw.
+  ///   Where the event carries the data, the missing row is rebuilt from it;
+  ///   otherwise the gap is logged at WARNING and the event is acknowledged.
+  ///   Storage failures (the backend itself throwing) still propagate.
+  /// - **Idempotent.** Applying the same event again (replay after a lagging
+  ///   checkpoint, rebuild over existing rows) leaves the read model as one
+  ///   application did. Every derived value is written as an absolute value
+  ///   recomputed from the UTXO rows, never as a delta; see [_syncAddress].
   @override
   Future<bool> handle(Event event) async {
     if (event is! WalletEvent) {
       return false;
     }
-    
-    
-    try {
-      switch (event.runtimeType) {
-        case WalletCreatedEvent:
-          await _handleWalletCreated(event as WalletCreatedEvent);
-          return true;
-        case WalletDeletedEvent:
-          await _handleWalletDeleted(event as WalletDeletedEvent);
-          return true;
-        case WalletConfigurationUpdatedEvent:
-          await _handleWalletConfigurationUpdated(event as WalletConfigurationUpdatedEvent);
-          return true;
-        case AddressGeneratedEvent:
-          await _handleAddressGenerated(event as AddressGeneratedEvent);
-          return true;
-        case AddressDiscoveredEvent:
-          await _handleAddressDiscovered(event as AddressDiscoveredEvent);
-          return true;
-        case AddressLabelUpdatedEvent:
-          // Label updates don't affect read model statistics
-          return true;
-        case UTXOReceivedEvent:
-          await _handleUTXOReceived(event as UTXOReceivedEvent);
-          return true;
-        case UTXOMarkedAvailableEvent:
-          await _handleUTXOMarkedAvailable(event as UTXOMarkedAvailableEvent);
-          return true;
-        case UTXOSpentEvent:
-          await _handleUTXOSpent(event as UTXOSpentEvent);
-          return true;
-        case UTXOConfirmationUpdatedEvent:
-          await _handleUTXOConfirmationUpdated(event as UTXOConfirmationUpdatedEvent);
-          return true;
-        case UTXOReservedEvent:
-          await _handleUTXOReserved(event as UTXOReservedEvent);
-          return true;
-        case UTXOReleasedEvent:
-          await _handleUTXOReleased(event as UTXOReleasedEvent);
-          return true;
-        case UTXOReservationRenewedEvent:
-          // Renewal doesn't change statistics
-          return true;
-        case TransactionImportedEvent:
-          await _handleTransactionImported(event as TransactionImportedEvent);
-          return true;
-        case TransactionRecordedEvent:
-          await _handleTransactionRecorded(event as TransactionRecordedEvent);
-          return true;
-        case TransactionConfirmedEvent:
-          await _handleTransactionConfirmed(event as TransactionConfirmedEvent);
-          return true;
-        case TransactionStatusUpdatedEvent:
-          await _handleTransactionStatusUpdated(event as TransactionStatusUpdatedEvent);
-          return true;
-        default:
-          return false;
-      }
-    } catch (e) {
-      rethrow;
+
+    switch (event.runtimeType) {
+      case WalletCreatedEvent:
+        await _handleWalletCreated(event as WalletCreatedEvent);
+        return true;
+      case WalletDeletedEvent:
+        await _handleWalletDeleted(event as WalletDeletedEvent);
+        return true;
+      case WalletConfigurationUpdatedEvent:
+        await _handleWalletConfigurationUpdated(event as WalletConfigurationUpdatedEvent);
+        return true;
+      case AddressGeneratedEvent:
+        await _handleAddressGenerated(event as AddressGeneratedEvent);
+        return true;
+      case AddressDiscoveredEvent:
+        await _handleAddressDiscovered(event as AddressDiscoveredEvent);
+        return true;
+      case AddressLabelUpdatedEvent:
+        // Label updates don't affect read model statistics
+        return true;
+      case UTXOReceivedEvent:
+        await _handleUTXOReceived(event as UTXOReceivedEvent);
+        return true;
+      case UTXOMarkedAvailableEvent:
+        await _handleUTXOMarkedAvailable(event as UTXOMarkedAvailableEvent);
+        return true;
+      case UTXOSpentEvent:
+        await _handleUTXOSpent(event as UTXOSpentEvent);
+        return true;
+      case UTXOConfirmationUpdatedEvent:
+        await _handleUTXOConfirmationUpdated(event as UTXOConfirmationUpdatedEvent);
+        return true;
+      case UTXOReservedEvent:
+        await _handleUTXOReserved(event as UTXOReservedEvent);
+        return true;
+      case UTXOReleasedEvent:
+        await _handleUTXOReleased(event as UTXOReleasedEvent);
+        return true;
+      case UTXOReservationRenewedEvent:
+        // Renewal doesn't change statistics
+        return true;
+      case TransactionImportedEvent:
+        await _handleTransactionImported(event as TransactionImportedEvent);
+        return true;
+      case TransactionRecordedEvent:
+        await _handleTransactionRecorded(event as TransactionRecordedEvent);
+        return true;
+      case TransactionConfirmedEvent:
+        await _handleTransactionConfirmed(event as TransactionConfirmedEvent);
+        return true;
+      case TransactionStatusUpdatedEvent:
+        await _handleTransactionStatusUpdated(event as TransactionStatusUpdatedEvent);
+        return true;
+      default:
+        return false;
     }
   }
   
   Future<void> _handleWalletCreated(WalletCreatedEvent event) async {
-    
-    // Persist root address to AddressEntity
-    final rootAddressMetadata = AddressMetadata(
-      address: event.rootAddress,
-      scriptType: 'p2pkh',
-      derivationPath: 'm/0/0', // First receiving address
-      derivationIndex: 0,
-      isChange: false,
-      label: 'Root address (m/0/0)',
-      purpose: 'receive',
-      firstUsedAt: null,
-      lastUsedAt: null,
-      usageCount: 0,
-      balance: BigInt.zero,
-      createdAt: event.timestamp,
-      isWatched: true,
-    );
-    await _storage.upsertAddress(event.walletId, rootAddressMetadata);
-    
+    // Root address first, with a single lookup: SPVActor.isWalletAddress
+    // reads it as soon as the coordinator reports the wallet created, and
+    // that report does not wait for this projection. An existing row means
+    // a replay; it is left as is so its usage and balance survive.
+    final existingRoot = await _storage.getAddressMetadata(event.walletId, event.rootAddress);
+    if (existingRoot == null) {
+      await _storage.upsertAddress(event.walletId, AddressMetadata(
+        address: event.rootAddress,
+        scriptType: 'p2pkh',
+        derivationPath: 'm/0/0', // First receiving address
+        derivationIndex: 0,
+        isChange: false,
+        label: 'Root address (m/0/0)',
+        purpose: 'receive',
+        firstUsedAt: null,
+        lastUsedAt: null,
+        usageCount: 0,
+        balance: BigInt.zero,
+        createdAt: event.timestamp,
+        isWatched: true,
+      ));
+    }
+    final replay = existingRoot != null || await _storage.getWallet(event.walletId) != null;
+
     // Store wallet metadata directly to storage (no in-memory caching)
     await _storage.storeWallet(
       event.walletId,
@@ -195,8 +208,15 @@ class WalletProjection extends Projection<void> {
         'lastUpdated': event.timestamp.toIso8601String(),
       },
     );
+
+    // A replayed creation must not zero the balances and counts that later
+    // events already derived: recompute them from the rows.
+    if (replay) {
+      await _updateWalletAddressCount(event.walletId, event.timestamp);
+      await _recalculateAndPersistForWallet(event.walletId, event.timestamp);
+    }
   }
-  
+
   Future<void> _handleWalletDeleted(WalletDeletedEvent event) async {
     await _storage.deleteWallet(event.walletId);
   }
@@ -205,16 +225,17 @@ class WalletProjection extends Projection<void> {
     // Read current wallet from storage
     final existingWallet = await _storage.getWallet(event.walletId);
     if (existingWallet == null) {
+      _log.warning('WalletConfigurationUpdated for ${event.walletId}: no wallet row; skipped');
       return;
     }
-    
+
     // Update wallet metadata in storage
     final existingMetadata = existingWallet['metadata'] as Map<String, dynamic>? ?? {};
     await _storage.storeWallet(
       event.walletId,
       event.newName ?? existingWallet['name'] as String,
-      rootAddress: existingWallet['root_address'] as String?,
-      networkType: existingWallet['network_type'] as String?,
+      rootAddress: existingWallet['rootAddress'] as String?,
+      networkType: (existingWallet['network'] ?? existingWallet['networkType']) as String?,
       metadata: {
         ...existingMetadata,
         if (event.newMetadata != null) ...event.newMetadata!,
@@ -226,7 +247,7 @@ class WalletProjection extends Projection<void> {
   Future<void> _handleAddressGenerated(AddressGeneratedEvent event) async {
     
     // Store address in AddressEntity
-    final metadata = AddressMetadata(
+    final metadata = await _preservingUsage(event.walletId, AddressMetadata(
       address: event.address,
       scriptType: 'p2pkh', // Standard HD wallet addresses are P2PKH
       derivationPath: null, // AddressGeneratedEvent doesn't include derivation path
@@ -240,7 +261,7 @@ class WalletProjection extends Projection<void> {
       balance: BigInt.zero,
       createdAt: event.timestamp,
       isWatched: true,
-    );
+    ));
     await _storage.upsertAddress(event.walletId, metadata);
     
     // Update wallet metadata with new address count (read from storage, update, write back)
@@ -250,7 +271,7 @@ class WalletProjection extends Projection<void> {
   Future<void> _handleAddressDiscovered(AddressDiscoveredEvent event) async {
     
     // Store discovered address in AddressEntity
-    final metadata = AddressMetadata(
+    final metadata = await _preservingUsage(event.walletId, AddressMetadata(
       address: event.address,
       scriptType: 'p2pkh', // Discovered addresses are typically P2PKH
       derivationPath: null,
@@ -264,7 +285,7 @@ class WalletProjection extends Projection<void> {
       balance: BigInt.zero,
       createdAt: event.timestamp,
       isWatched: true,
-    );
+    ));
     await _storage.upsertAddress(event.walletId, metadata);
     
     // Update wallet metadata with new address count (read from storage, update, write back)
@@ -275,6 +296,7 @@ class WalletProjection extends Projection<void> {
   Future<void> _updateWalletAddressCount(String walletId, DateTime timestamp) async {
     final existingWallet = await _storage.getWallet(walletId);
     if (existingWallet == null) {
+      _log.warning('No wallet row for $walletId; address count not updated');
       return;
     }
     
@@ -327,9 +349,8 @@ class WalletProjection extends Projection<void> {
         // This can happen for payment channel addresses or other externally generated addresses
         String scriptType = scriptMetadata?['scriptType'] as String? ?? 'unknown';
 
-        // Created empty: the updateAddressUsage call below records the
-        // first use and the balance exactly once (it used to be applied here
-        // as well, doubling both on the first UTXO for a new address).
+        // Created empty: _syncAddress below records the first use and the
+        // balance exactly once (audit H5).
         final newAddressMeta = AddressMetadata(
           address: event.address,
           scriptType: scriptType,
@@ -351,112 +372,205 @@ class WalletProjection extends Projection<void> {
         await _updateWalletAddressCount(event.walletId, event.timestamp);
       }
     }
-    
-    // Update address usage statistics
-    if (event.address.isNotEmpty) {
-      await _storage.updateAddressUsage(
-        event.walletId,
-        event.address,
-        usedAt: event.timestamp,
-        balanceDelta: BigInt.from(event.satoshis),
+
+    // A row that already exists means this receipt was applied before (the
+    // aggregate rejects duplicate UTXOs): leave the row alone so a replay
+    // does not regress a later spent/reserved/confirmed state, and do not
+    // count the address use again.
+    final existing = await _findUtxo(event.walletId, event.txid, event.vout);
+    if (existing == null) {
+      final utxo = BitcoinUtxo.create(
+        txid: event.txid,
+        vout: event.vout,
+        satoshis: BigInt.from(event.satoshis),
+        scriptPubKey: event.scriptPubKey,
+        address: event.address,
+        blockHeight: event.blockHeight,
+        confirmations: event.confirmations ?? 0,
+        status: event.initialStatus,
+        derivationIndex: derivationIndex,
+        pluginMetadata: scriptMetadata,
       );
+      await _storage.upsertUTXO(event.walletId, utxo);
     }
-    
-    // Create UTXO and persist directly to storage
-    final utxo = BitcoinUtxo.create(
-      txid: event.txid,
-      vout: event.vout,
-      satoshis: BigInt.from(event.satoshis),
-      scriptPubKey: event.scriptPubKey,
-      address: event.address,
-      blockHeight: event.blockHeight,
-      confirmations: event.confirmations ?? 0,
-      status: event.initialStatus,
-      derivationIndex: derivationIndex,
-      pluginMetadata: scriptMetadata,
-    );
-    await _storage.upsertUTXO(event.walletId, utxo);
-    
-    // Recalculate and persist wallet metadata (balance, counts, etc.)
-    await _recalculateAndPersistForWallet(event.walletId, event.timestamp);
-  }
-  
-  Future<void> _handleUTXOMarkedAvailable(UTXOMarkedAvailableEvent event) async {
-    
-    // Get from storage
+
     final utxos = await _storage.getUTXOs(event.walletId, includeSpent: true);
-    final utxo = utxos.firstWhere(
-      (u) => u.txid == event.txid && u.vout == event.vout,
-      orElse: () => throw StateError('UTXO not found'),
+    await _syncAddress(event.walletId, event.address, utxos,
+        newUseAt: existing == null ? event.timestamp : null);
+    await _recalculateAndPersistForWallet(event.walletId, event.timestamp, utxos);
+  }
+
+  /// The read-model row for txid:vout, or null.
+  Future<BitcoinUtxo?> _findUtxo(String walletId, String txid, int vout) async {
+    final utxos = await _storage.getUTXOs(walletId, includeSpent: true);
+    for (final u in utxos) {
+      if (u.txid == txid && u.vout == vout) return u;
+    }
+    return null;
+  }
+
+  /// Logs a UTXO event whose row the read model does not have. None of the
+  /// UTXO status events carries amount, script or address, so the row cannot
+  /// be rebuilt from them; the event is acknowledged rather than thrown.
+  void _warnMissingUtxo(WalletEvent event, String txid, int vout) {
+    _log.warning('${event.runtimeType} for ${event.walletId} $txid:$vout: '
+        'UTXO not in the read model; event acknowledged without changes');
+  }
+
+  /// Sets [address]'s balance to the sum of its unspent UTXO rows in [utxos]
+  /// and, when [newUseAt] is given, records one more use.
+  ///
+  /// Idempotency design (audit M2): the balance is recomputed from the UTXO
+  /// rows (absolute, so replaying any event converges), and the usage count
+  /// moves only when a UTXO row is created, which happens once per outpoint.
+  /// Rows are written through upsertAddress, not updateAddressUsage, so the
+  /// result does not depend on a backend's increment semantics.
+  Future<void> _syncAddress(
+    String walletId,
+    String address,
+    List<BitcoinUtxo> utxos, {
+    DateTime? newUseAt,
+  }) async {
+    if (address.isEmpty) return;
+    final meta = await _storage.getAddressMetadata(walletId, address);
+    if (meta == null) {
+      _log.warning('No address row for $walletId $address; balance not updated');
+      return;
+    }
+    var balance = BigInt.zero;
+    for (final u in utxos) {
+      if (u.address == address && u.status != UTXOStatus.spent) {
+        balance += u.satoshis;
+      }
+    }
+    if (balance == meta.balance && newUseAt == null) return;
+
+    final lastUsedAt = newUseAt != null &&
+            (meta.lastUsedAt == null || newUseAt.isAfter(meta.lastUsedAt!))
+        ? newUseAt
+        : meta.lastUsedAt;
+    await _storage.upsertAddress(
+      walletId,
+      _copyAddress(
+        meta,
+        balance: balance,
+        usageCount: meta.usageCount + (newUseAt != null ? 1 : 0),
+        firstUsedAt: meta.firstUsedAt ?? newUseAt,
+        lastUsedAt: lastUsedAt,
+      ),
     );
-    
+  }
+
+  /// [fresh] with the usage statistics of the address row that already
+  /// exists, so a replayed address/wallet creation does not zero them.
+  Future<AddressMetadata> _preservingUsage(String walletId, AddressMetadata fresh) async {
+    final existing = await _storage.getAddressMetadata(walletId, fresh.address);
+    if (existing == null) return fresh;
+    return _copyAddress(
+      fresh,
+      derivationPath: fresh.derivationPath ?? existing.derivationPath,
+      derivationIndex: fresh.derivationIndex ?? existing.derivationIndex,
+      usageCount: fresh.usageCount > existing.usageCount ? fresh.usageCount : existing.usageCount,
+      balance: existing.balance,
+      firstUsedAt: existing.firstUsedAt,
+      lastUsedAt: existing.lastUsedAt,
+      createdAt: existing.createdAt,
+    );
+  }
+
+  static AddressMetadata _copyAddress(
+    AddressMetadata m, {
+    String? derivationPath,
+    int? derivationIndex,
+    int? usageCount,
+    BigInt? balance,
+    DateTime? firstUsedAt,
+    DateTime? lastUsedAt,
+    DateTime? createdAt,
+  }) =>
+      AddressMetadata(
+        address: m.address,
+        scriptType: m.scriptType,
+        derivationPath: derivationPath ?? m.derivationPath,
+        derivationIndex: derivationIndex ?? m.derivationIndex,
+        isChange: m.isChange,
+        label: m.label,
+        purpose: m.purpose,
+        firstUsedAt: firstUsedAt ?? m.firstUsedAt,
+        lastUsedAt: lastUsedAt ?? m.lastUsedAt,
+        usageCount: usageCount ?? m.usageCount,
+        balance: balance ?? m.balance,
+        createdAt: createdAt ?? m.createdAt,
+        isWatched: m.isWatched,
+      );
+
+  Future<void> _handleUTXOMarkedAvailable(UTXOMarkedAvailableEvent event) async {
+    final utxo = await _findUtxo(event.walletId, event.txid, event.vout);
+    if (utxo == null) {
+      _warnMissingUtxo(event, event.txid, event.vout);
+      return;
+    }
+
     if (utxo.status == UTXOStatus.pending) {
       final updatedUtxo = utxo.markAvailable();
       await _storage.upsertUTXO(event.walletId, updatedUtxo);
       await _recalculateAndPersistForWallet(event.walletId, event.timestamp);
-    } else {
     }
   }
-  
-  Future<void> _handleUTXOSpent(UTXOSpentEvent event) async {
-    
-    // Get the UTXO from storage
-    final utxos = await _storage.getUTXOs(event.walletId, includeSpent: true);
-    final utxo = utxos.firstWhere(
-      (u) => u.txid == event.txid && u.vout == event.vout,
-      orElse: () => throw StateError('UTXO not found for spending'),
-    );
-    
-    // Mark as spent
-    final spentUtxo = utxo.copyWith(
-      status: UTXOStatus.spent,
-      updatedAt: event.timestamp,
-    );
-    
-    // Update in storage
-    await _storage.upsertUTXO(event.walletId, spentUtxo);
 
-    // The address balance was credited on receipt; debit it on spend.
-    if (utxo.status != UTXOStatus.spent && utxo.address.isNotEmpty) {
-      await _storage.updateAddressUsage(
+  Future<void> _handleUTXOSpent(UTXOSpentEvent event) async {
+    final utxo = await _findUtxo(event.walletId, event.txid, event.vout);
+    if (utxo == null) {
+      _warnMissingUtxo(event, event.txid, event.vout);
+      return;
+    }
+
+    if (utxo.status != UTXOStatus.spent) {
+      await _storage.upsertUTXO(
         event.walletId,
-        utxo.address,
-        balanceDelta: -utxo.satoshis,
+        utxo.copyWith(status: UTXOStatus.spent, updatedAt: event.timestamp),
       );
     }
-    
-    await _recalculateAndPersistForWallet(event.walletId, event.timestamp);
-  }
-  
-  Future<void> _handleUTXOConfirmationUpdated(UTXOConfirmationUpdatedEvent event) async {
-    // Get from storage
+
+    // Address balance and wallet totals are recomputed from the rows, so a
+    // replayed spend cannot debit twice.
     final utxos = await _storage.getUTXOs(event.walletId, includeSpent: true);
-    final utxo = utxos.firstWhere(
-      (u) => u.txid == event.txid && u.vout == event.vout,
-      orElse: () => throw StateError('UTXO not found'),
-    );
-    
-    // Update confirmations and status
-    // If confirmations > 0, mark as available (transition from pending)
+    await _syncAddress(event.walletId, utxo.address, utxos);
+    await _recalculateAndPersistForWallet(event.walletId, event.timestamp, utxos);
+  }
+
+  Future<void> _handleUTXOConfirmationUpdated(UTXOConfirmationUpdatedEvent event) async {
+    final utxo = await _findUtxo(event.walletId, event.txid, event.vout);
+    if (utxo == null) {
+      _warnMissingUtxo(event, event.txid, event.vout);
+      return;
+    }
+
+    // Confirmations and height only; the status moves solely from pending to
+    // available (BitcoinUtxo.updateConfirmations, the aggregate's rule).
+    // Forcing `available` resurrected spent and reserved UTXOs (audit M1).
     final updatedUtxo = utxo.updateConfirmations(
       blockHeight: event.blockHeight,
       confirmations: event.confirmations,
-    ).copyWith(
-      status: event.confirmations > 0 ? UTXOStatus.available : utxo.status,
     );
-    
+
     await _storage.upsertUTXO(event.walletId, updatedUtxo);
     await _recalculateAndPersistForWallet(event.walletId, event.timestamp);
   }
-  
+
   Future<void> _handleUTXOReserved(UTXOReservedEvent event) async {
-    // Get from storage
-    final utxos = await _storage.getUTXOs(event.walletId, includeSpent: true);
-    final utxo = utxos.firstWhere(
-      (u) => u.txid == event.txid && u.vout == event.vout,
-      orElse: () => throw StateError('UTXO not found'),
-    );
-    
+    final utxo = await _findUtxo(event.walletId, event.txid, event.vout);
+    if (utxo == null) {
+      _warnMissingUtxo(event, event.txid, event.vout);
+      return;
+    }
+    if (utxo.status == UTXOStatus.spent) {
+      // Only reachable on replay (the aggregate never reserves a spent UTXO);
+      // the later spend wins.
+      _log.warning('UTXOReservedEvent for spent UTXO ${event.txid}:${event.vout}; ignored');
+      return;
+    }
+
     final updatedUtxo = utxo.copyWith(
       status: UTXOStatus.reserved,
       reservedByTxId: event.reservedByTxId,
@@ -468,26 +582,34 @@ class WalletProjection extends Projection<void> {
     await _storage.upsertUTXO(event.walletId, updatedUtxo);
     await _recalculateAndPersistForWallet(event.walletId, event.timestamp);
   }
-  
+
   Future<void> _handleUTXOReleased(UTXOReleasedEvent event) async {
-    // Get from storage
-    final utxos = await _storage.getUTXOs(event.walletId, includeSpent: true);
-    final utxo = utxos.firstWhere(
-      (u) => u.txid == event.txid && u.vout == event.vout,
-      orElse: () => throw StateError('UTXO not found'),
-    );
-    
+    final utxo = await _findUtxo(event.walletId, event.txid, event.vout);
+    if (utxo == null) {
+      _warnMissingUtxo(event, event.txid, event.vout);
+      return;
+    }
+
     if (utxo.status == UTXOStatus.reserved) {
-      final updatedUtxo = utxo.releaseReservation();
+      // The read model does not persist the pre-reservation status; the
+      // aggregate records it on the event (audit M4). Older events carry
+      // none and release to available, as they did when journaled.
+      final updatedUtxo = utxo.releaseReservation(restoreStatus: event.restoredStatus);
       await _storage.upsertUTXO(event.walletId, updatedUtxo);
       await _recalculateAndPersistForWallet(event.walletId, event.timestamp);
     }
   }
-  
+
   /// Recalculate statistics and persist for a specific wallet
-  Future<void> _recalculateAndPersistForWallet(String walletId, DateTime timestamp) async {
-    // Get all UTXOs for this specific wallet from storage
-    final walletUtxos = await _storage.getUTXOs(walletId, includeSpent: true);
+  ///
+  /// [utxos], when given, must be the wallet's rows read after the last write
+  /// (includeSpent: true); it saves a second scan.
+  Future<void> _recalculateAndPersistForWallet(
+    String walletId,
+    DateTime timestamp, [
+    List<BitcoinUtxo>? utxos,
+  ]) async {
+    final walletUtxos = utxos ?? await _storage.getUTXOs(walletId, includeSpent: true);
     
     BigInt confirmed = BigInt.zero;
     BigInt unconfirmed = BigInt.zero;
@@ -523,9 +645,12 @@ class WalletProjection extends Projection<void> {
     // Get existing wallet metadata
     final existingWallet = await _storage.getWallet(walletId);
     if (existingWallet == null) {
+      // The wallet row cannot be rebuilt here (no name); the UTXO and address
+      // rows are still written, and a later WalletCreated replay recomputes.
+      _log.warning('No wallet row for $walletId; balances not updated');
       return;
     }
-    
+
     // Update wallet metadata with new balances
     await _storage.storeWallet(
       walletId,
@@ -560,11 +685,6 @@ class WalletProjection extends Projection<void> {
       // Calculate fee from actual input/output values (if inputs are available)
       final fee = totalInput > BigInt.zero ? totalInput - totalOutput : BigInt.zero;
       
-      // Determine if this is incoming or outgoing
-      // If we received funds, it's incoming; if we spent, it's outgoing
-      // For imported transactions, we're typically importing receives
-      final isIncoming = walletReceivedSats > BigInt.zero;
-      // Note: isOutgoing would need to check if inputs are from our wallet
       
       // Net amount: positive for receives, negative for sends
       final netAmount = walletReceivedSats; // For receives this is positive
@@ -589,8 +709,9 @@ class WalletProjection extends Projection<void> {
         receivingAddresses: event.walletReceivingAddresses, // Our addresses that received
         sendingAddresses: event.sendingAddresses, // Addresses from parent tx outputs (BEEF)
         netAmount: netAmount,
-        createdAt: DateTime.now(),
-        updatedAt: DateTime.now(),
+        // Event time, not wall-clock: a replay writes the same row.
+        createdAt: event.timestamp,
+        updatedAt: event.timestamp,
         lockTime: event.txLockTime,
         version: event.txVersion,
       );
@@ -602,15 +723,21 @@ class WalletProjection extends Projection<void> {
         await _storeMerkleProofFromBump(event.txid, event.bumpProof, event.blockHeight);
       }
       
-      // Create junction table records for efficient address-centric queries
-      await _createTransactionAddressJunctions(
-        event.walletId,
-        event.txid,
-        event.walletReceivingAddresses,
-        event.sendingAddresses,
-        transaction,
-      );
-    } catch (e, stackTrace) {
+      // Create junction table records for efficient address-centric queries.
+      // A transaction that cannot be parsed for them keeps its stored row;
+      // throwing here would drop the event for good (audit M2).
+      try {
+        await _createTransactionAddressJunctions(
+          event.walletId,
+          event.txid,
+          event.walletReceivingAddresses,
+          event.sendingAddresses,
+          transaction,
+        );
+      } catch (e) {
+        _log.warning('Address links for ${event.txid} not stored: $e');
+      }
+    } catch (e) {
       rethrow;
     }
   }
@@ -638,15 +765,16 @@ class WalletProjection extends Projection<void> {
         receivingAddresses: event.recipientAddresses,
         sendingAddresses: [], // Sender addresses will be from our wallet
         netAmount: netAmount, // Negative for outgoing
-        createdAt: DateTime.now(),
-        updatedAt: DateTime.now(),
+        // Event time, not wall-clock: a replay writes the same row.
+        createdAt: event.timestamp,
+        updatedAt: event.timestamp,
         lockTime: event.txLockTime,
         version: event.txVersion,
       );
       
       
       await _storage.storeTransaction(event.walletId, transaction);
-    } catch (e, stackTrace) {
+    } catch (e) {
       _log.warning('Failed to handle transaction recorded event: $e');
     }
   }
@@ -673,7 +801,7 @@ class WalletProjection extends Projection<void> {
       // Store the updated transaction
       await _storage.storeTransaction(event.walletId, confirmedTx);
 
-    } catch (e, stackTrace) {
+    } catch (e) {
       _log.warning('Failed to handle transaction confirmed event: $e');
     }
   }
@@ -746,7 +874,7 @@ class WalletProjection extends Projection<void> {
             }
           }
         }
-      } catch (e, stacktrace) {
+      } catch (_) {
         continue;
       }
     }

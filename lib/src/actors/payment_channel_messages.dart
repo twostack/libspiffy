@@ -69,6 +69,9 @@ class AcceptChannelMessage extends LocalMessage {
   final int lockTimeUnix;
   final String? context;
 
+  /// This node's own peer id, journaled with the acceptance.
+  final String? serverPeerId;
+
   AcceptChannelMessage({
     required this.channelId,
     required this.walletId,
@@ -78,6 +81,7 @@ class AcceptChannelMessage extends LocalMessage {
     required this.fundingAmountSats,
     required this.lockTimeUnix,
     this.context,
+    this.serverPeerId,
   }) : super(payload: null);
 
   @override
@@ -205,6 +209,17 @@ class RefundTransactionBuiltResponse extends LocalMessage {
 }
 
 /// Request to sign refund transaction (server side)
+///
+/// The server signs with the key of the wallet that accepted the channel, at
+/// the key index, public keys, amount and lockTime its channel journal holds
+/// (libspiffy-36f): [walletId], [clientPubKeyHex], [serverPubKeyHex],
+/// [derivationIndex], [fundingAmountSats] and [lockTimeUnix] are not used to
+/// sign, and a request whose non-empty [walletId] is not the channel's wallet
+/// is refused.
+///
+/// [fundingTxId], [fundingOutputIndex] and [fundingTxHex] name the funding
+/// output the refund spends (from refund_sign_request); the server refuses a
+/// refund that spends anything else, and journals them (libspiffy-fsy).
 class SignRefundTransactionMessage extends LocalMessage {
   final String channelId;
   final String walletId;
@@ -215,6 +230,9 @@ class SignRefundTransactionMessage extends LocalMessage {
   final int derivationIndex;
   final BigInt fundingAmountSats;
   final int lockTimeUnix;
+  final String? fundingTxId;
+  final int? fundingOutputIndex;
+  final String? fundingTxHex;
 
   SignRefundTransactionMessage({
     required this.channelId,
@@ -226,6 +244,9 @@ class SignRefundTransactionMessage extends LocalMessage {
     required this.derivationIndex,
     required this.fundingAmountSats,
     required this.lockTimeUnix,
+    this.fundingTxId,
+    this.fundingOutputIndex,
+    this.fundingTxHex,
   }) : super(payload: null);
 
   @override
@@ -285,17 +306,23 @@ class RefundSignatureRecordedResponse extends LocalMessage {
 // =============================================================================
 
 /// Message to finalize channel opening after funding TX is broadcast
+///
+/// Server side (from channel_open), [fundingBeefHex] must be the BEEF of the
+/// funding transaction: the channel opens only once it passes SPV validation
+/// (libspiffy-fsy). On the client the manager builds the BEEF itself.
 class OpenChannelMessage extends LocalMessage {
   final String channelId;
   final String fundingTxId;
   final int fundingOutputIndex;
   final String fundingTxHex;
+  final String? fundingBeefHex;
 
   OpenChannelMessage({
     required this.channelId,
     required this.fundingTxId,
     required this.fundingOutputIndex,
     required this.fundingTxHex,
+    this.fundingBeefHex,
   }) : super(payload: null);
 
   @override
@@ -528,6 +555,22 @@ class ChannelStateResponse extends LocalMessage {
   dynamic get payload => this;
 }
 
+/// Asks the channel manager for a channel's full journaled state (the
+/// aggregate is recovered from its journal when not loaded); answered with
+/// [FullChannelStateResponse], `success: false` for an unknown channel.
+/// The P2P adapter rebuilds its channel records from it after a restart
+/// (libspiffy-fsy, libspiffy-36f).
+class ChannelDetailsQueryMessage extends LocalMessage {
+  final String channelId;
+
+  ChannelDetailsQueryMessage({
+    required this.channelId,
+  }) : super(payload: null);
+
+  @override
+  dynamic get payload => this;
+}
+
 /// Direct query to aggregate for full state (for building transactions)
 class ChannelStateQuery extends LocalMessage {
   final String channelId;
@@ -571,6 +614,19 @@ class FullChannelStateResponse extends LocalMessage {
   /// wallet by an earlier broadcast attempt.
   final bool fundingRecordedInWallet;
 
+  /// A funding broadcast was started and has neither failed nor opened.
+  final bool fundingBroadcastInFlight;
+
+  final String? clientPeerId;
+  final String? serverPeerId;
+  final String? context;
+
+  /// Client: the refund template as built. Server: the refund it signed.
+  final String? refundTxHex;
+
+  /// BEEF of the funding transaction journaled with the opening.
+  final String? fundingBeefHex;
+
   final bool success;
   final String? error;
 
@@ -595,6 +651,12 @@ class FullChannelStateResponse extends LocalMessage {
     this.signedRefundTxHex,
     this.fundingInputSats,
     this.fundingRecordedInWallet = false,
+    this.fundingBroadcastInFlight = false,
+    this.clientPeerId,
+    this.serverPeerId,
+    this.context,
+    this.refundTxHex,
+    this.fundingBeefHex,
     required this.success,
     this.error,
   }) : super(payload: null);

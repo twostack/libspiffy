@@ -38,8 +38,11 @@ const _mnemonic = 'abandon abandon abandon abandon abandon abandon '
 const _timeout = Duration(seconds: 10);
 final _funding = BigInt.from(100000);
 
-int _lockTimeInADay() =>
-    DateTime.now().add(const Duration(days: 1)).millisecondsSinceEpoch ~/ 1000;
+/// The channel lockTime, one day ahead, fixed when the test starts: the
+/// server countersigns only a refund with the channel lockTime
+/// (libspiffy-fsy), so every message of a test carries the same value.
+late int _lockTime;
+int _lockTimeInADay() => _lockTime;
 
 void main() {
   late TestActorSystem actorSystem;
@@ -56,11 +59,15 @@ void main() {
   late String serverPubKeyHex;
   late String serverAddressB58;
 
-  /// Funding transaction locking [_funding] in the channel 2-of-2: the
-  /// server checks it on open (libspiffy-9f7).
-  late ({String hex, String txid}) fundingTx;
+  /// Funding transaction locking [_funding] in the channel 2-of-2, with its
+  /// BEEF: the server checks both on open (libspiffy-9f7, libspiffy-fsy).
+  late ({String hex, String txid, String beefHex}) fundingTx;
+  late ScriptedSpvActor spv;
 
   setUp(() async {
+    _lockTime =
+        DateTime.now().add(const Duration(days: 1)).millisecondsSinceEpoch ~/
+            1000;
     actorSystem = TestActorSystem();
     cryptoService = DartSVCryptoService();
     final hd = await cryptoService.mnemonicToHDPrivateKey(_mnemonic);
@@ -70,7 +77,7 @@ void main() {
     clientAddressB58 = client.toAddress(NetworkType.TEST).toString();
     serverPubKeyHex = server.toString();
     serverAddressB58 = server.toAddress(NetworkType.TEST).toString();
-    fundingTx = channelFundingTx(
+    fundingTx = channelFundingWithBeef(
         clientPubKeyHex: clientPubKeyHex,
         serverPubKeyHex: serverPubKeyHex,
         amountSats: _funding);
@@ -90,6 +97,8 @@ void main() {
     );
     final walletRef =
         await actorSystem.spawn('wallet-manager', () => walletStub);
+    spv = ScriptedSpvActor();
+    final spvRef = await actorSystem.spawn('spv', () => spv);
     manager = PaymentChannelManagerActor(
       walletManager: walletRef,
       eventStore: eventStore = _ReadCountingEventStore(),
@@ -100,6 +109,7 @@ void main() {
         channelEvents.add(event);
       },
       signingTimeout: const Duration(seconds: 2),
+      spvActor: spvRef,
     );
     managerRef = await actorSystem.spawn('channel-manager', () => manager);
   }
@@ -143,7 +153,7 @@ void main() {
       BuildRefundTransactionMessage(
         channelId: _channelId,
         walletId: _walletId,
-        fundingTxId: 'b' * 64,
+        fundingTxId: fundingTx.txid,
         fundingOutputIndex: 0,
         fundingAmountSats: _funding,
         clientPubKeyHex: clientPubKeyHex,
@@ -181,6 +191,7 @@ void main() {
           fundingTxId: fundingTx.txid,
           fundingOutputIndex: 0,
           fundingTxHex: fundingTx.hex,
+          fundingBeefHex: fundingTx.beefHex,
         ),
         _timeout,
       );
@@ -336,7 +347,9 @@ void main() {
 
       final second = await signRefund(refundTxHex);
 
-      expect(walletStub.signRequests, equals(2));
+      // The channel is no longer accepted: the request is refused before a
+      // signature is produced (libspiffy-36f reads the channel state first).
+      expect(walletStub.signRequests, equals(1));
       expect(second.success, isFalse,
           reason: 'the channel is refundSigned, not accepted');
       expect(second.error, contains('Channel not in accepted state'));
@@ -480,9 +493,9 @@ void main() {
       adapter.handleP2PMessage('client-peer', 'refund_sign_request', {
         'channelId': _channelId,
         'refundTxHex': await buildRefund(),
-        'fundingTxId': 'b' * 64,
+        'fundingTxId': fundingTx.txid,
         'fundingOutputIndex': 0,
-        'fundingTxHex': '',
+        'fundingTxHex': fundingTx.hex,
         'clientSignatureHex': '',
       });
       await waitFor(() => sent('refund_signed').isNotEmpty);
@@ -492,6 +505,7 @@ void main() {
         'fundingTxId': fundingTx.txid,
         'fundingOutputIndex': 0,
         'fundingTxHex': fundingTx.hex,
+        'fundingBeef': fundingTx.beefHex,
       });
       await waitFor(() => emitted.whereType<coord.ChannelOpenedEvent>().isNotEmpty);
 

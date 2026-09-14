@@ -85,6 +85,10 @@ class LibSpiffyActorSystem {
 
   /// Network passed to [initialize]; actors that derive addresses need it.
   String _networkType = 'test';
+
+  /// This node's own channel transport peer id ([initialize]'s
+  /// `channelPeerId`, libspiffy-36f).
+  String _channelPeerId = '';
   InvoiceProjection? _invoiceProjection;
   ChannelProjection? _channelProjection;
   ActorRef? _walletProjectionRef;
@@ -219,6 +223,11 @@ class LibSpiffyActorSystem {
     PostgresConfig? postgresConfig, // NEW: PostgreSQL configuration
     String? cdnBaseUrl, // CDN URL for fast initial header sync
     CdnSyncProgressCallback? onHeaderSyncProgress, // CDN sync progress callback
+    // This node's own peer id on the transport that carries payment channel
+    // messages (ChannelP2PMessageToSendEvent / ChannelP2PReceived): sent as
+    // clientPeerId in channel_request and journaled with the channel
+    // (libspiffy-36f). Empty when not given.
+    String channelPeerId = '',
   }) async {
     // An instance is initialized once. A second call used to build a second
     // actor system and storage stack over the first (A-M5).
@@ -234,6 +243,7 @@ class LibSpiffyActorSystem {
         break;
     }
     _lifecycle = _Lifecycle.initializing;
+    _channelPeerId = channelPeerId;
     try {
       await _initialize(
         actorSystem: actorSystem,
@@ -565,7 +575,7 @@ class LibSpiffyActorSystem {
     EventRegistry.register<InvoiceCancelledEvent>(InvoiceCancelledEvent.stableTypeName, InvoiceCancelledEvent.fromMap,
         aliases: const ['InvoiceCancelledEvent']);
 
-    // PAYMENT CHANNEL EVENTS (15)
+    // PAYMENT CHANNEL EVENTS (16)
     EventRegistry.register<ChannelRequestedEvent>(ChannelRequestedEvent.stableTypeName, ChannelRequestedEvent.fromMap,
         aliases: const ['ChannelRequestedEvent']);
     EventRegistry.register<ChannelAcceptedEvent>(ChannelAcceptedEvent.stableTypeName, ChannelAcceptedEvent.fromMap,
@@ -582,6 +592,8 @@ class LibSpiffyActorSystem {
         aliases: const ['FundingBroadcastStartedEvent']);
     EventRegistry.register<FundingBroadcastFailedEvent>(FundingBroadcastFailedEvent.stableTypeName, FundingBroadcastFailedEvent.fromMap,
         aliases: const ['FundingBroadcastFailedEvent']);
+    EventRegistry.register<FundingRecordedInWalletEvent>(FundingRecordedInWalletEvent.stableTypeName, FundingRecordedInWalletEvent.fromMap,
+        aliases: const ['FundingRecordedInWalletEvent']);
     EventRegistry.register<ChannelOpenedEvent>(ChannelOpenedEvent.stableTypeName, ChannelOpenedEvent.fromMap,
         aliases: const ['ChannelOpenedEvent']);
     EventRegistry.register<PaymentRecordedEvent>(PaymentRecordedEvent.stableTypeName, PaymentRecordedEvent.fromMap,
@@ -783,6 +795,10 @@ class LibSpiffyActorSystem {
       // Funding broadcast and wallet bookkeeping (libspiffy-9f7).
       arcActor: _arcActor!,
       walletProjection: _walletProjectionRef!,
+      // Funding BEEF: built from the read model (client), SPV-validated
+      // (server) (libspiffy-fsy).
+      spvActor: _spvActor!,
+      storage: _walletStorage,
     ));
     
     // Spawn ImportActor if blockchain data source is provided
@@ -818,6 +834,8 @@ class LibSpiffyActorSystem {
       importActor: _importActor,
       storage: _walletStorage,
       channelEvents: _channelEventBroadcaster.stream,
+      // This node's own peer id on the channel transport (libspiffy-36f).
+      peerId: _channelPeerId,
       broadcastWalletEvent: broadcastWalletEvent,
       importWalletFromXpriv: _importActor != null ? ({
         required String walletId,

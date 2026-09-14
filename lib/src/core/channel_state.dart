@@ -31,6 +31,9 @@ class ChannelState extends State {
   int? fundingOutputIndex;
   List<String> fundingAncestorTxids;
 
+  /// BEEF of the funding transaction journaled with the opening.
+  String? fundingBeefHex;
+
   /// Total input value of the funding transaction, when known.
   int? fundingInputSats;
 
@@ -98,6 +101,7 @@ class ChannelState extends State {
     this.fundingTxHex,
     this.fundingOutputIndex,
     List<String>? fundingAncestorTxids,
+    this.fundingBeefHex,
     this.fundingInputSats,
     this.fundingBroadcastAttempts = 0,
     this.fundingBroadcastInFlight = false,

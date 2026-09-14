@@ -466,6 +466,7 @@ void main() {
         'RefundBuiltEvent',
         'RefundCountersignedEvent',
         'FundingBroadcastStartedEvent',
+        'FundingRecordedInWalletEvent',
         'ChannelOpenedEvent',
       ]);
 

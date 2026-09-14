@@ -47,6 +47,7 @@ class ChannelProjection extends Projection<void> {
         RefundCountersignedEvent,
         FundingBroadcastStartedEvent,
         FundingBroadcastFailedEvent,
+        FundingRecordedInWalletEvent,
         ChannelOpenedEvent,
         PaymentRecordedEvent,
         PaymentAcknowledgedEvent,
@@ -112,6 +113,10 @@ class ChannelProjection extends Projection<void> {
       case FundingBroadcastFailedEvent:
         await _handleFundingBroadcastFailed(event as FundingBroadcastFailedEvent);
         return true;
+      case FundingRecordedInWalletEvent:
+        // Channel-side bookkeeping only; the wallet read model holds the
+        // transaction itself.
+        return true;
       case ChannelOpenedEvent:
         await _handleChannelOpened(event as ChannelOpenedEvent);
         return true;
@@ -174,7 +179,8 @@ class ChannelProjection extends Projection<void> {
         walletId: event.walletId,
         role: PaymentChannelRole.server,
         clientPeerId: event.clientPeerId,
-        serverPeerId: '', // Server's own peer ID is not carried by the event
+        // The node's own peer id, when it was given one (libspiffy-36f).
+        serverPeerId: event.serverPeerId ?? '',
         clientPubKeyHex: event.clientPubKeyHex,
         serverPubKeyHex: event.serverPubKeyHex,
         clientAddressB58: event.clientAddressB58,
@@ -247,10 +253,14 @@ class ChannelProjection extends Projection<void> {
     // Client side: the stored refund becomes the fully signed one the
     // aggregate verified (libspiffy-b83). The unsigned template stays in the
     // journal (RefundBuiltEvent) and is the signed transaction without its
-    // unlocking script.
+    // unlocking script. Server side: the refund it signed and the funding
+    // transaction that refund spends (libspiffy-fsy).
     await _storage.storePaymentChannel(existing.copyWith(
       refundServerSigHex: event.serverSignatureHex,
-      refundTxHex: event.signedRefundTxHex,
+      refundTxHex: event.signedRefundTxHex ?? event.refundTxHex,
+      fundingTxId: event.fundingTxId,
+      fundingOutputIndex: event.fundingOutputIndex,
+      fundingTxHex: event.fundingTxHex,
       state: PaymentChannelState.opening, // ChannelStatus.refundSigned → opening
     ));
   }

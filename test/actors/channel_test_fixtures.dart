@@ -3,6 +3,9 @@
 /// transactions and signatures, so tests hand it real ones.
 library;
 
+import 'dart:typed_data';
+
+import 'package:convert/convert.dart';
 import 'package:dactor/dactor.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:eventador/eventador.dart';
@@ -12,6 +15,7 @@ import 'package:libspiffy/src/core/channel_events.dart';
 import 'package:libspiffy/src/core/wallet_commands.dart';
 import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 import 'package:libspiffy/src/services/payment_channel_builder.dart';
+import 'package:libspiffy/src/utils/beef.dart';
 
 const channelFixtureMnemonic = 'abandon abandon abandon abandon abandon '
     'abandon abandon abandon abandon abandon abandon about';
@@ -246,6 +250,69 @@ class ChannelRefundFixture {
         lockTimeUnix: lockTimeUnix,
         version: version,
       );
+}
+
+/// A funding transaction locking [amountSats] in the 2-of-2 of the two keys
+/// whose input spends an unproven parent transaction (200000 sats), and the
+/// BEEF of the two (libspiffy-fsy). Unsigned: tests pair it with
+/// [ScriptedSpvActor], which answers SPV validation as told.
+({String hex, String txid, String beefHex}) channelFundingWithBeef({
+  required String clientPubKeyHex,
+  required String serverPubKeyHex,
+  required BigInt amountSats,
+}) {
+  final payTo = dartsv.P2PKHLockBuilder.fromAddress(
+          dartsv.Address.fromBase58('mkHS9ne12qx9pS9VojpwU5xtRd4T7X7ZUt'))
+      .getScriptPubkey();
+  final parent = dartsv.Transaction()..version = 1;
+  parent.inputs.add(dartsv.TransactionInput(
+      'd0' * 32, 0, dartsv.TransactionInput.MAX_SEQ_NUMBER));
+  parent.outputs.add(dartsv.TransactionOutput(BigInt.from(200000), payTo));
+  final multisig = dartsv.P2MSLockBuilder([
+    dartsv.SVPublicKey.fromHex(clientPubKeyHex),
+    dartsv.SVPublicKey.fromHex(serverPubKeyHex),
+  ], 2, sorting: true)
+      .getScriptPubkey();
+  final funding = dartsv.Transaction()..version = 1;
+  funding.inputs.add(dartsv.TransactionInput(
+      parent.id, 0, dartsv.TransactionInput.MAX_SEQ_NUMBER));
+  funding.outputs.add(dartsv.TransactionOutput(amountSats, multisig));
+  funding.outputs.add(dartsv.TransactionOutput(
+      BigInt.from(200000) - amountSats - BigInt.from(500), payTo));
+  final beef = BEEF.create(
+    bumps: const [],
+    txs: [
+      Uint8List.fromList(hex.decode(parent.serialize())),
+      Uint8List.fromList(hex.decode(funding.serialize())),
+    ],
+    hasMerkle: [false, false],
+    bumpIndex: const [],
+  );
+  return (
+    hex: funding.serialize(),
+    txid: funding.id,
+    beefHex: hex.encode(beef.serialize()),
+  );
+}
+
+/// An SPVActor stand-in: answers every [ReceiveTransactionMessage] with a
+/// [SPVValidationResult], valid unless [invalidWith] is set, and records
+/// the requests.
+class ScriptedSpvActor extends Actor {
+  final List<ReceiveTransactionMessage> requests = [];
+  String? invalidWith;
+
+  @override
+  Future<void> onMessage(dynamic message) async {
+    if (message is! ReceiveTransactionMessage) return;
+    requests.add(message);
+    context.sender?.tell(SPVValidationResult(
+      txid: message.transactionId,
+      isValid: invalidWith == null,
+      validationError: invalidWith,
+      targetWalletId: message.targetWalletId,
+    ));
+  }
 }
 
 /// An ARCActor stand-in: records every [BroadcastTransactionMessage] and

@@ -82,6 +82,9 @@ class AcceptChannelCommand extends ChannelCommand {
   final int lockTimeUnix;
   final String? context;
 
+  /// The accepting node's own peer id, journaled with the acceptance.
+  final String? serverPeerId;
+
   AcceptChannelCommand({
     required String channelId,
     required this.walletId,
@@ -94,6 +97,7 @@ class AcceptChannelCommand extends ChannelCommand {
     required this.fundingAmountSats,
     required this.lockTimeUnix,
     this.context,
+    this.serverPeerId,
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,
@@ -197,16 +201,24 @@ class RecordRefundBuiltCommand extends ChannelCommand {
   String get commandType => 'RecordRefundBuiltCommand';
 }
 
-/// Client provides refund transaction with server's pre-computed signature
-/// 
+/// Server journals its signature on the client's refund transaction.
+///
 /// Note: Signing is delegated to WalletManager. The signature must be
 /// obtained before creating this command.
+///
+/// The aggregate accepts it only for a refund that spends exactly
+/// [fundingTxId]:[fundingOutputIndex] with the channel lockTime and a
+/// non-final input sequence and, when [fundingTxHex] is given, only if that
+/// output locks the agreed amount in the channel's 2-of-2 (libspiffy-fsy).
 class RequestRefundSignatureCommand extends ChannelCommand {
   final String fundingTxId;
   final int fundingOutputIndex;
   final String refundTxHex;
   final int lockTimeUnix;
   final String serverSignatureHex;  // Pre-computed by WalletManager
+
+  /// The funding transaction the refund spends, as the client sent it.
+  final String? fundingTxHex;
 
   RequestRefundSignatureCommand({
     required String channelId,
@@ -215,6 +227,7 @@ class RequestRefundSignatureCommand extends ChannelCommand {
     required this.refundTxHex,
     required this.lockTimeUnix,
     required this.serverSignatureHex,
+    this.fundingTxHex,
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,
@@ -262,12 +275,17 @@ class ProvideRefundSignatureCommand extends ChannelCommand {
 ///
 /// Client: only after [StartFundingBroadcastCommand] for this funding
 /// transaction and a successful broadcast. Server: only for a funding
-/// transaction whose output pays the agreed amount to the channel's 2-of-2.
+/// transaction whose output pays the agreed amount to the channel's 2-of-2,
+/// which is the one whose refund it signed, carried in [fundingBeefHex]
+/// (the manager SPV-validates that BEEF first, libspiffy-fsy).
 class OpenChannelCommand extends ChannelCommand {
   final String fundingTxId;
   final int fundingOutputIndex;
   final String fundingTxHex;
   final List<String> fundingAncestorTxids;
+
+  /// BEEF of the funding transaction (journaled with the opening).
+  final String? fundingBeefHex;
 
   OpenChannelCommand({
     required String channelId,
@@ -275,6 +293,7 @@ class OpenChannelCommand extends ChannelCommand {
     required this.fundingOutputIndex,
     required this.fundingTxHex,
     this.fundingAncestorTxids = const [],
+    this.fundingBeefHex,
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,
@@ -313,6 +332,29 @@ class StartFundingBroadcastCommand extends ChannelCommand {
 
   @override
   String get commandType => 'StartFundingBroadcastCommand';
+}
+
+/// Client records that its wallet holds the funding transaction of the
+/// broadcast in progress; emits [FundingRecordedInWalletEvent]
+/// (libspiffy-fsy).
+class RecordFundingInWalletCommand extends ChannelCommand {
+  final String fundingTxId;
+
+  RecordFundingInWalletCommand({
+    required String channelId,
+    required this.fundingTxId,
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          channelId: channelId,
+          commandId: commandId,
+          timestamp: timestamp,
+          metadata: metadata,
+        );
+
+  @override
+  String get commandType => 'RecordFundingInWalletCommand';
 }
 
 /// Client records that broadcasting its funding transaction failed; emits

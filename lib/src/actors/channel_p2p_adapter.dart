@@ -20,6 +20,14 @@ final _log = Logger('ChannelP2PAdapter');
 /// - Emits [coord.CoordinatorEvent]s instead of sending WalletIsolateMessages
 /// - Takes walletId and peerId as updatable constructor parameters
 /// - Tells the channel manager directly instead of using request callbacks
+///
+/// Its per-channel records (peers, keys, funding transaction) are a cache of
+/// the channel journal: a message, event or response for a channel it has
+/// no record of (after a restart) first rebuilds the record from the channel
+/// manager ([ChannelDetailsQueryMessage]), so a restarted node carries on
+/// with a channel in mid-open (libspiffy-fsy, libspiffy-36f). Work for other
+/// channels waits meanwhile, so everything is still handled in arrival
+/// order.
 class ChannelP2PAdapter {
   final ActorRef _channelManager;
   final void Function(coord.CoordinatorEvent) _emitEvent;
@@ -35,6 +43,15 @@ class ChannelP2PAdapter {
   final Map<String, ClientChannelInfo> _clientChannelInfo = {};
   final Map<String, ServerChannelInfo> _serverChannelInfo = {};
   final Set<String> _closingChannels = {};
+
+  /// Work waiting behind a channel record being rebuilt (see [_sequenced]).
+  Future<void> _queue = Future<void>.value();
+  int _queued = 0;
+  bool _disposed = false;
+
+  /// How long rebuilding a channel record may wait for the channel manager
+  /// (which may be busy broadcasting a funding transaction).
+  static const Duration _restoreTimeout = Duration(seconds: 60);
 
   ChannelP2PAdapter({
     required ActorRef channelManager,
@@ -63,7 +80,107 @@ class ChannelP2PAdapter {
   void updateReplyTo(ActorRef replyTo) => _replyTo = replyTo;
 
   void dispose() {
+    _disposed = true;
     _eventSubscription?.cancel();
+  }
+
+  // ===========================================================================
+  // CHANNEL RECORDS AFTER A RESTART
+  // ===========================================================================
+
+  bool _knows(String channelId) =>
+      _clientChannelInfo.containsKey(channelId) ||
+      _serverChannelInfo.containsKey(channelId);
+
+  /// Runs [body] now, or, when work is already waiting or [channelId] names
+  /// a channel this adapter has no record of, after the waiting work and
+  /// after rebuilding that record from the channel journal.
+  void _sequenced(String? channelId, void Function() body) {
+    if (_queued == 0 && (channelId == null || _knows(channelId))) {
+      body();
+      return;
+    }
+    _queued++;
+    _queue = _queue.then((_) async {
+      try {
+        if (_disposed) return;
+        if (channelId != null && !_knows(channelId)) {
+          await _restore(channelId);
+        }
+        if (!_disposed) body();
+      } catch (e, stackTrace) {
+        _log.warning('Channel ${channelId ?? ''} work failed: $e', e, stackTrace);
+      } finally {
+        _queued--;
+      }
+    });
+  }
+
+  /// Rebuilds the records of [channelId] from its journaled state, if the
+  /// channel exists.
+  Future<void> _restore(String channelId) async {
+    final dynamic reply;
+    try {
+      reply = await _channelManager.ask<dynamic>(
+          ChannelDetailsQueryMessage(channelId: channelId), _restoreTimeout);
+    } catch (e) {
+      _log.warning('Cannot restore channel $channelId: $e');
+      return;
+    }
+    if (reply is! FullChannelStateResponse || !reply.success) {
+      _log.fine('No journaled channel $channelId to restore');
+      return;
+    }
+    _adopt(reply);
+  }
+
+  void _adopt(FullChannelStateResponse state) {
+    final channelId = state.channelId;
+    if (state.role == 'client') {
+      _clientChannelInfo[channelId] = ClientChannelInfo(
+        channelId: channelId,
+        walletId: state.walletId,
+        clientPubKeyHex: state.clientPubKeyHex ?? '',
+        clientAddressB58: state.clientAddressB58 ?? '',
+        clientDerivationIndex: state.derivationIndex ?? 0,
+        serverPubKeyHex: state.serverPubKeyHex,
+        serverAddressB58: state.serverAddressB58,
+        fundingAmountSats: state.fundingAmountSats.toInt(),
+        lockTimeUnix: state.lockTimeUnix ?? 0,
+        fundingTxId: state.fundingTxId,
+        fundingTxHex: state.fundingTxHex,
+        fundingOutputIndex: state.fundingOutputIndex,
+      );
+      final serverPeerId = state.serverPeerId;
+      if (serverPeerId != null) {
+        _channelPeers[channelId] = PeerInfo(
+          clientPeerId: state.clientPeerId ?? _myPeerId,
+          serverPeerId: serverPeerId,
+        );
+      }
+    } else if (state.role == 'server') {
+      final clientPeerId = state.clientPeerId ?? '';
+      _serverChannelInfo[channelId] = ServerChannelInfo(
+        channelId: channelId,
+        walletId: state.walletId,
+        clientPeerId: clientPeerId,
+        clientPubKeyHex: state.clientPubKeyHex ?? '',
+        clientAddressB58: state.clientAddressB58 ?? '',
+        serverPubKeyHex: state.serverPubKeyHex ?? '',
+        serverAddressB58: state.serverAddressB58 ?? '',
+        derivationIndex: state.derivationIndex ?? 0,
+        fundingAmountSats: state.fundingAmountSats.toInt(),
+        lockTimeUnix: state.lockTimeUnix ?? 0,
+        fundingTxId: state.fundingTxId,
+        fundingTxHex: state.fundingTxHex,
+        fundingOutputIndex: state.fundingOutputIndex,
+      );
+      _channelPeers[channelId] = PeerInfo(
+        clientPeerId: clientPeerId,
+        serverPeerId: state.serverPeerId ?? _myPeerId,
+      );
+    }
+    if (state.status == 'closing') _closingChannels.add(channelId);
   }
 
   // ===========================================================================
@@ -74,6 +191,23 @@ class ChannelP2PAdapter {
   void handleP2PMessage(String fromPeerId, String messageType, Map<String, dynamic> payload) {
     _log.fine('Received P2P message: $messageType from $fromPeerId');
 
+    // Messages that read this adapter's record of an existing channel.
+    const readsRecord = {
+      'channel_accept',
+      'refund_sign_request',
+      'payment_update',
+      'channel_close',
+      'channel_closed',
+    };
+    final channelId = payload['channelId'];
+    _sequenced(
+      readsRecord.contains(messageType) && channelId is String ? channelId : null,
+      () => _dispatchP2PMessage(fromPeerId, messageType, payload),
+    );
+  }
+
+  void _dispatchP2PMessage(
+      String fromPeerId, String messageType, Map<String, dynamic> payload) {
     switch (messageType) {
       case 'channel_request':
         _handleChannelRequest(fromPeerId, payload);
@@ -260,8 +394,13 @@ class ChannelP2PAdapter {
 
     _channelManager.tell(SignRefundTransactionMessage(
       channelId: channelId,
-      // The accepting wallet's key signs (libspiffy-9fo).
+      // The accepting wallet's key signs (libspiffy-9fo); the manager takes
+      // it, and the key index, from the channel journal (libspiffy-36f).
       walletId: serverInfo.walletId,
+      // The funding output the refund must spend (libspiffy-fsy).
+      fundingTxId: fundingTxId,
+      fundingOutputIndex: fundingOutputIndex,
+      fundingTxHex: fundingTxHex,
       refundTxHex: refundTxHex,
       clientPubKeyHex: serverInfo.clientPubKeyHex,
       serverPubKeyHex: serverInfo.serverPubKeyHex,
@@ -292,12 +431,14 @@ class ChannelP2PAdapter {
     final fundingTxHex = payload['fundingTxHex'] as String;
 
     // Server side: a funding transaction that does not lock the agreed
-    // amount in the channel 2-of-2 is refused and reported (libspiffy-9f7).
+    // amount in the channel 2-of-2 is refused and reported (libspiffy-9f7),
+    // and so is one whose BEEF does not pass SPV validation (libspiffy-fsy).
     _channelManager.tell(OpenChannelMessage(
       channelId: channelId,
       fundingTxId: fundingTxId,
       fundingOutputIndex: fundingOutputIndex,
       fundingTxHex: fundingTxHex,
+      fundingBeefHex: payload['fundingBeef'] as String?,
     ), sender: _replyTo);
   }
 
@@ -374,6 +515,25 @@ class ChannelP2PAdapter {
   void _handleEvent(ch.ChannelEvent event) {
     _log.fine('Handling channel event: ${event.runtimeType} for ${event.channelId}');
 
+    // Requested and accepted events create the channel's record; the other
+    // events the adapter acts on read it. The rest need nothing.
+    final createsRecord =
+        event is ch.ChannelRequestedEvent || event is ch.ChannelAcceptedEvent;
+    final readsRecord = event is ch.ChannelRejectedEvent ||
+        event is ch.RefundCountersignedEvent ||
+        event is ch.ChannelOpenedEvent ||
+        event is ch.PaymentRecordedEvent ||
+        event is ch.PaymentAcknowledgedEvent ||
+        event is ch.ChannelClosingEvent ||
+        event is ch.ChannelClosedEvent;
+    if (!createsRecord && !readsRecord) {
+      _log.fine('Unhandled channel event type: ${event.runtimeType}');
+      return;
+    }
+    _sequenced(readsRecord ? event.channelId : null, () => _dispatchEvent(event));
+  }
+
+  void _dispatchEvent(ch.ChannelEvent event) {
     if (event is ch.ChannelRequestedEvent) {
       _onChannelRequested(event);
     } else if (event is ch.ChannelAcceptedEvent) {
@@ -514,6 +674,9 @@ class ChannelP2PAdapter {
         'fundingTxId': event.fundingTxId,
         'fundingOutputIndex': event.fundingOutputIndex,
         'fundingTxHex': event.fundingTxHex,
+        // The funding transaction with its ancestors and their merkle
+        // proofs, for the server to SPV-validate (libspiffy-fsy).
+        'fundingBeef': event.fundingBeefHex,
       });
     }
 
@@ -626,7 +789,10 @@ class ChannelP2PAdapter {
   // ===========================================================================
 
   /// Handle a request to open a new payment channel as client.
-  void handleOpenChannel(coord.OpenChannelCommand command) {
+  void handleOpenChannel(coord.OpenChannelCommand command) =>
+      _sequenced(null, () => _openChannel(command));
+
+  void _openChannel(coord.OpenChannelCommand command) {
     // A timestamp-derived id repeated within one millisecond (A-L1).
     final channelId = uniqueId('ch');
 
@@ -675,12 +841,23 @@ class ChannelP2PAdapter {
   }
 
   /// Handle acceptance of an incoming channel request (we are server).
-  void handleAcceptRequest(coord.AcceptChannelCommand command) {
-    final pending = _pendingRequests.remove(command.channelId);
-    if (pending == null) {
-      _log.warning('No pending request for channel ${command.channelId}');
-      return;
-    }
+  ///
+  /// The request itself is not journaled (no channel exists before it is
+  /// accepted): a request received before a restart is accepted from what
+  /// [command] repeats of it (libspiffy-36f).
+  void handleAcceptRequest(coord.AcceptChannelCommand command) =>
+      _sequenced(null, () => _acceptRequest(command));
+
+  void _acceptRequest(coord.AcceptChannelCommand command) {
+    final pending = _pendingRequests.remove(command.channelId) ??
+        PendingRequest(
+          channelId: command.channelId,
+          clientPeerId: command.clientPeerId,
+          clientPubKey: command.clientPubKey,
+          clientAddress: command.clientAddress,
+          fundingAmountSats: command.fundingAmountSats,
+          lockTimeUnix: command.lockTimeUnix,
+        );
 
     _channelPeers[command.channelId] = PeerInfo(
       clientPeerId: pending.clientPeerId,
@@ -696,11 +873,15 @@ class ChannelP2PAdapter {
       fundingAmountSats: BigInt.from(pending.fundingAmountSats),
       lockTimeUnix: pending.lockTimeUnix,
       context: pending.context,
+      serverPeerId: _myPeerId.isEmpty ? null : _myPeerId,
     ));
   }
 
   /// Handle rejection of an incoming channel request.
-  void handleRejectRequest(coord.RejectChannelCommand command) {
+  void handleRejectRequest(coord.RejectChannelCommand command) =>
+      _sequenced(null, () => _rejectRequest(command));
+
+  void _rejectRequest(coord.RejectChannelCommand command) {
     final pending = _pendingRequests.remove(command.channelId);
     if (pending != null) {
       _emitP2PMessage(pending.clientPeerId, 'channel_reject', {
@@ -713,7 +894,10 @@ class ChannelP2PAdapter {
   }
 
   /// Handle a funding transaction that has been built by the wallet.
-  void handleFundingTransactionBuilt(FundingTransactionBuiltResponse response) {
+  void handleFundingTransactionBuilt(FundingTransactionBuiltResponse response) =>
+      _sequenced(response.channelId, () => _fundingTransactionBuilt(response));
+
+  void _fundingTransactionBuilt(FundingTransactionBuiltResponse response) {
     final channelId = response.channelId;
     final clientInfo = _clientChannelInfo[channelId];
 
@@ -766,7 +950,10 @@ class ChannelP2PAdapter {
   }
 
   /// Handle a refund transaction that has been built.
-  void handleRefundTransactionBuilt(RefundTransactionBuiltResponse response) {
+  void handleRefundTransactionBuilt(RefundTransactionBuiltResponse response) =>
+      _sequenced(response.channelId, () => _refundTransactionBuilt(response));
+
+  void _refundTransactionBuilt(RefundTransactionBuiltResponse response) {
     final channelId = response.channelId;
     final clientInfo = _clientChannelInfo[channelId];
     final peers = _channelPeers[channelId];
@@ -796,8 +983,10 @@ class ChannelP2PAdapter {
   /// signature that does not complete a valid refund stops the open.
   void handleRefundSignatureRecorded(RefundSignatureRecordedResponse response) {
     if (!response.success) {
-      _reportFailure(response.channelId,
-          'recording the server refund signature', response.error);
+      _sequenced(
+          response.channelId,
+          () => _reportFailure(response.channelId,
+              'recording the server refund signature', response.error));
     }
   }
 
@@ -806,7 +995,10 @@ class ChannelP2PAdapter {
   /// the server a funding transaction that was refused.
   void handleChannelOpenedResponse(ChannelOpenedResponse response) {
     if (!response.success) {
-      _reportFailure(response.channelId, 'opening the channel', response.error);
+      _sequenced(
+          response.channelId,
+          () => _reportFailure(
+              response.channelId, 'opening the channel', response.error));
     }
   }
 

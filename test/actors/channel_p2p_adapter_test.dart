@@ -226,7 +226,13 @@ void main() {
     await Future.delayed(const Duration(milliseconds: 100));
 
     expect(walletManagerProbe.received, isEmpty);
-    expect(channelManagerProbe.received, isEmpty);
+    // The adapter looks the channel up in the journal (it may predate a
+    // restart, libspiffy-fsy) and, finding none, sends nothing else.
+    expect(
+        channelManagerProbe.received
+            .map((r) => r.message)
+            .where((m) => m is! ChannelDetailsQueryMessage),
+        isEmpty);
   });
 }
 

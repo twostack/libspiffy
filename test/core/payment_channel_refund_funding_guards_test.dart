@@ -9,6 +9,9 @@
 ///   that never looked at the funding transaction.
 library;
 
+import 'dart:typed_data';
+
+import 'package:convert/convert.dart';
 import 'package:dactor/dactor.dart';
 import 'package:dactor_test/dactor_test.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
@@ -22,6 +25,7 @@ import 'package:libspiffy/src/core/channel_events.dart';
 import 'package:libspiffy/src/core/payment_channel_aggregate.dart';
 import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 import 'package:libspiffy/src/services/payment_channel_builder.dart';
+import 'package:libspiffy/src/utils/beef.dart';
 
 import '../actors/channel_test_fixtures.dart';
 import '../actors/in_memory_event_store.dart';
@@ -370,12 +374,23 @@ void main() {
     });
   });
 
+  /// A BEEF holding only [txHex] (the aggregate checks only that the BEEF
+  /// carries the funding transaction; the manager SPV-validates it).
+  String beefOf(String txHex) => hex.encode(BEEF.create(
+        bumps: const [],
+        txs: [Uint8List.fromList(hex.decode(txHex))],
+        hasMerkle: [false],
+        bumpIndex: const [],
+      ).serialize());
+
   group('libspiffy-9f7: OpenChannelCommand', () {
-    OpenChannelCommand open({String? txid, String? hex}) => OpenChannelCommand(
+    OpenChannelCommand open({String? txid, String? hex, String? beef}) =>
+        OpenChannelCommand(
           channelId: _channelId,
           fundingTxId: txid ?? f.fundingTxId,
           fundingOutputIndex: 0,
           fundingTxHex: hex ?? f.fundingTxHex,
+          fundingBeefHex: beef,
         );
 
     test('client: refused while the funding transaction was not broadcast',
@@ -422,16 +437,173 @@ void main() {
           serverPubKeyHex: f.serverPubKeyHex,
           amountSats: BigInt.from(1000));
 
+      final beef = beefOf(f.fundingTxHex);
       expectRejected(
-          await ref.ask<dynamic>(open(txid: short.txid, hex: short.hex), _ask),
+          await ref.ask<dynamic>(
+              open(txid: short.txid, hex: short.hex, beef: beef), _ask),
           'not the agreed');
-      expectRejected(await ref.ask<dynamic>(open(hex: ''), _ask),
+      expectRejected(await ref.ask<dynamic>(open(hex: '', beef: beef), _ask),
           'Invalid funding transaction');
       expectRejected(
-          await ref.ask<dynamic>(open(txid: 'e1' * 32), _ask), 'not e1');
+          await ref.ask<dynamic>(open(txid: 'e1' * 32, beef: beef), _ask),
+          'not e1');
       expect(journal(), hasLength(2));
 
-      expect(await ref.ask<dynamic>(open(), _ask), isA<List>());
+      final opened = await ref.ask<dynamic>(open(beef: beef), _ask);
+      expect(opened, isA<List>());
+      expect((opened as List).single.fundingBeefHex, beef,
+          reason: 'the BEEF the server validated is journaled');
+    });
+
+    group('libspiffy-fsy: server', () {
+      Future<ActorRef> countersigned({bool withFunding = true}) => spawn([
+            f.serverAccepted(version: 1),
+            RefundCountersignedEvent(
+              channelId: _channelId,
+              serverSignatureHex: f.serverSignatureHex,
+              refundTxHex: withFunding ? f.refundTxHex : null,
+              fundingTxId: withFunding ? f.fundingTxId : null,
+              fundingOutputIndex: withFunding ? 0 : null,
+              fundingTxHex: withFunding ? f.fundingTxHex : null,
+              version: 2,
+            ),
+          ]);
+
+      test('refuses a funding transaction without its BEEF', () async {
+        final ref = await countersigned();
+
+        expectRejected(await ref.ask<dynamic>(open(), _ask), 'No BEEF');
+        expectRejected(await ref.ask<dynamic>(open(beef: ''), _ask), 'No BEEF');
+        expect(journal(), hasLength(2));
+      });
+
+      test('refuses a BEEF that does not carry the funding transaction',
+          () async {
+        final ref = await countersigned();
+        final other = channelFundingTx(
+            clientPubKeyHex: f.clientPubKeyHex,
+            serverPubKeyHex: f.serverPubKeyHex,
+            amountSats: f.amountSats,
+            changeAddressB58: f.clientAddressB58);
+
+        expectRejected(
+            await ref.ask<dynamic>(open(beef: beefOf(other.hex)), _ask),
+            'does not carry');
+        expectRejected(await ref.ask<dynamic>(open(beef: 'zz'), _ask),
+            'Invalid funding BEEF');
+        expect(journal(), hasLength(2));
+      });
+
+      test('refuses a funding transaction other than the one whose refund it '
+          'signed', () async {
+        final ref = await countersigned();
+        final other = channelFundingTx(
+            clientPubKeyHex: f.clientPubKeyHex,
+            serverPubKeyHex: f.serverPubKeyHex,
+            amountSats: f.amountSats,
+            changeAddressB58: f.clientAddressB58);
+
+        expectRejected(
+            await ref.ask<dynamic>(
+                open(txid: other.txid, hex: other.hex, beef: beefOf(other.hex)),
+                _ask),
+            'not the one the signed refund spends');
+        expect(journal(), hasLength(2));
+        expect(await ref.ask<dynamic>(open(beef: beefOf(f.fundingTxHex)), _ask),
+            isA<List>());
+      });
+    });
+  });
+
+  group('libspiffy-fsy: RequestRefundSignatureCommand (server)', () {
+    RequestRefundSignatureCommand sign({
+      String? refundTxHex,
+      String? fundingTxId,
+      String? fundingTxHex,
+    }) =>
+        RequestRefundSignatureCommand(
+          channelId: _channelId,
+          fundingTxId: fundingTxId ?? f.fundingTxId,
+          fundingOutputIndex: 0,
+          fundingTxHex: fundingTxHex,
+          refundTxHex: refundTxHex ?? f.refundTxHex,
+          lockTimeUnix: f.lockTimeUnix,
+          serverSignatureHex: f.serverSignatureHex,
+        );
+
+    Future<String> refundWith({int? lockTimeUnix, int? sequence}) async {
+      final refund = await PaymentChannelBuilder(
+              cryptoService: DartSVCryptoService())
+          .buildRefundTransaction(
+        fundingTxId: f.fundingTxId,
+        fundingOutputIndex: 0,
+        fundingAmountSats: f.amountSats,
+        clientPubKey: f.clientKey.publicKey,
+        serverPubKey: f.serverKey.publicKey,
+        clientAddress: f.clientKey.publicKey.toAddress(dartsv.NetworkType.TEST),
+        lockTimeUnix: lockTimeUnix ?? f.lockTimeUnix,
+      );
+      if (sequence != null) {
+        refund.transaction.inputs.single.sequenceNumber = sequence;
+      }
+      return refund.transaction.serialize();
+    }
+
+    test('journals the refund and the funding output it spends', () async {
+      final ref = await spawn([f.serverAccepted(version: 1)]);
+
+      final reply = await ref.ask<dynamic>(
+          sign(fundingTxHex: f.fundingTxHex), _ask);
+
+      expect(reply, isA<List>(), reason: '$reply');
+      final event = (reply as List).single as RefundCountersignedEvent;
+      expect(event.refundTxHex, f.refundTxHex);
+      expect(event.fundingTxId, f.fundingTxId);
+      expect(event.fundingOutputIndex, 0);
+      expect(event.fundingTxHex, f.fundingTxHex);
+    });
+
+    test('refuses a refund without the channel lockTime', () async {
+      final ref = await spawn([f.serverAccepted(version: 1)]);
+
+      expectRejected(
+          await ref.ask<dynamic>(
+              sign(refundTxHex: await refundWith(lockTimeUnix: f.lockTimeUnix - 3600)),
+              _ask),
+          'is not the channel lockTime');
+      expect(journal(), hasLength(1));
+    });
+
+    test('refuses a refund whose input sequence is final', () async {
+      final ref = await spawn([f.serverAccepted(version: 1)]);
+
+      expectRejected(
+          await ref.ask<dynamic>(
+              sign(
+                  refundTxHex: await refundWith(
+                      sequence: dartsv.TransactionInput.MAX_SEQ_NUMBER)),
+              _ask),
+          'sequence is final');
+      expect(journal(), hasLength(1));
+    });
+
+    test('refuses a refund of another output', () async {
+      final ref = await spawn([f.serverAccepted(version: 1)]);
+
+      expectRejected(
+          await ref.ask<dynamic>(sign(fundingTxId: 'e1' * 32), _ask),
+          'does not spend exactly the funding output');
+      expectRejected(
+          await ref.ask<dynamic>(
+              sign(
+                  fundingTxHex: channelFundingTx(
+                          clientPubKeyHex: f.clientPubKeyHex,
+                          serverPubKeyHex: f.serverPubKeyHex,
+                          amountSats: BigInt.from(1000))
+                      .hex),
+              _ask),
+          'not ${f.fundingTxId}');
+      expect(journal(), hasLength(1));
     });
   });
 

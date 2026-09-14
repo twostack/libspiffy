@@ -77,6 +77,9 @@ class LibSpiffyActorSystem {
   // applied an event (via AwaitEventApplied). The actor system itself is
   // the registry — there is no separate ProjectionManager.
   WalletProjection? _walletProjection;
+
+  /// Network passed to [initialize]; actors that derive addresses need it.
+  String _networkType = 'test';
   InvoiceProjection? _invoiceProjection;
   ChannelProjection? _channelProjection;
   ActorRef? _walletProjectionRef;
@@ -211,6 +214,8 @@ class LibSpiffyActorSystem {
     CdnSyncProgressCallback? onHeaderSyncProgress, // CDN sync progress callback
   }) async {
     
+    _networkType = networkType;
+
     // 1. Initialize Dactor system (use provided or create new)
     if (actorSystem != null) {
       _actorSystem = actorSystem;
@@ -753,6 +758,7 @@ class LibSpiffyActorSystem {
       walletManager: _walletManager!,
       invoiceCoordinator: _invoiceCoordinator!,
       storage: _actorStorage,
+      networkType: _networkType,
     ));
 
     // Spawn HeaderSyncActor early (other actors may need to communicate with it)
@@ -832,6 +838,7 @@ class LibSpiffyActorSystem {
         dataSource: _blockchainDataSource,
         storage: _walletStorage,
         walletManagerActor: _walletManager!,
+        walletProjection: _walletProjectionRef,
         eventBroadcaster: broadcastWalletEvent,
       ));
       

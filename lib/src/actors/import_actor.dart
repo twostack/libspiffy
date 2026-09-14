@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:convert/convert.dart';
 import 'package:dactor/dactor.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
+import 'package:eventador/eventador.dart' show AwaitEventApplied, AwaitFailed;
 import 'package:logging/logging.dart';
 
 import '../services/blockchain_data_source.dart';
@@ -29,6 +30,14 @@ import '../utils/network_name.dart';
 ///
 /// The ImportActor keeps aggregates pure by handling all I/O externally
 /// and sending atomic commands to the wallet aggregate.
+///
+/// The import itself runs as a background job outside [onMessage], so the
+/// mailbox stays live: [ImportProgressQuery] is answered and
+/// [CancelImportMessage] takes effect between steps of a running import.
+/// Every wait is on an actual acknowledgement (an `ask` reply, the aggregate's
+/// response, or the wallet projection applying the resulting event); there
+/// are no fixed sleeps. Imports for different wallets queue up and run one
+/// after another.
 class ImportActor extends Actor {
   final Logger _logger = Logger('ImportActor');
   final BlockchainDataSource _dataSource;
@@ -36,40 +45,60 @@ class ImportActor extends Actor {
   final TransactionImportService _importService;
   final ReadModelStorage _storage;
   final ActorRef _walletManagerActor;
+  final ActorRef? _walletProjection;
   final void Function(WalletEvent)? _eventBroadcaster;
+
+  /// Window for a single acknowledgement (aggregate reply or projection
+  /// apply). `ask` timeouts are this plus [_askSlack] so dactor's own timeout
+  /// never fires before the awaiter's (see the coordinator actors).
+  final Duration _ackTimeout;
+  static const Duration _askSlack = Duration(seconds: 2);
 
   // Track import state
   String? _currentImportWalletId;
   bool _isCancelled = false;
+  Completer<void>? _cancelSignal;
+  final List<ImportWalletMessage> _queuedImports = [];
+  String _phase = 'idle';
+  String _progressMessage = '';
+  double _progress = 0.0;
+  int _addressesFound = 0;
   int _totalAddresses = 0;
   int _totalTransactions = 0;
   int _processedTransactions = 0;
-  
+
+  /// Aggregate acknowledgements awaited when no wallet projection is wired.
+  final Map<String, Completer<TransactionRecordedResponse>> _pendingRecordAcks = {};
+
   ImportActor({
     required BlockchainDataSource dataSource,
     required ReadModelStorage storage,
     required ActorRef walletManagerActor,
+    ActorRef? walletProjection,
     void Function(WalletEvent)? eventBroadcaster,
+    Duration ackTimeout = const Duration(seconds: 30),
   })  : _dataSource = dataSource,
         _discoveryService = AddressDiscoveryService(dataSource),
         _importService = TransactionImportService(dataSource: dataSource),
         _storage = storage,
         _walletManagerActor = walletManagerActor,
-        _eventBroadcaster = eventBroadcaster;
+        _walletProjection = walletProjection,
+        _eventBroadcaster = eventBroadcaster,
+        _ackTimeout = ackTimeout;
+
+  /// True while an import job is running.
+  bool get isImporting => _currentImportWalletId != null;
 
   @override
   Future<void> onMessage(dynamic message) async {
-    _logger.info('📨 ImportActor received message: ${message.runtimeType}');
-    
+    _logger.fine('📨 ImportActor received message: ${message.runtimeType}');
+
     try {
       if (message is ImportWalletMessage) {
-        _logger.info('▶️  Starting import for wallet: ${message.walletId}, network: ${message.networkType}');
-        await _handleImportWallet(message);
+        _enqueueImport(message);
       } else if (message is CancelImportMessage) {
-        _logger.info('❌ Cancel import requested');
-        _handleCancelImport();
+        _handleCancelImport(message);
       } else if (message is ImportProgressQuery) {
-        _logger.info('📊 Progress query received');
         _handleProgressQuery();
       } else if (message is TransactionRecordedResponse) {
         if (message.success) {
@@ -77,6 +106,8 @@ class ImportActor extends Actor {
         } else {
           _logger.severe('❌ Transaction recording FAILED: ${message.txid} — ${message.error}');
         }
+        final ack = _pendingRecordAcks.remove(message.txid);
+        if (ack != null && !ack.isCompleted) ack.complete(message);
         _eventBroadcaster?.call(WalletImportTransactionConfirmedEvent(
           walletId: message.walletId,
           txid: message.txid,
@@ -101,84 +132,128 @@ class ImportActor extends Actor {
       }
     } catch (e, stackTrace) {
       _logger.severe('💥 Error handling message: $e', e, stackTrace);
-      if (message is ImportWalletMessage) {
-        await _notifyImportFailed(message.walletId, e.toString());
-      }
     }
   }
 
-  Future<void> _handleImportWallet(ImportWalletMessage message) async {
+  // ===========================================================================
+  // JOB CONTROL
+  // ===========================================================================
+
+  void _enqueueImport(ImportWalletMessage message) {
     final walletId = message.walletId;
-    
-    // Guard: Prevent duplicate imports
-    if (_currentImportWalletId == walletId) {
+    final alreadyQueued = _queuedImports.any((m) => m.walletId == walletId);
+    if (_currentImportWalletId == walletId || alreadyQueued) {
       _logger.warning('⚠️  Import already in progress for wallet $walletId, ignoring duplicate request');
       return;
     }
-    
-    _currentImportWalletId = walletId;
+    if (_currentImportWalletId != null) {
+      _logger.info('⏳ Import for $walletId queued behind $_currentImportWalletId');
+      _queuedImports.add(message);
+      return;
+    }
+    _startImport(message);
+  }
+
+  void _startImport(ImportWalletMessage message) {
+    _currentImportWalletId = message.walletId;
     _isCancelled = false;
+    _cancelSignal = Completer<void>();
+    _phase = 'setup';
+    _progressMessage = 'Starting';
+    _progress = 0.0;
+    _addressesFound = 0;
     _totalAddresses = 0;
     _totalTransactions = 0;
     _processedTransactions = 0;
+    _logger.info('▶️  Starting import for wallet: ${message.walletId}, network: ${message.networkType}');
+    // Deliberately not awaited: the job runs outside the message handler so
+    // the mailbox keeps serving progress queries, cancellations and replies.
+    unawaited(_runImport(message));
+  }
 
+  Future<void> _runImport(ImportWalletMessage message) async {
+    final walletId = message.walletId;
     _logger.info('🚀 Starting wallet import for $walletId (name: "${message.walletName}")');
     _logger.info('   Network: ${message.networkType}, Gap Limit: ${message.addressGapLimit}');
 
     try {
-      // Phase 1: Create wallet from xpriv or wif
       _logger.info('📝 Phase 1/4: Creating wallet...');
       await _createWallet(message);
-      _logger.info('   ✅ Wallet created successfully');
+      _throwIfCancelled();
 
-      if (_isCancelled) {
-        _logger.info('   ❌ Import cancelled during wallet creation');
-        return;
-      }
-
-      // Phase 2: Discover used addresses
       _logger.info('🔍 Phase 2/4: Discovering addresses...');
       final discoveredAddresses = await _discoverAddresses(message);
       _totalAddresses = discoveredAddresses.length;
       _logger.info('   ✅ Found $_totalAddresses used addresses');
+      _throwIfCancelled();
 
-      if (_isCancelled) {
-        _logger.info('   ❌ Import cancelled during address discovery');
-        return;
-      }
-
-      // Phase 3: Import transactions and UTXOs
       _logger.info('💰 Phase 3/4: Importing transactions for $_totalAddresses addresses...');
       await _importTransactions(message, discoveredAddresses);
       _logger.info('   ✅ Imported $_processedTransactions transactions');
+      _throwIfCancelled();
 
-      if (_isCancelled) {
-        _logger.info('   ❌ Import cancelled during transaction import');
-        return;
-      }
-
-      // Phase 4: Complete import
       _logger.info('🏁 Phase 4/4: Completing import...');
       await _completeImport(message);
-      _logger.info('   ✅ Import finalized');
-
-      _logger.info('✨ Wallet import completed successfully!');
-      _logger.info('   📊 Summary: $_totalAddresses addresses, $_processedTransactions transactions');
+      _logger.info('✨ Wallet import completed: $_totalAddresses addresses, $_processedTransactions transactions');
+    } on ImportCancelledException {
+      _logger.info('❌ Import cancelled for wallet $walletId after $_processedTransactions/$_totalTransactions transactions');
+      await _notifyImportFailed(walletId, 'Import cancelled', cancelled: true);
     } catch (e, stackTrace) {
       _logger.severe('💥 Wallet import failed: $e', e, stackTrace);
       await _notifyImportFailed(walletId, e.toString());
     } finally {
       _currentImportWalletId = null;
+      _cancelSignal = null;
+      _phase = 'idle';
+      _pendingRecordAcks.clear();
       _logger.info('🔓 Import lock released for wallet $walletId');
+      if (_queuedImports.isNotEmpty) {
+        _startImport(_queuedImports.removeAt(0));
+      }
     }
   }
 
+  void _throwIfCancelled() {
+    if (_isCancelled) throw const ImportCancelledException();
+  }
+
+  /// Await [future], but return early (by throwing [ImportCancelledException])
+  /// as soon as the running import is cancelled.
+  Future<T> _cancellable<T>(Future<T> future) async {
+    final signal = _cancelSignal;
+    if (signal == null) return future;
+    final result = await Future.any<Object?>([
+      future,
+      signal.future.then((_) => const _CancelSentinel()),
+    ]);
+    if (result is _CancelSentinel || _isCancelled) {
+      // The abandoned future must not surface as an unhandled error later.
+      unawaited(future.then((_) {}, onError: (_) {}));
+      throw const ImportCancelledException();
+    }
+    return result as T;
+  }
+
+  /// Register an awaiter on the wallet projection for [predicate]. Must be
+  /// called BEFORE the command that produces the event is sent, otherwise a
+  /// fast projection could apply the event before the awaiter is registered.
+  Future<dynamic>? _awaitApplied(bool Function(dynamic event) predicate) {
+    final projection = _walletProjection;
+    if (projection == null) return null;
+    return projection.ask<dynamic>(
+      AwaitEventApplied(predicate, timeout: _ackTimeout),
+      _ackTimeout + _askSlack,
+    );
+  }
+
+  // ===========================================================================
+  // PHASES
+  // ===========================================================================
+
   Future<void> _createWallet(ImportWalletMessage message) async {
-    _logger.info('   → Creating wallet via CreateWalletMessage for wallet ${message.walletId}');
-    
     final importType = message.xpriv != null ? 'xpriv' : 'wif';
-    _logger.info('   → Import type: $importType');
-    
+    _logger.info('   → Creating wallet via CreateWalletMessage ($importType) for wallet ${message.walletId}');
+
     // Create wallet using CreateWalletMessage (spawns the wallet actor)
     // NOT CreateWalletCommand wrapped in WalletCommandMessage (which expects existing actor)
     final createMessage = CreateWalletMessage(
@@ -192,22 +267,18 @@ class ImportActor extends Actor {
       },
     );
 
-    _logger.info('   → Sending CreateWalletMessage to WalletManagerActor to spawn wallet aggregate');
-    _logger.info('   → Wallet ID: ${message.walletId}, Name: ${message.walletName}');
-    if (message.xpriv != null) {
-      _logger.info('   → Has xpriv: ${message.xpriv!.isNotEmpty}');
-    } else {
-      _logger.info('   → Has wif: ${message.wif!.isNotEmpty}');
-    }
-    
-    _logger.info('   → Sending CreateWalletMessage via ask() to WalletManagerActor');
+    // Registered before the command is sent (see _awaitApplied). Once the
+    // projection has applied WalletCreatedEvent the read model holds the
+    // wallet and its root address, which _registerAddresses relies on.
+    final applied = _awaitApplied(
+        (e) => e is WalletCreatedEvent && e.walletId == message.walletId);
 
-    // Use ask() to avoid actor mailbox deadlock:
-    // ask() creates a temporary actor ref that receives the reply independently
-    // of ImportActor's mailbox, so the future resolves without blocking onMessage.
-    final walletCreatedMsg = await _walletManagerActor.ask<WalletCreatedMessage>(
-      createMessage,
-      const Duration(seconds: 30),
+    // ask() replies through a temporary ref, independent of this mailbox.
+    final walletCreatedMsg = await _cancellable(
+      _walletManagerActor.ask<WalletCreatedMessage>(
+        createMessage,
+        _ackTimeout + _askSlack,
+      ),
     );
 
     if (!walletCreatedMsg.success) {
@@ -215,25 +286,23 @@ class ImportActor extends Actor {
     }
 
     _logger.info('   → Wallet aggregate confirmed spawned with root address: ${walletCreatedMsg.rootAddress}');
-    
-    _logger.info('   → Broadcasting WalletImportStartedEvent');
 
-    // Notify import started
+    if (applied != null) {
+      final response = await _cancellable(applied);
+      if (response is AwaitFailed) {
+        throw StateError('Wallet ${message.walletId} was created but the wallet read model '
+            'did not apply it (${response.reason})');
+      }
+      _logger.info('   → Wallet confirmed in the wallet read model');
+    }
+
     await _notifyEvent(message.walletId, WalletImportStartedEvent(
       walletId: message.walletId,
       walletName: message.walletName,
       addressGapLimit: message.addressGapLimit,
     ));
 
-    _logger.info('   → Reporting progress: Wallet created (10%)');
-    _reportProgress(
-      'Wallet created',
-      0.1,
-      0, // addressesFound
-      0, // totalAddresses (not known yet)
-      0, // transactionsProcessed
-      0, // totalTransactions (not known yet)
-    );
+    _reportProgress('Wallet created', 0.1, 0, 0, 0, 0);
   }
 
   Future<List<DiscoveredAddress>> _discoverAddresses(
@@ -252,20 +321,16 @@ class ImportActor extends Actor {
     _logger.info('   → Deriving HD keys from xpriv');
     final hdPrivateKey = dartsv.HDPrivateKey.fromXpriv(message.xpriv!);
     final hdPublicKey = hdPrivateKey.hdPublicKey;
-    
-    _logger.info('   → Xpriv path info:');
-    _logger.info('      Depth: ${hdPrivateKey.nodeDepth}');
-    _logger.info('      ⚠️  NOTE: For BSV, xpriv should be at m/44\'/236\'/0\' (depth 3)');
-    _logger.info('      ⚠️  For Bitcoin, xpriv would be at m/44\'/0\'/0\' (depth 3)');
+    _logger.info('   → Xpriv depth: ${hdPrivateKey.nodeDepth} (BSV account level is m/44\'/236\'/0\', depth 3)');
 
     _logger.info('   → Starting address discovery (gap limit: ${message.addressGapLimit})');
-    final discoveryResult = await _discoveryService.discoverAddresses(
+    final discoveryResult = await _cancellable(_discoveryService.discoverAddresses(
       hdPublicKey: hdPublicKey,
       networkType: message.networkType,
       gapLimit: message.addressGapLimit,
+      shouldStop: () => _isCancelled,
       onProgress: (scannedCount, usedCount) {
         if (!_isCancelled) {
-          _logger.fine('      Scanned $scannedCount addresses, found $usedCount used');
           _reportProgress(
             'Scanning addresses: $usedCount found',
             0.1 + (0.3 * (scannedCount / (usedCount + message.addressGapLimit))),
@@ -276,100 +341,25 @@ class ImportActor extends Actor {
           );
         }
       },
-    );
+    ));
+    _throwIfCancelled();
 
-    _logger.info('   → Discovery complete: ${discoveryResult.usedAddresses.length} addresses found');
-    _logger.info('   → Total transactions across all addresses: ${discoveryResult.totalTransactions}');
-    
-    // Log each discovered address for debugging
-    _logger.info('   📋 Discovered addresses:');
+    _logger.info('   → Discovery complete: ${discoveryResult.usedAddresses.length} addresses, '
+        '${discoveryResult.totalTransactions} transactions');
     for (final addr in discoveryResult.usedAddresses) {
-      _logger.info('      • ${addr.address} (index: ${addr.derivationIndex}, change: ${addr.isChange}, txs: ${addr.transactionCount})');
+      _logger.fine('      • ${addr.address} (index: ${addr.derivationIndex}, change: ${addr.isChange}, txs: ${addr.transactionCount})');
     }
 
-    // Register discovered addresses via proper CQRS command flow
-    // This ensures events are persisted to EventStore and WalletProjection builds AddressEntity records
-    _logger.info('   → Sending RegisterDiscoveredAddressCommands for ${discoveryResult.usedAddresses.length} addresses...');
-    int commandsSent = 0;
-    for (final address in discoveryResult.usedAddresses) {
-      if (_isCancelled) {
-        _logger.warning('      ⚠️  Import cancelled, stopping address registration');
-        break;
-      }
-
-      _logger.fine('      → [${commandsSent + 1}/${discoveryResult.usedAddresses.length}] Registering: ${address.address}');
-      _logger.fine('         (index: ${address.derivationIndex}, change: ${address.isChange}, txs: ${address.transactionCount})');
-      
-      final command = RegisterDiscoveredAddressCommand(
-        walletId: message.walletId,
-        address: address.address,
-        derivationIndex: address.derivationIndex,
-        isChange: address.isChange,
-        transactionCount: address.transactionCount,
-      );
-      
-      _logger.fine('         📤 Sending command to WalletManagerActor...');
-      _walletManagerActor.tell(
-        WalletCommandMessage(message.walletId, command),
-        sender: context.self,
-      );
-      commandsSent++;
-      _logger.fine('         ✅ Command sent (#$commandsSent)');
-      
-      // Small delay to prevent command queue overload (commands processed sequentially)
-      await Future.delayed(const Duration(milliseconds: 10));
-    }
-    
-    _logger.info('   ✅ All $commandsSent RegisterDiscoveredAddressCommands sent');
-
-    
-    // CRITICAL: Wait for projection to actually persist addresses to Isar storage
-    // The projection processes AddressDiscoveredEvents and writes AddressEntity records
-    // We MUST wait until these are queryable in Isar before proceeding with transaction import
-    _logger.info('   → Waiting for projection to persist ${discoveryResult.usedAddresses.length} addresses to Isar...');
-    
-    final expectedCount = discoveryResult.usedAddresses.length;
-    int persistedCount = 0;
-    int attempts = 0;
-    const maxAttempts = 100; // 100 attempts * 200ms = 20 seconds max
-    const pollInterval = Duration(milliseconds: 200);
-    
-    while (persistedCount < expectedCount && attempts < maxAttempts) {
-      attempts++;
-      
-      // Query actual address count from storage
-      persistedCount = await _storage.getAddressCount(message.walletId);
-      
-      if (persistedCount >= expectedCount) {
-        _logger.info('   ✅ All $expectedCount addresses confirmed persisted to Isar! (took ${attempts * 200}ms)');
-        break;
-      }
-      
-      // Log progress every 5 attempts (every second)
-      if (attempts % 5 == 0) {
-        _logger.info('      Progress: $persistedCount/$expectedCount addresses persisted (${attempts * 200}ms elapsed)');
-      }
-      
-      await Future.delayed(pollInterval);
-    }
-    
-    if (persistedCount < expectedCount) {
-      _logger.severe('   ❌ TIMEOUT: Only $persistedCount/$expectedCount addresses persisted after ${maxAttempts * 200}ms!');
-      _logger.severe('   This will cause transaction import to fail because addresses won\'t be found in database.');
-      throw StateError('Address persistence timeout: expected $expectedCount, got $persistedCount. '
-          'Projection may be lagging or event processing is blocked.');
-    }
-    
-    _logger.info('   ✅ Address registration complete - all addresses confirmed in Isar storage');
+    await _registerAddresses(message.walletId, discoveryResult.usedAddresses);
 
     _totalTransactions = discoveryResult.totalTransactions;
     _reportProgress(
       'Found ${discoveryResult.usedAddresses.length} addresses with $_totalTransactions transactions',
       0.4,
-      discoveryResult.usedAddresses.length, // addressesFound
-      discoveryResult.usedAddresses.length, // totalAddresses
-      0, // transactionsProcessed
-      _totalTransactions, // totalTransactions
+      discoveryResult.usedAddresses.length,
+      discoveryResult.usedAddresses.length,
+      0,
+      _totalTransactions,
     );
 
     return discoveryResult.usedAddresses;
@@ -380,39 +370,26 @@ class ImportActor extends Actor {
     ImportWalletMessage message,
   ) async {
     _logger.info('   → Importing from WIF private key');
-    
-    // Parse WIF to get private key
     final privateKey = dartsv.SVPrivateKey.fromWIF(message.wif!);
-    
-    // Determine network type
     final network = NetworkName.toDartsv(message.networkType);
-    
-    // Derive the single address
     final address = dartsv.Address.fromPublicKey(privateKey.publicKey, network).toBase58();
-    _logger.info('   → WIF address: $address');
-    _logger.info('   → Network: ${message.networkType}');
-    
-    _reportProgress(
-      'Checking address history...',
-      0.2,
-      0, // addressesFound (WIF is single address)
-      1, // totalAddresses (WIF has 1 address)
-      0, // transactionsProcessed
-      0, // totalTransactions (not known yet)
-    );
-    
+    _logger.info('   → WIF address: $address (network: ${message.networkType})');
+
+    _reportProgress('Checking address history...', 0.2, 0, 1, 0, 0);
+
     // Fetch transaction history for this single address
     // No limit - fetch all transactions (data source handles pagination)
     List<TransactionInfo> history;
     try {
-      history = await _dataSource.getTransactionHistory(address);
+      history = await _cancellable(_dataSource.getTransactionHistory(address));
       _logger.info('   → Found ${history.length} transactions for address');
+    } on ImportCancelledException {
+      rethrow;
     } catch (e) {
       _logger.severe('   ❌ Error fetching transaction history: $e');
       history = [];
     }
-    
-    // Create discovered address entry (single entry for WIF)
+
     final discoveredAddress = DiscoveredAddress(
       address: address,
       derivationIndex: 0, // WIF has no derivation
@@ -420,38 +397,68 @@ class ImportActor extends Actor {
       transactionCount: history.length,
       txids: history.map((tx) => tx.txid).toList(),
     );
-    
-    // Register the address via CQRS command
-    _logger.info('   → Registering WIF address...');
-    final command = RegisterDiscoveredAddressCommand(
-      walletId: message.walletId,
-      address: address,
-      derivationIndex: 0,
-      isChange: false,
-      transactionCount: history.length,
-    );
-    
-    _walletManagerActor.tell(
-      WalletCommandMessage(message.walletId, command),
-      sender: context.self,
-    );
-    _logger.info('   ✅ WIF address registered');
+
+    await _registerAddresses(message.walletId, [discoveredAddress]);
 
     _totalTransactions = history.length;
-    _reportProgress(
-      'Found 1 address with $_totalTransactions transactions',
-      0.4,
-      1, // addressesFound (WIF has 1 address)
-      1, // totalAddresses
-      0, // transactionsProcessed
-      _totalTransactions, // totalTransactions
-    );
-    
+    _reportProgress('Found 1 address with $_totalTransactions transactions', 0.4, 1, 1, 0, _totalTransactions);
+
     return [discoveredAddress];
   }
 
+  /// Register discovered addresses through the CQRS command flow and wait
+  /// until the wallet projection has applied the AddressDiscoveredEvent of the
+  /// last address that is new to the wallet (events are applied in order, so
+  /// the earlier ones are in by then). Addresses the read model already holds
+  /// (the root address the aggregate registers on creation, for one) are
+  /// idempotent no-ops in the aggregate and produce no event, so they are not
+  /// waited on. Without a projection reference there is nothing to await;
+  /// ownership checks use the in-memory discovered list anyway.
+  Future<void> _registerAddresses(String walletId, List<DiscoveredAddress> addresses) async {
+    if (addresses.isEmpty) return;
+    _logger.info('   → Registering ${addresses.length} discovered address(es)...');
+
+    Future<dynamic>? applied;
+    if (_walletProjection != null) {
+      final known = (await _cancellable(_storage.getWalletAddresses(walletId))).toSet();
+      final fresh = addresses.where((a) => !known.contains(a.address)).toList();
+      _logger.info('   → ${fresh.length} of ${addresses.length} address(es) are new to the wallet');
+      if (fresh.isNotEmpty) {
+        final last = fresh.last;
+        applied = _awaitApplied((e) =>
+            e is AddressDiscoveredEvent && e.walletId == walletId && e.address == last.address);
+      }
+    }
+
+    for (final address in addresses) {
+      _walletManagerActor.tell(
+        WalletCommandMessage(walletId, RegisterDiscoveredAddressCommand(
+          walletId: walletId,
+          address: address.address,
+          derivationIndex: address.derivationIndex,
+          isChange: address.isChange,
+          transactionCount: address.transactionCount,
+        )),
+        sender: context.self,
+      );
+    }
+
+    if (applied == null) {
+      if (_walletProjection == null) {
+        _logger.warning('   ⚠️  No wallet projection wired; not waiting for address persistence');
+      }
+      return;
+    }
+    final response = await _cancellable(applied);
+    if (response is AwaitFailed) {
+      throw StateError('Address registration was not applied by the wallet read model '
+          '(${response.reason}); ${addresses.length} address(es) sent');
+    }
+    _logger.info('   ✅ ${addresses.length} address(es) confirmed in the wallet read model');
+  }
+
   /// Import transactions for all discovered addresses
-  /// 
+  ///
   /// Uses a three-phase approach to ensure correct ordering:
   /// 1. Collect all transactions from all addresses
   /// 2. Sort by block height (oldest first) to ensure parent TXs are processed
@@ -462,18 +469,18 @@ class ImportActor extends Actor {
     List<DiscoveredAddress> addresses,
   ) async {
     _logger.info('   → Importing transactions for ${addresses.length} addresses');
-    
+
     // PHASE 1: Collect all transactions from all addresses
     _logger.info('   📥 Phase 1: Collecting all transactions...');
     final allTransactions = <ImportedTransaction>[];
     final addressMap = <String, DiscoveredAddress>{}; // txid -> address that found it
-    
+
     for (int i = 0; i < addresses.length; i++) {
       final address = addresses[i];
-      if (_isCancelled) break;
+      _throwIfCancelled();
 
       _logger.fine('   → [${i+1}/${addresses.length}] Fetching transactions for: ${address.address}');
-      
+
       // Report progress during collection phase
       _reportProgress(
         'Collecting transactions from address ${i+1}/${addresses.length}',
@@ -483,16 +490,17 @@ class ImportActor extends Actor {
         0, // transactionsProcessed (not processing yet, just collecting)
         _totalTransactions, // totalTransactions (known from discovery)
       );
-      
+
       // Import transactions but don't process yet - just collect them
-      await _importService.importAddressTransactions(
+      await _cancellable(_importService.importAddressTransactions(
         address,
+        shouldStop: () => _isCancelled,
         onProgress: (completed, total) {
           _logger.fine('      Progress: $completed/$total transactions fetched');
         },
         onTransactionImported: (tx) async {
           if (_isCancelled) return;
-          
+
           // Only add if not already in collection (same tx can appear for multiple addresses)
           if (!allTransactions.any((t) => t.txid == tx.txid)) {
             allTransactions.add(tx);
@@ -502,16 +510,16 @@ class ImportActor extends Actor {
             _logger.fine('      ⏭️ Skipping duplicate: ${tx.txid}');
           }
         },
-      );
+      ));
     }
-    
-    if (_isCancelled) return;
-    
+
+    _throwIfCancelled();
+
     if (allTransactions.isEmpty) {
       _logger.info('   ℹ️ No transactions found to import');
       _reportProgress(
-        'Import complete: 0 transactions', 
-        0.9, 
+        'Import complete: 0 transactions',
+        0.9,
         _totalAddresses, // addressesFound
         _totalAddresses, // totalAddresses
         0, // transactionsProcessed
@@ -519,36 +527,36 @@ class ImportActor extends Actor {
       );
       return;
     }
-    
+
     // Report progress after collection completes
     _reportProgress(
       'Collected ${allTransactions.length} transactions, preparing to process',
-      0.55, 
+      0.55,
       _totalAddresses, // addressesFound
       _totalAddresses, // totalAddresses
       0, // transactionsProcessed
       allTransactions.length, // totalTransactions (now we know the exact count)
     );
-    
+
     // PHASE 2: Sort by block height (ascending - oldest first)
     // This ensures parent transactions are processed before transactions that spend their outputs
     _logger.info('   🔄 Phase 2: Sorting ${allTransactions.length} transactions by block height...');
     allTransactions.sort((a, b) => a.blockHeight.compareTo(b.blockHeight));
-    
+
     _logger.info('   ✅ Sorted: first block ${allTransactions.first.blockHeight}, '
         'last block ${allTransactions.last.blockHeight}');
-    
+
     // PHASE 3: Process transactions in sorted order
     _logger.info('   ⚙️ Phase 3: Processing ${allTransactions.length} transactions in block order...');
     _totalTransactions = allTransactions.length;
     _processedTransactions = 0;
-    
+
     final importedUtxos = <Map<String, dynamic>>[];
     int totalUtxosFound = 0;
-    
+
     for (final tx in allTransactions) {
-      if (_isCancelled) break;
-      
+      _throwIfCancelled();
+
       _processedTransactions++;
       _reportProgress(
         'Processing transactions: $_processedTransactions/$_totalTransactions',
@@ -558,16 +566,16 @@ class ImportActor extends Actor {
         _processedTransactions, // transactionsProcessed
         _totalTransactions, // totalTransactions
       );
-      
+
       final currentAddress = addressMap[tx.txid]!;
-      
+
       final utxosFound = await _processImportedTransaction(
         tx,
         message,
         currentAddress,
         addresses,
       );
-      
+
       totalUtxosFound += utxosFound.length;
       importedUtxos.addAll(utxosFound);
     }
@@ -586,7 +594,7 @@ class ImportActor extends Actor {
   }
 
   /// Process a single imported transaction
-  /// 
+  ///
   /// Returns list of UTXO maps found in this transaction
   Future<List<Map<String, dynamic>>> _processImportedTransaction(
     ImportedTransaction tx,
@@ -595,29 +603,42 @@ class ImportActor extends Actor {
     List<DiscoveredAddress> allAddresses,
   ) async {
     final importedUtxos = <Map<String, dynamic>>[];
-    
+    final walletId = message.walletId;
+
+    // Register the acknowledgement we will wait on BEFORE any command for
+    // this transaction is sent: the projection applying TransactionImportedEvent
+    // (which follows the UTXO events in order), or, without a projection, the
+    // aggregate's TransactionRecordedResponse delivered to this mailbox.
+    final applied = _awaitApplied((e) =>
+        e is TransactionImportedEvent && e.walletId == walletId && e.txid == tx.txid);
+    Completer<TransactionRecordedResponse>? recordAck;
+    if (applied == null) {
+      recordAck = Completer<TransactionRecordedResponse>();
+      _pendingRecordAcks[tx.txid] = recordAck;
+    }
+
     // Parse transaction to extract data (BEEF already has this parsed)
     final parsedTx = tx.transaction;
-    
+
     // Calculate total output value and track wallet-relevant data
     BigInt totalOutput = BigInt.zero;
     final walletReceivingAddresses = <String>[];
     BigInt walletReceivedSats = BigInt.zero;
-    
+
     for (final output in parsedTx.outputs) {
       totalOutput += output.satoshis;
     }
-    
+
     // Extract input information by fetching parent transactions
     final sendingAddresses = <String>[];
     BigInt totalInputSats = BigInt.zero;
-    
+
     // Fetch parent transactions for each input to get values and addresses
     for (final input in parsedTx.inputs) {
       try {
         final prevTxid = input.prevTxnId.toString();
         final prevVout = input.prevTxnOutputIndex;
-        
+
         // Fetch parent transaction - check database cache first
         dartsv.Transaction parentTx;
         final cachedTx = await _storage.getTransaction(prevTxid);
@@ -629,22 +650,22 @@ class ImportActor extends Actor {
           parentTx = dartsv.Transaction.fromHex(parentRawHex);
           _logger.fine('      ✗ Cache miss, fetched from API: $prevTxid');
         }
-        
+
         // Get the output being spent
         if (prevVout >= parentTx.outputs.length) {
           _logger.warning('      ⚠️  Invalid prevVout $prevVout for parent tx $prevTxid');
           continue;
         }
-        
+
         final spentOutput = parentTx.outputs[prevVout];
         totalInputSats += spentOutput.satoshis;
-        
+
         // Extract sending address from output script
         final scriptRegistry = ScriptTypeRegistry(
           networkType: NetworkName.toDartsv(message.networkType),
         );
         final scriptType = scriptRegistry.identifyScriptType(spentOutput.script);
-        
+
         if (scriptType?.toLowerCase() == 'p2pkh') {
           final locker = dartsv.P2PKHLockBuilder.fromScript(
             spentOutput.script,
@@ -661,14 +682,14 @@ class ImportActor extends Actor {
         // Continue processing other inputs
       }
     }
-    
+
     if (totalInputSats > BigInt.zero) {
       final fee = totalInputSats - totalOutput;
       _logger.info('      💰 Total inputs: $totalInputSats sats, fee: $fee sats');
     }
-    
+
     _logger.info('      📦 Parsing TX ${tx.txid}: ${parsedTx.inputs.length} inputs, ${parsedTx.outputs.length} outputs');
-    
+
     // Note: Input addresses require looking up the previous transaction output
     if (parsedTx.inputs.isNotEmpty) {
       _logger.info('         ℹ️  Transaction has ${parsedTx.inputs.length} inputs (spending UTXOs)');
@@ -687,7 +708,7 @@ class ImportActor extends Actor {
 
     if (spentUtxos.isNotEmpty) {
       _logger.info('      → Transaction spends ${spentUtxos.length} wallet UTXO(s)');
-      
+
       // Send all spend commands in batch
       for (final spentUtxo in spentUtxos) {
         final utxoKey = '${spentUtxo['txid']}:${spentUtxo['vout']}';
@@ -714,23 +735,23 @@ class ImportActor extends Actor {
     for (int vout = 0; vout < parsedTx.outputs.length; vout++) {
       final output = parsedTx.outputs[vout];
       String? outputAddress;
-      
+
       // Log raw script info
       final scriptHex = output.script.toHex();
       _logger.fine('         Output $vout: ${output.satoshis} sats');
       _logger.fine('            Script (hex): ${scriptHex.substring(0, scriptHex.length > 50 ? 50 : scriptHex.length)}${scriptHex.length > 50 ? "..." : ""}');
       _logger.fine('            Script length: ${output.script.chunks.length} chunks');
-      
+
       // Step 1: Identify script type
       final scriptRegistry = ScriptTypeRegistry(
         networkType: NetworkName.toDartsv(message.networkType),
       );
       final scriptType = scriptRegistry.identifyScriptType(output.script);
       _logger.fine('            Script type: $scriptType');
-      
+
       // Step 2: Use appropriate builder based on script type
       bool belongsToWallet = false;
-      
+
       try {
         if (scriptType?.toLowerCase() == 'p2pkh') {
           // Use P2PKH builder to extract address
@@ -740,7 +761,7 @@ class ImportActor extends Actor {
           );
           outputAddress = locker.address?.toBase58();
           _logger.fine('            Decoded P2PKH address: $outputAddress');
-          
+
           if (outputAddress != null) {
             // Check against in-memory discovered addresses (not Isar)
             // to avoid race with projection persistence.
@@ -749,24 +770,24 @@ class ImportActor extends Actor {
         } else if (scriptType?.toLowerCase() == 'p2ms') {
           // P2MS (multisig) - check if any of the public keys belong to wallet
           _logger.info('            P2MS (multisig) output detected');
-          
+
           final scriptRegistry = ScriptTypeRegistry(
             networkType: NetworkName.toDartsv(message.networkType),
           );
           final scriptInfo = scriptRegistry.extractScriptMetadata(output.script);
           final pubKeys = scriptInfo?['publicKeys'] as List?;
-          
+
           if (pubKeys != null && pubKeys.isNotEmpty) {
             _logger.info('            Multisig has ${pubKeys.length} public keys');
-            
+
             final network = NetworkName.toDartsv(message.networkType);
-            
+
             // Check if any public key derives to a wallet address
             for (final pubKeyHex in pubKeys) {
               try {
                 final pubKey = dartsv.SVPublicKey.fromHex(pubKeyHex.toString());
                 final derivedAddress = dartsv.Address.fromPublicKey(pubKey, network).toBase58();
-                
+
                 if (allAddresses.any((a) => a.address == derivedAddress)) {
                   _logger.fine('            ✅ Wallet owns multisig key: $derivedAddress');
                   belongsToWallet = true;
@@ -778,7 +799,7 @@ class ImportActor extends Actor {
                 _logger.warning('            ⚠️  Error deriving address from P2MS pubkey: $e');
               }
             }
-            
+
             if (!belongsToWallet) {
               _logger.info('            ℹ️  Multisig does not include wallet keys');
             }
@@ -794,23 +815,23 @@ class ImportActor extends Actor {
         _logger.info('            ❌ Failed to parse script: $e');
         continue;
       }
-      
+
       if (outputAddress == null && belongsToWallet) {
         _logger.warning('            ⚠️  Wallet owns output but could not determine address');
         continue;
       }
-      
+
       if (outputAddress != null && !belongsToWallet) {
         _logger.fine('            → Address $outputAddress NOT in wallet');
       }
 
       if (belongsToWallet && outputAddress != null) {
         _logger.info('            ✅ UTXO found: ${tx.txid}:$vout (${output.satoshis} sats) → $outputAddress');
-        
+
         // Track wallet-specific data for the event
         walletReceivingAddresses.add(outputAddress);
         walletReceivedSats += output.satoshis;
-        
+
         // Send ReceiveUTXOCommand to wallet aggregate
         // IMPORTANT: Imported UTXOs are already confirmed, mark as available immediately
         final receiveCommand = ReceiveUTXOCommand(
@@ -859,22 +880,37 @@ class ImportActor extends Actor {
       totalInputSats: totalInputSats.toInt(),
       sendingAddresses: sendingAddresses,
     );
-    
+
     _walletManagerActor.tell(
       WalletCommandMessage(message.walletId, recordCommand),
       sender: context.self,
     );
-    
-    // Batch wait for all UTXO commands (spent + received) to be persisted
-    // This replaces individual waits per UTXO for better performance
+
+    // Wait for the acknowledgement registered above. The aggregate processes
+    // its mailbox in order, so once the record command is acknowledged every
+    // spend/receive command sent before it has been handled too.
     final totalUtxoCommands = spentUtxos.length + importedUtxos.length;
-    if (totalUtxoCommands > 0) {
-      await Future.delayed(const Duration(milliseconds: 150));
-      _logger.info('         ✅ Transaction and $totalUtxoCommands UTXO command(s) processed');
+    if (applied != null) {
+      final response = await _cancellable(applied);
+      if (response is AwaitFailed) {
+        throw StateError('Transaction ${tx.txid} was not applied by the wallet read model '
+            '(${response.reason})');
+      }
     } else {
-      await Future.delayed(const Duration(milliseconds: 50));
-      _logger.info('         ✅ RecordImportedTransactionCommand sent');
+      try {
+        final response = await _cancellable(recordAck!.future.timeout(
+          _ackTimeout,
+          onTimeout: () => throw TimeoutException(
+              'No TransactionRecordedResponse for ${tx.txid} within $_ackTimeout'),
+        ));
+        if (!response.success) {
+          throw StateError('Recording transaction ${tx.txid} failed: ${response.error}');
+        }
+      } finally {
+        _pendingRecordAcks.remove(tx.txid);
+      }
     }
+    _logger.info('         ✅ Transaction ${tx.txid} and $totalUtxoCommands UTXO command(s) acknowledged');
 
     return importedUtxos;
   }
@@ -903,14 +939,19 @@ class ImportActor extends Actor {
     _logger.info('Import completed: $_totalAddresses addresses, $_processedTransactions transactions');
   }
 
-  Future<void> _notifyImportFailed(String walletId, String error) async {
+  Future<void> _notifyImportFailed(String walletId, String error, {bool cancelled = false}) async {
     await _notifyEvent(walletId, WalletImportFailedEvent(
       walletId: walletId,
       error: error,
       partialProgress: '$_processedTransactions/$_totalTransactions transactions',
+      metadata: {'cancelled': cancelled},
     ));
 
-    _logger.severe('Import failed: $error');
+    if (cancelled) {
+      _logger.info('Import cancelled: $error');
+    } else {
+      _logger.severe('Import failed: $error');
+    }
   }
 
   Future<void> _notifyEvent(String walletId, WalletEvent event) async {
@@ -921,7 +962,7 @@ class ImportActor extends Actor {
   }
 
   void _reportProgress(
-    String message, 
+    String message,
     double progress,
     int addressesFound,
     int totalAddresses,
@@ -929,24 +970,30 @@ class ImportActor extends Actor {
     int totalTransactions,
   ) {
     _logger.info(message);
-    
+
+    // Determine phase based on progress
+    if (progress < 0.2) {
+      _phase = 'setup';
+    } else if (progress < 0.4) {
+      _phase = 'discovery';
+    } else if (progress < 0.9) {
+      _phase = 'import';
+    } else {
+      _phase = 'finalize';
+    }
+    _progressMessage = message;
+    _progress = progress;
+    _addressesFound = addressesFound;
+    _totalAddresses = totalAddresses;
+    _processedTransactions = transactionsProcessed;
+    _totalTransactions = totalTransactions;
+
     // Broadcast progress event for UI subscribers
-    if (_eventBroadcaster != null && _currentImportWalletId != null) {
-      // Determine phase based on progress
-      String phase;
-      if (progress < 0.2) {
-        phase = 'setup';
-      } else if (progress < 0.4) {
-        phase = 'discovery';
-      } else if (progress < 0.9) {
-        phase = 'import';
-      } else {
-        phase = 'finalize';
-      }
-      
+    final walletId = _currentImportWalletId;
+    if (_eventBroadcaster != null && walletId != null) {
       _eventBroadcaster(WalletImportProgressEvent(
-        walletId: _currentImportWalletId!,
-        phase: phase,
+        walletId: walletId,
+        phase: _phase,
         message: message,
         progress: progress,
         addressesFound: addressesFound,
@@ -957,26 +1004,58 @@ class ImportActor extends Actor {
     }
   }
 
-  void _handleCancelImport() {
-    _logger.info('Import cancellation requested');
+  void _handleCancelImport(CancelImportMessage message) {
+    final target = message.walletId;
+    if (target != null && target != _currentImportWalletId) {
+      final before = _queuedImports.length;
+      _queuedImports.removeWhere((m) => m.walletId == target);
+      final dequeued = before != _queuedImports.length;
+      _logger.info(dequeued
+          ? '❌ Queued import for $target removed'
+          : '❌ Cancel requested for $target but no such import is running or queued');
+      context.sender?.tell(ImportCancelResponse(walletId: target, accepted: dequeued));
+      if (dequeued) {
+        _eventBroadcaster?.call(WalletImportFailedEvent(
+          walletId: target,
+          error: 'Import cancelled',
+          partialProgress: 'not started',
+          metadata: const {'cancelled': true},
+        ));
+      }
+      return;
+    }
+    final running = _currentImportWalletId;
+    if (running == null) {
+      _logger.info('❌ Cancel requested but no import is running');
+      context.sender?.tell(ImportCancelResponse(walletId: target, accepted: false));
+      return;
+    }
+    _logger.info('❌ Import cancellation requested for $running');
     _isCancelled = true;
+    final signal = _cancelSignal;
+    if (signal != null && !signal.isCompleted) signal.complete();
+    context.sender?.tell(ImportCancelResponse(walletId: running, accepted: true));
   }
 
   void _handleProgressQuery() {
     final progressInfo = ImportProgressMessage(
       walletId: _currentImportWalletId ?? '',
-      message: 'In progress',
-      progress: _totalTransactions > 0
-          ? _processedTransactions / _totalTransactions
-          : 0.0,
+      message: _currentImportWalletId == null ? 'Idle' : _progressMessage,
+      progress: _progress,
       processedTransactions: _processedTransactions,
       totalTransactions: _totalTransactions,
+      phase: _phase,
+      addressesFound: _addressesFound,
+      totalAddresses: _totalAddresses,
+      isRunning: _currentImportWalletId != null,
+      queuedWalletIds: _queuedImports.map((m) => m.walletId).toList(),
     );
-    _logger.info('Progress: ${progressInfo.progress * 100}%');
+    _logger.info('Progress: ${(progressInfo.progress * 100).toStringAsFixed(1)}%');
+    context.sender?.tell(progressInfo);
   }
 
   /// Check if transaction inputs spend any wallet UTXOs
-  /// 
+  ///
   /// This method follows the same pattern as SPVActor._extractSpentUTXOs
   /// to ensure consistent UTXO accounting across import and SPV flows.
   Future<List<Map<String, dynamic>>> _findSpentWalletUTXOs(
@@ -1053,13 +1132,13 @@ class ImportWalletMessage implements Message {
           (xpriv != null && wif == null) || (xpriv == null && wif != null),
           'Exactly one of xpriv or wif must be provided',
         );
-  
+
   @override
   String get correlationId => 'import-wallet-$walletId-${DateTime.now().millisecondsSinceEpoch}';
-  
+
   @override
   DateTime get timestamp => DateTime.now();
-  
+
   @override
   Map<String, dynamic> get metadata => {
     'walletId': walletId,
@@ -1067,28 +1146,82 @@ class ImportWalletMessage implements Message {
     'addressGapLimit': addressGapLimit,
     'importType': xpriv != null ? 'xpriv' : 'wif',
   };
-  
+
   @override
   ActorRef? get replyTo => null;
 }
 
-/// Message to cancel ongoing import
-class CancelImportMessage {
-  CancelImportMessage();
+/// Thrown inside the import job when a [CancelImportMessage] arrives.
+class ImportCancelledException implements Exception {
+  const ImportCancelledException();
+
+  @override
+  String toString() => 'ImportCancelledException: import cancelled';
 }
 
-/// Query for import progress
-class ImportProgressQuery {
+class _CancelSentinel {
+  const _CancelSentinel();
+}
+
+/// Message to cancel an ongoing (or queued) import.
+///
+/// Without [walletId] the running import is cancelled. Reply (when sent with a
+/// sender / via `ask`): [ImportCancelResponse].
+class CancelImportMessage implements Message {
+  final String? walletId;
+
+  CancelImportMessage({this.walletId});
+
+  @override
+  String get correlationId => 'cancel-import-${walletId ?? 'current'}-${DateTime.now().microsecondsSinceEpoch}';
+  @override
+  DateTime get timestamp => DateTime.now();
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId};
+  @override
+  ActorRef? get replyTo => null;
+}
+
+/// Reply to [CancelImportMessage].
+class ImportCancelResponse extends LocalMessage {
+  final String? walletId;
+
+  /// True when an import was running/queued and has been told to stop.
+  final bool accepted;
+
+  ImportCancelResponse({required this.walletId, required this.accepted})
+      : super(payload: null);
+
+  @override
+  dynamic get payload => this;
+}
+
+/// Query for import progress. Reply: [ImportProgressMessage].
+class ImportProgressQuery implements Message {
   ImportProgressQuery();
+
+  @override
+  String get correlationId => 'import-progress-${DateTime.now().microsecondsSinceEpoch}';
+  @override
+  DateTime get timestamp => DateTime.now();
+  @override
+  Map<String, dynamic> get metadata => const {};
+  @override
+  ActorRef? get replyTo => null;
 }
 
-/// Progress update message
-class ImportProgressMessage {
+/// Progress update message (reply to [ImportProgressQuery]).
+class ImportProgressMessage extends LocalMessage {
   final String walletId;
   final String message;
   final double progress; // 0.0 to 1.0
   final int processedTransactions;
   final int totalTransactions;
+  final String phase;
+  final int addressesFound;
+  final int totalAddresses;
+  final bool isRunning;
+  final List<String> queuedWalletIds;
 
   ImportProgressMessage({
     required this.walletId,
@@ -1096,7 +1229,15 @@ class ImportProgressMessage {
     required this.progress,
     required this.processedTransactions,
     required this.totalTransactions,
-  });
+    this.phase = 'idle',
+    this.addressesFound = 0,
+    this.totalAddresses = 0,
+    this.isRunning = false,
+    this.queuedWalletIds = const [],
+  }) : super(payload: null);
+
+  @override
+  dynamic get payload => this;
 }
 
 /// Import completed response

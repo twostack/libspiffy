@@ -103,12 +103,15 @@ class TransactionImportService {
   /// - [txids]: List of transaction IDs to import
   /// - [onProgress]: Optional progress callback (completed, total)
   /// - [onTransactionImported]: Optional callback for each successfully imported transaction
+  /// - [shouldStop]: Polled before each transaction; returning true stops the
+  ///   batch early (import cancellation)
   ///
   /// Returns list of [ImportedTransaction], skipping any that fail.
   Future<List<ImportedTransaction>> importTransactions({
     required List<String> txids,
     void Function(int completed, int total)? onProgress,
     void Function(ImportedTransaction transaction)? onTransactionImported,
+    bool Function()? shouldStop,
   }) async {
     _logger.info('📦 Importing ${txids.length} transactions');
 
@@ -116,6 +119,10 @@ class TransactionImportService {
     int completed = 0;
 
     for (final txid in txids) {
+      if (shouldStop?.call() ?? false) {
+        _logger.info('   ⏹ Transaction import stopped early after $completed/${txids.length} (cancelled)');
+        break;
+      }
       try {
         _logger.info('   → Importing TX $txid (${completed + 1}/${txids.length})');
         final transaction = await importTransaction(txid);
@@ -155,6 +162,7 @@ class TransactionImportService {
     DiscoveredAddress address, {
     void Function(int completed, int total)? onProgress,
     void Function(ImportedTransaction transaction)? onTransactionImported,
+    bool Function()? shouldStop,
   }) async {
     _logger.info(
       '🔄 Importing ${address.transactionCount} transactions for address ${address.address}',
@@ -171,6 +179,7 @@ class TransactionImportService {
         }
       },
       onTransactionImported: onTransactionImported,
+      shouldStop: shouldStop,
     );
     
     _logger.info('   ✅ Completed: ${result.length} transactions imported for ${address.address}');

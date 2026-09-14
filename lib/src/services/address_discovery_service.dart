@@ -35,6 +35,8 @@ class AddressDiscoveryService {
   /// - [networkType]: Network type ('main' or 'test')
   /// - [gapLimit]: Number of consecutive unused addresses before stopping (default: 20)
   /// - [onProgress]: Optional callback for progress updates
+  /// - [shouldStop]: Polled before each address lookup; returning true ends
+  ///   the scan early with the addresses found so far (import cancellation)
   ///
   /// Returns [AddressDiscoveryResult] with all discovered addresses.
   ///
@@ -45,6 +47,7 @@ class AddressDiscoveryService {
     required String networkType,
     int gapLimit = 20,
     void Function(int scannedCount, int usedCount)? onProgress,
+    bool Function()? shouldStop,
   }) async {
     _logger.info(
       '🔍 Starting address discovery with gap limit $gapLimit on network: $networkType',
@@ -66,6 +69,7 @@ class AddressDiscoveryService {
       network: network,
       gapLimit: gapLimit,
       onProgress: onProgress,
+      shouldStop: shouldStop,
     );
     usedAddresses.addAll(receivingResults);
     totalTransactions += receivingResults.fold<int>(
@@ -81,6 +85,7 @@ class AddressDiscoveryService {
       network: network,
       gapLimit: gapLimit,
       onProgress: onProgress,
+      shouldStop: shouldStop,
     );
     usedAddresses.addAll(changeResults);
     totalTransactions += changeResults.fold<int>(
@@ -113,6 +118,7 @@ class AddressDiscoveryService {
     required dartsv.NetworkType network,
     required int gapLimit,
     void Function(int scannedCount, int usedCount)? onProgress,
+    bool Function()? shouldStop,
   }) async {
     final usedAddresses = <DiscoveredAddress>[];
     int consecutiveUnused = 0;
@@ -124,6 +130,11 @@ class AddressDiscoveryService {
     _logger.info('   → Scanning ${isChange ? "change" : "receiving"} address chain...');
 
     while (consecutiveUnused < gapLimit) {
+      if (shouldStop?.call() ?? false) {
+        _logger.info('   ⏹ Address scan stopped early at index $index (cancelled)');
+        break;
+      }
+
       // Derive address at current index
       final addressKey = chainKey.deriveChildNumber(index);
       final address = addressKey.publicKey.toAddress(network).toString();

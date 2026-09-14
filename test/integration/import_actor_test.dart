@@ -348,7 +348,9 @@ void main() {
         // Subscribe to wallet events
         context.libspiffy.subscribeToWalletEvents(walletId).listen((event) {
           context.capturedEvents.add(event);
-          print('📢 Event captured: ${event.runtimeType}');
+          print('📢 Event captured: ${event.runtimeType}'
+              '${event is WalletImportFailedEvent ? " — ${event.error}" : ""}'
+              '${event is WalletImportProgressEvent ? " — ${event.message}" : ""}');
         });
 
         print('Step 1: Send ImportWalletMessage to ImportActor');

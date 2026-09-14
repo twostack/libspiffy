@@ -14,6 +14,7 @@ import '../models/invoice_output_spec.dart';
 import 'spv_messages.dart' hide ValidateBEEFMessage, BEEFValidationResult;
 import 'wallet_messages.dart';
 import 'invoice_messages.dart';
+import '../utils/network_name.dart';
 
 /// Actor that handles true SPV validation - receives transactions from counterparties
 /// and validates them using merkle proofs against the block header chain
@@ -32,6 +33,11 @@ class SPVActor extends Actor {
   final ActorRef _walletManager;
   final ActorRef _invoiceCoordinator;
   final ReadModelStorage _storage;
+
+  /// Network the wallet runs on ('main', 'test', 'regtest'...). Output
+  /// addresses are derived with this network's version byte; a mismatch means
+  /// the wallet's own addresses never match and received UTXOs are dropped.
+  final String _networkType;
   
   /// Optional reference to ARCActor for triggering pending UTXO checks
   ActorRef? _arcActor;
@@ -48,9 +54,11 @@ class SPVActor extends Actor {
     required ReadModelStorage storage,
     ActorRef? arcActor,
     ActorRef? headerSyncActor,
+    String networkType = 'test',
   }) : _walletManager = walletManager,
        _invoiceCoordinator = invoiceCoordinator,
        _storage = storage,
+       _networkType = networkType,
        _arcActor = arcActor,
        _headerSyncActor = headerSyncActor;
   
@@ -592,7 +600,7 @@ class SPVActor extends Actor {
             if (pubkeyHash != null) {
               try {
                 // Create Address from pubkeyhash
-                address = dartsv.Address.fromPubkeyHash(hex.encode(pubkeyHash), dartsv.NetworkType.TEST).toBase58();
+                address = dartsv.Address.fromPubkeyHash(hex.encode(pubkeyHash), NetworkName.toDartsv(_networkType)).toBase58();
               } catch (e) {
                 _log.warning('Failed to derive P2PKH address from pubkey hash: $e');
               }
@@ -604,7 +612,7 @@ class SPVActor extends Actor {
             if (pubkey != null) {
               try {
                 final pubKeyObj = dartsv.SVPublicKey.fromHex(pubkey);
-                address = dartsv.Address.fromPublicKey(pubKeyObj, dartsv.NetworkType.TEST).toBase58();
+                address = dartsv.Address.fromPublicKey(pubKeyObj, NetworkName.toDartsv(_networkType)).toBase58();
               } catch (e) {
                 _log.warning('Failed to derive P2PK address from public key: $e');
               }

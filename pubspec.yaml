@@ -27,13 +27,14 @@ dependencies:
   postgres: ^3.4.4
 
   # Actor system foundation
-  dactor: ^1.2.0
+  dactor: ^1.3.0
 
   # Durable queuing
-  duraq: ^1.0.0
+  duraq: ^3.0.0
+  duraq_isar: ^2.0.0
 
   # Event sourcing
-  eventador: ^2.2.0
+  eventador: ^3.0.0
 
   # SPV and P2P networking
   spiffynode: ^1.1.0
@@ -53,8 +54,3 @@ dev_dependencies:
   # Token operations (dev-only: for integration tests, not a runtime dependency)
   tstokenlib: ^1.4.0
 
-# Local path override for eventador 2.2.0 (not yet on pub.dev).
-# Revert when eventador 2.2.0 is published.
-dependency_overrides:
-  eventador:
-    path: ../eventador

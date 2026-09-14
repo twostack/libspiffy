@@ -59,14 +59,15 @@ void main() {
       // Run migrations
       await migrations.migrate();
 
-      // Verify version
+      // Verify version: v001 initial schema + v002 secure secrets
       final version = await migrations.getCurrentVersion();
-      expect(version, equals(1));
+      expect(version, equals(2));
 
       // Verify applied migrations
       final applied = await migrations.getAppliedMigrations();
-      expect(applied, hasLength(1));
+      expect(applied, hasLength(2));
       expect(applied.first.name, equals('initial_schema'));
+      expect(applied.last.name, equals('secure_secrets'));
     });
 
     test('should handle re-running migrations idempotently', () async {
@@ -77,18 +78,23 @@ void main() {
       await migrations.migrate();
 
       final version = await migrations.getCurrentVersion();
-      expect(version, equals(1));
+      expect(version, equals(2));
     });
 
-    test('should rollback migrations', () async {
+    test('should rollback migrations one at a time', () async {
       final migrations = PostgresMigrations(config);
 
       await migrations.migrate();
+      expect(await migrations.getCurrentVersion(), equals(2));
+
+      expect(await migrations.rollback(), isTrue);
       expect(await migrations.getCurrentVersion(), equals(1));
 
-      final didRollback = await migrations.rollback();
-      expect(didRollback, isTrue);
+      expect(await migrations.rollback(), isTrue);
       expect(await migrations.getCurrentVersion(), equals(0));
+
+      // Nothing left to roll back
+      expect(await migrations.rollback(), isFalse);
     });
   });
 

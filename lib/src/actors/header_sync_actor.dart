@@ -216,15 +216,17 @@ class HeaderSyncActor extends Actor {
       
       final currentHeight = _headerChain.bestHeight;
 
-      // Mark sync as in progress
-      _syncInProgress = true;
-
       final peers = _peerManager.getPeers();
       _logger.info('Triggering header sync from height $currentHeight... (${peers.length} peers, states: ${peers.map((p) => p.state).toList()})');
       if (peers.isEmpty) {
+        // Not marked in progress: nothing was sent, so nothing will arrive to
+        // clear the flag, and every later trigger would be skipped forever.
         _logger.warning('No peers available for header sync');
         return;
       }
+
+      // Mark sync as in progress
+      _syncInProgress = true;
       
       // Build block locator hashes for efficient sync
       // Use current chain tip to request headers from where we left off

@@ -5,7 +5,6 @@ import 'package:convert/convert.dart';
 import 'package:test/test.dart';
 import 'package:dactor/dactor.dart';
 import 'package:isar/isar.dart';
-import 'package:eventador/eventador.dart';
 import 'package:libspiffy/libspiffy.dart';
 import 'package:libspiffy/src/actors/payment_messages.dart';
 import 'package:libspiffy/src/actors/wallet_messages.dart';
@@ -46,10 +45,7 @@ void main() {
       
       // Open Isar with LibSpiffy and Eventador schemas
       isar = await Isar.open(
-        [
-          ...LibSpiffySchemas.walletSchemas,
-          ...IsarEventStore.requiredSchemas,
-        ],
+        LibSpiffySchemas.allSchemas,
         directory: testDir.path,
         name: 'tx_history_test_${DateTime.now().millisecondsSinceEpoch}',
       );
@@ -456,10 +452,7 @@ void main() {
         print('\n✓ Creating sender actor system...');
         senderTestDir = await Directory.systemTemp.createTemp('sender_test_');
         senderIsar = await Isar.open(
-          [
-            ...LibSpiffySchemas.walletSchemas,
-            ...IsarEventStore.requiredSchemas,
-          ],
+          LibSpiffySchemas.allSchemas,
           directory: senderTestDir.path,
           name: 'sender_db',
         );
@@ -482,10 +475,7 @@ void main() {
         print('\n✓ Creating receiver actor system...');
         receiverTestDir = await Directory.systemTemp.createTemp('receiver_test_');
         receiverIsar = await Isar.open(
-          [
-            ...LibSpiffySchemas.walletSchemas,
-            ...IsarEventStore.requiredSchemas,
-          ],
+          LibSpiffySchemas.allSchemas,
           directory: receiverTestDir.path,
           name: 'receiver_db',
         );

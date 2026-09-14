@@ -323,7 +323,11 @@ class ArcService {
     required this.baseUrl,
     this.apiKey,
     http.Client? client,
+    this.requestTimeout = const Duration(seconds: 30),
   }) : _client = client ?? http.Client();
+
+  /// Upper bound on any single HTTP request; see [ArcServiceConfig.requestTimeout].
+  final Duration requestTimeout;
 
   /// Create ARC service from configuration
   factory ArcService.fromConfig(ArcServiceConfig config, {http.Client? client}) {
@@ -331,6 +335,7 @@ class ArcService {
       baseUrl: config.baseUrl,
       apiKey: config.apiKey,
       client: client,
+      requestTimeout: config.requestTimeout,
     );
   }
 
@@ -366,7 +371,7 @@ class ArcService {
       body: jsonEncode({
         'rawTx': rawTx,
       }),
-    );
+    ).timeout(requestTimeout);
 
     if (response.statusCode == 200 || response.statusCode == 201) {
       return ArcSubmitResponse.fromJson(jsonDecode(response.body));
@@ -385,7 +390,7 @@ class ArcService {
     final response = await _client.get(
       Uri.parse(url),
       headers: _headers,
-    );
+    ).timeout(requestTimeout);
 
     if (response.statusCode == 200) {
       return ArcTransactionResponse.fromJson(jsonDecode(response.body));
@@ -403,7 +408,7 @@ class ArcService {
     final response = await _client.get(
       Uri.parse(url),
       headers: _headers,
-    );
+    ).timeout(requestTimeout);
 
     if (response.statusCode == 200) {
       final data = jsonDecode(response.body);
@@ -423,7 +428,7 @@ class ArcService {
       final response = await _client.get(
         Uri.parse(url),
         headers: _headers,
-      );
+      ).timeout(requestTimeout);
 
       if (response.statusCode == 200) {
         return ArcMerkleProofResponse.fromJson(jsonDecode(response.body));
@@ -447,7 +452,7 @@ class ArcService {
       body: jsonEncode({
         'txids': txids,
       }),
-    );
+    ).timeout(requestTimeout);
 
     if (response.statusCode == 200) {
       final List<dynamic> data = jsonDecode(response.body);
@@ -464,7 +469,7 @@ class ArcService {
     final response = await _client.get(
       Uri.parse(url),
       headers: _headers,
-    );
+    ).timeout(requestTimeout);
 
     if (response.statusCode == 200) {
       return ArcPolicyResponse.fromJson(jsonDecode(response.body));
@@ -480,7 +485,7 @@ class ArcService {
     final response = await _client.get(
       Uri.parse(url),
       headers: _headers,
-    );
+    ).timeout(requestTimeout);
 
     if (response.statusCode == 200) {
       return ArcHealthResponse.fromJson(jsonDecode(response.body));
@@ -510,7 +515,7 @@ class ArcService {
       body: jsonEncode({
         'rawTxs': rawTxs,
       }),
-    );
+    ).timeout(requestTimeout);
 
     if (response.statusCode == 200 || response.statusCode == 201) {
       final List<dynamic> data = jsonDecode(response.body);
@@ -532,7 +537,7 @@ class ArcService {
       body: jsonEncode({
         'txids': txids,
       }),
-    );
+    ).timeout(requestTimeout);
 
     if (response.statusCode == 200) {
       final List<dynamic> data = jsonDecode(response.body);

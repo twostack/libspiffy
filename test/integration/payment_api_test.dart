@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:io';
 import 'package:test/test.dart';
 import 'package:dactor/dactor.dart';
-import 'package:eventador/eventador.dart';
 import 'package:isar/isar.dart';
 import 'package:convert/convert.dart';
 import 'package:libspiffy/libspiffy.dart';
@@ -222,10 +221,7 @@ void main() {
     
     // Open Isar with LibSpiffy and Eventador schemas
     isar = await Isar.open(
-      [
-        ...LibSpiffySchemas.walletSchemas,
-        ...IsarEventStore.requiredSchemas,
-      ],
+      LibSpiffySchemas.allSchemas,
       directory: testDir.path,
       name: 'payment_api_test_${DateTime.now().millisecondsSinceEpoch}',
     );

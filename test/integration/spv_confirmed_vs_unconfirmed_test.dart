@@ -12,7 +12,6 @@ import 'dart:typed_data';
 import 'package:test/test.dart';
 import 'package:dactor/dactor.dart';
 import 'package:isar/isar.dart';
-import 'package:eventador/eventador.dart';
 import 'package:convert/convert.dart';
 import 'package:libspiffy/libspiffy.dart';
 import 'package:libspiffy/src/actors/libspiffy_actor_system.dart';
@@ -45,11 +44,7 @@ void main() {
       bobActorSystem = LocalActorSystem(ActorSystemConfig());
       bobDbName = 'bob_confirm_db_${DateTime.now().microsecondsSinceEpoch}';
       bobIsar = await Isar.open(
-        [
-          ...LibSpiffySchemas.walletSchemas,
-          EventEnvelopeSchema,
-          SnapshotEnvelopeSchema,
-        ],
+        LibSpiffySchemas.allSchemas,
         directory: bobTestDir.path,
         name: bobDbName,
       );

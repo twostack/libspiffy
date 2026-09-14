@@ -39,19 +39,29 @@ class ChannelP2PAdapter {
 
   ChannelP2PAdapter({
     required ActorRef channelManager,
+    required ActorRef walletManager,
     required void Function(coord.CoordinatorEvent) emitEvent,
     required Stream<ch.ChannelEvent> channelEvents,
     required String walletId,
     required String myPeerId,
   })  : _channelManager = channelManager,
+        _walletManager = walletManager,
         _emitEvent = emitEvent,
         _walletId = walletId,
         _myPeerId = myPeerId {
     _eventSubscription = channelEvents.listen(_handleEvent);
   }
 
+  /// Wallet manager that routes wallet commands to the owning aggregate.
+  final ActorRef _walletManager;
+
+  /// Actor that receives wallet command responses on the adapter's behalf
+  /// (the coordinator that owns this adapter); set once its context exists.
+  ActorRef? _replyTo;
+
   void updateWalletId(String walletId) => _walletId = walletId;
   void updatePeerId(String peerId) => _myPeerId = peerId;
+  void updateReplyTo(ActorRef replyTo) => _replyTo = replyTo;
 
   void dispose() {
     _eventSubscription?.cancel();
@@ -174,17 +184,28 @@ class ChannelP2PAdapter {
       fundingOutputIndex: clientInfo.fundingOutputIndex,
     );
 
-    // Tell channel manager to build the funding transaction
-    _channelManager.tell(BuildFundingTransactionCommand(
-      walletId: _walletId,
-      correlationId: channelId,
-      channelId: channelId,
-      clientPubKeyHex: clientInfo.clientPubKeyHex,
-      serverPubKeyHex: serverPubKey,
-      fundingAmountSats: clientInfo.fundingAmountSats,
-      changeAddressBase58: clientInfo.clientAddressB58,
-      derivationIndex: clientInfo.clientDerivationIndex,
-    ));
+    // BuildFundingTransactionCommand is a wallet command: only the wallet
+    // aggregate handles it, reached through the wallet manager. It used to
+    // be told to the channel manager, which has no case for it and dropped
+    // it, so the client side never progressed past channel_accept. The
+    // FundingTransactionBuiltResponse comes back to the coordinator, which
+    // forwards it to handleFundingTransactionBuilt.
+    _walletManager.tell(
+      WalletCommandMessage(
+        _walletId,
+        BuildFundingTransactionCommand(
+          walletId: _walletId,
+          correlationId: channelId,
+          channelId: channelId,
+          clientPubKeyHex: clientInfo.clientPubKeyHex,
+          serverPubKeyHex: serverPubKey,
+          fundingAmountSats: clientInfo.fundingAmountSats,
+          changeAddressBase58: clientInfo.clientAddressB58,
+          derivationIndex: clientInfo.clientDerivationIndex,
+        ),
+      ),
+      sender: _replyTo,
+    );
   }
 
   void _handleChannelReject(String fromPeerId, Map<String, dynamic> payload) {

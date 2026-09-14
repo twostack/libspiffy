@@ -75,8 +75,7 @@ void main() {
         );
 
         // Start the actor to trigger recovery
-        wallet.preStart();
-        await Future.delayed(Duration(milliseconds: 100)); // Wait for recovery
+        await wallet.preStart();
 
         // Create wallet
         final createCommand = CreateWalletCommand(
@@ -104,8 +103,7 @@ void main() {
           secureStorage: secureStorage,
         );
 
-        wallet.preStart();
-        await Future.delayed(Duration(milliseconds: 100));
+        await wallet.preStart();
 
         // Create wallet first time
         await wallet.commandHandler(CreateWalletCommand(
@@ -145,8 +143,7 @@ void main() {
           secureStorage: secureStorage,
         );
 
-        wallet.preStart();
-        await Future.delayed(Duration(milliseconds: 100));
+        await wallet.preStart();
 
         // Create xpub wallet
         final createCommand = CreateWalletCommand(
@@ -175,8 +172,7 @@ void main() {
           secureStorage: secureStorage,
         );
 
-        wallet.preStart();
-        await Future.delayed(Duration(milliseconds: 100));
+        await wallet.preStart();
 
         // Try to create wallet with invalid xpub
         final createCommand = CreateWalletCommand(
@@ -210,8 +206,7 @@ void main() {
           secureStorage: secureStorage,
         );
 
-        wallet.preStart();
-        await Future.delayed(Duration(milliseconds: 100));
+        await wallet.preStart();
 
         // Try to create mainnet wallet with testnet xpub (should fail)
         // Explicitly specify mainnet in metadata
@@ -246,8 +241,7 @@ void main() {
           secureStorage: secureStorage,
         );
 
-        wallet.preStart();
-        await Future.delayed(Duration(milliseconds: 100));
+        await wallet.preStart();
 
         // Create xpub wallet
         await wallet.commandHandler(CreateWalletCommand(
@@ -306,8 +300,7 @@ void main() {
           secureStorage: secureStorage,
         );
 
-        wallet.preStart();
-        await Future.delayed(Duration(milliseconds: 100));
+        await wallet.preStart();
 
         // Create xpub wallet
         await wallet.commandHandler(CreateWalletCommand(
@@ -343,8 +336,7 @@ void main() {
           secureStorage: secureStorage,
         );
 
-        wallet.preStart();
-        await Future.delayed(Duration(milliseconds: 100));
+        await wallet.preStart();
 
         // Create xpub wallet
         await wallet.commandHandler(CreateWalletCommand(
@@ -378,8 +370,7 @@ void main() {
           secureStorage: secureStorage,
         );
 
-        wallet1.preStart();
-        await Future.delayed(Duration(milliseconds: 100));
+        await wallet1.preStart();
 
         await wallet1.commandHandler(CreateWalletCommand(
           walletId: 'xpub-wallet-recovery',
@@ -405,8 +396,7 @@ void main() {
           secureStorage: secureStorage,
         );
 
-        wallet2.preStart();
-        await Future.delayed(Duration(milliseconds: 200)); // Wait for recovery
+        await wallet2.preStart();
 
         // Verify recovered state
         expect(wallet2.isInitialized, isTrue);
@@ -434,8 +424,7 @@ void main() {
           secureStorage: secureStorage,
         );
 
-        wallet.preStart();
-        await Future.delayed(Duration(milliseconds: 100));
+        await wallet.preStart();
 
         await wallet.commandHandler(CreateWalletCommand(
           walletId: 'xpub-wallet-sign',
@@ -480,8 +469,7 @@ void main() {
           secureStorage: secureStorage,
         );
 
-        wallet.preStart();
-        await Future.delayed(Duration(milliseconds: 100));
+        await wallet.preStart();
 
         await wallet.commandHandler(CreateWalletCommand(
           walletId: 'xpub-wallet-multisig',
@@ -528,8 +516,7 @@ void main() {
           secureStorage: secureStorage,
         );
 
-        wallet.preStart();
-        await Future.delayed(Duration(milliseconds: 100));
+        await wallet.preStart();
 
         await wallet.commandHandler(CreateWalletCommand(
           walletId: 'xpub-wallet-funding',
@@ -576,8 +563,7 @@ void main() {
           secureStorage: secureStorage,
         );
 
-        wallet.preStart();
-        await Future.delayed(Duration(milliseconds: 100));
+        await wallet.preStart();
 
         await wallet.commandHandler(CreateWalletCommand(
           walletId: 'xpub-wallet-split',
@@ -613,8 +599,7 @@ void main() {
           cryptoService: cryptoService,
           secureStorage: secureStorage,
         );
-        wallet.preStart();
-        await Future.delayed(Duration(milliseconds: 100));
+        await wallet.preStart();
 
         // Create wallet first
         await wallet.commandHandler(CreateWalletCommand(
@@ -678,8 +663,7 @@ void main() {
           cryptoService: cryptoService,
           secureStorage: secureStorage,
         );
-        wallet.preStart();
-        await Future.delayed(Duration(milliseconds: 100));
+        await wallet.preStart();
 
         // Create wallet
         await wallet.commandHandler(CreateWalletCommand(
@@ -819,8 +803,7 @@ void main() {
           cryptoService: cryptoService,
           secureStorage: secureStorage,
         );
-        wallet.preStart();
-        await Future.delayed(Duration(milliseconds: 100));
+        await wallet.preStart();
 
         // Create wallet with UTXO
         await wallet.commandHandler(CreateWalletCommand(
@@ -892,8 +875,7 @@ void main() {
           cryptoService: cryptoService,
           secureStorage: secureStorage,
         );
-        wallet.preStart();
-        await Future.delayed(Duration(milliseconds: 100));
+        await wallet.preStart();
 
         // Perform operations
         await wallet.commandHandler(CreateWalletCommand(
@@ -932,8 +914,7 @@ void main() {
           cryptoService: cryptoService,
           secureStorage: secureStorage,
         );
-        wallet.preStart(); // Triggers recovery
-        await Future.delayed(Duration(milliseconds: 200)); // Wait for recovery
+        await wallet.preStart(); // Triggers recovery
 
         // Verify state recovered correctly
         expect(wallet.isInitialized, isTrue);
@@ -960,8 +941,7 @@ void main() {
           cryptoService: cryptoService,
           secureStorage: secureStorage,
         );
-        wallet.preStart();
-        await Future.delayed(Duration(milliseconds: 100));
+        await wallet.preStart();
       });
 
       test('should reject operations on non-existent wallet', () async {
@@ -1024,8 +1004,7 @@ void main() {
           cryptoService: cryptoService,
           secureStorage: secureStorage,
         );
-        wallet.preStart();
-        await Future.delayed(Duration(milliseconds: 100));
+        await wallet.preStart();
 
         // Create wallet
         await wallet.commandHandler(CreateWalletCommand(
@@ -1569,8 +1548,7 @@ void main() {
           cryptoService: cryptoService,
           secureStorage: secureStorage,
         );
-        wallet.preStart();
-        await Future.delayed(Duration(milliseconds: 100));
+        await wallet.preStart();
 
         await wallet.commandHandler(CreateWalletCommand(
           walletId: 'wallet-presigned',
@@ -1717,8 +1695,7 @@ void main() {
           cryptoService: cryptoService,
           secureStorage: secureStorage,
         );
-        wallet.preStart();
-        await Future.delayed(Duration(milliseconds: 100));
+        await wallet.preStart();
 
         await wallet.commandHandler(CreateWalletCommand(
           walletId: 'wallet-plugin',

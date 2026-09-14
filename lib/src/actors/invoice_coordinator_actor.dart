@@ -91,6 +91,9 @@ class InvoiceCoordinatorActor extends Actor {
           break;
           
         default:
+          if (message is Map && message['error'] != null) {
+            _handleWalletManagerError(message);
+          }
       }
     } catch (e, stackTrace) {
       
@@ -222,9 +225,8 @@ class InvoiceCoordinatorActor extends Actor {
       );
 
       _invoiceAggregates[invoiceId] = aggregateActor;
-
-      // Allow recovery to complete
-      await Future.delayed(const Duration(milliseconds: 200));
+      // spawn() returns once recovery has completed (dactor 1.3 awaits
+      // preStart), so no settle delay is needed before sending commands.
 
       // Extract P2PKH addresses for legacy compatibility
       final addresses = outputs
@@ -242,6 +244,9 @@ class InvoiceCoordinatorActor extends Actor {
           (e) => e is InvoiceCreatedEvent && e.invoiceId == invoiceId,
           timeout: const Duration(seconds: 10),
         ),
+        // Ask timeout must outlast the awaiter's own window, otherwise dactor's
+        // default (5 s) fires first and a slow projection looks like a failure.
+        const Duration(seconds: 12),
       );
 
       // Send CreateInvoiceCommand to the aggregate
@@ -303,6 +308,34 @@ class InvoiceCoordinatorActor extends Actor {
     }
   }
 
+  /// WalletManager replies `{'error': ..., 'walletId': ...}` when a wallet
+  /// cannot be loaded. Any invoice waiting on an address from that wallet
+  /// will never get one, so fail it now instead of leaking the pending
+  /// request and leaving the caller without a reply.
+  void _handleWalletManagerError(Map<dynamic, dynamic> reply) {
+    final walletId = reply['walletId']?.toString();
+    final error = reply['error'].toString();
+    final affected = _pendingRequests.entries
+        .where((e) => walletId == null || e.value.walletId == walletId)
+        .toList();
+    for (final entry in affected) {
+      _pendingRequests.remove(entry.key);
+      final request = entry.value;
+      _log.warning('Invoice ${entry.key} failed: wallet manager reported "$error"');
+      request.originalSender?.tell(InvoiceCreatedMessage(
+        invoiceId: entry.key,
+        walletId: request.walletId,
+        addresses: request.collectedAddresses,
+        amount: request.amount,
+        description: request.description,
+        createdAt: DateTime.now(),
+        expiresAt: request.expiresAt,
+        success: false,
+        error: error,
+      ));
+    }
+  }
+
   /// Handle address generation response - Step 2: Create the aggregate
   Future<void> _handleAddressGenerated(AddressGeneratedResponse msg) async {
     // Find the pending invoice request
@@ -313,6 +346,25 @@ class InvoiceCoordinatorActor extends Actor {
 
     final pendingRequest = _pendingRequests[invoiceId];
     if (pendingRequest == null) {
+      return;
+    }
+
+    if (!msg.success || msg.address.isEmpty) {
+      // Previously the empty address was appended and the invoice was
+      // created with an unpayable output while reporting success.
+      _pendingRequests.remove(invoiceId);
+      _log.warning('Address generation failed for invoice $invoiceId: ${msg.error}');
+      pendingRequest.originalSender?.tell(InvoiceCreatedMessage(
+        invoiceId: invoiceId,
+        walletId: pendingRequest.walletId,
+        addresses: pendingRequest.collectedAddresses,
+        amount: pendingRequest.amount,
+        description: pendingRequest.description,
+        createdAt: DateTime.now(),
+        expiresAt: pendingRequest.expiresAt,
+        success: false,
+        error: 'Address generation failed: ${msg.error ?? 'unknown error'}',
+      ));
       return;
     }
 
@@ -358,9 +410,6 @@ class InvoiceCoordinatorActor extends Actor {
 
       _invoiceAggregates[invoiceId] = aggregateActor;
 
-      // Allow recovery to complete before sending commands
-      await Future.delayed(const Duration(milliseconds: 200));
-
       // Extract addresses for legacy compatibility
       final addresses = finalOutputs
           .whereType<P2PKHOutputSpec>()
@@ -373,6 +422,9 @@ class InvoiceCoordinatorActor extends Actor {
           (e) => e is InvoiceCreatedEvent && e.invoiceId == invoiceId,
           timeout: const Duration(seconds: 10),
         ),
+        // Ask timeout must outlast the awaiter's own window, otherwise dactor's
+        // default (5 s) fires first and a slow projection looks like a failure.
+        const Duration(seconds: 12),
       );
 
       // Send CreateInvoiceCommand to the aggregate
@@ -526,10 +578,6 @@ class InvoiceCoordinatorActor extends Actor {
           ),
         );
         _invoiceAggregates[msg.invoiceId] = aggregateActor;
-
-        // Wait for recovery to complete before sending commands
-        // This prevents commands from being dropped during recovery
-        await Future.delayed(Duration(milliseconds: 200));
       } catch (e) {
         originalSender?.tell(InvoiceStatusMessage(
           invoiceId: msg.invoiceId,
@@ -566,6 +614,9 @@ class InvoiceCoordinatorActor extends Actor {
         (e) => e is InvoicePaidEvent && e.invoiceId == msg.invoiceId,
         timeout: const Duration(seconds: 10),
       ),
+      // Ask timeout must outlast the awaiter's own window, otherwise dactor's
+      // default (5 s) fires first and a slow projection looks like a failure.
+      const Duration(seconds: 12),
     );
 
     // Tell aggregate with a null/no sender so its onCommandProcessed reply
@@ -617,9 +668,6 @@ class InvoiceCoordinatorActor extends Actor {
           ),
         );
         _invoiceAggregates[msg.invoiceId] = aggregateActor;
-        
-        // Wait for recovery to complete before sending commands
-        await Future.delayed(Duration(milliseconds: 200));
       } catch (e) {
         context.sender?.tell(InvoiceStatusMessage(
           invoiceId: msg.invoiceId,
@@ -712,9 +760,6 @@ class InvoiceCoordinatorActor extends Actor {
                 ),
               );
               _invoiceAggregates[invoice.invoiceId] = aggregateActor;
-              
-              // Wait for recovery to complete before sending commands
-              await Future.delayed(Duration(milliseconds: 200));
             } catch (e) {
               continue;
             }

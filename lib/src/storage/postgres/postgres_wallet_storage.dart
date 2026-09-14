@@ -79,7 +79,7 @@ class PostgresWalletStorage implements ReadModelStorage {
           derivation_index, is_created, created_at, last_accessed_at,
           metadata_json, aggregate_version, confirmed_balance, unconfirmed_balance
         ) VALUES (
-          @walletId, @name, 'hd', @network, @rootAddress,
+          @walletId, @name, 'hd', COALESCE(@network, 'mainnet'), @rootAddress,
           0, true, @now, @now, @metadataJson, 0, 0, 0
         )
         ON CONFLICT (wallet_id) DO UPDATE SET
@@ -93,7 +93,9 @@ class PostgresWalletStorage implements ReadModelStorage {
         'walletId': walletId,
         'name': name,
         'rootAddress': rootAddress,
-        'network': networkType ?? 'mainnet',
+        // Bound as-is: a null must reach the COALESCE above, otherwise every
+        // balance update rewrote the network to the default.
+        'network': networkType,
         'metadataJson': metadata != null ? jsonEncode(metadata) : null,
         'now': DateTime.now(),
       },

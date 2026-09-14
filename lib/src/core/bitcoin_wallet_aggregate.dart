@@ -17,6 +17,7 @@ import '../services/transaction_builder_service.dart';
 import '../actors/wallet_messages.dart';
 import 'wallet_commands.dart';
 import 'wallet_events.dart';
+import '../utils/network_name.dart';
 
 /// Bitcoin wallet aggregate root implementing event sourcing
 /// 
@@ -47,8 +48,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
   final Map<String, ActorRef> _capturedSenders = {};
   
   @override
-  void preStart() {
-    super.preStart();
+  Future<void> preStart() async {
+    await super.preStart();
   }
   
   @override
@@ -190,6 +191,14 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       );
     } else if (command.mnemonic != null && command.mnemonic!.isNotEmpty) {
       await secureStorage.setMnemonic(walletId, command.mnemonic!);
+      // The passphrase is part of the seed: addresses were derived with it
+      // at creation, so signing must use it too or the keys will not match.
+      if (command.passphrase != null && command.passphrase!.isNotEmpty) {
+        await secureStorage.setString(
+          _passphraseKey(walletId),
+          command.passphrase!,
+        );
+      }
       if (createdEvent?.hdPublicKeyXpub != null) {
         await secureStorage.setString(
           'wallet_hdpubkey_$walletId',
@@ -198,6 +207,12 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       }
     }
   }
+
+  static String _passphraseKey(String walletId) => 'wallet_passphrase_$walletId';
+
+  /// BIP39 passphrase recorded at creation, or '' when none was given.
+  Future<String> _mnemonicPassphrase(String walletId) async =>
+      await secureStorage.getString(_passphraseKey(walletId)) ?? '';
 
   /// Send error responses when command processing fails
   /// Only active when aggregate is used as an actor in the actor system
@@ -483,8 +498,10 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     
     // Extract network type from metadata
     final metadata = command.walletMetadata ?? {};
-    final networkTypeStr = metadata['network'] as String? ?? 'testnet';
-    final networkType = networkTypeStr == 'mainnet' ? dartsv.NetworkType.MAIN : dartsv.NetworkType.TEST;
+    // Accept 'main'/'mainnet' (and 'test'/'testnet'); persist the canonical
+    // spelling so every later reader resolves the same network.
+    final networkTypeStr = NetworkName.canonical(metadata['network'] as String?);
+    final networkType = NetworkName.toDartsv(networkTypeStr);
 
     // Track HD public key xpub for inclusion in the event (public data, safe to persist)
     String? hdPublicKeyXpub;
@@ -691,8 +708,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     }
 
     // Determine network type
-    final networkTypeStr = currentState.networkType;
-    final networkType = networkTypeStr == 'mainnet' ? dartsv.NetworkType.MAIN : dartsv.NetworkType.TEST;
+    final networkType = NetworkName.toDartsv(currentState.networkType);
 
     // Reconstruct HD public key from xpubkey
     final hdPublicKey = dartsv.HDPublicKey.fromXpub(xpubkey);
@@ -876,8 +892,17 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       throw StateError('UTXO ${command.utxoKey} not found in wallet');
     }
 
-    if (utxo.status != UTXOStatus.available) {
-      throw StateError('UTXO ${command.utxoKey} is not available for spending (status: ${utxo.status})');
+    // A spend supersedes a reservation: the payment coordinator reserves the
+    // inputs, records the transaction with deferSpend, and ARC marks them
+    // spent once the transaction is seen on the network. Rejecting reserved
+    // UTXOs here meant that spend never applied, and the reservation expiry
+    // later returned an on-chain-spent coin to `available`.
+    final spendable = utxo.status == UTXOStatus.available ||
+        (utxo.status == UTXOStatus.reserved &&
+            (utxo.reservedByTxId == null ||
+                utxo.reservedByTxId == command.spendingTxId));
+    if (!spendable) {
+      throw StateError('UTXO ${command.utxoKey} is not available for spending (status: ${utxo.status}, reservedBy: ${utxo.reservedByTxId})');
     }
 
     // Parse txid and vout from utxoKey
@@ -1045,9 +1070,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     try {
       final tx = dartsv.Transaction.fromHex(command.rawHex);
       final walletAddresses = currentState.addresses.keys.toSet();
-      final network = currentState.networkType == 'main' 
-          ? dartsv.NetworkType.MAIN 
-          : dartsv.NetworkType.TEST;
+      final network = NetworkName.toDartsv(currentState.networkType);
       
       
       // Use ScriptTypeRegistry to identify output types and extract addresses
@@ -1228,9 +1251,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     WalletState currentState, {
     int? derivationIndex,
   }) async {
-    final networkType = currentState.networkType == 'mainnet' 
-        ? dartsv.NetworkType.MAIN 
-        : dartsv.NetworkType.TEST;
+    final networkType = NetworkName.toDartsv(currentState.networkType);
 
     if (currentState.walletType == WalletType.wif) {
       // WIF wallet: single private key
@@ -1278,6 +1299,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       if (mnemonic != null) {
         final hdPrivateKey = await cryptoService.mnemonicToHDPrivateKey(
           mnemonic,
+          passphrase: await _mnemonicPassphrase(walletId),
           network: networkType,
         );
         return await cryptoService.derivePrivateKey(
@@ -1384,7 +1406,11 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
           dartsv.VerifyFlag.UTXO_AFTER_GENESIS
         ]);
         final interpreter = dartsv.Interpreter();
-        var inputIndex = 0;
+        // Verify the input we just signed. With SIGHASH_FORKID the signature
+        // commits to this input's own subscript and amount, so checking
+        // input 0 against every UTXO (the previous behaviour) rejected any
+        // multi-input transaction whose inputs differ in script or amount.
+        final inputIndex = i;
         final scriptSig = signedTx.inputs[inputIndex].script;
 
         //run the input(s) through the interpreter to verify it
@@ -1816,9 +1842,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     int derivationIndex,
     WalletState currentState,
   ) async {
-    final networkType = currentState.networkType == 'mainnet' 
-        ? dartsv.NetworkType.MAIN 
-        : dartsv.NetworkType.TEST;
+    final networkType = NetworkName.toDartsv(currentState.networkType);
 
     if (currentState.walletType == WalletType.wif) {
       // WIF wallet: single private key
@@ -1847,6 +1871,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       if (mnemonic != null) {
         final hdPrivateKey = await cryptoService.mnemonicToHDPrivateKey(
           mnemonic,
+          passphrase: await _mnemonicPassphrase(walletId),
           network: networkType,
         );
         // Use simple m/0/{index} path: accountIndex=0, addressIndex=derivationIndex
@@ -2097,7 +2122,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     currentState.name = event.walletName;
     currentState.rootAddress = event.rootAddress;
     currentState.walletType = event.walletType;
-    currentState.networkType = event.walletMetadata?['network'] ?? 'testnet';
+    currentState.networkType = NetworkName.canonical(event.walletMetadata?['network'] as String?);
     currentState.timestamp = event.timestamp;
     currentState.nextDerivationIndex = 1; // Root address is index 0
     currentState.metadata.clear();

@@ -102,6 +102,8 @@ Future<TransactionLifecycleTestContext> setupTestContext() async {
 }
 
 /// Create a test wallet with a pending transaction
+int _txCounter = 0;
+
 Future<String> createWalletWithPendingTransaction(
   TransactionLifecycleTestContext context, {
   required String walletId,
@@ -115,7 +117,9 @@ Future<String> createWalletWithPendingTransaction(
   );
 
   // Create a pending transaction
-  final txid = 'test-pending-tx-${DateTime.now().millisecondsSinceEpoch}';
+  // Millisecond timestamps collide when wallets are created back to back and
+  // txid is unique across the store, so a collision silently drops the row.
+  final txid = 'test-pending-tx-${walletId}-${_txCounter++}';
   final transaction = BitcoinTransaction(
     walletId: walletId,
     txid: txid,

@@ -161,12 +161,14 @@ class WalletManagerActor extends Actor {
       
       // Check if wallet already exists
       if (_walletActors.containsKey(msg.walletId)) {
-        context.sender?.tell(WalletCreatedMessage(
+        // Wrapped like the success path: dactor's ask() reply channel only
+        // accepts LocalMessage, so a bare reply surfaced as a StateError.
+        context.sender?.tell(LocalMessage(payload: WalletCreatedMessage(
           msg.walletId,
           '',
           false,
           error: 'Wallet already exists',
-        ));
+        )));
         return;
       }
 
@@ -188,9 +190,9 @@ class WalletManagerActor extends Actor {
       // Track the original sender so we can route the WalletCreatedResponse back to them
       _pendingWalletCreations[msg.walletId] = context.sender;
 
-      // IMPORTANT: Wait for aggregate recovery to complete before sending commands
-      // PersistentActor drops messages that arrive during recovery
-      await Future.delayed(Duration(milliseconds: 200));
+      // spawn() returns once recovery has completed (dactor 1.3 awaits
+      // preStart and eventador 3.0 recovers inside it), so the command can
+      // be sent immediately.
 
       // Send create wallet command to the aggregate
       // The aggregate will respond with WalletCreatedResponse via onCommandProcessed hook
@@ -209,12 +211,12 @@ class WalletManagerActor extends Actor {
 
 
     } catch (e) {
-      context.sender?.tell(WalletCreatedMessage(
+      context.sender?.tell(LocalMessage(payload: WalletCreatedMessage(
         msg.walletId,
         '',
         false,
         error: e.toString(),
-      ));
+      )));
       _pendingWalletCreations.remove(msg.walletId);
     }
   }
@@ -513,12 +515,24 @@ class WalletManagerActor extends Actor {
     }
   }
 
-  /// Load wallet from event store and spawn actor
+  /// Load wallet from event store and spawn actor.
+  ///
+  /// Returns null when no journal exists for [walletId], so commands for an
+  /// unknown wallet are answered with "Wallet not found" instead of being
+  /// forwarded to an empty aggregate that rejects each of them with its own
+  /// "non-existent wallet" error.
   Future<ActorRef?> _loadWalletFromEventStore(String walletId) async {
     try {
+      final persistenceId = 'BitcoinWallet_$walletId';
+      final journalLength =
+          await _eventStore.getHighestSequenceNumber(persistenceId);
+      if (journalLength == 0) {
+        return null;
+      }
 
-      // Spawn wallet aggregate as actor (AggregateRoot extends Actor)
-      // The PersistentActor framework will automatically recover state from events
+      // Spawn wallet aggregate as actor (AggregateRoot extends Actor).
+      // Recovery runs inside preStart and spawn() awaits it (dactor 1.3), so
+      // the returned ref is fully recovered.
       final walletActor = await context.system.spawn(
         'wallet-$walletId',
         () => BitcoinWalletAggregate(
@@ -530,28 +544,11 @@ class WalletManagerActor extends Actor {
         ),
       );
 
-      
-      // IMPORTANT: Wait for aggregate recovery to complete before returning
-      // Use RecoveryStatusQuery to reliably wait for recovery completion
-      // instead of an arbitrary delay that might not be sufficient
-      try {
-        final recoveryResponse = await walletActor.ask<RecoveryStatusResponse>(
-          RecoveryStatusQuery(),
-          Duration(seconds: 30), // 30 second timeout for recovery
-        );
-        
-        if (recoveryResponse.isRecovered) {
-        } else {
-        }
-      } on TimeoutException {
-        // Continue anyway - the wallet might still work
-      } catch (e) {
-        // Continue anyway - the wallet might still work
-      }
-      
+
       return walletActor;
 
-    } catch (e) {
+    } catch (e, stack) {
+      _log.warning('Failed to load wallet $walletId from event store: $e', e, stack);
       return null;
     }
   }

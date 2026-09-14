@@ -171,8 +171,13 @@ class PaymentChannelManagerActor extends Actor {
       final addressResponse = await _walletManager.ask(
         WalletCommandMessage(msg.walletId, addressCmd),
       );
-      
-      
+
+      // WalletManager answers an unknown wallet (or a load failure) with a
+      // {'error': ..., 'walletId': ...} map rather than a typed response.
+      if (addressResponse is Map && addressResponse['error'] != null) {
+        throw StateError(addressResponse['error'].toString());
+      }
+
       // Handle AddressGeneratedResponse from WalletManager
       if (addressResponse is! AddressGeneratedResponse) {
         throw StateError('Unexpected response type: ${addressResponse.runtimeType}');
@@ -265,8 +270,13 @@ class PaymentChannelManagerActor extends Actor {
       final addressResponse = await _walletManager.ask(
         WalletCommandMessage(msg.walletId, addressCmd),
       );
-      
-      
+
+      // WalletManager answers an unknown wallet (or a load failure) with a
+      // {'error': ..., 'walletId': ...} map rather than a typed response.
+      if (addressResponse is Map && addressResponse['error'] != null) {
+        throw StateError(addressResponse['error'].toString());
+      }
+
       // Handle AddressGeneratedResponse from WalletManager
       if (addressResponse is! AddressGeneratedResponse) {
         throw StateError('Unexpected response type: ${addressResponse.runtimeType}');
@@ -745,6 +755,9 @@ class PaymentChannelManagerActor extends Actor {
           (e) => e is ChannelOpenedEvent && e.channelId == msg.channelId,
           timeout: const Duration(seconds: 10),
         ),
+        // Ask timeout must outlast the awaiter's own window, otherwise dactor's
+        // default (5 s) fires first and a slow projection looks like a failure.
+        const Duration(seconds: 12),
       );
 
       // Send command and wait for response
@@ -1079,6 +1092,9 @@ class PaymentChannelManagerActor extends Actor {
           (e) => e is ChannelExpiredEvent && e.channelId == msg.channelId,
           timeout: const Duration(seconds: 10),
         ),
+        // Ask timeout must outlast the awaiter's own window, otherwise dactor's
+        // default (5 s) fires first and a slow projection looks like a failure.
+        const Duration(seconds: 12),
       );
 
       final response = await aggregateRef.ask(expireCmd);

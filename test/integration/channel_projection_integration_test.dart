@@ -37,12 +37,7 @@ void main() {
       testDir = await Directory.systemTemp.createTemp('channel_projection_test_');
       dbName = 'channel_test_${DateTime.now().microsecondsSinceEpoch}';
       isar = await Isar.open(
-        [
-          ...LibSpiffySchemas.walletSchemas,
-          EventEnvelopeSchema,
-          SnapshotEnvelopeSchema,
-          ProjectionCheckpointSchema,
-        ],
+        LibSpiffySchemas.allSchemas,
         directory: testDir.path,
         name: dbName,
       );

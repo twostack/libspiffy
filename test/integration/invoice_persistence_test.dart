@@ -11,7 +11,6 @@ import 'dart:io';
 import 'package:test/test.dart';
 import 'package:dactor/dactor.dart';
 import 'package:isar/isar.dart';
-import 'package:eventador/eventador.dart';
 import 'package:libspiffy/libspiffy.dart';
 import 'package:libspiffy/src/actors/libspiffy_actor_system.dart';
 import 'package:libspiffy/src/actors/invoice_messages.dart';
@@ -40,11 +39,7 @@ void main() {
       
       // Open Isar with required schemas
       isar = await Isar.open(
-        [
-          ...LibSpiffySchemas.walletSchemas,
-          EventEnvelopeSchema,
-          SnapshotEnvelopeSchema,
-        ],
+        LibSpiffySchemas.allSchemas,
         directory: testDir.path,
         name: dbName,
       );
@@ -372,11 +367,7 @@ void main() {
       // Reopen Isar with same directory AND name to verify persistence
       print('Reopening Isar database...');
       final newIsar = await Isar.open(
-        [
-          ...LibSpiffySchemas.walletSchemas,
-          EventEnvelopeSchema,
-          SnapshotEnvelopeSchema,
-        ],
+        LibSpiffySchemas.allSchemas,
         directory: testDir.path,
         name: dbName, // MUST match the original DB name
       );

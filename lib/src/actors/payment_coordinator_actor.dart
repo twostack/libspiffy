@@ -27,6 +27,7 @@ import '../core/wallet_commands.dart';
 import '../services/transaction/builder/op_return_lockbuilder.dart';
 import 'payment_messages.dart';
 import 'wallet_messages.dart';
+import '../utils/network_name.dart';
 
 /// Coordinator actor for payment operations with SPV BEEF construction
 /// 
@@ -789,14 +790,15 @@ class PaymentCoordinatorActor extends Actor {
       if (mnemonic != null) {
         // Get wallet network type from storage
         final walletData = await _storage.getWallet(walletId);
-        final networkStr = walletData?['network'] as String? ?? 'test';
-        final networkType = networkStr == 'main'
-            ? dartsv.NetworkType.MAIN
-            : dartsv.NetworkType.TEST;
+        final networkType = NetworkName.toDartsv(
+            (walletData?['network'] ?? walletData?['networkType']) as String?);
 
-        // Derive HD private key from mnemonic
+        // Derive HD private key from mnemonic, with the BIP39 passphrase the
+        // wallet was created with (stored by the aggregate alongside it).
+        final passphrase =
+            await _secureStorage.getString('wallet_passphrase_$walletId') ?? '';
         hdPrivateKey = dartsv.HDPrivateKey.fromSeed(
-          dartsv.Mnemonic().toSeedHex(mnemonic, ''),
+          dartsv.Mnemonic().toSeedHex(mnemonic, passphrase),
           networkType,
         );
       }
@@ -1376,6 +1378,9 @@ class PaymentCoordinatorActor extends Actor {
         (e) => e is wevent.TransactionRecordedEvent && e.txid == txid,
         timeout: _recordPersistTimeout,
       ),
+      // Ask timeout must outlast the awaiter's own window, otherwise dactor's
+      // default (5 s) fires first and a slow projection looks like a failure.
+      _recordPersistTimeout + const Duration(seconds: 2),
     );
 
     _walletManager.tell(

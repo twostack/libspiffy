@@ -861,17 +861,30 @@ class IsarWalletStorage implements ReadModelStorage {
     // Use height index in descending order — avoids loading all 1.7M headers
     // into memory for an in-memory sort (sortByHeightDesc is always in-memory).
     // Instead, traverse the height index from the top and filter in-memory.
-    final height = await _isar.blockHeaderEntitys.where().isOrphanedEqualTo(false).heightProperty().max();
-    final entity = await _isar.blockHeaderEntitys.where().heightEqualTo(height ?? 0).findFirst();
+    // Walk the height index from the top and take the first header that is
+    // not orphaned. After a reorg the orphaned and replacement headers share
+    // a height, and a lookup by height alone returned whichever was stored
+    // first (the orphan).
+    final entity = await _isar.blockHeaderEntitys
+        .where(sort: Sort.desc)
+        .anyHeight()
+        .filter()
+        .isOrphanedEqualTo(false)
+        .findFirst();
 
     return entity?.toBlockHeader();
   }
 
   @override
   Future<int> getBestHeight() async {
-    final height = await _isar.blockHeaderEntitys.where().heightProperty().max();
+    final entity = await _isar.blockHeaderEntitys
+        .where(sort: Sort.desc)
+        .anyHeight()
+        .filter()
+        .isOrphanedEqualTo(false)
+        .findFirst();
 
-    return height ?? 0;
+    return entity?.height ?? 0;
   }
 
   @override

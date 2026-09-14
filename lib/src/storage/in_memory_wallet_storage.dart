@@ -102,12 +102,21 @@ class InMemoryWalletStorage implements WalletStorage {
     String? networkType,
     Map<String, dynamic>? metadata,
   }) async {
+    // Merge with the existing record (as the Isar and Postgres backends do)
+    // so a balance update that omits rootAddress/network keeps them.
+    final existing = _walletMetadata[walletId];
+    final mergedMetadata = <String, dynamic>{
+      ...?(existing?['metadata'] as Map<String, dynamic>?),
+      ...?metadata,
+    };
+    final network = networkType ?? existing?['network'] as String? ?? 'mainnet';
     _walletMetadata[walletId] = {
       'walletId': walletId,
       'name': name,
-      'rootAddress': rootAddress,
-      'networkType': networkType,
-      'metadata': metadata ?? {},
+      'rootAddress': rootAddress ?? existing?['rootAddress'],
+      'network': network,
+      'networkType': network, // legacy key
+      'metadata': mergedMetadata,
     };
     _walletIds.add(walletId);
   }

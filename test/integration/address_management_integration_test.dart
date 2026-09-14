@@ -77,8 +77,7 @@ void main() {
           secureStorage: secureStorage,
         );
 
-        wallet.preStart();
-        await Future.delayed(Duration(milliseconds: 100));
+        await wallet.preStart();
 
         // 2. Create wallet first
         final mnemonic = await cryptoService.generateMnemonic();
@@ -739,8 +738,7 @@ Future<BitcoinWalletAggregate> _createTestWallet(
     secureStorage: secureStorage,
   );
 
-  wallet.preStart();
-  await Future.delayed(Duration(milliseconds: 100));
+  await wallet.preStart();
 
   final mnemonic = await cryptoService.generateMnemonic();
   final createCommand = CreateWalletCommand(

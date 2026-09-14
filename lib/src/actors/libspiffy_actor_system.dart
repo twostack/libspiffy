@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'package:dactor/dactor.dart';
 import 'package:eventador/eventador.dart';
-import 'package:eventador/src/storage/event_stream.dart';
+
 import 'package:isar/isar.dart';
 import 'package:libspiffy/libspiffy.dart';
 import '../core/wallet_commands.dart';
@@ -144,7 +144,7 @@ class LibSpiffyActorSystem {
   /// Example with host actor system and Isar:
   /// ```dart
   /// final hostActorSystem = LocalActorSystem(ActorSystemConfig());
-  /// final isar = await Isar.open([...LibSpiffySchemas.walletSchemas, ...hostSchemas]);
+  /// final isar = await Isar.open([...LibSpiffySchemas.allSchemas, ...hostSchemas]);
   /// 
   /// await libspiffy.initialize(
   ///   actorSystem: hostActorSystem,
@@ -159,6 +159,34 @@ class LibSpiffyActorSystem {
   /// ```dart
   /// await libspiffy.initialize(enableP2P: false); // No P2P connectivity
   /// ```
+  /// Verifies that a host-supplied [Isar] instance was opened with every
+  /// collection LibSpiffy writes to.
+  ///
+  /// A host that lists collections by hand and forgets one used to get a
+  /// system that *looked* healthy: projections replayed from sequence 0 on
+  /// every start (eventador < 3.0 swallowed the missing checkpoint
+  /// collection) and the ARC broadcast retry queue silently disabled itself
+  /// (duraq's missing collection was caught and logged). Since eventador 3.0
+  /// a projection whose checkpoint cannot be read enters
+  /// `ProjectionStatus.error` and never subscribes, so the read models stop
+  /// updating with no exception on the caller's side. Failing here names the
+  /// problem and the fix instead.
+  static void _checkHostIsarSchemas(Isar isar) {
+    final missing = <String>[
+      for (final schema in LibSpiffySchemas.allSchemas)
+        // ignore: invalid_use_of_protected_member
+        if (isar.getCollectionByNameInternal(schema.name) == null) schema.name,
+    ];
+    if (missing.isEmpty) return;
+    throw ArgumentError(
+      'The Isar instance passed to LibSpiffyActorSystem.initialize is missing '
+      'the collection(s) ${missing.join(', ')}. Open it with '
+      '[...LibSpiffySchemas.allSchemas, ...yourOwnSchemas] so the event store, '
+      'projection checkpoints and the durable broadcast queue all have their '
+      'collections.',
+    );
+  }
+
   Future<void> initialize({
     ActorSystem? actorSystem,
     String? dataDirectory,
@@ -225,6 +253,7 @@ class LibSpiffyActorSystem {
       case StorageBackend.isar:
         // Original Isar initialization logic
         if (isar != null) {
+          _checkHostIsarSchemas(isar);
           _isarInstance = isar;
           final isarEventStore = IsarEventStore(isar);
           _eventStore = isarEventStore;
@@ -272,13 +301,28 @@ class LibSpiffyActorSystem {
     }
     
     // 4. Initialize secure storage (use provided or default to in-memory)
+    if (secureStorage == null && storageBackend != StorageBackend.inMemory) {
+      // Events and read models are durable but the keys would live in a
+      // Dart Map: after a restart every wallet exists and none can sign.
+      Logger('LibSpiffyActorSystem').severe(
+        'No secureStorage supplied for the ${storageBackend.name} backend; '
+        'falling back to InMemorySecureStorage. Mnemonics, WIFs and xprivs '
+        'will be lost on restart and the wallets will be unable to sign. '
+        'Pass a persistent SecureStorage in production.',
+      );
+    }
     _secureStorage = secureStorage ?? InMemorySecureStorage();
     
     // 5. Initialize crypto service (use provided or default to DartSV)
     _cryptoService = cryptoService ?? DartSVCryptoService();
     
     // 6. Store ARC configuration for actors
-    _arcConfig = arcConfig;
+    // ARCActor used to fall back to TAAL *mainnet* whenever no config was
+    // given, even though networkType defaults to 'test'.
+    _arcConfig = arcConfig ??
+        (networkType == 'main'
+            ? ArcServiceConfig.taalMainnet()
+            : ArcServiceConfig.taalTestnet());
     _arcService = arcService;  // ← Store mock service for testing
     
     // 6.5. Store blockchain data source for imports
@@ -1456,7 +1500,7 @@ LibSpiffyActorSystem getLibSpiffySystem() {
 ///
 /// If [isar] is provided, LibSpiffy will use it for read-model storage and optionally
 /// for event storage. The host application must include LibSpiffy's schemas when
-/// opening the Isar instance using LibSpiffySchemas.walletSchemas.
+/// opening the Isar instance using LibSpiffySchemas.allSchemas.
 /// 
 /// P2P Parameters:
 /// - [networkType]: 'main' for mainnet, 'test' for testnet (default: 'test')

@@ -9,7 +9,7 @@ import 'dart:typed_data';
 
 import 'package:eventador/eventador.dart';
 import 'package:logging/logging.dart';
-import 'package:eventador/src/storage/event_stream.dart';
+
 import 'package:postgres/postgres.dart';
 
 import 'postgres_config.dart';
@@ -25,9 +25,11 @@ class PostgresEventStore implements EventStore, EventStream {
   final _log = Logger('PostgresEventStore');
   final PostgresConfig _config;
   Pool? _pool;
-  final StreamController<Event> _eventStreamController =
-      StreamController<Event>.broadcast();
-  final Map<String, StreamController<Event>> _pidStreamControllers = {};
+  /// Events published after their transaction commits, with the journal
+  /// position they were stored at. Live subscribers read from this so no
+  /// per-event lookup is needed and ordering matches the journal.
+  final StreamController<_PersistedEvent> _live =
+      StreamController<_PersistedEvent>.broadcast();
   bool _isInitialized = false;
   bool _isClosed = false;
 
@@ -46,6 +48,9 @@ class PostgresEventStore implements EventStore, EventStream {
   }
 
   void _ensureInitialized() {
+    if (_isClosed) {
+      throw StateError('PostgresEventStore has been closed.');
+    }
     if (!_isInitialized || _pool == null) {
       throw StateError('PostgresEventStore not initialized. Call initialize() first.');
     }
@@ -63,7 +68,7 @@ class PostgresEventStore implements EventStore, EventStream {
   ) async {
     _ensureInitialized();
 
-    await _pool!.runTx((session) async {
+    final persisted = await _pool!.runTx((session) async {
       // Check optimistic concurrency
       final currentVersion = await _getHighestSequenceNumber(session, persistenceId);
       if (currentVersion != expectedVersion) {
@@ -72,41 +77,58 @@ class PostgresEventStore implements EventStore, EventStream {
         );
       }
 
-      final nextSequence = currentVersion + 1;
-
-      // Serialize event and metadata, convert to Uint8List for BYTEA columns
-      final eventData = Uint8List.fromList(CborSerializer.serializeEvent(event));
-      final metadataData = Uint8List.fromList(CborSerializer.serializeMetadata(
-        event.metadata.cast<String, String>(),
-      ));
-
-      // Insert event
-      await session.execute(
-        Sql.named('''
-          INSERT INTO event_envelopes (
-            persistence_id, sequence_number, event_data, event_type,
-            timestamp, metadata_data, event_id, schema_version
-          ) VALUES (
-            @persistenceId, @sequenceNumber, @eventData, @eventType,
-            @timestamp, @metadataData, @eventId, @schemaVersion
-          )
-        '''),
-        parameters: {
-          'persistenceId': persistenceId,
-          'sequenceNumber': nextSequence,
-          'eventData': TypedValue(Type.byteArray, eventData),
-          'eventType': event.runtimeType.toString(),
-          'timestamp': event.timestamp,
-          'metadataData': TypedValue(Type.byteArray, metadataData),
-          'eventId': event.eventId,
-          'schemaVersion': event is VersionedEvent ? event.schemaVersion : 1,
-        },
-      );
+      return _insertEvent(session, persistenceId, event, currentVersion + 1);
     });
 
-    // Emit to local streams for in-process listeners
-    _eventStreamController.add(event);
-    (_pidStreamControllers[persistenceId] ??= StreamController<Event>.broadcast()).add(event);
+    // Publish AFTER the transaction commits so a subscriber that re-reads the
+    // row (or a projection that checkpoints the id) sees committed data.
+    _publish(persisted);
+  }
+
+  /// Inserts one envelope and returns it with the journal id Postgres assigned.
+  Future<_PersistedEvent> _insertEvent(
+    TxSession session,
+    String persistenceId,
+    Event event,
+    int sequenceNumber,
+  ) async {
+    // Serialize event and metadata, convert to Uint8List for BYTEA columns.
+    // persistableMetadata drops transient ActorRef entries (eventador 3.0).
+    final eventData = Uint8List.fromList(CborSerializer.serializeEvent(event));
+    final metadataData = Uint8List.fromList(
+      CborSerializer.serializeMetadata(event.persistableMetadata),
+    );
+
+    final result = await session.execute(
+      Sql.named('''
+        INSERT INTO event_envelopes (
+          persistence_id, sequence_number, event_data, event_type,
+          timestamp, metadata_data, event_id, schema_version
+        ) VALUES (
+          @persistenceId, @sequenceNumber, @eventData, @eventType,
+          @timestamp, @metadataData, @eventId, @schemaVersion
+        )
+        RETURNING id
+      '''),
+      parameters: {
+        'persistenceId': persistenceId,
+        'sequenceNumber': sequenceNumber,
+        'eventData': TypedValue(Type.byteArray, eventData),
+        'eventType': event.typeName,
+        'timestamp': event.timestamp,
+        'metadataData': TypedValue(Type.byteArray, metadataData),
+        'eventId': event.eventId,
+        'schemaVersion': event is VersionedEvent ? event.schemaVersion : 1,
+      },
+    );
+    final id = result.first[0] as int;
+    return _PersistedEvent(event, id, persistenceId, sequenceNumber);
+  }
+
+  void _publish(_PersistedEvent persisted) {
+    if (!_live.isClosed) {
+      _live.add(persisted);
+    }
   }
 
   @override
@@ -119,7 +141,7 @@ class PostgresEventStore implements EventStore, EventStream {
 
     _ensureInitialized();
 
-    await _pool!.runTx((session) async {
+    final persisted = await _pool!.runTx((session) async {
       // Check optimistic concurrency
       final currentVersion = await _getHighestSequenceNumber(session, persistenceId);
       if (currentVersion != expectedVersion) {
@@ -128,45 +150,19 @@ class PostgresEventStore implements EventStore, EventStream {
         );
       }
 
-      // Insert all events
+      // Insert all events atomically
+      final stored = <_PersistedEvent>[];
       for (var i = 0; i < events.length; i++) {
-        final event = events[i];
-        final nextSequence = currentVersion + i + 1;
-
-        // Serialize and convert to Uint8List for BYTEA columns
-        final eventData = Uint8List.fromList(CborSerializer.serializeEvent(event));
-        final metadataData = Uint8List.fromList(CborSerializer.serializeMetadata(
-          event.metadata.cast<String, String>(),
+        stored.add(await _insertEvent(
+          session, persistenceId, events[i], currentVersion + i + 1,
         ));
-
-        await session.execute(
-          Sql.named('''
-            INSERT INTO event_envelopes (
-              persistence_id, sequence_number, event_data, event_type,
-              timestamp, metadata_data, event_id, schema_version
-            ) VALUES (
-              @persistenceId, @sequenceNumber, @eventData, @eventType,
-              @timestamp, @metadataData, @eventId, @schemaVersion
-            )
-          '''),
-          parameters: {
-            'persistenceId': persistenceId,
-            'sequenceNumber': nextSequence,
-            'eventData': TypedValue(Type.byteArray, eventData),
-            'eventType': event.runtimeType.toString(),
-            'timestamp': event.timestamp,
-            'metadataData': TypedValue(Type.byteArray, metadataData),
-            'eventId': event.eventId,
-            'schemaVersion': event is VersionedEvent ? event.schemaVersion : 1,
-          },
-        );
       }
+      return stored;
     });
 
-    // Emit to local streams
-    for (final event in events) {
-      _eventStreamController.add(event);
-      (_pidStreamControllers[persistenceId] ??= StreamController<Event>.broadcast()).add(event);
+    // Publish after commit, in journal order
+    for (final p in persisted) {
+      _publish(p);
     }
   }
 
@@ -282,7 +278,7 @@ class PostgresEventStore implements EventStore, EventStream {
         'sequenceNumber': sequenceNumber,
         'snapshotData': TypedValue(Type.byteArray, snapshotData),
         'timestamp': DateTime.now(),
-        'stateType': state.runtimeType.toString(),
+        'stateType': state is State ? state.typeName : state.runtimeType.toString(),
         'schemaVersion': 1,
         'sizeBytes': snapshotData.length,
         'metadataData': TypedValue(Type.byteArray, metadataData),
@@ -335,11 +331,7 @@ class PostgresEventStore implements EventStore, EventStream {
   @override
   Future<void> close() async {
     _isClosed = true;
-    await _eventStreamController.close();
-    for (final controller in _pidStreamControllers.values) {
-      await controller.close();
-    }
-    _pidStreamControllers.clear();
+    await _live.close();
     await _pool?.close();
     _pool = null;
     _isInitialized = false;
@@ -353,86 +345,26 @@ class PostgresEventStore implements EventStore, EventStream {
   Stream<Event> allEvents({
     int fromSequence = 0,
     bool live = true,
-  }) async* {
-    _ensureInitialized();
-
-    // Replay historical events
-    final result = await _pool!.execute(
-      Sql.named('''
-        SELECT id, event_data, event_type
-        FROM event_envelopes
-        WHERE id > @fromSequence
-        ORDER BY id ASC
-      '''),
-      parameters: {'fromSequence': fromSequence},
-    );
-
-    for (final row in result) {
-      try {
-        final eventData = row[1] as Uint8List;
-        final eventType = row[2] as String;
-        final event = CborSerializer.deserializeEvent(eventData, eventType);
-        yield event;
-      } catch (e) {
-        _log.warning('Failed to deserialize event in allEvents: $e');
-      }
-    }
-
-    // If live mode, subscribe to new events
-    if (live) {
-      yield* _eventStreamController.stream;
-    }
+  }) {
+    return allEventsWithSequence(fromSequence: fromSequence, live: live)
+        .map((pair) => pair.$1);
   }
 
   @override
   Stream<(Event, int)> allEventsWithSequence({
     int fromSequence = 0,
     bool live = true,
-  }) async* {
+  }) {
     _ensureInitialized();
-
-    // Replay historical events with sequence numbers
-    final result = await _pool!.execute(
-      Sql.named('''
-        SELECT id, event_data, event_type
-        FROM event_envelopes
-        WHERE id > @fromSequence
-        ORDER BY id ASC
-      '''),
-      parameters: {'fromSequence': fromSequence},
-    );
-
-    int lastSeenId = fromSequence;
-    for (final row in result) {
-      final id = row[0] as int;
-      try {
-        final eventData = row[1] as Uint8List;
-        final eventType = row[2] as String;
-        final event = CborSerializer.deserializeEvent(eventData, eventType);
-        lastSeenId = id;
-        yield (event, id);
-      } catch (e) {
-        _log.warning('Failed to deserialize event in allEventsWithSequence: $e');
-      }
-    }
-
-    // If live mode, continue with new events
-    if (live) {
-      await for (final event in _eventStreamController.stream) {
-        // Get the sequence number for this event
-        final seqResult = await _pool!.execute(
-          Sql.named('SELECT id FROM event_envelopes WHERE event_id = @eventId'),
-          parameters: {'eventId': event.eventId},
-        );
-        if (seqResult.isNotEmpty) {
-          final id = seqResult.first[0] as int;
-          if (id > lastSeenId) {
-            lastSeenId = id;
-            yield (event, id);
-          }
-        }
-      }
-    }
+    final historical = _journalAfterId(fromSequence);
+    final source = live
+        ? _replayThenLive(
+            from: fromSequence,
+            historical: historical,
+            keyOf: (p) => p.envelopeId,
+          )
+        : historical;
+    return source.map((p) => (p.event, p.envelopeId));
   }
 
   @override
@@ -440,18 +372,12 @@ class PostgresEventStore implements EventStore, EventStream {
     String tag, {
     int fromSequence = 0,
     bool live = true,
-  }) async* {
-    // Filter events by tag - check if event implements tag interface
-    await for (final event in allEvents(fromSequence: fromSequence, live: live)) {
-      // Check if event has tags (simplified - full implementation would check EventTags mixin)
-      final metadata = event.metadata;
-      if (metadata.containsKey('tags')) {
-        final tags = metadata['tags'];
-        if (tags is List && tags.contains(tag)) {
-          yield event;
-        }
-      }
-    }
+  }) {
+    // Tags are carried in event metadata under 'tags' (List<String>).
+    return allEvents(fromSequence: fromSequence, live: live).where((event) {
+      final tags = event.metadata['tags'];
+      return tags is List && tags.contains(tag);
+    });
   }
 
   @override
@@ -459,13 +385,45 @@ class PostgresEventStore implements EventStore, EventStream {
     String persistenceId, {
     int fromSequence = 0,
     bool live = true,
-  }) async* {
+  }) {
     _ensureInitialized();
+    final historical = _journalForActorAfter(persistenceId, fromSequence);
+    final source = live
+        ? _replayThenLive(
+            from: fromSequence,
+            historical: historical,
+            keyOf: (p) => p.sequenceNumber,
+            accept: (p) => p.persistenceId == persistenceId,
+          )
+        : historical;
+    return source.map((p) => p.event);
+  }
 
-    // Replay historical events for this persistence ID
+  /// Every journal row with `id > fromId`, in id order.
+  Stream<_PersistedEvent> _journalAfterId(int fromId) async* {
     final result = await _pool!.execute(
       Sql.named('''
-        SELECT event_data, event_type
+        SELECT id, persistence_id, sequence_number, event_data, event_type, event_id
+        FROM event_envelopes
+        WHERE id > @fromId
+        ORDER BY id ASC
+      '''),
+      parameters: {'fromId': fromId},
+    );
+    for (final row in result) {
+      final p = _rowToPersisted(row);
+      if (p != null) yield p;
+    }
+  }
+
+  /// One actor's journal rows with `sequence_number > fromSequence`, in order.
+  Stream<_PersistedEvent> _journalForActorAfter(
+    String persistenceId,
+    int fromSequence,
+  ) async* {
+    final result = await _pool!.execute(
+      Sql.named('''
+        SELECT id, persistence_id, sequence_number, event_data, event_type, event_id
         FROM event_envelopes
         WHERE persistence_id = @persistenceId
           AND sequence_number > @fromSequence
@@ -476,22 +434,116 @@ class PostgresEventStore implements EventStore, EventStream {
         'fromSequence': fromSequence,
       },
     );
-
     for (final row in result) {
-      try {
-        final eventData = row[0] as Uint8List;
-        final eventType = row[1] as String;
-        final event = CborSerializer.deserializeEvent(eventData, eventType);
-        yield event;
-      } catch (e) {
-        _log.warning('Failed to deserialize event in eventsByPersistenceId: $e');
+      final p = _rowToPersisted(row);
+      if (p != null) yield p;
+    }
+  }
+
+  _PersistedEvent? _rowToPersisted(ResultRow row) {
+    final id = row[0] as int;
+    final persistenceId = row[1] as String;
+    final sequenceNumber = row[2] as int;
+    final eventType = row[4] as String;
+    try {
+      final event = CborSerializer.deserializeEvent(
+        row[3] as Uint8List,
+        eventType,
+      );
+      return _PersistedEvent(event, id, persistenceId, sequenceNumber);
+    } catch (e) {
+      // An undeserializable row (unregistered type, bad bytes) is skipped so a
+      // projection is not wedged forever on it; the id is logged so the
+      // operator can find it.
+      _log.warning(
+        'Skipping event id=$id eventId=${row[5]} type=$eventType '
+        '($persistenceId#$sequenceNumber): $e',
+      );
+      return null;
+    }
+  }
+
+  /// Replays [historical], then continues with live events.
+  ///
+  /// The live subscription is opened *before* the replay starts, and live
+  /// events arriving during the replay are buffered and drained afterwards,
+  /// so nothing persisted while the replay runs can be missed. [keyOf] gives
+  /// the monotonic position used to drop anything already seen (an event that
+  /// was both read from the journal and received live). Mirrors
+  /// eventador's IsarEventStore.
+  Stream<_PersistedEvent> _replayThenLive({
+    required int from,
+    required Stream<_PersistedEvent> historical,
+    required int Function(_PersistedEvent) keyOf,
+    bool Function(_PersistedEvent)? accept,
+  }) {
+    late final StreamController<_PersistedEvent> controller;
+    StreamSubscription<_PersistedEvent>? liveSub;
+    var lastKey = from;
+    var replaying = true;
+    var cancelled = false;
+    final pending = <_PersistedEvent>[];
+
+    void emit(_PersistedEvent p) {
+      if (cancelled || controller.isClosed) return;
+      if (accept != null && !accept(p)) return;
+      final key = keyOf(p);
+      if (key > lastKey) {
+        lastKey = key;
+        controller.add(p);
       }
     }
 
-    // Live mode - filter stream by persistence ID
-    if (live) {
-      yield* (_pidStreamControllers[persistenceId] ??= StreamController<Event>.broadcast()).stream;
+    Future<void> replay() async {
+      try {
+        await for (final p in historical) {
+          if (cancelled) return;
+          emit(p);
+        }
+        // No await between here and the end of the drain, so no live event
+        // can slip in between the buffered ones and pass-through mode.
+        replaying = false;
+        for (final p in pending) {
+          emit(p);
+        }
+        pending.clear();
+      } catch (e, s) {
+        if (!controller.isClosed) {
+          controller.addError(e, s);
+          await controller.close();
+        }
+      }
     }
+
+    controller = StreamController<_PersistedEvent>(
+      onListen: () {
+        // Subscribe to live events first so nothing persisted during the
+        // replay can be missed.
+        liveSub = _live.stream.listen(
+          (p) {
+            if (replaying) {
+              pending.add(p);
+            } else {
+              emit(p);
+            }
+          },
+          onError: (Object e, StackTrace s) {
+            if (!controller.isClosed) controller.addError(e, s);
+          },
+          onDone: () {
+            if (!controller.isClosed) controller.close();
+          },
+        );
+        replay();
+      },
+      onCancel: () async {
+        cancelled = true;
+        await liveSub?.cancel();
+        liveSub = null;
+      },
+    );
+
+    return controller.stream;
   }
 
   @override
@@ -509,4 +561,23 @@ class PostgresEventStore implements EventStore, EventStream {
       }
     }
   }
+}
+
+/// An event together with where it landed in the journal.
+class _PersistedEvent {
+  final Event event;
+
+  /// The `id` column: the global journal position.
+  final int envelopeId;
+  final String persistenceId;
+
+  /// Position within [persistenceId]'s own journal.
+  final int sequenceNumber;
+
+  const _PersistedEvent(
+    this.event,
+    this.envelopeId,
+    this.persistenceId,
+    this.sequenceNumber,
+  );
 }

@@ -23,7 +23,7 @@ abstract class ChannelEvent extends Event {
   @override
   Map<String, dynamic> toMap() {
     return {
-      'type': runtimeType.toString(),  // Must match eventador's Event.toMap()
+      'type': typeName,  // Must match eventador's Event.toMap()
       'eventId': eventId,
       'timestamp': timestamp.toIso8601String(),
       'version': version,

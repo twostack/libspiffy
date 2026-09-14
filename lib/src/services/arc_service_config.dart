@@ -9,11 +9,16 @@ class ArcServiceConfig {
   /// Default callback URL for transaction status updates (optional)
   final String? defaultCallbackUrl;
 
+  /// Upper bound on any single HTTP request to ARC. A hung connection used
+  /// to block the calling actor indefinitely.
+  final Duration requestTimeout;
+
   /// Create a new ARC service configuration
   const ArcServiceConfig({
     required this.baseUrl,
     this.apiKey,
     this.defaultCallbackUrl,
+    this.requestTimeout = const Duration(seconds: 30),
   });
 
   /// Configuration for the TAAL testnet ARC service

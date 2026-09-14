@@ -10,6 +10,7 @@ import '../storage/secure_storage.dart';
 import '../storage/read_model_storage.dart';
 import '../utils/benford_distribution.dart';
 import 'wallet_messages.dart';
+import '../utils/network_name.dart';
 
 /// Coordinator actor for Benford UTXO splitting operations
 /// 
@@ -304,9 +305,8 @@ class BenfordCoordinatorActor extends Actor {
         throw StateError('WIF key not found for wallet: $walletId');
       }
       final privKey = dartsv.SVPrivateKey.fromWIF(wifKey);
-      final networkType = wallet['network'] == 'mainnet' 
-        ? dartsv.NetworkType.MAIN 
-        : dartsv.NetworkType.TEST;
+      final networkType = NetworkName.toDartsv(
+          (wallet['network'] ?? wallet['networkType']) as String?);
       final address = dartsv.Address.fromPublicKey(privKey.publicKey, networkType);
       
       for (int i = 0; i < count; i++) {

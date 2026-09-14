@@ -6,11 +6,9 @@ import 'dart:io';
 import 'package:test/test.dart';
 import 'package:dactor/dactor.dart';
 import 'package:isar/isar.dart';
-import 'package:eventador/eventador.dart';
 import 'package:libspiffy/libspiffy.dart';
 import 'package:libspiffy/src/actors/libspiffy_actor_system.dart';
 import 'package:libspiffy/src/actors/wallet_messages.dart';
-import 'package:libspiffy/src/storage/isar_wallet_storage.dart';
 import 'isar_test_helper.dart';
 
 void main() {
@@ -30,11 +28,7 @@ void main() {
     
     // Open Isar with required schemas
     final isar = await Isar.open(
-      [
-        ...LibSpiffySchemas.walletSchemas,
-        EventEnvelopeSchema,
-        SnapshotEnvelopeSchema,
-      ],
+      LibSpiffySchemas.allSchemas,
       directory: testDir.path,
       name: dbName,
     );

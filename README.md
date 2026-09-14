@@ -145,7 +145,7 @@ LibSpiffy implements a **CQRS (Command Query Responsibility Segregation)** archi
 ### Prerequisites
 
 - Dart SDK 3.5.1 or later
-- Dependencies: dactor, eventador, duraq, dartsv
+- Dependencies: dactor, eventador, duraq (+ duraq_isar for the Isar backend), dartsv
 
 ### ⚠️ Critical: Event Type Registration
 

@@ -75,8 +75,7 @@ void main() {
         secureStorage: secureStorage,
       );
 
-      wallet.preStart();
-      await Future.delayed(Duration(milliseconds: 100));
+      await wallet.preStart();
 
       final createCommand = CreateWalletCommand(
         walletId: 'test-wallet-002',
@@ -108,8 +107,7 @@ void main() {
         secureStorage: secureStorage,
       );
 
-      wallet1.preStart();
-      await Future.delayed(Duration(milliseconds: 100));
+      await wallet1.preStart();
 
       try {
         await wallet1.commandHandler(CreateWalletCommand(
@@ -127,8 +125,7 @@ void main() {
           secureStorage: secureStorage,
         );
 
-        wallet2.preStart();
-        await Future.delayed(Duration(milliseconds: 200));
+        await wallet2.preStart();
 
         expect(wallet2.currentState.version, equals(originalVersion));
         print('✅ Event sourcing test passed');

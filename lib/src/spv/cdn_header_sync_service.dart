@@ -217,11 +217,30 @@ class CdnHeaderSyncService {
       ..sort((a, b) => a.startHeight.compareTo(b.startHeight));
   }
 
+  /// Path of [chunk]'s on-disk cache file.
+  ///
+  /// The filename comes from the CDN manifest, i.e. from the network. It is
+  /// only ever used as a single path segment inside [config.cacheDirectory];
+  /// anything that could name another directory (separators, `..`, an
+  /// absolute path) is rejected rather than joined.
+  String _cacheFilePath(CdnChunkInfo chunk) {
+    final name = chunk.filename;
+    if (name.isEmpty ||
+        name == '.' ||
+        name == '..' ||
+        name.contains('/') ||
+        name.contains('\\') ||
+        name.contains('\u0000')) {
+      throw FormatException('Unsafe chunk filename in CDN manifest: "$name"');
+    }
+    return '${config.cacheDirectory}/$name';
+  }
+
   /// Load a chunk from disk cache or download it with retry logic.
   Future<Uint8List> _loadOrDownloadChunk(CdnChunkInfo chunk) async {
     // Check disk cache first
     if (config.cacheDirectory != null) {
-      final cachedFile = File('${config.cacheDirectory}/${chunk.filename}');
+      final cachedFile = File(_cacheFilePath(chunk));
       if (await cachedFile.exists()) {
         final data = await cachedFile.readAsBytes();
         if (_validateChunkIntegrity(data, chunk.sha256)) {
@@ -253,7 +272,7 @@ class CdnHeaderSyncService {
 
         // Cache to disk for crash resilience
         if (config.cacheDirectory != null) {
-          await File('${config.cacheDirectory}/${chunk.filename}')
+          await File(_cacheFilePath(chunk))
               .writeAsBytes(data);
         }
 
@@ -271,7 +290,7 @@ class CdnHeaderSyncService {
   /// Delete a cached chunk file if disk caching is enabled.
   Future<void> _deleteCachedChunk(CdnChunkInfo chunk) async {
     if (config.cacheDirectory != null) {
-      final cachedFile = File('${config.cacheDirectory}/${chunk.filename}');
+      final cachedFile = File(_cacheFilePath(chunk));
       if (await cachedFile.exists()) {
         await cachedFile.delete();
       }

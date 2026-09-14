@@ -254,7 +254,6 @@ class ImportActor extends Actor {
     
     _logger.info('   → Xpriv path info:');
     _logger.info('      Depth: ${hdPrivateKey.nodeDepth}');
-    _logger.info('      Xpub: ${hdPublicKey.xpubkey}');
     _logger.info('      ⚠️  NOTE: For BSV, xpriv should be at m/44\'/236\'/0\' (depth 3)');
     _logger.info('      ⚠️  For Bitcoin, xpriv would be at m/44\'/0\'/0\' (depth 3)');
 

@@ -4,6 +4,7 @@ import 'package:dactor/dactor.dart';
 import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:duraq/duraq.dart' as duraq;
+import 'package:duraq_isar/duraq_isar.dart' as duraq_isar;
 import 'package:isar/isar.dart';
 import 'package:logging/logging.dart';
 
@@ -129,7 +130,7 @@ class ARCActor extends Actor {
     }
 
     try {
-      final isarStorage = duraq.IsarStorage(_isar!);
+      final isarStorage = duraq_isar.IsarStorage(_isar!);
       _broadcastQueue = duraq.Queue<Map<String, dynamic>>(
         'arc_broadcast_retry',
         isarStorage,

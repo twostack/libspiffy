@@ -140,8 +140,8 @@ If your app already uses Isar, share the instance to avoid opening multiple data
 import 'package:libspiffy/libspiffy.dart';
 
 final isar = await Isar.open([
-  ...LibSpiffySchemas.walletSchemas, // LibSpiffy's schemas
-  ...myAppSchemas,                    // Your app's schemas
+  ...LibSpiffySchemas.allSchemas, // LibSpiffy read models + event store + queue collections
+  ...myAppSchemas,                 // Your app's schemas
 ]);
 
 await libspiffy.initialize(isar: isar, ...);

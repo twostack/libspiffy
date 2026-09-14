@@ -4,6 +4,9 @@ import 'package:isar/isar.dart';
 import 'package:eventador/eventador.dart';
 
 import 'package:libspiffy/libspiffy.dart';
+import 'package:libspiffy/src/core/bitcoin_wallet_aggregate.dart';
+import 'package:libspiffy/src/core/wallet_commands.dart';
+import 'package:libspiffy/src/core/wallet_events.dart';
 
 /// Example of Phase 1 Expansion: ARC Service Integration Tests
 ///

@@ -64,8 +64,7 @@ void main() {
           secureStorage: secureStorage,
         );
 
-        wallet.preStart();
-        await Future.delayed(Duration(milliseconds: 100));
+        await wallet.preStart();
 
         final createCommand = CreateWalletCommand(
           walletId: 'test-wallet-001',
@@ -274,8 +273,7 @@ void main() {
           secureStorage: secureStorage,
         );
 
-        wallet1.preStart();
-        await Future.delayed(Duration(milliseconds: 100));
+        await wallet1.preStart();
 
         try {
           await wallet1.commandHandler(CreateWalletCommand(
@@ -297,8 +295,7 @@ void main() {
             secureStorage: secureStorage,
           );
 
-          wallet2.preStart();
-          await Future.delayed(Duration(milliseconds: 200));
+          await wallet2.preStart();
 
           // Verify state was recovered correctly
           expect(wallet2.currentState.version, equals(originalVersion));
@@ -323,8 +320,7 @@ void main() {
           secureStorage: secureStorage,
         );
 
-        wallet.preStart();
-        await Future.delayed(Duration(milliseconds: 100));
+        await wallet.preStart();
 
         // Try operations on uncreated wallet
         bool caughtError = false;
@@ -401,8 +397,7 @@ Future<BitcoinWalletAggregate> _createTestWallet(
     secureStorage: secureStorage,
   );
 
-  wallet.preStart();
-  await Future.delayed(Duration(milliseconds: 100));
+  await wallet.preStart();
 
   await wallet.commandHandler(CreateWalletCommand(
     walletId: walletId,

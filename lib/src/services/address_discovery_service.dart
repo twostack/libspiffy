@@ -48,7 +48,6 @@ class AddressDiscoveryService {
     _logger.info(
       '🔍 Starting address discovery with gap limit $gapLimit on network: $networkType',
     );
-    _logger.info('   HD Public Key (xpub): ${hdPublicKey.xpubkey}');
 
     final usedAddresses = <DiscoveredAddress>[];
     int totalTransactions = 0;

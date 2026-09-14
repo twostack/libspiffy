@@ -13,6 +13,7 @@ import '../models/address_metadata.dart';
 import '../models/transaction_address_link.dart';
 import '../storage/read_model_storage.dart';
 import '../utils/bump.dart';
+import '../utils/network_name.dart';
 
 /// Wallet projection that builds read models from wallet events
 /// 
@@ -181,7 +182,7 @@ class WalletProjection extends Projection<void> {
       event.walletId,
       event.walletName,
       rootAddress: event.rootAddress,
-      networkType: event.walletMetadata?['network'] as String? ?? 'mainnet',
+      networkType: NetworkName.canonical(event.walletMetadata?['network'] as String?),
       metadata: {
         ...event.walletMetadata ?? {},
         'walletType': event.walletType.toStorageString(),
@@ -286,8 +287,8 @@ class WalletProjection extends Projection<void> {
     await _storage.storeWallet(
       walletId,
       existingWallet['name'] as String,
-      rootAddress: existingWallet['root_address'] as String?,
-      networkType: existingWallet['network_type'] as String?,
+      rootAddress: existingWallet['rootAddress'] as String?,
+      networkType: (existingWallet['network'] ?? existingWallet['networkType']) as String?,
       metadata: {
         ...existingMetadata,
         'addressCount': addressCount,
@@ -306,10 +307,10 @@ class WalletProjection extends Projection<void> {
     if (event.scriptPubKey.isNotEmpty) {
       try {
         final walletMeta = await _storage.getWallet(event.walletId);
-        final networkTypeStr = walletMeta?['network_type'] as String? ?? 'test';
-        final networkType = networkTypeStr == 'main'
-            ? dartsv.NetworkType.MAIN
-            : dartsv.NetworkType.TEST;
+        // Backends return the network under 'network' (Isar, Postgres) or
+        // 'networkType' (in-memory); 'network_type' was never a key.
+        final networkType = NetworkName.toDartsv(
+            (walletMeta?['network'] ?? walletMeta?['networkType']) as String?);
 
         final script = dartsv.SVScript.fromHex(event.scriptPubKey);
         final scriptRegistry = ScriptTypeRegistry(networkType: networkType);
@@ -517,8 +518,8 @@ class WalletProjection extends Projection<void> {
     await _storage.storeWallet(
       walletId,
       existingWallet['name'] as String,
-      rootAddress: existingWallet['root_address'] as String?,
-      networkType: existingWallet['network_type'] as String?,
+      rootAddress: existingWallet['rootAddress'] as String?,
+      networkType: (existingWallet['network'] ?? existingWallet['networkType']) as String?,
       metadata: {
         ...existingWallet['metadata'] as Map<String, dynamic>? ?? {},
         'confirmedBalance': confirmed.toString(),

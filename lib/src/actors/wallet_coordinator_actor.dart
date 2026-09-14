@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:convert/convert.dart';
@@ -153,6 +152,7 @@ class WalletCoordinatorActor extends Actor {
     if (channelEvents != null) {
       _channelAdapter = ChannelP2PAdapter(
         channelManager: channelManager,
+        walletManager: walletManager,
         emitEvent: _emitEvent,
         channelEvents: channelEvents,
         walletId: '',
@@ -168,6 +168,13 @@ class WalletCoordinatorActor extends Actor {
     if (!_eventStream.isClosed) {
       _eventStream.add(event);
     }
+  }
+
+  @override
+  void preStart() {
+    // The adapter is built in the constructor, before this actor has a
+    // context; wallet command replies it triggers must come back here.
+    _channelAdapter?.updateReplyTo(context.self);
   }
 
   @override
@@ -887,9 +894,11 @@ class WalletCoordinatorActor extends Actor {
       // This is a timestamp archive payment
       if (response.success) {
         // Broadcast the BEEF
+        // ARCActor hex-decodes beefHex (see _handleBroadcastBEEF); the
+        // SPV path at _handleBEEFValidated encodes the same way.
         _arcActor.tell(wm.BroadcastBEEFMessage(
           walletId ?? '',
-          base64Encode(response.beefBytes),
+          hex.encode(response.beefBytes),
           response.txid,
         ));
 
@@ -1234,6 +1243,9 @@ class WalletCoordinatorActor extends Actor {
                     e.txid == txid,
                 timeout: const Duration(seconds: 30),
               ),
+              // Ask timeout must outlast the awaiter's own window, otherwise dactor's
+              // default (5 s) fires first and a slow projection looks like a failure.
+              const Duration(seconds: 32),
             );
             if (response is AwaitFailed) {
               awaitError =

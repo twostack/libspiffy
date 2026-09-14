@@ -2,6 +2,9 @@ import '../models/bitcoin_utxo.dart';
 import '../models/bitcoin_transaction.dart';
 import '../models/address_metadata.dart';
 import '../models/transaction_address_link.dart';
+import '../models/invoice_read_model.dart';
+import '../models/payment_channel.dart';
+import '../actors/invoice_messages.dart' show InvoiceStatus;
 import 'package:spiffynode/spiffy_node.dart';
 
 /// Abstract interface for read-model storage operations.
@@ -400,49 +403,50 @@ abstract class ReadModelStorage {
   // ========================================
   // Invoice Operations
   // ========================================
+  //
+  // Every backend stores and returns the [InvoiceReadModel] that
+  // `InvoiceProjection` builds (audit 2026-09-14 S-07). Structured outputs
+  // must survive the round trip.
 
-  /// Store an invoice in the read model.
-  ///
-  /// Parameters:
-  /// - [invoice]: Invoice to store
-  Future<void> storeInvoice(dynamic invoice);
+  /// Store an invoice read model (insert, or replace an existing row with
+  /// the same `invoiceId`).
+  Future<void> storeInvoice(InvoiceReadModel invoice);
 
   /// Get a specific invoice by ID.
   ///
-  /// Parameters:
-  /// - [invoiceId]: Unique identifier for the invoice
-  ///
-  /// Returns: Invoice if found, null if not found
-  Future<dynamic> getInvoice(String invoiceId);
+  /// Returns: the invoice read model if found, null if not found
+  Future<InvoiceReadModel?> getInvoice(String invoiceId);
 
-  /// Get all invoices for a specific wallet.
+  /// List invoices, newest first.
   ///
   /// Parameters:
-  /// - [walletId]: Unique identifier for the wallet
-  ///
-  /// Returns: List of invoices for the wallet
-  Future<List<dynamic>> getInvoicesByWallet(String walletId);
+  /// - [walletId]: restrict to one wallet (null = every wallet)
+  /// - [status]: restrict to one status (null = every status)
+  Future<List<InvoiceReadModel>> listInvoices({
+    String? walletId,
+    InvoiceStatus? status,
+  });
 
-  /// Get all invoices with a specific status.
+  /// Get all invoices for a specific wallet, newest first.
   ///
-  /// Parameters:
-  /// - [status]: Invoice status to filter by
-  /// - [walletId]: Optional wallet ID to filter further
+  /// Equivalent to `listInvoices(walletId: walletId)`.
+  Future<List<InvoiceReadModel>> getInvoicesByWallet(String walletId);
+
+  /// Get all invoices with a specific status, newest first.
   ///
-  /// Returns: List of invoices matching the status
-  Future<List<dynamic>> getInvoicesByStatus(dynamic status, {String? walletId});
+  /// Equivalent to `listInvoices(status: status, walletId: walletId)`.
+  Future<List<InvoiceReadModel>> getInvoicesByStatus(
+    InvoiceStatus status, {
+    String? walletId,
+  });
 
   /// Update the status of an invoice.
   ///
-  /// Parameters:
-  /// - [invoiceId]: Unique identifier for the invoice
-  /// - [status]: New status for the invoice
-  /// - [txid]: Transaction ID if paid
-  /// - [amountReceived]: Amount received if paid
-  /// - [paidAt]: Timestamp when paid
+  /// [txid], [amountReceived] and [paidAt] replace the stored values only
+  /// when non-null; an unknown [invoiceId] is a no-op.
   Future<void> updateInvoiceStatus(
     String invoiceId,
-    dynamic status, {
+    InvoiceStatus status, {
     String? txid,
     BigInt? amountReceived,
     DateTime? paidAt,
@@ -459,17 +463,24 @@ abstract class ReadModelStorage {
   // ========================================
   // Payment Channel Storage
   // ========================================
+  //
+  // Typed on the domain [PaymentChannel] (audit 2026-09-14 S-01). Backends
+  // convert to their own row/entity representation internally; callers
+  // never see an Isar entity.
 
-  /// Store a payment channel
-  Future<void> storePaymentChannel(dynamic channel);
+  /// Store a payment channel (insert, or replace every mutable column of an
+  /// existing row with the same `channelId`).
+  Future<void> storePaymentChannel(PaymentChannel channel);
 
-  /// Get a payment channel by ID
-  Future<dynamic> getPaymentChannel(String channelId);
+  /// Get a payment channel by ID.
+  Future<PaymentChannel?> getPaymentChannel(String channelId);
 
-  /// Get all payment channels for a wallet
-  Future<List<dynamic>> getPaymentChannelsForWallet(String walletId);
+  /// Get all payment channels for a wallet.
+  Future<List<PaymentChannel>> getPaymentChannelsForWallet(String walletId);
 
-  /// Update payment channel state
+  /// Update payment channel state.
+  ///
+  /// [state] is a [PaymentChannelState] name (`PaymentChannelState.name`).
   Future<void> updatePaymentChannelState(String channelId, String state);
 
   /// Update payment channel balances

@@ -8,6 +8,8 @@ import 'package:libspiffy/src/storage/isar_wallet_storage.dart';
 import 'package:libspiffy/src/storage/libspiffy_schemas.dart';
 
 import '../integration/isar_test_helper.dart';
+import 'channel_read_model_contract.dart';
+import 'invoice_read_model_contract.dart';
 
 /// Builds a syntactically valid header chained to [prev]; [nonce] makes the
 /// hash unique so two headers can share a height (a reorg).
@@ -89,6 +91,54 @@ void main() {
             reason: 'the orphaned header shares height 3 and must not be returned');
         expect(tip.nonce, equals(33));
       });
+    });
+  });
+
+  /// Audit 2026-09-14 S-01 / S-07: Isar variant of the read-model contracts
+  /// shared with Postgres and in-memory. The old Isar backend returned the
+  /// PaymentChannelEntity from getPaymentChannel and a Map from getInvoice.
+  group('IsarWalletStorage read-model contracts', () {
+    late Directory tempDir;
+    late Isar isar;
+    late IsarWalletStorage storage;
+
+    setUpAll(() async {
+      await ensureIsarInitialized();
+    });
+
+    setUp(() async {
+      tempDir = await Directory.systemTemp.createTemp('isar_read_models_test_');
+      isar = await Isar.open(
+        LibSpiffySchemas.allSchemas,
+        directory: tempDir.path,
+        name: 'read_models_${DateTime.now().microsecondsSinceEpoch}',
+      );
+      storage = IsarWalletStorage(isar);
+    });
+
+    tearDown(() async {
+      await isar.close();
+      if (await tempDir.exists()) {
+        await tempDir.delete(recursive: true);
+      }
+    });
+
+    test('payment channel: projects open -> payment -> settle and reads back every field (audit S-01)',
+        () async {
+      await runChannelLifecycleContract(
+        storage,
+        channelId: 'isar-channel-contract',
+        walletId: 'isar-channel-wallet',
+      );
+    });
+
+    test('invoice: store -> update status -> getInvoice/list return typed models with outputs (audit S-07)',
+        () async {
+      await runInvoiceRoundTripContract(
+        storage,
+        invoiceId: 'isar-invoice-contract',
+        walletId: 'isar-invoice-wallet',
+      );
     });
   });
 }

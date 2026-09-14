@@ -5,6 +5,8 @@ import '../models/bitcoin_utxo.dart';
 import '../models/bitcoin_transaction.dart';
 import '../models/address_metadata.dart';
 import '../models/transaction_address_link.dart';
+import '../models/invoice_read_model.dart';
+import '../models/payment_channel.dart';
 import '../actors/invoice_messages.dart';
 import 'wallet_storage.dart';
 
@@ -698,89 +700,78 @@ class InMemoryWalletStorage implements WalletStorage {
   // Invoice Operations
   // ========================================
 
-  // Invoice storage: invoiceId -> Invoice
-  final Map<String, dynamic> _invoices = {};
+  // Invoice storage: invoiceId -> read model (immutable; replaced on update)
+  final Map<String, InvoiceReadModel> _invoices = {};
   
   // Invoice by wallet: walletId -> List of invoiceIds
   final Map<String, List<String>> _walletInvoices = {};
 
   @override
-  Future<void> storeInvoice(dynamic invoice) async {
-    final invoiceId = invoice.invoiceId as String;
-    final walletId = invoice.walletId as String;
-    
-    await _withLock(walletId, () async {
-      _invoices[invoiceId] = invoice;
+  Future<void> storeInvoice(InvoiceReadModel invoice) async {
+    await _withLock(invoice.walletId, () async {
+      _invoices[invoice.invoiceId] = invoice;
       
-      final walletInvs = _walletInvoices.putIfAbsent(walletId, () => []);
-      if (!walletInvs.contains(invoiceId)) {
-        walletInvs.add(invoiceId);
+      final walletInvs = _walletInvoices.putIfAbsent(invoice.walletId, () => []);
+      if (!walletInvs.contains(invoice.invoiceId)) {
+        walletInvs.add(invoice.invoiceId);
       }
     });
   }
 
   @override
-  Future<dynamic> getInvoice(String invoiceId) async {
+  Future<InvoiceReadModel?> getInvoice(String invoiceId) async {
     return _invoices[invoiceId];
   }
 
   @override
-  Future<List<dynamic>> getInvoicesByWallet(String walletId) async {
-    return await _withLock(walletId, () async {
-      final invoiceIds = _walletInvoices[walletId] ?? [];
-      return invoiceIds
-          .map((id) => _invoices[id])
-          .where((inv) => inv != null)
-          .toList();
-    });
+  Future<List<InvoiceReadModel>> listInvoices({
+    String? walletId,
+    InvoiceStatus? status,
+  }) async {
+    final candidates = walletId == null
+        ? _invoices.values
+        : (_walletInvoices[walletId] ?? const <String>[])
+            .map((id) => _invoices[id])
+            .whereType<InvoiceReadModel>();
+    final result = candidates
+        .where((inv) => status == null || inv.status == status)
+        .toList()
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    return result;
   }
 
   @override
-  Future<List<dynamic>> getInvoicesByStatus(dynamic status, {String? walletId}) async {
-    final statusName = status is String ? status : (status as InvoiceStatus).toString().split('.').last;
-    
-    if (walletId != null) {
-      return await _withLock(walletId, () async {
-        final invoiceIds = _walletInvoices[walletId] ?? [];
-        return invoiceIds
-            .map((id) => _invoices[id])
-            .where((inv) => inv != null && inv.status.name == statusName)
-            .toList();
-      });
-    }
-    
-    // Global search across all invoices
-    return _invoices.values
-        .where((inv) => inv.status.name == statusName)
-        .toList();
-  }
+  Future<List<InvoiceReadModel>> getInvoicesByWallet(String walletId) =>
+      listInvoices(walletId: walletId);
+
+  @override
+  Future<List<InvoiceReadModel>> getInvoicesByStatus(
+    InvoiceStatus status, {
+    String? walletId,
+  }) =>
+      listInvoices(walletId: walletId, status: status);
 
   @override
   Future<void> updateInvoiceStatus(
     String invoiceId,
-    dynamic status, {
+    InvoiceStatus status, {
     String? txid,
     BigInt? amountReceived,
     DateTime? paidAt,
   }) async {
     final invoice = _invoices[invoiceId];
-    if (invoice != null) {
-      final statusEnum = status is String 
-          ? InvoiceStatus.values.firstWhere((s) => s.toString().split('.').last == status)
-          : status;
-      
-      invoice.status = statusEnum;
-      
-      if (txid != null) {
-        invoice.paymentTxid = txid;
-      }
-      if (amountReceived != null) {
-        invoice.amountReceived = amountReceived;
-      }
-      if (paidAt != null) {
-        invoice.paidAt = paidAt;
-      }
-    }
+    if (invoice == null) return;
+    await _withLock(invoice.walletId, () async {
+      // InvoiceReadModel is immutable: replace it rather than assign to
+      // its final fields (audit S-07).
+      _invoices[invoiceId] = invoice.copyWith(
+        status: status,
+        paymentTxid: txid,
+        amountReceived: amountReceived,
+        paidAt: paidAt,
+        lastUpdated: DateTime.now(),
+      );
+    });
   }
 
   @override
@@ -916,14 +907,18 @@ class InMemoryWalletStorage implements WalletStorage {
   // ========================================
   // Payment Channel Storage
   // ========================================
+  //
+  // Channels are stored and returned as snapshots (copyWith) so that, like
+  // the persistent backends, a caller mutating a fetched channel changes
+  // nothing until it calls storePaymentChannel again.
 
-  final Map<String, dynamic> _paymentChannels = {};
+  final Map<String, PaymentChannel> _paymentChannels = {};
   final Map<String, List<String>> _walletChannels = {};
 
   @override
-  Future<void> storePaymentChannel(dynamic channel) async {
+  Future<void> storePaymentChannel(PaymentChannel channel) async {
     await _withGlobalLock(() async {
-      _paymentChannels[channel.channelId] = channel;
+      _paymentChannels[channel.channelId] = channel.copyWith();
       
       // Index by wallet
       final walletChannels = _walletChannels.putIfAbsent(channel.walletId, () => []);
@@ -934,16 +929,17 @@ class InMemoryWalletStorage implements WalletStorage {
   }
 
   @override
-  Future<dynamic> getPaymentChannel(String channelId) async {
-    return _paymentChannels[channelId];
+  Future<PaymentChannel?> getPaymentChannel(String channelId) async {
+    return _paymentChannels[channelId]?.copyWith();
   }
 
   @override
-  Future<List<dynamic>> getPaymentChannelsForWallet(String walletId) async {
-    final channelIds = _walletChannels[walletId] ?? [];
+  Future<List<PaymentChannel>> getPaymentChannelsForWallet(String walletId) async {
+    final channelIds = _walletChannels[walletId] ?? const <String>[];
     return channelIds
         .map((id) => _paymentChannels[id])
-        .where((ch) => ch != null)
+        .whereType<PaymentChannel>()
+        .map((ch) => ch.copyWith())
         .toList();
   }
 
@@ -952,8 +948,7 @@ class InMemoryWalletStorage implements WalletStorage {
     await _withGlobalLock(() async {
       final channel = _paymentChannels[channelId];
       if (channel != null) {
-        // Update the state field
-        channel.state = state;
+        channel.state = PaymentChannelState.values.byName(state);
       }
     });
   }
@@ -979,9 +974,8 @@ class InMemoryWalletStorage implements WalletStorage {
       final channel = _paymentChannels.remove(channelId);
       if (channel != null) {
         // Remove from wallet index
-        final walletChannels = _walletChannels[channel.walletId];
-        walletChannels?.remove(channelId);
+        _walletChannels[channel.walletId]?.remove(channelId);
       }
     });
   }
-} 
+}

@@ -143,11 +143,8 @@ class InvoiceProjection extends Projection<InvoiceReadModel> {
   }
 
   /// Get an invoice read model by ID from storage
-  Future<InvoiceReadModel?> getInvoice(String invoiceId) async {
-    final result = await _storage.getInvoice(invoiceId);
-    if (result is InvoiceReadModel) return result;
-    return null;
-  }
+  Future<InvoiceReadModel?> getInvoice(String invoiceId) =>
+      _storage.getInvoice(invoiceId);
 
   @override
   Future<void> reset() async {

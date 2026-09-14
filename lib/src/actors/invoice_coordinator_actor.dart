@@ -9,6 +9,7 @@ import '../core/invoice_commands.dart';
 import '../core/invoice_events.dart';
 import '../core/wallet_commands.dart';
 import '../models/invoice_output_spec.dart';
+import '../models/invoice_read_model.dart';
 import 'invoice_messages.dart';
 import 'wallet_messages.dart';
 
@@ -513,9 +514,9 @@ class InvoiceCoordinatorActor extends Actor {
   Future<void> _handleCheckInvoice(CheckInvoiceMessage msg) async {
     try {
       // Query read model storage (NOT the aggregate)
-      final invoiceData = await _storage.getInvoice(msg.invoiceId);
+      final invoice = await _storage.getInvoice(msg.invoiceId);
       
-      if (invoiceData == null) {
+      if (invoice == null) {
         context.sender?.tell(InvoiceDetailsResponse(
           invoiceId: msg.invoiceId,
           addresses: [],
@@ -528,23 +529,7 @@ class InvoiceCoordinatorActor extends Actor {
         return;
       }
       
-      // Convert to Invoice and send response
-      final invoice = _invoiceFromMap(invoiceData);
-      
-      context.sender?.tell(InvoiceDetailsResponse(
-        invoiceId: invoice.invoiceId,
-        walletId: invoice.walletId,
-        addresses: invoice.addresses,
-        amount: invoice.amount,
-        description: invoice.description,
-        status: invoice.status,
-        createdAt: invoice.createdAt,
-        expiresAt: invoice.expiresAt,
-        paidAt: invoice.paidAt,
-        paymentTxid: invoice.paymentTxid,
-        found: true,
-        error: null,
-      ));
+      context.sender?.tell(_detailsFromReadModel(invoice));
       
     } catch (e) {
       context.sender?.tell(InvoiceDetailsResponse(
@@ -691,35 +676,15 @@ class InvoiceCoordinatorActor extends Actor {
   /// Handle list invoices - Query read model
   Future<void> _handleListInvoices(ListInvoicesMessage msg) async {
     try {
-      List<dynamic> invoicesData;
+      // null walletId = every wallet; null filterStatus = every status.
+      final readModels = await _storage.listInvoices(
+        walletId: msg.walletId,
+        status: msg.filterStatus,
+      );
       
-      if (msg.filterStatus != null) {
-        invoicesData = await _storage.getInvoicesByStatus(msg.filterStatus!);
-      } else if (msg.walletId != null) {
-        invoicesData = await _storage.getInvoicesByWallet(msg.walletId!);
-      } else {
-        // List all invoices
-        invoicesData = await _storage.getInvoicesByStatus(InvoiceStatus.pending);
-      }
-      
-      final invoices = invoicesData.map((data) {
-        final inv = _invoiceFromMap(data);
-        return InvoiceDetailsResponse(
-          invoiceId: inv.invoiceId,
-          walletId: inv.walletId,
-          addresses: inv.addresses,
-          amount: inv.amount,
-          description: inv.description,
-          status: inv.status,
-          createdAt: inv.createdAt,
-          expiresAt: inv.expiresAt,
-          paidAt: inv.paidAt,
-          paymentTxid: inv.paymentTxid,
-          found: true,
-        );
-      }).toList();
-      
-      context.sender?.tell(InvoicesListMessage(invoices));
+      context.sender?.tell(InvoicesListMessage(
+        readModels.map(_detailsFromReadModel).toList(),
+      ));
       
     } catch (e) {
       context.sender?.tell(InvoicesListMessage([]));
@@ -737,12 +702,11 @@ class InvoiceCoordinatorActor extends Actor {
   Future<void> _checkExpiredInvoices() async {
     try {
       // Query pending invoices from read model
-      final pendingInvoicesData = await _storage.getInvoicesByStatus(InvoiceStatus.pending);
+      final pendingInvoices =
+          await _storage.listInvoices(status: InvoiceStatus.pending);
       final now = DateTime.now();
       
-      for (final invoiceData in pendingInvoicesData) {
-        final invoice = _invoiceFromMap(invoiceData);
-        
+      for (final invoice in pendingInvoices) {
         // Check if expired
         if (invoice.expiresAt != null && now.isAfter(invoice.expiresAt!)) {
           
@@ -775,34 +739,22 @@ class InvoiceCoordinatorActor extends Actor {
     }
   }
 
-  /// Convert map to Invoice object
-  Invoice _invoiceFromMap(dynamic data) {
-    if (data is Invoice) return data;
-    
-    final map = data as Map<String, dynamic>;
-    return Invoice(
-      invoiceId: map['invoiceId'] as String,
-      walletId: map['walletId'] as String,
-      addresses: List<String>.from(map['addresses']),
-      amount: map['amount'] is BigInt ? map['amount'] as BigInt : BigInt.parse(map['amount'].toString()),
-      description: map['description'] as String?,
-      status: map['status'] is InvoiceStatus 
-          ? map['status'] as InvoiceStatus
-          : InvoiceStatus.values.firstWhere(
-              (s) => s.toString().split('.').last == map['status'],
-            ),
-      createdAt: map['createdAt'] is DateTime ? map['createdAt'] as DateTime : DateTime.parse(map['createdAt'] as String),
-      expiresAt: map['expiresAt'] != null 
-          ? (map['expiresAt'] is DateTime ? map['expiresAt'] as DateTime : DateTime.parse(map['expiresAt'] as String))
-          : null,
-      paidAt: map['paidAt'] != null
-          ? (map['paidAt'] is DateTime ? map['paidAt'] as DateTime : DateTime.parse(map['paidAt'] as String))
-          : null,
-      paymentTxid: map['paymentTxid'] as String?,
-      amountReceived: map['amountReceived'] != null
-          ? (map['amountReceived'] is BigInt ? map['amountReceived'] as BigInt : BigInt.parse(map['amountReceived'].toString()))
-          : null,
-      metadata: map['metadata'] as Map<String, dynamic>?,
+  /// Build the query reply for a stored invoice read model.
+  InvoiceDetailsResponse _detailsFromReadModel(InvoiceReadModel invoice) {
+    return InvoiceDetailsResponse(
+      invoiceId: invoice.invoiceId,
+      walletId: invoice.walletId,
+      addresses: invoice.addresses,
+      amount: invoice.amount,
+      outputs: invoice.outputs,
+      description: invoice.description,
+      status: invoice.status,
+      createdAt: invoice.createdAt,
+      expiresAt: invoice.expiresAt,
+      paidAt: invoice.paidAt,
+      paymentTxid: invoice.paymentTxid,
+      found: true,
+      error: null,
     );
   }
 
@@ -844,11 +796,9 @@ class InvoiceCoordinatorActor extends Actor {
   }
 
   /// Get invoice by ID - Query read model
-  Future<Invoice?> getInvoice(String invoiceId) async {
+  Future<InvoiceReadModel?> getInvoice(String invoiceId) async {
     try {
-      final invoiceData = await _storage.getInvoice(invoiceId);
-      if (invoiceData == null) return null;
-      return _invoiceFromMap(invoiceData);
+      return await _storage.getInvoice(invoiceId);
     } catch (e) {
       return null;
     }

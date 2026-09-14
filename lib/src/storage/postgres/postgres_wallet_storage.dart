@@ -16,6 +16,7 @@ import '../../models/bitcoin_utxo.dart';
 import '../../models/bitcoin_transaction.dart';
 import '../../models/address_metadata.dart';
 import '../../models/transaction_address_link.dart';
+import '../../models/invoice_output_spec.dart';
 import '../../models/invoice_read_model.dart';
 import '../../models/payment_channel.dart';
 import '../read_model_storage.dart';
@@ -1379,55 +1380,67 @@ class PostgresWalletStorage implements ReadModelStorage {
   // Invoice Operations
   // ============================================================================
 
-  @override
-  Future<void> storeInvoice(dynamic invoice) async {
-    _ensureInitialized();
+  static const _invoiceColumns = '''
+        invoice_id, wallet_id, addresses_json, amount, description,
+        status, created_at, expires_at, paid_at, payment_txid,
+        amount_received, metadata_json, outputs_json''';
 
-    final inv = invoice as InvoiceReadModel;
+  @override
+  Future<void> storeInvoice(InvoiceReadModel invoice) async {
+    _ensureInitialized();
 
     await _pool!.execute(
       Sql.named('''
         INSERT INTO invoices (
           invoice_id, wallet_id, addresses_json, amount, description,
           status, created_at, expires_at, paid_at, payment_txid,
-          amount_received, metadata_json
+          amount_received, metadata_json, outputs_json
         ) VALUES (
           @invoiceId, @walletId, @addressesJson, @amount, @description,
           @status, @createdAt, @expiresAt, @paidAt, @paymentTxid,
-          @amountReceived, @metadataJson
+          @amountReceived, CAST(@metadataJson AS JSONB),
+          CAST(@outputsJson AS JSONB)
         )
         ON CONFLICT (invoice_id) DO UPDATE SET
-          status = @status,
-          paid_at = @paidAt,
-          payment_txid = @paymentTxid,
-          amount_received = @amountReceived
+          wallet_id = EXCLUDED.wallet_id,
+          addresses_json = EXCLUDED.addresses_json,
+          amount = EXCLUDED.amount,
+          description = EXCLUDED.description,
+          status = EXCLUDED.status,
+          expires_at = EXCLUDED.expires_at,
+          paid_at = EXCLUDED.paid_at,
+          payment_txid = EXCLUDED.payment_txid,
+          amount_received = EXCLUDED.amount_received,
+          metadata_json = EXCLUDED.metadata_json,
+          outputs_json = EXCLUDED.outputs_json
       '''),
       parameters: {
-        'invoiceId': inv.invoiceId,
-        'walletId': inv.walletId,
-        'addressesJson': jsonEncode(inv.addresses),
-        'amount': inv.amount.toInt(),
-        'description': inv.description,
-        'status': inv.status.name,
-        'createdAt': inv.createdAt,
-        'expiresAt': inv.expiresAt,
-        'paidAt': inv.paidAt,
-        'paymentTxid': inv.paymentTxid,
-        'amountReceived': inv.amountReceived?.toInt(),
-        'metadataJson': inv.metadata != null ? jsonEncode(inv.metadata) : null,
+        'invoiceId': invoice.invoiceId,
+        'walletId': invoice.walletId,
+        'addressesJson': jsonEncode(invoice.addresses),
+        'amount': invoice.amount.toInt(),
+        'description': invoice.description,
+        'status': invoice.status.name,
+        'createdAt': invoice.createdAt,
+        'expiresAt': invoice.expiresAt,
+        'paidAt': invoice.paidAt,
+        'paymentTxid': invoice.paymentTxid,
+        'amountReceived': invoice.amountReceived?.toInt(),
+        'metadataJson': jsonEncode(invoice.metadata),
+        'outputsJson': invoice.outputs == null
+            ? null
+            : jsonEncode(invoice.outputs!.map((o) => o.toMap()).toList()),
       },
     );
   }
 
   @override
-  Future<dynamic> getInvoice(String invoiceId) async {
+  Future<InvoiceReadModel?> getInvoice(String invoiceId) async {
     _ensureInitialized();
 
     final result = await _pool!.execute(
       Sql.named('''
-        SELECT invoice_id, wallet_id, addresses_json, amount, description,
-               status, created_at, expires_at, paid_at, payment_txid,
-               amount_received, metadata_json
+        SELECT $_invoiceColumns
         FROM invoices
         WHERE invoice_id = @invoiceId
       '''),
@@ -1439,58 +1452,53 @@ class PostgresWalletStorage implements ReadModelStorage {
   }
 
   @override
-  Future<List<dynamic>> getInvoicesByWallet(String walletId) async {
+  Future<List<InvoiceReadModel>> listInvoices({
+    String? walletId,
+    InvoiceStatus? status,
+  }) async {
     _ensureInitialized();
+
+    final conditions = <String>[];
+    final params = <String, dynamic>{};
+    if (walletId != null) {
+      conditions.add('wallet_id = @walletId');
+      params['walletId'] = walletId;
+    }
+    if (status != null) {
+      conditions.add('status = @status');
+      params['status'] = status.name;
+    }
+    final where =
+        conditions.isEmpty ? '' : 'WHERE ${conditions.join(' AND ')}';
 
     final result = await _pool!.execute(
       Sql.named('''
-        SELECT invoice_id, wallet_id, addresses_json, amount, description,
-               status, created_at, expires_at, paid_at, payment_txid,
-               amount_received, metadata_json
+        SELECT $_invoiceColumns
         FROM invoices
-        WHERE wallet_id = @walletId
+        $where
         ORDER BY created_at DESC
       '''),
-      parameters: {'walletId': walletId},
+      parameters: params,
     );
 
     return result.map(_rowToInvoice).toList();
   }
 
   @override
-  Future<List<dynamic>> getInvoicesByStatus(
-    dynamic status, {
+  Future<List<InvoiceReadModel>> getInvoicesByWallet(String walletId) =>
+      listInvoices(walletId: walletId);
+
+  @override
+  Future<List<InvoiceReadModel>> getInvoicesByStatus(
+    InvoiceStatus status, {
     String? walletId,
-  }) async {
-    _ensureInitialized();
-
-    var sql = '''
-      SELECT invoice_id, wallet_id, addresses_json, amount, description,
-             status, created_at, expires_at, paid_at, payment_txid,
-             amount_received, metadata_json
-      FROM invoices
-      WHERE status = @status
-    ''';
-
-    final params = <String, dynamic>{
-      'status': (status as InvoiceStatus).name,
-    };
-
-    if (walletId != null) {
-      sql += ' AND wallet_id = @walletId';
-      params['walletId'] = walletId;
-    }
-
-    sql += ' ORDER BY created_at DESC';
-
-    final result = await _pool!.execute(Sql.named(sql), parameters: params);
-    return result.map(_rowToInvoice).toList();
-  }
+  }) =>
+      listInvoices(walletId: walletId, status: status);
 
   @override
   Future<void> updateInvoiceStatus(
     String invoiceId,
-    dynamic status, {
+    InvoiceStatus status, {
     String? txid,
     BigInt? amountReceived,
     DateTime? paidAt,
@@ -1508,7 +1516,7 @@ class PostgresWalletStorage implements ReadModelStorage {
       '''),
       parameters: {
         'invoiceId': invoiceId,
-        'status': (status as InvoiceStatus).name,
+        'status': status.name,
         'txid': txid,
         'amountReceived': amountReceived?.toInt(),
         'paidAt': paidAt,
@@ -1517,7 +1525,8 @@ class PostgresWalletStorage implements ReadModelStorage {
   }
 
   InvoiceReadModel _rowToInvoice(ResultRow row) {
-    final createdAt = row[6] as DateTime? ?? DateTime.now();
+    final createdAt = row[6] as DateTime;
+    final paidAt = row[8] as DateTime?;
     return InvoiceReadModel(
       invoiceId: row[0] as String,
       walletId: row[1] as String,
@@ -1530,24 +1539,47 @@ class PostgresWalletStorage implements ReadModelStorage {
       ),
       createdAt: createdAt,
       expiresAt: row[7] as DateTime?,
-      paidAt: row[8] as DateTime?,
+      paidAt: paidAt,
       paymentTxid: row[9] as String?,
       amountReceived: row[10] != null ? BigInt.from(row[10] as num) : null,
-      lastUpdated: createdAt, // Use createdAt as lastUpdated
+      lastUpdated: paidAt ?? createdAt,
       metadata: _parseJsonMap(row[11]) ?? <String, dynamic>{},
+      outputs: _parseOutputs(row[12]),
     );
+  }
+
+  /// Decodes an `outputs_json` cell (JSONB: already a List, or a JSON
+  /// string) into output specs. Null when the invoice has no outputs.
+  List<InvoiceOutputSpec>? _parseOutputs(dynamic value) {
+    if (value == null) return null;
+    final decoded = value is String ? jsonDecode(value) : value;
+    if (decoded is! List) return null;
+    return decoded
+        .map((o) =>
+            InvoiceOutputSpec.fromMap(Map<String, dynamic>.from(o as Map)))
+        .toList();
   }
 
   // ============================================================================
   // Payment Channel Storage
   // ============================================================================
 
+  static const _channelColumns = '''
+        channel_id, wallet_id, role, client_peer_id, server_peer_id,
+        funding_tx_id, funding_tx_hex, funding_output_index, funding_amount_sats,
+        client_pub_key_hex, server_pub_key_hex, client_address_b58, server_address_b58,
+        lock_time_unix, state, client_balance_sats, server_balance_sats,
+        latest_sequence_number, latest_payment_tx_hex, refund_tx_hex,
+        refund_client_sig_hex, refund_server_sig_hex, funding_ancestor_txids,
+        context, created_at, closed_at, has_funding_merkle_proof,
+        latest_payment_tx_id, settlement_tx_id, error_message''';
+
   @override
-  Future<void> storePaymentChannel(dynamic channel) async {
+  Future<void> storePaymentChannel(PaymentChannel channel) async {
     _ensureInitialized();
 
-    final ch = channel as PaymentChannel;
-
+    // Every column except the key and created_at is replaced on conflict:
+    // the projection re-stores the whole channel after each event.
     await _pool!.execute(
       Sql.named('''
         INSERT INTO payment_channels (
@@ -1557,73 +1589,91 @@ class PostgresWalletStorage implements ReadModelStorage {
           lock_time_unix, state, client_balance_sats, server_balance_sats,
           latest_sequence_number, latest_payment_tx_hex, refund_tx_hex,
           refund_client_sig_hex, refund_server_sig_hex, funding_ancestor_txids,
-          context, created_at, closed_at, has_funding_merkle_proof
+          context, created_at, closed_at, has_funding_merkle_proof,
+          latest_payment_tx_id, settlement_tx_id, error_message
         ) VALUES (
           @channelId, @walletId, @role, @clientPeerId, @serverPeerId,
           @fundingTxId, @fundingTxHex, @fundingOutputIndex, @fundingAmountSats,
           @clientPubKeyHex, @serverPubKeyHex, @clientAddressB58, @serverAddressB58,
           @lockTimeUnix, @state, @clientBalanceSats, @serverBalanceSats,
           @latestSequenceNumber, @latestPaymentTxHex, @refundTxHex,
-          @refundClientSigHex, @refundServerSigHex, @fundingAncestorTxids,
-          @context, @createdAt, @closedAt, @hasFundingMerkleProof
+          @refundClientSigHex, @refundServerSigHex,
+          CAST(@fundingAncestorTxids AS JSONB),
+          @context, @createdAt, @closedAt, @hasFundingMerkleProof,
+          @latestPaymentTxId, @settlementTxId, @errorMessage
         )
         ON CONFLICT (channel_id) DO UPDATE SET
-          state = @state,
-          client_balance_sats = @clientBalanceSats,
-          server_balance_sats = @serverBalanceSats,
-          latest_sequence_number = @latestSequenceNumber,
-          latest_payment_tx_hex = @latestPaymentTxHex,
-          refund_tx_hex = @refundTxHex,
-          refund_client_sig_hex = @refundClientSigHex,
-          refund_server_sig_hex = @refundServerSigHex,
-          closed_at = @closedAt,
-          has_funding_merkle_proof = @hasFundingMerkleProof
+          wallet_id = EXCLUDED.wallet_id,
+          role = EXCLUDED.role,
+          client_peer_id = EXCLUDED.client_peer_id,
+          server_peer_id = EXCLUDED.server_peer_id,
+          funding_tx_id = EXCLUDED.funding_tx_id,
+          funding_tx_hex = EXCLUDED.funding_tx_hex,
+          funding_output_index = EXCLUDED.funding_output_index,
+          funding_amount_sats = EXCLUDED.funding_amount_sats,
+          client_pub_key_hex = EXCLUDED.client_pub_key_hex,
+          server_pub_key_hex = EXCLUDED.server_pub_key_hex,
+          client_address_b58 = EXCLUDED.client_address_b58,
+          server_address_b58 = EXCLUDED.server_address_b58,
+          lock_time_unix = EXCLUDED.lock_time_unix,
+          state = EXCLUDED.state,
+          client_balance_sats = EXCLUDED.client_balance_sats,
+          server_balance_sats = EXCLUDED.server_balance_sats,
+          latest_sequence_number = EXCLUDED.latest_sequence_number,
+          latest_payment_tx_hex = EXCLUDED.latest_payment_tx_hex,
+          refund_tx_hex = EXCLUDED.refund_tx_hex,
+          refund_client_sig_hex = EXCLUDED.refund_client_sig_hex,
+          refund_server_sig_hex = EXCLUDED.refund_server_sig_hex,
+          funding_ancestor_txids = EXCLUDED.funding_ancestor_txids,
+          context = EXCLUDED.context,
+          closed_at = EXCLUDED.closed_at,
+          has_funding_merkle_proof = EXCLUDED.has_funding_merkle_proof,
+          latest_payment_tx_id = EXCLUDED.latest_payment_tx_id,
+          settlement_tx_id = EXCLUDED.settlement_tx_id,
+          error_message = EXCLUDED.error_message
       '''),
       parameters: {
-        'channelId': ch.channelId,
-        'walletId': ch.walletId,
-        'role': ch.role.name,
-        'clientPeerId': ch.clientPeerId,
-        'serverPeerId': ch.serverPeerId,
-        'fundingTxId': ch.fundingTxId,
-        'fundingTxHex': ch.fundingTxHex,
-        'fundingOutputIndex': ch.fundingOutputIndex,
-        'fundingAmountSats': ch.fundingAmountSats.toInt(),
-        'clientPubKeyHex': ch.clientPubKeyHex,
-        'serverPubKeyHex': ch.serverPubKeyHex,
-        'clientAddressB58': ch.clientAddressB58,
-        'serverAddressB58': ch.serverAddressB58,
-        'lockTimeUnix': ch.lockTimeUnix,
-        'state': ch.state.name,
-        'clientBalanceSats': ch.clientBalanceSats.toInt(),
-        'serverBalanceSats': ch.serverBalanceSats.toInt(),
-        'latestSequenceNumber': ch.latestSequenceNumber,
-        'latestPaymentTxHex': ch.latestPaymentTxHex,
-        'refundTxHex': ch.refundTxHex,
-        'refundClientSigHex': ch.refundClientSigHex,
-        'refundServerSigHex': ch.refundServerSigHex,
-        'fundingAncestorTxids': jsonEncode(ch.fundingAncestorTxids),
-        'context': ch.context,
-        'createdAt': ch.createdAt,
-        'closedAt': ch.closedAt,
-        'hasFundingMerkleProof': ch.hasFundingMerkleProof,
+        'channelId': channel.channelId,
+        'walletId': channel.walletId,
+        'role': channel.role.name,
+        'clientPeerId': channel.clientPeerId,
+        'serverPeerId': channel.serverPeerId,
+        'fundingTxId': channel.fundingTxId,
+        'fundingTxHex': channel.fundingTxHex,
+        'fundingOutputIndex': channel.fundingOutputIndex,
+        'fundingAmountSats': channel.fundingAmountSats.toInt(),
+        'clientPubKeyHex': channel.clientPubKeyHex,
+        'serverPubKeyHex': channel.serverPubKeyHex,
+        'clientAddressB58': channel.clientAddressB58,
+        'serverAddressB58': channel.serverAddressB58,
+        'lockTimeUnix': channel.lockTimeUnix,
+        'state': channel.state.name,
+        'clientBalanceSats': channel.clientBalanceSats.toInt(),
+        'serverBalanceSats': channel.serverBalanceSats.toInt(),
+        'latestSequenceNumber': channel.latestSequenceNumber,
+        'latestPaymentTxHex': channel.latestPaymentTxHex,
+        'refundTxHex': channel.refundTxHex,
+        'refundClientSigHex': channel.refundClientSigHex,
+        'refundServerSigHex': channel.refundServerSigHex,
+        'fundingAncestorTxids': jsonEncode(channel.fundingAncestorTxids),
+        'context': channel.context,
+        'createdAt': channel.createdAt,
+        'closedAt': channel.closedAt,
+        'hasFundingMerkleProof': channel.hasFundingMerkleProof,
+        'latestPaymentTxId': channel.latestPaymentTxId,
+        'settlementTxId': channel.settlementTxId,
+        'errorMessage': channel.errorMessage,
       },
     );
   }
 
   @override
-  Future<dynamic> getPaymentChannel(String channelId) async {
+  Future<PaymentChannel?> getPaymentChannel(String channelId) async {
     _ensureInitialized();
 
     final result = await _pool!.execute(
       Sql.named('''
-        SELECT channel_id, wallet_id, role, client_peer_id, server_peer_id,
-               funding_tx_id, funding_tx_hex, funding_output_index, funding_amount_sats,
-               client_pub_key_hex, server_pub_key_hex, client_address_b58, server_address_b58,
-               lock_time_unix, state, client_balance_sats, server_balance_sats,
-               latest_sequence_number, latest_payment_tx_hex, refund_tx_hex,
-               refund_client_sig_hex, refund_server_sig_hex, funding_ancestor_txids,
-               context, created_at, closed_at, has_funding_merkle_proof
+        SELECT $_channelColumns
         FROM payment_channels
         WHERE channel_id = @channelId
       '''),
@@ -1635,18 +1685,14 @@ class PostgresWalletStorage implements ReadModelStorage {
   }
 
   @override
-  Future<List<dynamic>> getPaymentChannelsForWallet(String walletId) async {
+  Future<List<PaymentChannel>> getPaymentChannelsForWallet(
+    String walletId,
+  ) async {
     _ensureInitialized();
 
     final result = await _pool!.execute(
       Sql.named('''
-        SELECT channel_id, wallet_id, role, client_peer_id, server_peer_id,
-               funding_tx_id, funding_tx_hex, funding_output_index, funding_amount_sats,
-               client_pub_key_hex, server_pub_key_hex, client_address_b58, server_address_b58,
-               lock_time_unix, state, client_balance_sats, server_balance_sats,
-               latest_sequence_number, latest_payment_tx_hex, refund_tx_hex,
-               refund_client_sig_hex, refund_server_sig_hex, funding_ancestor_txids,
-               context, created_at, closed_at, has_funding_merkle_proof
+        SELECT $_channelColumns
         FROM payment_channels
         WHERE wallet_id = @walletId
         ORDER BY created_at DESC
@@ -1707,26 +1753,22 @@ class PostgresWalletStorage implements ReadModelStorage {
   }
 
   PaymentChannel _rowToPaymentChannel(ResultRow row) {
-    final channel = PaymentChannel(
+    return PaymentChannel(
       channelId: row[0] as String,
       walletId: row[1] as String,
-      role: PaymentChannelRole.values.firstWhere(
-        (e) => e.name == (row[2] as String),
-      ),
+      role: PaymentChannelRole.fromJson(row[2] as String),
       clientPeerId: row[3] as String,
       serverPeerId: row[4] as String,
-      fundingTxId: row[5] as String,
-      fundingTxHex: row[6] as String,
-      fundingOutputIndex: row[7] as int,
+      fundingTxId: row[5] as String?,
+      fundingTxHex: row[6] as String?,
+      fundingOutputIndex: row[7] as int?,
       fundingAmountSats: BigInt.from(row[8] as num),
       clientPubKeyHex: row[9] as String,
       serverPubKeyHex: row[10] as String,
-      clientAddressB58: row[11] as String,
-      serverAddressB58: row[12] as String,
+      clientAddressB58: row[11] as String?,
+      serverAddressB58: row[12] as String?,
       lockTimeUnix: row[13] as int,
-      state: PaymentChannelState.values.firstWhere(
-        (e) => e.name == (row[14] as String),
-      ),
+      state: PaymentChannelState.fromJson(row[14] as String),
       clientBalanceSats: BigInt.from(row[15] as num),
       serverBalanceSats: BigInt.from(row[16] as num),
       latestSequenceNumber: row[17] as int,
@@ -1738,9 +1780,10 @@ class PostgresWalletStorage implements ReadModelStorage {
       context: row[23] as String?,
       createdAt: row[24] as DateTime,
       closedAt: row[25] as DateTime?,
+      hasFundingMerkleProof: row[26] as bool? ?? false,
+      latestPaymentTxId: row[27] as String?,
+      settlementTxId: row[28] as String?,
+      errorMessage: row[29] as String?,
     );
-    // hasFundingMerkleProof is a field, not a constructor parameter
-    channel.hasFundingMerkleProof = row[26] as bool? ?? false;
-    return channel;
   }
 }

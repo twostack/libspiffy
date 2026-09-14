@@ -20,9 +20,12 @@ import 'package:libspiffy/src/actors/wallet_messages.dart';
 import 'package:libspiffy/src/core/invoice_events.dart';
 import 'package:libspiffy/src/core/wallet_commands.dart';
 import 'package:libspiffy/src/models/invoice_output_spec.dart';
+import 'package:libspiffy/src/models/invoice_read_model.dart';
 import 'package:libspiffy/src/storage/in_memory_wallet_storage.dart';
+import 'package:libspiffy/src/storage/read_model_storage.dart';
 
 import 'in_memory_event_store.dart';
+import '../storage/invoice_read_model_contract.dart';
 
 const _walletId = 'wallet-1';
 const _testnetAddress = 'mkHS9ne12qx9pS9VojpwU5xtRd4T7X7ZUt';
@@ -34,12 +37,15 @@ void main() {
   late ActorRef walletManagerRef;
   late TestProbe caller;
 
-  Future<ActorRef> spawnCoordinator({ActorRef? invoiceProjection}) {
+  Future<ActorRef> spawnCoordinator({
+    ActorRef? invoiceProjection,
+    ReadModelStorage? storage,
+  }) {
     return actorSystem.spawn(
       'invoice-coordinator',
       () => InvoiceCoordinatorActor(
         walletManager: walletManagerRef,
-        storage: InMemoryWalletStorage(),
+        storage: storage ?? InMemoryWalletStorage(),
         eventStore: eventStore,
         invoiceProjection: invoiceProjection,
       ),
@@ -136,6 +142,98 @@ void main() {
       expect(reply.error, 'Wallet not found');
       expect(reply.walletId, _walletId);
       expect(eventStore.allEvents.whereType<InvoiceCreatedEvent>(), isEmpty);
+    });
+  });
+
+  /// Audit 2026-09-14 S-07: the coordinator's `_invoiceFromMap` accepted an
+  /// `Invoice` or a `Map`, but every backend stores the `InvoiceReadModel`
+  /// that InvoiceProjection hands it, so CheckInvoice / ListInvoices threw
+  /// a type error on the in-memory and Postgres backends.
+  group('S-07: CheckInvoice / ListInvoices consume the stored InvoiceReadModel',
+      () {
+    const invoiceId = 'inv-s07';
+    late InMemoryWalletStorage storage;
+
+    setUp(() async {
+      storage = InMemoryWalletStorage();
+      // Exactly what InvoiceProjection._handleInvoiceCreated stores.
+      await storage.storeInvoice(
+        contractInvoice(invoiceId: invoiceId, walletId: _walletId),
+      );
+    });
+
+    test('CheckInvoice answers found:true with the stored fields', () async {
+      final coordinator = await spawnCoordinator(storage: storage);
+
+      coordinator.tell(CheckInvoiceMessage(invoiceId), sender: caller.ref);
+
+      final reply = await caller.expectMsgType<InvoiceDetailsResponse>(
+        timeout: const Duration(seconds: 5),
+      );
+      // Old code: `type 'InvoiceReadModel' is not a subtype of type
+      // 'Map<String, dynamic>' in type cast` -> found:false.
+      expect(reply.found, isTrue, reason: 'error: ${reply.error}');
+      expect(reply.error, isNull);
+      expect(reply.invoiceId, equals(invoiceId));
+      expect(reply.walletId, equals(_walletId));
+      expect(reply.amount, equals(contractInvoiceAmount));
+      expect(reply.status, equals(InvoiceStatus.pending));
+      expect(reply.addresses,
+          equals([contractInvoiceAddress1, contractInvoiceAddress2]));
+      expect(reply.description, equals('contract invoice'));
+      expect(reply.expiresAt, equals(contractInvoiceExpiresAt));
+      expect(reply.outputs, hasLength(2),
+          reason: 'structured outputs must reach the caller');
+    });
+
+    test('ListInvoices by wallet returns the stored invoice', () async {
+      final coordinator = await spawnCoordinator(storage: storage);
+
+      coordinator.tell(ListInvoicesMessage(walletId: _walletId),
+          sender: caller.ref);
+
+      final reply = await caller.expectMsgType<InvoicesListMessage>(
+        timeout: const Duration(seconds: 5),
+      );
+      // Old code swallowed the type error and answered an empty list.
+      expect(reply.invoices, hasLength(1));
+      expect(reply.invoices.single.invoiceId, equals(invoiceId));
+      expect(reply.invoices.single.status, equals(InvoiceStatus.pending));
+      expect(reply.invoices.single.amount, equals(contractInvoiceAmount));
+    });
+
+    test('ListInvoices by status returns the stored invoice', () async {
+      final coordinator = await spawnCoordinator(storage: storage);
+
+      coordinator.tell(ListInvoicesMessage(filterStatus: InvoiceStatus.pending),
+          sender: caller.ref);
+
+      final reply = await caller.expectMsgType<InvoicesListMessage>(
+        timeout: const Duration(seconds: 5),
+      );
+      expect(reply.invoices.map((i) => i.invoiceId), contains(invoiceId));
+    });
+
+    test('a read model whose status was updated is reported with the new status',
+        () async {
+      await storage.updateInvoiceStatus(
+        invoiceId,
+        InvoiceStatus.paid,
+        txid: contractInvoicePaidTxid,
+        amountReceived: contractInvoiceAmount,
+        paidAt: contractInvoicePaidAt,
+      );
+      final coordinator = await spawnCoordinator(storage: storage);
+
+      coordinator.tell(CheckInvoiceMessage(invoiceId), sender: caller.ref);
+
+      final reply = await caller.expectMsgType<InvoiceDetailsResponse>(
+        timeout: const Duration(seconds: 5),
+      );
+      expect(reply.found, isTrue, reason: 'error: ${reply.error}');
+      expect(reply.status, equals(InvoiceStatus.paid));
+      expect(reply.paymentTxid, equals(contractInvoicePaidTxid));
+      expect(reply.paidAt, equals(contractInvoicePaidAt));
     });
   });
 

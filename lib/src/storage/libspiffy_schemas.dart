@@ -7,6 +7,9 @@ import 'package:duraq_isar/duraq_isar.dart' show IsarStorage;
 import 'read_model_storage.dart';
 import '../models/bitcoin_utxo.dart';
 import '../models/bitcoin_transaction.dart';
+import '../models/invoice_output_spec.dart';
+import '../models/invoice_read_model.dart';
+import '../actors/invoice_messages.dart' show InvoiceStatus;
 part 'libspiffy_schemas.g.dart';
 
 /// LibSpiffy's Isar schemas that developers can add to their Isar instance.
@@ -925,58 +928,57 @@ class InvoiceEntity {
 
   InvoiceEntity();
 
-  /// Create from Invoice domain model
-  factory InvoiceEntity.fromDomain(dynamic invoice) {
-    // Serialize outputs if present
-    String? outputsJsonStr;
-    if (invoice.outputs != null) {
-      final outputsList = (invoice.outputs as List)
-          .map((o) => o.toMap())
-          .toList();
-      outputsJsonStr = jsonEncode(outputsList);
-    }
-
+  /// Create from the invoice read model the projection stores.
+  factory InvoiceEntity.fromDomain(InvoiceReadModel invoice) {
+    final outputs = invoice.outputs;
     return InvoiceEntity()
       ..invoiceId = invoice.invoiceId
       ..walletId = invoice.walletId
       ..addressesJson = _encodeList(invoice.addresses)
       ..amount = invoice.amount.toString()
       ..description = invoice.description
-      ..status = invoice.status.toString().split('.').last
+      ..status = invoice.status.name
       ..createdAt = invoice.createdAt
       ..expiresAt = invoice.expiresAt
       ..paidAt = invoice.paidAt
       ..paymentTxid = invoice.paymentTxid
       ..amountReceived = invoice.amountReceived?.toString()
-      ..metadataJson = invoice.metadata != null
-          ? _encodeJson(invoice.metadata!)
-          : null
-      ..outputsJson = outputsJsonStr;
+      ..metadataJson = _encodeJson(invoice.metadata)
+      ..outputsJson = outputs == null
+          ? null
+          : jsonEncode(outputs.map((o) => o.toMap()).toList());
   }
 
-  /// Convert to Invoice domain model
-  dynamic toDomain() {
-    // We need to dynamically import the Invoice class
-    // For now, we'll create a map that can be used to reconstruct it
-    return {
-      'invoiceId': invoiceId,
-      'walletId': walletId,
-      'addresses': _decodeList(addressesJson),
-      'amount': BigInt.parse(amount),
-      'description': description,
-      'status': status,
-      'createdAt': createdAt,
-      'expiresAt': expiresAt,
-      'paidAt': paidAt,
-      'paymentTxid': paymentTxid,
-      'amountReceived': amountReceived != null
-          ? BigInt.parse(amountReceived!)
-          : null,
-      'metadata': metadataJson != null
+  /// Convert to the invoice read model (audit S-07: previously a Map).
+  InvoiceReadModel toDomain() {
+    final rawOutputs = outputsJson;
+    return InvoiceReadModel(
+      invoiceId: invoiceId,
+      walletId: walletId,
+      addresses: _decodeList(addressesJson),
+      amount: BigInt.parse(amount),
+      outputs: rawOutputs == null
+          ? null
+          : (jsonDecode(rawOutputs) as List)
+              .map((o) => InvoiceOutputSpec.fromMap(
+                  Map<String, dynamic>.from(o as Map)))
+              .toList(),
+      description: description,
+      status: InvoiceStatus.values.firstWhere(
+        (s) => s.name == status,
+        orElse: () => InvoiceStatus.pending,
+      ),
+      createdAt: createdAt,
+      expiresAt: expiresAt,
+      paidAt: paidAt,
+      paymentTxid: paymentTxid,
+      amountReceived:
+          amountReceived != null ? BigInt.parse(amountReceived!) : null,
+      lastUpdated: paidAt ?? createdAt,
+      metadata: metadataJson != null
           ? _decodeJson(metadataJson!)
-          : null,
-      'outputsJson': outputsJson, // Raw JSON for caller to deserialize
-    };
+          : <String, dynamic>{},
+    );
   }
 
   /// Serialize to JSON for backup

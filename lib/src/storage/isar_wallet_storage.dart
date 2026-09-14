@@ -6,6 +6,8 @@ import '../models/bitcoin_utxo.dart';
 import '../models/bitcoin_transaction.dart';
 import '../models/address_metadata.dart';
 import '../models/transaction_address_link.dart';
+import '../models/invoice_read_model.dart';
+import '../models/payment_channel.dart';
 import '../actors/invoice_messages.dart';
 import 'read_model_storage.dart';
 import 'libspiffy_schemas.dart';
@@ -1004,60 +1006,61 @@ class IsarWalletStorage implements ReadModelStorage {
   // ========================================
 
   @override
-  Future<void> storeInvoice(dynamic invoice) async {
+  Future<void> storeInvoice(InvoiceReadModel invoice) async {
     final entity = InvoiceEntity.fromDomain(invoice);
     await _isar.writeTxn(() async {
+      // Upsert: reuse the Isar id of an existing row with this invoiceId.
+      final existing = await _isar.invoiceEntitys
+          .where()
+          .invoiceIdEqualTo(invoice.invoiceId)
+          .findFirst();
+      if (existing != null) {
+        entity.id = existing.id;
+      }
       await _isar.invoiceEntitys.put(entity);
     });
   }
 
   @override
-  Future<dynamic> getInvoice(String invoiceId) async {
+  Future<InvoiceReadModel?> getInvoice(String invoiceId) async {
     final entity = await _isar.invoiceEntitys
         .where()
         .invoiceIdEqualTo(invoiceId)
         .findFirst();
-    
+
     return entity?.toDomain();
   }
 
   @override
-  Future<List<dynamic>> getInvoicesByWallet(String walletId) async {
+  Future<List<InvoiceReadModel>> listInvoices({
+    String? walletId,
+    InvoiceStatus? status,
+  }) async {
     final entities = await _isar.invoiceEntitys
-        .where()
-        .walletIdEqualTo(walletId)
+        .filter()
+        .optional(walletId != null, (q) => q.walletIdEqualTo(walletId!))
+        .optional(status != null, (q) => q.statusEqualTo(status!.name))
         .sortByCreatedAtDesc()
         .findAll();
-    
+
     return entities.map((e) => e.toDomain()).toList();
   }
 
   @override
-  Future<List<dynamic>> getInvoicesByStatus(
-    dynamic status, {
+  Future<List<InvoiceReadModel>> getInvoicesByWallet(String walletId) =>
+      listInvoices(walletId: walletId);
+
+  @override
+  Future<List<InvoiceReadModel>> getInvoicesByStatus(
+    InvoiceStatus status, {
     String? walletId,
-  }) async {
-    final statusName = status is String ? status : (status as InvoiceStatus).toString().split('.').last;
-    
-    var query = _isar.invoiceEntitys
-        .filter()
-        .statusEqualTo(statusName);
-    
-    if (walletId != null) {
-      query = query.walletIdEqualTo(walletId);
-    }
-    
-    final entities = await query
-        .sortByCreatedAtDesc()
-        .findAll();
-    
-    return entities.map((e) => e.toDomain()).toList();
-  }
+  }) =>
+      listInvoices(walletId: walletId, status: status);
 
   @override
   Future<void> updateInvoiceStatus(
     String invoiceId,
-    dynamic status, {
+    InvoiceStatus status, {
     String? txid,
     BigInt? amountReceived,
     DateTime? paidAt,
@@ -1067,11 +1070,10 @@ class IsarWalletStorage implements ReadModelStorage {
           .where()
           .invoiceIdEqualTo(invoiceId)
           .findFirst();
-      
+
       if (entity != null) {
-        final statusName = status is String ? status : (status as InvoiceStatus).toString().split('.').last;
-        entity.status = statusName;
-        
+        entity.status = status.name;
+
         if (txid != null) {
           entity.paymentTxid = txid;
         }
@@ -1081,7 +1083,7 @@ class IsarWalletStorage implements ReadModelStorage {
         if (paidAt != null) {
           entity.paidAt = paidAt;
         }
-        
+
         await _isar.invoiceEntitys.put(entity);
       }
     });
@@ -1097,46 +1099,41 @@ class IsarWalletStorage implements ReadModelStorage {
   // ========================================
   // Payment Channel Storage
   // ========================================
+  //
+  // The Isar PaymentChannelEntity is an implementation detail of this
+  // backend: callers pass and receive the domain PaymentChannel (audit S-01).
 
   @override
-  Future<void> storePaymentChannel(dynamic channel) async {
+  Future<void> storePaymentChannel(PaymentChannel channel) async {
     await _isar.writeTxn(() async {
-      PaymentChannelEntity entity;
-      
-      // Support both PaymentChannelEntity (projection) and PaymentChannel (old code)
-      if (channel is PaymentChannelEntity) {
-        entity = channel;
-      } else {
-        entity = PaymentChannelEntity.fromPaymentChannel(channel);
-      }
-      
+      final entity = PaymentChannelEntity.fromPaymentChannel(channel);
+
       // Check if channel already exists (upsert)
       final existing = await _isar.paymentChannelEntitys
           .where()
           .channelIdEqualTo(entity.channelId)
           .findFirst();
-      
+
       // If exists, keep the same Isar ID for update
       if (existing != null) {
         entity.id = existing.id;
       }
-      
+
       await _isar.paymentChannelEntitys.put(entity);
     });
   }
 
   @override
-  Future<dynamic> getPaymentChannel(String channelId) async {
+  Future<PaymentChannel?> getPaymentChannel(String channelId) async {
     final entity = await _isar.paymentChannelEntitys
         .where()
         .channelIdEqualTo(channelId)
         .findFirst();
-    // Return entity directly for projection, can be converted to PaymentChannel if needed
-    return entity;
+    return entity?.toPaymentChannel();
   }
 
   @override
-  Future<List<dynamic>> getPaymentChannelsForWallet(String walletId) async {
+  Future<List<PaymentChannel>> getPaymentChannelsForWallet(String walletId) async {
     final entities = await _isar.paymentChannelEntitys
         .where()
         .walletIdEqualTo(walletId)

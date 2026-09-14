@@ -35,7 +35,11 @@ import 'package:libspiffy/src/models/bitcoin_utxo.dart';
 import 'package:libspiffy/src/models/bitcoin_transaction.dart';
 import 'package:libspiffy/src/models/address_metadata.dart';
 import 'package:libspiffy/src/models/invoice_read_model.dart';
+import 'package:libspiffy/src/models/payment_channel.dart';
 import 'package:libspiffy/src/actors/invoice_messages.dart' show InvoiceStatus;
+
+import '../channel_read_model_contract.dart';
+import '../invoice_read_model_contract.dart';
 
 /// Get PostgreSQL configuration from environment or use defaults
 PostgresConfig getTestConfig() {
@@ -133,15 +137,16 @@ void main() {
       await migrations.migrate();
 
       // Verify version: v001 initial schema, v002 secure secrets,
-      // v003 header ints + plugin metadata
+      // v003 header ints + plugin metadata, v004 channel columns +
+      // invoice outputs
       final version = await migrations.getCurrentVersion();
-      expect(version, equals(3));
+      expect(version, equals(4));
 
       // Verify applied migrations
       final applied = await migrations.getAppliedMigrations();
-      expect(applied, hasLength(3));
+      expect(applied, hasLength(4));
       expect(applied.first.name, equals('initial_schema'));
-      expect(applied.last.name, equals('header_ints_and_plugin_metadata'));
+      expect(applied.last.name, equals('channel_columns_and_invoice_outputs'));
     });
 
     test('should handle re-running migrations idempotently', () async {
@@ -152,13 +157,16 @@ void main() {
       await migrations.migrate();
 
       final version = await migrations.getCurrentVersion();
-      expect(version, equals(3));
+      expect(version, equals(4));
     });
 
     test('should rollback migrations one at a time', () async {
       final migrations = PostgresMigrations(config);
 
       await migrations.migrate();
+      expect(await migrations.getCurrentVersion(), equals(4));
+
+      expect(await migrations.rollback(), isTrue);
       expect(await migrations.getCurrentVersion(), equals(3));
 
       expect(await migrations.rollback(), isTrue);
@@ -761,7 +769,7 @@ void main() {
 
         final retrieved = await storage.getInvoice('inv-001');
         expect(retrieved, isNotNull);
-        expect(retrieved.invoiceId, equals('inv-001'));
+        expect(retrieved!.invoiceId, equals('inv-001'));
         expect(retrieved.amount, equals(BigInt.from(100000)));
       });
 
@@ -784,6 +792,61 @@ void main() {
 
         final invoices = await storage.getInvoicesByWallet('inv-list-wallet');
         expect(invoices, hasLength(3));
+      });
+
+      /// Audit 2026-09-14 S-07: Postgres had no outputs_json column, so the
+      /// structured outputs the projection stored were silently dropped.
+      test('round-trips a typed InvoiceReadModel with outputs through store, status update and list (audit S-07)',
+          () async {
+        final suffix = DateTime.now().microsecondsSinceEpoch;
+        await runInvoiceRoundTripContract(
+          storage,
+          invoiceId: 'pg-invoice-contract-$suffix',
+          walletId: 'pg-invoice-wallet-$suffix',
+        );
+      });
+    });
+
+    /// Audit 2026-09-14 S-01: ChannelProjection handed the Postgres backend
+    /// an Isar PaymentChannelEntity, which it cast to PaymentChannel
+    /// (TypeError on every channel event); the ON CONFLICT clause never
+    /// updated the server or funding columns; latest_payment_tx_id,
+    /// settlement_tx_id and error_message had no columns.
+    group('Payment Channel Operations (audit S-01)', () {
+      test('projects open -> payment -> settle through ChannelProjection and reads back every field',
+          () async {
+        final suffix = DateTime.now().microsecondsSinceEpoch;
+        await runChannelLifecycleContract(
+          storage,
+          channelId: 'pg-channel-contract-$suffix',
+          walletId: 'pg-channel-wallet-$suffix',
+        );
+      });
+
+      test('stores a failed channel with an error message and reads it back',
+          () async {
+        final suffix = DateTime.now().microsecondsSinceEpoch;
+        final channelId = 'pg-channel-failed-$suffix';
+        await storage.storePaymentChannel(PaymentChannel(
+          channelId: channelId,
+          walletId: 'pg-channel-wallet-$suffix',
+          role: PaymentChannelRole.server,
+          clientPeerId: 'c',
+          serverPeerId: 's',
+          clientPubKeyHex: contractClientPubKeyHex,
+          serverPubKeyHex: contractServerPubKeyHex,
+          fundingAmountSats: BigInt.from(5000),
+          lockTimeUnix: contractLockTimeUnix,
+          state: PaymentChannelState.failed,
+          errorMessage: 'peer rejected: insufficient funds',
+        ));
+        final channel = await storage.getPaymentChannel(channelId);
+        expect(channel, isNotNull);
+        expect(channel!.state, equals(PaymentChannelState.failed));
+        expect(channel.errorMessage, equals('peer rejected: insufficient funds'));
+        expect(channel.fundingTxId, isNull);
+        expect(channel.clientAddressB58, isNull);
+        expect(channel.role, equals(PaymentChannelRole.server));
       });
     });
   });

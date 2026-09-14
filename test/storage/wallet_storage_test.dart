@@ -4,6 +4,10 @@ import 'package:libspiffy/src/storage/wallet_storage.dart';
 import 'package:libspiffy/src/storage/in_memory_wallet_storage.dart';
 import 'package:libspiffy/src/models/bitcoin_utxo.dart';
 import 'package:libspiffy/src/models/wallet_event.dart';
+import 'package:libspiffy/src/models/payment_channel.dart';
+
+import 'channel_read_model_contract.dart';
+import 'invoice_read_model_contract.dart';
 
 /// Test event class for testing storage operations
 class TestWalletEvent extends WalletEvent {
@@ -363,4 +367,50 @@ void main() {
       });
     });
   });
-} 
+
+  /// Audit 2026-09-14 S-01: the channel read model must be typed on the
+  /// domain PaymentChannel across all backends. The old in-memory backend
+  /// stored whatever object the projection handed it (an Isar entity) and
+  /// its updatePaymentChannelState assigned a String to the state field.
+  group('InMemoryWalletStorage payment channel read model (audit S-01)', () {
+    test('projects open -> payment -> settle and reads back every field',
+        () async {
+      final storage = InMemoryWalletStorage();
+      await runChannelLifecycleContract(
+        storage,
+        channelId: 'inmem-channel-contract',
+        walletId: 'inmem-channel-wallet',
+      );
+    });
+
+    test('a fetched channel is a snapshot: mutating it does not change storage',
+        () async {
+      final storage = InMemoryWalletStorage();
+      await runChannelLifecycleContract(
+        storage,
+        channelId: 'inmem-channel-snapshot',
+        walletId: 'inmem-channel-wallet',
+      );
+      final fetched = await storage.getPaymentChannel('inmem-channel-snapshot');
+      fetched!.state = PaymentChannelState.failed;
+      fetched.errorMessage = 'mutated in caller';
+      final again = await storage.getPaymentChannel('inmem-channel-snapshot');
+      expect(again!.state, equals(PaymentChannelState.closed));
+      expect(again.errorMessage, isNull);
+    });
+  });
+
+  /// Audit 2026-09-14 S-07: the old in-memory updateInvoiceStatus assigned
+  /// to the final fields of InvoiceReadModel (NoSuchMethodError).
+  group('InMemoryWalletStorage invoice read model (audit S-07)', () {
+    test('store -> update status -> getInvoice/list return typed models with outputs',
+        () async {
+      final storage = InMemoryWalletStorage();
+      await runInvoiceRoundTripContract(
+        storage,
+        invoiceId: 'inmem-invoice-contract',
+        walletId: 'inmem-invoice-wallet',
+      );
+    });
+  });
+}

@@ -304,7 +304,7 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 
 ### Follow-ups before wave 4
 
-Defects found by the wave 3 lanes and this batch (report section 11, V-8 to V-16), each with
+Defects found by the wave 3 lanes and this batch (report section 11, V-8 to V-21), each with
 a regression test shown to fail on the previous code.
 
 - **Rejected commands (V-8, V-11).** A command an aggregate rejects is
@@ -348,6 +348,31 @@ a regression test shown to fail on the previous code.
   expire in the meantime. Every SEEN_ON_NETWORK or MINED report applies the
   spend exactly once, including after a restart; a MINED answer carrying a
   merkle path confirms the transaction after the header check.
+- **Multisig outputs and duplicate records (V-17).** A bare multisig output
+  is a wallet UTXO only when the wallet holds at least as many of its keys
+  as it requires, so a payment channel's 2-of-2 funding output is no longer
+  spendable balance (recording, importing and `ReceiveUTXOCommand` alike).
+  Recording an outgoing transaction that is already recorded has no further
+  effect. UTXO reservations (holder, reason, expiry, priority, prior
+  status), derivation index and spending txid persist on every read-model
+  backend (**Postgres migration v011**; new nullable Isar fields).
+- **Payment inputs spent (V-18).** The inputs of a standard invoice payment
+  are marked spent once ARC reports the transaction on the network; before,
+  that spend was rejected and the inputs went back to available when their
+  reservation expired. The ten pre-existing test failures (T-1) are
+  resolved; the test suite no longer calls testnet ARC.
+- **Channel refund signing (V-19).** The server signs a refund only with the
+  channel's own wallet, key and terms, and only a refund that spends the
+  channel output with the channel lockTime; the countersigned refund is
+  journaled.
+- **Channel funding verified (V-20).** The client sends its funding
+  transaction as BEEF; the server validates it (proofs against its headers,
+  ancestors, input scripts, values) before the channel opens.
+- **Channels survive a restart (V-21).** Channel open state is rebuilt from
+  the channel journal, so an open interrupted by a restart continues on
+  both sides, and a resumed funding broadcast does not record the funding
+  in the wallet twice. `LibSpiffyActorSystem.initialize(channelPeerId:)`
+  sets the node's channel peer id.
 
 #### Breaking changes
 
@@ -368,6 +393,20 @@ a regression test shown to fail on the previous code.
 - A client channel cannot open without an ARC actor; a client refund build
   needs the funding transaction hex; refund-signature and `channel_open`
   failures reach the coordinator as `ErrorEvent`s.
+- The server refuses a `channel_open` without a valid funding BEEF (clients
+  from before this change cannot open channels with it); a server-role
+  `PaymentChannelManagerActor` needs `spvActor:`, a client needs
+  `storage:` to send the BEEF; a client that cannot build the BEEF does not
+  broadcast. Refund sign requests naming another wallet, lockTime, sequence
+  or output are refused. `PaymentChannelManagerActor.channelOutputReservation`
+  is removed (the channel output is no longer reserved).
+- `ReceiveUTXOCommand` rejects a bare multisig output attributed to a wallet
+  address when the wallet cannot spend it alone; a `RecordOutgoingTransactionCommand`
+  for a recorded txid emits no `TransactionRecordedEvent` (do not wait for
+  one). A reserved or pending UTXO can be spent by a transaction the wallet
+  recorded as spending it.
+- Hosts opening Isar with their own schema list must regenerate for the new
+  `BitcoinUtxoEntity` fields.
 - `ReadModelStorage.storeAncestorTransaction` and
   `getAncestorTransactionsBatch` added (abstract). Hosts opening Isar with
   their own schema list must add `AncestorTransactionEntity`.
@@ -381,7 +420,15 @@ Additive API: `MerkleProofStatus`, `MerkleProof.status` / `statusChangedAt`,
 walletProjection:, broadcastTimeout:)`, `TransactionConfirmedEvent.bumpHex`,
 `ConfirmTransactionCommand.bumpHex`, `BeefAncestor`,
 `TransactionImportedEvent.ancestors`, `ArcSubmitResponse.merklePath` /
-`merklePathHex`.
+`merklePathHex`, `BareMultisigScript`, `LibSpiffyActorSystem.initialize(channelPeerId:)`,
+`PaymentChannelManagerActor(spvActor:, storage:)`, `OpenChannelMessage.fundingBeefHex`,
+`OpenChannelCommand.fundingBeefHex`, `ChannelOpenedEvent.fundingBeefHex`,
+`SignRefundTransactionMessage.fundingTxId` / `fundingOutputIndex` / `fundingTxHex`,
+`RequestRefundSignatureCommand.fundingTxHex`, `RefundCountersignedEvent.refundTxHex` /
+`fundingTxId` / `fundingOutputIndex` / `fundingTxHex`, `AcceptChannelMessage.serverPeerId`,
+`AcceptChannelCommand.serverPeerId`, `ChannelAcceptedEvent.serverPeerId`,
+`RecordFundingInWalletCommand`, `FundingRecordedInWalletEvent`,
+`ChannelDetailsQueryMessage`, new optional fields on `FullChannelStateResponse`.
 
 ## 2.0.0
 

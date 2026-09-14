@@ -1189,8 +1189,10 @@ await libspiffy.initialize(dataDirectory: './wallet-data');
 // Server — PostgreSQL
 await libspiffy.initialize(
   storageBackend: StorageBackend.postgres,
+  // SSL is required by default; a local server without TLS needs
+  // '?sslmode=disable'. Use sslmode=verify-full in production.
   postgresConfig: PostgresConfig.fromConnectionString(
-    'postgresql://user:pass@localhost:5432/wallets',
+    'postgresql://user:pass@localhost:5432/wallets?sslmode=disable',
   ),
 );
 

@@ -52,6 +52,8 @@ PostgresConfig getTestConfig() {
     database: Platform.environment['POSTGRES_DATABASE'] ?? 'libspiffy_test',
     username: Platform.environment['POSTGRES_USER'] ?? 'postgres',
     password: Platform.environment['POSTGRES_PASSWORD'] ?? 'postgres',
+    // SSL is on by default (audit S-14); the local test server has none.
+    enableSsl: false,
     maxConnections: 5,
   );
 }

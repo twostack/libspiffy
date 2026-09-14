@@ -7,7 +7,6 @@ library;
 import 'dart:convert';
 import 'dart:typed_data';
 
-import 'package:convert/convert.dart';
 import 'package:cryptography/cryptography.dart';
 
 /// Result of an encryption operation.
@@ -48,7 +47,12 @@ class EncryptionService {
   /// The master key used for HKDF derivation.
   final Uint8List _masterKey;
 
-  /// The key version for rotation support.
+  /// The version of this master key.
+  ///
+  /// Storage records it next to every secret encrypted with this service and
+  /// uses it on read to pick the matching key (see PostgresSecureStorage's
+  /// `previousKeys`), which is what makes key rotation possible. Give each
+  /// master key its own version.
   final int keyVersion;
 
   /// Salt used for HKDF (should be application-specific).

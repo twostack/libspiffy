@@ -33,15 +33,41 @@ class PostgresEventStore implements EventStore, EventStream {
   bool _isInitialized = false;
   bool _isClosed = false;
 
-  /// Test hooks around a live stream's replay query: [beforeReplayQuery] is
-  /// awaited just before the journal SELECT is issued and [afterReplayQuery]
-  /// just after it returns, before any row is emitted. They let a test park
+  /// Test hooks around each of a replay's journal page queries:
+  /// [beforeReplayQuery] is awaited just before a page SELECT is issued and
+  /// [afterReplayQuery] just after it returns, before any of its rows is
+  /// emitted. They let a test park
   /// the replay and persist events at an exact point relative to the query's
   /// snapshot, which is otherwise a timing race. Never set in production.
   @visibleForTesting
   Future<void> Function()? beforeReplayQuery;
   @visibleForTesting
   Future<void> Function()? afterReplayQuery;
+
+  /// Test hook awaited inside the append transaction after the version check
+  /// and before the insert. Lets a test park one writer at exactly the point
+  /// where a rival could slip in. Never set in production.
+  @visibleForTesting
+  Future<void> Function()? afterVersionCheck;
+
+  /// Rows fetched per journal page by the event streams. Replays read the
+  /// journal in keyset pages (`WHERE id > last ORDER BY id LIMIT n`) so a
+  /// long journal is never loaded in one result set.
+  @visibleForTesting
+  int journalPageSize = 500;
+
+  /// Number of INSERT statements issued into `event_envelopes`, for tests
+  /// that check a batch is written in one round trip.
+  @visibleForTesting
+  int insertStatementCount = 0;
+
+  /// Advisory lock class for per-persistence-id append locks (two-key form,
+  /// so it never collides with the single-key migration lock).
+  static const int _appendLockClass = 0x53504659; // 'SPFY'
+
+  /// Rows per multi-row INSERT: 8 parameters each, well below the protocol's
+  /// 65535 bind-parameter limit.
+  static const int _maxRowsPerInsert = 1000;
 
   /// Creates a new PostgresEventStore with the given configuration.
   ///
@@ -77,68 +103,11 @@ class PostgresEventStore implements EventStore, EventStream {
     int expectedVersion,
   ) async {
     _ensureInitialized();
-
-    final persisted = await _pool!.runTx((session) async {
-      // Check optimistic concurrency
-      final currentVersion = await _getHighestSequenceNumber(session, persistenceId);
-      if (currentVersion != expectedVersion) {
-        throw ConcurrencyException(
-          'Expected version $expectedVersion, but current version is $currentVersion',
-        );
-      }
-
-      return _insertEvent(session, persistenceId, event, currentVersion + 1);
-    });
+    final persisted = await _append(persistenceId, [event], expectedVersion);
 
     // Publish AFTER the transaction commits so a subscriber that re-reads the
     // row (or a projection that checkpoints the id) sees committed data.
-    _publish(persisted);
-  }
-
-  /// Inserts one envelope and returns it with the journal id Postgres assigned.
-  Future<_PersistedEvent> _insertEvent(
-    TxSession session,
-    String persistenceId,
-    Event event,
-    int sequenceNumber,
-  ) async {
-    // Serialize event and metadata, convert to Uint8List for BYTEA columns.
-    // persistableMetadata drops transient ActorRef entries (eventador 3.0).
-    final eventData = Uint8List.fromList(CborSerializer.serializeEvent(event));
-    final metadataData = Uint8List.fromList(
-      CborSerializer.serializeMetadata(event.persistableMetadata),
-    );
-
-    final result = await session.execute(
-      Sql.named('''
-        INSERT INTO event_envelopes (
-          persistence_id, sequence_number, event_data, event_type,
-          timestamp, metadata_data, event_id, schema_version
-        ) VALUES (
-          @persistenceId, @sequenceNumber, @eventData, @eventType,
-          @timestamp, @metadataData, @eventId, @schemaVersion
-        )
-        RETURNING id
-      '''),
-      parameters: {
-        'persistenceId': persistenceId,
-        'sequenceNumber': sequenceNumber,
-        'eventData': TypedValue(Type.byteArray, eventData),
-        'eventType': event.typeName,
-        'timestamp': event.timestamp,
-        'metadataData': TypedValue(Type.byteArray, metadataData),
-        'eventId': event.eventId,
-        'schemaVersion': event is VersionedEvent ? event.schemaVersion : 1,
-      },
-    );
-    final id = result.first[0] as int;
-    return _PersistedEvent(event, id, persistenceId, sequenceNumber);
-  }
-
-  void _publish(_PersistedEvent persisted) {
-    if (!_live.isClosed) {
-      _live.add(persisted);
-    }
+    _publish(persisted.single);
   }
 
   @override
@@ -148,31 +117,132 @@ class PostgresEventStore implements EventStore, EventStream {
     int expectedVersion,
   ) async {
     if (events.isEmpty) return;
-
     _ensureInitialized();
-
-    final persisted = await _pool!.runTx((session) async {
-      // Check optimistic concurrency
-      final currentVersion = await _getHighestSequenceNumber(session, persistenceId);
-      if (currentVersion != expectedVersion) {
-        throw ConcurrencyException(
-          'Expected version $expectedVersion, but current version is $currentVersion',
-        );
-      }
-
-      // Insert all events atomically
-      final stored = <_PersistedEvent>[];
-      for (var i = 0; i < events.length; i++) {
-        stored.add(await _insertEvent(
-          session, persistenceId, events[i], currentVersion + i + 1,
-        ));
-      }
-      return stored;
-    });
+    final persisted = await _append(persistenceId, events, expectedVersion);
 
     // Publish after commit, in journal order
     for (final p in persisted) {
       _publish(p);
+    }
+  }
+
+  /// Appends [events] to [persistenceId]'s journal in one transaction.
+  ///
+  /// Optimistic concurrency under READ COMMITTED: two writers with the same
+  /// [expectedVersion] would both pass a plain `MAX(sequence_number)` check,
+  /// and the loser would then hit `uk_persistence_sequence`. So the
+  /// transaction first takes a transaction-scoped advisory lock on the
+  /// persistence id; a rival writer waits there, and its version read (a new
+  /// statement, hence a new snapshot) sees the winner's commit and fails with
+  /// [ConcurrencyException]. A unique violation on that constraint (a writer
+  /// that bypassed the lock) is reported as [ConcurrencyException] too.
+  Future<List<_PersistedEvent>> _append(
+    String persistenceId,
+    List<Event> events,
+    int expectedVersion,
+  ) async {
+    try {
+      return await _pool!.runTx((session) async {
+        await session.execute(
+          Sql.named(
+            'SELECT pg_advisory_xact_lock($_appendLockClass, '
+            'hashtext(@persistenceId))',
+          ),
+          parameters: {'persistenceId': persistenceId},
+        );
+
+        final currentVersion =
+            await _getHighestSequenceNumber(session, persistenceId);
+        if (currentVersion != expectedVersion) {
+          throw ConcurrencyException(
+            'Expected version $expectedVersion, but current version is $currentVersion',
+          );
+        }
+        await afterVersionCheck?.call();
+
+        final stored = <_PersistedEvent>[];
+        for (var start = 0; start < events.length; start += _maxRowsPerInsert) {
+          final end = start + _maxRowsPerInsert < events.length
+              ? start + _maxRowsPerInsert
+              : events.length;
+          stored.addAll(await _insertEvents(
+            session,
+            persistenceId,
+            events.sublist(start, end),
+            currentVersion + start + 1,
+          ));
+        }
+        return stored;
+      });
+    } on ServerException catch (e) {
+      if (e.code == '23505' && e.constraintName == 'uk_persistence_sequence') {
+        throw ConcurrencyException(
+          'Concurrent write to $persistenceId: the sequence number after '
+          '$expectedVersion was already taken',
+        );
+      }
+      rethrow;
+    }
+  }
+
+  /// Inserts [events] with one multi-row INSERT, numbering them from
+  /// [firstSequence], and returns them with the journal ids Postgres assigned.
+  Future<List<_PersistedEvent>> _insertEvents(
+    TxSession session,
+    String persistenceId,
+    List<Event> events,
+    int firstSequence,
+  ) async {
+    final rows = <String>[];
+    final parameters = <String, Object?>{'persistenceId': persistenceId};
+    for (var i = 0; i < events.length; i++) {
+      final event = events[i];
+      // persistableMetadata drops transient ActorRef entries (eventador 3.0).
+      final eventData =
+          Uint8List.fromList(CborSerializer.serializeEvent(event));
+      final metadataData = Uint8List.fromList(
+        CborSerializer.serializeMetadata(event.persistableMetadata),
+      );
+      rows.add('(@persistenceId, @seq$i, @data$i, @type$i, @ts$i, @meta$i, '
+          '@eid$i, @ver$i)');
+      parameters['seq$i'] = firstSequence + i;
+      parameters['data$i'] = TypedValue(Type.byteArray, eventData);
+      parameters['type$i'] = event.typeName;
+      parameters['ts$i'] = event.timestamp;
+      parameters['meta$i'] = TypedValue(Type.byteArray, metadataData);
+      parameters['eid$i'] = event.eventId;
+      parameters['ver$i'] = event is VersionedEvent ? event.schemaVersion : 1;
+    }
+
+    insertStatementCount++;
+    final result = await session.execute(
+      Sql.named('''
+        INSERT INTO event_envelopes (
+          persistence_id, sequence_number, event_data, event_type,
+          timestamp, metadata_data, event_id, schema_version
+        ) VALUES ${rows.join(', ')}
+        RETURNING id, sequence_number
+      '''),
+      parameters: parameters,
+    );
+
+    final idBySequence = {
+      for (final row in result) row[1] as int: row[0] as int,
+    };
+    return [
+      for (var i = 0; i < events.length; i++)
+        _PersistedEvent(
+          events[i],
+          idBySequence[firstSequence + i]!,
+          persistenceId,
+          firstSequence + i,
+        ),
+    ];
+  }
+
+  void _publish(_PersistedEvent persisted) {
+    if (!_live.isClosed) {
+      _live.add(persisted);
     }
   }
 
@@ -203,34 +273,46 @@ class PostgresEventStore implements EventStore, EventStream {
 
     sql += ' ORDER BY sequence_number ASC';
 
-    final result = await _pool!.execute(
-      Sql.named(sql),
-      parameters: parameters,
-    );
+    try {
+      final result = await _pool!.execute(
+        Sql.named(sql),
+        parameters: parameters,
+      );
 
-    final events = <Event>[];
-    for (final row in result) {
-      try {
-        final eventData = row[0] as Uint8List;
-        final eventType = row[1] as String;
-        final event = CborSerializer.deserializeEvent(eventData, eventType);
-        events.add(event);
-      } catch (e) {
-        final eventId = row[2] as String;
-        throw EventStoreException(
-          'Failed to deserialize event $eventId of type ${row[1]}',
-          e,
-        );
+      final events = <Event>[];
+      for (final row in result) {
+        try {
+          final eventData = row[0] as Uint8List;
+          final eventType = row[1] as String;
+          final event = CborSerializer.deserializeEvent(eventData, eventType);
+          events.add(event);
+        } catch (e) {
+          final eventId = row[2] as String;
+          throw EventStoreException(
+            'Failed to deserialize event $eventId of type ${row[1]}',
+            e,
+          );
+        }
       }
-    }
 
-    return events;
+      return events;
+    } catch (e) {
+      if (e is EventStoreException) rethrow;
+      throw EventStoreException('Failed to get events for $persistenceId', e);
+    }
   }
 
   @override
   Future<int> getHighestSequenceNumber(String persistenceId) async {
     _ensureInitialized();
-    return _getHighestSequenceNumber(null, persistenceId);
+    try {
+      return await _getHighestSequenceNumber(null, persistenceId);
+    } catch (e) {
+      throw EventStoreException(
+        'Failed to get highest sequence number for $persistenceId',
+        e,
+      );
+    }
   }
 
   Future<int> _getHighestSequenceNumber(
@@ -259,81 +341,105 @@ class PostgresEventStore implements EventStore, EventStream {
   ) async {
     _ensureInitialized();
 
-    final snapshotDataList = CborSerializer.serializeState(state);
-    final metadataDataList = CborSerializer.serializeMetadata(<String, String>{});
+    try {
+      // Convert List<int> to Uint8List for PostgreSQL BYTEA columns
+      final snapshotData =
+          Uint8List.fromList(CborSerializer.serializeState(state));
+      final metadataData = Uint8List.fromList(
+        CborSerializer.serializeMetadata(<String, String>{}),
+      );
 
-    // Convert List<int> to Uint8List for PostgreSQL BYTEA columns
-    final snapshotData = Uint8List.fromList(snapshotDataList);
-    final metadataData = Uint8List.fromList(metadataDataList);
-
-    await _pool!.execute(
-      Sql.named('''
-        INSERT INTO snapshot_envelopes (
-          persistence_id, sequence_number, snapshot_data, timestamp,
-          state_type, schema_version, size_bytes, metadata_data
-        ) VALUES (
-          @persistenceId, @sequenceNumber, @snapshotData, @timestamp,
-          @stateType, @schemaVersion, @sizeBytes, @metadataData
-        )
-        ON CONFLICT (persistence_id) DO UPDATE SET
-          sequence_number = @sequenceNumber,
-          snapshot_data = @snapshotData,
-          timestamp = @timestamp,
-          state_type = @stateType,
-          size_bytes = @sizeBytes,
-          metadata_data = @metadataData
-      '''),
-      parameters: {
-        'persistenceId': persistenceId,
-        'sequenceNumber': sequenceNumber,
-        'snapshotData': TypedValue(Type.byteArray, snapshotData),
-        'timestamp': DateTime.now(),
-        'stateType': state is State ? state.typeName : state.runtimeType.toString(),
-        'schemaVersion': 1,
-        'sizeBytes': snapshotData.length,
-        'metadataData': TypedValue(Type.byteArray, metadataData),
-      },
-    );
+      await _pool!.execute(
+        Sql.named('''
+          INSERT INTO snapshot_envelopes (
+            persistence_id, sequence_number, snapshot_data, timestamp,
+            state_type, schema_version, size_bytes, metadata_data
+          ) VALUES (
+            @persistenceId, @sequenceNumber, @snapshotData, @timestamp,
+            @stateType, @schemaVersion, @sizeBytes, @metadataData
+          )
+          ON CONFLICT (persistence_id) DO UPDATE SET
+            sequence_number = EXCLUDED.sequence_number,
+            snapshot_data = EXCLUDED.snapshot_data,
+            timestamp = EXCLUDED.timestamp,
+            state_type = EXCLUDED.state_type,
+            schema_version = EXCLUDED.schema_version,
+            size_bytes = EXCLUDED.size_bytes,
+            metadata_data = EXCLUDED.metadata_data
+        '''),
+        parameters: {
+          'persistenceId': persistenceId,
+          'sequenceNumber': sequenceNumber,
+          'snapshotData': TypedValue(Type.byteArray, snapshotData),
+          'timestamp': DateTime.now(),
+          'stateType':
+              state is State ? state.typeName : state.runtimeType.toString(),
+          'schemaVersion': 1,
+          'sizeBytes': snapshotData.length,
+          'metadataData': TypedValue(Type.byteArray, metadataData),
+        },
+      );
+    } catch (e) {
+      throw EventStoreException(
+        'Failed to save snapshot for $persistenceId',
+        e,
+      );
+    }
   }
 
   @override
   Future<SnapshotData?> loadSnapshot(String persistenceId) async {
     _ensureInitialized();
 
-    final result = await _pool!.execute(
-      Sql.named('''
-        SELECT snapshot_data, sequence_number, timestamp, state_type
-        FROM snapshot_envelopes
-        WHERE persistence_id = @persistenceId
-      '''),
-      parameters: {'persistenceId': persistenceId},
-    );
+    try {
+      final result = await _pool!.execute(
+        Sql.named('''
+          SELECT snapshot_data, sequence_number, timestamp, state_type
+          FROM snapshot_envelopes
+          WHERE persistence_id = @persistenceId
+        '''),
+        parameters: {'persistenceId': persistenceId},
+      );
 
-    if (result.isEmpty) return null;
+      if (result.isEmpty) return null;
 
-    final row = result.first;
-    final snapshotData = row[0] as Uint8List;
-    final sequenceNumber = row[1] as int;
-    final timestamp = row[2] as DateTime;
-    final stateType = row[3] as String;
+      final row = result.first;
+      final state = CborSerializer.deserializeState(
+        row[0] as Uint8List,
+        row[3] as String,
+      );
 
-    final state = CborSerializer.deserializeState(snapshotData, stateType);
-
-    return SnapshotData(
-      state: state,
-      sequenceNumber: sequenceNumber,
-      timestamp: timestamp,
-    );
+      return SnapshotData(
+        state: state,
+        sequenceNumber: row[1] as int,
+        timestamp: row[2] as DateTime,
+      );
+    } catch (e) {
+      throw EventStoreException(
+        'Failed to load snapshot for $persistenceId',
+        e,
+      );
+    }
   }
 
   @override
   Future<void> deleteOldSnapshots(String persistenceId, int keepCount) async {
     _ensureInitialized();
 
-    if (keepCount <= 0) {
+    // Only one snapshot is kept per persistence id (unique constraint), so
+    // there is nothing to trim for keepCount > 0.
+    if (keepCount > 0) return;
+    try {
       await _pool!.execute(
-        Sql.named('DELETE FROM snapshot_envelopes WHERE persistence_id = @persistenceId'),
+        Sql.named(
+          'DELETE FROM snapshot_envelopes WHERE persistence_id = @persistenceId',
+        ),
         parameters: {'persistenceId': persistenceId},
+      );
+    } catch (e) {
+      throw EventStoreException(
+        'Failed to delete old snapshots for $persistenceId',
+        e,
       );
     }
   }
@@ -383,8 +489,11 @@ class PostgresEventStore implements EventStore, EventStream {
     int fromSequence = 0,
     bool live = true,
   }) {
-    // Tags are carried in event metadata under 'tags' (List<String>).
+    // Tags come from the EventTags mixin, as in eventador's IsarEventStore.
+    // A `tags` list in event metadata is still honoured as a fallback, since
+    // earlier versions of this store matched on that alone.
     return allEvents(fromSequence: fromSequence, live: live).where((event) {
+      if (event is EventTags && event.tags.contains(tag)) return true;
       final tags = event.metadata['tags'];
       return tags is List && tags.contains(tag);
     });
@@ -409,48 +518,66 @@ class PostgresEventStore implements EventStore, EventStream {
     return source.map((p) => p.event);
   }
 
-  /// Every journal row with `id > fromId`, in id order.
+  /// Every journal row with `id > fromId`, in id order, read in keyset
+  /// pages of [journalPageSize] rows.
   Stream<_PersistedEvent> _journalAfterId(int fromId) async* {
-    await beforeReplayQuery?.call();
-    final result = await _pool!.execute(
-      Sql.named('''
-        SELECT id, persistence_id, sequence_number, event_data, event_type, event_id
-        FROM event_envelopes
-        WHERE id > @fromId
-        ORDER BY id ASC
-      '''),
-      parameters: {'fromId': fromId},
-    );
-    await afterReplayQuery?.call();
-    for (final row in result) {
-      final p = _rowToPersisted(row);
-      if (p != null) yield p;
+    var lastId = fromId;
+    while (true) {
+      final pageSize = journalPageSize < 1 ? 1 : journalPageSize;
+      await beforeReplayQuery?.call();
+      final page = await _pool!.execute(
+        Sql.named('''
+          SELECT id, persistence_id, sequence_number, event_data, event_type, event_id
+          FROM event_envelopes
+          WHERE id > @lastId
+          ORDER BY id ASC
+          LIMIT @pageSize
+        '''),
+        parameters: {'lastId': lastId, 'pageSize': pageSize},
+      );
+      await afterReplayQuery?.call();
+      for (final row in page) {
+        // Advance past every row, including one that fails to decode.
+        lastId = row[0] as int;
+        final p = _rowToPersisted(row);
+        if (p != null) yield p;
+      }
+      if (page.length < pageSize) break;
     }
   }
 
-  /// One actor's journal rows with `sequence_number > fromSequence`, in order.
+  /// One actor's journal rows with `sequence_number > fromSequence`, in
+  /// order, read in keyset pages of [journalPageSize] rows.
   Stream<_PersistedEvent> _journalForActorAfter(
     String persistenceId,
     int fromSequence,
   ) async* {
-    await beforeReplayQuery?.call();
-    final result = await _pool!.execute(
-      Sql.named('''
-        SELECT id, persistence_id, sequence_number, event_data, event_type, event_id
-        FROM event_envelopes
-        WHERE persistence_id = @persistenceId
-          AND sequence_number > @fromSequence
-        ORDER BY sequence_number ASC
-      '''),
-      parameters: {
-        'persistenceId': persistenceId,
-        'fromSequence': fromSequence,
-      },
-    );
-    await afterReplayQuery?.call();
-    for (final row in result) {
-      final p = _rowToPersisted(row);
-      if (p != null) yield p;
+    var lastSequence = fromSequence;
+    while (true) {
+      final pageSize = journalPageSize < 1 ? 1 : journalPageSize;
+      await beforeReplayQuery?.call();
+      final page = await _pool!.execute(
+        Sql.named('''
+          SELECT id, persistence_id, sequence_number, event_data, event_type, event_id
+          FROM event_envelopes
+          WHERE persistence_id = @persistenceId
+            AND sequence_number > @lastSequence
+          ORDER BY sequence_number ASC
+          LIMIT @pageSize
+        '''),
+        parameters: {
+          'persistenceId': persistenceId,
+          'lastSequence': lastSequence,
+          'pageSize': pageSize,
+        },
+      );
+      await afterReplayQuery?.call();
+      for (final row in page) {
+        lastSequence = row[2] as int;
+        final p = _rowToPersisted(row);
+        if (p != null) yield p;
+      }
+      if (page.length < pageSize) break;
     }
   }
 

@@ -8,6 +8,8 @@
 /// - AES-256-GCM encryption for data at rest
 /// - HKDF-derived per-secret encryption keys
 /// - Master key from environment variable
+/// - Key rotation: every row records the key version it was encrypted under,
+///   and reads pick the matching key
 /// - Explicit rejection of private key storage
 library;
 
@@ -17,7 +19,6 @@ import 'package:postgres/postgres.dart';
 
 import '../../crypto/encryption_service.dart';
 import '../secure_storage.dart';
-import 'package:convert/convert.dart';
 
 /// PostgreSQL-based secure storage that ONLY supports xpub storage.
 ///
@@ -47,6 +48,10 @@ class PostgresSecureStorage implements SecureStorage {
   final Pool _pool;
   final EncryptionService _encryptionService;
 
+  /// Every key this storage can decrypt with, by key version: the current
+  /// [_encryptionService] plus any previous keys.
+  final Map<int, EncryptionService> _keysByVersion;
+
   /// Prefix for xpub keys.
   static const String _xpubKeyPrefix = 'wallet_xpub_';
 
@@ -57,12 +62,36 @@ class PostgresSecureStorage implements SecureStorage {
   ///
   /// Parameters:
   /// - [pool]: PostgreSQL connection pool.
-  /// - [encryptionService]: Service for encrypting/decrypting data.
+  /// - [encryptionService]: The current key. Every write is encrypted with it
+  ///   and tagged with its [EncryptionService.keyVersion].
+  /// - [previousKeys]: Retired keys, still used to read rows tagged with their
+  ///   versions. Keep them until [reencryptToCurrentKey] has moved every row
+  ///   onto the current key.
+  ///
+  /// Throws [ArgumentError] if two keys share a key version.
   PostgresSecureStorage({
     required Pool pool,
     required EncryptionService encryptionService,
+    Iterable<EncryptionService> previousKeys = const [],
   })  : _pool = pool,
-        _encryptionService = encryptionService;
+        _encryptionService = encryptionService,
+        _keysByVersion = _indexKeys(encryptionService, previousKeys);
+
+  static Map<int, EncryptionService> _indexKeys(
+    EncryptionService current,
+    Iterable<EncryptionService> previous,
+  ) {
+    final keys = {current.keyVersion: current};
+    for (final key in previous) {
+      if (keys.containsKey(key.keyVersion)) {
+        throw ArgumentError(
+          'Duplicate key version ${key.keyVersion}: each key needs its own version',
+        );
+      }
+      keys[key.keyVersion] = key;
+    }
+    return keys;
+  }
 
   /// Creates a PostgreSQL secure storage from configuration.
   ///
@@ -71,10 +100,14 @@ class PostgresSecureStorage implements SecureStorage {
   ///
   /// Throws [StateError] if the environment variable is not set.
   /// Throws [ArgumentError] if the key is not 32 bytes.
+  ///
+  /// [previousMasterKeysBase64] maps retired key versions to their base64
+  /// master keys, so rows written before a rotation stay readable.
   static Future<PostgresSecureStorage> create({
     required Pool pool,
     required String masterKeyBase64,
     int keyVersion = 1,
+    Map<int, String> previousMasterKeysBase64 = const {},
   }) async {
     final encryptionService = EncryptionService.fromBase64(
       masterKeyBase64: masterKeyBase64,
@@ -84,7 +117,48 @@ class PostgresSecureStorage implements SecureStorage {
     return PostgresSecureStorage(
       pool: pool,
       encryptionService: encryptionService,
+      previousKeys: [
+        for (final entry in previousMasterKeysBase64.entries)
+          EncryptionService.fromBase64(
+            masterKeyBase64: entry.value,
+            keyVersion: entry.key,
+          ),
+      ],
     );
+  }
+
+  /// Decrypts one stored row with the key its [keyVersion] names.
+  ///
+  /// Throws [SecureStorageException] naming the key and version when no key
+  /// for that version is configured or decryption fails (wrong key, tampered
+  /// data).
+  Future<String> _decryptRow(
+    String keyName,
+    Uint8List encryptedValue,
+    Uint8List nonce,
+    int keyVersion,
+  ) async {
+    final key = _keysByVersion[keyVersion];
+    if (key == null) {
+      final known = _keysByVersion.keys.toList()..sort();
+      throw SecureStorageException(
+        'Secret $keyName is encrypted under key version $keyVersion, but no '
+        'key for that version is configured (known versions: $known)',
+      );
+    }
+    try {
+      return await key.decrypt(
+        ciphertext: encryptedValue,
+        nonce: nonce,
+        context: keyName,
+      );
+    } on EncryptionException catch (e) {
+      throw SecureStorageException(
+        'Failed to decrypt secret $keyName with key version $keyVersion: '
+        '${e.message}',
+        e,
+      );
+    }
   }
 
   // ========================================
@@ -118,7 +192,7 @@ class PostgresSecureStorage implements SecureStorage {
     try {
       final result = await _pool.execute(
         Sql.named('''
-          SELECT encrypted_value, nonce
+          SELECT encrypted_value, nonce, key_version
           FROM secure_secrets
           WHERE key_name = @key_name
         '''),
@@ -130,17 +204,16 @@ class PostgresSecureStorage implements SecureStorage {
       }
 
       final row = result.first;
-      final encryptedValue = row[0] as Uint8List;
-      final nonce = row[1] as Uint8List;
-
-
-      return await _encryptionService.decrypt(
-        ciphertext: encryptedValue,
-        nonce: nonce,
-        context: key,
+      return await _decryptRow(
+        key,
+        row[0] as Uint8List,
+        row[1] as Uint8List,
+        row[2] as int,
       );
+    } on SecureStorageException {
+      rethrow;
     } catch (e) {
-      throw SecureStorageException('Failed to retrieve secret: $e');
+      throw SecureStorageException('Failed to retrieve secret: $e', e);
     }
   }
 
@@ -232,13 +305,18 @@ class PostgresSecureStorage implements SecureStorage {
     }
   }
 
+  /// Returns every xpub and hdpubkey secret, decrypted.
+  ///
+  /// All or nothing: if any row cannot be decrypted (no key for its version,
+  /// wrong key, tampered data) this throws a [SecureStorageException] naming
+  /// every such row, rather than returning a partial map that looks complete.
   @override
   Future<Map<String, String>> getAll() async {
-    // Only return xpub-related keys
+    final Result result;
     try {
-      final result = await _pool.execute(
+      result = await _pool.execute(
         Sql.named('''
-          SELECT key_name, encrypted_value, nonce
+          SELECT key_name, encrypted_value, nonce, key_version
           FROM secure_secrets
           WHERE key_name LIKE @xpub_pattern
              OR key_name LIKE @hdpubkey_pattern
@@ -248,28 +326,95 @@ class PostgresSecureStorage implements SecureStorage {
           'hdpubkey_pattern': '$_hdPubKeyPrefix%',
         },
       );
+    } catch (e) {
+      throw SecureStorageException('Failed to retrieve all secrets: $e', e);
+    }
 
-      final secrets = <String, String>{};
-      for (final row in result) {
+    final secrets = <String, String>{};
+    final failures = <SecureStorageException>[];
+    for (final row in result) {
+      try {
         final keyName = row[0] as String;
-        final encryptedValue = row[1] as Uint8List;
-        final nonce = row[2] as Uint8List;
+        secrets[keyName] = await _decryptRow(
+          keyName,
+          row[1] as Uint8List,
+          row[2] as Uint8List,
+          row[3] as int,
+        );
+      } on SecureStorageException catch (e) {
+        failures.add(e);
+      }
+    }
 
-        try {
-          final decrypted = await _encryptionService.decrypt(
-            ciphertext: encryptedValue,
-            nonce: nonce,
+    if (failures.isNotEmpty) {
+      throw SecureStorageException(
+        'Failed to decrypt ${failures.length} of ${result.length} secrets: '
+        '${failures.map((e) => e.message).join('; ')}',
+        failures,
+      );
+    }
+    return secrets;
+  }
+
+  /// Re-encrypts every xpub and hdpubkey row that is not under the current
+  /// key version with the current key, and returns how many rows changed.
+  ///
+  /// Completes a key rotation: once it returns, [previousKeys] are no longer
+  /// needed. Runs in one transaction; throws [SecureStorageException] (and
+  /// changes nothing) if any row cannot be decrypted.
+  Future<int> reencryptToCurrentKey() async {
+    try {
+      return await _pool.runTx((session) async {
+        final rows = await session.execute(
+          Sql.named('''
+            SELECT key_name, encrypted_value, nonce, key_version
+            FROM secure_secrets
+            WHERE key_version <> @current
+              AND (key_name LIKE @xpub_pattern OR key_name LIKE @hdpubkey_pattern)
+            FOR UPDATE
+          '''),
+          parameters: {
+            'current': _encryptionService.keyVersion,
+            'xpub_pattern': '$_xpubKeyPrefix%',
+            'hdpubkey_pattern': '$_hdPubKeyPrefix%',
+          },
+        );
+        for (final row in rows) {
+          final keyName = row[0] as String;
+          final plaintext = await _decryptRow(
+            keyName,
+            row[1] as Uint8List,
+            row[2] as Uint8List,
+            row[3] as int,
+          );
+          final encrypted = await _encryptionService.encrypt(
+            plaintext: plaintext,
             context: keyName,
           );
-          secrets[keyName] = decrypted;
-        } catch (e) {
-          // Skip secrets that fail to decrypt (e.g., wrong key version)
+          await session.execute(
+            Sql.named('''
+              UPDATE secure_secrets
+              SET encrypted_value = @encrypted_value,
+                  nonce = @nonce,
+                  key_version = @key_version,
+                  updated_at = NOW()
+              WHERE key_name = @key_name
+            '''),
+            parameters: {
+              'key_name': keyName,
+              'encrypted_value':
+                  TypedValue(Type.byteArray, encrypted.ciphertext),
+              'nonce': TypedValue(Type.byteArray, encrypted.nonce),
+              'key_version': _encryptionService.keyVersion,
+            },
+          );
         }
-      }
-
-      return secrets;
+        return rows.length;
+      });
+    } on SecureStorageException {
+      rethrow;
     } catch (e) {
-      throw SecureStorageException('Failed to retrieve all secrets: $e');
+      throw SecureStorageException('Failed to re-encrypt secrets: $e', e);
     }
   }
 

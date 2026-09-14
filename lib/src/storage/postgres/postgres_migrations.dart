@@ -4,6 +4,7 @@
 /// over time while maintaining backwards compatibility.
 library;
 
+import 'package:meta/meta.dart';
 import 'package:postgres/postgres.dart';
 
 import 'postgres_config.dart';
@@ -33,8 +34,8 @@ abstract class Migration {
 
 /// Manages database migrations for PostgreSQL.
 class PostgresMigrations {
-  final PostgresConfig _config;
-  Pool? _pool;
+  final PostgresConfig? _config;
+  final Pool? _pool;
 
   /// All registered migrations, in version order.
   final List<Migration> _migrations = [
@@ -45,20 +46,84 @@ class PostgresMigrations {
     V005WalletScopedKeysAndUniqueProofs(),
   ];
 
+  /// Test hook awaited by [migrate] right after it reads the current schema
+  /// version, before any migration is applied. Lets a test hold one instance
+  /// at the point where a concurrent instance used to read the same version.
+  /// Never set in production.
+  @visibleForTesting
+  Future<void> Function(int currentVersion)? afterVersionRead;
+
+  /// Session advisory lock key serialising schema changes across instances
+  /// ('libspify'). Single-key form, so it never collides with the event
+  /// store's two-key append locks.
+  static const int _migrationLockKey = 0x6c69627370696679;
+
   /// Creates a new migration manager with the given configuration.
-  PostgresMigrations(this._config);
+  ///
+  /// Each operation opens its own pool from [config] and closes it afterwards.
+  PostgresMigrations(PostgresConfig config)
+      : _config = config,
+        _pool = null;
 
   /// Creates a migration manager using an existing connection pool.
-  PostgresMigrations.withPool(this._pool) : _config = PostgresConfig(host: '', database: '');
+  ///
+  /// The pool stays owned by the caller and is never closed here.
+  PostgresMigrations.withPool(Pool pool)
+      : _pool = pool,
+        _config = null;
+
+  /// Runs [fn] with the caller's pool, or with a pool of its own that is
+  /// closed afterwards.
+  Future<T> _withPool<T>(Future<T> Function(Pool pool) fn) async {
+    final pool = _pool ?? await _config!.createPool();
+    try {
+      return await fn(pool);
+    } finally {
+      if (_pool == null) await pool.close();
+    }
+  }
+
+  /// Runs [fn] on one connection holding the migration advisory lock.
+  ///
+  /// Two instances starting together would otherwise both read the same
+  /// version and both apply the same migrations; the second then fails on
+  /// `schema_migrations`' primary key (or on a concurrent CREATE TABLE) and
+  /// aborts its startup. Under the lock the second waits, then reads the
+  /// version the first committed and has nothing left to do.
+  Future<T> _withMigrationLock<T>(
+    Future<T> Function(Connection conn) fn,
+  ) {
+    return _withPool((pool) => pool.withConnection((conn) async {
+          await conn.execute('SELECT pg_advisory_lock($_migrationLockKey)');
+          try {
+            return await fn(conn);
+          } finally {
+            try {
+              await conn.execute(
+                  'SELECT pg_advisory_unlock($_migrationLockKey)');
+            } catch (_) {
+              // The session is unusable; closing it releases the lock.
+              await conn.close(force: true);
+            }
+          }
+        }));
+  }
+
+  /// Whether `schema_migrations` exists (a fresh database has none).
+  static Future<bool> _hasMigrationsTable(Session session) async {
+    final result = await session.execute(
+      "SELECT to_regclass('schema_migrations') IS NOT NULL",
+    );
+    return result.first[0] as bool;
+  }
 
   /// Runs all pending migrations.
-  Future<void> migrate() async {
-    final pool = _pool ?? await _config.createPool();
-    final ownPool = _pool == null;
-
-    try {
-      // Create migrations table if it doesn't exist
-      await pool.execute('''
+  ///
+  /// Safe to call from several instances at once: they are serialised on a
+  /// database advisory lock.
+  Future<void> migrate() {
+    return _withMigrationLock((conn) async {
+      await conn.execute('''
         CREATE TABLE IF NOT EXISTS schema_migrations (
           version INTEGER PRIMARY KEY,
           name VARCHAR(255) NOT NULL,
@@ -66,61 +131,46 @@ class PostgresMigrations {
         )
       ''');
 
-      // Get current version
-      final result = await pool.execute(
+      final result = await conn.execute(
         'SELECT COALESCE(MAX(version), 0) as v FROM schema_migrations',
       );
       final currentVersion = result.first[0] as int;
+      await afterVersionRead?.call(currentVersion);
 
-      // Apply pending migrations
       for (final migration in _migrations) {
-        if (migration.version > currentVersion) {
-
-          // Run migration in a transaction
-          await pool.runTx((session) async {
-            // Apply the migration
-            await migration.up(session);
-
-            // Record the migration
-            await session.execute(
-              Sql.named('''
-                INSERT INTO schema_migrations (version, name)
-                VALUES (@version, @name)
-              '''),
-              parameters: {
-                'version': migration.version,
-                'name': migration.name,
-              },
-            );
-          });
-
-        }
+        if (migration.version <= currentVersion) continue;
+        // Each migration and its record commit together.
+        await conn.runTx((session) async {
+          await migration.up(session);
+          await session.execute(
+            Sql.named('''
+              INSERT INTO schema_migrations (version, name)
+              VALUES (@version, @name)
+            '''),
+            parameters: {
+              'version': migration.version,
+              'name': migration.name,
+            },
+          );
+        });
       }
-    } finally {
-      if (ownPool) {
-        await pool.close();
-      }
-    }
+    });
   }
 
   /// Rolls back the most recent migration.
-  Future<bool> rollback() async {
-    final pool = _pool ?? await _config.createPool();
-    final ownPool = _pool == null;
+  ///
+  /// Returns false when there is nothing to roll back, including on a
+  /// database that has never been migrated (no `schema_migrations` table).
+  Future<bool> rollback() {
+    return _withMigrationLock((conn) async {
+      if (!await _hasMigrationsTable(conn)) return false;
 
-    try {
-      // Get current version
-      final result = await pool.execute(
+      final result = await conn.execute(
         'SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1',
       );
-
-      if (result.isEmpty) {
-        return false;
-      }
+      if (result.isEmpty) return false;
 
       final currentVersion = result.first[0] as int;
-
-      // Find the migration to roll back
       final migration = _migrations.firstWhere(
         (m) => m.version == currentVersion,
         orElse: () => throw StateError(
@@ -128,25 +178,15 @@ class PostgresMigrations {
         ),
       );
 
-
-      // Run rollback in a transaction
-      await pool.runTx((session) async {
-        // Roll back the migration
+      await conn.runTx((session) async {
         await migration.down(session);
-
-        // Remove the migration record
         await session.execute(
           Sql.named('DELETE FROM schema_migrations WHERE version = @version'),
           parameters: {'version': migration.version},
         );
       });
-
       return true;
-    } finally {
-      if (ownPool) {
-        await pool.close();
-      }
-    }
+    });
   }
 
   /// Rolls back all migrations.
@@ -154,36 +194,29 @@ class PostgresMigrations {
     while (await rollback()) {}
   }
 
-  /// Gets the current schema version.
-  Future<int> getCurrentVersion() async {
-    final pool = _pool ?? await _config.createPool();
-    final ownPool = _pool == null;
-
-    try {
+  /// Gets the current schema version (0 on a never-migrated database).
+  ///
+  /// Connection and query errors propagate; they are not reported as 0.
+  Future<int> getCurrentVersion() {
+    return _withPool((pool) async {
+      if (!await _hasMigrationsTable(pool)) return 0;
       final result = await pool.execute(
         'SELECT COALESCE(MAX(version), 0) as v FROM schema_migrations',
       );
       return result.first[0] as int;
-    } catch (e) {
-      return 0;
-    } finally {
-      if (ownPool) {
-        await pool.close();
-      }
-    }
+    });
   }
 
-  /// Gets a list of applied migrations.
+  /// Gets a list of applied migrations (empty on a never-migrated database).
+  ///
+  /// Connection and query errors propagate; they are not reported as empty.
   Future<List<({int version, String name, DateTime appliedAt})>>
-      getAppliedMigrations() async {
-    final pool = _pool ?? await _config.createPool();
-    final ownPool = _pool == null;
-
-    try {
+      getAppliedMigrations() {
+    return _withPool((pool) async {
+      if (!await _hasMigrationsTable(pool)) return [];
       final result = await pool.execute(
         'SELECT version, name, applied_at FROM schema_migrations ORDER BY version',
       );
-
       return result.map((row) {
         return (
           version: row[0] as int,
@@ -191,13 +224,7 @@ class PostgresMigrations {
           appliedAt: row[2] as DateTime,
         );
       }).toList();
-    } catch (e) {
-      return [];
-    } finally {
-      if (ownPool) {
-        await pool.close();
-      }
-    }
+    });
   }
 
   /// Gets a list of pending migrations.

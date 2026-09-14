@@ -122,7 +122,12 @@ class PaymentChannel {
   /// Output index in funding transaction
   final int? fundingOutputIndex;
 
-  /// Raw hex of the refund transaction (T2)
+  /// Raw hex of the refund transaction (T2).
+  ///
+  /// Client side: the unsigned refund once built, replaced by the fully
+  /// signed refund (both signatures, verified against the funding output)
+  /// once the server countersigned it; that is the transaction the client
+  /// broadcasts after [lockTimeUnix] to recover its funds (libspiffy-b83).
   final String? refundTxHex;
 
   /// Client's signature on the refund transaction
@@ -412,6 +417,10 @@ class PaymentChannel {
   // copyWith
   // ===========================================================================
 
+  /// A copy with the given fields replaced. Null leaves a field unchanged;
+  /// [clearErrorMessage] drops the error message (replacing it with
+  /// [errorMessage], null by default).
+
   PaymentChannel copyWith({
     String? channelId,
     String? walletId,
@@ -443,6 +452,7 @@ class PaymentChannel {
     DateTime? createdAt,
     DateTime? closedAt,
     String? errorMessage,
+    bool clearErrorMessage = false,
   }) {
     return PaymentChannel(
       channelId: channelId ?? this.channelId,
@@ -475,7 +485,8 @@ class PaymentChannel {
       context: context ?? this.context,
       createdAt: createdAt ?? this.createdAt,
       closedAt: closedAt ?? this.closedAt,
-      errorMessage: errorMessage ?? this.errorMessage,
+      errorMessage:
+          clearErrorMessage ? errorMessage : (errorMessage ?? this.errorMessage),
     );
   }
 

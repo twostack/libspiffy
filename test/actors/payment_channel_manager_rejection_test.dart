@@ -28,6 +28,7 @@ import 'package:libspiffy/src/core/channel_events.dart';
 import 'package:libspiffy/src/core/wallet_commands.dart';
 import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 
+import 'channel_test_fixtures.dart';
 import 'in_memory_event_store.dart';
 
 const _walletId = 'channel-wallet';
@@ -55,6 +56,10 @@ void main() {
   late String serverPubKeyHex;
   late String serverAddressB58;
 
+  /// Funding transaction locking [_funding] in the channel 2-of-2: the
+  /// server checks it on open (libspiffy-9f7).
+  late ({String hex, String txid}) fundingTx;
+
   setUp(() async {
     actorSystem = TestActorSystem();
     cryptoService = DartSVCryptoService();
@@ -65,6 +70,10 @@ void main() {
     clientAddressB58 = client.toAddress(NetworkType.TEST).toString();
     serverPubKeyHex = server.toString();
     serverAddressB58 = server.toAddress(NetworkType.TEST).toString();
+    fundingTx = channelFundingTx(
+        clientPubKeyHex: clientPubKeyHex,
+        serverPubKeyHex: serverPubKeyHex,
+        amountSats: _funding);
     broadcast = [];
     channelEvents = StreamController<ChannelEvent>.broadcast();
   });
@@ -169,9 +178,9 @@ void main() {
       managerRef.ask<ChannelOpenedResponse>(
         OpenChannelMessage(
           channelId: _channelId,
-          fundingTxId: 'b' * 64,
+          fundingTxId: fundingTx.txid,
           fundingOutputIndex: 0,
-          fundingTxHex: '',
+          fundingTxHex: fundingTx.hex,
         ),
         _timeout,
       );
@@ -223,22 +232,14 @@ void main() {
     expect(initiated.success, isTrue, reason: initiated.error);
   }
 
-  Future<void> recordAcceptanceAndRefund() async {
-    // Fire-and-forget, as ChannelP2PAdapter sends it; the mailbox runs it
-    // before the next ask.
-    managerRef.tell(RecordServerAcceptanceMessage(
-      channelId: _channelId,
-      serverPubKeyHex: serverPubKeyHex,
-      serverAddressB58: serverAddressB58,
-    ));
-    final refundRecorded = await managerRef.ask<RefundSignatureRecordedResponse>(
-      RecordRefundSignatureMessage(
-        channelId: _channelId,
-        serverSignatureHex: '30' * 36,
-      ),
-      _timeout,
-    );
-    expect(refundRecorded.success, isTrue, reason: refundRecorded.error);
+  /// Client side: a journal of an open channel (verified refund, funding
+  /// broadcast), as the client flow leaves it (libspiffy-b83, 9f7).
+  Future<void> openClientChannelFromJournal({required int lockTimeUnix}) async {
+    await spawn(asClient: true);
+    final fixture = await ChannelRefundFixture.create(
+        channelId: _channelId, lockTimeUnix: lockTimeUnix);
+    await eventStore.persistEvents('PaymentChannel_$_channelId',
+        fixture.openClientJournal(walletId: _walletId), 0);
   }
 
   group('lhd: rejected commands fail the caller', () {
@@ -292,10 +293,9 @@ void main() {
         'channel still closes', () async {
       // A lock time of "now": the channel is expired as soon as it exists.
       // The manager does not check expiry; the aggregate does.
-      await initiateClientChannel(lockTimeDurationSeconds: 0);
-      await recordAcceptanceAndRefund();
-      final opened = await openChannel();
-      expect(opened.success, isTrue, reason: opened.error);
+      await openClientChannelFromJournal(
+          lockTimeUnix: DateTime.now().millisecondsSinceEpoch ~/ 1000);
+      await expectState('open', sequence: 0, client: 100000, server: 0);
       broadcast.clear();
 
       final paid = await managerRef.ask<PaymentRecordedResponse>(
@@ -489,9 +489,9 @@ void main() {
 
       adapter.handleP2PMessage('client-peer', 'channel_open', {
         'channelId': _channelId,
-        'fundingTxId': 'b' * 64,
+        'fundingTxId': fundingTx.txid,
         'fundingOutputIndex': 0,
-        'fundingTxHex': '',
+        'fundingTxHex': fundingTx.hex,
       });
       await waitFor(() => emitted.whereType<coord.ChannelOpenedEvent>().isNotEmpty);
 

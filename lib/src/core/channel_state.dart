@@ -30,12 +30,35 @@ class ChannelState extends State {
   String? fundingTxHex;
   int? fundingOutputIndex;
   List<String> fundingAncestorTxids;
+
+  /// Total input value of the funding transaction, when known.
+  int? fundingInputSats;
+
+  /// Broadcasts of the funding transaction started so far (client).
+  int fundingBroadcastAttempts;
+
+  /// A funding broadcast was started and has not failed (client): the
+  /// channel may be opened for it.
+  bool fundingBroadcastInFlight;
+
+  /// Error of the last failed funding broadcast, cleared by the next start.
+  String? fundingBroadcastError;
+
+  /// The funding transaction is recorded in the client wallet.
+  bool fundingRecordedInWallet;
   
   // Refund (T2)
   int? lockTimeUnix;
+
+  /// The refund template as built (unsigned), or on the server side the
+  /// refund it signed.
   String? refundTxHex;
   String? refundClientSigHex;
   String? refundServerSigHex;
+
+  /// The fully signed refund the client holds, verified against the funding
+  /// output (libspiffy-b83).
+  String? signedRefundTxHex;
   
   // Current balances
   BigInt clientBalanceSats;
@@ -75,10 +98,16 @@ class ChannelState extends State {
     this.fundingTxHex,
     this.fundingOutputIndex,
     List<String>? fundingAncestorTxids,
+    this.fundingInputSats,
+    this.fundingBroadcastAttempts = 0,
+    this.fundingBroadcastInFlight = false,
+    this.fundingBroadcastError,
+    this.fundingRecordedInWallet = false,
     this.lockTimeUnix,
     this.refundTxHex,
     this.refundClientSigHex,
     this.refundServerSigHex,
+    this.signedRefundTxHex,
     BigInt? clientBalanceSats,
     BigInt? serverBalanceSats,
     this.latestSequenceNumber = 0,

@@ -57,6 +57,8 @@ const goldenTypeNames = <String, String>{
   'ServerAcceptanceRecordedEvent': 'channel.server_acceptance_recorded',
   'RefundBuiltEvent': 'channel.refund.built',
   'RefundCountersignedEvent': 'channel.refund.countersigned',
+  'FundingBroadcastStartedEvent': 'channel.funding.broadcast_started',
+  'FundingBroadcastFailedEvent': 'channel.funding.broadcast_failed',
   'ChannelOpenedEvent': 'channel.opened',
   'PaymentRecordedEvent': 'channel.payment.recorded',
   'PaymentAcknowledgedEvent': 'channel.payment.acknowledged',
@@ -197,9 +199,16 @@ Map<String, Event> sampleEvents() => <String, Event>{
       'RefundBuiltEvent': RefundBuiltEvent(
           channelId: _c, fundingTxId: _txid, fundingOutputIndex: 0,
           fundingTxHex: '01', refundTxHex: '02', clientSignatureHex: '30',
-          timestamp: _t, version: 5),
+          fundingInputSats: 1100, timestamp: _t, version: 5),
       'RefundCountersignedEvent': RefundCountersignedEvent(
-          channelId: _c, serverSignatureHex: '30', timestamp: _t, version: 6),
+          channelId: _c, serverSignatureHex: '30', signedRefundTxHex: '03',
+          timestamp: _t, version: 6),
+      'FundingBroadcastStartedEvent': FundingBroadcastStartedEvent(
+          channelId: _c, fundingTxId: _txid, attempt: 1, timestamp: _t,
+          version: 6),
+      'FundingBroadcastFailedEvent': FundingBroadcastFailedEvent(
+          channelId: _c, fundingTxId: _txid, error: 'e', walletRecorded: true,
+          timestamp: _t, version: 6),
       'ChannelOpenedEvent': ChannelOpenedEvent(
           channelId: _c, fundingTxId: _txid, fundingOutputIndex: 0,
           fundingTxHex: '01', fundingAncestorTxids: [_txid],

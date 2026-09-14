@@ -10,7 +10,7 @@
 /// The invoice path is also covered behaviourally in
 /// invoice_coordinator_actor_test.dart; the payment and wallet-coordinator
 /// sites sit too deep in the payment flow to drive cheaply, so this scan
-/// keeps all seven sites honest.
+/// keeps every site honest (seven at the audit; three more channel-manager sites were added by the funding-broadcast fix, libspiffy-9f7).
 
 import 'dart:io';
 import 'package:test/test.dart';
@@ -23,7 +23,7 @@ const _files = [
 ];
 
 /// Number of AwaitEventApplied ask sites the audit enumerated.
-const _expectedSites = 7;
+const _expectedSites = 10;
 
 void main() {
   test('every AwaitEventApplied ask passes a timeout longer than the awaiter window',

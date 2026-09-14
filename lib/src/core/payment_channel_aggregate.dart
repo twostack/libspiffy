@@ -1,3 +1,6 @@
+import 'dart:typed_data';
+
+import 'package:convert/convert.dart';
 import 'package:dactor/dactor.dart';
 import 'package:eventador/eventador.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
@@ -17,6 +20,7 @@ import 'aggregate_command_failures.dart';
 class PaymentChannelAggregate extends AggregateRoot<ChannelState>
     with CommandFailureContainment<ChannelState> {
   late final PaymentChannelBuilder _channelBuilder;
+  final CryptoService _cryptoService;
   final dartsv.NetworkType _networkType;
   
   // Capture sender for responses (same pattern as BitcoinWalletAggregate)
@@ -28,6 +32,7 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
     required CryptoService cryptoService,
     dartsv.NetworkType networkType = dartsv.NetworkType.TEST,
   }) : _networkType = networkType,
+        _cryptoService = cryptoService,
         super(
           aggregateId: aggregateId,
           aggregateType: 'PaymentChannel',
@@ -72,10 +77,16 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
         'fundingTxHex': s.fundingTxHex,
         'fundingOutputIndex': s.fundingOutputIndex,
         'fundingAncestorTxids': List<String>.from(s.fundingAncestorTxids),
+        'fundingInputSats': s.fundingInputSats,
+        'fundingBroadcastAttempts': s.fundingBroadcastAttempts,
+        'fundingBroadcastInFlight': s.fundingBroadcastInFlight,
+        'fundingBroadcastError': s.fundingBroadcastError,
+        'fundingRecordedInWallet': s.fundingRecordedInWallet,
         'lockTimeUnix': s.lockTimeUnix,
         'refundTxHex': s.refundTxHex,
         'refundClientSigHex': s.refundClientSigHex,
         'refundServerSigHex': s.refundServerSigHex,
+        'signedRefundTxHex': s.signedRefundTxHex,
         'clientBalanceSats': s.clientBalanceSats.toString(),
         'serverBalanceSats': s.serverBalanceSats.toString(),
         'latestSequenceNumber': s.latestSequenceNumber,
@@ -115,10 +126,18 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       fundingAncestorTxids: [
         for (final t in map['fundingAncestorTxids'] as List? ?? const []) t as String,
       ],
+      // Snapshots written before libspiffy-b83/9f7 have no funding broadcast
+      // or signed refund keys.
+      fundingInputSats: map['fundingInputSats'] as int?,
+      fundingBroadcastAttempts: map['fundingBroadcastAttempts'] as int? ?? 0,
+      fundingBroadcastInFlight: map['fundingBroadcastInFlight'] as bool? ?? false,
+      fundingBroadcastError: map['fundingBroadcastError'] as String?,
+      fundingRecordedInWallet: map['fundingRecordedInWallet'] as bool? ?? false,
       lockTimeUnix: map['lockTimeUnix'] as int?,
       refundTxHex: map['refundTxHex'] as String?,
       refundClientSigHex: map['refundClientSigHex'] as String?,
       refundServerSigHex: map['refundServerSigHex'] as String?,
+      signedRefundTxHex: map['signedRefundTxHex'] as String?,
       clientBalanceSats: BigInt.parse(map['clientBalanceSats'] as String),
       serverBalanceSats: BigInt.parse(map['serverBalanceSats'] as String),
       latestSequenceNumber: map['latestSequenceNumber'] as int,
@@ -207,6 +226,9 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       serverAddressB58: currentState.serverAddressB58,
       derivationIndex: currentState.derivationIndex,
       lockTimeUnix: currentState.lockTimeUnix,
+      signedRefundTxHex: currentState.signedRefundTxHex,
+      fundingInputSats: currentState.fundingInputSats,
+      fundingRecordedInWallet: currentState.fundingRecordedInWallet,
       success: true,
     ));
   }
@@ -253,6 +275,12 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       return _handleRejectChannel(currentState, command);
     } else if (command is RecordServerAcceptanceCommand) {
       return _handleRecordServerAcceptance(currentState, command);
+    } else if (command is RecordRefundBuiltCommand) {
+      return _handleRecordRefundBuilt(currentState, command);
+    } else if (command is StartFundingBroadcastCommand) {
+      return _handleStartFundingBroadcast(currentState, command);
+    } else if (command is RecordFundingBroadcastFailedCommand) {
+      return _handleRecordFundingBroadcastFailed(currentState, command);
     } else if (command is RequestRefundSignatureCommand) {
       return await _handleRequestRefundSignature(currentState, command);
     } else if (command is ProvideRefundSignatureCommand) {
@@ -302,6 +330,12 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
         break;
       case RefundCountersignedEvent:
         _applyRefundCountersigned(event as RefundCountersignedEvent);
+        break;
+      case FundingBroadcastStartedEvent:
+        _applyFundingBroadcastStarted(event as FundingBroadcastStartedEvent);
+        break;
+      case FundingBroadcastFailedEvent:
+        _applyFundingBroadcastFailed(event as FundingBroadcastFailedEvent);
         break;
       case ChannelOpenedEvent:
         _applyChannelOpened(event as ChannelOpenedEvent);
@@ -471,10 +505,254 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
           '(status=${currentState.status.name})');
     }
 
+    // The signature is only worth journaling if it completes the refund the
+    // client built: a server that returns a bad signature would otherwise
+    // leave the client funding a 2-of-2 it cannot recover (libspiffy-b83).
+    final template = currentState.refundTxHex;
+    final clientSigHex = currentState.refundClientSigHex;
+    if (template == null || clientSigHex == null) {
+      throw StateError('No refund transaction built for channel '
+          '${cmd.channelId}: nothing for the server signature to complete');
+    }
+    final dartsv.SVSignature serverSignature;
+    try {
+      serverSignature = dartsv.SVSignature.fromTxFormat(cmd.serverSignatureHex);
+    } catch (e) {
+      throw StateError('Server refund signature is malformed: $e');
+    }
+    final keys = _channelKeys(currentState);
+    final signed = _channelBuilder.applyMultisigSignatures(
+      transaction: dartsv.Transaction.fromHex(template),
+      inputIndex: 0,
+      clientSignature: dartsv.SVSignature.fromTxFormat(clientSigHex),
+      serverSignature: serverSignature,
+      clientPubKey: keys.client,
+      serverPubKey: keys.server,
+    );
+    try {
+      _channelBuilder.verifyMultisigSpend(
+        signedTx: signed,
+        redeemScript: keys.redeemScript,
+        inputValueSats: currentState.fundingAmountSats,
+      );
+    } on ScriptVerificationException catch (e) {
+      throw StateError('Server refund signature does not verify: the fully '
+          'signed refund fails the script check against the funding output '
+          '(${e.message})');
+    }
+
     return [
       RefundCountersignedEvent(
         channelId: cmd.channelId,
         serverSignatureHex: cmd.serverSignatureHex,
+        signedRefundTxHex: signed.serialize(),
+        version: currentState.version + 1,
+      ),
+    ];
+  }
+
+  /// The channel's two public keys and their 2-of-2 script (BIP67 order).
+  ({dartsv.SVPublicKey client, dartsv.SVPublicKey server, dartsv.SVScript redeemScript})
+      _channelKeys(ChannelState state) {
+    final clientHex = state.clientPubKeyHex;
+    final serverHex = state.serverPubKeyHex;
+    if (clientHex == null || serverHex == null) {
+      throw StateError('Channel ${state.channelId} has no '
+          '${clientHex == null ? 'client' : 'server'} public key yet');
+    }
+    final client = dartsv.SVPublicKey.fromHex(clientHex);
+    final server = dartsv.SVPublicKey.fromHex(serverHex);
+    return (
+      client: client,
+      server: server,
+      redeemScript: _channelBuilder.buildMultisigRedeemScript(
+          clientPubKey: client, serverPubKey: server),
+    );
+  }
+
+  /// Parses [fundingTxHex] and checks it is transaction [fundingTxId] whose
+  /// output [outputIndex] locks exactly the channel's funding amount in the
+  /// channel's 2-of-2.
+  dartsv.Transaction _checkFundingOutput(
+    ChannelState state, {
+    required String fundingTxHex,
+    required String fundingTxId,
+    required int outputIndex,
+  }) {
+    final dartsv.Transaction funding;
+    try {
+      funding = dartsv.Transaction.fromHex(fundingTxHex);
+    } catch (e) {
+      throw StateError('Invalid funding transaction: $e');
+    }
+    if (funding.id != fundingTxId) {
+      throw StateError('Funding transaction is ${funding.id}, not $fundingTxId');
+    }
+    if (outputIndex < 0 || outputIndex >= funding.outputs.length) {
+      throw StateError('Funding transaction $fundingTxId has no output $outputIndex');
+    }
+    final output = funding.outputs[outputIndex];
+    if (output.script.toHex() != _channelKeys(state).redeemScript.toHex()) {
+      throw StateError('Funding output $fundingTxId:$outputIndex is not the '
+          'channel 2-of-2');
+    }
+    if (output.satoshis != state.fundingAmountSats) {
+      throw StateError('Funding output $fundingTxId:$outputIndex holds '
+          '${output.satoshis} sats, not the agreed ${state.fundingAmountSats}');
+    }
+    return funding;
+  }
+
+  /// Client records the refund it built (libspiffy-b83).
+  List<Event> _handleRecordRefundBuilt(
+    ChannelState currentState,
+    RecordRefundBuiltCommand cmd,
+  ) {
+    if (currentState.role != ChannelRole.client) {
+      throw StateError('Only the client records its refund transaction');
+    }
+    if (currentState.status != ChannelStatus.accepted) {
+      throw StateError('Channel not in accepted state '
+          '(status=${currentState.status.name})');
+    }
+    final lockTimeUnix = currentState.lockTimeUnix;
+    final clientAddress = currentState.clientAddressB58;
+    if (lockTimeUnix == null || clientAddress == null) {
+      throw StateError('Channel ${cmd.channelId} has no lockTime or client address');
+    }
+    _checkFundingOutput(currentState,
+        fundingTxHex: cmd.fundingTxHex,
+        fundingTxId: cmd.fundingTxId,
+        outputIndex: cmd.fundingOutputIndex);
+
+    final dartsv.Transaction refund;
+    try {
+      refund = dartsv.Transaction.fromHex(cmd.refundTxHex);
+    } catch (e) {
+      throw StateError('Invalid refund transaction: $e');
+    }
+    if (refund.inputs.length != 1 ||
+        refund.inputs.single.prevTxnId != cmd.fundingTxId ||
+        refund.inputs.single.prevTxnOutputIndex != cmd.fundingOutputIndex) {
+      throw StateError('Refund transaction does not spend exactly the funding '
+          'output ${cmd.fundingTxId}:${cmd.fundingOutputIndex}');
+    }
+    if (refund.nLockTime != lockTimeUnix) {
+      throw StateError('Refund nLockTime ${refund.nLockTime} is not the channel '
+          'lockTime $lockTimeUnix');
+    }
+    if (refund.inputs.single.sequenceNumber ==
+        dartsv.TransactionInput.MAX_SEQ_NUMBER) {
+      throw StateError('Refund input sequence is final: its nLockTime would '
+          'not be enforced');
+    }
+    final clientScript = dartsv.P2PKHLockBuilder.fromAddress(
+            dartsv.Address.fromBase58(clientAddress))
+        .getScriptPubkey()
+        .toHex();
+    if (refund.outputs.isEmpty ||
+        refund.outputs.any((o) => o.script.toHex() != clientScript)) {
+      throw StateError('Refund transaction does not pay the client address '
+          '$clientAddress');
+    }
+
+    // The client's own signature must be valid, or the refund can never be
+    // completed whatever the server signs.
+    final keys = _channelKeys(currentState);
+    final bool clientSignatureValid;
+    try {
+      final signature =
+          dartsv.SVSignature.fromTxFormat(cmd.clientSignatureHex);
+      final sighash = dartsv.Sighash().hash(refund, signature.nhashtype, 0,
+          keys.redeemScript, currentState.fundingAmountSats);
+      clientSignatureValid = _cryptoService.verifySignature(keys.client,
+          signature, Uint8List.fromList(hex.decode(sighash).reversed.toList()));
+    } catch (e) {
+      throw StateError('Client refund signature is malformed: $e');
+    }
+    if (!clientSignatureValid) {
+      throw StateError('Client refund signature does not verify');
+    }
+
+    return [
+      RefundBuiltEvent(
+        channelId: cmd.channelId,
+        fundingTxId: cmd.fundingTxId,
+        fundingOutputIndex: cmd.fundingOutputIndex,
+        fundingTxHex: cmd.fundingTxHex,
+        refundTxHex: cmd.refundTxHex,
+        clientSignatureHex: cmd.clientSignatureHex,
+        fundingInputSats: cmd.fundingInputSats,
+        version: currentState.version + 1,
+      ),
+    ];
+  }
+
+  /// The client may broadcast its funding transaction only once its journal
+  /// holds the verified, fully signed refund of that transaction
+  /// (libspiffy-9f7).
+  List<Event> _handleStartFundingBroadcast(
+    ChannelState currentState,
+    StartFundingBroadcastCommand cmd,
+  ) {
+    if (currentState.role != ChannelRole.client) {
+      throw StateError('Only the client broadcasts the funding transaction');
+    }
+    if (currentState.status != ChannelStatus.refundSigned) {
+      throw StateError('Refund not signed yet: funding is not broadcast before '
+          'the client holds the countersigned refund '
+          '(status=${currentState.status.name})');
+    }
+    final signedRefund = currentState.signedRefundTxHex;
+    if (signedRefund == null) {
+      throw StateError('No fully signed refund retained for channel '
+          '${cmd.channelId}: refusing to broadcast its funding');
+    }
+    if (cmd.fundingTxId != currentState.fundingTxId ||
+        (currentState.fundingTxHex ?? '').isEmpty) {
+      throw StateError('Funding transaction ${cmd.fundingTxId} is not the one '
+          'the refund spends (${currentState.fundingTxId})');
+    }
+    final refundInput = dartsv.Transaction.fromHex(signedRefund).inputs.single;
+    if (refundInput.prevTxnId != cmd.fundingTxId ||
+        refundInput.prevTxnOutputIndex != currentState.fundingOutputIndex) {
+      throw StateError('The retained refund does not spend funding output '
+          '${cmd.fundingTxId}:${currentState.fundingOutputIndex}');
+    }
+    // A start while one is still in flight is a retry after the broadcast's
+    // outcome was lost (a crash mid-broadcast): it is the next attempt of
+    // the same transaction, which ARC accepts again. The manager's mailbox
+    // runs one broadcast at a time.
+
+    return [
+      FundingBroadcastStartedEvent(
+        channelId: cmd.channelId,
+        fundingTxId: cmd.fundingTxId,
+        attempt: currentState.fundingBroadcastAttempts + 1,
+        version: currentState.version + 1,
+      ),
+    ];
+  }
+
+  List<Event> _handleRecordFundingBroadcastFailed(
+    ChannelState currentState,
+    RecordFundingBroadcastFailedCommand cmd,
+  ) {
+    if (currentState.role != ChannelRole.client) {
+      throw StateError('Only the client broadcasts the funding transaction');
+    }
+    if (currentState.status != ChannelStatus.refundSigned ||
+        !currentState.fundingBroadcastInFlight ||
+        cmd.fundingTxId != currentState.fundingTxId) {
+      throw StateError('No funding broadcast of ${cmd.fundingTxId} in progress '
+          '(status=${currentState.status.name})');
+    }
+    return [
+      FundingBroadcastFailedEvent(
+        channelId: cmd.channelId,
+        fundingTxId: cmd.fundingTxId,
+        error: cmd.error,
+        walletRecorded: cmd.walletRecorded,
         version: currentState.version + 1,
       ),
     ];
@@ -489,12 +767,40 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       throw StateError('Refund not signed yet');
     }
 
+    var fundingTxHex = cmd.fundingTxHex;
+    if (currentState.role == ChannelRole.client) {
+      // The client opens only a channel whose verified refund it holds and
+      // whose funding broadcast it started and did not see fail
+      // (libspiffy-b83, libspiffy-9f7).
+      if (currentState.signedRefundTxHex == null) {
+        throw StateError('No fully signed refund retained for channel '
+            '${cmd.channelId}');
+      }
+      if (cmd.fundingTxId != currentState.fundingTxId) {
+        throw StateError('Funding transaction ${cmd.fundingTxId} is not the one '
+            'the refund spends (${currentState.fundingTxId})');
+      }
+      if (!currentState.fundingBroadcastInFlight) {
+        throw StateError('Funding transaction ${cmd.fundingTxId} has not been '
+            'broadcast');
+      }
+      fundingTxHex = currentState.fundingTxHex ?? fundingTxHex;
+    } else {
+      // The server accepts only a funding transaction that locks the agreed
+      // amount in the channel's 2-of-2: its refund signature and every
+      // payment it acknowledges rely on that output (libspiffy-9f7).
+      _checkFundingOutput(currentState,
+          fundingTxHex: cmd.fundingTxHex,
+          fundingTxId: cmd.fundingTxId,
+          outputIndex: cmd.fundingOutputIndex);
+    }
+
     return [
       ChannelOpenedEvent(
         channelId: cmd.channelId,
         fundingTxId: cmd.fundingTxId,
         fundingOutputIndex: cmd.fundingOutputIndex,
-        fundingTxHex: cmd.fundingTxHex,
+        fundingTxHex: fundingTxHex,
         fundingAncestorTxids: cmd.fundingAncestorTxids,
         initialClientBalanceSats: currentState.fundingAmountSats,
         initialServerBalanceSats: BigInt.zero,
@@ -707,7 +1013,9 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
     // The journal records the txid of the actual refund transaction (audit
     // L4): the one the command carries (typically the fully signed refund)
     // or else the refund transaction this channel built.
-    final refundTxHex = cmd.refundTxHex ?? currentState.refundTxHex;
+    final refundTxHex = cmd.refundTxHex ??
+        currentState.signedRefundTxHex ??
+        currentState.refundTxHex;
     if (refundTxHex == null || refundTxHex.isEmpty) {
       throw StateError('No refund transaction known for channel '
           '${cmd.channelId}');
@@ -808,6 +1116,7 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
     currentState.fundingTxId = event.fundingTxId;
     currentState.fundingOutputIndex = event.fundingOutputIndex;
     currentState.fundingTxHex = event.fundingTxHex;
+    currentState.fundingInputSats = event.fundingInputSats;
     currentState.refundTxHex = event.refundTxHex;
     currentState.refundClientSigHex = event.clientSignatureHex;
     currentState.version = event.version;
@@ -817,12 +1126,35 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
   void _applyRefundCountersigned(RefundCountersignedEvent event) {
     currentState.status = ChannelStatus.refundSigned;
     currentState.refundServerSigHex = event.serverSignatureHex;
+    currentState.signedRefundTxHex =
+        event.signedRefundTxHex ?? currentState.signedRefundTxHex;
+    currentState.version = event.version;
+    currentState.lastModified = event.timestamp;
+  }
+
+  void _applyFundingBroadcastStarted(FundingBroadcastStartedEvent event) {
+    currentState.fundingBroadcastAttempts = event.attempt;
+    currentState.fundingBroadcastInFlight = true;
+    currentState.fundingBroadcastError = null;
+    currentState.version = event.version;
+    currentState.lastModified = event.timestamp;
+  }
+
+  void _applyFundingBroadcastFailed(FundingBroadcastFailedEvent event) {
+    currentState.fundingBroadcastInFlight = false;
+    currentState.fundingBroadcastError = event.error;
+    currentState.fundingRecordedInWallet =
+        currentState.fundingRecordedInWallet || event.walletRecorded;
     currentState.version = event.version;
     currentState.lastModified = event.timestamp;
   }
 
   void _applyChannelOpened(ChannelOpenedEvent event) {
     currentState.status = ChannelStatus.open;
+    currentState.fundingBroadcastInFlight = false;
+    if (currentState.role == ChannelRole.client) {
+      currentState.fundingRecordedInWallet = true;
+    }
     currentState.fundingTxId = event.fundingTxId;
     currentState.fundingOutputIndex = event.fundingOutputIndex;
     currentState.fundingTxHex = event.fundingTxHex;

@@ -565,7 +565,7 @@ class LibSpiffyActorSystem {
     EventRegistry.register<InvoiceCancelledEvent>(InvoiceCancelledEvent.stableTypeName, InvoiceCancelledEvent.fromMap,
         aliases: const ['InvoiceCancelledEvent']);
 
-    // PAYMENT CHANNEL EVENTS (13)
+    // PAYMENT CHANNEL EVENTS (15)
     EventRegistry.register<ChannelRequestedEvent>(ChannelRequestedEvent.stableTypeName, ChannelRequestedEvent.fromMap,
         aliases: const ['ChannelRequestedEvent']);
     EventRegistry.register<ChannelAcceptedEvent>(ChannelAcceptedEvent.stableTypeName, ChannelAcceptedEvent.fromMap,
@@ -578,6 +578,10 @@ class LibSpiffyActorSystem {
         aliases: const ['RefundBuiltEvent']);
     EventRegistry.register<RefundCountersignedEvent>(RefundCountersignedEvent.stableTypeName, RefundCountersignedEvent.fromMap,
         aliases: const ['RefundCountersignedEvent']);
+    EventRegistry.register<FundingBroadcastStartedEvent>(FundingBroadcastStartedEvent.stableTypeName, FundingBroadcastStartedEvent.fromMap,
+        aliases: const ['FundingBroadcastStartedEvent']);
+    EventRegistry.register<FundingBroadcastFailedEvent>(FundingBroadcastFailedEvent.stableTypeName, FundingBroadcastFailedEvent.fromMap,
+        aliases: const ['FundingBroadcastFailedEvent']);
     EventRegistry.register<ChannelOpenedEvent>(ChannelOpenedEvent.stableTypeName, ChannelOpenedEvent.fromMap,
         aliases: const ['ChannelOpenedEvent']);
     EventRegistry.register<PaymentRecordedEvent>(PaymentRecordedEvent.stableTypeName, PaymentRecordedEvent.fromMap,
@@ -776,6 +780,9 @@ class LibSpiffyActorSystem {
       eventStore: _eventStore,
       cryptoService: _cryptoService,
       channelProjection: _channelProjectionRef!,
+      // Funding broadcast and wallet bookkeeping (libspiffy-9f7).
+      arcActor: _arcActor!,
+      walletProjection: _walletProjectionRef!,
     ));
     
     // Spawn ImportActor if blockchain data source is provided

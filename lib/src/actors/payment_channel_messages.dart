@@ -156,6 +156,17 @@ class BuildRefundTransactionMessage extends LocalMessage {
   final String serverAddressB58;
   final int lockTimeUnix;
 
+  /// The signed funding transaction the refund spends. Required on the
+  /// client side of a channel: the client journals it with the refund
+  /// (libspiffy-b83) and broadcasts it once the refund is countersigned
+  /// (libspiffy-9f7). A server-side build, which only returns the refund,
+  /// ignores it.
+  final String? fundingTxHex;
+
+  /// Total value of the funding transaction's inputs (what the wallet
+  /// spent), so the recorded funding transaction carries its fee.
+  final int? fundingInputSats;
+
   BuildRefundTransactionMessage({
     required this.channelId,
     required this.walletId,
@@ -167,6 +178,8 @@ class BuildRefundTransactionMessage extends LocalMessage {
     required this.serverPubKeyHex,
     required this.serverAddressB58,
     required this.lockTimeUnix,
+    this.fundingTxHex,
+    this.fundingInputSats,
   }) : super(payload: null);
 
   @override
@@ -546,6 +559,18 @@ class FullChannelStateResponse extends LocalMessage {
   final String? serverAddressB58;
   final int? derivationIndex;
   final int? lockTimeUnix;
+
+  /// The fully signed refund transaction the client holds (null until the
+  /// server's signature is verified, and on the server side).
+  final String? signedRefundTxHex;
+
+  /// Total input value of the funding transaction, when known.
+  final int? fundingInputSats;
+
+  /// Whether the funding transaction is already recorded in the client
+  /// wallet by an earlier broadcast attempt.
+  final bool fundingRecordedInWallet;
+
   final bool success;
   final String? error;
 
@@ -567,6 +592,9 @@ class FullChannelStateResponse extends LocalMessage {
     this.serverAddressB58,
     this.derivationIndex,
     this.lockTimeUnix,
+    this.signedRefundTxHex,
+    this.fundingInputSats,
+    this.fundingRecordedInWallet = false,
     required this.success,
     this.error,
   }) : super(payload: null);

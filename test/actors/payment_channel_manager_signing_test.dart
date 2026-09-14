@@ -23,6 +23,7 @@ import 'package:libspiffy/src/actors/wallet_messages.dart';
 import 'package:libspiffy/src/core/wallet_commands.dart';
 import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 
+import 'channel_test_fixtures.dart';
 import 'in_memory_event_store.dart';
 
 const _walletId = 'server-wallet';
@@ -38,6 +39,7 @@ void main() {
   late PaymentChannelManagerActor manager;
   late ActorRef managerRef;
   late _StubWalletManager walletStub;
+  late InMemoryEventStore eventStore;
 
   late String clientPubKeyHex;
   late String clientAddressB58;
@@ -69,7 +71,7 @@ void main() {
     final walletRef = await actorSystem.spawn('wallet-manager', () => walletStub);
     manager = PaymentChannelManagerActor(
       walletManager: walletRef,
-      eventStore: InMemoryEventStore(),
+      eventStore: eventStore = InMemoryEventStore(),
       cryptoService: cryptoService,
       networkType: NetworkType.TEST,
       signingTimeout: const Duration(milliseconds: 300),
@@ -165,44 +167,14 @@ void main() {
       await spawn(_SignBehaviour.errorMap, asClient: true);
       const timeout = Duration(seconds: 10);
 
-      // Client side of a channel, driven to "open".
-      final initiated = await managerRef.ask<ChannelInitiatedResponse>(
-        InitiateChannelMessage(
-          channelId: _channelId,
-          walletId: _walletId,
-          clientPeerId: 'client-peer',
-          serverPeerId: 'server-peer',
-          fundingAmountSats: BigInt.from(100000),
-          lockTimeDurationSeconds: 86400,
-        ),
-        timeout,
-      );
-      expect(initiated.success, isTrue, reason: initiated.error);
-      // Fire-and-forget (no reply); the mailbox runs it before the next ask.
-      managerRef.tell(RecordServerAcceptanceMessage(
-        channelId: _channelId,
-        serverPubKeyHex: serverPubKeyHex,
-        serverAddressB58: serverAddressB58,
-      ));
-      final refundRecorded =
-          await managerRef.ask<RefundSignatureRecordedResponse>(
-        RecordRefundSignatureMessage(
-          channelId: _channelId,
-          serverSignatureHex: '30' * 36,
-        ),
-        timeout,
-      );
-      expect(refundRecorded.success, isTrue, reason: refundRecorded.error);
-      final opened = await managerRef.ask<ChannelOpenedResponse>(
-        OpenChannelMessage(
-          channelId: _channelId,
-          fundingTxId: 'b' * 64,
-          fundingOutputIndex: 0,
-          fundingTxHex: '',
-        ),
-        timeout,
-      );
-      expect(opened.success, isTrue, reason: opened.error);
+      // Client side of an open channel, as the client flow journals it
+      // (verified refund, funding broadcast; libspiffy-b83, 9f7).
+      final fixture = await ChannelRefundFixture.create(channelId: _channelId);
+      await eventStore.persistEvents('PaymentChannel_$_channelId',
+          fixture.openClientJournal(walletId: _walletId), 0);
+      final state = await managerRef.ask<ChannelStateResponse>(
+          QueryChannelStateMessage(channelId: _channelId), timeout);
+      expect(state.status, 'open', reason: state.error);
 
       final paid = await managerRef.ask<PaymentRecordedResponse>(
         RecordPaymentMessage(

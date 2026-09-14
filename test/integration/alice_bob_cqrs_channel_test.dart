@@ -10,10 +10,12 @@
 /// Flow:
 /// 1. Alice initiates channel (generates client keys)
 /// 2. Bob accepts channel (generates server keys)
-/// 3. Bob builds refund transaction
-/// 4. Bob signs refund transaction (server signature)
-/// 5. Alice records Bob's refund signature
-/// 6. Alice opens channel (funding TX broadcast simulation)
+/// 3. Alice records the acceptance and builds (and journals) the refund
+///    transaction with its funding transaction (libspiffy-b83)
+/// 4. Bob signs Alice's refund transaction (server signature)
+/// 5. Alice records Bob's refund signature (verified against the refund)
+/// 6. Alice opens channel: the funding transaction is broadcast (to a
+///    recording ARC stand-in) before it opens (libspiffy-9f7)
 /// 7. Both aggregates have complete, event-sourced channel state
 
 import 'dart:async';
@@ -31,6 +33,7 @@ import 'package:libspiffy/src/actors/wallet_messages.dart';
 import 'package:libspiffy/src/actors/wallet_manager_actor.dart';
 import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 import 'package:libspiffy/src/storage/in_memory_secure_storage.dart';
+import '../actors/channel_test_fixtures.dart';
 import 'isar_test_helper.dart';
 
 void main() {
@@ -43,6 +46,7 @@ void main() {
     late InMemorySecureStorage aliceSecureStorage;
     late ActorRef aliceWalletManager;
     late ActorRef aliceChannelManager;
+    late RecordingArcActor aliceArc;
     late String aliceWalletId;
 
     // Bob's system
@@ -99,6 +103,12 @@ void main() {
         ),
       );
 
+      // Alice broadcasts her funding transaction through ARC (a recording
+      // stand-in here).
+      aliceArc = RecordingArcActor();
+      final aliceArcRef =
+          await aliceActorSystem.spawn('alice-arc', () => aliceArc);
+
       // Spawn Alice's ChannelManager
       aliceChannelManager = await aliceActorSystem.spawn(
         'alice-channel-manager',
@@ -107,6 +117,7 @@ void main() {
           eventStore: aliceEventStore,
           cryptoService: cryptoService,
           networkType: NetworkType.TEST,
+          arcActor: aliceArcRef,
         ),
       );
 
@@ -288,17 +299,40 @@ void main() {
       expect(bobEvents.any((e) => e.runtimeType.toString() == 'ChannelAcceptedEvent'), isTrue);
       print('  ✓ ChannelAcceptedEvent persisted');
 
-      print('\n=== STEP 3: Bob builds refund transaction ===');
+      print('\n=== STEP 3: Alice builds and journals the refund transaction ===');
 
-      // Mock funding transaction ID (64 hex chars)
-      final mockFundingTxId = 'a' * 64;
+      // The acceptance reaches Alice first (as ChannelP2PAdapter delivers
+      // it): only the client of an accepted channel records its refund and
+      // the refund signature (audit M10, libspiffy-b83).
+      final aliceAcceptanceProbe = await aliceActorSystem.createProbe();
+      aliceChannelManager.tell(
+        RecordServerAcceptanceMessage(
+          channelId: channelId,
+          serverPubKeyHex: bobAcceptResponse.serverPubKeyHex,
+          serverAddressB58: bobAcceptResponse.serverAddressB58,
+        ),
+        sender: aliceAcceptanceProbe.ref,
+      );
+      expect(
+          (await aliceAcceptanceProbe.expectMsgType<ServerAcceptanceRecordedResponse>(
+            timeout: Duration(seconds: 10),
+          ))
+              .success,
+          isTrue);
 
-      final bobRefundProbe = await bobActorSystem.createProbe();
-      bobChannelManager.tell(
+      // Alice's funding transaction (built by her wallet in the full flow).
+      final funding = channelFundingTx(
+        clientPubKeyHex: aliceInitiateResponse.clientPubKeyHex,
+        serverPubKeyHex: bobAcceptResponse.serverPubKeyHex,
+        amountSats: fundingAmountSats,
+      );
+
+      final aliceRefundProbe = await aliceActorSystem.createProbe();
+      aliceChannelManager.tell(
         BuildRefundTransactionMessage(
           channelId: channelId,
-          walletId: bobWalletId,
-          fundingTxId: mockFundingTxId,
+          walletId: aliceWalletId,
+          fundingTxId: funding.txid,
           fundingOutputIndex: 0,
           fundingAmountSats: fundingAmountSats,
           clientPubKeyHex: aliceInitiateResponse.clientPubKeyHex,
@@ -306,20 +340,20 @@ void main() {
           serverPubKeyHex: bobAcceptResponse.serverPubKeyHex,
           serverAddressB58: bobAcceptResponse.serverAddressB58,
           lockTimeUnix: lockTimeUnix,
+          fundingTxHex: funding.hex,
         ),
-        sender: bobRefundProbe.ref,
+        sender: aliceRefundProbe.ref,
       );
 
-      final bobRefundResponse = await bobRefundProbe.expectMsgType<RefundTransactionBuiltResponse>(
+      final aliceRefundResponse = await aliceRefundProbe.expectMsgType<RefundTransactionBuiltResponse>(
         timeout: Duration(seconds: 10),
       );
 
-      expect(bobRefundResponse.success, isTrue,
-          reason: bobRefundResponse.error ?? 'Refund TX building should succeed');
-      expect(bobRefundResponse.refundTxHex, isNotEmpty);
+      expect(aliceRefundResponse.success, isTrue,
+          reason: aliceRefundResponse.error ?? 'Refund TX building should succeed');
+      expect(aliceRefundResponse.refundTxHex, isNotEmpty);
 
-      print('✓ Bob built refund TX');
-      print('  Refund TX hex: ${bobRefundResponse.refundTxHex.substring(0, 40)}...');
+      print('✓ Alice built and journaled refund TX');
 
       print('\n=== STEP 4: Bob signs refund transaction (server signature) ===');
 
@@ -328,7 +362,7 @@ void main() {
         SignRefundTransactionMessage(
           channelId: channelId,
           walletId: bobWalletId,
-          refundTxHex: bobRefundResponse.refundTxHex,
+          refundTxHex: aliceRefundResponse.refundTxHex,
           clientPubKeyHex: aliceInitiateResponse.clientPubKeyHex,
           serverPubKeyHex: bobAcceptResponse.serverPubKeyHex,
           serverAddressB58: bobAcceptResponse.serverAddressB58,
@@ -360,14 +394,6 @@ void main() {
 
       // In real scenario, Bob would send serverSignatureHex to Alice via P2P
       // Alice's P2P layer (OverNode) would then call LibSpiffy's API to record it.
-      // The acceptance reaches Alice first (as ChannelP2PAdapter delivers it):
-      // only the client of an accepted channel may record the refund
-      // signature (audit M10).
-      aliceChannelManager.tell(RecordServerAcceptanceMessage(
-        channelId: channelId,
-        serverPubKeyHex: bobAcceptResponse.serverPubKeyHex,
-        serverAddressB58: bobAcceptResponse.serverAddressB58,
-      ));
 
       final aliceRecordProbe = await aliceActorSystem.createProbe();
       aliceChannelManager.tell(
@@ -395,18 +421,16 @@ void main() {
 
       print('\n=== STEP 6: Alice opens channel (funding TX broadcast simulation) ===');
 
-      // Now that Alice has the refund signature, she can safely broadcast the funding TX
-      // and open the channel
-
-      final mockFundingTxHex = '01000000' + ('00' * 100); // Mock transaction hex
+      // Now that Alice holds the verified refund, she broadcasts the funding
+      // TX and opens the channel
 
       final aliceOpenProbe = await aliceActorSystem.createProbe();
       aliceChannelManager.tell(
         OpenChannelMessage(
           channelId: channelId,
-          fundingTxId: mockFundingTxId,
+          fundingTxId: funding.txid,
           fundingOutputIndex: 0,
-          fundingTxHex: mockFundingTxHex,
+          fundingTxHex: funding.hex,
         ),
         sender: aliceOpenProbe.ref,
       );
@@ -418,8 +442,11 @@ void main() {
       expect(aliceOpenResponse.success, isTrue,
           reason: aliceOpenResponse.error ?? 'Channel opening should succeed now that refund is signed');
 
+      expect(aliceArc.broadcasts.map((b) => b.txHex), [funding.hex],
+          reason: 'the funding transaction is broadcast once, before open');
+
       print('✓ Alice opened channel: $channelId');
-      print('  Funding TX ID: $mockFundingTxId');
+      print('  Funding TX ID: ${funding.txid}');
 
       // Verify ChannelOpenedEvent was persisted
       await Future.delayed(Duration(milliseconds: 500));
@@ -433,9 +460,14 @@ void main() {
       for (final event in aliceEventsAfterOpen) {
         print('  - ${event.runtimeType}');
       }
-      expect(aliceEventsAfterOpen.length, equals(4),
-          reason: 'Alice should have 4 events: Requested, ServerAcceptanceRecorded, '
-              'RefundCountersigned, Opened');
+      expect(aliceEventsAfterOpen.map((e) => e.runtimeType.toString()), [
+        'ChannelRequestedEvent',
+        'ServerAcceptanceRecordedEvent',
+        'RefundBuiltEvent',
+        'RefundCountersignedEvent',
+        'FundingBroadcastStartedEvent',
+        'ChannelOpenedEvent',
+      ]);
 
       print('\nBob\'s event history:');
       for (final event in bobEventsAfterSign) {

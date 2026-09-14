@@ -22,6 +22,7 @@ import 'package:libspiffy/src/core/channel_events.dart';
 import 'package:libspiffy/src/core/payment_channel_aggregate.dart';
 import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 
+import '../actors/channel_test_fixtures.dart';
 import '../actors/in_memory_event_store.dart';
 
 const _channelId = 'channel-guards';
@@ -228,12 +229,17 @@ void main() {
       expect(journalLength(), 3);
     });
 
-    test('is accepted by the client of an accepted channel', () async {
-      final ref = await spawn([
-        _requested(lockTimeUnix: _nowUnix() + 86400),
-        _serverAcceptanceRecorded(),
-      ]);
-      final reply = await ref.ask<dynamic>(provide(), _ask);
+    test('is accepted by the client of an accepted channel whose refund the '
+        'signature completes', () async {
+      // The signature must complete the journaled refund (libspiffy-b83), so
+      // this channel has real keys and a real refund.
+      final fixture = await ChannelRefundFixture.create(channelId: _channelId);
+      final ref = await spawn(fixture.clientJournalWithRefund());
+      final reply = await ref.ask<dynamic>(
+          ProvideRefundSignatureCommand(
+              channelId: _channelId,
+              serverSignatureHex: fixture.serverSignatureHex),
+          _ask);
       expect(reply, isA<List>(), reason: '$reply');
       expect((reply as List).single, isA<RefundCountersignedEvent>());
     });

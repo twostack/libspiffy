@@ -22,6 +22,8 @@ import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 import 'package:libspiffy/src/storage/secure_storage.dart';
 import 'package:libspiffy/src/storage/in_memory_secure_storage.dart';
 
+import 'channel_test_fixtures.dart';
+
 void main() {
   late Isar isar;
   late TestActorSystem actorSystem;
@@ -288,11 +290,17 @@ void main() {
       );
       expect(acceptResponse.success, isTrue);
       
-      // Step 3: Build refund transaction (client side)
+      // Step 3: Build refund transaction (client side). The client journals
+      // it with the funding transaction it spends (libspiffy-b83).
+      final funding = channelFundingTx(
+        clientPubKeyHex: initiateResponse.clientPubKeyHex,
+        serverPubKeyHex: acceptResponse.serverPubKeyHex,
+        amountSats: BigInt.from(1000000),
+      );
       channelManagerRef.tell(BuildRefundTransactionMessage(
         channelId: channelId,
         walletId: walletId,
-        fundingTxId: 'a' * 64, // Valid 64-character hex string (mock TX ID)
+        fundingTxId: funding.txid,
         fundingOutputIndex: 0,
         fundingAmountSats: BigInt.from(1000000),
         clientPubKeyHex: initiateResponse.clientPubKeyHex,
@@ -300,6 +308,7 @@ void main() {
         serverPubKeyHex: acceptResponse.serverPubKeyHex,
         serverAddressB58: acceptResponse.serverAddressB58,
         lockTimeUnix: initiateResponse.lockTimeUnix,
+        fundingTxHex: funding.hex,
       ), sender: probe.ref);
       
       final refundBuiltResponse = await probe.expectMsgType<RefundTransactionBuiltResponse>(
@@ -434,12 +443,26 @@ void main() {
       expect(acceptResponse.success, isTrue);
       print('✓ Server accepted channel (server side)');
       
-      // Step 3: Client builds refund transaction (could be client-side)
+      // Step 3: Client records the acceptance and builds (and journals) the
+      // refund transaction with the funding transaction (libspiffy-b83).
       print('Step 3: Building refund transaction...');
+      channelManagerRef.tell(RecordServerAcceptanceMessage(
+        channelId: clientChannelId,
+        serverPubKeyHex: acceptResponse.serverPubKeyHex,
+        serverAddressB58: acceptResponse.serverAddressB58,
+      ), sender: clientProbe.ref);
+      expect((await clientProbe.expectMsgType<ServerAcceptanceRecordedResponse>(
+        timeout: Duration(seconds: 10),
+      )).success, isTrue);
+      final funding = channelFundingTx(
+        clientPubKeyHex: initiateResponse.clientPubKeyHex,
+        serverPubKeyHex: acceptResponse.serverPubKeyHex,
+        amountSats: BigInt.from(100000),
+      );
       channelManagerRef.tell(BuildRefundTransactionMessage(
         channelId: clientChannelId,
         walletId: 'wallet-test',
-        fundingTxId: 'a' * 64,
+        fundingTxId: funding.txid,
         fundingOutputIndex: 0,
         fundingAmountSats: BigInt.from(100000),
         clientPubKeyHex: initiateResponse.clientPubKeyHex,
@@ -447,6 +470,7 @@ void main() {
         serverPubKeyHex: acceptResponse.serverPubKeyHex,
         serverAddressB58: acceptResponse.serverAddressB58,
         lockTimeUnix: initiateResponse.lockTimeUnix,
+        fundingTxHex: funding.hex,
       ), sender: clientProbe.ref);
       
       final refundBuiltResponse = await clientProbe.expectMsgType<RefundTransactionBuiltResponse>(
@@ -507,9 +531,9 @@ void main() {
       print('\nStep 6: Attempting to open channel without client recording signature...');
       channelManagerRef.tell(OpenChannelMessage(
         channelId: clientChannelId,
-        fundingTxId: 'a' * 64,
+        fundingTxId: funding.txid,
         fundingOutputIndex: 0,
-        fundingTxHex: '01000000' + '00' * 100,
+        fundingTxHex: funding.hex,
       ), sender: clientProbe.ref);
       
       final openResponse = await clientProbe.expectMsgType<ChannelOpenedResponse>(
@@ -690,12 +714,26 @@ void main() {
         expect(acceptResponse.success, isTrue);
         print('✓ Server accepted: ChannelAcceptedEvent emitted');
         
-        // Step 3: Client builds refund transaction
+        // Step 3: Client records the acceptance and builds (and journals) the
+        // refund transaction with the funding transaction (libspiffy-b83)
         print('\nStep 3: Client builds refund transaction...');
+        clientChannelManager.tell(RecordServerAcceptanceMessage(
+          channelId: channelId,
+          serverPubKeyHex: acceptResponse.serverPubKeyHex,
+          serverAddressB58: acceptResponse.serverAddressB58,
+        ), sender: clientProbe.ref);
+        expect((await clientProbe.expectMsgType<ServerAcceptanceRecordedResponse>(
+          timeout: Duration(seconds: 10),
+        )).success, isTrue);
+        final funding = channelFundingTx(
+          clientPubKeyHex: initiateResponse.clientPubKeyHex,
+          serverPubKeyHex: acceptResponse.serverPubKeyHex,
+          amountSats: BigInt.from(100000),
+        );
         clientChannelManager.tell(BuildRefundTransactionMessage(
           channelId: channelId,
           walletId: 'client-wallet',
-          fundingTxId: 'a' * 64,
+          fundingTxId: funding.txid,
           fundingOutputIndex: 0,
           fundingAmountSats: BigInt.from(100000),
           clientPubKeyHex: initiateResponse.clientPubKeyHex,
@@ -703,6 +741,7 @@ void main() {
           serverPubKeyHex: acceptResponse.serverPubKeyHex,
           serverAddressB58: acceptResponse.serverAddressB58,
           lockTimeUnix: initiateResponse.lockTimeUnix,
+          fundingTxHex: funding.hex,
         ), sender: clientProbe.ref);
         
         final refundBuiltResponse = await clientProbe.expectMsgType<RefundTransactionBuiltResponse>(
@@ -745,9 +784,9 @@ void main() {
         
         clientChannelManager.tell(OpenChannelMessage(
           channelId: channelId,
-          fundingTxId: 'a' * 64,
+          fundingTxId: funding.txid,
           fundingOutputIndex: 0,
-          fundingTxHex: '01000000' + '00' * 100,
+          fundingTxHex: funding.hex,
         ), sender: clientProbe.ref);
         
         final openResponse = await clientProbe.expectMsgType<ChannelOpenedResponse>(

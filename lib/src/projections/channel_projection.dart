@@ -45,6 +45,8 @@ class ChannelProjection extends Projection<void> {
         ServerAcceptanceRecordedEvent,
         RefundBuiltEvent,
         RefundCountersignedEvent,
+        FundingBroadcastStartedEvent,
+        FundingBroadcastFailedEvent,
         ChannelOpenedEvent,
         PaymentRecordedEvent,
         PaymentAcknowledgedEvent,
@@ -103,6 +105,12 @@ class ChannelProjection extends Projection<void> {
         return true;
       case RefundCountersignedEvent:
         await _handleRefundCountersigned(event as RefundCountersignedEvent);
+        return true;
+      case FundingBroadcastStartedEvent:
+        await _handleFundingBroadcastStarted(event as FundingBroadcastStartedEvent);
+        return true;
+      case FundingBroadcastFailedEvent:
+        await _handleFundingBroadcastFailed(event as FundingBroadcastFailedEvent);
         return true;
       case ChannelOpenedEvent:
         await _handleChannelOpened(event as ChannelOpenedEvent);
@@ -236,9 +244,41 @@ class ChannelProjection extends Projection<void> {
       return;
     }
 
+    // Client side: the stored refund becomes the fully signed one the
+    // aggregate verified (libspiffy-b83). The unsigned template stays in the
+    // journal (RefundBuiltEvent) and is the signed transaction without its
+    // unlocking script.
     await _storage.storePaymentChannel(existing.copyWith(
       refundServerSigHex: event.serverSignatureHex,
+      refundTxHex: event.signedRefundTxHex,
       state: PaymentChannelState.opening, // ChannelStatus.refundSigned → opening
+    ));
+  }
+
+  Future<void> _handleFundingBroadcastStarted(
+      FundingBroadcastStartedEvent event) async {
+    final existing = await _storage.getPaymentChannel(event.channelId);
+    if (existing == null) {
+      return;
+    }
+
+    await _storage.storePaymentChannel(existing.copyWith(
+      state: PaymentChannelState.funding,
+      clearErrorMessage: true,
+    ));
+  }
+
+  /// The channel stays unopened, awaiting funding, with the broadcast error.
+  Future<void> _handleFundingBroadcastFailed(
+      FundingBroadcastFailedEvent event) async {
+    final existing = await _storage.getPaymentChannel(event.channelId);
+    if (existing == null) {
+      return;
+    }
+
+    await _storage.storePaymentChannel(existing.copyWith(
+      state: PaymentChannelState.funding,
+      errorMessage: 'Funding broadcast failed: ${event.error}',
     ));
   }
 
@@ -250,6 +290,7 @@ class ChannelProjection extends Projection<void> {
 
     await _storage.storePaymentChannel(existing.copyWith(
       state: PaymentChannelState.open,
+      clearErrorMessage: true,
       fundingTxId: event.fundingTxId,
       fundingOutputIndex: event.fundingOutputIndex,
       fundingTxHex: event.fundingTxHex,

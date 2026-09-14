@@ -19,6 +19,7 @@ import '../core/payment_channel_aggregate.dart';
 import '../core/channel_commands.dart';
 import '../core/channel_events.dart';
 import '../core/wallet_commands.dart';
+import '../core/wallet_events.dart' show TransactionRecordedEvent, UTXOSpentEvent;
 import '../services/crypto_service.dart';
 import '../services/payment_channel_builder.dart';
 import 'payment_channel_messages.dart';
@@ -51,6 +52,25 @@ class PaymentChannelManagerActor extends Actor {
   /// (overnode_v2-8gh).
   final ActorRef? _channelProjection;
 
+  /// ARCActor that broadcasts the client's funding transaction
+  /// (libspiffy-9f7). Without one a client channel cannot be funded, so it
+  /// cannot open.
+  final ActorRef? _arcActor;
+
+  /// Wallet ProjectionActor: when supplied, the funding transaction's wallet
+  /// bookkeeping is awaited in the read model before the channel opens.
+  final ActorRef? _walletProjection;
+
+  /// How long a funding broadcast may take before it counts as failed.
+  final Duration _broadcastTimeout;
+
+  /// How long the channel's 2-of-2 output stays reserved in the client
+  /// wallet: it is never spendable by the wallet alone (it needs the server
+  /// signature, or the refund after the lockTime).
+  static const Duration channelOutputReservation = Duration(days: 365 * 100);
+
+  static const Duration _walletPersistTimeout = Duration(seconds: 10);
+
   /// Map of active channel aggregates: channelId -> ActorRef
   final Map<String, ActorRef> _channelAggregates = {};
 
@@ -73,13 +93,19 @@ class PaymentChannelManagerActor extends Actor {
     dartsv.NetworkType networkType = dartsv.NetworkType.TEST,
     void Function(ChannelEvent)? eventBroadcaster,
     ActorRef? channelProjection,
+    ActorRef? arcActor,
+    ActorRef? walletProjection,
     Duration signingTimeout = const Duration(seconds: 30),
+    Duration broadcastTimeout = const Duration(seconds: 45),
   })  : _walletManager = walletManager,
         _eventStore = eventStore,
         _cryptoService = cryptoService,
         _networkType = networkType,
         _eventBroadcaster = eventBroadcaster,
         _channelProjection = channelProjection,
+        _arcActor = arcActor,
+        _walletProjection = walletProjection,
+        _broadcastTimeout = broadcastTimeout,
         _signingTimeout = signingTimeout {
     _channelBuilder = PaymentChannelBuilder(cryptoService: cryptoService);
   }
@@ -112,23 +138,49 @@ class PaymentChannelManagerActor extends Actor {
   Future<MultisigTransactionSignedResponse> _requestMultisigSignature(
     String walletId,
     SignMultisigTransactionCommand command,
-  ) async {
-    final completer = Completer<MultisigTransactionSignedResponse>();
+  ) =>
+      _askWallet<MultisigTransactionSignedResponse>(
+          walletId, command, 'Signing ${command.transactionId}');
+
+  /// Sends [command] to WalletManager and waits for its reply of type [T]
+  /// (see [_request]). WalletManager's `{'error': ...}` map fails the call;
+  /// silence times out after the signing timeout ('[what] timed out').
+  Future<T> _askWallet<T>(
+    String walletId,
+    WalletCommand command,
+    String what,
+  ) async =>
+      await _request(
+        _walletManager,
+        WalletCommandMessage(walletId, command),
+        accept: (reply) => reply is T,
+        what: what,
+        timeout: _signingTimeout,
+      ) as T;
+
+  /// Tells [message] to [target] and waits on a dedicated receiver actor for
+  /// the first reply [accept] takes. Replies of wallet and ARC actors are
+  /// not all LocalMessages, so `ask` cannot carry them. An `{'error': ...}`
+  /// map fails the call; silence times out ('[what] timed out').
+  Future<dynamic> _request(
+    ActorRef target,
+    dynamic message, {
+    required bool Function(dynamic reply) accept,
+    required String what,
+    required Duration timeout,
+  }) async {
+    final completer = Completer<dynamic>();
     final receiver = await context.system.spawn(
-      'channel-sign-${++_signRequestSeq}-${DateTime.now().microsecondsSinceEpoch}',
-      () => _MultisigSignatureReceiver(completer),
+      'channel-request-${++_signRequestSeq}-${DateTime.now().microsecondsSinceEpoch}',
+      () => _ReplyReceiver(completer, accept),
     );
     try {
-      _walletManager.tell(
-        WalletCommandMessage(walletId, command),
-        sender: receiver,
-      );
+      target.tell(message, sender: receiver);
       return await completer.future.timeout(
-        _signingTimeout,
+        timeout,
         onTimeout: () => throw TimeoutException(
-          'Signing ${command.transactionId} timed out after '
-          '${_signingTimeout.inMilliseconds} ms',
-          _signingTimeout,
+          '$what timed out after ${timeout.inMilliseconds} ms',
+          timeout,
         ),
       );
     } finally {
@@ -332,11 +384,7 @@ class PaymentChannelManagerActor extends Actor {
       // Step 2: Get or spawn channel aggregate
       final aggregateRef = await _getOrSpawnChannelAggregate(msg.channelId);
       
-      // Step 3: Calculate lock time
-      final lockTimeUnix = (DateTime.now().millisecondsSinceEpoch ~/ 1000) +
-          msg.lockTimeDurationSeconds;
-      
-      // Step 4: Send RequestChannelCommand with pre-computed keys
+      // Step 3: Send RequestChannelCommand with pre-computed keys
       final requestCmd = RequestChannelCommand(
         channelId: msg.channelId,
         walletId: msg.walletId,
@@ -355,15 +403,19 @@ class PaymentChannelManagerActor extends Actor {
 
       // Broadcast events to external subscribers (P2P adapter)
       _broadcastEvents(response);
-      
-      
+
+      // The lock time is the one the aggregate journaled: computing it here
+      // as well could differ by a second, and a refund built with that value
+      // is refused (its nLockTime must be the channel's).
+      final requested = response.whereType<ChannelRequestedEvent>().single;
+
       // Send success response
       originalSender?.tell(ChannelInitiatedResponse(
         channelId: msg.channelId,
         clientPubKeyHex: addressResponse.publicKeyHex!,
         clientAddressB58: addressResponse.address,
         derivationIndex: addressResponse.derivationIndex,
-        lockTimeUnix: lockTimeUnix,
+        lockTimeUnix: requested.lockTimeUnix,
         success: true,
       ));
       
@@ -515,8 +567,8 @@ class PaymentChannelManagerActor extends Actor {
     
     try {
       // Step 1: The channel must exist (loaded, or recoverable from its journal)
-      await _channelAggregate(msg.channelId);
-      
+      final aggregateRef = await _channelAggregate(msg.channelId);
+
       // Step 2: Build the refund transaction using PaymentChannelBuilder
       final builder = PaymentChannelBuilder(
         cryptoService: _cryptoService,
@@ -539,10 +591,16 @@ class PaymentChannelManagerActor extends Actor {
       );
       
       
-      // Step 3: Send RequestRefundSignatureCommand to aggregate
-      // Note: We don't have the server signature yet - that comes from P2P
-      // For now, we just return the unsigned refund TX
-      
+      // Step 3 (client): sign the refund with the channel key and journal it
+      // with the funding transaction, so the countersigned refund can be
+      // completed, verified and kept (libspiffy-b83). A server-side build
+      // only returns the refund.
+      final state = _stateOrThrow(await aggregateRef
+          .ask(ChannelStateQuery(channelId: msg.channelId)));
+      if (state.role == 'client') {
+        await _journalClientRefund(msg, aggregateRef, state, refundTxResult);
+      }
+
       originalSender?.tell(RefundTransactionBuiltResponse(
         channelId: msg.channelId,
         refundTxHex: refundTxResult.transactionHex,
@@ -558,6 +616,55 @@ class PaymentChannelManagerActor extends Actor {
         error: e.toString(),
       ));
     }
+  }
+
+  /// Signs the client's refund with the channel key and journals it
+  /// ([RecordRefundBuiltCommand]) with the funding transaction it spends.
+  Future<void> _journalClientRefund(
+    BuildRefundTransactionMessage msg,
+    ActorRef aggregateRef,
+    FullChannelStateResponse state,
+    ChannelTransactionResult refund,
+  ) async {
+    final fundingTxHex = msg.fundingTxHex;
+    if (fundingTxHex == null || fundingTxHex.isEmpty) {
+      throw StateError('The client refund of channel ${msg.channelId} needs '
+          'the signed funding transaction (fundingTxHex)');
+    }
+    final derivationIndex = state.derivationIndex;
+    if (derivationIndex == null) {
+      throw StateError('Channel ${msg.channelId} has no client key index');
+    }
+    final signed = await _requestMultisigSignature(
+      state.walletId,
+      SignMultisigTransactionCommand(
+        walletId: state.walletId,
+        transactionId: 'client-refund-${msg.channelId}',
+        rawTransaction: refund.transactionHex,
+        derivationIndex: derivationIndex,
+        inputIndex: 0,
+        prevOutValue: msg.fundingAmountSats.toInt(),
+        redeemScriptHex: refund.multisigScript!.toHex(),
+        sighashType: 0x41, // SIGHASH_ALL | SIGHASH_FORKID
+      ),
+    );
+    if (!signed.success) {
+      throw StateError('Signing the client refund failed: ${signed.error}');
+    }
+    final events = await _askAggregate(
+      msg.channelId,
+      aggregateRef,
+      RecordRefundBuiltCommand(
+        channelId: msg.channelId,
+        fundingTxId: msg.fundingTxId,
+        fundingOutputIndex: msg.fundingOutputIndex,
+        fundingTxHex: fundingTxHex,
+        refundTxHex: refund.transactionHex,
+        clientSignatureHex: signed.signatureHex,
+        fundingInputSats: msg.fundingInputSats,
+      ),
+    );
+    _broadcastEvents(events);
   }
 
   /// Sign refund transaction (server side, step 4)
@@ -859,6 +966,15 @@ class PaymentChannelManagerActor extends Actor {
     try {
       final aggregateRef = await _channelAggregate(msg.channelId);
 
+      // Client: the funding transaction reaches the network (and the wallet)
+      // before the channel is open, and only once the verified refund is
+      // journaled (libspiffy-9f7). A failure is journaled and rethrown.
+      final state = _stateOrThrow(await aggregateRef
+          .ask(ChannelStateQuery(channelId: msg.channelId)));
+      if (state.role == 'client') {
+        await _fundClientChannel(msg, aggregateRef, state);
+      }
+
       final openCmd = OpenChannelCommand(
         channelId: msg.channelId,
         fundingTxId: msg.fundingTxId,
@@ -914,6 +1030,213 @@ class PaymentChannelManagerActor extends Actor {
         success: false,
         error: e.toString(),
       ));
+    }
+  }
+
+  /// Broadcasts the client's funding transaction and records it in the
+  /// client wallet (libspiffy-9f7).
+  ///
+  /// Order: [StartFundingBroadcastCommand] is journaled first (the aggregate
+  /// refuses it unless the verified, fully signed refund of this funding
+  /// transaction is journaled); then the transaction is recorded in the
+  /// wallet (inputs kept reserved, change credited pending, the 2-of-2
+  /// output reserved for the channel); then ARC broadcasts it; then its
+  /// inputs are marked spent. Any failure journals
+  /// [RecordFundingBroadcastFailedCommand] and is rethrown, leaving the
+  /// channel unopened and its inputs reserved for a retry of the same
+  /// transaction.
+  Future<void> _fundClientChannel(
+    OpenChannelMessage msg,
+    ActorRef aggregateRef,
+    FullChannelStateResponse state,
+  ) async {
+    final started = await _askAggregate(
+      msg.channelId,
+      aggregateRef,
+      StartFundingBroadcastCommand(
+          channelId: msg.channelId, fundingTxId: msg.fundingTxId),
+    );
+    _broadcastEvents(started);
+
+    final fundingTxId = msg.fundingTxId;
+    final fundingTxHex = state.fundingTxHex!;
+    var walletRecorded = state.fundingRecordedInWallet;
+    try {
+      final arcActor = _arcActor;
+      if (arcActor == null) {
+        throw StateError('No transaction broadcaster (ARC actor) configured');
+      }
+      final funding = dartsv.Transaction.fromHex(fundingTxHex);
+      if (!walletRecorded) {
+        await _recordFundingInWallet(msg.channelId, state, funding);
+        walletRecorded = true;
+      }
+
+      final reply = await _request(
+        arcActor,
+        BroadcastTransactionMessage(state.walletId, fundingTxHex, fundingTxId),
+        accept: (r) => r is BroadcastSuccessMessage || r is BroadcastFailedMessage,
+        what: 'Broadcasting funding transaction $fundingTxId',
+        timeout: _broadcastTimeout,
+      );
+      if (reply is BroadcastFailedMessage) {
+        throw StateError('Funding broadcast failed: ${reply.error}');
+      }
+      if (reply is! BroadcastSuccessMessage) {
+        throw StateError('Funding broadcast failed: unexpected reply '
+            '${reply.runtimeType}');
+      }
+
+      await _spendFundingInputs(state.walletId, funding);
+    } catch (e, stackTrace) {
+      _log.warning('Funding channel ${msg.channelId} failed: $e', e, stackTrace);
+      final applied = _awaitChannelEvent((event) =>
+          event is FundingBroadcastFailedEvent &&
+          event.channelId == msg.channelId);
+      final failed = await _askAggregate(
+        msg.channelId,
+        aggregateRef,
+        RecordFundingBroadcastFailedCommand(
+          channelId: msg.channelId,
+          fundingTxId: fundingTxId,
+          error: e is StateError ? e.message : e.toString(),
+          walletRecorded: walletRecorded,
+        ),
+      );
+      _broadcastEvents(failed);
+      await applied;
+      rethrow;
+    }
+  }
+
+  /// Registers an awaiter on the channel projection (if any) for the first
+  /// applied event matching [predicate]; completes with null without one.
+  Future<dynamic> _awaitChannelEvent(bool Function(Event) predicate) =>
+      _channelProjection?.ask<dynamic>(
+        AwaitEventApplied(predicate, timeout: const Duration(seconds: 10)),
+        const Duration(seconds: 12),
+      ) ??
+      Future<dynamic>.value();
+
+  /// Records the funding transaction as an outgoing transaction of the
+  /// client wallet, with its inputs left reserved (they are marked spent
+  /// once ARC accepts the transaction), and reserves the channel's 2-of-2
+  /// output so it never counts as spendable wallet balance.
+  Future<void> _recordFundingInWallet(
+    String channelId,
+    FullChannelStateResponse state,
+    dartsv.Transaction funding,
+  ) async {
+    final walletId = state.walletId;
+    final txid = funding.id;
+    final channelVout = state.fundingOutputIndex ?? 0;
+    final totalOutput = funding.outputs
+        .fold<BigInt>(BigInt.zero, (sum, o) => sum + o.satoshis)
+        .toInt();
+    final totalInput = state.fundingInputSats ?? totalOutput;
+    var change = BigInt.zero;
+    for (var i = 0; i < funding.outputs.length; i++) {
+      if (i != channelVout) change += funding.outputs[i].satoshis;
+    }
+
+    final command = RecordOutgoingTransactionCommand(
+      walletId: walletId,
+      txid: txid,
+      rawHex: funding.serialize(),
+      totalInputSats: totalInput,
+      totalOutputSats: totalOutput,
+      fee: totalInput - totalOutput,
+      numInputs: funding.inputs.length,
+      numOutputs: funding.outputs.length,
+      txVersion: funding.version,
+      txLockTime: funding.nLockTime,
+      spentUtxoKeys: [
+        for (final input in funding.inputs)
+          '${input.prevTxnId}:${input.prevTxnOutputIndex}',
+      ],
+      recipientAddresses: ['channel:$channelId'],
+      paymentAmount: state.fundingAmountSats,
+      changeAddress: change > BigInt.zero ? state.clientAddressB58 : null,
+      changeAmount: change > BigInt.zero ? change : null,
+      // The inputs stay reserved by this transaction until ARC accepts it.
+      deferSpend: true,
+    );
+
+    final applied = _walletProjection?.ask<dynamic>(
+      AwaitEventApplied(
+        (e) => e is TransactionRecordedEvent && e.txid == txid,
+        timeout: _walletPersistTimeout,
+      ),
+      _walletPersistTimeout + const Duration(seconds: 2),
+    );
+    _walletManager.tell(WalletCommandMessage(walletId, command));
+    if (applied != null) {
+      final result = await applied;
+      if (result is AwaitFailed) {
+        throw StateError('Recording funding transaction $txid in wallet '
+            '$walletId failed: ${result.reason}');
+      }
+    }
+
+    // The wallet treats an output locked to one of its keys as its own; the
+    // channel output needs the server's signature too, so it is reserved
+    // for the channel instead of counting as spendable balance.
+    final utxoKey = '$txid:$channelVout';
+    final reserved = await _askWallet<UTXOReservedResponse>(
+      walletId,
+      ReserveUTXOCommand(
+        walletId: walletId,
+        utxoKey: utxoKey,
+        reservedByTxId: 'channel:$channelId',
+        reservationReason: 'Payment channel $channelId 2-of-2 funding output '
+            '(not spendable by this wallet alone)',
+        reservationDuration: channelOutputReservation,
+        priority: 1000,
+      ),
+      'Reserving channel output $utxoKey',
+    );
+    // A wallet that does not hold the output has nothing to reserve.
+    if (!reserved.success && !(reserved.error ?? '').contains('not found')) {
+      throw StateError('Reserving channel output $utxoKey failed: '
+          '${reserved.error}');
+    }
+  }
+
+  /// Marks the funding inputs spent by the broadcast funding transaction,
+  /// consuming their reservation, and waits for the wallet read model.
+  Future<void> _spendFundingInputs(
+      String walletId, dartsv.Transaction funding) async {
+    final txid = funding.id;
+    final waits = <Future<dynamic>>[];
+    for (final input in funding.inputs) {
+      final applied = _walletProjection?.ask<dynamic>(
+        AwaitEventApplied(
+          (e) =>
+              e is UTXOSpentEvent &&
+              e.txid == input.prevTxnId &&
+              e.vout == input.prevTxnOutputIndex,
+          timeout: _walletPersistTimeout,
+        ),
+        _walletPersistTimeout + const Duration(seconds: 2),
+      );
+      if (applied != null) waits.add(applied);
+      _walletManager.tell(WalletCommandMessage(
+        walletId,
+        SpendUTXOCommand(
+          walletId: walletId,
+          utxoKey: '${input.prevTxnId}:${input.prevTxnOutputIndex}',
+          spendingTxId: txid,
+          fee: BigInt.zero,
+        ),
+      ));
+    }
+    for (final result in await Future.wait(waits)) {
+      if (result is AwaitFailed) {
+        // The broadcast went through; the spend is also applied when ARC
+        // reports the transaction seen or mined.
+        _log.warning('Funding $txid: an input spend was not applied in the '
+            'wallet read model: ${result.reason}');
+      }
     }
   }
 
@@ -1341,16 +1664,18 @@ class PaymentChannelManagerActor extends Actor {
   }
 }
 
-/// Receives WalletManager's reply to one multisig signing request.
-class _MultisigSignatureReceiver extends Actor {
-  final Completer<MultisigTransactionSignedResponse> completer;
+/// Receives the reply to one request (see
+/// PaymentChannelManagerActor._request).
+class _ReplyReceiver extends Actor {
+  final Completer<dynamic> completer;
+  final bool Function(dynamic reply) accept;
 
-  _MultisigSignatureReceiver(this.completer);
+  _ReplyReceiver(this.completer, this.accept);
 
   @override
   Future<void> onMessage(dynamic message) async {
     if (completer.isCompleted) return;
-    if (message is MultisigTransactionSignedResponse) {
+    if (accept(message)) {
       completer.complete(message);
       return;
     }

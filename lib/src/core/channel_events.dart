@@ -298,7 +298,13 @@ class ServerAcceptanceRecordedEvent extends ChannelEvent {
 // REFUND SIGNING EVENTS
 // =============================================================================
 
-/// Refund transaction has been built (client side)
+/// Refund transaction has been built (client side).
+///
+/// Journals the unsigned refund template ([refundTxHex]), the client's own
+/// signature on it and the signed funding transaction it spends, after the
+/// aggregate checked that the funding output is the channel's 2-of-2 with
+/// the agreed amount and that the refund carries the channel lockTime
+/// (libspiffy-b83).
 class RefundBuiltEvent extends ChannelEvent {
   /// Journal identifier of this event type. Stored with every event and
   /// independent of the class name; never change it (audit 2026-09-14 M8).
@@ -313,6 +319,10 @@ class RefundBuiltEvent extends ChannelEvent {
   final String refundTxHex;
   final String clientSignatureHex;
 
+  /// Total value of the funding transaction's inputs, when known (null in
+  /// rows written before libspiffy-9f7).
+  final int? fundingInputSats;
+
   RefundBuiltEvent({
     required String channelId,
     required this.fundingTxId,
@@ -320,6 +330,7 @@ class RefundBuiltEvent extends ChannelEvent {
     required this.fundingTxHex,
     required this.refundTxHex,
     required this.clientSignatureHex,
+    this.fundingInputSats,
     String? eventId,
     DateTime? timestamp,
     int? version,
@@ -339,6 +350,7 @@ class RefundBuiltEvent extends ChannelEvent {
         'fundingTxHex': fundingTxHex,
         'refundTxHex': refundTxHex,
         'clientSignatureHex': clientSignatureHex,
+        'fundingInputSats': fundingInputSats,
       };
 
   factory RefundBuiltEvent.fromMap(Map<String, dynamic> map) {
@@ -349,6 +361,7 @@ class RefundBuiltEvent extends ChannelEvent {
       fundingTxHex: map['fundingTxHex'] as String,
       refundTxHex: map['refundTxHex'] as String,
       clientSignatureHex: map['clientSignatureHex'] as String,
+      fundingInputSats: map['fundingInputSats'] as int?,
       eventId: map['eventId'] as String?,
       timestamp: ChannelEvent._parseTimestamp(map['timestamp']),
       version: map['version'] as int?,
@@ -357,7 +370,13 @@ class RefundBuiltEvent extends ChannelEvent {
   }
 }
 
-/// Server has signed the refund transaction
+/// Server has signed the refund transaction.
+///
+/// On the server side it records the server's signature. On the client side
+/// it is journaled only once that signature verified, and carries the fully
+/// signed refund ([signedRefundTxHex]: template plus both signatures, checked
+/// by the script interpreter against the funding output) that lets the
+/// client recover its funds after the lockTime (libspiffy-b83).
 class RefundCountersignedEvent extends ChannelEvent {
   /// Journal identifier of this event type. Stored with every event and
   /// independent of the class name; never change it (audit 2026-09-14 M8).
@@ -368,9 +387,14 @@ class RefundCountersignedEvent extends ChannelEvent {
 
   final String serverSignatureHex;
 
+  /// The fully signed refund transaction (client side). Null on the server
+  /// side and in rows written before libspiffy-b83.
+  final String? signedRefundTxHex;
+
   RefundCountersignedEvent({
     required String channelId,
     required this.serverSignatureHex,
+    this.signedRefundTxHex,
     String? eventId,
     DateTime? timestamp,
     int? version,
@@ -386,12 +410,14 @@ class RefundCountersignedEvent extends ChannelEvent {
   @override
   Map<String, dynamic> getChannelEventData() => {
         'serverSignatureHex': serverSignatureHex,
+        'signedRefundTxHex': signedRefundTxHex,
       };
 
   factory RefundCountersignedEvent.fromMap(Map<String, dynamic> map) {
     return RefundCountersignedEvent(
       channelId: map['channelId'] as String,
       serverSignatureHex: map['serverSignatureHex'] as String,
+      signedRefundTxHex: map['signedRefundTxHex'] as String?,
       eventId: map['eventId'] as String?,
       timestamp: ChannelEvent._parseTimestamp(map['timestamp']),
       version: map['version'] as int?,
@@ -403,6 +429,116 @@ class RefundCountersignedEvent extends ChannelEvent {
 // =============================================================================
 // CHANNEL OPENING EVENTS
 // =============================================================================
+
+/// The client is about to broadcast its funding transaction (libspiffy-9f7).
+///
+/// Journaled before the transaction is handed to ARC, and only by a client
+/// whose journal already holds the verified, fully signed refund: the
+/// aggregate refuses it otherwise. [attempt] counts broadcasts of this
+/// funding transaction (a retry after [FundingBroadcastFailedEvent] is the
+/// next attempt).
+class FundingBroadcastStartedEvent extends ChannelEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'channel.funding.broadcast_started';
+
+  @override
+  String get typeName => stableTypeName;
+
+  final String fundingTxId;
+  final int attempt;
+
+  FundingBroadcastStartedEvent({
+    required String channelId,
+    required this.fundingTxId,
+    required this.attempt,
+    String? eventId,
+    DateTime? timestamp,
+    int? version,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          channelId: channelId,
+          eventId: eventId,
+          timestamp: timestamp,
+          version: version,
+          metadata: metadata,
+        );
+
+  @override
+  Map<String, dynamic> getChannelEventData() => {
+        'fundingTxId': fundingTxId,
+        'attempt': attempt,
+      };
+
+  factory FundingBroadcastStartedEvent.fromMap(Map<String, dynamic> map) {
+    return FundingBroadcastStartedEvent(
+      channelId: map['channelId'] as String,
+      fundingTxId: map['fundingTxId'] as String,
+      attempt: map['attempt'] as int,
+      eventId: map['eventId'] as String?,
+      timestamp: ChannelEvent._parseTimestamp(map['timestamp']),
+      version: map['version'] as int?,
+      metadata: map['metadata'] as Map<String, dynamic>?,
+    );
+  }
+}
+
+/// Broadcasting the client's funding transaction failed (libspiffy-9f7).
+///
+/// The channel does not open: it stays refund-signed, awaiting funding, and
+/// the same funding transaction may be broadcast again (its inputs stay
+/// reserved for it). [walletRecorded] says whether the transaction was
+/// already recorded in the client wallet, so a retry does not record it
+/// twice.
+class FundingBroadcastFailedEvent extends ChannelEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'channel.funding.broadcast_failed';
+
+  @override
+  String get typeName => stableTypeName;
+
+  final String fundingTxId;
+  final String error;
+  final bool walletRecorded;
+
+  FundingBroadcastFailedEvent({
+    required String channelId,
+    required this.fundingTxId,
+    required this.error,
+    required this.walletRecorded,
+    String? eventId,
+    DateTime? timestamp,
+    int? version,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          channelId: channelId,
+          eventId: eventId,
+          timestamp: timestamp,
+          version: version,
+          metadata: metadata,
+        );
+
+  @override
+  Map<String, dynamic> getChannelEventData() => {
+        'fundingTxId': fundingTxId,
+        'error': error,
+        'walletRecorded': walletRecorded,
+      };
+
+  factory FundingBroadcastFailedEvent.fromMap(Map<String, dynamic> map) {
+    return FundingBroadcastFailedEvent(
+      channelId: map['channelId'] as String,
+      fundingTxId: map['fundingTxId'] as String,
+      error: map['error'] as String,
+      walletRecorded: map['walletRecorded'] as bool? ?? false,
+      eventId: map['eventId'] as String?,
+      timestamp: ChannelEvent._parseTimestamp(map['timestamp']),
+      version: map['version'] as int?,
+      metadata: map['metadata'] as Map<String, dynamic>?,
+    );
+  }
+}
 
 /// Channel is now open (funding TX broadcast)
 class ChannelOpenedEvent extends ChannelEvent {

@@ -276,10 +276,13 @@ class ChannelP2PAdapter {
     final channelId = payload['channelId'] as String;
     final serverSignatureHex = payload['serverSignatureHex'] as String;
 
+    // The manager answers with RefundSignatureRecordedResponse; a signature
+    // that does not complete a valid refund is refused and reported
+    // (libspiffy-b83), see handleRefundSignatureRecorded.
     _channelManager.tell(RecordRefundSignatureMessage(
       channelId: channelId,
       serverSignatureHex: serverSignatureHex,
-    ));
+    ), sender: _replyTo);
   }
 
   void _handleChannelOpen(String fromPeerId, Map<String, dynamic> payload) {
@@ -288,12 +291,14 @@ class ChannelP2PAdapter {
     final fundingOutputIndex = payload['fundingOutputIndex'] as int;
     final fundingTxHex = payload['fundingTxHex'] as String;
 
+    // Server side: a funding transaction that does not lock the agreed
+    // amount in the channel 2-of-2 is refused and reported (libspiffy-9f7).
     _channelManager.tell(OpenChannelMessage(
       channelId: channelId,
       fundingTxId: fundingTxId,
       fundingOutputIndex: fundingOutputIndex,
       fundingTxHex: fundingTxHex,
-    ));
+    ), sender: _replyTo);
   }
 
   void _handlePaymentUpdate(String fromPeerId, Map<String, dynamic> payload) {
@@ -461,21 +466,11 @@ class ChannelP2PAdapter {
     _cleanupChannel(event.channelId);
   }
 
+  /// The client journals its refund before asking the server to sign it
+  /// (libspiffy-b83); the request itself is sent from
+  /// [handleRefundTransactionBuilt], once, when the build is answered.
   void _onRefundBuilt(ch.RefundBuiltEvent event) {
-    final peers = _channelPeers[event.channelId];
-    if (peers == null) {
-      _log.warning('No peer info for channel ${event.channelId}');
-      return;
-    }
-
-    _emitP2PMessage(peers.serverPeerId, 'refund_sign_request', {
-      'channelId': event.channelId,
-      'refundTxHex': event.refundTxHex,
-      'fundingTxId': event.fundingTxId,
-      'fundingOutputIndex': event.fundingOutputIndex,
-      'fundingTxHex': event.fundingTxHex,
-      'clientSignatureHex': event.clientSignatureHex,
-    });
+    _log.fine('Refund of channel ${event.channelId} journaled');
   }
 
   void _onRefundCountersigned(ch.RefundCountersignedEvent event) {
@@ -489,14 +484,17 @@ class ChannelP2PAdapter {
         'serverSignatureHex': event.serverSignatureHex,
       });
     } else if (clientInfo != null) {
-      // We are the client - refund is fully signed, open the channel
+      // We are the client - the refund is fully signed and verified: fund
+      // and open the channel. The manager broadcasts the funding
+      // transaction first; a failure comes back as ChannelOpenedResponse
+      // (handleChannelOpenedResponse) and the channel does not open.
       if (clientInfo.fundingTxId != null) {
         _channelManager.tell(OpenChannelMessage(
           channelId: event.channelId,
           fundingTxId: clientInfo.fundingTxId!,
           fundingOutputIndex: clientInfo.fundingOutputIndex ?? 0,
           fundingTxHex: clientInfo.fundingTxHex ?? '',
-        ));
+        ), sender: _replyTo);
       } else {
         _log.warning('No funding tx info for client channel ${event.channelId}');
       }
@@ -761,6 +759,9 @@ class ChannelP2PAdapter {
       serverPubKeyHex: clientInfo.serverPubKeyHex ?? '',
       serverAddressB58: clientInfo.serverAddressB58 ?? '',
       lockTimeUnix: clientInfo.lockTimeUnix,
+      // Journaled with the refund, broadcast once it is countersigned.
+      fundingTxHex: response.fundingTxHex,
+      fundingInputSats: response.totalInputSats,
     ), sender: _replyTo);
   }
 
@@ -789,6 +790,24 @@ class ChannelP2PAdapter {
       'fundingOutputIndex': clientInfo.fundingOutputIndex,
       'fundingTxHex': clientInfo.fundingTxHex,
     });
+  }
+
+  /// The manager's answer to recording the server's refund signature: a
+  /// signature that does not complete a valid refund stops the open.
+  void handleRefundSignatureRecorded(RefundSignatureRecordedResponse response) {
+    if (!response.success) {
+      _reportFailure(response.channelId,
+          'recording the server refund signature', response.error);
+    }
+  }
+
+  /// The manager's answer to opening a channel: on the client a failed
+  /// funding broadcast (the channel stays unopened, awaiting funding), on
+  /// the server a funding transaction that was refused.
+  void handleChannelOpenedResponse(ChannelOpenedResponse response) {
+    if (!response.success) {
+      _reportFailure(response.channelId, 'opening the channel', response.error);
+    }
   }
 
   // ===========================================================================

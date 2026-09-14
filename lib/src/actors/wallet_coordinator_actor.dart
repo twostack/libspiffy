@@ -293,6 +293,10 @@ class WalletCoordinatorActor extends Actor {
         _channelAdapter?.handleFundingTransactionBuilt(message);
       } else if (message is ch.RefundTransactionBuiltResponse) {
         _channelAdapter?.handleRefundTransactionBuilt(message);
+      } else if (message is ch.RefundSignatureRecordedResponse) {
+        _channelAdapter?.handleRefundSignatureRecorded(message);
+      } else if (message is ch.ChannelOpenedResponse) {
+        _channelAdapter?.handleChannelOpenedResponse(message);
       } else if (message is wm.BroadcastSuccessMessage) {
         // Route to settlement tracking if this txid belongs to an in-flight
         // SettleBEEFCommand; otherwise ignore (e.g., retries from duraq).

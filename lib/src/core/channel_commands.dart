@@ -160,6 +160,43 @@ class RejectChannelCommand extends ChannelCommand {
 // REFUND SIGNING COMMANDS
 // =============================================================================
 
+/// Client journals the refund transaction it built, with its own signature
+/// and the signed funding transaction the refund spends (libspiffy-b83).
+///
+/// The aggregate checks the funding output is the channel's 2-of-2 holding
+/// the funding amount, the refund spends exactly that output back to the
+/// client with the channel lockTime (and a non-final input sequence), and
+/// the client signature is valid; then emits [RefundBuiltEvent].
+class RecordRefundBuiltCommand extends ChannelCommand {
+  final String fundingTxId;
+  final int fundingOutputIndex;
+  final String fundingTxHex;
+  final String refundTxHex;
+  final String clientSignatureHex;
+  final int? fundingInputSats;
+
+  RecordRefundBuiltCommand({
+    required String channelId,
+    required this.fundingTxId,
+    required this.fundingOutputIndex,
+    required this.fundingTxHex,
+    required this.refundTxHex,
+    required this.clientSignatureHex,
+    this.fundingInputSats,
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          channelId: channelId,
+          commandId: commandId,
+          timestamp: timestamp,
+          metadata: metadata,
+        );
+
+  @override
+  String get commandType => 'RecordRefundBuiltCommand';
+}
+
 /// Client provides refund transaction with server's pre-computed signature
 /// 
 /// Note: Signing is delegated to WalletManager. The signature must be
@@ -192,7 +229,11 @@ class RequestRefundSignatureCommand extends ChannelCommand {
   String get commandType => 'RequestRefundSignatureCommand';
 }
 
-/// Server provides their signature on the refund transaction
+/// Client records the server's signature on its refund transaction.
+///
+/// The aggregate combines it with the journaled template and client
+/// signature and accepts it only if the fully signed refund satisfies the
+/// script interpreter against the funding output (libspiffy-b83).
 class ProvideRefundSignatureCommand extends ChannelCommand {
   final String serverSignatureHex;
 
@@ -217,7 +258,11 @@ class ProvideRefundSignatureCommand extends ChannelCommand {
 // CHANNEL OPENING COMMANDS
 // =============================================================================
 
-/// Mark channel as open after funding transaction is broadcast
+/// Mark channel as open after funding transaction is broadcast.
+///
+/// Client: only after [StartFundingBroadcastCommand] for this funding
+/// transaction and a successful broadcast. Server: only for a funding
+/// transaction whose output pays the agreed amount to the channel's 2-of-2.
 class OpenChannelCommand extends ChannelCommand {
   final String fundingTxId;
   final int fundingOutputIndex;
@@ -242,6 +287,61 @@ class OpenChannelCommand extends ChannelCommand {
 
   @override
   String get commandType => 'OpenChannelCommand';
+}
+
+/// Client asks to broadcast its funding transaction (libspiffy-9f7).
+///
+/// Accepted only from the client of a channel whose journal holds the
+/// verified, fully signed refund of this funding transaction; emits
+/// [FundingBroadcastStartedEvent], after which (and only after which) the
+/// transaction is handed to ARC.
+class StartFundingBroadcastCommand extends ChannelCommand {
+  final String fundingTxId;
+
+  StartFundingBroadcastCommand({
+    required String channelId,
+    required this.fundingTxId,
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          channelId: channelId,
+          commandId: commandId,
+          timestamp: timestamp,
+          metadata: metadata,
+        );
+
+  @override
+  String get commandType => 'StartFundingBroadcastCommand';
+}
+
+/// Client records that broadcasting its funding transaction failed; emits
+/// [FundingBroadcastFailedEvent] and leaves the channel unopened.
+class RecordFundingBroadcastFailedCommand extends ChannelCommand {
+  final String fundingTxId;
+  final String error;
+
+  /// Whether the funding transaction was recorded in the wallet before the
+  /// broadcast failed.
+  final bool walletRecorded;
+
+  RecordFundingBroadcastFailedCommand({
+    required String channelId,
+    required this.fundingTxId,
+    required this.error,
+    required this.walletRecorded,
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          channelId: channelId,
+          commandId: commandId,
+          timestamp: timestamp,
+          metadata: metadata,
+        );
+
+  @override
+  String get commandType => 'RecordFundingBroadcastFailedCommand';
 }
 
 // =============================================================================

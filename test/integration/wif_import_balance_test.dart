@@ -8,7 +8,6 @@ import 'package:libspiffy/internals.dart';
 import 'package:libspiffy/src/storage/isar_wallet_storage.dart';
 import 'package:libspiffy/src/services/blockchain_data_source.dart';
 import 'package:libspiffy/src/models/blockchain_data_models.dart';
-import 'package:libspiffy/src/models/wallet_event.dart';
 import 'package:spiffynode/spiffy_node.dart' as spiffynode;
 import 'isar_test_helper.dart';
 
@@ -234,9 +233,9 @@ void main() {
       try {
         // Wait for import completed event
         final completer = Completer<WalletImportCompletedEvent>();
-        final events = <WalletEvent>[];
+        final events = <WalletImportNotification>[];
 
-        libspiffy.subscribeToWalletEvents(walletId).listen((event) {
+        libspiffy.subscribeToImportNotifications(walletId).listen((event) {
           events.add(event);
           print('📢 ${event.runtimeType}');
           if (event is WalletImportCompletedEvent && !completer.isCompleted) {

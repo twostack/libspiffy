@@ -28,7 +28,6 @@ import 'package:libspiffy/src/core/wallet_events.dart';
 import 'package:libspiffy/src/models/bitcoin_transaction.dart';
 import 'package:libspiffy/src/models/bitcoin_utxo.dart';
 import 'package:libspiffy/src/models/blockchain_data_models.dart';
-import 'package:libspiffy/src/models/wallet_event.dart';
 import 'package:libspiffy/src/services/blockchain_data_source.dart';
 import 'package:libspiffy/src/storage/read_model_storage.dart';
 import 'package:test/test.dart';
@@ -55,8 +54,8 @@ void main() {
     late ActorRef walletManagerRef;
     late _GatedDataSource dataSource;
     late ActorRef importActor;
-    late List<WalletEvent> events;
-    late Completer<WalletEvent> terminal;
+    late List<WalletImportNotification> events;
+    late Completer<WalletImportNotification> terminal;
 
     setUp(() async {
       system = LocalActorSystem(ActorSystemConfig());
@@ -64,7 +63,7 @@ void main() {
       walletManagerRef = await system.spawn('wallet-manager', () => walletManager);
       dataSource = _GatedDataSource();
       events = [];
-      terminal = Completer<WalletEvent>();
+      terminal = Completer<WalletImportNotification>();
       importActor = await system.spawn(
         'import-actor',
         () => ImportActor(

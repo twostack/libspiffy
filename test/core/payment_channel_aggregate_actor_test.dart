@@ -491,53 +491,6 @@ void main() {
 
 /// Register channel event types for deserialization
 void _registerChannelEvents() {
-  EventRegistry.register(
-    'ChannelRequestedEvent',
-    (map) => ChannelRequestedEvent.fromMap(map),
-  );
-  EventRegistry.register(
-    'ChannelAcceptedEvent',
-    (map) => ChannelAcceptedEvent.fromMap(map),
-  );
-  EventRegistry.register(
-    'ChannelRejectedEvent',
-    (map) => ChannelRejectedEvent.fromMap(map),
-  );
-  EventRegistry.register(
-    'RefundBuiltEvent',
-    (map) => RefundBuiltEvent.fromMap(map),
-  );
-  EventRegistry.register(
-    'RefundCountersignedEvent',
-    (map) => RefundCountersignedEvent.fromMap(map),
-  );
-  EventRegistry.register(
-    'ChannelOpenedEvent',
-    (map) => ChannelOpenedEvent.fromMap(map),
-  );
-  EventRegistry.register(
-    'PaymentRecordedEvent',
-    (map) => PaymentRecordedEvent.fromMap(map),
-  );
-  EventRegistry.register(
-    'PaymentAcknowledgedEvent',
-    (map) => PaymentAcknowledgedEvent.fromMap(map),
-  );
-  EventRegistry.register(
-    'ChannelClosingEvent',
-    (map) => ChannelClosingEvent.fromMap(map),
-  );
-  EventRegistry.register(
-    'ChannelClosedEvent',
-    (map) => ChannelClosedEvent.fromMap(map),
-  );
-  EventRegistry.register(
-    'RefundClaimedEvent',
-    (map) => RefundClaimedEvent.fromMap(map),
-  );
-  EventRegistry.register(
-    'ChannelExpiredEvent',
-    (map) => ChannelExpiredEvent.fromMap(map),
-  );
+  LibSpiffyActorSystem.registerEventTypes();
 }
 

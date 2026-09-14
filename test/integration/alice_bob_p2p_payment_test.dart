@@ -593,7 +593,7 @@ void main() {
           .findAll();
       
       expect(createEvents, isNotEmpty, reason: 'Events should be in EventStore');
-      expect(createEvents.any((e) => e.eventType == 'InvoiceCreatedEvent'), isTrue,
+      expect(createEvents.any((e) => e.eventType == 'invoice.created'), isTrue,
           reason: 'InvoiceCreatedEvent should be in EventStore');
       print('✓ ${createEvents.length} event(s) persisted in EventStore');
       print('  Event types: ${createEvents.map((e) => e.eventType).join(", ")}');
@@ -641,7 +641,7 @@ void main() {
       
       expect(allInvoiceEvents.length, greaterThan(createEvents.length),
           reason: 'More events should be appended after marking paid');
-      expect(allInvoiceEvents.any((e) => e.eventType == 'InvoicePaidEvent'), isTrue,
+      expect(allInvoiceEvents.any((e) => e.eventType == 'invoice.paid'), isTrue,
           reason: 'InvoicePaidEvent should be in EventStore');
       print('✓ Additional events appended (${allInvoiceEvents.length} total)');
       print('  All event types: ${allInvoiceEvents.map((e) => e.eventType).join(", ")}');

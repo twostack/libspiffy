@@ -2,14 +2,12 @@ import 'dart:async';
 import 'dart:io';
 import 'package:test/test.dart';
 import 'package:dactor/dactor.dart';
-import 'package:eventador/eventador.dart';
 import 'package:isar/isar.dart';
 import 'package:libspiffy/libspiffy.dart';
 import 'package:libspiffy/internals.dart';
 import 'package:libspiffy/src/storage/isar_wallet_storage.dart';
 import 'package:libspiffy/src/services/blockchain_data_source.dart';
 import 'package:libspiffy/src/models/blockchain_data_models.dart';
-import 'package:libspiffy/src/models/wallet_event.dart';
 import 'package:spiffynode/spiffy_node.dart' as spiffynode;
 import 'isar_test_helper.dart';
 
@@ -269,7 +267,7 @@ class TestContext {
   final LibSpiffyActorSystem libspiffy;
   final MockTestnetDataSource mockDataSource;
   final IsarWalletStorage storage;
-  final List<WalletEvent> capturedEvents = [];
+  final List<WalletImportNotification> capturedEvents = [];
 
   TestContext({
     required this.testDir,
@@ -346,7 +344,7 @@ void main() {
       
       try {
         // Subscribe to wallet events
-        context.libspiffy.subscribeToWalletEvents(walletId).listen((event) {
+        context.libspiffy.subscribeToImportNotifications(walletId).listen((event) {
           context.capturedEvents.add(event);
           print('📢 Event captured: ${event.runtimeType}'
               '${event is WalletImportFailedEvent ? " — ${event.error}" : ""}'
@@ -522,7 +520,7 @@ void main() {
         bool importCompleted = false;
         
         print('Step 1: Subscribe to progress events');
-        context.libspiffy.subscribeToWalletEvents(walletId).listen((event) {
+        context.libspiffy.subscribeToImportNotifications(walletId).listen((event) {
           print('  Progress event: ${event.runtimeType}');
           if (event is WalletImportStartedEvent) {
             importStarted = true;

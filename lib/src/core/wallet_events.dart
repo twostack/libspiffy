@@ -10,11 +10,29 @@ import '../models/wallet_type.dart';
 
 /// Event fired when a wallet is created
 class WalletCreatedEvent extends WalletEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'wallet.created';
+
+  @override
+  String get typeName => stableTypeName;
+
   final String walletName;
   final String rootAddress; // Initial address generated from mnemonic/wif/xpriv
   final WalletType walletType; // Type of wallet (hd, wif, xpriv)
   final Map<String, dynamic>? walletMetadata;
-  final String? hdPublicKeyXpub; // HD public key xpub string (safe public data for post-persistence storage)
+
+  /// Never persisted, and no longer set by the wallet aggregate.
+  ///
+  /// The account xpub exposes every address and the balance of the wallet,
+  /// so it is kept only in secure storage (`wallet_hdpubkey_<walletId>`),
+  /// which the aggregate reads when it derives addresses. Earlier releases
+  /// also wrote it into this event: such rows still replay and [fromMap]
+  /// still reads the value into this field (so a recovery tool can use it),
+  /// but [toMap] never writes it again (audit 2026-09-14 KM-8).
+  @Deprecated('The xpub is kept out of the event journal; read it from '
+      'SecureStorage (wallet_hdpubkey_<walletId>). Will be removed.')
+  final String? hdPublicKeyXpub;
 
   WalletCreatedEvent({
     required String walletId,
@@ -22,6 +40,7 @@ class WalletCreatedEvent extends WalletEvent {
     required this.rootAddress,
     required this.walletType,
     this.walletMetadata,
+    @Deprecated('Not persisted; see the hdPublicKeyXpub field.')
     this.hdPublicKeyXpub,
     String? eventId,
     DateTime? timestamp,
@@ -42,7 +61,7 @@ class WalletCreatedEvent extends WalletEvent {
       'rootAddress': rootAddress,
       'walletType': walletType.toStorageString(),
       'walletMetadata': walletMetadata,
-      if (hdPublicKeyXpub != null) 'hdPublicKeyXpub': hdPublicKeyXpub,
+      // No 'hdPublicKeyXpub': the xpub stays out of the journal (KM-8).
     };
   }
 
@@ -55,6 +74,9 @@ class WalletCreatedEvent extends WalletEvent {
         map['walletType'] as String? ?? 'hd', // Default to HD for backwards compatibility
       ),
       walletMetadata: map['walletMetadata'] as Map<String, dynamic>?,
+      // Rows written before KM-8 carry the xpub. Keep it readable in memory
+      // (nothing read from the journal is dropped); toMap never writes it.
+      // ignore: deprecated_member_use_from_same_package
       hdPublicKeyXpub: map['hdPublicKeyXpub'] as String?,
       eventId: map['eventId'] as String?,
       timestamp: map['timestamp'] != null
@@ -70,6 +92,13 @@ class WalletCreatedEvent extends WalletEvent {
 
 /// Event fired when a wallet is permanently deleted
 class WalletDeletedEvent extends WalletEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'wallet.deleted';
+
+  @override
+  String get typeName => stableTypeName;
+
   final String? reason;
 
   WalletDeletedEvent({
@@ -112,6 +141,13 @@ class WalletDeletedEvent extends WalletEvent {
 
 /// Event fired when wallet configuration is updated
 class WalletConfigurationUpdatedEvent extends WalletEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'wallet.configuration_updated';
+
+  @override
+  String get typeName => stableTypeName;
+
   final String? newName;
   final Map<String, dynamic>? newMetadata;
 
@@ -156,120 +192,15 @@ class WalletConfigurationUpdatedEvent extends WalletEvent {
   }
 }
 
-/// Event fired when wallet import starts
-class WalletImportStartedEvent extends WalletEvent {
-  final String walletName;
-  final int addressGapLimit;
-
-  WalletImportStartedEvent({
-    required String walletId,
-    required this.walletName,
-    required this.addressGapLimit,
-    String? eventId,
-    DateTime? timestamp,
-    int? version,
-    Map<String, dynamic>? metadata,
-  }) : super(
-          walletId: walletId,
-          eventId: eventId,
-          timestamp: timestamp,
-          version: version,
-          metadata: metadata,
-        );
-
-  @override
-  Map<String, dynamic> getWalletEventData() {
-    return {
-      'walletName': walletName,
-      'addressGapLimit': addressGapLimit,
-    };
-  }
-
-  static WalletImportStartedEvent fromMap(Map<String, dynamic> map) {
-    return WalletImportStartedEvent(
-      walletId: map['walletId'] as String,
-      walletName: map['walletName'] as String,
-      addressGapLimit: map['addressGapLimit'] as int,
-      eventId: map['eventId'] as String?,
-      timestamp: map['timestamp'] != null
-          ? (map['timestamp'] is String
-              ? DateTime.parse(map['timestamp'] as String)
-              : map['timestamp'] as DateTime)
-          : null,
-      version: map['version'] as int?,
-      metadata: map['metadata'] as Map<String, dynamic>?,
-    );
-  }
-}
-
-/// Event fired during wallet import to report progress
-class WalletImportProgressEvent extends WalletEvent {
-  final String phase;
-  final String message;
-  final double progress;
-  final int addressesFound;
-  final int totalAddresses;
-  final int transactionsProcessed;
-  final int totalTransactions;
-
-  WalletImportProgressEvent({
-    required String walletId,
-    required this.phase,
-    required this.message,
-    required this.progress,
-    required this.addressesFound,
-    required this.totalAddresses,
-    required this.transactionsProcessed,
-    required this.totalTransactions,
-    String? eventId,
-    DateTime? timestamp,
-    int? version,
-    Map<String, dynamic>? metadata,
-  }) : super(
-          walletId: walletId,
-          eventId: eventId,
-          timestamp: timestamp,
-          version: version,
-          metadata: metadata,
-        );
-
-  @override
-  Map<String, dynamic> getWalletEventData() {
-    return {
-      'phase': phase,
-      'message': message,
-      'progress': progress,
-      'addressesFound': addressesFound,
-      'totalAddresses': totalAddresses,
-      'transactionsProcessed': transactionsProcessed,
-      'totalTransactions': totalTransactions,
-    };
-  }
-
-  static WalletImportProgressEvent fromMap(Map<String, dynamic> map) {
-    return WalletImportProgressEvent(
-      walletId: map['walletId'] as String,
-      phase: map['phase'] as String,
-      message: map['message'] as String,
-      progress: (map['progress'] as num).toDouble(),
-      addressesFound: map['addressesFound'] as int,
-      totalAddresses: map['totalAddresses'] as int,
-      transactionsProcessed: map['transactionsProcessed'] as int,
-      totalTransactions: map['totalTransactions'] as int,
-      eventId: map['eventId'] as String?,
-      timestamp: map['timestamp'] != null
-          ? (map['timestamp'] is String
-              ? DateTime.parse(map['timestamp'] as String)
-              : map['timestamp'] as DateTime)
-          : null,
-      version: map['version'] as int?,
-      metadata: map['metadata'] as Map<String, dynamic>?,
-    );
-  }
-}
-
 /// Event fired when an address is discovered during import
 class AddressDiscoveredEvent extends WalletEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'wallet.address.discovered';
+
+  @override
+  String get typeName => stableTypeName;
+
   final String address;
   final int derivationIndex;
   final bool isChange;
@@ -324,6 +255,13 @@ class AddressDiscoveredEvent extends WalletEvent {
 
 /// Event fired when a transaction is imported
 class TransactionImportedEvent extends WalletEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'wallet.transaction.imported';
+
+  @override
+  String get typeName => stableTypeName;
+
   final String txid;
   final String rawHex;
   final int blockHeight;
@@ -418,217 +356,19 @@ class TransactionImportedEvent extends WalletEvent {
   }
 }
 
-/// Event fired when wallet import completes
-class WalletImportCompletedEvent extends WalletEvent {
-  final int totalAddresses;
-  final int totalTransactions;
-  final List<Map<String, dynamic>> importedUtxos; // Serialized UTXO data
-
-  WalletImportCompletedEvent({
-    required String walletId,
-    required this.totalAddresses,
-    required this.totalTransactions,
-    required this.importedUtxos,
-    String? eventId,
-    DateTime? timestamp,
-    int? version,
-    Map<String, dynamic>? metadata,
-  }) : super(
-          walletId: walletId,
-          eventId: eventId,
-          timestamp: timestamp,
-          version: version,
-          metadata: metadata,
-        );
-
-  @override
-  Map<String, dynamic> getWalletEventData() {
-    return {
-      'totalAddresses': totalAddresses,
-      'totalTransactions': totalTransactions,
-      'importedUtxos': importedUtxos,
-    };
-  }
-
-  static WalletImportCompletedEvent fromMap(Map<String, dynamic> map) {
-    return WalletImportCompletedEvent(
-      walletId: map['walletId'] as String,
-      totalAddresses: map['totalAddresses'] as int,
-      totalTransactions: map['totalTransactions'] as int,
-      importedUtxos: (map['importedUtxos'] as List)
-          .cast<Map<String, dynamic>>(),
-      eventId: map['eventId'] as String?,
-      timestamp: map['timestamp'] != null
-          ? (map['timestamp'] is String
-              ? DateTime.parse(map['timestamp'] as String)
-              : map['timestamp'] as DateTime)
-          : null,
-      version: map['version'] as int?,
-      metadata: map['metadata'] as Map<String, dynamic>?,
-    );
-  }
-}
-
-/// Event fired when wallet import fails
-class WalletImportFailedEvent extends WalletEvent {
-  final String error;
-  final String? partialProgress;
-
-  WalletImportFailedEvent({
-    required String walletId,
-    required this.error,
-    this.partialProgress,
-    String? eventId,
-    DateTime? timestamp,
-    int? version,
-    Map<String, dynamic>? metadata,
-  }) : super(
-          walletId: walletId,
-          eventId: eventId,
-          timestamp: timestamp,
-          version: version,
-          metadata: metadata,
-        );
-
-  @override
-  Map<String, dynamic> getWalletEventData() {
-    return {
-      'error': error,
-      'partialProgress': partialProgress,
-    };
-  }
-
-  static WalletImportFailedEvent fromMap(Map<String, dynamic> map) {
-    return WalletImportFailedEvent(
-      walletId: map['walletId'] as String,
-      error: map['error'] as String,
-      partialProgress: map['partialProgress'] as String?,
-      eventId: map['eventId'] as String?,
-      timestamp: map['timestamp'] != null
-          ? (map['timestamp'] is String
-              ? DateTime.parse(map['timestamp'] as String)
-              : map['timestamp'] as DateTime)
-          : null,
-      version: map['version'] as int?,
-      metadata: map['metadata'] as Map<String, dynamic>?,
-    );
-  }
-}
-
-// =============================================================================
-// IMPORT CONFIRMATION EVENTS (from aggregate responses)
-// =============================================================================
-
-/// Event confirming a UTXO was recorded (or failed) by the aggregate
-class WalletImportUTXOConfirmedEvent extends WalletEvent {
-  final String txid;
-  final int vout;
-  final bool success;
-  final String? error;
-
-  WalletImportUTXOConfirmedEvent({
-    required String walletId,
-    required this.txid,
-    required this.vout,
-    required this.success,
-    this.error,
-    String? eventId,
-    DateTime? timestamp,
-    int? version,
-    Map<String, dynamic>? metadata,
-  }) : super(
-          walletId: walletId,
-          eventId: eventId,
-          timestamp: timestamp,
-          version: version,
-          metadata: metadata,
-        );
-
-  @override
-  Map<String, dynamic> getWalletEventData() {
-    return {
-      'txid': txid,
-      'vout': vout,
-      'success': success,
-      if (error != null) 'error': error,
-    };
-  }
-
-  static WalletImportUTXOConfirmedEvent fromMap(Map<String, dynamic> map) {
-    return WalletImportUTXOConfirmedEvent(
-      walletId: map['walletId'] as String,
-      txid: map['txid'] as String,
-      vout: map['vout'] as int,
-      success: map['success'] as bool,
-      error: map['error'] as String?,
-      eventId: map['eventId'] as String?,
-      timestamp: map['timestamp'] != null
-          ? (map['timestamp'] is String
-              ? DateTime.parse(map['timestamp'] as String)
-              : map['timestamp'] as DateTime)
-          : null,
-      version: map['version'] as int?,
-      metadata: map['metadata'] as Map<String, dynamic>?,
-    );
-  }
-}
-
-/// Event confirming a transaction was recorded (or failed) by the aggregate
-class WalletImportTransactionConfirmedEvent extends WalletEvent {
-  final String txid;
-  final bool success;
-  final String? error;
-
-  WalletImportTransactionConfirmedEvent({
-    required String walletId,
-    required this.txid,
-    required this.success,
-    this.error,
-    String? eventId,
-    DateTime? timestamp,
-    int? version,
-    Map<String, dynamic>? metadata,
-  }) : super(
-          walletId: walletId,
-          eventId: eventId,
-          timestamp: timestamp,
-          version: version,
-          metadata: metadata,
-        );
-
-  @override
-  Map<String, dynamic> getWalletEventData() {
-    return {
-      'txid': txid,
-      'success': success,
-      if (error != null) 'error': error,
-    };
-  }
-
-  static WalletImportTransactionConfirmedEvent fromMap(Map<String, dynamic> map) {
-    return WalletImportTransactionConfirmedEvent(
-      walletId: map['walletId'] as String,
-      txid: map['txid'] as String,
-      success: map['success'] as bool,
-      error: map['error'] as String?,
-      eventId: map['eventId'] as String?,
-      timestamp: map['timestamp'] != null
-          ? (map['timestamp'] is String
-              ? DateTime.parse(map['timestamp'] as String)
-              : map['timestamp'] as DateTime)
-          : null,
-      version: map['version'] as int?,
-      metadata: map['metadata'] as Map<String, dynamic>?,
-    );
-  }
-}
-
 // =============================================================================
 // ADDRESS MANAGEMENT EVENTS
 // =============================================================================
 
 /// Event fired when a new address is generated
 class AddressGeneratedEvent extends WalletEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'wallet.address.generated';
+
+  @override
+  String get typeName => stableTypeName;
+
   final String address;
   final int derivationIndex;
   final String? label;
@@ -696,6 +436,13 @@ class AddressGeneratedEvent extends WalletEvent {
 
 /// Event fired when an address label is updated
 class AddressLabelUpdatedEvent extends WalletEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'wallet.address.label_updated';
+
+  @override
+  String get typeName => stableTypeName;
+
   final String address;
   final String? newLabel;
   final String? oldLabel;
@@ -750,6 +497,13 @@ class AddressLabelUpdatedEvent extends WalletEvent {
 
 /// Event fired when a UTXO is received
 class UTXOReceivedEvent extends WalletEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'wallet.utxo.received';
+
+  @override
+  String get typeName => stableTypeName;
+
   final String txid;
   final int vout;
   final int satoshis;
@@ -838,6 +592,13 @@ class UTXOReceivedEvent extends WalletEvent {
 
 /// Event fired when UTXO becomes available for spending
 class UTXOMarkedAvailableEvent extends WalletEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'wallet.utxo.marked_available';
+
+  @override
+  String get typeName => stableTypeName;
+
   final String txid;
   final int vout;
   
@@ -884,6 +645,13 @@ class UTXOMarkedAvailableEvent extends WalletEvent {
 
 /// Event fired when a UTXO is spent
 class UTXOSpentEvent extends WalletEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'wallet.utxo.spent';
+
+  @override
+  String get typeName => stableTypeName;
+
   final String txid;
   final int vout;
   final String spentInTxId;
@@ -934,6 +702,13 @@ class UTXOSpentEvent extends WalletEvent {
 
 /// Event fired when UTXO confirmation count is updated
 class UTXOConfirmationUpdatedEvent extends WalletEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'wallet.utxo.confirmation_updated';
+
+  @override
+  String get typeName => stableTypeName;
+
   final String txid;
   final int vout;
   final int confirmations;
@@ -988,6 +763,13 @@ class UTXOConfirmationUpdatedEvent extends WalletEvent {
 
 /// Event fired when a UTXO is reserved for a transaction
 class UTXOReservedEvent extends WalletEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'wallet.utxo.reserved';
+
+  @override
+  String get typeName => stableTypeName;
+
   final String txid;
   final int vout;
   final String reservedByTxId;
@@ -1061,6 +843,13 @@ class UTXOReservedEvent extends WalletEvent {
 
 /// Event fired when a UTXO reservation is released
 class UTXOReleasedEvent extends WalletEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'wallet.utxo.released';
+
+  @override
+  String get typeName => stableTypeName;
+
   final String txid;
   final int vout;
   final String? releaseReason;
@@ -1125,6 +914,13 @@ class UTXOReleasedEvent extends WalletEvent {
 
 /// Event fired when a UTXO reservation is renewed/extended
 class UTXOReservationRenewedEvent extends WalletEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'wallet.utxo.reservation_renewed';
+
+  @override
+  String get typeName => stableTypeName;
+
   final String txid;
   final int vout;
   final DateTime newExpiresAt;
@@ -1195,6 +991,13 @@ class UTXOReservationRenewedEvent extends WalletEvent {
 /// Event fired when a transaction is created
 /// Event fired when a transaction is signed
 class TransactionSignedEvent extends WalletEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'wallet.transaction.signed';
+
+  @override
+  String get typeName => stableTypeName;
+
   final String txid;
   final String signedRawHex;
 
@@ -1241,6 +1044,13 @@ class TransactionSignedEvent extends WalletEvent {
 
 /// Event fired when a transaction is broadcast
 class TransactionBroadcastEvent extends WalletEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'wallet.transaction.broadcast';
+
+  @override
+  String get typeName => stableTypeName;
+
   final String txid;
   final String broadcastResponse;
 
@@ -1287,6 +1097,13 @@ class TransactionBroadcastEvent extends WalletEvent {
 
 /// Event fired when an outgoing transaction is recorded (in pending state)
 class TransactionRecordedEvent extends WalletEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'wallet.transaction.recorded';
+
+  @override
+  String get typeName => stableTypeName;
+
   final String txid;
   final String rawHex;
   final int totalInputSats;
@@ -1381,6 +1198,13 @@ class TransactionRecordedEvent extends WalletEvent {
 
 /// Event fired when a pending transaction is confirmed
 class TransactionConfirmedEvent extends WalletEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'wallet.transaction.confirmed';
+
+  @override
+  String get typeName => stableTypeName;
+
   final String txid;
   final int? blockHeight;
   final String? blockHash;
@@ -1431,6 +1255,13 @@ class TransactionConfirmedEvent extends WalletEvent {
 
 /// Event fired when a transaction's status is updated (e.g., from ARC status transitions)
 class TransactionStatusUpdatedEvent extends WalletEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'wallet.transaction.status_updated';
+
+  @override
+  String get typeName => stableTypeName;
+
   final String txid;
   final TransactionStatus newStatus;
 
@@ -1484,6 +1315,13 @@ class TransactionStatusUpdatedEvent extends WalletEvent {
 
 /// Event fired when UTXOs are reserved for transaction creation
 class UTXOReservationPlacedEvent extends WalletEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'wallet.utxo_reservation.placed';
+
+  @override
+  String get typeName => stableTypeName;
+
   final List<Map<String, dynamic>> utxoIdentifiers; // {txid, vout}
   final String reservationId;
   final DateTime expiresAt;
@@ -1536,6 +1374,13 @@ class UTXOReservationPlacedEvent extends WalletEvent {
 
 /// Event fired when UTXO reservation is released
 class UTXOReservationReleasedEvent extends WalletEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'wallet.utxo_reservation.released';
+
+  @override
+  String get typeName => stableTypeName;
+
   final String reservationId;
   final List<Map<String, dynamic>> utxoIdentifiers; // {txid, vout}
 
@@ -1582,6 +1427,13 @@ class UTXOReservationReleasedEvent extends WalletEvent {
 
 /// Event fired when UTXO reservation expires
 class UTXOReservationExpiredEvent extends WalletEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'wallet.utxo_reservation.expired';
+
+  @override
+  String get typeName => stableTypeName;
+
   final String reservationId;
   final List<Map<String, dynamic>> utxoIdentifiers; // {txid, vout}
 
@@ -1636,6 +1488,13 @@ class UTXOReservationExpiredEvent extends WalletEvent {
 /// UTXO keys to split. The BenfordCoordinatorActor listens to this event and
 /// performs the actual orchestration (building, signing, broadcasting).
 class UTXOSplitInitiatedEvent extends WalletEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'wallet.utxo_split.initiated';
+
+  @override
+  String get typeName => stableTypeName;
+
   final List<String> utxoKeysToSplit;
   final int targetUtxoCount;
   final BigInt feeRate;
@@ -1690,6 +1549,13 @@ class UTXOSplitInitiatedEvent extends WalletEvent {
 /// the split transaction. This is informational only - actual state changes
 /// happen via CQRS commands (SpendUTXO, ReceiveUTXO, RecordTransaction).
 class UTXOSplitCompletedEvent extends WalletEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'wallet.utxo_split.completed';
+
+  @override
+  String get typeName => stableTypeName;
+
   final String originalUtxoKey;
   final String originalAmount;
   final String splitTxid;
@@ -1748,6 +1614,13 @@ class UTXOSplitCompletedEvent extends WalletEvent {
 
 /// Event fired when all UTXOs have been processed
 class AllUTXOsSplitCompletedEvent extends WalletEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'wallet.utxo_split.all_completed';
+
+  @override
+  String get typeName => stableTypeName;
+
   final int totalUtxosSplit;
   final int totalOutputsCreated;
   final String totalFeesPaid; // Store as string
@@ -1799,3 +1672,140 @@ class AllUTXOsSplitCompletedEvent extends WalletEvent {
     );
   }
 } 
+
+// =============================================================================
+// WALLET IMPORT NOTIFICATIONS (in-process only, never journaled)
+// =============================================================================
+
+/// Progress of a wallet import, broadcast in-process by the ImportActor.
+///
+/// These are notifications, not events: they are not persisted, not
+/// registered with the event registry, and never applied by the wallet
+/// aggregate. What an import durably changes is journaled by the ordinary
+/// wallet events it causes (WalletCreatedEvent, AddressGeneratedEvent,
+/// UTXOReceivedEvent, TransactionRecordedEvent, ...). Subscribe with
+/// `LibSpiffyActorSystem.subscribeToImportNotifications` (audit 2026-09-14
+/// L4). The `...Event` class names are kept so existing subscribers'
+/// type tests still compile.
+sealed class WalletImportNotification {
+  /// Wallet being imported.
+  final String walletId;
+
+  /// When the notification was raised.
+  final DateTime timestamp;
+
+  /// Free-form details (for example `{'cancelled': true}` on a failure).
+  final Map<String, dynamic> metadata;
+
+  WalletImportNotification({
+    required this.walletId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  })  : timestamp = timestamp ?? DateTime.now(),
+        metadata = Map<String, dynamic>.unmodifiable(metadata ?? const {});
+
+  @override
+  String toString() => '$runtimeType(walletId: $walletId, timestamp: $timestamp)';
+}
+
+/// An import job has created (or confirmed) the wallet and is starting.
+class WalletImportStartedEvent extends WalletImportNotification {
+  final String walletName;
+  final int addressGapLimit;
+
+  WalletImportStartedEvent({
+    required super.walletId,
+    required this.walletName,
+    required this.addressGapLimit,
+    super.timestamp,
+    super.metadata,
+  });
+}
+
+/// Periodic progress of a running import.
+class WalletImportProgressEvent extends WalletImportNotification {
+  final String phase;
+  final String message;
+  final double progress;
+  final int addressesFound;
+  final int totalAddresses;
+  final int transactionsProcessed;
+  final int totalTransactions;
+
+  WalletImportProgressEvent({
+    required super.walletId,
+    required this.phase,
+    required this.message,
+    required this.progress,
+    required this.addressesFound,
+    required this.totalAddresses,
+    required this.transactionsProcessed,
+    required this.totalTransactions,
+    super.timestamp,
+    super.metadata,
+  });
+}
+
+/// The import finished.
+class WalletImportCompletedEvent extends WalletImportNotification {
+  final int totalAddresses;
+  final int totalTransactions;
+  final List<Map<String, dynamic>> importedUtxos;
+
+  WalletImportCompletedEvent({
+    required super.walletId,
+    required this.totalAddresses,
+    required this.totalTransactions,
+    required this.importedUtxos,
+    super.timestamp,
+    super.metadata,
+  });
+}
+
+/// The import failed or was cancelled (`metadata['cancelled'] == true`).
+class WalletImportFailedEvent extends WalletImportNotification {
+  final String error;
+  final String? partialProgress;
+
+  WalletImportFailedEvent({
+    required super.walletId,
+    required this.error,
+    this.partialProgress,
+    super.timestamp,
+    super.metadata,
+  });
+}
+
+/// The wallet aggregate acknowledged (or rejected) an imported UTXO.
+class WalletImportUTXOConfirmedEvent extends WalletImportNotification {
+  final String txid;
+  final int vout;
+  final bool success;
+  final String? error;
+
+  WalletImportUTXOConfirmedEvent({
+    required super.walletId,
+    required this.txid,
+    required this.vout,
+    required this.success,
+    this.error,
+    super.timestamp,
+    super.metadata,
+  });
+}
+
+/// The wallet aggregate acknowledged (or rejected) an imported transaction.
+class WalletImportTransactionConfirmedEvent extends WalletImportNotification {
+  final String txid;
+  final bool success;
+  final String? error;
+
+  WalletImportTransactionConfirmedEvent({
+    required super.walletId,
+    required this.txid,
+    required this.success,
+    this.error,
+    super.timestamp,
+    super.metadata,
+  });
+}

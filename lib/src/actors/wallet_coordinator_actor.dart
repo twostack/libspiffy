@@ -97,8 +97,8 @@ class WalletCoordinatorActor extends Actor {
     String networkType,
   })? _importWalletFromWif;
 
-  // Wallet events stream for import monitoring
-  final Stream<wallet_event_model.WalletEvent>? _walletEventsStream;
+  // Import notifications (ImportActor progress), forwarded as CoordinatorEvents
+  final Stream<domain_events.WalletImportNotification>? _importNotifications;
 
   /// Current wallet ID (set after first wallet created)
   String? _currentWalletId;
@@ -137,7 +137,7 @@ class WalletCoordinatorActor extends Actor {
       String networkType,
     })?
         importWalletFromWif,
-    Stream<wallet_event_model.WalletEvent>? walletEventsStream,
+    Stream<domain_events.WalletImportNotification>? importNotifications,
   })  : _walletManager = walletManager,
         _invoiceCoordinator = invoiceCoordinator,
         _paymentCoordinator = paymentCoordinator,
@@ -152,7 +152,7 @@ class WalletCoordinatorActor extends Actor {
         _peerId = peerId,
         _importWalletFromXpriv = importWalletFromXpriv,
         _importWalletFromWif = importWalletFromWif,
-        _walletEventsStream = walletEventsStream {
+        _importNotifications = importNotifications {
     // Initialize channel P2P adapter if channel events stream provided
     if (channelEvents != null) {
       _channelAdapter = ChannelP2PAdapter(
@@ -376,9 +376,9 @@ class WalletCoordinatorActor extends Actor {
     _log.info('Importing wallet ${cmd.walletId}');
 
     try {
-      // Subscribe to wallet events for progress/completion forwarding
-      if (_walletEventsStream != null) {
-        _eventSubscriptions[cmd.walletId] = _walletEventsStream!
+      // Subscribe to import notifications for progress/completion forwarding
+      if (_importNotifications != null) {
+        _eventSubscriptions[cmd.walletId] = _importNotifications!
             .where((e) => e.walletId == cmd.walletId)
             .listen((event) {
           if (event is domain_events.WalletImportProgressEvent) {

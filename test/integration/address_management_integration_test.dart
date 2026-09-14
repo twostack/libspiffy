@@ -713,12 +713,7 @@ void main() {
 
 void _registerWalletEvents() {
   try {
-    EventRegistry.register<WalletCreatedEvent>('WalletCreatedEvent', (map) => WalletCreatedEvent.fromMap(map));
-    EventRegistry.register<AddressGeneratedEvent>('AddressGeneratedEvent', (map) => AddressGeneratedEvent.fromMap(map));
-    EventRegistry.register<AddressDiscoveredEvent>('AddressDiscoveredEvent', (map) => AddressDiscoveredEvent.fromMap(map));
-    EventRegistry.register<UTXOReceivedEvent>('UTXOReceivedEvent', (map) => UTXOReceivedEvent.fromMap(map));
-    EventRegistry.register<UTXOSpentEvent>('UTXOSpentEvent', (map) => UTXOSpentEvent.fromMap(map));
-    EventRegistry.register<TransactionImportedEvent>('TransactionImportedEvent', (map) => TransactionImportedEvent.fromMap(map));
+    LibSpiffyActorSystem.registerEventTypes();
   } catch (e) {
     print('⚠️  Event registration warning: $e');
   }

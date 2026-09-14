@@ -20,7 +20,6 @@ import 'package:logging/logging.dart' as logging;
 import 'package:libspiffy/libspiffy.dart';
 import 'package:libspiffy/internals.dart';
 import 'package:libspiffy/src/models/blockchain_data_models.dart';
-import 'package:libspiffy/src/models/wallet_event.dart';
 import 'package:libspiffy/src/services/blockchain_data_source.dart';
 import 'isar_test_helper.dart';
 
@@ -70,9 +69,9 @@ void main() {
   });
 
   /// Resolves with the terminal import event (completed or failed).
-  Future<WalletEvent> awaitImportOutcome(String walletId) {
+  Future<WalletImportNotification> awaitImportOutcome(String walletId) {
     return libspiffy
-        .subscribeToWalletEvents(walletId)
+        .subscribeToImportNotifications(walletId)
         .firstWhere((e) =>
             e is WalletImportCompletedEvent || e is WalletImportFailedEvent)
         .timeout(const Duration(seconds: 30));

@@ -18,7 +18,6 @@ import 'package:libspiffy/src/core/wallet_events.dart';
 import 'package:libspiffy/src/models/bitcoin_transaction.dart';
 import 'package:libspiffy/src/models/bitcoin_utxo.dart';
 import 'package:libspiffy/src/models/blockchain_data_models.dart';
-import 'package:libspiffy/src/models/wallet_event.dart';
 import 'package:libspiffy/src/services/blockchain_data_source.dart';
 import 'package:libspiffy/src/services/transaction_import_service.dart';
 import 'package:libspiffy/src/storage/read_model_storage.dart';
@@ -124,9 +123,9 @@ void main() {
 
     tearDown(() => system.shutdown());
 
-    Future<WalletEvent> runImport(_FixtureDataSource dataSource) async {
+    Future<WalletImportNotification> runImport(_FixtureDataSource dataSource) async {
       final walletManagerRef = await system.spawn('wm', () => walletManager);
-      final terminal = Completer<WalletEvent>();
+      final terminal = Completer<WalletImportNotification>();
       final importer = await system.spawn(
         'importer',
         () => ImportActor(

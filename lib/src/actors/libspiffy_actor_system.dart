@@ -121,6 +121,8 @@ class LibSpiffyActorSystem {
   
   // Event broadcast for UI subscriptions
   final StreamController<WalletEvent> _walletEventBroadcaster = StreamController<WalletEvent>.broadcast();
+  final StreamController<WalletImportNotification> _importNotificationBroadcaster =
+      StreamController<WalletImportNotification>.broadcast();
   final StreamController<ChannelEvent> _channelEventBroadcaster = StreamController<ChannelEvent>.broadcast();
 
   /// Initialize the LibSpiffy actor system
@@ -473,258 +475,123 @@ class LibSpiffyActorSystem {
     
   }
   
-  /// Register all LibSpiffy event types with Eventador's EventRegistry
-  /// 
-  /// This is REQUIRED for event deserialization from CBOR storage after restart.
-  /// During live operation, events flow through memory as objects, but after
-  /// a restart, they must be reconstructed from CBOR bytes in the EventStore.
-  /// 
-  /// The EventRegistry provides the mapping from event type names to their
-  /// fromMap() factory functions for deserialization.
-  /// 
-  /// MUST be called before _initializeProjections() because projections may
-  /// need to deserialize events when catching up on startup.
-  Future<void> _registerEventTypes() async {
-    
-    // =================================================================
-    // WALLET EVENTS (17 total)
-    // =================================================================
-    
-    // Wallet Lifecycle
-    EventRegistry.register<WalletCreatedEvent>(
-      'WalletCreatedEvent',
-      (map) => WalletCreatedEvent.fromMap(map),
-    );
-    
-    EventRegistry.register<WalletConfigurationUpdatedEvent>(
-      'WalletConfigurationUpdatedEvent',
-      (map) => WalletConfigurationUpdatedEvent.fromMap(map),
-    );
+  /// Registers every LibSpiffy journal event type (see [registerEventTypes]).
+  ///
+  /// MUST run before _initializeProjections(): projections deserialize
+  /// stored events when they catch up on startup.
+  Future<void> _registerEventTypes() async => registerEventTypes();
 
-    EventRegistry.register<WalletDeletedEvent>(
-      'WalletDeletedEvent',
-      (map) => WalletDeletedEvent.fromMap(map),
-    );
+  /// Register every event type LibSpiffy writes to the event journal with
+  /// eventador's [EventRegistry].
+  ///
+  /// Events are stored under their [Event.typeName], a stable identifier
+  /// such as `wallet.utxo.received` that each event class declares as its
+  /// `stableTypeName`. It does not depend on the Dart class name, so the
+  /// journal keeps loading after a class rename or in an app built with
+  /// `--obfuscate` (audit 2026-09-14 M8).
+  ///
+  /// Journals written by earlier releases stored the class name (for
+  /// example `UTXOReceivedEvent`). Each type registers that name as an
+  /// alias, so those rows still deserialize. The aliases are string
+  /// literals on purpose: they must keep matching what is already on disk.
+  ///
+  /// Idempotent. [initialize] calls it; call it yourself when reading a
+  /// LibSpiffy journal without the actor system (tests, tools, a custom
+  /// event store).
+  static void registerEventTypes() {
+    // WALLET EVENTS (25)
+    EventRegistry.register<WalletCreatedEvent>(WalletCreatedEvent.stableTypeName, WalletCreatedEvent.fromMap,
+        aliases: const ['WalletCreatedEvent']);
+    EventRegistry.register<WalletConfigurationUpdatedEvent>(WalletConfigurationUpdatedEvent.stableTypeName, WalletConfigurationUpdatedEvent.fromMap,
+        aliases: const ['WalletConfigurationUpdatedEvent']);
+    EventRegistry.register<WalletDeletedEvent>(WalletDeletedEvent.stableTypeName, WalletDeletedEvent.fromMap,
+        aliases: const ['WalletDeletedEvent']);
+    EventRegistry.register<AddressGeneratedEvent>(AddressGeneratedEvent.stableTypeName, AddressGeneratedEvent.fromMap,
+        aliases: const ['AddressGeneratedEvent']);
+    EventRegistry.register<AddressLabelUpdatedEvent>(AddressLabelUpdatedEvent.stableTypeName, AddressLabelUpdatedEvent.fromMap,
+        aliases: const ['AddressLabelUpdatedEvent']);
+    EventRegistry.register<AddressDiscoveredEvent>(AddressDiscoveredEvent.stableTypeName, AddressDiscoveredEvent.fromMap,
+        aliases: const ['AddressDiscoveredEvent']);
+    EventRegistry.register<UTXOReceivedEvent>(UTXOReceivedEvent.stableTypeName, UTXOReceivedEvent.fromMap,
+        aliases: const ['UTXOReceivedEvent']);
+    EventRegistry.register<UTXOMarkedAvailableEvent>(UTXOMarkedAvailableEvent.stableTypeName, UTXOMarkedAvailableEvent.fromMap,
+        aliases: const ['UTXOMarkedAvailableEvent']);
+    EventRegistry.register<UTXOSpentEvent>(UTXOSpentEvent.stableTypeName, UTXOSpentEvent.fromMap,
+        aliases: const ['UTXOSpentEvent']);
+    EventRegistry.register<UTXOConfirmationUpdatedEvent>(UTXOConfirmationUpdatedEvent.stableTypeName, UTXOConfirmationUpdatedEvent.fromMap,
+        aliases: const ['UTXOConfirmationUpdatedEvent']);
+    EventRegistry.register<UTXOReservedEvent>(UTXOReservedEvent.stableTypeName, UTXOReservedEvent.fromMap,
+        aliases: const ['UTXOReservedEvent']);
+    EventRegistry.register<UTXOReleasedEvent>(UTXOReleasedEvent.stableTypeName, UTXOReleasedEvent.fromMap,
+        aliases: const ['UTXOReleasedEvent']);
+    EventRegistry.register<UTXOReservationRenewedEvent>(UTXOReservationRenewedEvent.stableTypeName, UTXOReservationRenewedEvent.fromMap,
+        aliases: const ['UTXOReservationRenewedEvent']);
+    EventRegistry.register<UTXOReservationPlacedEvent>(UTXOReservationPlacedEvent.stableTypeName, UTXOReservationPlacedEvent.fromMap,
+        aliases: const ['UTXOReservationPlacedEvent']);
+    EventRegistry.register<UTXOReservationReleasedEvent>(UTXOReservationReleasedEvent.stableTypeName, UTXOReservationReleasedEvent.fromMap,
+        aliases: const ['UTXOReservationReleasedEvent']);
+    EventRegistry.register<UTXOReservationExpiredEvent>(UTXOReservationExpiredEvent.stableTypeName, UTXOReservationExpiredEvent.fromMap,
+        aliases: const ['UTXOReservationExpiredEvent']);
+    EventRegistry.register<TransactionSignedEvent>(TransactionSignedEvent.stableTypeName, TransactionSignedEvent.fromMap,
+        aliases: const ['TransactionSignedEvent']);
+    EventRegistry.register<TransactionBroadcastEvent>(TransactionBroadcastEvent.stableTypeName, TransactionBroadcastEvent.fromMap,
+        aliases: const ['TransactionBroadcastEvent']);
+    EventRegistry.register<TransactionImportedEvent>(TransactionImportedEvent.stableTypeName, TransactionImportedEvent.fromMap,
+        aliases: const ['TransactionImportedEvent']);
+    EventRegistry.register<TransactionRecordedEvent>(TransactionRecordedEvent.stableTypeName, TransactionRecordedEvent.fromMap,
+        aliases: const ['TransactionRecordedEvent']);
+    EventRegistry.register<TransactionConfirmedEvent>(TransactionConfirmedEvent.stableTypeName, TransactionConfirmedEvent.fromMap,
+        aliases: const ['TransactionConfirmedEvent']);
+    EventRegistry.register<TransactionStatusUpdatedEvent>(TransactionStatusUpdatedEvent.stableTypeName, TransactionStatusUpdatedEvent.fromMap,
+        aliases: const ['TransactionStatusUpdatedEvent']);
+    EventRegistry.register<UTXOSplitInitiatedEvent>(UTXOSplitInitiatedEvent.stableTypeName, UTXOSplitInitiatedEvent.fromMap,
+        aliases: const ['UTXOSplitInitiatedEvent']);
+    EventRegistry.register<UTXOSplitCompletedEvent>(UTXOSplitCompletedEvent.stableTypeName, UTXOSplitCompletedEvent.fromMap,
+        aliases: const ['UTXOSplitCompletedEvent']);
+    EventRegistry.register<AllUTXOsSplitCompletedEvent>(AllUTXOsSplitCompletedEvent.stableTypeName, AllUTXOsSplitCompletedEvent.fromMap,
+        aliases: const ['AllUTXOsSplitCompletedEvent']);
 
-    // Address Management
-    EventRegistry.register<AddressGeneratedEvent>(
-      'AddressGeneratedEvent',
-      (map) => AddressGeneratedEvent.fromMap(map),
-    );
-    
-    EventRegistry.register<AddressLabelUpdatedEvent>(
-      'AddressLabelUpdatedEvent',
-      (map) => AddressLabelUpdatedEvent.fromMap(map),
-    );
-    
-    EventRegistry.register<AddressDiscoveredEvent>(
-      'AddressDiscoveredEvent',
-      (map) => AddressDiscoveredEvent.fromMap(map),
-    );
-    
-    // UTXO Management
-    EventRegistry.register<UTXOReceivedEvent>(
-      'UTXOReceivedEvent',
-      (map) => UTXOReceivedEvent.fromMap(map),
-    );
-    
-    EventRegistry.register<UTXOMarkedAvailableEvent>(
-      'UTXOMarkedAvailableEvent',
-      (map) => UTXOMarkedAvailableEvent.fromMap(map),
-    );
-    
-    EventRegistry.register<UTXOSpentEvent>(
-      'UTXOSpentEvent',
-      (map) => UTXOSpentEvent.fromMap(map),
-    );
-    
-    EventRegistry.register<UTXOConfirmationUpdatedEvent>(
-      'UTXOConfirmationUpdatedEvent',
-      (map) => UTXOConfirmationUpdatedEvent.fromMap(map),
-    );
-    
-    // UTXO Reservation (Legacy)
-    EventRegistry.register<UTXOReservedEvent>(
-      'UTXOReservedEvent',
-      (map) => UTXOReservedEvent.fromMap(map),
-    );
-    
-    EventRegistry.register<UTXOReleasedEvent>(
-      'UTXOReleasedEvent',
-      (map) => UTXOReleasedEvent.fromMap(map),
-    );
-    
-    EventRegistry.register<UTXOReservationRenewedEvent>(
-      'UTXOReservationRenewedEvent',
-      (map) => UTXOReservationRenewedEvent.fromMap(map),
-    );
-    
-    // UTXO Reservation (New Pattern)
-    EventRegistry.register<UTXOReservationPlacedEvent>(
-      'UTXOReservationPlacedEvent',
-      (map) => UTXOReservationPlacedEvent.fromMap(map),
-    );
-    
-    EventRegistry.register<UTXOReservationReleasedEvent>(
-      'UTXOReservationReleasedEvent',
-      (map) => UTXOReservationReleasedEvent.fromMap(map),
-    );
-    
-    EventRegistry.register<UTXOReservationExpiredEvent>(
-      'UTXOReservationExpiredEvent',
-      (map) => UTXOReservationExpiredEvent.fromMap(map),
-    );
-    
-    // Transaction Management
-    EventRegistry.register<TransactionSignedEvent>(
-      'TransactionSignedEvent',
-      (map) => TransactionSignedEvent.fromMap(map),
-    );
-    
-    EventRegistry.register<TransactionBroadcastEvent>(
-      'TransactionBroadcastEvent',
-      (map) => TransactionBroadcastEvent.fromMap(map),
-    );
-    
-    EventRegistry.register<TransactionImportedEvent>(
-      'TransactionImportedEvent',
-      (map) => TransactionImportedEvent.fromMap(map),
-    );
-    
-    EventRegistry.register<TransactionRecordedEvent>(
-      'TransactionRecordedEvent',
-      (map) => TransactionRecordedEvent.fromMap(map),
-    );
-    
-    EventRegistry.register<TransactionConfirmedEvent>(
-      'TransactionConfirmedEvent',
-      (map) => TransactionConfirmedEvent.fromMap(map),
-    );
+    // INVOICE EVENTS (5)
+    EventRegistry.register<InvoiceCreatedEvent>(InvoiceCreatedEvent.stableTypeName, InvoiceCreatedEvent.fromMap,
+        aliases: const ['InvoiceCreatedEvent']);
+    EventRegistry.register<InvoiceStatusChangedEvent>(InvoiceStatusChangedEvent.stableTypeName, InvoiceStatusChangedEvent.fromMap,
+        aliases: const ['InvoiceStatusChangedEvent']);
+    EventRegistry.register<InvoicePaidEvent>(InvoicePaidEvent.stableTypeName, InvoicePaidEvent.fromMap,
+        aliases: const ['InvoicePaidEvent']);
+    EventRegistry.register<InvoiceExpiredEvent>(InvoiceExpiredEvent.stableTypeName, InvoiceExpiredEvent.fromMap,
+        aliases: const ['InvoiceExpiredEvent']);
+    EventRegistry.register<InvoiceCancelledEvent>(InvoiceCancelledEvent.stableTypeName, InvoiceCancelledEvent.fromMap,
+        aliases: const ['InvoiceCancelledEvent']);
 
-    EventRegistry.register<TransactionStatusUpdatedEvent>(
-      'TransactionStatusUpdatedEvent',
-      (map) => TransactionStatusUpdatedEvent.fromMap(map),
-    );
-
-    // =================================================================
-    // INVOICE EVENTS (5 total)
-    // =================================================================
-    
-    EventRegistry.register<InvoiceCreatedEvent>(
-      'InvoiceCreatedEvent',
-      (map) => InvoiceCreatedEvent.fromMap(map),
-    );
-    
-    EventRegistry.register<InvoiceStatusChangedEvent>(
-      'InvoiceStatusChangedEvent',
-      (map) => InvoiceStatusChangedEvent.fromMap(map),
-    );
-    
-    EventRegistry.register<InvoicePaidEvent>(
-      'InvoicePaidEvent',
-      (map) => InvoicePaidEvent.fromMap(map),
-    );
-    
-    EventRegistry.register<InvoiceExpiredEvent>(
-      'InvoiceExpiredEvent',
-      (map) => InvoiceExpiredEvent.fromMap(map),
-    );
-    
-    EventRegistry.register<InvoiceCancelledEvent>(
-      'InvoiceCancelledEvent',
-      (map) => InvoiceCancelledEvent.fromMap(map),
-    );
-    
-    // =================================================================
-    // BENFORD SPLIT EVENTS (3 total)
-    // =================================================================
-    
-    EventRegistry.register<UTXOSplitInitiatedEvent>(
-      'UTXOSplitInitiatedEvent',
-      (map) => UTXOSplitInitiatedEvent.fromMap(map),
-    );
-    
-    EventRegistry.register<UTXOSplitCompletedEvent>(
-      'UTXOSplitCompletedEvent',
-      (map) => UTXOSplitCompletedEvent.fromMap(map),
-    );
-    
-    EventRegistry.register<AllUTXOsSplitCompletedEvent>(
-      'AllUTXOsSplitCompletedEvent',
-      (map) => AllUTXOsSplitCompletedEvent.fromMap(map),
-    );
-    
-    // =================================================================
-    // PAYMENT CHANNEL EVENTS (11 total)
-    // =================================================================
-    
-    EventRegistry.register<ChannelRequestedEvent>(
-      'ChannelRequestedEvent',
-      (map) => ChannelRequestedEvent.fromMap(map),
-    );
-    
-    EventRegistry.register<ChannelAcceptedEvent>(
-      'ChannelAcceptedEvent',
-      (map) => ChannelAcceptedEvent.fromMap(map),
-    );
-    
-    EventRegistry.register<ChannelRejectedEvent>(
-      'ChannelRejectedEvent',
-      (map) => ChannelRejectedEvent.fromMap(map),
-    );
-    
-    EventRegistry.register<ServerAcceptanceRecordedEvent>(
-      'ServerAcceptanceRecordedEvent',
-      (map) => ServerAcceptanceRecordedEvent.fromMap(map),
-    );
-    
-    EventRegistry.register<RefundBuiltEvent>(
-      'RefundBuiltEvent',
-      (map) => RefundBuiltEvent.fromMap(map),
-    );
-    
-    EventRegistry.register<RefundCountersignedEvent>(
-      'RefundCountersignedEvent',
-      (map) => RefundCountersignedEvent.fromMap(map),
-    );
-    
-    EventRegistry.register<ChannelOpenedEvent>(
-      'ChannelOpenedEvent',
-      (map) => ChannelOpenedEvent.fromMap(map),
-    );
-    
-    EventRegistry.register<PaymentRecordedEvent>(
-      'PaymentRecordedEvent',
-      (map) => PaymentRecordedEvent.fromMap(map),
-    );
-    
-    EventRegistry.register<PaymentAcknowledgedEvent>(
-      'PaymentAcknowledgedEvent',
-      (map) => PaymentAcknowledgedEvent.fromMap(map),
-    );
-    
-    EventRegistry.register<ChannelClosingEvent>(
-      'ChannelClosingEvent',
-      (map) => ChannelClosingEvent.fromMap(map),
-    );
-    
-    EventRegistry.register<ChannelClosedEvent>(
-      'ChannelClosedEvent',
-      (map) => ChannelClosedEvent.fromMap(map),
-    );
-    
-    EventRegistry.register<RefundClaimedEvent>(
-      'RefundClaimedEvent',
-      (map) => RefundClaimedEvent.fromMap(map),
-    );
-
-    EventRegistry.register<ChannelExpiredEvent>(
-      'ChannelExpiredEvent',
-      (map) => ChannelExpiredEvent.fromMap(map),
-    );
-
+    // PAYMENT CHANNEL EVENTS (13)
+    EventRegistry.register<ChannelRequestedEvent>(ChannelRequestedEvent.stableTypeName, ChannelRequestedEvent.fromMap,
+        aliases: const ['ChannelRequestedEvent']);
+    EventRegistry.register<ChannelAcceptedEvent>(ChannelAcceptedEvent.stableTypeName, ChannelAcceptedEvent.fromMap,
+        aliases: const ['ChannelAcceptedEvent']);
+    EventRegistry.register<ChannelRejectedEvent>(ChannelRejectedEvent.stableTypeName, ChannelRejectedEvent.fromMap,
+        aliases: const ['ChannelRejectedEvent']);
+    EventRegistry.register<ServerAcceptanceRecordedEvent>(ServerAcceptanceRecordedEvent.stableTypeName, ServerAcceptanceRecordedEvent.fromMap,
+        aliases: const ['ServerAcceptanceRecordedEvent']);
+    EventRegistry.register<RefundBuiltEvent>(RefundBuiltEvent.stableTypeName, RefundBuiltEvent.fromMap,
+        aliases: const ['RefundBuiltEvent']);
+    EventRegistry.register<RefundCountersignedEvent>(RefundCountersignedEvent.stableTypeName, RefundCountersignedEvent.fromMap,
+        aliases: const ['RefundCountersignedEvent']);
+    EventRegistry.register<ChannelOpenedEvent>(ChannelOpenedEvent.stableTypeName, ChannelOpenedEvent.fromMap,
+        aliases: const ['ChannelOpenedEvent']);
+    EventRegistry.register<PaymentRecordedEvent>(PaymentRecordedEvent.stableTypeName, PaymentRecordedEvent.fromMap,
+        aliases: const ['PaymentRecordedEvent']);
+    EventRegistry.register<PaymentAcknowledgedEvent>(PaymentAcknowledgedEvent.stableTypeName, PaymentAcknowledgedEvent.fromMap,
+        aliases: const ['PaymentAcknowledgedEvent']);
+    EventRegistry.register<ChannelClosingEvent>(ChannelClosingEvent.stableTypeName, ChannelClosingEvent.fromMap,
+        aliases: const ['ChannelClosingEvent']);
+    EventRegistry.register<ChannelClosedEvent>(ChannelClosedEvent.stableTypeName, ChannelClosedEvent.fromMap,
+        aliases: const ['ChannelClosedEvent']);
+    EventRegistry.register<RefundClaimedEvent>(RefundClaimedEvent.stableTypeName, RefundClaimedEvent.fromMap,
+        aliases: const ['RefundClaimedEvent']);
+    EventRegistry.register<ChannelExpiredEvent>(ChannelExpiredEvent.stableTypeName, ChannelExpiredEvent.fromMap,
+        aliases: const ['ChannelExpiredEvent']);
   }
-  
+
   /// Initialize CQRS projections for read-side persistence
   /// 
   /// Projections listen to events from the EventStore and build denormalized
@@ -918,7 +785,7 @@ class LibSpiffyActorSystem {
         storage: _walletStorage,
         walletManagerActor: _walletManager!,
         walletProjection: _walletProjectionRef,
-        eventBroadcaster: broadcastWalletEvent,
+        eventBroadcaster: broadcastImportNotification,
       ));
       
       // Initialize transaction import service
@@ -973,7 +840,7 @@ class LibSpiffyActorSystem {
           networkType: networkType,
         );
       } : null,
-      walletEventsStream: _walletEventBroadcaster.stream,
+      importNotifications: _importNotificationBroadcaster.stream,
     );
     _coordinatorActor = await _actorSystem.spawn('wallet-coordinator', () => _coordinatorInstance!);
 
@@ -1399,18 +1266,43 @@ class LibSpiffyActorSystem {
   }
   
   /// Subscribe to wallet events for a specific wallet
-  /// 
-  /// Returns a stream of events for the given wallet ID. Useful for
-  /// monitoring real-time progress of operations like wallet imports.
-  /// 
-  /// The stream emits all events from the event store filtered by aggregateId (walletId).
+  ///
+  /// Returns the events passed to [broadcastWalletEvent] for [walletId].
+  /// Wallet import progress is not delivered here: it is a
+  /// [WalletImportNotification], see [subscribeToImportNotifications].
   Stream<WalletEvent> subscribeToWalletEvents(String walletId) {
     if (!isInitialized) {
       throw StateError('LibSpiffy actor system not initialized');
     }
-    
+
     // Return filtered broadcast stream
     return _walletEventBroadcaster.stream.where((event) => event.walletId == walletId);
+  }
+
+  /// Broadcast an import notification to [importNotifications] subscribers.
+  ///
+  /// Used by the ImportActor; notifications are in-process only and never
+  /// journaled (audit 2026-09-14 L4).
+  void broadcastImportNotification(WalletImportNotification notification) {
+    if (_importNotificationBroadcaster.isClosed) return;
+    _importNotificationBroadcaster.add(notification);
+  }
+
+  /// Progress, completion and failure notifications of every wallet import.
+  Stream<WalletImportNotification> get importNotifications =>
+      _importNotificationBroadcaster.stream;
+
+  /// Import notifications for [walletId]: [WalletImportStartedEvent],
+  /// [WalletImportProgressEvent], [WalletImportCompletedEvent],
+  /// [WalletImportFailedEvent] and the per-UTXO / per-transaction
+  /// confirmations. Use this to follow [importWalletFromXpriv] and
+  /// [importWalletFromWif].
+  Stream<WalletImportNotification> subscribeToImportNotifications(String walletId) {
+    if (!isInitialized) {
+      throw StateError('LibSpiffy actor system not initialized');
+    }
+    return _importNotificationBroadcaster.stream
+        .where((notification) => notification.walletId == walletId);
   }
 
   /// Import wallet from extended private key (xpriv)
@@ -1422,7 +1314,7 @@ class LibSpiffyActorSystem {
   /// 4. Import UTXOs into the wallet
   /// 
   /// The import runs asynchronously in the ImportActor. Progress can be monitored
-  /// by subscribing to wallet events from the event store.
+  /// with [subscribeToImportNotifications].
   /// 
   /// Returns immediately after sending the import message to the actor.
   /// Check wallet events or query the wallet projection for completion status.
@@ -1457,7 +1349,7 @@ class LibSpiffyActorSystem {
   /// 4. Import UTXOs into the wallet
   /// 
   /// The import runs asynchronously in the ImportActor. Progress can be monitored
-  /// by subscribing to wallet events from the event store.
+  /// with [subscribeToImportNotifications].
   /// 
   /// Returns immediately after sending the import message to the actor.
   /// Check wallet events or query the wallet projection for completion status.
@@ -1517,6 +1409,7 @@ class LibSpiffyActorSystem {
     _lifecycle = _Lifecycle.shutDown;
     if (!wasStarted) {
       await _walletEventBroadcaster.close();
+      await _importNotificationBroadcaster.close();
       await _channelEventBroadcaster.close();
       return;
     }
@@ -1611,6 +1504,7 @@ class LibSpiffyActorSystem {
       await _channelProjectionAppliedSub?.cancel();
       _channelProjectionAppliedSub = null;
       await _walletEventBroadcaster.close();
+      await _importNotificationBroadcaster.close();
       await _channelEventBroadcaster.close();
 
     } finally {

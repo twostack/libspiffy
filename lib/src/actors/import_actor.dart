@@ -13,7 +13,6 @@ import '../services/script_type_registry.dart';
 import '../storage/read_model_storage.dart';
 import '../models/blockchain_data_models.dart';
 import '../models/bitcoin_utxo.dart'; // For UTXOStatus
-import '../models/wallet_event.dart';
 import '../core/wallet_commands.dart';
 import '../core/wallet_events.dart';
 import 'wallet_messages.dart';
@@ -46,7 +45,7 @@ class ImportActor extends Actor {
   final ReadModelStorage _storage;
   final ActorRef _walletManagerActor;
   final ActorRef? _walletProjection;
-  final void Function(WalletEvent)? _eventBroadcaster;
+  final void Function(WalletImportNotification)? _eventBroadcaster;
 
   /// Window for a single acknowledgement (aggregate reply or projection
   /// apply). `ask` timeouts are this plus [_askSlack] so dactor's own timeout
@@ -75,7 +74,7 @@ class ImportActor extends Actor {
     required ReadModelStorage storage,
     required ActorRef walletManagerActor,
     ActorRef? walletProjection,
-    void Function(WalletEvent)? eventBroadcaster,
+    void Function(WalletImportNotification)? eventBroadcaster,
     Duration ackTimeout = const Duration(seconds: 30),
   })  : _dataSource = dataSource,
         _discoveryService = AddressDiscoveryService(dataSource),
@@ -958,7 +957,7 @@ class ImportActor extends Actor {
     }
   }
 
-  Future<void> _notifyEvent(String walletId, WalletEvent event) async {
+  Future<void> _notifyEvent(String walletId, WalletImportNotification event) async {
     // Events are created and persisted via commands to the wallet aggregate
     // Broadcast to UI subscribers if broadcaster is available
     _eventBroadcaster?.call(event);

@@ -1,7 +1,13 @@
 import 'package:eventador/eventador.dart';
 
-/// Base class for all channel events
-abstract class ChannelEvent extends Event {
+/// Base class for all channel events.
+///
+/// An aggregate event of the `PaymentChannel` aggregate, keyed by
+/// [channelId]. Serialization goes through [SerializableEvent], so the map
+/// carries only [persistableMetadata]: transient values such as a `replyTo`
+/// ActorRef stay on the in-memory event and never reach the journal (audit
+/// 2026-09-14 L2).
+abstract class ChannelEvent extends AggregateEventBase with SerializableEvent {
   final String channelId;
 
   ChannelEvent({
@@ -11,6 +17,8 @@ abstract class ChannelEvent extends Event {
     int? version,
     Map<String, dynamic>? metadata,
   }) : super(
+          aggregateId: channelId,
+          aggregateType: 'PaymentChannel',
           eventId: eventId,
           timestamp: timestamp,
           version: version,
@@ -21,17 +29,10 @@ abstract class ChannelEvent extends Event {
   Map<String, dynamic> getChannelEventData();
 
   @override
-  Map<String, dynamic> toMap() {
-    return {
-      'type': typeName,  // Must match eventador's Event.toMap()
-      'eventId': eventId,
-      'timestamp': timestamp.toIso8601String(),
-      'version': version,
-      'channelId': channelId,
-      'metadata': metadata,
-      ...getChannelEventData(),
-    };
-  }
+  Map<String, dynamic> getEventData() => {
+        'channelId': channelId,
+        ...getChannelEventData(),
+      };
 
   /// Helper to parse timestamp from either String or DateTime
   /// Handles both Isar (preserves DateTime) and JSON/CBOR (stores as String)
@@ -49,6 +50,13 @@ abstract class ChannelEvent extends Event {
 
 /// Channel has been requested by a client
 class ChannelRequestedEvent extends ChannelEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'channel.requested';
+
+  @override
+  String get typeName => stableTypeName;
+
   final String walletId;
   final String clientPeerId;
   final String serverPeerId;
@@ -117,6 +125,13 @@ class ChannelRequestedEvent extends ChannelEvent {
 
 /// Server has accepted a channel request
 class ChannelAcceptedEvent extends ChannelEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'channel.accepted';
+
+  @override
+  String get typeName => stableTypeName;
+
   final String walletId;
   final String clientPeerId;
   final String clientPubKeyHex;
@@ -189,6 +204,13 @@ class ChannelAcceptedEvent extends ChannelEvent {
 
 /// Server has rejected a channel request
 class ChannelRejectedEvent extends ChannelEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'channel.rejected';
+
+  @override
+  String get typeName => stableTypeName;
+
   final String reason;
 
   ChannelRejectedEvent({
@@ -227,6 +249,13 @@ class ChannelRejectedEvent extends ChannelEvent {
 /// the server's acceptance via P2P. It stores the server's cryptographic
 /// info needed for building channel transactions.
 class ServerAcceptanceRecordedEvent extends ChannelEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'channel.server_acceptance_recorded';
+
+  @override
+  String get typeName => stableTypeName;
+
   final String serverPubKeyHex;
   final String serverAddressB58;
 
@@ -271,6 +300,13 @@ class ServerAcceptanceRecordedEvent extends ChannelEvent {
 
 /// Refund transaction has been built (client side)
 class RefundBuiltEvent extends ChannelEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'channel.refund.built';
+
+  @override
+  String get typeName => stableTypeName;
+
   final String fundingTxId;
   final int fundingOutputIndex;
   final String fundingTxHex;
@@ -323,6 +359,13 @@ class RefundBuiltEvent extends ChannelEvent {
 
 /// Server has signed the refund transaction
 class RefundCountersignedEvent extends ChannelEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'channel.refund.countersigned';
+
+  @override
+  String get typeName => stableTypeName;
+
   final String serverSignatureHex;
 
   RefundCountersignedEvent({
@@ -363,6 +406,13 @@ class RefundCountersignedEvent extends ChannelEvent {
 
 /// Channel is now open (funding TX broadcast)
 class ChannelOpenedEvent extends ChannelEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'channel.opened';
+
+  @override
+  String get typeName => stableTypeName;
+
   final String fundingTxId;
   final int fundingOutputIndex;
   final String fundingTxHex;
@@ -425,6 +475,13 @@ class ChannelOpenedEvent extends ChannelEvent {
 
 /// Payment has been recorded (client side - built and signed)
 class PaymentRecordedEvent extends ChannelEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'channel.payment.recorded';
+
+  @override
+  String get typeName => stableTypeName;
+
   final BigInt amountSats;
   final BigInt newClientBalanceSats;
   final BigInt newServerBalanceSats;
@@ -493,6 +550,13 @@ class PaymentRecordedEvent extends ChannelEvent {
 
 /// Payment has been acknowledged (server side - verified and countersigned)
 class PaymentAcknowledgedEvent extends ChannelEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'channel.payment.acknowledged';
+
+  @override
+  String get typeName => stableTypeName;
+
   final BigInt amountSats;
   final int sequenceNumber;
   final BigInt newClientBalanceSats;
@@ -553,6 +617,13 @@ class PaymentAcknowledgedEvent extends ChannelEvent {
 
 /// Channel close has been initiated
 class ChannelClosingEvent extends ChannelEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'channel.closing';
+
+  @override
+  String get typeName => stableTypeName;
+
   final String? reason;
   final String initiator; // 'client' or 'server'
   final BigInt clientBalanceSats;
@@ -601,6 +672,13 @@ class ChannelClosingEvent extends ChannelEvent {
 
 /// Channel has been closed (settlement TX broadcast)
 class ChannelClosedEvent extends ChannelEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'channel.closed';
+
+  @override
+  String get typeName => stableTypeName;
+
   final String settlementTxId;
   final BigInt finalClientBalanceSats;
   final BigInt finalServerBalanceSats;
@@ -657,6 +735,13 @@ class ChannelClosedEvent extends ChannelEvent {
 /// records the broadcast txid if any (best-effort — the broadcast itself is
 /// handled out-of-band by the expiry manager).
 class ChannelExpiredEvent extends ChannelEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'channel.expired';
+
+  @override
+  String get typeName => stableTypeName;
+
   /// Optional txid of refund (client) or settlement (server) TX broadcast
   /// in response to the expiry. Null when nothing was broadcast (e.g., no
   /// refund TX available, or server received no payments).
@@ -702,6 +787,13 @@ class ChannelExpiredEvent extends ChannelEvent {
 
 /// Refund has been claimed after channel expiry
 class RefundClaimedEvent extends ChannelEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'channel.refund.claimed';
+
+  @override
+  String get typeName => stableTypeName;
+
   final String refundTxId;
   final BigInt refundAmountSats;
 

@@ -9,14 +9,12 @@ import 'dart:io';
 import 'package:test/test.dart';
 import 'package:dactor/dactor.dart';
 import 'package:isar/isar.dart';
-import 'package:eventador/eventador.dart';
 import 'package:libspiffy/libspiffy.dart';
 import 'package:libspiffy/src/actors/libspiffy_actor_system.dart';
 import 'package:libspiffy/src/actors/payment_channel_messages.dart';
 import 'package:libspiffy/src/actors/payment_channel_manager_actor.dart';
 import 'package:libspiffy/src/actors/wallet_messages.dart';
 import 'package:libspiffy/src/storage/payment_channel_entity.dart';
-import 'package:libspiffy/src/core/channel_events.dart';
 import 'isar_test_helper.dart';
 
 void main() {
@@ -55,22 +53,7 @@ void main() {
       );
       
       // Register channel events for deserialization
-      EventRegistry.register<ChannelRequestedEvent>(
-        'ChannelRequestedEvent',
-        (map) => ChannelRequestedEvent.fromMap(map),
-      );
-      EventRegistry.register<ChannelAcceptedEvent>(
-        'ChannelAcceptedEvent',
-        (map) => ChannelAcceptedEvent.fromMap(map),
-      );
-      EventRegistry.register<RefundCountersignedEvent>(
-        'RefundCountersignedEvent',
-        (map) => RefundCountersignedEvent.fromMap(map),
-      );
-      EventRegistry.register<ChannelOpenedEvent>(
-        'ChannelOpenedEvent',
-        (map) => ChannelOpenedEvent.fromMap(map),
-      );
+      LibSpiffyActorSystem.registerEventTypes();
       
       // The ChannelProjection is already registered by LibSpiffy during initialization
       // We don't need to register it manually

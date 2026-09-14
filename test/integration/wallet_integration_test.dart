@@ -350,34 +350,7 @@ void main() {
 
 void _registerWalletEvents() {
   try {
-    EventRegistry.register<WalletCreatedEvent>(
-      'WalletCreatedEvent',
-      (map) => WalletCreatedEvent.fromMap(map),
-    );
-    EventRegistry.register<WalletConfigurationUpdatedEvent>(
-      'WalletConfigurationUpdatedEvent',
-      (map) => WalletConfigurationUpdatedEvent.fromMap(map),
-    );
-    EventRegistry.register<AddressGeneratedEvent>(
-      'AddressGeneratedEvent',
-      (map) => AddressGeneratedEvent.fromMap(map),
-    );
-    EventRegistry.register<AddressLabelUpdatedEvent>(
-      'AddressLabelUpdatedEvent',
-      (map) => AddressLabelUpdatedEvent.fromMap(map),
-    );
-    EventRegistry.register<UTXOReceivedEvent>(
-      'UTXOReceivedEvent',
-      (map) => UTXOReceivedEvent.fromMap(map),
-    );
-    EventRegistry.register<UTXOSpentEvent>(
-      'UTXOSpentEvent',
-      (map) => UTXOSpentEvent.fromMap(map),
-    );
-    EventRegistry.register<TransactionSignedEvent>(
-      'TransactionSignedEvent',
-      (map) => TransactionSignedEvent.fromMap(map),
-    );
+    LibSpiffyActorSystem.registerEventTypes();
   } catch (e) {
     print('⚠️  Some event types may not be implemented yet: $e');
   }

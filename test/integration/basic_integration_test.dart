@@ -33,10 +33,7 @@ void main() {
       secureStorage = InMemorySecureStorage();
       
       EventRegistry.clear();
-      EventRegistry.register<WalletCreatedEvent>(
-        'WalletCreatedEvent',
-        (map) => WalletCreatedEvent.fromMap(map),
-      );
+      LibSpiffyActorSystem.registerEventTypes();
     });
 
     tearDown(() async {

@@ -14,6 +14,36 @@ import 'package:spiffynode/spiffy_node.dart';
 import '../utils/crypto_utils.dart';
 import 'crypto_service.dart';
 
+/// [CryptoService] backed by dartsv.
+///
+/// ## Key derivation and its trust boundary (audit 2026-09-14 KM-10)
+///
+/// HD wallets use a two-level, entirely non-hardened scheme directly under
+/// the wallet's root key: receive keys are `m/0/i`, change keys `m/1/i`
+/// (see [derivePrivateKey], [generateReceivingAddress],
+/// [generateChangeAddress]). For a mnemonic wallet the root is the BIP32
+/// master key; for an xpriv wallet it is the imported key. The matching
+/// extended public key is what the wallet stores as its xpub
+/// (`wallet_hdpubkey_<walletId>` in secure storage) and what watch-only
+/// wallets are created from.
+///
+/// Because no level is hardened, **that xpub together with any single
+/// derived child private key yields the root extended private key**, and
+/// with it every key of the wallet (the standard BIP32 non-hardened parent
+/// recovery). Consequences:
+///
+/// * The stored xpub is not "just public data". It reveals every address
+///   and the balance, and it is one leaked child key away from full spend
+///   authority. Keep it in secure storage and out of logs and the event
+///   journal.
+/// * **Per-address private-key export (for example handing out the WIF of a
+///   receive address, or a sweep/"export key" feature) must never be offered
+///   under this scheme.** It would require a hardened level between the root
+///   and the exported keys (for example `m/44'/236'/0'/0/i`), which changes
+///   every derived address and therefore needs a wallet migration.
+/// * The same applies to any component that receives child private keys
+///   (plugins, signing callbacks, remote signers): it must be trusted with
+///   the whole wallet, not just the one address.
 class DartSVCryptoService implements CryptoService {
   final dartsv.NetworkType _networkType;
   static final SHA256Digest _sha256Digest = SHA256Digest();
@@ -68,6 +98,10 @@ class DartSVCryptoService implements CryptoService {
   /// in-tree caller passes 0, so receive keys are m/0/{index}). Before the
   /// 2026-09 audit (H3) [isChange] was ignored and change-chain keys could
   /// never be derived. [coinType] is unused in this scheme.
+  ///
+  /// The returned key is a non-hardened child of the wallet root: together
+  /// with the wallet xpub it recovers the root xpriv. Use it to sign inside
+  /// the wallet; never export it (see the class documentation, KM-10).
   @override
   Future<dartsv.SVPrivateKey> derivePrivateKey(
     dartsv.HDPrivateKey hdPrivateKey,

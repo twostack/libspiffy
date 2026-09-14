@@ -6,7 +6,6 @@ import 'package:eventador/eventador.dart';
 import 'package:libspiffy/libspiffy.dart';
 import 'package:libspiffy/src/core/bitcoin_wallet_aggregate.dart';
 import 'package:libspiffy/src/core/wallet_commands.dart';
-import 'package:libspiffy/src/core/wallet_events.dart';
 
 /// Example of Phase 1 Expansion: ARC Service Integration Tests
 ///
@@ -134,10 +133,7 @@ void main() {
 
 void _registerWalletEvents() {
   try {
-    EventRegistry.register<WalletCreatedEvent>(
-      'WalletCreatedEvent',
-          (map) => WalletCreatedEvent.fromMap(map),
-    );
+    LibSpiffyActorSystem.registerEventTypes();
     // Register additional events for ARC integration
     // EventRegistry.register<TransactionBroadcastEvent>...
   } catch (e) {

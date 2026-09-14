@@ -12,6 +12,7 @@ import 'package:eventador/eventador.dart';
 import 'package:dartsv/dartsv.dart';
 import 'package:isar/isar.dart';
 
+import 'package:libspiffy/src/actors/libspiffy_actor_system.dart';
 import 'package:libspiffy/src/actors/payment_channel_manager_actor.dart';
 import 'package:libspiffy/src/actors/payment_channel_messages.dart';
 import 'package:libspiffy/src/actors/wallet_manager_actor.dart';
@@ -20,8 +21,6 @@ import 'package:libspiffy/src/services/crypto_service.dart';
 import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 import 'package:libspiffy/src/storage/secure_storage.dart';
 import 'package:libspiffy/src/storage/in_memory_secure_storage.dart';
-import 'package:libspiffy/src/core/wallet_events.dart';
-import 'package:libspiffy/src/core/channel_events.dart';
 
 void main() {
   late Isar isar;
@@ -54,42 +53,7 @@ void main() {
     cryptoService = DartSVCryptoService();
     
     // Register event types for deserialization
-    EventRegistry.register<WalletCreatedEvent>(
-      'WalletCreatedEvent',
-      (map) => WalletCreatedEvent.fromMap(map),
-    );
-    EventRegistry.register<AddressGeneratedEvent>(
-      'AddressGeneratedEvent',
-      (map) => AddressGeneratedEvent.fromMap(map),
-    );
-    EventRegistry.register<ChannelRequestedEvent>(
-      'ChannelRequestedEvent',
-      (map) => ChannelRequestedEvent.fromMap(map),
-    );
-    EventRegistry.register<ChannelAcceptedEvent>(
-      'ChannelAcceptedEvent',
-      (map) => ChannelAcceptedEvent.fromMap(map),
-    );
-    EventRegistry.register<RefundCountersignedEvent>(
-      'RefundCountersignedEvent',
-      (map) => RefundCountersignedEvent.fromMap(map),
-    );
-    EventRegistry.register<ChannelOpenedEvent>(
-      'ChannelOpenedEvent',
-      (map) => ChannelOpenedEvent.fromMap(map),
-    );
-    EventRegistry.register<PaymentRecordedEvent>(
-      'PaymentRecordedEvent',
-      (map) => PaymentRecordedEvent.fromMap(map),
-    );
-    EventRegistry.register<PaymentAcknowledgedEvent>(
-      'PaymentAcknowledgedEvent',
-      (map) => PaymentAcknowledgedEvent.fromMap(map),
-    );
-    EventRegistry.register<ChannelClosedEvent>(
-      'ChannelClosedEvent',
-      (map) => ChannelClosedEvent.fromMap(map),
-    );
+    LibSpiffyActorSystem.registerEventTypes();
     
     // Initialize actor system
     actorSystem = TestActorSystem();

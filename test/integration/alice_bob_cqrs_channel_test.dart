@@ -24,12 +24,11 @@ import 'package:dactor_test/dactor_test.dart';
 import 'package:isar/isar.dart';
 import 'package:eventador/eventador.dart';
 import 'package:dartsv/dartsv.dart';
+import 'package:libspiffy/src/actors/libspiffy_actor_system.dart';
 import 'package:libspiffy/src/actors/payment_channel_manager_actor.dart';
 import 'package:libspiffy/src/actors/payment_channel_messages.dart';
 import 'package:libspiffy/src/actors/wallet_messages.dart';
 import 'package:libspiffy/src/actors/wallet_manager_actor.dart';
-import 'package:libspiffy/src/core/channel_events.dart';
-import 'package:libspiffy/src/core/wallet_events.dart';
 import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 import 'package:libspiffy/src/storage/in_memory_secure_storage.dart';
 import 'isar_test_helper.dart';
@@ -85,34 +84,7 @@ void main() {
       aliceSecureStorage = InMemorySecureStorage();
 
       // Register events for Alice
-      EventRegistry.register<WalletCreatedEvent>(
-        'WalletCreatedEvent',
-        (map) => WalletCreatedEvent.fromMap(map),
-      );
-      EventRegistry.register<AddressGeneratedEvent>(
-        'AddressGeneratedEvent',
-        (map) => AddressGeneratedEvent.fromMap(map),
-      );
-      EventRegistry.register<ChannelRequestedEvent>(
-        'ChannelRequestedEvent',
-        (map) => ChannelRequestedEvent.fromMap(map),
-      );
-      EventRegistry.register<ChannelAcceptedEvent>(
-        'ChannelAcceptedEvent',
-        (map) => ChannelAcceptedEvent.fromMap(map),
-      );
-      EventRegistry.register<ServerAcceptanceRecordedEvent>(
-        'ServerAcceptanceRecordedEvent',
-        (map) => ServerAcceptanceRecordedEvent.fromMap(map),
-      );
-      EventRegistry.register<RefundCountersignedEvent>(
-        'RefundCountersignedEvent',
-        (map) => RefundCountersignedEvent.fromMap(map),
-      );
-      EventRegistry.register<ChannelOpenedEvent>(
-        'ChannelOpenedEvent',
-        (map) => ChannelOpenedEvent.fromMap(map),
-      );
+      LibSpiffyActorSystem.registerEventTypes();
 
       // Create Alice's actor system
       aliceActorSystem = TestActorSystem();

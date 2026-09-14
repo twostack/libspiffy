@@ -1,13 +1,10 @@
-import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:convert/convert.dart';
-import 'package:cryptography/cryptography.dart' as cryptography;
 import 'package:dartsv/dartsv.dart';
 import 'package:logging/logging.dart' hide Level;
-import 'package:unorm_dart/unorm_dart.dart';
 import 'package:crypto/crypto.dart' as crypto;
 import '../storage/read_model_storage.dart' show MerkleProof;
 import 'bump.dart';
@@ -42,24 +39,6 @@ class CryptoUtils {
       throw Exception('Failed to load word list: $e');
     }
   };
-
-  static String salt(String? password) {
-    return 'mnemonic${password ?? ""}';
-  }
-
-  static Future<List<int>> toPbkdf2Seed(String mnemonic,
-      [String password = '']) async {
-    final mnemonicBuffer = nfkd(mnemonic);
-    final saltBuffer = utf8.encode(salt(nfkd(password)));
-
-    final pbkdf2 = cryptography.Pbkdf2(
-        macAlgorithm: cryptography.Hmac.sha256(), iterations: 10000, bits: 256);
-
-    final secret = await pbkdf2.deriveKeyFromPassword(
-        password: mnemonicBuffer, nonce: saltBuffer);
-
-    return await secret.extractBytes();
-  }
 
   // For testing purposes
   static Future<bool> Function(String) validateWordsImpl = defaultValidateWords;

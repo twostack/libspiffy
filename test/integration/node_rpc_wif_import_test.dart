@@ -75,7 +75,7 @@ class TestContext {
   final Isar isar;
   final LibSpiffyActorSystem libspiffy;
   final IsarWalletStorage storage;
-  final List<WalletEvent> capturedEvents = [];
+  final List<WalletImportNotification> capturedEvents = [];
 
   TestContext({
     required this.testDir,
@@ -144,7 +144,7 @@ void main() {
 
     try {
       // Subscribe to wallet events
-      final eventSub = context.libspiffy.subscribeToWalletEvents(walletId).listen((event) {
+      final eventSub = context.libspiffy.subscribeToImportNotifications(walletId).listen((event) {
         context.capturedEvents.add(event);
         print('📢 ${event.runtimeType}');
       });
@@ -170,7 +170,7 @@ void main() {
       // Step 3: Wait for import to complete
       print('Step 3 — Waiting for import completion (max 30s)...');
       final completer = Completer<WalletImportCompletedEvent>();
-      final completionSub = context.libspiffy.subscribeToWalletEvents(walletId).listen((event) {
+      final completionSub = context.libspiffy.subscribeToImportNotifications(walletId).listen((event) {
         if (event is WalletImportCompletedEvent && !completer.isCompleted) {
           completer.complete(event);
         }

@@ -49,6 +49,13 @@ abstract class InvoiceEvent extends AggregateEventBase with SerializableEvent {
 
 /// Event fired when an invoice is created
 class InvoiceCreatedEvent extends InvoiceEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'invoice.created';
+
+  @override
+  String get typeName => stableTypeName;
+
   /// Legacy: P2PKH addresses for the invoice
   final List<String> addresses;
 
@@ -129,6 +136,13 @@ class InvoiceCreatedEvent extends InvoiceEvent {
 
 /// Event fired when invoice status changes
 class InvoiceStatusChangedEvent extends InvoiceEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'invoice.status_changed';
+
+  @override
+  String get typeName => stableTypeName;
+
   final InvoiceStatus oldStatus;
   final InvoiceStatus newStatus;
   final String? reason;
@@ -161,16 +175,28 @@ class InvoiceStatusChangedEvent extends InvoiceEvent {
     };
   }
 
+  /// Reads an [InvoiceStatus] stored by name.
+  ///
+  /// An unknown name throws a [FormatException] rather than being mapped to
+  /// a default: replaying a status this build does not know (a corrupt row,
+  /// or a journal written by a newer release) as, say, `pending` would
+  /// silently reopen the invoice (audit 2026-09-14 L2).
+  static InvoiceStatus _parseStatus(Map<String, dynamic> map, String field) {
+    final name = map[field];
+    for (final status in InvoiceStatus.values) {
+      if (status.name == name) return status;
+    }
+    throw FormatException(
+        'InvoiceStatusChangedEvent ${map['eventId']}: unknown $field "$name"; '
+        'expected one of ${InvoiceStatus.values.map((s) => s.name).join(', ')}');
+  }
+
   static InvoiceStatusChangedEvent fromMap(Map<String, dynamic> map) {
     return InvoiceStatusChangedEvent(
       invoiceId: map['invoiceId'] as String,
       walletId: map['walletId'] as String,
-      oldStatus: InvoiceStatus.values.firstWhere(
-        (s) => s.name == map['oldStatus'],
-      ),
-      newStatus: InvoiceStatus.values.firstWhere(
-        (s) => s.name == map['newStatus'],
-      ),
+      oldStatus: _parseStatus(map, 'oldStatus'),
+      newStatus: _parseStatus(map, 'newStatus'),
       reason: map['reason'] as String?,
       eventId: map['eventId'] as String?,
       timestamp: map['timestamp'] != null
@@ -186,6 +212,13 @@ class InvoiceStatusChangedEvent extends InvoiceEvent {
 
 /// Event fired when an invoice is paid
 class InvoicePaidEvent extends InvoiceEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'invoice.paid';
+
+  @override
+  String get typeName => stableTypeName;
+
   final String txid;
   final BigInt amountReceived;
   final List<String> addressesPaidTo;
@@ -246,6 +279,13 @@ class InvoicePaidEvent extends InvoiceEvent {
 
 /// Event fired when an invoice expires
 class InvoiceExpiredEvent extends InvoiceEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'invoice.expired';
+
+  @override
+  String get typeName => stableTypeName;
+
   InvoiceExpiredEvent({
     required String invoiceId,
     required String walletId,
@@ -285,6 +325,13 @@ class InvoiceExpiredEvent extends InvoiceEvent {
 
 /// Event fired when an invoice is cancelled
 class InvoiceCancelledEvent extends InvoiceEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'invoice.cancelled';
+
+  @override
+  String get typeName => stableTypeName;
+
   final String? reason;
 
   InvoiceCancelledEvent({

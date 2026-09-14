@@ -532,9 +532,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       case UTXOReservationRenewedEvent:
         _applyUTXOReservationRenewed(event as UTXOReservationRenewedEvent);
         break;
-      case WalletImportStartedEvent:
-        _applyWalletImportStarted(event as WalletImportStartedEvent);
-        break;
       case AddressDiscoveredEvent:
         _applyAddressDiscovered(event as AddressDiscoveredEvent);
         break;
@@ -549,12 +546,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         break;
       case TransactionStatusUpdatedEvent:
         // Status update is projection-only — no aggregate state change needed
-        break;
-      case WalletImportCompletedEvent:
-        _applyWalletImportCompleted(event as WalletImportCompletedEvent);
-        break;
-      case WalletImportFailedEvent:
-        _applyWalletImportFailed(event as WalletImportFailedEvent);
         break;
       case UTXOSplitInitiatedEvent:
         _applyUTXOSplitInitiated(event as UTXOSplitInitiatedEvent);
@@ -592,7 +583,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     final networkTypeStr = NetworkName.canonical(metadata['network'] as String?);
     final networkType = NetworkName.toDartsv(networkTypeStr);
 
-    // Track HD public key xpub for inclusion in the event (public data, safe to persist)
+    // Account xpub: goes to secure storage only, never into the event (KM-8)
     String? hdPublicKeyXpub;
 
     if (command.wif != null && command.wif!.isNotEmpty) {
@@ -715,7 +706,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       walletName: command.walletName,
       rootAddress: rootAddress,
       walletType: walletType,
-      hdPublicKeyXpub: hdPublicKeyXpub,
       walletMetadata: {
         ...?command.walletMetadata,
         'network': networkTypeStr,
@@ -2563,14 +2553,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
   // WALLET IMPORT EVENT HANDLERS
   // ==========================================================================
 
-  void _applyWalletImportStarted(WalletImportStartedEvent event) {
-    // Track import in metadata
-    currentState.metadata['importInProgress'] = true;
-    currentState.metadata['importStartedAt'] = event.timestamp.toIso8601String();
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
-  }
-
   void _applyAddressDiscovered(AddressDiscoveredEvent event) {
     // Add discovered address to wallet
     currentState.addresses[event.address] = 'Imported (${event.isChange ? 'change' : 'receive'} #${event.derivationIndex})';
@@ -2634,29 +2616,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     currentState.lastModified = event.timestamp;
   }
 
-  void _applyWalletImportCompleted(WalletImportCompletedEvent event) {
-    // Mark import as complete
-    currentState.metadata['importInProgress'] = false;
-    currentState.metadata['importCompletedAt'] = event.timestamp.toIso8601String();
-    currentState.metadata['totalImportedAddresses'] = event.totalAddresses;
-    currentState.metadata['totalImportedTransactions'] = event.totalTransactions;
-    
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
-  }
-
-  void _applyWalletImportFailed(WalletImportFailedEvent event) {
-    // Mark import as failed
-    currentState.metadata['importInProgress'] = false;
-    currentState.metadata['importFailedAt'] = event.timestamp.toIso8601String();
-    currentState.metadata['importError'] = event.error;
-    if (event.partialProgress != null) {
-      currentState.metadata['importPartialProgress'] = event.partialProgress;
-    }
-    
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
-  }
   
   /// Helper method to recalculate wallet balances after UTXO changes
   void _recalculateBalances() {

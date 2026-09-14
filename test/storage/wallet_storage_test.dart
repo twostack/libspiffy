@@ -10,6 +10,7 @@ import 'channel_read_model_contract.dart';
 import 'invoice_read_model_contract.dart';
 import 'header_reorg_contract.dart';
 import 'read_model_keying_contract.dart';
+import 'wallet_lifecycle_contract.dart';
 
 /// Test event class for testing storage operations
 class TestWalletEvent extends WalletEvent {
@@ -304,23 +305,14 @@ void main() {
     });
 
     group('Error Handling', () {
-      test('should throw StorageException for operations on non-existent wallet', () async {
+      test('read-model queries for a non-existent wallet return empty results (audit S-15)', () async {
+        // The in-memory backend used to throw where Isar and Postgres return
+        // empty; the rule is now shared (wallet_lifecycle_contract.dart).
         const nonExistentWallet = 'non_existent_wallet';
 
-        expect(
-          () => storage.getUTXOs(nonExistentWallet),
-          throwsA(isA<StorageException>()),
-        );
-
-        expect(
-          () => storage.getAvailableUTXOs(nonExistentWallet),
-          throwsA(isA<StorageException>()),
-        );
-
-        expect(
-          () => storage.getBalance(nonExistentWallet),
-          throwsA(isA<StorageException>()),
-        );
+        expect(await storage.getUTXOs(nonExistentWallet), isEmpty);
+        expect(await storage.getAvailableUTXOs(nonExistentWallet), isEmpty);
+        expect(await storage.getBalance(nonExistentWallet), BigInt.zero);
       });
 
       test('should handle operations on deleted wallet gracefully', () async {
@@ -340,12 +332,10 @@ void main() {
         // Delete wallet
         await storage.deleteWallet(walletId);
 
-        // Operations should throw exceptions
-        expect(
-          () => storage.getUTXOs(walletId),
-          throwsA(isA<StorageException>()),
-        );
-        
+        // The read model is empty; the event stream is gone.
+        expect(await storage.walletExists(walletId), isFalse);
+        expect(await storage.getUTXOs(walletId), isEmpty);
+
         expect(
           () => storage.loadEvents(walletId),
           throwsA(isA<StorageException>()),
@@ -444,6 +434,7 @@ void main() {
     var counter = 0;
     setUp(() => storage = InMemoryWalletStorage());
     defineReadModelKeyingContract(() => storage, unique: () => 'm${counter++}');
+    defineWalletLifecycleContract(() => storage, unique: () => 'ml${counter++}');
 
     test('0v3: BlockHeaderChain reorg A -> B -> A persists branch A across a restart',
         () async {

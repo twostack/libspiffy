@@ -83,8 +83,10 @@ void main() {
         () => PaymentCoordinatorActor(
           walletManager: probe,
           walletProjection: probe,
-          // Throws StorageException('Wallet not found') for any wallet.
-          storage: InMemoryWalletStorage(),
+          // Throws StorageException('Wallet not found') for any wallet. (The
+          // in-memory backend itself returns empty for unknown wallets since
+          // audit S-15, so the failure is injected.)
+          storage: _WalletNotFoundStorage(),
         ),
       );
 
@@ -206,4 +208,12 @@ class _Collector extends Actor {
   Future<void> onMessage(dynamic message) async {
     received.add(message);
   }
+}
+
+/// Read model whose payment-UTXO lookup fails, to drive the coordinator's
+/// catch path.
+class _WalletNotFoundStorage extends InMemoryWalletStorage {
+  @override
+  Future<List<BitcoinUtxo>> getPaymentUTXOs(String walletId) async =>
+      throw StorageException('Wallet not found: $walletId');
 }

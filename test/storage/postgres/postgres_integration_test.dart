@@ -43,6 +43,7 @@ import '../channel_read_model_contract.dart';
 import '../invoice_read_model_contract.dart';
 import '../header_reorg_contract.dart';
 import '../read_model_keying_contract.dart';
+import '../wallet_lifecycle_contract.dart';
 
 /// Get PostgreSQL configuration from environment or use defaults
 PostgresConfig getTestConfig() {
@@ -150,7 +151,7 @@ void main() {
 
       // Verify applied migrations
       final applied = await migrations.getAppliedMigrations();
-      expect(applied, hasLength(6));
+      expect(applied, hasLength(7));
       expect(applied.first.name, equals('initial_schema'));
       expect(applied.last.name, equals('nullable_channel_server_key'));
     });
@@ -171,6 +172,9 @@ void main() {
 
       await migrations.migrate();
       expect(await migrations.getCurrentVersion(), equals(7));
+
+      expect(await migrations.rollback(), isTrue);
+      expect(await migrations.getCurrentVersion(), equals(6));
 
       expect(await migrations.rollback(), isTrue);
       expect(await migrations.getCurrentVersion(), equals(5));
@@ -237,8 +241,11 @@ void main() {
         await storage.close();
       }
 
-      // Down keeps the first-stored row so the global keys can be restored.
+      // v007 and v006 first; then v005's down keeps the first-stored row
+      // so the global keys can be restored.
       expect(await migrations.rollback(), isTrue); // v007
+      expect(await migrations.rollback(), isTrue); // v006
+      expect(await migrations.getCurrentVersion(), equals(5));
       expect(await migrations.rollback(), isTrue);
       expect(await migrations.getCurrentVersion(), equals(4));
       final pool = await config.createPool();
@@ -303,7 +310,7 @@ void main() {
 
         // Down restores NOT NULL with the old '' placeholder.
         expect(await migrations.rollback(), isTrue);
-        expect(await migrations.getCurrentVersion(), equals(5));
+        expect(await migrations.getCurrentVersion(), equals(6));
         expect(await serverKeyColumn(), equals(''));
 
         // Up turns the placeholder back into NULL.
@@ -768,6 +775,46 @@ void main() {
             isNull);
       });
 
+      test('S-08: a bulk batch is written as multi-row statements in chunks, with upsert semantics',
+          () async {
+        // S-08: one INSERT per header made a CDN sync ~900k round-trips.
+        final statements = <int>[];
+        storage.headerInsertChunkSize = 3;
+        storage.onHeaderInsertStatement = statements.add;
+        final headers = [
+          for (var i = 0; i < 7; i++) (syntheticHeader(300 + i), 710000 + i),
+        ];
+
+        await storage.storeBlockHeadersBulk(headers);
+
+        expect(statements, [3, 3, 1],
+            reason: '7 headers in chunks of 3 are three multi-row statements');
+        for (final (header, height) in headers) {
+          expect((await storage.getBlockHeaderByHeight(height))?.blockHash(),
+              equals(header.blockHash()));
+        }
+
+        // Upsert: an orphaned header is re-activated, a hash repeated
+        // within the batch is written once, nothing is duplicated.
+        final orphan = headers[2].$1.blockHash().toString();
+        await storage.markHeaderAsOrphaned(orphan);
+        expect(await storage.getBlockHeaderByHash(orphan), isNull);
+        statements.clear();
+        await storage.storeBlockHeadersBulk([...headers, headers[2]]);
+        expect(statements, [3, 3, 1]);
+        expect(await storage.getBlockHeaderByHash(orphan), isNotNull);
+        expect(await storage.getHeightByBlockHash(orphan), 710002);
+        expect(await storage.getBlockHeaderRange(710000, 710006), hasLength(7));
+        final pool = await config.createPool();
+        try {
+          final count = await pool.execute(
+              'SELECT COUNT(*) FROM block_headers WHERE height BETWEEN 710000 AND 710006');
+          expect(count.first[0], 7);
+        } finally {
+          await pool.close();
+        }
+      });
+
       test('stores a header whose nonce exceeds int32', () async {
         // Block 1 on mainnet has nonce 2573394689 (> 2^31 - 1); with the
         // INTEGER column of v001 this insert failed as out of range.
@@ -1036,6 +1083,112 @@ void main() {
         expect(channel.role, equals(PaymentChannelRole.server));
       });
     });
+    /// Audit 2026-09-14 S-15, S-16, S-19, S-20: the wallet lifecycle,
+    /// ordering, round-trip and retention contract shared with the in-memory
+    /// and Isar backends.
+    group('lifecycle', () {
+      final run = DateTime.now().microsecondsSinceEpoch.toRadixString(36);
+      var counter = 0;
+      defineWalletLifecycleContract(
+        () => storage,
+        unique: () => 'pl$run${counter++}',
+      );
+
+      test('S-20: upsertUTXO records spent_at and is_spendable and keeps the spend history',
+          () async {
+        final wallet = 'pg-spent-cols-$run';
+        final txid = contractHex64('pg-spent-cols-$run');
+        final created = DateTime.utc(2026, 9, 1);
+        final firstSpend = DateTime.utc(2026, 9, 2);
+        final base = BitcoinUtxo(
+          txid: txid,
+          vout: 0,
+          value: dartsv.Coin.ofSat(BigInt.from(1000)),
+          scriptPubKey: '76a914000000000000000000000000000000000000000088ac',
+          address: 'mkHS9ne12qx9pS9VojpwU5xtRd4T7X7ZUt',
+          status: UTXOStatus.available,
+          createdAt: created,
+          updatedAt: created,
+        );
+        final pool = await config.createPool();
+        Future<List<Object?>> columns() async {
+          final rows = await pool.execute(
+            Sql.named('SELECT spent_at, is_spendable, spent_in_tx_id FROM bitcoin_utxos '
+                'WHERE wallet_id = @w AND txid = @t AND vout = 0'),
+            parameters: {'w': wallet, 't': txid},
+          );
+          return rows.single.toList();
+        }
+
+        try {
+          await storage.upsertUTXO(wallet, base.copyWith(status: UTXOStatus.reserved));
+          expect(await columns(), [null, false, null],
+              reason: 'a reserved UTXO is not spendable');
+
+          await storage.upsertUTXO(
+              wallet, base.copyWith(status: UTXOStatus.spent, updatedAt: firstSpend));
+          var cols = await columns();
+          expect((cols[0] as DateTime?)?.toUtc(), firstSpend,
+              reason: 'spent_at must record the spend time');
+          expect(cols[1], isFalse);
+
+          // The domain model carries no spending txid; a value recorded in
+          // the row (by SQL here) must not be overwritten with NULL.
+          await pool.execute(
+            Sql.named('UPDATE bitcoin_utxos SET spent_in_tx_id = @s '
+                'WHERE wallet_id = @w AND txid = @t AND vout = 0'),
+            parameters: {'s': 'ab' * 32, 'w': wallet, 't': txid},
+          );
+
+          // A later update of the spent row keeps the first spend time and
+          // the spending txid.
+          await storage.upsertUTXO(wallet,
+              base.copyWith(status: UTXOStatus.spent, updatedAt: DateTime.utc(2026, 9, 5)));
+          cols = await columns();
+          expect((cols[0] as DateTime?)?.toUtc(), firstSpend);
+          expect(cols[2], 'ab' * 32,
+              reason: 'spent_in_tx_id is spend history and must not be overwritten');
+
+          // Even a direct caller storing the row as available again does not
+          // erase the spend history; only is_spendable follows the status.
+          await storage.upsertUTXO(wallet, base);
+          cols = await columns();
+          expect((cols[0] as DateTime?)?.toUtc(), firstSpend);
+          expect(cols[1], isTrue);
+          expect(cols[2], 'ab' * 32);
+        } finally {
+          await pool.close();
+        }
+      });
+
+      test('S-19: v006 creates the (wallet_id, created_at DESC) list indexes',
+          () async {
+        final pool = await config.createPool();
+        try {
+          final rows = await pool.execute(
+            "SELECT indexname, indexdef FROM pg_indexes WHERE schemaname = current_schema()",
+          );
+          final defs = {for (final r in rows) r[0] as String: r[1] as String};
+          const expected = {
+            'idx_transactions_wallet_created': 'bitcoin_transactions',
+            'idx_utxos_wallet_created': 'bitcoin_utxos',
+            'idx_addresses_wallet_created': 'addresses',
+            'idx_tx_addr_wallet_address_created': 'transaction_addresses',
+            'idx_invoices_wallet_created': 'invoices',
+            'idx_channels_wallet_created': 'payment_channels',
+            'idx_wallet_metadata_created': 'wallet_metadata',
+          };
+          for (final entry in expected.entries) {
+            expect(defs.keys, contains(entry.key));
+            expect(defs[entry.key], contains('${entry.value} USING'));
+            expect(defs[entry.key], contains('created_at DESC'));
+          }
+        } finally {
+          await pool.close();
+        }
+      });
+    });
+
     /// Audit 2026-09-14 S-05, S-12, S-13, S-17, S-18 and bead
     /// libspiffy-0v3: the keying contract shared with the in-memory and
     /// Isar backends.

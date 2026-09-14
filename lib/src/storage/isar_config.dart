@@ -1,7 +1,9 @@
 /// Configuration for isolate-aware Isar storage operations.
 ///
-/// This class controls when heavy database operations should be
-/// executed in separate isolates to avoid blocking the UI thread.
+/// **Deprecated, has no effect** (audit 2026-09-14 S-21): no storage
+/// operation ever consulted it or ran in an isolate. It is still accepted
+/// where it used to be (`IsarWalletStorage(config:)`,
+/// `LibSpiffyActorSystem.initialize(isolateConfig:)`) and will be removed.
 ///
 /// Example usage:
 /// ```dart
@@ -17,6 +19,8 @@
 /// // Disable isolates
 /// final disabledConfig = IsolateConfig.disabled();
 /// ```
+@Deprecated('Has no effect: libspiffy never runs storage operations in an isolate. '
+    'Will be removed.')
 class IsolateConfig {
   /// Threshold for switching to isolate-based operations.
   /// Operations affecting more items than this threshold will use isolates.

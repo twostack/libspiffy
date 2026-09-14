@@ -13,6 +13,7 @@ import 'migrations/v002_secure_secrets.dart';
 import 'migrations/v003_header_ints_and_plugin_metadata.dart';
 import 'migrations/v004_channel_columns_and_invoice_outputs.dart';
 import 'migrations/v005_wallet_scoped_keys_and_unique_proofs.dart';
+import 'migrations/v006_list_indexes_and_updated_at.dart';
 import 'migrations/v007_nullable_channel_server_key.dart';
 
 /// Base class for database migrations.
@@ -45,6 +46,7 @@ class PostgresMigrations {
     V003HeaderIntsAndPluginMetadata(),
     V004ChannelColumnsAndInvoiceOutputs(),
     V005WalletScopedKeysAndUniqueProofs(),
+    V006ListIndexesAndUpdatedAt(),
     V007NullableChannelServerKey(),
   ];
 

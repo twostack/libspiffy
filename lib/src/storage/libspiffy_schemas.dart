@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:isar/isar.dart';
 import 'package:libspiffy/src/storage/payment_channel_entity.dart';
 import 'package:spiffynode/spiffy_node.dart';
@@ -235,42 +236,18 @@ class MerkleProofEntity {
   }
 }
 
-/// Wallet event storage entity for event sourcing
-@collection
-class WalletEventEntity {
-  Id id = Isar.autoIncrement;
-
-  /// Wallet ID this event belongs to
-  @Index()
-  late String walletId;
-
-  /// Event version/sequence number
-  @Index()
-  late int version;
-
-  /// Event type (e.g., 'UTXOReceived', 'TransactionCreated')
-  late String eventType;
-
-  /// Event data (serialized as JSON)
-  late String eventData;
-
-  /// When this event occurred
-  @Index()
-  late DateTime timestamp;
-
-  /// Aggregate version after this event
-  late int aggregateVersion;
-
-  WalletEventEntity();
-}
-
 /// Bitcoin UTXO storage entity
 @collection
 class BitcoinUtxoEntity {
   Id id = Isar.autoIncrement;
 
   /// Wallet ID this UTXO belongs to
+  ///
+  /// The composite (walletId, status) index lets the UTXO queries select a
+  /// wallet's unspent or available rows without reading its spent ones
+  /// (audit S-16).
   @Index()
+  @Index(composite: [CompositeIndex('status')])
   late String walletId;
 
   /// Transaction ID
@@ -310,7 +287,12 @@ class BitcoinUtxoEntity {
   /// When this UTXO was created
   late DateTime createdAt;
 
-  /// When this UTXO was spent (if applicable)
+  /// When this UTXO was last updated ([BitcoinUtxo.updatedAt]); null on
+  /// rows written before it was stored (read back as [createdAt]).
+  DateTime? updatedAt;
+
+  /// When this UTXO was first stored as spent (if applicable). Part of the
+  /// spend history: set once, never overwritten or cleared by an update.
   DateTime? spentAt;
 
   /// Transaction ID that spent this UTXO (if applicable)
@@ -331,27 +313,39 @@ class BitcoinUtxoEntity {
   BitcoinUtxoEntity();
 
   /// Create from domain model BitcoinUtxo
-  factory BitcoinUtxoEntity.fromDomain(BitcoinUtxo utxo) {
+  ///
+  /// [walletId] is empty unless given; the storage sets it.
+  factory BitcoinUtxoEntity.fromDomain(BitcoinUtxo utxo, {String walletId = ''}) {
     return BitcoinUtxoEntity()
-      ..walletId = '' // Will be set by the storage implementation
+      ..walletId = walletId
       ..txid = utxo.txid
       ..vout = utxo.vout
       ..utxoKey = '${utxo.txid}:${utxo.vout}'
-      ..satoshis = utxo.satoshis.toString()
-      ..scriptPubKey = utxo.scriptPubKey
-      ..address = utxo.address
-      ..blockHeight = utxo.blockHeight
-      ..confirmations = utxo.confirmations ?? 0
-      ..status = utxo.status.name
       ..createdAt = utxo.createdAt
-      ..spentAt = utxo.status == UTXOStatus.spent ? utxo.updatedAt : null
-      ..spentInTxId = null // This info would come from spending transaction
+      ..spentInTxId = null // not carried by the domain model
       ..scriptType = 'p2pkh' // Default, could be enhanced
-      ..isSpendable = utxo.status == UTXOStatus.available
       ..category = 'funding' // Default category
-      ..pluginMetadataJson = utxo.pluginMetadata != null
-          ? jsonEncode(utxo.pluginMetadata)
-          : null;
+      ..applyDomain(utxo);
+  }
+
+  /// Copies the mutable state of [utxo] onto this row (the insert and the
+  /// update path of the storage share it). A block height or plugin
+  /// metadata [utxo] lacks keeps the stored value; the spend history
+  /// ([spentAt], [spentInTxId]) is only ever added to.
+  void applyDomain(BitcoinUtxo utxo) {
+    satoshis = utxo.satoshis.toString();
+    scriptPubKey = utxo.scriptPubKey;
+    address = utxo.address;
+    // A zero-confirmation update (reorg, audit 3b0) clears the height.
+    blockHeight = utxo.blockHeight ?? ((utxo.confirmations ?? 0) > 0 ? blockHeight : null);
+    confirmations = utxo.confirmations ?? 0;
+    status = utxo.status.name;
+    updatedAt = utxo.updatedAt;
+    if (utxo.status == UTXOStatus.spent) spentAt ??= utxo.updatedAt;
+    isSpendable = utxo.status == UTXOStatus.available;
+    if (utxo.pluginMetadata != null) {
+      pluginMetadataJson = jsonEncode(utxo.pluginMetadata);
+    }
   }
 
   /// Convert back to domain model BitcoinUtxo
@@ -362,15 +356,18 @@ class BitcoinUtxoEntity {
       orElse: () => UTXOStatus.pending,  // Default fallback
     );
     
-    return BitcoinUtxo.create(
+    // The stored timestamps, not "now" (audit S-20).
+    return BitcoinUtxo(
       txid: txid,
       vout: vout,
-      satoshis: BigInt.parse(satoshis),
+      value: dartsv.Coin.ofSat(BigInt.parse(satoshis)),
       scriptPubKey: scriptPubKey,
       address: address ?? '',
       blockHeight: blockHeight,
       confirmations: confirmations,
       status: utxoStatus,
+      createdAt: createdAt,
+      updatedAt: updatedAt ?? createdAt,
       pluginMetadata: pluginMetadataJson != null
           ? Map<String, dynamic>.from(jsonDecode(pluginMetadataJson!) as Map)
           : null,
@@ -391,6 +388,7 @@ class BitcoinUtxoEntity {
       'confirmations': confirmations,
       'status': status,
       'createdAt': createdAt.toIso8601String(),
+      'updatedAt': updatedAt?.toIso8601String(),
       'spentAt': spentAt?.toIso8601String(),
       'spentInTxId': spentInTxId,
       'scriptType': scriptType,
@@ -414,6 +412,7 @@ class BitcoinUtxoEntity {
       ..confirmations = json['confirmations'] as int
       ..status = json['status'] as String
       ..createdAt = DateTime.parse(json['createdAt'] as String)
+      ..updatedAt = json['updatedAt'] != null ? DateTime.parse(json['updatedAt'] as String) : null
       ..spentAt = json['spentAt'] != null ? DateTime.parse(json['spentAt'] as String) : null
       ..spentInTxId = json['spentInTxId'] as String?
       ..scriptType = json['scriptType'] as String
@@ -429,7 +428,11 @@ class BitcoinTransactionEntity {
   Id id = Isar.autoIncrement;
 
   /// Wallet ID this transaction belongs to
+  ///
+  /// The composite (walletId, createdAt) index serves the newest-first,
+  /// paginated history query (audit S-16).
   @Index()
+  @Index(composite: [CompositeIndex('createdAt')])
   late String walletId;
 
   /// Transaction ID
@@ -480,6 +483,10 @@ class BitcoinTransactionEntity {
   @Index()
   late DateTime createdAt;
 
+  /// When this row was last updated ([BitcoinTransaction.updatedAt]); null
+  /// on rows written before it was stored (read back as [createdAt]).
+  DateTime? updatedAt;
+
   /// When this transaction was confirmed (if applicable)
   DateTime? confirmedAt;
 
@@ -505,38 +512,58 @@ class BitcoinTransactionEntity {
   BitcoinTransactionEntity();
 
   /// Create from domain model BitcoinTransaction
-  factory BitcoinTransactionEntity.fromDomain(BitcoinTransaction tx) {
-    // Calculate net amount (positive for incoming, negative for outgoing)
-    final netAmount = tx.netAmount;
-    
+  ///
+  /// The single conversion used by the storage for a new row (audit S-21).
+  /// [walletId] overrides [BitcoinTransaction.walletId] (empty when neither
+  /// is given).
+  factory BitcoinTransactionEntity.fromDomain(BitcoinTransaction tx, {String? walletId}) {
     return BitcoinTransactionEntity()
-      ..walletId = tx.walletId ?? '' // Use transaction's walletId or empty string as fallback
+      ..walletId = walletId ?? tx.walletId ?? ''
       ..txid = tx.txid
       ..rawHex = tx.rawHex
-      ..blockHeight = tx.blockHeight
-      ..blockHash = tx.blockHeight != null ? '' : null // Would need actual hash
-      ..confirmations = tx.confirmations ?? 0
-      ..totalInput = tx.inputValue.toString()
-      ..totalOutput = tx.outputValue.toString()
-      ..fee = tx.fee.toString()
-      ..netAmount = netAmount.toString()
-      ..isIncoming = netAmount > BigInt.zero
-      ..isOutgoing = netAmount < BigInt.zero
-      ..status = tx.status.name
+      ..blockHash = null // Not available in BitcoinTransaction
       ..createdAt = tx.createdAt
-      ..confirmedAt = null // Not directly available in model
-      ..broadcastAt = null // Not directly available in model
-      ..receivingAddressesJson = jsonEncode(tx.receivingAddresses)
-      ..sendingAddressesJson = jsonEncode(tx.sendingAddresses)
-      ..primaryCounterparty = _getPrimaryCounterparty(tx, netAmount)
-      ..counterparty = null
-      ..notes = tx.memo;
+      ..broadcastAt = null // Not available in BitcoinTransaction
+      ..counterparty = primaryCounterpartyOf(tx)
+      ..applyDomain(tx);
   }
 
-  static String? _getPrimaryCounterparty(BitcoinTransaction tx, BigInt netAmount) {
-    if (netAmount > BigInt.zero) {
+  /// Copies the mutable state of [tx] onto this row (the insert and the
+  /// update path of the storage share it). History is not erased: an empty
+  /// raw hex or a null block height keeps the stored value (an SPV wallet
+  /// cannot fetch the transaction again), and `confirmedAt` is set once the
+  /// transaction has a block height and is not cleared.
+  void applyDomain(BitcoinTransaction tx) {
+    final net = tx.netAmount;
+    if (tx.rawHex.isNotEmpty) rawHex = tx.rawHex;
+    status = tx.status.name;
+    // A non-confirmed update clears the height (reorg, audit 3b0).
+    blockHeight = tx.blockHeight ?? (tx.status == TransactionStatus.confirmed ? blockHeight : null);
+    confirmations = tx.confirmations ?? 0;
+    totalInput = tx.inputValue.toString();
+    totalOutput = tx.outputValue.toString();
+    fee = tx.fee.toString();
+    netAmount = net.toString();
+    isIncoming = net > BigInt.zero;
+    isOutgoing = net < BigInt.zero;
+    receivingAddressesJson = jsonEncode(tx.receivingAddresses);
+    sendingAddressesJson = jsonEncode(tx.sendingAddresses);
+    primaryCounterparty = primaryCounterpartyOf(tx);
+    notes = tx.memo;
+    updatedAt = tx.updatedAt;
+    if (tx.blockHeight != null && tx.blockHeight! > 0) {
+      confirmedAt = tx.updatedAt;
+    }
+  }
+
+  /// The other party of [tx] from the wallet's perspective: the first
+  /// sending address of an incoming transaction, the first receiving
+  /// address of an outgoing one, null otherwise.
+  static String? primaryCounterpartyOf(BitcoinTransaction tx) {
+    final net = tx.netAmount;
+    if (net > BigInt.zero) {
       return tx.sendingAddresses.isNotEmpty ? tx.sendingAddresses.first : null;
-    } else if (netAmount < BigInt.zero) {
+    } else if (net < BigInt.zero) {
       return tx.receivingAddresses.isNotEmpty ? tx.receivingAddresses.first : null;
     }
     return null;
@@ -565,7 +592,7 @@ class BitcoinTransactionEntity {
       sendingAddresses: sending,
       netAmount: BigInt.parse(netAmount), // Read directly from stored value
       createdAt: createdAt,
-      updatedAt: createdAt, // Use createdAt as fallback
+      updatedAt: updatedAt ?? createdAt,
       memo: notes,
       lockTime: 0, // Would need to parse from rawHex or store separately
       version: 1, // Would need to parse from rawHex or store separately
@@ -589,6 +616,7 @@ class BitcoinTransactionEntity {
       'isOutgoing': isOutgoing,
       'status': status,
       'createdAt': createdAt.toIso8601String(),
+      'updatedAt': updatedAt?.toIso8601String(),
       'confirmedAt': confirmedAt?.toIso8601String(),
       'broadcastAt': broadcastAt?.toIso8601String(),
       'counterparty': counterparty,
@@ -616,6 +644,7 @@ class BitcoinTransactionEntity {
       ..isOutgoing = json['isOutgoing'] as bool
       ..status = json['status'] as String
       ..createdAt = DateTime.parse(json['createdAt'] as String)
+      ..updatedAt = json['updatedAt'] != null ? DateTime.parse(json['updatedAt'] as String) : null
       ..confirmedAt = json['confirmedAt'] != null ? DateTime.parse(json['confirmedAt'] as String) : null
       ..broadcastAt = json['broadcastAt'] != null ? DateTime.parse(json['broadcastAt'] as String) : null
       ..counterparty = json['counterparty'] as String?

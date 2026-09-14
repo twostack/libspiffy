@@ -210,11 +210,8 @@ void main() {
       expect(txids, containsAll(['reg1', 'reg2', 'reg3']));
     });
 
-    test('throws StorageException for non-existent wallet', () async {
-      expect(
-        () => storage.getPaymentUTXOs('nonexistent'),
-        throwsA(isA<StorageException>()),
-      );
+    test('returns empty for a non-existent wallet (audit S-15)', () async {
+      expect(await storage.getPaymentUTXOs('nonexistent'), isEmpty);
     });
   });
 

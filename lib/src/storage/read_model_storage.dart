@@ -12,12 +12,29 @@ import 'package:spiffynode/spiffy_node.dart';
 /// This interface handles query operations for wallet data projections,
 /// including UTXOs, transactions, block headers, and merkle proofs.
 /// This represents the "read side" of CQRS pattern.
+///
+/// Rules every backend follows (audit 2026-09-14 S-15, S-19; contract tests
+/// in `test/storage/wallet_lifecycle_contract.dart`):
+/// * A wallet exists when its metadata row exists ([storeWallet]); UTXO,
+///   transaction or address rows alone do not create a wallet.
+/// * [deleteWallet] is a hard delete; storing the wallet again creates it
+///   afresh.
+/// * Queries for an unknown wallet return empty results (zero balance, null
+///   metadata) and never throw.
+/// * List queries return the newest rows first (`createdAt` descending):
+///   [listWallets], [getWalletIds], [getUTXOs], [getUTXOsByPlugin],
+///   [getTransactionHistory], [getTransactionsByStatus],
+///   [getAddressesWithMetadata], [getTransactionsByAddress] and the invoice
+///   lists.
 abstract class ReadModelStorage {
   // ========================================
   // Wallet Metadata
   // ========================================
   
-  /// Store or update wallet metadata
+  /// Store or update wallet metadata.
+  ///
+  /// Creates the wallet when no metadata row exists (including after
+  /// [deleteWallet]); otherwise merges into the existing row.
   Future<void> storeWallet(
     String walletId,
     String name, {
@@ -26,10 +43,10 @@ abstract class ReadModelStorage {
     Map<String, dynamic>? metadata,
   });
   
-  /// Get wallet metadata
+  /// Get wallet metadata; null for an unknown or deleted wallet.
   Future<Map<String, dynamic>?> getWallet(String walletId);
-  
-  /// List all wallet IDs
+
+  /// List the IDs of all existing wallets, newest first.
   Future<List<String>> listWallets();
   
   /// Get all addresses for a wallet
@@ -128,7 +145,8 @@ abstract class ReadModelStorage {
   /// - [walletId]: Unique identifier for the wallet
   /// - [includeSpent]: Whether to include spent UTXOs (default: false)
   ///
-  /// Returns: List of UTXOs for the wallet
+  /// Returns: List of UTXOs for the wallet, newest first (empty for an
+  /// unknown wallet). `createdAt` and `updatedAt` are returned as stored.
   Future<List<BitcoinUtxo>> getUTXOs(String walletId, {bool includeSpent = false});
 
   /// Get only available (unspent and unreserved) UTXOs for a wallet.
@@ -211,6 +229,8 @@ abstract class ReadModelStorage {
   /// - [offset]: Number of transactions to skip
   ///
   /// Returns: List of transactions in reverse chronological order
+  /// (`createdAt` descending); [offset] and [limit] apply to that order.
+  /// Every returned transaction carries [walletId].
   Future<List<BitcoinTransaction>> getTransactionHistory(
     String walletId, {
     int? limit,
@@ -420,7 +440,7 @@ abstract class ReadModelStorage {
 
   /// Get a list of all wallet IDs in storage.
   ///
-  /// This is useful for wallet enumeration and management operations.
+  /// The same wallets, in the same order, as [listWallets].
   ///
   /// Returns: List of wallet identifiers
   Future<List<String>> getWalletIds();
@@ -430,13 +450,14 @@ abstract class ReadModelStorage {
   /// Parameters:
   /// - [walletId]: Unique identifier for the wallet
   ///
-  /// Returns: true if the wallet exists, false otherwise
+  /// Returns: true if the wallet's metadata row exists
   Future<bool> walletExists(String walletId);
 
   /// Delete all data for a specific wallet.
   ///
-  /// This operation should remove all read model data for the wallet.
-  /// Use with caution.
+  /// A hard delete of the wallet's metadata, addresses, UTXOs, transactions,
+  /// transaction-address links, invoices and payment channels. Block
+  /// headers and merkle proofs are shared and stay. Use with caution.
   ///
   /// Parameters:
   /// - [walletId]: Unique identifier for the wallet

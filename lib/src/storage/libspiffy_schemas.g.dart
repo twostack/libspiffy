@@ -3077,1433 +3077,6 @@ extension MerkleProofEntityQueryProperty
 // coverage:ignore-file
 // ignore_for_file: duplicate_ignore, non_constant_identifier_names, constant_identifier_names, invalid_use_of_protected_member, unnecessary_cast, prefer_const_constructors, lines_longer_than_80_chars, require_trailing_commas, inference_failure_on_function_invocation, unnecessary_parenthesis, unnecessary_raw_strings, unnecessary_null_checks, join_return_with_assignment, prefer_final_locals, avoid_js_rounded_ints, avoid_positional_boolean_parameters, always_specify_types
 
-extension GetWalletEventEntityCollection on Isar {
-  IsarCollection<WalletEventEntity> get walletEventEntitys => this.collection();
-}
-
-const WalletEventEntitySchema = CollectionSchema(
-  name: r'WalletEventEntity',
-  id: -858548467826076375,
-  properties: {
-    r'aggregateVersion': PropertySchema(
-      id: 0,
-      name: r'aggregateVersion',
-      type: IsarType.long,
-    ),
-    r'eventData': PropertySchema(
-      id: 1,
-      name: r'eventData',
-      type: IsarType.string,
-    ),
-    r'eventType': PropertySchema(
-      id: 2,
-      name: r'eventType',
-      type: IsarType.string,
-    ),
-    r'timestamp': PropertySchema(
-      id: 3,
-      name: r'timestamp',
-      type: IsarType.dateTime,
-    ),
-    r'version': PropertySchema(
-      id: 4,
-      name: r'version',
-      type: IsarType.long,
-    ),
-    r'walletId': PropertySchema(
-      id: 5,
-      name: r'walletId',
-      type: IsarType.string,
-    )
-  },
-  estimateSize: _walletEventEntityEstimateSize,
-  serialize: _walletEventEntitySerialize,
-  deserialize: _walletEventEntityDeserialize,
-  deserializeProp: _walletEventEntityDeserializeProp,
-  idName: r'id',
-  indexes: {
-    r'walletId': IndexSchema(
-      id: -1783113319798776304,
-      name: r'walletId',
-      unique: false,
-      replace: false,
-      properties: [
-        IndexPropertySchema(
-          name: r'walletId',
-          type: IndexType.hash,
-          caseSensitive: true,
-        )
-      ],
-    ),
-    r'version': IndexSchema(
-      id: -3425991338577364869,
-      name: r'version',
-      unique: false,
-      replace: false,
-      properties: [
-        IndexPropertySchema(
-          name: r'version',
-          type: IndexType.value,
-          caseSensitive: false,
-        )
-      ],
-    ),
-    r'timestamp': IndexSchema(
-      id: 1852253767416892198,
-      name: r'timestamp',
-      unique: false,
-      replace: false,
-      properties: [
-        IndexPropertySchema(
-          name: r'timestamp',
-          type: IndexType.value,
-          caseSensitive: false,
-        )
-      ],
-    )
-  },
-  links: {},
-  embeddedSchemas: {},
-  getId: _walletEventEntityGetId,
-  getLinks: _walletEventEntityGetLinks,
-  attach: _walletEventEntityAttach,
-  version: '3.1.0+1',
-);
-
-int _walletEventEntityEstimateSize(
-  WalletEventEntity object,
-  List<int> offsets,
-  Map<Type, List<int>> allOffsets,
-) {
-  var bytesCount = offsets.last;
-  bytesCount += 3 + object.eventData.length * 3;
-  bytesCount += 3 + object.eventType.length * 3;
-  bytesCount += 3 + object.walletId.length * 3;
-  return bytesCount;
-}
-
-void _walletEventEntitySerialize(
-  WalletEventEntity object,
-  IsarWriter writer,
-  List<int> offsets,
-  Map<Type, List<int>> allOffsets,
-) {
-  writer.writeLong(offsets[0], object.aggregateVersion);
-  writer.writeString(offsets[1], object.eventData);
-  writer.writeString(offsets[2], object.eventType);
-  writer.writeDateTime(offsets[3], object.timestamp);
-  writer.writeLong(offsets[4], object.version);
-  writer.writeString(offsets[5], object.walletId);
-}
-
-WalletEventEntity _walletEventEntityDeserialize(
-  Id id,
-  IsarReader reader,
-  List<int> offsets,
-  Map<Type, List<int>> allOffsets,
-) {
-  final object = WalletEventEntity();
-  object.aggregateVersion = reader.readLong(offsets[0]);
-  object.eventData = reader.readString(offsets[1]);
-  object.eventType = reader.readString(offsets[2]);
-  object.id = id;
-  object.timestamp = reader.readDateTime(offsets[3]);
-  object.version = reader.readLong(offsets[4]);
-  object.walletId = reader.readString(offsets[5]);
-  return object;
-}
-
-P _walletEventEntityDeserializeProp<P>(
-  IsarReader reader,
-  int propertyId,
-  int offset,
-  Map<Type, List<int>> allOffsets,
-) {
-  switch (propertyId) {
-    case 0:
-      return (reader.readLong(offset)) as P;
-    case 1:
-      return (reader.readString(offset)) as P;
-    case 2:
-      return (reader.readString(offset)) as P;
-    case 3:
-      return (reader.readDateTime(offset)) as P;
-    case 4:
-      return (reader.readLong(offset)) as P;
-    case 5:
-      return (reader.readString(offset)) as P;
-    default:
-      throw IsarError('Unknown property with id $propertyId');
-  }
-}
-
-Id _walletEventEntityGetId(WalletEventEntity object) {
-  return object.id;
-}
-
-List<IsarLinkBase<dynamic>> _walletEventEntityGetLinks(
-    WalletEventEntity object) {
-  return [];
-}
-
-void _walletEventEntityAttach(
-    IsarCollection<dynamic> col, Id id, WalletEventEntity object) {
-  object.id = id;
-}
-
-extension WalletEventEntityQueryWhereSort
-    on QueryBuilder<WalletEventEntity, WalletEventEntity, QWhere> {
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterWhere> anyId() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addWhereClause(const IdWhereClause.any());
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterWhere> anyVersion() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addWhereClause(
-        const IndexWhereClause.any(indexName: r'version'),
-      );
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterWhere>
-      anyTimestamp() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addWhereClause(
-        const IndexWhereClause.any(indexName: r'timestamp'),
-      );
-    });
-  }
-}
-
-extension WalletEventEntityQueryWhere
-    on QueryBuilder<WalletEventEntity, WalletEventEntity, QWhereClause> {
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterWhereClause>
-      idEqualTo(Id id) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addWhereClause(IdWhereClause.between(
-        lower: id,
-        upper: id,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterWhereClause>
-      idNotEqualTo(Id id) {
-    return QueryBuilder.apply(this, (query) {
-      if (query.whereSort == Sort.asc) {
-        return query
-            .addWhereClause(
-              IdWhereClause.lessThan(upper: id, includeUpper: false),
-            )
-            .addWhereClause(
-              IdWhereClause.greaterThan(lower: id, includeLower: false),
-            );
-      } else {
-        return query
-            .addWhereClause(
-              IdWhereClause.greaterThan(lower: id, includeLower: false),
-            )
-            .addWhereClause(
-              IdWhereClause.lessThan(upper: id, includeUpper: false),
-            );
-      }
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterWhereClause>
-      idGreaterThan(Id id, {bool include = false}) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addWhereClause(
-        IdWhereClause.greaterThan(lower: id, includeLower: include),
-      );
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterWhereClause>
-      idLessThan(Id id, {bool include = false}) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addWhereClause(
-        IdWhereClause.lessThan(upper: id, includeUpper: include),
-      );
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterWhereClause>
-      idBetween(
-    Id lowerId,
-    Id upperId, {
-    bool includeLower = true,
-    bool includeUpper = true,
-  }) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addWhereClause(IdWhereClause.between(
-        lower: lowerId,
-        includeLower: includeLower,
-        upper: upperId,
-        includeUpper: includeUpper,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterWhereClause>
-      walletIdEqualTo(String walletId) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addWhereClause(IndexWhereClause.equalTo(
-        indexName: r'walletId',
-        value: [walletId],
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterWhereClause>
-      walletIdNotEqualTo(String walletId) {
-    return QueryBuilder.apply(this, (query) {
-      if (query.whereSort == Sort.asc) {
-        return query
-            .addWhereClause(IndexWhereClause.between(
-              indexName: r'walletId',
-              lower: [],
-              upper: [walletId],
-              includeUpper: false,
-            ))
-            .addWhereClause(IndexWhereClause.between(
-              indexName: r'walletId',
-              lower: [walletId],
-              includeLower: false,
-              upper: [],
-            ));
-      } else {
-        return query
-            .addWhereClause(IndexWhereClause.between(
-              indexName: r'walletId',
-              lower: [walletId],
-              includeLower: false,
-              upper: [],
-            ))
-            .addWhereClause(IndexWhereClause.between(
-              indexName: r'walletId',
-              lower: [],
-              upper: [walletId],
-              includeUpper: false,
-            ));
-      }
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterWhereClause>
-      versionEqualTo(int version) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addWhereClause(IndexWhereClause.equalTo(
-        indexName: r'version',
-        value: [version],
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterWhereClause>
-      versionNotEqualTo(int version) {
-    return QueryBuilder.apply(this, (query) {
-      if (query.whereSort == Sort.asc) {
-        return query
-            .addWhereClause(IndexWhereClause.between(
-              indexName: r'version',
-              lower: [],
-              upper: [version],
-              includeUpper: false,
-            ))
-            .addWhereClause(IndexWhereClause.between(
-              indexName: r'version',
-              lower: [version],
-              includeLower: false,
-              upper: [],
-            ));
-      } else {
-        return query
-            .addWhereClause(IndexWhereClause.between(
-              indexName: r'version',
-              lower: [version],
-              includeLower: false,
-              upper: [],
-            ))
-            .addWhereClause(IndexWhereClause.between(
-              indexName: r'version',
-              lower: [],
-              upper: [version],
-              includeUpper: false,
-            ));
-      }
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterWhereClause>
-      versionGreaterThan(
-    int version, {
-    bool include = false,
-  }) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addWhereClause(IndexWhereClause.between(
-        indexName: r'version',
-        lower: [version],
-        includeLower: include,
-        upper: [],
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterWhereClause>
-      versionLessThan(
-    int version, {
-    bool include = false,
-  }) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addWhereClause(IndexWhereClause.between(
-        indexName: r'version',
-        lower: [],
-        upper: [version],
-        includeUpper: include,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterWhereClause>
-      versionBetween(
-    int lowerVersion,
-    int upperVersion, {
-    bool includeLower = true,
-    bool includeUpper = true,
-  }) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addWhereClause(IndexWhereClause.between(
-        indexName: r'version',
-        lower: [lowerVersion],
-        includeLower: includeLower,
-        upper: [upperVersion],
-        includeUpper: includeUpper,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterWhereClause>
-      timestampEqualTo(DateTime timestamp) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addWhereClause(IndexWhereClause.equalTo(
-        indexName: r'timestamp',
-        value: [timestamp],
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterWhereClause>
-      timestampNotEqualTo(DateTime timestamp) {
-    return QueryBuilder.apply(this, (query) {
-      if (query.whereSort == Sort.asc) {
-        return query
-            .addWhereClause(IndexWhereClause.between(
-              indexName: r'timestamp',
-              lower: [],
-              upper: [timestamp],
-              includeUpper: false,
-            ))
-            .addWhereClause(IndexWhereClause.between(
-              indexName: r'timestamp',
-              lower: [timestamp],
-              includeLower: false,
-              upper: [],
-            ));
-      } else {
-        return query
-            .addWhereClause(IndexWhereClause.between(
-              indexName: r'timestamp',
-              lower: [timestamp],
-              includeLower: false,
-              upper: [],
-            ))
-            .addWhereClause(IndexWhereClause.between(
-              indexName: r'timestamp',
-              lower: [],
-              upper: [timestamp],
-              includeUpper: false,
-            ));
-      }
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterWhereClause>
-      timestampGreaterThan(
-    DateTime timestamp, {
-    bool include = false,
-  }) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addWhereClause(IndexWhereClause.between(
-        indexName: r'timestamp',
-        lower: [timestamp],
-        includeLower: include,
-        upper: [],
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterWhereClause>
-      timestampLessThan(
-    DateTime timestamp, {
-    bool include = false,
-  }) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addWhereClause(IndexWhereClause.between(
-        indexName: r'timestamp',
-        lower: [],
-        upper: [timestamp],
-        includeUpper: include,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterWhereClause>
-      timestampBetween(
-    DateTime lowerTimestamp,
-    DateTime upperTimestamp, {
-    bool includeLower = true,
-    bool includeUpper = true,
-  }) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addWhereClause(IndexWhereClause.between(
-        indexName: r'timestamp',
-        lower: [lowerTimestamp],
-        includeLower: includeLower,
-        upper: [upperTimestamp],
-        includeUpper: includeUpper,
-      ));
-    });
-  }
-}
-
-extension WalletEventEntityQueryFilter
-    on QueryBuilder<WalletEventEntity, WalletEventEntity, QFilterCondition> {
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      aggregateVersionEqualTo(int value) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.equalTo(
-        property: r'aggregateVersion',
-        value: value,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      aggregateVersionGreaterThan(
-    int value, {
-    bool include = false,
-  }) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.greaterThan(
-        include: include,
-        property: r'aggregateVersion',
-        value: value,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      aggregateVersionLessThan(
-    int value, {
-    bool include = false,
-  }) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.lessThan(
-        include: include,
-        property: r'aggregateVersion',
-        value: value,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      aggregateVersionBetween(
-    int lower,
-    int upper, {
-    bool includeLower = true,
-    bool includeUpper = true,
-  }) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.between(
-        property: r'aggregateVersion',
-        lower: lower,
-        includeLower: includeLower,
-        upper: upper,
-        includeUpper: includeUpper,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      eventDataEqualTo(
-    String value, {
-    bool caseSensitive = true,
-  }) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.equalTo(
-        property: r'eventData',
-        value: value,
-        caseSensitive: caseSensitive,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      eventDataGreaterThan(
-    String value, {
-    bool include = false,
-    bool caseSensitive = true,
-  }) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.greaterThan(
-        include: include,
-        property: r'eventData',
-        value: value,
-        caseSensitive: caseSensitive,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      eventDataLessThan(
-    String value, {
-    bool include = false,
-    bool caseSensitive = true,
-  }) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.lessThan(
-        include: include,
-        property: r'eventData',
-        value: value,
-        caseSensitive: caseSensitive,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      eventDataBetween(
-    String lower,
-    String upper, {
-    bool includeLower = true,
-    bool includeUpper = true,
-    bool caseSensitive = true,
-  }) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.between(
-        property: r'eventData',
-        lower: lower,
-        includeLower: includeLower,
-        upper: upper,
-        includeUpper: includeUpper,
-        caseSensitive: caseSensitive,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      eventDataStartsWith(
-    String value, {
-    bool caseSensitive = true,
-  }) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.startsWith(
-        property: r'eventData',
-        value: value,
-        caseSensitive: caseSensitive,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      eventDataEndsWith(
-    String value, {
-    bool caseSensitive = true,
-  }) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.endsWith(
-        property: r'eventData',
-        value: value,
-        caseSensitive: caseSensitive,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      eventDataContains(String value, {bool caseSensitive = true}) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.contains(
-        property: r'eventData',
-        value: value,
-        caseSensitive: caseSensitive,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      eventDataMatches(String pattern, {bool caseSensitive = true}) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.matches(
-        property: r'eventData',
-        wildcard: pattern,
-        caseSensitive: caseSensitive,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      eventDataIsEmpty() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.equalTo(
-        property: r'eventData',
-        value: '',
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      eventDataIsNotEmpty() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.greaterThan(
-        property: r'eventData',
-        value: '',
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      eventTypeEqualTo(
-    String value, {
-    bool caseSensitive = true,
-  }) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.equalTo(
-        property: r'eventType',
-        value: value,
-        caseSensitive: caseSensitive,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      eventTypeGreaterThan(
-    String value, {
-    bool include = false,
-    bool caseSensitive = true,
-  }) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.greaterThan(
-        include: include,
-        property: r'eventType',
-        value: value,
-        caseSensitive: caseSensitive,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      eventTypeLessThan(
-    String value, {
-    bool include = false,
-    bool caseSensitive = true,
-  }) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.lessThan(
-        include: include,
-        property: r'eventType',
-        value: value,
-        caseSensitive: caseSensitive,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      eventTypeBetween(
-    String lower,
-    String upper, {
-    bool includeLower = true,
-    bool includeUpper = true,
-    bool caseSensitive = true,
-  }) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.between(
-        property: r'eventType',
-        lower: lower,
-        includeLower: includeLower,
-        upper: upper,
-        includeUpper: includeUpper,
-        caseSensitive: caseSensitive,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      eventTypeStartsWith(
-    String value, {
-    bool caseSensitive = true,
-  }) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.startsWith(
-        property: r'eventType',
-        value: value,
-        caseSensitive: caseSensitive,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      eventTypeEndsWith(
-    String value, {
-    bool caseSensitive = true,
-  }) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.endsWith(
-        property: r'eventType',
-        value: value,
-        caseSensitive: caseSensitive,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      eventTypeContains(String value, {bool caseSensitive = true}) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.contains(
-        property: r'eventType',
-        value: value,
-        caseSensitive: caseSensitive,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      eventTypeMatches(String pattern, {bool caseSensitive = true}) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.matches(
-        property: r'eventType',
-        wildcard: pattern,
-        caseSensitive: caseSensitive,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      eventTypeIsEmpty() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.equalTo(
-        property: r'eventType',
-        value: '',
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      eventTypeIsNotEmpty() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.greaterThan(
-        property: r'eventType',
-        value: '',
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      idEqualTo(Id value) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.equalTo(
-        property: r'id',
-        value: value,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      idGreaterThan(
-    Id value, {
-    bool include = false,
-  }) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.greaterThan(
-        include: include,
-        property: r'id',
-        value: value,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      idLessThan(
-    Id value, {
-    bool include = false,
-  }) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.lessThan(
-        include: include,
-        property: r'id',
-        value: value,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      idBetween(
-    Id lower,
-    Id upper, {
-    bool includeLower = true,
-    bool includeUpper = true,
-  }) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.between(
-        property: r'id',
-        lower: lower,
-        includeLower: includeLower,
-        upper: upper,
-        includeUpper: includeUpper,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      timestampEqualTo(DateTime value) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.equalTo(
-        property: r'timestamp',
-        value: value,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      timestampGreaterThan(
-    DateTime value, {
-    bool include = false,
-  }) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.greaterThan(
-        include: include,
-        property: r'timestamp',
-        value: value,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      timestampLessThan(
-    DateTime value, {
-    bool include = false,
-  }) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.lessThan(
-        include: include,
-        property: r'timestamp',
-        value: value,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      timestampBetween(
-    DateTime lower,
-    DateTime upper, {
-    bool includeLower = true,
-    bool includeUpper = true,
-  }) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.between(
-        property: r'timestamp',
-        lower: lower,
-        includeLower: includeLower,
-        upper: upper,
-        includeUpper: includeUpper,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      versionEqualTo(int value) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.equalTo(
-        property: r'version',
-        value: value,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      versionGreaterThan(
-    int value, {
-    bool include = false,
-  }) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.greaterThan(
-        include: include,
-        property: r'version',
-        value: value,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      versionLessThan(
-    int value, {
-    bool include = false,
-  }) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.lessThan(
-        include: include,
-        property: r'version',
-        value: value,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      versionBetween(
-    int lower,
-    int upper, {
-    bool includeLower = true,
-    bool includeUpper = true,
-  }) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.between(
-        property: r'version',
-        lower: lower,
-        includeLower: includeLower,
-        upper: upper,
-        includeUpper: includeUpper,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      walletIdEqualTo(
-    String value, {
-    bool caseSensitive = true,
-  }) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.equalTo(
-        property: r'walletId',
-        value: value,
-        caseSensitive: caseSensitive,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      walletIdGreaterThan(
-    String value, {
-    bool include = false,
-    bool caseSensitive = true,
-  }) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.greaterThan(
-        include: include,
-        property: r'walletId',
-        value: value,
-        caseSensitive: caseSensitive,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      walletIdLessThan(
-    String value, {
-    bool include = false,
-    bool caseSensitive = true,
-  }) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.lessThan(
-        include: include,
-        property: r'walletId',
-        value: value,
-        caseSensitive: caseSensitive,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      walletIdBetween(
-    String lower,
-    String upper, {
-    bool includeLower = true,
-    bool includeUpper = true,
-    bool caseSensitive = true,
-  }) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.between(
-        property: r'walletId',
-        lower: lower,
-        includeLower: includeLower,
-        upper: upper,
-        includeUpper: includeUpper,
-        caseSensitive: caseSensitive,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      walletIdStartsWith(
-    String value, {
-    bool caseSensitive = true,
-  }) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.startsWith(
-        property: r'walletId',
-        value: value,
-        caseSensitive: caseSensitive,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      walletIdEndsWith(
-    String value, {
-    bool caseSensitive = true,
-  }) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.endsWith(
-        property: r'walletId',
-        value: value,
-        caseSensitive: caseSensitive,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      walletIdContains(String value, {bool caseSensitive = true}) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.contains(
-        property: r'walletId',
-        value: value,
-        caseSensitive: caseSensitive,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      walletIdMatches(String pattern, {bool caseSensitive = true}) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.matches(
-        property: r'walletId',
-        wildcard: pattern,
-        caseSensitive: caseSensitive,
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      walletIdIsEmpty() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.equalTo(
-        property: r'walletId',
-        value: '',
-      ));
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterFilterCondition>
-      walletIdIsNotEmpty() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addFilterCondition(FilterCondition.greaterThan(
-        property: r'walletId',
-        value: '',
-      ));
-    });
-  }
-}
-
-extension WalletEventEntityQueryObject
-    on QueryBuilder<WalletEventEntity, WalletEventEntity, QFilterCondition> {}
-
-extension WalletEventEntityQueryLinks
-    on QueryBuilder<WalletEventEntity, WalletEventEntity, QFilterCondition> {}
-
-extension WalletEventEntityQuerySortBy
-    on QueryBuilder<WalletEventEntity, WalletEventEntity, QSortBy> {
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterSortBy>
-      sortByAggregateVersion() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addSortBy(r'aggregateVersion', Sort.asc);
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterSortBy>
-      sortByAggregateVersionDesc() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addSortBy(r'aggregateVersion', Sort.desc);
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterSortBy>
-      sortByEventData() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addSortBy(r'eventData', Sort.asc);
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterSortBy>
-      sortByEventDataDesc() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addSortBy(r'eventData', Sort.desc);
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterSortBy>
-      sortByEventType() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addSortBy(r'eventType', Sort.asc);
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterSortBy>
-      sortByEventTypeDesc() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addSortBy(r'eventType', Sort.desc);
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterSortBy>
-      sortByTimestamp() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addSortBy(r'timestamp', Sort.asc);
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterSortBy>
-      sortByTimestampDesc() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addSortBy(r'timestamp', Sort.desc);
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterSortBy>
-      sortByVersion() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addSortBy(r'version', Sort.asc);
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterSortBy>
-      sortByVersionDesc() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addSortBy(r'version', Sort.desc);
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterSortBy>
-      sortByWalletId() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addSortBy(r'walletId', Sort.asc);
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterSortBy>
-      sortByWalletIdDesc() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addSortBy(r'walletId', Sort.desc);
-    });
-  }
-}
-
-extension WalletEventEntityQuerySortThenBy
-    on QueryBuilder<WalletEventEntity, WalletEventEntity, QSortThenBy> {
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterSortBy>
-      thenByAggregateVersion() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addSortBy(r'aggregateVersion', Sort.asc);
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterSortBy>
-      thenByAggregateVersionDesc() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addSortBy(r'aggregateVersion', Sort.desc);
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterSortBy>
-      thenByEventData() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addSortBy(r'eventData', Sort.asc);
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterSortBy>
-      thenByEventDataDesc() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addSortBy(r'eventData', Sort.desc);
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterSortBy>
-      thenByEventType() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addSortBy(r'eventType', Sort.asc);
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterSortBy>
-      thenByEventTypeDesc() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addSortBy(r'eventType', Sort.desc);
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterSortBy> thenById() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addSortBy(r'id', Sort.asc);
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterSortBy>
-      thenByIdDesc() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addSortBy(r'id', Sort.desc);
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterSortBy>
-      thenByTimestamp() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addSortBy(r'timestamp', Sort.asc);
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterSortBy>
-      thenByTimestampDesc() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addSortBy(r'timestamp', Sort.desc);
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterSortBy>
-      thenByVersion() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addSortBy(r'version', Sort.asc);
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterSortBy>
-      thenByVersionDesc() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addSortBy(r'version', Sort.desc);
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterSortBy>
-      thenByWalletId() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addSortBy(r'walletId', Sort.asc);
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QAfterSortBy>
-      thenByWalletIdDesc() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addSortBy(r'walletId', Sort.desc);
-    });
-  }
-}
-
-extension WalletEventEntityQueryWhereDistinct
-    on QueryBuilder<WalletEventEntity, WalletEventEntity, QDistinct> {
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QDistinct>
-      distinctByAggregateVersion() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addDistinctBy(r'aggregateVersion');
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QDistinct>
-      distinctByEventData({bool caseSensitive = true}) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addDistinctBy(r'eventData', caseSensitive: caseSensitive);
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QDistinct>
-      distinctByEventType({bool caseSensitive = true}) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addDistinctBy(r'eventType', caseSensitive: caseSensitive);
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QDistinct>
-      distinctByTimestamp() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addDistinctBy(r'timestamp');
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QDistinct>
-      distinctByVersion() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addDistinctBy(r'version');
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, WalletEventEntity, QDistinct>
-      distinctByWalletId({bool caseSensitive = true}) {
-    return QueryBuilder.apply(this, (query) {
-      return query.addDistinctBy(r'walletId', caseSensitive: caseSensitive);
-    });
-  }
-}
-
-extension WalletEventEntityQueryProperty
-    on QueryBuilder<WalletEventEntity, WalletEventEntity, QQueryProperty> {
-  QueryBuilder<WalletEventEntity, int, QQueryOperations> idProperty() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addPropertyName(r'id');
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, int, QQueryOperations>
-      aggregateVersionProperty() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addPropertyName(r'aggregateVersion');
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, String, QQueryOperations>
-      eventDataProperty() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addPropertyName(r'eventData');
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, String, QQueryOperations>
-      eventTypeProperty() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addPropertyName(r'eventType');
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, DateTime, QQueryOperations>
-      timestampProperty() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addPropertyName(r'timestamp');
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, int, QQueryOperations> versionProperty() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addPropertyName(r'version');
-    });
-  }
-
-  QueryBuilder<WalletEventEntity, String, QQueryOperations> walletIdProperty() {
-    return QueryBuilder.apply(this, (query) {
-      return query.addPropertyName(r'walletId');
-    });
-  }
-}
-
-// coverage:ignore-file
-// ignore_for_file: duplicate_ignore, non_constant_identifier_names, constant_identifier_names, invalid_use_of_protected_member, unnecessary_cast, prefer_const_constructors, lines_longer_than_80_chars, require_trailing_commas, inference_failure_on_function_invocation, unnecessary_parenthesis, unnecessary_raw_strings, unnecessary_null_checks, join_return_with_assignment, prefer_final_locals, avoid_js_rounded_ints, avoid_positional_boolean_parameters, always_specify_types
-
 extension GetBitcoinUtxoEntityCollection on Isar {
   IsarCollection<BitcoinUtxoEntity> get bitcoinUtxoEntitys => this.collection();
 }
@@ -4582,18 +3155,23 @@ const BitcoinUtxoEntitySchema = CollectionSchema(
       name: r'txid',
       type: IsarType.string,
     ),
-    r'utxoKey': PropertySchema(
+    r'updatedAt': PropertySchema(
       id: 14,
+      name: r'updatedAt',
+      type: IsarType.dateTime,
+    ),
+    r'utxoKey': PropertySchema(
+      id: 15,
       name: r'utxoKey',
       type: IsarType.string,
     ),
     r'vout': PropertySchema(
-      id: 15,
+      id: 16,
       name: r'vout',
       type: IsarType.long,
     ),
     r'walletId': PropertySchema(
-      id: 16,
+      id: 17,
       name: r'walletId',
       type: IsarType.string,
     )
@@ -4612,6 +3190,24 @@ const BitcoinUtxoEntitySchema = CollectionSchema(
       properties: [
         IndexPropertySchema(
           name: r'walletId',
+          type: IndexType.hash,
+          caseSensitive: true,
+        )
+      ],
+    ),
+    r'walletId_status': IndexSchema(
+      id: -6954685166978019689,
+      name: r'walletId_status',
+      unique: false,
+      replace: false,
+      properties: [
+        IndexPropertySchema(
+          name: r'walletId',
+          type: IndexType.hash,
+          caseSensitive: true,
+        ),
+        IndexPropertySchema(
+          name: r'status',
           type: IndexType.hash,
           caseSensitive: true,
         )
@@ -4725,9 +3321,10 @@ void _bitcoinUtxoEntitySerialize(
   writer.writeString(offsets[11], object.spentInTxId);
   writer.writeString(offsets[12], object.status);
   writer.writeString(offsets[13], object.txid);
-  writer.writeString(offsets[14], object.utxoKey);
-  writer.writeLong(offsets[15], object.vout);
-  writer.writeString(offsets[16], object.walletId);
+  writer.writeDateTime(offsets[14], object.updatedAt);
+  writer.writeString(offsets[15], object.utxoKey);
+  writer.writeLong(offsets[16], object.vout);
+  writer.writeString(offsets[17], object.walletId);
 }
 
 BitcoinUtxoEntity _bitcoinUtxoEntityDeserialize(
@@ -4752,9 +3349,10 @@ BitcoinUtxoEntity _bitcoinUtxoEntityDeserialize(
   object.spentInTxId = reader.readStringOrNull(offsets[11]);
   object.status = reader.readString(offsets[12]);
   object.txid = reader.readString(offsets[13]);
-  object.utxoKey = reader.readString(offsets[14]);
-  object.vout = reader.readLong(offsets[15]);
-  object.walletId = reader.readString(offsets[16]);
+  object.updatedAt = reader.readDateTimeOrNull(offsets[14]);
+  object.utxoKey = reader.readString(offsets[15]);
+  object.vout = reader.readLong(offsets[16]);
+  object.walletId = reader.readString(offsets[17]);
   return object;
 }
 
@@ -4794,10 +3392,12 @@ P _bitcoinUtxoEntityDeserializeProp<P>(
     case 13:
       return (reader.readString(offset)) as P;
     case 14:
-      return (reader.readString(offset)) as P;
+      return (reader.readDateTimeOrNull(offset)) as P;
     case 15:
-      return (reader.readLong(offset)) as P;
+      return (reader.readString(offset)) as P;
     case 16:
+      return (reader.readLong(offset)) as P;
+    case 17:
       return (reader.readString(offset)) as P;
     default:
       throw IsarError('Unknown property with id $propertyId');
@@ -5026,6 +3626,96 @@ extension BitcoinUtxoEntityQueryWhere
               indexName: r'walletId',
               lower: [],
               upper: [walletId],
+              includeUpper: false,
+            ));
+      }
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterWhereClause>
+      walletIdEqualToAnyStatus(String walletId) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'walletId_status',
+        value: [walletId],
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterWhereClause>
+      walletIdNotEqualToAnyStatus(String walletId) {
+    return QueryBuilder.apply(this, (query) {
+      if (query.whereSort == Sort.asc) {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_status',
+              lower: [],
+              upper: [walletId],
+              includeUpper: false,
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_status',
+              lower: [walletId],
+              includeLower: false,
+              upper: [],
+            ));
+      } else {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_status',
+              lower: [walletId],
+              includeLower: false,
+              upper: [],
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_status',
+              lower: [],
+              upper: [walletId],
+              includeUpper: false,
+            ));
+      }
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterWhereClause>
+      walletIdStatusEqualTo(String walletId, String status) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'walletId_status',
+        value: [walletId, status],
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterWhereClause>
+      walletIdEqualToStatusNotEqualTo(String walletId, String status) {
+    return QueryBuilder.apply(this, (query) {
+      if (query.whereSort == Sort.asc) {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_status',
+              lower: [walletId],
+              upper: [walletId, status],
+              includeUpper: false,
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_status',
+              lower: [walletId, status],
+              includeLower: false,
+              upper: [walletId],
+            ));
+      } else {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_status',
+              lower: [walletId, status],
+              includeLower: false,
+              upper: [walletId],
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_status',
+              lower: [walletId],
+              upper: [walletId, status],
               includeUpper: false,
             ));
       }
@@ -6820,6 +5510,80 @@ extension BitcoinUtxoEntityQueryFilter
   }
 
   QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      updatedAtIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'updatedAt',
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      updatedAtIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'updatedAt',
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      updatedAtEqualTo(DateTime? value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'updatedAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      updatedAtGreaterThan(
+    DateTime? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'updatedAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      updatedAtLessThan(
+    DateTime? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'updatedAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      updatedAtBetween(
+    DateTime? lower,
+    DateTime? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'updatedAt',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
       utxoKeyEqualTo(
     String value, {
     bool caseSensitive = true,
@@ -7353,6 +6117,20 @@ extension BitcoinUtxoEntityQuerySortBy
   }
 
   QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterSortBy>
+      sortByUpdatedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'updatedAt', Sort.asc);
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterSortBy>
+      sortByUpdatedAtDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'updatedAt', Sort.desc);
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterSortBy>
       sortByUtxoKey() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'utxoKey', Sort.asc);
@@ -7607,6 +6385,20 @@ extension BitcoinUtxoEntityQuerySortThenBy
   }
 
   QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterSortBy>
+      thenByUpdatedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'updatedAt', Sort.asc);
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterSortBy>
+      thenByUpdatedAtDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'updatedAt', Sort.desc);
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterSortBy>
       thenByUtxoKey() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'utxoKey', Sort.asc);
@@ -7751,6 +6543,13 @@ extension BitcoinUtxoEntityQueryWhereDistinct
   }
 
   QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QDistinct>
+      distinctByUpdatedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'updatedAt');
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QDistinct>
       distinctByUtxoKey({bool caseSensitive = true}) {
     return QueryBuilder.apply(this, (query) {
       return query.addDistinctBy(r'utxoKey', caseSensitive: caseSensitive);
@@ -7870,6 +6669,13 @@ extension BitcoinUtxoEntityQueryProperty
   QueryBuilder<BitcoinUtxoEntity, String, QQueryOperations> txidProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'txid');
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, DateTime?, QQueryOperations>
+      updatedAtProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'updatedAt');
     });
   }
 
@@ -8004,8 +6810,13 @@ const BitcoinTransactionEntitySchema = CollectionSchema(
       name: r'txid',
       type: IsarType.string,
     ),
-    r'walletId': PropertySchema(
+    r'updatedAt': PropertySchema(
       id: 20,
+      name: r'updatedAt',
+      type: IsarType.dateTime,
+    ),
+    r'walletId': PropertySchema(
+      id: 21,
       name: r'walletId',
       type: IsarType.string,
     )
@@ -8026,6 +6837,24 @@ const BitcoinTransactionEntitySchema = CollectionSchema(
           name: r'walletId',
           type: IndexType.hash,
           caseSensitive: true,
+        )
+      ],
+    ),
+    r'walletId_createdAt': IndexSchema(
+      id: -211284628616307852,
+      name: r'walletId_createdAt',
+      unique: false,
+      replace: false,
+      properties: [
+        IndexPropertySchema(
+          name: r'walletId',
+          type: IndexType.hash,
+          caseSensitive: true,
+        ),
+        IndexPropertySchema(
+          name: r'createdAt',
+          type: IndexType.value,
+          caseSensitive: false,
         )
       ],
     ),
@@ -8177,7 +7006,8 @@ void _bitcoinTransactionEntitySerialize(
   writer.writeString(offsets[17], object.totalInput);
   writer.writeString(offsets[18], object.totalOutput);
   writer.writeString(offsets[19], object.txid);
-  writer.writeString(offsets[20], object.walletId);
+  writer.writeDateTime(offsets[20], object.updatedAt);
+  writer.writeString(offsets[21], object.walletId);
 }
 
 BitcoinTransactionEntity _bitcoinTransactionEntityDeserialize(
@@ -8208,7 +7038,8 @@ BitcoinTransactionEntity _bitcoinTransactionEntityDeserialize(
   object.totalInput = reader.readString(offsets[17]);
   object.totalOutput = reader.readString(offsets[18]);
   object.txid = reader.readString(offsets[19]);
-  object.walletId = reader.readString(offsets[20]);
+  object.updatedAt = reader.readDateTimeOrNull(offsets[20]);
+  object.walletId = reader.readString(offsets[21]);
   return object;
 }
 
@@ -8260,6 +7091,8 @@ P _bitcoinTransactionEntityDeserializeProp<P>(
     case 19:
       return (reader.readString(offset)) as P;
     case 20:
+      return (reader.readDateTimeOrNull(offset)) as P;
+    case 21:
       return (reader.readString(offset)) as P;
     default:
       throw IsarError('Unknown property with id $propertyId');
@@ -8503,6 +7336,149 @@ extension BitcoinTransactionEntityQueryWhere on QueryBuilder<
               includeUpper: false,
             ));
       }
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterWhereClause> walletIdEqualToAnyCreatedAt(String walletId) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'walletId_createdAt',
+        value: [walletId],
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterWhereClause> walletIdNotEqualToAnyCreatedAt(String walletId) {
+    return QueryBuilder.apply(this, (query) {
+      if (query.whereSort == Sort.asc) {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_createdAt',
+              lower: [],
+              upper: [walletId],
+              includeUpper: false,
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_createdAt',
+              lower: [walletId],
+              includeLower: false,
+              upper: [],
+            ));
+      } else {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_createdAt',
+              lower: [walletId],
+              includeLower: false,
+              upper: [],
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_createdAt',
+              lower: [],
+              upper: [walletId],
+              includeUpper: false,
+            ));
+      }
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+          QAfterWhereClause>
+      walletIdCreatedAtEqualTo(String walletId, DateTime createdAt) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'walletId_createdAt',
+        value: [walletId, createdAt],
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+          QAfterWhereClause>
+      walletIdEqualToCreatedAtNotEqualTo(String walletId, DateTime createdAt) {
+    return QueryBuilder.apply(this, (query) {
+      if (query.whereSort == Sort.asc) {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_createdAt',
+              lower: [walletId],
+              upper: [walletId, createdAt],
+              includeUpper: false,
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_createdAt',
+              lower: [walletId, createdAt],
+              includeLower: false,
+              upper: [walletId],
+            ));
+      } else {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_createdAt',
+              lower: [walletId, createdAt],
+              includeLower: false,
+              upper: [walletId],
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_createdAt',
+              lower: [walletId],
+              upper: [walletId, createdAt],
+              includeUpper: false,
+            ));
+      }
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterWhereClause> walletIdEqualToCreatedAtGreaterThan(
+    String walletId,
+    DateTime createdAt, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.between(
+        indexName: r'walletId_createdAt',
+        lower: [walletId, createdAt],
+        includeLower: include,
+        upper: [walletId],
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterWhereClause> walletIdEqualToCreatedAtLessThan(
+    String walletId,
+    DateTime createdAt, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.between(
+        indexName: r'walletId_createdAt',
+        lower: [walletId],
+        upper: [walletId, createdAt],
+        includeUpper: include,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterWhereClause> walletIdEqualToCreatedAtBetween(
+    String walletId,
+    DateTime lowerCreatedAt,
+    DateTime upperCreatedAt, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.between(
+        indexName: r'walletId_createdAt',
+        lower: [walletId, lowerCreatedAt],
+        includeLower: includeLower,
+        upper: [walletId, upperCreatedAt],
+        includeUpper: includeUpper,
+      ));
     });
   }
 
@@ -11131,6 +10107,80 @@ extension BitcoinTransactionEntityQueryFilter on QueryBuilder<
   }
 
   QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> updatedAtIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'updatedAt',
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> updatedAtIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'updatedAt',
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> updatedAtEqualTo(DateTime? value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'updatedAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> updatedAtGreaterThan(
+    DateTime? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'updatedAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> updatedAtLessThan(
+    DateTime? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'updatedAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> updatedAtBetween(
+    DateTime? lower,
+    DateTime? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'updatedAt',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
       QAfterFilterCondition> walletIdEqualTo(
     String value, {
     bool caseSensitive = true,
@@ -11558,6 +10608,20 @@ extension BitcoinTransactionEntityQuerySortBy on QueryBuilder<
   }
 
   QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterSortBy>
+      sortByUpdatedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'updatedAt', Sort.asc);
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterSortBy>
+      sortByUpdatedAtDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'updatedAt', Sort.desc);
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterSortBy>
       sortByWalletId() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'walletId', Sort.asc);
@@ -11869,6 +10933,20 @@ extension BitcoinTransactionEntityQuerySortThenBy on QueryBuilder<
   }
 
   QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterSortBy>
+      thenByUpdatedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'updatedAt', Sort.asc);
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterSortBy>
+      thenByUpdatedAtDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'updatedAt', Sort.desc);
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterSortBy>
       thenByWalletId() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'walletId', Sort.asc);
@@ -12029,6 +11107,13 @@ extension BitcoinTransactionEntityQueryWhereDistinct on QueryBuilder<
   }
 
   QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QDistinct>
+      distinctByUpdatedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'updatedAt');
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QDistinct>
       distinctByWalletId({bool caseSensitive = true}) {
     return QueryBuilder.apply(this, (query) {
       return query.addDistinctBy(r'walletId', caseSensitive: caseSensitive);
@@ -12181,6 +11266,13 @@ extension BitcoinTransactionEntityQueryProperty on QueryBuilder<
       txidProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'txid');
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, DateTime?, QQueryOperations>
+      updatedAtProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'updatedAt');
     });
   }
 

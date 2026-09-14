@@ -8,6 +8,7 @@ import 'dart:convert';
 
 import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:logging/logging.dart';
+import 'package:meta/meta.dart';
 import 'package:postgres/postgres.dart';
 import 'package:spiffynode/spiffy_node.dart';
 
@@ -36,6 +37,15 @@ class PostgresWalletStorage implements ReadModelStorage {
   ///
   /// Call [initialize] before using the storage.
   PostgresWalletStorage(this._config);
+
+  /// Headers per multi-row INSERT in [storeBlockHeadersBulk]. Eight bind
+  /// parameters per header: 1000 stays far below the protocol's 65535.
+  @visibleForTesting
+  int headerInsertChunkSize = 1000;
+
+  /// Called with the row count of each INSERT [storeBlockHeadersBulk] sends.
+  @visibleForTesting
+  void Function(int rows)? onHeaderInsertStatement;
 
   /// Initializes the storage by creating the connection pool.
   Future<void> initialize() async {
@@ -142,8 +152,9 @@ class PostgresWalletStorage implements ReadModelStorage {
   Future<List<String>> listWallets() async {
     _ensureInitialized();
 
+    // Newest first, as every backend (audit S-19).
     final result = await _pool!.execute(
-      'SELECT wallet_id FROM wallet_metadata ORDER BY created_at',
+      'SELECT wallet_id FROM wallet_metadata ORDER BY created_at DESC, id DESC',
     );
 
     return result.map((row) => row[0] as String).toList();
@@ -260,7 +271,8 @@ class PostgresWalletStorage implements ReadModelStorage {
       params['isChange'] = isChange;
     }
 
-    sql += ' ORDER BY derivation_index';
+    // Newest first by the stored createdAt, as every backend (audit S-19).
+    sql += ' ORDER BY created_at DESC, id';
 
     if (limit != null) {
       sql += ' LIMIT @limit';
@@ -320,7 +332,7 @@ class PostgresWalletStorage implements ReadModelStorage {
         ) VALUES (
           @walletId, @address, @scriptType, @derivationPath, @derivationIndex,
           @isChange, @label, @purpose, @firstUsedAt, @lastUsedAt,
-          @usageCount, @balance, @now, @isWatched
+          @usageCount, @balance, @createdAt, @isWatched
         )
         ON CONFLICT (wallet_id, address) DO UPDATE SET
           script_type = COALESCE(@scriptType, addresses.script_type),
@@ -348,7 +360,9 @@ class PostgresWalletStorage implements ReadModelStorage {
         'lastUsedAt': metadata.lastUsedAt,
         'usageCount': metadata.usageCount,
         'balance': metadata.balance.toInt(),
-        'now': DateTime.now(),
+        // The address's own creation time (it used to be the store time),
+        // so the newest-first order matches the other backends.
+        'createdAt': metadata.createdAt,
         'isWatched': metadata.isWatched,
       },
     );
@@ -481,7 +495,7 @@ class PostgresWalletStorage implements ReadModelStorage {
     _ensureInitialized();
 
     var sql = '''
-      SELECT DISTINCT txid FROM transaction_addresses
+      SELECT txid FROM transaction_addresses
       WHERE wallet_id = @walletId AND address = @address
     ''';
 
@@ -495,7 +509,8 @@ class PostgresWalletStorage implements ReadModelStorage {
       params['direction'] = direction;
     }
 
-    sql += ' ORDER BY txid';
+    // Newest first, as every backend (audit S-19; it was txid order).
+    sql += ' GROUP BY txid ORDER BY MAX(created_at) DESC, MAX(id) DESC';
 
     if (limit != null) {
       sql += ' LIMIT @limit';
@@ -579,9 +594,7 @@ class PostgresWalletStorage implements ReadModelStorage {
     _ensureInitialized();
 
     var sql = '''
-      SELECT txid, vout, satoshis, script_pub_key, address, block_height,
-             confirmations, status, created_at, spent_at, spent_in_tx_id,
-             script_type, is_spendable, category, plugin_metadata
+      SELECT $_utxoColumns
       FROM bitcoin_utxos
       WHERE wallet_id = @walletId
     ''';
@@ -590,7 +603,7 @@ class PostgresWalletStorage implements ReadModelStorage {
       sql += " AND status != 'spent'";
     }
 
-    sql += ' ORDER BY created_at DESC';
+    sql += ' ORDER BY created_at DESC, id';
 
     final result = await _pool!.execute(
       Sql.named(sql),
@@ -606,9 +619,7 @@ class PostgresWalletStorage implements ReadModelStorage {
 
     final result = await _pool!.execute(
       Sql.named('''
-        SELECT txid, vout, satoshis, script_pub_key, address, block_height,
-               confirmations, status, created_at, spent_at, spent_in_tx_id,
-               script_type, is_spendable, category, plugin_metadata
+        SELECT $_utxoColumns
         FROM bitcoin_utxos
         WHERE wallet_id = @walletId AND status = 'available'
         ORDER BY satoshis DESC
@@ -619,33 +630,45 @@ class PostgresWalletStorage implements ReadModelStorage {
     return result.map(_rowToUtxo).toList();
   }
 
+  /// Inserts or updates the ([walletId], txid, vout) row.
+  ///
+  /// `updated_at` is the UTXO's [BitcoinUtxo.updatedAt]; `is_spendable`
+  /// follows the status (available only). The spend history is only ever
+  /// added to (audit S-20, data retention): `spent_at` records the first
+  /// store as spent and is never cleared, and `spent_in_tx_id` (which the
+  /// domain model does not carry) is never overwritten. A block height or
+  /// plugin metadata the update lacks keeps the stored value.
   @override
   Future<void> upsertUTXO(String walletId, BitcoinUtxo utxo) async {
     _ensureInitialized();
 
+    final spent = utxo.status == UTXOStatus.spent;
     await _pool!.execute(
       Sql.named('''
         INSERT INTO bitcoin_utxos (
           wallet_id, txid, vout, utxo_key, satoshis, script_pub_key, address,
-          block_height, confirmations, status, created_at, spent_at,
+          block_height, confirmations, status, created_at, updated_at, spent_at,
           spent_in_tx_id, script_type, is_spendable, category, plugin_metadata
         ) VALUES (
           @walletId, @txid, @vout, @utxoKey, @satoshis, @scriptPubKey, @address,
-          @blockHeight, @confirmations, @status, @createdAt, @spentAt,
-          @spentInTxId, @scriptType, @isSpendable, @category,
+          @blockHeight, @confirmations, @status, @createdAt, @updatedAt, @spentAt,
+          NULL, @scriptType, @isSpendable, @category,
           CAST(@pluginMetadata AS JSONB)
         )
         ON CONFLICT (wallet_id, txid, vout) DO UPDATE SET
-          satoshis = @satoshis,
-          script_pub_key = @scriptPubKey,
-          address = @address,
-          block_height = @blockHeight,
-          confirmations = @confirmations,
-          status = @status,
-          spent_at = @spentAt,
-          spent_in_tx_id = @spentInTxId,
-          is_spendable = @isSpendable,
-          plugin_metadata = CAST(@pluginMetadata AS JSONB)
+          satoshis = EXCLUDED.satoshis,
+          script_pub_key = EXCLUDED.script_pub_key,
+          address = EXCLUDED.address,
+          -- A zero-confirmation update (reorg, audit 3b0) clears the height.
+          block_height = CASE WHEN EXCLUDED.confirmations > 0
+              THEN COALESCE(EXCLUDED.block_height, bitcoin_utxos.block_height)
+              ELSE EXCLUDED.block_height END,
+          confirmations = EXCLUDED.confirmations,
+          status = EXCLUDED.status,
+          updated_at = EXCLUDED.updated_at,
+          spent_at = COALESCE(bitcoin_utxos.spent_at, EXCLUDED.spent_at),
+          is_spendable = EXCLUDED.is_spendable,
+          plugin_metadata = COALESCE(EXCLUDED.plugin_metadata, bitcoin_utxos.plugin_metadata)
       '''),
       parameters: {
         'walletId': walletId,
@@ -659,10 +682,10 @@ class PostgresWalletStorage implements ReadModelStorage {
         'confirmations': utxo.confirmations ?? 0,
         'status': utxo.status.name,
         'createdAt': utxo.createdAt,
-        'spentAt': null, // Set separately when spent
-        'spentInTxId': null,
+        'updatedAt': utxo.updatedAt,
+        'spentAt': spent ? utxo.updatedAt : null,
         'scriptType': 'p2pkh',
-        'isSpendable': true,
+        'isSpendable': utxo.status == UTXOStatus.available,
         'category': 'funding',
         'pluginMetadata': utxo.pluginMetadata == null
             ? null
@@ -692,9 +715,7 @@ class PostgresWalletStorage implements ReadModelStorage {
     // spendable as plain funding) when its metadata names a pluginId.
     final result = await _pool!.execute(
       Sql.named('''
-        SELECT txid, vout, satoshis, script_pub_key, address, block_height,
-               confirmations, status, created_at, spent_at, spent_in_tx_id,
-               script_type, is_spendable, category, plugin_metadata
+        SELECT $_utxoColumns
         FROM bitcoin_utxos
         WHERE wallet_id = @walletId
           AND status = 'available'
@@ -717,14 +738,12 @@ class PostgresWalletStorage implements ReadModelStorage {
 
     final result = await _pool!.execute(
       Sql.named('''
-        SELECT txid, vout, satoshis, script_pub_key, address, block_height,
-               confirmations, status, created_at, spent_at, spent_in_tx_id,
-               script_type, is_spendable, category, plugin_metadata
+        SELECT $_utxoColumns
         FROM bitcoin_utxos
         WHERE wallet_id = @walletId
           AND status != 'spent'
           AND plugin_metadata->>'pluginId' = @pluginId
-        ORDER BY created_at DESC
+        ORDER BY created_at DESC, id
       '''),
       parameters: {'walletId': walletId, 'pluginId': pluginId},
     );
@@ -748,8 +767,15 @@ class PostgresWalletStorage implements ReadModelStorage {
     return utxos.fold<BigInt>(BigInt.zero, (sum, utxo) => sum + utxo.satoshis);
   }
 
+  /// Columns [_rowToUtxo] reads, in its order.
+  static const _utxoColumns = '''
+        txid, vout, satoshis, script_pub_key, address, block_height,
+        confirmations, status, created_at, spent_at, spent_in_tx_id,
+        script_type, is_spendable, category, plugin_metadata, updated_at''';
+
   BitcoinUtxo _rowToUtxo(ResultRow row) {
     final now = DateTime.now();
+    final createdAt = row[8] as DateTime? ?? now;
     return BitcoinUtxo(
       txid: row[0] as String,
       vout: row[1] as int,
@@ -762,9 +788,10 @@ class PostgresWalletStorage implements ReadModelStorage {
         (e) => e.name == (row[7] as String),
         orElse: () => UTXOStatus.available,
       ),
-      createdAt: row[8] as DateTime? ?? now,
-      updatedAt: row[8] as DateTime? ?? now, // Use same datetime for updatedAt
-      pluginMetadata: row.length > 14 ? _parseJsonMap(row[14]) : null,
+      createdAt: createdAt,
+      // Rows written before v006 have no updated_at.
+      updatedAt: row[15] as DateTime? ?? createdAt,
+      pluginMetadata: _parseJsonMap(row[14]),
     );
   }
 
@@ -781,13 +808,10 @@ class PostgresWalletStorage implements ReadModelStorage {
     _ensureInitialized();
 
     var sql = '''
-      SELECT txid, raw_hex, block_height, block_hash, confirmations,
-             total_input, total_output, fee, net_amount, is_incoming,
-             is_outgoing, status, created_at, confirmed_at, broadcast_at,
-             counterparty, notes, receiving_addresses, sending_addresses
+      SELECT $_transactionColumns
       FROM bitcoin_transactions
       WHERE wallet_id = @walletId
-      ORDER BY created_at DESC
+      ORDER BY created_at DESC, id
     ''';
 
     final params = <String, dynamic>{'walletId': walletId};
@@ -813,10 +837,7 @@ class PostgresWalletStorage implements ReadModelStorage {
     // the first-stored row is returned.
     final result = await _pool!.execute(
       Sql.named('''
-        SELECT txid, raw_hex, block_height, block_hash, confirmations,
-               total_input, total_output, fee, net_amount, is_incoming,
-               is_outgoing, status, created_at, confirmed_at, broadcast_at,
-               counterparty, notes, receiving_addresses, sending_addresses
+        SELECT $_transactionColumns
         FROM bitcoin_transactions
         WHERE txid = @txid
           ${walletId == null ? '' : 'AND wallet_id = @walletId'}
@@ -849,11 +870,7 @@ class PostgresWalletStorage implements ReadModelStorage {
     final result = await _pool!.execute(
       // One row per txid: the first-stored, as getTransaction.
       Sql.named('''
-        SELECT DISTINCT ON (txid)
-               txid, raw_hex, block_height, block_hash, confirmations,
-               total_input, total_output, fee, net_amount, is_incoming,
-               is_outgoing, status, created_at, confirmed_at, broadcast_at,
-               counterparty, notes, receiving_addresses, sending_addresses
+        SELECT DISTINCT ON (txid) $_transactionColumns
         FROM bitcoin_transactions
         WHERE txid IN (${placeholders.join(', ')})
         ORDER BY txid, id
@@ -877,10 +894,7 @@ class PostgresWalletStorage implements ReadModelStorage {
     _ensureInitialized();
 
     var sql = '''
-      SELECT txid, raw_hex, block_height, block_hash, confirmations,
-             total_input, total_output, fee, net_amount, is_incoming,
-             is_outgoing, status, created_at, confirmed_at, broadcast_at,
-             counterparty, notes, receiving_addresses, sending_addresses
+      SELECT $_transactionColumns
       FROM bitcoin_transactions
       WHERE status = @status
     ''';
@@ -892,7 +906,7 @@ class PostgresWalletStorage implements ReadModelStorage {
       params['walletId'] = walletId;
     }
 
-    sql += ' ORDER BY created_at DESC';
+    sql += ' ORDER BY created_at DESC, id';
 
     final result = await _pool!.execute(Sql.named(sql), parameters: params);
     return result.map(_rowToTransaction).toList();
@@ -911,17 +925,26 @@ class PostgresWalletStorage implements ReadModelStorage {
           wallet_id, txid, raw_hex, block_height, block_hash, confirmations,
           total_input, total_output, fee, net_amount, is_incoming, is_outgoing,
           status, created_at, confirmed_at, broadcast_at, counterparty, notes,
-          receiving_addresses, sending_addresses, primary_counterparty
+          receiving_addresses, sending_addresses, primary_counterparty, updated_at
         ) VALUES (
           @walletId, @txid, @rawHex, @blockHeight, @blockHash, @confirmations,
           @totalInput, @totalOutput, @fee, @netAmount, @isIncoming, @isOutgoing,
           @status, @createdAt, @confirmedAt, @broadcastAt, @counterparty, @notes,
-          @receivingAddresses, @sendingAddresses, @primaryCounterparty
+          @receivingAddresses, @sendingAddresses, @primaryCounterparty, @updatedAt
         )
         ON CONFLICT (wallet_id, txid) DO UPDATE SET
-          raw_hex = COALESCE(@rawHex, bitcoin_transactions.raw_hex),
-          block_height = COALESCE(@blockHeight, bitcoin_transactions.block_height),
-          block_hash = COALESCE(@blockHash, bitcoin_transactions.block_hash),
+          -- An update without the raw transaction keeps the stored bytes: an
+          -- SPV wallet cannot fetch them again.
+          raw_hex = COALESCE(NULLIF(EXCLUDED.raw_hex, ''), bitcoin_transactions.raw_hex),
+          updated_at = EXCLUDED.updated_at,
+          -- A confirmed update without a height keeps the stored one; a
+          -- non-confirmed update clears it (reorg, audit 3b0).
+          block_height = CASE WHEN EXCLUDED.status = 'confirmed'
+              THEN COALESCE(EXCLUDED.block_height, bitcoin_transactions.block_height)
+              ELSE EXCLUDED.block_height END,
+          block_hash = CASE WHEN EXCLUDED.status = 'confirmed'
+              THEN COALESCE(EXCLUDED.block_hash, bitcoin_transactions.block_hash)
+              ELSE EXCLUDED.block_hash END,
           confirmations = @confirmations,
           total_input = @totalInput,
           total_output = @totalOutput,
@@ -951,6 +974,7 @@ class PostgresWalletStorage implements ReadModelStorage {
         'isOutgoing': transaction.netAmount < BigInt.zero,
         'status': transaction.status.name,
         'createdAt': transaction.createdAt,
+        'updatedAt': transaction.updatedAt,
         'confirmedAt': transaction.status == TransactionStatus.confirmed
             ? DateTime.now()
             : null,
@@ -966,9 +990,19 @@ class PostgresWalletStorage implements ReadModelStorage {
     );
   }
 
+  /// Columns [_rowToTransaction] reads, in its order.
+  static const _transactionColumns = '''
+        txid, raw_hex, block_height, block_hash, confirmations,
+        total_input, total_output, fee, net_amount, is_incoming,
+        is_outgoing, status, created_at, confirmed_at, broadcast_at,
+        counterparty, notes, receiving_addresses, sending_addresses,
+        wallet_id, updated_at''';
+
   BitcoinTransaction _rowToTransaction(ResultRow row) {
     final now = DateTime.now();
+    final createdAt = row[12] as DateTime? ?? now;
     return BitcoinTransaction(
+      walletId: row[19] as String,
       txid: row[0] as String,
       rawHex: row[1] as String,
       blockHeight: row[2] as int?,
@@ -981,8 +1015,9 @@ class PostgresWalletStorage implements ReadModelStorage {
         (e) => e.name == (row[11] as String),
         orElse: () => TransactionStatus.pending,
       ),
-      createdAt: row[12] as DateTime? ?? now,
-      updatedAt: row[12] as DateTime? ?? now, // Use createdAt for updatedAt
+      createdAt: createdAt,
+      // Rows written before v006 have no updated_at.
+      updatedAt: row[20] as DateTime? ?? createdAt,
       receivingAddresses: _parseJsonList(row[17]),
       sendingAddresses: _parseJsonList(row[18]),
       memo: row[16] as String?,
@@ -1074,34 +1109,50 @@ class PostgresWalletStorage implements ReadModelStorage {
 
     final now = DateTime.now();
 
-    // One transaction per batch: a failure part-way no longer leaves a
-    // partial chain behind, and the batch avoids per-row commits.
+    // One upsert row per hash; the last occurrence wins. A multi-row
+    // ON CONFLICT DO UPDATE may not touch the same row twice.
+    final byHash = <String, (BlockHeader, int)>{};
+    for (final entry in headers) {
+      byHash[entry.$1.blockHash().toString()] = entry;
+    }
+    final rows = byHash.entries.toList();
+    final chunkSize = headerInsertChunkSize < 1 ? 1 : headerInsertChunkSize;
+
+    // One transaction per batch (a failure leaves no partial chain) and one
+    // multi-row INSERT per chunk: a CDN sync was one round-trip per header
+    // (audit S-08). Upsert semantics as storeBlockHeader (S-12).
     await _pool!.runTx((session) async {
-      for (final (header, height) in headers) {
+      for (var start = 0; start < rows.length; start += chunkSize) {
+        final chunk = rows.sublist(start, (start + chunkSize).clamp(0, rows.length));
+        final values = <String>[];
+        final params = <String, dynamic>{'storedAt': now};
+        for (var i = 0; i < chunk.length; i++) {
+          final hash = chunk[i].key;
+          final (header, height) = chunk[i].value;
+          values.add('(@h$i, @hash$i, @prev$i, @merkle$i, @ts$i, '
+              '@version$i, @bits$i, @nonce$i, false, @storedAt)');
+          params['h$i'] = height;
+          params['hash$i'] = hash;
+          params['prev$i'] = header.prevBlock.toString();
+          params['merkle$i'] = header.merkleRoot.toString();
+          params['ts$i'] = header.timestamp.millisecondsSinceEpoch ~/ 1000;
+          params['version$i'] = header.version;
+          params['bits$i'] = header.bits;
+          params['nonce$i'] = header.nonce;
+        }
         await session.execute(
           Sql.named('''
             INSERT INTO block_headers (
               height, hash, prev_block_hash, merkle_root, timestamp,
               version, bits, nonce, is_orphaned, stored_at
-            ) VALUES (
-              @height, @hash, @prevHash, @merkle, @ts,
-              @version, @bits, @nonce, false, @storedAt
-            ) ON CONFLICT (hash) DO UPDATE SET
+            ) VALUES ${values.join(', ')}
+            ON CONFLICT (hash) DO UPDATE SET
               is_orphaned = false,
               height = EXCLUDED.height
           '''),
-          parameters: {
-            'height': height,
-            'hash': header.blockHash().toString(),
-            'prevHash': header.prevBlock.toString(),
-            'merkle': header.merkleRoot.toString(),
-            'ts': header.timestamp.millisecondsSinceEpoch ~/ 1000,
-            'version': header.version,
-            'bits': header.bits,
-            'nonce': header.nonce,
-            'storedAt': now,
-          },
+          parameters: params,
         );
+        onHeaderInsertStatement?.call(chunk.length);
       }
     });
   }

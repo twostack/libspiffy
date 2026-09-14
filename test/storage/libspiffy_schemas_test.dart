@@ -106,6 +106,9 @@ void main() {
         address: '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa',
         blockHeight: 100,
         confirmations: 6,
+        // BitcoinUtxo.create defaults to pending; the expectations below
+        // are for an available UTXO (the test used to omit it: T-1).
+        status: UTXOStatus.available,
       );
 
       final entity = BitcoinUtxoEntity.fromDomain(utxo);
@@ -196,6 +199,7 @@ void main() {
         ..totalInput = '500000'
         ..totalOutput = '480000'
         ..fee = '20000'
+        ..netAmount = '480000' // a required column the test used to omit (T-1)
         ..isIncoming = true
         ..isOutgoing = false
         ..status = 'confirmed'

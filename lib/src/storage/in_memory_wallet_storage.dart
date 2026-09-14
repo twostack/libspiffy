@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:collection';
+import 'package:collection/collection.dart' show mergeSort;
 import 'package:spiffynode/spiffy_node.dart';
 import '../models/wallet_event.dart';
 import '../models/bitcoin_utxo.dart';
@@ -63,8 +65,10 @@ class InMemoryWalletStorage implements WalletStorage {
   // Balance cache: walletId -> balance
   final Map<String, BigInt> _balanceCache = {};
   
-  // Wallet existence tracking
-  final Set<String> _walletIds = {};
+  // Existing wallets in creation order: a metadata row (storeWallet) or, as
+  // this class is also the event store, a saved event stream. UTXO and
+  // transaction rows do not create a wallet (audit S-15).
+  final LinkedHashSet<String> _walletIds = LinkedHashSet<String>();
   
   // Synchronization for thread safety
   final Map<String, Completer<void>?> _locks = {};
@@ -140,7 +144,8 @@ class InMemoryWalletStorage implements WalletStorage {
   
   @override
   Future<List<String>> listWallets() async {
-    return _walletIds.toList();
+    // Newest first, as every backend (audit S-19).
+    return _walletIds.toList().reversed.toList();
   }
   
   @override
@@ -158,7 +163,7 @@ class InMemoryWalletStorage implements WalletStorage {
     final txids = _transactions[walletId]?.keys.toList();
     final invoiceIds = _walletInvoices[walletId];
 
-    // Remove wallet data
+    // Remove wallet data (a hard delete, as every backend: audit S-15)
     _events.remove(walletId);
     _utxos.remove(walletId);
     _transactions.remove(walletId);
@@ -182,6 +187,14 @@ _balanceCache.remove(walletId);
     if (invoiceIds != null) {
       for (final invoiceId in invoiceIds) {
         _invoices.remove(invoiceId);
+      }
+    }
+
+    // And payment channels
+    final channelIds = _walletChannels.remove(walletId);
+    if (channelIds != null) {
+      for (final channelId in channelIds) {
+        _paymentChannels.remove(channelId);
       }
     }
   }
@@ -230,28 +243,25 @@ _balanceCache.remove(walletId);
   
   @override
   Future<List<BitcoinUtxo>> getUTXOs(String walletId, {bool includeSpent = false}) async {
+    // An unknown wallet has no UTXOs (audit S-15: no exception).
     return await _withLock(walletId, () async {
-      if (!_walletIds.contains(walletId)) {
-        throw StorageException('Wallet not found: $walletId');
-      }
-      
       final walletUtxos = _utxos[walletId] ?? <String, BitcoinUtxo>{};
-      
-      return walletUtxos.values
+      return _newestFirst(walletUtxos.values
           .where((utxo) => includeSpent || !utxo.isSpent)
-          .toList();
+          .toList());
     });
+  }
+
+  /// Newest first by createdAt; ties keep the store order (audit S-19).
+  static List<BitcoinUtxo> _newestFirst(List<BitcoinUtxo> utxos) {
+    mergeSort<BitcoinUtxo>(utxos, compare: (a, b) => b.createdAt.compareTo(a.createdAt));
+    return utxos;
   }
   
   @override
   Future<List<BitcoinUtxo>> getAvailableUTXOs(String walletId) async {
     return await _withLock(walletId, () async {
-      if (!_walletIds.contains(walletId)) {
-        throw StorageException('Wallet not found: $walletId');
-      }
-      
       final walletUtxos = _utxos[walletId] ?? <String, BitcoinUtxo>{};
-      
       return walletUtxos.values
           .where((utxo) => utxo.isAvailable)
           .toList();
@@ -261,9 +271,6 @@ _balanceCache.remove(walletId);
   @override
   Future<List<BitcoinUtxo>> getPaymentUTXOs(String walletId) async {
     return await _withLock(walletId, () async {
-      if (!_walletIds.contains(walletId)) {
-        throw StorageException('Wallet not found: $walletId');
-      }
       final walletUtxos = _utxos[walletId] ?? <String, BitcoinUtxo>{};
       return walletUtxos.values
           .where((utxo) => utxo.isAvailable && !_isPluginManaged(utxo))
@@ -284,13 +291,9 @@ _balanceCache.remove(walletId);
     Map<String, dynamic>? metadataFilter,
   }) async {
     return await _withLock(walletId, () async {
-      if (!_walletIds.contains(walletId)) {
-        throw StorageException('Wallet not found: $walletId');
-      }
-
       final walletUtxos = _utxos[walletId] ?? <String, BitcoinUtxo>{};
 
-      return walletUtxos.values.where((utxo) {
+      return _newestFirst(walletUtxos.values.where((utxo) {
         final meta = utxo.pluginMetadata;
         if (meta == null || meta['pluginId'] != pluginId) return false;
         if (metadataFilter != null) {
@@ -299,17 +302,13 @@ _balanceCache.remove(walletId);
           }
         }
         return true;
-      }).toList();
+      }).toList());
     });
   }
 
   @override
   Future<BigInt> getBalance(String walletId) async {
     return await _withLock(walletId, () async {
-      if (!_walletIds.contains(walletId)) {
-        throw StorageException('Wallet not found: $walletId');
-      }
-      
       // Check cache first  
       if (_balanceCache.containsKey(walletId)) {
         return _balanceCache[walletId]!;
@@ -336,17 +335,21 @@ _balanceCache.remove(walletId);
   @override
   Future<void> upsertUTXO(String walletId, BitcoinUtxo utxo) async {
     await _withLock(walletId, () async {
-      if (!_walletIds.contains(walletId)) {
-        _walletIds.add(walletId);
-      }
-      
-      if (!_utxos.containsKey(walletId)) {
-        _utxos[walletId] = {};
-      }
-      
+      // A UTXO row does not create the wallet (audit S-15).
       final utxoKey = '${utxo.txid}:${utxo.vout}';
-      _utxos[walletId]![utxoKey] = utxo;
-      
+      final walletUtxos = _utxos.putIfAbsent(walletId, () => {});
+      final existing = walletUtxos[utxoKey];
+      // A block height or plugin metadata the update lacks keeps the stored
+      // value, as on the persistent backends. A zero-confirmation update
+      // (a confirmation taken back after a reorg, audit 3b0) clears the height.
+      walletUtxos[utxoKey] = existing == null
+          ? utxo
+          : utxo.copyWith(
+              blockHeight: utxo.blockHeight ??
+                  ((utxo.confirmations ?? 0) > 0 ? existing.blockHeight : null),
+              pluginMetadata: utxo.pluginMetadata ?? existing.pluginMetadata,
+            );
+
       // Invalidate cache
       _balanceCache.remove(walletId);
     });
@@ -366,9 +369,7 @@ _balanceCache.remove(walletId);
   }
   
   @override
-  Future<List<String>> getWalletIds() async {
-    return List<String>.from(_walletIds);
-  }
+  Future<List<String>> getWalletIds() => listWallets();
   
   @override
   Future<bool> walletExists(String walletId) async {
@@ -383,7 +384,6 @@ _balanceCache.remove(walletId);
   /// This is typically called by event handlers when processing UTXOReceivedEvent
   Future<void> addOrUpdateUtxo(String walletId, BitcoinUtxo utxo) async {
     await _withLock(walletId, () async {
-      _walletIds.add(walletId);
       final walletUtxos = _utxos.putIfAbsent(walletId, () => <String, BitcoinUtxo>{});
       
       final isNew = !walletUtxos.containsKey(utxo.key);
@@ -433,12 +433,13 @@ _balanceCache.remove(walletId);
   @override
   Future<List<BitcoinTransaction>> getTransactionHistory(String walletId, {int? limit, int? offset}) async {
     return await _withLock(walletId, () async {
-      if (!_walletIds.contains(walletId)) {
-        throw StorageException('Wallet not found: $walletId');
-      }
-
-      Iterable<BitcoinTransaction> txs =
-          _transactions[walletId]?.values ?? const <BitcoinTransaction>[];
+      // Newest first (createdAt descending; ties keep the store order), and
+      // empty for an unknown wallet (audit S-15, S-19).
+      final sorted = (_transactions[walletId]?.values ?? const <BitcoinTransaction>[])
+          .toList();
+      mergeSort<BitcoinTransaction>(sorted,
+          compare: (a, b) => b.createdAt.compareTo(a.createdAt));
+      Iterable<BitcoinTransaction> txs = sorted;
 
       // Apply offset
       if (offset != null && offset > 0) {
@@ -488,12 +489,10 @@ _balanceCache.remove(walletId);
       transactions = _transactions.values.expand((txs) => txs.values);
     }
     
-    // Filter by status and sort by creation date (descending)
-    final filtered = transactions
-        .where((tx) => tx.status == status)
-        .toList()
-      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
-    
+    // Filter by status and sort by creation date (descending, stable)
+    final filtered = transactions.where((tx) => tx.status == status).toList();
+    mergeSort<BitcoinTransaction>(filtered,
+        compare: (a, b) => b.createdAt.compareTo(a.createdAt));
     return filtered;
   }
 
@@ -505,10 +504,23 @@ _balanceCache.remove(walletId);
   }
 
   /// Insert or replace the ([walletId], txid) row. Returns true when new.
+  ///
+  /// The stored copy carries [walletId] whatever the caller's model says,
+  /// as the persistent backends return it (audit S-20). An update without
+  /// raw hex keeps the stored bytes: an SPV wallet cannot fetch the
+  /// transaction again. A confirmed update without a block height keeps the
+  /// stored height; a non-confirmed one clears it (a reorg took the
+  /// confirmation back, audit 3b0).
   bool _putTransaction(String walletId, BitcoinTransaction transaction) {
     final walletTxs = _transactions.putIfAbsent(walletId, () => {});
-    final isNew = !walletTxs.containsKey(transaction.txid);
-    walletTxs[transaction.txid] = transaction;
+    final existing = walletTxs[transaction.txid];
+    final isNew = existing == null;
+    walletTxs[transaction.txid] = transaction.copyWith(
+      walletId: walletId,
+      rawHex: transaction.rawHex.isEmpty ? existing?.rawHex : null,
+      blockHeight: transaction.blockHeight ??
+          (transaction.status == TransactionStatus.confirmed ? existing?.blockHeight : null),
+    );
     if (isNew) {
       _txidWallets.putIfAbsent(transaction.txid, () => []).add(walletId);
     }
@@ -707,7 +719,6 @@ _balanceCache.remove(walletId);
   /// Add a transaction to storage
   Future<void> addTransaction(String walletId, BitcoinTransaction transaction) async {
     await _withLock(walletId, () async {
-      _walletIds.add(walletId);
       if (_putTransaction(walletId, transaction)) {
         _totalTransactions++;
       }

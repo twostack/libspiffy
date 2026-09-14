@@ -44,13 +44,14 @@ class StorageFactory {
   /// Parameters:
   /// - [backend]: The storage backend to use
   /// - [isar]: Required for [StorageBackend.isar] - the Isar database instance
-  /// - [isolateConfig]: Optional Isar-specific configuration for isolate support
+  /// - [isolateConfig]: Ignored (deprecated, audit S-21)
   /// - [postgresConfig]: Required for [StorageBackend.postgres] - PostgreSQL connection config
   ///
   /// Throws [ArgumentError] if required configuration is missing for the backend.
   static Future<ReadModelStorage> createReadModelStorage({
     required StorageBackend backend,
     Isar? isar,
+    @Deprecated('Ignored: storage never used isolates. Will be removed.')
     IsolateConfig? isolateConfig,
     PostgresConfig? postgresConfig,
   }) async {
@@ -59,7 +60,7 @@ class StorageFactory {
         if (isar == null) {
           throw ArgumentError('Isar instance required for Isar backend');
         }
-        return IsarWalletStorage(isar, config: isolateConfig);
+        return IsarWalletStorage(isar);
 
       case StorageBackend.postgres:
         if (postgresConfig == null) {
@@ -120,13 +121,13 @@ class StorageFactory {
       createStorages({
     required StorageBackend backend,
     Isar? isar,
+    @Deprecated('Ignored: storage never used isolates. Will be removed.')
     IsolateConfig? isolateConfig,
     PostgresConfig? postgresConfig,
   }) async {
     final readModel = await createReadModelStorage(
       backend: backend,
       isar: isar,
-      isolateConfig: isolateConfig,
       postgresConfig: postgresConfig,
     );
 

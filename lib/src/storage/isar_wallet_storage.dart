@@ -14,18 +14,14 @@ import 'libspiffy_schemas.dart';
 import 'isar_config.dart';
 import 'payment_channel_entity.dart';
 
-// TODO: Import compute from foundation when needed for isolate operations
-// import 'package:flutter/foundation.dart' show compute;
-
 /// Isar-based implementation of ReadModelStorage.
 ///
 /// This storage implementation provides persistent read-model operations
-/// using Isar database with optional isolate support for heavy operations.
+/// using Isar database.
 ///
 /// **Features:**
 /// - Persistent storage using Isar
-/// - Isolate-aware operations for UI responsiveness
-/// - Efficient indexing and querying
+/// - Index-backed queries (where clauses, native offset/limit)
 /// - Support for SPV validation (block headers, merkle proofs)
 ///
 /// **Usage:**
@@ -39,11 +35,15 @@ class IsarWalletStorage implements ReadModelStorage {
   /// Expose Isar instance for ProjectionManager to handle automatic checkpoint persistence
   Isar get isar => _isar;
   
-  // ignore: unused_field
-  final IsolateConfig _config;
-
-  IsarWalletStorage(this._isar, {IsolateConfig? config})
-      : _config = config ?? IsolateConfig.defaultConfig();
+  /// Creates the storage on [_isar].
+  ///
+  /// [config] is ignored: no operation ever ran in an isolate (audit
+  /// 2026-09-14 S-21). It is accepted for source compatibility only.
+  IsarWalletStorage(
+    this._isar, {
+    @Deprecated('Ignored: IsarWalletStorage never used isolates. Will be removed.')
+    IsolateConfig? config,
+  });
 
   // ========================================
   // Wallet Metadata
@@ -62,8 +62,11 @@ class IsarWalletStorage implements ReadModelStorage {
           .where()
           .walletIdEqualTo(walletId)
           .findFirst();
-      
-      if (entity == null) {
+
+      // A row soft-deleted by an older version is a deleted wallet: storing
+      // it again creates the wallet afresh, reusing the row (audit S-15).
+      if (entity == null || entity.isDeleted) {
+        final reusedId = entity?.id;
         entity = WalletMetadataEntity()
           ..walletId = walletId
           ..name = name
@@ -80,6 +83,7 @@ class IsarWalletStorage implements ReadModelStorage {
           ..unconfirmedBalance = metadata?['unconfirmedBalance'] as String? ?? '0'
           ..addressesJson = metadata?['addressesJson'] as String? ?? ''
           ..publicKeysJson = metadata?['publicKeysJson'] as String? ?? '';
+        if (reusedId != null) entity.id = reusedId;
       } else {
         entity.name = name;
         entity.network = networkType ?? entity.network;
@@ -114,8 +118,8 @@ class IsarWalletStorage implements ReadModelStorage {
         .walletIdEqualTo(walletId)
         .findFirst();
     
-    if (entity == null) return null;
-    
+    if (entity == null || entity.isDeleted) return null;
+
     return {
       'walletId': entity.walletId,
       'name': entity.name,
@@ -134,15 +138,14 @@ class IsarWalletStorage implements ReadModelStorage {
   
   @override
   Future<List<String>> listWallets() async {
-    final entities = await _isar.walletMetadataEntitys
-        .where()
+    // Newest first. isDeleted only marks rows soft-deleted by older
+    // versions; deleteWallet now removes the row.
+    return await _isar.walletMetadataEntitys
+        .filter()
+        .isDeletedEqualTo(false)
         .sortByCreatedAtDesc()
+        .walletIdProperty()
         .findAll();
-
-    return entities
-        .where((e) => !e.isDeleted)
-        .map((e) => e.walletId)
-        .toList();
   }
   
   @override
@@ -163,9 +166,7 @@ class IsarWalletStorage implements ReadModelStorage {
   Future<bool> isWalletAddress(String walletId, String address) async {
     final count = await _isar.addressEntitys
         .where()
-        .addressEqualTo(address)
-        .filter()
-        .walletIdEqualTo(walletId)
+        .addressWalletIdEqualTo(address, walletId)
         .count();
 
     return count > 0;
@@ -175,11 +176,9 @@ class IsarWalletStorage implements ReadModelStorage {
   Future<AddressMetadata?> getAddressMetadata(String walletId, String address) async {
     final entity = await _isar.addressEntitys
         .where()
-        .addressEqualTo(address)
-        .filter()
-        .walletIdEqualTo(walletId)
+        .addressWalletIdEqualTo(address, walletId)
         .findFirst();
-    
+
     return entity != null ? AddressMetadata.fromEntity(entity) : null;
   }
 
@@ -212,32 +211,18 @@ class IsarWalletStorage implements ReadModelStorage {
     int? limit,
     int? offset,
   }) async {
-    var query = _isar.addressEntitys
+    // The walletId index narrows the scan to this wallet (the former
+    // filter() read the whole collection); offset/limit run in Isar.
+    final entities = await _isar.addressEntitys
+        .where()
+        .walletIdEqualTo(walletId)
         .filter()
-        .walletIdEqualTo(walletId);
-    
-    if (includeUnused == false) {
-      query = query.usageCountGreaterThan(0);
-    }
-    
-    if (isChange != null) {
-      query = query.isChangeEqualTo(isChange);
-    }
-    
-    var orderedQuery = query.sortByCreatedAtDesc();
-    
-    if (offset != null && limit != null) {
-      final entities = await orderedQuery.offset(offset).limit(limit).findAll();
-      return entities.map((e) => AddressMetadata.fromEntity(e)).toList();
-    } else if (offset != null) {
-      final entities = await orderedQuery.offset(offset).findAll();
-      return entities.map((e) => AddressMetadata.fromEntity(e)).toList();
-    } else if (limit != null) {
-      final entities = await orderedQuery.limit(limit).findAll();
-      return entities.map((e) => AddressMetadata.fromEntity(e)).toList();
-    }
-    
-    final entities = await orderedQuery.findAll();
+        .optional(includeUnused == false, (q) => q.usageCountGreaterThan(0))
+        .optional(isChange != null, (q) => q.isChangeEqualTo(isChange!))
+        .sortByCreatedAtDesc()
+        .offset(offset ?? 0)
+        .limit(limit ?? _noLimit)
+        .findAll();
     return entities.map((e) => AddressMetadata.fromEntity(e)).toList();
   }
 
@@ -264,14 +249,13 @@ class IsarWalletStorage implements ReadModelStorage {
   @override
   Future<void> upsertAddress(String walletId, AddressMetadata metadata) async {
     await _isar.writeTxn(() async {
-      // Find existing entity by address (unique index)
+      // Unique (address, walletId) index: the former filter() scanned the
+      // whole collection per call, O(n^2) over an import (audit S-16).
       final existing = await _isar.addressEntitys
-          .filter()
-          .addressEqualTo(metadata.address)
-          .and()
-          .walletIdEqualTo(walletId)
+          .where()
+          .addressWalletIdEqualTo(metadata.address, walletId)
           .findFirst();
-      
+
       final entity = metadata.toEntity(walletId);
       
       // If exists, preserve the ID for update; otherwise Isar will insert new
@@ -300,12 +284,10 @@ class IsarWalletStorage implements ReadModelStorage {
   }) async {
     await _isar.writeTxn(() async {
       final entity = await _isar.addressEntitys
-          .filter()
-          .addressEqualTo(address)
-          .and()
-          .walletIdEqualTo(walletId)
+          .where()
+          .addressWalletIdEqualTo(address, walletId)
           .findFirst();
-      
+
       if (entity == null) return;
       
       if (usedAt != null) {
@@ -335,12 +317,7 @@ class IsarWalletStorage implements ReadModelStorage {
   ) async {
     await _isar.writeTxn(() async {
       // Delete existing records for this transaction
-      await _isar.transactionAddressEntitys
-          .where()
-          .txidEqualTo(txid)
-          .filter()
-          .walletIdEqualTo(walletId)
-          .deleteAll();
+      await _junctionByTxid(walletId, txid).deleteAll();
       
       // Insert new records
       final entities = links.map((link) {
@@ -369,33 +346,15 @@ class IsarWalletStorage implements ReadModelStorage {
     int? limit,
     int? offset,
   }) async {
-    var query = _isar.transactionAddressEntitys
-        .where()
-        .addressEqualTo(address)
-        .filter()
-        .walletIdEqualTo(walletId);
-
-    if (direction != null) {
-      query = query.directionEqualTo(direction);
-    }
-    
-    var orderedQuery = query
+    final txids = await _junctionByAddress(walletId, address)
+        .optional(direction != null, (q) => q.directionEqualTo(direction!))
         .sortByCreatedAtDesc()
-        .distinctByTxid();
-    
-    if (offset != null && limit != null) {
-      final entities = await orderedQuery.offset(offset).limit(limit).findAll();
-      return entities.map((e) => e.txid).toList();
-    } else if (offset != null) {
-      final entities = await orderedQuery.offset(offset).findAll();
-      return entities.map((e) => e.txid).toList();
-    } else if (limit != null) {
-      final entities = await orderedQuery.limit(limit).findAll();
-      return entities.map((e) => e.txid).toList();
-    }
-    
-    final entities = await orderedQuery.findAll();
-    return entities.map((e) => e.txid).toList();
+        .distinctByTxid()
+        .offset(offset ?? 0)
+        .limit(limit ?? _noLimit)
+        .txidProperty()
+        .findAll();
+    return txids;
   }
 
   @override
@@ -403,13 +362,8 @@ class IsarWalletStorage implements ReadModelStorage {
     String walletId,
     String txid,
   ) async {
-    final entities = await _isar.transactionAddressEntitys
-        .where()
-        .walletIdEqualTo(walletId)
-        .filter()
-        .txidEqualTo(txid)
-        .findAll();
-    
+    final entities = await _junctionByTxid(walletId, txid).findAll();
+
     final inputs = entities
         .where((e) => e.direction == 'input')
         .map((e) => TransactionAddressLink(
@@ -435,27 +389,44 @@ class IsarWalletStorage implements ReadModelStorage {
 
   @override
   Future<int> getAddressTransactionCount(String walletId, String address) async {
-    return await _isar.transactionAddressEntitys
-        .where()
-        .walletIdEqualTo(walletId)
-        .filter()
-        .addressEqualTo(address)
-        .distinctByTxid()
-        .count();
+    return await _junctionByAddress(walletId, address).distinctByTxid().count();
   }
-  
+
+  /// Junction rows of ([walletId], [txid]) through the walletIdTxid index.
+  /// The concatenated key is ambiguous when ids contain '_', so the exact
+  /// fields are filtered as well.
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterFilterCondition>
+      _junctionByTxid(String walletId, String txid) => _isar.transactionAddressEntitys
+          .where()
+          .walletIdTxidEqualToAnyTxid('${walletId}_$txid')
+          .filter()
+          .walletIdEqualTo(walletId)
+          .txidEqualTo(txid);
+
+  /// Junction rows of ([walletId], [address]) through the walletIdAddress
+  /// index (see [_junctionByTxid]).
+  QueryBuilder<TransactionAddressEntity, TransactionAddressEntity, QAfterFilterCondition>
+      _junctionByAddress(String walletId, String address) => _isar.transactionAddressEntitys
+          .where()
+          .walletIdAddressEqualToAnyAddress('${walletId}_$address')
+          .filter()
+          .walletIdEqualTo(walletId)
+          .addressEqualTo(address);
+
+  /// Isar's limit() takes an int; this stands for "no limit".
+  static const _noLimit = 0x7fffffff;
+
   @override
   Future<void> deleteWallet(String walletId) async {
     await _isar.writeTxn(() async {
-      // Soft-delete wallet metadata (survives projection replay race)
-      final entity = await _isar.walletMetadataEntitys
+      // Hard delete, as every backend (audit S-15). The former soft delete
+      // kept the row flagged, so storeWallet could never bring the wallet
+      // back into listWallets. A replayed journal converges regardless:
+      // WalletDeletedEvent follows WalletCreatedEvent.
+      await _isar.walletMetadataEntitys
           .where()
           .walletIdEqualTo(walletId)
-          .findFirst();
-      if (entity != null) {
-        entity.isDeleted = true;
-        await _isar.walletMetadataEntitys.put(entity);
-      }
+          .deleteAll();
 
       // Delete all addresses for this wallet
       await _isar.addressEntitys
@@ -475,8 +446,20 @@ class IsarWalletStorage implements ReadModelStorage {
           .walletIdEqualTo(walletId)
           .deleteAll();
 
+      // Delete all transaction-address links for this wallet
+      await _isar.transactionAddressEntitys
+          .where()
+          .walletIdEqualTo(walletId)
+          .deleteAll();
+
       // Delete all invoices for this wallet
       await _isar.invoiceEntitys
+          .where()
+          .walletIdEqualTo(walletId)
+          .deleteAll();
+
+      // Delete all payment channels for this wallet
+      await _isar.paymentChannelEntitys
           .where()
           .walletIdEqualTo(walletId)
           .deleteAll();
@@ -492,27 +475,23 @@ class IsarWalletStorage implements ReadModelStorage {
     String walletId, {
     bool includeSpent = false,
   }) async {
-    final allEntities = await _isar.bitcoinUtxoEntitys
-        .where()
-        .walletIdEqualTo(walletId)
+    // Unspent rows come from the (walletId, status) index: spent rows are
+    // not read at all (audit S-16; they used to be loaded and dropped).
+    // Newest first (S-19).
+    final query = _isar.bitcoinUtxoEntitys.where();
+    final entities = await (includeSpent
+            ? query.walletIdEqualTo(walletId)
+            : query.walletIdEqualToStatusNotEqualTo(walletId, UTXOStatus.spent.name))
+        .sortByCreatedAtDesc()
         .findAll();
-    
-    if (includeSpent) {
-      return allEntities.map((e) => e.toDomain()).toList();
-    } else {
-      // Filter out spent UTXOs
-      final unspent = allEntities.where((e) => e.status != 'spent').toList();
-      return unspent.map((e) => e.toDomain()).toList();
-    }
+    return entities.map((e) => e.toDomain()).toList();
   }
 
   @override
   Future<List<BitcoinUtxo>> getAvailableUTXOs(String walletId) async {
     final entities = await _isar.bitcoinUtxoEntitys
         .where()
-        .walletIdEqualTo(walletId)
-        .filter()
-        .statusEqualTo('available')
+        .walletIdStatusEqualTo(walletId, UTXOStatus.available.name)
         .findAll();
 
     return entities.map((e) => e.toDomain()).toList();
@@ -522,9 +501,7 @@ class IsarWalletStorage implements ReadModelStorage {
   Future<List<BitcoinUtxo>> getPaymentUTXOs(String walletId) async {
     final entities = await _isar.bitcoinUtxoEntitys
         .where()
-        .walletIdEqualTo(walletId)
-        .filter()
-        .statusEqualTo('available')
+        .walletIdStatusEqualTo(walletId, UTXOStatus.available.name)
         .findAll();
 
     // Exclude UTXOs managed by token plugins (e.g., PP1/PP2/PP3 outputs).
@@ -570,42 +547,15 @@ class IsarWalletStorage implements ReadModelStorage {
   @override
   Future<void> upsertUTXO(String walletId, BitcoinUtxo utxo) async {
     await _isar.writeTxn(() async {
-      // Check if UTXO already exists
-      final existingEntity = await _isar.bitcoinUtxoEntitys
-          .where()
-          .walletIdEqualTo(walletId)
-          .filter()
-          .txidEqualTo(utxo.txid)
-          .and()
-          .voutEqualTo(utxo.vout)
-          .findFirst();
-      
+      // Unique (utxoKey, walletId) index.
+      final existingEntity = await _utxoRow(walletId, utxo.txid, utxo.vout).findFirst();
+
       if (existingEntity != null) {
-        // Update existing
-        if (existingEntity.status == 'spent' && utxo.status != UTXOStatus.spent) {
-        }
-        existingEntity
-          ..satoshis = utxo.satoshis.toString()
-          ..scriptPubKey = utxo.scriptPubKey
-          ..address = utxo.address
-          ..blockHeight = utxo.blockHeight
-          ..confirmations = utxo.confirmations ?? 0
-          ..status = utxo.status.name
-          ..isSpendable = utxo.status == UTXOStatus.available
-          ..pluginMetadataJson = utxo.pluginMetadata != null
-              ? jsonEncode(utxo.pluginMetadata)
-              : existingEntity.pluginMetadataJson;
-        
-        if (utxo.status == UTXOStatus.spent) {
-          existingEntity.spentAt = utxo.updatedAt;
-        }
-        
-        await _isar.bitcoinUtxoEntitys.put(existingEntity);
+        // createdAt and the first spend time are kept.
+        await _isar.bitcoinUtxoEntitys.put(existingEntity..applyDomain(utxo));
       } else {
-        // Insert new
-        final entity = BitcoinUtxoEntity.fromDomain(utxo);
-        entity.walletId = walletId; // Set the walletId
-        await _isar.bitcoinUtxoEntitys.put(entity);
+        await _isar.bitcoinUtxoEntitys
+            .put(BitcoinUtxoEntity.fromDomain(utxo, walletId: walletId));
       }
     });
   }
@@ -613,16 +563,13 @@ class IsarWalletStorage implements ReadModelStorage {
   @override
   Future<void> deleteUTXO(String walletId, String txid, int vout) async {
     await _isar.writeTxn(() async {
-      await _isar.bitcoinUtxoEntitys
-          .where()
-          .walletIdEqualTo(walletId)
-          .filter()
-          .txidEqualTo(txid)
-          .and()
-          .voutEqualTo(vout)
-          .deleteAll();
+      await _utxoRow(walletId, txid, vout).deleteAll();
     });
   }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterWhereClause> _utxoRow(
+          String walletId, String txid, int vout) =>
+      _isar.bitcoinUtxoEntitys.where().utxoKeyWalletIdEqualTo('$txid:$vout', walletId);
 
   // ========================================
   // Transaction History
@@ -634,22 +581,16 @@ class IsarWalletStorage implements ReadModelStorage {
     int? limit,
     int? offset,
   }) async {
-    final allEntities = await _isar.bitcoinTransactionEntitys
-        .where()
-        .walletIdEqualTo(walletId)
-        .sortByCreatedAtDesc()
+    // Walks the (walletId, createdAt) index backwards: newest first, with
+    // offset/limit applied by Isar. The former query loaded and sorted every
+    // row of the wallet, then skipped in Dart (audit S-16).
+    final entities = await _isar.bitcoinTransactionEntitys
+        .where(sort: Sort.desc)
+        .walletIdEqualToAnyCreatedAt(walletId)
+        .offset(offset ?? 0)
+        .limit(limit ?? _noLimit)
         .findAll();
-
-    // Apply offset and limit in memory
-    var result = allEntities;
-    if (offset != null) {
-      result = result.skip(offset).toList();
-    }
-    if (limit != null) {
-      result = result.take(limit).toList();
-    }
-    
-    return result.map((e) => e.toDomain()).toList();
+    return entities.map((e) => e.toDomain()).toList();
   }
 
   @override
@@ -691,15 +632,11 @@ class IsarWalletStorage implements ReadModelStorage {
     TransactionStatus status, {
     String? walletId,
   }) async {
-    var query = _isar.bitcoinTransactionEntitys
+    final entities = await _isar.bitcoinTransactionEntitys
+        .where()
+        .statusEqualTo(status.name)
         .filter()
-        .statusEqualTo(status.name);
-    
-    if (walletId != null) {
-      query = query.walletIdEqualTo(walletId);
-    }
-    
-    final entities = await query
+        .optional(walletId != null, (q) => q.walletIdEqualTo(walletId!))
         .sortByCreatedAtDesc()
         .findAll();
     
@@ -717,58 +654,13 @@ class IsarWalletStorage implements ReadModelStorage {
           .txidWalletIdEqualTo(transaction.txid, walletId)
           .findFirst();
       
+      // One conversion for both paths (audit S-21): createdAt and
+      // counterparty are set once, on insert.
       if (existing != null) {
-        // Update existing transaction
-        existing
-          ..rawHex = transaction.rawHex
-          ..status = transaction.status.name
-          ..blockHeight = transaction.blockHeight
-          ..confirmations = transaction.confirmations ?? 0
-          ..totalInput = transaction.inputValue.toString()
-          ..totalOutput = transaction.outputValue.toString()
-          ..fee = transaction.fee.toString()
-          ..netAmount = transaction.netAmount.toString()
-          ..isIncoming = transaction.netAmount > BigInt.zero
-          ..isOutgoing = transaction.netAmount < BigInt.zero
-          ..receivingAddressesJson = jsonEncode(transaction.receivingAddresses)
-          ..sendingAddressesJson = jsonEncode(transaction.sendingAddresses)
-          ..primaryCounterparty = _getPrimaryCounterparty(transaction)
-          ..notes = transaction.memo;
-        
-        if (transaction.blockHeight != null && transaction.blockHeight! > 0) {
-          existing.confirmedAt = transaction.updatedAt;
-        }
-        
-        await _isar.bitcoinTransactionEntitys.put(existing);
-        return;
+        await _isar.bitcoinTransactionEntitys.put(existing..applyDomain(transaction));
       } else {
-        // Insert new transaction
-        final entity = BitcoinTransactionEntity()
-          ..walletId = walletId
-          ..txid = transaction.txid
-          ..rawHex = transaction.rawHex
-          ..blockHeight = transaction.blockHeight
-          ..blockHash = null // Not available in BitcoinTransaction
-          ..confirmations = transaction.confirmations ?? 0
-          ..totalInput = transaction.inputValue.toString()
-          ..totalOutput = transaction.outputValue.toString()
-          ..fee = transaction.fee.toString()
-          ..netAmount = transaction.netAmount.toString()
-          ..isIncoming = transaction.netAmount > BigInt.zero
-          ..isOutgoing = transaction.netAmount < BigInt.zero
-          ..status = transaction.status.name
-          ..createdAt = transaction.createdAt
-          ..confirmedAt = (transaction.blockHeight != null && transaction.blockHeight! > 0) 
-              ? transaction.updatedAt 
-              : null
-          ..broadcastAt = null // Not available in BitcoinTransaction
-          ..receivingAddressesJson = jsonEncode(transaction.receivingAddresses)
-          ..sendingAddressesJson = jsonEncode(transaction.sendingAddresses)
-          ..primaryCounterparty = _getPrimaryCounterparty(transaction)
-          ..counterparty = _getPrimaryCounterparty(transaction)
-          ..notes = transaction.memo;
-        
-        await _isar.bitcoinTransactionEntitys.put(entity);
+        await _isar.bitcoinTransactionEntitys
+            .put(BitcoinTransactionEntity.fromDomain(transaction, walletId: walletId));
       }
     });
   }
@@ -990,56 +882,21 @@ class IsarWalletStorage implements ReadModelStorage {
   // Wallet Management
   // ========================================
 
+  /// The same wallets, in the same order, as [listWallets] (formerly the
+  /// wallet ids found on UTXO and transaction rows, audit S-15).
   @override
-  Future<List<String>> getWalletIds() async {
-    // Get unique wallet IDs from UTXOs
-    final utxoWallets = await _isar.bitcoinUtxoEntitys
-        .where()
-        .distinctByWalletId()
-        .walletIdProperty()
-        .findAll();
+  Future<List<String>> getWalletIds() => listWallets();
 
-    // Get unique wallet IDs from transactions
-    final txWallets = await _isar.bitcoinTransactionEntitys
-        .where()
-        .distinctByWalletId()
-        .walletIdProperty()
-        .findAll();
-
-    // Combine and deduplicate
-    final allWallets = <String>{...utxoWallets, ...txWallets}.toList();
-    return allWallets;
-  }
-
+  /// A wallet exists when its metadata row does (audit S-15).
   @override
   Future<bool> walletExists(String walletId) async {
-    final hasUtxos = await _isar.bitcoinUtxoEntitys
+    final count = await _isar.walletMetadataEntitys
         .where()
         .walletIdEqualTo(walletId)
+        .filter()
+        .isDeletedEqualTo(false)
         .count();
-
-    if (hasUtxos > 0) return true;
-
-    final hasTransactions = await _isar.bitcoinTransactionEntitys
-        .where()
-        .walletIdEqualTo(walletId)
-        .count();
-
-    return hasTransactions > 0;
-  }
-
-  // ========================================
-  // Helper Methods
-  // ========================================
-
-  String? _getPrimaryCounterparty(BitcoinTransaction tx) {
-    final netAmount = tx.netAmount;
-    if (netAmount > BigInt.zero) {
-      return tx.sendingAddresses.isNotEmpty ? tx.sendingAddresses.first : null;
-    } else if (netAmount < BigInt.zero) {
-      return tx.receivingAddresses.isNotEmpty ? tx.receivingAddresses.first : null;
-    }
-    return null;
+    return count > 0;
   }
 
   // ========================================

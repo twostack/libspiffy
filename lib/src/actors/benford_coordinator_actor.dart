@@ -511,9 +511,8 @@ class BenfordCoordinatorActor extends Actor {
   
   /// Reserve a single UTXO via the wallet aggregate.
   ///
-  /// Uses the timeout-as-success pattern: the aggregate sends a LocalMessage
-  /// with an error on failure, but sends nothing on success. A 2-second timeout
-  /// with no error means the reservation succeeded.
+  /// The aggregate replies with [UTXOReservedResponse] on success and on
+  /// failure; no reply within the timeout is a failure.
   Future<bool> _reserveUTXO(String walletId, BitcoinUtxo utxo, String reservationId) async {
     final completer = Completer<void>();
     final receiverName = 'reserve-receiver-${utxo.key.replaceAll(':', '-')}-${DateTime.now().microsecondsSinceEpoch}';
@@ -537,13 +536,11 @@ class BenfordCoordinatorActor extends Actor {
         sender: receiver,
       );
 
-      // Timeout = success (no error received), StateError = failure
-      await completer.future.timeout(const Duration(seconds: 2));
-      // If completer completes without error (shouldn't happen), treat as success
+      await completer.future.timeout(const Duration(seconds: 10));
       return true;
     } on TimeoutException {
-      // No error received within timeout — reservation succeeded
-      return true;
+      _log.warning('No reply to reservation of ${utxo.key}; treating as failed');
+      return false;
     } on StateError catch (e) {
       _log.info('UTXO reservation failed for ${utxo.key}: $e');
       return false;
@@ -590,11 +587,19 @@ class _ReservationReceiverActor extends Actor {
 
   @override
   Future<void> onMessage(dynamic message) async {
-    if (message is LocalMessage && !completer.isCompleted) {
-      final payload = message.payload;
-      if (payload is Map && payload.containsKey('error')) {
-        completer.completeError(StateError(payload['error'].toString()));
+    if (completer.isCompleted) return;
+    if (message is UTXOReservedResponse) {
+      if (message.success) {
+        completer.complete();
+      } else {
+        completer.completeError(StateError(message.error ?? 'reservation rejected'));
       }
+      return;
+    }
+    // Legacy shape: the aggregate's generic failure reply.
+    final payload = message is LocalMessage ? message.payload : message;
+    if (payload is Map && payload.containsKey('error')) {
+      completer.completeError(StateError(payload['error'].toString()));
     }
   }
 }

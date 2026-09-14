@@ -327,6 +327,9 @@ class WalletProjection extends Projection<void> {
         // This can happen for payment channel addresses or other externally generated addresses
         String scriptType = scriptMetadata?['scriptType'] as String? ?? 'unknown';
 
+        // Created empty: the updateAddressUsage call below records the
+        // first use and the balance exactly once (it used to be applied here
+        // as well, doubling both on the first UTXO for a new address).
         final newAddressMeta = AddressMetadata(
           address: event.address,
           scriptType: scriptType,
@@ -335,10 +338,10 @@ class WalletProjection extends Projection<void> {
           isChange: false,
           label: 'Received UTXO ($scriptType)',
           purpose: 'receive',
-          firstUsedAt: event.timestamp,
-          lastUsedAt: event.timestamp,
-          usageCount: 1,
-          balance: BigInt.from(event.satoshis),
+          firstUsedAt: null,
+          lastUsedAt: null,
+          usageCount: 0,
+          balance: BigInt.zero,
           createdAt: event.timestamp,
           isWatched: true,
         );
@@ -412,6 +415,15 @@ class WalletProjection extends Projection<void> {
     
     // Update in storage
     await _storage.upsertUTXO(event.walletId, spentUtxo);
+
+    // The address balance was credited on receipt; debit it on spend.
+    if (utxo.status != UTXOStatus.spent && utxo.address.isNotEmpty) {
+      await _storage.updateAddressUsage(
+        event.walletId,
+        utxo.address,
+        balanceDelta: -utxo.satoshis,
+      );
+    }
     
     await _recalculateAndPersistForWallet(event.walletId, event.timestamp);
   }

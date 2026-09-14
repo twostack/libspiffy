@@ -162,6 +162,86 @@ void main() {
       });
     });
 
+    group('Specific header requests', () {
+      test('is answered when the requested header arrives in a later batch', () async {
+        final realHeaders = await _loadRealBlockHeaders();
+        expect(realHeaders.length, greaterThanOrEqualTo(6));
+
+        // Heights 0-2 are synced; 3+ are not.
+        headerSyncActor.tell(BlockHeadersReceivedMessage(
+          peerId: 'test-peer-1',
+          headers: realHeaders.take(3).toList(),
+          startHeight: 0,
+          isReorganization: false,
+        ) as dynamic);
+        await Future.delayed(Duration(milliseconds: 300));
+        expect(headerChain.bestHeight, equals(2));
+
+        // A peer that answers getHeaders by delivering the rest through the
+        // actor's own mailbox, exactly as the SpiffyNode bridge does.
+        final peerManager = _FakePeerManager(onGetHeaders: () {
+          headerSyncActor.tell(BlockHeadersReceivedMessage(
+            peerId: 'fake-peer',
+            headers: realHeaders.skip(3).take(3).toList(),
+            startHeight: 3,
+            isReorganization: false,
+          ) as dynamic);
+        });
+        headerSyncActor.tell(SetPeerManagerMessage(peerManager));
+
+        // Before the fix this polled storage from inside the handler and could
+        // never observe the batch, so it always timed out.
+        final response = await headerSyncActor.ask<SpecificHeaderResponseMessage>(
+          RequestSpecificHeaderMessage(
+            blockHeight: 5,
+            timeout: const Duration(seconds: 5),
+          ),
+          const Duration(seconds: 8),
+        );
+
+        expect(response.success, isTrue, reason: response.error);
+        expect(response.blockHeight, equals(5));
+        expect(response.header, isNotNull);
+        expect(peerManager.getHeadersRequests, equals(1));
+      });
+
+      test('fails with a timeout when no peer delivers the header', () async {
+        final realHeaders = await _loadRealBlockHeaders();
+        headerSyncActor.tell(BlockHeadersReceivedMessage(
+          peerId: 'test-peer-1',
+          headers: realHeaders.take(3).toList(),
+          startHeight: 0,
+          isReorganization: false,
+        ) as dynamic);
+        await Future.delayed(Duration(milliseconds: 300));
+
+        headerSyncActor.tell(SetPeerManagerMessage(_FakePeerManager(onGetHeaders: () {})));
+
+        final pendingFuture = headerSyncActor.ask<SpecificHeaderResponseMessage>(
+          RequestSpecificHeaderMessage(
+            blockHeight: 5,
+            timeout: const Duration(milliseconds: 500),
+          ),
+          const Duration(seconds: 5),
+        );
+
+        // The actor must not be blocked while the request is parked: a
+        // request for a header it already has is answered immediately.
+        final stopwatch = Stopwatch()..start();
+        final synced = await headerSyncActor.ask<SpecificHeaderResponseMessage>(
+          RequestSpecificHeaderMessage(blockHeight: 2),
+          const Duration(seconds: 5),
+        );
+        stopwatch.stop();
+        expect(synced.success, isTrue, reason: synced.error);
+        expect(stopwatch.elapsedMilliseconds, lessThan(400));
+
+        final response = await pendingFuture;
+        expect(response.success, isFalse);
+        expect(response.error, contains('Timeout'));
+      });
+    });
+
     group('Error Handling', () {
       test('should handle invalid headers gracefully', () async {
         // Load real headers and create one invalid header
@@ -575,3 +655,29 @@ class _UnknownTestMessage implements Message {
   @override
   final Map<String, dynamic> metadata = {};
 } 
+
+/// Stand-in for spiffynode's PeerManager (HeaderSyncActor holds it as
+/// `dynamic`). [onGetHeaders] runs whenever a getHeaders message is written.
+class _FakePeerManager {
+  final void Function() onGetHeaders;
+  int getHeadersRequests = 0;
+
+  _FakePeerManager({required this.onGetHeaders});
+
+  List<_FakePeer> getPeers() => [_FakePeer(this)];
+}
+
+class _FakePeer {
+  final _FakePeerManager manager;
+  _FakePeer(this.manager);
+
+  String get state => 'connected';
+
+  Future<void> writeMessage(dynamic message) async {
+    manager.getHeadersRequests++;
+    manager.onGetHeaders();
+  }
+
+  @override
+  String toString() => 'fake-peer';
+}

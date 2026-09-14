@@ -297,6 +297,38 @@ class SplitUTXOsResponse implements Message {
 }
 
 /// Response from BitcoinWalletAggregate after processing ReceiveUTXOCommand
+/// Reply to [ReserveUTXOCommand]. Sent on success as well as failure so
+/// callers no longer have to treat "no reply within 2 s" as success.
+class UTXOReservedResponse implements Message {
+  final String walletId;
+  final String utxoKey;
+  final String reservedByTxId;
+  final bool success;
+  final String? error;
+
+  UTXOReservedResponse({
+    required this.walletId,
+    required this.utxoKey,
+    required this.reservedByTxId,
+    required this.success,
+    this.error,
+  });
+
+  @override
+  String get correlationId => 'utxo-reserved-response-$utxoKey';
+  @override
+  Map<String, dynamic> get metadata =>
+      {'walletId': walletId, 'utxoKey': utxoKey, 'reservedByTxId': reservedByTxId};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+
+  @override
+  String toString() =>
+      'UTXOReservedResponse($walletId, $utxoKey, success: $success${error != null ? ', error: $error' : ''})';
+}
+
 class UTXOReceivedResponse implements Message {
   final String walletId;
   final String txid;

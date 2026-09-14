@@ -151,6 +151,13 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
               txid: event.txid,
               success: true,
             ));
+          } else if (event is UTXOReservedEvent) {
+            sender.tell(UTXOReservedResponse(
+              walletId: event.walletId,
+              utxoKey: '${event.txid}:${event.vout}',
+              reservedByTxId: event.reservedByTxId,
+              success: true,
+            ));
           }
         }
       }
@@ -248,6 +255,14 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         success: false,
         error: errorMessage,
         metadata: command.metadata, // Pass through metadata even on error
+      ));
+    } else if (command is ReserveUTXOCommand) {
+      sender.tell(UTXOReservedResponse(
+        walletId: command.walletId,
+        utxoKey: command.utxoKey,
+        reservedByTxId: command.reservedByTxId,
+        success: false,
+        error: errorMessage,
       ));
     } else if (command is BuildFundingTransactionCommand) {
       sender.tell(FundingTransactionBuiltResponse(

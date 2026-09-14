@@ -22,6 +22,7 @@ library;
 import 'dart:io';
 
 import 'package:dartsv/dartsv.dart' as dartsv;
+import 'package:spiffynode/spiffy_node.dart';
 import 'package:test/test.dart';
 
 import 'package:libspiffy/src/storage/postgres/postgres_config.dart';
@@ -59,15 +60,16 @@ void main() {
       // Run migrations
       await migrations.migrate();
 
-      // Verify version: v001 initial schema + v002 secure secrets
+      // Verify version: v001 initial schema, v002 secure secrets,
+      // v003 header ints + plugin metadata
       final version = await migrations.getCurrentVersion();
-      expect(version, equals(2));
+      expect(version, equals(3));
 
       // Verify applied migrations
       final applied = await migrations.getAppliedMigrations();
-      expect(applied, hasLength(2));
+      expect(applied, hasLength(3));
       expect(applied.first.name, equals('initial_schema'));
-      expect(applied.last.name, equals('secure_secrets'));
+      expect(applied.last.name, equals('header_ints_and_plugin_metadata'));
     });
 
     test('should handle re-running migrations idempotently', () async {
@@ -78,13 +80,16 @@ void main() {
       await migrations.migrate();
 
       final version = await migrations.getCurrentVersion();
-      expect(version, equals(2));
+      expect(version, equals(3));
     });
 
     test('should rollback migrations one at a time', () async {
       final migrations = PostgresMigrations(config);
 
       await migrations.migrate();
+      expect(await migrations.getCurrentVersion(), equals(3));
+
+      expect(await migrations.rollback(), isTrue);
       expect(await migrations.getCurrentVersion(), equals(2));
 
       expect(await migrations.rollback(), isTrue);
@@ -240,6 +245,50 @@ void main() {
         expect(balance, equals(BigInt.from(30000)));
       });
 
+      test('keeps plugin-managed UTXOs out of payment UTXOs and balance', () async {
+        await storage.storeWallet('plugin-wallet', 'Plugin Wallet');
+        final payment = BitcoinUtxo(
+          txid: 'pay${'0' * 61}',
+          vout: 0,
+          value: dartsv.Coin.ofSat(BigInt.from(10000)),
+          scriptPubKey: '76a914...88ac',
+          address: 'addr-pay',
+          status: UTXOStatus.available,
+          createdAt: DateTime.now(),
+          updatedAt: DateTime.now(),
+        );
+        final token = BitcoinUtxo(
+          txid: 'tok${'0' * 61}',
+          vout: 1,
+          value: dartsv.Coin.ofSat(BigInt.from(1)),
+          scriptPubKey: '76a914...88ac',
+          address: 'addr-token',
+          status: UTXOStatus.available,
+          createdAt: DateTime.now(),
+          updatedAt: DateTime.now(),
+          pluginMetadata: {'pluginId': 'pp1', 'tokenId': 't-1'},
+        );
+        await storage.upsertUTXO('plugin-wallet', payment);
+        await storage.upsertUTXO('plugin-wallet', token);
+
+        // Metadata round-trips through the JSONB column.
+        final all = await storage.getUTXOs('plugin-wallet');
+        final storedToken = all.firstWhere((u) => u.txid == token.txid);
+        expect(storedToken.pluginMetadata, equals({'pluginId': 'pp1', 'tokenId': 't-1'}));
+
+        // Before v003 the column did not exist, so the token was selectable
+        // as ordinary funding and counted in the balance.
+        final paymentUtxos = await storage.getPaymentUTXOs('plugin-wallet');
+        expect(paymentUtxos.map((u) => u.txid), equals([payment.txid]));
+        expect(await storage.getBalance('plugin-wallet'), equals(BigInt.from(10000)));
+
+        final byPlugin = await storage.getUTXOsByPlugin('plugin-wallet', 'pp1');
+        expect(byPlugin.map((u) => u.txid), equals([token.txid]));
+        final filtered = await storage.getUTXOsByPlugin(
+          'plugin-wallet', 'pp1', metadataFilter: {'tokenId': 'other'});
+        expect(filtered, isEmpty);
+      });
+
       test('should filter spent UTXOs', () async {
         await storage.storeWallet('spent-test', 'Spent Test');
 
@@ -271,6 +320,25 @@ void main() {
         final utxos = await storage.getUTXOs('spent-test', includeSpent: false);
         expect(utxos, hasLength(1));
         expect(utxos.first.txid, equals(available.txid));
+      });
+    });
+
+    group('Block Header Operations', () {
+      test('stores a header whose nonce exceeds int32', () async {
+        // Block 1 on mainnet has nonce 2573394689 (> 2^31 - 1); with the
+        // INTEGER column of v001 this insert failed as out of range.
+        final header = BlockHeader(
+          version: 1,
+          prevBlock: Hash.fromHex('000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f'),
+          merkleRoot: Hash.fromHex('0e3e2357e806b6cdb1f70b54c3a3a17b6714ee1f0e68bebb44a74b1efd512098'),
+          timestamp: DateTime.fromMillisecondsSinceEpoch(1231469665 * 1000, isUtc: true),
+          bits: 0x1d00ffff,
+          nonce: 2573394689,
+        );
+        await storage.storeBlockHeadersBulk([(header, 1)]);
+        final stored = await storage.getBlockHeaderByHeight(1);
+        expect(stored, isNotNull);
+        expect(stored!.nonce, equals(2573394689));
       });
     });
 

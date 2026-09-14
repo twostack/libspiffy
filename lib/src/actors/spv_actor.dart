@@ -286,6 +286,7 @@ class SPVActor extends Actor {
           // Validate that all its ancestors (inputs) have valid merkle proofs
           
           // Validate ALL transactions in BEEF that have proofs
+          final provenTxids = <String>{};
           for (int i = 0; i < beef.txs.length; i++) {
             if (!beef.hasMerkle[i]) {
               continue; // Skip transactions without proofs (like this payment tx)
@@ -314,8 +315,22 @@ class SPVActor extends Actor {
                 targetWalletId: walletId,
               );
             }
+            provenTxids.add(hex.encode(ancestorTxid));
           }
-          
+
+          // A valid proof somewhere in the BEEF says nothing about *this*
+          // transaction unless its inputs chain back to proven transactions.
+          // Without this check a BEEF holding one real mined transaction plus
+          // a self-signed payment spending non-existent outpoints validated.
+          final coverageError = _checkAncestorCoverage(beef, txid, provenTxids);
+          if (coverageError != null) {
+            return SPVValidationResult(
+              txid: txidHex,
+              isValid: false,
+              validationError: coverageError,
+              targetWalletId: walletId,
+            );
+          }
         }
 
         // Step 2: Validate transaction structure and scripts
@@ -405,6 +420,38 @@ class SPVActor extends Actor {
     }
   }
 
+  /// BRC-62 ancestor coverage: every input of an unproven transaction must
+  /// be spent from a transaction that either has a validated merkle proof
+  /// ([provenTxids]) or is itself in the BEEF and covered recursively.
+  ///
+  /// Returns a description of the first gap, or null when [subjectTxid] is
+  /// fully covered.
+  String? _checkAncestorCoverage(BEEF beef, Uint8List subjectTxid, Set<String> provenTxids) {
+    final visited = <String>{};
+
+    String? visit(Uint8List txidBytes) {
+      final txidHex = hex.encode(txidBytes);
+      if (provenTxids.contains(txidHex)) return null;
+      if (!visited.add(txidHex)) return null;
+
+      final txMap = beef.findTransactionByTxid(txidBytes);
+      if (txMap == null) {
+        return 'Input transaction $txidHex is neither in the BEEF nor proven';
+      }
+      final tx = dartsv.Transaction.fromHex(hex.encode(txMap['txData'] as List<int>));
+      if (tx.inputs.isEmpty) {
+        return 'Unproven transaction $txidHex has no inputs';
+      }
+      for (final input in tx.inputs) {
+        final err = visit(Uint8List.fromList(hex.decode(input.prevTxnId)));
+        if (err != null) return err;
+      }
+      return null;
+    }
+
+    return visit(subjectTxid);
+  }
+
   ///validate that the transaction's inputs are spending properly from their corresponding UTXOs
   ///The BEEF should have all input/funding transactions available or this method will fail
   Future<bool> _validateTransactionSpendsCorrectly(BEEF beef, Uint8List txid) async {
@@ -425,6 +472,10 @@ class SPVActor extends Actor {
       if (txMap == null) return false;
 
       final txToBeValidated = dartsv.Transaction.fromHex(hex.encode(txMap['txData']));
+      // A transaction with a validated merkle proof is already mined; its
+      // funding transactions need not travel in the BEEF. An unproven one
+      // must be fully checkable, so a missing funding transaction fails it.
+      final subjectProven = txMap['hasMerkleProof'] == true;
 
       var interpreter = dartsv.Interpreter();
       try {
@@ -448,6 +499,12 @@ class SPVActor extends Actor {
             interpreter.correctlySpends(
                 scriptSig!, scriptPubKey, broadcastTxn, inputIndex, scriptFlags,
                 dartsv.Coin.ofSat(lockedValue));
+          } else if (!subjectProven) {
+            // An input whose funding transaction is absent cannot be checked
+            // at all; silently accepting it let unverifiable spends through.
+            _log.warning('Input $inputIndex of ${hex.encode(txid)} spends '
+                '${input.prevTxnId}:${input.prevTxnOutputIndex}, which is not in the BEEF');
+            return false;
           }
           inputIndex++;
         }

@@ -63,6 +63,72 @@ void main() {
       await actorSystem.shutdown();
     });
 
+    test('rejects an unproven payment whose inputs are not covered by the BEEF', () async {
+      // A BEEF holding one genuinely mined transaction (with a valid BUMP)
+      // plus a self-signed "payment" that spends an outpoint nobody has ever
+      // seen. Before the ancestor-coverage check the valid proof on the
+      // unrelated transaction was enough for the payment to validate.
+      final realTx = _getRealTransaction1();
+      final tscProof = _getTscProof1();
+      final tx = dartsv.Transaction.fromHex(realTx['hex'] as String);
+      final targetAddress = _extractP2PKHAddress(tx.outputs[0].script);
+
+      final createCompleter = Completer<InvoiceCreatedMessage>();
+      final createReceiver = await actorSystem.spawn(
+        'create-receiver-forged',
+        () => _TestReceiverActor<InvoiceCreatedMessage>(createCompleter),
+      );
+      mockWalletManager.tell(_RegisterExpectedAddressMessage(
+        walletId: 'bob-wallet',
+        expectedAddress: targetAddress,
+      ));
+      invoiceManager.tell(
+        CreateInvoiceMessage(walletId: 'bob-wallet', amount: BigInt.from(3883936)),
+        sender: createReceiver,
+      );
+      final invoice = await createCompleter.future.timeout(Duration(seconds: 5));
+      expect(invoice.success, isTrue);
+
+      // Forged payment: one input from a non-existent outpoint, one output
+      // paying the invoice address the exact invoice amount.
+      final forgedTxBytes = _buildRawTransaction(
+        prevTxidInternal: Uint8List.fromList(List<int>.generate(32, (i) => i + 1)),
+        prevVout: 0,
+        outputScript: Uint8List.fromList(hex.decode(tx.outputs[0].script.toHex())),
+        outputSatoshis: 3883936,
+      );
+      final forgedTxid = dartsv.Transaction.fromHex(hex.encode(forgedTxBytes)).id;
+
+      final proven = _createBeefFromRealData(realTx, tscProof);
+      final beef = BEEF.create(
+        bumps: proven.bumps,
+        txs: [proven.txs.first, forgedTxBytes],
+        hasMerkle: [true, false],
+        bumpIndex: [0],
+      );
+
+      final validationCompleter = Completer<dynamic>();
+      final validationReceiver = await actorSystem.spawn(
+        'validation-receiver-forged',
+        () => _TestReceiverActor<dynamic>(validationCompleter),
+      );
+      spvActor.tell(
+        ReceiveTransactionMessage(
+          transactionId: forgedTxid,
+          beef: beef,
+          fromCounterparty: 'mallory',
+          targetWalletId: 'bob-wallet',
+          invoiceId: invoice.invoiceId,
+        ),
+        sender: validationReceiver,
+      );
+      final result = await validationCompleter.future.timeout(Duration(seconds: 10))
+          as SPVValidationResult;
+
+      expect(result.isValid, isFalse);
+      expect(result.validationError, contains('neither in the BEEF nor proven'));
+    });
+
     test('validates real transaction with merkle proof', () async {
       // Use real testnet transaction from block 1641074
       final realTx = _getRealTransaction1();
@@ -680,3 +746,33 @@ class _TestReceiverActor<T> extends Actor {
   }
 }
 
+/// Serialises a minimal version-1 transaction with one input and one P2PKH
+/// output. The input's scriptSig is empty; the SPV actor never gets as far
+/// as script verification for it.
+Uint8List _buildRawTransaction({
+  required Uint8List prevTxidInternal,
+  required int prevVout,
+  required Uint8List outputScript,
+  required int outputSatoshis,
+}) {
+  final out = BytesBuilder();
+  void u32(int v) => out.add([v & 0xff, (v >> 8) & 0xff, (v >> 16) & 0xff, (v >> 24) & 0xff]);
+  void u64(int v) {
+    for (var i = 0; i < 8; i++) {
+      out.addByte((v >> (8 * i)) & 0xff);
+    }
+  }
+
+  u32(1); // version
+  out.addByte(1); // input count
+  out.add(prevTxidInternal);
+  u32(prevVout);
+  out.addByte(0); // empty scriptSig
+  u32(0xffffffff); // sequence
+  out.addByte(1); // output count
+  u64(outputSatoshis);
+  out.addByte(outputScript.length);
+  out.add(outputScript);
+  u32(0); // locktime
+  return out.toBytes();
+}

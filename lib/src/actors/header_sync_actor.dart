@@ -92,6 +92,10 @@ class HeaderSyncActor extends Actor {
   // Sync state guard to prevent concurrent header requests
   bool _syncInProgress = false;
 
+  /// Specific-header requests waiting for a header that has not been synced
+  /// yet, keyed by height. Resolved by [_resolvePendingHeaderRequests].
+  final Map<int, List<_PendingHeaderRequest>> _pendingHeaderRequests = {};
+
   HeaderSyncActor({
     required BlockHeaderChain headerChain,
     ActorRef? spvActor,
@@ -314,6 +318,8 @@ class HeaderSyncActor extends Actor {
       }
       
       _headersProcessed += successCount;
+
+      await _resolvePendingHeaderRequests();
       
       _logger.info('Header processing complete: $successCount stored, $failureCount failed');
       _logger.info('Current height: $_lastProcessedHeight');
@@ -563,36 +569,37 @@ class HeaderSyncActor extends Actor {
       if (!sent) {
         throw Exception('Failed to send getHeaders request to any peer');
       }
-      
-      // Wait for headers to arrive (with timeout)
-      // Poll for the header with exponential backoff
-      final startTime = DateTime.now();
-      var pollInterval = 500; // Start with 500ms
-      const maxPollInterval = 2000; // Max 2 seconds between polls
-      
-      while (DateTime.now().difference(startTime) < msg.timeout) {
-        await Future.delayed(Duration(milliseconds: pollInterval));
-        
-        final header = await _headerChain.getHeaderByHeight(msg.blockHeight);
-        if (header != null) {
-          _logger.info('✅ Successfully fetched header at height ${msg.blockHeight}');
-          
-          context.sender?.tell(SpecificHeaderResponseMessage(
+
+      // The headers arrive as BlockHeadersReceivedMessage on this actor's
+      // own mailbox and are stored by _handleBlockHeadersReceived. Polling
+      // storage from inside this handler could never see them (the mailbox
+      // is held by this handler), so every fetch timed out and blocked
+      // header sync for the whole timeout. Park the request instead; it is
+      // answered from _handleBlockHeadersReceived, or by the timer.
+      final sender = context.sender;
+      late final _PendingHeaderRequest pending;
+      pending = _PendingHeaderRequest(
+        height: msg.blockHeight,
+        sender: sender,
+        correlationId: msg.correlationId,
+        timer: Timer(msg.timeout, () {
+          final list = _pendingHeaderRequests[msg.blockHeight];
+          if (list == null || !list.remove(pending)) return;
+          if (list.isEmpty) _pendingHeaderRequests.remove(msg.blockHeight);
+          _logger.warning(
+              '⏰ Timeout waiting for header at height ${msg.blockHeight} after ${msg.timeout.inSeconds}s');
+          sender?.tell(SpecificHeaderResponseMessage(
             blockHeight: msg.blockHeight,
-            header: header,
-            success: true,
+            header: null,
+            success: false,
+            error: 'Timeout waiting for header at height ${msg.blockHeight}',
             correlationId: msg.correlationId,
           ));
-          return;
-        }
-        
-        // Exponential backoff
-        pollInterval = (pollInterval * 1.5).toInt().clamp(500, maxPollInterval);
-      }
-      
-      // Timeout reached
-      throw Exception('Timeout waiting for header at height ${msg.blockHeight} after ${msg.timeout.inSeconds}s');
-      
+        }),
+      );
+      _pendingHeaderRequests.putIfAbsent(msg.blockHeight, () => []).add(pending);
+      return;
+
     } catch (e) {
       _logger.severe('❌ Failed to fetch specific header at height ${msg.blockHeight}: $e');
       
@@ -630,7 +637,34 @@ class HeaderSyncActor extends Actor {
 
   @override
   void postStop() {
+    for (final list in _pendingHeaderRequests.values) {
+      for (final p in list) {
+        p.timer.cancel();
+      }
+    }
+    _pendingHeaderRequests.clear();
     _logger.info('HeaderSyncActor stopped');
+  }
+
+  /// Answers any parked RequestSpecificHeaderMessage whose header is now
+  /// stored. Called after each batch of headers has been processed.
+  Future<void> _resolvePendingHeaderRequests() async {
+    if (_pendingHeaderRequests.isEmpty) return;
+    for (final height in _pendingHeaderRequests.keys.toList()) {
+      final header = await _headerChain.getHeaderByHeight(height);
+      if (header == null) continue;
+      final list = _pendingHeaderRequests.remove(height) ?? const [];
+      for (final p in list) {
+        p.timer.cancel();
+        _logger.info('✅ Header at height $height arrived; answering parked request');
+        p.sender?.tell(SpecificHeaderResponseMessage(
+          blockHeight: height,
+          header: header,
+          success: true,
+          correlationId: p.correlationId,
+        ));
+      }
+    }
   }
 
   /// Get current header chain status
@@ -719,3 +753,18 @@ class HeaderSyncStatusMessage implements SPVMessage, Message {
   String toString() => 'HeaderSyncStatusMessage(requested: $requestedHeight, '
       'current: $currentHeight, upToDate: $isUpToDate)';
 } 
+
+/// A RequestSpecificHeaderMessage parked until its header is stored.
+class _PendingHeaderRequest {
+  final int height;
+  final ActorRef? sender;
+  final String? correlationId;
+  final Timer timer;
+
+  _PendingHeaderRequest({
+    required this.height,
+    required this.sender,
+    required this.correlationId,
+    required this.timer,
+  });
+}

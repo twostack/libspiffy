@@ -561,7 +561,7 @@ class PostgresWalletStorage implements ReadModelStorage {
     var sql = '''
       SELECT txid, vout, satoshis, script_pub_key, address, block_height,
              confirmations, status, created_at, spent_at, spent_in_tx_id,
-             script_type, is_spendable, category
+             script_type, is_spendable, category, plugin_metadata
       FROM bitcoin_utxos
       WHERE wallet_id = @walletId
     ''';
@@ -588,7 +588,7 @@ class PostgresWalletStorage implements ReadModelStorage {
       Sql.named('''
         SELECT txid, vout, satoshis, script_pub_key, address, block_height,
                confirmations, status, created_at, spent_at, spent_in_tx_id,
-               script_type, is_spendable, category
+               script_type, is_spendable, category, plugin_metadata
         FROM bitcoin_utxos
         WHERE wallet_id = @walletId AND status = 'available'
         ORDER BY satoshis DESC
@@ -608,11 +608,12 @@ class PostgresWalletStorage implements ReadModelStorage {
         INSERT INTO bitcoin_utxos (
           wallet_id, txid, vout, utxo_key, satoshis, script_pub_key, address,
           block_height, confirmations, status, created_at, spent_at,
-          spent_in_tx_id, script_type, is_spendable, category
+          spent_in_tx_id, script_type, is_spendable, category, plugin_metadata
         ) VALUES (
           @walletId, @txid, @vout, @utxoKey, @satoshis, @scriptPubKey, @address,
           @blockHeight, @confirmations, @status, @createdAt, @spentAt,
-          @spentInTxId, @scriptType, @isSpendable, @category
+          @spentInTxId, @scriptType, @isSpendable, @category,
+          CAST(@pluginMetadata AS JSONB)
         )
         ON CONFLICT (utxo_key) DO UPDATE SET
           satoshis = @satoshis,
@@ -623,7 +624,8 @@ class PostgresWalletStorage implements ReadModelStorage {
           status = @status,
           spent_at = @spentAt,
           spent_in_tx_id = @spentInTxId,
-          is_spendable = @isSpendable
+          is_spendable = @isSpendable,
+          plugin_metadata = CAST(@pluginMetadata AS JSONB)
       '''),
       parameters: {
         'walletId': walletId,
@@ -642,6 +644,9 @@ class PostgresWalletStorage implements ReadModelStorage {
         'scriptType': 'p2pkh',
         'isSpendable': true,
         'category': 'funding',
+        'pluginMetadata': utxo.pluginMetadata == null
+            ? null
+            : jsonEncode(utxo.pluginMetadata),
       },
     );
   }
@@ -661,10 +666,25 @@ class PostgresWalletStorage implements ReadModelStorage {
 
   @override
   Future<List<BitcoinUtxo>> getPaymentUTXOs(String walletId) async {
-    // TODO: Add plugin_metadata column for native SQL filtering.
-    // For now, filter in memory.
-    final all = await getAvailableUTXOs(walletId);
-    return all.where((utxo) => !utxo.hasPluginMetadata).toList();
+    _ensureInitialized();
+
+    // Same rule as the Isar backend: a UTXO belongs to a plugin (and is not
+    // spendable as plain funding) when its metadata names a pluginId.
+    final result = await _pool!.execute(
+      Sql.named('''
+        SELECT txid, vout, satoshis, script_pub_key, address, block_height,
+               confirmations, status, created_at, spent_at, spent_in_tx_id,
+               script_type, is_spendable, category, plugin_metadata
+        FROM bitcoin_utxos
+        WHERE wallet_id = @walletId
+          AND status = 'available'
+          AND (plugin_metadata IS NULL OR plugin_metadata->>'pluginId' IS NULL)
+        ORDER BY satoshis DESC
+      '''),
+      parameters: {'walletId': walletId},
+    );
+
+    return result.map(_rowToUtxo).toList();
   }
 
   @override
@@ -673,12 +693,25 @@ class PostgresWalletStorage implements ReadModelStorage {
     String pluginId, {
     Map<String, dynamic>? metadataFilter,
   }) async {
-    // TODO: Add plugin_metadata JSONB column to bitcoin_utxos table for
-    // native PostgreSQL filtering. For now, filter in memory.
-    final allUtxos = await getUTXOs(walletId);
-    return allUtxos.where((utxo) {
+    _ensureInitialized();
+
+    final result = await _pool!.execute(
+      Sql.named('''
+        SELECT txid, vout, satoshis, script_pub_key, address, block_height,
+               confirmations, status, created_at, spent_at, spent_in_tx_id,
+               script_type, is_spendable, category, plugin_metadata
+        FROM bitcoin_utxos
+        WHERE wallet_id = @walletId
+          AND status != 'spent'
+          AND plugin_metadata->>'pluginId' = @pluginId
+        ORDER BY created_at DESC
+      '''),
+      parameters: {'walletId': walletId, 'pluginId': pluginId},
+    );
+
+    return result.map(_rowToUtxo).where((utxo) {
       final meta = utxo.pluginMetadata;
-      if (meta == null || meta['pluginId'] != pluginId) return false;
+      if (meta == null) return false;
       if (metadataFilter != null) {
         for (final entry in metadataFilter.entries) {
           if (meta[entry.key] != entry.value) return false;
@@ -711,6 +744,7 @@ class PostgresWalletStorage implements ReadModelStorage {
       ),
       createdAt: row[8] as DateTime? ?? now,
       updatedAt: row[8] as DateTime? ?? now, // Use same datetime for updatedAt
+      pluginMetadata: row.length > 14 ? _parseJsonMap(row[14]) : null,
     );
   }
 
@@ -997,31 +1031,34 @@ class PostgresWalletStorage implements ReadModelStorage {
 
     final now = DateTime.now();
 
-    // Use parameterized inserts to prevent SQL injection
-    for (final (header, height) in headers) {
-      await _pool!.execute(
-        Sql.named('''
-          INSERT INTO block_headers (
-            height, hash, prev_block_hash, merkle_root, timestamp,
-            version, bits, nonce, is_orphaned, stored_at
-          ) VALUES (
-            @height, @hash, @prevHash, @merkle, @ts,
-            @version, @bits, @nonce, false, @storedAt
-          ) ON CONFLICT (hash) DO NOTHING
-        '''),
-        parameters: {
-          'height': height,
-          'hash': header.blockHash().toString(),
-          'prevHash': header.prevBlock.toString(),
-          'merkle': header.merkleRoot.toString(),
-          'ts': header.timestamp.millisecondsSinceEpoch ~/ 1000,
-          'version': header.version,
-          'bits': header.bits,
-          'nonce': header.nonce,
-          'storedAt': now,
-        },
-      );
-    }
+    // One transaction per batch: a failure part-way no longer leaves a
+    // partial chain behind, and the batch avoids per-row commits.
+    await _pool!.runTx((session) async {
+      for (final (header, height) in headers) {
+        await session.execute(
+          Sql.named('''
+            INSERT INTO block_headers (
+              height, hash, prev_block_hash, merkle_root, timestamp,
+              version, bits, nonce, is_orphaned, stored_at
+            ) VALUES (
+              @height, @hash, @prevHash, @merkle, @ts,
+              @version, @bits, @nonce, false, @storedAt
+            ) ON CONFLICT (hash) DO NOTHING
+          '''),
+          parameters: {
+            'height': height,
+            'hash': header.blockHash().toString(),
+            'prevHash': header.prevBlock.toString(),
+            'merkle': header.merkleRoot.toString(),
+            'ts': header.timestamp.millisecondsSinceEpoch ~/ 1000,
+            'version': header.version,
+            'bits': header.bits,
+            'nonce': header.nonce,
+            'storedAt': now,
+          },
+        );
+      }
+    });
   }
 
   @override

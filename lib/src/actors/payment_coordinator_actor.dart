@@ -50,6 +50,9 @@ class PaymentCoordinatorActor extends Actor {
   /// transaction event before treating the recording as failed.
   static const _recordPersistTimeout = Duration(seconds: 30);
 
+  /// How long to wait for the aggregate's reply to a ReserveUTXOCommand.
+  static const _reservationReplyTimeout = Duration(seconds: 10);
+
   PaymentCoordinatorActor({
     required ActorRef walletManager,
     required ActorRef walletProjection,
@@ -1078,9 +1081,10 @@ class PaymentCoordinatorActor extends Actor {
 
   /// Reserve multiple UTXOs via the wallet aggregate.
   ///
-  /// Uses the timeout-as-success pattern: the aggregate sends a LocalMessage
-  /// with an error on failure, but sends nothing on success. A 2-second timeout
-  /// with no error means the reservation succeeded.
+  /// The aggregate replies with [UTXOReservedResponse] for every request
+  /// (success or failure). A missing reply is a failure: the previous
+  /// "no error within 2 s means reserved" convention treated a slow
+  /// rejection as success and stalled every payment for the full 2 s.
   Future<bool> _reserveUTXOs(String walletId, List<BitcoinUtxo> utxos, String reservationId) async {
     final receivers = <ActorRef>[];
     final futures = <Future<void>>[];
@@ -1112,12 +1116,13 @@ class PaymentCoordinatorActor extends Actor {
         futures.add(completer.future);
       }
 
-      // Timeout = success (no errors received), any StateError = failure
-      await Future.wait(futures).timeout(const Duration(seconds: 2));
+      await Future.wait(futures).timeout(_reservationReplyTimeout);
       return true;
     } on TimeoutException {
-      // No errors received within timeout — all reservations succeeded
-      return true;
+      _log.warning('UTXO reservation for $reservationId got no reply within '
+          '$_reservationReplyTimeout; treating as failed');
+      _releaseReservation(walletId: walletId, reservationId: reservationId);
+      return false;
     } catch (e) {
       _log.info('UTXO reservation failed: $e');
       _releaseReservation(walletId: walletId, reservationId: reservationId);
@@ -1576,11 +1581,19 @@ class _ReservationReceiverActor extends Actor {
 
   @override
   Future<void> onMessage(dynamic message) async {
-    if (message is LocalMessage && !completer.isCompleted) {
-      final payload = message.payload;
-      if (payload is Map && payload.containsKey('error')) {
-        completer.completeError(StateError(payload['error'].toString()));
+    if (completer.isCompleted) return;
+    if (message is UTXOReservedResponse) {
+      if (message.success) {
+        completer.complete();
+      } else {
+        completer.completeError(StateError(message.error ?? 'reservation rejected'));
       }
+      return;
+    }
+    // Legacy shape: the aggregate's generic failure reply.
+    final payload = message is LocalMessage ? message.payload : message;
+    if (payload is Map && payload.containsKey('error')) {
+      completer.completeError(StateError(payload['error'].toString()));
     }
   }
 }

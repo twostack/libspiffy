@@ -74,7 +74,11 @@ abstract class ReadModelStorage {
   /// Get the count of addresses for a wallet (for verification during import)
   Future<int> getAddressCount(String walletId);
 
-  /// Update address usage statistics
+  /// Update address usage statistics.
+  ///
+  /// [usedAt] records a use (first/last used, usage count + 1);
+  /// [balanceDelta] adjusts the balance. A call with only a balance delta
+  /// (a spend) does not count as a use.
   Future<void> updateAddressUsage(
     String walletId,
     String address, {
@@ -86,7 +90,10 @@ abstract class ReadModelStorage {
   // Transaction-Address Junction (Address-Centric Queries)
   // ========================================
 
-  /// Store transaction-address junction records
+  /// Store transaction-address junction records.
+  ///
+  /// Replaces the links previously stored for ([walletId], [txid]), so a
+  /// projection replay leaves exactly one set of rows.
   Future<void> storeTransactionAddresses(
     String walletId,
     String txid,
@@ -137,9 +144,11 @@ abstract class ReadModelStorage {
 
   /// Get available UTXOs suitable for BSV payments.
   ///
-  /// Like [getAvailableUTXOs] but excludes UTXOs that carry plugin metadata
-  /// (e.g. token scripts). These UTXOs are managed by their respective
-  /// plugins and must not be selected as funding inputs for ordinary payments.
+  /// Like [getAvailableUTXOs] but excludes UTXOs whose plugin metadata names
+  /// a `pluginId` (e.g. token scripts). These UTXOs are managed by their
+  /// respective plugins and must not be selected as funding inputs for
+  /// ordinary payments. Metadata without a `pluginId` (script analysis of a
+  /// plain P2PKH output) does not exclude a UTXO. Same rule on every backend.
   Future<List<BitcoinUtxo>> getPaymentUTXOs(String walletId);
 
   /// Upsert (insert or update) a UTXO in the read model.
@@ -208,17 +217,27 @@ abstract class ReadModelStorage {
     int? offset,
   });
 
-  /// Get a specific transaction by ID
+  /// Get a specific transaction by ID.
+  ///
+  /// Transactions are stored per wallet (audit 2026-09-14 S-05): when wallet
+  /// A pays wallet B in the same store, each wallet has its own row for the
+  /// txid with its own `netAmount`, direction and status.
   ///
   /// Parameters:
   /// - [txid]: Transaction ID to retrieve
+  /// - [walletId]: the wallet whose row to return. Pass it whenever the
+  ///   wallet-specific fields matter. When null, the row of the wallet that
+  ///   stored the txid first is returned; its wallet-independent fields
+  ///   (`rawHex`, `fee`, input/output values) are the same for every wallet.
   ///
   /// Returns: Transaction if found, null if not found
-  Future<BitcoinTransaction?> getTransaction(String txid);
+  Future<BitcoinTransaction?> getTransaction(String txid, {String? walletId});
 
   /// Batch get transactions by txid list
   ///
-  /// Returns a map of txid → transaction for all found transactions.
+  /// Returns a map of txid → transaction for all found transactions. Like
+  /// [getTransaction] without a wallet id, a txid stored by several wallets
+  /// maps to the row of the wallet that stored it first.
   /// Default implementation loops over single-item getTransaction.
   Future<Map<String, BitcoinTransaction>> getTransactionsBatch(List<String> txids) async {
     final result = <String, BitcoinTransaction>{};
@@ -246,6 +265,9 @@ abstract class ReadModelStorage {
   /// Used by TransactionImportService to persist historical transaction data
   /// for BEEF construction and transaction history queries.
   ///
+  /// Inserts or updates the row keyed by ([walletId], txid); another
+  /// wallet's row for the same txid is never touched.
+  ///
   /// Parameters:
   /// - [walletId]: Wallet ID this transaction belongs to
   /// - [transaction]: Transaction to store
@@ -255,7 +277,12 @@ abstract class ReadModelStorage {
   // Block Header Storage (SPV)
   // ========================================
 
-  /// Store a block header at a specific height
+  /// Store a block header as part of the active chain at [height].
+  ///
+  /// An upsert keyed by the block hash: storing a hash that is already
+  /// present is idempotent, and storing a header that was orphaned earlier
+  /// (a reorganization back onto a previous branch) clears its orphan flag
+  /// and sets its height. Retire headers with [markHeaderAsOrphaned].
   ///
   /// Parameters:
   /// - [header]: Block header to store
@@ -263,6 +290,8 @@ abstract class ReadModelStorage {
   Future<void> storeBlockHeader(BlockHeader header, int height);
 
   /// Bulk store block headers for fast initial sync (CDN import).
+  ///
+  /// Same upsert semantics as [storeBlockHeader].
   ///
   /// Parameters:
   /// - [headers]: List of (BlockHeader, height) pairs to store
@@ -336,7 +365,11 @@ abstract class ReadModelStorage {
   // Merkle Proof Storage (SPV)
   // ========================================
 
-  /// Store merkle proof for a transaction
+  /// Store merkle proof for a transaction.
+  ///
+  /// There is at most one proof per txid: a later proof (for example after
+  /// the transaction was re-mined in another block during a reorganization)
+  /// replaces the earlier one.
   ///
   /// Parameters:
   /// - [txid]: Transaction ID

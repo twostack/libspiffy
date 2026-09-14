@@ -161,6 +161,11 @@ class MerkleProofEntity {
   Id id = Isar.autoIncrement;
 
   /// Transaction ID this proof is for
+  ///
+  /// One row per txid, enforced by [IsarWalletStorage.storeMerkleProof]
+  /// (delete-then-insert) rather than a unique index: stores written before
+  /// audit S-13 hold duplicates, and Isar refuses to open a collection whose
+  /// new unique index the existing rows violate.
   @Index()
   late String txid;
 
@@ -198,7 +203,8 @@ class MerkleProofEntity {
     return MerkleProof(
       blockHash: blockHash,
       txid: txid,
-      merkleProof: merkleProofJson.split(','),
+      // ''.split(',') is [''] — drop empty segments (audit S-13).
+      merkleProof: merkleProofJson.split(',').where((s) => s.isNotEmpty).toList(),
       position: position,
       blockHeight: blockHeight,
       createdAt: createdAt,
@@ -275,7 +281,11 @@ class BitcoinUtxoEntity {
   late int vout;
 
   /// UTXO key (txid:vout)
-  @Index(unique: true)
+  ///
+  /// Unique per wallet, not globally (audit 2026-09-14 S-05): two wallets
+  /// in one store can hold the same outpoint. Relaxing the former global
+  /// unique index cannot fail on existing data when Isar rebuilds it.
+  @Index(unique: true, composite: [CompositeIndex('walletId')])
   late String utxoKey;
 
   /// Value in satoshis (as string to handle BigInt)
@@ -423,7 +433,12 @@ class BitcoinTransactionEntity {
   late String walletId;
 
   /// Transaction ID
-  @Index(unique: true)
+  ///
+  /// Unique per wallet (audit 2026-09-14 S-05): when wallet A pays wallet B
+  /// in the same store each wallet has its own row. The plain `txid` index
+  /// serves wallet-independent lookups.
+  @Index()
+  @Index(unique: true, composite: [CompositeIndex('walletId')])
   late String txid;
 
   /// Raw transaction hex
@@ -719,7 +734,11 @@ class AddressEntity {
   late String walletId;
 
   /// Bitcoin address (base58) or payment destination identifier
-  @Index(unique: true, type: IndexType.hash)
+  ///
+  /// Unique per wallet (audit 2026-09-14 S-12): the same address may be
+  /// registered by two wallets (for example a watch-only copy).
+  @Index(type: IndexType.hash)
+  @Index(unique: true, composite: [CompositeIndex('walletId')])
   late String address;
 
   /// Script type: 'p2pkh', 'p2pk', 'p2ms', 'p2sh', 'custom', 'unknown'

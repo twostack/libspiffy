@@ -233,7 +233,7 @@ class _FakeStorage implements ReadModelStorage {
       _walletManager.registeredAddresses.length;
 
   @override
-  Future<BitcoinTransaction?> getTransaction(String txid) async => null;
+  Future<BitcoinTransaction?> getTransaction(String txid, {String? walletId}) async => null;
 
   @override
   Future<List<BitcoinUtxo>> getUTXOs(String walletId, {bool includeSpent = false}) async =>

@@ -497,7 +497,7 @@ class WalletCoordinatorActor extends Actor {
 
   Future<void> _handleGetTransactionDetail(GetTransactionDetailQuery query) async {
     try {
-      final tx = await _storage.getTransaction(query.txid);
+      final tx = await _storage.getTransaction(query.txid, walletId: query.walletId);
 
       _emitEvent(TransactionDetailResponse(
         walletId: query.walletId,

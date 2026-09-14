@@ -783,7 +783,7 @@ class WalletProjection extends Projection<void> {
     
     try {
       // Fetch the existing transaction from storage
-      final existingTx = await _storage.getTransaction(event.txid);
+      final existingTx = await _storage.getTransaction(event.txid, walletId: event.walletId);
       
       if (existingTx == null) {
         return;
@@ -808,7 +808,7 @@ class WalletProjection extends Projection<void> {
 
   Future<void> _handleTransactionStatusUpdated(TransactionStatusUpdatedEvent event) async {
     try {
-      final existingTx = await _storage.getTransaction(event.txid);
+      final existingTx = await _storage.getTransaction(event.txid, walletId: event.walletId);
       if (existingTx == null) {
         return;
       }

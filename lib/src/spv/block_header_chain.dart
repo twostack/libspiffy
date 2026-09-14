@@ -545,17 +545,16 @@ class BlockHeaderChain {
       _uncacheActive(oldHash, oldHeight);
     }
 
-    // Store the new branch. A header that was itself orphaned earlier (a
-    // reorg back to a previous branch) cannot be re-activated through the
-    // storage API: Isar refuses the duplicate hash and Postgres keeps the
-    // orphan flag. Log it; the in-memory tip still moves.
+    // Store the new branch. storeBlockHeader is an upsert on every backend:
+    // a header orphaned by an earlier reorg (a reorg back onto a previous
+    // branch) is re-activated with its orphan flag cleared (libspiffy-0v3).
     for (final s in newBranch) {
       try {
         await _storage.storeBlockHeader(s.header, s.height);
       } catch (e) {
-        _logger.severe('Could not store reorganized header ${s.hash} at height ${s.height} '
-            '(previously orphaned?): $e. The active tip is correct in memory but storage '
-            'will not reflect it after a restart.');
+        _logger.severe('Could not store reorganized header ${s.hash} at height ${s.height}: '
+            '$e. The active tip is correct in memory but storage will not reflect it '
+            'after a restart.');
       }
     }
     // Keep the old branch reachable in memory so it can be compared

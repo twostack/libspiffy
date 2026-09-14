@@ -167,17 +167,7 @@ class IsarWalletStorage implements ReadModelStorage {
         .filter()
         .walletIdEqualTo(walletId)
         .count();
-    
-    // Debug logging for address lookup
-    if (count == 0) {
-      // Check how many addresses exist for this wallet
-      final totalAddresses = await _isar.addressEntitys
-          .where()
-          .walletIdEqualTo(walletId)
-          .count();
-    } else {
-    }
-    
+
     return count > 0;
   }
 
@@ -663,13 +653,21 @@ class IsarWalletStorage implements ReadModelStorage {
   }
 
   @override
-  Future<BitcoinTransaction?> getTransaction(String txid) async {
-    final entity = await _isar.bitcoinTransactionEntitys
+  Future<BitcoinTransaction?> getTransaction(String txid, {String? walletId}) async {
+    if (walletId != null) {
+      final entity = await _isar.bitcoinTransactionEntitys
+          .where()
+          .txidWalletIdEqualTo(txid, walletId)
+          .findFirst();
+      return entity?.toDomain();
+    }
+    // Without a wallet id: the row of the wallet that stored the txid first.
+    final entities = await _isar.bitcoinTransactionEntitys
         .where()
         .txidEqualTo(txid)
-        .findFirst();
-
-    return entity?.toDomain();
+        .findAll();
+    if (entities.isEmpty) return null;
+    return entities.reduce((a, b) => a.id <= b.id ? a : b).toDomain();
   }
 
   @override
@@ -679,7 +677,13 @@ class IsarWalletStorage implements ReadModelStorage {
         .where()
         .anyOf(txids, (q, txid) => q.txidEqualTo(txid))
         .findAll();
-    return {for (final e in entities) e.txid: e.toDomain()};
+    // A txid held by several wallets maps to the first-stored row.
+    final firstByTxid = <String, BitcoinTransactionEntity>{};
+    for (final e in entities) {
+      final current = firstByTxid[e.txid];
+      if (current == null || e.id < current.id) firstByTxid[e.txid] = e;
+    }
+    return {for (final e in firstByTxid.values) e.txid: e.toDomain()};
   }
 
   @override
@@ -705,10 +709,12 @@ class IsarWalletStorage implements ReadModelStorage {
   @override
   Future<void> storeTransaction(String walletId, BitcoinTransaction transaction) async {
     await _isar.writeTxn(() async {
-      // Check if transaction already exists
+      // Check if this wallet already has the transaction. Rows are keyed by
+      // (walletId, txid): another wallet's row for the same txid is a
+      // different row (audit S-05).
       final existing = await _isar.bitcoinTransactionEntitys
           .where()
-          .txidEqualTo(transaction.txid)
+          .txidWalletIdEqualTo(transaction.txid, walletId)
           .findFirst();
       
       if (existing != null) {
@@ -773,20 +779,31 @@ class IsarWalletStorage implements ReadModelStorage {
 
   @override
   Future<void> storeBlockHeader(BlockHeader header, int height) async {
-    final entity = BlockHeaderEntity.fromBlockHeader(header, height);
-
-    await _isar.writeTxn(() async {
-      await _isar.blockHeaderEntitys.put(entity);
-    });
+    await storeBlockHeadersBulk([(header, height)]);
   }
 
+  /// Upsert by hash (audit S-12, bead libspiffy-0v3): a stored hash reuses
+  /// its Isar id, so re-storing is idempotent instead of violating the
+  /// unique hash index, and a header orphaned by an earlier reorganization
+  /// is re-activated (orphan flag cleared, height set).
   @override
   Future<void> storeBlockHeadersBulk(List<(BlockHeader, int)> headers) async {
-    final entities = headers
-        .map((pair) => BlockHeaderEntity.fromBlockHeader(pair.$1, pair.$2))
-        .toList();
+    if (headers.isEmpty) return;
+    // Last occurrence wins if a batch repeats a hash.
+    final byHash = <String, BlockHeaderEntity>{};
+    for (final (header, height) in headers) {
+      final entity = BlockHeaderEntity.fromBlockHeader(header, height);
+      byHash[entity.hash] = entity;
+    }
+    final entities = byHash.values.toList();
 
     await _isar.writeTxn(() async {
+      final existing = await _isar.blockHeaderEntitys
+          .getAllByHash(entities.map((e) => e.hash).toList());
+      for (var i = 0; i < entities.length; i++) {
+        final stored = existing[i];
+        if (stored != null) entities[i].id = stored.id;
+      }
       await _isar.blockHeaderEntitys.putAll(entities);
     });
   }
@@ -906,23 +923,28 @@ class IsarWalletStorage implements ReadModelStorage {
   // Merkle Proof Storage (SPV)
   // ========================================
 
+  /// One proof per txid (audit S-13): the rows for [txid] are replaced in
+  /// one write transaction, so a proof stored after a reorganization wins
+  /// and duplicates left by older versions disappear on the next store.
   @override
   Future<void> storeMerkleProof(String txid, MerkleProof proof) async {
-    final entity = MerkleProofEntity.fromMerkleProof(proof);
+    final entity = MerkleProofEntity.fromMerkleProof(proof)..txid = txid;
 
     await _isar.writeTxn(() async {
+      await _isar.merkleProofEntitys.where().txidEqualTo(txid).deleteAll();
       await _isar.merkleProofEntitys.put(entity);
     });
   }
 
   @override
   Future<MerkleProof?> getMerkleProof(String txid) async {
-    final entity = await _isar.merkleProofEntitys
+    final entities = await _isar.merkleProofEntitys
         .where()
         .txidEqualTo(txid)
-        .findFirst();
-
-    return entity?.toMerkleProof();
+        .findAll();
+    if (entities.isEmpty) return null;
+    // Newest row, should a pre-S-13 store still hold duplicates.
+    return entities.reduce((a, b) => a.id >= b.id ? a : b).toMerkleProof();
   }
 
   @override
@@ -932,7 +954,12 @@ class IsarWalletStorage implements ReadModelStorage {
         .where()
         .anyOf(txids, (q, txid) => q.txidEqualTo(txid))
         .findAll();
-    return {for (final e in entities) e.txid: e.toMerkleProof()};
+    final newest = <String, MerkleProofEntity>{};
+    for (final e in entities) {
+      final current = newest[e.txid];
+      if (current == null || e.id > current.id) newest[e.txid] = e;
+    }
+    return {for (final e in newest.values) e.txid: e.toMerkleProof()};
   }
 
   @override

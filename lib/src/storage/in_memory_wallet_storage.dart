@@ -29,12 +29,15 @@ class InMemoryWalletStorage implements WalletStorage {
   // UTXO storage: walletId -> Map<utxoKey, BitcoinUtxo>
   final Map<String, Map<String, BitcoinUtxo>> _utxos = {};
   
-  // Transaction storage: txid -> BitcoinTransaction
-  final Map<String, BitcoinTransaction> _transactions = {};
-  
-  // Transaction history by wallet: walletId -> List of txids
-  final Map<String, List<String>> _walletTransactions = {};
-  
+  // Transaction storage: walletId -> (txid -> BitcoinTransaction), in the
+  // order the wallet first stored each txid. Keyed per wallet: wallet A
+  // paying wallet B in the same store gives each its own row (audit S-05).
+  final Map<String, Map<String, BitcoinTransaction>> _transactions = {};
+
+  // Wallets holding a row for a txid, in the order they first stored it
+  // (getTransaction without a wallet id returns the first).
+  final Map<String, List<String>> _txidWallets = {};
+
   // Block header storage: height -> BlockHeader
   final Map<int, BlockHeader> _blockHeaders = {};
   
@@ -43,7 +46,14 @@ class InMemoryWalletStorage implements WalletStorage {
   
   // Orphaned block headers: hash -> BlockHeader
   final Map<String, BlockHeader> _orphanedHeaders = {};
-  
+
+  // Address metadata: walletId -> (address -> metadata)
+  final Map<String, Map<String, AddressMetadata>> _addresses = {};
+
+  // Transaction-address junction: walletId -> (txid -> links). The
+  // insertion order of the inner map is the store order.
+  final Map<String, Map<String, List<TransactionAddressLink>>> _txAddresses = {};
+
   // Merkle proof storage: txid -> MerkleProof
   final Map<String, MerkleProof> _merkleProofs = {};
   
@@ -135,31 +145,36 @@ class InMemoryWalletStorage implements WalletStorage {
   
   @override
   Future<List<String>> getWalletAddresses(String walletId) async {
-    // Get unique addresses from UTXO records
+    // Registered addresses first, then any address only known from a UTXO.
+    final addresses = <String>{...?_addresses[walletId]?.keys};
     final utxos = await getAvailableUTXOs(walletId);
-    final addresses = utxos.map((u) => u.address).toSet().toList();
-    return addresses;
+    addresses.addAll(utxos.map((u) => u.address).where((a) => a.isNotEmpty));
+    return addresses.toList();
   }
   
   @override
   Future<void> deleteWallet(String walletId) async {
     // Read associations BEFORE removing maps
-    final txids = _walletTransactions[walletId];
+    final txids = _transactions[walletId]?.keys.toList();
     final invoiceIds = _walletInvoices[walletId];
 
     // Remove wallet data
     _events.remove(walletId);
     _utxos.remove(walletId);
-    _walletTransactions.remove(walletId);
-    _balanceCache.remove(walletId);
+    _transactions.remove(walletId);
+    _addresses.remove(walletId);
+    _txAddresses.remove(walletId);
+_balanceCache.remove(walletId);
     _walletMetadata.remove(walletId);
     _walletIds.remove(walletId);
     _walletInvoices.remove(walletId);
 
-    // Clean up associated transactions
+    // Drop the wallet from the txid index (other wallets keep their rows)
     if (txids != null) {
       for (final txid in txids) {
-        _transactions.remove(txid);
+        final owners = _txidWallets[txid];
+        owners?.remove(walletId);
+        if (owners != null && owners.isEmpty) _txidWallets.remove(txid);
       }
     }
 
@@ -251,10 +266,16 @@ class InMemoryWalletStorage implements WalletStorage {
       }
       final walletUtxos = _utxos[walletId] ?? <String, BitcoinUtxo>{};
       return walletUtxos.values
-          .where((utxo) => utxo.isAvailable && !utxo.hasPluginMetadata)
+          .where((utxo) => utxo.isAvailable && !_isPluginManaged(utxo))
           .toList();
     });
   }
+
+  /// The payment-UTXO rule shared with the Isar and Postgres backends
+  /// (audit S-18): a UTXO belongs to a plugin when its metadata names a
+  /// pluginId. Script-analysis metadata alone does not exclude it.
+  static bool _isPluginManaged(BitcoinUtxo utxo) =>
+      utxo.pluginMetadata?['pluginId'] != null;
 
   @override
   Future<List<BitcoinUtxo>> getUTXOsByPlugin(
@@ -297,7 +318,7 @@ class InMemoryWalletStorage implements WalletStorage {
       // Calculate balance from available payment UTXOs (exclude token UTXOs)
       final walletUtxos = _utxos[walletId] ?? <String, BitcoinUtxo>{};
       final availableUtxos = walletUtxos.values
-          .where((utxo) => utxo.isAvailable && !utxo.hasPluginMetadata)
+          .where((utxo) => utxo.isAvailable && !_isPluginManaged(utxo))
           .toList();
       
       final balance = availableUtxos.fold<BigInt>(
@@ -416,34 +437,36 @@ class InMemoryWalletStorage implements WalletStorage {
         throw StorageException('Wallet not found: $walletId');
       }
 
-      final walletTxIds = _walletTransactions[walletId] ?? [];
-      var txIds = List<String>.from(walletTxIds);
-      
+      Iterable<BitcoinTransaction> txs =
+          _transactions[walletId]?.values ?? const <BitcoinTransaction>[];
+
       // Apply offset
       if (offset != null && offset > 0) {
-        txIds = txIds.skip(offset).toList();
+        txs = txs.skip(offset);
       }
-      
+
       // Apply limit
       if (limit != null && limit > 0) {
-        txIds = txIds.take(limit).toList();
+        txs = txs.take(limit);
       }
-      
-      // Get transactions in order
-      return txIds.map((txid) => _transactions[txid]!).toList();
+
+      return txs.toList();
     });
   }
 
   @override
-  Future<BitcoinTransaction?> getTransaction(String txid) async {
-    return _transactions[txid];
+  Future<BitcoinTransaction?> getTransaction(String txid, {String? walletId}) async {
+    if (walletId != null) return _transactions[walletId]?[txid];
+    final owners = _txidWallets[txid];
+    if (owners == null || owners.isEmpty) return null;
+    return _transactions[owners.first]?[txid];
   }
 
   @override
   Future<Map<String, BitcoinTransaction>> getTransactionsBatch(List<String> txids) async {
     final result = <String, BitcoinTransaction>{};
     for (final txid in txids) {
-      final tx = _transactions[txid];
+      final tx = await getTransaction(txid);
       if (tx != null) result[txid] = tx;
     }
     return result;
@@ -459,14 +482,10 @@ class InMemoryWalletStorage implements WalletStorage {
     
     if (walletId != null) {
       // Filter by wallet
-      final walletTxIds = _walletTransactions[walletId] ?? [];
-      transactions = walletTxIds
-          .map((txid) => _transactions[txid])
-          .where((tx) => tx != null)
-          .cast<BitcoinTransaction>();
+      transactions = _transactions[walletId]?.values ?? const <BitcoinTransaction>[];
     } else {
-      // Get all transactions
-      transactions = _transactions.values;
+      // Get all transactions (one row per wallet holding the txid)
+      transactions = _transactions.values.expand((txs) => txs.values);
     }
     
     // Filter by status and sort by creation date (descending)
@@ -481,18 +500,19 @@ class InMemoryWalletStorage implements WalletStorage {
   @override
   Future<void> storeTransaction(String walletId, BitcoinTransaction transaction) async {
     await _withLock(walletId, () async {
-      // Store transaction
-      _transactions[transaction.txid] = transaction;
-      
-      // Associate transaction with wallet
-      if (!_walletTransactions.containsKey(walletId)) {
-        _walletTransactions[walletId] = [];
-      }
-      
-      if (!_walletTransactions[walletId]!.contains(transaction.txid)) {
-        _walletTransactions[walletId]!.add(transaction.txid);
-      }
+      _putTransaction(walletId, transaction);
     });
+  }
+
+  /// Insert or replace the ([walletId], txid) row. Returns true when new.
+  bool _putTransaction(String walletId, BitcoinTransaction transaction) {
+    final walletTxs = _transactions.putIfAbsent(walletId, () => {});
+    final isNew = !walletTxs.containsKey(transaction.txid);
+    walletTxs[transaction.txid] = transaction;
+    if (isNew) {
+      _txidWallets.putIfAbsent(transaction.txid, () => []).add(walletId);
+    }
+    return isNew;
   }
 
   // ========================================
@@ -502,11 +522,7 @@ class InMemoryWalletStorage implements WalletStorage {
   @override
   Future<void> storeBlockHeader(BlockHeader header, int height) async {
     await _withGlobalLock(() async {
-      final hash = header.blockHash().toString();
-
-      _blockHeaders[height] = header;
-      _hashToHeight[hash] = height;
-      _totalHeaders++;
+      _putActiveHeader(header, height);
     });
   }
 
@@ -514,12 +530,32 @@ class InMemoryWalletStorage implements WalletStorage {
   Future<void> storeBlockHeadersBulk(List<(BlockHeader, int)> headers) async {
     await _withGlobalLock(() async {
       for (final (header, height) in headers) {
-        final hash = header.blockHash().toString();
-        _blockHeaders[height] = header;
-        _hashToHeight[hash] = height;
-        _totalHeaders++;
+        _putActiveHeader(header, height);
       }
     });
+  }
+
+  /// Upsert [header] as the active header at [height]: idempotent for a
+  /// hash already stored there, re-activates an orphaned header, and moves
+  /// a hash stored at another height. This store holds one header per
+  /// height, so a different header at [height] loses its hash entry.
+  void _putActiveHeader(BlockHeader header, int height) {
+    final hash = header.blockHash().toString();
+
+    final previousHeight = _hashToHeight[hash];
+    if (previousHeight != null && previousHeight != height) {
+      _blockHeaders.remove(previousHeight);
+    }
+    final displaced = _blockHeaders[height];
+    if (displaced != null) {
+      final displacedHash = displaced.blockHash().toString();
+      if (displacedHash != hash) _hashToHeight.remove(displacedHash);
+    }
+
+    if (previousHeight == null) _totalHeaders++;
+    _orphanedHeaders.remove(hash);
+    _blockHeaders[height] = header;
+    _hashToHeight[hash] = height;
   }
 
   @override
@@ -557,11 +593,12 @@ class InMemoryWalletStorage implements WalletStorage {
       final height = _hashToHeight[hash];
       if (height != null) {
         final header = _blockHeaders[height];
-        if (header != null) {
+        // Only retire the header if it is the one with this hash.
+        if (header != null && header.blockHash().toString() == hash) {
           _orphanedHeaders[hash] = header;
           _blockHeaders.remove(height);
-          _hashToHeight.remove(hash);
         }
+        _hashToHeight.remove(hash);
       }
     });
   }
@@ -593,15 +630,25 @@ class InMemoryWalletStorage implements WalletStorage {
   @override
   Future<void> storeMerkleProof(String txid, MerkleProof proof) async {
     await _withGlobalLock(() async {
+      // One proof per txid: a later proof (re-mined after a reorg) replaces
+      // the earlier one and leaves its block's index (audit S-13).
+      final previous = _merkleProofs[txid];
+      if (previous != null && previous.blockHash != proof.blockHash) {
+        final oldBlockProofs = _blockToProofs[previous.blockHash];
+        oldBlockProofs?.remove(txid);
+        if (oldBlockProofs != null && oldBlockProofs.isEmpty) {
+          _blockToProofs.remove(previous.blockHash);
+        }
+      }
       _merkleProofs[txid] = proof;
-      
+
       // Update block to proofs mapping
       final blockProofs = _blockToProofs.putIfAbsent(proof.blockHash, () => []);
       if (!blockProofs.contains(txid)) {
         blockProofs.add(txid);
       }
-      
-      _totalProofs++;
+
+      if (previous == null) _totalProofs++;
     });
   }
 
@@ -634,11 +681,7 @@ class InMemoryWalletStorage implements WalletStorage {
   Future<void> addTransaction(String walletId, BitcoinTransaction transaction) async {
     await _withLock(walletId, () async {
       _walletIds.add(walletId);
-      _transactions[transaction.txid] = transaction;
-      
-      final walletTxs = _walletTransactions.putIfAbsent(walletId, () => []);
-      if (!walletTxs.contains(transaction.txid)) {
-        walletTxs.add(transaction.txid);
+      if (_putTransaction(walletId, transaction)) {
         _totalTransactions++;
       }
     });
@@ -781,26 +824,26 @@ class InMemoryWalletStorage implements WalletStorage {
     return _merkleProofs.length;
   }
 
-  // Address Management Methods (stubs for in-memory storage)
-  
+  // ========================================
+  // Address Management (same semantics as the Isar backend, audit S-18)
+  // ========================================
+
   @override
   Future<bool> isWalletAddress(String walletId, String address) async {
-    // Stub implementation for in-memory storage
-    return false;
+    return _addresses[walletId]?.containsKey(address) ?? false;
   }
-  
+
   @override
   Future<AddressMetadata?> getAddressMetadata(String walletId, String address) async {
-    // Stub implementation for in-memory storage
-    return null;
+    return _addresses[walletId]?[address];
   }
-  
+
   @override
   Future<Map<String, bool>> checkAddresses(String walletId, List<String> addresses) async {
-    // Stub implementation for in-memory storage
-    return {for (var addr in addresses) addr: false};
+    final known = _addresses[walletId];
+    return {for (final addr in addresses) addr: known?.containsKey(addr) ?? false};
   }
-  
+
   @override
   Future<List<AddressMetadata>> getAddressesWithMetadata(
     String walletId, {
@@ -809,10 +852,18 @@ class InMemoryWalletStorage implements WalletStorage {
     int? limit,
     int? offset,
   }) async {
-    // Stub implementation for in-memory storage
-    return [];
+    // Newest first, as the Isar backend sorts by creation time.
+    final matching = (_addresses[walletId]?.values ?? const <AddressMetadata>[])
+        .where((a) => includeUnused != false || a.usageCount > 0)
+        .where((a) => isChange == null || a.isChange == isChange)
+        .toList()
+      ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    Iterable<AddressMetadata> result = matching;
+    if (offset != null) result = result.skip(offset);
+    if (limit != null) result = result.take(limit);
+    return result.toList();
   }
-  
+
   @override
   Future<List<AddressMetadata>> getAddressRange(
     String walletId, {
@@ -820,21 +871,29 @@ class InMemoryWalletStorage implements WalletStorage {
     required int count,
     bool isChange = false,
   }) async {
-    // Stub implementation for in-memory storage
-    return [];
+    final endIndex = startIndex + count - 1;
+    return (_addresses[walletId]?.values ?? const <AddressMetadata>[])
+        .where((a) =>
+            a.isChange == isChange &&
+            a.derivationIndex != null &&
+            a.derivationIndex! >= startIndex &&
+            a.derivationIndex! <= endIndex)
+        .toList()
+      ..sort((a, b) => a.derivationIndex!.compareTo(b.derivationIndex!));
   }
-  
+
   @override
   Future<void> upsertAddress(String walletId, AddressMetadata metadata) async {
-    // Stub implementation for in-memory storage
+    await _withLock(walletId, () async {
+      _addresses.putIfAbsent(walletId, () => {})[metadata.address] = metadata;
+    });
   }
-  
+
   @override
   Future<int> getAddressCount(String walletId) async {
-    // Stub implementation for in-memory storage
-    return 0;
+    return _addresses[walletId]?.length ?? 0;
   }
-  
+
   @override
   Future<void> updateAddressUsage(
     String walletId,
@@ -842,20 +901,46 @@ class InMemoryWalletStorage implements WalletStorage {
     DateTime? usedAt,
     BigInt? balanceDelta,
   }) async {
-    // Stub implementation for in-memory storage
+    await _withLock(walletId, () async {
+      final current = _addresses[walletId]?[address];
+      if (current == null) return;
+      _addresses[walletId]![address] = AddressMetadata(
+        address: current.address,
+        scriptType: current.scriptType,
+        derivationPath: current.derivationPath,
+        derivationIndex: current.derivationIndex,
+        isChange: current.isChange,
+        label: current.label,
+        purpose: current.purpose,
+        firstUsedAt: current.firstUsedAt ?? usedAt,
+        lastUsedAt: usedAt ?? current.lastUsedAt,
+        usageCount: current.usageCount + (usedAt != null ? 1 : 0),
+        balance: current.balance + (balanceDelta ?? BigInt.zero),
+        createdAt: current.createdAt,
+        isWatched: current.isWatched,
+      );
+    });
   }
-  
-  // Transaction-Address Junction Methods (stubs for in-memory storage)
-  
+
+  // ========================================
+  // Transaction-Address Junction
+  // ========================================
+
   @override
   Future<void> storeTransactionAddresses(
     String walletId,
     String txid,
     List<TransactionAddressLink> links,
   ) async {
-    // Stub implementation for in-memory storage
+    await _withLock(walletId, () async {
+      final walletLinks = _txAddresses.putIfAbsent(walletId, () => {});
+      // Replace (not append) so a replay leaves one set; re-insert so the
+      // txid moves to the newest position like a freshly written Isar row.
+      walletLinks.remove(txid);
+      walletLinks[txid] = List.unmodifiable(links);
+    });
   }
-  
+
   @override
   Future<List<String>> getTransactionsByAddress(
     String walletId,
@@ -864,20 +949,36 @@ class InMemoryWalletStorage implements WalletStorage {
     int? limit,
     int? offset,
   }) async {
-    // Stub implementation for in-memory storage
-    return [];
+    final walletLinks = _txAddresses[walletId];
+    if (walletLinks == null) return [];
+    // Newest first, as the Isar backend orders by creation time.
+    Iterable<String> txids = walletLinks.entries
+        .where((e) => e.value.any((l) =>
+            l.address == address && (direction == null || l.direction == direction)))
+        .map((e) => e.key)
+        .toList()
+        .reversed;
+    if (offset != null) txids = txids.skip(offset);
+    if (limit != null) txids = txids.take(limit);
+    return txids.toList();
   }
-  
+
   @override
   Future<TransactionAddresses> getTransactionAddresses(String walletId, String txid) async {
-    // Stub implementation for in-memory storage
-    return TransactionAddresses(inputs: [], outputs: []);
+    final links = _txAddresses[walletId]?[txid] ?? const <TransactionAddressLink>[];
+    return TransactionAddresses(
+      inputs: links.where((l) => l.direction == 'input').toList(),
+      outputs: links.where((l) => l.direction == 'output').toList(),
+    );
   }
-  
+
   @override
   Future<int> getAddressTransactionCount(String walletId, String address) async {
-    // Stub implementation for in-memory storage
-    return 0;
+    final walletLinks = _txAddresses[walletId];
+    if (walletLinks == null) return 0;
+    return walletLinks.values
+        .where((links) => links.any((l) => l.address == address))
+        .length;
   }
 
   /// Clear all data (useful for testing)
@@ -885,7 +986,9 @@ class InMemoryWalletStorage implements WalletStorage {
     _events.clear();
     _utxos.clear();
     _transactions.clear();
-    _walletTransactions.clear();
+    _txidWallets.clear();
+    _addresses.clear();
+    _txAddresses.clear();
     _blockHeaders.clear();
     _hashToHeight.clear();
     _orphanedHeaders.clear();

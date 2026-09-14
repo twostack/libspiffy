@@ -24,6 +24,7 @@ import 'dart:io';
 
 import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:eventador/eventador.dart';
+import 'package:postgres/postgres.dart' show Sql;
 import 'package:spiffynode/spiffy_node.dart';
 import 'package:test/test.dart';
 
@@ -40,6 +41,8 @@ import 'package:libspiffy/src/actors/invoice_messages.dart' show InvoiceStatus;
 
 import '../channel_read_model_contract.dart';
 import '../invoice_read_model_contract.dart';
+import '../header_reorg_contract.dart';
+import '../read_model_keying_contract.dart';
 
 /// Get PostgreSQL configuration from environment or use defaults
 PostgresConfig getTestConfig() {
@@ -138,15 +141,15 @@ void main() {
 
       // Verify version: v001 initial schema, v002 secure secrets,
       // v003 header ints + plugin metadata, v004 channel columns +
-      // invoice outputs
+      // invoice outputs, v005 wallet-scoped keys + unique proofs
       final version = await migrations.getCurrentVersion();
-      expect(version, equals(4));
+      expect(version, equals(5));
 
       // Verify applied migrations
       final applied = await migrations.getAppliedMigrations();
-      expect(applied, hasLength(4));
+      expect(applied, hasLength(5));
       expect(applied.first.name, equals('initial_schema'));
-      expect(applied.last.name, equals('channel_columns_and_invoice_outputs'));
+      expect(applied.last.name, equals('wallet_scoped_keys_and_unique_proofs'));
     });
 
     test('should handle re-running migrations idempotently', () async {
@@ -157,13 +160,16 @@ void main() {
       await migrations.migrate();
 
       final version = await migrations.getCurrentVersion();
-      expect(version, equals(4));
+      expect(version, equals(5));
     });
 
     test('should rollback migrations one at a time', () async {
       final migrations = PostgresMigrations(config);
 
       await migrations.migrate();
+      expect(await migrations.getCurrentVersion(), equals(5));
+
+      expect(await migrations.rollback(), isTrue);
       expect(await migrations.getCurrentVersion(), equals(4));
 
       expect(await migrations.rollback(), isTrue);
@@ -180,6 +186,81 @@ void main() {
 
       // Nothing left to roll back
       expect(await migrations.rollback(), isFalse);
+    });
+
+    test('v005 rolls back and re-applies with two wallets sharing a txid, an outpoint and a proof',
+        () async {
+      final migrations = PostgresMigrations(config);
+      await migrations.migrate();
+      expect(await migrations.getCurrentVersion(), equals(5));
+
+      final storage = PostgresWalletStorage(config);
+      await storage.initialize();
+      final txid = 'f5' * 32;
+      BitcoinTransaction tx(int net) => BitcoinTransaction(
+            txid: txid,
+            rawHex: '01000000',
+            status: TransactionStatus.pending,
+            inputValue: BigInt.from(2000),
+            outputValue: BigInt.from(1800),
+            fee: BigInt.from(200),
+            receivingAddresses: const [],
+            sendingAddresses: const [],
+            netAmount: BigInt.from(net),
+            createdAt: DateTime.now(),
+            updatedAt: DateTime.now(),
+            lockTime: 0,
+            version: 1,
+          );
+      BitcoinUtxo utxo() => BitcoinUtxo(
+            txid: txid,
+            vout: 0,
+            value: dartsv.Coin.ofSat(BigInt.from(1800)),
+            scriptPubKey: '76a914',
+            address: 'addr',
+            status: UTXOStatus.available,
+            createdAt: DateTime.now(),
+            updatedAt: DateTime.now(),
+          );
+      try {
+        await storage.storeTransaction('v005-a', tx(-1800));
+        await storage.storeTransaction('v005-b', tx(1800));
+        await storage.upsertUTXO('v005-a', utxo());
+        await storage.upsertUTXO('v005-b', utxo());
+      } finally {
+        await storage.close();
+      }
+
+      // Down keeps the first-stored row so the global keys can be restored.
+      expect(await migrations.rollback(), isTrue);
+      expect(await migrations.getCurrentVersion(), equals(4));
+      final pool = await config.createPool();
+      try {
+        final txRows = await pool.execute(
+          Sql.named('SELECT wallet_id FROM bitcoin_transactions WHERE txid = @txid'),
+          parameters: {'txid': txid},
+        );
+        expect(txRows.map((r) => r[0]), ['v005-a']);
+        final utxoRows = await pool.execute(
+          Sql.named('SELECT wallet_id FROM bitcoin_utxos WHERE txid = @txid'),
+          parameters: {'txid': txid},
+        );
+        expect(utxoRows.map((r) => r[0]), ['v005-a']);
+
+        // Up again, and leave the database at the latest version.
+        await migrations.migrate();
+        expect(await migrations.getCurrentVersion(), equals(5));
+        await pool.execute(
+          Sql.named('DELETE FROM bitcoin_transactions WHERE txid = @txid'),
+          parameters: {'txid': txid},
+        );
+        await pool.execute(
+          Sql.named('DELETE FROM bitcoin_utxos WHERE txid = @txid'),
+          parameters: {'txid': txid},
+        );
+      } finally {
+        await pool.close();
+      }
     });
   });
 
@@ -847,6 +928,27 @@ void main() {
         expect(channel.fundingTxId, isNull);
         expect(channel.clientAddressB58, isNull);
         expect(channel.role, equals(PaymentChannelRole.server));
+      });
+    });
+    /// Audit 2026-09-14 S-05, S-12, S-13, S-17, S-18 and bead
+    /// libspiffy-0v3: the keying contract shared with the in-memory and
+    /// Isar backends.
+    group('keying contract', () {
+      final run = DateTime.now().microsecondsSinceEpoch.toRadixString(36);
+      var counter = 0;
+      // Header rows are global: clear them before each header test and
+      // leave none behind for the next schema reset.
+      tearDownAll(() => clearBlockHeaders(config));
+      defineReadModelKeyingContract(
+        () => storage,
+        unique: () => 'p$run${counter++}',
+        beforeHeaders: () => clearBlockHeaders(config),
+      );
+
+      test('0v3: BlockHeaderChain reorg A -> B -> A persists branch A across a restart',
+          () async {
+        await clearBlockHeaders(config);
+        await runReorgBackOntoOrphanedBranchContract(storage);
       });
     });
   });

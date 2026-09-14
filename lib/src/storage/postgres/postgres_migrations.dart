@@ -11,6 +11,7 @@ import 'migrations/v001_initial_schema.dart';
 import 'migrations/v002_secure_secrets.dart';
 import 'migrations/v003_header_ints_and_plugin_metadata.dart';
 import 'migrations/v004_channel_columns_and_invoice_outputs.dart';
+import 'migrations/v005_wallet_scoped_keys_and_unique_proofs.dart';
 
 /// Base class for database migrations.
 ///
@@ -41,6 +42,7 @@ class PostgresMigrations {
     V002SecureSecrets(),
     V003HeaderIntsAndPluginMetadata(),
     V004ChannelColumnsAndInvoiceOutputs(),
+    V005WalletScopedKeysAndUniqueProofs(),
   ];
 
   /// Creates a new migration manager with the given configuration.

@@ -10,6 +10,8 @@ import 'package:libspiffy/src/storage/libspiffy_schemas.dart';
 import '../integration/isar_test_helper.dart';
 import 'channel_read_model_contract.dart';
 import 'invoice_read_model_contract.dart';
+import 'header_reorg_contract.dart';
+import 'read_model_keying_contract.dart';
 
 /// Builds a syntactically valid header chained to [prev]; [nonce] makes the
 /// hash unique so two headers can share a height (a reorg).
@@ -139,6 +141,43 @@ void main() {
         invoiceId: 'isar-invoice-contract',
         walletId: 'isar-invoice-wallet',
       );
+    });
+  });
+
+  /// Audit 2026-09-14 S-05, S-12, S-13, S-17, S-18 and bead libspiffy-0v3:
+  /// the keying contract shared with the in-memory and Postgres backends.
+  group('IsarWalletStorage', () {
+    late Directory tempDir;
+    late Isar isar;
+    late IsarWalletStorage storage;
+    var counter = 0;
+
+    setUpAll(() async {
+      await ensureIsarInitialized();
+    });
+
+    setUp(() async {
+      tempDir = await Directory.systemTemp.createTemp('isar_keying_test_');
+      isar = await Isar.open(
+        LibSpiffySchemas.allSchemas,
+        directory: tempDir.path,
+        name: 'keying_${DateTime.now().microsecondsSinceEpoch}',
+      );
+      storage = IsarWalletStorage(isar);
+    });
+
+    tearDown(() async {
+      await isar.close();
+      if (await tempDir.exists()) {
+        await tempDir.delete(recursive: true);
+      }
+    });
+
+    defineReadModelKeyingContract(() => storage, unique: () => 'i${counter++}');
+
+    test('0v3: BlockHeaderChain reorg A -> B -> A persists branch A across a restart',
+        () async {
+      await runReorgBackOntoOrphanedBranchContract(storage);
     });
   });
 }

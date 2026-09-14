@@ -4630,14 +4630,19 @@ const BitcoinUtxoEntitySchema = CollectionSchema(
         )
       ],
     ),
-    r'utxoKey': IndexSchema(
-      id: 224192052285061779,
-      name: r'utxoKey',
+    r'utxoKey_walletId': IndexSchema(
+      id: 3988507795190943642,
+      name: r'utxoKey_walletId',
       unique: true,
       replace: false,
       properties: [
         IndexPropertySchema(
           name: r'utxoKey',
+          type: IndexType.hash,
+          caseSensitive: true,
+        ),
+        IndexPropertySchema(
+          name: r'walletId',
           type: IndexType.hash,
           caseSensitive: true,
         )
@@ -4814,57 +4819,92 @@ void _bitcoinUtxoEntityAttach(
 }
 
 extension BitcoinUtxoEntityByIndex on IsarCollection<BitcoinUtxoEntity> {
-  Future<BitcoinUtxoEntity?> getByUtxoKey(String utxoKey) {
-    return getByIndex(r'utxoKey', [utxoKey]);
+  Future<BitcoinUtxoEntity?> getByUtxoKeyWalletId(
+      String utxoKey, String walletId) {
+    return getByIndex(r'utxoKey_walletId', [utxoKey, walletId]);
   }
 
-  BitcoinUtxoEntity? getByUtxoKeySync(String utxoKey) {
-    return getByIndexSync(r'utxoKey', [utxoKey]);
+  BitcoinUtxoEntity? getByUtxoKeyWalletIdSync(String utxoKey, String walletId) {
+    return getByIndexSync(r'utxoKey_walletId', [utxoKey, walletId]);
   }
 
-  Future<bool> deleteByUtxoKey(String utxoKey) {
-    return deleteByIndex(r'utxoKey', [utxoKey]);
+  Future<bool> deleteByUtxoKeyWalletId(String utxoKey, String walletId) {
+    return deleteByIndex(r'utxoKey_walletId', [utxoKey, walletId]);
   }
 
-  bool deleteByUtxoKeySync(String utxoKey) {
-    return deleteByIndexSync(r'utxoKey', [utxoKey]);
+  bool deleteByUtxoKeyWalletIdSync(String utxoKey, String walletId) {
+    return deleteByIndexSync(r'utxoKey_walletId', [utxoKey, walletId]);
   }
 
-  Future<List<BitcoinUtxoEntity?>> getAllByUtxoKey(List<String> utxoKeyValues) {
-    final values = utxoKeyValues.map((e) => [e]).toList();
-    return getAllByIndex(r'utxoKey', values);
+  Future<List<BitcoinUtxoEntity?>> getAllByUtxoKeyWalletId(
+      List<String> utxoKeyValues, List<String> walletIdValues) {
+    final len = utxoKeyValues.length;
+    assert(walletIdValues.length == len,
+        'All index values must have the same length');
+    final values = <List<dynamic>>[];
+    for (var i = 0; i < len; i++) {
+      values.add([utxoKeyValues[i], walletIdValues[i]]);
+    }
+
+    return getAllByIndex(r'utxoKey_walletId', values);
   }
 
-  List<BitcoinUtxoEntity?> getAllByUtxoKeySync(List<String> utxoKeyValues) {
-    final values = utxoKeyValues.map((e) => [e]).toList();
-    return getAllByIndexSync(r'utxoKey', values);
+  List<BitcoinUtxoEntity?> getAllByUtxoKeyWalletIdSync(
+      List<String> utxoKeyValues, List<String> walletIdValues) {
+    final len = utxoKeyValues.length;
+    assert(walletIdValues.length == len,
+        'All index values must have the same length');
+    final values = <List<dynamic>>[];
+    for (var i = 0; i < len; i++) {
+      values.add([utxoKeyValues[i], walletIdValues[i]]);
+    }
+
+    return getAllByIndexSync(r'utxoKey_walletId', values);
   }
 
-  Future<int> deleteAllByUtxoKey(List<String> utxoKeyValues) {
-    final values = utxoKeyValues.map((e) => [e]).toList();
-    return deleteAllByIndex(r'utxoKey', values);
+  Future<int> deleteAllByUtxoKeyWalletId(
+      List<String> utxoKeyValues, List<String> walletIdValues) {
+    final len = utxoKeyValues.length;
+    assert(walletIdValues.length == len,
+        'All index values must have the same length');
+    final values = <List<dynamic>>[];
+    for (var i = 0; i < len; i++) {
+      values.add([utxoKeyValues[i], walletIdValues[i]]);
+    }
+
+    return deleteAllByIndex(r'utxoKey_walletId', values);
   }
 
-  int deleteAllByUtxoKeySync(List<String> utxoKeyValues) {
-    final values = utxoKeyValues.map((e) => [e]).toList();
-    return deleteAllByIndexSync(r'utxoKey', values);
+  int deleteAllByUtxoKeyWalletIdSync(
+      List<String> utxoKeyValues, List<String> walletIdValues) {
+    final len = utxoKeyValues.length;
+    assert(walletIdValues.length == len,
+        'All index values must have the same length');
+    final values = <List<dynamic>>[];
+    for (var i = 0; i < len; i++) {
+      values.add([utxoKeyValues[i], walletIdValues[i]]);
+    }
+
+    return deleteAllByIndexSync(r'utxoKey_walletId', values);
   }
 
-  Future<Id> putByUtxoKey(BitcoinUtxoEntity object) {
-    return putByIndex(r'utxoKey', object);
+  Future<Id> putByUtxoKeyWalletId(BitcoinUtxoEntity object) {
+    return putByIndex(r'utxoKey_walletId', object);
   }
 
-  Id putByUtxoKeySync(BitcoinUtxoEntity object, {bool saveLinks = true}) {
-    return putByIndexSync(r'utxoKey', object, saveLinks: saveLinks);
-  }
-
-  Future<List<Id>> putAllByUtxoKey(List<BitcoinUtxoEntity> objects) {
-    return putAllByIndex(r'utxoKey', objects);
-  }
-
-  List<Id> putAllByUtxoKeySync(List<BitcoinUtxoEntity> objects,
+  Id putByUtxoKeyWalletIdSync(BitcoinUtxoEntity object,
       {bool saveLinks = true}) {
-    return putAllByIndexSync(r'utxoKey', objects, saveLinks: saveLinks);
+    return putByIndexSync(r'utxoKey_walletId', object, saveLinks: saveLinks);
+  }
+
+  Future<List<Id>> putAllByUtxoKeyWalletId(List<BitcoinUtxoEntity> objects) {
+    return putAllByIndex(r'utxoKey_walletId', objects);
+  }
+
+  List<Id> putAllByUtxoKeyWalletIdSync(List<BitcoinUtxoEntity> objects,
+      {bool saveLinks = true}) {
+    return putAllByIndexSync(r'utxoKey_walletId', objects,
+        saveLinks: saveLinks);
   }
 }
 
@@ -5038,28 +5078,28 @@ extension BitcoinUtxoEntityQueryWhere
   }
 
   QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterWhereClause>
-      utxoKeyEqualTo(String utxoKey) {
+      utxoKeyEqualToAnyWalletId(String utxoKey) {
     return QueryBuilder.apply(this, (query) {
       return query.addWhereClause(IndexWhereClause.equalTo(
-        indexName: r'utxoKey',
+        indexName: r'utxoKey_walletId',
         value: [utxoKey],
       ));
     });
   }
 
   QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterWhereClause>
-      utxoKeyNotEqualTo(String utxoKey) {
+      utxoKeyNotEqualToAnyWalletId(String utxoKey) {
     return QueryBuilder.apply(this, (query) {
       if (query.whereSort == Sort.asc) {
         return query
             .addWhereClause(IndexWhereClause.between(
-              indexName: r'utxoKey',
+              indexName: r'utxoKey_walletId',
               lower: [],
               upper: [utxoKey],
               includeUpper: false,
             ))
             .addWhereClause(IndexWhereClause.between(
-              indexName: r'utxoKey',
+              indexName: r'utxoKey_walletId',
               lower: [utxoKey],
               includeLower: false,
               upper: [],
@@ -5067,15 +5107,60 @@ extension BitcoinUtxoEntityQueryWhere
       } else {
         return query
             .addWhereClause(IndexWhereClause.between(
-              indexName: r'utxoKey',
+              indexName: r'utxoKey_walletId',
               lower: [utxoKey],
               includeLower: false,
               upper: [],
             ))
             .addWhereClause(IndexWhereClause.between(
-              indexName: r'utxoKey',
+              indexName: r'utxoKey_walletId',
               lower: [],
               upper: [utxoKey],
+              includeUpper: false,
+            ));
+      }
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterWhereClause>
+      utxoKeyWalletIdEqualTo(String utxoKey, String walletId) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'utxoKey_walletId',
+        value: [utxoKey, walletId],
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterWhereClause>
+      utxoKeyEqualToWalletIdNotEqualTo(String utxoKey, String walletId) {
+    return QueryBuilder.apply(this, (query) {
+      if (query.whereSort == Sort.asc) {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'utxoKey_walletId',
+              lower: [utxoKey],
+              upper: [utxoKey, walletId],
+              includeUpper: false,
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'utxoKey_walletId',
+              lower: [utxoKey, walletId],
+              includeLower: false,
+              upper: [utxoKey],
+            ));
+      } else {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'utxoKey_walletId',
+              lower: [utxoKey, walletId],
+              includeLower: false,
+              upper: [utxoKey],
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'utxoKey_walletId',
+              lower: [utxoKey],
+              upper: [utxoKey, walletId],
               includeUpper: false,
             ));
       }
@@ -7947,11 +8032,29 @@ const BitcoinTransactionEntitySchema = CollectionSchema(
     r'txid': IndexSchema(
       id: 7339874292043634331,
       name: r'txid',
+      unique: false,
+      replace: false,
+      properties: [
+        IndexPropertySchema(
+          name: r'txid',
+          type: IndexType.hash,
+          caseSensitive: true,
+        )
+      ],
+    ),
+    r'txid_walletId': IndexSchema(
+      id: -2771771174176035985,
+      name: r'txid_walletId',
       unique: true,
       replace: false,
       properties: [
         IndexPropertySchema(
           name: r'txid',
+          type: IndexType.hash,
+          caseSensitive: true,
+        ),
+        IndexPropertySchema(
+          name: r'walletId',
           type: IndexType.hash,
           caseSensitive: true,
         )
@@ -8179,58 +8282,93 @@ void _bitcoinTransactionEntityAttach(
 
 extension BitcoinTransactionEntityByIndex
     on IsarCollection<BitcoinTransactionEntity> {
-  Future<BitcoinTransactionEntity?> getByTxid(String txid) {
-    return getByIndex(r'txid', [txid]);
+  Future<BitcoinTransactionEntity?> getByTxidWalletId(
+      String txid, String walletId) {
+    return getByIndex(r'txid_walletId', [txid, walletId]);
   }
 
-  BitcoinTransactionEntity? getByTxidSync(String txid) {
-    return getByIndexSync(r'txid', [txid]);
+  BitcoinTransactionEntity? getByTxidWalletIdSync(
+      String txid, String walletId) {
+    return getByIndexSync(r'txid_walletId', [txid, walletId]);
   }
 
-  Future<bool> deleteByTxid(String txid) {
-    return deleteByIndex(r'txid', [txid]);
+  Future<bool> deleteByTxidWalletId(String txid, String walletId) {
+    return deleteByIndex(r'txid_walletId', [txid, walletId]);
   }
 
-  bool deleteByTxidSync(String txid) {
-    return deleteByIndexSync(r'txid', [txid]);
+  bool deleteByTxidWalletIdSync(String txid, String walletId) {
+    return deleteByIndexSync(r'txid_walletId', [txid, walletId]);
   }
 
-  Future<List<BitcoinTransactionEntity?>> getAllByTxid(
-      List<String> txidValues) {
-    final values = txidValues.map((e) => [e]).toList();
-    return getAllByIndex(r'txid', values);
+  Future<List<BitcoinTransactionEntity?>> getAllByTxidWalletId(
+      List<String> txidValues, List<String> walletIdValues) {
+    final len = txidValues.length;
+    assert(walletIdValues.length == len,
+        'All index values must have the same length');
+    final values = <List<dynamic>>[];
+    for (var i = 0; i < len; i++) {
+      values.add([txidValues[i], walletIdValues[i]]);
+    }
+
+    return getAllByIndex(r'txid_walletId', values);
   }
 
-  List<BitcoinTransactionEntity?> getAllByTxidSync(List<String> txidValues) {
-    final values = txidValues.map((e) => [e]).toList();
-    return getAllByIndexSync(r'txid', values);
+  List<BitcoinTransactionEntity?> getAllByTxidWalletIdSync(
+      List<String> txidValues, List<String> walletIdValues) {
+    final len = txidValues.length;
+    assert(walletIdValues.length == len,
+        'All index values must have the same length');
+    final values = <List<dynamic>>[];
+    for (var i = 0; i < len; i++) {
+      values.add([txidValues[i], walletIdValues[i]]);
+    }
+
+    return getAllByIndexSync(r'txid_walletId', values);
   }
 
-  Future<int> deleteAllByTxid(List<String> txidValues) {
-    final values = txidValues.map((e) => [e]).toList();
-    return deleteAllByIndex(r'txid', values);
+  Future<int> deleteAllByTxidWalletId(
+      List<String> txidValues, List<String> walletIdValues) {
+    final len = txidValues.length;
+    assert(walletIdValues.length == len,
+        'All index values must have the same length');
+    final values = <List<dynamic>>[];
+    for (var i = 0; i < len; i++) {
+      values.add([txidValues[i], walletIdValues[i]]);
+    }
+
+    return deleteAllByIndex(r'txid_walletId', values);
   }
 
-  int deleteAllByTxidSync(List<String> txidValues) {
-    final values = txidValues.map((e) => [e]).toList();
-    return deleteAllByIndexSync(r'txid', values);
+  int deleteAllByTxidWalletIdSync(
+      List<String> txidValues, List<String> walletIdValues) {
+    final len = txidValues.length;
+    assert(walletIdValues.length == len,
+        'All index values must have the same length');
+    final values = <List<dynamic>>[];
+    for (var i = 0; i < len; i++) {
+      values.add([txidValues[i], walletIdValues[i]]);
+    }
+
+    return deleteAllByIndexSync(r'txid_walletId', values);
   }
 
-  Future<Id> putByTxid(BitcoinTransactionEntity object) {
-    return putByIndex(r'txid', object);
+  Future<Id> putByTxidWalletId(BitcoinTransactionEntity object) {
+    return putByIndex(r'txid_walletId', object);
   }
 
-  Id putByTxidSync(BitcoinTransactionEntity object, {bool saveLinks = true}) {
-    return putByIndexSync(r'txid', object, saveLinks: saveLinks);
-  }
-
-  Future<List<Id>> putAllByTxid(List<BitcoinTransactionEntity> objects) {
-    return putAllByIndex(r'txid', objects);
-  }
-
-  List<Id> putAllByTxidSync(List<BitcoinTransactionEntity> objects,
+  Id putByTxidWalletIdSync(BitcoinTransactionEntity object,
       {bool saveLinks = true}) {
-    return putAllByIndexSync(r'txid', objects, saveLinks: saveLinks);
+    return putByIndexSync(r'txid_walletId', object, saveLinks: saveLinks);
+  }
+
+  Future<List<Id>> putAllByTxidWalletId(
+      List<BitcoinTransactionEntity> objects) {
+    return putAllByIndex(r'txid_walletId', objects);
+  }
+
+  List<Id> putAllByTxidWalletIdSync(List<BitcoinTransactionEntity> objects,
+      {bool saveLinks = true}) {
+    return putAllByIndexSync(r'txid_walletId', objects, saveLinks: saveLinks);
   }
 }
 
@@ -8407,6 +8545,97 @@ extension BitcoinTransactionEntityQueryWhere on QueryBuilder<
               indexName: r'txid',
               lower: [],
               upper: [txid],
+              includeUpper: false,
+            ));
+      }
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterWhereClause> txidEqualToAnyWalletId(String txid) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'txid_walletId',
+        value: [txid],
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterWhereClause> txidNotEqualToAnyWalletId(String txid) {
+    return QueryBuilder.apply(this, (query) {
+      if (query.whereSort == Sort.asc) {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'txid_walletId',
+              lower: [],
+              upper: [txid],
+              includeUpper: false,
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'txid_walletId',
+              lower: [txid],
+              includeLower: false,
+              upper: [],
+            ));
+      } else {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'txid_walletId',
+              lower: [txid],
+              includeLower: false,
+              upper: [],
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'txid_walletId',
+              lower: [],
+              upper: [txid],
+              includeUpper: false,
+            ));
+      }
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterWhereClause> txidWalletIdEqualTo(String txid, String walletId) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'txid_walletId',
+        value: [txid, walletId],
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+          QAfterWhereClause>
+      txidEqualToWalletIdNotEqualTo(String txid, String walletId) {
+    return QueryBuilder.apply(this, (query) {
+      if (query.whereSort == Sort.asc) {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'txid_walletId',
+              lower: [txid],
+              upper: [txid, walletId],
+              includeUpper: false,
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'txid_walletId',
+              lower: [txid, walletId],
+              includeLower: false,
+              upper: [txid],
+            ));
+      } else {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'txid_walletId',
+              lower: [txid, walletId],
+              includeLower: false,
+              upper: [txid],
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'txid_walletId',
+              lower: [txid],
+              upper: [txid, walletId],
               includeUpper: false,
             ));
       }
@@ -14918,11 +15147,29 @@ const AddressEntitySchema = CollectionSchema(
     r'address': IndexSchema(
       id: -259407546592846288,
       name: r'address',
+      unique: false,
+      replace: false,
+      properties: [
+        IndexPropertySchema(
+          name: r'address',
+          type: IndexType.hash,
+          caseSensitive: true,
+        )
+      ],
+    ),
+    r'address_walletId': IndexSchema(
+      id: -9099177396998242652,
+      name: r'address_walletId',
       unique: true,
       replace: false,
       properties: [
         IndexPropertySchema(
           name: r'address',
+          type: IndexType.hash,
+          caseSensitive: true,
+        ),
+        IndexPropertySchema(
+          name: r'walletId',
           type: IndexType.hash,
           caseSensitive: true,
         )
@@ -15077,57 +15324,90 @@ void _addressEntityAttach(
 }
 
 extension AddressEntityByIndex on IsarCollection<AddressEntity> {
-  Future<AddressEntity?> getByAddress(String address) {
-    return getByIndex(r'address', [address]);
+  Future<AddressEntity?> getByAddressWalletId(String address, String walletId) {
+    return getByIndex(r'address_walletId', [address, walletId]);
   }
 
-  AddressEntity? getByAddressSync(String address) {
-    return getByIndexSync(r'address', [address]);
+  AddressEntity? getByAddressWalletIdSync(String address, String walletId) {
+    return getByIndexSync(r'address_walletId', [address, walletId]);
   }
 
-  Future<bool> deleteByAddress(String address) {
-    return deleteByIndex(r'address', [address]);
+  Future<bool> deleteByAddressWalletId(String address, String walletId) {
+    return deleteByIndex(r'address_walletId', [address, walletId]);
   }
 
-  bool deleteByAddressSync(String address) {
-    return deleteByIndexSync(r'address', [address]);
+  bool deleteByAddressWalletIdSync(String address, String walletId) {
+    return deleteByIndexSync(r'address_walletId', [address, walletId]);
   }
 
-  Future<List<AddressEntity?>> getAllByAddress(List<String> addressValues) {
-    final values = addressValues.map((e) => [e]).toList();
-    return getAllByIndex(r'address', values);
+  Future<List<AddressEntity?>> getAllByAddressWalletId(
+      List<String> addressValues, List<String> walletIdValues) {
+    final len = addressValues.length;
+    assert(walletIdValues.length == len,
+        'All index values must have the same length');
+    final values = <List<dynamic>>[];
+    for (var i = 0; i < len; i++) {
+      values.add([addressValues[i], walletIdValues[i]]);
+    }
+
+    return getAllByIndex(r'address_walletId', values);
   }
 
-  List<AddressEntity?> getAllByAddressSync(List<String> addressValues) {
-    final values = addressValues.map((e) => [e]).toList();
-    return getAllByIndexSync(r'address', values);
+  List<AddressEntity?> getAllByAddressWalletIdSync(
+      List<String> addressValues, List<String> walletIdValues) {
+    final len = addressValues.length;
+    assert(walletIdValues.length == len,
+        'All index values must have the same length');
+    final values = <List<dynamic>>[];
+    for (var i = 0; i < len; i++) {
+      values.add([addressValues[i], walletIdValues[i]]);
+    }
+
+    return getAllByIndexSync(r'address_walletId', values);
   }
 
-  Future<int> deleteAllByAddress(List<String> addressValues) {
-    final values = addressValues.map((e) => [e]).toList();
-    return deleteAllByIndex(r'address', values);
+  Future<int> deleteAllByAddressWalletId(
+      List<String> addressValues, List<String> walletIdValues) {
+    final len = addressValues.length;
+    assert(walletIdValues.length == len,
+        'All index values must have the same length');
+    final values = <List<dynamic>>[];
+    for (var i = 0; i < len; i++) {
+      values.add([addressValues[i], walletIdValues[i]]);
+    }
+
+    return deleteAllByIndex(r'address_walletId', values);
   }
 
-  int deleteAllByAddressSync(List<String> addressValues) {
-    final values = addressValues.map((e) => [e]).toList();
-    return deleteAllByIndexSync(r'address', values);
+  int deleteAllByAddressWalletIdSync(
+      List<String> addressValues, List<String> walletIdValues) {
+    final len = addressValues.length;
+    assert(walletIdValues.length == len,
+        'All index values must have the same length');
+    final values = <List<dynamic>>[];
+    for (var i = 0; i < len; i++) {
+      values.add([addressValues[i], walletIdValues[i]]);
+    }
+
+    return deleteAllByIndexSync(r'address_walletId', values);
   }
 
-  Future<Id> putByAddress(AddressEntity object) {
-    return putByIndex(r'address', object);
+  Future<Id> putByAddressWalletId(AddressEntity object) {
+    return putByIndex(r'address_walletId', object);
   }
 
-  Id putByAddressSync(AddressEntity object, {bool saveLinks = true}) {
-    return putByIndexSync(r'address', object, saveLinks: saveLinks);
+  Id putByAddressWalletIdSync(AddressEntity object, {bool saveLinks = true}) {
+    return putByIndexSync(r'address_walletId', object, saveLinks: saveLinks);
   }
 
-  Future<List<Id>> putAllByAddress(List<AddressEntity> objects) {
-    return putAllByIndex(r'address', objects);
+  Future<List<Id>> putAllByAddressWalletId(List<AddressEntity> objects) {
+    return putAllByIndex(r'address_walletId', objects);
   }
 
-  List<Id> putAllByAddressSync(List<AddressEntity> objects,
+  List<Id> putAllByAddressWalletIdSync(List<AddressEntity> objects,
       {bool saveLinks = true}) {
-    return putAllByIndexSync(r'address', objects, saveLinks: saveLinks);
+    return putAllByIndexSync(r'address_walletId', objects,
+        saveLinks: saveLinks);
   }
 }
 
@@ -15303,6 +15583,96 @@ extension AddressEntityQueryWhere
               indexName: r'address',
               lower: [],
               upper: [address],
+              includeUpper: false,
+            ));
+      }
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterWhereClause>
+      addressEqualToAnyWalletId(String address) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'address_walletId',
+        value: [address],
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterWhereClause>
+      addressNotEqualToAnyWalletId(String address) {
+    return QueryBuilder.apply(this, (query) {
+      if (query.whereSort == Sort.asc) {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'address_walletId',
+              lower: [],
+              upper: [address],
+              includeUpper: false,
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'address_walletId',
+              lower: [address],
+              includeLower: false,
+              upper: [],
+            ));
+      } else {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'address_walletId',
+              lower: [address],
+              includeLower: false,
+              upper: [],
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'address_walletId',
+              lower: [],
+              upper: [address],
+              includeUpper: false,
+            ));
+      }
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterWhereClause>
+      addressWalletIdEqualTo(String address, String walletId) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'address_walletId',
+        value: [address, walletId],
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterWhereClause>
+      addressEqualToWalletIdNotEqualTo(String address, String walletId) {
+    return QueryBuilder.apply(this, (query) {
+      if (query.whereSort == Sort.asc) {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'address_walletId',
+              lower: [address],
+              upper: [address, walletId],
+              includeUpper: false,
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'address_walletId',
+              lower: [address, walletId],
+              includeLower: false,
+              upper: [address],
+            ));
+      } else {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'address_walletId',
+              lower: [address, walletId],
+              includeLower: false,
+              upper: [address],
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'address_walletId',
+              lower: [address],
+              upper: [address, walletId],
               includeUpper: false,
             ));
       }

@@ -8,6 +8,8 @@ import 'package:libspiffy/src/models/payment_channel.dart';
 
 import 'channel_read_model_contract.dart';
 import 'invoice_read_model_contract.dart';
+import 'header_reorg_contract.dart';
+import 'read_model_keying_contract.dart';
 
 /// Test event class for testing storage operations
 class TestWalletEvent extends WalletEvent {
@@ -411,6 +413,20 @@ void main() {
         invoiceId: 'inmem-invoice-contract',
         walletId: 'inmem-invoice-wallet',
       );
+    });
+  });
+
+  /// Audit 2026-09-14 S-05, S-12, S-13, S-17, S-18 and bead libspiffy-0v3:
+  /// the keying contract shared with the Isar and Postgres backends.
+  group('InMemoryWalletStorage', () {
+    late InMemoryWalletStorage storage;
+    var counter = 0;
+    setUp(() => storage = InMemoryWalletStorage());
+    defineReadModelKeyingContract(() => storage, unique: () => 'm${counter++}');
+
+    test('0v3: BlockHeaderChain reorg A -> B -> A persists branch A across a restart',
+        () async {
+      await runReorgBackOntoOrphanedBranchContract(storage);
     });
   });
 }

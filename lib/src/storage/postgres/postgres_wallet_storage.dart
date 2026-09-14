@@ -375,24 +375,31 @@ class PostgresWalletStorage implements ReadModelStorage {
   }) async {
     _ensureInitialized();
 
-    var sql = 'UPDATE addresses SET usage_count = usage_count + 1';
+    // Only a use (usedAt) counts towards usage_count, as on Isar: the
+    // projection's spend path passes a balance delta alone and used to
+    // bump the count on every spend.
+    final sets = <String>[];
     final params = <String, dynamic>{
       'walletId': walletId,
       'address': address,
     };
 
     if (usedAt != null) {
-      sql += ', last_used_at = @usedAt';
-      sql += ', first_used_at = COALESCE(first_used_at, @usedAt)';
+      sets.add('usage_count = usage_count + 1');
+      sets.add('last_used_at = @usedAt');
+      sets.add('first_used_at = COALESCE(first_used_at, @usedAt)');
       params['usedAt'] = usedAt;
     }
 
     if (balanceDelta != null) {
-      sql += ', balance = balance + @balanceDelta';
+      sets.add('balance = balance + @balanceDelta');
       params['balanceDelta'] = balanceDelta.toInt();
     }
 
-    sql += ' WHERE wallet_id = @walletId AND address = @address';
+    if (sets.isEmpty) return;
+
+    final sql = 'UPDATE addresses SET ${sets.join(', ')} '
+        'WHERE wallet_id = @walletId AND address = @address';
 
     await _pool!.execute(Sql.named(sql), parameters: params);
   }
@@ -427,28 +434,40 @@ class PostgresWalletStorage implements ReadModelStorage {
   ) async {
     _ensureInitialized();
 
-    for (final link in links) {
-      await _pool!.execute(
+    // Replace this transaction's rows atomically. The table has no unique
+    // key, so the former `ON CONFLICT DO NOTHING` inserted a second set on
+    // every projection replay (audit S-17).
+    final now = DateTime.now();
+    await _pool!.runTx((session) async {
+      await session.execute(
         Sql.named('''
-          INSERT INTO transaction_addresses (
-            wallet_id, txid, address, direction, amount, vout, vin, created_at
-          ) VALUES (
-            @walletId, @txid, @address, @direction, @amount, @vout, @vin, @now
-          )
-          ON CONFLICT DO NOTHING
+          DELETE FROM transaction_addresses
+          WHERE wallet_id = @walletId AND txid = @txid
         '''),
-        parameters: {
-          'walletId': walletId,
-          'txid': txid,
-          'address': link.address,
-          'direction': link.direction,
-          'amount': link.amount.toInt(),
-          'vout': link.vout,
-          'vin': link.vin,
-          'now': DateTime.now(),
-        },
+        parameters: {'walletId': walletId, 'txid': txid},
       );
-    }
+      for (final link in links) {
+        await session.execute(
+          Sql.named('''
+            INSERT INTO transaction_addresses (
+              wallet_id, txid, address, direction, amount, vout, vin, created_at
+            ) VALUES (
+              @walletId, @txid, @address, @direction, @amount, @vout, @vin, @now
+            )
+          '''),
+          parameters: {
+            'walletId': walletId,
+            'txid': txid,
+            'address': link.address,
+            'direction': link.direction,
+            'amount': link.amount.toInt(),
+            'vout': link.vout,
+            'vin': link.vin,
+            'now': now,
+          },
+        );
+      }
+    });
   }
 
   @override
@@ -616,7 +635,7 @@ class PostgresWalletStorage implements ReadModelStorage {
           @spentInTxId, @scriptType, @isSpendable, @category,
           CAST(@pluginMetadata AS JSONB)
         )
-        ON CONFLICT (utxo_key) DO UPDATE SET
+        ON CONFLICT (wallet_id, txid, vout) DO UPDATE SET
           satoshis = @satoshis,
           script_pub_key = @scriptPubKey,
           address = @address,
@@ -787,9 +806,11 @@ class PostgresWalletStorage implements ReadModelStorage {
   }
 
   @override
-  Future<BitcoinTransaction?> getTransaction(String txid) async {
+  Future<BitcoinTransaction?> getTransaction(String txid, {String? walletId}) async {
     _ensureInitialized();
 
+    // Rows are keyed by (wallet_id, txid) since v005. Without a wallet id
+    // the first-stored row is returned.
     final result = await _pool!.execute(
       Sql.named('''
         SELECT txid, raw_hex, block_height, block_hash, confirmations,
@@ -798,8 +819,14 @@ class PostgresWalletStorage implements ReadModelStorage {
                counterparty, notes, receiving_addresses, sending_addresses
         FROM bitcoin_transactions
         WHERE txid = @txid
+          ${walletId == null ? '' : 'AND wallet_id = @walletId'}
+        ORDER BY id
+        LIMIT 1
       '''),
-      parameters: {'txid': txid},
+      parameters: {
+        'txid': txid,
+        if (walletId != null) 'walletId': walletId,
+      },
     );
 
     if (result.isEmpty) return null;
@@ -820,13 +847,16 @@ class PostgresWalletStorage implements ReadModelStorage {
     }
 
     final result = await _pool!.execute(
+      // One row per txid: the first-stored, as getTransaction.
       Sql.named('''
-        SELECT txid, raw_hex, block_height, block_hash, confirmations,
+        SELECT DISTINCT ON (txid)
+               txid, raw_hex, block_height, block_hash, confirmations,
                total_input, total_output, fee, net_amount, is_incoming,
                is_outgoing, status, created_at, confirmed_at, broadcast_at,
                counterparty, notes, receiving_addresses, sending_addresses
         FROM bitcoin_transactions
         WHERE txid IN (${placeholders.join(', ')})
+        ORDER BY txid, id
       '''),
       parameters: params,
     );
@@ -888,13 +918,23 @@ class PostgresWalletStorage implements ReadModelStorage {
           @status, @createdAt, @confirmedAt, @broadcastAt, @counterparty, @notes,
           @receivingAddresses, @sendingAddresses, @primaryCounterparty
         )
-        ON CONFLICT (txid) DO UPDATE SET
+        ON CONFLICT (wallet_id, txid) DO UPDATE SET
           raw_hex = COALESCE(@rawHex, bitcoin_transactions.raw_hex),
           block_height = COALESCE(@blockHeight, bitcoin_transactions.block_height),
           block_hash = COALESCE(@blockHash, bitcoin_transactions.block_hash),
           confirmations = @confirmations,
+          total_input = @totalInput,
+          total_output = @totalOutput,
+          fee = @fee,
+          net_amount = @netAmount,
+          is_incoming = @isIncoming,
+          is_outgoing = @isOutgoing,
           status = @status,
-          confirmed_at = COALESCE(@confirmedAt, bitcoin_transactions.confirmed_at)
+          confirmed_at = COALESCE(@confirmedAt, bitcoin_transactions.confirmed_at),
+          notes = @notes,
+          receiving_addresses = @receivingAddresses,
+          sending_addresses = @sendingAddresses,
+          primary_counterparty = @primaryCounterparty
       '''),
       parameters: {
         'walletId': walletId,
@@ -1009,7 +1049,9 @@ class PostgresWalletStorage implements ReadModelStorage {
           @height, @hash, @prevBlockHash, @merkleRoot, @timestamp,
           @version, @bits, @nonce, false, @now
         )
-        ON CONFLICT (hash) DO NOTHING
+        ON CONFLICT (hash) DO UPDATE SET
+          is_orphaned = false,
+          height = EXCLUDED.height
       '''),
       parameters: {
         'height': height,
@@ -1044,7 +1086,9 @@ class PostgresWalletStorage implements ReadModelStorage {
             ) VALUES (
               @height, @hash, @prevHash, @merkle, @ts,
               @version, @bits, @nonce, false, @storedAt
-            ) ON CONFLICT (hash) DO NOTHING
+            ) ON CONFLICT (hash) DO UPDATE SET
+              is_orphaned = false,
+              height = EXCLUDED.height
           '''),
           parameters: {
             'height': height,
@@ -1222,7 +1266,12 @@ class PostgresWalletStorage implements ReadModelStorage {
         ) VALUES (
           @txid, @blockHash, @blockHeight, @position, @merkleProofJson, @now
         )
-        ON CONFLICT DO NOTHING
+        ON CONFLICT (txid) DO UPDATE SET
+          block_hash = EXCLUDED.block_hash,
+          block_height = EXCLUDED.block_height,
+          position = EXCLUDED.position,
+          merkle_proof_json = EXCLUDED.merkle_proof_json,
+          created_at = EXCLUDED.created_at
       '''),
       parameters: {
         'txid': txid,

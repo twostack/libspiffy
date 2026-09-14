@@ -231,6 +231,41 @@ void main() {
       expect(validation.isValid, isTrue, reason: validation.validationError);
     });
   });
+
+  /// Bead libspiffy-mny: orphaned proofs are kept in storage now, so the
+  /// ancestor walk must not take one for a proof.
+  group('AncestorChainService with an orphaned proof (mny)', () {
+    test('an orphaned proof is never put in a BEEF; the walk continues to the proven ancestor', () async {
+      // A was once proven in a block that left the active chain.
+      final orphanedBump = 'fe${'ab' * 40}';
+      final orphanedBlock = 'cd' * 32;
+      await storage.storeMerkleProof(a.id, MerkleProof(
+        txid: a.id,
+        blockHash: orphanedBlock,
+        blockHeight: kFixtureHeight + 1,
+        position: 1,
+        merkleProof: [orphanedBump],
+      ));
+      expect(await storage.markMerkleProofOrphaned(a.id, blockHash: orphanedBlock), isTrue);
+
+      final chain = await service.collectAncestorChainForUtxos([c.id]);
+      expect(chain.isValid, isTrue, reason: chain.error);
+      expect(chain.merkleProofs.map((p) => p.txid), equals([g.id]),
+          reason: "A's orphaned proof must not end the walk or enter the BEEF");
+      expect(chain.ancestorTransactions.map((t) => t.txid), equals([g.id, a.id, b.id, c.id]));
+
+      final result = await service.createBeefWithAncestry(
+        newTransaction: record(p),
+        ancestorTransactions: chain.ancestorTransactions,
+        merkleProofs: chain.merkleProofs,
+      );
+      final beef = BEEF.parse(result.beefBytes!);
+      expect(beef.hasMerkle, equals([true, false, false, false, false]));
+      expect(beef.bumps.map((bump) => bump.toHex()), equals([fixtureBumpHex()]));
+      expect((await storage.getMerkleProofHistory(a.id)).single.status, MerkleProofStatus.orphaned,
+          reason: 'the orphaned proof is still stored');
+    });
+  });
 }
 
 class _Sink extends Actor {

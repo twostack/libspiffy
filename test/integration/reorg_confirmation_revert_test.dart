@@ -10,6 +10,10 @@
 /// height was synced is stored with an unverified proof (block hash
 /// 'pending') and was never checked once the header arrived.
 ///
+/// mny (libspiffy-mny): proofs are never deleted. The orphaned or mismatching
+/// proof stays stored with the status orphaned; a proof stored before its
+/// header has the status pendingHeader (no placeholder block hash).
+///
 /// The transaction is the real testnet fixture transaction; each test puts
 /// it in a regtest block of its own (a two-leaf merkle tree) so that the
 /// block header commits to it.
@@ -179,7 +183,8 @@ void main() {
       await libspiffy.eventStore.getEvents('BitcoinWallet_$walletId');
 
   group('a reorganization past the confirming block (3b0)', () {
-    test('takes back the confirmation, drops that proof, keeps the transaction and re-polls ARC', () async {
+    test('takes back the confirmation, keeps that proof as orphaned, keeps the transaction and re-polls ARC',
+        () async {
       final (bump, root) = blockFor(2);
       final a1 = RegtestMiner.mine(parent: genesis, seed: 'A1');
       final a2 = RegtestMiner.mine(parent: a1, merkleRoot: root);
@@ -196,6 +201,19 @@ void main() {
       }, 'confirmed with proof and an available UTXO');
       expect((await storage().getMerkleProof(kFixtureTxid))!.blockHash, a2.blockHash().toString());
 
+      // The other transaction of A2 (the fixture's sibling leaf), whose
+      // proof is stored but which no wallet holds as confirmed.
+      final siblingInternal = bump.path[0].leaves.firstWhere((l) => !l.isTxid).hash!;
+      final siblingTxid = hex.encode(siblingInternal.reversed.toList());
+      final siblingBump = BUMP.fromMerklePath(
+          blockHeight: 2, txid: siblingInternal, index: 1, siblings: [txidInternal]);
+      await storage().storeMerkleProof(siblingTxid, MerkleProof(
+          txid: siblingTxid,
+          blockHash: a2.blockHash().toString(),
+          blockHeight: 2,
+          position: 1,
+          merkleProof: [siblingBump.toHex()]));
+
       // A heavier branch forks at height 1 and orphans A2 (the confirming
       // block) and A3.
       final b = RegtestMiner.mineChain(a1, 3, seed: 'B');
@@ -210,7 +228,13 @@ void main() {
       expect(t.confirmations ?? 0, 0);
       expect(t.rawHex, kFixtureTxHex, reason: 'the transaction itself is retained');
 
-      await _until(() async => await storage().getMerkleProof(kFixtureTxid) == null, 'orphaned proof dropped');
+      await _until(() async => await storage().getMerkleProof(kFixtureTxid) == null,
+          'the orphaned proof is no longer the current proof');
+      final history = await storage().getMerkleProofHistory(kFixtureTxid);
+      expect(history, hasLength(1), reason: 'the orphaned proof is kept (mny)');
+      expect(history.single.status, MerkleProofStatus.orphaned);
+      expect(history.single.blockHash, a2.blockHash().toString());
+      expect(history.single.merkleProof, [bump.toHex()]);
 
       final u = (await walletUtxo())!;
       expect(u.status, UTXOStatus.pending, reason: 'no longer spendable on the strength of the orphaned proof');
@@ -221,9 +245,16 @@ void main() {
       expect(reverted, hasLength(1), reason: 'the revert is journaled, so a replay keeps it');
       expect(reverted.single.txid, kFixtureTxid);
       expect(reverted.single.blockHash, a2.blockHash().toString());
-      expect(reverted.single.merkleProof, [bump.toHex()], reason: 'the dropped proof stays in the journal');
+      expect(reverted.single.merkleProof, [bump.toHex()], reason: 'the orphaned proof is named in the journal');
 
       await _until(() async => arc.queried.contains(kFixtureTxid), 'ARC polled again for a new proof');
+
+      // No confirmation to take back for the sibling, but its proof names an
+      // orphaned block: marked orphaned, kept.
+      expect(await storage().getMerkleProof(siblingTxid), isNull);
+      expect([for (final p in await storage().getMerkleProofHistory(siblingTxid)) p.status],
+          [MerkleProofStatus.orphaned]);
+      expect(arc.queried, isNot(contains(siblingTxid)));
     });
 
     test('a reorganization above the confirming block leaves the confirmation and proof alone', () async {
@@ -241,7 +272,7 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 1500));
 
       expect((await tx())!.status, TransactionStatus.confirmed);
-      expect(await storage().getMerkleProof(kFixtureTxid), isNotNull);
+      expect((await storage().getMerkleProof(kFixtureTxid))!.status, MerkleProofStatus.verified);
       expect((await walletUtxo())!.status, UTXOStatus.available);
       expect((await journal()).whereType<TransactionConfirmationRevertedEvent>(), isEmpty);
     });
@@ -251,8 +282,11 @@ void main() {
     test('is verified when the header arrives', () async {
       final (bump, root) = blockFor(2);
       importWithProof(bump);
-      await _until(() async => (await storage().getMerkleProof(kFixtureTxid))?.blockHash == 'pending',
+      await _until(() async => (await storage().getMerkleProof(kFixtureTxid))?.status == MerkleProofStatus.pendingHeader,
           'imported with an unverified proof');
+      expect((await storage().getMerkleProof(kFixtureTxid))!.blockHash, isNull);
+      expect([for (final p in await storage().getMerkleProofsByStatus(MerkleProofStatus.pendingHeader)) p.txid],
+          [kFixtureTxid]);
 
       final a1 = RegtestMiner.mine(parent: genesis, seed: 'A1');
       final a2 = RegtestMiner.mine(parent: a1, merkleRoot: root);
@@ -260,6 +294,11 @@ void main() {
 
       await _until(() async => (await storage().getMerkleProof(kFixtureTxid))?.blockHash == a2.blockHash().toString(),
           'proof bound to the header that verifies it');
+      final history = await storage().getMerkleProofHistory(kFixtureTxid);
+      expect([for (final p in history) (p.blockHash, p.status)],
+          [(a2.blockHash().toString(), MerkleProofStatus.verified)],
+          reason: 'the pendingHeader proof itself becomes verified');
+      expect(await storage().getMerkleProofsByStatus(MerkleProofStatus.pendingHeader), isEmpty);
       expect((await tx())!.status, TransactionStatus.confirmed);
       expect((await walletUtxo())!.status, UTXOStatus.available);
     });
@@ -267,7 +306,7 @@ void main() {
     test('whose root does not match the header that arrives loses its confirmation', () async {
       final (bump, _) = blockFor(2);
       importWithProof(bump);
-      await _until(() async => (await storage().getMerkleProof(kFixtureTxid))?.blockHash == 'pending' &&
+      await _until(() async => (await storage().getMerkleProof(kFixtureTxid))?.status == MerkleProofStatus.pendingHeader &&
           (await walletUtxo())?.status == UTXOStatus.available, 'imported with an unverified proof');
 
       // The block at height 2 on our chain does not contain the transaction.
@@ -275,7 +314,12 @@ void main() {
       await sendHeaders(headers, 2);
 
       await _until(() async => (await tx())?.status == TransactionStatus.pending, 'confirmation taken back');
-      await _until(() async => await storage().getMerkleProof(kFixtureTxid) == null, 'mismatching proof dropped');
+      await _until(() async => await storage().getMerkleProof(kFixtureTxid) == null,
+          'the mismatching proof is no longer the current proof');
+      final history = await storage().getMerkleProofHistory(kFixtureTxid);
+      expect([for (final p in history) (p.merkleProof.join(), p.status)], [
+        (bump.toHex(), MerkleProofStatus.orphaned)
+      ], reason: 'the mismatching proof is kept as orphaned (mny)');
       expect((await walletUtxo())!.status, UTXOStatus.pending);
       expect((await tx())!.rawHex, kFixtureTxHex);
     });

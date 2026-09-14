@@ -16,6 +16,7 @@ import 'migrations/v005_wallet_scoped_keys_and_unique_proofs.dart';
 import 'migrations/v006_list_indexes_and_updated_at.dart';
 import 'migrations/v007_nullable_channel_server_key.dart';
 import 'migrations/v008_journal_tx_id.dart';
+import 'migrations/v009_merkle_proof_status.dart';
 
 /// Base class for database migrations.
 ///
@@ -50,6 +51,7 @@ class PostgresMigrations {
     V006ListIndexesAndUpdatedAt(),
     V007NullableChannelServerKey(),
     V008JournalTxId(),
+    V009MerkleProofStatus(),
   ];
 
   /// Test hook awaited by [migrate] right after it reads the current schema

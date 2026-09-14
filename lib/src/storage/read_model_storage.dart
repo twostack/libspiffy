@@ -387,35 +387,58 @@ abstract class ReadModelStorage {
 
   /// Store merkle proof for a transaction.
   ///
-  /// There is at most one proof per txid: a later proof (for example after
-  /// the transaction was re-mined in another block during a reorganization)
-  /// replaces the earlier one.
+  /// Proofs are never deleted (audit bead libspiffy-mny). A transaction has
+  /// one row per block its proofs name, plus rows without a block hash for
+  /// proofs whose header was not known (told apart by their `merkleProof`).
+  /// At most one row per txid is not [MerkleProofStatus.orphaned]: the
+  /// transaction's current proof.
   ///
-  /// Parameters:
-  /// - [txid]: Transaction ID
-  /// - [proof]: Merkle proof data
+  /// Storing [proof]:
+  /// * updates the row with the same (txid, block hash); else the row with
+  ///   no block hash and the same `merkleProof` (a
+  ///   [MerkleProofStatus.pendingHeader] proof whose header arrived); else,
+  ///   when [proof] has no block hash, a row with the same `merkleProof`
+  ///   (keeping that row's block hash); otherwise it adds a row;
+  /// * when [proof] is not orphaned, marks every other non-orphaned row of
+  ///   [txid] orphaned (the transaction was mined again in another block):
+  ///   [proof] becomes the current proof;
+  /// * when [proof] is orphaned, leaves the current proof alone.
+  ///
+  /// A row keeps its first `createdAt`; `statusChangedAt` moves when its
+  /// status changes ([MerkleProof.statusChangedAt], default now).
   Future<void> storeMerkleProof(String txid, MerkleProof proof);
 
-  /// Delete the merkle proof of [txid] (audit 3b0: a proof whose block left
-  /// the active chain, or that does not match its block header).
+  /// Mark the current (non-orphaned) proof of [txid] orphaned: its block left
+  /// the active chain, or its root does not match the header at its height
+  /// (audit 3b0, bead libspiffy-mny). The row is kept and stays readable
+  /// through [getMerkleProofHistory]; [getMerkleProof] no longer returns it.
   ///
-  /// With [onlyIfMerkleProof] the proof is deleted only while its
-  /// `merkleProof` still equals that list, so a newer proof stored in the
-  /// meantime (the transaction re-mined on the active chain) survives.
-  /// Returns whether a proof was deleted.
-  Future<bool> deleteMerkleProof(String txid, {List<String>? onlyIfMerkleProof});
+  /// With [blockHash] the proof is marked only while it names that block (a
+  /// proof without a block hash matches any [blockHash]); with
+  /// [onlyIfMerkleProof] only while its `merkleProof` equals that list. So a
+  /// newer proof stored in the meantime (the transaction re-mined on the
+  /// active chain) is left alone. [at] is recorded as `statusChangedAt`
+  /// (default now). Returns whether a proof was marked; marking again is a
+  /// no-op that returns false.
+  Future<bool> markMerkleProofOrphaned(
+    String txid, {
+    String? blockHash,
+    List<String>? onlyIfMerkleProof,
+    DateTime? at,
+  });
 
-  /// Get merkle proof for a transaction
+  /// The current proof of [txid]: its one row that is not
+  /// [MerkleProofStatus.orphaned] (so [MerkleProofStatus.verified] or
+  /// [MerkleProofStatus.pendingHeader]), or null.
   ///
   /// Parameters:
   /// - [txid]: Transaction ID
-  ///
-  /// Returns: Merkle proof if found, null if not found
   Future<MerkleProof?> getMerkleProof(String txid);
 
-  /// Batch get merkle proofs by txid list
+  /// Batch get the current proofs by txid list (see [getMerkleProof]).
   ///
-  /// Returns a map of txid → proof for all txids that have proofs.
+  /// Returns a map of txid → proof for all txids that have a current proof.
+  /// Orphaned proofs are never returned, so BEEFs are never built from them.
   /// Default implementation loops over single-item getMerkleProof.
   Future<Map<String, MerkleProof>> getMerkleProofsBatch(List<String> txids) async {
     final result = <String, MerkleProof>{};
@@ -426,12 +449,18 @@ abstract class ReadModelStorage {
     return result;
   }
 
-  /// Get all merkle proofs for a block
+  /// Every proof row stored for [txid], orphaned ones included, oldest
+  /// first.
+  Future<List<MerkleProof>> getMerkleProofHistory(String txid);
+
+  /// Every proof row with [status] (for example the
+  /// [MerkleProofStatus.pendingHeader] proofs to check once headers arrive).
+  Future<List<MerkleProof>> getMerkleProofsByStatus(MerkleProofStatus status);
+
+  /// The current (non-orphaned) proofs that name [blockHash].
   ///
   /// Parameters:
   /// - [blockHash]: Block hash as hex string
-  ///
-  /// Returns: List of merkle proofs for transactions in the block
   Future<List<MerkleProof>> getMerkleProofsForBlock(String blockHash);
 
   // ========================================
@@ -520,7 +549,7 @@ abstract class ReadModelStorage {
   /// Parameters:
   /// - [walletId]: Optional wallet ID to count proofs for a specific wallet
   ///
-  /// Returns: Number of merkle proofs stored
+  /// Returns: Number of merkle proof rows stored, orphaned ones included
   Future<int> getMerkleProofCount({String? walletId});
 
   // ========================================
@@ -557,14 +586,44 @@ abstract class ReadModelStorage {
   Future<void> deletePaymentChannel(String channelId);
 }
 
+/// Where a stored [MerkleProof] stands against the local header chain
+/// (audit bead libspiffy-mny).
+enum MerkleProofStatus {
+  /// Its root matches the header at its height on the active chain.
+  verified,
+
+  /// Not yet matched against a header: no header was known at its height
+  /// when it was stored (or, from WalletProjection, the stored header did not
+  /// match and SPVActor has not decided yet). SPVActor checks it when
+  /// headers arrive; it then becomes [verified] or [orphaned] (and the
+  /// confirmation is taken back). Until then it is the transaction's current
+  /// proof: `getMerkleProof` returns it and outgoing BEEFs carry it (the
+  /// receiver verifies it against its own headers).
+  pendingHeader,
+
+  /// Its block left the active chain, or its root does not match the header
+  /// at its height. Kept for the record; never a transaction's current proof
+  /// and never put in a BEEF.
+  orphaned,
+}
+
 /// Merkle proof data for SPV validation
 class MerkleProof {
-  final String blockHash;
+  /// Hash of the block the proof is for; null when no header was known at
+  /// [blockHeight] when it was stored.
+  final String? blockHash;
   final String txid;
-  final List<String> merkleProof; // Sibling hashes in merkle tree
+  final List<String> merkleProof; // Since SPV-06: [rawBumpHex]
   final int position; // Position of tx in block
   final int blockHeight;
   final DateTime createdAt;
+
+  /// See [MerkleProofStatus]. Defaults to [MerkleProofStatus.pendingHeader]
+  /// when [blockHash] is null, otherwise [MerkleProofStatus.verified].
+  final MerkleProofStatus status;
+
+  /// When [status] last changed, if recorded.
+  final DateTime? statusChangedAt;
 
   MerkleProof({
     required this.blockHash,
@@ -573,7 +632,49 @@ class MerkleProof {
     required this.position,
     required this.blockHeight,
     DateTime? createdAt,
-  }) : createdAt = createdAt ?? DateTime.now();
+    MerkleProofStatus? status,
+    this.statusChangedAt,
+  })  : createdAt = createdAt ?? DateTime.now(),
+        status = status ??
+            (blockHash == null ? MerkleProofStatus.pendingHeader : MerkleProofStatus.verified);
+
+  /// The block hash stored before bead mny for a proof whose header was not
+  /// known (a [MerkleProofStatus.pendingHeader] proof with no block hash
+  /// since). Backends read it as null.
+  static const String legacyPendingBlockHash = 'pending';
+
+  /// Whether this proof is not orphaned.
+  bool get isCurrent => status != MerkleProofStatus.orphaned;
+
+  /// A copy with the given fields replaced ([blockHash] cannot be cleared).
+  MerkleProof copyWith({
+    String? blockHash,
+    int? blockHeight,
+    int? position,
+    List<String>? merkleProof,
+    MerkleProofStatus? status,
+    DateTime? statusChangedAt,
+  }) {
+    return MerkleProof(
+      blockHash: blockHash ?? this.blockHash,
+      txid: txid,
+      merkleProof: merkleProof ?? this.merkleProof,
+      position: position ?? this.position,
+      blockHeight: blockHeight ?? this.blockHeight,
+      createdAt: createdAt,
+      status: status ?? this.status,
+      statusChangedAt: statusChangedAt ?? this.statusChangedAt,
+    );
+  }
+
+  /// Whether two `merkleProof` lists are the same proof.
+  static bool sameContent(List<String> a, List<String> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
 
   Map<String, dynamic> toMap() {
     return {
@@ -583,17 +684,24 @@ class MerkleProof {
       'position': position,
       'blockHeight': blockHeight,
       'createdAt': createdAt.toIso8601String(),
+      'status': status.name,
+      if (statusChangedAt != null) 'statusChangedAt': statusChangedAt!.toIso8601String(),
     };
   }
 
   factory MerkleProof.fromMap(Map<String, dynamic> map) {
+    final blockHash = map['blockHash'] as String?;
+    final status = map['status'] as String?;
+    final changedAt = map['statusChangedAt'] as String?;
     return MerkleProof(
-      blockHash: map['blockHash'],
+      blockHash: blockHash == legacyPendingBlockHash ? null : blockHash,
       txid: map['txid'],
       merkleProof: List<String>.from(map['merkleProof']),
       position: map['position'],
       blockHeight: map['blockHeight'],
       createdAt: DateTime.parse(map['createdAt']),
+      status: status == null ? null : MerkleProofStatus.values.byName(status),
+      statusChangedAt: changedAt == null ? null : DateTime.parse(changedAt),
     );
   }
 }

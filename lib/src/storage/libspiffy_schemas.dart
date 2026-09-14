@@ -163,16 +163,28 @@ class MerkleProofEntity {
 
   /// Transaction ID this proof is for
   ///
-  /// One row per txid, enforced by [IsarWalletStorage.storeMerkleProof]
-  /// (delete-then-insert) rather than a unique index: stores written before
-  /// audit S-13 hold duplicates, and Isar refuses to open a collection whose
-  /// new unique index the existing rows violate.
+  /// Rows are never deleted (bead mny): one row per (txid, block hash), and
+  /// at most one row per txid that is not orphaned. Both are enforced by
+  /// [IsarWalletStorage.storeMerkleProof] rather than unique indexes: stores
+  /// written before audit S-13 hold duplicates, and Isar refuses to open a
+  /// collection whose new unique index the existing rows violate.
   @Index()
   late String txid;
 
-  /// Block hash containing this transaction
+  /// Block hash containing this transaction; null while its header is not
+  /// known. Rows written before bead mny hold the placeholder 'pending'
+  /// instead (read as null).
   @Index()
-  late String blockHash;
+  String? blockHash;
+
+  /// [MerkleProofStatus] name. Null on rows written before bead mny, which
+  /// read as `pendingHeader` when [blockHash] is 'pending' and as `verified`
+  /// otherwise.
+  @Index()
+  String? status;
+
+  /// When [status] last changed.
+  DateTime? statusChangedAt;
 
   /// Block height
   late int blockHeight;
@@ -190,25 +202,37 @@ class MerkleProofEntity {
 
   /// Create from MerkleProof
   factory MerkleProofEntity.fromMerkleProof(MerkleProof proof) {
-    return MerkleProofEntity()
-      ..txid = proof.txid
-      ..blockHash = proof.blockHash
-      ..blockHeight = proof.blockHeight
-      ..position = proof.position
-      ..merkleProofJson = proof.merkleProof.join(',')
-      ..createdAt = proof.createdAt;
+    return MerkleProofEntity()..setFrom(proof);
+  }
+
+  /// Overwrite every column but [id] with [proof].
+  void setFrom(MerkleProof proof) {
+    txid = proof.txid;
+    blockHash = proof.blockHash == MerkleProof.legacyPendingBlockHash ? null : proof.blockHash;
+    blockHeight = proof.blockHeight;
+    position = proof.position;
+    merkleProofJson = proof.merkleProof.join(',');
+    createdAt = proof.createdAt;
+    status = proof.status.name;
+    statusChangedAt = proof.statusChangedAt;
   }
 
   /// Convert back to MerkleProof
   MerkleProof toMerkleProof() {
+    final legacyPending = blockHash == MerkleProof.legacyPendingBlockHash;
+    final stored = status;
     return MerkleProof(
-      blockHash: blockHash,
+      blockHash: legacyPending ? null : blockHash,
       txid: txid,
       // ''.split(',') is [''] — drop empty segments (audit S-13).
       merkleProof: merkleProofJson.split(',').where((s) => s.isNotEmpty).toList(),
       position: position,
       blockHeight: blockHeight,
       createdAt: createdAt,
+      status: stored != null
+          ? MerkleProofStatus.values.byName(stored)
+          : (legacyPending ? MerkleProofStatus.pendingHeader : MerkleProofStatus.verified),
+      statusChangedAt: statusChangedAt,
     );
   }
 
@@ -221,18 +245,23 @@ class MerkleProofEntity {
       'position': position,
       'merkleProofJson': merkleProofJson,
       'createdAt': createdAt.toIso8601String(),
+      'status': status,
+      'statusChangedAt': statusChangedAt?.toIso8601String(),
     };
   }
 
   /// Deserialize from JSON for restore
   factory MerkleProofEntity.fromJson(Map<String, dynamic> json) {
+    final changedAt = json['statusChangedAt'] as String?;
     return MerkleProofEntity()
       ..txid = json['txid'] as String
-      ..blockHash = json['blockHash'] as String
+      ..blockHash = json['blockHash'] as String?
       ..blockHeight = json['blockHeight'] as int
       ..position = json['position'] as int
       ..merkleProofJson = json['merkleProofJson'] as String
-      ..createdAt = DateTime.parse(json['createdAt'] as String);
+      ..createdAt = DateTime.parse(json['createdAt'] as String)
+      ..status = json['status'] as String?
+      ..statusChangedAt = changedAt == null ? null : DateTime.parse(changedAt);
   }
 }
 

@@ -1854,8 +1854,18 @@ const MerkleProofEntitySchema = CollectionSchema(
       name: r'position',
       type: IsarType.long,
     ),
-    r'txid': PropertySchema(
+    r'status': PropertySchema(
       id: 5,
+      name: r'status',
+      type: IsarType.string,
+    ),
+    r'statusChangedAt': PropertySchema(
+      id: 6,
+      name: r'statusChangedAt',
+      type: IsarType.dateTime,
+    ),
+    r'txid': PropertySchema(
+      id: 7,
       name: r'txid',
       type: IsarType.string,
     )
@@ -1891,6 +1901,19 @@ const MerkleProofEntitySchema = CollectionSchema(
           caseSensitive: true,
         )
       ],
+    ),
+    r'status': IndexSchema(
+      id: -107785170620420283,
+      name: r'status',
+      unique: false,
+      replace: false,
+      properties: [
+        IndexPropertySchema(
+          name: r'status',
+          type: IndexType.hash,
+          caseSensitive: true,
+        )
+      ],
     )
   },
   links: {},
@@ -1907,8 +1930,19 @@ int _merkleProofEntityEstimateSize(
   Map<Type, List<int>> allOffsets,
 ) {
   var bytesCount = offsets.last;
-  bytesCount += 3 + object.blockHash.length * 3;
+  {
+    final value = object.blockHash;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
   bytesCount += 3 + object.merkleProofJson.length * 3;
+  {
+    final value = object.status;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
   bytesCount += 3 + object.txid.length * 3;
   return bytesCount;
 }
@@ -1924,7 +1958,9 @@ void _merkleProofEntitySerialize(
   writer.writeDateTime(offsets[2], object.createdAt);
   writer.writeString(offsets[3], object.merkleProofJson);
   writer.writeLong(offsets[4], object.position);
-  writer.writeString(offsets[5], object.txid);
+  writer.writeString(offsets[5], object.status);
+  writer.writeDateTime(offsets[6], object.statusChangedAt);
+  writer.writeString(offsets[7], object.txid);
 }
 
 MerkleProofEntity _merkleProofEntityDeserialize(
@@ -1934,13 +1970,15 @@ MerkleProofEntity _merkleProofEntityDeserialize(
   Map<Type, List<int>> allOffsets,
 ) {
   final object = MerkleProofEntity();
-  object.blockHash = reader.readString(offsets[0]);
+  object.blockHash = reader.readStringOrNull(offsets[0]);
   object.blockHeight = reader.readLong(offsets[1]);
   object.createdAt = reader.readDateTime(offsets[2]);
   object.id = id;
   object.merkleProofJson = reader.readString(offsets[3]);
   object.position = reader.readLong(offsets[4]);
-  object.txid = reader.readString(offsets[5]);
+  object.status = reader.readStringOrNull(offsets[5]);
+  object.statusChangedAt = reader.readDateTimeOrNull(offsets[6]);
+  object.txid = reader.readString(offsets[7]);
   return object;
 }
 
@@ -1952,7 +1990,7 @@ P _merkleProofEntityDeserializeProp<P>(
 ) {
   switch (propertyId) {
     case 0:
-      return (reader.readString(offset)) as P;
+      return (reader.readStringOrNull(offset)) as P;
     case 1:
       return (reader.readLong(offset)) as P;
     case 2:
@@ -1962,6 +2000,10 @@ P _merkleProofEntityDeserializeProp<P>(
     case 4:
       return (reader.readLong(offset)) as P;
     case 5:
+      return (reader.readStringOrNull(offset)) as P;
+    case 6:
+      return (reader.readDateTimeOrNull(offset)) as P;
+    case 7:
       return (reader.readString(offset)) as P;
     default:
       throw IsarError('Unknown property with id $propertyId');
@@ -2107,7 +2149,29 @@ extension MerkleProofEntityQueryWhere
   }
 
   QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterWhereClause>
-      blockHashEqualTo(String blockHash) {
+      blockHashIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'blockHash',
+        value: [null],
+      ));
+    });
+  }
+
+  QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterWhereClause>
+      blockHashIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.between(
+        indexName: r'blockHash',
+        lower: [null],
+        includeLower: false,
+        upper: [],
+      ));
+    });
+  }
+
+  QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterWhereClause>
+      blockHashEqualTo(String? blockHash) {
     return QueryBuilder.apply(this, (query) {
       return query.addWhereClause(IndexWhereClause.equalTo(
         indexName: r'blockHash',
@@ -2117,7 +2181,7 @@ extension MerkleProofEntityQueryWhere
   }
 
   QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterWhereClause>
-      blockHashNotEqualTo(String blockHash) {
+      blockHashNotEqualTo(String? blockHash) {
     return QueryBuilder.apply(this, (query) {
       if (query.whereSort == Sort.asc) {
         return query
@@ -2150,13 +2214,98 @@ extension MerkleProofEntityQueryWhere
       }
     });
   }
+
+  QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterWhereClause>
+      statusIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'status',
+        value: [null],
+      ));
+    });
+  }
+
+  QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterWhereClause>
+      statusIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.between(
+        indexName: r'status',
+        lower: [null],
+        includeLower: false,
+        upper: [],
+      ));
+    });
+  }
+
+  QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterWhereClause>
+      statusEqualTo(String? status) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'status',
+        value: [status],
+      ));
+    });
+  }
+
+  QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterWhereClause>
+      statusNotEqualTo(String? status) {
+    return QueryBuilder.apply(this, (query) {
+      if (query.whereSort == Sort.asc) {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'status',
+              lower: [],
+              upper: [status],
+              includeUpper: false,
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'status',
+              lower: [status],
+              includeLower: false,
+              upper: [],
+            ));
+      } else {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'status',
+              lower: [status],
+              includeLower: false,
+              upper: [],
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'status',
+              lower: [],
+              upper: [status],
+              includeUpper: false,
+            ));
+      }
+    });
+  }
 }
 
 extension MerkleProofEntityQueryFilter
     on QueryBuilder<MerkleProofEntity, MerkleProofEntity, QFilterCondition> {
   QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterFilterCondition>
+      blockHashIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'blockHash',
+      ));
+    });
+  }
+
+  QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterFilterCondition>
+      blockHashIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'blockHash',
+      ));
+    });
+  }
+
+  QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterFilterCondition>
       blockHashEqualTo(
-    String value, {
+    String? value, {
     bool caseSensitive = true,
   }) {
     return QueryBuilder.apply(this, (query) {
@@ -2170,7 +2319,7 @@ extension MerkleProofEntityQueryFilter
 
   QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterFilterCondition>
       blockHashGreaterThan(
-    String value, {
+    String? value, {
     bool include = false,
     bool caseSensitive = true,
   }) {
@@ -2186,7 +2335,7 @@ extension MerkleProofEntityQueryFilter
 
   QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterFilterCondition>
       blockHashLessThan(
-    String value, {
+    String? value, {
     bool include = false,
     bool caseSensitive = true,
   }) {
@@ -2202,8 +2351,8 @@ extension MerkleProofEntityQueryFilter
 
   QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterFilterCondition>
       blockHashBetween(
-    String lower,
-    String upper, {
+    String? lower,
+    String? upper, {
     bool includeLower = true,
     bool includeUpper = true,
     bool caseSensitive = true,
@@ -2651,6 +2800,234 @@ extension MerkleProofEntityQueryFilter
   }
 
   QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterFilterCondition>
+      statusIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'status',
+      ));
+    });
+  }
+
+  QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterFilterCondition>
+      statusIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'status',
+      ));
+    });
+  }
+
+  QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterFilterCondition>
+      statusEqualTo(
+    String? value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'status',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterFilterCondition>
+      statusGreaterThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'status',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterFilterCondition>
+      statusLessThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'status',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterFilterCondition>
+      statusBetween(
+    String? lower,
+    String? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'status',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterFilterCondition>
+      statusStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'status',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterFilterCondition>
+      statusEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'status',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterFilterCondition>
+      statusContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'status',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterFilterCondition>
+      statusMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'status',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterFilterCondition>
+      statusIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'status',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterFilterCondition>
+      statusIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'status',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterFilterCondition>
+      statusChangedAtIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'statusChangedAt',
+      ));
+    });
+  }
+
+  QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterFilterCondition>
+      statusChangedAtIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'statusChangedAt',
+      ));
+    });
+  }
+
+  QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterFilterCondition>
+      statusChangedAtEqualTo(DateTime? value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'statusChangedAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterFilterCondition>
+      statusChangedAtGreaterThan(
+    DateTime? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'statusChangedAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterFilterCondition>
+      statusChangedAtLessThan(
+    DateTime? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'statusChangedAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterFilterCondition>
+      statusChangedAtBetween(
+    DateTime? lower,
+    DateTime? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'statusChangedAt',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+      ));
+    });
+  }
+
+  QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterFilterCondition>
       txidEqualTo(
     String value, {
     bool caseSensitive = true,
@@ -2866,6 +3243,34 @@ extension MerkleProofEntityQuerySortBy
   }
 
   QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterSortBy>
+      sortByStatus() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'status', Sort.asc);
+    });
+  }
+
+  QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterSortBy>
+      sortByStatusDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'status', Sort.desc);
+    });
+  }
+
+  QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterSortBy>
+      sortByStatusChangedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'statusChangedAt', Sort.asc);
+    });
+  }
+
+  QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterSortBy>
+      sortByStatusChangedAtDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'statusChangedAt', Sort.desc);
+    });
+  }
+
+  QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterSortBy>
       sortByTxid() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'txid', Sort.asc);
@@ -2966,6 +3371,34 @@ extension MerkleProofEntityQuerySortThenBy
   }
 
   QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterSortBy>
+      thenByStatus() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'status', Sort.asc);
+    });
+  }
+
+  QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterSortBy>
+      thenByStatusDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'status', Sort.desc);
+    });
+  }
+
+  QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterSortBy>
+      thenByStatusChangedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'statusChangedAt', Sort.asc);
+    });
+  }
+
+  QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterSortBy>
+      thenByStatusChangedAtDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'statusChangedAt', Sort.desc);
+    });
+  }
+
+  QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterSortBy>
       thenByTxid() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'txid', Sort.asc);
@@ -3018,6 +3451,20 @@ extension MerkleProofEntityQueryWhereDistinct
     });
   }
 
+  QueryBuilder<MerkleProofEntity, MerkleProofEntity, QDistinct>
+      distinctByStatus({bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'status', caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<MerkleProofEntity, MerkleProofEntity, QDistinct>
+      distinctByStatusChangedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'statusChangedAt');
+    });
+  }
+
   QueryBuilder<MerkleProofEntity, MerkleProofEntity, QDistinct> distinctByTxid(
       {bool caseSensitive = true}) {
     return QueryBuilder.apply(this, (query) {
@@ -3034,7 +3481,7 @@ extension MerkleProofEntityQueryProperty
     });
   }
 
-  QueryBuilder<MerkleProofEntity, String, QQueryOperations>
+  QueryBuilder<MerkleProofEntity, String?, QQueryOperations>
       blockHashProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'blockHash');
@@ -3064,6 +3511,19 @@ extension MerkleProofEntityQueryProperty
   QueryBuilder<MerkleProofEntity, int, QQueryOperations> positionProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'position');
+    });
+  }
+
+  QueryBuilder<MerkleProofEntity, String?, QQueryOperations> statusProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'status');
+    });
+  }
+
+  QueryBuilder<MerkleProofEntity, DateTime?, QQueryOperations>
+      statusChangedAtProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'statusChangedAt');
     });
   }
 

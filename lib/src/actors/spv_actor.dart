@@ -956,18 +956,21 @@ class SPVActor extends Actor {
   /// hash refreshed if needed); otherwise the confirmation is reverted in
   /// each wallet holding the transaction, which journals
   /// TransactionConfirmationRevertedEvent: the transaction returns to
-  /// pending, its UTXOs lose their confirmations, and the read model drops
-  /// exactly that proof. Nothing else is deleted. ARCActor is then told to
-  /// poll the transactions again; a new proof it obtains is verified against
-  /// the active chain before the transaction is confirmed again.
+  /// pending and its UTXOs lose their confirmations. The proof is marked
+  /// orphaned, here and again (idempotently) by the projection of that event;
+  /// it is kept, never deleted (bead mny). A proof on an orphaned block whose
+  /// transaction no wallet holds as confirmed is marked orphaned too. ARCActor
+  /// is then told to poll the transactions again; a new proof it obtains is
+  /// verified against the active chain before the transaction is confirmed
+  /// again.
   Future<void> _handleHeaderChainReorganized(HeaderChainReorganizedMessage msg) async {
     _currentHeight = msg.newTipHeight;
     try {
       final orphaned = msg.orphanedBlockHashes.toSet();
-      final onOrphanedBlocks = <String>{};
+      final onOrphanedBlocks = <String, MerkleProof>{};
       for (final hash in orphaned) {
         for (final proof in await _storage.getMerkleProofsForBlock(hash)) {
-          onOrphanedBlocks.add(proof.txid);
+          onOrphanedBlocks[proof.txid] = proof;
         }
       }
 
@@ -976,7 +979,7 @@ class SPVActor extends Actor {
         final walletId = tx.walletId;
         if (walletId == null || walletId.isEmpty) continue;
         final height = tx.blockHeight;
-        if (onOrphanedBlocks.contains(tx.txid) || height == null || height > msg.forkHeight) {
+        if (onOrphanedBlocks.containsKey(tx.txid) || height == null || height > msg.forkHeight) {
           candidates.putIfAbsent(tx.txid, () => []).add(walletId);
         }
       }
@@ -1001,9 +1004,18 @@ class SPVActor extends Actor {
           }
           reason = 'reorganization at height ${msg.forkHeight}: ${outcome.status.name}'
               '${outcome.detail == null ? '' : ' (${outcome.detail})'}';
+          await _markOrphaned(proof);
         }
         _revertConfirmation(entry.key, entry.value, proof, reason);
         reverted.add(entry.key);
+      }
+
+      // Proofs on orphaned blocks of transactions no wallet holds as
+      // confirmed: no confirmation to take back, but the proof's status
+      // must still say its block left the active chain.
+      for (final proof in onOrphanedBlocks.values) {
+        if (candidates.containsKey(proof.txid)) continue;
+        if (await _recheckProof(proof) != null) await _markOrphaned(proof);
       }
 
       if (reverted.isNotEmpty) {
@@ -1016,14 +1028,15 @@ class SPVActor extends Actor {
     }
   }
 
-  /// Proofs stored before their block header was known carry the block hash
-  /// `'pending'` (WalletProjection). Once headers up to [upToHeight] are
-  /// stored they are checked (zvj part 1): a match records the real block
-  /// hash, a mismatch reverts the confirmation like a reorganization does.
-  /// Proofs whose header is still unknown stay as they are.
+  /// Proofs stored before their block header was known have the status
+  /// [MerkleProofStatus.pendingHeader] (WalletProjection). Once headers up to
+  /// [upToHeight] are stored they are checked (zvj part 1): a match marks the
+  /// proof verified with the real block hash; a mismatch marks it orphaned
+  /// (kept, bead mny) and reverts the confirmation like a reorganization
+  /// does. Proofs whose header is still unknown stay as they are.
   Future<void> _recheckUnverifiedProofs(int upToHeight) async {
     try {
-      final unverified = await _storage.getMerkleProofsForBlock(_unverifiedBlockHash);
+      final unverified = await _storage.getMerkleProofsByStatus(MerkleProofStatus.pendingHeader);
       if (unverified.isEmpty) return;
 
       final reverted = <String>[];
@@ -1031,6 +1044,8 @@ class SPVActor extends Actor {
         if (proof.blockHeight > upToHeight) continue;
         final outcome = await _recheckProof(proof);
         if (outcome == null || outcome.status == ProofHeaderStatus.headerUnknown) continue;
+
+        await _markOrphaned(proof);
 
         final wallets = [
           for (final tx in await _storage.getTransactionsByStatus(TransactionStatus.confirmed))
@@ -1051,12 +1066,19 @@ class SPVActor extends Actor {
     }
   }
 
-  /// Block hash the projection stores for a proof whose header is unknown.
-  static const String _unverifiedBlockHash = 'pending';
+  /// Mark [proof] orphaned if it is still the current proof of its
+  /// transaction (a newer proof stored meanwhile is left alone).
+  Future<void> _markOrphaned(MerkleProof proof) async {
+    await _storage.markMerkleProofOrphaned(
+      proof.txid,
+      blockHash: proof.blockHash,
+      onlyIfMerkleProof: proof.merkleProof,
+    );
+  }
 
   /// Check a stored [proof] against the active header chain. Returns null
-  /// when it verifies (after recording the active block's hash on the proof
-  /// if it differed), otherwise the failed check.
+  /// when it verifies (after recording it as verified with the active
+  /// block's hash, if it was not already), otherwise the failed check.
   Future<ProofHeaderCheck?> _recheckProof(MerkleProof proof) async {
     // A proof that is not a single stored BUMP (pre-SPV-06 layout) does not
     // parse and comes back malformed.
@@ -1066,13 +1088,16 @@ class SPVActor extends Actor {
       headerAt: _storage.getBlockHeaderByHeight,
     );
     if (!check.isVerified) return check;
-    if (check.blockHash != proof.blockHash || check.txIndex != proof.position) {
+    if (check.blockHash != proof.blockHash ||
+        check.txIndex != proof.position ||
+        proof.status != MerkleProofStatus.verified) {
       await _storage.storeMerkleProof(proof.txid, MerkleProof(
         txid: proof.txid,
         blockHash: check.blockHash!,
         blockHeight: check.blockHeight!,
         merkleProof: proof.merkleProof,
         position: check.txIndex!,
+        status: MerkleProofStatus.verified,
       ));
     }
     return null;

@@ -11,6 +11,7 @@ import '../models/payment_channel.dart';
 import '../actors/invoice_messages.dart';
 import 'read_model_storage.dart';
 import 'libspiffy_schemas.dart';
+import 'merkle_proof_rows.dart';
 import 'isar_config.dart';
 import 'payment_channel_entity.dart';
 
@@ -815,42 +816,57 @@ class IsarWalletStorage implements ReadModelStorage {
   // Merkle Proof Storage (SPV)
   // ========================================
 
-  /// One proof per txid (audit S-13): the rows for [txid] are replaced in
-  /// one write transaction, so a proof stored after a reorganization wins
-  /// and duplicates left by older versions disappear on the next store.
+  /// Rows are only added or updated, in one write transaction (bead mny);
+  /// see [ReadModelStorage.storeMerkleProof] and `planMerkleProofStore`.
   @override
   Future<void> storeMerkleProof(String txid, MerkleProof proof) async {
-    final entity = MerkleProofEntity.fromMerkleProof(proof)..txid = txid;
-
     await _isar.writeTxn(() async {
-      await _isar.merkleProofEntitys.where().txidEqualTo(txid).deleteAll();
-      await _isar.merkleProofEntitys.put(entity);
+      final entities = await _merkleProofRows(txid);
+      final plan = planMerkleProofStore(
+          [for (final e in entities) e.toMerkleProof()], txid, proof);
+      final puts = <MerkleProofEntity>[];
+      for (final i in plan.orphan) {
+        puts.add(entities[i]
+          ..setFrom(entities[i].toMerkleProof().copyWith(
+              status: MerkleProofStatus.orphaned, statusChangedAt: plan.orphanedAt)));
+      }
+      final target = plan.target;
+      puts.add(target == null
+          ? MerkleProofEntity.fromMerkleProof(plan.row)
+          : (entities[target]..setFrom(plan.row)));
+      await _isar.merkleProofEntitys.putAll(puts);
     });
   }
 
   @override
-  Future<bool> deleteMerkleProof(String txid, {List<String>? onlyIfMerkleProof}) async {
+  Future<bool> markMerkleProofOrphaned(
+    String txid, {
+    String? blockHash,
+    List<String>? onlyIfMerkleProof,
+    DateTime? at,
+  }) async {
     return _isar.writeTxn(() async {
-      final entities = await _isar.merkleProofEntitys.where().txidEqualTo(txid).findAll();
-      if (entities.isEmpty) return false;
-      if (onlyIfMerkleProof != null) {
-        final current = entities.reduce((a, b) => a.id >= b.id ? a : b).toMerkleProof();
-        if (current.merkleProof.join(',') != onlyIfMerkleProof.join(',')) return false;
-      }
-      await _isar.merkleProofEntitys.deleteAll(entities.map((e) => e.id).toList());
+      final entities = await _merkleProofRows(txid);
+      final i = findMerkleProofToOrphan([for (final e in entities) e.toMerkleProof()],
+          blockHash: blockHash, onlyIfMerkleProof: onlyIfMerkleProof);
+      if (i == null) return false;
+      await _isar.merkleProofEntitys.put(entities[i]
+        ..setFrom(entities[i].toMerkleProof().copyWith(
+            status: MerkleProofStatus.orphaned, statusChangedAt: at ?? DateTime.now())));
       return true;
     });
   }
 
+  /// Every row of [txid], oldest first.
+  Future<List<MerkleProofEntity>> _merkleProofRows(String txid) async {
+    final entities = await _isar.merkleProofEntitys.where().txidEqualTo(txid).findAll();
+    return entities..sort((a, b) => a.id.compareTo(b.id));
+  }
+
   @override
   Future<MerkleProof?> getMerkleProof(String txid) async {
-    final entities = await _isar.merkleProofEntitys
-        .where()
-        .txidEqualTo(txid)
-        .findAll();
-    if (entities.isEmpty) return null;
-    // Newest row, should a pre-S-13 store still hold duplicates.
-    return entities.reduce((a, b) => a.id >= b.id ? a : b).toMerkleProof();
+    // Newest current row, should a pre-S-13 store still hold duplicates.
+    return currentMerkleProof([for (final e in await _merkleProofRows(txid)) e.toMerkleProof()]);
   }
 
   @override
@@ -860,12 +876,42 @@ class IsarWalletStorage implements ReadModelStorage {
         .where()
         .anyOf(txids, (q, txid) => q.txidEqualTo(txid))
         .findAll();
-    final newest = <String, MerkleProofEntity>{};
+    entities.sort((a, b) => a.id.compareTo(b.id));
+    final current = <String, MerkleProof>{};
     for (final e in entities) {
-      final current = newest[e.txid];
-      if (current == null || e.id > current.id) newest[e.txid] = e;
+      final proof = e.toMerkleProof();
+      if (proof.isCurrent) current[e.txid] = proof;
     }
-    return {for (final e in newest.values) e.txid: e.toMerkleProof()};
+    return current;
+  }
+
+  @override
+  Future<List<MerkleProof>> getMerkleProofHistory(String txid) async {
+    return [for (final e in await _merkleProofRows(txid)) e.toMerkleProof()];
+  }
+
+  @override
+  Future<List<MerkleProof>> getMerkleProofsByStatus(MerkleProofStatus status) async {
+    final entities = await _isar.merkleProofEntitys.where().statusEqualTo(status.name).findAll();
+    // Rows written before bead mny have no status (see MerkleProofEntity).
+    if (status == MerkleProofStatus.pendingHeader) {
+      entities.addAll(await _isar.merkleProofEntitys
+          .where()
+          .blockHashEqualTo(MerkleProof.legacyPendingBlockHash)
+          .filter()
+          .statusIsNull()
+          .findAll());
+    } else if (status == MerkleProofStatus.verified) {
+      entities.addAll(await _isar.merkleProofEntitys
+          .where()
+          .statusIsNull()
+          .filter()
+          .not()
+          .blockHashEqualTo(MerkleProof.legacyPendingBlockHash)
+          .findAll());
+    }
+    entities.sort((a, b) => a.id.compareTo(b.id));
+    return [for (final e in entities) e.toMerkleProof()];
   }
 
   @override
@@ -875,7 +921,10 @@ class IsarWalletStorage implements ReadModelStorage {
         .blockHashEqualTo(blockHash)
         .findAll();
 
-    return entities.map((e) => e.toMerkleProof()).toList();
+    return [
+      for (final e in entities)
+        if (e.toMerkleProof() case final proof when proof.isCurrent) proof,
+    ];
   }
 
   // ========================================

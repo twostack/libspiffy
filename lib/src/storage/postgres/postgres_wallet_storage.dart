@@ -21,6 +21,7 @@ import '../../models/invoice_output_spec.dart';
 import '../../models/invoice_read_model.dart';
 import '../../models/payment_channel.dart';
 import '../read_model_storage.dart';
+import '../merkle_proof_rows.dart';
 import 'postgres_config.dart';
 
 /// PostgreSQL implementation of ReadModelStorage.
@@ -1306,60 +1307,129 @@ class PostgresWalletStorage implements ReadModelStorage {
   // Merkle Proof Storage (SPV)
   // ============================================================================
 
+  /// Columns [_rowToMerkleProof] reads, in order.
+  static const _merkleProofColumns =
+      'block_hash, txid, merkle_proof_json, position, block_height, created_at, status, status_changed_at';
+
+  /// Rows are only added or updated (bead mny; v009 enforces one row per
+  /// (txid, block hash) and one non-orphaned row per txid). The rows of
+  /// [txid] are read and written in one transaction holding a per-txid
+  /// advisory lock; see [ReadModelStorage.storeMerkleProof] and
+  /// `planMerkleProofStore`.
   @override
   Future<void> storeMerkleProof(String txid, MerkleProof proof) async {
     _ensureInitialized();
 
-    await _pool!.execute(
-      Sql.named('''
-        INSERT INTO merkle_proofs (
-          txid, block_hash, block_height, position, merkle_proof_json, created_at
-        ) VALUES (
-          @txid, @blockHash, @blockHeight, @position, @merkleProofJson, @now
-        )
-        ON CONFLICT (txid) DO UPDATE SET
-          block_hash = EXCLUDED.block_hash,
-          block_height = EXCLUDED.block_height,
-          position = EXCLUDED.position,
-          merkle_proof_json = EXCLUDED.merkle_proof_json,
-          created_at = EXCLUDED.created_at
-      '''),
-      parameters: {
-        'txid': txid,
-        'blockHash': proof.blockHash,
-        'blockHeight': proof.blockHeight,
-        'position': proof.position,
-        'merkleProofJson': proof.merkleProof.join(','),
-        'now': DateTime.now(),
-      },
-    );
+    await _pool!.runTx((session) async {
+      final (ids, rows) = await _lockMerkleProofRows(session, txid);
+      final plan = planMerkleProofStore(rows, txid, proof);
+      for (final i in plan.orphan) {
+        await session.execute(
+          Sql.named('''
+            UPDATE merkle_proofs SET status = 'orphaned', status_changed_at = @at
+            WHERE id = @id
+          '''),
+          parameters: {'id': ids[i], 'at': plan.orphanedAt},
+        );
+      }
+      final row = plan.row;
+      final values = {
+        'blockHash': row.blockHash,
+        'blockHeight': row.blockHeight,
+        'position': row.position,
+        'merkleProofJson': row.merkleProof.join(','),
+        'status': row.status.name,
+        'statusChangedAt': row.statusChangedAt,
+      };
+      final target = plan.target;
+      if (target == null) {
+        await session.execute(
+          Sql.named('''
+            INSERT INTO merkle_proofs (
+              txid, block_hash, block_height, position, merkle_proof_json, created_at,
+              status, status_changed_at
+            ) VALUES (
+              @txid, @blockHash, @blockHeight, @position, @merkleProofJson, @createdAt,
+              @status, @statusChangedAt
+            )
+          '''),
+          parameters: {...values, 'txid': txid, 'createdAt': row.createdAt},
+        );
+      } else {
+        await session.execute(
+          Sql.named('''
+            UPDATE merkle_proofs SET
+              block_hash = @blockHash,
+              block_height = @blockHeight,
+              position = @position,
+              merkle_proof_json = @merkleProofJson,
+              status = @status,
+              status_changed_at = @statusChangedAt
+            WHERE id = @id
+          '''),
+          parameters: {...values, 'id': ids[target]},
+        );
+      }
+    });
   }
 
   @override
-  Future<bool> deleteMerkleProof(String txid, {List<String>? onlyIfMerkleProof}) async {
+  Future<bool> markMerkleProofOrphaned(
+    String txid, {
+    String? blockHash,
+    List<String>? onlyIfMerkleProof,
+    DateTime? at,
+  }) async {
     _ensureInitialized();
 
-    final result = await _pool!.execute(
-      Sql.named(onlyIfMerkleProof == null
-          ? 'DELETE FROM merkle_proofs WHERE txid = @txid'
-          : 'DELETE FROM merkle_proofs WHERE txid = @txid AND merkle_proof_json = @merkleProofJson'),
-      parameters: {
-        'txid': txid,
-        if (onlyIfMerkleProof != null) 'merkleProofJson': onlyIfMerkleProof.join(','),
-      },
+    return _pool!.runTx((session) async {
+      final (ids, rows) = await _lockMerkleProofRows(session, txid);
+      final i = findMerkleProofToOrphan(rows, blockHash: blockHash, onlyIfMerkleProof: onlyIfMerkleProof);
+      if (i == null) return false;
+      await session.execute(
+        Sql.named('''
+          UPDATE merkle_proofs SET status = 'orphaned', status_changed_at = @at
+          WHERE id = @id
+        '''),
+        parameters: {'id': ids[i], 'at': at ?? DateTime.now()},
+      );
+      return true;
+    });
+  }
+
+  /// Every row of [txid] (ids and proofs, oldest first), after taking a
+  /// transaction-scoped advisory lock on [txid] so concurrent writers of
+  /// the same txid run one after the other.
+  Future<(List<int>, List<MerkleProof>)> _lockMerkleProofRows(Session session, String txid) async {
+    await session.execute(
+      Sql.named('SELECT 1 FROM pg_advisory_xact_lock(hashtext(@key))'),
+      parameters: {'key': 'merkle_proofs:$txid'},
     );
-    return result.affectedRows > 0;
+    final result = await session.execute(
+      Sql.named('''
+        SELECT $_merkleProofColumns, id
+        FROM merkle_proofs
+        WHERE txid = @txid
+        ORDER BY id
+      '''),
+      parameters: {'txid': txid},
+    );
+    return (
+      [for (final row in result) row[8] as int],
+      [for (final row in result) _rowToMerkleProof(row)],
+    );
   }
 
   @override
   Future<MerkleProof?> getMerkleProof(String txid) async {
     _ensureInitialized();
 
+    // uk_merkle_proofs_txid_current: at most one such row.
     final result = await _pool!.execute(
       Sql.named('''
-        SELECT block_hash, txid, merkle_proof_json, position, block_height, created_at
+        SELECT $_merkleProofColumns
         FROM merkle_proofs
-        WHERE txid = @txid
+        WHERE txid = @txid AND status <> 'orphaned'
         LIMIT 1
       '''),
       parameters: {'txid': txid},
@@ -1367,6 +1437,38 @@ class PostgresWalletStorage implements ReadModelStorage {
 
     if (result.isEmpty) return null;
     return _rowToMerkleProof(result.first);
+  }
+
+  @override
+  Future<List<MerkleProof>> getMerkleProofHistory(String txid) async {
+    _ensureInitialized();
+
+    final result = await _pool!.execute(
+      Sql.named('''
+        SELECT $_merkleProofColumns
+        FROM merkle_proofs
+        WHERE txid = @txid
+        ORDER BY id
+      '''),
+      parameters: {'txid': txid},
+    );
+    return result.map(_rowToMerkleProof).toList();
+  }
+
+  @override
+  Future<List<MerkleProof>> getMerkleProofsByStatus(MerkleProofStatus status) async {
+    _ensureInitialized();
+
+    final result = await _pool!.execute(
+      Sql.named('''
+        SELECT $_merkleProofColumns
+        FROM merkle_proofs
+        WHERE status = @status
+        ORDER BY id
+      '''),
+      parameters: {'status': status.name},
+    );
+    return result.map(_rowToMerkleProof).toList();
   }
 
   @override
@@ -1383,9 +1485,9 @@ class PostgresWalletStorage implements ReadModelStorage {
 
     final result = await _pool!.execute(
       Sql.named('''
-        SELECT block_hash, txid, merkle_proof_json, position, block_height, created_at
+        SELECT $_merkleProofColumns
         FROM merkle_proofs
-        WHERE txid IN (${placeholders.join(', ')})
+        WHERE txid IN (${placeholders.join(', ')}) AND status <> 'orphaned'
       '''),
       parameters: params,
     );
@@ -1404,9 +1506,9 @@ class PostgresWalletStorage implements ReadModelStorage {
 
     final result = await _pool!.execute(
       Sql.named('''
-        SELECT block_hash, txid, merkle_proof_json, position, block_height, created_at
+        SELECT $_merkleProofColumns
         FROM merkle_proofs
-        WHERE block_hash = @blockHash
+        WHERE block_hash = @blockHash AND status <> 'orphaned'
       '''),
       parameters: {'blockHash': blockHash},
     );
@@ -1425,12 +1527,14 @@ class PostgresWalletStorage implements ReadModelStorage {
   MerkleProof _rowToMerkleProof(ResultRow row) {
     final merkleProofStr = row[2] as String;
     return MerkleProof(
-      blockHash: row[0] as String,
+      blockHash: row[0] as String?,
       txid: row[1] as String,
       merkleProof: merkleProofStr.split(',').where((s) => s.isNotEmpty).toList(),
       position: row[3] as int,
       blockHeight: row[4] as int,
       createdAt: row[5] as DateTime,
+      status: MerkleProofStatus.values.byName(row[6] as String),
+      statusChangedAt: row[7] as DateTime?,
     );
   }
 

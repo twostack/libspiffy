@@ -323,7 +323,9 @@ void defineReadModelKeyingContract(
     // S-13: merkle proofs
     // ------------------------------------------------------------------
 
-    test('S-13: a second proof for a txid replaces the first', () async {
+    // Since bead mny the first proof is kept as orphaned
+    // (merkle_proof_retention_contract.dart); it is no longer current.
+    test('S-13: a second proof for a txid replaces the first as the current proof', () async {
       final s = storage();
       final u = unique();
       final txid = contractHex64('proof-tx-$u');
@@ -347,9 +349,9 @@ void defineReadModelKeyingContract(
       expect(proof.blockHeight, 11);
       expect((await s.getMerkleProofsBatch([txid]))[txid]!.blockHash, blockB);
       expect(await s.getMerkleProofsForBlock(blockA), isEmpty,
-          reason: 'the replaced proof must be gone');
+          reason: 'the replaced proof is no longer current');
       expect(await s.getMerkleProofsForBlock(blockB), hasLength(1),
-          reason: 'exactly one row per txid');
+          reason: 'exactly one row per (txid, block)');
     });
 
     test('S-13: a proof with no segments reads back with no segments', () async {

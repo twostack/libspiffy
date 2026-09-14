@@ -806,12 +806,15 @@ class ARCActor extends Actor {
     _pendingProofs.remove(txid);
 
     try {
+      // Checked against the local header just now. A proof of an earlier
+      // block (orphaned by a reorganization) stays stored as orphaned.
       await _storage.storeMerkleProof(txid, MerkleProof(
         txid: txid,
         blockHash: check.blockHash!,
         blockHeight: check.blockHeight!,
         merkleProof: [proof.bumpHex],
         position: check.txIndex!,
+        status: MerkleProofStatus.verified,
       ));
     } catch (e) {
       _log.warning('Failed to store merkle proof for $txid: $e');

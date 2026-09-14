@@ -11,6 +11,7 @@ import '../models/invoice_read_model.dart';
 import '../models/payment_channel.dart';
 import '../actors/invoice_messages.dart';
 import 'wallet_storage.dart';
+import 'merkle_proof_rows.dart';
 
 /// In-memory implementation of WalletStorage for development and testing.
 /// 
@@ -56,11 +57,13 @@ class InMemoryWalletStorage implements WalletStorage {
   // insertion order of the inner map is the store order.
   final Map<String, Map<String, List<TransactionAddressLink>>> _txAddresses = {};
 
-  // Merkle proof storage: txid -> MerkleProof
-  final Map<String, MerkleProof> _merkleProofs = {};
-  
-  // Block hash to merkle proofs mapping: blockHash -> List<txid>
-  final Map<String, List<String>> _blockToProofs = {};
+  // Merkle proof storage: txid -> every proof row, oldest first (bead mny:
+  // rows are never removed; at most one is not orphaned).
+  final Map<String, List<MerkleProof>> _merkleProofs = {};
+
+  // Block hash to merkle proofs mapping: blockHash -> txids with a row
+  // naming that block (filtered by status on read).
+  final Map<String, Set<String>> _blockToProofs = {};
   
   // Balance cache: walletId -> balance
   final Map<String, BigInt> _balanceCache = {};
@@ -639,77 +642,80 @@ _balanceCache.remove(walletId);
   // Merkle Proof Storage Methods
   // ========================================
 
+  /// Rows are only added or updated (bead mny); see
+  /// [ReadModelStorage.storeMerkleProof] and `planMerkleProofStore`.
   @override
   Future<void> storeMerkleProof(String txid, MerkleProof proof) async {
     await _withGlobalLock(() async {
-      // One proof per txid: a later proof (re-mined after a reorg) replaces
-      // the earlier one and leaves its block's index (audit S-13).
-      final previous = _merkleProofs[txid];
-      if (previous != null && previous.blockHash != proof.blockHash) {
-        final oldBlockProofs = _blockToProofs[previous.blockHash];
-        oldBlockProofs?.remove(txid);
-        if (oldBlockProofs != null && oldBlockProofs.isEmpty) {
-          _blockToProofs.remove(previous.blockHash);
-        }
+      final rows = _merkleProofs.putIfAbsent(txid, () => []);
+      final plan = planMerkleProofStore(rows, txid, proof);
+      for (final i in plan.orphan) {
+        rows[i] = rows[i].copyWith(status: MerkleProofStatus.orphaned, statusChangedAt: plan.orphanedAt);
       }
-      _merkleProofs[txid] = proof;
-
-      // Update block to proofs mapping
-      final blockProofs = _blockToProofs.putIfAbsent(proof.blockHash, () => []);
-      if (!blockProofs.contains(txid)) {
-        blockProofs.add(txid);
+      if (plan.target == null) {
+        rows.add(plan.row);
+        _totalProofs++;
+      } else {
+        rows[plan.target!] = plan.row;
       }
-
-      if (previous == null) _totalProofs++;
+      final hash = plan.row.blockHash;
+      if (hash != null) _blockToProofs.putIfAbsent(hash, () => {}).add(txid);
     });
   }
 
   @override
-  Future<bool> deleteMerkleProof(String txid, {List<String>? onlyIfMerkleProof}) async {
+  Future<bool> markMerkleProofOrphaned(
+    String txid, {
+    String? blockHash,
+    List<String>? onlyIfMerkleProof,
+    DateTime? at,
+  }) async {
     return _withGlobalLock(() async {
-      final previous = _merkleProofs[txid];
-      if (previous == null) return false;
-      if (onlyIfMerkleProof != null && !_sameProof(previous.merkleProof, onlyIfMerkleProof)) {
-        return false;
-      }
-      _merkleProofs.remove(txid);
-      final blockProofs = _blockToProofs[previous.blockHash];
-      blockProofs?.remove(txid);
-      if (blockProofs != null && blockProofs.isEmpty) {
-        _blockToProofs.remove(previous.blockHash);
-      }
-      _totalProofs--;
+      final rows = _merkleProofs[txid];
+      if (rows == null) return false;
+      final i = findMerkleProofToOrphan(rows, blockHash: blockHash, onlyIfMerkleProof: onlyIfMerkleProof);
+      if (i == null) return false;
+      rows[i] = rows[i].copyWith(status: MerkleProofStatus.orphaned, statusChangedAt: at ?? DateTime.now());
       return true;
     });
   }
 
-  static bool _sameProof(List<String> a, List<String> b) {
-    if (a.length != b.length) return false;
-    for (var i = 0; i < a.length; i++) {
-      if (a[i] != b[i]) return false;
-    }
-    return true;
-  }
-
   @override
   Future<MerkleProof?> getMerkleProof(String txid) async {
-    return _merkleProofs[txid];
+    return currentMerkleProof(_merkleProofs[txid] ?? const []);
   }
 
   @override
   Future<Map<String, MerkleProof>> getMerkleProofsBatch(List<String> txids) async {
     final result = <String, MerkleProof>{};
     for (final txid in txids) {
-      final proof = _merkleProofs[txid];
+      final proof = currentMerkleProof(_merkleProofs[txid] ?? const []);
       if (proof != null) result[txid] = proof;
     }
     return result;
   }
 
   @override
+  Future<List<MerkleProof>> getMerkleProofHistory(String txid) async {
+    return List.unmodifiable(_merkleProofs[txid] ?? const <MerkleProof>[]);
+  }
+
+  @override
+  Future<List<MerkleProof>> getMerkleProofsByStatus(MerkleProofStatus status) async {
+    return [
+      for (final rows in _merkleProofs.values)
+        for (final r in rows)
+          if (r.status == status) r,
+    ];
+  }
+
+  @override
   Future<List<MerkleProof>> getMerkleProofsForBlock(String blockHash) async {
-    final txIds = _blockToProofs[blockHash] ?? [];
-    return txIds.map((txid) => _merkleProofs[txid]!).toList();
+    return [
+      for (final txid in _blockToProofs[blockHash] ?? const <String>{})
+        for (final r in _merkleProofs[txid]!)
+          if (r.isCurrent && r.blockHash == blockHash) r,
+    ];
   }
 
   // ========================================
@@ -858,8 +864,8 @@ _balanceCache.remove(walletId);
   @override
   Future<int> getMerkleProofCount({String? walletId}) async {
     // In-memory storage doesn't track proofs by wallet
-    // Return total count
-    return _merkleProofs.length;
+    // Return total count of proof rows, orphaned ones included
+    return _merkleProofs.values.fold<int>(0, (n, rows) => n + rows.length);
   }
 
   // ========================================

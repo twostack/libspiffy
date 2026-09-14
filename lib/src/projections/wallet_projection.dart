@@ -12,6 +12,7 @@ import '../models/bitcoin_transaction.dart';
 import '../models/address_metadata.dart';
 import '../models/transaction_address_link.dart';
 import '../storage/read_model_storage.dart';
+import '../spv/merkle_proof_header_check.dart';
 import '../utils/bump.dart';
 import '../utils/network_name.dart';
 
@@ -739,7 +740,7 @@ class WalletProjection extends Projection<void> {
 
       // Store Merkle proof from BUMP
       if (event.bumpProof.isNotEmpty) {
-        await _storeMerkleProofFromBump(event.txid, event.bumpProof, event.blockHeight);
+        await _storeMerkleProofFromBump(event.txid, event.bumpProof);
       }
       
       // Create junction table records for efficient address-centric queries.
@@ -828,9 +829,10 @@ class WalletProjection extends Projection<void> {
   /// A confirmation was taken back (audit 3b0): the transaction row returns
   /// to pending with no block, the transaction's UTXO rows lose their
   /// confirmations (available ones become pending), and the stored proof is
-  /// deleted if it is still the one the event names. A newer proof (the
-  /// transaction re-mined on the active chain, stored by ARCActor) differs
-  /// and is kept. Idempotent.
+  /// marked orphaned (never deleted, bead mny) if it is still the current one
+  /// the event names. A newer proof (the transaction re-mined on the active
+  /// chain, stored by ARCActor) differs and stays current. Idempotent: a
+  /// replay finds nothing left to mark.
   Future<void> _handleTransactionConfirmationReverted(TransactionConfirmationRevertedEvent event) async {
     final existingTx = await _storage.getTransaction(event.txid, walletId: event.walletId);
     if (existingTx == null) {
@@ -892,7 +894,12 @@ class WalletProjection extends Projection<void> {
 
     final dropped = event.merkleProof;
     if (dropped != null) {
-      await _storage.deleteMerkleProof(event.txid, onlyIfMerkleProof: dropped);
+      await _storage.markMerkleProofOrphaned(
+        event.txid,
+        blockHash: event.blockHash,
+        onlyIfMerkleProof: dropped,
+        at: event.timestamp,
+      );
     }
   }
 
@@ -1038,7 +1045,6 @@ class WalletProjection extends Projection<void> {
   Future<void> _storeMerkleProofFromBump(
     String txid,
     String bumpHex,
-    int blockHeight,
   ) async {
     try {
       final bump = BUMP.fromBytes(Uint8List.fromList(hex.decode(bumpHex)));
@@ -1055,27 +1061,41 @@ class WalletProjection extends Projection<void> {
       final txPosition = txidLeaf.offset;
       final siblingHashes = <String>[bumpHex];
 
-      // Look up block header to get block hash
-      String blockHash = '';
-      try {
-        final blockHeader = await _storage.getBlockHeaderByHeight(blockHeight);
-        if (blockHeader != null) {
-          blockHash = blockHeader.blockHash().toString();
-        } else {
-          // Use a placeholder - merkle proof can still be stored without block hash
-          blockHash = 'pending'; // Placeholder until header is synced
+      // The proof's status comes from the stored headers (bead mny):
+      // verified (with that block's hash) when its root matches the active
+      // header at its height, otherwise pendingHeader (no block hash), which
+      // SPVActor checks when headers arrive and then marks verified, or
+      // orphaned with the confirmation reverted (zvj). The projection itself
+      // never takes a confirmation back. Live imports and received BEEFs
+      // reject a proof that contradicts a stored header before this event;
+      // a replay after its block left the active chain can still meet one.
+      // Such a proof never displaces a different, verified current proof
+      // (ARCActor's, after the reorganization): it is kept as orphaned.
+      final check = await checkBumpAgainstHeaders(
+        txid: txid,
+        bump: bump,
+        headerAt: _storage.getBlockHeaderByHeight,
+      );
+      var status = check.isVerified ? MerkleProofStatus.verified : MerkleProofStatus.pendingHeader;
+      if (check.status == ProofHeaderStatus.rootMismatch || check.status == ProofHeaderStatus.malformed) {
+        final current = await _storage.getMerkleProof(txid);
+        if (current != null &&
+            current.status == MerkleProofStatus.verified &&
+            !MerkleProof.sameContent(current.merkleProof, siblingHashes)) {
+          status = MerkleProofStatus.orphaned;
         }
-      } catch (e) {
-        blockHash = 'pending';
+        _log.warning('Merkle proof for $txid does not match the active header chain ($check); '
+            'stored as ${status.name}');
       }
-      
+
       // Create MerkleProof object
       final merkleProof = MerkleProof(
         txid: txid,
-        blockHash: blockHash,
+        blockHash: status == MerkleProofStatus.verified ? check.blockHash : null,
         blockHeight: bump.blockHeight,
         position: txPosition,
         merkleProof: siblingHashes,
+        status: status,
       );
       
       // Store to database

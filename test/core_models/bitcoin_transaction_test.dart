@@ -520,7 +520,10 @@ void main() {
         expect(statuses, contains(TransactionStatus.pending));
         expect(statuses, contains(TransactionStatus.confirmed));
         expect(statuses, contains(TransactionStatus.failed));
-        expect(statuses.length, equals(6));
+        // ARC lifecycle states added with the ARC integration.
+        expect(statuses, contains(TransactionStatus.seenOnNetwork));
+        expect(statuses, contains(TransactionStatus.orphaned));
+        expect(statuses.length, equals(8));
       });
 
       test('should cover all script types', () {

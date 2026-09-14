@@ -1066,12 +1066,18 @@ class UTXOReleasedEvent extends WalletEvent {
   final String? releaseReason;
   final bool wasExpired;
 
+  /// Status the UTXO returns to: the status it had before it was reserved
+  /// (audit 2026-09-14 M4). Null on events journaled before this field
+  /// existed, which released to [UTXOStatus.available].
+  final UTXOStatus? restoredStatus;
+
   UTXOReleasedEvent({
     required String walletId,
     required this.txid,
     required this.vout,
     this.releaseReason,
     this.wasExpired = false,
+    this.restoredStatus,
     String? eventId,
     DateTime? timestamp,
     int? version,
@@ -1091,6 +1097,7 @@ class UTXOReleasedEvent extends WalletEvent {
       'vout': vout,
       'releaseReason': releaseReason,
       'wasExpired': wasExpired,
+      if (restoredStatus != null) 'restoredStatus': restoredStatus!.name,
     };
   }
 
@@ -1101,6 +1108,9 @@ class UTXOReleasedEvent extends WalletEvent {
       vout: map['vout'] as int,
       releaseReason: map['releaseReason'] as String?,
       wasExpired: map['wasExpired'] as bool? ?? false,
+      restoredStatus: UTXOStatus.values
+          .where((s) => s.name == map['restoredStatus'])
+          .firstOrNull,
       eventId: map['eventId'] as String?,
       timestamp: map['timestamp'] != null
           ? (map['timestamp'] is String 

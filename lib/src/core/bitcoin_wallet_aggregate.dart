@@ -43,6 +43,13 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
   // This is needed because context.sender can be cleared by the time async processing completes
   // Use a Map keyed by command ID to handle concurrent message processing
   final Map<String, ActorRef> _capturedSenders = {};
+
+  /// Command ids whose failure reply has been sent. Eventador calls
+  /// [onCommandFailure] twice for one failed command when the aggregate runs
+  /// as an actor (from AggregateRoot.commandHandler and again from
+  /// PersistentActor's command loop); without this the caller got every
+  /// failure reply twice.
+  final Set<String> _failureReplied = {};
   
   @override
   Future<void> preStart() async {
@@ -96,6 +103,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       // Clean up the captured sender for this specific command
       if (commandKey != null) {
         _capturedSenders.remove(commandKey);
+        _failureReplied.remove(commandKey);
       }
     }
   }
@@ -123,11 +131,18 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
   Future<void> onCommandProcessed(Command command, List<Event> events) async {
     await super.onCommandProcessed(command, events);
 
+    // A reply prepared by the command handler (signed or funding
+    // transaction) is released only now that its events are journaled.
+    final awaitingPersist = _repliesAwaitingPersist.remove(command.commandId);
+
     // Send actor system responses. Key material is already in secure storage:
     // _handleCreateWallet writes it before the event is persisted (audit H4).
     if (_isInActorSystem()) {
       final sender = _capturedSenders[command.commandId];
       if (sender != null) {
+        if (awaitingPersist != null) {
+          sender.tell(awaitingPersist);
+        }
         for (final event in events) {
           if (event is WalletCreatedEvent) {
             sender.tell(WalletCreatedResponse(
@@ -175,6 +190,14 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       _keyMaterialAwaitingPersist.remove(command.commandId);
     }
   }
+
+  /// Success replies whose payload exists only once the command's events are
+  /// persisted, keyed by command id: the signed transaction
+  /// ([TransactionSignedResponse]) and the funding transaction
+  /// ([FundingTransactionBuiltResponse]). [onCommandProcessed] sends them;
+  /// [onCommandFailure] discards them, so a failed persist never hands the
+  /// caller a transaction the journal did not record (audit 2026-09-14 M5).
+  final Map<String, Message> _repliesAwaitingPersist = {};
 
   /// Wallet ids whose key material has been written to secure storage for a
   /// CreateWalletCommand (keyed by command id) whose WalletCreatedEvent has
@@ -255,6 +278,9 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
   Future<void> onCommandFailure(Command command, dynamic error) async {
     await super.onCommandFailure(command, error);
 
+    // The events behind a prepared success reply were not journaled.
+    _repliesAwaitingPersist.remove(command.commandId);
+
     // Key material was written before the WalletCreatedEvent; if the event
     // could not be persisted, take the secrets back out (best effort).
     final pendingWalletId = _keyMaterialAwaitingPersist.remove(command.commandId);
@@ -274,7 +300,10 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     if (sender == null) {
       return;
     }
-    
+    if (!_failureReplied.add(command.commandId)) {
+      return;
+    }
+
     final errorMessage = error.toString();
 
     if (command is CreateWalletCommand) {
@@ -298,6 +327,14 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         walletId: command.walletId,
         utxoKey: command.utxoKey,
         reservedByTxId: command.reservedByTxId,
+        success: false,
+        error: errorMessage,
+      ));
+    } else if (command is ReserveUTXOsCommand) {
+      sender.tell(UTXOReservedResponse(
+        walletId: command.walletId,
+        utxoKey: command.utxoKeys.join(','),
+        reservedByTxId: command.reservationId,
         success: false,
         error: errorMessage,
       ));
@@ -928,7 +965,11 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       throw StateError('UTXO $utxoKey not found');
     }
     
-    if (utxo.status != UTXOStatus.pending) {
+    // A pending UTXO that is reserved still needs the promotion: the
+    // reservation stays, and its release then restores `available` (M4).
+    final pendingUnderReservation = utxo.status == UTXOStatus.reserved &&
+        utxo.statusBeforeReservation == UTXOStatus.pending;
+    if (utxo.status != UTXOStatus.pending && !pendingUnderReservation) {
       // Already available or spent, no-op
       return [];
     }
@@ -1234,6 +1275,13 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
             break;
         }
         
+        // An output the wallet already holds (the transaction was recorded
+        // before, or the UTXO arrived another way) keeps its current state:
+        // re-emitting UTXOReceivedEvent reset its status (audit M9).
+        if (belongsToWallet && currentState.utxos.containsKey('${command.txid}:$i')) {
+          continue;
+        }
+
         // If output belongs to wallet, create a UTXO for it
         if (belongsToWallet && outputAddress != null) {
           
@@ -1492,18 +1540,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       // The txid changes after signing because the scriptSig bytes are different
       final signedTxid = signedTx.id;
       
-      // Send response if in actor system
-      final sender = _capturedSenders[command.commandId];
-      if (_isInActorSystem() && sender != null) {
-        sender.tell(TransactionSignedResponse(
-          walletId: command.walletId,
-          txid: signedTxid, // Use signed txid, not unsigned command.transactionId
-          signedHex: signedHex,
-          success: true,
-        ));
-      }
-
-
       // Return TransactionSignedEvent
       final event = TransactionSignedEvent(
         walletId: command.walletId,
@@ -1513,8 +1549,21 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         timestamp: DateTime.now(),
       );
 
+      // The success reply goes out from onCommandProcessed, once the event
+      // is journaled (audit M5).
+      final sender = _capturedSenders[command.commandId];
+      if (_isInActorSystem() && sender != null) {
+        _repliesAwaitingPersist[command.commandId] = TransactionSignedResponse(
+          walletId: command.walletId,
+          txid: signedTxid, // Use signed txid, not unsigned command.transactionId
+          signedHex: signedHex,
+          success: true,
+        );
+      }
+
       return [event];
     } catch (e, stackTrace) {
+      _repliesAwaitingPersist.remove(command.commandId);
       _log.warning('Sign transaction failed for ${command.transactionId}: $e');
 
       // Send error response if in actor system
@@ -1850,10 +1899,12 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       final totalInputSats = selectedTotal.toInt();
       final totalOutputSats = fundingAmount.toInt() + actualChangeAmount;
       
-      // Send response with full transaction details for wallet bookkeeping
+      // Response with full transaction details for wallet bookkeeping. It is
+      // sent from onCommandProcessed once the reservations are journaled
+      // (audit M5).
       final sender = _capturedSenders[command.commandId];
       if (_isInActorSystem() && sender != null) {
-        sender.tell(FundingTransactionBuiltResponse(
+        _repliesAwaitingPersist[command.commandId] = FundingTransactionBuiltResponse(
           walletId: command.walletId,
           correlationId: command.correlationId,
           channelId: command.channelId,
@@ -1868,7 +1919,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
           fee: fee.toInt(),
           totalInputSats: totalInputSats,
           totalOutputSats: totalOutputSats,
-        ));
+        );
       }
       
       // Return reservation events to prevent double-spend of selected UTXOs
@@ -1876,7 +1927,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       return reserveEvents;
       
     } catch (e, stackTrace) {
-      
+      _repliesAwaitingPersist.remove(command.commandId);
+
       final sender = _capturedSenders[command.commandId];
       if (_isInActorSystem() && sender != null) {
         sender.tell(FundingTransactionBuiltResponse(
@@ -1977,53 +2029,109 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
   // UTXO RESERVATION COMMAND HANDLERS
   // ==========================================================================
 
+  /// Reserve every UTXO in [ReserveUTXOsCommand.utxoKeys] for
+  /// [ReserveUTXOsCommand.reservationId], under the same rules as
+  /// [ReserveUTXOCommand] (priority 0). All-or-nothing: if any key cannot be
+  /// reserved the command fails and nothing is reserved. Emits one
+  /// [UTXOReservedEvent] per UTXO so the aggregate and the read model both
+  /// see the reservation (audit 2026-09-14 M3: this used to emit a
+  /// [UTXOReservationPlacedEvent] that nothing applied).
   List<Event> _handleReserveUTXOs(WalletState currentState, ReserveUTXOsCommand command) {
     // Business rule: Wallet must exist
     if (!currentState.isCreated) {
       throw StateError('Cannot reserve UTXOs for non-existent wallet');
     }
 
-    // Convert utxoKeys to utxoIdentifiers format
-    final utxoIdentifiers = command.utxoKeys.map((key) {
-      final parts = key.split(':');
-      return {'txid': parts[0], 'vout': int.parse(parts[1])};
-    }).toList();
-
-    final expiresAt = command.reservationDuration != null
-        ? DateTime.now().add(command.reservationDuration!)
-        : DateTime.now().add(Duration(minutes: 30));
-
-    final event = UTXOReservationPlacedEvent(
-      walletId: command.walletId,
-      utxoIdentifiers: utxoIdentifiers,
-      reservationId: command.reservationId,
-      expiresAt: expiresAt,
-      version: currentState.version + 1,
-      timestamp: DateTime.now(),
-    );
-
-    return [event];
+    final duration = command.reservationDuration ?? const Duration(minutes: 30);
+    final events = <Event>[];
+    for (final utxoKey in command.utxoKeys.toSet()) {
+      events.add(_reservationEvent(
+        currentState,
+        walletId: command.walletId,
+        utxoKey: utxoKey,
+        reservedByTxId: command.reservationId,
+        reservationReason: 'Reservation ${command.reservationId}',
+        duration: duration,
+        priority: 0,
+        version: currentState.version + events.length + 1,
+      ));
+    }
+    return events;
   }
 
+  /// Release every UTXO currently reserved by
+  /// [ReleaseUTXOsCommand.reservationId] (whether it was reserved with
+  /// [ReserveUTXOsCommand], [ReserveUTXOCommand] or a funding build), each
+  /// back to the status it had before the reservation. The coordinators send
+  /// this to clean up abandoned payments; a reservation with no reserved
+  /// UTXOs left is a no-op (audit 2026-09-14 M3: this used to emit a
+  /// [UTXOReservationReleasedEvent] that released nothing).
   List<Event> _handleReleaseUTXOs(WalletState currentState, ReleaseUTXOsCommand command) {
     // Business rule: Wallet must exist
     if (!currentState.isCreated) {
       throw StateError('Cannot release UTXOs for non-existent wallet');
     }
 
-    // For now, create empty utxoIdentifiers since ReleaseUTXOsCommand only has reservationId
-    // Note: Automated cleanup runs every 5 minutes via WalletManagerActor timer
-    final utxoIdentifiers = <Map<String, dynamic>>[];
+    final events = <Event>[];
+    for (final utxo in currentState.utxos.values) {
+      if (utxo.status != UTXOStatus.reserved || utxo.reservedByTxId != command.reservationId) {
+        continue;
+      }
+      events.add(UTXOReleasedEvent(
+        walletId: command.walletId,
+        txid: utxo.txid,
+        vout: utxo.vout,
+        releaseReason: 'Reservation ${command.reservationId} released',
+        wasExpired: utxo.isReservationExpired,
+        restoredStatus: utxo.statusToRestoreOnRelease,
+        version: currentState.version + events.length + 1,
+        timestamp: DateTime.now(),
+      ));
+    }
+    return events;
+  }
 
-    final event = UTXOReservationReleasedEvent(
-      walletId: command.walletId,
-      reservationId: command.reservationId,
-      utxoIdentifiers: utxoIdentifiers,
-      version: currentState.version + 1,
+  /// A [UTXOReservedEvent] for [utxoKey], enforcing the reservation rules:
+  /// the UTXO exists, is not spent, and is not held by a live reservation of
+  /// equal or higher priority.
+  UTXOReservedEvent _reservationEvent(
+    WalletState currentState, {
+    required String walletId,
+    required String utxoKey,
+    required String reservedByTxId,
+    required String? reservationReason,
+    required Duration duration,
+    required int priority,
+    required int version,
+  }) {
+    final utxo = currentState.utxos[utxoKey];
+    if (utxo == null) {
+      throw StateError('UTXO $utxoKey not found in wallet');
+    }
+
+    if (utxo.status == UTXOStatus.spent) {
+      throw StateError('Cannot reserve spent UTXO $utxoKey');
+    }
+
+    if (utxo.status == UTXOStatus.reserved && !utxo.isReservationExpired) {
+      // Check priority - higher priority can override lower priority
+      final currentPriority = utxo.reservationPriority ?? 0;
+      if (priority <= currentPriority) {
+        throw StateError('UTXO $utxoKey is already reserved with higher or equal priority');
+      }
+    }
+
+    return UTXOReservedEvent(
+      walletId: walletId,
+      txid: utxo.txid,
+      vout: utxo.vout,
+      reservedByTxId: reservedByTxId,
+      reservationReason: reservationReason,
+      expiresAt: DateTime.now().add(duration),
+      priority: priority,
+      version: version,
       timestamp: DateTime.now(),
     );
-
-    return [event];
   }
 
   List<Event> _handleReserveUTXO(WalletState currentState, ReserveUTXOCommand command) {
@@ -2032,46 +2140,18 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       throw StateError('Cannot reserve UTXO for non-existent wallet');
     }
 
-    // Business rule: UTXO must exist and be available (or have expired reservation)
-    final utxo = currentState.utxos[command.utxoKey];
-    if (utxo == null) {
-      throw StateError('UTXO ${command.utxoKey} not found in wallet');
-    }
-
-    if (utxo.status == UTXOStatus.spent) {
-      throw StateError('Cannot reserve spent UTXO ${command.utxoKey}');
-    }
-
-    if (utxo.status == UTXOStatus.reserved && !utxo.isReservationExpired) {
-      // Check priority - higher priority can override lower priority
-      final currentPriority = utxo.reservationPriority ?? 0;
-      if (command.priority <= currentPriority) {
-        throw StateError('UTXO ${command.utxoKey} is already reserved with higher or equal priority');
-      }
-    }
-
-    // Parse txid and vout from utxoKey
-    final parts = command.utxoKey.split(':');
-    final txid = parts[0];
-    final vout = int.parse(parts[1]);
-
-    // Calculate expiration time
-    final duration = command.reservationDuration ?? Duration(minutes: 30); // Default 30 minutes
-    final expiresAt = DateTime.now().add(duration);
-
-    final event = UTXOReservedEvent(
-      walletId: command.walletId,
-      txid: txid,
-      vout: vout,
-      reservedByTxId: command.reservedByTxId,
-      reservationReason: command.reservationReason,
-      expiresAt: expiresAt,
-      priority: command.priority,
-      version: currentState.version + 1,
-      timestamp: DateTime.now(),
-    );
-
-    return [event];
+    return [
+      _reservationEvent(
+        currentState,
+        walletId: command.walletId,
+        utxoKey: command.utxoKey,
+        reservedByTxId: command.reservedByTxId,
+        reservationReason: command.reservationReason,
+        duration: command.reservationDuration ?? const Duration(minutes: 30),
+        priority: command.priority,
+        version: currentState.version + 1,
+      ),
+    ];
   }
 
   List<Event> _handleReleaseUTXO(WalletState currentState, ReleaseUTXOCommand command) {
@@ -2101,6 +2181,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       vout: vout,
       releaseReason: command.releaseReason,
       wasExpired: utxo.isReservationExpired,
+      restoredStatus: utxo.statusToRestoreOnRelease,
       version: currentState.version + 1,
       timestamp: DateTime.now(),
     );
@@ -2168,6 +2249,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
           vout: utxo.vout,
           releaseReason: 'Expired reservation cleanup',
           wasExpired: true,
+          restoredStatus: utxo.statusToRestoreOnRelease,
           version: currentState.version + events.length + 1,
           timestamp: DateTime.now(),
         );
@@ -2326,6 +2408,17 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
 
   void _applyUTXOReceived(UTXOReceivedEvent event) {
     final utxoKey = '${event.txid}:${event.vout}';
+    if (currentState.utxos.containsKey(utxoKey)) {
+      // First receipt wins (audit 2026-09-14 M9). The command handlers no
+      // longer emit a second UTXOReceivedEvent for a known outpoint, but
+      // journals written before the fix can hold one (the outgoing-tx
+      // scanner re-emitted it); overwriting would reset the UTXO's status
+      // and drop its reservation or spent mark. Replay must not throw.
+      _log.fine('Ignoring UTXOReceivedEvent for known outpoint $utxoKey');
+      currentState.version = event.version;
+      currentState.lastModified = event.timestamp;
+      return;
+    }
     final utxo = BitcoinUtxo.create(
       txid: event.txid,
       vout: event.vout,
@@ -2350,7 +2443,9 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     final utxo = currentState.utxos[utxoKey];
     
     if (utxo != null) {
-      currentState.utxos[utxoKey] = utxo.markAvailable();
+      currentState.utxos[utxoKey] = utxo.status == UTXOStatus.reserved
+          ? utxo.copyWith(statusBeforeReservation: UTXOStatus.available, updatedAt: event.timestamp)
+          : utxo.markAvailable();
       currentState.version = event.version;
       currentState.lastModified = event.timestamp;
       _recalculateBalances();
@@ -2419,6 +2514,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     if (utxo != null) {
       final reservedUtxo = utxo.copyWith(
         status: UTXOStatus.reserved,
+        statusBeforeReservation: utxo.statusToRestoreOnRelease,
         reservedByTxId: event.reservedByTxId,
         reservationExpiresAt: event.expiresAt,
         reservationPriority: event.priority,
@@ -2439,7 +2535,11 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     final utxo = currentState.utxos[utxoKey];
     
     if (utxo != null && utxo.status == UTXOStatus.reserved) {
-      final releasedUtxo = utxo.releaseReservation();
+      // Events journaled before restoredStatus existed released to
+      // available; replay them that way.
+      final releasedUtxo = utxo.releaseReservation(
+        restoreStatus: event.restoredStatus ?? UTXOStatus.available,
+      );
       currentState.utxos[utxoKey] = releasedUtxo;
       _recalculateBalances();
     }

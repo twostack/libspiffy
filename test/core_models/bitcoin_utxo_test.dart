@@ -78,12 +78,14 @@ void main() {
         expect(utxo.txid, equals('factory_test'));
         expect(utxo.vout, equals(2));
         expect(utxo.satoshis, equals(BigInt.from(75000)));
-        expect(utxo.status, equals(UTXOStatus.available));
+        // A newly created UTXO is pending until the wallet promotes it
+        // (confirmation or SPV proof); the factory defaults to pending.
+        expect(utxo.status, equals(UTXOStatus.pending));
         expect(utxo.blockHeight, equals(750001));
         expect(utxo.confirmations, equals(3));
         expect(utxo.derivationIndex, equals(10));
         expect(utxo.isConfirmed, isTrue);
-        expect(utxo.isAvailable, isTrue);
+        expect(utxo.isAvailable, isFalse);
       });
     });
 
@@ -185,6 +187,38 @@ void main() {
         expect(released.isAvailable, isTrue);
         expect(released.isReserved, isFalse);
         expect(released.updatedAt.isAfter(reserved.updatedAt), isTrue);
+      });
+
+      // Audit 2026-09-14 M4: release restores the status held before the
+      // reservation instead of always making the UTXO available.
+      test('releasing a reservation on a pending UTXO restores pending', () {
+        final pending = utxo.copyWith(status: UTXOStatus.pending);
+        final reserved = pending.reserve('tx_789');
+        expect(reserved.statusBeforeReservation, equals(UTXOStatus.pending));
+
+        final released = reserved.releaseReservation();
+        expect(released.status, equals(UTXOStatus.pending));
+        expect(released.statusBeforeReservation, isNull);
+      });
+
+      test('a higher-priority reservation keeps the original status to restore', () {
+        final reserved = utxo.copyWith(status: UTXOStatus.pending).reserve('low');
+        final overridden = reserved.reserve('high', priority: 5);
+        expect(overridden.releaseReservation().status, equals(UTXOStatus.pending));
+      });
+
+      test('confirming a reserved pending UTXO makes its release restore available', () {
+        final reserved = utxo.copyWith(status: UTXOStatus.pending).reserve('tx');
+        final confirmed = reserved.updateConfirmations(blockHeight: 1, confirmations: 1);
+        expect(confirmed.status, equals(UTXOStatus.reserved));
+        expect(confirmed.releaseReservation().status, equals(UTXOStatus.available));
+      });
+
+      test('statusBeforeReservation survives toMap/fromMap', () {
+        final reserved = utxo.copyWith(status: UTXOStatus.pending).reserve('tx');
+        final restored = BitcoinUtxo.fromMap(reserved.toMap());
+        expect(restored.statusBeforeReservation, equals(UTXOStatus.pending));
+        expect(utxo.toMap().containsKey('statusBeforeReservation'), isFalse);
       });
 
       test('should update confirmations correctly', () {
@@ -477,7 +511,7 @@ void main() {
         expect(map['satoshis'], equals('250000'));
         expect(map['scriptPubKey'], equals('76a914serialize123456789012345678901234567888ac'));
         expect(map['address'], equals('1SerializeTest123456789012345678901234'));
-        expect(map['status'], equals('available'));
+        expect(map['status'], equals('pending')); // factory default
         expect(map['blockHeight'], equals(751234));
         expect(map['confirmations'], equals(7));
         expect(map['derivationIndex'], equals(15));
@@ -604,7 +638,8 @@ void main() {
         );
 
         expect(dustUtxo.satoshis, equals(BigInt.from(546)));
-        expect(dustUtxo.isAvailable, isTrue);
+        expect(dustUtxo.status, equals(UTXOStatus.pending)); // factory default
+        expect(dustUtxo.markAvailable().isAvailable, isTrue);
       });
 
       test('should handle invalid status gracefully in deserialization', () {

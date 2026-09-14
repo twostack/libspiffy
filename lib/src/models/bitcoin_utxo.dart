@@ -65,6 +65,13 @@ class BitcoinUtxo {
   /// Derivation index used to generate the address (for HD wallets)
   final int? derivationIndex;
 
+  /// Status the UTXO had when it was reserved ([UTXOStatus.pending] or
+  /// [UTXOStatus.available]); null when not reserved, or when the value is
+  /// unknown (loaded from a store that does not record it).
+  /// [releaseReservation] restores it, so releasing a reservation on an
+  /// unconfirmed UTXO does not make it spendable (audit 2026-09-14 M4).
+  final UTXOStatus? statusBeforeReservation;
+
   /// Plugin-provided metadata for token/custom script UTXOs.
   ///
   /// Populated by [ScriptPlugin.extractMetadata()] during UTXO indexing.
@@ -90,6 +97,7 @@ class BitcoinUtxo {
     this.reservationReason,
     this.derivationIndex,
     this.pluginMetadata,
+    this.statusBeforeReservation,
   });
   
   /// Create a new UTXO from transaction output
@@ -158,6 +166,7 @@ class BitcoinUtxo {
     Object? reservationReason = _sentinel,
     int? derivationIndex,
     Object? pluginMetadata = _sentinel,
+    Object? statusBeforeReservation = _sentinel,
   }) {
     return BitcoinUtxo(
       txid: txid ?? this.txid,
@@ -176,6 +185,9 @@ class BitcoinUtxo {
       reservationReason: reservationReason == _sentinel ? this.reservationReason : reservationReason as String?,
       derivationIndex: derivationIndex ?? this.derivationIndex,
       pluginMetadata: pluginMetadata == _sentinel ? this.pluginMetadata : pluginMetadata as Map<String, dynamic>?,
+      statusBeforeReservation: statusBeforeReservation == _sentinel
+          ? this.statusBeforeReservation
+          : statusBeforeReservation as UTXOStatus?,
     );
   }
   
@@ -191,6 +203,7 @@ class BitcoinUtxo {
     
     return copyWith(
       status: UTXOStatus.reserved,
+      statusBeforeReservation: statusToRestoreOnRelease,
       reservedByTxId: transactionId,
       reservationExpiresAt: expiresAt,
       reservationPriority: priority,
@@ -215,10 +228,20 @@ class BitcoinUtxo {
     );
   }
   
-  /// Release reservation on this UTXO
-  BitcoinUtxo releaseReservation() {
+  /// The status a reservation placed now should restore on release: the
+  /// current status, or the remembered one when this UTXO is already
+  /// reserved (a higher-priority reservation replacing a lower one).
+  UTXOStatus get statusToRestoreOnRelease => status == UTXOStatus.reserved
+      ? (statusBeforeReservation ?? UTXOStatus.available)
+      : status;
+
+  /// Release reservation on this UTXO, restoring the status it had before
+  /// it was reserved ([restoreStatus] overrides it; unknown means
+  /// [UTXOStatus.available], the behaviour before the status was recorded).
+  BitcoinUtxo releaseReservation({UTXOStatus? restoreStatus}) {
     return copyWith(
-      status: UTXOStatus.available,
+      status: restoreStatus ?? statusBeforeReservation ?? UTXOStatus.available,
+      statusBeforeReservation: null,
       reservedByTxId: null,
       reservationExpiresAt: null,
       reservationPriority: null,
@@ -280,9 +303,18 @@ class BitcoinUtxo {
     final newStatus = (status == UTXOStatus.pending && confirmations > 0)
         ? UTXOStatus.available
         : status;
-    
+    // A reserved UTXO stays reserved, but what its release restores follows
+    // the confirmation: a pending coin confirmed while reserved is available
+    // once released.
+    final restore = (status == UTXOStatus.reserved &&
+            statusBeforeReservation == UTXOStatus.pending &&
+            confirmations > 0)
+        ? UTXOStatus.available
+        : statusBeforeReservation;
+
     return copyWith(
       status: newStatus,
+      statusBeforeReservation: restore,
       blockHeight: blockHeight,
       confirmations: confirmations,
       updatedAt: DateTime.now(),
@@ -305,6 +337,8 @@ class BitcoinUtxo {
       'reservedByTxId': reservedByTxId,
       'derivationIndex': derivationIndex,
       if (pluginMetadata != null) 'pluginMetadata': pluginMetadata,
+      if (statusBeforeReservation != null)
+        'statusBeforeReservation': statusBeforeReservation!.name,
     };
   }
   
@@ -329,6 +363,9 @@ class BitcoinUtxo {
       pluginMetadata: map['pluginMetadata'] != null
           ? Map<String, dynamic>.from(map['pluginMetadata'] as Map)
           : null,
+      statusBeforeReservation: UTXOStatus.values
+          .where((s) => s.name == map['statusBeforeReservation'])
+          .firstOrNull,
     );
   }
   

@@ -1,3 +1,75 @@
+## 2.0.0
+
+Dependency upgrade and audit release. libspiffy now tracks **dactor 1.3.0**,
+**eventador 3.0.0**, **duraq 3.0.0** and **duraq_isar 2.0.0**. A full
+correctness, security, performance and architecture audit accompanies the
+upgrade; its report is `doc/audit-2026-09-14.md` and every open finding is
+a beads issue labelled `audit-2026-09`.
+
+### Upgrading from 1.x
+
+1. **Bump the dependencies together**: `dactor: ^1.3.0`, `eventador: ^3.0.0`,
+   `duraq: ^3.0.0`, `duraq_isar: ^2.0.0`. `IsarStorage` now comes from
+   `package:duraq_isar/duraq_isar.dart`. Read the duraq 2.0.0/3.0.0 notes:
+   the broadcast-retry queue database is migrated in place on first open and
+   cannot be reopened by duraq 1.x.
+2. **Open a shared Isar instance with `LibSpiffySchemas.allSchemas`.**
+   `LibSpiffyActorSystem.initialize` now throws an `ArgumentError` naming
+   any missing collection. Under eventador 3.0 a projection whose checkpoint
+   collection is missing stops in `ProjectionStatus.error` instead of
+   replaying from 0, so the old partial-schema setup would leave read models
+   silently frozen. `walletSchemas` alone is no longer enough.
+3. **`BitcoinWalletAggregate.preStart` returns `Future<void>`.** Recovery
+   runs inside it and `spawn()` awaits it. Await `preStart()` if you call it
+   directly; no settle delay is needed before sending commands.
+4. **Reservation replies**: `ReserveUTXOCommand` now answers with
+   `UTXOReservedResponse` on success as well as failure. Callers that relied
+   on "no reply within 2 s means reserved" must handle the reply.
+5. **`ArcServiceConfig.requestTimeout`** (default 30 s) bounds every ARC
+   request. With no `arcConfig`, the ARC endpoint now follows `networkType`
+   (testnet ARC for `'test'`) instead of always using TAAL mainnet.
+6. **`ChannelP2PAdapter`** takes a `walletManager` and the coordinator sets
+   its reply target in `preStart`; hosts constructing it directly must pass
+   the wallet manager.
+7. **Postgres migration v003** runs on first start: block header integer
+   columns become `BIGINT` and `bitcoin_utxos.plugin_metadata JSONB` is added.
+8. Wallet metadata network names are normalised: `'main'`/`'mainnet'` and
+   `'test'`/`'testnet'` are accepted everywhere and persisted canonically.
+   A BIP39 passphrase given at creation is now stored (secure storage key
+   `wallet_passphrase_<walletId>`) and used for signing.
+
+### Fixed
+
+Critical: unproven BEEF payments were accepted when any transaction in the
+BEEF had a valid proof (inputs are now required to chain back to proven
+ancestors); `HeaderSyncActor` deadlocked on opportunistic header fetches;
+client-side channel open never progressed past `channel_accept`; deferred
+spends could never mark UTXOs spent and the expiry returned spent coins to
+`available`; on Postgres, token UTXOs were spendable as ordinary funding and
+about half of all block headers failed to store.
+
+High: BIP39 passphrase wallets could not spend what they received; mainnet
+key imports were rejected and mainnet change outputs were never detected
+(network-name mismatch); multi-input signing failed its own sanity check;
+timestamp BEEFs were never broadcast (base64 vs hex); `AwaitEventApplied`
+asks timed out at dactor's 5 s default; UTXO reservation treated a slow
+rejection as success; header sync stuck "in progress" forever with no
+peers; invoices were created with empty addresses on address-generation
+failure; the Isar chain tip pointed at an orphaned header after a reorg;
+Postgres reset a wallet's network to mainnet on every balance update; the
+wallet projection double-counted address balances; CDN chunk filenames
+could escape the cache directory; ARC HTTP requests had no timeout.
+
+Also: PostgresEventStore live streams no longer miss events persisted during
+a projection's replay and honour the eventador 3.0 `typeName` /
+`persistableMetadata` contracts; wallet-manager error replies are handled by
+the invoice and channel coordinators; `ask()` failure replies are
+`LocalMessage`-wrapped; commands for an unknown wallet are answered "Wallet
+not found" instead of spawning an empty aggregate; recovery sleeps and the
+`RecoveryStatusQuery` poll are gone; xpubs are no longer logged; a SEVERE
+warning is logged when `InMemorySecureStorage` backs a persistent backend;
+the `example/` directory compiles again.
+
 ## 1.1.0
 
 ### WalletCoordinatorActor (Unified Public API)

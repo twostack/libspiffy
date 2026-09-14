@@ -17,6 +17,7 @@ import '../storage/secure_storage.dart';
 import '../actors/wallet_messages.dart';
 import 'wallet_commands.dart';
 import 'wallet_events.dart';
+import 'wallet_output_ownership.dart';
 import '../utils/network_name.dart';
 import 'aggregate_command_failures.dart';
 
@@ -975,6 +976,11 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
       throw ArgumentError('UTXO amount must be positive');
     }
 
+    // Business rule: a bare multisig output attributed to one of the
+    // wallet's addresses (by one of its keys) is a wallet UTXO only when the
+    // wallet can spend it alone (bead libspiffy-viy).
+    _rejectMultisigNotSpendableAlone(currentState, command.scriptPubKey, command.address, utxoKey);
+
     // Use the initialStatus provided by the caller (defaults to pending)
     // The caller (e.g., wallet_manager_actor for SPV-validated UTXOs) is responsible
     // for determining the appropriate status based on merkle proof verification
@@ -1149,6 +1155,17 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
       throw StateError('Cannot record outgoing transaction for non-existent wallet');
     }
 
+    // Business rule: a transaction is recorded once (bead libspiffy-viy).
+    // The command is re-sent for a txid the wallet already recorded, e.g. by
+    // a channel funding broadcast resumed after a restart. Recording it
+    // again journaled a second TransactionRecordedEvent (the read model's
+    // history row went back to pending) and spent the inputs again. Only an
+    // input spend the earlier record deferred and this one asks for is
+    // still applied.
+    if (_isOutgoingTransactionRecorded(currentState, command.txid)) {
+      return _spendsStillOwed(currentState, command);
+    }
+
     final events = <Event>[];
 
     // Phase 4: when the TX was signed externally (plugin's
@@ -1274,30 +1291,16 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
             break;
 
           case 'p2ms':
-            // For P2MS (multisig), check if any of the public keys belong to wallet addresses
-            try {
-              final scriptInfo = scriptRegistry.extractScriptMetadata(output.script);
-              final pubKeys = scriptInfo?['publicKeys'] as List?;
-              if (pubKeys != null) {
-                for (final pubKeyHex in pubKeys) {
-                  try {
-                    final pubKey = dartsv.SVPublicKey.fromHex(pubKeyHex.toString());
-                    final derivedAddress = dartsv.Address.fromPublicKey(pubKey, network).toBase58();
-                    if (walletAddresses.contains(derivedAddress)) {
-                      belongsToWallet = true;
-                      outputAddress = derivedAddress; // Use the first matching address
-                      break;
-                    }
-                  } catch (e) {
-                    _log.warning('Failed to derive P2MS address from public key: $e');
-                  }
-                }
-              }
-            } catch (e) {
-              _log.warning('Failed to extract P2MS script metadata: $e');
-            }
+            // A bare multisig output is the wallet's only when the wallet
+            // holds as many of its keys as it requires: a payment channel's
+            // 2-of-2 funding output also needs the other party's signature
+            // and is not spendable balance (bead libspiffy-viy). The
+            // transaction itself is recorded whole either way.
+            outputAddress = BareMultisigScript.parse(output.script)
+                ?.spendableAloneBy(walletAddresses.contains, network);
+            belongsToWallet = outputAddress != null;
             break;
-            
+
           case 'opreturn':
           case 'op_return':
             // OP_RETURN outputs don't belong to anyone
@@ -1349,17 +1352,72 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
             timestamp: DateTime.now(),
           );
           events.add(utxoEvent);
-        } else {
         }
       }
-      
-      final walletOutputsCount = events.length - 1 - command.spentUtxoKeys.length;
-      
     } catch (e, stackTrace) {
-      // Continue without creating UTXOs - better than crashing
+      // The transaction is still recorded; its outputs are not scanned.
+      _log.warning('Could not scan the outputs of ${command.txid}: $e', e, stackTrace);
     }
 
     return events;
+  }
+
+  /// Whether [state] holds the outgoing-transaction record of [txid]
+  /// ([_applyTransactionRecorded]; a list-shaped record from older state
+  /// included).
+  static bool _isOutgoingTransactionRecorded(WalletState state, String txid) {
+    final records = state.metadata[_outgoingTransactionsKey];
+    if (records is Map) return records.containsKey(txid);
+    if (records is List) {
+      return records.any((r) => r is Map && r['txid']?.toString() == txid);
+    }
+    return false;
+  }
+
+  /// For a [command] recording a transaction already recorded: a
+  /// [UTXOSpentEvent] for each of its spent UTXOs the wallet holds unspent,
+  /// unless the spend is deferred. Nothing else is journaled again.
+  List<Event> _spendsStillOwed(WalletState currentState, RecordOutgoingTransactionCommand command) {
+    final events = <Event>[];
+    if (!command.deferSpend) {
+      for (final utxoKey in command.spentUtxoKeys) {
+        final utxo = currentState.utxos[utxoKey];
+        if (utxo == null || utxo.status == UTXOStatus.spent) continue;
+        events.add(UTXOSpentEvent(
+          walletId: command.walletId,
+          txid: utxo.txid,
+          vout: utxo.vout,
+          spentInTxId: command.txid,
+          version: currentState.version + events.length + 1,
+          timestamp: DateTime.now(),
+        ));
+      }
+    }
+    _log.info('Outgoing transaction ${command.txid} is already recorded; '
+        '${events.length} spend(s) still applied, nothing else journaled');
+    return events;
+  }
+
+  /// Throws when [scriptPubKey] is a bare multisig script, [address] is one
+  /// of the wallet's addresses, and the wallet holds fewer of the script's
+  /// keys than it requires. Outputs attributed some other way (an invoice's
+  /// multisig output under a 'p2ms:' pseudo-address) are not affected.
+  void _rejectMultisigNotSpendableAlone(
+      WalletState currentState, String scriptPubKey, String address, String utxoKey) {
+    if (!currentState.addresses.containsKey(address)) return;
+    final BareMultisigScript? multisig;
+    try {
+      multisig = BareMultisigScript.parse(dartsv.SVScript.fromHex(scriptPubKey));
+    } catch (_) {
+      return;
+    }
+    if (multisig == null) return;
+    final network = NetworkName.toDartsv(currentState.networkType);
+    if (multisig.spendableAloneBy(currentState.addresses.containsKey, network) == null) {
+      throw StateError('UTXO $utxoKey is a ${multisig.threshold}-of-'
+          '${multisig.publicKeysHex.length} multisig output the wallet cannot '
+          'spend alone; it is not a wallet UTXO');
+    }
   }
 
   /// Handle confirming a pending transaction

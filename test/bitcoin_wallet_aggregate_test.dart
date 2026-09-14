@@ -1260,13 +1260,14 @@ void main() {
         
         await wallet.commandHandler(recordCommand);
         
-        // Should create UTXO for multisig output since wallet has one of the keys
-        expect(wallet.currentState.utxos, hasLength(1));
-        
-        final utxo = wallet.currentState.utxos['$txid:0'];
-        expect(utxo, isNotNull);
-        expect(utxo!.address, equals(walletAddr));
-        expect(utxo.satoshis, equals(BigInt.from(100000)));
+        // A 2-of-2 needs the external key's signature too: the wallet cannot
+        // spend it alone, so it is not a wallet UTXO (bead libspiffy-viy).
+        // A payment channel's funding output has this shape.
+        expect(wallet.currentState.utxos.containsKey('$txid:0'), isFalse);
+        expect(wallet.currentState.balance, BigInt.zero);
+        // The transaction itself is recorded.
+        expect((wallet.currentState.metadata['outgoingTransactions'] as Map).keys,
+            contains(txid));
       });
 
       test('should handle settlement-like transaction (payment channel)', () async {
@@ -1405,7 +1406,9 @@ void main() {
 
       test('COMPREHENSIVE: Payment channel settlement with correct UTXO attribution', () async {
         // This test validates the complete payment channel settlement flow:
-        // 1. Multisig funding UTXO exists and is marked as spent
+        // 1. The 2-of-2 funding output is not a wallet UTXO (the wallet holds
+        //    one of its two keys; bead libspiffy-viy), so the settlement
+        //    spends an outpoint the wallet does not hold
         // 2. Server payment output creates a UTXO for wallet
         // 3. Client refund output does NOT create a UTXO (external)
         // 4. Transaction metadata correctly shows client as recipient
@@ -1434,16 +1437,20 @@ void main() {
         );
         final multisigScript = lockBuilder.getScriptPubkey();
         
-        // Record the funding UTXO (2-of-2 multisig)
-        await wallet.commandHandler(ReceiveUTXOCommand(
-          walletId: 'wallet-456',
-          txid: fundingTxid,
-          vout: fundingVout,
-          satoshis: BigInt.from(fundingAmount),
-          scriptPubKey: multisigScript.toHex(),
-          address: serverAddr, // Associated with server's key in the multisig
-          confirmations: 6,
-        ));
+        // The funding output (2-of-2 multisig) is not the wallet's to
+        // receive: the wallet cannot spend it without the client.
+        await expectLater(
+          wallet.commandHandler(ReceiveUTXOCommand(
+            walletId: 'wallet-456',
+            txid: fundingTxid,
+            vout: fundingVout,
+            satoshis: BigInt.from(fundingAmount),
+            scriptPubKey: multisigScript.toHex(),
+            address: serverAddr, // Associated with server's key in the multisig
+            confirmations: 6,
+          )),
+          throwsA(isA<StateError>()),
+        );
         
         // Build the settlement transaction
         // Structure:
@@ -1501,11 +1508,9 @@ void main() {
         
         // VALIDATIONS
         
-        // 1. The multisig funding UTXO should be marked as spent
-        final fundingUtxo = wallet.currentState.utxos['$fundingTxid:$fundingVout'];
-        expect(fundingUtxo, isNotNull, reason: 'Funding UTXO should exist');
-        expect(fundingUtxo!.status, equals(UTXOStatus.spent), 
-            reason: 'Funding UTXO should be marked as spent');
+        // 1. The multisig funding output is not a wallet UTXO
+        expect(wallet.currentState.utxos['$fundingTxid:$fundingVout'], isNull,
+            reason: 'the 2-of-2 funding output is not spendable by the wallet alone');
         
         // 2. Server payment output should create a UTXO for the wallet
         final serverPaymentUtxo = wallet.currentState.utxos['$settlementTxid:0'];
@@ -1523,12 +1528,12 @@ void main() {
         expect(clientRefundUtxo, isNull,
             reason: 'Client refund UTXO should NOT be created (external address)');
         
-        // 4. Total UTXOs should be 2: spent funding + new server payment
-        expect(wallet.currentState.utxos, hasLength(2),
-            reason: 'Should have exactly 2 UTXOs (spent funding + new server payment)');
+        // 4. The only wallet UTXO is the server payment
+        expect(wallet.currentState.utxos, hasLength(1),
+            reason: 'Should have exactly 1 UTXO (the server payment)');
         
         print('✅ Payment channel settlement UTXO attribution test passed!');
-        print('   - Funding UTXO correctly marked as spent');
+        print('   - Funding output correctly not a wallet UTXO');
         print('   - Server payment UTXO correctly created (2400 sats)');
         print('   - Client refund UTXO correctly NOT created (external)');
         print('   - Total UTXO count correct: ${wallet.currentState.utxos.length}');

@@ -428,6 +428,102 @@ void defineWalletLifecycleContract(
       expect(await s.getUTXOs(wallet), isEmpty);
     });
 
+    test(
+        'viy: a reserved UTXO reads back with its reservation, status before '
+        'reservation and derivation index; a release clears the reservation',
+        () async {
+      final s = storage();
+      final u = unique();
+      final wallet = 'lc-utxo-resv-$u';
+      await s.storeWallet(wallet, 'reservation');
+      final txid = contractHex64('utxo-resv-$u');
+      final base = BitcoinUtxo(
+        txid: txid,
+        vout: 1,
+        value: dartsv.Coin.ofSat(BigInt.from(100000)),
+        scriptPubKey: '76a914000000000000000000000000000000000000000088ac',
+        address: 'mkHS9ne12qx9pS9VojpwU5xtRd4T7X7ZUt',
+        status: UTXOStatus.pending,
+        createdAt: _at(10),
+        updatedAt: _at(10),
+        derivationIndex: 7,
+      );
+      await s.upsertUTXO(wallet, base);
+      await s.upsertUTXO(
+          wallet,
+          base.reserve('channel:c1',
+              duration: const Duration(days: 30),
+              priority: 1000,
+              reason: 'Payment channel c1 funding',
+              timestamp: _at(20)));
+
+      Future<BitcoinUtxo> read() async =>
+          (await s.getUTXOs(wallet, includeSpent: true)).single;
+
+      final reserved = await read();
+      expect(reserved.status, UTXOStatus.reserved);
+      expect(reserved.reservedByTxId, 'channel:c1');
+      expect(reserved.reservationReason, 'Payment channel c1 funding');
+      expect(reserved.reservationPriority, 1000);
+      expect(reserved.reservationExpiresAt, _sameMoment(_at(20).add(const Duration(days: 30))));
+      expect(reserved.statusBeforeReservation, UTXOStatus.pending,
+          reason: 'releasing must restore pending, not make the coin spendable');
+      expect(reserved.derivationIndex, 7);
+
+      // Released: the reservation fields are cleared, the index stays.
+      await s.upsertUTXO(wallet, reserved.releaseReservation(timestamp: _at(30)));
+      final released = await read();
+      expect(released.status, UTXOStatus.pending);
+      expect(released.reservedByTxId, isNull);
+      expect(released.reservationReason, isNull);
+      expect(released.reservationPriority, isNull);
+      expect(released.reservationExpiresAt, isNull);
+      expect(released.statusBeforeReservation, isNull);
+      expect(released.derivationIndex, 7);
+
+      // An update that lacks the derivation index keeps the stored one.
+      await s.upsertUTXO(
+          wallet,
+          BitcoinUtxo(
+            txid: txid,
+            vout: 1,
+            value: released.value,
+            scriptPubKey: released.scriptPubKey,
+            address: released.address,
+            status: UTXOStatus.available,
+            createdAt: _at(10),
+            updatedAt: _at(40),
+            confirmations: 1,
+            blockHeight: 800,
+          ));
+      expect((await read()).derivationIndex, 7);
+    });
+
+    test('viy: a spent UTXO reads back with the transaction that spent it, never overwritten',
+        () async {
+      final s = storage();
+      final u = unique();
+      final wallet = 'lc-utxo-spentin-$u';
+      await s.storeWallet(wallet, 'spent in');
+      final txid = contractHex64('utxo-spentin-$u');
+      final spender = contractHex64('utxo-spender-$u');
+      final utxo = _utxo(txid, 0, createdAt: _at(1));
+      await s.upsertUTXO(wallet, utxo);
+      await s.upsertUTXO(wallet, utxo.markSpent(timestamp: _at(2), spentInTxId: spender));
+
+      final spent = (await s.getUTXOs(wallet, includeSpent: true)).single;
+      expect(spent.status, UTXOStatus.spent);
+      expect(spent.spentInTxId, spender);
+
+      // A later update of the row without it (or with another one) keeps the
+      // spend history.
+      await s.upsertUTXO(wallet,
+          _utxo(txid, 0, status: UTXOStatus.spent, createdAt: _at(1), updatedAt: _at(3)));
+      await s.upsertUTXO(wallet,
+          utxo.markSpent(timestamp: _at(4), spentInTxId: contractHex64('other-$u')));
+      expect((await s.getUTXOs(wallet, includeSpent: true)).single.spentInTxId, spender);
+    });
+
     test('S-20: a transaction reads back with its walletId, createdAt and updatedAt',
         () async {
       final s = storage();

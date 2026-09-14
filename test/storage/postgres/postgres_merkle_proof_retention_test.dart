@@ -82,6 +82,7 @@ void main() {
 
     try {
       // --- the pre-v009 shape, with a 'pending' placeholder row ----------
+      expect(await migrations.rollback(), isTrue); // v011
       expect(await migrations.rollback(), isTrue); // v010
       expect(await migrations.rollback(), isTrue); // v009
       expect(await migrations.getCurrentVersion(), equals(8));
@@ -95,7 +96,7 @@ void main() {
 
       // --- up -------------------------------------------------------------
       await migrations.migrate();
-      expect(await migrations.getCurrentVersion(), equals(10));
+      expect(await migrations.getCurrentVersion(), equals(11));
       expect(await rawRows(pendingTx, 'block_hash, status'), [
         [null, 'pendingHeader']
       ]);
@@ -138,6 +139,7 @@ void main() {
       await expectRejected(orphanOnlyTx, null, 'bogus', 'fe07'); // unknown status
 
       // --- down -----------------------------------------------------------
+      expect(await migrations.rollback(), isTrue); // v011
       expect(await migrations.rollback(), isTrue); // v010
       expect(await migrations.rollback(), isTrue); // v009
       expect(await migrations.getCurrentVersion(), equals(8));
@@ -154,7 +156,7 @@ void main() {
 
       // --- up again, leaving the database at the latest version ----------
       await migrations.migrate();
-      expect(await migrations.getCurrentVersion(), equals(10));
+      expect(await migrations.getCurrentVersion(), equals(11));
       expect((await storage.getMerkleProof(pendingTx))!.status, MerkleProofStatus.pendingHeader);
     } finally {
       await migrations.migrate();

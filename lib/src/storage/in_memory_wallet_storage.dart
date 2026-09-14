@@ -346,15 +346,19 @@ _balanceCache.remove(walletId);
       final utxoKey = '${utxo.txid}:${utxo.vout}';
       final walletUtxos = _utxos.putIfAbsent(walletId, () => {});
       final existing = walletUtxos[utxoKey];
-      // A block height or plugin metadata the update lacks keeps the stored
-      // value, as on the persistent backends. A zero-confirmation update
-      // (a confirmation taken back after a reorg, audit 3b0) clears the height.
+      // A block height, plugin metadata or derivation index the update lacks
+      // keeps the stored value, as on the persistent backends. A
+      // zero-confirmation update (a confirmation taken back after a reorg,
+      // audit 3b0) clears the height. The spending transaction, once stored,
+      // is spend history and never replaced (bead libspiffy-viy).
       walletUtxos[utxoKey] = existing == null
           ? utxo
           : utxo.copyWith(
               blockHeight: utxo.blockHeight ??
                   ((utxo.confirmations ?? 0) > 0 ? existing.blockHeight : null),
               pluginMetadata: utxo.pluginMetadata ?? existing.pluginMetadata,
+              derivationIndex: utxo.derivationIndex ?? existing.derivationIndex,
+              spentInTxId: existing.spentInTxId ?? utxo.spentInTxId,
             );
 
       // Invalidate cache

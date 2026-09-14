@@ -4432,68 +4432,98 @@ const BitcoinUtxoEntitySchema = CollectionSchema(
       name: r'createdAt',
       type: IsarType.dateTime,
     ),
-    r'isSpendable': PropertySchema(
+    r'derivationIndex': PropertySchema(
       id: 5,
+      name: r'derivationIndex',
+      type: IsarType.long,
+    ),
+    r'isSpendable': PropertySchema(
+      id: 6,
       name: r'isSpendable',
       type: IsarType.bool,
     ),
     r'pluginMetadataJson': PropertySchema(
-      id: 6,
+      id: 7,
       name: r'pluginMetadataJson',
       type: IsarType.string,
     ),
+    r'reservationExpiresAt': PropertySchema(
+      id: 8,
+      name: r'reservationExpiresAt',
+      type: IsarType.dateTime,
+    ),
+    r'reservationPriority': PropertySchema(
+      id: 9,
+      name: r'reservationPriority',
+      type: IsarType.long,
+    ),
+    r'reservationReason': PropertySchema(
+      id: 10,
+      name: r'reservationReason',
+      type: IsarType.string,
+    ),
+    r'reservedByTxId': PropertySchema(
+      id: 11,
+      name: r'reservedByTxId',
+      type: IsarType.string,
+    ),
     r'satoshis': PropertySchema(
-      id: 7,
+      id: 12,
       name: r'satoshis',
       type: IsarType.string,
     ),
     r'scriptPubKey': PropertySchema(
-      id: 8,
+      id: 13,
       name: r'scriptPubKey',
       type: IsarType.string,
     ),
     r'scriptType': PropertySchema(
-      id: 9,
+      id: 14,
       name: r'scriptType',
       type: IsarType.string,
     ),
     r'spentAt': PropertySchema(
-      id: 10,
+      id: 15,
       name: r'spentAt',
       type: IsarType.dateTime,
     ),
     r'spentInTxId': PropertySchema(
-      id: 11,
+      id: 16,
       name: r'spentInTxId',
       type: IsarType.string,
     ),
     r'status': PropertySchema(
-      id: 12,
+      id: 17,
       name: r'status',
       type: IsarType.string,
     ),
+    r'statusBeforeReservation': PropertySchema(
+      id: 18,
+      name: r'statusBeforeReservation',
+      type: IsarType.string,
+    ),
     r'txid': PropertySchema(
-      id: 13,
+      id: 19,
       name: r'txid',
       type: IsarType.string,
     ),
     r'updatedAt': PropertySchema(
-      id: 14,
+      id: 20,
       name: r'updatedAt',
       type: IsarType.dateTime,
     ),
     r'utxoKey': PropertySchema(
-      id: 15,
+      id: 21,
       name: r'utxoKey',
       type: IsarType.string,
     ),
     r'vout': PropertySchema(
-      id: 16,
+      id: 22,
       name: r'vout',
       type: IsarType.long,
     ),
     r'walletId': PropertySchema(
-      id: 17,
+      id: 23,
       name: r'walletId',
       type: IsarType.string,
     )
@@ -4607,6 +4637,18 @@ int _bitcoinUtxoEntityEstimateSize(
       bytesCount += 3 + value.length * 3;
     }
   }
+  {
+    final value = object.reservationReason;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
+  {
+    final value = object.reservedByTxId;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
   bytesCount += 3 + object.satoshis.length * 3;
   bytesCount += 3 + object.scriptPubKey.length * 3;
   bytesCount += 3 + object.scriptType.length * 3;
@@ -4617,6 +4659,12 @@ int _bitcoinUtxoEntityEstimateSize(
     }
   }
   bytesCount += 3 + object.status.length * 3;
+  {
+    final value = object.statusBeforeReservation;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
   bytesCount += 3 + object.txid.length * 3;
   bytesCount += 3 + object.utxoKey.length * 3;
   bytesCount += 3 + object.walletId.length * 3;
@@ -4634,19 +4682,25 @@ void _bitcoinUtxoEntitySerialize(
   writer.writeString(offsets[2], object.category);
   writer.writeLong(offsets[3], object.confirmations);
   writer.writeDateTime(offsets[4], object.createdAt);
-  writer.writeBool(offsets[5], object.isSpendable);
-  writer.writeString(offsets[6], object.pluginMetadataJson);
-  writer.writeString(offsets[7], object.satoshis);
-  writer.writeString(offsets[8], object.scriptPubKey);
-  writer.writeString(offsets[9], object.scriptType);
-  writer.writeDateTime(offsets[10], object.spentAt);
-  writer.writeString(offsets[11], object.spentInTxId);
-  writer.writeString(offsets[12], object.status);
-  writer.writeString(offsets[13], object.txid);
-  writer.writeDateTime(offsets[14], object.updatedAt);
-  writer.writeString(offsets[15], object.utxoKey);
-  writer.writeLong(offsets[16], object.vout);
-  writer.writeString(offsets[17], object.walletId);
+  writer.writeLong(offsets[5], object.derivationIndex);
+  writer.writeBool(offsets[6], object.isSpendable);
+  writer.writeString(offsets[7], object.pluginMetadataJson);
+  writer.writeDateTime(offsets[8], object.reservationExpiresAt);
+  writer.writeLong(offsets[9], object.reservationPriority);
+  writer.writeString(offsets[10], object.reservationReason);
+  writer.writeString(offsets[11], object.reservedByTxId);
+  writer.writeString(offsets[12], object.satoshis);
+  writer.writeString(offsets[13], object.scriptPubKey);
+  writer.writeString(offsets[14], object.scriptType);
+  writer.writeDateTime(offsets[15], object.spentAt);
+  writer.writeString(offsets[16], object.spentInTxId);
+  writer.writeString(offsets[17], object.status);
+  writer.writeString(offsets[18], object.statusBeforeReservation);
+  writer.writeString(offsets[19], object.txid);
+  writer.writeDateTime(offsets[20], object.updatedAt);
+  writer.writeString(offsets[21], object.utxoKey);
+  writer.writeLong(offsets[22], object.vout);
+  writer.writeString(offsets[23], object.walletId);
 }
 
 BitcoinUtxoEntity _bitcoinUtxoEntityDeserialize(
@@ -4661,20 +4715,26 @@ BitcoinUtxoEntity _bitcoinUtxoEntityDeserialize(
   object.category = reader.readString(offsets[2]);
   object.confirmations = reader.readLong(offsets[3]);
   object.createdAt = reader.readDateTime(offsets[4]);
+  object.derivationIndex = reader.readLongOrNull(offsets[5]);
   object.id = id;
-  object.isSpendable = reader.readBool(offsets[5]);
-  object.pluginMetadataJson = reader.readStringOrNull(offsets[6]);
-  object.satoshis = reader.readString(offsets[7]);
-  object.scriptPubKey = reader.readString(offsets[8]);
-  object.scriptType = reader.readString(offsets[9]);
-  object.spentAt = reader.readDateTimeOrNull(offsets[10]);
-  object.spentInTxId = reader.readStringOrNull(offsets[11]);
-  object.status = reader.readString(offsets[12]);
-  object.txid = reader.readString(offsets[13]);
-  object.updatedAt = reader.readDateTimeOrNull(offsets[14]);
-  object.utxoKey = reader.readString(offsets[15]);
-  object.vout = reader.readLong(offsets[16]);
-  object.walletId = reader.readString(offsets[17]);
+  object.isSpendable = reader.readBool(offsets[6]);
+  object.pluginMetadataJson = reader.readStringOrNull(offsets[7]);
+  object.reservationExpiresAt = reader.readDateTimeOrNull(offsets[8]);
+  object.reservationPriority = reader.readLongOrNull(offsets[9]);
+  object.reservationReason = reader.readStringOrNull(offsets[10]);
+  object.reservedByTxId = reader.readStringOrNull(offsets[11]);
+  object.satoshis = reader.readString(offsets[12]);
+  object.scriptPubKey = reader.readString(offsets[13]);
+  object.scriptType = reader.readString(offsets[14]);
+  object.spentAt = reader.readDateTimeOrNull(offsets[15]);
+  object.spentInTxId = reader.readStringOrNull(offsets[16]);
+  object.status = reader.readString(offsets[17]);
+  object.statusBeforeReservation = reader.readStringOrNull(offsets[18]);
+  object.txid = reader.readString(offsets[19]);
+  object.updatedAt = reader.readDateTimeOrNull(offsets[20]);
+  object.utxoKey = reader.readString(offsets[21]);
+  object.vout = reader.readLong(offsets[22]);
+  object.walletId = reader.readString(offsets[23]);
   return object;
 }
 
@@ -4696,17 +4756,17 @@ P _bitcoinUtxoEntityDeserializeProp<P>(
     case 4:
       return (reader.readDateTime(offset)) as P;
     case 5:
-      return (reader.readBool(offset)) as P;
+      return (reader.readLongOrNull(offset)) as P;
     case 6:
-      return (reader.readStringOrNull(offset)) as P;
+      return (reader.readBool(offset)) as P;
     case 7:
-      return (reader.readString(offset)) as P;
+      return (reader.readStringOrNull(offset)) as P;
     case 8:
-      return (reader.readString(offset)) as P;
-    case 9:
-      return (reader.readString(offset)) as P;
-    case 10:
       return (reader.readDateTimeOrNull(offset)) as P;
+    case 9:
+      return (reader.readLongOrNull(offset)) as P;
+    case 10:
+      return (reader.readStringOrNull(offset)) as P;
     case 11:
       return (reader.readStringOrNull(offset)) as P;
     case 12:
@@ -4714,12 +4774,24 @@ P _bitcoinUtxoEntityDeserializeProp<P>(
     case 13:
       return (reader.readString(offset)) as P;
     case 14:
-      return (reader.readDateTimeOrNull(offset)) as P;
-    case 15:
       return (reader.readString(offset)) as P;
+    case 15:
+      return (reader.readDateTimeOrNull(offset)) as P;
     case 16:
-      return (reader.readLong(offset)) as P;
+      return (reader.readStringOrNull(offset)) as P;
     case 17:
+      return (reader.readString(offset)) as P;
+    case 18:
+      return (reader.readStringOrNull(offset)) as P;
+    case 19:
+      return (reader.readString(offset)) as P;
+    case 20:
+      return (reader.readDateTimeOrNull(offset)) as P;
+    case 21:
+      return (reader.readString(offset)) as P;
+    case 22:
+      return (reader.readLong(offset)) as P;
+    case 23:
       return (reader.readString(offset)) as P;
     default:
       throw IsarError('Unknown property with id $propertyId');
@@ -5704,6 +5776,80 @@ extension BitcoinUtxoEntityQueryFilter
   }
 
   QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      derivationIndexIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'derivationIndex',
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      derivationIndexIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'derivationIndex',
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      derivationIndexEqualTo(int? value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'derivationIndex',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      derivationIndexGreaterThan(
+    int? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'derivationIndex',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      derivationIndexLessThan(
+    int? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'derivationIndex',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      derivationIndexBetween(
+    int? lower,
+    int? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'derivationIndex',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
       idEqualTo(Id value) {
     return QueryBuilder.apply(this, (query) {
       return query.addFilterCondition(FilterCondition.equalTo(
@@ -5918,6 +6064,462 @@ extension BitcoinUtxoEntityQueryFilter
     return QueryBuilder.apply(this, (query) {
       return query.addFilterCondition(FilterCondition.greaterThan(
         property: r'pluginMetadataJson',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      reservationExpiresAtIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'reservationExpiresAt',
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      reservationExpiresAtIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'reservationExpiresAt',
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      reservationExpiresAtEqualTo(DateTime? value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'reservationExpiresAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      reservationExpiresAtGreaterThan(
+    DateTime? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'reservationExpiresAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      reservationExpiresAtLessThan(
+    DateTime? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'reservationExpiresAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      reservationExpiresAtBetween(
+    DateTime? lower,
+    DateTime? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'reservationExpiresAt',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      reservationPriorityIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'reservationPriority',
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      reservationPriorityIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'reservationPriority',
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      reservationPriorityEqualTo(int? value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'reservationPriority',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      reservationPriorityGreaterThan(
+    int? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'reservationPriority',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      reservationPriorityLessThan(
+    int? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'reservationPriority',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      reservationPriorityBetween(
+    int? lower,
+    int? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'reservationPriority',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      reservationReasonIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'reservationReason',
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      reservationReasonIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'reservationReason',
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      reservationReasonEqualTo(
+    String? value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'reservationReason',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      reservationReasonGreaterThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'reservationReason',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      reservationReasonLessThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'reservationReason',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      reservationReasonBetween(
+    String? lower,
+    String? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'reservationReason',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      reservationReasonStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'reservationReason',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      reservationReasonEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'reservationReason',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      reservationReasonContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'reservationReason',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      reservationReasonMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'reservationReason',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      reservationReasonIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'reservationReason',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      reservationReasonIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'reservationReason',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      reservedByTxIdIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'reservedByTxId',
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      reservedByTxIdIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'reservedByTxId',
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      reservedByTxIdEqualTo(
+    String? value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'reservedByTxId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      reservedByTxIdGreaterThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'reservedByTxId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      reservedByTxIdLessThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'reservedByTxId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      reservedByTxIdBetween(
+    String? lower,
+    String? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'reservedByTxId',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      reservedByTxIdStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'reservedByTxId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      reservedByTxIdEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'reservedByTxId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      reservedByTxIdContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'reservedByTxId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      reservedByTxIdMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'reservedByTxId',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      reservedByTxIdIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'reservedByTxId',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      reservedByTxIdIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'reservedByTxId',
         value: '',
       ));
     });
@@ -6696,6 +7298,162 @@ extension BitcoinUtxoEntityQueryFilter
   }
 
   QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      statusBeforeReservationIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'statusBeforeReservation',
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      statusBeforeReservationIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'statusBeforeReservation',
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      statusBeforeReservationEqualTo(
+    String? value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'statusBeforeReservation',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      statusBeforeReservationGreaterThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'statusBeforeReservation',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      statusBeforeReservationLessThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'statusBeforeReservation',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      statusBeforeReservationBetween(
+    String? lower,
+    String? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'statusBeforeReservation',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      statusBeforeReservationStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'statusBeforeReservation',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      statusBeforeReservationEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'statusBeforeReservation',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      statusBeforeReservationContains(String value,
+          {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'statusBeforeReservation',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      statusBeforeReservationMatches(String pattern,
+          {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'statusBeforeReservation',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      statusBeforeReservationIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'statusBeforeReservation',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
+      statusBeforeReservationIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'statusBeforeReservation',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
       txidEqualTo(
     String value, {
     bool caseSensitive = true,
@@ -7313,6 +8071,20 @@ extension BitcoinUtxoEntityQuerySortBy
   }
 
   QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterSortBy>
+      sortByDerivationIndex() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'derivationIndex', Sort.asc);
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterSortBy>
+      sortByDerivationIndexDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'derivationIndex', Sort.desc);
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterSortBy>
       sortByIsSpendable() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'isSpendable', Sort.asc);
@@ -7337,6 +8109,62 @@ extension BitcoinUtxoEntityQuerySortBy
       sortByPluginMetadataJsonDesc() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'pluginMetadataJson', Sort.desc);
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterSortBy>
+      sortByReservationExpiresAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'reservationExpiresAt', Sort.asc);
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterSortBy>
+      sortByReservationExpiresAtDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'reservationExpiresAt', Sort.desc);
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterSortBy>
+      sortByReservationPriority() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'reservationPriority', Sort.asc);
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterSortBy>
+      sortByReservationPriorityDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'reservationPriority', Sort.desc);
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterSortBy>
+      sortByReservationReason() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'reservationReason', Sort.asc);
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterSortBy>
+      sortByReservationReasonDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'reservationReason', Sort.desc);
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterSortBy>
+      sortByReservedByTxId() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'reservedByTxId', Sort.asc);
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterSortBy>
+      sortByReservedByTxIdDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'reservedByTxId', Sort.desc);
     });
   }
 
@@ -7421,6 +8249,20 @@ extension BitcoinUtxoEntityQuerySortBy
       sortByStatusDesc() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'status', Sort.desc);
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterSortBy>
+      sortByStatusBeforeReservation() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'statusBeforeReservation', Sort.asc);
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterSortBy>
+      sortByStatusBeforeReservationDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'statusBeforeReservation', Sort.desc);
     });
   }
 
@@ -7567,6 +8409,20 @@ extension BitcoinUtxoEntityQuerySortThenBy
     });
   }
 
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterSortBy>
+      thenByDerivationIndex() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'derivationIndex', Sort.asc);
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterSortBy>
+      thenByDerivationIndexDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'derivationIndex', Sort.desc);
+    });
+  }
+
   QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterSortBy> thenById() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'id', Sort.asc);
@@ -7605,6 +8461,62 @@ extension BitcoinUtxoEntityQuerySortThenBy
       thenByPluginMetadataJsonDesc() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'pluginMetadataJson', Sort.desc);
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterSortBy>
+      thenByReservationExpiresAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'reservationExpiresAt', Sort.asc);
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterSortBy>
+      thenByReservationExpiresAtDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'reservationExpiresAt', Sort.desc);
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterSortBy>
+      thenByReservationPriority() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'reservationPriority', Sort.asc);
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterSortBy>
+      thenByReservationPriorityDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'reservationPriority', Sort.desc);
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterSortBy>
+      thenByReservationReason() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'reservationReason', Sort.asc);
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterSortBy>
+      thenByReservationReasonDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'reservationReason', Sort.desc);
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterSortBy>
+      thenByReservedByTxId() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'reservedByTxId', Sort.asc);
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterSortBy>
+      thenByReservedByTxIdDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'reservedByTxId', Sort.desc);
     });
   }
 
@@ -7689,6 +8601,20 @@ extension BitcoinUtxoEntityQuerySortThenBy
       thenByStatusDesc() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'status', Sort.desc);
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterSortBy>
+      thenByStatusBeforeReservation() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'statusBeforeReservation', Sort.asc);
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterSortBy>
+      thenByStatusBeforeReservationDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'statusBeforeReservation', Sort.desc);
     });
   }
 
@@ -7801,6 +8727,13 @@ extension BitcoinUtxoEntityQueryWhereDistinct
   }
 
   QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QDistinct>
+      distinctByDerivationIndex() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'derivationIndex');
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QDistinct>
       distinctByIsSpendable() {
     return QueryBuilder.apply(this, (query) {
       return query.addDistinctBy(r'isSpendable');
@@ -7811,6 +8744,36 @@ extension BitcoinUtxoEntityQueryWhereDistinct
       distinctByPluginMetadataJson({bool caseSensitive = true}) {
     return QueryBuilder.apply(this, (query) {
       return query.addDistinctBy(r'pluginMetadataJson',
+          caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QDistinct>
+      distinctByReservationExpiresAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'reservationExpiresAt');
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QDistinct>
+      distinctByReservationPriority() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'reservationPriority');
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QDistinct>
+      distinctByReservationReason({bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'reservationReason',
+          caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QDistinct>
+      distinctByReservedByTxId({bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'reservedByTxId',
           caseSensitive: caseSensitive);
     });
   }
@@ -7854,6 +8817,14 @@ extension BitcoinUtxoEntityQueryWhereDistinct
       distinctByStatus({bool caseSensitive = true}) {
     return QueryBuilder.apply(this, (query) {
       return query.addDistinctBy(r'status', caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QDistinct>
+      distinctByStatusBeforeReservation({bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'statusBeforeReservation',
+          caseSensitive: caseSensitive);
     });
   }
 
@@ -7934,6 +8905,13 @@ extension BitcoinUtxoEntityQueryProperty
     });
   }
 
+  QueryBuilder<BitcoinUtxoEntity, int?, QQueryOperations>
+      derivationIndexProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'derivationIndex');
+    });
+  }
+
   QueryBuilder<BitcoinUtxoEntity, bool, QQueryOperations>
       isSpendableProperty() {
     return QueryBuilder.apply(this, (query) {
@@ -7945,6 +8923,34 @@ extension BitcoinUtxoEntityQueryProperty
       pluginMetadataJsonProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'pluginMetadataJson');
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, DateTime?, QQueryOperations>
+      reservationExpiresAtProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'reservationExpiresAt');
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, int?, QQueryOperations>
+      reservationPriorityProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'reservationPriority');
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, String?, QQueryOperations>
+      reservationReasonProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'reservationReason');
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, String?, QQueryOperations>
+      reservedByTxIdProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'reservedByTxId');
     });
   }
 
@@ -7985,6 +8991,13 @@ extension BitcoinUtxoEntityQueryProperty
   QueryBuilder<BitcoinUtxoEntity, String, QQueryOperations> statusProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'status');
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, String?, QQueryOperations>
+      statusBeforeReservationProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'statusBeforeReservation');
     });
   }
 

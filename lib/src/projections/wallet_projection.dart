@@ -148,7 +148,7 @@ class WalletProjection extends Projection<void> {
         await _handleUTXOReleased(event as UTXOReleasedEvent);
         return true;
       case UTXOReservationRenewedEvent:
-        // Renewal doesn't change statistics
+        await _handleUTXOReservationRenewed(event as UTXOReservationRenewedEvent);
         return true;
       case TransactionImportedEvent:
         await _handleTransactionImported(event as TransactionImportedEvent);
@@ -538,7 +538,7 @@ class WalletProjection extends Projection<void> {
     }
 
     if (utxo.status != UTXOStatus.spent) {
-      final spent = utxo.copyWith(status: UTXOStatus.spent, updatedAt: event.timestamp);
+      final spent = utxo.markSpent(timestamp: event.timestamp, spentInTxId: event.spentInTxId);
       await _storage.upsertUTXO(event.walletId, spent);
       rows.put(spent);
     }
@@ -587,6 +587,7 @@ class WalletProjection extends Projection<void> {
 
     final updatedUtxo = utxo.copyWith(
       status: UTXOStatus.reserved,
+      statusBeforeReservation: utxo.statusToRestoreOnRelease,
       reservedByTxId: event.reservedByTxId,
       reservationExpiresAt: event.expiresAt,
       reservationPriority: event.priority,
@@ -607,17 +608,37 @@ class WalletProjection extends Projection<void> {
     }
 
     if (utxo.status == UTXOStatus.reserved) {
-      // The read model does not persist the pre-reservation status; the
-      // aggregate records it on the event (audit M4). Older events carry
-      // none and release to available, as they did when journaled.
+      // The aggregate records the restored status on the event (audit M4).
+      // Older events carry none and release to available, as they did when
+      // journaled (the aggregate replays them the same way).
       final updatedUtxo = utxo.releaseReservation(
-        restoreStatus: event.restoredStatus,
+        restoreStatus: event.restoredStatus ?? UTXOStatus.available,
         timestamp: event.timestamp,
       );
       await _storage.upsertUTXO(event.walletId, updatedUtxo);
       rows.put(updatedUtxo);
       await _recalculateAndPersistForWallet(event.walletId, event.timestamp, rows.all);
     }
+  }
+
+  /// A renewed reservation: the new expiry (and reason) on the reserved
+  /// row, as the aggregate applies it. Balances do not change.
+  Future<void> _handleUTXOReservationRenewed(UTXOReservationRenewedEvent event) async {
+    final rows = await _loadUtxoRows(event.walletId);
+    final utxo = rows.find(event.txid, event.vout);
+    if (utxo == null) {
+      _warnMissingUtxo(event, event.txid, event.vout);
+      return;
+    }
+    if (utxo.status != UTXOStatus.reserved) return;
+    await _storage.upsertUTXO(
+      event.walletId,
+      utxo.copyWith(
+        reservationExpiresAt: event.newExpiresAt,
+        reservationReason: event.renewalReason ?? utxo.reservationReason,
+        updatedAt: event.timestamp,
+      ),
+    );
   }
 
   /// Recalculate statistics and persist for a specific wallet
@@ -799,9 +820,15 @@ class WalletProjection extends Projection<void> {
     }
   }
 
+  /// The outgoing transaction's history row, pending. A row that already
+  /// exists (a second TransactionRecordedEvent for the txid, which journals
+  /// written before bead libspiffy-viy can hold) keeps its status, block,
+  /// confirmations and creation time, as the aggregate keeps its record: a
+  /// replay must not take a confirmed transaction back to pending.
   Future<void> _handleTransactionRecorded(TransactionRecordedEvent event) async {
     
     try {
+      final existing = await _storage.getTransaction(event.txid, walletId: event.walletId);
       // For outgoing transactions, net amount should be:
       // -(payment amount + fee) because we're losing this amount from our wallet
       final paymentAmount = BigInt.parse(event.paymentAmount);
@@ -813,9 +840,9 @@ class WalletProjection extends Projection<void> {
         walletId: event.walletId, // Include wallet ID for proper querying
         txid: event.txid,
         rawHex: event.rawHex,
-        status: TransactionStatus.pending, // Important: starts as PENDING
-        blockHeight: null, // No block height yet
-        confirmations: 0,
+        status: existing?.status ?? TransactionStatus.pending, // a new row starts pending
+        blockHeight: existing?.blockHeight, // none until confirmed
+        confirmations: existing?.confirmations ?? 0,
         inputValue: BigInt.from(event.totalInputSats),
         outputValue: BigInt.from(event.totalOutputSats),
         fee: fee,
@@ -823,7 +850,7 @@ class WalletProjection extends Projection<void> {
         sendingAddresses: [], // Sender addresses will be from our wallet
         netAmount: netAmount, // Negative for outgoing
         // Event time, not wall-clock: a replay writes the same row.
-        createdAt: event.timestamp,
+        createdAt: existing?.createdAt ?? event.timestamp,
         updatedAt: event.timestamp,
         lockTime: event.txLockTime,
         version: event.txVersion,

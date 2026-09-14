@@ -15,6 +15,7 @@ import '../models/blockchain_data_models.dart';
 import '../models/bitcoin_utxo.dart'; // For UTXOStatus
 import '../core/wallet_commands.dart';
 import '../core/wallet_events.dart';
+import '../core/wallet_output_ownership.dart';
 import 'wallet_messages.dart';
 import '../utils/network_name.dart';
 
@@ -771,41 +772,16 @@ class ImportActor extends Actor {
             belongsToWallet = allAddresses.any((a) => a.address == outputAddress);
           }
         } else if (scriptType?.toLowerCase() == 'p2ms') {
-          // P2MS (multisig) - check if any of the public keys belong to wallet
-          _logger.info('            P2MS (multisig) output detected');
-
-          final scriptRegistry = ScriptTypeRegistry(
-            networkType: NetworkName.toDartsv(message.networkType),
+          // A bare multisig output is the wallet's only when the wallet holds
+          // as many of its keys as it requires; a payment channel's 2-of-2
+          // output needs the other party too (bead libspiffy-viy).
+          outputAddress = BareMultisigScript.parse(output.script)?.spendableAloneBy(
+            (address) => allAddresses.any((a) => a.address == address),
+            NetworkName.toDartsv(message.networkType),
           );
-          final scriptInfo = scriptRegistry.extractScriptMetadata(output.script);
-          final pubKeys = scriptInfo?['publicKeys'] as List?;
-
-          if (pubKeys != null && pubKeys.isNotEmpty) {
-            _logger.info('            Multisig has ${pubKeys.length} public keys');
-
-            final network = NetworkName.toDartsv(message.networkType);
-
-            // Check if any public key derives to a wallet address
-            for (final pubKeyHex in pubKeys) {
-              try {
-                final pubKey = dartsv.SVPublicKey.fromHex(pubKeyHex.toString());
-                final derivedAddress = dartsv.Address.fromPublicKey(pubKey, network).toBase58();
-
-                if (allAddresses.any((a) => a.address == derivedAddress)) {
-                  _logger.fine('            ✅ Wallet owns multisig key: $derivedAddress');
-                  belongsToWallet = true;
-                  // Use the first matching address for UTXO tracking
-                  outputAddress = derivedAddress;
-                  break;
-                }
-              } catch (e) {
-                _logger.warning('            ⚠️  Error deriving address from P2MS pubkey: $e');
-              }
-            }
-
-            if (!belongsToWallet) {
-              _logger.info('            ℹ️  Multisig does not include wallet keys');
-            }
+          belongsToWallet = outputAddress != null;
+          if (!belongsToWallet) {
+            _logger.info('            ℹ️  Multisig output not spendable by the wallet alone');
           }
         } else if (scriptType?.toLowerCase() == 'p2sh') {
           _logger.info('            ⚠️  P2SH output detected - skipping (not supported for UTXO import)');

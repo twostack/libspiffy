@@ -18,6 +18,7 @@ import 'migrations/v007_nullable_channel_server_key.dart';
 import 'migrations/v008_journal_tx_id.dart';
 import 'migrations/v009_merkle_proof_status.dart';
 import 'migrations/v010_ancestor_transactions.dart';
+import 'migrations/v011_utxo_reservation_columns.dart';
 
 /// Base class for database migrations.
 ///
@@ -54,6 +55,7 @@ class PostgresMigrations {
     V008JournalTxId(),
     V009MerkleProofStatus(),
     V010AncestorTransactions(),
+    V011UtxoReservationColumns(),
   ];
 
   /// Test hook awaited by [migrate] right after it reads the current schema

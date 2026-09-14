@@ -360,6 +360,22 @@ class BitcoinUtxoEntity {
   /// Plugin metadata as JSON string (null for standard P2PKH UTXOs)
   String? pluginMetadataJson;
 
+  /// [BitcoinUtxo.derivationIndex]; null on rows written before it was
+  /// stored.
+  int? derivationIndex;
+
+  /// The reservation of a reserved UTXO ([BitcoinUtxo.reservedByTxId],
+  /// [BitcoinUtxo.reservationReason], [BitcoinUtxo.reservationExpiresAt],
+  /// [BitcoinUtxo.reservationPriority]) and the status its release restores
+  /// ([BitcoinUtxo.statusBeforeReservation], a [UTXOStatus] name). Null when
+  /// not reserved, and on rows written before they were stored (bead
+  /// libspiffy-viy).
+  String? reservedByTxId;
+  String? reservationReason;
+  DateTime? reservationExpiresAt;
+  int? reservationPriority;
+  String? statusBeforeReservation;
+
   BitcoinUtxoEntity();
 
   /// Create from domain model BitcoinUtxo
@@ -372,16 +388,16 @@ class BitcoinUtxoEntity {
       ..vout = utxo.vout
       ..utxoKey = '${utxo.txid}:${utxo.vout}'
       ..createdAt = utxo.createdAt
-      ..spentInTxId = null // not carried by the domain model
       ..scriptType = 'p2pkh' // Default, could be enhanced
       ..category = 'funding' // Default category
       ..applyDomain(utxo);
   }
 
   /// Copies the mutable state of [utxo] onto this row (the insert and the
-  /// update path of the storage share it). A block height or plugin
-  /// metadata [utxo] lacks keeps the stored value; the spend history
-  /// ([spentAt], [spentInTxId]) is only ever added to.
+  /// update path of the storage share it). A block height, plugin metadata
+  /// or derivation index [utxo] lacks keeps the stored value; the spend
+  /// history ([spentAt], [spentInTxId]) is only ever added to. The
+  /// reservation fields follow [utxo] (a release clears them).
   void applyDomain(BitcoinUtxo utxo) {
     satoshis = utxo.satoshis.toString();
     scriptPubKey = utxo.scriptPubKey;
@@ -396,6 +412,13 @@ class BitcoinUtxoEntity {
     if (utxo.pluginMetadata != null) {
       pluginMetadataJson = jsonEncode(utxo.pluginMetadata);
     }
+    spentInTxId ??= utxo.spentInTxId;
+    derivationIndex = utxo.derivationIndex ?? derivationIndex;
+    reservedByTxId = utxo.reservedByTxId;
+    reservationReason = utxo.reservationReason;
+    reservationExpiresAt = utxo.reservationExpiresAt;
+    reservationPriority = utxo.reservationPriority;
+    statusBeforeReservation = utxo.statusBeforeReservation?.name;
   }
 
   /// Convert back to domain model BitcoinUtxo
@@ -421,6 +444,15 @@ class BitcoinUtxoEntity {
       pluginMetadata: pluginMetadataJson != null
           ? Map<String, dynamic>.from(jsonDecode(pluginMetadataJson!) as Map)
           : null,
+      derivationIndex: derivationIndex,
+      reservedByTxId: reservedByTxId,
+      reservationReason: reservationReason,
+      reservationExpiresAt: reservationExpiresAt,
+      reservationPriority: reservationPriority,
+      statusBeforeReservation: UTXOStatus.values
+          .where((s) => s.name == statusBeforeReservation)
+          .firstOrNull,
+      spentInTxId: spentInTxId,
     );
   }
 
@@ -445,6 +477,12 @@ class BitcoinUtxoEntity {
       'isSpendable': isSpendable,
       'category': category,
       'pluginMetadataJson': pluginMetadataJson,
+      'derivationIndex': derivationIndex,
+      'reservedByTxId': reservedByTxId,
+      'reservationReason': reservationReason,
+      'reservationExpiresAt': reservationExpiresAt?.toIso8601String(),
+      'reservationPriority': reservationPriority,
+      'statusBeforeReservation': statusBeforeReservation,
     };
   }
 
@@ -468,7 +506,15 @@ class BitcoinUtxoEntity {
       ..scriptType = json['scriptType'] as String
       ..isSpendable = json['isSpendable'] as bool
       ..category = json['category'] as String
-      ..pluginMetadataJson = json['pluginMetadataJson'] as String?;
+      ..pluginMetadataJson = json['pluginMetadataJson'] as String?
+      ..derivationIndex = json['derivationIndex'] as int?
+      ..reservedByTxId = json['reservedByTxId'] as String?
+      ..reservationReason = json['reservationReason'] as String?
+      ..reservationExpiresAt = json['reservationExpiresAt'] != null
+          ? DateTime.parse(json['reservationExpiresAt'] as String)
+          : null
+      ..reservationPriority = json['reservationPriority'] as int?
+      ..statusBeforeReservation = json['statusBeforeReservation'] as String?;
   }
 }
 

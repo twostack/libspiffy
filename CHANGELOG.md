@@ -200,6 +200,108 @@ headerTriggerDebounce:)`, `PaymentChannelManagerActor(signingTimeout:)`,
 `PaymentCoordinatorActor(signingReplyTimeout:)`, `ArcFeeAmount`,
 `ArcTransactionResponse.merklePathHex`.
 
+### Audit backlog, wave 3
+
+Every fix below has a regression test shown to fail on the previous code
+(report `Test` rows). Data retention follows `spv-understanding.md`: no
+code path deletes transactions, raw transactions, merkle proofs or spent
+UTXO history; the purge suggestions in S-16 and M7 were rejected by design.
+
+- **Postgres event store (S-09, S-10, S-11, S-23).** Concurrent writers to
+  one aggregate get `ConcurrencyException` instead of a unique-violation;
+  batches are one INSERT; journal replay is paged; `eventsByTag` honours the
+  `EventTags` mixin; snapshot upserts update `schema_version`; database
+  errors surface as `EventStoreException`.
+- **Postgres operations (S-14, S-22, V-6).** SSL is required by default and
+  `sslmode=verify-full` is honoured; `schema` and `idleTimeout` are applied;
+  migrations take an advisory lock, so instances can start together;
+  `reset()` works on a fresh database; connection errors are no longer
+  reported as schema version 0.
+- **Secret key rotation (KM-9).** `PostgresSecureStorage` decrypts with the
+  key for each row's `key_version` and can re-encrypt to the current key;
+  `getAll` reports undecryptable rows instead of dropping them.
+- **Wallet storage (S-08, S-15, S-16, S-19, S-20, V-7).** Bulk header
+  imports use multi-row upserts; wallet existence, deletion and unknown
+  wallets behave the same on every backend; Isar queries use indexes; list
+  queries are newest-first everywhere (**Postgres migration v006**); updates
+  no longer wipe stored raw transactions, block heights, spend history or
+  plugin metadata; Postgres rows keep `updatedAt`, `spent_at` and `walletId`.
+- **Event journal (M8, L2, L4, KM-8).** Events are stored under stable type
+  ids (`wallet.utxo.received`, ...) with the old class names as aliases, so
+  existing journals load and obfuscated builds work; channel events persist
+  only persistable metadata; import progress is an in-process notification,
+  not an event; new wallets no longer journal the xpub.
+- **Aggregate state (M6, M7, L1).** Snapshots restore the complete state
+  (wallet, invoice, channel); balances are maintained incrementally, so
+  recovery is linear; replayed timestamps equal live ones.
+- **Signing (5sr).** `SignInputCommand` signs one input for plugin payments.
+- **Payment channels (M10, L3, SPV-13, L4, y3b, 32t).** The aggregate
+  enforces server-side balance and refund-signature invariants; state
+  queries on unknown channels reply; refund locktimes below 500,000,000 are
+  rejected; signing does not mutate the caller's transaction; the refund
+  event journals the real refund txid; a requested channel has a null server
+  key (**Postgres migration v007**); `PaymentChannel` is immutable.
+- **Reorgs and proofs (3b0, zvj, A-L2).** A header reorganization takes back
+  confirmations whose proofs no longer verify against the active chain: the
+  transaction returns to pending, its outputs stop counting as confirmed,
+  the orphaned proof row is removed from the read model (the BUMP stays in
+  the journal event) and ARC is polled for a new proof. Proofs stored before
+  their header was known are verified when it arrives. BEEF BUMPs are chosen
+  by `bumpIndex`; a transaction confirmed straight from broadcast marks its
+  inputs spent.
+- **Actors (p56, A-L1, A-L3, A-L4, A-L5).** `WalletCreatedEvent` is emitted
+  after the read model has the wallet; ids are UUIDs; SPV results without a
+  target wallet are rejected; every caught error is logged with its stack.
+- **Regtest (x27).** Regtest wallets resolve regtest consensus parameters,
+  CDN directory and genesis instead of testnet.
+- **Key management docs and cleanup (KM-10, KM-11).**
+
+#### Breaking changes in wave 3
+
+- `PostgresConfig` requires SSL by default: a local server without TLS
+  needs `enableSsl: false` or `?sslmode=disable`. An unknown `sslmode`
+  throws. `toConnectionString()` omits the password unless
+  `includePassword: true`. `PostgresMigrations.withPool` takes a non-null
+  `Pool`; `getCurrentVersion` / `getAppliedMigrations` throw on connection
+  errors.
+- `PostgresSecureStorage.getAll()` throws when any row cannot be decrypted.
+- The journal `eventType` column holds stable ids for new events. Readers
+  outside libspiffy that match class names must accept both.
+- `WalletImport*Event` classes are `WalletImportNotification`s (no `fromMap`,
+  `eventId`, `version`); import progress is on
+  `LibSpiffyActorSystem.importNotifications` /
+  `subscribeToImportNotifications`, no longer on `walletEvents`.
+  `WalletCoordinatorActor(walletEventsStream:)` is now `importNotifications:`.
+- `WalletCreatedEvent.hdPublicKeyXpub` is deprecated and not journaled; the
+  xpub lives only in secure storage for new wallets.
+- `PaymentChannel` fields are final (use `copyWith`); `serverPubKeyHex`,
+  `myPubKeyHex` and `counterpartyPubKeyHex` are nullable. The client must
+  record the server's acceptance before the refund signature.
+- `ReadModelStorage.deleteMerkleProof` added (implementers outside the
+  package must add it). In-memory reads return empty results for unknown
+  wallets instead of throwing; Isar deletes wallets outright and
+  `walletExists` no longer counts wallets that only have UTXO rows. List
+  queries are newest-first.
+- `RegisterTransactionOutputsMessage`, `RegisterTransactionInputsMessage`
+  and `ArcService.getRawTransaction` removed; `TransactionLifecycleCoordinator`
+  does nothing; channel ids are `ch-<uuid>`.
+- An aggregate whose snapshot cannot be restored fails recovery.
+- After a reorg, UTXOs confirmed only by an orphaned proof are pending until
+  ARC confirms them again. Regtest wallets report network `regtest`.
+- `metadata['importedTransactions' / 'outgoingTransactions']` in wallet
+  state are maps keyed by txid.
+- `CryptoUtils.toPbkdf2Seed` removed (internal).
+
+Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
+`toConnectionSettings()`; `PostgresSecureStorage(previousKeys:)`,
+`reencryptToCurrentKey()`; `LibSpiffyActorSystem.registerEventTypes()`;
+`stableTypeName` on every event; `SignInputCommand`, `InputSignedResponse`;
+`BitcoinUtxo.spentInTxId`; `ClaimRefundCommand.refundTxHex`;
+`TransactionConfirmationRevertedEvent`, `RevertTransactionConfirmationCommand`,
+`HeaderChainReorganizedMessage`; `NetworkName.isRegtest`;
+`BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
+`IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
+
 ## 2.0.0
 
 Dependency upgrade and audit release. libspiffy now tracks **dactor 1.3.0**,

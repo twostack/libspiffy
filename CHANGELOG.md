@@ -324,6 +324,22 @@ a regression test shown to fail on the previous code.
 - **Channel open (V-12).** A client-side channel open no longer stalls on
   the server's refund countersignature; channel funding and refund signing
   use the channel's wallet instead of the last one created.
+- **Channel refund and funding (V-13).** The client journals the fully
+  signed refund transaction and verifies the server's signature before
+  anything goes on-chain; only then is the funding transaction recorded as
+  an outgoing wallet transaction and broadcast through ARC. The 2-of-2
+  output is reserved for the channel, so it does not count as spendable
+  balance. A failed broadcast keeps the channel in `funding`. The server
+  refuses a `channel_open` whose funding output does not match. Claiming the
+  refund works after its locktime.
+- **ARC proofs journaled (V-14).** `TransactionConfirmedEvent` carries the
+  BUMP, so rebuilding the read model from the journal keeps ARC-supplied
+  proofs; every wallet holding a mined transaction is confirmed in the same
+  scan.
+- **Received ancestors retained (V-15).** The ancestor transactions and
+  BUMPs of a received unproven payment are journaled and stored (outside
+  wallet history and balance), so its output can be spent before it is
+  mined (**Postgres migration v010**).
 
 #### Breaking changes
 
@@ -341,9 +357,22 @@ a regression test shown to fail on the previous code.
   Mark-paid, cancel and expire for an unknown invoice fail at once with
   "not found". A `CreateWalletMessage` rejected earlier can be retried.
 - Coordinator channel events carry the channel's wallet id.
+- A client channel cannot open without an ARC actor; a client refund build
+  needs the funding transaction hex; refund-signature and `channel_open`
+  failures reach the coordinator as `ErrorEvent`s.
+- `ReadModelStorage.storeAncestorTransaction` and
+  `getAncestorTransactionsBatch` added (abstract). Hosts opening Isar with
+  their own schema list must add `AncestorTransactionEntity`.
 
 Additive API: `MerkleProofStatus`, `MerkleProof.status` / `statusChangedAt`,
-`PostgresEventStore(livePollInterval:)`, `ServerAcceptanceRecordedResponse`.
+`PostgresEventStore(livePollInterval:)`, `ServerAcceptanceRecordedResponse`,
+`RecordRefundBuiltCommand`, `StartFundingBroadcastCommand`,
+`RecordFundingBroadcastFailedCommand`, `FundingBroadcastStartedEvent`,
+`FundingBroadcastFailedEvent`, `RefundCountersignedEvent.signedRefundTxHex`,
+`PaymentChannelManagerActor(arcActor:,
+walletProjection:, broadcastTimeout:)`, `TransactionConfirmedEvent.bumpHex`,
+`ConfirmTransactionCommand.bumpHex`, `BeefAncestor`,
+`TransactionImportedEvent.ancestors`.
 
 ## 2.0.0
 

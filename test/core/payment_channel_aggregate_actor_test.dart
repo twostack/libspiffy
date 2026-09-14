@@ -41,11 +41,22 @@ class PrecomputedKeys {
     required this.derivationIndex,
   });
   
+  /// Receive indexes handed out in order, one per [generate] call.
+  ///
+  /// This used m/0/(clock % 1000000), which failed about once in 256 calls:
+  /// dartsv threw 'Too few elements' for keys with a leading zero byte
+  /// (libspiffy-hvp). The sequence now starts with the three such indexes of
+  /// [testMnemonic] below 1000 (so every run covers them) and then counts up
+  /// from 1000, which keeps the keys distinct within a run.
+  static const _shortKeyIndexes = [113, 349, 945];
+  static var _generated = 0;
+
   static Future<PrecomputedKeys> generate(CryptoService cryptoService) async {
     final hdKey = await cryptoService.mnemonicToHDPrivateKey(testMnemonic);
-    final derivationIndex = DateTime.now().millisecondsSinceEpoch % 1000000;
-    final derivedKey = hdKey.deriveChildKey('m/0/$derivationIndex');
-    final privateKey = derivedKey.privateKey;
+    final n = _generated++;
+    final derivationIndex =
+        n < _shortKeyIndexes.length ? _shortKeyIndexes[n] : 1000 + n;
+    final privateKey = await cryptoService.derivePrivateKey(hdKey, 0, derivationIndex);
     final publicKey = privateKey.publicKey;
     final address = publicKey.toAddress(dartsv.NetworkType.TEST);
     

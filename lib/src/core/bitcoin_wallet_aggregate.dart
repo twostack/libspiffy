@@ -18,6 +18,7 @@ import '../actors/wallet_messages.dart';
 import 'wallet_commands.dart';
 import 'wallet_events.dart';
 import 'wallet_output_ownership.dart';
+import '../utils/bip32.dart';
 import '../utils/network_name.dart';
 import 'aggregate_command_failures.dart';
 
@@ -884,7 +885,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
     // Derive public key if requested
     String? publicKeyHex;
     if (command.includePublicKey) {
-      final childKey = hdPublicKey.deriveChildKey("m/$derivationPath/$derivationIndex");
+      final childKey = Bip32.derivePublicPath(
+          hdPublicKey, "m/$derivationPath/$derivationIndex");
       publicKeyHex = childKey.publicKey.toHex();
     }
 

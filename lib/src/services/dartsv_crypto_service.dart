@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:convert/convert.dart';
@@ -9,8 +8,8 @@ import 'package:pointycastle/digests/sha256.dart';
 import 'package:pointycastle/ecc/api.dart';
 import 'package:pointycastle/macs/hmac.dart';
 import 'package:pointycastle/signers/ecdsa_signer.dart';
-import 'package:spiffynode/spiffy_node.dart';
 
+import '../utils/bip32.dart';
 import '../utils/crypto_utils.dart';
 import 'crypto_service.dart';
 
@@ -80,9 +79,9 @@ class DartSVCryptoService implements CryptoService {
     dartsv.NetworkType network = dartsv.NetworkType.TEST,
   }) async {
 
-    final privKey = dartsv.HDPrivateKey.fromSeed(
+    final privKey = Bip32.masterFromSeed(
       Mnemonic().toSeedHex(mnemonic, passphrase),
-      network
+      network,
     );
 
     return privKey;
@@ -111,7 +110,9 @@ class DartSVCryptoService implements CryptoService {
     bool isChange = false,
   }) async {
     final chain = isChange ? 1 : accountIndex;
-    final privKey = hdPrivateKey.deriveChildKey("m/$chain/$addressIndex");
+    // Bip32, not dartsv's deriveChildKey: dartsv throws 'Too few elements'
+    // for the 1 in 256 child keys with a leading zero byte (libspiffy-hvp).
+    final privKey = Bip32.derivePrivatePath(hdPrivateKey, "m/$chain/$addressIndex");
 
     return privKey.privateKey;
   }
@@ -216,7 +217,7 @@ class DartSVCryptoService implements CryptoService {
     int addressIndex, {
     dartsv.NetworkType network = dartsv.NetworkType.TEST,
   }) {
-    final childKey= hdPublicKey.deriveChildKey("m/0/${addressIndex}");
+    final childKey = Bip32.derivePublicPath(hdPublicKey, "m/0/$addressIndex");
     final address = Address.fromPublicKey(childKey.publicKey, network);
     return address.toBase58();
   }
@@ -227,8 +228,7 @@ class DartSVCryptoService implements CryptoService {
     int addressIndex, {
     dartsv.NetworkType network = dartsv.NetworkType.TEST,
   }) {
-    // final childKey = hdPublicKey.deriveChildNumber(addressIndex);
-    final childKey= hdPublicKey.deriveChildKey("m/1/${addressIndex}");
+    final childKey = Bip32.derivePublicPath(hdPublicKey, "m/1/$addressIndex");
     final address = Address.fromPublicKey(childKey.publicKey, network);
     return address.toBase58();
 

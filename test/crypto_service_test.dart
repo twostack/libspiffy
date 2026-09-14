@@ -5,6 +5,7 @@ import 'package:dartsv/dartsv.dart' as dartsv;
 
 import '../lib/src/services/crypto_service.dart';
 import '../lib/src/services/dartsv_crypto_service.dart';
+import 'crypto/hd_leading_zero_fixtures.dart';
 
 void main() {
   group('DartSVCryptoService Tests', () {
@@ -69,7 +70,9 @@ void main() {
       });
 
       test('should create different keys with different passphrases', () async {
-        final mnemonic = await cryptoService.generateMnemonic();
+        // Fixed, not random: m/0/0 of this mnemonic has a leading zero byte,
+        // which made dartsv throw 'Too few elements' (libspiffy-hvp).
+        const mnemonic = kShortReceive00Mnemonic;
         
         final hdKey1 = await cryptoService.mnemonicToHDPrivateKey(
           mnemonic,
@@ -88,7 +91,8 @@ void main() {
       });
 
       test('should derive child private keys with BIP44 paths', () async {
-        final mnemonic = await cryptoService.generateMnemonic();
+        // Fixed, not random: the change chain key m/1 has a leading zero byte (libspiffy-hvp).
+        const mnemonic = kShortChangeChainMnemonic;
         final hdKey = await cryptoService.mnemonicToHDPrivateKey(mnemonic);
         
         // Test receiving address derivation (isChange: false)
@@ -113,7 +117,8 @@ void main() {
       });
 
       test('should derive different keys for different indices', () async {
-        final mnemonic = await cryptoService.generateMnemonic();
+        // Fixed, not random: the receive chain key m/0 has a leading zero byte (libspiffy-hvp).
+        const mnemonic = kShortReceiveChainMnemonic;
         final hdKey = await cryptoService.mnemonicToHDPrivateKey(mnemonic);
         
         final key0 = await cryptoService.derivePrivateKey(hdKey, 0, 0);
@@ -130,7 +135,8 @@ void main() {
       //somewhat redundant since our DartSV library is very capable
       test('should generate valid Bitcoin addresses', () async {
 
-        final mnemonic = await cryptoService.generateMnemonic();
+        // Fixed, not random: m/0/0 has a leading zero byte (libspiffy-hvp).
+        const mnemonic = kShortReceive00Mnemonic;
         final hdKey = await cryptoService.mnemonicToHDPrivateKey(mnemonic);
         final privateKey = await cryptoService.derivePrivateKey(hdKey, 0, 0);
         
@@ -345,7 +351,8 @@ void main() {
     group('Integration Tests', () {
       test('should perform complete wallet key derivation flow', () async {
         // Generate mnemonic
-        final mnemonic = await cryptoService.generateMnemonic();
+        // Fixed, not random: the change chain key m/1 has a leading zero byte (libspiffy-hvp).
+        const mnemonic = kShortChangeChainMnemonic;
         expect(await cryptoService.validateMnemonic(mnemonic), isTrue);
         
         // Create HD key

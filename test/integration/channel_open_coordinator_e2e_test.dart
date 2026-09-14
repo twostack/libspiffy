@@ -57,10 +57,11 @@ import '../spv/testnet_proof_fixture.dart';
 
 const _alicePeer = 'alice-peer';
 
-/// Fixed mnemonics for the wallets that sign channel transactions: dartsv's
-/// HD derivation fails ('Too few elements') for some keys, so a random
-/// mnemonic made channel opens fail at random (the server's refund
-/// signature never came).
+/// Fixed mnemonics for the wallets that sign channel transactions, so the
+/// test is deterministic. (They were introduced when dartsv's HD derivation
+/// failed with 'Too few elements' for 1 in 256 keys and random mnemonics made
+/// channel opens fail at random; libspiffy now derives through Bip32,
+/// libspiffy-hvp.)
 const _bobMnemonic = 'abandon abandon abandon abandon abandon abandon '
     'abandon abandon abandon abandon abandon about';
 const _otherMnemonic = 'legal winner thank year wave sausage worth useful '

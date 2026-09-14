@@ -3,6 +3,7 @@ import 'package:logging/logging.dart';
 
 import '../models/blockchain_data_models.dart';
 import 'blockchain_data_source.dart';
+import '../utils/bip32.dart';
 import '../utils/network_name.dart';
 
 /// Service for discovering used addresses in an HD wallet
@@ -126,7 +127,7 @@ class AddressDiscoveryService {
     int scannedCount = 0;
 
     // Derive the change or receiving chain key
-    final chainKey = hdPublicKey.deriveChildNumber(isChange ? 1 : 0);
+    final chainKey = Bip32.derivePublicChild(hdPublicKey, isChange ? 1 : 0);
     _logger.info('   → Scanning ${isChange ? "change" : "receiving"} address chain...');
 
     while (consecutiveUnused < gapLimit) {
@@ -136,7 +137,7 @@ class AddressDiscoveryService {
       }
 
       // Derive address at current index
-      final addressKey = chainKey.deriveChildNumber(index);
+      final addressKey = Bip32.derivePublicChild(chainKey, index);
       final address = addressKey.publicKey.toAddress(network).toString();
 
       scannedCount++;
@@ -223,10 +224,10 @@ class AddressDiscoveryService {
     final network = NetworkName.toDartsv(networkType);
 
     final usedAddresses = <DiscoveredAddress>[];
-    final chainKey = hdPublicKey.deriveChildNumber(isChange ? 1 : 0);
+    final chainKey = Bip32.derivePublicChild(hdPublicKey, isChange ? 1 : 0);
 
     for (int index = startIndex; index < endIndex; index++) {
-      final addressKey = chainKey.deriveChildNumber(index);
+      final addressKey = Bip32.derivePublicChild(chainKey, index);
       final address = addressKey.publicKey.toAddress(network).toString();
 
       try {

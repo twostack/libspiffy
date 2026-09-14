@@ -359,6 +359,19 @@ void main() {
 
         // Create XPub Wallet
         final walletId = 'xpub-signing-${DateTime.now().millisecondsSinceEpoch}';
+        // The wallet manager replies once the event is journaled; the read
+        // model row (which BenfordCoordinatorActor consults for the wallet
+        // type) is written by the projection afterwards. This test talks to
+        // the wallet manager directly rather than through the coordinator,
+        // which waits for the projection, so it waits itself. Registered
+        // before the command so the event cannot be missed.
+        final walletProjected = libspiffy.walletProjectionRef!.ask<dynamic>(
+          AwaitEventApplied(
+            (e) => e is WalletCreatedEvent && e.walletId == walletId,
+            timeout: const Duration(seconds: 10),
+          ),
+          const Duration(seconds: 12),
+        );
         libspiffy.walletManager.tell(
           CreateWalletMessage(walletId, 'Signing Test Wallet', xpub: xpub),
           sender: receiver,
@@ -366,6 +379,7 @@ void main() {
 
         final createResponse = await _waitForMessage<WalletCreatedMessage>(controller.stream);
         expect(createResponse.success, isTrue);
+        expect(await walletProjected, isA<EventAppliedResponse>(), reason: 'wallet projection did not apply the creation');
         print('✓ Wallet created');
 
         // Test 1: SignTransactionCommand

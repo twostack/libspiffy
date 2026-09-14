@@ -9,19 +9,24 @@
 /// 3. Alice's BEEF is sent to Bob (simulated P2P transfer)
 /// 4. Bob validates BEEF via SPVActor and records UTXOs/transaction
 /// 5. Both parties have correct database state (pending UTXOs/transactions)
+/// 6. Bob broadcasts the payment through ARC; Alice's ARC status scan finds
+///    it on the network and applies her deferred spend
 ///
 /// This test validates:
 /// - PayInvoiceMessage API creates valid BEEF
 /// - BEEF validation works correctly on receiver side
-/// - UTXOs are correctly marked (spent for sender, pending for receiver)
+/// - The sender does not broadcast (spv-understanding.md): her input stays
+///   reserved while the payment is only in the counterparty's hands, and is
+///   spent once ARC reports the transaction SEEN_ON_NETWORK
+/// - The receiver's UTXO is pending until then
 /// - Transactions are correctly recorded in pending state
 
 import 'dart:async';
 import 'dart:io';
 import 'package:test/test.dart';
 import 'package:dactor/dactor.dart';
+import 'package:eventador/eventador.dart' show AwaitEventApplied, EventAppliedResponse;
 import 'package:isar/isar.dart';
-import 'package:eventador/eventador.dart';
 import 'package:convert/convert.dart';
 import 'package:libspiffy/libspiffy.dart';
 import 'package:libspiffy/src/actors/libspiffy_actor_system.dart';
@@ -30,12 +35,15 @@ import 'package:libspiffy/src/actors/payment_messages.dart';
 import 'package:libspiffy/src/actors/wallet_messages.dart';
 import 'package:libspiffy/src/storage/isar_wallet_storage.dart';
 import 'package:libspiffy/src/core/wallet_commands.dart';
+import 'package:libspiffy/src/core/wallet_events.dart' show AddressGeneratedEvent;
 import 'package:libspiffy/src/models/bitcoin_utxo.dart';
 import 'package:libspiffy/src/models/bitcoin_transaction.dart';
 import 'package:libspiffy/src/utils/beef.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
 import 'isar_test_helper.dart';
 import 'p2p_test_helpers.dart';
+import '../mocks/network_arc.dart';
+import '../spv/testnet_proof_fixture.dart' show kFixtureHeight;
 
 // Use the same funding data as p2p_test_helpers.dart
 // This transaction has a valid merkle proof for BEEF creation
@@ -64,6 +72,9 @@ void main() {
     late String aliceDbName;
     late String bobDbName;
 
+    // The one ARC both parties talk to (no network).
+    late NetworkArc arc;
+
     setUpAll(() async {
       await ensureIsarInitialized();
     });
@@ -77,6 +88,8 @@ void main() {
 
       print('Alice DB: ${aliceTestDir.path}');
       print('Bob DB: ${bobTestDir.path}');
+
+      arc = NetworkArc();
 
       // Initialize Alice's system
       aliceActorSystem = LocalActorSystem(ActorSystemConfig());
@@ -94,6 +107,7 @@ void main() {
         isar: aliceIsar,
         dataDirectory: aliceTestDir.path,
         enableP2P: false,
+        arcService: arc,
       );
 
       // Setup test headers for Alice
@@ -136,6 +150,7 @@ void main() {
         isar: bobIsar,
         dataDirectory: bobTestDir.path,
         enableP2P: false,
+        arcService: arc,
       );
 
       // Setup test headers for Bob
@@ -246,22 +261,23 @@ void main() {
 
       print('  BEEF contains ${beef.txs.length} transactions and ${beef.bumps.length} merkle proofs');
 
-      // Wait for Alice's projection to process the outgoing transaction
-      await Future.delayed(Duration(milliseconds: 500));
-
       print('\n=== STEP 3: Verify Alice\'s database state after sending ===');
 
       final aliceStorage = aliceLibSpiffy.walletStorage as IsarWalletStorage;
 
-      // Verify Alice's original UTXO is now spent
+      // Alice does not broadcast: until the network has the payment her
+      // input is reserved for it, neither spendable nor spent. Checked once
+      // her projection has applied everything the payment journaled (a
+      // spend recorded with the payment would otherwise show up only later).
+      await projectionCaughtUp(aliceLibSpiffy, aliceWalletId);
       await verifyUTXOStatus(
         storage: aliceStorage,
         walletId: aliceWalletId,
         txid: fundingTxid,
         vout: fundingVout,
-        expectedStatus: UTXOStatus.spent,
+        expectedStatus: UTXOStatus.reserved,
       );
-      print('Alice\'s original UTXO is marked as spent');
+      print('Alice\'s original UTXO is reserved for the payment');
 
       // Verify Alice's outgoing transaction is pending
       await verifyTransactionStatus(
@@ -320,9 +336,6 @@ void main() {
 
       print('Bob received and recorded the payment transaction');
 
-      // Wait for Bob's projection to process
-      await Future.delayed(Duration(milliseconds: 500));
-
       print('\n=== STEP 5: Verify Bob\'s database state after receiving ===');
 
       final bobStorage = bobLibSpiffy.walletStorage as IsarWalletStorage;
@@ -375,6 +388,34 @@ void main() {
         expectedStatus: InvoiceStatus.paid,
       );
 
+      print('\n=== STEP 7: Bob broadcasts; Alice learns it from ARC ===');
+
+      await broadcastAndScan(
+        aliceSystem: aliceLibSpiffy,
+        bobSystem: bobLibSpiffy,
+        bobActorSystem: bobActorSystem,
+        bobWalletId: bobWalletId,
+        rawHex: hex.encode(beef.txs.last),
+        txid: beefResponse.txid,
+      );
+
+      // Alice's status scan found the payment SEEN_ON_NETWORK: her input is
+      // spent and her transaction is on the network.
+      await verifyUTXOStatus(
+        storage: aliceStorage,
+        walletId: aliceWalletId,
+        txid: fundingTxid,
+        vout: fundingVout,
+        expectedStatus: UTXOStatus.spent,
+      );
+      await verifyTransactionStatus(
+        storage: aliceStorage,
+        walletId: aliceWalletId,
+        txid: beefResponse.txid,
+        expectedStatus: TransactionStatus.seenOnNetwork,
+      );
+      print('Alice\'s original UTXO is spent once ARC reports the payment on the network');
+
       // Verify database isolation
       await verifyDatabaseIsolation(
         aliceIsar: aliceIsar,
@@ -386,8 +427,8 @@ void main() {
       print('\n=== Payment Protocol Flow Complete ===');
       print('Summary:');
       print('  Alice:');
-      print('    - Original UTXO: spent');
-      print('    - Outgoing transaction: pending');
+      print('    - Original UTXO: reserved, spent once ARC reports the payment');
+      print('    - Outgoing transaction: pending, then seen on network');
       print('  Bob:');
       print('    - New UTXO: pending');
       print('    - Incoming transaction: pending');
@@ -534,22 +575,23 @@ void main() {
       expect(beef.txs.length, greaterThanOrEqualTo(2));
       expect(beef.bumps.isNotEmpty, isTrue);
 
-      // Wait for Alice's projection to process
-      await Future.delayed(Duration(milliseconds: 500));
-
       print('\n=== STEP 3: Verify Alice\'s database state after sending ===');
 
       final aliceStorage = aliceLibSpiffy.walletStorage as IsarWalletStorage;
 
-      // Verify Alice's original UTXO is now spent
+      // Alice does not broadcast: until the network has the payment her
+      // input is reserved for it, neither spendable nor spent. Checked once
+      // her projection has applied everything the payment journaled (a
+      // spend recorded with the payment would otherwise show up only later).
+      await projectionCaughtUp(aliceLibSpiffy, aliceWalletId);
       await verifyUTXOStatus(
         storage: aliceStorage,
         walletId: aliceWalletId,
         txid: fundingTxid,
         vout: fundingVout,
-        expectedStatus: UTXOStatus.spent,
+        expectedStatus: UTXOStatus.reserved,
       );
-      print('Alice\'s original UTXO is marked as spent');
+      print('Alice\'s original UTXO is reserved for the payment');
 
       // Verify Alice's outgoing transaction is pending
       await verifyTransactionStatus(
@@ -605,9 +647,6 @@ void main() {
 
       print('Bob (xpub-only) received and recorded the payment transaction');
 
-      // Wait for Bob's projection to process
-      await Future.delayed(Duration(milliseconds: 500));
-
       print('\n=== STEP 5: Verify Bob\'s (xpub-only) database state ===');
 
       final bobStorage = bobLibSpiffy.walletStorage as IsarWalletStorage;
@@ -660,7 +699,35 @@ void main() {
         expectedStatus: InvoiceStatus.paid,
       );
 
-      print('\n=== STEP 7: Verify xpub-only wallet cannot spend received funds ===');
+      print('\n=== STEP 7: Bob broadcasts; Alice learns it from ARC ===');
+
+      await broadcastAndScan(
+        aliceSystem: aliceLibSpiffy,
+        bobSystem: bobLibSpiffy,
+        bobActorSystem: bobActorSystem,
+        bobWalletId: xpubBobWalletId,
+        rawHex: hex.encode(beef.txs.last),
+        txid: beefResponse.txid,
+      );
+
+      // Alice's status scan found the payment SEEN_ON_NETWORK: her input is
+      // spent and her transaction is on the network.
+      await verifyUTXOStatus(
+        storage: aliceStorage,
+        walletId: aliceWalletId,
+        txid: fundingTxid,
+        vout: fundingVout,
+        expectedStatus: UTXOStatus.spent,
+      );
+      await verifyTransactionStatus(
+        storage: aliceStorage,
+        walletId: aliceWalletId,
+        txid: beefResponse.txid,
+        expectedStatus: TransactionStatus.seenOnNetwork,
+      );
+      print('Alice\'s original UTXO is spent once ARC reports the payment on the network');
+
+      print('\n=== STEP 8: Verify xpub-only wallet cannot spend received funds ===');
 
       // Attempt to sign a transaction with Bob's xpub-only wallet
       // This should fail because xpub wallets cannot sign
@@ -692,8 +759,8 @@ void main() {
       print('\n=== XPub-Only Recipient Payment Protocol Flow Complete ===');
       print('Summary:');
       print('  Alice (full wallet):');
-      print('    - Original UTXO: spent');
-      print('    - Outgoing transaction: pending');
+      print('    - Original UTXO: reserved, spent once ARC reports the payment');
+      print('    - Outgoing transaction: pending, then seen on network');
       print('  Bob (xpub-only wallet):');
       print('    - New UTXO: pending');
       print('    - Incoming transaction: pending');
@@ -702,4 +769,41 @@ void main() {
       print('==============================================\n');
     });
   });
+}
+
+/// Returns once [system]'s wallet projection has applied every event
+/// [walletId] journaled before this call: the marker command's event is
+/// journaled after them, and the projection applies events in journal order.
+Future<void> projectionCaughtUp(LibSpiffyActorSystem system, String walletId) async {
+  final applied = system.walletProjectionRef!.ask<dynamic>(
+    AwaitEventApplied(
+      (e) => e is AddressGeneratedEvent && e.walletId == walletId,
+      timeout: const Duration(seconds: 10),
+    ),
+    const Duration(seconds: 12),
+  );
+  system.walletManager.tell(WalletCommandMessage(walletId, GenerateAddressCommand(walletId: walletId)));
+  expect(await applied, isA<EventAppliedResponse>(), reason: 'wallet projection did not catch up');
+}
+
+/// Bob (the recipient) broadcasts the payment through his ARC actor, then
+/// Alice's ARC actor runs a status scan (what a header arrival or its timer
+/// does) over her stored non-terminal transactions.
+Future<void> broadcastAndScan({
+  required LibSpiffyActorSystem bobSystem,
+  required LocalActorSystem bobActorSystem,
+  required String bobWalletId,
+  required String rawHex,
+  required String txid,
+  required LibSpiffyActorSystem aliceSystem,
+}) async {
+  final done = Completer<dynamic>();
+  final receiver = await bobActorSystem.spawn(
+    'bob-broadcast-receiver-${DateTime.now().microsecondsSinceEpoch}',
+    () => TestReceiverActor<dynamic>(done),
+  );
+  bobSystem.arcActor.tell(BroadcastTransactionMessage(bobWalletId, rawHex, txid), sender: receiver);
+  final reply = await done.future.timeout(const Duration(seconds: 5));
+  expect(reply, isA<BroadcastSuccessMessage>(), reason: 'Bob\'s broadcast should be accepted by ARC');
+  aliceSystem.arcActor.tell(CheckStoragePendingUTXOsMessage(triggerBlockHeight: kFixtureHeight));
 }

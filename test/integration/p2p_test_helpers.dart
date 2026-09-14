@@ -18,6 +18,7 @@ import 'package:libspiffy/src/models/bitcoin_transaction.dart';
 import '../mocks/mock_arc_service.dart';
 import '../mocks/mock_peer_manager.dart';
 import 'isar_test_helper.dart';
+import '../spv/testnet_proof_fixture.dart';
 
 /// Test receiver actor that completes a future when it receives a specific message type
 class TestReceiverActor<T> extends Actor {
@@ -139,21 +140,16 @@ Future<void> fundWallet({
   final fundingTxHex = '020000000165b6c06790c23623c4988ee51b3f27c76bfb6a0c9e5bab3432968c51379af66a000000006b483045022100b735fb60adca4fa42e37746aa602c3206bf98572ae83e396da4fd11cb716b26d022017bf9955bd8fc4d60f2829236c7864d5b5540062c88113daef137c0ee441736c41210222824a8530bc570b7bae7c7600529b450a65eab1203c5f561d8082cd97b3dba1feffffff02872ec735150000001976a9149d02ce72bbdc1713d5537a0705d8ec7d9702c81088ac00c2eb0b000000001976a9146a418bf9e2e2b670e1aa7b7da59391e212b4ba1988ac5cea1200';
   final blockHeight = 1239645;
 
-  // Real TSC proof for this transaction (position 2 in block 1239645)
+  // Real WhatsOnChain TSC proof for this transaction (position 2 in block
+  // 1239645), nodes in display order; walks to the merkle root of the real
+  // header that setupTestHeaders stores at that height.
   final tscProof = {
-    'index': 2,
+    'index': kFixtureIndex,
     'txOrId': fundingTxid,
-    'target': '0000000014ba177afc3977062d2709ff4f289462b18189a381ad3cbf244d1c3b',
-    'nodes': [
-      '2bb617ed9b7950dcc9ddd952364a5d039742b40b786d3ef8a3984a5cf5495640',
-      'e0c82744e0d7c7a1e72102b82fa37ae09f4e6018ebb18773f888617b83250e75',
-      '9991c11c2ecb5087a29032a279d926bfe03c926c582a30743c902b57a3d98039',
-      '9d54821a3821713dadeeb3a614921f8c63866f82686cbcf019ed7a6c20a36d2b',
-      'a1e33369efb20fa5a1311ddfed20747de1996fdc814aa19691106eafe28b3e5d',
-      '5a2f7dcc9b1fddc64f57157e7c59082729622050a76cb6956ae6b15f1a9ff0c4',
-    ],
+    'target': kFixtureBlockHash,
+    'nodes': kFixtureNodes,
   };
-  
+
   // Create BUMP from TSC proof
   final bump = CryptoUtils.createBumpFromTscProof(tscProof, blockHeight);
   final bumpBytes = bump.serialize();
@@ -265,17 +261,11 @@ Future<String> generateAddress({
 Future<void> setupTestHeaders(IsarWalletStorage storage) async {
   // Block 1239645 - Real testnet data (used by fundWallet with kTestXpriv)
   // Transaction a05924fcc63712d3e4b94b0c88baad234c2c8ad3d369704f53765e21a53a2101
-  final existingHeader0 = await storage.getBlockHeaderByHeight(1239645);
+  final existingHeader0 = await storage.getBlockHeaderByHeight(kFixtureHeight);
   if (existingHeader0 == null) {
-    final header0 = BlockHeader(
-      version: 536870912,
-      prevBlock: Hash.fromHex('000000001539f91cede66262caa22d1b504d09aa1dc3221f7fac5b30c2f7d65d'),
-      merkleRoot: Hash.fromHex('5a2f7dcc9b1fddc64f57157e7c59082729622050a76cb6956ae6b15f1a9ff0c4'),
-      timestamp: DateTime.fromMillisecondsSinceEpoch(1528803530 * 1000),
-      bits: 0x1d00ffff,
-      nonce: 12345, // Placeholder - actual nonce not needed for merkle validation
-    );
-    await storage.storeBlockHeader(header0, 1239645);
+    // The real header (proof of work, prevBlock and merkle root), so the
+    // funding proof verifies against it.
+    await storage.storeBlockHeader(fixtureHeader(), kFixtureHeight);
   }
 
   // Block 1291860 - Real testnet data

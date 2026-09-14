@@ -9,7 +9,7 @@ import 'package:libspiffy/libspiffy.dart';
 import 'package:libspiffy/internals.dart';
 import 'package:libspiffy/src/storage/isar_wallet_storage.dart';
 
-import '../mocks/mock_arc_service.dart';
+import '../mocks/network_arc.dart';
 import 'isar_test_helper.dart';
 
 /// Integration tests for Benford UTXO Splitting
@@ -56,7 +56,7 @@ class BenfordTestContext {
   final EventStore eventStore;
   final DartSVCryptoService cryptoService;
   final InMemorySecureStorage secureStorage;
-  final MockArcService mockArcService;
+  final NetworkArc arc;
   final List<WalletEvent> capturedEvents = [];
   final List<String> broadcastedTransactions = [];
 
@@ -69,7 +69,7 @@ class BenfordTestContext {
     required this.eventStore,
     required this.cryptoService,
     required this.secureStorage,
-    required this.mockArcService,
+    required this.arc,
   });
 
   /// Cleanup resources
@@ -94,8 +94,8 @@ Future<BenfordTestContext> setupBenfordTestContext() async {
     name: 'test_benford_db',
   );
 
-  // Create MockArcService for testing
-  final mockArcService = MockArcService();
+  // ARC stand-in: a submitted transaction is SEEN_ON_NETWORK
+  final arc = NetworkArc();
   
   // Initialize LibSpiffy actor system (this registers all event types)
   final libspiffy = LibSpiffyActorSystem();
@@ -104,7 +104,7 @@ Future<BenfordTestContext> setupBenfordTestContext() async {
     isar: isar,
     dataDirectory: testDir.path,
     enableP2P: false,
-    arcService: mockArcService,  // ← Pass mock service for testing!
+    arcService: arc,
   );
 
   final storage = libspiffy.walletStorage as IsarWalletStorage;
@@ -125,80 +125,53 @@ Future<BenfordTestContext> setupBenfordTestContext() async {
     eventStore: eventStore,
     cryptoService: cryptoService,
     secureStorage: secureStorage,
-    mockArcService: mockArcService,
+    arc: arc,
   );
 }
 
 /// Create a test wallet with UTXOs using the actor system
+///
+/// The wallet is created with [CreateWalletMessage]: a wallet command for a
+/// wallet that has no journal is answered "Wallet not found", so a
+/// `CreateWalletCommand` sent as a wallet command never creates it. Each
+/// step waits for its reply, and the helper returns once the read model
+/// (which BenfordCoordinatorActor reads) shows the wallet and its UTXOs.
 Future<String> createTestWalletWithUtxos(
   BenfordTestContext context, {
   required String walletId,
   required int utxoCount,
   required List<BigInt> utxoAmounts,
 }) async {
-  // Store the xpriv in secure storage for HD key derivation
-  await context.secureStorage.setXPriv(walletId, kTestXpriv);
+  final system = context.actorSystem;
+  final walletManager = context.libspiffy.walletManager;
 
-  // Create wallet through the actor system (proper flow)
-  final createCommand = CreateWalletCommand(
-    walletId: walletId,
-    walletName: 'Benford Test Wallet',
-    xpriv: kTestXpriv,
-    walletMetadata: {'network': 'testnet'},
+  final created = Completer<WalletCreatedMessage>();
+  final createReceiver = await system.spawn(
+    'benford-create-$walletId',
+    () => _ReplyReceiver<WalletCreatedMessage>(created),
   );
+  walletManager.tell(
+    CreateWalletMessage(walletId, 'Benford Test Wallet', xpriv: kTestXpriv),
+    sender: createReceiver,
+  );
+  final createdReply = await created.future.timeout(const Duration(seconds: 10));
+  expect(createdReply.success, isTrue, reason: 'wallet creation failed: ${createdReply.error}');
 
-  context.libspiffy.walletManager.tell(WalletCommandMessage(
-    walletId,
-    createCommand,
-  ));
-  
-  // Wait for wallet creation to propagate through projections
-  await Future.delayed(const Duration(milliseconds: 500));
-
-  // Generate addresses for each UTXO
+  // One receive address per UTXO
   final addresses = <String>[];
   for (int i = 0; i < utxoCount; i++) {
-    final addrCommand = GenerateAddressCommand(
-      walletId: walletId,
-      purpose: 'receive',
+    final generated = Completer<AddressGeneratedResponse>();
+    final receiver = await system.spawn(
+      'benford-address-$walletId-$i',
+      () => _ReplyReceiver<AddressGeneratedResponse>(generated),
     );
-    context.libspiffy.walletManager.tell(WalletCommandMessage(
-      walletId,
-      addrCommand,
-    ));
-    await Future.delayed(const Duration(milliseconds: 100));
-
-    // Get addresses from projection
-    final walletAddresses = await context.storage.getWalletAddresses(walletId);
-    if (walletAddresses.length > i) {
-      addresses.add(walletAddresses[i]);
-    }
-  }
-  
-  // Wait for address generation to complete
-  await Future.delayed(const Duration(milliseconds: 500));
-  final allAddresses = await context.storage.getWalletAddresses(walletId);
-  
-  // Use generated addresses or derive them directly
-  if (allAddresses.length >= utxoCount) {
-    addresses.clear();
-    addresses.addAll(allAddresses.take(utxoCount));
-  } else {
-    // Fallback: derive addresses directly
-    final hdPubkey = await context.secureStorage.getString('wallet_hdpubkey_$walletId');
-    if (hdPubkey != null) {
-      final hdKey = dartsv.HDPublicKey.fromXpub(hdPubkey);
-      for (int i = 0; i < utxoCount; i++) {
-        final addr = context.cryptoService.generateReceivingAddress(
-          hdKey,
-          i,
-          network: dartsv.NetworkType.TEST,
-        );
-        if (!addresses.contains(addr)) {
-          addresses.add(addr);
-        }
-      }
-    }
+    walletManager.tell(
+      WalletCommandMessage(walletId, GenerateAddressCommand(walletId: walletId, purpose: 'receive')),
+      sender: receiver,
+    );
+    final reply = await generated.future.timeout(const Duration(seconds: 10));
+    expect(reply.success, isTrue, reason: 'address generation failed: ${reply.error}');
+    addresses.add(reply.address);
   }
 
   // Add UTXOs to the wallet using real testnet transaction IDs
@@ -216,15 +189,22 @@ Future<String> createTestWalletWithUtxos(
       confirmations: 10,
       initialStatus: UTXOStatus.available,
     );
-    context.libspiffy.walletManager.tell(WalletCommandMessage(
+    walletManager.tell(WalletCommandMessage(
       walletId,
       utxoCommand,
     ));
-    await Future.delayed(const Duration(milliseconds: 100));
   }
-  
-  // Wait for UTXO commands to propagate
-  await Future.delayed(const Duration(milliseconds: 500));
+
+  // The read model has the wallet, its addresses and every UTXO
+  await eventually(
+    () async {
+      final wallet = await context.storage.getWallet(walletId);
+      final known = await context.storage.getWalletAddresses(walletId);
+      final utxos = await context.storage.getPaymentUTXOs(walletId);
+      return wallet != null && addresses.every(known.contains) && utxos.length == utxoCount ? utxos : null;
+    },
+    'the wallet, its addresses and $utxoCount available UTXOs in the read model',
+  );
 
   print('✓ Created test wallet with $utxoCount UTXOs');
   for (int i = 0; i < utxoCount && i < addresses.length; i++) {
@@ -234,9 +214,76 @@ Future<String> createTestWalletWithUtxos(
   return walletId;
 }
 
-/// Create a P2PKH script for an address (dummy for testing)
+/// Waits for a Benford split of the UTXOs in [originalKeys] to settle and
+/// returns every UTXO of the wallet (spent included).
+///
+/// First the split is recorded: [expectedSpent] of the original UTXOs are
+/// spent and [expectedOutputs] new UTXOs exist. ARC answered each broadcast
+/// SEEN_ON_NETWORK, so each split output becomes spendable: the submit
+/// answer promotes the outputs the read model already shows, and a status
+/// scan (requested here, as a header arrival would) promotes any recorded
+/// after it. Then every new UTXO must be available.
+Future<List<BitcoinUtxo>> splitSettled(
+  BenfordTestContext context,
+  String walletId, {
+  required Set<String> originalKeys,
+  required int expectedSpent,
+  required int expectedOutputs,
+}) async {
+  Future<List<BitcoinUtxo>> all() => context.storage.getUTXOs(walletId, includeSpent: true);
+  await eventually(
+    () async {
+      final utxos = await all();
+      final spent = utxos.where((u) => originalKeys.contains(u.key) && u.status == UTXOStatus.spent).length;
+      final outputs = utxos.where((u) => !originalKeys.contains(u.key)).length;
+      return spent == expectedSpent && outputs == expectedOutputs ? utxos : null;
+    },
+    '$expectedSpent original UTXO(s) spent and $expectedOutputs split outputs recorded',
+  );
+  context.libspiffy.arcActor.tell(CheckStoragePendingUTXOsMessage(triggerBlockHeight: 0));
+  return eventually(
+    () async {
+      final utxos = await all();
+      final outputs = utxos.where((u) => !originalKeys.contains(u.key)).toList();
+      return outputs.length == expectedOutputs && outputs.every((u) => u.status == UTXOStatus.available)
+          ? utxos
+          : null;
+    },
+    'every split output to be available once ARC reports its transaction on the network',
+  );
+}
+
+/// Polls [probe] until it returns a non-null value, failing after [timeout].
+Future<T> eventually<T>(
+  Future<T?> Function() probe,
+  String what, {
+  Duration timeout = const Duration(seconds: 20),
+}) async {
+  final deadline = DateTime.now().add(timeout);
+  while (true) {
+    final value = await probe();
+    if (value != null) return value;
+    if (DateTime.now().isAfter(deadline)) fail('Timed out after $timeout waiting for $what');
+    await Future.delayed(const Duration(milliseconds: 50));
+  }
+}
+
+/// Completes [completer] with the first message of type [T].
+class _ReplyReceiver<T> extends Actor {
+  final Completer<T> completer;
+
+  _ReplyReceiver(this.completer);
+
+  @override
+  Future<void> onMessage(dynamic message) async {
+    if (message is T && !completer.isCompleted) completer.complete(message);
+  }
+}
+
+/// The P2PKH locking script of [address] as hex, the form a UTXO's
+/// scriptPubKey takes (the wallet aggregate parses it to sign).
 String _createP2PKHScript(String address) {
-  return dartsv.P2PKHLockBuilder.fromAddress(dartsv.Address.fromBase58(address)).script.toString();
+  return dartsv.P2PKHLockBuilder.fromAddress(dartsv.Address.fromBase58(address)).getScriptPubkey().toHex();
 }
 
 /// Verify that amounts follow Benford's Law distribution
@@ -294,6 +341,8 @@ void main() {
           utxoAmounts: [BigInt.from(100000)],
         );
 
+        final originalKeys = {for (final u in await context.storage.getUTXOs(walletId)) u.key};
+
         print('\nStep 2: Send SplitUTXOsToBenfordCommand through WalletManager');
         // Send split command through the wallet manager (proper flow)
         final splitCommand = SplitUTXOsToBenfordCommand(
@@ -310,14 +359,10 @@ void main() {
         ));
         
         print('\nStep 3: Verify split operation completed successfully');
-        // Give time for command processing and event persistence
-        // The split operation involves: coordinator processing, address generation (10 addresses),
-        // transaction building, signing, broadcasting, UTXO recording, and event persistence
-        // This can take several seconds due to all the async actor messages
-        await Future.delayed(const Duration(milliseconds: 5000));
-        
-        // Verify split by checking the actual UTXOs (like the end-to-end test does)
-        final allUtxos = await context.storage.getUTXOs(walletId, includeSpent: true);
+        // The split involves coordinator processing, address generation (10
+        // addresses), building, signing, broadcasting and recording.
+        final allUtxos = await splitSettled(context, walletId,
+            originalKeys: originalKeys, expectedSpent: 1, expectedOutputs: 10);
         
         print('  Total UTXOs (including spent): ${allUtxos.length}');
         
@@ -327,23 +372,25 @@ void main() {
         
         // After split, we should have:
         // - 1 spent UTXO (the original 100000 sats)
-        // - 10 new UTXOs from the split transaction (pending status)
+        // - 10 new UTXOs from the split transaction, available once ARC
+        //   reported the transaction SEEN_ON_NETWORK
         final spentUtxos = allUtxos.where((u) => u.status == UTXOStatus.spent).length;
-        final pendingUtxos = allUtxos.where((u) => u.status == UTXOStatus.pending).length;
-        
+        final newUtxos = allUtxos.where((u) => !originalKeys.contains(u.key)).toList();
+
         print('  Spent UTXOs: $spentUtxos');
-        print('  Pending UTXOs: $pendingUtxos');
-        
-        // Verify we have at least 10 new UTXOs (they may be pending)
-        expect(pendingUtxos, greaterThanOrEqualTo(10),
-          reason: 'Split should have created at least 10 new pending UTXOs');
-        
+        print('  New UTXOs: ${newUtxos.length}');
+
+        expect(newUtxos.length, equals(10),
+          reason: 'Split should have created 10 new UTXOs');
+        expect(newUtxos.map((u) => u.status).toSet(), {UTXOStatus.available},
+          reason: 'Split outputs are spendable once the split is on the network');
+
         // Verify original UTXO was spent
-        expect(spentUtxos, greaterThanOrEqualTo(1),
+        expect(spentUtxos, equals(1),
           reason: 'Original UTXO should be marked as spent');
-        
+
         print('✓ Split operation completed successfully');
-        print('  Original UTXO spent, created $pendingUtxos new UTXOs from split');
+        print('  Original UTXO spent, created ${newUtxos.length} new UTXOs from split');
 
         print('\n✅ Aggregate validation test PASSED\n');
       } finally {
@@ -370,6 +417,8 @@ void main() {
           ],
         );
 
+        final originalKeys = {for (final u in await context.storage.getUTXOs(walletId)) u.key};
+
         print('\nStep 2: Process split command');
         final splitCommand = SplitUTXOsToBenfordCommand(
           walletId: walletId,
@@ -384,28 +433,27 @@ void main() {
         ));
 
         print('\nStep 3: Verify split completed for all 3 UTXOs');
-        // Give time for the split operation to complete
-        await Future.delayed(const Duration(milliseconds: 15000));
-        
-        // Verify all 3 UTXOs were split by checking the resulting UTXOs
-        final allUtxos = await context.storage.getUTXOs(walletId, includeSpent: true);
+        final allUtxos = await splitSettled(context, walletId,
+            originalKeys: originalKeys, expectedSpent: 3, expectedOutputs: 24);
         
         print('  Total UTXOs after split: ${allUtxos.length}');
         
         // After split: 3 original UTXOs spent + (3 * 8) = 24 new UTXOs
         final spentUtxos = allUtxos.where((u) => u.status == UTXOStatus.spent).length;
-        final pendingUtxos = allUtxos.where((u) => u.status == UTXOStatus.pending).length;
-        
+        final newUtxos = allUtxos.where((u) => !originalKeys.contains(u.key)).toList();
+
         print('  Spent UTXOs: $spentUtxos');
-        print('  Pending UTXOs: $pendingUtxos');
-        
+        print('  New UTXOs: ${newUtxos.length}');
+
         // Each of the 3 UTXOs should be split into 8, creating 24 new UTXOs
-        expect(pendingUtxos, greaterThanOrEqualTo(24),
-          reason: 'Should have at least 24 new UTXOs (3 * 8)');
-        expect(spentUtxos, greaterThanOrEqualTo(3),
+        expect(newUtxos.length, equals(24),
+          reason: 'Should have 24 new UTXOs (3 * 8)');
+        expect(newUtxos.map((u) => u.status).toSet(), {UTXOStatus.available},
+          reason: 'Split outputs are spendable once the splits are on the network');
+        expect(spentUtxos, equals(3),
           reason: 'All 3 original UTXOs should be spent');
-        
-        print('✓ All 3 UTXOs were split successfully (3 spent → $pendingUtxos new)');
+
+        print('✓ All 3 UTXOs were split successfully (3 spent → ${newUtxos.length} new)');
 
         print('\n✅ Multiple UTXOs split test PASSED\n');
       } finally {
@@ -640,6 +688,8 @@ void main() {
         );
         print('  Initial balance: $initialBalance sats');
 
+        final originalKeys = {for (final u in initialUtxos) u.key};
+
         print('\nStep 3: Send SplitUTXOsToBenfordCommand through actor system');
         final splitCommand = SplitUTXOsToBenfordCommand(
           walletId: walletId,
@@ -661,20 +711,17 @@ void main() {
         // 2. Broadcast via MockArcService
         // 3. Send CQRS commands (SpendUTXO, ReceiveUTXO, RecordTransaction)
         // 4. Wallet projection will update the database
-        await Future.delayed(const Duration(seconds: 5));
+        final finalUtxos = await splitSettled(context, walletId,
+            originalKeys: originalKeys, expectedSpent: 2, expectedOutputs: 10);
 
         print('\nStep 5: Verify split transactions were broadcast');
-        // Check MockArcService for broadcast transactions
-        final broadcastCount = context.mockArcService.getBroadcastCount();
+        // Check the ARC stand-in for broadcast transactions
+        final broadcastCount = context.arc.seen.length;
         expect(broadcastCount, greaterThanOrEqualTo(2), 
           reason: 'Should broadcast 2 transactions (one per source UTXO)');
         print('✓ Broadcast $broadcastCount transaction(s)');
 
         print('\nStep 6: Verify wallet projection updated UTXOs');
-        // Wait for projections to fully process all events (spent + new UTXOs)
-        await Future.delayed(const Duration(seconds: 5));
-        
-        final finalUtxos = await context.storage.getUTXOs(walletId, includeSpent: true);
         print('  Total UTXOs in projection: ${finalUtxos.length}');
         
         // Should have:
@@ -684,15 +731,19 @@ void main() {
           reason: 'Should have at least 10 new UTXOs');
 
         final spentUtxos = finalUtxos.where((u) => u.status == UTXOStatus.spent).toList();
-        final pendingUtxos = finalUtxos.where((u) => u.status == UTXOStatus.pending).toList();
-        
+        // The split outputs; ARC reported the splits SEEN_ON_NETWORK, so
+        // they are available.
+        final pendingUtxos = finalUtxos.where((u) => !originalKeys.contains(u.key)).toList();
+
         print('  Spent UTXOs: ${spentUtxos.length}');
-        print('  Pending UTXOs: ${pendingUtxos.length}');
-        
-        expect(spentUtxos.length, equals(2), 
+        print('  Split output UTXOs: ${pendingUtxos.length}');
+
+        expect(spentUtxos.length, equals(2),
           reason: 'Original 2 UTXOs should be spent');
-        expect(pendingUtxos.length, greaterThanOrEqualTo(10),
-          reason: 'Should have 10 pending UTXOs from split');
+        expect(pendingUtxos.length, equals(10),
+          reason: 'Should have 10 UTXOs from split');
+        expect(pendingUtxos.map((u) => u.status).toSet(), {UTXOStatus.available},
+          reason: 'Split outputs are spendable once the splits are on the network');
 
         print('\nStep 7: Verify Benford distribution of new UTXOs');
         final newUtxoAmounts = pendingUtxos

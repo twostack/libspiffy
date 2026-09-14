@@ -608,6 +608,81 @@ void main() {
         );
       });
     });
+
+    /// T-1 (libspiffy-hhj): the payment coordinator reserves the inputs under
+    /// a payment id (`payment-<invoice>-<ms>`), because the txid exists only
+    /// after signing, and records the signed transaction with a deferred
+    /// spend. The spend ARC triggers names the txid, so it was rejected and
+    /// every standard payment's input stayed reserved until expiry.
+    group('SpendUTXOCommand for a recorded transaction reserved under a payment id', () {
+      const paymentId = 'payment-inv-1-1700000000000';
+      const signedTxId = 'signed_tx_Z';
+
+      TransactionRecordedEvent recordedEvent(List<String> spentUtxoKeys) => TransactionRecordedEvent(
+            walletId: 'test_wallet',
+            txid: signedTxId,
+            rawHex: '00',
+            totalInputSats: 100000,
+            totalOutputSats: 99000,
+            fee: 1000,
+            numInputs: spentUtxoKeys.length,
+            numOutputs: 1,
+            txVersion: 1,
+            txLockTime: 0,
+            spentUtxoKeys: spentUtxoKeys,
+            recipientAddresses: const ['1Recipient'],
+            paymentAmount: '99000',
+            version: 2,
+          );
+
+      /// [base] with the outgoing-transaction record the aggregate keeps for
+      /// [recordedEvent] (applied through the aggregate's event handler).
+      WalletState recorded(WalletState base, List<String> spentUtxoKeys) {
+        aggregate.eventHandler(recordedEvent(spentUtxoKeys));
+        return base.copyWithWallet(metadata: {
+          ...base.metadata,
+          'outgoingTransactions': aggregate.currentState.metadata['outgoingTransactions'],
+        });
+      }
+
+      WalletState withInput(UTXOStatus status, {String? reservedBy}) {
+        final utxo = initialState.utxos['test_tx_1:0']!;
+        return initialState.copyWithWallet(utxos: {
+          ...initialState.utxos,
+          'test_tx_1:0': utxo.copyWith(status: status, reservedByTxId: reservedBy),
+        });
+      }
+
+      SpendUTXOCommand spend() => SpendUTXOCommand(
+            walletId: 'test_wallet',
+            utxoKey: 'test_tx_1:0',
+            spendingTxId: signedTxId,
+            fee: BigInt.zero,
+          );
+
+      test('a reserved input the recorded transaction spends is spent', () async {
+        final state = recorded(withInput(UTXOStatus.reserved, reservedBy: paymentId), ['test_tx_1:0']);
+        final events = await aggregate.handleCommand(state, spend());
+        expect(events.single, isA<UTXOSpentEvent>());
+        expect((events.single as UTXOSpentEvent).spentInTxId, signedTxId);
+      });
+
+      test('a pending input the recorded transaction spends is spent', () async {
+        final state = recorded(withInput(UTXOStatus.pending), ['test_tx_1:0']);
+        final events = await aggregate.handleCommand(state, spend());
+        expect(events.single, isA<UTXOSpentEvent>());
+      });
+
+      test('an input the recorded transaction does not spend stays protected', () {
+        final state = recorded(withInput(UTXOStatus.reserved, reservedBy: paymentId), ['test_tx_2:1']);
+        expect(() => aggregate.handleCommand(state, spend()), throwsA(isA<StateError>()));
+      });
+
+      test('without a recorded transaction the payment reservation is not superseded', () {
+        final state = withInput(UTXOStatus.reserved, reservedBy: paymentId);
+        expect(() => aggregate.handleCommand(state, spend()), throwsA(isA<StateError>()));
+      });
+    });
   });
 }
 

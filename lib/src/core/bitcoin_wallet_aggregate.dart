@@ -1054,10 +1054,16 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
     // spent once the transaction is seen on the network. Rejecting reserved
     // UTXOs here meant that spend never applied, and the reservation expiry
     // later returned an on-chain-spent coin to `available`.
+    // The payment coordinator reserves under a payment id (the txid exists
+    // only after signing), so a reservation by another id is superseded too
+    // when the wallet's own recorded transaction [SpendUTXOCommand.spendingTxId]
+    // spends this UTXO (T-1: every standard payment's input stayed reserved).
     final spendable = utxo.status == UTXOStatus.available ||
         (utxo.status == UTXOStatus.reserved &&
             (utxo.reservedByTxId == null ||
-                utxo.reservedByTxId == command.spendingTxId));
+                utxo.reservedByTxId == command.spendingTxId)) ||
+        ((utxo.status == UTXOStatus.reserved || utxo.status == UTXOStatus.pending) &&
+            _recordedTransactionSpends(currentState, command.spendingTxId, command.utxoKey));
     if (!spendable) {
       throw StateError('UTXO ${command.utxoKey} is not available for spending (status: ${utxo.status}, reservedBy: ${utxo.reservedByTxId})');
     }
@@ -1077,6 +1083,20 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
     );
 
     return [event];
+  }
+
+  /// Whether the outgoing transaction [txid] this wallet recorded lists
+  /// [utxoKey] among the UTXOs it spends.
+  static bool _recordedTransactionSpends(WalletState state, String txid, String utxoKey) {
+    final records = state.metadata[_outgoingTransactionsKey];
+    final record = records is Map
+        ? records[txid]
+        : records is List
+            ? records.firstWhere((r) => r is Map && r['txid']?.toString() == txid, orElse: () => null)
+            : null;
+    if (record is! Map) return false;
+    final keys = record['spentUtxoKeys'];
+    return keys is List && keys.contains(utxoKey);
   }
 
   List<Event> _handleUpdateUTXOConfirmations(WalletState currentState, UpdateUTXOConfirmationsCommand command) {
@@ -2846,6 +2866,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
       'recipientAddresses': event.recipientAddresses,
       'paymentAmount': event.paymentAmount,
       'fee': event.fee,
+      'spentUtxoKeys': List<String>.from(event.spentUtxoKeys),
       'recordedAt': event.timestamp.toIso8601String(),
     };
     final existing = records[event.txid];

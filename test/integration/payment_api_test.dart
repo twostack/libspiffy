@@ -8,11 +8,13 @@ import 'package:libspiffy/libspiffy.dart';
 import 'package:libspiffy/internals.dart';
 import 'package:libspiffy/src/storage/isar_wallet_storage.dart';
 import 'package:libspiffy/src/utils/crypto_utils.dart';
+import 'package:libspiffy/src/spv/merkle_proof_header_check.dart';
 import 'package:libspiffy/src/services/blockchain_data_source.dart';
 import 'package:libspiffy/src/models/blockchain_data_models.dart';
 import 'package:dartsv/dartsv.dart';
 import 'p2p_test_helpers.dart';
 import 'isar_test_helper.dart';
+import '../spv/testnet_proof_fixture.dart';
 
 /// Integration tests for PaymentCoordinatorActor and PayInvoiceMessage API
 /// 
@@ -335,21 +337,15 @@ void main() {
       
       // testAddress is already set from setUp()
       
-      // Parse the real merkle proof from your test data
+      // The real WhatsOnChain TSC proof (display-order nodes); it walks to
+      // the merkle root of the real header setupTestHeaders stores at 1239645.
       final proofJson = {
-        'index': 2,
+        'index': kFixtureIndex,
         'txOrId': testTxid,
-        'target': '0000000014ba177afc3977062d2709ff4f289462b18189a381ad3cbf244d1c3b',
-        'nodes': [
-          '2bb617ed9b7950dcc9ddd952364a5d039742b40b786d3ef8a3984a5cf5495640',
-          'e0c82744e0d7c7a1e72102b82fa37ae09f4e6018ebb18773f888617b83250e75',
-          '9991c11c2ecb5087a29032a279d926bfe03c926c582a30743c902b57a3d98039',
-          '9d54821a3821713dadeeb3a614921f8c63866f82686cbcf019ed7a6c20a36d2b',
-          'a1e33369efb20fa5a1311ddfed20747de1996fdc814aa19691106eafe28b3e5d',
-          '5a2f7dcc9b1fddc64f57157e7c59082729622050a76cb6956ae6b15f1a9ff0c4',
-        ],
+        'target': kFixtureBlockHash,
+        'nodes': kFixtureNodes,
       };
-      
+
       // Create BUMP from the real merkle proof
       final bump = CryptoUtils.createBumpFromTscProof(proofJson, testBlockHeight);
       final bumpHex = hex.encode(bump.serialize());
@@ -393,6 +389,10 @@ void main() {
             address: testAddress,
             blockHeight: testBlockHeight,
             confirmations: 6,
+            // The caller sets the status from the proof it verified (the
+            // import above carries the transaction's BUMP); payments spend
+            // only available UTXOs, and the command defaults to pending.
+            initialStatus: UTXOStatus.available,
           ),
         ),
       );
@@ -438,15 +438,24 @@ void main() {
       expect(response, isNotNull);
       expect(response.invoiceId, equals('test-invoice-funded'));
       
+      expect(response.success, isTrue, reason: 'BEEF creation should succeed: ${response.error}');
+
       // Verify BEEF can be parsed successfully
       final parsedBeef = BEEF.parse(response.beefBytes);
       expect(parsedBeef, isA<BEEF>());
       expect(parsedBeef.txs.length, equals(2)); // Ancestor + payment transaction
       expect(parsedBeef.bumps.length, equals(1)); // One merkle proof
 
+      // The ancestor's proof must verify against our header chain, the
+      // check the counterparty makes (a proof that does not walk to the
+      // header's merkle root makes the BEEF worthless).
+      final proofCheck = await checkBumpAgainstHeaders(
+        txid: testTxid,
+        bump: parsedBeef.bumps.single,
+        headerAt: libspiffy.walletStorage.getBlockHeaderByHeight,
+      );
+      expect(proofCheck.status, ProofHeaderStatus.verified, reason: '$proofCheck');
 
-      
-      expect(response.success, isTrue, reason: 'BEEF creation should succeed');
       
       print('✓ BEEF created successfully with signed transaction:');
       print('  Transaction ID: ${response.txid}');

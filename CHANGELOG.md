@@ -302,6 +302,49 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### Follow-ups before wave 4
+
+Defects found by the wave 3 lanes (report section 11, V-8 to V-12), each with
+a regression test shown to fail on the previous code.
+
+- **Rejected commands (V-8, V-11).** A command an aggregate rejects is
+  answered with the aggregate's error and no longer stops the wallet,
+  invoice or channel aggregate; the channel manager no longer reports
+  rejected payments and refund countersignatures as successful. A journal
+  write failure still takes the aggregate out of service; managers replace
+  dead aggregate refs. Invoice failures are answered once, not twice.
+- **Postgres journal ordering (V-9).** Replays, `eventsByTag` and live
+  streams deliver every committed event even when concurrent writers commit
+  out of id order, and live streams now receive appends from other
+  processes (**Postgres migration v008**).
+- **Merkle proof retention (V-10).** Proofs carry a status (`verified`,
+  `pendingHeader`, `orphaned`); a reorg marks a proof orphaned instead of
+  deleting it, and BEEFs use only a transaction's current proof
+  (**Postgres migration v009**).
+- **Channel open (V-12).** A client-side channel open no longer stalls on
+  the server's refund countersignature; channel funding and refund signing
+  use the channel's wallet instead of the last one created.
+
+#### Breaking changes
+
+- PostgreSQL 13 or newer is required. `PostgresEventStore` polls for live
+  events (`livePollInterval`, default 1 s; `null` disables); an open writing
+  transaction anywhere on the server delays live delivery until it ends;
+  overlapping appends may be delivered with the higher id first.
+- `ReadModelStorage.deleteMerkleProof` is replaced by
+  `markMerkleProofOrphaned`; `getMerkleProofHistory` and
+  `getMerkleProofsByStatus` are new (all abstract). `MerkleProof.blockHash`
+  is nullable; the `'pending'` block hash is gone; a transaction may have
+  several proof rows; `getMerkleProofCount` counts orphaned rows.
+- Channel manager error texts are the aggregate's messages;
+  `RecordServerAcceptanceMessage` gets a `ServerAcceptanceRecordedResponse`.
+  Mark-paid, cancel and expire for an unknown invoice fail at once with
+  "not found". A `CreateWalletMessage` rejected earlier can be retried.
+- Coordinator channel events carry the channel's wallet id.
+
+Additive API: `MerkleProofStatus`, `MerkleProof.status` / `statusChangedAt`,
+`PostgresEventStore(livePollInterval:)`, `ServerAcceptanceRecordedResponse`.
+
 ## 2.0.0
 
 Dependency upgrade and audit release. libspiffy now tracks **dactor 1.3.0**,

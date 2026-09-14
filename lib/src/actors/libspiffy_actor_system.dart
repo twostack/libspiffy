@@ -24,6 +24,7 @@ import '../services/crypto_service.dart';
 import '../services/dartsv_crypto_service.dart';
 import '../services/arc_service_config.dart';
 import '../spv/block_header_chain.dart';
+import '../spv/network_params.dart';
 import '../spv/cdn_header_sync_config.dart';
 import '../spv/cdn_header_sync_service.dart';
 import '../integration/spiffynode_bridge.dart';
@@ -336,7 +337,12 @@ class LibSpiffyActorSystem {
     
     // 7. Initialize block header chain for SPV validation
     // IMPORTANT: BlockHeaderChain uses _actorStorage which now points to Isar
-    _headerChain = BlockHeaderChain(_actorStorage);
+    // Anchored to the configured network's genesis; initialize() refuses a
+    // header store that is not anchored to it (SPV-02).
+    _headerChain = BlockHeaderChain(
+      _actorStorage,
+      params: NetworkParams.forNetwork(networkType),
+    );
     await _headerChain.initialize();
 
     // 7.1. Start CDN header sync concurrently with actor setup (independent operations)

@@ -92,6 +92,11 @@ class HeaderSyncActor extends Actor {
   // Sync state guard to prevent concurrent header requests
   bool _syncInProgress = false;
 
+  // Consecutive batches whose first header had no known parent; each one
+  // triggers a re-request with a full locator, up to this many times.
+  int _unknownParentBatches = 0;
+  static const int _maxUnknownParentRetries = 3;
+
   /// Specific-header requests waiting for a header that has not been synced
   /// yet, keyed by height. Resolved by [_resolvePendingHeaderRequests].
   final Map<int, List<_PendingHeaderRequest>> _pendingHeaderRequests = {};
@@ -231,28 +236,12 @@ class HeaderSyncActor extends Actor {
 
       // Mark sync as in progress
       _syncInProgress = true;
-      
-      // Build block locator hashes for efficient sync
-      // Use current chain tip to request headers from where we left off
-      final blockLocators = <Hash>[];
-      
-      if (currentHeight > 0) {
-        // Get the header at our current tip to use as locator
-        final tipHeader = await _headerChain.getHeaderByHeight(currentHeight);
-        if (tipHeader != null) {
-          // SpiffyNode BlockHeader uses blockHash() method
-          final tipHash = tipHeader.blockHash();
-          blockLocators.add(tipHash);
-          _logger.info('Using tip hash as locator: ${tipHash.toString()} at height $currentHeight');
-        } else {
-          _logger.warning('Could not get header at height $currentHeight, using zero hash');
-          blockLocators.add(Hash.zero());
-        }
-      } else {
-        // Starting from genesis
-        blockLocators.add(Hash.zero());
-      }
-      
+
+      // Dense-then-sparse locator down to the anchor: a peer on another
+      // branch answers from the first hash it recognises, so after a reorg
+      // the reply starts at the fork point rather than at our stale tip.
+      final blockLocators = await _headerChain.buildBlockLocator();
+
       final getHeadersMsg = MsgGetHeaders(
         protocolVersion: 70016,
         blockLocatorHashes: blockLocators,
@@ -295,52 +284,85 @@ class HeaderSyncActor extends Actor {
       return;
     }
 
-    _logger.info('Processing ${msg.headers.length} headers from peer ${msg.peerId}');
-    
+    _logger.info('Processing ${msg.headers.length} headers from peer ${msg.peerId} '
+        '(sender says start height ${msg.startHeight})');
+
     var successCount = 0;
     var failureCount = 0;
-    var currentHeight = msg.startHeight;
+    var reorganized = false;
+    var firstParentUnknown = false;
+    BlockHeader? lastStored;
 
     try {
-      for (final header in msg.headers) {
-        final success = await _headerChain.validateAndStoreHeader(header, currentHeight);
-        
-        if (success) {
+      for (var i = 0; i < msg.headers.length; i++) {
+        final header = msg.headers[i];
+        // The chain derives the height from the header's parent. The
+        // sender's startHeight is not trusted: after a reorg the peer sends
+        // from the fork point, which is below our tip.
+        final result = await _headerChain.acceptHeader(header);
+
+        if (result.accepted) {
           successCount++;
-          _lastProcessedHeight = currentHeight;
+          lastStored = header;
+          _lastProcessedHeight = result.height ?? _lastProcessedHeight;
           _lastHeaderAt = DateTime.now();
+          if (result.reorganized) {
+            reorganized = true;
+            _reorgsHandled++;
+            _logger.warning('Reorganization applied: fork at height ${result.forkHeight}, '
+                '${result.orphaned.length} header(s) orphaned, new tip at height ${result.height}');
+          }
         } else {
           failureCount++;
-          _logger.warning('Failed to validate header at height $currentHeight');
+          _logger.warning('Rejected header from ${msg.peerId}: ${result.reason} - ${result.detail}');
+          if (i == 0 && result.reason == HeaderRejectReason.unknownParent) {
+            firstParentUnknown = true;
+          }
         }
-        
-        currentHeight++;
       }
-      
+
       _headersProcessed += successCount;
 
       await _resolvePendingHeaderRequests();
-      
+
       _logger.info('Header processing complete: $successCount stored, $failureCount failed');
       _logger.info('Current height: $_lastProcessedHeight');
-      
+
       // Clear sync-in-progress flag BEFORE potentially triggering next batch
       _syncInProgress = false;
-      
+
+      if (firstParentUnknown && successCount == 0) {
+        // The peer answered from a point we do not know (its branch forks
+        // below anything in our locator, or it ignored the locator). Ask
+        // again with a fresh locator; bounded so a misbehaving peer cannot
+        // keep us in a loop.
+        _unknownParentBatches++;
+        if (_unknownParentBatches <= _maxUnknownParentRetries) {
+          _logger.warning('Batch from ${msg.peerId} does not connect to any known header; '
+              're-requesting with a full block locator (attempt $_unknownParentBatches)');
+          _triggerHeaderSync();
+        } else {
+          _logger.severe('Giving up on unconnectable batches from ${msg.peerId} after '
+              '$_maxUnknownParentRetries attempts');
+        }
+      } else if (successCount > 0) {
+        _unknownParentBatches = 0;
+      }
+
       // Check if we received a full batch (2000 = protocol limit = more headers available)
       if (successCount >= 2000) {
         _logger.info('📡 Received full batch (2000 headers), requesting more...');
         _triggerHeaderSync(); // Request next batch automatically
-      } else {
+      } else if (successCount > 0) {
         _logger.info('✅ Sync complete: received ${successCount} headers (less than 2000)');
       }
-      
+
       // Notify SPVActor of new headers (using the last header stored)
-      if (_spvActor != null && successCount > 0 && msg.headers.isNotEmpty) {
+      if (_spvActor != null && successCount > 0 && lastStored != null) {
         _spvActor.tell(BlockHeaderStoredMessage(
-          header: msg.headers.last,
+          header: lastStored,
           height: _lastProcessedHeight,
-          isReorg: msg.isReorganization,
+          isReorg: reorganized || msg.isReorganization,
         ) as dynamic);
       }
       
@@ -404,19 +426,21 @@ class HeaderSyncActor extends Actor {
   /// Handle blockchain reorganization
   Future<void> _handleReorganization(ChainTipEventMessage msg) async {
     _logger.warning('Handling blockchain reorganization: ${msg.description}');
-    
+
     try {
-      // Use BlockHeaderChain's reorganization handling
-      // Note: ChainTipEventMessage doesn't contain actual headers, only heights
-      await _headerChain.handleReorganization(
-        [], // orphanedHeaders - would need from SpiffyNode 
-        [], // newHeaders - would need from SpiffyNode
-      );
-      
-      _reorgsHandled++;
-      
-      _logger.info('Reorganization handled successfully');
-      
+      // The tip event carries no headers, only the new tip. Ask the peers
+      // for headers with a full block locator: a peer on the new branch
+      // replies from the fork point, and _handleBlockHeadersReceived places
+      // those headers by their parents and moves the tip on chainwork.
+      // _reorgsHandled is counted there, when the chain actually reorganizes.
+      final newTipHash = msg.newTip.blockHash.toString();
+      if (await _headerChain.getHeaderByHash(newTipHash) != null) {
+        _logger.info('Reorganized tip $newTipHash is already our active tip');
+        return;
+      }
+      _syncInProgress = false; // a tip change supersedes any in-flight request
+      await _triggerHeaderSync();
+
     } catch (e) {
       _logger.severe('Failed to handle reorganization: $e');
       rethrow;
@@ -537,15 +561,8 @@ class HeaderSyncActor extends Actor {
       _logger.info('⚠️  Requested height ${msg.blockHeight} is ahead of current height $currentHeight');
       _logger.info('📡 Triggering header sync to fetch missing headers...');
       
-      // Build block locator starting from current tip
-      final blockLocators = <Hash>[];
-      final tipHeader = await _headerChain.getHeaderByHeight(currentHeight);
-      if (tipHeader != null) {
-        blockLocators.add(tipHeader.blockHash());
-      } else {
-        blockLocators.add(Hash.zero());
-      }
-      
+      final blockLocators = await _headerChain.buildBlockLocator();
+
       // Send getHeaders request
       final getHeadersMsg = MsgGetHeaders(
         protocolVersion: 70016,

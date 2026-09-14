@@ -1,7 +1,5 @@
 import 'dart:async';
 import 'dart:typed_data';
-import 'dart:convert';
-import 'dart:io';
 import 'package:test/test.dart';
 import 'package:logging/logging.dart';
 import 'package:dactor/dactor.dart';
@@ -9,18 +7,24 @@ import 'package:spiffynode/spiffy_node.dart';
 
 import 'package:libspiffy/src/actors/header_sync_actor.dart';
 import 'package:libspiffy/src/actors/spv_messages.dart';
+import 'package:libspiffy/src/spv/network_params.dart';
 import 'package:libspiffy/src/storage/wallet_storage.dart';
 import 'package:libspiffy/src/storage/in_memory_wallet_storage.dart';
 import 'package:libspiffy/src/spv/block_header_chain.dart';
 
+import '../spv/regtest_chain_builder.dart';
+
 /// Integration tests for HeaderSyncActor
-/// 
+///
 /// These tests verify:
 /// 1. Actor message handling (BlockHeadersReceivedMessage, ChainTipEventMessage, etc.)
 /// 2. BlockHeaderChain integration and coordination
 /// 3. SPV actor communication and status reporting
 /// 4. Error handling and recovery
-/// 5. Performance under load
+/// 5. Reorganization handling (SPV-03)
+///
+/// The chain runs with regtest consensus rules; every synthetic header is
+/// mined with real (cheap) proof of work on top of the regtest genesis.
 void main() {
   // Set up logging for tests
   Logger.root.level = Level.WARNING; // Reduce noise in tests
@@ -30,12 +34,17 @@ void main() {
     }
   });
 
+  final regtest = NetworkParams.regtest;
+  final genesis = regtest.genesisHeader;
+  DateTime clock() => genesis.timestamp.add(const Duration(days: 365));
+
   group('HeaderSyncActor Integration Tests', () {
     late ActorSystem actorSystem;
     late WalletStorage storage;
     late BlockHeaderChain headerChain;
     late ActorRef headerSyncActor;
     late ActorRef mockSPVActor;
+    late _MockSPVActor spvInstance;
 
     setUpAll(() async {
       // Initialize actor system
@@ -45,11 +54,12 @@ void main() {
     setUp(() async {
       // Initialize storage and header chain
       storage = InMemoryWalletStorage();
-      headerChain = BlockHeaderChain(storage, skipProofOfWorkValidation: true);
+      headerChain = BlockHeaderChain(storage, params: regtest, clock: clock);
       await headerChain.initialize();
 
       // Create a mock SPV actor to receive messages
-      mockSPVActor = await actorSystem.spawn('mock-spv', () => _MockSPVActor());
+      spvInstance = _MockSPVActor();
+      mockSPVActor = await actorSystem.spawn('mock-spv', () => spvInstance);
 
       // Spawn HeaderSyncActor with dependencies
       headerSyncActor = await actorSystem.spawn('header-sync', () => HeaderSyncActor(
@@ -74,15 +84,13 @@ void main() {
 
     group('Message Handling', () {
       test('should handle BlockHeadersReceivedMessage and store headers', () async {
-        // Load real Bitcoin block headers
-        final realHeaders = await _loadRealBlockHeaders();
-        final testHeaders = realHeaders.take(3).toList();
+        final headers = RegtestMiner.mineChain(genesis, 3);
 
         // Send headers to actor
         final message = BlockHeadersReceivedMessage(
           peerId: 'test-peer-1',
-          headers: testHeaders,
-          startHeight: 0,
+          headers: headers,
+          startHeight: 1,
           isReorganization: false,
         );
 
@@ -92,9 +100,9 @@ void main() {
         await Future.delayed(Duration(milliseconds: 500));
 
         // Verify headers were stored through the actor
-        expect(headerChain.bestHeight, equals(2)); // Should have stored 3 headers (0, 1, 2)
-        expect(headerChain.chainTip, isNotNull);
-        expect(headerChain.cacheSize, equals(3));
+        expect(headerChain.bestHeight, equals(3));
+        expect(headerChain.chainTip!.blockHash(), equals(headers.last.blockHash()));
+        expect(headerChain.cacheSize, equals(4)); // genesis + 3
 
         // Verify headers can be retrieved
         final retrievedHeader = await headerChain.getHeaderByHeight(1);
@@ -115,75 +123,55 @@ void main() {
         // Wait for processing
         await Future.delayed(Duration(milliseconds: 100));
 
-        // Check that mock SPV actor received the forwarded message
-        // (This would need to be verified through the mock actor's received messages)
+        expect(spvInstance.receivedMessages.whereType<ChainTipEventMessage>(), isNotEmpty);
       });
 
       test('should handle GetSPVStatusMessage and respond with current status', () async {
-        // Store some test headers first
-        final header = _createTestBlockHeader(height: 1, prevHash: '0' * 64);
+        final header = RegtestMiner.mine(parent: genesis);
         await headerChain.validateAndStoreHeader(header, 1);
 
-        // Create a test actor to receive the response
-        final responder = await actorSystem.spawn('responder', () => _ResponseCollectorActor());
-
-        // Send status request from responder
+        // SPVStatusMessage is not a LocalMessage, so it cannot be awaited
+        // with ask; the reply goes to the sender via tell.
         headerSyncActor.tell(GetSPVStatusMessage() as dynamic);
-
-        // Wait for response processing
         await Future.delayed(Duration(milliseconds: 100));
-
-        // The response would be collected by the ResponseCollectorActor
-        await actorSystem.stop(responder);
+        expect(headerChain.bestHeight, equals(1));
       });
 
       test('should handle RequestHeaderSyncMessage and respond with sync status', () async {
-        // Store some headers to create a baseline
-        final headers = List.generate(5, (i) => _createTestBlockHeader(
-          height: i + 1,
-          prevHash: i == 0 ? '0' * 64 : _calculateHash('header_$i'),
-        ));
-
+        final headers = RegtestMiner.mineChain(genesis, 5);
         for (int i = 0; i < headers.length; i++) {
           await headerChain.validateAndStoreHeader(headers[i], i + 1);
         }
 
-        // Create sync request
-        final syncRequest = RequestHeaderSyncMessage(fromHeight: 3);
-
-        // Create responder to collect response
-        final responder = await actorSystem.spawn('sync-responder', () => _ResponseCollectorActor());
-
-        // Send sync request
-        headerSyncActor.tell(syncRequest as dynamic);
-
+        // HeaderSyncStatusMessage is not a LocalMessage (no ask); the actor
+        // must stay responsive after the request.
+        headerSyncActor.tell(RequestHeaderSyncMessage(fromHeight: 3) as dynamic);
         await Future.delayed(Duration(milliseconds: 100));
-        await actorSystem.stop(responder);
+        expect(headerChain.bestHeight, equals(5));
       });
     });
 
     group('Specific header requests', () {
       test('is answered when the requested header arrives in a later batch', () async {
-        final realHeaders = await _loadRealBlockHeaders();
-        expect(realHeaders.length, greaterThanOrEqualTo(6));
+        final headers = RegtestMiner.mineChain(genesis, 6);
 
-        // Heights 0-2 are synced; 3+ are not.
+        // Heights 1-3 are synced; 4+ are not.
         headerSyncActor.tell(BlockHeadersReceivedMessage(
           peerId: 'test-peer-1',
-          headers: realHeaders.take(3).toList(),
-          startHeight: 0,
+          headers: headers.take(3).toList(),
+          startHeight: 1,
           isReorganization: false,
         ) as dynamic);
         await Future.delayed(Duration(milliseconds: 300));
-        expect(headerChain.bestHeight, equals(2));
+        expect(headerChain.bestHeight, equals(3));
 
         // A peer that answers getHeaders by delivering the rest through the
         // actor's own mailbox, exactly as the SpiffyNode bridge does.
-        final peerManager = _FakePeerManager(onGetHeaders: () {
+        final peerManager = _FakePeerManager(onGetHeaders: (_) {
           headerSyncActor.tell(BlockHeadersReceivedMessage(
             peerId: 'fake-peer',
-            headers: realHeaders.skip(3).take(3).toList(),
-            startHeight: 3,
+            headers: headers.skip(3).take(3).toList(),
+            startHeight: 4,
             isReorganization: false,
           ) as dynamic);
         });
@@ -206,16 +194,16 @@ void main() {
       });
 
       test('fails with a timeout when no peer delivers the header', () async {
-        final realHeaders = await _loadRealBlockHeaders();
+        final headers = RegtestMiner.mineChain(genesis, 3);
         headerSyncActor.tell(BlockHeadersReceivedMessage(
           peerId: 'test-peer-1',
-          headers: realHeaders.take(3).toList(),
-          startHeight: 0,
+          headers: headers,
+          startHeight: 1,
           isReorganization: false,
         ) as dynamic);
         await Future.delayed(Duration(milliseconds: 300));
 
-        headerSyncActor.tell(SetPeerManagerMessage(_FakePeerManager(onGetHeaders: () {})));
+        headerSyncActor.tell(SetPeerManagerMessage(_FakePeerManager(onGetHeaders: (_) {})));
 
         final pendingFuture = headerSyncActor.ask<SpecificHeaderResponseMessage>(
           RequestSpecificHeaderMessage(
@@ -245,7 +233,7 @@ void main() {
     group('Sync in-progress flag', () {
       test('a sync attempt with no connected peers does not block later syncs', () async {
         // First attempt: peer manager is set but has no connected peers.
-        final noPeers = _FakePeerManager(onGetHeaders: () {}, hasPeers: false);
+        final noPeers = _FakePeerManager(onGetHeaders: (_) {}, hasPeers: false);
         headerSyncActor.tell(SetPeerManagerMessage(noPeers));
         headerSyncActor.tell(InitiateHeaderSyncMessage());
         await Future.delayed(Duration(milliseconds: 200));
@@ -255,7 +243,7 @@ void main() {
         // first attempt had already set _syncInProgress = true before it
         // discovered there were no peers, so this (and every later) request
         // was skipped as a "duplicate" and getHeaders was never sent.
-        final withPeer = _FakePeerManager(onGetHeaders: () {});
+        final withPeer = _FakePeerManager(onGetHeaders: (_) {});
         headerSyncActor.tell(SetPeerManagerMessage(withPeer));
         headerSyncActor.tell(InitiateHeaderSyncMessage());
         await Future.delayed(Duration(milliseconds: 200));
@@ -267,26 +255,14 @@ void main() {
 
     group('Error Handling', () {
       test('should handle invalid headers gracefully', () async {
-        // Load real headers and create one invalid header
-        final realHeaders = await _loadRealBlockHeaders();
-        final validHeader = realHeaders[0]; // Genesis block
-        
-        // Create an invalid header with wrong previous block hash
-        final invalidHeader = BlockHeader(
-          version: 1,
-          prevBlock: Hash.fromBytes(Uint8List.fromList(_stringToBytes('invalid_hash_that_doesnt_match'))),
-          merkleRoot: realHeaders[1].merkleRoot,
-          timestamp: realHeaders[1].timestamp,
-          bits: realHeaders[1].bits,
-          nonce: realHeaders[1].nonce,
-        );
-        
-        final invalidHeaders = [validHeader, invalidHeader];
+        final valid = RegtestMiner.mine(parent: genesis);
+        // A header whose parent is not known.
+        final invalidHeader = RegtestMiner.mine(parent: RegtestMiner.mine(parent: valid, seed: 'x'));
 
         final message = BlockHeadersReceivedMessage(
           peerId: 'test-peer-invalid',
-          headers: invalidHeaders,
-          startHeight: 0,
+          headers: [valid, invalidHeader],
+          startHeight: 1,
           isReorganization: false,
         );
 
@@ -295,15 +271,15 @@ void main() {
         // Wait for processing
         await Future.delayed(Duration(milliseconds: 500));
 
-        // Should only have stored the first valid header (genesis block)
-        expect(headerChain.bestHeight, equals(0)); // Genesis block doesn't increase bestHeight
-        expect(headerChain.cacheSize, equals(1));
+        // Only the first (valid) header is stored.
+        expect(headerChain.bestHeight, equals(1));
+        expect(headerChain.cacheSize, equals(2));
       });
 
       test('should handle unknown message types gracefully', () async {
         // Create an unknown message type that implements Message
         final unknownMessage = _UnknownTestMessage();
-        
+
         headerSyncActor.tell(unknownMessage as dynamic);
 
         // Wait for processing
@@ -316,7 +292,7 @@ void main() {
       test('should handle messages when not initialized', () async {
         // Create a fresh HeaderSyncActor that hasn't been initialized yet
         final freshStorage = InMemoryWalletStorage();
-        final freshHeaderChain = BlockHeaderChain(freshStorage);
+        final freshHeaderChain = BlockHeaderChain(freshStorage, params: regtest, clock: clock);
         // Don't call initialize()
 
         final freshActor = await actorSystem.spawn('fresh-header-sync', () => HeaderSyncActor(
@@ -327,7 +303,7 @@ void main() {
         // Send message before initialization is complete
         final message = BlockHeadersReceivedMessage(
           peerId: 'early-peer',
-          headers: [_createTestBlockHeader(height: 1, prevHash: '0' * 64)],
+          headers: [RegtestMiner.mine(parent: genesis)],
           startHeight: 1,
         );
 
@@ -345,18 +321,14 @@ void main() {
         const batchCount = 10;
         const headersPerBatch = 20;
 
+        final chain = RegtestMiner.mineChain(genesis, batchCount * headersPerBatch);
+
         // Create multiple batches of headers
         final futures = <Future>[];
 
         for (int batch = 0; batch < batchCount; batch++) {
           final startHeight = batch * headersPerBatch + 1;
-          final headers = List.generate(headersPerBatch, (i) {
-            final height = startHeight + i;
-            return _createTestBlockHeader(
-              height: height,
-              prevHash: height == 1 ? '0' * 64 : _calculateHash('header_${height - 1}'),
-            );
-          });
+          final headers = chain.sublist(batch * headersPerBatch, (batch + 1) * headersPerBatch);
 
           final message = BlockHeadersReceivedMessage(
             peerId: 'batch-peer-$batch',
@@ -377,16 +349,14 @@ void main() {
         // Wait for processing to complete
         await Future.delayed(Duration(seconds: 2));
 
-        // Verify all headers were processed
-        // Note: Due to concurrency, some headers might be rejected due to validation failures
-        // But we should have a significant number stored
-        expect(headerChain.bestHeight, greaterThan(10));
+        // The mailbox serializes the batches, so every header is stored.
+        expect(headerChain.bestHeight, equals(batchCount * headersPerBatch));
         expect(headerChain.cacheSize, greaterThan(10));
       });
 
       test('should handle rapid chain tip events', () async {
         const eventCount = 50;
-        
+
         // Send rapid chain tip updates
         for (int i = 1; i <= eventCount; i++) {
           final event = ChainTipEventMessage(
@@ -397,7 +367,7 @@ void main() {
           );
 
           headerSyncActor.tell(event as dynamic);
-          
+
           // Small delay to simulate realistic timing
           if (i % 10 == 0) {
             await Future.delayed(Duration(milliseconds: 10));
@@ -407,18 +377,29 @@ void main() {
         // Wait for all events to be processed
         await Future.delayed(Duration(milliseconds: 500));
 
-        // Actor should still be responsive
-        final statusRequest = GetSPVStatusMessage();
-        headerSyncActor.tell(statusRequest as dynamic);
-        
-        await Future.delayed(Duration(milliseconds: 100));
+        // Actor should still be responsive: a header it already holds is
+        // answered through the ask-capable SpecificHeaderResponseMessage.
+        final response = await headerSyncActor.ask<SpecificHeaderResponseMessage>(
+          RequestSpecificHeaderMessage(blockHeight: 0),
+          const Duration(seconds: 5),
+        );
+        expect(response.success, isTrue, reason: response.error);
       });
     });
 
     group('BlockHeaderChain Integration', () {
       test('should properly coordinate with BlockHeaderChain for validation', () async {
-        // Use all available real headers (we have 7 real headers: 0-6)
-        final headers = await _loadRealBlockHeaders();
+        // Real mainnet headers 0-6 on a mainnet-anchored chain.
+        final mainStorage = InMemoryWalletStorage();
+        final mainChain = BlockHeaderChain(mainStorage, params: NetworkParams.mainnet);
+        await mainChain.initialize();
+        final mainActor = await actorSystem.spawn('header-sync-main', () => HeaderSyncActor(
+          headerChain: mainChain,
+          spvActor: mockSPVActor,
+        ));
+        await Future.delayed(Duration(milliseconds: 100));
+
+        final headers = loadFirstMainnetHeaders();
 
         // Send headers one batch at a time to ensure proper chaining
         for (int i = 0; i < headers.length; i += 3) {
@@ -430,8 +411,8 @@ void main() {
             isReorganization: false,
           );
 
-          headerSyncActor.tell(message as dynamic);
-          
+          mainActor.tell(message as dynamic);
+
           // Wait between batches to ensure ordered processing
           await Future.delayed(Duration(milliseconds: 100));
         }
@@ -440,48 +421,107 @@ void main() {
         await Future.delayed(Duration(milliseconds: 200));
 
         // Verify chain integrity
-        expect(headerChain.bestHeight, equals(6)); // 7 headers: heights 0-6
-        
+        expect(mainChain.bestHeight, equals(6)); // 7 headers: heights 0-6
+
         // Verify we can retrieve headers by height
         for (int i = 0; i < 7; i++) {
-          final header = await headerChain.getHeaderByHeight(i);
+          final header = await mainChain.getHeaderByHeight(i);
           expect(header, isNotNull, reason: 'Header at height $i should exist');
+          expect(header!.blockHash(), equals(headers[i].blockHash()));
         }
+        await actorSystem.stop(mainActor);
       });
+    });
 
-      test('should handle blockchain reorganizations', () async {
-        // Create initial chain
-        final initialHeaders = [
-          _createTestBlockHeader(height: 1, prevHash: '0' * 64),
-          _createTestBlockHeader(height: 2, prevHash: _calculateHash('header_1')),
-          _createTestBlockHeader(height: 3, prevHash: _calculateHash('header_2')),
-        ];
-
-        // Store initial chain
-        final initialMessage = BlockHeadersReceivedMessage(
-          peerId: 'initial-peer',
-          headers: initialHeaders,
+    group('SPV-03 reorganization', () {
+      test('a batch arriving after a reorg is stored at the heights its parents dictate, '
+          'not at bestHeight + 1', () async {
+        final a = RegtestMiner.mineChain(genesis, 3, seed: 'A'); // heights 1..3
+        headerSyncActor.tell(BlockHeadersReceivedMessage(
+          peerId: 'peer-a',
+          headers: a,
           startHeight: 1,
-        );
-
-        headerSyncActor.tell(initialMessage as dynamic);
-        await Future.delayed(Duration(milliseconds: 200));
-
+        ) as dynamic);
+        await Future.delayed(Duration(milliseconds: 300));
         expect(headerChain.bestHeight, equals(3));
 
-        // Simulate reorganization event
-        final reorgEvent = ChainTipEventMessage(
-          newTip: _TestChainTip(blockHash: 'new_chain_tip', height: 4),
-          oldTip: _TestChainTip(blockHash: _calculateHash('header_3'), height: 3),
+        // The peer reorganized onto B, which forks at height 1. Its reply
+        // to getHeaders starts at the fork point. The old bridge labelled
+        // every batch bestHeight + 1 = 4, and the old chain then compared
+        // B2's parent with the header at height 3 and dropped the batch.
+        final b = RegtestMiner.mineChain(a[0], 3, seed: 'B'); // heights 2..4
+        headerSyncActor.tell(BlockHeadersReceivedMessage(
+          peerId: 'peer-b',
+          headers: b,
+          startHeight: 4, // what the old bridge would have sent
+        ) as dynamic);
+        await Future.delayed(Duration(milliseconds: 300));
+
+        expect(headerChain.bestHeight, equals(4));
+        expect(headerChain.chainTip!.blockHash(), equals(b[2].blockHash()));
+        expect((await headerChain.getHeaderByHeight(2))!.blockHash(), equals(b[0].blockHash()));
+        expect((await headerChain.getHeaderByHeight(3))!.blockHash(), equals(b[1].blockHash()));
+        expect(await headerChain.getHeaderByHash(a[2].blockHash().toString()), isNull,
+            reason: 'A2/A3 are orphaned');
+
+        // The SPV actor is told the stored header was part of a reorg.
+        final stored = spvInstance.receivedMessages.whereType<BlockHeaderStoredMessage>().toList();
+        expect(stored.last.isReorg, isTrue);
+        expect(stored.last.height, equals(4));
+      });
+
+      test('a lower-work competing branch delivered by a peer does not move the tip', () async {
+        final a = RegtestMiner.mineChain(genesis, 3, seed: 'A');
+        headerSyncActor.tell(BlockHeadersReceivedMessage(
+          peerId: 'peer-a', headers: a, startHeight: 1) as dynamic);
+        await Future.delayed(Duration(milliseconds: 300));
+
+        final c = RegtestMiner.mineChain(genesis, 2, seed: 'C');
+        headerSyncActor.tell(BlockHeadersReceivedMessage(
+          peerId: 'peer-c', headers: c, startHeight: 1) as dynamic);
+        await Future.delayed(Duration(milliseconds: 300));
+
+        expect(headerChain.bestHeight, equals(3));
+        expect(headerChain.chainTip!.blockHash(), equals(a[2].blockHash()));
+        expect(await headerChain.hasHeader(c[1].blockHash().toString()), isTrue);
+      });
+
+      test('a reorg chain-tip event requests headers with a full block locator', () async {
+        final a = RegtestMiner.mineChain(genesis, 15, seed: 'A');
+        for (var i = 0; i < a.length; i++) {
+          await headerChain.validateAndStoreHeader(a[i], i + 1);
+        }
+        final sent = <MsgGetHeaders>[];
+        headerSyncActor.tell(SetPeerManagerMessage(_FakePeerManager(onGetHeaders: sent.add)));
+
+        headerSyncActor.tell(ChainTipEventMessage(
+          newTip: _TestChainTip(blockHash: 'ab' * 32, height: 16),
+          oldTip: _TestChainTip(blockHash: a.last.blockHash().toString(), height: 15),
           eventType: ChainTipEventType.reorganization,
           description: 'Blockchain reorganization detected',
-        );
+        ) as dynamic);
+        await Future.delayed(Duration(milliseconds: 300));
 
-        headerSyncActor.tell(reorgEvent as dynamic);
-        await Future.delayed(Duration(milliseconds: 200));
+        expect(sent, hasLength(1));
+        final locator = sent.single.blockLocatorHashes;
+        expect(locator.first, equals(a.last.blockHash()));
+        expect(locator.last, equals(genesis.blockHash()));
+        expect(locator.length, greaterThan(10));
+        expect(locator.length, lessThan(16));
+      });
 
-        // HeaderSyncActor should forward the reorg event to SPV actor
-        // The actual reorganization handling would be coordinated through BlockHeaderChain
+      test('a batch that does not connect to any known header triggers a re-request', () async {
+        final sent = <MsgGetHeaders>[];
+        headerSyncActor.tell(SetPeerManagerMessage(_FakePeerManager(onGetHeaders: sent.add)));
+
+        final foreign = RegtestMiner.mineChain(NetworkParams.testnet.genesisHeader, 2);
+        headerSyncActor.tell(BlockHeadersReceivedMessage(
+          peerId: 'peer-x', headers: foreign, startHeight: 1) as dynamic);
+        await Future.delayed(Duration(milliseconds: 300));
+
+        expect(headerChain.bestHeight, equals(0));
+        expect(sent, hasLength(1));
+        expect(sent.single.blockLocatorHashes, equals([genesis.blockHash()]));
       });
     });
   });
@@ -497,37 +537,22 @@ class _MockSPVActor extends Actor {
   }
 }
 
-/// Actor that collects responses for testing ask patterns
-class _ResponseCollectorActor extends Actor {
-  dynamic lastResponse;
-
-  @override
-  Future<void> onMessage(dynamic message) async {
-    lastResponse = message;
-    
-    // If this is an ask message, we should reply
-    if (context.sender != null) {
-      context.sender!.tell(message);
-    }
-  }
-}
-
 /// Test chain tip implementation
 class _TestChainTip implements ChainTip {
   final String _blockHashString;
-  
+
   @override
   final int height;
-  
+
   @override
   final DateTime lastUpdated;
-  
+
   @override
   final int peerCount;
-  
+
   @override
   final double confidence;
-  
+
   @override
   final List<String> reportingPeers;
 
@@ -582,88 +607,6 @@ List<int> _stringToBytes(String str) {
   return bytes;
 }
 
-/// Create a test block header for testing
-BlockHeader _createTestBlockHeader({
-  required int height,
-  required String prevHash,
-  int version = 1,
-  String? merkleRoot,
-  DateTime? timestamp,
-  int bits = 0x1d00ffff,
-  int nonce = 12345,
-}) {
-  final finalMerkleRoot = merkleRoot ?? 'merkle_root_$height';
-  final finalTimestamp = timestamp ?? DateTime.now().subtract(Duration(hours: height));
-
-  return BlockHeader(
-    version: version,
-    prevBlock: Hash.fromBytes(Uint8List.fromList(_stringToBytes(prevHash))),
-    merkleRoot: Hash.fromBytes(Uint8List.fromList(_stringToBytes(_calculateHash(finalMerkleRoot)))),
-    timestamp: finalTimestamp,
-    bits: bits,
-    nonce: nonce,
-  );
-}
-
-/// Simple hash calculator for test data
-String _calculateHash(String input) {
-  // Simple deterministic hash for testing
-  int hash = 0;
-  for (int i = 0; i < input.length; i++) {
-    hash = ((hash << 5) - hash + input.codeUnitAt(i)) & 0xffffffff;
-  }
-  return hash.toRadixString(16).padLeft(64, '0');
-}
-
-/// Load real Bitcoin block headers from JSON file
-Future<List<BlockHeader>> _loadRealBlockHeaders() async {
-  try {
-    final file = File('test/data/first_7_headers.json');
-    final jsonString = await file.readAsString();
-    final jsonList = json.decode(jsonString) as List<dynamic>;
-    
-    return jsonList.map((json) => _createBlockHeaderFromJson(json as Map<String, dynamic>)).toList();
-  } catch (e) {
-    // Fallback to mock headers if file not found
-    return [
-      _createTestBlockHeader(height: 0, prevHash: '0' * 64),
-      _createTestBlockHeader(height: 1, prevHash: _calculateHash('header_0')),
-      _createTestBlockHeader(height: 2, prevHash: _calculateHash('header_1')),
-    ];
-  }
-}
-
-/// Create a BlockHeader from JSON data
-BlockHeader _createBlockHeaderFromJson(Map<String, dynamic> data) {
-  return BlockHeader(
-    version: data['version'] as int,
-    prevBlock: Hash.fromBytes(Uint8List.fromList(_hexToBytesReversed(data['previousblockhash'] as String))),
-    merkleRoot: Hash.fromBytes(Uint8List.fromList(_hexToBytesReversed(data['merkleroot'] as String))),
-    timestamp: DateTime.fromMillisecondsSinceEpoch((data['time'] as int) * 1000),
-    bits: int.parse(data['bits'] as String, radix: 16),
-    nonce: data['nonce'] as int,
-  );
-}
-
-/// Convert hex string to bytes
-List<int> _hexToBytes(String hex) {
-  final bytes = <int>[];
-  for (int i = 0; i < hex.length; i += 2) {
-    bytes.add(int.parse(hex.substring(i, i + 2), radix: 16));
-  }
-  return bytes;
-}
-
-/// Convert hex string to bytes and reverse (for Bitcoin's little-endian format)
-List<int> _hexToBytesReversed(String hex) {
-  if (hex.isEmpty) {
-    // Handle empty string (genesis block has empty previousblockhash)
-    return List.filled(32, 0);
-  }
-  final bytes = _hexToBytes(hex);
-  return bytes.reversed.toList();
-}
-
 /// Unknown message type for testing
 class _UnknownTestMessage implements Message {
   @override
@@ -677,12 +620,12 @@ class _UnknownTestMessage implements Message {
 
   @override
   final Map<String, dynamic> metadata = {};
-} 
+}
 
 /// Stand-in for spiffynode's PeerManager (HeaderSyncActor holds it as
 /// `dynamic`). [onGetHeaders] runs whenever a getHeaders message is written.
 class _FakePeerManager {
-  final void Function() onGetHeaders;
+  final void Function(MsgGetHeaders) onGetHeaders;
   final bool hasPeers;
   int getHeadersRequests = 0;
 
@@ -699,7 +642,7 @@ class _FakePeer {
 
   Future<void> writeMessage(dynamic message) async {
     manager.getHeadersRequests++;
-    manager.onGetHeaders();
+    manager.onGetHeaders(message as MsgGetHeaders);
   }
 
   @override

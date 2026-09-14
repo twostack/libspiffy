@@ -251,22 +251,32 @@ class LibSpiffyPeerHandler implements PeerHandlerI {
       _logger.info('📥 Capturing ${message.headers.length} headers from ${peer.toString()}');
       
       try {
-        // Query actual chain height from BlockHeaderChain (not cached counter)
-        // Bitcoin's getHeaders returns blocks AFTER the locator, so next height is bestHeight + 1
-        // IMPORTANT: When starting fresh (bestHeight = 0), peers send blocks starting from height 1, 
-        // not genesis (height 0). Genesis is hardcoded and not synced from the network.
+        // A getHeaders reply starts after the first locator hash the peer
+        // recognises. After a reorganization that is the fork point, below
+        // our tip, so the batch's height is derived from its first header's
+        // parent rather than from bestHeight + 1. BlockHeaderChain derives
+        // every header's height the same way; startHeight is informational.
         final currentBestHeight = _headerChain?.bestHeight ?? 0;
-        final startHeight = currentBestHeight > 0 ? currentBestHeight + 1 : 1;
+        final parentHash = message.headers.first.prevBlock.toString();
+        final parentHeight = await _headerChain?.getHeightByHash(parentHash) as int?;
+        final startHeight = parentHeight != null ? parentHeight + 1 : -1;
         final batchSize = message.headers.length;
-        
-        _logger.info('Forwarding ${batchSize} headers starting at height $startHeight (current tip: $currentBestHeight)');
-        
+
+        if (parentHeight == null) {
+          _logger.warning('Batch of $batchSize headers from ${peer.toString()} starts at an '
+              'unknown parent $parentHash (current tip: $currentBestHeight); forwarding for '
+              'the chain to decide');
+        } else {
+          _logger.info('Forwarding $batchSize headers starting at height $startHeight '
+              '(current tip: $currentBestHeight)');
+        }
+
         // Forward headers to HeaderSyncActor via bridge
         await _bridge.storeHeaders(message.headers, startHeight);
-        
-        final endHeight = startHeight + batchSize - 1;
-        _logger.info('✓ Forwarded ${batchSize} headers (expected range: $startHeight-$endHeight)');
-        
+
+        _logger.info('✓ Forwarded $batchSize headers (start height: '
+            '${startHeight < 0 ? 'unknown' : startHeight})');
+
       } catch (e) {
         _logger.severe('❌ Failed to forward headers from ${peer.toString()}: $e');
       }

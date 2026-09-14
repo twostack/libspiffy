@@ -430,12 +430,9 @@ BlockHeader _createMockBlockHeader({
 Hash _createHash(String hashString) {
   // Handle hex strings (64 characters) and regular strings differently
   if (hashString.length == 64 && _isHexString(hashString)) {
-    // Convert hex string to bytes
-    final bytes = <int>[];
-    for (int i = 0; i < hashString.length; i += 2) {
-      bytes.add(int.parse(hashString.substring(i, i + 2), radix: 16));
-    }
-    return Hash.fromBytes(Uint8List.fromList(bytes));
+    // Display-order hex (what blockHash().toString() produces); fromHex
+    // reverses it into wire order, so prevBlock really links to the parent.
+    return Hash.fromHex(hashString);
   } else {
     // For non-hex strings, hash the content and pad to 32 bytes
     final hash = dartsv.sha256(hashString.codeUnits);

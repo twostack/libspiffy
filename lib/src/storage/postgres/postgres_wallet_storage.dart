@@ -1813,7 +1813,7 @@ class PostgresWalletStorage implements ReadModelStorage {
       fundingOutputIndex: row[7] as int?,
       fundingAmountSats: BigInt.from(row[8] as num),
       clientPubKeyHex: row[9] as String,
-      serverPubKeyHex: row[10] as String,
+      serverPubKeyHex: row[10] as String?, // '' (pre-v007 rows) reads as null
       clientAddressB58: row[11] as String?,
       serverAddressB58: row[12] as String?,
       lockTimeUnix: row[13] as int,

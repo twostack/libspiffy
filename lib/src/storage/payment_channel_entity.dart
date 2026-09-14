@@ -45,8 +45,10 @@ class PaymentChannelEntity {
   /// Client's public key (hex encoded)
   late String clientPubKeyHex;
 
-  /// Server's public key (hex encoded)
-  late String serverPubKeyHex;
+  /// Server's public key (hex encoded); null until the server accepts.
+  /// Rows written before it became nullable hold '' instead, which
+  /// [toPaymentChannel] reads as null.
+  String? serverPubKeyHex;
 
   /// Client's address for receiving funds on close
   String? clientAddressB58;

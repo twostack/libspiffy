@@ -143,15 +143,16 @@ void main() {
 
       // Verify version: v001 initial schema, v002 secure secrets,
       // v003 header ints + plugin metadata, v004 channel columns +
-      // invoice outputs, v005 wallet-scoped keys + unique proofs
+      // invoice outputs, v005 wallet-scoped keys + unique proofs,
+      // v007 nullable channel server key
       final version = await migrations.getCurrentVersion();
-      expect(version, equals(5));
+      expect(version, equals(7));
 
       // Verify applied migrations
       final applied = await migrations.getAppliedMigrations();
-      expect(applied, hasLength(5));
+      expect(applied, hasLength(6));
       expect(applied.first.name, equals('initial_schema'));
-      expect(applied.last.name, equals('wallet_scoped_keys_and_unique_proofs'));
+      expect(applied.last.name, equals('nullable_channel_server_key'));
     });
 
     test('should handle re-running migrations idempotently', () async {
@@ -162,13 +163,16 @@ void main() {
       await migrations.migrate();
 
       final version = await migrations.getCurrentVersion();
-      expect(version, equals(5));
+      expect(version, equals(7));
     });
 
     test('should rollback migrations one at a time', () async {
       final migrations = PostgresMigrations(config);
 
       await migrations.migrate();
+      expect(await migrations.getCurrentVersion(), equals(7));
+
+      expect(await migrations.rollback(), isTrue);
       expect(await migrations.getCurrentVersion(), equals(5));
 
       expect(await migrations.rollback(), isTrue);
@@ -194,7 +198,7 @@ void main() {
         () async {
       final migrations = PostgresMigrations(config);
       await migrations.migrate();
-      expect(await migrations.getCurrentVersion(), equals(5));
+      expect(await migrations.getCurrentVersion(), equals(7));
 
       final storage = PostgresWalletStorage(config);
       await storage.initialize();
@@ -234,6 +238,7 @@ void main() {
       }
 
       // Down keeps the first-stored row so the global keys can be restored.
+      expect(await migrations.rollback(), isTrue); // v007
       expect(await migrations.rollback(), isTrue);
       expect(await migrations.getCurrentVersion(), equals(4));
       final pool = await config.createPool();
@@ -251,7 +256,7 @@ void main() {
 
         // Up again, and leave the database at the latest version.
         await migrations.migrate();
-        expect(await migrations.getCurrentVersion(), equals(5));
+        expect(await migrations.getCurrentVersion(), equals(7));
         await pool.execute(
           Sql.named('DELETE FROM bitcoin_transactions WHERE txid = @txid'),
           parameters: {'txid': txid},
@@ -262,6 +267,61 @@ void main() {
         );
       } finally {
         await pool.close();
+      }
+    });
+
+    test('v007 rolls back and re-applies with a channel that has no server key (y3b)',
+        () async {
+      final migrations = PostgresMigrations(config);
+      await migrations.migrate();
+      final channelId = 'v007-channel-${DateTime.now().microsecondsSinceEpoch}';
+      final storage = PostgresWalletStorage(config);
+      await storage.initialize();
+      final pool = await config.createPool();
+      try {
+        await runRequestedChannelServerKeyContract(storage,
+            channelId: '$channelId-accepted', walletId: 'v007-wallet');
+        await storage.storePaymentChannel(PaymentChannel(
+          channelId: channelId,
+          walletId: 'v007-wallet',
+          role: PaymentChannelRole.client,
+          clientPeerId: 'c',
+          serverPeerId: 's',
+          clientPubKeyHex: contractClientPubKeyHex,
+          fundingAmountSats: BigInt.from(5000),
+          lockTimeUnix: contractLockTimeUnix,
+        ));
+
+        Future<Object?> serverKeyColumn() async => (await pool.execute(
+              Sql.named('SELECT server_pub_key_hex FROM payment_channels '
+                  'WHERE channel_id = @id'),
+              parameters: {'id': channelId},
+            ))
+                .single[0];
+
+        expect(await serverKeyColumn(), isNull);
+
+        // Down restores NOT NULL with the old '' placeholder.
+        expect(await migrations.rollback(), isTrue);
+        expect(await migrations.getCurrentVersion(), equals(5));
+        expect(await serverKeyColumn(), equals(''));
+
+        // Up turns the placeholder back into NULL.
+        await migrations.migrate();
+        expect(await migrations.getCurrentVersion(), equals(7));
+        expect(await serverKeyColumn(), isNull);
+        expect((await storage.getPaymentChannel(channelId))!.serverPubKeyHex,
+            isNull);
+        expect(
+            (await storage.getPaymentChannel('$channelId-accepted'))!
+                .serverPubKeyHex,
+            equals(contractServerPubKeyHex));
+      } finally {
+        await pool.execute(
+          Sql.named("DELETE FROM payment_channels WHERE wallet_id = 'v007-wallet'"),
+        );
+        await pool.close();
+        await storage.close();
       }
     });
   });
@@ -904,6 +964,50 @@ void main() {
           channelId: 'pg-channel-contract-$suffix',
           walletId: 'pg-channel-wallet-$suffix',
         );
+      });
+
+      test('every channel field survives storage and projection updates (32t, y3b)',
+          () async {
+        final suffix = DateTime.now().microsecondsSinceEpoch;
+        await runChannelFullFieldRetentionContract(
+          storage,
+          channelId: 'pg-channel-retention-$suffix',
+          walletId: 'pg-channel-wallet-$suffix',
+        );
+      });
+
+      test('a requested channel reads back with a null server key (y3b)',
+          () async {
+        final suffix = DateTime.now().microsecondsSinceEpoch;
+        await runRequestedChannelServerKeyContract(
+          storage,
+          channelId: 'pg-channel-server-key-$suffix',
+          walletId: 'pg-channel-wallet-$suffix',
+        );
+      });
+
+      test('a legacy empty server key reads back as null (y3b)', () async {
+        final suffix = DateTime.now().microsecondsSinceEpoch;
+        final channelId = 'pg-channel-legacy-key-$suffix';
+        await runChannelLifecycleContract(
+          storage,
+          channelId: channelId,
+          walletId: 'pg-channel-wallet-$suffix',
+        );
+        // Rows written before y3b hold '' for a channel without a server key.
+        final pool = await config.createPool();
+        try {
+          await pool.execute(
+            Sql.named("UPDATE payment_channels SET server_pub_key_hex = '' "
+                'WHERE channel_id = @id'),
+            parameters: {'id': channelId},
+          );
+        } finally {
+          await pool.close();
+        }
+
+        final channel = await storage.getPaymentChannel(channelId);
+        expect(channel!.serverPubKeyHex, isNull);
       });
 
       test('stores a failed channel with an error message and reads it back',

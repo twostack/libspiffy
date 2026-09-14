@@ -418,8 +418,14 @@ class ExpireChannelCommand extends ChannelCommand {
 
 /// Claim refund after channel expiry (non-cooperative close)
 class ClaimRefundCommand extends ChannelCommand {
+  /// Raw hex of the refund transaction being claimed (typically the fully
+  /// signed refund). When null, the refund transaction the channel built is
+  /// used. Its txid is what the journaled [RefundClaimedEvent] records.
+  final String? refundTxHex;
+
   ClaimRefundCommand({
     required String channelId,
+    this.refundTxHex,
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,

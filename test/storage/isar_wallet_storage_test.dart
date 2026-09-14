@@ -6,6 +6,7 @@ import 'package:test/test.dart';
 
 import 'package:libspiffy/src/storage/isar_wallet_storage.dart';
 import 'package:libspiffy/src/storage/libspiffy_schemas.dart';
+import 'package:libspiffy/src/storage/payment_channel_entity.dart';
 
 import '../integration/isar_test_helper.dart';
 import 'channel_read_model_contract.dart';
@@ -132,6 +133,45 @@ void main() {
         channelId: 'isar-channel-contract',
         walletId: 'isar-channel-wallet',
       );
+    });
+
+    test('payment channel: every field survives storage and projection updates (32t, y3b)',
+        () async {
+      await runChannelFullFieldRetentionContract(
+        storage,
+        channelId: 'isar-channel-retention',
+        walletId: 'isar-channel-wallet',
+      );
+    });
+
+    test('payment channel: a requested channel reads back with a null server key (y3b)',
+        () async {
+      await runRequestedChannelServerKeyContract(
+        storage,
+        channelId: 'isar-channel-server-key',
+        walletId: 'isar-channel-wallet',
+      );
+    });
+
+    test('payment channel: a legacy empty server key reads back as null (y3b)',
+        () async {
+      await runChannelLifecycleContract(
+        storage,
+        channelId: 'isar-channel-legacy-key',
+        walletId: 'isar-channel-wallet',
+      );
+      // Rows written before y3b hold '' for a channel without a server key.
+      await isar.writeTxn(() async {
+        final entity = await isar.paymentChannelEntitys
+            .filter()
+            .channelIdEqualTo('isar-channel-legacy-key')
+            .findFirst();
+        entity!.serverPubKeyHex = '';
+        await isar.paymentChannelEntitys.put(entity);
+      });
+
+      final channel = await storage.getPaymentChannel('isar-channel-legacy-key');
+      expect(channel!.serverPubKeyHex, isNull);
     });
 
     test('invoice: store -> update status -> getInvoice/list return typed models with outputs (audit S-07)',

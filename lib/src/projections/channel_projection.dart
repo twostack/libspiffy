@@ -144,7 +144,7 @@ class ChannelProjection extends Projection<void> {
       clientPeerId: event.clientPeerId,
       serverPeerId: event.serverPeerId,
       clientPubKeyHex: event.clientPubKeyHex,
-      serverPubKeyHex: '', // Set on accept
+      // No serverPubKeyHex: the server key is recorded on acceptance.
       clientAddressB58: event.clientAddressB58,
       fundingAmountSats: event.fundingAmountSats,
       lockTimeUnix: event.lockTimeUnix,
@@ -196,10 +196,10 @@ class ChannelProjection extends Projection<void> {
           event.channelId, PaymentChannelState.closed.name);
       return;
     }
-    existing
-      ..state = PaymentChannelState.closed
-      ..errorMessage = event.reason;
-    await _storage.storePaymentChannel(existing);
+    await _storage.storePaymentChannel(existing.copyWith(
+      state: PaymentChannelState.closed,
+      errorMessage: event.reason,
+    ));
   }
 
   Future<void> _handleServerAcceptanceRecorded(ServerAcceptanceRecordedEvent event) async {
@@ -221,13 +221,13 @@ class ChannelProjection extends Projection<void> {
       return;
     }
 
-    existing
-      ..fundingTxId = event.fundingTxId
-      ..fundingOutputIndex = event.fundingOutputIndex
-      ..fundingTxHex = event.fundingTxHex
-      ..refundTxHex = event.refundTxHex
-      ..refundClientSigHex = event.clientSignatureHex;
-    await _storage.storePaymentChannel(existing);
+    await _storage.storePaymentChannel(existing.copyWith(
+      fundingTxId: event.fundingTxId,
+      fundingOutputIndex: event.fundingOutputIndex,
+      fundingTxHex: event.fundingTxHex,
+      refundTxHex: event.refundTxHex,
+      refundClientSigHex: event.clientSignatureHex,
+    ));
   }
 
   Future<void> _handleRefundCountersigned(RefundCountersignedEvent event) async {
@@ -236,10 +236,10 @@ class ChannelProjection extends Projection<void> {
       return;
     }
 
-    existing
-      ..refundServerSigHex = event.serverSignatureHex
-      ..state = PaymentChannelState.opening; // ChannelStatus.refundSigned → opening
-    await _storage.storePaymentChannel(existing);
+    await _storage.storePaymentChannel(existing.copyWith(
+      refundServerSigHex: event.serverSignatureHex,
+      state: PaymentChannelState.opening, // ChannelStatus.refundSigned → opening
+    ));
   }
 
   Future<void> _handleChannelOpened(ChannelOpenedEvent event) async {
@@ -248,15 +248,15 @@ class ChannelProjection extends Projection<void> {
       return;
     }
 
-    existing
-      ..state = PaymentChannelState.open
-      ..fundingTxId = event.fundingTxId
-      ..fundingOutputIndex = event.fundingOutputIndex
-      ..fundingTxHex = event.fundingTxHex
-      ..fundingAncestorTxids = List<String>.from(event.fundingAncestorTxids)
-      ..clientBalanceSats = event.initialClientBalanceSats
-      ..serverBalanceSats = event.initialServerBalanceSats;
-    await _storage.storePaymentChannel(existing);
+    await _storage.storePaymentChannel(existing.copyWith(
+      state: PaymentChannelState.open,
+      fundingTxId: event.fundingTxId,
+      fundingOutputIndex: event.fundingOutputIndex,
+      fundingTxHex: event.fundingTxHex,
+      fundingAncestorTxids: List<String>.from(event.fundingAncestorTxids),
+      clientBalanceSats: event.initialClientBalanceSats,
+      serverBalanceSats: event.initialServerBalanceSats,
+    ));
   }
 
   Future<void> _handlePaymentRecorded(PaymentRecordedEvent event) async {
@@ -265,13 +265,13 @@ class ChannelProjection extends Projection<void> {
       return;
     }
 
-    existing
-      ..clientBalanceSats = event.newClientBalanceSats
-      ..serverBalanceSats = event.newServerBalanceSats
-      ..latestSequenceNumber = event.sequenceNumber
-      ..latestPaymentTxHex = event.paymentTxHex
-      ..latestPaymentTxId = event.paymentTxId;
-    await _storage.storePaymentChannel(existing);
+    await _storage.storePaymentChannel(existing.copyWith(
+      clientBalanceSats: event.newClientBalanceSats,
+      serverBalanceSats: event.newServerBalanceSats,
+      latestSequenceNumber: event.sequenceNumber,
+      latestPaymentTxHex: event.paymentTxHex,
+      latestPaymentTxId: event.paymentTxId,
+    ));
   }
 
   Future<void> _handlePaymentAcknowledged(PaymentAcknowledgedEvent event) async {
@@ -280,12 +280,12 @@ class ChannelProjection extends Projection<void> {
       return;
     }
 
-    existing
-      ..clientBalanceSats = event.newClientBalanceSats
-      ..serverBalanceSats = event.newServerBalanceSats
-      ..latestSequenceNumber = event.sequenceNumber
-      ..latestPaymentTxHex = event.fullySignedPaymentTxHex;
-    await _storage.storePaymentChannel(existing);
+    await _storage.storePaymentChannel(existing.copyWith(
+      clientBalanceSats: event.newClientBalanceSats,
+      serverBalanceSats: event.newServerBalanceSats,
+      latestSequenceNumber: event.sequenceNumber,
+      latestPaymentTxHex: event.fullySignedPaymentTxHex,
+    ));
   }
 
   Future<void> _handleChannelClosing(ChannelClosingEvent event) async {
@@ -299,13 +299,13 @@ class ChannelProjection extends Projection<void> {
       return;
     }
 
-    existing
-      ..state = PaymentChannelState.closed
-      ..clientBalanceSats = event.finalClientBalanceSats
-      ..serverBalanceSats = event.finalServerBalanceSats
-      ..settlementTxId = event.settlementTxId
-      ..closedAt = event.timestamp;
-    await _storage.storePaymentChannel(existing);
+    await _storage.storePaymentChannel(existing.copyWith(
+      state: PaymentChannelState.closed,
+      clientBalanceSats: event.finalClientBalanceSats,
+      serverBalanceSats: event.finalServerBalanceSats,
+      settlementTxId: event.settlementTxId,
+      closedAt: event.timestamp,
+    ));
   }
 
   Future<void> _handleRefundClaimed(RefundClaimedEvent event) async {
@@ -314,10 +314,10 @@ class ChannelProjection extends Projection<void> {
       return;
     }
 
-    existing
-      ..state = PaymentChannelState.expired
-      ..closedAt = event.timestamp;
-    await _storage.storePaymentChannel(existing);
+    await _storage.storePaymentChannel(existing.copyWith(
+      state: PaymentChannelState.expired,
+      closedAt: event.timestamp,
+    ));
   }
 
   Future<void> _handleChannelExpired(ChannelExpiredEvent event) async {
@@ -326,10 +326,10 @@ class ChannelProjection extends Projection<void> {
       return;
     }
 
-    existing
-      ..state = PaymentChannelState.expired
-      ..settlementTxId = event.settlementOrRefundTxId ?? existing.settlementTxId
-      ..closedAt = event.timestamp;
-    await _storage.storePaymentChannel(existing);
+    await _storage.storePaymentChannel(existing.copyWith(
+      state: PaymentChannelState.expired,
+      settlementTxId: event.settlementOrRefundTxId ?? existing.settlementTxId,
+      closedAt: event.timestamp,
+    ));
   }
 }

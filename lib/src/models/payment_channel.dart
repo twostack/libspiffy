@@ -64,6 +64,8 @@ enum PaymentChannelRole {
 ///
 /// Tracks the complete state of a unidirectional payment channel including
 /// all transaction data needed for safety (refund TX, latest payment TX).
+///
+/// Immutable: derive an updated channel with [copyWith] and store that.
 class PaymentChannel {
   /// Unique identifier for this channel
   final String channelId;
@@ -83,14 +85,18 @@ class PaymentChannel {
   /// Client's public key for 2-of-2 multisig (hex encoded)
   final String clientPubKeyHex;
 
-  /// Server's public key for 2-of-2 multisig (hex encoded)
-  final String serverPubKeyHex;
+  /// Server's public key for 2-of-2 multisig (hex encoded).
+  ///
+  /// Null until the server accepts the channel: a requested channel has no
+  /// server key yet. An empty string (how rows written before this field
+  /// became nullable recorded "no key") is read as null.
+  final String? serverPubKeyHex;
 
   /// Client's Bitcoin address for receiving funds on close
-  String? clientAddressB58;
+  final String? clientAddressB58;
 
   /// Server's Bitcoin address for receiving funds on close
-  String? serverAddressB58;
+  final String? serverAddressB58;
 
   /// Total amount locked in the channel (satoshis)
   final BigInt fundingAmountSats;
@@ -99,61 +105,61 @@ class PaymentChannel {
   final int lockTimeUnix;
 
   /// Current state of the channel
-  PaymentChannelState state;
+  final PaymentChannelState state;
 
   /// Client's current balance (satoshis)
-  BigInt clientBalanceSats;
+  final BigInt clientBalanceSats;
 
   /// Server's current balance (satoshis)
-  BigInt serverBalanceSats;
+  final BigInt serverBalanceSats;
 
   /// Transaction ID of the funding transaction (T1)
-  String? fundingTxId;
+  final String? fundingTxId;
 
   /// Raw hex of the funding transaction
-  String? fundingTxHex;
+  final String? fundingTxHex;
 
   /// Output index in funding transaction
-  int? fundingOutputIndex;
+  final int? fundingOutputIndex;
 
   /// Raw hex of the refund transaction (T2)
-  String? refundTxHex;
+  final String? refundTxHex;
 
   /// Client's signature on the refund transaction
-  String? refundClientSigHex;
+  final String? refundClientSigHex;
 
   /// Server's signature on the refund transaction
-  String? refundServerSigHex;
+  final String? refundServerSigHex;
 
   /// Latest sequence number used in payment transactions
-  int latestSequenceNumber;
+  final int latestSequenceNumber;
 
   /// Raw hex of the latest payment transaction (T3)
-  String? latestPaymentTxHex;
+  final String? latestPaymentTxHex;
 
   /// Latest payment transaction ID
-  String? latestPaymentTxId;
+  final String? latestPaymentTxId;
 
   /// Settlement transaction ID (set when channel closes cooperatively)
-  String? settlementTxId;
+  final String? settlementTxId;
 
   /// TXIDs of ancestor transactions for BEEF construction
-  List<String> fundingAncestorTxids;
+  final List<String> fundingAncestorTxids;
 
   /// Whether funding transaction has a merkle proof
-  bool hasFundingMerkleProof;
+  final bool hasFundingMerkleProof;
 
   /// Optional context/purpose for this channel (e.g., "audiospace:meeting-123")
-  String? context;
+  final String? context;
 
   /// When the channel was created
   final DateTime createdAt;
 
   /// When the channel was closed (null if still open)
-  DateTime? closedAt;
+  final DateTime? closedAt;
 
   /// Error message if channel failed
-  String? errorMessage;
+  final String? errorMessage;
 
   PaymentChannel({
     required this.channelId,
@@ -162,7 +168,7 @@ class PaymentChannel {
     required this.clientPeerId,
     required this.serverPeerId,
     required this.clientPubKeyHex,
-    required this.serverPubKeyHex,
+    String? serverPubKeyHex,
     this.clientAddressB58,
     this.serverAddressB58,
     required this.fundingAmountSats,
@@ -186,9 +192,13 @@ class PaymentChannel {
     DateTime? createdAt,
     this.closedAt,
     this.errorMessage,
-  })  : clientBalanceSats = clientBalanceSats ?? fundingAmountSats,
+  })  : serverPubKeyHex = (serverPubKeyHex == null || serverPubKeyHex.isEmpty)
+            ? null
+            : serverPubKeyHex,
+        clientBalanceSats = clientBalanceSats ?? fundingAmountSats,
         serverBalanceSats = serverBalanceSats ?? BigInt.zero,
-        fundingAncestorTxids = fundingAncestorTxids ?? [],
+        fundingAncestorTxids =
+            List.unmodifiable(fundingAncestorTxids ?? const <String>[]),
         createdAt = createdAt ?? DateTime.now();
 
   // ===========================================================================
@@ -207,11 +217,11 @@ class PaymentChannel {
   /// Counterparty peer ID
   String get counterpartyPeerId => isClient ? serverPeerId : clientPeerId;
 
-  /// Our public key
-  String get myPubKeyHex => isClient ? clientPubKeyHex : serverPubKeyHex;
+  /// Our public key (null for a server key not yet known)
+  String? get myPubKeyHex => isClient ? clientPubKeyHex : serverPubKeyHex;
 
-  /// Counterparty's public key
-  String get counterpartyPubKeyHex =>
+  /// Counterparty's public key (null for a server key not yet known)
+  String? get counterpartyPubKeyHex =>
       isClient ? serverPubKeyHex : clientPubKeyHex;
 
   // ===========================================================================
@@ -300,7 +310,7 @@ class PaymentChannel {
       clientPeerId: json['clientPeerId'] as String,
       serverPeerId: json['serverPeerId'] as String,
       clientPubKeyHex: (json['clientPubKeyHex'] ?? json['clientPubKey']) as String,
-      serverPubKeyHex: (json['serverPubKeyHex'] ?? json['serverPubKey']) as String,
+      serverPubKeyHex: (json['serverPubKeyHex'] ?? json['serverPubKey']) as String?,
       clientAddressB58: (json['clientAddressB58'] ?? json['clientAddress']) as String?,
       serverAddressB58: (json['serverAddressB58'] ?? json['serverAddress']) as String?,
       fundingAmountSats: _parseBigInt(json['fundingAmountSats']),
@@ -371,7 +381,7 @@ class PaymentChannel {
       'clientPeerId': clientPeerId,
       'serverPeerId': serverPeerId,
       'clientPubKeyHex': clientPubKeyHex,
-      'serverPubKeyHex': serverPubKeyHex,
+      if (serverPubKeyHex != null) 'serverPubKeyHex': serverPubKeyHex,
       if (clientAddressB58 != null) 'clientAddressB58': clientAddressB58,
       if (serverAddressB58 != null) 'serverAddressB58': serverAddressB58,
       'fundingAmountSats': fundingAmountSats.toString(),

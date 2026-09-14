@@ -336,7 +336,12 @@ int _paymentChannelEntityEstimateSize(
   }
   bytesCount += 3 + object.serverBalanceSats.length * 3;
   bytesCount += 3 + object.serverPeerId.length * 3;
-  bytesCount += 3 + object.serverPubKeyHex.length * 3;
+  {
+    final value = object.serverPubKeyHex;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
   {
     final value = object.settlementTxId;
     if (value != null) {
@@ -420,7 +425,7 @@ PaymentChannelEntity _paymentChannelEntityDeserialize(
   object.serverAddressB58 = reader.readStringOrNull(offsets[23]);
   object.serverBalanceSats = reader.readString(offsets[24]);
   object.serverPeerId = reader.readString(offsets[25]);
-  object.serverPubKeyHex = reader.readString(offsets[26]);
+  object.serverPubKeyHex = reader.readStringOrNull(offsets[26]);
   object.settlementTxId = reader.readStringOrNull(offsets[27]);
   object.state = reader.readString(offsets[28]);
   object.walletId = reader.readString(offsets[29]);
@@ -487,7 +492,7 @@ P _paymentChannelEntityDeserializeProp<P>(
     case 25:
       return (reader.readString(offset)) as P;
     case 26:
-      return (reader.readString(offset)) as P;
+      return (reader.readStringOrNull(offset)) as P;
     case 27:
       return (reader.readStringOrNull(offset)) as P;
     case 28:
@@ -4310,8 +4315,26 @@ extension PaymentChannelEntityQueryFilter on QueryBuilder<PaymentChannelEntity,
   }
 
   QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+      QAfterFilterCondition> serverPubKeyHexIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'serverPubKeyHex',
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
+      QAfterFilterCondition> serverPubKeyHexIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'serverPubKeyHex',
+      ));
+    });
+  }
+
+  QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
       QAfterFilterCondition> serverPubKeyHexEqualTo(
-    String value, {
+    String? value, {
     bool caseSensitive = true,
   }) {
     return QueryBuilder.apply(this, (query) {
@@ -4325,7 +4348,7 @@ extension PaymentChannelEntityQueryFilter on QueryBuilder<PaymentChannelEntity,
 
   QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
       QAfterFilterCondition> serverPubKeyHexGreaterThan(
-    String value, {
+    String? value, {
     bool include = false,
     bool caseSensitive = true,
   }) {
@@ -4341,7 +4364,7 @@ extension PaymentChannelEntityQueryFilter on QueryBuilder<PaymentChannelEntity,
 
   QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
       QAfterFilterCondition> serverPubKeyHexLessThan(
-    String value, {
+    String? value, {
     bool include = false,
     bool caseSensitive = true,
   }) {
@@ -4357,8 +4380,8 @@ extension PaymentChannelEntityQueryFilter on QueryBuilder<PaymentChannelEntity,
 
   QueryBuilder<PaymentChannelEntity, PaymentChannelEntity,
       QAfterFilterCondition> serverPubKeyHexBetween(
-    String lower,
-    String upper, {
+    String? lower,
+    String? upper, {
     bool includeLower = true,
     bool includeUpper = true,
     bool caseSensitive = true,
@@ -6132,7 +6155,7 @@ extension PaymentChannelEntityQueryProperty on QueryBuilder<
     });
   }
 
-  QueryBuilder<PaymentChannelEntity, String, QQueryOperations>
+  QueryBuilder<PaymentChannelEntity, String?, QQueryOperations>
       serverPubKeyHexProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'serverPubKeyHex');

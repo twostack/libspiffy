@@ -1873,22 +1873,18 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       
       
       // CRITICAL: Find the actual multisig output index
-      // TransactionBuilder.sendChangeToPKH() may reorder outputs, putting change at index 0
-      // We need to find where the multisig output actually ended up
-      int multisigOutputIndex = -1;
-      int? actualChangeOutputIdx;
-      
-      for (int i = 0; i < signedTx.outputs.length; i++) {
-        final output = signedTx.outputs[i];
-        if (output.satoshis == fundingAmount) {
-          multisigOutputIndex = i;
-        } else {
-          actualChangeOutputIdx = i;
-        }
-      }
-      
+      // TransactionBuilder.sendChangeToPKH() puts change at index 0. The
+      // multisig output is located by its locking script, never by amount:
+      // the change can carry the same amount (audit SPV-13).
+      final multisigScriptHex = msLockBuilder.getScriptPubkey().toHex();
+      final multisigOutputIndex = signedTx.outputs
+          .indexWhere((o) => o.script.toHex() == multisigScriptHex);
       if (multisigOutputIndex == -1) {
         throw StateError('Could not find multisig output in funding transaction');
+      }
+      int? actualChangeOutputIdx;
+      for (int i = 0; i < signedTx.outputs.length; i++) {
+        if (i != multisigOutputIndex) actualChangeOutputIdx = i;
       }
       
       // Determine if change output was actually added (above dust threshold)

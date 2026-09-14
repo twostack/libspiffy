@@ -98,6 +98,10 @@ class PaymentChannelBuilder {
   /// Minimum fee in satoshis (ensures fee is never zero)
   static const int minimumFeeSats = 1;
 
+  /// nLockTime values below this are block heights; values at or above it
+  /// are Unix timestamps (consensus LOCKTIME_THRESHOLD).
+  static const int lockTimeThreshold = 500000000;
+
   PaymentChannelBuilder({
     required CryptoService cryptoService,
     dartsv.NetworkType networkType = dartsv.NetworkType.TEST,
@@ -344,6 +348,13 @@ class PaymentChannelBuilder {
   /// - Returns all funds to client (minus fee)
   /// - Uses nSequence = 0 (enables nLockTime check)
   /// - Uses nLockTime = channel expiry time
+  ///
+  /// [lockTimeUnix] must be a Unix timestamp that consensus reads as one:
+  /// nLockTime values below [lockTimeThreshold] are block heights, so a
+  /// smaller value would make the refund valid at a block height rather than
+  /// at the channel expiry. Values outside
+  /// [lockTimeThreshold]..0xFFFFFFFF throw a [TransactionBuildException]
+  /// with code `INVALID_LOCKTIME`.
   Future<ChannelTransactionResult> buildRefundTransaction({
     required String fundingTxId,
     required int fundingOutputIndex,
@@ -354,6 +365,15 @@ class PaymentChannelBuilder {
     required int lockTimeUnix,
     int feePerKb = defaultFeePerKb,
   }) async {
+    if (lockTimeUnix < lockTimeThreshold || lockTimeUnix > 0xFFFFFFFF) {
+      throw TransactionBuildException(
+        'Refund lockTimeUnix $lockTimeUnix is not a Unix timestamp nLockTime '
+        '(must be in $lockTimeThreshold..${0xFFFFFFFF}; smaller values are '
+        'block heights)',
+        code: 'INVALID_LOCKTIME',
+      );
+    }
+
     final lockBuilder = dartsv.P2MSLockBuilder(
       [clientPubKey, serverPubKey],
       2,
@@ -405,7 +425,11 @@ class PaymentChannelBuilder {
   /// Creates a transaction that:
   /// - Spends the funding output (2-of-2 multisig)
   /// - Distributes funds: serverAmount to server, remainder to client
-  /// - Uses nSequence = sequenceNumber (incrementing enables replacement)
+  /// - Uses nSequence = sequenceNumber, which orders payment versions
+  ///   between the parties. With nLockTime = 0 the transaction is final as
+  ///   soon as it is built, so nSequence gives no on-chain replacement: any
+  ///   version either party holds can be broadcast. The server keeps (and
+  ///   broadcasts) the latest one.
   /// - Uses nLockTime = 0 (immediately valid)
   Future<ChannelTransactionResult> buildPaymentTransaction({
     required String fundingTxId,
@@ -487,6 +511,8 @@ class PaymentChannelBuilder {
   /// This method uses dartsv's TransactionSigner which correctly computes
   /// the sighash for multisig inputs. The previous implementation using
   /// Sighash.hash() directly produced invalid signatures.
+  ///
+  /// [transaction] is not modified: the signer works on a copy.
   Future<MultisigSignatureResult> signMultisigInput({
     required dartsv.Transaction transaction,
     required int inputIndex,
@@ -509,9 +535,13 @@ class PaymentChannelBuilder {
     // Create a P2MSUnlockBuilder to collect signatures
     final unlockBuilder = dartsv.P2MSUnlockBuilder();
     
-    // Save the original input's script builder (if any)
-    final originalInput = transaction.inputs[inputIndex];
-    
+    // Sign a copy: the signer needs our unlock builder attached to the input,
+    // and the caller's transaction must not be modified (audit SPV-13). The
+    // FORKID sighash commits to outpoints, sequences, outputs, version and
+    // nLockTime, all of which the serialized copy preserves.
+    final signingTx = dartsv.Transaction.fromHex(transaction.serialize());
+    final originalInput = signingTx.inputs[inputIndex];
+
     // Replace the input with one that has our unlock builder attached
     // This is required because TransactionSigner adds signatures to the unlock builder
     final newInput = dartsv.TransactionInput(
@@ -520,14 +550,14 @@ class PaymentChannelBuilder {
       originalInput.sequenceNumber,
       scriptBuilder: unlockBuilder,
     );
-    transaction.inputs[inputIndex] = newInput;
+    signingTx.inputs[inputIndex] = newInput;
     
     // Create the UTXO output that we're spending from
     final utxo = dartsv.TransactionOutput(inputAmountSats, redeemScript);
     
     // Use TransactionSigner - this correctly computes sighash and signs
     final signer = dartsv.DefaultTransactionSigner(sighashType, privateKey);
-    signer.sign(transaction, utxo, inputIndex);
+    signer.sign(signingTx, utxo, inputIndex);
     
     // Extract our signature from the unlock builder
     if (unlockBuilder.signatures.isEmpty) {

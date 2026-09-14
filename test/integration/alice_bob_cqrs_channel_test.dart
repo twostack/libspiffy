@@ -101,6 +101,10 @@ void main() {
         'ChannelAcceptedEvent',
         (map) => ChannelAcceptedEvent.fromMap(map),
       );
+      EventRegistry.register<ServerAcceptanceRecordedEvent>(
+        'ServerAcceptanceRecordedEvent',
+        (map) => ServerAcceptanceRecordedEvent.fromMap(map),
+      );
       EventRegistry.register<RefundCountersignedEvent>(
         'RefundCountersignedEvent',
         (map) => RefundCountersignedEvent.fromMap(map),
@@ -383,7 +387,15 @@ void main() {
       print('\n=== STEP 5: Alice records Bob\'s refund signature (simulated P2P delivery) ===');
 
       // In real scenario, Bob would send serverSignatureHex to Alice via P2P
-      // Alice's P2P layer (OverNode) would then call LibSpiffy's API to record it
+      // Alice's P2P layer (OverNode) would then call LibSpiffy's API to record it.
+      // The acceptance reaches Alice first (as ChannelP2PAdapter delivers it):
+      // only the client of an accepted channel may record the refund
+      // signature (audit M10).
+      aliceChannelManager.tell(RecordServerAcceptanceMessage(
+        channelId: channelId,
+        serverPubKeyHex: bobAcceptResponse.serverPubKeyHex,
+        serverAddressB58: bobAcceptResponse.serverAddressB58,
+      ));
 
       final aliceRecordProbe = await aliceActorSystem.createProbe();
       aliceChannelManager.tell(
@@ -449,8 +461,9 @@ void main() {
       for (final event in aliceEventsAfterOpen) {
         print('  - ${event.runtimeType}');
       }
-      expect(aliceEventsAfterOpen.length, equals(3),
-          reason: 'Alice should have 3 events: Requested, RefundCountersigned, Opened');
+      expect(aliceEventsAfterOpen.length, equals(4),
+          reason: 'Alice should have 4 events: Requested, ServerAcceptanceRecorded, '
+              'RefundCountersigned, Opened');
 
       print('\nBob\'s event history:');
       for (final event in bobEventsAfterSign) {

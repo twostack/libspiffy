@@ -215,3 +215,242 @@ void expectSettledChannel(
   expect(channel.errorMessage, isNull);
   expect(channel.hasFundingMerkleProof, isFalse);
 }
+
+/// A channel with every field set to a non-default value, so a backend or a
+/// projection step that drops any field is visible.
+PaymentChannel fullFieldChannel({
+  required String channelId,
+  required String walletId,
+}) =>
+    PaymentChannel(
+      channelId: channelId,
+      walletId: walletId,
+      role: PaymentChannelRole.server,
+      clientPeerId: contractClientPeerId,
+      serverPeerId: contractServerPeerId,
+      clientPubKeyHex: contractClientPubKeyHex,
+      serverPubKeyHex: contractServerPubKeyHex,
+      clientAddressB58: contractClientAddress,
+      serverAddressB58: contractServerAddress,
+      fundingAmountSats: contractFundingAmount,
+      lockTimeUnix: contractLockTimeUnix,
+      state: PaymentChannelState.open,
+      clientBalanceSats: contractClientBalanceAfterPayment,
+      serverBalanceSats: contractServerBalanceAfterPayment,
+      fundingTxId: contractFundingTxId,
+      fundingTxHex: contractFundingTxHex,
+      fundingOutputIndex: contractFundingOutputIndex,
+      refundTxHex: '0100000001${'aa' * 60}',
+      refundClientSigHex: '3045${'12' * 69}',
+      refundServerSigHex: '3045${'34' * 69}',
+      latestSequenceNumber: 3,
+      latestPaymentTxHex: contractPaymentTxHex,
+      latestPaymentTxId: contractPaymentTxId,
+      settlementTxId: contractSettlementTxId,
+      fundingAncestorTxids: contractAncestorTxids,
+      hasFundingMerkleProof: true,
+      context: contractContext,
+      createdAt: contractCreatedAt,
+      closedAt: contractClosedAt,
+      errorMessage: 'contract error message',
+    );
+
+/// Asserts [actual] carries exactly the field values of [expected].
+void expectSameChannelFields(PaymentChannel actual, PaymentChannel expected,
+    {String step = ''}) {
+  String r(String field) => '$field must survive $step';
+  expect(actual.channelId, equals(expected.channelId), reason: r('channelId'));
+  expect(actual.walletId, equals(expected.walletId), reason: r('walletId'));
+  expect(actual.role, equals(expected.role), reason: r('role'));
+  expect(actual.clientPeerId, equals(expected.clientPeerId),
+      reason: r('clientPeerId'));
+  expect(actual.serverPeerId, equals(expected.serverPeerId),
+      reason: r('serverPeerId'));
+  expect(actual.clientPubKeyHex, equals(expected.clientPubKeyHex),
+      reason: r('clientPubKeyHex'));
+  expect(actual.serverPubKeyHex, equals(expected.serverPubKeyHex),
+      reason: r('serverPubKeyHex'));
+  expect(actual.clientAddressB58, equals(expected.clientAddressB58),
+      reason: r('clientAddressB58'));
+  expect(actual.serverAddressB58, equals(expected.serverAddressB58),
+      reason: r('serverAddressB58'));
+  expect(actual.fundingAmountSats, equals(expected.fundingAmountSats),
+      reason: r('fundingAmountSats'));
+  expect(actual.lockTimeUnix, equals(expected.lockTimeUnix),
+      reason: r('lockTimeUnix'));
+  expect(actual.state, equals(expected.state), reason: r('state'));
+  expect(actual.clientBalanceSats, equals(expected.clientBalanceSats),
+      reason: r('clientBalanceSats'));
+  expect(actual.serverBalanceSats, equals(expected.serverBalanceSats),
+      reason: r('serverBalanceSats'));
+  expect(actual.fundingTxId, equals(expected.fundingTxId),
+      reason: r('fundingTxId'));
+  expect(actual.fundingTxHex, equals(expected.fundingTxHex),
+      reason: r('fundingTxHex'));
+  expect(actual.fundingOutputIndex, equals(expected.fundingOutputIndex),
+      reason: r('fundingOutputIndex'));
+  expect(actual.refundTxHex, equals(expected.refundTxHex),
+      reason: r('refundTxHex'));
+  expect(actual.refundClientSigHex, equals(expected.refundClientSigHex),
+      reason: r('refundClientSigHex'));
+  expect(actual.refundServerSigHex, equals(expected.refundServerSigHex),
+      reason: r('refundServerSigHex'));
+  expect(actual.latestSequenceNumber, equals(expected.latestSequenceNumber),
+      reason: r('latestSequenceNumber'));
+  expect(actual.latestPaymentTxHex, equals(expected.latestPaymentTxHex),
+      reason: r('latestPaymentTxHex'));
+  expect(actual.latestPaymentTxId, equals(expected.latestPaymentTxId),
+      reason: r('latestPaymentTxId'));
+  expect(actual.settlementTxId, equals(expected.settlementTxId),
+      reason: r('settlementTxId'));
+  expect(actual.fundingAncestorTxids, equals(expected.fundingAncestorTxids),
+      reason: r('fundingAncestorTxids'));
+  expect(actual.hasFundingMerkleProof, equals(expected.hasFundingMerkleProof),
+      reason: r('hasFundingMerkleProof'));
+  expect(actual.context, equals(expected.context), reason: r('context'));
+  expect(actual.createdAt.toUtc(), equals(expected.createdAt.toUtc()),
+      reason: r('createdAt'));
+  expect(actual.closedAt?.toUtc(), equals(expected.closedAt?.toUtc()),
+      reason: r('closedAt'));
+  expect(actual.errorMessage, equals(expected.errorMessage),
+      reason: r('errorMessage'));
+}
+
+/// Data-retention contract for the channel read model (beads 32t, y3b):
+/// every field of a stored channel survives the storage round trip, and each
+/// projection step and storage update changes only the fields it is about.
+/// Funding, refund and payment transaction data in particular must never be
+/// dropped by a later event.
+Future<void> runChannelFullFieldRetentionContract(
+  ReadModelStorage storage, {
+  required String channelId,
+  required String walletId,
+}) async {
+  final projection = ChannelProjection(
+    projectionId: 'channel-retention-$channelId',
+    eventStore: InMemoryEventStore(),
+    storage: storage,
+  );
+  var expected = fullFieldChannel(channelId: channelId, walletId: walletId);
+
+  Future<void> check(String step) async {
+    final stored = await storage.getPaymentChannel(channelId);
+    expect(stored, isNotNull, reason: 'channel must be stored after $step');
+    expectSameChannelFields(stored!, expected, step: step);
+    final listed = (await storage.getPaymentChannelsForWallet(walletId))
+        .singleWhere((c) => c.channelId == channelId);
+    expectSameChannelFields(listed, expected, step: '$step (wallet listing)');
+  }
+
+  await storage.storePaymentChannel(expected);
+  await check('storePaymentChannel');
+
+  // Re-storing an unchanged read-back channel loses nothing.
+  await storage.storePaymentChannel((await storage.getPaymentChannel(channelId))!);
+  await check('re-storing the read-back channel');
+
+  await projection.handle(RefundCountersignedEvent(
+    channelId: channelId,
+    serverSignatureHex: '3045${'56' * 69}',
+  ));
+  expected = expected.copyWith(
+    refundServerSigHex: '3045${'56' * 69}',
+    state: PaymentChannelState.opening,
+  );
+  await check('RefundCountersignedEvent');
+
+  await projection.handle(PaymentAcknowledgedEvent(
+    channelId: channelId,
+    amountSats: BigInt.from(500),
+    sequenceNumber: 4,
+    newClientBalanceSats: BigInt.from(97000),
+    newServerBalanceSats: BigInt.from(3000),
+    fullySignedPaymentTxHex: '0100000001${'bb' * 60}',
+    serverSignatureHex: '3045${'78' * 69}',
+  ));
+  expected = expected.copyWith(
+    clientBalanceSats: BigInt.from(97000),
+    serverBalanceSats: BigInt.from(3000),
+    latestSequenceNumber: 4,
+    latestPaymentTxHex: '0100000001${'bb' * 60}',
+  );
+  await check('PaymentAcknowledgedEvent');
+
+  await projection.handle(ChannelClosingEvent(
+    channelId: channelId,
+    initiator: 'server',
+    clientBalanceSats: BigInt.from(97000),
+    serverBalanceSats: BigInt.from(3000),
+  ));
+  expected = expected.copyWith(state: PaymentChannelState.closing);
+  await check('ChannelClosingEvent (updatePaymentChannelState)');
+
+  await storage.updatePaymentChannelBalance(
+      channelId, BigInt.from(96000), BigInt.from(4000));
+  expected = expected.copyWith(
+    clientBalanceSats: BigInt.from(96000),
+    serverBalanceSats: BigInt.from(4000),
+  );
+  await check('updatePaymentChannelBalance');
+
+  final expiredAt = DateTime.utc(2026, 9, 15, 8, 0, 0);
+  await projection.handle(ChannelExpiredEvent(
+    channelId: channelId,
+    observedBy: 'server',
+    timestamp: expiredAt,
+  ));
+  expected = expected.copyWith(
+    state: PaymentChannelState.expired,
+    closedAt: expiredAt,
+  );
+  await check('ChannelExpiredEvent without a txid');
+}
+
+/// Audit bead libspiffy-y3b: a requested channel has no server key yet. The
+/// projection used to store `''` for it, which every backend then returned
+/// as a "key". The read model must return `null` until the server accepts,
+/// then the key.
+Future<void> runRequestedChannelServerKeyContract(
+  ReadModelStorage storage, {
+  required String channelId,
+  required String walletId,
+}) async {
+  final projection = ChannelProjection(
+    projectionId: 'channel-server-key-$channelId',
+    eventStore: InMemoryEventStore(),
+    storage: storage,
+  );
+
+  await projection.handle(ChannelRequestedEvent(
+    channelId: channelId,
+    walletId: walletId,
+    clientPeerId: contractClientPeerId,
+    serverPeerId: contractServerPeerId,
+    clientPubKeyHex: contractClientPubKeyHex,
+    clientAddressB58: contractClientAddress,
+    derivationIndex: 0,
+    fundingAmountSats: contractFundingAmount,
+    lockTimeUnix: contractLockTimeUnix,
+    timestamp: contractCreatedAt,
+  ));
+
+  final requested = await storage.getPaymentChannel(channelId);
+  expect(requested, isNotNull);
+  expect(requested!.serverPubKeyHex, isNull,
+      reason: 'a requested channel has no server key');
+  expect(requested.serverAddressB58, isNull);
+
+  final listed = (await storage.getPaymentChannelsForWallet(walletId))
+      .singleWhere((c) => c.channelId == channelId);
+  expect(listed.serverPubKeyHex, isNull);
+
+  await projection.handle(ServerAcceptanceRecordedEvent(
+    channelId: channelId,
+    serverPubKeyHex: contractServerPubKeyHex,
+    serverAddressB58: contractServerAddress,
+  ));
+
+  final accepted = await storage.getPaymentChannel(channelId);
+  expect(accepted!.serverPubKeyHex, equals(contractServerPubKeyHex));
+  expect(accepted.serverAddressB58, equals(contractServerAddress));
+}

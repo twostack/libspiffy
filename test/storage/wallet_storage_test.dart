@@ -385,7 +385,25 @@ void main() {
       );
     });
 
-    test('a fetched channel is a snapshot: mutating it does not change storage',
+    test('every channel field survives storage and projection updates (32t, y3b)',
+        () async {
+      await runChannelFullFieldRetentionContract(
+        InMemoryWalletStorage(),
+        channelId: 'inmem-channel-retention',
+        walletId: 'inmem-channel-wallet',
+      );
+    });
+
+    test('a requested channel reads back with a null server key (y3b)',
+        () async {
+      await runRequestedChannelServerKeyContract(
+        InMemoryWalletStorage(),
+        channelId: 'inmem-channel-server-key',
+        walletId: 'inmem-channel-wallet',
+      );
+    });
+
+    test('a fetched channel is a snapshot: deriving a changed copy does not change storage',
         () async {
       final storage = InMemoryWalletStorage();
       await runChannelLifecycleContract(
@@ -394,8 +412,11 @@ void main() {
         walletId: 'inmem-channel-wallet',
       );
       final fetched = await storage.getPaymentChannel('inmem-channel-snapshot');
-      fetched!.state = PaymentChannelState.failed;
-      fetched.errorMessage = 'mutated in caller';
+      final changed = fetched!.copyWith(
+          state: PaymentChannelState.failed, errorMessage: 'changed in caller');
+      expect(changed.state, equals(PaymentChannelState.failed));
+      expect(() => fetched.fundingAncestorTxids.add('ff' * 32),
+          throwsUnsupportedError);
       final again = await storage.getPaymentChannel('inmem-channel-snapshot');
       expect(again!.state, equals(PaymentChannelState.closed));
       expect(again.errorMessage, isNull);

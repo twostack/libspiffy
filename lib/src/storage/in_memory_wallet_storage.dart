@@ -1051,7 +1051,8 @@ _balanceCache.remove(walletId);
     await _withGlobalLock(() async {
       final channel = _paymentChannels[channelId];
       if (channel != null) {
-        channel.state = PaymentChannelState.values.byName(state);
+        _paymentChannels[channelId] =
+            channel.copyWith(state: PaymentChannelState.values.byName(state));
       }
     });
   }
@@ -1065,8 +1066,10 @@ _balanceCache.remove(walletId);
     await _withGlobalLock(() async {
       final channel = _paymentChannels[channelId];
       if (channel != null) {
-        channel.clientBalanceSats = clientBalance;
-        channel.serverBalanceSats = serverBalance;
+        _paymentChannels[channelId] = channel.copyWith(
+          clientBalanceSats: clientBalance,
+          serverBalanceSats: serverBalance,
+        );
       }
     });
   }

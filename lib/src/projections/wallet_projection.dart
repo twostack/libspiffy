@@ -377,7 +377,8 @@ class WalletProjection extends Projection<void> {
     // aggregate rejects duplicate UTXOs): leave the row alone so a replay
     // does not regress a later spent/reserved/confirmed state, and do not
     // count the address use again.
-    final existing = await _findUtxo(event.walletId, event.txid, event.vout);
+    final rows = await _loadUtxoRows(event.walletId);
+    final existing = rows.find(event.txid, event.vout);
     if (existing == null) {
       final utxo = BitcoinUtxo.create(
         txid: event.txid,
@@ -390,24 +391,27 @@ class WalletProjection extends Projection<void> {
         status: event.initialStatus,
         derivationIndex: derivationIndex,
         pluginMetadata: scriptMetadata,
+        createdAt: event.timestamp,
       );
       await _storage.upsertUTXO(event.walletId, utxo);
+      rows.put(utxo);
     }
 
-    final utxos = await _storage.getUTXOs(event.walletId, includeSpent: true);
-    await _syncAddress(event.walletId, event.address, utxos,
+    await _syncAddress(event.walletId, event.address, rows.all,
         newUseAt: existing == null ? event.timestamp : null);
-    await _recalculateAndPersistForWallet(event.walletId, event.timestamp, utxos);
+    await _recalculateAndPersistForWallet(event.walletId, event.timestamp, rows.all);
   }
 
-  /// The read-model row for txid:vout, or null.
-  Future<BitcoinUtxo?> _findUtxo(String walletId, String txid, int vout) async {
-    final utxos = await _storage.getUTXOs(walletId, includeSpent: true);
-    for (final u in utxos) {
-      if (u.txid == txid && u.vout == vout) return u;
-    }
-    return null;
-  }
+  /// The wallet's UTXO rows (spent included), loaded once per event.
+  ///
+  /// Each UTXO handler used to load every row twice: once to find the row
+  /// the event is about and again to recompute the balances (audit
+  /// 2026-09-14 M7). Handlers now load once, find the row in memory, and
+  /// apply their own write to the loaded rows ([_UtxoRows.put]) instead of
+  /// reading them back. ReadModelStorage has no single-outpoint lookup, so
+  /// one full load per event remains.
+  Future<_UtxoRows> _loadUtxoRows(String walletId) async =>
+      _UtxoRows(await _storage.getUTXOs(walletId, includeSpent: true));
 
   /// Logs a UTXO event whose row the read model does not have. None of the
   /// UTXO status events carries amount, script or address, so the row cannot
@@ -505,42 +509,44 @@ class WalletProjection extends Projection<void> {
       );
 
   Future<void> _handleUTXOMarkedAvailable(UTXOMarkedAvailableEvent event) async {
-    final utxo = await _findUtxo(event.walletId, event.txid, event.vout);
+    final rows = await _loadUtxoRows(event.walletId);
+    final utxo = rows.find(event.txid, event.vout);
     if (utxo == null) {
       _warnMissingUtxo(event, event.txid, event.vout);
       return;
     }
 
     if (utxo.status == UTXOStatus.pending) {
-      final updatedUtxo = utxo.markAvailable();
+      final updatedUtxo = utxo.markAvailable(timestamp: event.timestamp);
       await _storage.upsertUTXO(event.walletId, updatedUtxo);
-      await _recalculateAndPersistForWallet(event.walletId, event.timestamp);
+      rows.put(updatedUtxo);
+      await _recalculateAndPersistForWallet(event.walletId, event.timestamp, rows.all);
     }
   }
 
   Future<void> _handleUTXOSpent(UTXOSpentEvent event) async {
-    final utxo = await _findUtxo(event.walletId, event.txid, event.vout);
+    final rows = await _loadUtxoRows(event.walletId);
+    final utxo = rows.find(event.txid, event.vout);
     if (utxo == null) {
       _warnMissingUtxo(event, event.txid, event.vout);
       return;
     }
 
     if (utxo.status != UTXOStatus.spent) {
-      await _storage.upsertUTXO(
-        event.walletId,
-        utxo.copyWith(status: UTXOStatus.spent, updatedAt: event.timestamp),
-      );
+      final spent = utxo.copyWith(status: UTXOStatus.spent, updatedAt: event.timestamp);
+      await _storage.upsertUTXO(event.walletId, spent);
+      rows.put(spent);
     }
 
     // Address balance and wallet totals are recomputed from the rows, so a
     // replayed spend cannot debit twice.
-    final utxos = await _storage.getUTXOs(event.walletId, includeSpent: true);
-    await _syncAddress(event.walletId, utxo.address, utxos);
-    await _recalculateAndPersistForWallet(event.walletId, event.timestamp, utxos);
+    await _syncAddress(event.walletId, utxo.address, rows.all);
+    await _recalculateAndPersistForWallet(event.walletId, event.timestamp, rows.all);
   }
 
   Future<void> _handleUTXOConfirmationUpdated(UTXOConfirmationUpdatedEvent event) async {
-    final utxo = await _findUtxo(event.walletId, event.txid, event.vout);
+    final rows = await _loadUtxoRows(event.walletId);
+    final utxo = rows.find(event.txid, event.vout);
     if (utxo == null) {
       _warnMissingUtxo(event, event.txid, event.vout);
       return;
@@ -552,14 +558,17 @@ class WalletProjection extends Projection<void> {
     final updatedUtxo = utxo.updateConfirmations(
       blockHeight: event.blockHeight,
       confirmations: event.confirmations,
+      timestamp: event.timestamp,
     );
 
     await _storage.upsertUTXO(event.walletId, updatedUtxo);
-    await _recalculateAndPersistForWallet(event.walletId, event.timestamp);
+    rows.put(updatedUtxo);
+    await _recalculateAndPersistForWallet(event.walletId, event.timestamp, rows.all);
   }
 
   Future<void> _handleUTXOReserved(UTXOReservedEvent event) async {
-    final utxo = await _findUtxo(event.walletId, event.txid, event.vout);
+    final rows = await _loadUtxoRows(event.walletId);
+    final utxo = rows.find(event.txid, event.vout);
     if (utxo == null) {
       _warnMissingUtxo(event, event.txid, event.vout);
       return;
@@ -580,11 +589,13 @@ class WalletProjection extends Projection<void> {
       updatedAt: event.timestamp,
     );
     await _storage.upsertUTXO(event.walletId, updatedUtxo);
-    await _recalculateAndPersistForWallet(event.walletId, event.timestamp);
+    rows.put(updatedUtxo);
+    await _recalculateAndPersistForWallet(event.walletId, event.timestamp, rows.all);
   }
 
   Future<void> _handleUTXOReleased(UTXOReleasedEvent event) async {
-    final utxo = await _findUtxo(event.walletId, event.txid, event.vout);
+    final rows = await _loadUtxoRows(event.walletId);
+    final utxo = rows.find(event.txid, event.vout);
     if (utxo == null) {
       _warnMissingUtxo(event, event.txid, event.vout);
       return;
@@ -594,16 +605,20 @@ class WalletProjection extends Projection<void> {
       // The read model does not persist the pre-reservation status; the
       // aggregate records it on the event (audit M4). Older events carry
       // none and release to available, as they did when journaled.
-      final updatedUtxo = utxo.releaseReservation(restoreStatus: event.restoredStatus);
+      final updatedUtxo = utxo.releaseReservation(
+        restoreStatus: event.restoredStatus,
+        timestamp: event.timestamp,
+      );
       await _storage.upsertUTXO(event.walletId, updatedUtxo);
-      await _recalculateAndPersistForWallet(event.walletId, event.timestamp);
+      rows.put(updatedUtxo);
+      await _recalculateAndPersistForWallet(event.walletId, event.timestamp, rows.all);
     }
   }
 
   /// Recalculate statistics and persist for a specific wallet
   ///
-  /// [utxos], when given, must be the wallet's rows read after the last write
-  /// (includeSpent: true); it saves a second scan.
+  /// [utxos], when given, must be the wallet's rows (includeSpent: true) with
+  /// the handler's own writes applied; it saves a second scan.
   Future<void> _recalculateAndPersistForWallet(
     String walletId,
     DateTime timestamp, [
@@ -1010,3 +1025,32 @@ class WalletProjection extends Projection<void> {
   }
 }
 
+/// One load of a wallet's UTXO rows, updated in memory with the writes the
+/// handler makes (see [WalletProjection._loadUtxoRows]).
+class _UtxoRows {
+  final List<BitcoinUtxo> all;
+  final Map<String, int> _index = {};
+
+  _UtxoRows(List<BitcoinUtxo> rows) : all = List.of(rows) {
+    for (var i = 0; i < all.length; i++) {
+      _index[all[i].key] = i;
+    }
+  }
+
+  /// The row for txid:vout, or null.
+  BitcoinUtxo? find(String txid, int vout) {
+    final i = _index['$txid:$vout'];
+    return i == null ? null : all[i];
+  }
+
+  /// Records [utxo] as written: replaces its row or adds it.
+  void put(BitcoinUtxo utxo) {
+    final i = _index[utxo.key];
+    if (i == null) {
+      _index[utxo.key] = all.length;
+      all.add(utxo);
+    } else {
+      all[i] = utxo;
+    }
+  }
+}

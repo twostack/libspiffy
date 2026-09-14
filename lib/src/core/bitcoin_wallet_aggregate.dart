@@ -1,4 +1,5 @@
 
+import 'package:convert/convert.dart';
 import 'package:eventador/eventador.dart';
 import 'package:logging/logging.dart';
 import 'package:uuid/uuid.dart';
@@ -112,6 +113,44 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
   @override
   WalletState createInitialState() {
     return WalletState.empty(aggregateId);
+  }
+
+  // ==========================================================================
+  // SNAPSHOTS (audit 2026-09-14 M6)
+  // ==========================================================================
+  //
+  // The snapshot is WalletState.toMap() (the base getSnapshotState). Restoring
+  // it must yield the state a full replay would: the round-trip tests in
+  // test/core/aggregate_snapshot_restore_test.dart compare the two.
+
+  /// Rebuilds the wallet state from a snapshot written by [getSnapshotState]
+  /// (after the event store's CBOR round trip).
+  @override
+  Future<WalletState> restoreStateFromMap(Map<String, dynamic> map, int sequenceNumber) async {
+    final state = WalletState.fromMap(map);
+    if (state.walletId != aggregateId) {
+      throw StateError('Snapshot at $sequenceNumber belongs to wallet ${state.walletId}, '
+          'not $aggregateId');
+    }
+    // The round trip hands back untyped maps; the derivation records are
+    // read as typed maps.
+    state.metadata[_addressIndicesKey] = _typedEntries<int>(state.metadata[_addressIndicesKey]);
+    state.metadata[_addressChainsKey] = _typedEntries<bool>(state.metadata[_addressChainsKey]);
+    // Balances are derived data: recompute them once from the restored UTXOs
+    // rather than trusting the cached values in the snapshot.
+    _setFullBalances(state);
+    return state;
+  }
+
+  /// A snapshot that cannot be restored must fail recovery. Eventador's
+  /// default falls back to the empty state and then replays only the events
+  /// after the snapshot, silently dropping the wallet's history.
+  @override
+  Future<void> onSnapshotRestorationFailure(
+      dynamic snapshotData, int sequenceNumber, dynamic error) async {
+    _log.severe('Wallet $aggregateId: snapshot at $sequenceNumber cannot be restored: $error');
+    throw StateError('Wallet $aggregateId: snapshot at $sequenceNumber cannot be restored '
+        '(refusing to recover from the events after it alone): $error');
   }
 
   /// Register command and event handlers
@@ -367,6 +406,16 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         success: false,
         error: errorMessage,
       ));
+    } else if (command is SignInputCommand) {
+      sender.tell(InputSignedResponse(
+        walletId: command.walletId,
+        commandId: command.commandId,
+        inputIndex: command.inputIndex,
+        signatureHex: '',
+        publicKeyHex: '',
+        success: false,
+        error: errorMessage,
+      ));
     } else if (command is SplitUTXOsToBenfordCommand) {
       sender.tell(SplitUTXOsResponse(
         walletId: command.walletId,
@@ -441,6 +490,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         return await _handleSignTransaction(currentState, command as SignTransactionCommand);
       case SignMultisigTransactionCommand:
         return await _handleSignMultisigTransaction(currentState, command as SignMultisigTransactionCommand);
+      case SignInputCommand:
+        return await _handleSignInput(currentState, command as SignInputCommand);
       case BuildFundingTransactionCommand:
         return await _handleBuildFundingTransaction(currentState, command as BuildFundingTransactionCommand);
       case BroadcastTransactionCommand:
@@ -1697,6 +1748,83 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     }
   }
 
+  /// Signs one input of [SignInputCommand.rawTransaction] against a
+  /// caller-supplied subscript and amount with the key at an explicit path,
+  /// and replies [InputSignedResponse] with the signature and that key's
+  /// public key.
+  ///
+  /// The per-input signing primitive for plugin-built transactions
+  /// (AggregateSigningClient). Nothing is journaled: signing changes no
+  /// wallet state, so the reply is sent directly (the reply-after-persist
+  /// rule of audit M5 concerns commands that emit events).
+  Future<List<Event>> _handleSignInput(WalletState currentState, SignInputCommand command) async {
+    final sender = _capturedSenders[command.commandId];
+    final replyTo = _isInActorSystem() ? sender : null;
+    try {
+      if (!currentState.isCreated) {
+        throw StateError('Cannot sign an input for non-existent wallet ${command.walletId}');
+      }
+      if (currentState.walletType == WalletType.xpub) {
+        throw StateError('Signing not supported for watch-only wallets');
+      }
+
+      final tx = dartsv.Transaction.fromHex(command.rawTransaction);
+      if (command.inputIndex < 0 || command.inputIndex >= tx.inputs.length) {
+        throw ArgumentError('Input index ${command.inputIndex} out of range '
+            '(transaction has ${tx.inputs.length} inputs)');
+      }
+      if (command.satoshis < BigInt.zero) {
+        throw ArgumentError('Spent amount must not be negative');
+      }
+
+      final privateKey = await _getPrivateKeyAtIndex(
+        command.walletId,
+        command.derivationIndex,
+        currentState,
+        isChange: command.isChange,
+      );
+
+      // What dartsv's DefaultTransactionSigner does, without needing an
+      // unlocking-script builder on the input.
+      final digest = dartsv.Sighash().hash(
+        tx,
+        command.sighashType,
+        command.inputIndex,
+        dartsv.SVScript.fromHex(command.subscriptHex),
+        command.satoshis,
+      );
+      final signature = dartsv.SVSignature.fromPrivateKey(privateKey)
+        ..nhashtype = command.sighashType;
+      signature.sign(hex.encode(hex.decode(digest).reversed.toList()));
+
+      replyTo?.tell(InputSignedResponse(
+        walletId: command.walletId,
+        commandId: command.commandId,
+        inputIndex: command.inputIndex,
+        signatureHex: signature.toTxFormat(),
+        publicKeyHex: privateKey.publicKey.toHex(),
+        success: true,
+      ));
+      return [];
+    } catch (e) {
+      _log.warning('Sign input ${command.inputIndex} failed for wallet ${command.walletId}: $e');
+      if (replyTo != null) {
+        replyTo.tell(InputSignedResponse(
+          walletId: command.walletId,
+          commandId: command.commandId,
+          inputIndex: command.inputIndex,
+          signatureHex: '',
+          publicKeyHex: '',
+          success: false,
+          error: e.toString(),
+        ));
+        // Answered; returning normally keeps onCommandFailure from replying twice.
+        return [];
+      }
+      throw StateError('Failed to sign input ${command.inputIndex}: $e');
+    }
+  }
+
   /// Handle building and signing a funding transaction for payment channels.
   /// 
   /// This creates a 2-of-2 multisig output funded by the client's P2PKH UTXOs.
@@ -2416,12 +2544,12 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       status: event.initialStatus, // Use the status from the event
       derivationIndex: event.derivationIndex,
       pluginMetadata: event.pluginMetadata,
+      createdAt: event.timestamp,
     );
-    
-    currentState.utxos[utxoKey] = utxo;
+
+    _putUtxo(utxoKey, utxo);
     currentState.version = event.version;
     currentState.lastModified = event.timestamp;
-    _recalculateBalances();
   }
 
   void _applyUTXOMarkedAvailable(UTXOMarkedAvailableEvent event) {
@@ -2429,12 +2557,14 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     final utxo = currentState.utxos[utxoKey];
     
     if (utxo != null) {
-      currentState.utxos[utxoKey] = utxo.status == UTXOStatus.reserved
-          ? utxo.copyWith(statusBeforeReservation: UTXOStatus.available, updatedAt: event.timestamp)
-          : utxo.markAvailable();
+      _putUtxo(
+        utxoKey,
+        utxo.status == UTXOStatus.reserved
+            ? utxo.copyWith(statusBeforeReservation: UTXOStatus.available, updatedAt: event.timestamp)
+            : utxo.markAvailable(timestamp: event.timestamp),
+      );
       currentState.version = event.version;
       currentState.lastModified = event.timestamp;
-      _recalculateBalances();
     }
   }
 
@@ -2442,27 +2572,30 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     final utxoKey = '${event.txid}:${event.vout}';
     final utxo = currentState.utxos[utxoKey];
     if (utxo != null) {
-      final spentUtxo = utxo.markSpent();
-      currentState.utxos[utxoKey] = spentUtxo;
+      _putUtxo(
+        utxoKey,
+        utxo.markSpent(timestamp: event.timestamp, spentInTxId: event.spentInTxId),
+      );
     }
     currentState.version = event.version;
     currentState.lastModified = event.timestamp;
-    _recalculateBalances();
   }
 
   void _applyUTXOConfirmationUpdated(UTXOConfirmationUpdatedEvent event) {
     final utxoKey = '${event.txid}:${event.vout}';
     final utxo = currentState.utxos[utxoKey];
     if (utxo != null) {
-      final updatedUtxo = utxo.updateConfirmations(
-        blockHeight: event.blockHeight,
-        confirmations: event.confirmations,
+      _putUtxo(
+        utxoKey,
+        utxo.updateConfirmations(
+          blockHeight: event.blockHeight,
+          confirmations: event.confirmations,
+          timestamp: event.timestamp,
+        ),
       );
-      currentState.utxos[utxoKey] = updatedUtxo;
     }
     currentState.version = event.version;
     currentState.lastModified = event.timestamp;
-    _recalculateBalances();
   }
 
   void _applyTransactionSigned(TransactionSignedEvent event) {
@@ -2507,9 +2640,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
         reservationReason: event.reservationReason,
         updatedAt: event.timestamp,
       );
-      
-      currentState.utxos[utxoKey] = reservedUtxo;
-      _recalculateBalances();
+
+      _putUtxo(utxoKey, reservedUtxo);
     }
     
     currentState.version = event.version;
@@ -2525,9 +2657,9 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
       // available; replay them that way.
       final releasedUtxo = utxo.releaseReservation(
         restoreStatus: event.restoredStatus ?? UTXOStatus.available,
+        timestamp: event.timestamp,
       );
-      currentState.utxos[utxoKey] = releasedUtxo;
-      _recalculateBalances();
+      _putUtxo(utxoKey, releasedUtxo);
     }
     
     currentState.version = event.version;
@@ -2539,10 +2671,15 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     final utxo = currentState.utxos[utxoKey];
     
     if (utxo != null && utxo.status == UTXOStatus.reserved) {
-      final extensionDuration = event.newExpiresAt.difference(event.oldExpiresAt);
-      final renewedUtxo = utxo.renewReservation(extensionDuration, reason: event.renewalReason);
-      currentState.utxos[utxoKey] = renewedUtxo;
-      _recalculateBalances();
+      // The event carries the new expiry; recomputing it from the state
+      // (extension added to the current expiry, or to "now" when there was
+      // none) made the result depend on when the event was applied (L1).
+      // Renewal moves no amount between balances.
+      currentState.utxos[utxoKey] = utxo.copyWith(
+        reservationExpiresAt: event.newExpiresAt,
+        reservationReason: event.renewalReason ?? utxo.reservationReason,
+        updatedAt: event.timestamp,
+      );
     }
     
     currentState.version = event.version;
@@ -2569,16 +2706,47 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
     currentState.lastModified = event.timestamp;
   }
 
+  static const String _importedTransactionsKey = 'importedTransactions';
+  static const String _outgoingTransactionsKey = 'outgoingTransactions';
+
+  /// The transaction records under metadata[[key]], keyed by txid (audit
+  /// 2026-09-14 M7: they were lists appended on every event and searched
+  /// linearly). A list-shaped value (state built before the change) is
+  /// converted once.
+  Map<String, dynamic> _transactionRecords(String key) {
+    final existing = currentState.metadata[key];
+    if (existing is Map<String, dynamic>) return existing;
+    final records = <String, dynamic>{};
+    if (existing is Map) {
+      existing.forEach((txid, record) => records[txid.toString()] = record);
+    } else if (existing is List) {
+      for (final record in existing) {
+        if (record is Map && record['txid'] != null) {
+          records[record['txid'].toString()] = Map<String, dynamic>.from(record);
+        }
+      }
+    }
+    currentState.metadata[key] = records;
+    return records;
+  }
+
   void _applyTransactionImported(TransactionImportedEvent event) {
-    // Store imported transaction in metadata (for audit/history)
-    final importedTxs = currentState.metadata['importedTransactions'] as List? ?? [];
-    importedTxs.add({
-      'txid': event.txid,
-      'blockHeight': event.blockHeight,
-      'importedAt': event.timestamp.toIso8601String(),
-    });
-    currentState.metadata['importedTransactions'] = importedTxs;
-    
+    // Store imported transaction in metadata (for audit/history). Records
+    // keep first-import order. A repeated import of the same txid keeps the
+    // first import time and takes the latest block height.
+    final records = _transactionRecords(_importedTransactionsKey);
+    final existing = records[event.txid];
+    if (existing is Map) {
+      existing['blockHeight'] = event.blockHeight;
+      existing['lastImportedAt'] = event.timestamp.toIso8601String();
+    } else {
+      records[event.txid] = <String, dynamic>{
+        'txid': event.txid,
+        'blockHeight': event.blockHeight,
+        'importedAt': event.timestamp.toIso8601String(),
+      };
+    }
+
     currentState.version = event.version;
     currentState.lastModified = event.timestamp;
   }
@@ -2586,58 +2754,102 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
   void _applyTransactionRecorded(TransactionRecordedEvent event) {
     // Store outgoing transaction in metadata (for audit/history)
     // Status starts as PENDING - will be updated to CONFIRMED when recipient accepts
-    final outgoingTxs = currentState.metadata['outgoingTransactions'] as List? ?? [];
-    outgoingTxs.add({
+    final records = _transactionRecords(_outgoingTransactionsKey);
+    final details = <String, dynamic>{
       'txid': event.txid,
-      'status': 'pending',
       'recipientAddresses': event.recipientAddresses,
       'paymentAmount': event.paymentAmount,
       'fee': event.fee,
       'recordedAt': event.timestamp.toIso8601String(),
-    });
-    currentState.metadata['outgoingTransactions'] = outgoingTxs;
-    
+    };
+    final existing = records[event.txid];
+    if (existing is Map) {
+      // Recorded again: refresh the details; keep the first record time and
+      // any confirmation.
+      existing.addAll(<String, dynamic>{
+        ...details,
+        'recordedAt': existing['recordedAt'] ?? details['recordedAt'],
+      });
+    } else {
+      records[event.txid] = <String, dynamic>{...details, 'status': 'pending'};
+    }
+
     currentState.version = event.version;
     currentState.lastModified = event.timestamp;
   }
 
   void _applyTransactionConfirmed(TransactionConfirmedEvent event) {
     // Update transaction status from PENDING to CONFIRMED
-    final outgoingTxs = currentState.metadata['outgoingTransactions'] as List? ?? [];
-    final txIndex = outgoingTxs.indexWhere((tx) => tx['txid'] == event.txid);
-    if (txIndex >= 0) {
-      outgoingTxs[txIndex]['status'] = 'confirmed';
-      outgoingTxs[txIndex]['blockHeight'] = event.blockHeight;
-      outgoingTxs[txIndex]['blockHash'] = event.blockHash;
-      outgoingTxs[txIndex]['confirmedAt'] = event.timestamp.toIso8601String();
+    final record = _transactionRecords(_outgoingTransactionsKey)[event.txid];
+    if (record is Map) {
+      record['status'] = 'confirmed';
+      record['blockHeight'] = event.blockHeight;
+      record['blockHash'] = event.blockHash;
+      record['confirmedAt'] = event.timestamp.toIso8601String();
     }
-    
+
     currentState.version = event.version;
     currentState.lastModified = event.timestamp;
   }
 
   
-  /// Helper method to recalculate wallet balances after UTXO changes
-  void _recalculateBalances() {
-    BigInt confirmed = BigInt.zero;
-    BigInt unconfirmed = BigInt.zero;
-    BigInt reserved = BigInt.zero;
+  // ==========================================================================
+  // BALANCES (audit 2026-09-14 M7)
+  // ==========================================================================
+  //
+  // Balances are kept incrementally: every UTXO transition goes through
+  // [_putUtxo], which moves only that UTXO's amount between the balance
+  // buckets. Recomputing from every UTXO on each event (the previous
+  // behaviour) made recovery O(N^2) in the number of UTXO events. The rule
+  // matches WalletState.recalculateBalances(); tests compare the two over
+  // randomized command sequences.
 
-    for (final utxo in currentState.utxos.values) {
-      if (utxo.status == UTXOStatus.spent) continue;
+  /// Stores [utxo] under [key] and moves its amount from the bucket of the
+  /// UTXO it replaces (if any) to its own bucket.
+  void _putUtxo(String key, BitcoinUtxo utxo) {
+    final previous = currentState.utxos[key];
+    if (previous != null) _addToBalances(currentState, previous, negate: true);
+    currentState.utxos[key] = utxo;
+    _addToBalances(currentState, utxo);
+  }
 
-      if (utxo.status == UTXOStatus.reserved) {
-        reserved += utxo.satoshis;
-      } else if ((utxo.confirmations ?? 0) >= 6) {
-        confirmed += utxo.satoshis;
-      } else {
-        unconfirmed += utxo.satoshis;
-      }
+  /// Adds (or with [negate], removes) [utxo]'s amount to its balance bucket:
+  /// nothing when spent, reserved when reserved, confirmed with 6 or more
+  /// confirmations, unconfirmed otherwise.
+  static void _addToBalances(WalletState state, BitcoinUtxo utxo, {bool negate = false}) {
+    if (utxo.status == UTXOStatus.spent) return;
+    final amount = negate ? -utxo.satoshis : utxo.satoshis;
+    if (utxo.status == UTXOStatus.reserved) {
+      state.reservedBalance = dartsv.Coin.ofSat(state.reservedBalance.getValue() + amount);
+    } else if ((utxo.confirmations ?? 0) >= 6) {
+      state.confirmedBalance = dartsv.Coin.ofSat(state.confirmedBalance.getValue() + amount);
+    } else {
+      state.unconfirmedBalance = dartsv.Coin.ofSat(state.unconfirmedBalance.getValue() + amount);
     }
+  }
 
-    currentState.confirmedBalance = dartsv.Coin.ofSat(confirmed);
-    currentState.unconfirmedBalance = dartsv.Coin.ofSat(unconfirmed);
-    currentState.reservedBalance = dartsv.Coin.ofSat(reserved);
+  /// Sets [state]'s balances from all of its UTXOs (once per snapshot
+  /// restore; event application is incremental).
+  static void _setFullBalances(WalletState state) {
+    state.confirmedBalance = dartsv.Coin.ofSat(BigInt.zero);
+    state.unconfirmedBalance = dartsv.Coin.ofSat(BigInt.zero);
+    state.reservedBalance = dartsv.Coin.ofSat(BigInt.zero);
+    for (final utxo in state.utxos.values) {
+      _addToBalances(state, utxo);
+    }
+  }
+
+  /// A `Map<String, T>` of the entries of [value] whose values are [T]
+  /// (snapshot data arrives as untyped maps).
+  static Map<String, T> _typedEntries<T>(Object? value) {
+    if (value is Map<String, T>) return value;
+    final map = <String, T>{};
+    if (value is Map) {
+      value.forEach((k, v) {
+        if (v is T) map[k.toString()] = v;
+      });
+    }
+    return map;
   }
 
   // ==========================================================================

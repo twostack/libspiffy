@@ -248,7 +248,12 @@ class WalletState extends State {
     );
   }
   
-  /// Convert state to map for serialization
+  /// Convert state to map for serialization.
+  ///
+  /// Complete (every field [WalletState.fromMap] reads) and detached: nested
+  /// maps and lists are copies, so a snapshot taken from the map is not
+  /// changed by events applied afterwards (audit 2026-09-14 M6).
+  @override
   Map<String, dynamic> toMap() {
     return {
       'walletId': walletId,
@@ -261,9 +266,9 @@ class WalletState extends State {
       'version': version,
       'timestamp': timestamp.toIso8601String(),
       'utxos': utxos.map((key, utxo) => MapEntry(key, utxo.toMap())),
-      'addresses': addresses,
+      'addresses': Map<String, String?>.from(addresses),
       'nextDerivationIndex': nextDerivationIndex,
-      'metadata': metadata,
+      'metadata': _deepCopy(metadata),
       'confirmedBalance': confirmedBalance.getValue().toString(),
       'unconfirmedBalance': unconfirmedBalance.getValue().toString(),
       'reservedBalance': reservedBalance.getValue().toString(),
@@ -271,13 +276,30 @@ class WalletState extends State {
     };
   }
   
-  /// Create state from map (deserialization)
+  static dynamic _deepCopy(dynamic value) => switch (value) {
+        Map m => <String, dynamic>{
+            for (final e in m.entries) e.key.toString(): _deepCopy(e.value),
+          },
+        List l => [for (final v in l) _deepCopy(v)],
+        _ => value,
+      };
+
+  static DateTime _parseDate(Object? value) =>
+      value is DateTime ? value : DateTime.parse(value as String);
+
+  /// Create state from map (deserialization). Accepts the output of
+  /// [toMap] after a CBOR round trip (untyped nested maps).
+  ///
+  /// Metadata values keep the shape the round trip gives them (e.g.
+  /// `Map<String, dynamic>` where the live state held `Map<String, int>`);
+  /// [BitcoinWalletAggregate] normalises the entries it reads.
   factory WalletState.fromMap(Map<String, dynamic> map) {
     final utxosMap = <String, BitcoinUtxo>{};
     if (map['utxos'] != null) {
-      final utxosData = map['utxos'] as Map<String, dynamic>;
+      final utxosData = map['utxos'] as Map;
       for (final entry in utxosData.entries) {
-        utxosMap[entry.key] = BitcoinUtxo.fromMap(entry.value as Map<String, dynamic>);
+        utxosMap[entry.key.toString()] =
+            BitcoinUtxo.fromMap(Map<String, dynamic>.from(entry.value as Map));
       }
     }
     
@@ -291,7 +313,7 @@ class WalletState extends State {
       walletType: WalletTypeExtension.fromStorageString(
         map['walletType'] as String? ?? 'hd', // Default to HD for backwards compatibility
       ),
-      timestamp: DateTime.parse(map['timestamp'] as String),
+      timestamp: _parseDate(map['timestamp']),
       utxos: utxosMap,
       addresses: Map<String, String?>.from(map['addresses'] ?? {}),
       nextDerivationIndex: map['nextDerivationIndex'] as int,
@@ -300,9 +322,7 @@ class WalletState extends State {
       unconfirmedBalance: dartsv.Coin.ofSat(BigInt.parse(map['unconfirmedBalance'] as String)),
       reservedBalance: dartsv.Coin.ofSat(BigInt.parse(map['reservedBalance'] as String)),
       version: map['version'] as int,
-      lastModified: map['lastModified'] != null 
-          ? DateTime.parse(map['lastModified'] as String)
-          : null,
+      lastModified: map['lastModified'] != null ? _parseDate(map['lastModified']) : null,
     );
   }
   

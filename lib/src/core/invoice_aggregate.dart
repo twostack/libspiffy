@@ -50,6 +50,91 @@ class InvoiceAggregate extends AggregateRoot<InvoiceState> {
     return InvoiceState.empty(aggregateId);
   }
 
+  // ==========================================================================
+  // SNAPSHOTS (audit 2026-09-14 M6)
+  // ==========================================================================
+  //
+  // InvoiceState inherits State.toMap (version and timestamp only), so the
+  // snapshot is written here and read back by restoreStateFromMap. Dates are
+  // ISO-8601 strings and amounts decimal strings, which survive the event
+  // store's CBOR round trip unchanged.
+
+  @override
+  Future<dynamic> getSnapshotState() async =>
+      isInitialized ? invoiceStateToMap(currentState) : null;
+
+  /// Every field of [state], in the form [restoreStateFromMap] reads.
+  static Map<String, dynamic> invoiceStateToMap(InvoiceState state) => {
+        'type': state.typeName,
+        'invoiceId': state.invoiceId,
+        'isCreated': state.isCreated,
+        'walletId': state.walletId,
+        'addresses': List<String>.from(state.addresses),
+        'amount': state.amount.toString(),
+        if (state.outputs != null) 'outputs': [for (final o in state.outputs!) o.toMap()],
+        'description': state.description,
+        'status': state.status.name,
+        'createdAt': state.createdAt.toIso8601String(),
+        'expiresAt': state.expiresAt?.toIso8601String(),
+        'paidAt': state.paidAt?.toIso8601String(),
+        'paymentTxid': state.paymentTxid,
+        'amountReceived': state.amountReceived?.toString(),
+        'metadata': _detachedCopy(state.metadata),
+        'version': state.version,
+        'lastModified': state.lastModified.toIso8601String(),
+      };
+
+  @override
+  Future<InvoiceState> restoreStateFromMap(Map<String, dynamic> map, int sequenceNumber) async {
+    DateTime? date(Object? v) => v == null ? null : (v is DateTime ? v : DateTime.parse(v as String));
+    final invoiceId = map['invoiceId'] as String;
+    if (invoiceId != aggregateId) {
+      throw StateError('Snapshot at $sequenceNumber belongs to invoice $invoiceId, not $aggregateId');
+    }
+    final outputs = map['outputs'] as List?;
+    return InvoiceState(
+      invoiceId: invoiceId,
+      isCreated: map['isCreated'] as bool,
+      walletId: map['walletId'] as String,
+      addresses: [for (final a in map['addresses'] as List) a as String],
+      amount: BigInt.parse(map['amount'] as String),
+      outputs: outputs == null
+          ? null
+          : [
+              for (final o in outputs)
+                InvoiceOutputSpec.fromMap(Map<String, dynamic>.from(o as Map)),
+            ],
+      description: map['description'] as String?,
+      status: InvoiceStatus.values.byName(map['status'] as String),
+      createdAt: date(map['createdAt'])!,
+      expiresAt: date(map['expiresAt']),
+      paidAt: date(map['paidAt']),
+      paymentTxid: map['paymentTxid'] as String?,
+      amountReceived:
+          map['amountReceived'] == null ? null : BigInt.parse(map['amountReceived'] as String),
+      metadata: Map<String, dynamic>.from(map['metadata'] as Map? ?? const {}),
+      version: map['version'] as int,
+      lastModified: date(map['lastModified']),
+    );
+  }
+
+  /// A snapshot that cannot be restored fails recovery instead of eventador's
+  /// default (empty state plus only the events after the snapshot).
+  @override
+  Future<void> onSnapshotRestorationFailure(
+      dynamic snapshotData, int sequenceNumber, dynamic error) async {
+    throw StateError('Invoice $aggregateId: snapshot at $sequenceNumber cannot be restored '
+        '(refusing to recover from the events after it alone): $error');
+  }
+
+  static dynamic _detachedCopy(dynamic value) => switch (value) {
+        Map m => <String, dynamic>{
+            for (final e in m.entries) e.key.toString(): _detachedCopy(e.value),
+          },
+        List l => [for (final v in l) _detachedCopy(v)],
+        _ => value,
+      };
+
   @override
   void registerHandlers() {
     // Intentionally empty - using override pattern instead of registry pattern

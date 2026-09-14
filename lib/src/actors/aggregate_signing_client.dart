@@ -46,12 +46,13 @@ class AggregateSigningException implements Exception {
 /// * [SignTransactionCommand] -> [TransactionSignedResponse]: signs every
 ///   P2PKH input of a wallet transaction and verifies each input with the
 ///   script interpreter before replying.
-/// * [SignMultisigTransactionCommand] -> [MultisigTransactionSignedResponse]:
-///   returns the signature for one input against a caller-supplied subscript
-///   and amount with the key at an explicit path (no event is journaled).
-///   Used as a per-input signing primitive for plugin-built transactions and
-///   to learn a key's public key (recovered from a signature and checked
-///   against the address).
+/// * [SignInputCommand] -> [InputSignedResponse]: returns the signature for
+///   one input against a caller-supplied subscript and amount with the key at
+///   an explicit path, and that key's public key (no event is journaled).
+///   The per-input signing primitive for plugin-built transactions, and how
+///   a key's public key is learned. (This used to go through
+///   `SignMultisigTransactionCommand` and recover the public key from a
+///   throwaway signature; that command is now left to payment channels.)
 class AggregateSigningClient {
   static final _log = Logger('AggregateSigningClient');
 
@@ -151,35 +152,66 @@ class AggregateSigningClient {
     required BigInt satoshis,
     required SigningPath path,
     int? sighashType,
-  }) async {
-    final reply = await _request<MultisigTransactionSignedResponse>(
-      walletId,
-      SignMultisigTransactionCommand(
+  }) async =>
+      (await _signInputWithKey(
         walletId: walletId,
-        transactionId: 'input-$inputIndex',
+        txHex: txHex,
+        inputIndex: inputIndex,
+        subscript: subscript,
+        satoshis: satoshis,
+        path: path,
+        sighashType: sighashType ?? sigHashAllForkId,
+      ))
+          .signature;
+
+  /// Sends [SignInputCommand] and returns the signature with the public key
+  /// the aggregate reports for the signing key. The signature is checked to
+  /// come from that key over this input's sighash.
+  Future<({dartsv.SVSignature signature, dartsv.SVPublicKey publicKey})> _signInputWithKey({
+    required String walletId,
+    required String txHex,
+    required int inputIndex,
+    required dartsv.SVScript subscript,
+    required BigInt satoshis,
+    required SigningPath path,
+    required int sighashType,
+  }) async {
+    final reply = await _request<InputSignedResponse>(
+      walletId,
+      SignInputCommand(
+        walletId: walletId,
         rawTransaction: txHex,
+        inputIndex: inputIndex,
+        subscriptHex: subscript.toHex(),
+        satoshis: satoshis,
         derivationIndex: path.derivationIndex,
         isChange: path.isChange,
-        inputIndex: inputIndex,
-        prevOutValue: satoshis.toInt(),
-        redeemScriptHex: subscript.toHex(),
-        sighashType: sighashType ?? sigHashAllForkId,
+        sighashType: sighashType,
       ),
       'signing input $inputIndex',
     );
-    if (!reply.success || reply.signatureHex.isEmpty) {
+    if (!reply.success || reply.signatureHex.isEmpty || reply.publicKeyHex.isEmpty) {
       throw AggregateSigningException(
           'Wallet refused to sign input $inputIndex: ${reply.error ?? 'no signature'}');
     }
-    return dartsv.SVSignature.fromTxFormat(reply.signatureHex);
+    final signature = dartsv.SVSignature.fromTxFormat(reply.signatureHex);
+    final publicKey = dartsv.SVPublicKey.fromHex(reply.publicKeyHex);
+    final digest = sighashDigest(
+        dartsv.Transaction.fromHex(txHex), sighashType, inputIndex, subscript, satoshis);
+    final signer = publicKey.getEncoded(true);
+    if (!recoverPublicKeys(signature, digest).any((k) => k.getEncoded(true) == signer)) {
+      throw AggregateSigningException(
+          'The signature for input $inputIndex does not come from the reported key');
+    }
+    return (signature: signature, publicKey: publicKey);
   }
 
   /// The public key the wallet controls [address] with.
   ///
-  /// The aggregate signs a throwaway spend of [address]; the public key is
-  /// recovered from that signature and must hash to [address]. Throws
-  /// [AggregateSigningException] when the key at the address's path does not
-  /// control the address.
+  /// Taken from the aggregate's [InputSignedResponse] for a throwaway spend of
+  /// [address] with the key at the address's path; it must hash to
+  /// [address]. Throws [AggregateSigningException] when the key at that path
+  /// does not control the address.
   Future<dartsv.SVPublicKey> publicKeyForAddress(String walletId, String address,
       {SigningPath? path}) async {
     final effectivePath =
@@ -191,23 +223,21 @@ class AggregateSigningClient {
       ..nLockTime = 0;
     probe.inputs.add(dartsv.TransactionInput('00' * 32, 0, dartsv.TransactionInput.MAX_SEQ_NUMBER));
     probe.outputs.add(dartsv.TransactionOutput(BigInt.zero, dartsv.SVScript.fromHex('006a')));
-    final amount = BigInt.one;
 
-    final signature = await signInput(
+    final signed = await _signInputWithKey(
       walletId: walletId,
       txHex: probe.serialize(),
       inputIndex: 0,
       subscript: lockingScript,
-      satoshis: amount,
+      satoshis: BigInt.one,
       path: effectivePath,
+      sighashType: sigHashAllForkId,
     );
-    final digest = sighashDigest(probe, sigHashAllForkId, 0, lockingScript, amount);
-    final wanted = dartsv.Address.fromBase58(address).pubkeyHash160;
-    for (final candidate in recoverPublicKeys(signature, digest)) {
-      if (_hash160Hex(candidate) == wanted) return candidate;
+    if (_hash160Hex(signed.publicKey) != dartsv.Address.fromBase58(address).pubkeyHash160) {
+      throw AggregateSigningException(
+          'The wallet key at $effectivePath does not control $address');
     }
-    throw AggregateSigningException(
-        'The wallet key at $effectivePath does not control $address');
+    return signed.publicKey;
   }
 
   // ---------------------------------------------------------------------------
@@ -275,7 +305,7 @@ class AggregateSigningClient {
     for (final entry in pending.entries) {
       final input = entry.value;
       final owner = await _ownerOf(walletId, network, input.subscript);
-      final signature = await signInput(
+      final signed = await _signInputWithKey(
         walletId: walletId,
         txHex: input.txHex,
         inputIndex: input.inputIndex,
@@ -284,13 +314,11 @@ class AggregateSigningClient {
         path: owner?.path ?? fallbackPath,
         sighashType: input.sighashType,
       );
-      if (owner != null &&
-          !recoverPublicKeys(signature, input.digest)
-              .any((k) => _hash160Hex(k) == owner.pubkeyHash)) {
+      if (owner != null && _hash160Hex(signed.publicKey) != owner.pubkeyHash) {
         throw AggregateSigningException('The wallet key at ${owner.path} does not own '
             'the output spent by input ${input.inputIndex}');
       }
-      signatures[entry.key] = signature;
+      signatures[entry.key] = signed.signature;
     }
   }
 

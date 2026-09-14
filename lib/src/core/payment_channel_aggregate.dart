@@ -38,6 +38,107 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState> {
   @override
   ChannelState createInitialState() => ChannelState.empty(aggregateId);
 
+  // ==========================================================================
+  // SNAPSHOTS (audit 2026-09-14 M6)
+  // ==========================================================================
+  //
+  // ChannelState inherits State.toMap (version and timestamp only), so the
+  // snapshot is written here and read back by restoreStateFromMap. Amounts
+  // are decimal strings and dates ISO-8601 strings, which survive the event
+  // store's CBOR round trip unchanged.
+
+  @override
+  Future<dynamic> getSnapshotState() async =>
+      isInitialized ? channelStateToMap(currentState) : null;
+
+  /// Every field of [s], in the form [restoreStateFromMap] reads.
+  static Map<String, dynamic> channelStateToMap(ChannelState s) => {
+        'type': s.typeName,
+        'channelId': s.channelId,
+        'walletId': s.walletId,
+        'status': s.status.name,
+        'role': s.role?.name,
+        'clientPeerId': s.clientPeerId,
+        'serverPeerId': s.serverPeerId,
+        'clientPubKeyHex': s.clientPubKeyHex,
+        'serverPubKeyHex': s.serverPubKeyHex,
+        'clientAddressB58': s.clientAddressB58,
+        'serverAddressB58': s.serverAddressB58,
+        'derivationIndex': s.derivationIndex,
+        'fundingAmountSats': s.fundingAmountSats.toString(),
+        'fundingTxId': s.fundingTxId,
+        'fundingTxHex': s.fundingTxHex,
+        'fundingOutputIndex': s.fundingOutputIndex,
+        'fundingAncestorTxids': List<String>.from(s.fundingAncestorTxids),
+        'lockTimeUnix': s.lockTimeUnix,
+        'refundTxHex': s.refundTxHex,
+        'refundClientSigHex': s.refundClientSigHex,
+        'refundServerSigHex': s.refundServerSigHex,
+        'clientBalanceSats': s.clientBalanceSats.toString(),
+        'serverBalanceSats': s.serverBalanceSats.toString(),
+        'latestSequenceNumber': s.latestSequenceNumber,
+        'latestPaymentTxHex': s.latestPaymentTxHex,
+        'latestPaymentTxId': s.latestPaymentTxId,
+        'context': s.context,
+        'createdAt': s.createdAt?.toIso8601String(),
+        'closedAt': s.closedAt?.toIso8601String(),
+        'version': s.version,
+        'lastModified': s.lastModified.toIso8601String(),
+      };
+
+  @override
+  Future<ChannelState> restoreStateFromMap(Map<String, dynamic> map, int sequenceNumber) async {
+    DateTime? date(Object? v) => v == null ? null : (v is DateTime ? v : DateTime.parse(v as String));
+    final channelId = map['channelId'] as String;
+    if (channelId != aggregateId) {
+      throw StateError('Snapshot at $sequenceNumber belongs to channel $channelId, not $aggregateId');
+    }
+    final role = map['role'] as String?;
+    return ChannelState(
+      channelId: channelId,
+      walletId: map['walletId'] as String?,
+      status: ChannelStatus.values.byName(map['status'] as String),
+      role: role == null ? null : ChannelRole.values.byName(role),
+      clientPeerId: map['clientPeerId'] as String?,
+      serverPeerId: map['serverPeerId'] as String?,
+      clientPubKeyHex: map['clientPubKeyHex'] as String?,
+      serverPubKeyHex: map['serverPubKeyHex'] as String?,
+      clientAddressB58: map['clientAddressB58'] as String?,
+      serverAddressB58: map['serverAddressB58'] as String?,
+      derivationIndex: map['derivationIndex'] as int?,
+      fundingAmountSats: BigInt.parse(map['fundingAmountSats'] as String),
+      fundingTxId: map['fundingTxId'] as String?,
+      fundingTxHex: map['fundingTxHex'] as String?,
+      fundingOutputIndex: map['fundingOutputIndex'] as int?,
+      fundingAncestorTxids: [
+        for (final t in map['fundingAncestorTxids'] as List? ?? const []) t as String,
+      ],
+      lockTimeUnix: map['lockTimeUnix'] as int?,
+      refundTxHex: map['refundTxHex'] as String?,
+      refundClientSigHex: map['refundClientSigHex'] as String?,
+      refundServerSigHex: map['refundServerSigHex'] as String?,
+      clientBalanceSats: BigInt.parse(map['clientBalanceSats'] as String),
+      serverBalanceSats: BigInt.parse(map['serverBalanceSats'] as String),
+      latestSequenceNumber: map['latestSequenceNumber'] as int,
+      latestPaymentTxHex: map['latestPaymentTxHex'] as String?,
+      latestPaymentTxId: map['latestPaymentTxId'] as String?,
+      context: map['context'] as String?,
+      createdAt: date(map['createdAt']),
+      closedAt: date(map['closedAt']),
+      version: map['version'] as int,
+      lastModified: date(map['lastModified']),
+    );
+  }
+
+  /// A snapshot that cannot be restored fails recovery instead of eventador's
+  /// default (empty state plus only the events after the snapshot).
+  @override
+  Future<void> onSnapshotRestorationFailure(
+      dynamic snapshotData, int sequenceNumber, dynamic error) async {
+    throw StateError('Channel $aggregateId: snapshot at $sequenceNumber cannot be restored '
+        '(refusing to recover from the events after it alone): $error');
+  }
+
   @override
   void registerHandlers() {
     // Using override pattern (same as BitcoinWalletAggregate)

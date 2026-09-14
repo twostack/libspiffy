@@ -72,6 +72,11 @@ class BitcoinUtxo {
   /// unconfirmed UTXO does not make it spendable (audit 2026-09-14 M4).
   final UTXOStatus? statusBeforeReservation;
 
+  /// Transaction that spent this UTXO, when [status] is [UTXOStatus.spent]
+  /// and the spend was recorded with it (null for UTXOs spent before this
+  /// field existed, or loaded from a store that does not record it).
+  final String? spentInTxId;
+
   /// Plugin-provided metadata for token/custom script UTXOs.
   ///
   /// Populated by [ScriptPlugin.extractMetadata()] during UTXO indexing.
@@ -98,6 +103,7 @@ class BitcoinUtxo {
     this.derivationIndex,
     this.pluginMetadata,
     this.statusBeforeReservation,
+    this.spentInTxId,
   });
   
   /// Create a new UTXO from transaction output
@@ -112,8 +118,11 @@ class BitcoinUtxo {
     int? derivationIndex,
     Map<String, dynamic>? pluginMetadata,
     UTXOStatus status = UTXOStatus.pending,
+    DateTime? createdAt,
   }) {
-    final now = DateTime.now();
+    // Event handlers pass the event's timestamp, so replaying the event
+    // yields the same UTXO (audit 2026-09-14 L1).
+    final now = createdAt ?? DateTime.now();
     return BitcoinUtxo(
       txid: txid,
       vout: vout,
@@ -167,6 +176,7 @@ class BitcoinUtxo {
     int? derivationIndex,
     Object? pluginMetadata = _sentinel,
     Object? statusBeforeReservation = _sentinel,
+    Object? spentInTxId = _sentinel,
   }) {
     return BitcoinUtxo(
       txid: txid ?? this.txid,
@@ -188,19 +198,25 @@ class BitcoinUtxo {
       statusBeforeReservation: statusBeforeReservation == _sentinel
           ? this.statusBeforeReservation
           : statusBeforeReservation as UTXOStatus?,
+      spentInTxId: spentInTxId == _sentinel ? this.spentInTxId : spentInTxId as String?,
     );
   }
   
+  // Every transition below takes an optional [timestamp]: the time the
+  // change happened. Code applying an event must pass the event's timestamp
+  // so that state rebuilt from the journal equals the state that applied the
+  // event live (audit 2026-09-14 L1); it defaults to the current time.
+
   /// Reserve this UTXO for a transaction
   BitcoinUtxo reserve(String transactionId, {
     Duration? duration,
     int priority = 0,
     String? reason,
+    DateTime? timestamp,
   }) {
-    final expiresAt = duration != null 
-        ? DateTime.now().add(duration)
-        : null;
-    
+    final now = timestamp ?? DateTime.now();
+    final expiresAt = duration != null ? now.add(duration) : null;
+
     return copyWith(
       status: UTXOStatus.reserved,
       statusBeforeReservation: statusToRestoreOnRelease,
@@ -208,23 +224,24 @@ class BitcoinUtxo {
       reservationExpiresAt: expiresAt,
       reservationPriority: priority,
       reservationReason: reason,
-      updatedAt: DateTime.now(),
+      updatedAt: now,
     );
   }
   
-  /// Mark this UTXO as spent
-  BitcoinUtxo markSpent() {
+  /// Mark this UTXO as spent (by [spentInTxId], when known)
+  BitcoinUtxo markSpent({DateTime? timestamp, String? spentInTxId}) {
     return copyWith(
       status: UTXOStatus.spent,
-      updatedAt: DateTime.now(),
+      spentInTxId: spentInTxId ?? this.spentInTxId,
+      updatedAt: timestamp ?? DateTime.now(),
     );
   }
   
   /// Mark this UTXO as available for spending
-  BitcoinUtxo markAvailable() {
+  BitcoinUtxo markAvailable({DateTime? timestamp}) {
     return copyWith(
       status: UTXOStatus.available,
-      updatedAt: DateTime.now(),
+      updatedAt: timestamp ?? DateTime.now(),
     );
   }
   
@@ -238,7 +255,7 @@ class BitcoinUtxo {
   /// Release reservation on this UTXO, restoring the status it had before
   /// it was reserved ([restoreStatus] overrides it; unknown means
   /// [UTXOStatus.available], the behaviour before the status was recorded).
-  BitcoinUtxo releaseReservation({UTXOStatus? restoreStatus}) {
+  BitcoinUtxo releaseReservation({UTXOStatus? restoreStatus, DateTime? timestamp}) {
     return copyWith(
       status: restoreStatus ?? statusBeforeReservation ?? UTXOStatus.available,
       statusBeforeReservation: null,
@@ -246,23 +263,25 @@ class BitcoinUtxo {
       reservationExpiresAt: null,
       reservationPriority: null,
       reservationReason: null,
-      updatedAt: DateTime.now(),
+      updatedAt: timestamp ?? DateTime.now(),
     );
   }
 
-  /// Renew/extend the reservation on this UTXO
-  BitcoinUtxo renewReservation(Duration extension, {String? reason}) {
+  /// Renew/extend the reservation on this UTXO. A reservation without an
+  /// expiry is extended from [timestamp] (default: now).
+  BitcoinUtxo renewReservation(Duration extension, {String? reason, DateTime? timestamp}) {
     if (status != UTXOStatus.reserved) {
       throw StateError('Cannot renew reservation on non-reserved UTXO');
     }
     
-    final currentExpiry = reservationExpiresAt ?? DateTime.now();
+    final now = timestamp ?? DateTime.now();
+    final currentExpiry = reservationExpiresAt ?? now;
     final newExpiry = currentExpiry.add(extension);
     
     return copyWith(
       reservationExpiresAt: newExpiry,
       reservationReason: reason ?? reservationReason,
-      updatedAt: DateTime.now(),
+      updatedAt: now,
     );
   }
 
@@ -298,6 +317,7 @@ class BitcoinUtxo {
   BitcoinUtxo updateConfirmations({
     required int blockHeight,
     required int confirmations,
+    DateTime? timestamp,
   }) {
     // If UTXO is pending and now has confirmations, make it available
     final newStatus = (status == UTXOStatus.pending && confirmations > 0)
@@ -317,11 +337,14 @@ class BitcoinUtxo {
       statusBeforeReservation: restore,
       blockHeight: blockHeight,
       confirmations: confirmations,
-      updatedAt: DateTime.now(),
+      updatedAt: timestamp ?? DateTime.now(),
     );
   }
   
-  /// Convert to map for serialization
+  /// Convert to map for serialization. Every field is included, so
+  /// [BitcoinUtxo.fromMap] restores an equal UTXO (aggregate snapshots rely
+  /// on it; audit 2026-09-14 M6). Dates are ISO-8601 strings and amounts
+  /// decimal strings.
   Map<String, dynamic> toMap() {
     return {
       'txid': txid,
@@ -335,10 +358,15 @@ class BitcoinUtxo {
       'createdAt': createdAt.toIso8601String(),
       'updatedAt': updatedAt.toIso8601String(),
       'reservedByTxId': reservedByTxId,
+      if (reservationExpiresAt != null)
+        'reservationExpiresAt': reservationExpiresAt!.toIso8601String(),
+      if (reservationPriority != null) 'reservationPriority': reservationPriority,
+      if (reservationReason != null) 'reservationReason': reservationReason,
       'derivationIndex': derivationIndex,
       if (pluginMetadata != null) 'pluginMetadata': pluginMetadata,
       if (statusBeforeReservation != null)
         'statusBeforeReservation': statusBeforeReservation!.name,
+      if (spentInTxId != null) 'spentInTxId': spentInTxId,
     };
   }
   
@@ -356,9 +384,12 @@ class BitcoinUtxo {
       ),
       blockHeight: map['blockHeight'] as int?,
       confirmations: map['confirmations'] as int?,
-      createdAt: DateTime.parse(map['createdAt'] as String),
-      updatedAt: DateTime.parse(map['updatedAt'] as String),
+      createdAt: _parseDate(map['createdAt'])!,
+      updatedAt: _parseDate(map['updatedAt'])!,
       reservedByTxId: map['reservedByTxId'] as String?,
+      reservationExpiresAt: _parseDate(map['reservationExpiresAt']),
+      reservationPriority: map['reservationPriority'] as int?,
+      reservationReason: map['reservationReason'] as String?,
       derivationIndex: map['derivationIndex'] as int?,
       pluginMetadata: map['pluginMetadata'] != null
           ? Map<String, dynamic>.from(map['pluginMetadata'] as Map)
@@ -366,9 +397,18 @@ class BitcoinUtxo {
       statusBeforeReservation: UTXOStatus.values
           .where((s) => s.name == map['statusBeforeReservation'])
           .firstOrNull,
+      spentInTxId: map['spentInTxId'] as String?,
     );
   }
   
+  /// An ISO-8601 string, or a [DateTime] (a CBOR round trip of a map that
+  /// held one decodes it as a date).
+  static DateTime? _parseDate(Object? value) => switch (value) {
+        null => null,
+        DateTime d => d,
+        _ => DateTime.parse(value as String),
+      };
+
   @override
   bool operator ==(Object other) {
     if (identical(this, other)) return true;

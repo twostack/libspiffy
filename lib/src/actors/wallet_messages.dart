@@ -172,6 +172,45 @@ class MultisigTransactionSignedResponse implements Message {
   DateTime get timestamp => DateTime.now();
 }
 
+/// Reply to `SignInputCommand`: the signature for one input and the public
+/// key of the wallet key that produced it.
+class InputSignedResponse implements Message {
+  final String walletId;
+
+  /// Id of the `SignInputCommand` this answers.
+  final String commandId;
+  final int inputIndex;
+
+  /// Signature in transaction format (DER plus the sighash byte); empty on
+  /// failure.
+  final String signatureHex;
+
+  /// Compressed public key of the signing key (hex); empty on failure.
+  final String publicKeyHex;
+  final bool success;
+  final String? error;
+
+  InputSignedResponse({
+    required this.walletId,
+    required this.commandId,
+    required this.inputIndex,
+    required this.signatureHex,
+    required this.publicKeyHex,
+    required this.success,
+    this.error,
+  });
+
+  @override
+  String get correlationId => 'input-signed-$commandId';
+  @override
+  Map<String, dynamic> get metadata =>
+      {'walletId': walletId, 'commandId': commandId, 'inputIndex': inputIndex};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
 /// Response from building and signing a funding transaction
 class FundingTransactionBuiltResponse implements Message {
   final String walletId;

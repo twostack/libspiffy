@@ -737,6 +737,53 @@ class SignMultisigTransactionCommand extends WalletCommand {
   String get commandType => 'SignMultisigTransactionCommand';
 }
 
+/// Command to sign one input of a transaction with the wallet key at an
+/// explicit derivation path, against a caller-supplied subscript and amount.
+///
+/// The aggregate replies `InputSignedResponse` carrying the signature (DER
+/// plus sighash byte) and the signing key's public key; nothing is journaled.
+/// For WIF wallets the path is ignored (single key); watch-only wallets are
+/// refused.
+class SignInputCommand extends WalletCommand {
+  /// Transaction whose input is signed (hex). Unlocking scripts are ignored:
+  /// the signature hash does not cover them.
+  final String rawTransaction;
+
+  /// Index of the input to sign.
+  final int inputIndex;
+
+  /// Script the signature commits to: the locking script of the output
+  /// being spent (or the part of it after the last executed OP_CODESEPARATOR).
+  final String subscriptHex;
+
+  /// Value of the output being spent, in satoshis.
+  final BigInt satoshis;
+
+  /// Key path `m/{isChange ? 1 : 0}/{derivationIndex}`.
+  final int derivationIndex;
+  final bool isChange;
+
+  /// SIGHASH flags; SIGHASH_ALL | SIGHASH_FORKID by default.
+  final int sighashType;
+
+  SignInputCommand({
+    required super.walletId,
+    required this.rawTransaction,
+    required this.inputIndex,
+    required this.subscriptHex,
+    required this.satoshis,
+    required this.derivationIndex,
+    this.isChange = false,
+    this.sighashType = 0x41,
+    super.commandId,
+    super.timestamp,
+    super.metadata,
+  });
+
+  @override
+  String get commandType => 'SignInputCommand';
+}
+
 /// Command to build and sign a payment channel funding transaction.
 /// 
 /// This creates a 2-of-2 multisig output funded by the client's UTXOs.

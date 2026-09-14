@@ -21,24 +21,71 @@ import 'postgres_config.dart';
 /// - Snapshot storage for aggregate state recovery
 /// - Saga state management
 /// - Event streaming for projections
+///
+/// ## Journal order
+///
+/// Journal ids (`BIGSERIAL`) are allocated at INSERT time, but appends to
+/// different persistence ids commit in any order, so the id order is not the
+/// order in which rows become visible. The global streams
+/// ([allEventsWithSequence], [allEvents], [eventsByTag]) therefore read in
+/// *commit-horizon order*: each row carries the id of the transaction that
+/// wrote it (`tx_id`, migration v008), a read only takes rows whose
+/// transaction is older than the oldest transaction still running
+/// (`pg_snapshot_xmin(pg_current_snapshot())`), and rows are ordered by
+/// `(tx_id, id)`. Every transaction that can still commit then sorts after
+/// everything already delivered, so a cursor never passes a row that becomes
+/// visible later. Appends that do not overlap in time are delivered in id
+/// order; overlapping appends may be delivered with a later id first. The
+/// sequence reported with each event is still its journal id: resuming from
+/// an id continues after that row's `(tx_id, id)` position.
+///
+/// A transaction that stays open holds the horizon back, so a writing
+/// transaction left open anywhere on the server (the horizon is
+/// cluster-wide) delays delivery until it ends. Nothing is lost or reordered.
+///
+/// [eventsByPersistenceId] reads one actor's journal by sequence number;
+/// appends to one persistence id are serialised, so no horizon is needed.
+///
+/// Live streams re-read the journal from their own cursor whenever this
+/// instance commits an append and, when [livePollInterval] is set, on that
+/// interval, which also delivers appends made by other processes.
 class PostgresEventStore implements EventStore, EventStream {
   final _log = Logger('PostgresEventStore');
   final PostgresConfig _config;
   Pool? _pool;
-  /// Events published after their transaction commits, with the journal
-  /// position they were stored at. Live subscribers read from this so no
-  /// per-event lookup is needed and ordering matches the journal.
-  final StreamController<_PersistedEvent> _live =
-      StreamController<_PersistedEvent>.broadcast();
   bool _isInitialized = false;
   bool _isClosed = false;
+
+  /// How often an idle live stream re-reads the journal. Appends made by this
+  /// instance wake its live streams at once; this interval bounds how late a
+  /// live stream sees appends made by another process (or another store
+  /// instance). `null` disables polling: other writers' events then arrive
+  /// only with this instance's next append.
+  final Duration? livePollInterval;
+
+  /// Highest `tx_id` this instance has committed an append under.
+  int _maxCommittedTx = -1;
+
+  /// Incremented on every append this instance commits.
+  int _commitGeneration = 0;
+
+  /// Idle live streams, woken by the next append this instance commits and
+  /// by [close].
+  final Set<Completer<void>> _waiters = {};
+
+  /// Shortest and longest wait before a live stream re-reads a journal whose
+  /// horizon has not yet passed an append this instance committed.
+  static const Duration _minHorizonRetry = Duration(milliseconds: 2);
+  static const Duration _maxHorizonRetry = Duration(milliseconds: 200);
 
   /// Test hooks around each of a replay's journal page queries:
   /// [beforeReplayQuery] is awaited just before a page SELECT is issued and
   /// [afterReplayQuery] just after it returns, before any of its rows is
   /// emitted. They let a test park
   /// the replay and persist events at an exact point relative to the query's
-  /// snapshot, which is otherwise a timing race. Never set in production.
+  /// snapshot, which is otherwise a timing race. They run for the replay's
+  /// pages only, not for a live stream's later re-reads. Never set in
+  /// production.
   @visibleForTesting
   Future<void> Function()? beforeReplayQuery;
   @visibleForTesting
@@ -50,9 +97,20 @@ class PostgresEventStore implements EventStore, EventStream {
   @visibleForTesting
   Future<void> Function()? afterVersionCheck;
 
-  /// Rows fetched per journal page by the event streams. Replays read the
-  /// journal in keyset pages (`WHERE id > last ORDER BY id LIMIT n`) so a
-  /// long journal is never loaded in one result set.
+  /// Test hook awaited inside the append transaction after the insert and
+  /// before COMMIT: the rows hold journal ids but are not visible yet.
+  /// Never set in production.
+  @visibleForTesting
+  Future<void> Function(String persistenceId)? beforeCommit;
+
+  /// Test hook awaited after the append transaction committed and before
+  /// this instance wakes its live streams. Never set in production.
+  @visibleForTesting
+  Future<void> Function(String persistenceId)? afterCommit;
+
+  /// Rows fetched per journal page by the event streams. Streams read the
+  /// journal in keyset pages so a long journal is never loaded in one result
+  /// set.
   @visibleForTesting
   int journalPageSize = 500;
 
@@ -60,6 +118,11 @@ class PostgresEventStore implements EventStore, EventStream {
   /// that check a batch is written in one round trip.
   @visibleForTesting
   int insertStatementCount = 0;
+
+  /// Number of journal page queries that have returned (replays and live
+  /// re-reads), so a test can wait until a stream has read the journal.
+  @visibleForTesting
+  int journalReadCount = 0;
 
   /// Advisory lock class for per-persistence-id append locks (two-key form,
   /// so it never collides with the single-key migration lock).
@@ -71,8 +134,11 @@ class PostgresEventStore implements EventStore, EventStream {
 
   /// Creates a new PostgresEventStore with the given configuration.
   ///
-  /// Call [initialize] before using the event store.
-  PostgresEventStore(this._config);
+  /// Call [initialize] before using the event store. See [livePollInterval].
+  PostgresEventStore(
+    this._config, {
+    this.livePollInterval = const Duration(seconds: 1),
+  });
 
   /// Initializes the event store.
   ///
@@ -103,11 +169,9 @@ class PostgresEventStore implements EventStore, EventStream {
     int expectedVersion,
   ) async {
     _ensureInitialized();
-    final persisted = await _append(persistenceId, [event], expectedVersion);
-
-    // Publish AFTER the transaction commits so a subscriber that re-reads the
-    // row (or a projection that checkpoints the id) sees committed data.
-    _publish(persisted.single);
+    final txId = await _append(persistenceId, [event], expectedVersion);
+    await afterCommit?.call(persistenceId);
+    _notifyCommitted(txId);
   }
 
   @override
@@ -118,12 +182,9 @@ class PostgresEventStore implements EventStore, EventStream {
   ) async {
     if (events.isEmpty) return;
     _ensureInitialized();
-    final persisted = await _append(persistenceId, events, expectedVersion);
-
-    // Publish after commit, in journal order
-    for (final p in persisted) {
-      _publish(p);
-    }
+    final txId = await _append(persistenceId, events, expectedVersion);
+    await afterCommit?.call(persistenceId);
+    _notifyCommitted(txId);
   }
 
   /// Appends [events] to [persistenceId]'s journal in one transaction.
@@ -136,7 +197,9 @@ class PostgresEventStore implements EventStore, EventStream {
   /// statement, hence a new snapshot) sees the winner's commit and fails with
   /// [ConcurrencyException]. A unique violation on that constraint (a writer
   /// that bypassed the lock) is reported as [ConcurrencyException] too.
-  Future<List<_PersistedEvent>> _append(
+  ///
+  /// Returns the id of the transaction the events were written under.
+  Future<int> _append(
     String persistenceId,
     List<Event> events,
     int expectedVersion,
@@ -160,19 +223,20 @@ class PostgresEventStore implements EventStore, EventStream {
         }
         await afterVersionCheck?.call();
 
-        final stored = <_PersistedEvent>[];
+        var txId = -1;
         for (var start = 0; start < events.length; start += _maxRowsPerInsert) {
           final end = start + _maxRowsPerInsert < events.length
               ? start + _maxRowsPerInsert
               : events.length;
-          stored.addAll(await _insertEvents(
+          txId = await _insertEvents(
             session,
             persistenceId,
             events.sublist(start, end),
             currentVersion + start + 1,
-          ));
+          );
         }
-        return stored;
+        await beforeCommit?.call(persistenceId);
+        return txId;
       });
     } on ServerException catch (e) {
       if (e.code == '23505' && e.constraintName == 'uk_persistence_sequence') {
@@ -186,8 +250,9 @@ class PostgresEventStore implements EventStore, EventStream {
   }
 
   /// Inserts [events] with one multi-row INSERT, numbering them from
-  /// [firstSequence], and returns them with the journal ids Postgres assigned.
-  Future<List<_PersistedEvent>> _insertEvents(
+  /// [firstSequence], and returns the id of the writing transaction (the
+  /// `tx_id` column's default).
+  Future<int> _insertEvents(
     TxSession session,
     String persistenceId,
     List<Event> events,
@@ -221,28 +286,25 @@ class PostgresEventStore implements EventStore, EventStream {
           persistence_id, sequence_number, event_data, event_type,
           timestamp, metadata_data, event_id, schema_version
         ) VALUES ${rows.join(', ')}
-        RETURNING id, sequence_number
+        RETURNING tx_id
       '''),
       parameters: parameters,
     );
-
-    final idBySequence = {
-      for (final row in result) row[1] as int: row[0] as int,
-    };
-    return [
-      for (var i = 0; i < events.length; i++)
-        _PersistedEvent(
-          events[i],
-          idBySequence[firstSequence + i]!,
-          persistenceId,
-          firstSequence + i,
-        ),
-    ];
+    return result.first[0] as int;
   }
 
-  void _publish(_PersistedEvent persisted) {
-    if (!_live.isClosed) {
-      _live.add(persisted);
+  /// Records a committed append and wakes this instance's live streams.
+  void _notifyCommitted(int txId) {
+    if (txId > _maxCommittedTx) _maxCommittedTx = txId;
+    _commitGeneration++;
+    _wakeWaiters();
+  }
+
+  void _wakeWaiters() {
+    final waiters = _waiters.toList();
+    _waiters.clear();
+    for (final c in waiters) {
+      if (!c.isCompleted) c.complete();
     }
   }
 
@@ -447,7 +509,7 @@ class PostgresEventStore implements EventStore, EventStream {
   @override
   Future<void> close() async {
     _isClosed = true;
-    await _live.close();
+    _wakeWaiters();
     await _pool?.close();
     _pool = null;
     _isInitialized = false;
@@ -466,21 +528,24 @@ class PostgresEventStore implements EventStore, EventStream {
         .map((pair) => pair.$1);
   }
 
+  /// Streams the whole journal in commit-horizon order (see the class
+  /// documentation), each event with its journal id.
+  ///
+  /// [fromSequence] is a journal id this stream delivered before (a
+  /// projection checkpoint): the stream continues after that row's position.
+  /// For an id with no row it continues after the row with the greatest
+  /// lower id; `0` (or less) starts at the beginning.
   @override
   Stream<(Event, int)> allEventsWithSequence({
     int fromSequence = 0,
     bool live = true,
   }) {
     _ensureInitialized();
-    final historical = _journalAfterId(fromSequence);
-    final source = live
-        ? _replayThenLive(
-            from: fromSequence,
-            historical: historical,
-            keyOf: (p) => p.envelopeId,
-          )
-        : historical;
-    return source.map((p) => (p.event, p.envelopeId));
+    return _tail(
+      start: () => _journalPositionOf(fromSequence),
+      readPage: _readJournalPage,
+      live: live,
+    ).map((p) => (p.event, p.envelopeId));
   }
 
   @override
@@ -506,79 +571,97 @@ class PostgresEventStore implements EventStore, EventStream {
     bool live = true,
   }) {
     _ensureInitialized();
-    final historical = _journalForActorAfter(persistenceId, fromSequence);
-    final source = live
-        ? _replayThenLive(
-            from: fromSequence,
-            historical: historical,
-            keyOf: (p) => p.sequenceNumber,
-            accept: (p) => p.persistenceId == persistenceId,
-          )
-        : historical;
-    return source.map((p) => p.event);
+    return _tail(
+      start: () async => (tx: 0, id: fromSequence),
+      readPage: (after, limit) =>
+          _readActorPage(persistenceId, after.id, limit),
+      live: live,
+    ).map((p) => p.event);
   }
 
-  /// Every journal row with `id > fromId`, in id order, read in keyset
-  /// pages of [journalPageSize] rows.
-  Stream<_PersistedEvent> _journalAfterId(int fromId) async* {
-    var lastId = fromId;
-    while (true) {
-      final pageSize = journalPageSize < 1 ? 1 : journalPageSize;
-      await beforeReplayQuery?.call();
-      final page = await _pool!.execute(
-        Sql.named('''
-          SELECT id, persistence_id, sequence_number, event_data, event_type, event_id
+  /// The `(tx_id, id)` position a global stream resumes after, for the
+  /// journal id [fromId].
+  Future<_Position> _journalPositionOf(int fromId) async {
+    const beginning = (tx: -1, id: 0);
+    if (fromId <= 0) return beginning;
+    final result = await _pool!.execute(
+      Sql.named('''
+        SELECT tx_id, id FROM event_envelopes
+        WHERE id <= @fromId
+        ORDER BY id DESC
+        LIMIT 1
+      '''),
+      parameters: {'fromId': fromId},
+    );
+    if (result.isEmpty) return beginning;
+    return (tx: result.first[0] as int, id: result.first[1] as int);
+  }
+
+  /// Up to [limit] journal rows after [after] in `(tx_id, id)` order, taking
+  /// only rows written by transactions older than every transaction still
+  /// running when the statement's snapshot was taken. Those rows are all
+  /// committed (or rolled back) and visible, and any row that commits later
+  /// has a higher `tx_id`, so the cursor never passes a row that appears
+  /// later. The page also reports that horizon.
+  Future<_JournalPage> _readJournalPage(_Position after, int limit) async {
+    final result = await _pool!.execute(
+      Sql.named('''
+        WITH horizon AS (
+          SELECT pg_snapshot_xmin(pg_current_snapshot())::text::bigint AS xmin
+        )
+        SELECT e.id, e.persistence_id, e.sequence_number, e.event_data,
+               e.event_type, e.event_id, e.tx_id, horizon.xmin
+        FROM horizon
+        LEFT JOIN LATERAL (
+          SELECT id, persistence_id, sequence_number, event_data, event_type,
+                 event_id, tx_id
           FROM event_envelopes
-          WHERE id > @lastId
-          ORDER BY id ASC
-          LIMIT @pageSize
-        '''),
-        parameters: {'lastId': lastId, 'pageSize': pageSize},
-      );
-      await afterReplayQuery?.call();
-      for (final row in page) {
-        // Advance past every row, including one that fails to decode.
-        lastId = row[0] as int;
-        final p = _rowToPersisted(row);
-        if (p != null) yield p;
-      }
-      if (page.length < pageSize) break;
-    }
+          WHERE (tx_id, id) > (@afterTx:int8, @afterId:int8)
+            AND tx_id < horizon.xmin
+          ORDER BY tx_id, id
+          LIMIT @limit:int8
+        ) e ON TRUE
+      '''),
+      parameters: {'afterTx': after.tx, 'afterId': after.id, 'limit': limit},
+    );
+    return _JournalPage(
+      [
+        for (final row in result)
+          if (row[0] != null)
+            ((tx: row[6] as int, id: row[0] as int), _rowToPersisted(row)),
+      ],
+      horizon: result.first[7] as int,
+    );
   }
 
-  /// One actor's journal rows with `sequence_number > fromSequence`, in
-  /// order, read in keyset pages of [journalPageSize] rows.
-  Stream<_PersistedEvent> _journalForActorAfter(
+  /// Up to [limit] of one actor's journal rows with a sequence number above
+  /// [afterSequence], in order. Appends to one persistence id are serialised
+  /// on its advisory lock, so sequence number k+1 commits only after k and
+  /// this cursor needs no horizon.
+  Future<_JournalPage> _readActorPage(
     String persistenceId,
-    int fromSequence,
-  ) async* {
-    var lastSequence = fromSequence;
-    while (true) {
-      final pageSize = journalPageSize < 1 ? 1 : journalPageSize;
-      await beforeReplayQuery?.call();
-      final page = await _pool!.execute(
-        Sql.named('''
-          SELECT id, persistence_id, sequence_number, event_data, event_type, event_id
-          FROM event_envelopes
-          WHERE persistence_id = @persistenceId
-            AND sequence_number > @lastSequence
-          ORDER BY sequence_number ASC
-          LIMIT @pageSize
-        '''),
-        parameters: {
-          'persistenceId': persistenceId,
-          'lastSequence': lastSequence,
-          'pageSize': pageSize,
-        },
-      );
-      await afterReplayQuery?.call();
-      for (final row in page) {
-        lastSequence = row[2] as int;
-        final p = _rowToPersisted(row);
-        if (p != null) yield p;
-      }
-      if (page.length < pageSize) break;
-    }
+    int afterSequence,
+    int limit,
+  ) async {
+    final result = await _pool!.execute(
+      Sql.named('''
+        SELECT id, persistence_id, sequence_number, event_data, event_type, event_id
+        FROM event_envelopes
+        WHERE persistence_id = @persistenceId
+          AND sequence_number > @afterSequence
+        ORDER BY sequence_number ASC
+        LIMIT @limit
+      '''),
+      parameters: {
+        'persistenceId': persistenceId,
+        'afterSequence': afterSequence,
+        'limit': limit,
+      },
+    );
+    return _JournalPage([
+      for (final row in result)
+        ((tx: 0, id: row[2] as int), _rowToPersisted(row)),
+    ]);
   }
 
   _PersistedEvent? _rowToPersisted(ResultRow row) {
@@ -604,86 +687,106 @@ class PostgresEventStore implements EventStore, EventStream {
     }
   }
 
-  /// Replays [historical], then continues with live events.
+  /// Reads the journal from a cursor in keyset pages: first the replay (every
+  /// page up to the first short one), then, when [live], the same read again
+  /// whenever there may be something new.
   ///
-  /// The live subscription is opened *before* the replay starts, and live
-  /// events arriving during the replay are buffered and drained afterwards,
-  /// so nothing persisted while the replay runs can be missed. [keyOf] gives
-  /// the monotonic position used to drop anything already seen (an event that
-  /// was both read from the journal and received live). Mirrors
-  /// eventador's IsarEventStore.
-  Stream<_PersistedEvent> _replayThenLive({
-    required int from,
-    required Stream<_PersistedEvent> historical,
-    required int Function(_PersistedEvent) keyOf,
-    bool Function(_PersistedEvent)? accept,
+  /// The cursor is the only state: a row is emitted when the cursor moves
+  /// past it, so every row is delivered once and in the reader's order,
+  /// whether it was committed before the subscription, during the replay or
+  /// later. A live stream re-reads at once if this instance committed an
+  /// append while the last read ran, when this instance commits one, after
+  /// [livePollInterval], and, while an append this instance committed is not
+  /// yet below the horizon, after a short backoff.
+  Stream<_PersistedEvent> _tail({
+    required Future<_Position> Function() start,
+    required Future<_JournalPage> Function(_Position after, int limit) readPage,
+    required bool live,
   }) {
     late final StreamController<_PersistedEvent> controller;
-    StreamSubscription<_PersistedEvent>? liveSub;
-    var lastKey = from;
-    var replaying = true;
     var cancelled = false;
-    final pending = <_PersistedEvent>[];
+    Completer<void>? wake;
 
-    void emit(_PersistedEvent p) {
-      if (cancelled || controller.isClosed) return;
-      if (accept != null && !accept(p)) return;
-      final key = keyOf(p);
-      if (key > lastKey) {
-        lastKey = key;
-        controller.add(p);
-      }
+    bool stopped() => cancelled || _isClosed;
+
+    void wakeUp() {
+      final c = wake;
+      if (c != null && !c.isCompleted) c.complete();
     }
 
-    Future<void> replay() async {
+    // Waits for an append by this instance, close(), cancellation, resume
+    // (while paused) or [timeout], whichever comes first.
+    Future<void> sleep(Duration? timeout) async {
+      if (stopped()) return;
+      final c = Completer<void>();
+      wake = c;
+      _waiters.add(c);
+      final timer = timeout == null ? null : Timer(timeout, wakeUp);
+      await c.future;
+      timer?.cancel();
+      _waiters.remove(c);
+      wake = null;
+    }
+
+    Future<void> run() async {
       try {
-        await for (final p in historical) {
-          if (cancelled) return;
-          emit(p);
+        var cursor = await start();
+        var replaying = true;
+        var retry = _minHorizonRetry;
+        int? replayTarget;
+        while (!stopped()) {
+          final generation = _commitGeneration;
+          final limit = journalPageSize < 1 ? 1 : journalPageSize;
+          if (replaying) await beforeReplayQuery?.call();
+          if (stopped()) break;
+          final page = await readPage(cursor, limit);
+          journalReadCount++;
+          if (replaying) await afterReplayQuery?.call();
+          for (final (position, event) in page.rows) {
+            if (stopped()) break;
+            cursor = position;
+            if (event != null) controller.add(event);
+          }
+          while (controller.isPaused && !stopped()) {
+            await sleep(null);
+          }
+          if (page.rows.length >= limit) continue;
+
+          replaying = false;
+          if (page.rows.isNotEmpty) retry = _minHorizonRetry;
+          // A replay (live: false) still waits for the appends this instance
+          // committed before it reached the end, so a caller reads its own
+          // writes; a live stream waits for every append it knows of.
+          final committed =
+              live ? _maxCommittedTx : (replayTarget ??= _maxCommittedTx);
+          final horizon = page.horizon;
+          final unreadOwnAppend = horizon != null && committed >= horizon;
+          if (!live && !unreadOwnAppend) break;
+          if (live && _commitGeneration != generation) continue;
+          if (unreadOwnAppend) {
+            // An append committed here is not below the horizon yet: an
+            // older transaction is still running.
+            await sleep(retry);
+            final doubled = retry * 2;
+            retry = doubled > _maxHorizonRetry ? _maxHorizonRetry : doubled;
+            continue;
+          }
+          await sleep(livePollInterval);
         }
-        // No await between here and the end of the drain, so no live event
-        // can slip in between the buffered ones and pass-through mode.
-        replaying = false;
-        for (final p in pending) {
-          emit(p);
-        }
-        pending.clear();
       } catch (e, s) {
-        if (!controller.isClosed) {
-          controller.addError(e, s);
-          await controller.close();
-        }
+        if (!stopped() && !controller.isClosed) controller.addError(e, s);
       }
+      if (!controller.isClosed) unawaited(controller.close());
     }
 
     controller = StreamController<_PersistedEvent>(
-      onListen: () {
-        // Subscribe to live events first so nothing persisted during the
-        // replay can be missed.
-        liveSub = _live.stream.listen(
-          (p) {
-            if (replaying) {
-              pending.add(p);
-            } else {
-              emit(p);
-            }
-          },
-          onError: (Object e, StackTrace s) {
-            if (!controller.isClosed) controller.addError(e, s);
-          },
-          onDone: () {
-            if (!controller.isClosed) controller.close();
-          },
-        );
-        replay();
-      },
-      onCancel: () async {
+      onListen: () => unawaited(run()),
+      onResume: wakeUp,
+      onCancel: () {
         cancelled = true;
-        await liveSub?.cancel();
-        liveSub = null;
+        wakeUp();
       },
     );
-
     return controller.stream;
   }
 
@@ -702,6 +805,22 @@ class PostgresEventStore implements EventStore, EventStream {
       }
     }
   }
+}
+
+/// A stream cursor: `(tx_id, id)` for the global journal order, `(0,
+/// sequence_number)` for one actor's journal.
+typedef _Position = ({int tx, int id});
+
+/// One keyset page of journal rows, each with the cursor position it moves
+/// to and its event (`null` for a row that could not be decoded).
+class _JournalPage {
+  final List<(_Position, _PersistedEvent?)> rows;
+
+  /// The visibility horizon of a global read (`pg_snapshot_xmin`); `null`
+  /// for reads that need none.
+  final int? horizon;
+
+  const _JournalPage(this.rows, {this.horizon});
 }
 
 /// An event together with where it landed in the journal.

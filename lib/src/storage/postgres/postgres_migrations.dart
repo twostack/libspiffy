@@ -15,6 +15,7 @@ import 'migrations/v004_channel_columns_and_invoice_outputs.dart';
 import 'migrations/v005_wallet_scoped_keys_and_unique_proofs.dart';
 import 'migrations/v006_list_indexes_and_updated_at.dart';
 import 'migrations/v007_nullable_channel_server_key.dart';
+import 'migrations/v008_journal_tx_id.dart';
 
 /// Base class for database migrations.
 ///
@@ -48,6 +49,7 @@ class PostgresMigrations {
     V005WalletScopedKeysAndUniqueProofs(),
     V006ListIndexesAndUpdatedAt(),
     V007NullableChannelServerKey(),
+    V008JournalTxId(),
   ];
 
   /// Test hook awaited by [migrate] right after it reads the current schema

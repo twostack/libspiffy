@@ -22,6 +22,91 @@ API additions (no behaviour change): `PaymentCoordinatorActor(reservationReplyTi
 `CdnHeaderSyncService.cacheFilePath` (`@visibleForTesting`),
 `PostgresEventStore.beforeReplayQuery` / `afterReplayQuery` (`@visibleForTesting`).
 
+### Audit backlog, wave 1
+
+Fixes for the open P0/P1 audit findings, each with a regression test shown
+to fail on the previous code (report `Test` rows).
+
+- **S-01 (Critical) and S-07**: the payment-channel and invoice read
+  models are typed on the domain `PaymentChannel` and `InvoiceReadModel`
+  across Isar, Postgres and in-memory. The Postgres channel read model
+  previously failed on every channel event with a type cast error.
+  **Postgres migration v004** adds `payment_channels.latest_payment_tx_id`,
+  `settlement_tx_id`, `error_message`, `invoices.outputs_json`, and drops
+  NOT NULL on the funding and address columns of a requested channel.
+- **H3**: change-chain addresses are now signable. `derivePrivateKey`
+  honours `isChange` (m/1/i); the aggregate records each address's chain
+  in state (rebuilt from the journal, older events mean receive).
+- **H4**: key material is written to secure storage before the
+  `WalletCreatedEvent` is persisted; a failed write fails the command.
+- **A-H7**: `ImportActor` no longer sleeps between steps or blocks its
+  mailbox; progress queries are answered and `CancelImportMessage` works
+  mid-import. A 30-transaction import takes milliseconds instead of
+  seconds.
+- **A-H3**: `SPVActor` derives output addresses for the configured
+  network instead of always testnet.
+- **SPV-02, SPV-03**: the header chain is anchored to the network genesis
+  (or a configured checkpoint), validates the proof-of-work limit, the
+  mainnet difficulty rules (legacy retarget, EDA bound, cw-144 DAA verified
+  against real headers) and timestamps, and chooses the tip by cumulative
+  chainwork. Reorganizations are real: heights come from the parent header,
+  the old branch is orphaned, and unconnected batches trigger a
+  locator-based re-request.
+- **SPV-04**: CDN header sync is anchored to the in-code genesis header,
+  validates proof of work by default, and refuses plain http.
+- **SPV-06, SPV-07, SPV-08, SPV-14**: one BRC-74 compliant BUMP builder
+  and merkle walk; library-built BUMPs are byte-identical to ARC's; TSC
+  `*` duplicate markers are honoured; node-RPC single-transaction proofs
+  are correct.
+- New `NetworkParams` (genesis header and hash, proof-of-work limit,
+  compact-target codec) for mainnet, testnet and regtest.
+
+#### Breaking changes in this wave
+
+- `ReadModelStorage`: `storePaymentChannel(PaymentChannel)`,
+  `getPaymentChannel` returns `PaymentChannel?`,
+  `getPaymentChannelsForWallet` returns `List<PaymentChannel>`;
+  `storeInvoice(InvoiceReadModel)`, `getInvoice` returns
+  `InvoiceReadModel?`, `getInvoicesByWallet` / `getInvoicesByStatus`
+  return `List<InvoiceReadModel>`, `updateInvoiceStatus` takes
+  `InvoiceStatus`; new required `listInvoices({walletId, status})`.
+  External implementers must update. `InvoiceEntity.toDomain()` returns
+  `InvoiceReadModel`.
+- `ListInvoicesMessage` with no filters returns all invoices (previously
+  only pending); `walletId` and `filterStatus` now combine.
+- `BlockHeaderChain.initialize()` seeds the genesis header into an empty
+  store (`bestHeight` 0, `chainTip` non-null on a fresh install) and throws
+  `StateError` on a non-empty store that is not anchored to the network
+  genesis (an old store that starts at height 1 and links to genesis is
+  back-filled). `validateAndStoreHeader` rejects headers whose parent is
+  unknown or whose given height disagrees with the parent;
+  `getHeaderByHash` / `getHeaderByHeight` return active-chain headers only;
+  `handleReorganization` returns `HeaderAcceptResult?`.
+- `CdnHeaderSyncConfig.validateProofOfWork` defaults to `true`; new
+  `allowInsecureHttp` (default `false`), an `http://` base URL makes
+  `CdnHeaderSyncService` throw `ArgumentError`. A first chunk that does
+  not start at the network genesis is rejected.
+- `BUMP.computeMerkleRoot` throws `BUMPException` and rejects the old
+  non-standard layouts; every BUMP builder emits different (compliant)
+  bytes; `convertBumpToBrc71Path` returns display-order hex with `*`;
+  stored `MerkleProof.merkleProof` is `[rawBumpHex]`. Journaled proofs
+  produced by the old builder fail the strict walk on replay and are not
+  stored (re-import fixes).
+- `CryptoService.derivePrivateKey(isChange: true)` returns the change-chain
+  key (it previously returned the receive key).
+- A duplicate `CreateWalletCommand` replies
+  `WalletCreatedResponse(success: false)` instead of being dropped; an
+  unacknowledged import step fails the import instead of continuing.
+- `CancelImportMessage` and `ImportProgressQuery` implement `Message`;
+  `ImportProgressMessage` extends `LocalMessage` with additional fields.
+
+Additive API: `BlockHeaderChain({params, anchor, clock})`, `acceptHeader`, `buildBlockLocator`, `BlockHeaderAnchor`, `HeaderAcceptResult`, `DifficultyRules`; `SignTransactionCommand.isChangeFlags`,
+`SignMultisigTransactionCommand.isChange`,
+`BuildFundingTransactionCommand.isChange`, `SPVActor(networkType:)`,
+`ImportActor(walletProjection:, ackTimeout:)`, `ImportCancelResponse`,
+`BUMP.fromMerklePath` / `fromTscProof` / `merge` / `fromHex` / `toHex`,
+`CdnHeaderSyncConfig.checkBaseUrl()`, `CdnHeaderSyncService.networkParams`.
+
 ## 2.0.0
 
 Dependency upgrade and audit release. libspiffy now tracks **dactor 1.3.0**,

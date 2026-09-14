@@ -1045,8 +1045,10 @@ class SPVActor extends Actor {
   /// each wallet holding the transaction, which journals
   /// TransactionConfirmationRevertedEvent: the transaction returns to
   /// pending and its UTXOs lose their confirmations. The proof is marked
-  /// orphaned, here and again (idempotently) by the projection of that event;
-  /// it is kept, never deleted (bead mny). A proof on an orphaned block whose
+  /// orphaned, here and again (idempotently) by the projection of that event
+  /// (rejected instead when it is a pendingHeader proof the active header
+  /// contradicts: it never verified, bead azl); it is kept, never deleted
+  /// (bead mny). A proof on an orphaned block whose
   /// transaction no wallet holds as confirmed is marked orphaned too. ARCActor
   /// is then told to poll the transactions again; a new proof it obtains is
   /// verified against the active chain before the transaction is confirmed
@@ -1092,7 +1094,14 @@ class SPVActor extends Actor {
           }
           reason = 'reorganization at height ${msg.forkHeight}: ${outcome.status.name}'
               '${outcome.detail == null ? '' : ' (${outcome.detail})'}';
-          await _markOrphaned(proof);
+          // A proof that never named a block (pendingHeader) and that the
+          // active header contradicts was never verified: rejected (azl).
+          if (proof.blockHash == null && outcome.status != ProofHeaderStatus.headerUnknown) {
+            await _markRejected(proof);
+          } else {
+            await _markOrphaned(proof);
+          }
+          _rejectionsHandled.add(entry.key);
         }
         _revertConfirmation(entry.key, entry.value, proof, reason);
         reverted.add(entry.key);
@@ -1119,13 +1128,15 @@ class SPVActor extends Actor {
   /// Proofs stored before their block header was known have the status
   /// [MerkleProofStatus.pendingHeader] (WalletProjection). Once headers up to
   /// [upToHeight] are stored they are checked (zvj part 1): a match marks the
-  /// proof verified with the real block hash; a mismatch marks it orphaned
-  /// (kept, bead mny) and reverts the confirmation like a reorganization
-  /// does. Proofs whose header is still unknown stay as they are.
+  /// proof verified with the real block hash; a mismatch marks it rejected
+  /// (kept, beads mny and azl; a pendingHeader row that still names a block,
+  /// which projections before azl could leave, is marked orphaned instead)
+  /// and reverts the confirmation like a reorganization does. Proofs whose
+  /// header is still unknown stay as they are. Then confirmations whose only
+  /// proof is rejected are taken back ([_revertRejectedConfirmations]).
   Future<void> _recheckUnverifiedProofs(int upToHeight) async {
     try {
       final unverified = await _storage.getMerkleProofsByStatus(MerkleProofStatus.pendingHeader);
-      if (unverified.isEmpty) return;
 
       final reverted = <String>[];
       for (final proof in unverified) {
@@ -1133,7 +1144,11 @@ class SPVActor extends Actor {
         final outcome = await _recheckProof(proof);
         if (outcome == null || outcome.status == ProofHeaderStatus.headerUnknown) continue;
 
-        await _markOrphaned(proof);
+        if (proof.blockHash == null) {
+          await _markRejected(proof);
+        } else {
+          await _markOrphaned(proof);
+        }
 
         final wallets = [
           for (final tx in await _storage.getTransactionsByStatus(TransactionStatus.confirmed))
@@ -1142,6 +1157,7 @@ class SPVActor extends Actor {
         _revertConfirmation(proof.txid, wallets, proof,
             'proof imported before its block header does not match header at height '
             '${proof.blockHeight}: ${outcome.status.name}${outcome.detail == null ? '' : ' (${outcome.detail})'}');
+        _rejectionsHandled.add(proof.txid);
         reverted.add(proof.txid);
       }
       if (reverted.isNotEmpty) {
@@ -1152,6 +1168,76 @@ class SPVActor extends Actor {
     } catch (e, st) {
       _log.warning('Failed to re-check unverified proofs: $e', e, st);
     }
+    await _revertRejectedConfirmations();
+  }
+
+  /// Txids whose rejected proofs [_revertRejectedConfirmations] has dealt
+  /// with in this actor's lifetime (a revert was sent, or the transaction has
+  /// a current proof), so later header notifications do not revert the same
+  /// confirmation again before the projection has applied the first revert.
+  /// After a restart the read model shows those transactions unconfirmed.
+  final Set<String> _rejectionsHandled = {};
+
+  /// A transaction held as confirmed whose proof is
+  /// [MerkleProofStatus.rejected] and which has no current proof is not
+  /// confirmed (bead azl). WalletProjection stores such a proof when the
+  /// header at its height contradicts it (a replay after that header
+  /// changed, or a header change between the live check and the event).
+  /// Each wallet holding it as confirmed has the confirmation reverted, as
+  /// for a pendingHeader proof that fails its header, and ARCActor is asked
+  /// to poll for a real proof.
+  Future<void> _revertRejectedConfirmations() async {
+    try {
+      final rejected = <String, MerkleProof>{
+        for (final proof in await _storage.getMerkleProofsByStatus(MerkleProofStatus.rejected))
+          if (!_rejectionsHandled.contains(proof.txid)) proof.txid: proof,
+      };
+      if (rejected.isEmpty) return;
+
+      for (final txid in (await _storage.getMerkleProofsBatch(rejected.keys.toList())).keys) {
+        rejected.remove(txid); // a current proof backs the transaction
+        _rejectionsHandled.add(txid);
+      }
+      // A rejected proof of a received ancestor belongs to no wallet transaction.
+      final held = (await _storage.getTransactionsBatch(rejected.keys.toList())).keys.toSet();
+      rejected.removeWhere((txid, _) => !held.contains(txid));
+      if (rejected.isEmpty) return;
+
+      final wallets = <String, List<String>>{};
+      for (final tx in await _storage.getTransactionsByStatus(TransactionStatus.confirmed)) {
+        final walletId = tx.walletId;
+        if (rejected.containsKey(tx.txid) && walletId != null && walletId.isNotEmpty) {
+          wallets.putIfAbsent(tx.txid, () => []).add(walletId);
+        }
+      }
+      if (wallets.isEmpty) return;
+
+      for (final entry in wallets.entries) {
+        final proof = rejected[entry.key]!;
+        _revertConfirmation(entry.key, entry.value, proof,
+            'its only proof does not match the block header at height ${proof.blockHeight} (rejected)');
+        _rejectionsHandled.add(entry.key);
+      }
+      _log.severe('${wallets.length} confirmation(s) rested only on rejected proofs; reverted: ${wallets.keys.toList()}');
+      _arcActor?.tell(TransactionConfirmationsRevertedMessage(wallets.keys.toList()));
+    } catch (e, st) {
+      _log.warning('Failed to revert confirmations resting on rejected proofs: $e', e, st);
+    }
+  }
+
+  /// Mark the pendingHeader [proof] (no block hash) rejected: the header at
+  /// its height contradicts it (bead azl). Its own row is updated in place
+  /// and a current proof of the transaction is left alone.
+  Future<void> _markRejected(MerkleProof proof) async {
+    await _storage.storeMerkleProof(proof.txid, MerkleProof(
+      txid: proof.txid,
+      blockHash: null,
+      blockHeight: proof.blockHeight,
+      position: proof.position,
+      merkleProof: proof.merkleProof,
+      createdAt: proof.createdAt,
+      status: MerkleProofStatus.rejected,
+    ));
   }
 
   /// Mark [proof] orphaned if it is still the current proof of its

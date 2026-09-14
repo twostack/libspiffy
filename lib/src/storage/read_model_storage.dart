@@ -390,27 +390,28 @@ abstract class ReadModelStorage {
   /// Proofs are never deleted (audit bead libspiffy-mny). A transaction has
   /// one row per block its proofs name, plus rows without a block hash for
   /// proofs whose header was not known (told apart by their `merkleProof`).
-  /// At most one row per txid is not [MerkleProofStatus.orphaned]: the
-  /// transaction's current proof.
+  /// At most one row per txid is current ([MerkleProof.isCurrent]: verified
+  /// or pendingHeader): the transaction's current proof.
   ///
   /// Storing [proof]:
   /// * updates the row with the same (txid, block hash); else the row with
   ///   no block hash and the same `merkleProof` (a
   ///   [MerkleProofStatus.pendingHeader] proof whose header arrived); else,
   ///   when [proof] has no block hash, a row with the same `merkleProof`
-  ///   (keeping that row's block hash); otherwise it adds a row;
-  /// * when [proof] is not orphaned, marks every other non-orphaned row of
-  ///   [txid] orphaned (the transaction was mined again in another block):
-  ///   [proof] becomes the current proof;
-  /// * when [proof] is orphaned, leaves the current proof alone.
+  ///   (keeping that row's block hash); otherwise it adds a row. A
+  ///   [MerkleProofStatus.rejected] proof is stored without a block hash and
+  ///   only ever updates a row that has none (bead libspiffy-azl);
+  /// * when [proof] is current, marks every other current row of [txid]
+  ///   orphaned (the transaction was mined again in another block): [proof]
+  ///   becomes the current proof;
+  /// * when [proof] is orphaned or rejected, leaves the current proof alone.
   ///
   /// A row keeps its first `createdAt`; `statusChangedAt` moves when its
   /// status changes ([MerkleProof.statusChangedAt], default now).
   Future<void> storeMerkleProof(String txid, MerkleProof proof);
 
-  /// Mark the current (non-orphaned) proof of [txid] orphaned: its block left
-  /// the active chain, or its root does not match the header at its height
-  /// (audit 3b0, bead libspiffy-mny). The row is kept and stays readable
+  /// Mark the current proof of [txid] orphaned: its block left the active
+  /// chain (audit 3b0, bead libspiffy-mny). The row is kept and stays readable
   /// through [getMerkleProofHistory]; [getMerkleProof] no longer returns it.
   ///
   /// With [blockHash] the proof is marked only while it names that block (a
@@ -427,9 +428,9 @@ abstract class ReadModelStorage {
     DateTime? at,
   });
 
-  /// The current proof of [txid]: its one row that is not
-  /// [MerkleProofStatus.orphaned] (so [MerkleProofStatus.verified] or
-  /// [MerkleProofStatus.pendingHeader]), or null.
+  /// The current proof of [txid]: its one [MerkleProof.isCurrent] row
+  /// ([MerkleProofStatus.verified] or [MerkleProofStatus.pendingHeader]), or
+  /// null. Orphaned and rejected rows are never returned.
   ///
   /// Parameters:
   /// - [txid]: Transaction ID
@@ -438,7 +439,8 @@ abstract class ReadModelStorage {
   /// Batch get the current proofs by txid list (see [getMerkleProof]).
   ///
   /// Returns a map of txid → proof for all txids that have a current proof.
-  /// Orphaned proofs are never returned, so BEEFs are never built from them.
+  /// Orphaned and rejected proofs are never returned, so BEEFs are never
+  /// built from them.
   /// Default implementation loops over single-item getMerkleProof.
   Future<Map<String, MerkleProof>> getMerkleProofsBatch(List<String> txids) async {
     final result = <String, MerkleProof>{};
@@ -449,15 +451,15 @@ abstract class ReadModelStorage {
     return result;
   }
 
-  /// Every proof row stored for [txid], orphaned ones included, oldest
-  /// first.
+  /// Every proof row stored for [txid], orphaned and rejected ones included,
+  /// oldest first.
   Future<List<MerkleProof>> getMerkleProofHistory(String txid);
 
   /// Every proof row with [status] (for example the
   /// [MerkleProofStatus.pendingHeader] proofs to check once headers arrive).
   Future<List<MerkleProof>> getMerkleProofsByStatus(MerkleProofStatus status);
 
-  /// The current (non-orphaned) proofs that name [blockHash].
+  /// The current ([MerkleProof.isCurrent]) proofs that name [blockHash].
   ///
   /// Parameters:
   /// - [blockHash]: Block hash as hex string
@@ -615,24 +617,46 @@ abstract class ReadModelStorage {
 }
 
 /// Where a stored [MerkleProof] stands against the local header chain
-/// (audit bead libspiffy-mny).
+/// (audit beads libspiffy-mny, libspiffy-azl).
+///
+/// Only [verified] and [pendingHeader] proofs are current
+/// ([MerkleProof.isCurrent]): at most one per transaction, returned by
+/// `getMerkleProof`, put in BEEFs and backing a confirmation. [orphaned] and
+/// [rejected] rows are kept for the record (proofs are never deleted).
+///
+/// Transitions: a proof is stored [verified] when its root matches the
+/// active header at its height, [pendingHeader] when no header is known
+/// there, [rejected] when the header there contradicts it. A
+/// [pendingHeader] proof becomes [verified] or [rejected] when its header
+/// arrives (SPVActor). A [verified] proof becomes [orphaned] when its block
+/// leaves the active chain. A later proof of the transaction that verifies
+/// (the same one against a new active header, or another one) becomes
+/// current whatever the earlier rows say.
 enum MerkleProofStatus {
   /// Its root matches the header at its height on the active chain.
   verified,
 
   /// Not yet matched against a header: no header was known at its height
-  /// when it was stored (or, from WalletProjection, the stored header did not
-  /// match and SPVActor has not decided yet). SPVActor checks it when
-  /// headers arrive; it then becomes [verified] or [orphaned] (and the
-  /// confirmation is taken back). Until then it is the transaction's current
-  /// proof: `getMerkleProof` returns it and outgoing BEEFs carry it (the
-  /// receiver verifies it against its own headers).
+  /// when it was stored. SPVActor checks it when headers arrive; it then
+  /// becomes [verified] or [rejected] (and the confirmation is taken back).
+  /// Until then it is the transaction's current proof: `getMerkleProof`
+  /// returns it and outgoing BEEFs carry it (the receiver verifies it
+  /// against its own headers; SPV lets a wallet sign and hand on a
+  /// transaction before its own headers have caught up).
   pendingHeader,
 
-  /// Its block left the active chain, or its root does not match the header
-  /// at its height. Kept for the record; never a transaction's current proof
-  /// and never put in a BEEF.
+  /// It was verified in a block that has left the active chain (a
+  /// reorganization). Kept for the record; never a transaction's current
+  /// proof and never put in a BEEF.
   orphaned,
+
+  /// The active header at its height contradicts it: the root it computes is
+  /// not that header's merkle root, or it cannot be walked to a root at all.
+  /// It was never verified on our chain (a forged proof, or one for a block
+  /// we do not have), so it has no block hash. Kept for the record; never a
+  /// transaction's current proof, never put in a BEEF, never backing a
+  /// confirmation, and it never displaces a current proof.
+  rejected,
 }
 
 /// Merkle proof data for SPV validation
@@ -671,8 +695,10 @@ class MerkleProof {
   /// since). Backends read it as null.
   static const String legacyPendingBlockHash = 'pending';
 
-  /// Whether this proof is not orphaned.
-  bool get isCurrent => status != MerkleProofStatus.orphaned;
+  /// Whether this proof can be a transaction's current proof:
+  /// [MerkleProofStatus.verified] or [MerkleProofStatus.pendingHeader], not
+  /// [MerkleProofStatus.orphaned] or [MerkleProofStatus.rejected].
+  bool get isCurrent => status == MerkleProofStatus.verified || status == MerkleProofStatus.pendingHeader;
 
   /// A copy with the given fields replaced ([blockHash] cannot be cleared).
   MerkleProof copyWith({

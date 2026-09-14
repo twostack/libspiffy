@@ -1343,7 +1343,8 @@ class PostgresWalletStorage implements ReadModelStorage {
       'block_hash, txid, merkle_proof_json, position, block_height, created_at, status, status_changed_at';
 
   /// Rows are only added or updated (bead mny; v009 enforces one row per
-  /// (txid, block hash) and one non-orphaned row per txid). The rows of
+  /// (txid, block hash) and v012 one current (verified or pendingHeader) row
+  /// per txid). The rows of
   /// [txid] are read and written in one transaction holding a per-txid
   /// advisory lock; see [ReadModelStorage.storeMerkleProof] and
   /// `planMerkleProofStore`.
@@ -1455,12 +1456,12 @@ class PostgresWalletStorage implements ReadModelStorage {
   Future<MerkleProof?> getMerkleProof(String txid) async {
     _ensureInitialized();
 
-    // uk_merkle_proofs_txid_current: at most one such row.
+    // uk_merkle_proofs_txid_current (v012 predicate): at most one such row.
     final result = await _pool!.execute(
       Sql.named('''
         SELECT $_merkleProofColumns
         FROM merkle_proofs
-        WHERE txid = @txid AND status <> 'orphaned'
+        WHERE txid = @txid AND status IN ('verified', 'pendingHeader')
         LIMIT 1
       '''),
       parameters: {'txid': txid},
@@ -1518,7 +1519,7 @@ class PostgresWalletStorage implements ReadModelStorage {
       Sql.named('''
         SELECT $_merkleProofColumns
         FROM merkle_proofs
-        WHERE txid IN (${placeholders.join(', ')}) AND status <> 'orphaned'
+        WHERE txid IN (${placeholders.join(', ')}) AND status IN ('verified', 'pendingHeader')
       '''),
       parameters: params,
     );
@@ -1539,7 +1540,7 @@ class PostgresWalletStorage implements ReadModelStorage {
       Sql.named('''
         SELECT $_merkleProofColumns
         FROM merkle_proofs
-        WHERE block_hash = @blockHash AND status <> 'orphaned'
+        WHERE block_hash = @blockHash AND status IN ('verified', 'pendingHeader')
       '''),
       parameters: {'blockHash': blockHash},
     );

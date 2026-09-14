@@ -973,13 +973,48 @@ class WalletProjection extends Projection<void> {
 
     final dropped = event.merkleProof;
     if (dropped != null) {
-      await _storage.markMerkleProofOrphaned(
+      final marked = await _storage.markMerkleProofOrphaned(
         event.txid,
         blockHash: event.blockHash,
         onlyIfMerkleProof: dropped,
         at: event.timestamp,
       );
+      final blockHash = event.blockHash;
+      if (!marked && blockHash != null) {
+        await _orphanRejectedRevertedProof(event.txid, blockHash, dropped, event.timestamp);
+      }
     }
+  }
+
+  /// A rebuild from the journal meets a proof that was verified in [blockHash]
+  /// and then reverted against today's header chain, where that block is
+  /// gone: [_storeContradictedProof] stored it rejected. The revert names the
+  /// block the proof was verified in, so the row becomes what the live read
+  /// model holds: orphaned, in that block (bead azl). A revert without a block
+  /// hash (a pendingHeader proof that never verified) leaves it rejected.
+  /// Only a rejected row with no block hash and the same proof is changed,
+  /// and only while no row of [txid] names [blockHash].
+  Future<void> _orphanRejectedRevertedProof(
+      String txid, String blockHash, List<String> merkleProof, DateTime at) async {
+    final rows = await _storage.getMerkleProofHistory(txid);
+    if (rows.any((r) => r.blockHash == blockHash)) return;
+    final rejected = rows
+        .where((r) =>
+            r.status == MerkleProofStatus.rejected &&
+            r.blockHash == null &&
+            MerkleProof.sameContent(r.merkleProof, merkleProof))
+        .firstOrNull;
+    if (rejected == null) return;
+    await _storage.storeMerkleProof(txid, MerkleProof(
+      txid: txid,
+      blockHash: blockHash,
+      blockHeight: rejected.blockHeight,
+      position: rejected.position,
+      merkleProof: rejected.merkleProof,
+      createdAt: rejected.createdAt,
+      status: MerkleProofStatus.orphaned,
+      statusChangedAt: at,
+    ));
   }
 
   Future<void> _handleTransactionStatusUpdated(TransactionStatusUpdatedEvent event) async {
@@ -1140,33 +1175,24 @@ class WalletProjection extends Projection<void> {
       final txPosition = txidLeaf.offset;
       final siblingHashes = <String>[bumpHex];
 
-      // The proof's status comes from the stored headers (bead mny):
+      // The proof's status comes from the stored headers (beads mny, azl):
       // verified (with that block's hash) when its root matches the active
-      // header at its height, otherwise pendingHeader (no block hash), which
-      // SPVActor checks when headers arrive and then marks verified, or
-      // orphaned with the confirmation reverted (zvj). The projection itself
-      // never takes a confirmation back. Live imports and received BEEFs
-      // reject a proof that contradicts a stored header before this event;
-      // a replay after its block left the active chain can still meet one.
-      // Such a proof never displaces a different, verified current proof
-      // (ARC's, journaled by a later confirmation, after the
-      // reorganization): it is kept as orphaned.
+      // header at its height; pendingHeader (no block hash) when no header
+      // is known there, which SPVActor checks when headers arrive (zvj).
+      // A proof the header at its height contradicts is not pending: see
+      // [_storeContradictedProof]. The projection itself never takes a
+      // confirmation back; SPVActor does, for a confirmation whose only proof
+      // is rejected.
       final check = await checkBumpAgainstHeaders(
         txid: txid,
         bump: bump,
         headerAt: _storage.getBlockHeaderByHeight,
       );
-      var status = check.isVerified ? MerkleProofStatus.verified : MerkleProofStatus.pendingHeader;
       if (check.status == ProofHeaderStatus.rootMismatch || check.status == ProofHeaderStatus.malformed) {
-        final current = await _storage.getMerkleProof(txid);
-        if (current != null &&
-            current.status == MerkleProofStatus.verified &&
-            !MerkleProof.sameContent(current.merkleProof, siblingHashes)) {
-          status = MerkleProofStatus.orphaned;
-        }
-        _log.warning('Merkle proof for $txid does not match the active header chain ($check); '
-            'stored as ${status.name}');
+        await _storeContradictedProof(txid, bump.blockHeight, txPosition, siblingHashes, check);
+        return;
       }
+      final status = check.isVerified ? MerkleProofStatus.verified : MerkleProofStatus.pendingHeader;
 
       // Create MerkleProof object
       final merkleProof = MerkleProof(
@@ -1187,6 +1213,52 @@ class WalletProjection extends Projection<void> {
     }
   }
   
+  /// A proof the active header at its height contradicts (bead azl). It is
+  /// never current, never in a BEEF and never displaces the current proof.
+  ///
+  /// Live imports, received BEEFs and ARC confirmations check a proof
+  /// against the stored headers before journaling it, so this is met on a
+  /// replay after the header at that height changed, or when the header
+  /// changed between the check and this event:
+  /// * no row holds this proof: it is stored rejected (no block hash);
+  /// * this proof is the current proof with a block hash (it was verified
+  ///   there): that block left the active chain, so it is marked orphaned,
+  ///   as SPVActor does on a reorganization;
+  /// * this proof is the current proof without a block hash
+  ///   (pendingHeader): it becomes rejected;
+  /// * it is already orphaned or rejected: nothing changes (replay no-op).
+  Future<void> _storeContradictedProof(
+    String txid,
+    int blockHeight,
+    int position,
+    List<String> merkleProof,
+    ProofHeaderCheck check,
+  ) async {
+    final same = [
+      for (final row in await _storage.getMerkleProofHistory(txid))
+        if (MerkleProof.sameContent(row.merkleProof, merkleProof)) row,
+    ];
+    final current = same.where((r) => r.isCurrent).firstOrNull;
+    final String outcome;
+    if (same.isEmpty || (current != null && current.blockHash == null)) {
+      await _storage.storeMerkleProof(txid, MerkleProof(
+        txid: txid,
+        blockHash: null,
+        blockHeight: blockHeight,
+        position: position,
+        merkleProof: merkleProof,
+        status: MerkleProofStatus.rejected,
+      ));
+      outcome = 'stored as rejected';
+    } else if (current != null) {
+      await _storage.markMerkleProofOrphaned(txid, blockHash: current.blockHash, onlyIfMerkleProof: merkleProof);
+      outcome = 'its block left the active chain: marked orphaned';
+    } else {
+      outcome = 'already ${same.last.status.name}';
+    }
+    _log.warning('Merkle proof for $txid does not match the active header chain ($check); $outcome');
+  }
+
   @override
   Future<void> reset() async {
     // Stateless projection - no in-memory state to clear.

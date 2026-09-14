@@ -222,6 +222,117 @@ void defineMerkleProofRetentionContract(
           isNot(contains(txid)));
     });
 
+    // azl (libspiffy-azl): a proof the header at its height contradicts was
+    // stored as pendingHeader and stayed the current proof (BEEFs used it).
+    Future<List<(String?, MerkleProofStatus, String)>> shape(ReadModelStorage s, String txid) async =>
+        [for (final p in await s.getMerkleProofHistory(txid)) (p.blockHash, p.status, p.merkleProof.join())];
+
+    test('azl: a rejected proof is kept and found by status, and is never the current proof', () async {
+      final s = storage();
+      final u = unique();
+      final txid = contractHex64('ret-rejected-$u');
+      final bump = bumpHex('rejected-$u');
+
+      await s.storeMerkleProof(txid, proof(txid, null, bump, status: MerkleProofStatus.rejected));
+
+      expect(await s.getMerkleProof(txid), isNull, reason: 'a rejected proof is not the current proof');
+      expect(await s.getMerkleProofsBatch([txid]), isEmpty, reason: 'BEEFs are built from this batch');
+      expect(await shape(s, txid), [(null, MerkleProofStatus.rejected, bump)]);
+      expect([for (final p in await s.getMerkleProofsByStatus(MerkleProofStatus.rejected)) p.txid], contains(txid));
+      expect([for (final p in await s.getMerkleProofsByStatus(MerkleProofStatus.pendingHeader)) p.txid],
+          isNot(contains(txid)));
+      expect((await s.getMerkleProofHistory(txid)).single.isCurrent, isFalse);
+
+      // Stored again (a replay): the same row, no second one.
+      await s.storeMerkleProof(txid, proof(txid, null, bump, status: MerkleProofStatus.rejected));
+      expect(await shape(s, txid), [(null, MerkleProofStatus.rejected, bump)]);
+      // Marking orphaned only ever touches a current proof.
+      expect(await s.markMerkleProofOrphaned(txid, onlyIfMerkleProof: [bump]), isFalse);
+    });
+
+    test('azl: a rejected proof never displaces the current proof, even one naming the same block', () async {
+      final s = storage();
+      final u = unique();
+      final txid = contractHex64('ret-rejected-keep-$u');
+      final block = contractHex64('ret-rejected-keep-block-$u');
+      final good = bumpHex('rejected-keep-good-$u');
+      final forged = bumpHex('rejected-keep-forged-$u');
+      final other = bumpHex('rejected-keep-other-$u');
+
+      await s.storeMerkleProof(txid, proof(txid, block, good));
+      await s.storeMerkleProof(txid, proof(txid, null, other, status: MerkleProofStatus.rejected));
+      // A rejected proof claiming the verified proof's block is stored
+      // without a block hash: it cannot overwrite that block's row.
+      await s.storeMerkleProof(txid, proof(txid, block, forged, status: MerkleProofStatus.rejected));
+
+      final current = (await s.getMerkleProof(txid))!;
+      expect((current.blockHash, current.status, current.merkleProof.join()), (block, MerkleProofStatus.verified, good));
+      expect((await s.getMerkleProofsBatch([txid]))[txid]!.merkleProof, [good]);
+      expect([for (final p in await s.getMerkleProofsForBlock(block)) p.merkleProof.join()], [good]);
+      expect(await shape(s, txid), [
+        (block, MerkleProofStatus.verified, good),
+        (null, MerkleProofStatus.rejected, other),
+        (null, MerkleProofStatus.rejected, forged),
+      ]);
+    });
+
+    test('azl: a pendingHeader proof whose header contradicts it becomes rejected in place', () async {
+      final s = storage();
+      final u = unique();
+      final txid = contractHex64('ret-pending-rejected-$u');
+      final bump = bumpHex('pending-rejected-$u');
+      await s.storeMerkleProof(txid, proof(txid, null, bump));
+      expect((await s.getMerkleProof(txid))!.status, MerkleProofStatus.pendingHeader);
+
+      final at = DateTime.utc(2026, 9, 15, 3);
+      await s.storeMerkleProof(txid, MerkleProof(
+          txid: txid,
+          blockHash: null,
+          blockHeight: 10,
+          merkleProof: [bump],
+          position: 1,
+          status: MerkleProofStatus.rejected,
+          statusChangedAt: at));
+
+      expect(await s.getMerkleProof(txid), isNull);
+      final history = await s.getMerkleProofHistory(txid);
+      expect(await shape(s, txid), [(null, MerkleProofStatus.rejected, bump)], reason: 'the same row, not a copy');
+      expect(history.single.statusChangedAt!.isAtSameMomentAs(at), isTrue);
+      expect([for (final p in await s.getMerkleProofsByStatus(MerkleProofStatus.pendingHeader)) p.txid],
+          isNot(contains(txid)));
+    });
+
+    test('azl: a later proof that verifies becomes the current proof; a rejected row stays rejected', () async {
+      final s = storage();
+      final u = unique();
+      // The same proof, verified once the active header at its height matches.
+      final sameTx = contractHex64('ret-rejected-same-$u');
+      final block = contractHex64('ret-rejected-same-block-$u');
+      final bump = bumpHex('rejected-same-$u');
+      await s.storeMerkleProof(sameTx, proof(sameTx, null, bump, status: MerkleProofStatus.rejected));
+      await s.storeMerkleProof(sameTx, proof(sameTx, block, bump, status: MerkleProofStatus.verified));
+      expect((await s.getMerkleProof(sameTx))!.blockHash, block);
+      expect(await shape(s, sameTx), [(block, MerkleProofStatus.verified, bump)]);
+
+      // Another proof (ARC's, for the block the transaction is really in).
+      final otherTx = contractHex64('ret-rejected-other-$u');
+      final otherBlock = contractHex64('ret-rejected-other-block-$u');
+      final bad = bumpHex('rejected-other-bad-$u');
+      final real = bumpHex('rejected-other-real-$u');
+      final pending = bumpHex('rejected-other-pending-$u');
+      await s.storeMerkleProof(otherTx, proof(otherTx, null, bad, status: MerkleProofStatus.rejected));
+      await s.storeMerkleProof(otherTx, proof(otherTx, null, pending, height: 12));
+      expect((await s.getMerkleProof(otherTx))!.merkleProof, [pending], reason: 'a pendingHeader proof is current');
+      await s.storeMerkleProof(otherTx, proof(otherTx, otherBlock, real, height: 11));
+
+      expect((await s.getMerkleProofsBatch([otherTx]))[otherTx]!.merkleProof, [real]);
+      expect(await shape(s, otherTx), [
+        (null, MerkleProofStatus.rejected, bad),
+        (null, MerkleProofStatus.orphaned, pending),
+        (otherBlock, MerkleProofStatus.verified, real),
+      ], reason: 'the rejected row is kept as rejected, not turned into orphaned');
+    });
+
     test('mny: getMerkleProofsBatch never returns an orphaned proof', () async {
       final s = storage();
       final u = unique();

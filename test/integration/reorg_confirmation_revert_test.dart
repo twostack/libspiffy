@@ -10,9 +10,13 @@
 /// height was synced is stored with an unverified proof (block hash
 /// 'pending') and was never checked once the header arrived.
 ///
-/// mny (libspiffy-mny): proofs are never deleted. The orphaned or mismatching
-/// proof stays stored with the status orphaned; a proof stored before its
-/// header has the status pendingHeader (no placeholder block hash).
+/// mny (libspiffy-mny): proofs are never deleted. The orphaned proof stays
+/// stored with the status orphaned; a proof stored before its header has the
+/// status pendingHeader (no placeholder block hash).
+///
+/// azl (libspiffy-azl): a proof the header at its height contradicts is
+/// rejected (kept, never current) and the confirmation it backed is taken
+/// back.
 ///
 /// The transaction is the real testnet fixture transaction; each test puts
 /// it in a regtest block of its own (a two-leaf merkle tree) so that the
@@ -318,10 +322,75 @@ void main() {
           'the mismatching proof is no longer the current proof');
       final history = await storage().getMerkleProofHistory(kFixtureTxid);
       expect([for (final p in history) (p.merkleProof.join(), p.status)], [
-        (bump.toHex(), MerkleProofStatus.orphaned)
-      ], reason: 'the mismatching proof is kept as orphaned (mny)');
+        (bump.toHex(), MerkleProofStatus.rejected)
+      ], reason: 'the mismatching proof is kept (mny), as rejected: it never verified on our chain (azl)');
       expect((await walletUtxo())!.status, UTXOStatus.pending);
       expect((await tx())!.rawHex, kFixtureTxHex);
+    });
+  });
+
+  // azl (libspiffy-azl): a proof whose root contradicts the header already
+  // stored at its height was stored as pendingHeader and stayed the current
+  // proof (put in BEEFs) until SPVActor happened to re-check it.
+  group('a proof that contradicts the header already stored at its height (azl)', () {
+    test('is rejected at once, is never the current proof, and loses its confirmation when headers arrive', () async {
+      final (bump, _) = blockFor(2);
+      final chain = RegtestMiner.mineChain(genesis, 8, seed: 'other');
+      await sendHeaders(chain.sublist(0, 2), 2); // height 2 does not contain the transaction
+
+      importWithProof(bump);
+      await _until(() async => (await storage().getMerkleProofHistory(kFixtureTxid)).isNotEmpty &&
+          (await walletUtxo())?.status == UTXOStatus.available, 'imported');
+      expect(await storage().getMerkleProof(kFixtureTxid), isNull,
+          reason: 'the header at its height contradicts it: not the current proof, never in a BEEF');
+      expect([for (final p in await storage().getMerkleProofHistory(kFixtureTxid)) (p.blockHash, p.status.name)],
+          [(null, 'rejected')]);
+      expect(await storage().getMerkleProofsByStatus(MerkleProofStatus.pendingHeader), isEmpty);
+
+      // The next header notifications (several in a burst, before the
+      // projection has applied the first revert): SPVActor takes back the
+      // confirmation the rejected proof was the only evidence for, once.
+      for (var tip = 3; tip <= 8; tip++) {
+        libspiffy.headerSyncActor.tell(BlockHeadersReceivedMessage(
+          peerId: 'peer',
+          headers: chain.sublist(0, tip),
+          startHeight: 1,
+        ) as dynamic);
+      }
+      await _until(() async => libspiffy.headerChain.bestHeight == 8, 'tip at 8');
+      await _until(() async => (await tx())?.status == TransactionStatus.pending, 'confirmation taken back');
+      await _until(() async => (await walletUtxo())?.status == UTXOStatus.pending, 'UTXO no longer confirmed');
+      expect((await tx())!.blockHeight, isNull);
+      await _until(() async => arc.queried.contains(kFixtureTxid), 'ARC asked for a real proof');
+
+      // It is reverted once; the proof is kept as rejected.
+      await sendHeaders([...chain, ...RegtestMiner.mineChain(chain.last, 1, seed: 'later')], 9);
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      expect((await journal()).whereType<TransactionConfirmationRevertedEvent>(), hasLength(1));
+      expect([for (final p in await storage().getMerkleProofHistory(kFixtureTxid)) (p.merkleProof.join(), p.status.name)],
+          [(bump.toHex(), 'rejected')]);
+    });
+
+    test('a pendingHeader proof a reorganization checks against a contradicting header is rejected, not orphaned',
+        () async {
+      final (bump, _) = blockFor(2);
+      final a1 = RegtestMiner.mine(parent: genesis, seed: 'A1');
+      await sendHeaders([a1], 1);
+      importWithProof(bump); // no header at 2 yet: pendingHeader
+      await _until(() async => (await storage().getMerkleProof(kFixtureTxid))?.status == MerkleProofStatus.pendingHeader &&
+          (await tx())?.status == TransactionStatus.confirmed, 'imported with an unverified proof');
+
+      // A heavier branch from genesis whose block 2 does not contain the
+      // transaction: the reorganization re-checks the confirmation above
+      // the fork point before the pendingHeader pass runs.
+      final b = RegtestMiner.mineChain(genesis, 3, seed: 'B');
+      await sendHeaders(b, 3);
+
+      await _until(() async => (await tx())?.status == TransactionStatus.pending, 'confirmation taken back');
+      expect([for (final p in await storage().getMerkleProofHistory(kFixtureTxid)) (p.blockHash, p.status.name)],
+          [(null, 'rejected')], reason: 'it never verified on any chain of ours');
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      expect((await journal()).whereType<TransactionConfirmationRevertedEvent>(), hasLength(1));
     });
   });
 }

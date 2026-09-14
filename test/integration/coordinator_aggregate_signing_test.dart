@@ -15,11 +15,13 @@
 /// aggregate, and checks every signed input with the script interpreter.
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:convert/convert.dart';
 import 'package:dactor/dactor.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:isar/isar.dart';
+import 'package:spiffynode/spiffy_node.dart' show BlockHeader, Hash;
 import 'package:test/test.dart';
 
 import 'package:libspiffy/libspiffy.dart';
@@ -205,19 +207,34 @@ void main() {
     parent.outputs.add(dartsv.TransactionOutput(
         BigInt.from(satoshis), dartsv.SVScript.fromHex(_p2pkhScriptHex(address))));
     final parentTxid = parent.id;
+    // The parent is made up, so its block is too: a header of its own at a
+    // height no test header uses, committing to the parent's BUMP. (At
+    // 1239645, where the real testnet header is stored, the proof is one the
+    // header chain contradicts and never goes into a BEEF: bead azl.)
+    final blockHeight = 3000000 + seed;
     final bump = CryptoUtils.createBumpFromTscProof({
       'index': 0,
       'txOrId': parentTxid,
       'target': '00' * 32,
       'nodes': ['ab' * 32],
-    }, 1239645);
+    }, blockHeight);
+    await libspiffy.walletStorage.storeBlockHeader(
+        BlockHeader(
+          version: 536870912,
+          prevBlock: Hash.fromHex('00' * 32),
+          merkleRoot: Hash.fromBytes(bump.computeMerkleRoot(Uint8List.fromList(hex.decode(parentTxid).reversed.toList()))),
+          timestamp: DateTime.utc(2026, 9, 15),
+          bits: 0x1d00ffff,
+          nonce: seed,
+        ),
+        blockHeight);
     libspiffy.walletManager.tell(WalletCommandMessage(
       walletId,
       RecordImportedTransactionCommand(
         walletId: walletId,
         txid: parentTxid,
         rawHex: parent.serialize(),
-        blockHeight: 1239645,
+        blockHeight: blockHeight,
         bumpProofHex: hex.encode(bump.serialize()),
         totalOutputSats: satoshis,
         numInputs: 1,

@@ -28,6 +28,7 @@ import 'package:libspiffy/src/storage/in_memory_wallet_storage.dart';
 import 'package:libspiffy/src/storage/read_model_storage.dart';
 import 'package:libspiffy/src/utils/beef.dart';
 import 'package:libspiffy/src/utils/bump.dart';
+import 'package:spiffynode/spiffy_node.dart' show BlockHeader, Hash;
 import 'package:test/test.dart';
 
 import '../actors/in_memory_event_store.dart';
@@ -200,6 +201,36 @@ void main() {
     final chain = await AncestorChainService(storage: storage).collectAncestorChainForUtxos([p.id]);
     expect(chain.isValid, isTrue, reason: chain.error);
     expect(chain.ancestorTransactions.map((t) => t.txid), [kFixture2Txid, u.id, p.id]);
+  });
+
+  test('azl: an ancestor BUMP the stored header contradicts is kept as rejected and never travels', () async {
+    final result = await receive(await headers(), p.id, receivedBeef());
+    expect(result.isValid, isTrue, reason: result.validationError);
+
+    // The event is projected where the header at G2's height is another
+    // block (the chain moved since the BEEF was checked, or a replay).
+    final storage = await headers(fixture2: false);
+    final real = fixture2Header();
+    await storage.storeBlockHeader(
+        BlockHeader(
+          version: real.version,
+          prevBlock: real.prevBlock,
+          merkleRoot: Hash.fromHex('22' * 32),
+          timestamp: real.timestamp,
+          bits: real.bits,
+          nonce: real.nonce,
+        ),
+        kFixture2Height);
+    await projectionOn(storage).handle(importedEvent(result));
+
+    expect(await storage.getMerkleProof(kFixture2Txid), isNull);
+    expect([for (final r in await storage.getMerkleProofHistory(kFixture2Txid)) (r.status.name, r.merkleProof.join())],
+        [('rejected', fixture2BumpHex())],
+        reason: 'the proof is kept');
+    expect(await storage.getAncestorTransactionsBatch([kFixture2Txid]), {kFixture2Txid: kFixture2TxHex});
+    final chain = await AncestorChainService(storage: storage).collectAncestorChainForUtxos([p.id]);
+    expect(chain.merkleProofs, isEmpty, reason: 'a BEEF must not carry a proof our headers contradict');
+    expect(chain.isValid, isFalse);
   });
 
   test('zsh: an ancestor whose raw transaction does not hash to its txid is not stored', () async {

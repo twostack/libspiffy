@@ -165,7 +165,7 @@ class MerkleProofEntity {
   /// Transaction ID this proof is for
   ///
   /// Rows are never deleted (bead mny): one row per (txid, block hash), and
-  /// at most one row per txid that is not orphaned. Both are enforced by
+  /// at most one current (verified or pendingHeader) row per txid. Both are enforced by
   /// [IsarWalletStorage.storeMerkleProof] rather than unique indexes: stores
   /// written before audit S-13 hold duplicates, and Isar refuses to open a
   /// collection whose new unique index the existing rows violate.

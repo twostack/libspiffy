@@ -82,16 +82,8 @@ void main() {
     expect((proof.blockHash, proof.status), (kFixtureBlockHash, MerkleProofStatus.verified));
   });
 
-  test('mny: a proof that does not match the stored header is left pendingHeader for SPVActor', () async {
-    // Not verified, and not the projection's to reject: SPVActor re-checks
-    // pendingHeader proofs when headers arrive and takes the confirmation
-    // back (reorg_confirmation_revert_test.dart).
-    await storage.storeBlockHeader(otherHeaderAtFixtureHeight(), kFixtureHeight);
-    await projection.handle(imported());
-
-    final proof = (await storage.getMerkleProof(kFixtureTxid))!;
-    expect((proof.blockHash, proof.status), (null, MerkleProofStatus.pendingHeader));
-  });
+  // A proof that does not match the stored header was left pendingHeader
+  // here until bead azl; it is rejected now (group 'azl' below).
 
   test('mny: a reverted confirmation marks the proof orphaned, and a replay changes nothing', () async {
     await storage.storeBlockHeader(fixtureHeader(), kFixtureHeight);
@@ -132,7 +124,9 @@ void main() {
     expect((await storage.getMerkleProof(kFixtureTxid))!.blockHash, newBlock,
         reason: 'the replayed, orphaned proof must not displace the current one');
     final history = await storage.getMerkleProofHistory(kFixtureTxid);
-    expect(shape(history), [(newBlock, MerkleProofStatus.verified), (null, MerkleProofStatus.orphaned)]);
+    // azl: the replayed proof is rejected against today's header, then the
+    // revert names the block it was verified in: orphaned there, as live.
+    expect(shape(history), [(newBlock, MerkleProofStatus.verified), (kFixtureBlockHash, MerkleProofStatus.orphaned)]);
     expect(history.last.merkleProof, [bumpHex]);
   });
 
@@ -199,6 +193,141 @@ void main() {
       expect(roundTrip.bumpHex, bumpHex);
     });
   });
+  // azl (libspiffy-azl): a proof whose root contradicts the stored header at
+  // its height was stored as pendingHeader, so it stayed the transaction's
+  // current proof and AncestorChainService put it into BEEFs.
+  group('azl: a proof that contradicts the stored header', () {
+    final tamperedHex = fixtureBumpHex(tamperLevel: 0);
+
+    TransactionConfirmedEvent confirmedWith(String bump, {int version = 3}) => TransactionConfirmedEvent(
+          walletId: walletId,
+          txid: kFixtureTxid,
+          blockHeight: kFixtureHeight,
+          blockHash: kFixtureBlockHash,
+          bumpHex: bump,
+          version: version,
+          timestamp: DateTime.utc(2026, 9, 3),
+        );
+
+    List<(String?, String, String)> rows(List<MerkleProof> history) =>
+        [for (final p in history) (p.blockHash, p.status.name, p.merkleProof.join())];
+
+    test('imported against another header at its height: kept, but not the current proof', () async {
+      await storage.storeBlockHeader(otherHeaderAtFixtureHeight(), kFixtureHeight);
+      await projection.handle(imported());
+
+      expect(await storage.getMerkleProof(kFixtureTxid), isNull,
+          reason: 'a proof our header chain contradicts is not the current proof');
+      expect(await storage.getMerkleProofsBatch([kFixtureTxid]), isEmpty);
+      expect(rows(await storage.getMerkleProofHistory(kFixtureTxid)), [(null, 'rejected', bumpHex)],
+          reason: 'the proof is kept (retention), with no block hash');
+      expect(await storage.getMerkleProofsByStatus(MerkleProofStatus.pendingHeader), isEmpty,
+          reason: 'it is not waiting for a header: the header is here and does not match');
+    });
+
+    test('a tampered BUMP confirmed against the real header is rejected, and a replay changes nothing', () async {
+      await storage.storeBlockHeader(fixtureHeader(), kFixtureHeight);
+      await projection.handle(confirmedWith(tamperedHex));
+
+      expect(await storage.getMerkleProof(kFixtureTxid), isNull);
+      final once = rows(await storage.getMerkleProofHistory(kFixtureTxid));
+      expect(once, [(null, 'rejected', tamperedHex)]);
+
+      await projection.handle(confirmedWith(tamperedHex));
+      expect(rows(await storage.getMerkleProofHistory(kFixtureTxid)), once);
+    });
+
+    test('a rejected proof does not displace the verified proof of the transaction', () async {
+      await storage.storeBlockHeader(fixtureHeader(), kFixtureHeight);
+      await projection.handle(confirmedWith(bumpHex));
+      await projection.handle(confirmedWith(tamperedHex, version: 4));
+
+      final current = (await storage.getMerkleProof(kFixtureTxid))!;
+      expect((current.blockHash, current.status.name, current.merkleProof.join()),
+          (kFixtureBlockHash, 'verified', bumpHex));
+      expect(rows(await storage.getMerkleProofHistory(kFixtureTxid)), [
+        (kFixtureBlockHash, 'verified', bumpHex),
+        (null, 'rejected', tamperedHex),
+      ]);
+    });
+
+    test('a later valid proof of the transaction becomes the current proof; the rejected one stays', () async {
+      await storage.storeBlockHeader(fixtureHeader(), kFixtureHeight);
+      await projection.handle(confirmedWith(tamperedHex));
+      await projection.handle(confirmedWith(bumpHex, version: 4));
+
+      final current = (await storage.getMerkleProof(kFixtureTxid))!;
+      expect((current.blockHash, current.status.name, current.merkleProof.join()),
+          (kFixtureBlockHash, 'verified', bumpHex));
+      expect(rows(await storage.getMerkleProofHistory(kFixtureTxid)), [
+        (null, 'rejected', tamperedHex),
+        (kFixtureBlockHash, 'verified', bumpHex),
+      ]);
+    });
+
+    test('the same proof verifies in place once the active header at its height matches', () async {
+      await storage.storeBlockHeader(otherHeaderAtFixtureHeight(), kFixtureHeight);
+      await projection.handle(imported());
+      await storage.storeBlockHeader(fixtureHeader(), kFixtureHeight); // the chain moved to the proof's block
+      await projection.handle(imported());
+
+      expect(rows(await storage.getMerkleProofHistory(kFixtureTxid)), [(kFixtureBlockHash, 'verified', bumpHex)]);
+    });
+
+    test('a verified proof whose header at its height changed is orphaned, not left current', () async {
+      await storage.storeBlockHeader(fixtureHeader(), kFixtureHeight);
+      await projection.handle(imported());
+      await storage.storeBlockHeader(otherHeaderAtFixtureHeight(), kFixtureHeight); // its block left the chain
+      await projection.handle(imported()); // replay over the existing read model
+
+      expect(await storage.getMerkleProof(kFixtureTxid), isNull);
+      expect(rows(await storage.getMerkleProofHistory(kFixtureTxid)), [(kFixtureBlockHash, 'orphaned', bumpHex)]);
+    });
+
+    test('a rebuild after a reorganization records the reverted proof as orphaned on its block, as live', () async {
+      // Live: the proof was verified in the fixture block, the block left the
+      // chain, SPVActor marked the proof orphaned and journaled the revert.
+      // A rebuild meets the proof against today's header (rejected) and then
+      // the revert naming its block: the proof was verified once, so orphaned.
+      await storage.storeBlockHeader(otherHeaderAtFixtureHeight(), kFixtureHeight);
+      await projection.handle(imported());
+      await projection.handle(reverted());
+
+      expect(rows(await storage.getMerkleProofHistory(kFixtureTxid)), [(kFixtureBlockHash, 'orphaned', bumpHex)]);
+      await projection.handle(imported());
+      await projection.handle(reverted());
+      expect(rows(await storage.getMerkleProofHistory(kFixtureTxid)), [(kFixtureBlockHash, 'orphaned', bumpHex)],
+          reason: 'a second replay changes nothing');
+    });
+
+    test('a received ancestor whose BUMP contradicts the stored header is not a current proof', () async {
+      await storage.storeBlockHeader(fixtureHeader(), kFixtureHeight);
+      await projection.handle(TransactionImportedEvent(
+        walletId: walletId,
+        txid: kFixture2Txid,
+        rawHex: kFixture2TxHex,
+        blockHeight: 0,
+        bumpProof: '',
+        totalOutputSats: 200000000,
+        numInputs: 1,
+        numOutputs: 2,
+        txVersion: 2,
+        txLockTime: 0,
+        walletReceivingAddresses: const [],
+        walletReceivedSats: 0,
+        totalInputSats: 0,
+        sendingAddresses: const [],
+        ancestors: [BeefAncestor(txid: kFixtureTxid, rawHex: kFixtureTxHex, bumpHex: tamperedHex)],
+        version: 1,
+        timestamp: DateTime.utc(2026, 9, 1),
+      ));
+
+      expect(await storage.getAncestorTransactionsBatch([kFixtureTxid]), {kFixtureTxid: kFixtureTxHex});
+      expect(await storage.getMerkleProof(kFixtureTxid), isNull);
+      expect(rows(await storage.getMerkleProofHistory(kFixtureTxid)), [(null, 'rejected', tamperedHex)]);
+    });
+  });
+
 }
 
 /// WalletProjection takes an EventStore but never reads from it; handle() is

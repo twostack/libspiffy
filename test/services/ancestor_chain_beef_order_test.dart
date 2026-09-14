@@ -20,13 +20,17 @@ import 'package:dactor/dactor.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:libspiffy/src/actors/spv_actor.dart';
 import 'package:libspiffy/src/actors/wallet_messages.dart';
+import 'package:libspiffy/src/core/wallet_events.dart';
 import 'package:libspiffy/src/models/bitcoin_transaction.dart';
+import 'package:libspiffy/src/projections/wallet_projection.dart';
 import 'package:libspiffy/src/services/ancestor_chain_service.dart';
 import 'package:libspiffy/src/storage/in_memory_wallet_storage.dart';
 import 'package:libspiffy/src/storage/read_model_storage.dart';
 import 'package:libspiffy/src/utils/beef.dart';
+import 'package:spiffynode/spiffy_node.dart' show BlockHeader;
 import 'package:test/test.dart';
 
+import '../actors/in_memory_event_store.dart';
 import '../spv/testnet_proof_fixture.dart';
 
 const _xpriv =
@@ -264,6 +268,123 @@ void main() {
       expect(beef.bumps.map((bump) => bump.toHex()), equals([fixtureBumpHex()]));
       expect((await storage.getMerkleProofHistory(a.id)).single.status, MerkleProofStatus.orphaned,
           reason: 'the orphaned proof is still stored');
+    });
+  });
+
+  /// Bead libspiffy-azl: a proof whose root contradicts the stored header at
+  /// its height was the transaction's current proof (pendingHeader), so the
+  /// BEEF carried a proof that does not verify.
+  group('AncestorChainService with a proof that contradicts the stored header (azl)', () {
+    final tamperedHex = fixtureBumpHex(tamperLevel: 0);
+
+    /// A read model holding A, B, C and G, with G proven only by [bump], as
+    /// WalletProjection stores it from a confirmation (headers per [header]).
+    Future<InMemoryWalletStorage> projected(String bump, {BlockHeader? header}) async {
+      final s = InMemoryWalletStorage();
+      await s.storeBlockHeader(header ?? fixtureHeader(), kFixtureHeight);
+      for (final tx in [c, b, a, g]) {
+        await s.storeTransaction('w', record(tx));
+      }
+      await WalletProjection(projectionId: 'azl', eventStore: InMemoryEventStore(), storage: s)
+          .handle(TransactionConfirmedEvent(
+        walletId: 'w',
+        txid: g.id,
+        blockHeight: kFixtureHeight,
+        blockHash: kFixtureBlockHash,
+        bumpHex: bump,
+        version: 2,
+        timestamp: DateTime.utc(2026, 9, 15),
+      ));
+      return s;
+    }
+
+    Future<SPVValidationResult> validate(ReadModelStorage s, BEEF beef, String txid) async {
+      final system = LocalActorSystem(ActorSystemConfig());
+      addTearDown(system.shutdown);
+      final sink = await system.spawn('sink', () => _Sink());
+      final spv = await system.spawn('spv', () => SPVActor(walletManager: sink, invoiceCoordinator: sink, storage: s));
+      final done = Completer<SPVValidationResult>();
+      final receiver = await system.spawn('receiver', () => _Receiver(done));
+      spv.tell(ReceiveTransactionMessage(transactionId: txid, beef: beef, fromCounterparty: 'alice'), sender: receiver);
+      return done.future.timeout(const Duration(seconds: 10));
+    }
+
+    test('the genuine proof, projected, builds a BEEF our own SPV check accepts (control)', () async {
+      final s = await projected(fixtureBumpHex());
+      final chain = await AncestorChainService(storage: s).collectAncestorChainForUtxos([c.id]);
+      expect(chain.isValid, isTrue, reason: chain.error);
+      final result = await AncestorChainService(storage: s).createBeefWithAncestry(
+        newTransaction: record(p),
+        ancestorTransactions: chain.ancestorTransactions,
+        merkleProofs: chain.merkleProofs,
+      );
+      expect((await validate(s, BEEF.parse(result.beefBytes!), p.id)).isValid, isTrue);
+    });
+
+    test('a tampered BUMP against the real header never enters a BEEF', () async {
+      final s = await projected(tamperedHex);
+      final chain = await AncestorChainService(storage: s).collectAncestorChainForUtxos([c.id]);
+      if (chain.isValid) {
+        // What a counterparty (here our own SPVActor, same headers) makes of
+        // the BEEF such a chain produces.
+        final result = await AncestorChainService(storage: s).createBeefWithAncestry(
+          newTransaction: record(p),
+          ancestorTransactions: chain.ancestorTransactions,
+          merkleProofs: chain.merkleProofs,
+        );
+        final validation = await validate(s, BEEF.parse(result.beefBytes!), p.id);
+        expect(validation.isValid, isTrue,
+            reason: 'a BEEF built from stored proofs must verify: ${validation.validationError}');
+      }
+      expect(chain.merkleProofs.map((p) => p.merkleProof.join()), isNot(contains(tamperedHex)),
+          reason: 'a proof the stored header contradicts is not a proof');
+      expect(chain.isValid, isFalse, reason: "G's inputs are not stored, so there is no provable chain");
+    });
+
+    test('the genuine BUMP against another header at its height never enters a BEEF', () async {
+      final s = await projected(fixtureBumpHex(), header: otherHeaderAtFixtureHeight());
+      final chain = await AncestorChainService(storage: s).collectAncestorChainForUtxos([c.id]);
+      expect(chain.merkleProofs, isEmpty);
+      expect(chain.isValid, isFalse);
+    });
+
+    test('a pendingHeader proof stored before the fix, whose header is now stored and differs, is skipped', () async {
+      // Read models written before azl hold such rows until SPVActor next
+      // checks pendingHeader proofs; a BEEF built meanwhile must not use one.
+      final s = InMemoryWalletStorage();
+      await s.storeBlockHeader(fixtureHeader(), kFixtureHeight);
+      for (final tx in [c, b, a, g]) {
+        await s.storeTransaction('w', record(tx));
+      }
+      await s.storeMerkleProof(g.id, MerkleProof(
+        txid: g.id,
+        blockHash: null,
+        blockHeight: kFixtureHeight,
+        position: kFixtureIndex,
+        merkleProof: [tamperedHex],
+      ));
+      expect((await s.getMerkleProof(g.id))!.status, MerkleProofStatus.pendingHeader);
+
+      final chain = await AncestorChainService(storage: s).collectAncestorChainForUtxos([c.id]);
+      expect(chain.merkleProofs, isEmpty);
+      expect(chain.isValid, isFalse);
+
+      // A pendingHeader proof whose header is still unknown travels (the
+      // receiver checks it against its own headers).
+      final noHeader = InMemoryWalletStorage();
+      for (final tx in [c, b, a, g]) {
+        await noHeader.storeTransaction('w', record(tx));
+      }
+      await noHeader.storeMerkleProof(g.id, MerkleProof(
+        txid: g.id,
+        blockHash: null,
+        blockHeight: kFixtureHeight,
+        position: kFixtureIndex,
+        merkleProof: [fixtureBumpHex()],
+      ));
+      final pending = await AncestorChainService(storage: noHeader).collectAncestorChainForUtxos([c.id]);
+      expect(pending.isValid, isTrue, reason: pending.error);
+      expect(pending.merkleProofs.map((p) => p.txid), [g.id]);
     });
   });
 }

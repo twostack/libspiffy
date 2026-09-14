@@ -1,5 +1,6 @@
 /// Bead libspiffy-mny on PostgreSQL: the retention contract and migration
-/// v009 (proof status; one current proof per txid instead of one row).
+/// v009 (proof status; one current proof per txid instead of one row), and
+/// bead libspiffy-azl: migration v012 (the rejected status).
 @Tags(['postgres', 'integration'])
 library;
 
@@ -82,6 +83,7 @@ void main() {
 
     try {
       // --- the pre-v009 shape, with a 'pending' placeholder row ----------
+      expect(await migrations.rollback(), isTrue); // v012
       expect(await migrations.rollback(), isTrue); // v011
       expect(await migrations.rollback(), isTrue); // v010
       expect(await migrations.rollback(), isTrue); // v009
@@ -96,7 +98,7 @@ void main() {
 
       // --- up -------------------------------------------------------------
       await migrations.migrate();
-      expect(await migrations.getCurrentVersion(), equals(11));
+      expect(await migrations.getCurrentVersion(), equals(12));
       expect(await rawRows(pendingTx, 'block_hash, status'), [
         [null, 'pendingHeader']
       ]);
@@ -139,6 +141,7 @@ void main() {
       await expectRejected(orphanOnlyTx, null, 'bogus', 'fe07'); // unknown status
 
       // --- down -----------------------------------------------------------
+      expect(await migrations.rollback(), isTrue); // v012
       expect(await migrations.rollback(), isTrue); // v011
       expect(await migrations.rollback(), isTrue); // v010
       expect(await migrations.rollback(), isTrue); // v009
@@ -156,7 +159,7 @@ void main() {
 
       // --- up again, leaving the database at the latest version ----------
       await migrations.migrate();
-      expect(await migrations.getCurrentVersion(), equals(11));
+      expect(await migrations.getCurrentVersion(), equals(12));
       expect((await storage.getMerkleProof(pendingTx))!.status, MerkleProofStatus.pendingHeader);
     } finally {
       await migrations.migrate();
@@ -165,6 +168,82 @@ void main() {
         Sql.named('DELETE FROM merkle_proofs WHERE txid IN (@a, @b, @c)'),
         parameters: {'a': txids[0], 'b': txids[1], 'c': txids[2]},
       );
+      await storage.close();
+      await pool.close();
+    }
+  });
+
+  test('v012 admits rejected rows next to the current proof, and rolls them back to orphaned', () async {
+    final migrations = PostgresMigrations(config);
+    await migrations.migrate();
+    final pool = await config.createPool();
+    final storage = PostgresWalletStorage(config);
+    await storage.initialize();
+    String hex64(String tag) => (tag.codeUnits.fold<int>(run, (h, c) => (h * 31 + c) & 0x7fffffff))
+        .toRadixString(16)
+        .padLeft(64, '0');
+    final txid = hex64('v012-tx');
+    final block = hex64('v012-block');
+    Future<List<List<Object?>>> rawRows(String columns) async => [
+          for (final row in await pool.execute(
+            Sql.named('SELECT $columns FROM merkle_proofs WHERE txid = @txid ORDER BY id'),
+            parameters: {'txid': txid},
+          ))
+            row.toList(),
+        ];
+    Future<void> insert(String? blockHash, String status, String proof) => pool.execute(
+          Sql.named('''
+            INSERT INTO merkle_proofs (txid, block_hash, block_height, position, merkle_proof_json,
+                                       created_at, status)
+            VALUES (@txid, @blockHash, 9, 0, @proof, NOW(), @status)
+          '''),
+          parameters: {'txid': txid, 'blockHash': blockHash, 'status': status, 'proof': proof},
+        );
+
+    try {
+      expect(await migrations.getCurrentVersion(), equals(12));
+      await storage.storeMerkleProof(txid, MerkleProof(
+          txid: txid, blockHash: block, blockHeight: 9, position: 0, merkleProof: ['fe12']));
+      await storage.storeMerkleProof(txid, MerkleProof(
+          txid: txid,
+          blockHash: null,
+          blockHeight: 9,
+          position: 0,
+          merkleProof: ['fe13'],
+          status: MerkleProofStatus.rejected));
+      expect(await rawRows('block_hash, status, merkle_proof_json'), [
+        [block, 'verified', 'fe12'],
+        [null, 'rejected', 'fe13'],
+      ]);
+      expect((await storage.getMerkleProof(txid))!.merkleProof, ['fe12']);
+
+      // The database itself: several rejected rows beside one current row,
+      // still one current row only.
+      await insert(null, 'rejected', 'fe14');
+      await expectLater(insert(null, 'pendingHeader', 'fe15'), throwsA(isA<ServerException>()),
+          reason: 'a second current proof');
+      await expectLater(insert(null, 'bogus', 'fe16'), throwsA(isA<ServerException>()));
+
+      // --- down: rejected rows become orphaned, none is deleted ----------
+      expect(await migrations.rollback(), isTrue);
+      expect(await migrations.getCurrentVersion(), equals(11));
+      expect(await rawRows('block_hash, status, merkle_proof_json'), [
+        [block, 'verified', 'fe12'],
+        [null, 'orphaned', 'fe13'],
+        [null, 'orphaned', 'fe14'],
+      ]);
+      await expectLater(insert(null, 'rejected', 'fe17'), throwsA(isA<ServerException>()),
+          reason: 'v011 has no rejected status');
+
+      // --- up again ------------------------------------------------------
+      await migrations.migrate();
+      expect(await migrations.getCurrentVersion(), equals(12));
+      await insert(null, 'rejected', 'fe18');
+      expect((await storage.getMerkleProof(txid))!.merkleProof, ['fe12']);
+    } finally {
+      await migrations.migrate();
+      // Test rows only; the storage API itself never deletes proofs.
+      await pool.execute(Sql.named('DELETE FROM merkle_proofs WHERE txid = @txid'), parameters: {'txid': txid});
       await storage.close();
       await pool.close();
     }

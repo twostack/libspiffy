@@ -13,6 +13,7 @@ import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:logging/logging.dart';
 
 import '../models/bitcoin_transaction.dart';
+import '../spv/merkle_proof_header_check.dart';
 import '../storage/read_model_storage.dart';
 import '../utils/beef.dart';
 import '../utils/bump.dart';
@@ -138,7 +139,7 @@ class AncestorChainService {
         ancestorTxs.add(tx);
 
         final proof = proofMap[txid];
-        if (proof != null) {
+        if (proof != null && await _usableInBeef(proof)) {
           // Found merkle proof — this branch is complete
           merkleProofs.add(proof);
           blockHeights.add(proof.blockHeight);
@@ -177,6 +178,41 @@ class AncestorChainService {
       merkleProofs: _proofsInTransactionOrder(ordered, merkleProofs),
       blockHeights: blockHeights.toList(),
     );
+  }
+
+  /// Whether [proof] may go into a BEEF (bead azl). Only a transaction's
+  /// current proof is returned by the storage, and of those:
+  /// * a [MerkleProofStatus.verified] proof is used: it matched the active
+  ///   header at its height, and a reorganization marks it orphaned;
+  /// * a [MerkleProofStatus.pendingHeader] proof is used while no header is
+  ///   known at its height: SPV has the receiver check it against its own
+  ///   headers, and a wallet may hand on a transaction before its own
+  ///   headers have caught up. If a header has arrived there since (SPVActor
+  ///   has not re-checked the proof yet, or the row predates azl) it is used
+  ///   only if it matches that header;
+  /// * nothing else ([MerkleProofStatus.orphaned], [MerkleProofStatus.rejected])
+  ///   is ever used, whatever a storage implementation returns.
+  /// An unusable proof is treated as no proof: the walk continues to the
+  /// transaction's inputs.
+  Future<bool> _usableInBeef(MerkleProof proof) async {
+    switch (proof.status) {
+      case MerkleProofStatus.verified:
+        return true;
+      case MerkleProofStatus.orphaned:
+      case MerkleProofStatus.rejected:
+        _log.warning('Stored ${proof.status.name} proof for ${proof.txid} is not used in a BEEF');
+        return false;
+      case MerkleProofStatus.pendingHeader:
+        final check = await checkBumpHexAgainstHeaders(
+          txid: proof.txid,
+          bumpHex: proof.merkleProof.length == 1 ? proof.merkleProof.single : '',
+          headerAt: _storage.getBlockHeaderByHeight,
+        );
+        if (check.isVerified || check.status == ProofHeaderStatus.headerUnknown) return true;
+        _log.warning('Unverified proof for ${proof.txid} does not match the stored header chain ($check); '
+            'not used in a BEEF');
+        return false;
+    }
   }
 
   /// A stored ancestor transaction (no wallet row) as the record the BEEF

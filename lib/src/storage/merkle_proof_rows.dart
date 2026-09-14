@@ -24,8 +24,8 @@ class MerkleProofStorePlan {
 
 /// Decide how storing [proof] for [txid] changes [rows] (every stored row of
 /// [txid], oldest first), following `ReadModelStorage.storeMerkleProof`:
-/// rows are only ever added or updated, and at most one row stays
-/// non-orphaned.
+/// rows are only ever added or updated, and at most one row stays current
+/// ([MerkleProof.isCurrent]).
 MerkleProofStorePlan planMerkleProofStore(
   List<MerkleProof> rows,
   String txid,
@@ -33,10 +33,18 @@ MerkleProofStorePlan planMerkleProofStore(
   DateTime? now,
 }) {
   final at = now ?? DateTime.now();
-  final hash = proof.blockHash == MerkleProof.legacyPendingBlockHash ? null : proof.blockHash;
+  // A rejected proof names no block of ours (bead azl): it is stored without
+  // a block hash and only updates a row that has none, so it can never
+  // overwrite the row of a block it claims to be in.
+  final rejected = proof.status == MerkleProofStatus.rejected;
+  final hash = rejected || proof.blockHash == MerkleProof.legacyPendingBlockHash ? null : proof.blockHash;
 
   int? target;
-  if (hash != null) {
+  if (rejected) {
+    target = _indexWhere(
+            rows, (r) => r.blockHash == null && r.isCurrent && MerkleProof.sameContent(r.merkleProof, proof.merkleProof)) ??
+        _indexWhere(rows, (r) => r.blockHash == null && MerkleProof.sameContent(r.merkleProof, proof.merkleProof));
+  } else if (hash != null) {
     target = _indexWhere(rows, (r) => r.blockHash == hash);
     target ??= _indexWhere(
         rows, (r) => r.blockHash == null && MerkleProof.sameContent(r.merkleProof, proof.merkleProof));
@@ -50,7 +58,7 @@ MerkleProofStorePlan planMerkleProofStore(
   final statusChanged = previous == null || previous.status != proof.status;
   final row = MerkleProof(
     txid: txid,
-    blockHash: hash ?? previous?.blockHash,
+    blockHash: rejected ? null : (hash ?? previous?.blockHash),
     blockHeight: proof.blockHeight,
     position: proof.position,
     merkleProof: proof.merkleProof,
@@ -84,8 +92,8 @@ int? findMerkleProofToOrphan(
   );
 }
 
-/// The current row of a txid: the newest non-orphaned one (a store written
-/// before bead mny may hold several).
+/// The current row of a txid: the newest [MerkleProof.isCurrent] one (a
+/// store written before bead mny may hold several).
 MerkleProof? currentMerkleProof(Iterable<MerkleProof> rows) {
   MerkleProof? current;
   for (final r in rows) {

@@ -88,9 +88,14 @@ class PaymentCoordinatorActor extends Actor {
       } else {
       }
     } catch (e, stackTrace) {
-
+      _log.warning('Failed to handle ${message.runtimeType}: $e', e, stackTrace);
       if (message is PayInvoiceMessage) {
         _sendError(message.invoiceId, 'Internal error: $e');
+      } else if (message is ProvisionFundingMessage) {
+        context.sender?.tell(ProvisionFundingResponse.error(
+          walletId: message.walletId,
+          error: 'Internal error: $e',
+        ));
       }
     }
   }

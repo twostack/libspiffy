@@ -153,7 +153,8 @@ class PaymentChannelManagerActor extends Actor {
         onFailure('Signing reply for ${command.transactionId} did not match '
             'the request (got ${response.originalTransactionId})');
       }
-    } catch (e) {
+    } catch (e, stackTrace) {
+      _log.warning('Signing ${command.transactionId} failed: $e', e, stackTrace);
       if (removePending()) onFailure(e.toString());
     }
   }
@@ -219,8 +220,8 @@ class PaymentChannelManagerActor extends Actor {
           break;
         default:
       }
-    } catch (e, stack) {
-      
+    } catch (e, stackTrace) {
+      _log.warning('Failed to handle ${message.runtimeType}: $e', e, stackTrace);
       // Send error response to sender if available
       if (context.sender != null) {
         _sendErrorResponse(message, e.toString());
@@ -313,8 +314,8 @@ class PaymentChannelManagerActor extends Actor {
         success: true,
       ));
       
-    } catch (e, stack) {
-      
+    } catch (e, stackTrace) {
+      _log.warning('Initiating channel ${msg.channelId} failed: $e', e, stackTrace);
       originalSender?.tell(ChannelInitiatedResponse(
         channelId: msg.channelId,
         clientPubKeyHex: '',
@@ -409,8 +410,8 @@ class PaymentChannelManagerActor extends Actor {
         success: true,
       ));
       
-    } catch (e, stack) {
-      
+    } catch (e, stackTrace) {
+      _log.warning('Accepting channel ${msg.channelId} failed: $e', e, stackTrace);
       originalSender?.tell(ChannelAcceptedResponse(
         channelId: msg.channelId,
         serverPubKeyHex: '',
@@ -446,8 +447,8 @@ class PaymentChannelManagerActor extends Actor {
       // Broadcast events
       _broadcastEvents(response);
       
-    } catch (e, stack) {
-      _log.warning('Failed to record server acceptance: $e');
+    } catch (e, stackTrace) {
+      _log.warning('Failed to record server acceptance: $e', e, stackTrace);
     }
   }
 
@@ -496,8 +497,8 @@ class PaymentChannelManagerActor extends Actor {
         success: true,
       ));
       
-    } catch (e, stack) {
-      
+    } catch (e, stackTrace) {
+      _log.warning('Building the refund transaction for channel ${msg.channelId} failed: $e', e, stackTrace);
       originalSender?.tell(RefundTransactionBuiltResponse(
         channelId: msg.channelId,
         refundTxHex: '',
@@ -571,8 +572,8 @@ class PaymentChannelManagerActor extends Actor {
         )),
       );
 
-    } catch (e, stack) {
-      
+    } catch (e, stackTrace) {
+      _log.warning('Signing the refund transaction for channel ${msg.channelId} failed: $e', e, stackTrace);
       originalSender?.tell(RefundTransactionSignedResponse(
         channelId: msg.channelId,
         serverSignatureHex: '',
@@ -661,8 +662,8 @@ class PaymentChannelManagerActor extends Actor {
         success: true,
       ));
       
-    } catch (e, stack) {
-      
+    } catch (e, stackTrace) {
+      _log.warning('Completing the refund signature for channel $channelId failed: $e', e, stackTrace);
       pending.sender?.tell(RefundTransactionSignedResponse(
         channelId: channelId,
         serverSignatureHex: '',
@@ -745,8 +746,8 @@ class PaymentChannelManagerActor extends Actor {
         ));
         
       }
-    } catch (e, stack) {
-      
+    } catch (e, stackTrace) {
+      _log.warning('Completing the payment signature for channel ${pending.channelId} failed: $e', e, stackTrace);
       if (pending.isAcknowledgment) {
         pending.originalSender?.tell(PaymentAcknowledgedResponse(
           channelId: pending.channelId,
@@ -808,8 +809,8 @@ class PaymentChannelManagerActor extends Actor {
         success: true,
       ));
       
-    } catch (e) {
-      
+    } catch (e, stackTrace) {
+      _log.warning('Recording the refund signature for channel ${msg.channelId} failed: $e', e, stackTrace);
       originalSender?.tell(RefundSignatureRecordedResponse(
         channelId: msg.channelId,
         success: false,
@@ -888,8 +889,8 @@ class PaymentChannelManagerActor extends Actor {
         success: true,
       ));
 
-    } catch (e) {
-      
+    } catch (e, stackTrace) {
+      _log.warning('Opening channel ${msg.channelId} failed: $e', e, stackTrace);
       originalSender?.tell(ChannelOpenedResponse(
         channelId: msg.channelId,
         success: false,
@@ -1024,8 +1025,8 @@ class PaymentChannelManagerActor extends Actor {
       );
 
       
-    } catch (e) {
-      
+    } catch (e, stackTrace) {
+      _log.warning('Recording a payment on channel ${msg.channelId} failed: $e', e, stackTrace);
       originalSender?.tell(PaymentRecordedResponse(
         channelId: msg.channelId,
         amountSats: msg.amountSats,
@@ -1118,8 +1119,8 @@ class PaymentChannelManagerActor extends Actor {
       );
 
       
-    } catch (e) {
-      
+    } catch (e, stackTrace) {
+      _log.warning('Acknowledging a payment on channel ${msg.channelId} failed: $e', e, stackTrace);
       originalSender?.tell(PaymentAcknowledgedResponse(
         channelId: msg.channelId,
         success: false,
@@ -1166,8 +1167,8 @@ class PaymentChannelManagerActor extends Actor {
         success: true,
       ));
       
-    } catch (e) {
-      
+    } catch (e, stackTrace) {
+      _log.warning('Closing channel ${msg.channelId} failed: $e', e, stackTrace);
       originalSender?.tell(ChannelClosedResponse(
         channelId: msg.channelId,
         success: false,
@@ -1232,7 +1233,8 @@ class PaymentChannelManagerActor extends Actor {
         channelId: msg.channelId,
         success: true,
       ));
-    } catch (e) {
+    } catch (e, stackTrace) {
+      _log.warning('Expiring channel ${msg.channelId} failed: $e', e, stackTrace);
       originalSender?.tell(ChannelExpiredResponse(
         channelId: msg.channelId,
         success: false,
@@ -1288,7 +1290,8 @@ class PaymentChannelManagerActor extends Actor {
         latestSequenceNumber: state.latestSequenceNumber,
         success: true,
       ));
-    } catch (e) {
+    } catch (e, stackTrace) {
+      _log.warning('Querying state of channel ${msg.channelId} failed: $e', e, stackTrace);
       originalSender?.tell(ChannelStateResponse(
         channelId: msg.channelId,
         status: 'unknown',

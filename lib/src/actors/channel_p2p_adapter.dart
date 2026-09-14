@@ -8,6 +8,7 @@ import '../core/wallet_commands.dart';
 import 'coordinator_messages.dart' as coord;
 import 'payment_channel_messages.dart';
 import 'wallet_messages.dart';
+import '../utils/unique_id.dart';
 
 final _log = Logger('ChannelP2PAdapter');
 
@@ -29,8 +30,6 @@ class ChannelP2PAdapter {
   StreamSubscription? _eventSubscription;
 
   // Correlation maps
-  final Map<String, String> _requestToChannelId = {};
-  final Map<String, String> _channelIdToRequestId = {};
   final Map<String, PeerInfo> _channelPeers = {};
   final Map<String, PendingRequest> _pendingRequests = {};
   final Map<String, ClientChannelInfo> _clientChannelInfo = {};
@@ -620,8 +619,8 @@ class ChannelP2PAdapter {
 
   /// Handle a request to open a new payment channel as client.
   void handleOpenChannel(coord.OpenChannelCommand command) {
-    final channelId =
-        'ch-${DateTime.now().millisecondsSinceEpoch}-${command.walletId.hashCode.abs()}';
+    // A timestamp-derived id repeated within one millisecond (A-L1).
+    final channelId = uniqueId('ch');
 
     _channelPeers[channelId] = PeerInfo(
       clientPeerId: _myPeerId,
@@ -780,8 +779,6 @@ class ChannelP2PAdapter {
   }
 
   void _cleanupChannel(String channelId) {
-    _requestToChannelId.removeWhere((_, v) => v == channelId);
-    _channelIdToRequestId.remove(channelId);
     _channelPeers.remove(channelId);
     _pendingRequests.remove(channelId);
     _clientChannelInfo.remove(channelId);

@@ -82,9 +82,6 @@ class WalletCoordinatorActor extends Actor {
   final Map<String, _PendingSettlement> _pendingSettlements = {}; // parentTxid → entry
   final Map<String, String> _childToParentSettlement = {}; // childTxid → parentTxid
 
-  // Wallet event broadcaster for import progress forwarding
-  final void Function(wallet_event_model.WalletEvent)? _broadcastWalletEvent;
-
   // Import wallet functionality
   final dynamic Function({
     required String walletId,
@@ -123,6 +120,7 @@ class WalletCoordinatorActor extends Actor {
     required ReadModelStorage storage,
     Stream<ChannelEvent>? channelEvents,
     String peerId = '',
+    /// Unused; accepted for compatibility with existing callers.
     void Function(wallet_event_model.WalletEvent)? broadcastWalletEvent,
     dynamic Function({
       required String walletId,
@@ -152,7 +150,6 @@ class WalletCoordinatorActor extends Actor {
         _importActor = importActor,
         _storage = storage,
         _peerId = peerId,
-        _broadcastWalletEvent = broadcastWalletEvent,
         _importWalletFromXpriv = importWalletFromXpriv,
         _importWalletFromWif = importWalletFromWif,
         _walletEventsStream = walletEventsStream {
@@ -870,11 +867,53 @@ class WalletCoordinatorActor extends Actor {
 
     _pendingCreateWallet.remove(response.walletId);
 
+    if (!response.success) {
+      _emitEvent(WalletCreatedEvent(
+        walletId: response.walletId,
+        rootAddress: response.rootAddress,
+        success: false,
+        error: response.error,
+      ));
+      return;
+    }
+
+    // Callers act on this event straight away (import a transaction, which
+    // makes SPVActor look up the root address in the read model), so it is
+    // emitted only once the projection has written the wallet row and its
+    // root address (libspiffy-p56). The wait runs off the mailbox (A-M2).
+    unawaited(_emitWalletCreated(response));
+  }
+
+  /// Waits (off the mailbox) until the wallet read model holds the wallet
+  /// created by [response], then emits the coordinator-level
+  /// WalletCreatedEvent. If the projection does not apply the creation, the
+  /// event reports failure with the reason, as imports do.
+  Future<void> _emitWalletCreated(wm.WalletCreatedMessage response) async {
+    final walletId = response.walletId;
+    String? awaitError;
+    try {
+      final reason = await _awaitProjectionApplied(
+        matches: (e) =>
+            e is domain_events.WalletCreatedEvent && e.walletId == walletId,
+        alreadyApplied: () async => await _storage.getWallet(walletId) != null,
+      );
+      if (reason != null) {
+        awaitError = 'Wallet $walletId was created but the wallet read model '
+            'failed to apply it: $reason';
+        _log.warning(awaitError);
+      }
+    } catch (e, stackTrace) {
+      awaitError =
+          'Unexpected error awaiting projection persistence for wallet '
+          '$walletId: $e';
+      _log.warning(awaitError, e, stackTrace);
+    }
+
     _emitEvent(WalletCreatedEvent(
-      walletId: response.walletId,
+      walletId: walletId,
       rootAddress: response.rootAddress,
-      success: response.success,
-      error: response.error,
+      success: awaitError == null,
+      error: awaitError,
     ));
   }
 
@@ -950,22 +989,6 @@ class WalletCoordinatorActor extends Actor {
         ));
       }
     } else {
-      // Regular payment — register inputs with ARCActor for deferred spend
-      // and independent sender-side monitoring
-      if (response.success && response.spentUtxoKeys.isNotEmpty && walletId != null) {
-        _arcActor.tell(wm.RegisterTransactionInputsMessage(
-          txid: response.txid,
-          walletId: walletId,
-          utxoKeys: response.spentUtxoKeys,
-        ));
-        // Also register outputs for status tracking
-        _arcActor.tell(wm.RegisterTransactionOutputsMessage(
-          txid: response.txid,
-          walletId: walletId,
-          vouts: [], // Output tracking will be populated by the receiver
-        ));
-      }
-
       _emitEvent(PaymentReadyEvent(
         walletId: walletId,
         invoiceId: response.invoiceId,
@@ -1327,12 +1350,23 @@ class WalletCoordinatorActor extends Actor {
   ///    from then on resolves the awaiter, and every event applied before
   ///    has finished its read-model write;
   /// 3. then look for the row. Present means "already applied".
-  Future<String?> _awaitImportApplied(String txid) async {
+  Future<String?> _awaitImportApplied(String txid) => _awaitProjectionApplied(
+        matches: (e) =>
+            e is domain_events.TransactionImportedEvent && e.txid == txid,
+        alreadyApplied: () async => await _storage.getTransaction(txid) != null,
+      );
+
+  /// Resolves with null once the wallet projection has applied an event
+  /// satisfying [matches], or with the failure reason; [alreadyApplied]
+  /// checks the read model for the effect of an event applied before the
+  /// awaiter was registered. See [_awaitImportApplied] for the barrier.
+  Future<String?> _awaitProjectionApplied({
+    required bool Function(Event e) matches,
+    required Future<bool> Function() alreadyApplied,
+  }) async {
     final applied = _walletProjection.ask<dynamic>(
       AwaitEventApplied(
-        (e) =>
-            e is domain_events.TransactionImportedEvent &&
-            e.txid == txid,
+        matches,
         timeout: const Duration(seconds: 30),
       ),
       // Ask timeout must outlast the awaiter's own window, otherwise dactor's
@@ -1345,11 +1379,11 @@ class WalletCoordinatorActor extends Actor {
       onError: (Object e) => e.toString(),
     );
 
-    final alreadyApplied = () async {
+    final applyVisible = () async {
       try {
         await _walletProjection.ask<dynamic>(
             GetProjectionInfo(), const Duration(seconds: 30));
-        return await _storage.getTransaction(txid) != null;
+        return await alreadyApplied();
       } catch (_) {
         return false; // No barrier answer: rely on the awaiter alone.
       }
@@ -1357,7 +1391,7 @@ class WalletCoordinatorActor extends Actor {
 
     final first = await Future.any<Object?>([
       appliedOutcome.then((reason) => _AwaiterOutcome(reason)),
-      alreadyApplied,
+      applyVisible,
     ]);
     if (first is _AwaiterOutcome) return first.reason;
     if (first == true) return null;

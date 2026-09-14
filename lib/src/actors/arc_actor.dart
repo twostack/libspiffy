@@ -157,14 +157,6 @@ class ARCActor extends Actor {
           await _handleEstimateFee(message as EstimateFeeMessage);
           break;
 
-        case RegisterTransactionOutputsMessage:
-          _handleRegisterOutputs(message as RegisterTransactionOutputsMessage);
-          break;
-
-        case RegisterTransactionInputsMessage:
-          _handleRegisterInputs(message as RegisterTransactionInputsMessage);
-          break;
-
         case CheckStoragePendingUTXOsMessage:
           await _handleCheckStoragePendingUTXOs(message as CheckStoragePendingUTXOsMessage);
           break;
@@ -818,18 +810,6 @@ class ARCActor extends Actor {
       if (!identical(_pendingProofs[entry.key], entry.value)) continue;
       await _applyProofCheck(entry.key, entry.value);
     }
-  }
-
-  /// Handle registration of transaction outputs for tracking.
-  /// Now a no-op — transaction monitoring is storage-backed.
-  void _handleRegisterOutputs(RegisterTransactionOutputsMessage msg) {
-    // No-op: outputs are parsed on demand from rawHex when needed
-  }
-
-  /// Handle registration of transaction inputs for deferred spending.
-  /// Now a no-op — inputs are parsed on demand from rawHex when needed.
-  void _handleRegisterInputs(RegisterTransactionInputsMessage msg) {
-    // No-op: inputs are parsed on demand from rawHex when needed
   }
 
   /// Handle request to check all pending UTXOs from storage against Arc

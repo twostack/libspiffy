@@ -33,7 +33,9 @@ class WalletManagerActor extends Actor {
   // Invoice manager reference for invoice-based payments
   ActorRef? _invoiceManager;
 
-  // ARC actor reference for transaction status tracking
+  // ARC actor reference (set via SetArcActorMessage). Nothing is registered
+  // with it any more: ARC status tracking is storage-backed (A-L4).
+  // ignore: unused_field
   ActorRef? _arcActor;
   
   // Benford coordinator for privacy-focused UTXO splitting
@@ -106,8 +108,9 @@ class WalletManagerActor extends Actor {
       try {
         await context.system.stop(ref);
         _log.fine('Evicted idle wallet aggregate $walletId');
-      } catch (e) {
-        _log.warning('Failed to stop idle wallet aggregate $walletId: $e');
+      } catch (e, stackTrace) {
+        _log.warning('Failed to stop idle wallet aggregate $walletId: $e',
+            e, stackTrace);
       }
     }
   }
@@ -138,8 +141,10 @@ class WalletManagerActor extends Actor {
         
         walletRef.tell(WalletCommandMessage(walletId, cleanupCommand));
         walletsProcessed++;
-      } catch (e) {
-        _log.warning('Failed to cleanup expired reservations for wallet $walletId: $e');
+      } catch (e, stackTrace) {
+        _log.warning(
+            'Failed to cleanup expired reservations for wallet $walletId: $e',
+            e, stackTrace);
       }
     }
 
@@ -203,8 +208,8 @@ class WalletManagerActor extends Actor {
           
         default:
       }
-    } catch (e) {
-      
+    } catch (e, stackTrace) {
+      _log.warning('Failed to handle ${message.runtimeType}: $e', e, stackTrace);
       if (context.sender != null) {
         context.sender!.tell(LocalMessage(
           payload: {'error': e.toString(), 'type': 'wallet_manager_error'},
@@ -273,7 +278,8 @@ class WalletManagerActor extends Actor {
       walletActor.tell(createCommand, sender: context.self);
 
 
-    } catch (e) {
+    } catch (e, stackTrace) {
+      _log.warning('Failed to create wallet ${msg.walletId}: $e', e, stackTrace);
       context.sender?.tell(LocalMessage(payload: WalletCreatedMessage(
         msg.walletId,
         '',
@@ -384,8 +390,10 @@ class WalletManagerActor extends Actor {
         }
       }
 
-    } catch (e) {
-      
+    } catch (e, stackTrace) {
+      _log.warning('Failed to route command for wallet ${msg.walletId}: $e',
+          e, stackTrace);
+
       // Clean up loading state on error
       _loadingWallets.remove(msg.walletId);
       
@@ -433,8 +441,8 @@ class WalletManagerActor extends Actor {
         _touch(walletId);
       } else {
       }
-    } catch (e) {
-      _log.warning('Failed to preload wallet $walletId: $e');
+    } catch (e, stackTrace) {
+      _log.warning('Failed to preload wallet $walletId: $e', e, stackTrace);
       _loadingWallets.remove(walletId);
     }
   }
@@ -448,16 +456,20 @@ class WalletManagerActor extends Actor {
         return;
       }
 
-      // Route to appropriate wallet if specified
-      if (result.targetWalletId != null) {
-        await _processSPVResultForWallet(result.targetWalletId!, result);
-      } else {
-        // If no specific wallet, might need to determine which wallet(s) this affects
-        await _processSPVResultForAllWallets(result);
+      // A result without a target wallet is rejected (A-L3). SPVActor
+      // attributes outputs and spent inputs only to a target wallet, so such
+      // a result says nothing about which wallet it belongs to; recording it
+      // into every loaded wallet credited wallets that were never paid.
+      final walletId = result.targetWalletId;
+      if (walletId == null) {
+        _log.warning('SPV result for ${result.txid} names no target wallet; '
+            'not recorded');
+        return;
       }
-      
-    } catch (e) {
-      _log.warning('Failed to handle SPV validation result: $e');
+      await _processSPVResultForWallet(walletId, result);
+    } catch (e, stackTrace) {
+      _log.warning('Failed to handle SPV validation result ${result.txid}: $e',
+          e, stackTrace);
     }
   }
 
@@ -502,22 +514,6 @@ class WalletManagerActor extends Actor {
         );
         
         walletActor.tell(command);
-      }
-
-      // Register received UTXOs with ARC actor for status tracking
-      if (result.spendableUTXOs.isNotEmpty && _arcActor != null) {
-        final txid = result.txid;
-        final vouts = result.spendableUTXOs
-            .map((utxoData) => utxoData['vout'] as int? ?? 0)
-            .toList();
-        
-        final registerMsg = RegisterTransactionOutputsMessage(
-          txid: txid,
-          walletId: walletId,
-          vouts: vouts,
-        );
-        
-        _arcActor!.tell(registerMsg);
       }
 
     // Process spent UTXOs
@@ -565,21 +561,11 @@ class WalletManagerActor extends Actor {
     } else {
     }
 
-  } catch (e) {
-    _log.warning('Failed to process SPV result for wallet: $e');
+  } catch (e, stackTrace) {
+    _log.warning('Failed to process SPV result ${result.txid} for wallet '
+        '$walletId: $e', e, stackTrace);
   }
 }
-
-  /// Process SPV validation result for all wallets (when target not specified)
-  Future<void> _processSPVResultForAllWallets(SPVValidationResult result) async {
-    // This might happen with BEEF bundles or when we can't determine the target wallet
-    
-    // For now, we could iterate through all wallets, but this should be rare
-    // In a proper implementation, we'd have better ways to route transactions
-    for (final walletId in _walletActors.keys) {
-      await _processSPVResultForWallet(walletId, result);
-    }
-  }
 
   /// Load wallet from event store and spawn actor.
   ///
@@ -706,7 +692,9 @@ class WalletManagerActor extends Actor {
       // Forward to InvoiceManager (which will handle address generation)
       _invoiceManager!.tell(msg, sender: context.sender);
       
-    } catch (e) {
+    } catch (e, stackTrace) {
+      _log.warning('Failed to create invoice for wallet ${msg.walletId}: $e',
+          e, stackTrace);
       context.sender?.tell(InvoiceCreatedMessage(
         invoiceId: '',
         walletId: msg.walletId,

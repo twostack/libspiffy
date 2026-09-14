@@ -270,13 +270,6 @@ class BenfordCoordinatorActor extends Actor {
         ),
       ));
 
-      // 8. Register outputs with ARCActor for status tracking
-      _arcActor.tell(RegisterTransactionOutputsMessage(
-        txid: txid,
-        walletId: walletId,
-        vouts: List.generate(outputAmounts.length, (i) => i),
-      ));
-
       return txid;
 
     } catch (e, stackTrace) {

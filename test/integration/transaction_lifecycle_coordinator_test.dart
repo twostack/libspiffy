@@ -198,8 +198,8 @@ void main() {
       await Future.delayed(const Duration(milliseconds: 500));
 
       // Then: Coordinator should have recovered the pending transaction
-      // Note: We can't directly verify RegisterTransactionOutputsMessage was sent
-      // but we can verify the coordinator was created without errors
+      // Note: the coordinator is a no-op since A-L4 (ARC monitoring is
+      // storage-backed); verify it was created without errors
       final coordinator = libspiffy2.transactionLifecycleCoordinator;
       expect(coordinator, isNotNull);
 

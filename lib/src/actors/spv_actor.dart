@@ -15,6 +15,7 @@ import 'spv_messages.dart' hide ValidateBEEFMessage, BEEFValidationResult;
 import 'wallet_messages.dart';
 import 'invoice_messages.dart';
 import '../utils/network_name.dart';
+import '../utils/unique_id.dart';
 
 /// Actor that handles true SPV validation - receives transactions from counterparties
 /// and validates them using merkle proofs against the block header chain
@@ -771,7 +772,7 @@ class SPVActor extends Actor {
       
       // Create a temporary actor to receive the response
       final responseReceiver = await context.system.spawn(
-        'invoice-query-${DateTime.now().millisecondsSinceEpoch}',
+        uniqueId('invoice-query'), // ms timestamps collided (A-L1)
         () => _InvoiceQueryReceiver(completer),
       );
       

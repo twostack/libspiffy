@@ -1007,8 +1007,10 @@ class LibSpiffyActorSystem {
       // Brief yield to let the actor message pump process preload commands
       await Future.delayed(const Duration(milliseconds: 100));
       
-    } catch (e) {
+    } catch (e, stackTrace) {
       // Non-fatal - wallets will load on-demand if preload fails
+      Logger('LibSpiffyActorSystem')
+          .warning('Wallet aggregate preload failed: $e', e, stackTrace);
     }
   }
 

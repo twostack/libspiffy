@@ -304,7 +304,7 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 
 ### Follow-ups before wave 4
 
-Defects found by the wave 3 lanes and this batch (report section 11, V-8 to V-21), each with
+Defects found by the wave 3 lanes and this batch (report section 11, V-8 to V-24), each with
 a regression test shown to fail on the previous code.
 
 - **Rejected commands (V-8, V-11).** A command an aggregate rejects is
@@ -373,6 +373,17 @@ a regression test shown to fail on the previous code.
   both sides, and a resumed funding broadcast does not record the funding
   in the wallet twice. `LibSpiffyActorSystem.initialize(channelPeerId:)`
   sets the node's channel peer id.
+- **HD key derivation (V-22).** Keys whose derived child private key starts
+  with a zero byte (1 in 256) are derived correctly; before, derivation
+  threw and the wallet could not sign for addresses it had handed out.
+  Existing wallets keep their addresses.
+- **Multisig invoices (V-23).** An invoice paid to its multisig output is
+  marked paid; the output is spendable balance only when the wallet holds
+  enough of its keys.
+- **Contradicted proofs (V-24).** A merkle proof that does not match the
+  stored header at its height is kept with the new status `rejected`: it is
+  never used in a BEEF or as a confirmation, and a confirmation resting
+  only on it is reverted (**Postgres migration v012**).
 
 #### Breaking changes
 
@@ -405,6 +416,15 @@ a regression test shown to fail on the previous code.
   for a recorded txid emits no `TransactionRecordedEvent` (do not wait for
   one). A reserved or pending UTXO can be spent by a transaction the wallet
   recorded as spending it.
+- `MerkleProofStatus.rejected` is a new enum value (exhaustive switches
+  must handle it); `MerkleProof.isCurrent` excludes it; `getMerkleProof`
+  and `getMerkleProofsBatch` no longer return a proof the stored header
+  contradicts. `ReceiveUTXOCommand` rejects any bare multisig output the
+  wallet cannot spend alone, whatever address it names. `InvoicePaidEvent.addressesPaidTo`
+  may contain `p2ms:m-of-n`. A derived private HD node's depth is parent
+  depth + 1 and a derived public node keeps its network (serialized
+  extended keys of derived nodes change; master keys and all derived keys
+  and addresses are unchanged).
 - Hosts opening Isar with their own schema list must regenerate for the new
   `BitcoinUtxoEntity` fields.
 - `ReadModelStorage.storeAncestorTransaction` and
@@ -428,7 +448,8 @@ walletProjection:, broadcastTimeout:)`, `TransactionConfirmedEvent.bumpHex`,
 `fundingTxId` / `fundingOutputIndex` / `fundingTxHex`, `AcceptChannelMessage.serverPeerId`,
 `AcceptChannelCommand.serverPeerId`, `ChannelAcceptedEvent.serverPeerId`,
 `RecordFundingInWalletCommand`, `FundingRecordedInWalletEvent`,
-`ChannelDetailsQueryMessage`, new optional fields on `FullChannelStateResponse`.
+`ChannelDetailsQueryMessage`, new optional fields on `FullChannelStateResponse`,
+`Bip32` (lib/src/utils/bip32.dart), `MerkleProofStatus.rejected`.
 
 ## 2.0.0
 

@@ -9,8 +9,8 @@ import '../models/bitcoin_utxo.dart';
 import '../storage/secure_storage.dart';
 import '../storage/read_model_storage.dart';
 import '../utils/benford_distribution.dart';
+import 'aggregate_signing_client.dart';
 import 'wallet_messages.dart';
-import '../utils/network_name.dart';
 
 /// Coordinator actor for Benford UTXO splitting operations
 /// 
@@ -26,18 +26,22 @@ class BenfordCoordinatorActor extends Actor {
   final _log = Logger('BenfordCoordinatorActor');
   final ActorRef _walletManager;
   final ActorRef _arcActor;
-  final SecureStorage _secureStorage;
   final ReadModelStorage _storage;
+  final Duration _signingReplyTimeout;
 
+  /// [secureStorage] is no longer used: split transactions are signed by the
+  /// wallet aggregate, which alone reads key material (audit A-H8).
   BenfordCoordinatorActor({
     required ActorRef walletManager,
     required ActorRef arcActor,
-    required SecureStorage secureStorage,
+    @Deprecated('Unused: signing is delegated to the wallet aggregate')
+    SecureStorage? secureStorage,
     required ReadModelStorage storage,
+    Duration signingReplyTimeout = const Duration(seconds: 20),
   })  : _walletManager = walletManager,
         _arcActor = arcActor,
-        _secureStorage = secureStorage,
-        _storage = storage;
+        _storage = storage,
+        _signingReplyTimeout = signingReplyTimeout;
 
   @override
   void preStart() {
@@ -182,6 +186,7 @@ class BenfordCoordinatorActor extends Actor {
       final outputAddresses = await _generateAddresses(
         walletId: walletId,
         count: targetCount,
+        sourceAddress: sourceUtxo.address,
       );
 
       // 5. Build and sign transaction
@@ -288,6 +293,7 @@ class BenfordCoordinatorActor extends Actor {
   Future<List<String>> _generateAddresses({
     required String walletId,
     required int count,
+    required String sourceAddress,
   }) async {
     final addresses = <String>[];
     
@@ -298,19 +304,11 @@ class BenfordCoordinatorActor extends Actor {
     }
 
 
-    // For WIF wallets, all outputs go to the same address
+    // A WIF wallet has a single key and therefore a single address, the one
+    // the source UTXO sits on: all outputs go back to it.
     if (wallet['walletType'] == 'wif') {
-      final wifKey = await _secureStorage.getWIF(walletId);
-      if (wifKey == null) {
-        throw StateError('WIF key not found for wallet: $walletId');
-      }
-      final privKey = dartsv.SVPrivateKey.fromWIF(wifKey);
-      final networkType = NetworkName.toDartsv(
-          (wallet['network'] ?? wallet['networkType']) as String?);
-      final address = dartsv.Address.fromPublicKey(privKey.publicKey, networkType);
-      
       for (int i = 0; i < count; i++) {
-        addresses.add(address.toString());
+        addresses.add(sourceAddress);
       }
       return addresses;
     }
@@ -368,7 +366,7 @@ class BenfordCoordinatorActor extends Actor {
     return addresses;
   }
 
-  /// Build and sign a split transaction
+  /// Build a split transaction and have the wallet aggregate sign it.
   Future<Map<String, dynamic>?> _buildAndSignTransaction({
     required String walletId,
     required BitcoinUtxo sourceUtxo,
@@ -377,40 +375,25 @@ class BenfordCoordinatorActor extends Actor {
     required BigInt feeRate,
   }) async {
     try {
-      // Get private key for source UTXO
-      final privateKey = await _getPrivateKeyForAddress(
-        walletId: walletId,
-        address: sourceUtxo.address,
-      );
-
-      // Build transaction
+      // Build the unsigned transaction. The wallet aggregate, which alone
+      // holds key material (audit A-H8), fills in the signature and public
+      // key for the input, using the derivation path (index and chain) the
+      // read model records for the source address.
       final txBuilder = dartsv.TransactionBuilder();
 
-      // Create locking script for the UTXO
       final lockedAddress = dartsv.Address.fromBase58(sourceUtxo.address);
       final lockingScript = dartsv.P2PKHLockBuilder.fromAddress(lockedAddress)
           .getScriptPubkey();
-
-      // Create signer
-      final signer = dartsv.DefaultTransactionSigner(
-        dartsv.SighashType.SIGHASH_ALL.value | dartsv.SighashType.SIGHASH_FORKID.value,
-        privateKey,
-      );
-
-      // Create UTXO outpoint
       final outpoint = dartsv.TransactionOutpoint(
         sourceUtxo.txid,
         sourceUtxo.vout,
         sourceUtxo.satoshis,
         lockingScript,
       );
-
-      // Add input with signer
-      txBuilder.spendFromOutpointWithSigner(
-        signer,
+      txBuilder.spendFromOutpoint(
         outpoint,
         dartsv.TransactionInput.MAX_SEQ_NUMBER,
-        dartsv.P2PKHUnlockBuilder(privateKey.publicKey),
+        dartsv.P2PKHUnlockBuilder(null),
       );
 
       // Add outputs
@@ -424,10 +407,20 @@ class BenfordCoordinatorActor extends Actor {
           .withFeePerKb(feeRate.toInt())
           .withOption(dartsv.TransactionOption.DISABLE_DUST_OUTPUTS);
 
-      // Build and sign transaction
-      final signedTx = txBuilder.build(false); // Skip sanity checks
-      final txid = signedTx.id;
-      final txHex = signedTx.serialize();
+      final unsignedTx = txBuilder.build(false); // Skip sanity checks
+
+      final signedHex = await AggregateSigningClient(
+        system: context.system,
+        walletManager: _walletManager,
+        storage: _storage,
+        replyTimeout: _signingReplyTimeout,
+      ).signTransaction(
+        walletId: walletId,
+        transactionId: unsignedTx.id,
+        unsignedTxHex: unsignedTx.serialize(),
+        utxos: [sourceUtxo],
+      );
+      final signedTx = dartsv.Transaction.fromHex(signedHex);
 
       // Calculate actual fee
       final actualFee = sourceUtxo.satoshis - outputAmounts.fold<BigInt>(
@@ -436,70 +429,14 @@ class BenfordCoordinatorActor extends Actor {
       );
 
       return {
-        'txid': txid,
-        'txHex': txHex,
+        'txid': signedTx.id,
+        'txHex': signedHex,
         'actualFee': actualFee,
       };
     } catch (e) {
+      _log.warning('Failed to build or sign the split of ${sourceUtxo.key}: $e');
       return null;
     }
-  }
-
-  /// Get private key for an address
-  Future<dartsv.SVPrivateKey> _getPrivateKeyForAddress({
-    required String walletId,
-    required String address,
-  }) async {
-    // Get wallet info
-    final wallet = await _storage.getWallet(walletId);
-    if (wallet == null) {
-      throw StateError('Wallet not found: $walletId');
-    }
-
-
-    // For WIF wallets
-    if (wallet['walletType'] == 'wif') {
-      final wifKey = await _secureStorage.getWIF(walletId);
-      if (wifKey == null) {
-        throw StateError('WIF key not found for wallet: $walletId');
-      }
-      return dartsv.SVPrivateKey.fromWIF(wifKey);
-    }
-
-    // For HD wallets, derive the key
-    final xpriv = await _secureStorage.getXPriv(walletId);
-    if (xpriv == null) {
-      throw StateError('Extended private key not found for wallet: $walletId');
-    }
-
-    // Try to get derivation index from UTXO first
-    int? derivationIndex;
-    final utxos = await _storage.getUTXOs(walletId);
-    final utxo = utxos.firstWhere(
-      (u) => u.address == address,
-      orElse: () => throw StateError('UTXO with address not found: $address'),
-    );
-    derivationIndex = utxo.derivationIndex;
-    
-    // If UTXO doesn't have derivationIndex, look up from address metadata
-    if (derivationIndex == null) {
-      final addressMeta = await _storage.getAddressMetadata(walletId, address);
-      if (addressMeta != null) {
-        derivationIndex = addressMeta.derivationIndex;
-      }
-    }
-    
-    // Default to 0 only if still unknown (shouldn't happen for properly imported wallets)
-    if (derivationIndex == null) {
-      derivationIndex = 0;
-    }
-
-    // Derive the private key using derivation index
-    final hdPrivateKey = dartsv.HDPrivateKey.fromXpriv(xpriv);
-    final derivationPath = 'm/0/$derivationIndex';
-    final derivedKey = hdPrivateKey.deriveChildKey(derivationPath);
-    
-    return derivedKey.privateKey;
   }
 
   /// Create script pubkey hex for an address

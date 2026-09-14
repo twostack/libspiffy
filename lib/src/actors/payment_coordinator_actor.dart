@@ -16,7 +16,6 @@ import '../plugin/plugin_registry.dart';
 import '../plugin/plugin_types.dart';
 import '../plugin/transaction_builder_plugin.dart';
 import '../plugin/provisioned_transaction.dart';
-import '../services/callback_transaction_signer.dart';
 import '../storage/read_model_storage.dart';
 import '../storage/secure_storage.dart';
 import '../services/ancestor_chain_service.dart';
@@ -25,9 +24,9 @@ import '../utils/bump.dart';
 import '../utils/crypto_utils.dart';
 import '../core/wallet_commands.dart';
 import '../services/transaction/builder/op_return_lockbuilder.dart';
+import 'aggregate_signing_client.dart';
 import 'payment_messages.dart';
 import 'wallet_messages.dart';
-import '../utils/network_name.dart';
 
 /// Coordinator actor for payment operations with SPV BEEF construction
 /// 
@@ -41,7 +40,6 @@ import '../utils/network_name.dart';
 class PaymentCoordinatorActor extends Actor {
   static final _log = Logger('PaymentCoordinatorActor');
   final ReadModelStorage _storage;
-  final SecureStorage _secureStorage;
   final ActorRef _walletManager;
   final ActorRef _walletProjection;
   late final AncestorChainService _ancestorService;
@@ -54,17 +52,25 @@ class PaymentCoordinatorActor extends Actor {
   /// Injectable so tests can exercise the no-reply path quickly.
   final Duration _reservationReplyTimeout;
 
+  /// How long to wait for the wallet aggregate's reply to each signing
+  /// request (whole transaction, one input, or a public-key probe).
+  final Duration _signingReplyTimeout;
+
+  /// [secureStorage] is no longer used: every signature is produced by the
+  /// wallet aggregate, which alone reads key material (audit A-H8).
   PaymentCoordinatorActor({
     required ActorRef walletManager,
     required ActorRef walletProjection,
     required ReadModelStorage storage,
-    required SecureStorage secureStorage,
+    @Deprecated('Unused: signing is delegated to the wallet aggregate')
+    SecureStorage? secureStorage,
     Duration reservationReplyTimeout = const Duration(seconds: 10),
+    Duration signingReplyTimeout = const Duration(seconds: 20),
   })  : _storage = storage,
-        _secureStorage = secureStorage,
         _walletManager = walletManager,
         _walletProjection = walletProjection,
-        _reservationReplyTimeout = reservationReplyTimeout {
+        _reservationReplyTimeout = reservationReplyTimeout,
+        _signingReplyTimeout = signingReplyTimeout {
     _ancestorService = AncestorChainService(storage: storage);
   }
 
@@ -96,8 +102,6 @@ class PaymentCoordinatorActor extends Actor {
     final originalSender = context.sender;
     // Calculate effective amount (from outputs or legacy amount)
     final effectiveAmount = msg.effectiveAmount;
-    // Fee estimate from message or default
-    final feeEstimate = msg.feeEstimateSats ?? BigInt.from(1000);
 
     _log.info('[pay ${msg.invoiceId}] Starting payment: amount=$effectiveAmount sats');
 
@@ -133,6 +137,44 @@ class PaymentCoordinatorActor extends Actor {
       return;
     }
 
+    // From here on the reservation is released on every outcome except a
+    // payment handed back to the caller (audit A-M7): failures reported by
+    // the steps below and any unexpected exception alike.
+    var paymentDelivered = false;
+    try {
+      paymentDelivered = await _payWithReservedUtxos(
+        msg: msg,
+        selectedUtxos: selectedUtxos,
+        originalSender: originalSender,
+        totalSw: totalSw,
+      );
+    } catch (e, stackTrace) {
+      _log.warning('[pay ${msg.invoiceId}] failed after reserving UTXOs: $e\n$stackTrace');
+      _sendError(msg.invoiceId, 'Internal error: $e', sender: originalSender);
+    } finally {
+      if (!paymentDelivered) {
+        _releaseReservation(walletId: msg.walletId, reservationId: reservationId);
+      }
+    }
+  }
+
+  /// Builds, signs, records and packages a payment funded by
+  /// [selectedUtxos], which the caller has reserved.
+  ///
+  /// Returns true once a successful [BEEFPaymentResponse] has been sent.
+  /// Returns false after reporting a failure to [originalSender]; throws on
+  /// unexpected errors. The caller owns the reservation in every case.
+  Future<bool> _payWithReservedUtxos({
+    required PayInvoiceMessage msg,
+    required List<BitcoinUtxo> selectedUtxos,
+    required ActorRef? originalSender,
+    required Stopwatch totalSw,
+  }) async {
+    final effectiveAmount = msg.effectiveAmount;
+    // Fee estimate from message or default
+    final feeEstimate = msg.feeEstimateSats ?? BigInt.from(1000);
+    final signing = _signingClient();
+
     // Check if this payment will be handled by a TransactionBuilderPlugin.
     // Plugin-built transactions manage their own inputs — ancestor chain
     // validation and BEEF construction are not applicable.
@@ -150,9 +192,8 @@ class PaymentCoordinatorActor extends Actor {
       final bestHeight = await _storage.getBestHeight();
       if (bestHeight == 0) {
         _log.warning('[pay ${msg.invoiceId}] No block headers synced yet - cannot construct BEEF payment');
-        _releaseReservation(walletId: msg.walletId, reservationId: reservationId);
         _sendError(msg.invoiceId, 'No block headers synced yet - cannot construct BEEF payment', sender: originalSender);
-        return;
+        return false;
       }
 
       // 3. CRITICAL: Validate complete ancestor chain using AncestorChainService
@@ -164,19 +205,16 @@ class PaymentCoordinatorActor extends Actor {
           'ancestors=${ancestorResult.isValid ? ancestorResult.ancestorTransactions.length : "N/A"}, '
           'proofs=${ancestorResult.isValid ? ancestorResult.merkleProofs.length : "N/A"}');
       if (!ancestorResult.isValid) {
-        _releaseReservation(walletId: msg.walletId, reservationId: reservationId);
         _sendError(
           msg.invoiceId,
           'Incomplete transaction chain: ${ancestorResult.error}',
           sender: originalSender,
         );
-        return;
+        return false;
       }
     } else {
       ancestorResult = null;
     }
-
-    final keyInfo = await _getPublicKeysForUTXOs(msg.walletId, selectedUtxos);
 
     // 4. Build payment transaction (with outputs if provided)
     // Returns (transaction, preSigned, witnessTx) — plugin-built transactions are already signed.
@@ -189,41 +227,38 @@ class PaymentCoordinatorActor extends Actor {
       legacyAmount: msg.amount,
       changeAddress: msg.changeAddress,
       walletId: msg.walletId,
-      publicKeys: keyInfo.publicKeys,
+      signing: signing,
     );
 
     _log.info('[pay ${msg.invoiceId}] buildTx: ${buildSw.elapsedMilliseconds}ms, preSigned=$preSigned');
     if (paymentTx == null) {
-      _releaseReservation(walletId: msg.walletId, reservationId: reservationId);
       _sendError(msg.invoiceId, 'Failed to build payment transaction', sender: originalSender);
-      return;
+      return false;
     }
 
     late final BitcoinTransaction signedPaymentTx;
 
     if (preSigned) {
-      // TransactionBuilderPlugin already built and signed the transaction
+      // TransactionBuilderPlugin already built the transaction, with every
+      // signature produced by the wallet aggregate.
       signedPaymentTx = paymentTx;
     } else {
-      // 4b. Sign the transaction
+      // 4b. The wallet aggregate signs every input with its own key.
       final signSw = Stopwatch()..start();
-      final utxoKeys = selectedUtxos.map((u) => '${u.txid}:${u.vout}').toList();
-      final (signedTxHex, signError) = await _signTransaction(
-        walletId: msg.walletId,
-        txid: paymentTx.txid,
-        unsignedTxHex: paymentTx.rawHex,
-        utxoKeys: utxoKeys,
-        publicKeys: keyInfo.publicKeys,
-        addresses: keyInfo.addresses,
-        derivationIndices: keyInfo.derivationIndices,
-      );
-
-      _log.info('[pay ${msg.invoiceId}] signing: ${signSw.elapsedMilliseconds}ms');
-      if (signedTxHex == null) {
-        _releaseReservation(walletId: msg.walletId, reservationId: reservationId);
-        _sendError(msg.invoiceId, 'Failed to sign transaction: $signError', sender: originalSender);
-        return;
+      final String signedTxHex;
+      try {
+        signedTxHex = await signing.signTransaction(
+          walletId: msg.walletId,
+          transactionId: paymentTx.txid,
+          unsignedTxHex: paymentTx.rawHex,
+          utxos: selectedUtxos,
+        );
+      } on AggregateSigningException catch (e) {
+        _log.warning('[sign] Failed: $e');
+        _sendError(msg.invoiceId, 'Failed to sign transaction: $e', sender: originalSender);
+        return false;
       }
+      _log.info('[pay ${msg.invoiceId}] signing: ${signSw.elapsedMilliseconds}ms');
 
       // IMPORTANT: TXID changes after signing because scriptSig changes the raw bytes
       final signedDartsvTx = dartsv.Transaction.fromHex(signedTxHex);
@@ -256,9 +291,13 @@ class PaymentCoordinatorActor extends Actor {
     final recipientAddresses = _getRecipientAddresses(msg.outputs, msg.addresses);
 
     final spentUtxoKeys = selectedUtxos.map((u) => '${u.txid}:${u.vout}').toList();
-    // Phase 4: when this TX was signed by a plugin's CallbackTransactionSigner
-    // (preSigned=true), emit a TransactionSignedEvent alongside the recording
-    // for audit-trail parity with the SignTransactionCommand path.
+    final primaryDerivationIndex = preSigned
+        ? (await signing.pathForAddress(msg.walletId, selectedUtxos.first.address))
+            ?.derivationIndex
+        : null;
+    // Phase 4: when this TX was built by a plugin (preSigned=true), emit a
+    // TransactionSignedEvent alongside the recording for audit-trail parity
+    // with the SignTransactionCommand path.
     await _recordOutgoingTransaction(
       walletId: msg.walletId,
       transaction: signedPaymentTx,
@@ -272,9 +311,7 @@ class PaymentCoordinatorActor extends Actor {
           ? {
               'signerType': 'plugin-callback',
               'role': 'primary',
-              'derivationIndex': keyInfo.derivationIndices.isNotEmpty
-                  ? keyInfo.derivationIndices.first
-                  : null,
+              'derivationIndex': primaryDerivationIndex,
             }
           : null,
     );
@@ -303,9 +340,7 @@ class PaymentCoordinatorActor extends Actor {
             signerMetadata: {
               'signerType': 'plugin-callback',
               'role': 'witness',
-              'derivationIndex': keyInfo.derivationIndices.isNotEmpty
-                  ? keyInfo.derivationIndices.first
-                  : null,
+              'derivationIndex': primaryDerivationIndex,
             },
           );
         }
@@ -366,8 +401,10 @@ class PaymentCoordinatorActor extends Actor {
             spentUtxoKeys: spentUtxoKeys,
           ));
         }
+        return true;
       } catch (e) {
         _sendError(msg.invoiceId, 'Failed to package plugin transaction: $e', sender: originalSender);
+        return false;
       }
     } else {
       // Standard transaction — full BEEF with ancestor chain and merkle proofs.
@@ -406,11 +443,20 @@ class PaymentCoordinatorActor extends Actor {
             spentUtxoKeys: spentUtxoKeys,
           ));
         }
+        return true;
       } catch (e) {
         _sendError(msg.invoiceId, 'Failed to create BEEF: $e', sender: originalSender);
+        return false;
       }
     }
   }
+
+  AggregateSigningClient _signingClient() => AggregateSigningClient(
+        system: context.system,
+        walletManager: _walletManager,
+        storage: _storage,
+        replyTimeout: _signingReplyTimeout,
+      );
 
   /// Extract recipient addresses from outputs or legacy addresses
   List<String> _getRecipientAddresses(List<InvoiceOutputSpec>? outputs, List<String> legacyAddresses) {
@@ -473,7 +519,7 @@ class PaymentCoordinatorActor extends Actor {
     required BigInt legacyAmount,
     String? changeAddress,
     required String walletId,
-    required List<dartsv.SVPublicKey> publicKeys,
+    required AggregateSigningClient signing,
   }) async {
     try {
       // Calculate total input
@@ -499,61 +545,21 @@ class PaymentCoordinatorActor extends Actor {
           if (pluginInstance is TransactionBuilderPlugin &&
               pluginOutput.params.containsKey('action') &&
               pluginInstance.supportedActions.contains(pluginOutput.params['action'])) {
-            // Retrieve the signing key from secure storage and create a
-            // CallbackTransactionSigner. The private key stays inside this
-            // closure — the plugin receives a TransactionSigner interface
-            // but cannot extract the key.
-            final xpriv = await _secureStorage.getXPriv(walletId);
-            final wif = await _secureStorage.getWIF(walletId);
-            final keyMaterial = xpriv ?? wif;
-            if (keyMaterial == null) {
-              throw Exception('No signing key available for wallet $walletId');
+            // Every signature the plugin asks for is produced by the wallet
+            // aggregate (audit A-H8): the coordinator holds no key material.
+            // Each funding UTXO's derivation path (index and chain) comes from
+            // the read model's address metadata; its public key is the one the
+            // aggregate proves it controls the address with.
+            final fundingPaths = <SigningPath>[];
+            final publicKeys = <dartsv.SVPublicKey>[];
+            final keysByAddress = <String, dartsv.SVPublicKey>{};
+            for (final utxo in selectedUtxos) {
+              final path = await signing.pathForAddress(walletId, utxo.address) ??
+                  SigningPath(utxo.derivationIndex ?? 0);
+              fundingPaths.add(path);
+              publicKeys.add(keysByAddress[utxo.address] ??=
+                  await signing.publicKeyForAddress(walletId, utxo.address, path: path));
             }
-
-            // Derive the private key for the funding UTXO's derivation index.
-            //
-            // SOURCE OF TRUTH: `addressMetadata.derivationIndex` (looked up
-            // by address). This is what `_getPublicKeysForUTXOs` uses to
-            // derive `publicKeys.first`, and therefore the key whose hash
-            // appears in the UTXO's P2PKH scriptPubKey.
-            //
-            // `selectedUtxos.first.derivationIndex` is a CACHED field on the
-            // UTXO entity. It can be null on freshly imported wallets or
-            // stale on legacy entries — falling back to `?? 0` silently
-            // signs with the wrong key, which CHECKSIG-fails with ARC 461
-            // (and cascades 460 to all downstream TXs in the chain).
-            late dartsv.SVPrivateKey signingKey;
-            if (xpriv != null) {
-              final addrMeta = await _storage.getAddressMetadata(
-                  walletId, selectedUtxos.first.address);
-              if (addrMeta == null) {
-                throw Exception(
-                    'No address metadata for ${selectedUtxos.first.address}');
-              }
-              final derivationIndex = addrMeta.derivationIndex ?? 0;
-              final hdKey = dartsv.HDPrivateKey.fromXpriv(xpriv);
-              final derived = hdKey
-                  .deriveChildNumber(0)
-                  .deriveChildNumber(derivationIndex);
-              signingKey = derived.privateKey;
-            } else {
-              signingKey = dartsv.SVPrivateKey.fromWIF(wif!);
-            }
-
-            final sigHashType = dartsv.SighashType.SIGHASH_ALL.value |
-                dartsv.SighashType.SIGHASH_FORKID.value;
-
-            // Create callback signer — key is captured in the closure, never
-            // exposed to the plugin through any accessible field or parameter.
-            final callbackSigner = CallbackTransactionSigner(
-              sigHashType: sigHashType,
-              onSign: (Uint8List sighash, int inputIndex) {
-                final sig = dartsv.SVSignature.fromPrivateKey(signingKey);
-                sig.nhashtype = sigHashType;
-                sig.sign(hex.encode(sighash));
-                return Uint8List.fromList(sig.toDER());
-              },
-            );
 
             // Check if plugin needs more funding UTXOs than selected
             final action = pluginOutput.params['action'] as String;
@@ -569,7 +575,8 @@ class PaymentCoordinatorActor extends Actor {
               final provision = await _autoProvisionForPlugin(
                 sourceUtxo: selectedUtxos.first,
                 count: requiredCount,
-                signer: callbackSigner,
+                signing: signing,
+                sourcePath: fundingPaths.first,
                 publicKey: publicKeys.first,
                 walletId: walletId,
               );
@@ -578,21 +585,23 @@ class PaymentCoordinatorActor extends Actor {
               ancestorTxids = provision.ancestorTxids;
             }
 
-            final request = PluginTransactionRequest(
-              fundingUtxos: pluginFundingUtxos,
-              signer: callbackSigner,
-              publicKeys: pluginPublicKeys,
-              params: pluginOutput.params,
-              transactionLookup: (txid) async {
-                // All auto-provisioned ancestors are persisted before
-                // _autoProvisionForPlugin returns, so a single storage read
-                // is authoritative. No in-memory shortcut.
-                final tx = await _storage.getTransaction(txid);
-                return tx?.rawHex;
-              },
+            final result = await signing.buildWithSigner(
+              walletId: walletId,
+              fallbackPath: fundingPaths.first,
+              build: (signer) => pluginInstance.buildTransaction(PluginTransactionRequest(
+                fundingUtxos: pluginFundingUtxos,
+                signer: signer,
+                publicKeys: pluginPublicKeys,
+                params: pluginOutput.params,
+                transactionLookup: (txid) async {
+                  // All auto-provisioned ancestors are persisted before
+                  // _autoProvisionForPlugin returns, so a single storage read
+                  // is authoritative. No in-memory shortcut.
+                  final tx = await _storage.getTransaction(txid);
+                  return tx?.rawHex;
+                },
+              )),
             );
-
-            final result = await pluginInstance.buildTransaction(request);
 
             // Validate primary TX structure
             if (!pluginInstance.validateTransactionStructure(result.primaryTx, action)) {
@@ -710,10 +719,10 @@ class PaymentCoordinatorActor extends Actor {
       final changeAddress_ = dartsv.Address.fromBase58(changeAddr);
       txBuilder.sendChangeToPKH(changeAddress_);
 
-      // Add inputs from selected UTXOs with public keys
+      // Add inputs from selected UTXOs. They stay unsigned: the wallet
+      // aggregate fills in each input's signature and public key.
       for (int i = 0; i < selectedUtxos.length; i++) {
         final utxo = selectedUtxos[i];
-        final publicKey = publicKeys[i];
 
         final lockedAddress = dartsv.Address.fromBase58(utxo.address);
         final lockingScript = dartsv.P2PKHLockBuilder.fromAddress(lockedAddress).getScriptPubkey();
@@ -725,8 +734,7 @@ class PaymentCoordinatorActor extends Actor {
           lockingScript,
         );
 
-        // Prime the scriptSig with the public key for this UTXO
-        final unlockBuilder = dartsv.P2PKHUnlockBuilder(publicKey);
+        final unlockBuilder = dartsv.P2PKHUnlockBuilder(null);
         txBuilder.spendFromOutpoint(outpoint, dartsv.TransactionInput.MAX_SEQ_NUMBER, unlockBuilder);
       }
 
@@ -769,147 +777,6 @@ class PaymentCoordinatorActor extends Actor {
     }
   }
 
-
-  /// Get public keys for all UTXOs being spent
-  /// 
-  /// For each UTXO, this method:
-  /// Returns (publicKeys, addresses, derivationIndices) for UTXOs.
-  /// Derivation indices are from the read model and can be passed to SignTransactionCommand.
-  Future<({List<dartsv.SVPublicKey> publicKeys, List<String> addresses, List<int> derivationIndices})> _getPublicKeysForUTXOs(
-    String walletId,
-    List<BitcoinUtxo> utxos,
-  ) async {
-    final publicKeys = <dartsv.SVPublicKey>[];
-    final addresses = <String>[];
-    final derivationIndices = <int>[];
-
-    // Get the wallet's extended private key
-    dartsv.HDPrivateKey? hdPrivateKey;
-
-    final xpriv = await _secureStorage.getXPriv(walletId);
-    if (xpriv != null) {
-      // Parse the extended private key directly
-      hdPrivateKey = dartsv.HDPrivateKey.fromXpriv(xpriv);
-    } else {
-      // Try mnemonic if xpriv not available (e.g., wallet created from seed phrase)
-      final mnemonic = await _secureStorage.getMnemonic(walletId);
-      if (mnemonic != null) {
-        // Get wallet network type from storage
-        final walletData = await _storage.getWallet(walletId);
-        final networkType = NetworkName.toDartsv(
-            (walletData?['network'] ?? walletData?['networkType']) as String?);
-
-        // Derive HD private key from mnemonic, with the BIP39 passphrase the
-        // wallet was created with (stored by the aggregate alongside it).
-        final passphrase =
-            await _secureStorage.getString('wallet_passphrase_$walletId') ?? '';
-        hdPrivateKey = dartsv.HDPrivateKey.fromSeed(
-          dartsv.Mnemonic().toSeedHex(mnemonic, passphrase),
-          networkType,
-        );
-      }
-    }
-
-    // WIF wallet: single private key, no HD derivation
-    if (hdPrivateKey == null) {
-      final wif = await _secureStorage.getWIF(walletId);
-      if (wif == null) {
-        throw Exception('Wallet xpriv, mnemonic, or WIF not found in secure storage');
-      }
-      final privateKey = dartsv.SVPrivateKey.fromWIF(wif);
-      final publicKey = privateKey.publicKey;
-      // All UTXOs in a WIF wallet belong to the same key
-      for (final utxo in utxos) {
-        publicKeys.add(publicKey);
-        addresses.add(utxo.address);
-        derivationIndices.add(0); // WIF has no derivation
-      }
-      return (publicKeys: publicKeys, addresses: addresses, derivationIndices: derivationIndices);
-    }
-
-    // HD wallet: derive public key per UTXO using derivation path
-    for (final utxo in utxos) {
-      // Get address metadata to find derivation index
-      final addressMetadata = await _storage.getAddressMetadata(walletId, utxo.address);
-      if (addressMetadata == null) {
-        throw Exception('Address metadata not found for ${utxo.address}');
-      }
-
-      final derivationPath = "m/0/${addressMetadata.derivationIndex}";
-
-      final derivedHdKey = hdPrivateKey.deriveChildKey(derivationPath);
-      final privateKey = derivedHdKey.privateKey;
-      final publicKey = privateKey.publicKey;
-
-      publicKeys.add(publicKey);
-      addresses.add(utxo.address);
-      derivationIndices.add(addressMetadata.derivationIndex ?? 0);
-    }
-
-    return (publicKeys: publicKeys, addresses: addresses, derivationIndices: derivationIndices);
-  }
-
-  /// Request wallet to sign the transaction
-  /// Returns (signedHex, error) — signedHex is null on failure
-  Future<(String?, String?)> _signTransaction({
-    required String walletId,
-    required String txid,
-    required String unsignedTxHex,
-    required List<String> utxoKeys,
-    required List<dartsv.SVPublicKey> publicKeys,
-    required List<String> addresses,
-    required List<int> derivationIndices,
-  }) async {
-
-    final completer = Completer<TransactionSignedResponse>();
-    final receiver = await context.system.spawn(
-      'sign-receiver-$txid',
-      () => _SigningReceiverActor(completer),
-    );
-
-    // Send SignTransactionCommand to wallet
-    _walletManager.tell(
-      WalletCommandMessage(
-        walletId,
-        SignTransactionCommand(
-          walletId: walletId,
-          transactionId: txid,
-          rawTransaction: unsignedTxHex,
-          utxoKeys: utxoKeys,
-          publicKeys: publicKeys.map((key) => key.toHex()).toList(),
-          addresses: addresses,
-          derivationIndices: derivationIndices,
-        ),
-      ),
-      sender: receiver,
-    );
-    
-    // Wait for signing response
-    try {
-      final response = await completer.future.timeout(
-        Duration(seconds: 20),
-        onTimeout: () {
-          return TransactionSignedResponse(
-            walletId: walletId,
-            txid: txid,
-            signedHex: '',
-            success: false,
-            error: 'Signing timeout',
-          );
-        },
-      );
-
-      if (!response.success) {
-        _log.warning('[sign] Failed: ${response.error}');
-        return (null, response.error ?? 'Unknown signing error');
-      }
-
-      return (response.signedHex, null);
-    } finally {
-      // Clean up temporary receiver actor to prevent resource leak
-      await context.system.stop(receiver);
-    }
-  }
 
   /// Get block headers for validation
   Future<List<spiffy.BlockHeader>> _getBlockHeaders(List<int> blockHeights) async {
@@ -1173,7 +1040,8 @@ class PaymentCoordinatorActor extends Actor {
   })> _autoProvisionForPlugin({
     required BitcoinUtxo sourceUtxo,
     required int count,
-    required dartsv.TransactionSigner signer,
+    required AggregateSigningClient signing,
+    required SigningPath sourcePath,
     required dartsv.SVPublicKey publicKey,
     required String walletId,
   }) async {
@@ -1201,53 +1069,65 @@ class PaymentCoordinatorActor extends Actor {
     final inputSats = sourceUtxo.satoshis;
     final perEarmark = (inputSats - splitFee) ~/ BigInt.from(count);
 
-    // Level 1: Split TX
-    final splitBuilder = dartsv.TransactionBuilder()
-        .spendFromTxnWithSigner(signer, sourceTx, sourceUtxo.vout,
-            dartsv.TransactionInput.MAX_SEQ_NUMBER, dartsv.P2PKHUnlockBuilder(publicKey));
+    // Build the whole tree with signatures from the wallet aggregate. Every
+    // input spends the source address, so every signature comes from
+    // [sourcePath]. Nothing is recorded until the tree is fully signed.
+    final (splitTx, earmarkTxs) = await signing.buildWithSigner(
+      walletId: walletId,
+      fallbackPath: sourcePath,
+      build: (signer) async {
+        // Level 1: Split TX
+        final splitBuilder = dartsv.TransactionBuilder()
+            .spendFromTxnWithSigner(signer, sourceTx, sourceUtxo.vout,
+                dartsv.TransactionInput.MAX_SEQ_NUMBER, dartsv.P2PKHUnlockBuilder(publicKey));
 
-    for (int i = 0; i < count; i++) {
-      splitBuilder.spendToLockBuilder(dartsv.P2PKHLockBuilder.fromAddress(address), perEarmark);
-    }
-    final changeSats = inputSats - splitFee - perEarmark * BigInt.from(count);
-    if (changeSats > dust) {
-      splitBuilder.spendToLockBuilder(dartsv.P2PKHLockBuilder.fromAddress(address), changeSats);
-    }
+        for (int i = 0; i < count; i++) {
+          splitBuilder.spendToLockBuilder(dartsv.P2PKHLockBuilder.fromAddress(address), perEarmark);
+        }
+        final changeSats = inputSats - splitFee - perEarmark * BigInt.from(count);
+        if (changeSats > dust) {
+          splitBuilder.spendToLockBuilder(dartsv.P2PKHLockBuilder.fromAddress(address), changeSats);
+        }
 
-    final splitTx = splitBuilder.build(false);
+        final split = splitBuilder.build(false);
+
+        // Level 2: build all earmark TXs in memory before recording, so we can
+        // record the split first and have it queryable by the time each earmark
+        // references it.
+        final earmarks = <dartsv.Transaction>[];
+        for (int i = 0; i < count; i++) {
+          final splitOutputSats = split.outputs[i].satoshis;
+          final fundingSats = splitOutputSats - dust - earmarkFee;
+
+          // Fresh unlocker per TX — TransactionBuilder mutates during build
+          final earmarkBuilder = dartsv.TransactionBuilder()
+              .spendFromTxnWithSigner(signer, split, i,
+                  dartsv.TransactionInput.MAX_SEQ_NUMBER, dartsv.P2PKHUnlockBuilder(publicKey));
+
+          earmarkBuilder.spendToLockBuilder(
+              dartsv.P2PKHLockBuilder.fromAddress(address), dust);
+          earmarkBuilder.spendToLockBuilder(
+              dartsv.P2PKHLockBuilder.fromAddress(address), fundingSats);
+          earmarkBuilder.withOption(dartsv.TransactionOption.DISABLE_DUST_OUTPUTS);
+
+          earmarks.add(earmarkBuilder.build(false));
+        }
+        return (split, earmarks);
+      },
+    );
     _log.info('[provision] split TX: ${splitTx.id}, $count earmark outputs');
 
-    // Level 2: build all earmark TXs in memory before recording, so we can
-    // record the split first and have it queryable by the time each earmark
-    // references it.
-    final earmarkTxs = <dartsv.Transaction>[];
     final earmarkUtxos = <BitcoinUtxo>[];
-
     for (int i = 0; i < count; i++) {
-      final splitOutputSats = splitTx.outputs[i].satoshis;
-      final fundingSats = splitOutputSats - dust - earmarkFee;
-
-      // Fresh unlocker per TX — TransactionBuilder mutates during build
-      final earmarkBuilder = dartsv.TransactionBuilder()
-          .spendFromTxnWithSigner(signer, splitTx, i,
-              dartsv.TransactionInput.MAX_SEQ_NUMBER, dartsv.P2PKHUnlockBuilder(publicKey));
-
-      earmarkBuilder.spendToLockBuilder(
-          dartsv.P2PKHLockBuilder.fromAddress(address), dust);
-      earmarkBuilder.spendToLockBuilder(
-          dartsv.P2PKHLockBuilder.fromAddress(address), fundingSats);
-      earmarkBuilder.withOption(dartsv.TransactionOption.DISABLE_DUST_OUTPUTS);
-
-      final earmarkTx = earmarkBuilder.build(false);
-      earmarkTxs.add(earmarkTx);
-
+      final earmarkTx = earmarkTxs[i];
+      final fundingSats = earmarkTx.outputs[1].satoshis;
       earmarkUtxos.add(BitcoinUtxo.create(
         txid: earmarkTx.id,
         vout: 1,
         satoshis: fundingSats,
         scriptPubKey: sourceUtxo.scriptPubKey,
         address: sourceUtxo.address,
-        derivationIndex: sourceUtxo.derivationIndex,
+        derivationIndex: sourcePath.derivationIndex,
       ));
 
       _log.info('[provision] earmark $i: ${earmarkTx.id}, funding=$fundingSats sats at vout=1');
@@ -1280,7 +1160,7 @@ class PaymentCoordinatorActor extends Actor {
       signerMetadata: {
         'signerType': 'plugin-callback',
         'role': 'provisioning-split',
-        'derivationIndex': sourceUtxo.derivationIndex,
+        'derivationIndex': sourcePath.derivationIndex,
       },
     );
 
@@ -1317,7 +1197,7 @@ class PaymentCoordinatorActor extends Actor {
           'signerType': 'plugin-callback',
           'role': 'provisioning-earmark',
           'earmarkIndex': i,
-          'derivationIndex': sourceUtxo.derivationIndex,
+          'derivationIndex': sourcePath.derivationIndex,
         },
       );
       ancestorTxids.add(earmarkTx.id);
@@ -1430,7 +1310,6 @@ class PaymentCoordinatorActor extends Actor {
       final sortedUtxos = List<BitcoinUtxo>.from(availableUtxos)
         ..sort((a, b) => b.satoshis.compareTo(a.satoshis));
       final selectedUtxo = sortedUtxos.first;
-      final derivationIndex = selectedUtxo.derivationIndex ?? 0;
 
       // 2a. Reserve the selected UTXO to prevent double-spending
       reservationId = 'provision-$walletId-${DateTime.now().millisecondsSinceEpoch}';
@@ -1439,46 +1318,26 @@ class PaymentCoordinatorActor extends Actor {
         throw Exception('Failed to reserve UTXO for provisioning — it may already be in use');
       }
 
-      // 3. Create callback signer (same pattern as plugin TX build path)
-      final xpriv = await _secureStorage.getXPriv(walletId);
-      final wif = await _secureStorage.getWIF(walletId);
-      final keyMaterial = xpriv ?? wif;
-      if (keyMaterial == null) {
-        throw Exception('No signing key available for wallet $walletId');
-      }
-
-      late dartsv.SVPrivateKey signingKey;
-      if (xpriv != null) {
-        final hdKey = dartsv.HDPrivateKey.fromXpriv(xpriv);
-        final derived = hdKey.deriveChildNumber(0).deriveChildNumber(derivationIndex);
-        signingKey = derived.privateKey;
-      } else {
-        signingKey = dartsv.SVPrivateKey.fromWIF(wif!);
-      }
-
-      final sigHashType = dartsv.SighashType.SIGHASH_ALL.value |
-          dartsv.SighashType.SIGHASH_FORKID.value;
-      final callbackSigner = CallbackTransactionSigner(
-        sigHashType: sigHashType,
-        onSign: (Uint8List sighash, int inputIndex) {
-          final sig = dartsv.SVSignature.fromPrivateKey(signingKey);
-          sig.nhashtype = sigHashType;
-          sig.sign(hex.encode(sighash));
-          return Uint8List.fromList(sig.toDER());
-        },
-      );
-
-      final publicKey = signingKey.publicKey;
+      // 3. Signatures come from the wallet aggregate (same as the plugin
+      // payment path); the derivation path from the read model.
+      final signing = _signingClient();
+      final path = await signing.pathForAddress(walletId, selectedUtxo.address) ??
+          SigningPath(selectedUtxo.derivationIndex ?? 0);
+      final derivationIndex = path.derivationIndex;
+      final publicKey =
+          await signing.publicKeyForAddress(walletId, selectedUtxo.address, path: path);
 
       // 4. Build plugin request and call provisionFunding
-      final request = PluginTransactionRequest(
-        fundingUtxos: [selectedUtxo],
-        signer: callbackSigner,
-        publicKeys: [publicKey],
-        params: msg.pluginParams,
+      final provisions = await signing.buildWithSigner(
+        walletId: walletId,
+        fallbackPath: path,
+        build: (signer) => plugin.provisionFunding(PluginTransactionRequest(
+          fundingUtxos: [selectedUtxo],
+          signer: signer,
+          publicKeys: [publicKey],
+          params: msg.pluginParams,
+        )),
       );
-
-      final provisions = await plugin.provisionFunding(request);
       _log.info('[provision $walletId] built ${provisions.length} TXs '
           '(${provisions.where((p) => p.role == "earmark").length} earmarks)');
 
@@ -1597,20 +1456,6 @@ class _ReservationReceiverActor extends Actor {
     final payload = message is LocalMessage ? message.payload : message;
     if (payload is Map && payload.containsKey('error')) {
       completer.completeError(StateError(payload['error'].toString()));
-    }
-  }
-}
-
-/// Helper actor to receive signing response
-class _SigningReceiverActor extends Actor {
-  final Completer<TransactionSignedResponse> completer;
-  
-  _SigningReceiverActor(this.completer);
-  
-  @override
-  Future<void> onMessage(dynamic message) async {
-    if (message is TransactionSignedResponse && !completer.isCompleted) {
-      completer.complete(message);
     }
   }
 }

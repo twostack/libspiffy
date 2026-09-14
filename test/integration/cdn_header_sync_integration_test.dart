@@ -168,6 +168,7 @@ void main() {
 
       final config = CdnHeaderSyncConfig(
         baseUrl: 'http://localhost',
+        allowInsecureHttp: true, // local file-backed mock CDN
         network: 'testnet',
         verifyCheckpoints: false, // No checkpoints in single-chunk manifest
       );
@@ -221,6 +222,7 @@ void main() {
       final phases = <CdnSyncPhase>[];
       final config = CdnHeaderSyncConfig(
         baseUrl: 'http://localhost',
+        allowInsecureHttp: true, // local file-backed mock CDN
         network: 'testnet',
         verifyCheckpoints: false,
         onProgress: (current, total, phase) {
@@ -294,6 +296,7 @@ void main() {
 
       final config = CdnHeaderSyncConfig(
         baseUrl: 'http://localhost',
+        allowInsecureHttp: true, // local file-backed mock CDN
         network: 'testnet',
         verifyCheckpoints: false,
       );
@@ -319,6 +322,7 @@ void main() {
 
       final config = CdnHeaderSyncConfig(
         baseUrl: 'http://localhost',
+        allowInsecureHttp: true, // local file-backed mock CDN
         network: 'testnet',
         maxRetries: 1, // Skip retries for faster test
       );
@@ -378,6 +382,7 @@ void main() {
 
       final config = CdnHeaderSyncConfig(
         baseUrl: 'http://localhost',
+        allowInsecureHttp: true, // local file-backed mock CDN
         network: 'testnet',
         verifyCheckpoints: false,
         maxRetries: 1, // Skip retries for faster test
@@ -445,6 +450,7 @@ void main() {
 
       final config = CdnHeaderSyncConfig(
         baseUrl: 'http://localhost',
+        allowInsecureHttp: true, // local file-backed mock CDN
         network: 'testnet',
         verifyCheckpoints: false,
       );

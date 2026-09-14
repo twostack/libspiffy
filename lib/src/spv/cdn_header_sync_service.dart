@@ -9,10 +9,10 @@ import 'package:logging/logging.dart';
 import 'package:meta/meta.dart';
 import 'package:spiffynode/spiffy_node.dart';
 
-import '../utils/hex_utils.dart' as hex_utils;
 import 'block_header_chain.dart';
 import 'cdn_header_sync_config.dart';
 import 'cdn_manifest.dart';
+import 'network_params.dart';
 
 /// Downloads and imports block headers from a CDN for fast initial sync.
 ///
@@ -23,19 +23,43 @@ import 'cdn_manifest.dart';
 /// Chunks are processed one at a time (download → validate → import) to
 /// minimize memory usage and enable resumability. Optional disk caching
 /// allows crash-resilient sync across app restarts.
+///
+/// The CDN is not trusted (audit finding SPV-04). Every chunk must pass,
+/// before anything from it is written:
+///
+/// * integrity: its SHA-256 matches the manifest (a transport check only);
+/// * anchoring: on an empty database the first header must be the in-code
+///   genesis block of the configured network ([NetworkParams.genesisHash]);
+///   on a non-empty database the first new header must link to the stored
+///   tip. A chunk that starts anywhere else is rejected;
+/// * continuity: every header's `prevBlock` is the hash of the one before;
+/// * proof of work (on by default): every header's hash is at or below its
+///   own target, and that target is no easier than [NetworkParams.powLimit].
+///
+/// Manifest checkpoints are advisory and are compared only after the above.
 class CdnHeaderSyncService {
   final CdnHeaderSyncConfig config;
   final BlockHeaderChain headerChain;
+
+  /// Consensus constants the downloaded headers are checked against,
+  /// derived from [CdnHeaderSyncConfig.network].
+  final NetworkParams networkParams;
+
   final Logger _logger;
   final http.Client _httpClient;
 
+  /// Throws an [ArgumentError] if [config.baseUrl] is not https (unless
+  /// [CdnHeaderSyncConfig.allowInsecureHttp] is set).
   CdnHeaderSyncService({
     required this.config,
     required this.headerChain,
     http.Client? httpClient,
     Logger? logger,
-  })  : _logger = logger ?? Logger('CdnHeaderSyncService'),
-        _httpClient = httpClient ?? http.Client();
+  })  : networkParams = NetworkParams.forNetwork(config.network),
+        _logger = logger ?? Logger('CdnHeaderSyncService'),
+        _httpClient = httpClient ?? http.Client() {
+    config.checkBaseUrl();
+  }
 
   /// Main entry point - downloads and imports CDN headers.
   ///
@@ -58,22 +82,28 @@ class CdnHeaderSyncService {
       _logger.info(
           'CDN manifest: ${manifest.totalHeaders} headers in ${manifest.chunks.length} chunks');
 
-      // Phase 2: Determine which chunks we need
-      final currentHeight = headerChain.bestHeight;
-      final neededChunks = _determineNeededChunks(manifest, currentHeight);
+      // Phase 2: Determine which chunks we need.
+      //
+      // An empty database reports bestHeight 0 just like one holding only
+      // the genesis block, so the tip (null when empty) decides whether the
+      // next height needed is 0 or bestHeight + 1.
+      final tip = headerChain.chainTip;
+      final nextHeight = tip == null ? 0 : headerChain.bestHeight + 1;
+      final neededChunks = _determineNeededChunks(manifest, nextHeight);
       if (neededChunks.isEmpty) {
-        _logger.info('No CDN chunks needed, already at height $currentHeight');
+        _logger.info(
+            'No CDN chunks needed, already at height ${headerChain.bestHeight}');
         stopwatch.stop();
         return CdnSyncResult(
           success: true,
           headersImported: 0,
-          finalHeight: currentHeight,
+          finalHeight: headerChain.bestHeight,
           elapsed: stopwatch.elapsed,
         );
       }
 
       _logger.info(
-          'Need ${neededChunks.length} chunks (current height: $currentHeight)');
+          'Need ${neededChunks.length} chunks (next height: $nextHeight)');
 
       // Ensure cache directory exists
       if (config.cacheDirectory != null) {
@@ -87,13 +117,23 @@ class CdnHeaderSyncService {
       progressOffset = totalNeeded -
           neededChunks.fold<int>(0, (sum, c) => sum + c.headerCount);
 
-      // Track the last header's hash for chain continuity across chunks.
-      // For the first chunk, use the DB chain tip.
-      String? previousBlockHash = headerChain.chainTip?.blockHash().toString();
+      // The hash every accepted header must extend. Null only while the
+      // database is empty, in which case the next header must be the
+      // in-code genesis block rather than link to anything.
+      String? expectedPrevHash = tip?.blockHash().toString();
+      var expectedHeight = nextHeight;
 
       // Phase 3-5: Process each chunk sequentially (download → validate → import)
       for (var chunkIndex = 0; chunkIndex < neededChunks.length; chunkIndex++) {
         final chunk = neededChunks[chunkIndex];
+
+        if (chunk.startHeight < 0 ||
+            chunk.headerCount != chunk.endHeight - chunk.startHeight + 1) {
+          throw Exception(
+              'Manifest chunk ${chunk.filename} is inconsistent: heights '
+              '${chunk.startHeight}..${chunk.endHeight} but headerCount '
+              '${chunk.headerCount}');
+        }
 
         final progressCurrent = progressOffset + headersImportedThisRun;
 
@@ -117,16 +157,21 @@ class CdnHeaderSyncService {
               'expected ${chunk.headerCount}, got ${headers.length}');
         }
 
-        // Handle partially-imported chunks on resume: if the chunk's start
-        // is at or below the current DB height, trim already-imported headers.
-        // After trimming, the chain tip hash correctly links to headers[0].
+        // Line the chunk up with the next height we need.
+        //
+        // A chunk that starts below it overlaps what is already stored
+        // (resume after a partial import): trim the overlap so headers[0]
+        // is the header for expectedHeight, which must then link to the
+        // stored tip. A chunk that starts above it leaves a gap, which on an
+        // empty database means it does not begin with the genesis block;
+        // either way nothing in it can be anchored, so it is rejected.
         var importStartHeight = chunk.startHeight;
-        if (chunk.startHeight <= currentHeight) {
-          final skipCount = currentHeight - chunk.startHeight + 1;
+        if (chunk.startHeight < expectedHeight) {
+          final skipCount = expectedHeight - chunk.startHeight;
           if (skipCount >= headers.length) {
-            // Entire chunk already imported — skip it
+            // Entire chunk already imported — skip it. What we already hold
+            // stays the anchor; the chunk's own contents are not consulted.
             _logger.fine('Skipping fully imported chunk ${chunk.filename}');
-            previousBlockHash = headers.last.blockHash().toString();
             await _deleteCachedChunk(chunk);
             continue;
           }
@@ -134,17 +179,39 @@ class CdnHeaderSyncService {
               'Resuming chunk ${chunk.filename}: skipping $skipCount '
               'already-imported headers');
           headers = headers.sublist(skipCount);
-          importStartHeight = currentHeight + 1;
-        }
-
-        // Validate chain continuity against the previous chunk (or DB tip)
-        if (!_validateChunkContinuity(
-            headers, importStartHeight, previousBlockHash)) {
+          importStartHeight = expectedHeight;
+        } else if (chunk.startHeight > expectedHeight) {
           throw Exception(
-              'Chain continuity validation failed at chunk ${chunk.filename}');
+              'Chunk ${chunk.filename} starts at height ${chunk.startHeight} '
+              'but the next height needed is $expectedHeight'
+              '${expectedHeight == 0 ? '; the first chunk on an empty database must begin with the genesis block' : ''}');
         }
 
-        // Verify checkpoints within this chunk's range
+        // Anchor: an empty database accepts only the in-code genesis block
+        // of this network as its first header. Nothing the manifest says
+        // (checkpoints included) can substitute for this.
+        if (expectedPrevHash == null) {
+          final firstHash = headers.first.blockHash().toString();
+          if (firstHash != networkParams.genesisHash) {
+            throw Exception(
+                'Genesis mismatch in ${chunk.filename}: the first header is '
+                '$firstHash but the ${networkParams.name} genesis block is '
+                '${networkParams.genesisHash}; refusing an unanchored chain');
+          }
+        }
+
+        // Validate linkage to the previous chunk / DB tip, intra-chunk
+        // continuity, and proof of work.
+        final failure =
+            _validateChunk(headers, importStartHeight, expectedPrevHash);
+        if (failure != null) {
+          throw Exception(
+              'Chunk ${chunk.filename} rejected: $failure');
+        }
+
+        // Compare against the manifest's (advisory) checkpoints. A mismatch
+        // means the CDN contradicts itself, so the chunk is rejected; a
+        // match adds nothing to the checks above.
         if (config.verifyCheckpoints && manifest.checkpoints.isNotEmpty) {
           _verifyCheckpoints(headers, importStartHeight, manifest.checkpoints);
         }
@@ -154,8 +221,9 @@ class CdnHeaderSyncService {
         await headerChain.bulkImportHeaders(headers, importStartHeight);
         headersImportedThisRun += headers.length;
 
-        // Track last header hash for next chunk's continuity check
-        previousBlockHash = headers.last.blockHash().toString();
+        // The next chunk must extend what was just written.
+        expectedPrevHash = headers.last.blockHash().toString();
+        expectedHeight = importStartHeight + headers.length;
 
         // Clean up cache file after successful import
         await _deleteCachedChunk(chunk);
@@ -209,11 +277,12 @@ class CdnHeaderSyncService {
     return CdnManifest.fromJson(json);
   }
 
-  /// Determine which chunks need to be downloaded based on current height.
+  /// Chunks that contain at least one header at or above [nextHeight], in
+  /// ascending order.
   List<CdnChunkInfo> _determineNeededChunks(
-      CdnManifest manifest, int currentHeight) {
+      CdnManifest manifest, int nextHeight) {
     return manifest.chunks
-        .where((chunk) => chunk.endHeight > currentHeight)
+        .where((chunk) => chunk.endHeight >= nextHeight)
         .toList()
       ..sort((a, b) => a.startHeight.compareTo(b.startHeight));
   }
@@ -282,7 +351,7 @@ class CdnHeaderSyncService {
       } catch (e) {
         if (attempt == config.maxRetries) rethrow;
         _logger.warning(
-            'Chunk ${chunk.filename} attempt $attempt/${config.maxRetries} failed: $e');
+            'Download attempt $attempt for ${chunk.filename} failed: $e');
         await Future.delayed(Duration(seconds: attempt)); // linear backoff
       }
     }
@@ -331,23 +400,26 @@ class CdnHeaderSyncService {
     return headers;
   }
 
-  /// Validate chain continuity within a chunk, and linkage to previous chunk.
+  /// Validate a chunk's chain: linkage to [previousBlockHash] (the last
+  /// header of the previous chunk, or the stored tip), intra-chunk
+  /// continuity, and proof of work when enabled.
   ///
-  /// [previousBlockHash] is the block hash of the last header from the
-  /// previous chunk, or the DB chain tip for the first chunk. If null
-  /// (no previous data), only intra-chunk continuity is validated.
-  bool _validateChunkContinuity(
+  /// [previousBlockHash] is null only when the database is empty, in which
+  /// case the caller has already checked that `headers[0]` is the in-code
+  /// genesis block.
+  ///
+  /// Returns null when the chunk is acceptable, otherwise a description of
+  /// the first failure.
+  String? _validateChunk(
       List<BlockHeader> headers, int startHeight, String? previousBlockHash) {
-    if (headers.isEmpty) return true;
+    if (headers.isEmpty) return null;
 
     // Validate linkage to previous chunk / DB tip
     if (previousBlockHash != null) {
       final firstPrevHash = headers[0].prevBlock.toString();
       if (firstPrevHash != previousBlockHash) {
-        _logger.warning(
-            'Chain continuity break at height $startHeight: '
-            'expected prevBlock $previousBlockHash, got $firstPrevHash');
-        return false;
+        return 'chain continuity break at height $startHeight: '
+            'expected prevBlock $previousBlockHash, got $firstPrevHash';
       }
     }
 
@@ -357,20 +429,18 @@ class CdnHeaderSyncService {
       final headerPrevHash = headers[i].prevBlock.toString();
 
       if (prevHash != headerPrevHash) {
-        _logger.warning(
-            'Chain continuity break at height ${startHeight + i}: '
-            'expected prevBlock $prevHash, got $headerPrevHash');
-        return false;
+        return 'chain continuity break at height ${startHeight + i}: '
+            'expected prevBlock $prevHash, got $headerPrevHash';
       }
     }
 
-    // Optionally validate proof-of-work
+    // Validate proof-of-work
     if (config.validateProofOfWork) {
       for (var i = 0; i < headers.length; i++) {
-        if (!_validateProofOfWork(headers[i])) {
-          _logger.warning(
-              'PoW validation failed at height ${startHeight + i}');
-          return false;
+        final failure = _proofOfWorkFailure(headers[i]);
+        if (failure != null) {
+          return 'proof-of-work validation failed at height ${startHeight + i}: '
+              '$failure';
         }
       }
     }
@@ -378,10 +448,14 @@ class CdnHeaderSyncService {
     _logger.fine(
         'Chain continuity validated for ${headers.length} headers '
         'starting at height $startHeight');
-    return true;
+    return null;
   }
 
   /// Verify that block hashes at checkpoint heights match expected values.
+  ///
+  /// The checkpoints are the manifest's own and are advisory: a mismatch
+  /// rejects the chunk, a match proves nothing beyond what the anchor,
+  /// continuity and proof-of-work checks already established.
   void _verifyCheckpoints(
       List<BlockHeader> headers, int startHeight, Map<int, String> checkpoints) {
     for (final entry in checkpoints.entries) {
@@ -399,37 +473,30 @@ class CdnHeaderSyncService {
       }
     }
 
-    _logger.fine('All applicable checkpoints verified');
+    _logger.fine('All applicable manifest checkpoints matched');
   }
 
-  /// Validate proof-of-work for a single header.
-  bool _validateProofOfWork(BlockHeader header) {
-    final blockHash = header.blockHash();
-    final target = _bitsToTarget(header.bits);
-
-    final hashBytes = hex_utils.hexToBytes(blockHash.toString());
-    final hashBigInt = _bytesToBigInt(hashBytes.reversed.toList());
-
-    return hashBigInt <= target;
-  }
-
-  BigInt _bitsToTarget(int bits) {
-    final exponent = bits >> 24;
-    final mantissa = bits & 0x00ffffff;
-
-    if (exponent <= 3) {
-      return BigInt.from(mantissa >> (8 * (3 - exponent)));
-    } else {
-      return BigInt.from(mantissa) << (8 * (exponent - 3));
+  /// Proof-of-work check for a single header against its own target and
+  /// the network's [NetworkParams.powLimit].
+  ///
+  /// Returns null if the header is acceptable, otherwise the reason.
+  String? _proofOfWorkFailure(BlockHeader header) {
+    final bits = header.bits;
+    final target = NetworkParams.bitsToTarget(bits);
+    if (target == BigInt.zero) {
+      return 'bits 0x${bits.toRadixString(16)} encode no valid target';
     }
-  }
-
-  BigInt _bytesToBigInt(List<int> bytes) {
-    var result = BigInt.zero;
-    for (var i = 0; i < bytes.length; i++) {
-      result += BigInt.from(bytes[i]) << (8 * i);
+    if (target > networkParams.powLimit) {
+      return 'bits 0x${bits.toRadixString(16)} are easier than the '
+          '${networkParams.name} powLimit '
+          '0x${networkParams.powLimitBits.toRadixString(16)}';
     }
-    return result;
+    final blockHash = header.blockHash().toString();
+    if (NetworkParams.hashToBigInt(blockHash) > target) {
+      return 'hash $blockHash exceeds target for bits '
+          '0x${bits.toRadixString(16)}';
+    }
+    return null;
   }
 
   void _reportProgress(int current, int total, CdnSyncPhase phase) {

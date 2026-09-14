@@ -47,7 +47,14 @@ class CdnManifest {
   final int headerSizeBytes;
   final List<CdnChunkInfo> chunks;
 
-  /// Hardcoded checkpoint hashes: height -> expected block hash.
+  /// Checkpoint hashes published by the CDN: height -> expected block hash.
+  ///
+  /// These are advisory only. They arrive from the same origin as the
+  /// headers they describe, so they cannot authenticate anything: a chunk
+  /// that disagrees with them is rejected, but agreeing with them is not
+  /// evidence of validity. The only trusted anchor is the in-code genesis
+  /// block in `NetworkParams`, which is checked before any checkpoint and
+  /// which a manifest checkpoint can never override.
   final Map<int, String> checkpoints;
 
   const CdnManifest({

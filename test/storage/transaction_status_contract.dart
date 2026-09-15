@@ -8,7 +8,14 @@
 ///    broadcast / pending, seenOnNetwork. Only
 ///    [ReadModelStorage.storeRevertedTransaction] (a reorganization or a
 ///    rejected proof) takes a confirmation back.
-/// 2. The stored primary counterparty is the same on every backend that
+/// 2. `confirmedAt` (bead libspiffy-hccp item 4), on the backends that store
+///    it (Isar, Postgres; the in-memory backend keeps no such field): the
+///    time the row became confirmed, the confirming record's
+///    [BitcoinTransaction.updatedAt]. Later confirmed records (a confirmation
+///    count update, a replay) and refused stale records keep it. A reverted
+///    row keeps it (nothing is blanked) until it is confirmed again, which
+///    sets the new confirmation's time.
+/// 3. The stored primary counterparty is the same on every backend that
 ///    stores one: the first sending address of an incoming transaction, the
 ///    first receiving address of an outgoing one, none otherwise.
 library;
@@ -52,16 +59,22 @@ BitcoinTransaction _tx(
 /// The counterparty columns a backend stores for a transaction row.
 typedef StoredCounterparty = ({String? primaryCounterparty, String? counterparty});
 
+/// The confirmation time a backend stores for a transaction row.
+typedef StoredConfirmedAt = Future<DateTime?> Function(String walletId, String txid);
+
 /// Registers the transaction status and counterparty contract tests.
 ///
 /// [storage] returns the storage for the running test; [unique] a string
 /// unique per test run. [storedCounterparty] reads the stored counterparty
 /// columns of a row (null when the row is missing); a backend that stores no
 /// such columns (the in-memory one) passes none and skips those tests.
+/// [storedConfirmedAt] reads the stored confirmation time of a row, likewise
+/// optional.
 void defineTransactionStatusContract(
   ReadModelStorage Function() storage, {
   required String Function() unique,
   Future<StoredCounterparty?> Function(String walletId, String txid)? storedCounterparty,
+  StoredConfirmedAt? storedConfirmedAt,
 }) {
   group('transaction status contract (7dj)', () {
     test('a stale record after the confirmation keeps confirmed, its height, confirmations and proof', () async {
@@ -204,6 +217,58 @@ void defineTransactionStatusContract(
       row = (await s.getTransaction(txid, walletId: wallet))!;
       expect((row.status, row.blockHeight), (TransactionStatus.confirmed, 702));
     });
+
+    if (storedConfirmedAt != null) {
+      test('confirmedAt is set by the first confirmation, kept by later records, and set again after a revert (hccp)',
+          () async {
+        final s = storage();
+        final u = unique();
+        final wallet = 'ts-cat-$u';
+        await s.storeWallet(wallet, 'W');
+        final txid = contractHex64('ts-cat-tx-$u');
+        DateTime at(int second) => DateTime.utc(2026, 9, 15, 12, 0, second);
+        Future<DateTime?> confirmedAt() async => (await storedConfirmedAt(wallet, txid))?.toUtc();
+
+        await s.storeTransaction(wallet, _tx(txid, status: TransactionStatus.pending));
+        expect(await confirmedAt(), isNull, reason: 'not confirmed yet');
+
+        await s.storeTransaction(wallet, _tx(txid, status: TransactionStatus.confirmed, height: 800, second: 1));
+        expect(await confirmedAt(), at(1), reason: 'the confirming record');
+
+        // Later records of the confirmed transaction: a confirmation count
+        // update, the confirmation replayed, stale reports refused by 7dj.
+        await s.storeTransaction(wallet,
+            _tx(txid, status: TransactionStatus.confirmed, height: 800, confirmations: 6, second: 2));
+        expect(await confirmedAt(), at(1), reason: 'a later confirmed record');
+        await s.storeTransaction(wallet, _tx(txid, status: TransactionStatus.confirmed, second: 3));
+        expect(await confirmedAt(), at(1), reason: 'a confirmed record without a height');
+        await s.storeTransaction(wallet,
+            _tx(txid, status: TransactionStatus.seenOnNetwork, height: 800, confirmations: 6, second: 4));
+        await s.storeTransaction(wallet, _tx(txid, status: TransactionStatus.pending, rawHex: '', second: 5));
+        expect(await confirmedAt(), at(1), reason: 'stale records');
+
+        // A reorganization takes the confirmation back: the time is kept.
+        await s.storeRevertedTransaction(wallet, _tx(txid, status: TransactionStatus.pending, second: 6));
+        expect((await s.getTransaction(txid, walletId: wallet))!.status, TransactionStatus.pending);
+        expect(await confirmedAt(), at(1), reason: 'a revert blanks nothing');
+        await s.storeTransaction(wallet, _tx(txid, status: TransactionStatus.seenOnNetwork, second: 7));
+        expect(await confirmedAt(), at(1));
+
+        // Mined again on the active chain: the new confirmation's time.
+        await s.storeTransaction(wallet, _tx(txid, status: TransactionStatus.confirmed, height: 802, second: 8));
+        expect(await confirmedAt(), at(8), reason: 'confirmed again after the revert');
+        await s.storeTransaction(wallet,
+            _tx(txid, status: TransactionStatus.confirmed, height: 802, confirmations: 3, second: 9));
+        expect(await confirmedAt(), at(8));
+
+        // A row inserted confirmed.
+        final direct = contractHex64('ts-cat-direct-$u');
+        await s.storeTransaction(wallet, _tx(direct, status: TransactionStatus.confirmed, height: 810, second: 10));
+        expect((await storedConfirmedAt(wallet, direct))?.toUtc(), at(10));
+        await s.storeTransaction(wallet, _tx(direct, status: TransactionStatus.confirmed, height: 810, second: 11));
+        expect((await storedConfirmedAt(wallet, direct))?.toUtc(), at(10));
+      });
+    }
 
     if (storedCounterparty != null) {
       test('the primary counterparty of a multi-input, multi-output transaction', () async {

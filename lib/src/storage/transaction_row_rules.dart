@@ -46,6 +46,34 @@ abstract final class TransactionRowRules {
     return to >= from;
   }
 
+  /// The confirmation time (`confirmedAt`) a row stores after a record with
+  /// status [incoming] and update time [recordedAt] (bead libspiffy-hccp).
+  ///
+  /// [stored] and [storedConfirmedAt] are the row's status and confirmation
+  /// time before the store (null for a new row); [statusSet] is whether the
+  /// store sets the status ([setsStatus], or a revert).
+  ///
+  /// * A record that confirms a row not yet confirmed (a new row, a pending
+  ///   one, one a reorganization reverted) sets it to [recordedAt], the
+  ///   confirming record's own time, so a replay stores the same value.
+  /// * A later confirmed record (a confirmation count update, the
+  ///   confirmation replayed) keeps it: it is the time of the first
+  ///   confirmation. A confirmed row stored without one gets [recordedAt].
+  /// * Every other record keeps it, a revert included: nothing is blanked. A
+  ///   row confirmed again after a revert gets the new confirmation's time;
+  ///   the orphaned confirmation stays on record in the merkle proof history.
+  static DateTime? confirmedAtAfter({
+    required TransactionStatus? stored,
+    required DateTime? storedConfirmedAt,
+    required TransactionStatus incoming,
+    required DateTime recordedAt,
+    required bool statusSet,
+  }) {
+    if (!statusSet || incoming != TransactionStatus.confirmed) return storedConfirmedAt;
+    if (stored != TransactionStatus.confirmed) return recordedAt;
+    return storedConfirmedAt ?? recordedAt;
+  }
+
   /// The statuses of a stored row whose status a record with status
   /// [incoming] sets ([setsStatus]), for backends that apply the rule in a
   /// query.

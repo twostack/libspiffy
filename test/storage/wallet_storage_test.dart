@@ -12,6 +12,9 @@ import 'header_reorg_contract.dart';
 import 'read_model_keying_contract.dart';
 import 'transaction_lookup_contract.dart';
 import 'transaction_status_contract.dart';
+import 'wallet_metadata_types_contract.dart';
+import 'package:libspiffy/src/core/wallet/state_records.dart';
+import 'package:libspiffy/src/storage/wallet_row_rules.dart';
 import 'wallet_lifecycle_contract.dart';
 
 /// Test event class for testing storage operations
@@ -439,6 +442,16 @@ void main() {
     defineWalletLifecycleContract(() => storage, unique: () => 'ml${counter++}');
     defineTransactionLookupContract(() => storage, unique: () => 'mt${counter++}');
     defineTransactionStatusContract(() => storage, unique: () => 'ms${counter++}');
+    defineWalletMetadataTypesContract(() => storage, unique: () => 'mw${counter++}');
+
+    test('k7na: every derived wallet row key has a value type', () {
+      expect({
+        ...WalletRowRules.balanceKeys,
+        ...WalletRowRules.integerKeys,
+        ...WalletRowRules.stringKeys,
+        ...WalletRowRules.jsonKeys,
+      }, WalletMetadataKeys.readModel);
+    });
 
     test('0v3: BlockHeaderChain reorg A -> B -> A persists branch A across a restart',
         () async {

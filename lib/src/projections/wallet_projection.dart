@@ -299,7 +299,8 @@ class WalletProjection extends Projection<void> {
     await _storage.upsertAddress(event.walletId, metadata);
     
     // Update wallet metadata with new address count (read from storage, update, write back)
-    await _updateWalletAddressCount(event.walletId, event.timestamp);
+    final row = await _updateWalletAddressCount(event.walletId, event.timestamp);
+    await _recalculateForNewKey(event.walletId, row, event.timestamp);
   }
   
   Future<void> _handleAddressDiscovered(AddressDiscoveredEvent event) async {
@@ -323,7 +324,27 @@ class WalletProjection extends Projection<void> {
     await _storage.upsertAddress(event.walletId, metadata);
     
     // Update wallet metadata with new address count (read from storage, update, write back)
-    await _updateWalletAddressCount(event.walletId, event.timestamp);
+    final row = await _updateWalletAddressCount(event.walletId, event.timestamp);
+    await _recalculateForNewKey(event.walletId, row, event.timestamp);
+  }
+
+  /// Wallet row metadata key: the number of unspent bare multisig UTXOs the
+  /// wallet's keys cannot spend alone ([_recalculateAndPersistForWallet]).
+  static const String _notSpendableAloneUtxoCount = 'notSpendableAloneUtxoCount';
+
+  /// Recomputes the wallet row's balances after the wallet gained the key of
+  /// a new address (row metadata [row]) when that can change them (bead
+  /// libspiffy-hccp): a bare multisig UTXO the wallet could not spend alone
+  /// may be spendable with the new key, as it is at once for the aggregate
+  /// and `getBalance`. Only a wallet whose row counts such a UTXO is
+  /// recomputed; a row written before the count was stored is recomputed
+  /// once when it has UTXOs, which stores the count. Other wallets' address
+  /// events load no UTXO rows.
+  Future<void> _recalculateForNewKey(String walletId, Map<String, dynamic>? row, DateTime timestamp) async {
+    if (row == null) return;
+    final count = row[_notSpendableAloneUtxoCount];
+    if (count == null ? (row['utxoCount'] ?? 0) == 0 : count == 0) return;
+    await _recalculateAndPersistForWallet(walletId, timestamp);
   }
 
   /// The watch address row (bead libspiffy-p4kv). An existing row (a replay,
@@ -349,12 +370,13 @@ class WalletProjection extends Projection<void> {
     await _recalculateAndPersistForWallet(event.walletId, event.timestamp);
   }
 
-  /// Helper: Update wallet address count by reading current count from storage
-  Future<void> _updateWalletAddressCount(String walletId, DateTime timestamp) async {
+  /// Helper: Update wallet address count by reading current count from storage.
+  /// Returns the metadata written, null when there is no wallet row.
+  Future<Map<String, dynamic>?> _updateWalletAddressCount(String walletId, DateTime timestamp) async {
     final existingWallet = await _storage.getWallet(walletId);
     if (existingWallet == null) {
       _log.warning('No wallet row for $walletId; address count not updated');
-      return;
+      return null;
     }
     
     // Get actual address count from storage
@@ -363,17 +385,19 @@ class WalletProjection extends Projection<void> {
     
     // Update wallet metadata
     final existingMetadata = existingWallet['metadata'] as Map<String, dynamic>? ?? {};
+    final metadata = {
+      ...existingMetadata,
+      'addressCount': addressCount,
+      'lastUpdated': timestamp.toIso8601String(),
+    };
     await _storage.storeWallet(
       walletId,
       existingWallet['name'] as String,
       rootAddress: existingWallet['rootAddress'] as String?,
       networkType: (existingWallet['network'] ?? existingWallet['networkType']) as String?,
-      metadata: {
-        ...existingMetadata,
-        'addressCount': addressCount,
-        'lastUpdated': timestamp.toIso8601String(),
-      },
+      metadata: metadata,
     );
+    return metadata;
   }
   
   Future<void> _handleUTXOReceived(UTXOReceivedEvent event) async {
@@ -937,6 +961,8 @@ class WalletProjection extends Projection<void> {
         'reservedBalance': reserved.toString(),
         'totalBalance': total.toString(),
         'watchOnlyBalance': split.watchOnlySatoshis.toString(),
+        // A new key can make these spendable (_recalculateForNewKey).
+        _notSpendableAloneUtxoCount: split.notSpendableAlone.length,
         'utxoCount': walletUtxos.length,
         'availableUtxoCount': available,
         'reservedUtxoCount': reservedCount,

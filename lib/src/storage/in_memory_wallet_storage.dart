@@ -16,6 +16,7 @@ import '../services/watch_only_funds.dart' show splitBalanceUtxos;
 import 'wallet_storage.dart';
 import 'merkle_proof_rows.dart';
 import 'transaction_row_rules.dart';
+import 'wallet_row_rules.dart';
 
 /// In-memory implementation of WalletStorage for development and testing.
 /// 
@@ -149,6 +150,9 @@ class InMemoryWalletStorage implements WalletStorage {
     String? networkType,
     Map<String, dynamic>? metadata,
   }) async {
+    // Typed values converted or rejected before anything is written, as on
+    // every backend (bead libspiffy-k7na).
+    metadata = WalletRowRules.normalizeMetadata(metadata);
     // Merge with the existing record (as the Isar and Postgres backends do)
     // so a balance update that omits rootAddress/network keeps them.
     final existing = _walletMetadata[walletId];

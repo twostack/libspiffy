@@ -61,6 +61,16 @@ void main() {
       } finally {
         await pool.close();
       }
+    }, storedConfirmedAt: (walletId, txid) async {
+      final pool = await config.createPool();
+      try {
+        final rows = await pool.execute(
+            Sql.named('SELECT confirmed_at FROM bitcoin_transactions WHERE wallet_id = @walletId AND txid = @txid'),
+            parameters: {'walletId': walletId, 'txid': txid});
+        return rows.isEmpty ? null : rows.single[0] as DateTime?;
+      } finally {
+        await pool.close();
+      }
     });
 
     /// The plan of the last lookup query [body] ran, with sequential scans

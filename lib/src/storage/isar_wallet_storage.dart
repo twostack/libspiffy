@@ -16,6 +16,7 @@ import 'read_model_storage.dart';
 import 'libspiffy_schemas.dart';
 import 'merkle_proof_rows.dart';
 import 'transaction_row_rules.dart';
+import 'wallet_row_rules.dart';
 import 'isar_config.dart';
 import 'payment_channel_entity.dart';
 
@@ -82,6 +83,11 @@ class IsarWalletStorage implements ReadModelStorage {
     String? networkType,
     Map<String, dynamic>? metadata,
   }) async {
+    // Typed values converted or rejected before anything is written (bead
+    // libspiffy-k7na): the columns below read them without a cast error, and
+    // the metadata document is never replaced by '{}' for a value that is
+    // not JSON.
+    metadata = WalletRowRules.normalizeMetadata(metadata);
     await _isar.writeTxn(() async {
       var entity = await _traced('storeWallet', _isar.walletMetadataEntitys
           .where()
@@ -118,11 +124,12 @@ class IsarWalletStorage implements ReadModelStorage {
         // Update balances and metadata if provided
         if (metadata != null) {
           // Update balance fields
-          if (metadata.containsKey('confirmedBalance')) {
-            entity.confirmedBalance = metadata['confirmedBalance'] as String;
+          // A null balance keeps the stored one.
+          if (metadata['confirmedBalance'] case final String confirmed) {
+            entity.confirmedBalance = confirmed;
           }
-          if (metadata.containsKey('unconfirmedBalance')) {
-            entity.unconfirmedBalance = metadata['unconfirmedBalance'] as String;
+          if (metadata['unconfirmedBalance'] case final String unconfirmed) {
+            entity.unconfirmedBalance = unconfirmed;
           }
           
           // Merge new metadata with existing metadata
@@ -742,7 +749,7 @@ class IsarWalletStorage implements ReadModelStorage {
 
   /// An update whose status [TransactionRowRules.setsStatus] refuses keeps
   /// the stored status, block height and confirmations (7dj), unless
-  /// [reverting].
+  /// [reverting]. `confirmedAt` follows [TransactionRowRules.confirmedAtAfter].
   Future<void> _storeTransaction(String walletId, BitcoinTransaction transaction, {required bool reverting}) async {
     await _isar.writeTxn(() async {
       // Check if this wallet already has the transaction. Rows are keyed by
@@ -758,22 +765,36 @@ class IsarWalletStorage implements ReadModelStorage {
       if (existing != null) {
         final stored = TransactionStatus.values
             .firstWhere((s) => s.name == existing.status, orElse: () => transaction.status);
-        if (!reverting && !TransactionRowRules.setsStatus(stored, transaction.status)) {
-          final (height, confirmations, confirmedAt) =
-              (existing.blockHeight, existing.confirmations, existing.confirmedAt);
+        final statusSet = reverting || TransactionRowRules.setsStatus(stored, transaction.status);
+        final confirmedAt = TransactionRowRules.confirmedAtAfter(
+          stored: stored,
+          storedConfirmedAt: existing.confirmedAt,
+          incoming: transaction.status,
+          recordedAt: transaction.updatedAt,
+          statusSet: statusSet,
+        );
+        if (!statusSet) {
+          final (height, confirmations) = (existing.blockHeight, existing.confirmations);
           existing.applyDomain(transaction);
           existing
             ..status = stored.name
             ..blockHeight = height
-            ..confirmations = confirmations
-            ..confirmedAt = confirmedAt;
+            ..confirmations = confirmations;
         } else {
           existing.applyDomain(transaction);
         }
+        // Set once per confirmation (hccp), not on every store with a height.
+        existing.confirmedAt = confirmedAt;
         await _isar.bitcoinTransactionEntitys.put(existing);
       } else {
-        await _isar.bitcoinTransactionEntitys
-            .put(BitcoinTransactionEntity.fromDomain(transaction, walletId: walletId));
+        await _isar.bitcoinTransactionEntitys.put(BitcoinTransactionEntity.fromDomain(transaction, walletId: walletId)
+          ..confirmedAt = TransactionRowRules.confirmedAtAfter(
+            stored: null,
+            storedConfirmedAt: null,
+            incoming: transaction.status,
+            recordedAt: transaction.updatedAt,
+            statusSet: true,
+          ));
       }
     });
   }

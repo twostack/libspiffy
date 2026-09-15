@@ -24,6 +24,7 @@ import '../../services/watch_only_funds.dart' show splitBalanceUtxos;
 import '../read_model_storage.dart';
 import '../merkle_proof_rows.dart';
 import '../transaction_row_rules.dart';
+import '../wallet_row_rules.dart';
 import 'postgres_config.dart';
 
 /// PostgreSQL implementation of ReadModelStorage.
@@ -85,6 +86,9 @@ class PostgresWalletStorage implements ReadModelStorage {
     Map<String, dynamic>? metadata,
   }) async {
     _ensureInitialized();
+    // Typed values converted or rejected before anything is written, as on
+    // every backend (bead libspiffy-k7na).
+    metadata = WalletRowRules.normalizeMetadata(metadata);
 
     await _pool!.execute(
       Sql.named('''
@@ -1088,7 +1092,16 @@ class PostgresWalletStorage implements ReadModelStorage {
           is_incoming = @isIncoming,
           is_outgoing = @isOutgoing,
           status = CASE WHEN $setsStatus THEN EXCLUDED.status ELSE bitcoin_transactions.status END,
-          confirmed_at = COALESCE(@confirmedAt, bitcoin_transactions.confirmed_at),
+          -- TransactionRowRules.confirmedAtAfter (hccp): set when the update
+          -- confirms a row that is not confirmed (new, pending, reverted),
+          -- kept otherwise; a confirmed row without one gets it.
+          confirmed_at = CASE
+              WHEN ($setsStatus) AND EXCLUDED.status = 'confirmed'
+                  AND bitcoin_transactions.status <> 'confirmed'
+              THEN EXCLUDED.confirmed_at
+              WHEN ($setsStatus) AND EXCLUDED.status = 'confirmed'
+              THEN COALESCE(bitcoin_transactions.confirmed_at, EXCLUDED.confirmed_at)
+              ELSE bitcoin_transactions.confirmed_at END,
           notes = @notes,
           receiving_addresses = @receivingAddresses,
           sending_addresses = @sendingAddresses,
@@ -1110,8 +1123,10 @@ class PostgresWalletStorage implements ReadModelStorage {
         'status': transaction.status.name,
         'createdAt': transaction.createdAt,
         'updatedAt': transaction.updatedAt,
+        // The confirming record's own time, as on Isar: a replay stores the
+        // same value.
         'confirmedAt': transaction.status == TransactionStatus.confirmed
-            ? DateTime.now()
+            ? transaction.updatedAt
             : null,
         'broadcastAt': null,
         // Set once, on insert, as the Isar backend does.

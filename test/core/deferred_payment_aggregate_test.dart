@@ -499,6 +499,38 @@ void main() {
       });
     }
 
+    for (final released in [false, true]) {
+      final how = released ? 'already released' : 'expired';
+      test('8j9w: before any reconcile, availableBalance and coin selection leave the held input out '
+          '(reservation $how)', () async {
+        final wallet = legacyWallet(released: released);
+        final agg = wallet.aggregate;
+        final state = agg.currentState;
+        expect(wallet.journal.whereType<TransactionSpendDeferredEvent>(), isEmpty, reason: 'no hold journaled');
+
+        // _input (20000) is held by the legacy payment, _pendingInput is
+        // pending: only _other (7000) is spendable.
+        expect(state.availableBalance, BigInt.from(7000));
+        expect(agg.getAvailableUTXOs(state).map((u) => u.key), [_other]);
+        expect(agg.hasSufficientBalance(state, BigInt.from(7001)), isFalse);
+        expect(() => agg.selectUTXOsForAmount(state, BigInt.from(7001)), throwsA(isA<StateError>()));
+        expect(state.availableUtxos.map((u) => u.key), [_other]);
+
+        // The reconcile journals the hold; the spendable amount stays.
+        await wallet.handle(ReconcileDeferredSpendsCommand(walletId: _w));
+        expect(agg.currentState.availableBalance, BigInt.from(7000));
+        expect(agg.getAvailableUTXOs(agg.currentState).map((u) => u.key), [_other]);
+      });
+    }
+
+    test('8j9w: cancelling a legacy payment makes its input spendable again', () async {
+      final wallet = legacyWallet(released: true);
+      final txid = wallet.journal.whereType<TransactionRecordedEvent>().single.txid;
+      expect(wallet.aggregate.currentState.availableBalance, BigInt.from(7000));
+      await wallet.handle(CancelDeferredSpendCommand(walletId: _w, txid: txid));
+      expect(wallet.aggregate.currentState.availableBalance, BigInt.from(27000));
+    });
+
     test('a recording that spent its inputs (no deferred spend) is not inferred', () async {
       final wallet = _Wallet();
       final rawHex = _paymentHex([_input]);

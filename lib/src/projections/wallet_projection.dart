@@ -13,6 +13,7 @@ import '../models/bitcoin_transaction.dart';
 import '../models/address_metadata.dart';
 import '../models/transaction_address_link.dart';
 import '../models/deferred_payment.dart';
+import '../services/watch_only_funds.dart' show splitBalanceUtxos;
 import '../storage/read_model_storage.dart';
 import '../spv/merkle_proof_header_check.dart';
 import '../utils/bump.dart';
@@ -342,6 +343,10 @@ class WalletProjection extends Projection<void> {
     ));
     await _storage.upsertAddress(event.walletId, metadata);
     await _updateWalletAddressCount(event.walletId, event.timestamp);
+    // UTXO rows at the address may exist already (a legacy registration
+    // journaled on load): they are watch-only from now on (bead
+    // libspiffy-vsap).
+    await _recalculateAndPersistForWallet(event.walletId, event.timestamp);
   }
 
   /// Helper: Update wallet address count by reading current count from storage
@@ -442,7 +447,11 @@ class WalletProjection extends Projection<void> {
         confirmations: event.confirmations ?? 0,
         status: event.initialStatus,
         derivationIndex: derivationIndex,
-        pluginMetadata: scriptMetadata,
+        // The script analysis, and over it the metadata the UTXO was
+        // received with: a plugin id the event names (a funding earmark on
+        // a P2PKH output) makes the row plugin-managed, as on the wallet
+        // aggregate (bead libspiffy-ecy8). The analysis alone dropped it.
+        pluginMetadata: event.pluginMetadata == null ? scriptMetadata : {...?scriptMetadata, ...event.pluginMetadata!},
         createdAt: event.timestamp,
       );
       await _storage.upsertUTXO(event.walletId, utxo);
@@ -853,10 +862,13 @@ class WalletProjection extends Projection<void> {
   /// The read model's balance rule (spv-understanding.md, "Balances"): the
   /// write model's buckets (`WalletBalances.bucketOf`: reserved when
   /// reserved, confirmed from 6 confirmations, unconfirmed otherwise,
-  /// pending UTXOs included) over the wallet's unspent UTXOs, leaving out
-  /// UTXOs whose plugin metadata names a `pluginId`. Watch-only UTXOs count
-  /// (they are not filtered here). `totalBalance` is
-  /// confirmed + unconfirmed; it is not a spendable amount.
+  /// pending UTXOs included) over the wallet's unspent UTXOs the wallet can
+  /// spend alone: plugin-managed UTXOs (`BitcoinUtxo.isPluginManaged`),
+  /// watch-only UTXOs and bare multisig UTXOs the wallet's keys cannot spend
+  /// alone are left out ([splitBalanceUtxos], beads libspiffy-vsap,
+  /// libspiffy-0k8). `watchOnlyBalance` is the unspent watch-only UTXOs'
+  /// total, whatever their status. `totalBalance` is confirmed +
+  /// unconfirmed; it is not a spendable amount.
   ///
   /// [utxos], when given, must be the wallet's rows (includeSpent: true) with
   /// the handler's own writes applied; it saves a second scan.
@@ -873,17 +885,22 @@ class WalletProjection extends Projection<void> {
     int available = 0;
     int reservedCount = 0;
     int spentCount = 0;
-    
+
+    // Skip plugin-managed UTXOs (e.g. tokens) from balance calculation.
+    // Only UTXOs whose metadata names a pluginId are plugin-managed: standard
+    // P2PKH outputs have script-analysis metadata (scriptType, address) but
+    // no pluginId.
+    final unspent = <BitcoinUtxo>[];
     for (final utxo in walletUtxos) {
       if (utxo.status == UTXOStatus.spent) {
         spentCount++;
-        continue;
+      } else if (!utxo.isPluginManaged) {
+        unspent.add(utxo);
       }
-      // Skip plugin-managed UTXOs (e.g. tokens) from balance calculation.
-      // Only exclude UTXOs with an explicit pluginId — standard P2PKH outputs
-      // have script-analysis metadata (scriptType, address) but no pluginId.
-      if (utxo.pluginMetadata?['pluginId'] != null) continue;
+    }
+    final split = await splitBalanceUtxos(_storage, walletId, unspent);
 
+    for (final utxo in split.spendable) {
       if (utxo.status == UTXOStatus.reserved) {
         reserved += utxo.satoshis;
         reservedCount++;
@@ -919,6 +936,7 @@ class WalletProjection extends Projection<void> {
         'unconfirmedBalance': unconfirmed.toString(),
         'reservedBalance': reserved.toString(),
         'totalBalance': total.toString(),
+        'watchOnlyBalance': split.watchOnlySatoshis.toString(),
         'utxoCount': walletUtxos.length,
         'availableUtxoCount': available,
         'reservedUtxoCount': reservedCount,

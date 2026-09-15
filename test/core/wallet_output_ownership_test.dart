@@ -324,11 +324,12 @@ void main() {
 
     test(
         'a journal written before the fix (an escrow received under a p2ms: '
-        'pseudo-address) replays as written; new ones are refused', () async {
+        'pseudo-address) replays as written but is not spendable; new ones are refused', () async {
       // Events are facts: replay does not re-run command rules, so the
-      // output stays a UTXO and in the balance of a journal that holds it
-      // until a corrective event takes it out (bead libspiffy-0k8). No
-      // silent change on load.
+      // output stays a UTXO (with its row) and in the buckets, which count
+      // everything the wallet holds. Whether the wallet can spend it alone
+      // is derived from the script and the wallet's keys, on both layers
+      // (bead libspiffy-0k8): no corrective event is needed.
       final escrow = multisig([walletKey, _serverKey.publicKey], 2);
       await store.persistEvents(store.journal.keys.single, [
         UTXOReceivedEvent(
@@ -350,9 +351,10 @@ void main() {
       await replayed.preStart();
       expect(replayed.currentState.utxos['${_txid('7')}:0']?.address, 'p2ms:2-of-2');
       expect(replayed.currentState.balance, BigInt.from(100000));
+      expect(replayed.currentState.availableBalance, BigInt.zero);
       final storage = await project();
       expect((await storage.getUTXOs(_walletId)).map((u) => u.key), ['${_txid('7')}:0']);
-      expect(await storage.getBalance(_walletId), BigInt.from(100000));
+      expect(await storage.getBalance(_walletId), BigInt.zero);
 
       await expectLater(
         replayed.commandHandler(receiveMultisig(_txid('6'), escrow, 'p2ms:2-of-2')),

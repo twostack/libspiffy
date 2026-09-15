@@ -1,4 +1,4 @@
-import '../core/wallet_output_ownership.dart' show isWatchOnlyOutput;
+import '../core/wallet_output_ownership.dart' show BareMultisigScript, isWatchOnlyOutput;
 import '../utils/network_name.dart';
 import 'bitcoin_utxo.dart';
 import 'wallet_state.dart';
@@ -29,18 +29,22 @@ enum BalanceBucket { confirmed, unconfirmed, reserved }
 ///   `BitcoinWalletAggregate.selectUTXOsForAmount`), and so what
 ///   [WalletState.availableBalance] and
 ///   `BitcoinWalletAggregate.hasSufficientBalance` count: status available,
-///   no plugin metadata, not watch-only, with any number of confirmations.
-///   It is not derived from the buckets (bead libspiffy-ad07: subtracting
-///   the reserved bucket from the other two subtracted reserved UTXOs twice
-///   and counted pending, plugin-managed and watch-only UTXOs).
+///   not plugin-managed, not watch-only, not a bare multisig the wallet
+///   cannot spend alone, not held by a legacy deferred payment, with any
+///   number of confirmations. It is not derived from the buckets (bead
+///   libspiffy-ad07: subtracting the reserved bucket from the other two
+///   subtracted reserved UTXOs twice and counted pending, plugin-managed and
+///   watch-only UTXOs).
 ///
-/// The read side keeps separate rules (spv-understanding.md, "Balances"):
-/// the read model's balances (`WalletProjection`) use the same buckets but
-/// leave out UTXOs whose plugin metadata names a `pluginId`, and count
-/// watch-only UTXOs; the coordinator's `BalanceResponse` counts payment
-/// UTXOs (available, no `pluginId`, not watch-only) as confirmed when they
-/// have a block height and reports watch-only funds apart;
-/// `ReadModelStorage.getBalance` sums the payment UTXOs.
+/// The read side (spv-understanding.md, "Balances") leaves out the same
+/// UTXOs from what it calls spendable: plugin-managed
+/// ([BitcoinUtxo.isPluginManaged], the one rule for both layers, bead
+/// libspiffy-ecy8), watch-only and multisig-not-spendable-alone UTXOs
+/// (`splitBalanceUtxos`, bead libspiffy-vsap), and reports watch-only funds
+/// apart. The read model's wallet row keeps the buckets' confirmed /
+/// unconfirmed / reserved split over those UTXOs; the coordinator's
+/// `BalanceResponse` and `ReadModelStorage.getBalance` count available
+/// ones, `BalanceResponse` confirmed when mined.
 abstract final class WalletBalances {
   /// Confirmations from which an unreserved UTXO is confirmed balance.
   static const int confirmedAt = 6;
@@ -77,16 +81,47 @@ abstract final class WalletBalances {
 
   /// Whether the wallet aggregate's coin selection may pick [utxo] from
   /// [state]: it is available (not pending, reserved, held by a deferred
-  /// payment or spent), carries no plugin metadata (plugin-managed UTXOs
-  /// such as tokens are spent by their plugin), and is not watch-only
-  /// ([isWatchOnly]). Confirmations do not matter.
+  /// payment or spent), is not plugin-managed ([BitcoinUtxo.isPluginManaged]:
+  /// its plugin metadata names a `pluginId`; such UTXOs, e.g. tokens or
+  /// funding earmarks, are spent by their plugin), is not watch-only
+  /// ([isWatchOnly]), is not a bare multisig UTXO the wallet cannot spend
+  /// alone ([cannotSpendAlone]), and is not held by a deferred payment
+  /// recorded before holds were journaled
+  /// ([WalletState.legacyDeferredHeldKeys], bead libspiffy-8j9w: such an
+  /// input is available in the state until `ReconcileDeferredSpendsCommand`
+  /// journals its hold). Confirmations do not matter.
   ///
-  /// Selection does not look at the script type: a bare multisig or P2PK
-  /// UTXO the wallet can spend alone counts, although the paths that sign
-  /// every input as P2PKH (channel funding, the payment coordinator) leave
-  /// it out.
+  /// Selection does not otherwise look at the script type: a bare multisig
+  /// or P2PK UTXO the wallet can spend alone counts, although the paths that
+  /// sign every input as P2PKH (channel funding, the payment coordinator)
+  /// leave it out.
   static bool isSpendable(WalletState state, BitcoinUtxo utxo) =>
-      utxo.status == UTXOStatus.available && !utxo.hasPluginMetadata && !isWatchOnly(state, utxo);
+      utxo.status == UTXOStatus.available &&
+      !utxo.isPluginManaged &&
+      !isWatchOnly(state, utxo) &&
+      !cannotSpendAlone(state, utxo) &&
+      !state.legacyDeferredHeldKeys.contains(utxo.key);
+
+  /// Whether [utxo] is a bare multisig UTXO whose threshold the wallet's own
+  /// keys ([WalletState.addresses]) do not meet (bead libspiffy-0k8).
+  ///
+  /// The wallet no longer takes such an output as a UTXO (beads viy, n0p),
+  /// but a journal written before can hold one (a channel's 2-of-2 funding
+  /// output recorded from the funding transaction, an escrow under a
+  /// `p2ms:` pseudo-address). Replay keeps it, with its transaction and
+  /// proof, and it never funds a transaction. Derived from the state, so
+  /// replay, a snapshot restore and a later key the wallet derives all give
+  /// the same answer with no corrective event. A bare multisig over a watch
+  /// address is judged by [isWatchOnly] first on the read side; here both
+  /// exclude it.
+  static bool cannotSpendAlone(WalletState state, BitcoinUtxo utxo) {
+    // Every bare multisig script ends with OP_CHECKMULTISIG: no parse for
+    // any other UTXO.
+    if (!utxo.scriptPubKey.toLowerCase().endsWith('ae')) return false;
+    final multisig = BareMultisigScript.parseHex(utxo.scriptPubKey);
+    return multisig != null &&
+        multisig.spendableAloneBy(state.addresses.containsKey, NetworkName.toDartsv(state.networkType)) == null;
+  }
 
   /// Whether [utxo] is watch-only funds: attributed to the wallet through a
   /// watch address the wallet holds no key for (bead libspiffy-87a2). Such a

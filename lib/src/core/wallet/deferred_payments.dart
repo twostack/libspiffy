@@ -12,7 +12,10 @@ import '../../models/wallet_event.dart';
 import '../../models/wallet_state.dart';
 import '../wallet_commands.dart';
 import '../wallet_events.dart';
+import 'legacy_deferred_spends.dart';
 import 'state_records.dart';
+
+export 'legacy_deferred_spends.dart' show LegacyDeferredSpend;
 
 final _log = Logger('BitcoinWalletAggregate');
 
@@ -30,8 +33,8 @@ final _log = Logger('BitcoinWalletAggregate');
 /// last network status) and metadata['deferredHolds'] (utxoKey -> txid of
 /// the outstanding payment holding it).
 ///
-/// An instance belongs to one aggregate: it caches the last state found to
-/// hold no un-journaled deferred payment ([stateApplied] keeps the cache).
+/// Payments a journal recorded before holds were journaled are inferred from
+/// the state ([legacySpends]) and hold their inputs like journaled ones.
 class DeferredPayments {
   static const String _deferredSpendsKey = WalletMetadataKeys.deferredSpends;
   static const String _deferredHoldsKey = WalletMetadataKeys.deferredHolds;
@@ -68,69 +71,24 @@ class DeferredPayments {
   }
 
   /// The keys every un-journaled outstanding deferred payment holds.
-  Set<String> legacyHeldKeys(WalletState state) => {for (final l in legacySpends(state)) ...l.heldKeys};
+  Set<String> legacyHeldKeys(WalletState state) => state.legacyDeferredHeldKeys;
 
-  /// The state last found to hold no un-journaled deferred payment, so the
-  /// inference below runs once per state change that could create one (a
-  /// recorded transaction, a received UTXO, a reverted confirmation).
-  WalletState? _noLegacyDeferredSpendsIn;
-
-  /// Keeps the cached "no un-journaled deferred payment" check across the
-  /// application of [event], which turned [current] into [next]: the check
-  /// carries over unless the event can create such a payment.
+  /// Carries the finding "no un-journaled deferred payment" of [current]
+  /// over to [next], the state the application of [event] turned it into,
+  /// unless [event] can create such a payment (a recorded transaction, a
+  /// received UTXO, a reverted confirmation): the inference then runs once
+  /// per state change that could create one, not once per event.
   void stateApplied(WalletState current, WalletState next, WalletEvent event) {
     if (event is UTXOReceivedEvent || event is TransactionRecordedEvent || event is TransactionConfirmationRevertedEvent) {
-      _noLegacyDeferredSpendsIn = null;
-    } else if (identical(_noLegacyDeferredSpendsIn, current)) {
-      _noLegacyDeferredSpendsIn = next;
+      return;
     }
+    next.carryNoLegacyDeferredSpendsFrom(current);
   }
 
   /// Outgoing transactions recorded with a deferred spend before holds were
-  /// journaled, still outstanding: a record with no deferred-payment record,
-  /// not confirmed, whose inputs the wallet still has unspent. A record
-  /// without deferSpend spent its inputs in its own command, so it never
-  /// qualifies. Oldest record first; an input two records list is held by
-  /// the older one.
-  List<LegacyDeferredSpend> legacySpends(WalletState state) {
-    if (identical(_noLegacyDeferredSpendsIn, state)) return const [];
-    final records = state.metadata[WalletMetadataKeys.outgoingTransactions];
-    final deferred = state.metadata[_deferredSpendsKey];
-    final holds = state.metadata[_deferredHoldsKey];
-
-    // One pass over the records keeps the candidates (usually none); only
-    // those are ordered.
-    bool unheldUnspent(Object? key) {
-      final utxo = state.utxos[key.toString()];
-      return utxo != null && utxo.status != UTXOStatus.spent && !(holds is Map && holds.containsKey(key.toString()));
-    }
-
-    final candidates = <Map>[
-      for (final record in <Object?>[
-        if (records is Map) ...records.values,
-        if (records is List) ...records,
-      ])
-        if (record is Map &&
-            record['txid'] != null &&
-            !(deferred is Map && deferred.containsKey(record['txid'].toString())) &&
-            record['status'] != 'confirmed' &&
-            record['spentUtxoKeys'] is List &&
-            (record['spentUtxoKeys'] as List).any(unheldUnspent))
-          record,
-    ]..sort((a, b) => (a['recordedAt']?.toString() ?? '').compareTo(b['recordedAt']?.toString() ?? ''));
-
-    final claimed = <String>{};
-    final result = <LegacyDeferredSpend>[];
-    for (final record in candidates) {
-      final held = <String>[
-        for (final k in record['spentUtxoKeys'] as List)
-          if (unheldUnspent(k) && claimed.add(k.toString())) k.toString(),
-      ];
-      if (held.isNotEmpty) result.add(LegacyDeferredSpend(record['txid'].toString(), held, record));
-    }
-    if (result.isEmpty) _noLegacyDeferredSpendsIn = state;
-    return result;
-  }
+  /// journaled, still outstanding ([inferLegacyDeferredSpends], computed
+  /// once per state: [WalletState.legacyDeferredSpends]).
+  List<LegacyDeferredSpend> legacySpends(WalletState state) => state.legacyDeferredSpends;
 
   /// `{'utxoKey', 'satoshis'}` of each of [keys].
   static List<Map<String, dynamic>> _heldInputMaps(WalletState state, Iterable<String> keys) => [
@@ -518,14 +476,4 @@ class DeferredPayments {
     state.version = event.version;
     state.lastModified = event.timestamp;
   }
-}
-
-/// An outgoing transaction recorded with a deferred spend before holds were
-/// journaled, with the inputs it still holds ([DeferredPayments.legacySpends]).
-class LegacyDeferredSpend {
-  final String txid;
-  final List<String> heldKeys;
-  final Map record;
-
-  LegacyDeferredSpend(this.txid, this.heldKeys, this.record);
 }

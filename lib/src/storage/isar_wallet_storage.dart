@@ -11,6 +11,7 @@ import '../models/invoice_read_model.dart';
 import '../models/payment_channel.dart';
 import '../models/deferred_payment.dart';
 import '../actors/invoice_messages.dart';
+import '../services/watch_only_funds.dart' show splitBalanceUtxos;
 import 'read_model_storage.dart';
 import 'libspiffy_schemas.dart';
 import 'merkle_proof_rows.dart';
@@ -549,11 +550,7 @@ class IsarWalletStorage implements ReadModelStorage {
     // Standard P2PKH outputs may have script-analysis metadata (scriptType,
     // address) but are still valid payment UTXOs — only exclude those with
     // an explicit pluginId from a registered TransactionBuilderPlugin.
-    return entities.map((e) => e.toDomain()).where((utxo) {
-      final meta = utxo.pluginMetadata;
-      if (meta == null) return true;
-      return meta['pluginId'] == null;
-    }).toList();
+    return entities.map((e) => e.toDomain()).where((utxo) => !utxo.isPluginManaged).toList();
   }
 
   @override
@@ -585,14 +582,15 @@ class IsarWalletStorage implements ReadModelStorage {
     }).toList();
   }
 
+  /// [ReadModelStorage.getBalance]: [splitBalanceUtxos] over
+  /// [getPaymentUTXOs], as on every backend.
   @override
-  Future<BigInt> getBalance(String walletId) async {
-    final utxos = await getPaymentUTXOs(walletId);
-    return utxos.fold<BigInt>(
-      BigInt.zero,
-      (sum, utxo) => sum + utxo.satoshis,
-    );
-  }
+  Future<BigInt> getBalance(String walletId) async =>
+      (await splitBalanceUtxos(this, walletId, await getPaymentUTXOs(walletId))).spendableSatoshis;
+
+  @override
+  Future<BigInt> getWatchOnlyBalance(String walletId) async =>
+      (await splitBalanceUtxos(this, walletId, await getPaymentUTXOs(walletId))).watchOnlySatoshis;
 
   @override
   Future<void> upsertUTXO(String walletId, BitcoinUtxo utxo) async {

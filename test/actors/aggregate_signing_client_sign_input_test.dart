@@ -62,6 +62,7 @@ void main() {
   late AggregateSigningClient client;
   late String root;
   late String change2;
+  late InMemoryWalletStorage storage;
 
   setUp(() async {
     final store = InMemoryEventStore();
@@ -85,7 +86,7 @@ void main() {
     root = setup.currentState.rootAddress!;
     change2 = setup.currentState.addresses.keys.last;
 
-    final storage = InMemoryWalletStorage();
+    storage = InMemoryWalletStorage();
     await storage.storeWallet(_walletId, 'client', rootAddress: root, networkType: 'testnet');
     for (final (address, index, isChange) in [(root, 0, false), (change2, 2, true)]) {
       await storage.upsertAddress(
@@ -122,6 +123,32 @@ void main() {
 
   tearDown(() async {
     await system.shutdown();
+  });
+
+  test('vsap: pathForAddress refuses a watch address row instead of naming m/0/0', () async {
+    const watched = 'mfWxJ45yp2SFn7UciZyNpvDKrzbhyfKrY8';
+    await storage.upsertAddress(
+      _walletId,
+      AddressMetadata(
+        address: watched,
+        scriptType: 'p2pkh',
+        isChange: false,
+        purpose: 'watch',
+        usageCount: 0,
+        balance: BigInt.zero,
+        createdAt: DateTime.utc(2026),
+        isWatched: true,
+      ),
+    );
+
+    await expectLater(
+      client.pathForAddress(_walletId, watched),
+      throwsA(isA<AggregateSigningException>().having((e) => e.message, 'message', contains('watch address'))),
+    );
+    await expectLater(client.publicKeyForAddress(_walletId, watched), throwsA(isA<AggregateSigningException>()));
+    expect(manager.commandTypes, isEmpty, reason: 'nothing is asked of the aggregate');
+    expect((await client.pathForAddress(_walletId, change2)).toString(), 'm/1/2');
+    expect(await client.pathForAddress(_walletId, _externalAddress), isNull);
   });
 
   test('publicKeyForAddress asks the aggregate with SignInputCommand', () async {

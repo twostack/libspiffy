@@ -53,6 +53,7 @@ abstract final class WalletMetadataKeys {
     'unconfirmedBalance',
     'reservedBalance',
     'totalBalance',
+    'watchOnlyBalance',
     'addressCount',
     'utxoCount',
     'availableUtxoCount',

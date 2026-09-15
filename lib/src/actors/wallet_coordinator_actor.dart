@@ -487,13 +487,15 @@ class WalletCoordinatorActor extends Actor {
   Future<void> _handleGetBalance(GetBalanceQuery query) async {
     try {
       // Spendable balance: UTXOs at watch addresses are reported apart, as
-      // watch-only (bead libspiffy-87a2).
+      // watch-only (bead libspiffy-87a2); a bare multisig UTXO the wallet
+      // cannot spend alone counts nowhere (bead libspiffy-0k8). The same
+      // split as ReadModelStorage.getBalance.
       final paymentUtxos =
-          await splitWatchOnlyUtxos(_storage, query.walletId, await _storage.getPaymentUTXOs(query.walletId));
+          await splitBalanceUtxos(_storage, query.walletId, await _storage.getPaymentUTXOs(query.walletId));
       BigInt confirmed = BigInt.zero;
       BigInt unconfirmed = BigInt.zero;
 
-      for (final utxo in paymentUtxos.signable) {
+      for (final utxo in paymentUtxos.spendable) {
         final amount = utxo.satoshis;
         if (utxo.blockHeight != null && utxo.blockHeight! > 0) {
           confirmed += amount;

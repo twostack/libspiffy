@@ -83,9 +83,29 @@ class AggregateSigningClient {
 
   /// The read model's derivation path for [address], or null when the read
   /// model does not know the address.
+  ///
+  /// Throws [AggregateSigningException] for a watch address row (bead
+  /// libspiffy-vsap): the wallet holds no key for it, and the row has no
+  /// derivation index, which read as m/0/0 (the root key's path). The
+  /// aggregate refuses such an input too; this refuses before asking it.
   Future<SigningPath?> pathForAddress(String walletId, String address) async {
     final metadata = await _storage.getAddressMetadata(walletId, address);
     if (metadata == null) return null;
+    if (metadata.purpose == 'watch') {
+      throw AggregateSigningException('Address $address of wallet $walletId is a watch address: '
+          'the wallet holds no key for it and has no signing path');
+    }
+    return SigningPath(metadata.derivationIndex ?? 0, isChange: metadata.isChange);
+  }
+
+  /// The path of the wallet key at [address], or null when the read model
+  /// does not know the address or it is a watch address (no key there).
+  /// For signing that falls back to the aggregate's own key records: a
+  /// bare multisig UTXO attributed to a watch address can still be the
+  /// wallet's to sign with another of its keys.
+  Future<SigningPath?> _keyPathOrNull(String walletId, String address) async {
+    final metadata = await _storage.getAddressMetadata(walletId, address);
+    if (metadata == null || metadata.purpose == 'watch') return null;
     return SigningPath(metadata.derivationIndex ?? 0, isChange: metadata.isChange);
   }
 
@@ -107,9 +127,9 @@ class AggregateSigningClient {
   }) async {
     final paths = <SigningPath>[];
     for (final utxo in utxos) {
-      final path = await pathForAddress(walletId, utxo.address);
+      final path = await _keyPathOrNull(walletId, utxo.address);
       if (path == null) {
-        _log.info('No read-model metadata for ${utxo.address}; '
+        _log.info('No read-model key path for ${utxo.address}; '
             'the aggregate resolves the signing keys for $transactionId');
         paths.clear();
         break;
@@ -339,7 +359,7 @@ class AggregateSigningClient {
       }
       if (!seen.add(hashHex)) continue;
       final address = dartsv.Address.fromPubkeyHash(hashHex, network).toBase58();
-      final path = await pathForAddress(walletId, address);
+      final path = await _keyPathOrNull(walletId, address);
       if (path != null) return (path: path, pubkeyHash: hashHex);
     }
     return null;

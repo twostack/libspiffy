@@ -466,5 +466,57 @@ void defineReadModelKeyingContract(
       expect(await s.getBalance(wallet), BigInt.from(3000));
       expect((await s.getUTXOsByPlugin(wallet, 'tstoken')).map((x) => x.vout), [2]);
     });
+
+    test(
+        'vsap / 0k8: getBalance leaves out watch-only UTXOs and bare multisig UTXOs the wallet cannot '
+        'spend alone; getWatchOnlyBalance reports the watch-only ones', () async {
+      final s = storage();
+      final u = unique();
+      final wallet = 'kc-bal-$u';
+      await s.storeWallet(wallet, 'balance', networkType: 'testnet');
+
+      dartsv.SVPublicKey key(String byte) => dartsv.SVPrivateKey.fromHex(byte * 32, dartsv.NetworkType.TEST).publicKey;
+      String addressOf(dartsv.SVPublicKey k) => k.toAddress(dartsv.NetworkType.TEST).toBase58();
+      String p2pkh(String a) =>
+          dartsv.P2PKHLockBuilder.fromAddress(dartsv.Address.fromBase58(a)).getScriptPubkey().toHex();
+      String multisig(List<dartsv.SVPublicKey> keys, int m) =>
+          dartsv.P2MSLockBuilder(keys, m, sorting: false).getScriptPubkey().toHex();
+      final walletKey = key('31');
+      final serverKey = key('11');
+      final watchKey = key('22');
+      final own = addressOf(walletKey);
+      final watched = addressOf(watchKey);
+      await s.upsertAddress(wallet, _address(own));
+      await s.upsertAddress(
+          wallet,
+          AddressMetadata(
+            address: watched,
+            scriptType: 'p2pkh',
+            isChange: false,
+            purpose: 'watch',
+            usageCount: 0,
+            balance: BigInt.zero,
+            createdAt: DateTime.utc(2026, 9, 14),
+            isWatched: true,
+          ));
+
+      final txid = contractHex64('bal-$u');
+      Future<void> put(int vout, int sats, String script, String address,
+              {UTXOStatus status = UTXOStatus.available}) =>
+          s.upsertUTXO(
+              wallet,
+              _utxo(txid, vout, sats, status: status)
+                  .copyWith(scriptPubKey: script, address: address));
+      await put(0, 1000, p2pkh(own), own); // spendable
+      await put(1, 20000, p2pkh(watched), watched); // watch-only
+      await put(2, 300000, multisig([walletKey, serverKey], 2), own); // cannot spend alone (a journal before viy)
+      await put(3, 4000, multisig([serverKey, walletKey], 1), own); // 1-of-2 with a wallet key: spendable
+      await put(4, 50000, multisig([watchKey, walletKey], 2), watched); // needs the watch key: watch-only
+      await put(5, 7, p2pkh(own), own, status: UTXOStatus.pending); // not available
+
+      expect(await s.getBalance(wallet), BigInt.from(5000));
+      expect(await s.getWatchOnlyBalance(wallet), BigInt.from(70000));
+      expect((await s.getPaymentUTXOs(wallet)).length, 5, reason: 'the rows are kept and listed');
+    });
   });
 }

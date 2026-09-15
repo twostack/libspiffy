@@ -12,6 +12,7 @@ import '../models/invoice_read_model.dart';
 import '../models/payment_channel.dart';
 import '../models/deferred_payment.dart';
 import '../actors/invoice_messages.dart';
+import '../services/watch_only_funds.dart' show splitBalanceUtxos;
 import 'wallet_storage.dart';
 import 'merkle_proof_rows.dart';
 import 'transaction_row_rules.dart';
@@ -90,7 +91,9 @@ class InMemoryWalletStorage implements WalletStorage {
   // never removed by deleteWallet.
   final Map<String, String> _ancestorTransactions = {};
   
-  // Balance cache: walletId -> balance
+  // Balance cache: walletId -> balance. No longer read: getBalance depends
+  // on the wallet's address rows as well as its UTXOs (bead libspiffy-vsap).
+  // Kept for [statistics] and [clearBalanceCache].
   final Map<String, BigInt> _balanceCache = {};
   
   // Existing wallets in creation order: a metadata row (storeWallet) or, as
@@ -307,16 +310,13 @@ _balanceCache.remove(walletId);
     return await _withLock(walletId, () async {
       final walletUtxos = _utxos[walletId] ?? <String, BitcoinUtxo>{};
       return walletUtxos.values
-          .where((utxo) => utxo.isAvailable && !_isPluginManaged(utxo))
+          // The payment-UTXO rule shared with the Isar and Postgres
+          // backends (audit S-18, bead ecy8): script-analysis metadata alone
+          // does not exclude a UTXO.
+          .where((utxo) => utxo.isAvailable && !utxo.isPluginManaged)
           .toList();
     });
   }
-
-  /// The payment-UTXO rule shared with the Isar and Postgres backends
-  /// (audit S-18): a UTXO belongs to a plugin when its metadata names a
-  /// pluginId. Script-analysis metadata alone does not exclude it.
-  static bool _isPluginManaged(BitcoinUtxo utxo) =>
-      utxo.pluginMetadata?['pluginId'] != null;
 
   @override
   Future<List<BitcoinUtxo>> getUTXOsByPlugin(
@@ -340,33 +340,16 @@ _balanceCache.remove(walletId);
     });
   }
 
-  /// The sum of the available UTXOs without a `pluginId`
-  /// ([ReadModelStorage.getBalance]); same rule as the other backends.
+  /// [ReadModelStorage.getBalance]; same rule as the other backends
+  /// ([splitBalanceUtxos] over [getPaymentUTXOs]). Not cached: the result
+  /// depends on the wallet's address rows too (bead libspiffy-vsap).
   @override
-  Future<BigInt> getBalance(String walletId) async {
-    return await _withLock(walletId, () async {
-      // Check cache first  
-      if (_balanceCache.containsKey(walletId)) {
-        return _balanceCache[walletId]!;
-      }
-      
-      // Calculate balance from available payment UTXOs (exclude token UTXOs)
-      final walletUtxos = _utxos[walletId] ?? <String, BitcoinUtxo>{};
-      final availableUtxos = walletUtxos.values
-          .where((utxo) => utxo.isAvailable && !_isPluginManaged(utxo))
-          .toList();
-      
-      final balance = availableUtxos.fold<BigInt>(
-        BigInt.zero,
-        (sum, utxo) => sum + utxo.satoshis,
-      );
-      
-      // Cache the result
-      _balanceCache[walletId] = balance;
-      
-      return balance;
-    });
-  }
+  Future<BigInt> getBalance(String walletId) async =>
+      (await splitBalanceUtxos(this, walletId, await getPaymentUTXOs(walletId))).spendableSatoshis;
+
+  @override
+  Future<BigInt> getWatchOnlyBalance(String walletId) async =>
+      (await splitBalanceUtxos(this, walletId, await getPaymentUTXOs(walletId))).watchOnlySatoshis;
 
   @override
   Future<void> upsertUTXO(String walletId, BitcoinUtxo utxo) async {

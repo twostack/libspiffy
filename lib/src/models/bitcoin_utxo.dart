@@ -81,8 +81,10 @@ class BitcoinUtxo {
   ///
   /// Populated by [ScriptPlugin.extractMetadata()] during UTXO indexing.
   /// Contains plugin-specific data such as tokenId, token type, owner,
-  /// and amount. The 'pluginId' and 'scriptType' keys are always present
-  /// when this field is non-null.
+  /// and amount, under the 'pluginId' of the plugin that manages the UTXO
+  /// ([isPluginManaged]). Read-model rows also carry script-analysis
+  /// metadata here (script type, address) for plain outputs, without a
+  /// 'pluginId'.
   final Map<String, dynamic>? pluginMetadata;
 
   const BitcoinUtxo({
@@ -299,9 +301,21 @@ class BitcoinUtxo {
            (status == UTXOStatus.reserved && isReservationExpired);
   }
 
-  /// Whether this UTXO is managed by a script plugin (e.g. token protocol).
-  /// Plugin-managed UTXOs must not be selected for ordinary BSV payments.
+  /// Whether this UTXO carries any [pluginMetadata]. In the read model
+  /// every row carries script-analysis metadata (script type, address), so
+  /// this does not say the UTXO belongs to a plugin: [isPluginManaged] does.
   bool get hasPluginMetadata => pluginMetadata != null;
+
+  /// Whether this UTXO is managed by a script plugin (e.g. a token protocol,
+  /// or a funding earmark): its [pluginMetadata] names a `pluginId`.
+  /// Plugin-managed UTXOs are spent by their plugin and are never selected
+  /// or counted as balance for ordinary BSV payments.
+  ///
+  /// The one rule for both the wallet aggregate and the read side (bead
+  /// libspiffy-ecy8): metadata without a `pluginId` (the read model's
+  /// script analysis of a plain output, or a label) does not make a UTXO
+  /// plugin-managed.
+  bool get isPluginManaged => pluginMetadata?['pluginId'] != null;
 
   /// Get time remaining on reservation (null if not reserved or no expiry)
   Duration? get reservationTimeRemaining {

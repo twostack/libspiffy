@@ -1047,17 +1047,21 @@ class ImportTransactionConfirmedEvent extends CoordinatorEvent {
 ///
 /// [confirmedBalance], [unconfirmedBalance] and [totalBalance] are the
 /// spendable balance: the wallet's payment UTXOs
-/// (`ReadModelStorage.getPaymentUTXOs`: status available, no plugin
-/// metadata naming a `pluginId`), any number of confirmations. Pending,
-/// reserved (a deferred payment's held inputs included) and spent UTXOs are
-/// left out; UTXOs at watch addresses, which the wallet holds no key for,
-/// are left out and reported in [watchOnlyBalance] (bead libspiffy-87a2).
+/// (`ReadModelStorage.getPaymentUTXOs`: status available, not
+/// plugin-managed, i.e. no plugin metadata naming a `pluginId`), any number
+/// of confirmations. Pending, reserved (a deferred payment's held inputs
+/// included) and spent UTXOs are left out; UTXOs at watch addresses, which
+/// the wallet holds no key for, are left out and reported in
+/// [watchOnlyBalance] (bead libspiffy-87a2); bare multisig UTXOs the wallet
+/// cannot spend alone are left out (bead libspiffy-0k8). [totalBalance] is
+/// `ReadModelStorage.getBalance`.
 ///
-/// This is not the write model's rule (spv-understanding.md, "Balances"):
-/// the confirmed/unconfirmed split here is by block height, not by the six
-/// confirmations of `WalletBalances.confirmedAt`, and unlike
-/// `WalletState.availableBalance` a UTXO with script-analysis metadata but
-/// no `pluginId` counts.
+/// The UTXOs are those `WalletState.availableBalance` counts on the wallet
+/// aggregate (spv-understanding.md, "Balances"; the inputs of a deferred
+/// payment recorded before holds were journaled leave the read side when the
+/// wallet manager reconciles it at spawn); the confirmed/unconfirmed
+/// split here is by block height, not by the six confirmations of
+/// `WalletBalances.confirmedAt`.
 class BalanceResponse extends CoordinatorEvent {
   @override
   final String walletId;

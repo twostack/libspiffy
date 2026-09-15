@@ -252,28 +252,36 @@ void main() {
       expect(reservations.releaseMany(state, ReleaseUTXOsCommand(walletId: _w, reservationId: 'held')), isEmpty);
     });
 
-    test('the "no legacy payment" check carries over events that cannot create one, and is dropped by those that can',
+    test('the "no legacy payment" finding carries over events that cannot create one, and not over those that can',
         () {
       final deferred = DeferredPayments();
       final before = _withUtxos(_created(), [_utxo(1, 5)]);
-      expect(deferred.legacySpends(before), isEmpty); // cached for `before`
+      expect(deferred.legacySpends(before), isEmpty); // inferred once for `before`
 
-      // A state that does hold an un-journaled deferred payment, reached (as
-      // far as the cache knows) by an event that cannot create one: the
-      // check carries over and is not run again.
-      final withLegacy = _with(before, (b) => OutgoingTransactions.applyRecorded(b, _recorded('old', [_key(1)], 2, _t0)));
+      // States that do hold an un-journaled deferred payment, reached (as far
+      // as the finding knows) from `before`: across an event that cannot
+      // create one the finding carries over and the inference does not run
+      // again; across one that can, it runs.
+      WalletState withLegacy() =>
+          _with(before, (b) => OutgoingTransactions.applyRecorded(b, _recorded('old', [_key(1)], 2, _t0)));
       final noOp = WatchAddressAddedEvent(
           walletId: _w, address: _watchAddress, scriptType: 'p2pkh', registeredAt: _t0, version: 2, timestamp: _t0);
-      deferred.stateApplied(before, withLegacy, noOp);
-      expect(deferred.legacySpends(withLegacy), isEmpty);
+      final carried = withLegacy();
+      deferred.stateApplied(before, carried, noOp);
+      expect(deferred.legacySpends(carried), isEmpty);
+      expect(carried.legacyDeferredHeldKeys, isEmpty, reason: 'the spendable rule reads the same finding');
 
-      final fresh = DeferredPayments();
-      expect(fresh.legacySpends(before), isEmpty);
-      fresh.stateApplied(before, withLegacy, _recorded('old', [_key(1)], 2, _t0));
-      final legacy = fresh.legacySpends(withLegacy).single;
+      final inferred = withLegacy();
+      deferred.stateApplied(before, inferred, _recorded('old', [_key(1)], 2, _t0));
+      final legacy = deferred.legacySpends(inferred).single;
       expect(legacy.txid, 'old');
       expect(legacy.heldKeys, [_key(1)]);
-      expect(fresh.holderOf(withLegacy, _key(1)), 'old');
+      expect(deferred.holderOf(inferred, _key(1)), 'old');
+      expect(inferred.legacyDeferredHeldKeys, {_key(1)});
+      expect(WalletBalances.isSpendable(inferred, inferred.utxos[_key(1)]!), isFalse);
+
+      // A state never told about `before` infers for itself.
+      expect(DeferredPayments().legacySpends(withLegacy()).single.txid, 'old');
     });
   });
 

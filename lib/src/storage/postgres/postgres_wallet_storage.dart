@@ -20,6 +20,7 @@ import '../../models/transaction_address_link.dart';
 import '../../models/invoice_output_spec.dart';
 import '../../models/invoice_read_model.dart';
 import '../../models/payment_channel.dart';
+import '../../services/watch_only_funds.dart' show splitBalanceUtxos;
 import '../read_model_storage.dart';
 import '../merkle_proof_rows.dart';
 import '../transaction_row_rules.dart';
@@ -800,12 +801,16 @@ class PostgresWalletStorage implements ReadModelStorage {
     }).toList();
   }
 
+  /// [ReadModelStorage.getBalance]: [splitBalanceUtxos] over
+  /// [getPaymentUTXOs] (plugin-managed UTXOs left out in SQL), as on every
+  /// backend.
   @override
-  Future<BigInt> getBalance(String walletId) async {
-    // Use getPaymentUTXOs to exclude plugin-managed UTXOs from balance
-    final utxos = await getPaymentUTXOs(walletId);
-    return utxos.fold<BigInt>(BigInt.zero, (sum, utxo) => sum + utxo.satoshis);
-  }
+  Future<BigInt> getBalance(String walletId) async =>
+      (await splitBalanceUtxos(this, walletId, await getPaymentUTXOs(walletId))).spendableSatoshis;
+
+  @override
+  Future<BigInt> getWatchOnlyBalance(String walletId) async =>
+      (await splitBalanceUtxos(this, walletId, await getPaymentUTXOs(walletId))).watchOnlySatoshis;
 
   /// Columns [_rowToUtxo] reads, in its order.
   static const _utxoColumns = '''

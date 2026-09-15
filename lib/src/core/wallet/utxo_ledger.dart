@@ -13,6 +13,7 @@ import '../../models/wallet_balances.dart';
 import '../../models/wallet_state.dart';
 import '../../models/wallet_type.dart';
 import '../../models/persistent_map.dart';
+import '../../plugin/plugin_registry.dart';
 import '../../utils/network_name.dart';
 import '../wallet_commands.dart';
 import '../wallet_events.dart';
@@ -32,9 +33,11 @@ abstract final class UtxoLedger {
   static bool isWatchOnly(WalletState state, BitcoinUtxo utxo) => WalletBalances.isWatchOnly(state, utxo);
 
   /// Available UTXOs for spending ([WalletBalances.isSpendable]: excludes
-  /// plugin-managed UTXOs like tokens, and watch-only UTXOs at watch
-  /// addresses, bead libspiffy-87a2), in state order. Their total is
-  /// [WalletState.availableBalance].
+  /// plugin-managed UTXOs like tokens, watch-only UTXOs at watch addresses
+  /// (bead libspiffy-87a2), bare multisig UTXOs the wallet cannot spend
+  /// alone (bead libspiffy-0k8) and inputs of deferred payments recorded
+  /// before holds were journaled (bead libspiffy-8j9w)), in state order.
+  /// Their total is [WalletState.availableBalance].
   static List<BitcoinUtxo> available(WalletState state) {
     return state.utxos.values.where((utxo) => WalletBalances.isSpendable(state, utxo)).toList();
   }
@@ -92,6 +95,51 @@ abstract final class UtxoLedger {
       throw StateError('UTXO $utxoKey is a ${multisig.threshold}-of-'
           '${multisig.publicKeysHex.length} multisig output the wallet cannot '
           'spend alone; it is not a wallet UTXO');
+    }
+  }
+
+  /// The plugin metadata of a UTXO locked by [scriptPubKey] that was
+  /// received with [metadata], naming the plugin that manages it (bead
+  /// libspiffy-ecy8).
+  ///
+  /// A UTXO is plugin-managed when its metadata names a `pluginId`
+  /// ([BitcoinUtxo.isPluginManaged]), on the wallet aggregate and on the
+  /// read side alike. The read model takes the `pluginId` of a script that
+  /// a registered plugin claims (and no standard template matches) from
+  /// the script itself; so does the aggregate here, for metadata without a
+  /// `pluginId` (a plugin's `extractMetadata` need not name itself, and
+  /// may return nothing). [metadata] itself when it names a `pluginId`,
+  /// when no plugin is registered, or when no plugin claims the script.
+  static Map<String, dynamic>? pluginMetadataNamingPlugin(String scriptPubKey, Map<String, dynamic>? metadata) {
+    if (metadata?['pluginId'] != null || !PluginRegistry().hasPlugins || scriptPubKey.isEmpty) return metadata;
+    // A P2PKH script is a standard template: no parse.
+    if (scriptPubKey.length == 50 && scriptPubKey.startsWith('76a914') && scriptPubKey.endsWith('88ac')) {
+      return metadata;
+    }
+    try {
+      final script = dartsv.SVScript.fromHex(scriptPubKey);
+      dartsv.TemplateRegistry.initialize();
+      if (dartsv.ScriptTemplateRegistry().identifyScriptType(script) != null) return metadata;
+      final claimed = PluginRegistry().identifyScript(script);
+      if (claimed == null) return metadata;
+      return {...?metadata, 'pluginId': claimed.pluginId};
+    } catch (e) {
+      _log.fine('Could not identify the script of a received UTXO: $e');
+      return metadata;
+    }
+  }
+
+  /// Names the managing plugin in the metadata of each UTXO restored from a
+  /// snapshot ([pluginMetadataNamingPlugin]), as a replay of its
+  /// [UTXOReceivedEvent] would: a snapshot written before bead ecy8 holds
+  /// the metadata as received.
+  static void namePluginsOfRestoredUtxos(WalletStateBuilder state) {
+    if (!PluginRegistry().hasPlugins) return;
+    for (final entry in state.utxos.entries.toList()) {
+      final utxo = entry.value;
+      final named = pluginMetadataNamingPlugin(utxo.scriptPubKey, utxo.pluginMetadata);
+      if (identical(named, utxo.pluginMetadata)) continue;
+      state.utxos = state.utxos.put(entry.key, utxo.copyWith(pluginMetadata: unmodifiableDeepCopy(named)));
     }
   }
 
@@ -279,7 +327,7 @@ abstract final class UtxoLedger {
     final availableUtxos = available(currentState);
     if (availableUtxos.isEmpty) {
       final watchOnly = currentState.utxos.values
-          .where((u) => u.status == UTXOStatus.available && !u.hasPluginMetadata && isWatchOnly(currentState, u))
+          .where((u) => u.status == UTXOStatus.available && !u.isPluginManaged && isWatchOnly(currentState, u))
           .length;
       throw StateError(watchOnly == 0
           ? 'No available UTXOs to split'
@@ -327,8 +375,10 @@ abstract final class UtxoLedger {
       confirmations: event.confirmations ?? 0,
       status: event.initialStatus, // Use the status from the event
       derivationIndex: event.derivationIndex,
-      pluginMetadata:
-          event.pluginMetadata == null ? null : unmodifiableDeepCopy(event.pluginMetadata) as Map<String, dynamic>,
+      pluginMetadata: switch (pluginMetadataNamingPlugin(event.scriptPubKey, event.pluginMetadata)) {
+        null => null,
+        final metadata => unmodifiableDeepCopy(metadata) as Map<String, dynamic>,
+      },
       createdAt: event.timestamp,
     );
 

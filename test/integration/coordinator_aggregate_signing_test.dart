@@ -713,6 +713,44 @@ void main() {
       expect(response.watchOnlyBalance, BigInt.from(90000));
     });
 
+    test('ecy8: the balance counts a UTXO whose plugin metadata names no pluginId and leaves out an earmark',
+        () async {
+      const walletId = 'plugin-metadata-balance';
+      final root = await createXprivWallet(walletId);
+      await fund(walletId, root, txid: _fakeTxid(44), satoshis: 40000);
+      for (final (n, sats, metadata) in [
+        (45, 3000, <String, dynamic>{'purpose': 'label only'}),
+        (46, 5000, <String, dynamic>{'pluginId': 'funding-earmark', 'purpose': 'mint'}),
+      ]) {
+        final received = await _tellAndAwait<UTXOReceivedResponse>(
+          actorSystem,
+          libspiffy.walletManager,
+          WalletCommandMessage(
+            walletId,
+            ReceiveUTXOCommand(
+              walletId: walletId,
+              txid: _fakeTxid(n),
+              vout: 0,
+              satoshis: BigInt.from(sats),
+              scriptPubKey: _p2pkhScriptHex(root),
+              address: root,
+              blockHeight: 1239645,
+              confirmations: 10,
+              initialStatus: UTXOStatus.available,
+              pluginMetadata: metadata,
+            ),
+          ),
+        );
+        expect(received.success, isTrue, reason: received.error);
+      }
+      await eventually(() async => (await libspiffy.walletStorage.getUTXOs(walletId)).length == 3, 'three UTXO rows');
+
+      final response = await balance(walletId);
+      expect(response.totalBalance, BigInt.from(43000));
+      expect((await libspiffy.walletStorage.getUTXOsByPlugin(walletId, 'funding-earmark')).map((u) => u.key),
+          ['${_fakeTxid(46)}:0']);
+    });
+
     test('the wallet refuses to sign an input at a watch address, naming it', () async {
       const walletId = 'watch-sign';
       await createXprivWallet(walletId);

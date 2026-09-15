@@ -218,11 +218,14 @@ abstract class ReadModelStorage {
 
   /// Calculate the total balance for a wallet.
   ///
-  /// The sum of the wallet's [getPaymentUTXOs]: UTXOs with status available
-  /// (not pending, reserved or spent), whatever their confirmations, except
-  /// those whose plugin metadata names a `pluginId`. Watch-only UTXOs count:
-  /// this sum does not filter them (the coordinator's `BalanceResponse`
-  /// reports them apart). See spv-understanding.md,
+  /// The spendable part of the wallet's [getPaymentUTXOs] (UTXOs with status
+  /// available, whatever their confirmations, whose plugin metadata names no
+  /// `pluginId`): watch-only UTXOs (at a watch address the wallet holds no
+  /// key for, reported by [getWatchOnlyBalance]) and bare multisig UTXOs the
+  /// wallet's keys cannot spend alone (kept from a journal written before
+  /// bead viy) are left out (beads libspiffy-vsap, libspiffy-0k8). The same
+  /// UTXOs as `WalletState.availableBalance` on the wallet aggregate and the
+  /// coordinator's `BalanceResponse.totalBalance`. See spv-understanding.md,
   /// "Balances", for how the other balance APIs differ.
   ///
   /// Parameters:
@@ -230,6 +233,12 @@ abstract class ReadModelStorage {
   ///
   /// Returns: Total balance in satoshis
   Future<BigInt> getBalance(String walletId);
+
+  /// The watch-only part of the wallet's [getPaymentUTXOs]: available UTXOs
+  /// the wallet holds no key for because a key they need is a watch address
+  /// (bead libspiffy-vsap). Not part of [getBalance]; the coordinator's
+  /// `BalanceResponse.watchOnlyBalance`.
+  Future<BigInt> getWatchOnlyBalance(String walletId);
 
   // ========================================
   // Transaction History

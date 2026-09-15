@@ -1,6 +1,7 @@
 import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:eventador/eventador.dart';
 import 'package:meta/meta.dart';
+import '../core/wallet/legacy_deferred_spends.dart';
 import 'bitcoin_utxo.dart';
 import 'persistent_map.dart';
 import 'wallet_balances.dart';
@@ -248,9 +249,11 @@ class WalletState extends State {
 
   /// The amount the wallet aggregate's coin selection can fund: the total
   /// of the UTXOs `BitcoinWalletAggregate.selectUTXOsForAmount` may select
-  /// ([WalletBalances.isSpendable]: available, no plugin metadata, not
-  /// watch-only, any number of confirmations), so a selection of up to this
-  /// amount succeeds and one satoshi more fails.
+  /// ([WalletBalances.isSpendable]: available, not plugin-managed, not
+  /// watch-only, not a bare multisig the wallet cannot spend alone, not held
+  /// by a deferred payment recorded before holds were journaled, any number
+  /// of confirmations), so a selection of up to this amount succeeds and one
+  /// satoshi more fails.
   ///
   /// Not derived from [confirmedBalance], [unconfirmedBalance] and
   /// [reservedBalance], which count every unspent UTXO (pending,
@@ -259,13 +262,36 @@ class WalletState extends State {
   /// immutable).
   late final BigInt availableBalance = WalletBalances.spendableTotal(this);
 
-  /// UTXOs whose status is available, plugin-managed and watch-only ones
-  /// included. The UTXOs coin selection may pick are the ones
-  /// [WalletBalances.isSpendable] accepts (see [availableBalance]).
+  /// The UTXOs coin selection may pick ([WalletBalances.isSpendable]), in
+  /// state order; their total is [availableBalance]. Watch-only,
+  /// plugin-managed and legacy-held UTXOs whose status is available are not
+  /// among them (bead libspiffy-vsap).
   List<BitcoinUtxo> get availableUtxos {
-    return utxos.values
-        .where((utxo) => utxo.status == UTXOStatus.available)
-        .toList();
+    return utxos.values.where((utxo) => WalletBalances.isSpendable(this, utxo)).toList();
+  }
+
+  /// Deferred payments recorded before holds were journaled that still hold
+  /// inputs ([inferLegacyDeferredSpends]). Inferred once per state, when
+  /// first asked; the aggregate carries "none" over events that cannot
+  /// create one ([carryNoLegacyDeferredSpendsFrom]).
+  @internal
+  List<LegacyDeferredSpend> get legacyDeferredSpends => _legacyDeferredSpends ??= inferLegacyDeferredSpends(this);
+  List<LegacyDeferredSpend>? _legacyDeferredSpends;
+
+  /// The inputs [legacyDeferredSpends] hold (bead libspiffy-8j9w).
+  @internal
+  late final Set<String> legacyDeferredHeldKeys = {
+    for (final legacy in legacyDeferredSpends) ...legacy.heldKeys,
+  };
+
+  /// Takes over [previous]'s finding that it holds no un-journaled deferred
+  /// payment, for a state reached from it by an event that cannot create
+  /// one. Nothing when [previous] was not inferred or holds one.
+  @internal
+  void carryNoLegacyDeferredSpendsFrom(WalletState previous) {
+    if (_legacyDeferredSpends == null && (previous._legacyDeferredSpends?.isEmpty ?? false)) {
+      _legacyDeferredSpends = const [];
+    }
   }
 
   /// Recalculate balances from UTXOs ([WalletBalances]: the rule the wallet

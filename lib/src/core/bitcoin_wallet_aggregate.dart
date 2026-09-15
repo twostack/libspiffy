@@ -210,6 +210,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
     // The round trip hands back untyped maps; the derivation records are
     // read as typed maps.
     AddressBook.typeRestoredDerivationRecords(state);
+    UtxoLedger.namePluginsOfRestoredUtxos(state);
     // Balances are derived data: recompute them once from the restored UTXOs
     // rather than trusting the cached values in the snapshot.
     state.recomputeBalances();

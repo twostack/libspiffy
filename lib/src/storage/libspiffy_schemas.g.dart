@@ -12890,14 +12890,19 @@ const BitcoinTransactionEntitySchema = CollectionSchema(
         )
       ],
     ),
-    r'status': IndexSchema(
-      id: -107785170620420283,
-      name: r'status',
+    r'status_walletId': IndexSchema(
+      id: -7937539104915722070,
+      name: r'status_walletId',
       unique: false,
       replace: false,
       properties: [
         IndexPropertySchema(
           name: r'status',
+          type: IndexType.hash,
+          caseSensitive: true,
+        ),
+        IndexPropertySchema(
+          name: r'walletId',
           type: IndexType.hash,
           caseSensitive: true,
         )
@@ -13620,28 +13625,28 @@ extension BitcoinTransactionEntityQueryWhere on QueryBuilder<
   }
 
   QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
-      QAfterWhereClause> statusEqualTo(String status) {
+      QAfterWhereClause> statusEqualToAnyWalletId(String status) {
     return QueryBuilder.apply(this, (query) {
       return query.addWhereClause(IndexWhereClause.equalTo(
-        indexName: r'status',
+        indexName: r'status_walletId',
         value: [status],
       ));
     });
   }
 
   QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
-      QAfterWhereClause> statusNotEqualTo(String status) {
+      QAfterWhereClause> statusNotEqualToAnyWalletId(String status) {
     return QueryBuilder.apply(this, (query) {
       if (query.whereSort == Sort.asc) {
         return query
             .addWhereClause(IndexWhereClause.between(
-              indexName: r'status',
+              indexName: r'status_walletId',
               lower: [],
               upper: [status],
               includeUpper: false,
             ))
             .addWhereClause(IndexWhereClause.between(
-              indexName: r'status',
+              indexName: r'status_walletId',
               lower: [status],
               includeLower: false,
               upper: [],
@@ -13649,15 +13654,61 @@ extension BitcoinTransactionEntityQueryWhere on QueryBuilder<
       } else {
         return query
             .addWhereClause(IndexWhereClause.between(
-              indexName: r'status',
+              indexName: r'status_walletId',
               lower: [status],
               includeLower: false,
               upper: [],
             ))
             .addWhereClause(IndexWhereClause.between(
-              indexName: r'status',
+              indexName: r'status_walletId',
               lower: [],
               upper: [status],
+              includeUpper: false,
+            ));
+      }
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterWhereClause> statusWalletIdEqualTo(String status, String walletId) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'status_walletId',
+        value: [status, walletId],
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+          QAfterWhereClause>
+      statusEqualToWalletIdNotEqualTo(String status, String walletId) {
+    return QueryBuilder.apply(this, (query) {
+      if (query.whereSort == Sort.asc) {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'status_walletId',
+              lower: [status],
+              upper: [status, walletId],
+              includeUpper: false,
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'status_walletId',
+              lower: [status, walletId],
+              includeLower: false,
+              upper: [status],
+            ));
+      } else {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'status_walletId',
+              lower: [status, walletId],
+              includeLower: false,
+              upper: [status],
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'status_walletId',
+              lower: [status],
+              upper: [status, walletId],
               includeUpper: false,
             ));
       }
@@ -20224,14 +20275,19 @@ const AddressEntitySchema = CollectionSchema(
   deserializeProp: _addressEntityDeserializeProp,
   idName: r'id',
   indexes: {
-    r'walletId': IndexSchema(
-      id: -1783113319798776304,
-      name: r'walletId',
+    r'walletId_purpose': IndexSchema(
+      id: -6688837697255533726,
+      name: r'walletId_purpose',
       unique: false,
       replace: false,
       properties: [
         IndexPropertySchema(
           name: r'walletId',
+          type: IndexType.hash,
+          caseSensitive: true,
+        ),
+        IndexPropertySchema(
+          name: r'purpose',
           type: IndexType.hash,
           caseSensitive: true,
         )
@@ -20592,29 +20648,29 @@ extension AddressEntityQueryWhere
     });
   }
 
-  QueryBuilder<AddressEntity, AddressEntity, QAfterWhereClause> walletIdEqualTo(
-      String walletId) {
+  QueryBuilder<AddressEntity, AddressEntity, QAfterWhereClause>
+      walletIdEqualToAnyPurpose(String walletId) {
     return QueryBuilder.apply(this, (query) {
       return query.addWhereClause(IndexWhereClause.equalTo(
-        indexName: r'walletId',
+        indexName: r'walletId_purpose',
         value: [walletId],
       ));
     });
   }
 
   QueryBuilder<AddressEntity, AddressEntity, QAfterWhereClause>
-      walletIdNotEqualTo(String walletId) {
+      walletIdNotEqualToAnyPurpose(String walletId) {
     return QueryBuilder.apply(this, (query) {
       if (query.whereSort == Sort.asc) {
         return query
             .addWhereClause(IndexWhereClause.between(
-              indexName: r'walletId',
+              indexName: r'walletId_purpose',
               lower: [],
               upper: [walletId],
               includeUpper: false,
             ))
             .addWhereClause(IndexWhereClause.between(
-              indexName: r'walletId',
+              indexName: r'walletId_purpose',
               lower: [walletId],
               includeLower: false,
               upper: [],
@@ -20622,15 +20678,60 @@ extension AddressEntityQueryWhere
       } else {
         return query
             .addWhereClause(IndexWhereClause.between(
-              indexName: r'walletId',
+              indexName: r'walletId_purpose',
               lower: [walletId],
               includeLower: false,
               upper: [],
             ))
             .addWhereClause(IndexWhereClause.between(
-              indexName: r'walletId',
+              indexName: r'walletId_purpose',
               lower: [],
               upper: [walletId],
+              includeUpper: false,
+            ));
+      }
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterWhereClause>
+      walletIdPurposeEqualTo(String walletId, String purpose) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'walletId_purpose',
+        value: [walletId, purpose],
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterWhereClause>
+      walletIdEqualToPurposeNotEqualTo(String walletId, String purpose) {
+    return QueryBuilder.apply(this, (query) {
+      if (query.whereSort == Sort.asc) {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_purpose',
+              lower: [walletId],
+              upper: [walletId, purpose],
+              includeUpper: false,
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_purpose',
+              lower: [walletId, purpose],
+              includeLower: false,
+              upper: [walletId],
+            ));
+      } else {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_purpose',
+              lower: [walletId, purpose],
+              includeLower: false,
+              upper: [walletId],
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_purpose',
+              lower: [walletId],
+              upper: [walletId, purpose],
               includeUpper: false,
             ));
       }

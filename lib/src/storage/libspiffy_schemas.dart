@@ -654,7 +654,11 @@ class BitcoinTransactionEntity {
   late bool isOutgoing;
 
   /// Transaction status ('pending', 'confirmed', 'failed')
-  @Index()
+  ///
+  /// The composite (status, walletId) index serves status queries across
+  /// every wallet (prefix) and for one wallet, so a wallet's query does not
+  /// read other wallets' rows (audit S-16).
+  @Index(composite: [CompositeIndex('walletId')])
   late String status;
 
   /// When this transaction was created/received
@@ -937,7 +941,11 @@ class AddressEntity {
   Id id = Isar.autoIncrement;
 
   /// Wallet ID this address belongs to
-  @Index()
+  ///
+  /// The composite (walletId, purpose) index serves every per-wallet address
+  /// query (prefix) and the purpose lookup, so reading a wallet's watch
+  /// addresses does not read its derived addresses (audit S-16).
+  @Index(composite: [CompositeIndex('purpose')])
   late String walletId;
 
   /// Bitcoin address (base58) or payment destination identifier
@@ -1263,3 +1271,30 @@ Map<String, dynamic> _decodeJson(String json) {
   if (json.isEmpty || json == '{}') return {};
   return Map<String, dynamic>.from(jsonDecode(json) as Map);
 } 
+
+/// The where clauses of the single-property indexes that audit S-16 turned
+/// into composite indexes, kept for hosts that query these collections
+/// directly. They use the new indexes' prefixes and return the same rows.
+extension AddressEntityFormerWhereClauses on QueryBuilder<AddressEntity, AddressEntity, QWhereClause> {
+  @Deprecated('Use walletIdEqualToAnyPurpose (the walletId index is now (walletId, purpose)).')
+  QueryBuilder<AddressEntity, AddressEntity, QAfterWhereClause> walletIdEqualTo(String walletId) =>
+      walletIdEqualToAnyPurpose(walletId);
+
+  @Deprecated('Use walletIdNotEqualToAnyPurpose (the walletId index is now (walletId, purpose)).')
+  QueryBuilder<AddressEntity, AddressEntity, QAfterWhereClause> walletIdNotEqualTo(String walletId) =>
+      walletIdNotEqualToAnyPurpose(walletId);
+}
+
+/// See [AddressEntityFormerWhereClauses].
+extension BitcoinTransactionEntityFormerWhereClauses
+    on QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QWhereClause> {
+  @Deprecated('Use statusEqualToAnyWalletId (the status index is now (status, walletId)).')
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterWhereClause> statusEqualTo(
+          String status) =>
+      statusEqualToAnyWalletId(status);
+
+  @Deprecated('Use statusNotEqualToAnyWalletId (the status index is now (status, walletId)).')
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterWhereClause> statusNotEqualTo(
+          String status) =>
+      statusNotEqualToAnyWalletId(status);
+}

@@ -187,6 +187,13 @@ class DeferredPayment {
   /// a status only when it changes; explicit checks and broadcasts always.
   final DateTime? lastCheckedAt;
 
+  /// The competing transactions ARC named (`competingTxs`) when it reported
+  /// DOUBLE_SPEND_ATTEMPTED for this payment (bead libspiffy-pkum): every
+  /// txid reported so far, in the order first reported. Kept when a later
+  /// status names none and after the payment resolves; empty when ARC named
+  /// none, or for a status journaled before they were recorded.
+  final List<String> competingTxids;
+
   /// When the payment was recorded (handed over).
   final DateTime createdAt;
   final DateTime updatedAt;
@@ -214,6 +221,7 @@ class DeferredPayment {
     this.lastNetworkStatus,
     this.lastNetworkStatusSource,
     this.lastCheckedAt,
+    this.competingTxids = const [],
     required this.createdAt,
     required this.updatedAt,
     this.resolvedAt,
@@ -233,6 +241,7 @@ class DeferredPayment {
     Object? lastNetworkStatus = _unset,
     Object? lastNetworkStatusSource = _unset,
     Object? lastCheckedAt = _unset,
+    List<String>? competingTxids,
     DateTime? updatedAt,
     Object? resolvedAt = _unset,
     Object? resolutionReason = _unset,
@@ -254,6 +263,7 @@ class DeferredPayment {
             ? this.lastNetworkStatusSource
             : lastNetworkStatusSource as String?,
         lastCheckedAt: identical(lastCheckedAt, _unset) ? this.lastCheckedAt : lastCheckedAt as DateTime?,
+        competingTxids: competingTxids ?? this.competingTxids,
         createdAt: createdAt,
         updatedAt: updatedAt ?? this.updatedAt,
         resolvedAt: identical(resolvedAt, _unset) ? this.resolvedAt : resolvedAt as DateTime?,
@@ -270,6 +280,22 @@ class DeferredPayment {
     final decoded = jsonDecode(json);
     if (decoded is! List) return const [];
     return [for (final e in decoded) if (e is Map) DeferredPaymentInput.fromMap(e)];
+  }
+
+  /// [known] followed by the txids of [reported] it does not hold, or null
+  /// when [reported] adds none: how a new report of competing transactions
+  /// joins the ones recorded (bead libspiffy-pkum).
+  static List<String>? mergeCompetingTxids(List<Object?>? known, List<String> reported) {
+    final merged = [for (final t in known ?? const []) t.toString()];
+    final seen = merged.toSet();
+    var added = false;
+    for (final t in reported) {
+      if (seen.add(t)) {
+        merged.add(t);
+        added = true;
+      }
+    }
+    return added ? merged : null;
   }
 
   static DeferredPaymentState stateFromName(String? name) => DeferredPaymentState.values
@@ -290,6 +316,7 @@ class DeferredPayment {
       other.lastNetworkStatus == lastNetworkStatus &&
       other.lastNetworkStatusSource == lastNetworkStatusSource &&
       _sameInstant(other.lastCheckedAt, lastCheckedAt) &&
+      _listEquals(other.competingTxids, competingTxids) &&
       _sameInstant(other.createdAt, createdAt) &&
       _sameInstant(other.updatedAt, updatedAt) &&
       _sameInstant(other.resolvedAt, resolvedAt) &&
@@ -312,7 +339,7 @@ class DeferredPayment {
 
   @override
   String toString() => 'DeferredPayment($walletId, $txid, ${state.name}, '
-      'status: $lastNetworkStatus, inputs: $heldInputs)';
+      'status: $lastNetworkStatus${competingTxids.isEmpty ? '' : ', competing: $competingTxids'}, inputs: $heldInputs)';
 }
 
 /// Filter and page of [ReadModelStorage.listDeferredPayments].

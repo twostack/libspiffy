@@ -6,7 +6,7 @@ import 'package:eventador/eventador.dart';
 import 'package:logging/logging.dart';
 
 import '../../models/bitcoin_utxo.dart';
-import '../../models/deferred_payment.dart' show DeferredNetworkStatus, DeferredPaymentState;
+import '../../models/deferred_payment.dart' show DeferredNetworkStatus, DeferredPayment, DeferredPaymentState;
 import '../../models/persistent_map.dart';
 import '../../models/wallet_event.dart';
 import '../../models/wallet_state.dart';
@@ -208,7 +208,14 @@ class DeferredPayments {
     final state = record?['state']?.toString() ?? DeferredPaymentState.outstanding.name;
     final definitiveFailure =
         DeferredNetworkStatus.isDefinitiveFailure(command.networkStatus) && state == DeferredPaymentState.outstanding.name;
-    if (command.explicit || definitiveFailure || record?['lastNetworkStatus'] != command.networkStatus) {
+    // A competing transaction the record does not list yet is news even when
+    // the status is unchanged (bead libspiffy-pkum).
+    final newCompetitor =
+        DeferredPayment.mergeCompetingTxids(record?['competingTxids'] as List?, command.competingTxids) != null;
+    if (command.explicit ||
+        definitiveFailure ||
+        newCompetitor ||
+        record?['lastNetworkStatus'] != command.networkStatus) {
       events.add(TransactionNetworkStatusCheckedEvent(
         walletId: command.walletId,
         txid: command.txid,
@@ -217,6 +224,7 @@ class DeferredPayments {
         checkedAt: command.checkedAt,
         blockHeight: command.blockHeight,
         explicit: command.explicit,
+        competingTxids: command.competingTxids,
         version: currentState.version + events.length + 1,
         timestamp: DateTime.now(),
       ));
@@ -424,14 +432,15 @@ class DeferredPayments {
   static void applyNetworkStatusChecked(WalletStateBuilder state, TransactionNetworkStatusCheckedEvent event) {
     final record = _recordForUpdate(state, event.txid);
     if (record != null) {
-      _putRecord(
-        state,
-        event.txid,
-        record
-            .put('lastNetworkStatus', event.networkStatus)
-            .put('lastNetworkStatusSource', event.source)
-            .put('lastCheckedAt', event.checkedAt.toIso8601String()),
-      );
+      var updated = record
+          .put('lastNetworkStatus', event.networkStatus)
+          .put('lastNetworkStatusSource', event.source)
+          .put('lastCheckedAt', event.checkedAt.toIso8601String());
+      // Every competing txid ARC named so far, first-reported order (bead
+      // libspiffy-pkum); a status naming none keeps them.
+      final competing = DeferredPayment.mergeCompetingTxids(record['competingTxids'] as List?, event.competingTxids);
+      if (competing != null) updated = updated.put('competingTxids', freezeDeep(competing));
+      _putRecord(state, event.txid, updated);
       if (DeferredNetworkStatus.isOnNetwork(event.networkStatus)) {
         _markSeen(state, event.txid, event.timestamp);
       }

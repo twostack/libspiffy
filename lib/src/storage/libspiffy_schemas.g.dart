@@ -4514,83 +4514,88 @@ const DeferredPaymentEntitySchema = CollectionSchema(
       name: r'amount',
       type: IsarType.string,
     ),
-    r'createdAt': PropertySchema(
+    r'competingTxids': PropertySchema(
       id: 1,
+      name: r'competingTxids',
+      type: IsarType.stringList,
+    ),
+    r'createdAt': PropertySchema(
+      id: 2,
       name: r'createdAt',
       type: IsarType.dateTime,
     ),
     r'fee': PropertySchema(
-      id: 2,
+      id: 3,
       name: r'fee',
       type: IsarType.string,
     ),
     r'heldInputsJson': PropertySchema(
-      id: 3,
+      id: 4,
       name: r'heldInputsJson',
       type: IsarType.string,
     ),
     r'inferred': PropertySchema(
-      id: 4,
+      id: 5,
       name: r'inferred',
       type: IsarType.bool,
     ),
     r'invoiceId': PropertySchema(
-      id: 5,
+      id: 6,
       name: r'invoiceId',
       type: IsarType.string,
     ),
     r'lastCheckedAt': PropertySchema(
-      id: 6,
+      id: 7,
       name: r'lastCheckedAt',
       type: IsarType.dateTime,
     ),
     r'lastNetworkStatus': PropertySchema(
-      id: 7,
+      id: 8,
       name: r'lastNetworkStatus',
       type: IsarType.string,
     ),
     r'lastNetworkStatusSource': PropertySchema(
-      id: 8,
+      id: 9,
       name: r'lastNetworkStatusSource',
       type: IsarType.string,
     ),
     r'purpose': PropertySchema(
-      id: 9,
+      id: 10,
       name: r'purpose',
       type: IsarType.string,
     ),
     r'recipientAddresses': PropertySchema(
-      id: 10,
+      id: 11,
       name: r'recipientAddresses',
       type: IsarType.stringList,
     ),
     r'resolutionReason': PropertySchema(
-      id: 11,
+      id: 12,
       name: r'resolutionReason',
       type: IsarType.string,
     ),
     r'resolvedAt': PropertySchema(
-      id: 12,
+      id: 13,
       name: r'resolvedAt',
       type: IsarType.dateTime,
     ),
     r'state': PropertySchema(
-      id: 13,
+      id: 14,
       name: r'state',
       type: IsarType.string,
     ),
     r'txid': PropertySchema(
-      id: 14,
+      id: 15,
       name: r'txid',
       type: IsarType.string,
     ),
     r'updatedAt': PropertySchema(
-      id: 15,
+      id: 16,
       name: r'updatedAt',
       type: IsarType.dateTime,
     ),
     r'walletId': PropertySchema(
-      id: 16,
+      id: 17,
       name: r'walletId',
       type: IsarType.string,
     )
@@ -4658,6 +4663,13 @@ int _deferredPaymentEntityEstimateSize(
 ) {
   var bytesCount = offsets.last;
   bytesCount += 3 + object.amount.length * 3;
+  bytesCount += 3 + object.competingTxids.length * 3;
+  {
+    for (var i = 0; i < object.competingTxids.length; i++) {
+      final value = object.competingTxids[i];
+      bytesCount += value.length * 3;
+    }
+  }
   bytesCount += 3 + object.fee.length * 3;
   bytesCount += 3 + object.heldInputsJson.length * 3;
   {
@@ -4710,22 +4722,23 @@ void _deferredPaymentEntitySerialize(
   Map<Type, List<int>> allOffsets,
 ) {
   writer.writeString(offsets[0], object.amount);
-  writer.writeDateTime(offsets[1], object.createdAt);
-  writer.writeString(offsets[2], object.fee);
-  writer.writeString(offsets[3], object.heldInputsJson);
-  writer.writeBool(offsets[4], object.inferred);
-  writer.writeString(offsets[5], object.invoiceId);
-  writer.writeDateTime(offsets[6], object.lastCheckedAt);
-  writer.writeString(offsets[7], object.lastNetworkStatus);
-  writer.writeString(offsets[8], object.lastNetworkStatusSource);
-  writer.writeString(offsets[9], object.purpose);
-  writer.writeStringList(offsets[10], object.recipientAddresses);
-  writer.writeString(offsets[11], object.resolutionReason);
-  writer.writeDateTime(offsets[12], object.resolvedAt);
-  writer.writeString(offsets[13], object.state);
-  writer.writeString(offsets[14], object.txid);
-  writer.writeDateTime(offsets[15], object.updatedAt);
-  writer.writeString(offsets[16], object.walletId);
+  writer.writeStringList(offsets[1], object.competingTxids);
+  writer.writeDateTime(offsets[2], object.createdAt);
+  writer.writeString(offsets[3], object.fee);
+  writer.writeString(offsets[4], object.heldInputsJson);
+  writer.writeBool(offsets[5], object.inferred);
+  writer.writeString(offsets[6], object.invoiceId);
+  writer.writeDateTime(offsets[7], object.lastCheckedAt);
+  writer.writeString(offsets[8], object.lastNetworkStatus);
+  writer.writeString(offsets[9], object.lastNetworkStatusSource);
+  writer.writeString(offsets[10], object.purpose);
+  writer.writeStringList(offsets[11], object.recipientAddresses);
+  writer.writeString(offsets[12], object.resolutionReason);
+  writer.writeDateTime(offsets[13], object.resolvedAt);
+  writer.writeString(offsets[14], object.state);
+  writer.writeString(offsets[15], object.txid);
+  writer.writeDateTime(offsets[16], object.updatedAt);
+  writer.writeString(offsets[17], object.walletId);
 }
 
 DeferredPaymentEntity _deferredPaymentEntityDeserialize(
@@ -4736,23 +4749,24 @@ DeferredPaymentEntity _deferredPaymentEntityDeserialize(
 ) {
   final object = DeferredPaymentEntity();
   object.amount = reader.readString(offsets[0]);
-  object.createdAt = reader.readDateTime(offsets[1]);
-  object.fee = reader.readString(offsets[2]);
-  object.heldInputsJson = reader.readString(offsets[3]);
+  object.competingTxids = reader.readStringList(offsets[1]) ?? [];
+  object.createdAt = reader.readDateTime(offsets[2]);
+  object.fee = reader.readString(offsets[3]);
+  object.heldInputsJson = reader.readString(offsets[4]);
   object.id = id;
-  object.inferred = reader.readBool(offsets[4]);
-  object.invoiceId = reader.readStringOrNull(offsets[5]);
-  object.lastCheckedAt = reader.readDateTimeOrNull(offsets[6]);
-  object.lastNetworkStatus = reader.readStringOrNull(offsets[7]);
-  object.lastNetworkStatusSource = reader.readStringOrNull(offsets[8]);
-  object.purpose = reader.readStringOrNull(offsets[9]);
-  object.recipientAddresses = reader.readStringList(offsets[10]) ?? [];
-  object.resolutionReason = reader.readStringOrNull(offsets[11]);
-  object.resolvedAt = reader.readDateTimeOrNull(offsets[12]);
-  object.state = reader.readString(offsets[13]);
-  object.txid = reader.readString(offsets[14]);
-  object.updatedAt = reader.readDateTime(offsets[15]);
-  object.walletId = reader.readString(offsets[16]);
+  object.inferred = reader.readBool(offsets[5]);
+  object.invoiceId = reader.readStringOrNull(offsets[6]);
+  object.lastCheckedAt = reader.readDateTimeOrNull(offsets[7]);
+  object.lastNetworkStatus = reader.readStringOrNull(offsets[8]);
+  object.lastNetworkStatusSource = reader.readStringOrNull(offsets[9]);
+  object.purpose = reader.readStringOrNull(offsets[10]);
+  object.recipientAddresses = reader.readStringList(offsets[11]) ?? [];
+  object.resolutionReason = reader.readStringOrNull(offsets[12]);
+  object.resolvedAt = reader.readDateTimeOrNull(offsets[13]);
+  object.state = reader.readString(offsets[14]);
+  object.txid = reader.readString(offsets[15]);
+  object.updatedAt = reader.readDateTime(offsets[16]);
+  object.walletId = reader.readString(offsets[17]);
   return object;
 }
 
@@ -4766,36 +4780,38 @@ P _deferredPaymentEntityDeserializeProp<P>(
     case 0:
       return (reader.readString(offset)) as P;
     case 1:
-      return (reader.readDateTime(offset)) as P;
+      return (reader.readStringList(offset) ?? []) as P;
     case 2:
-      return (reader.readString(offset)) as P;
+      return (reader.readDateTime(offset)) as P;
     case 3:
       return (reader.readString(offset)) as P;
     case 4:
-      return (reader.readBool(offset)) as P;
+      return (reader.readString(offset)) as P;
     case 5:
-      return (reader.readStringOrNull(offset)) as P;
+      return (reader.readBool(offset)) as P;
     case 6:
-      return (reader.readDateTimeOrNull(offset)) as P;
-    case 7:
       return (reader.readStringOrNull(offset)) as P;
+    case 7:
+      return (reader.readDateTimeOrNull(offset)) as P;
     case 8:
       return (reader.readStringOrNull(offset)) as P;
     case 9:
       return (reader.readStringOrNull(offset)) as P;
     case 10:
-      return (reader.readStringList(offset) ?? []) as P;
-    case 11:
       return (reader.readStringOrNull(offset)) as P;
+    case 11:
+      return (reader.readStringList(offset) ?? []) as P;
     case 12:
-      return (reader.readDateTimeOrNull(offset)) as P;
+      return (reader.readStringOrNull(offset)) as P;
     case 13:
-      return (reader.readString(offset)) as P;
+      return (reader.readDateTimeOrNull(offset)) as P;
     case 14:
       return (reader.readString(offset)) as P;
     case 15:
-      return (reader.readDateTime(offset)) as P;
+      return (reader.readString(offset)) as P;
     case 16:
+      return (reader.readDateTime(offset)) as P;
+    case 17:
       return (reader.readString(offset)) as P;
     default:
       throw IsarError('Unknown property with id $propertyId');
@@ -5406,6 +5422,234 @@ extension DeferredPaymentEntityQueryFilter on QueryBuilder<
         property: r'amount',
         value: '',
       ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> competingTxidsElementEqualTo(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'competingTxids',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> competingTxidsElementGreaterThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'competingTxids',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> competingTxidsElementLessThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'competingTxids',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> competingTxidsElementBetween(
+    String lower,
+    String upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'competingTxids',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> competingTxidsElementStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'competingTxids',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> competingTxidsElementEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'competingTxids',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+          QAfterFilterCondition>
+      competingTxidsElementContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'competingTxids',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+          QAfterFilterCondition>
+      competingTxidsElementMatches(String pattern,
+          {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'competingTxids',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> competingTxidsElementIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'competingTxids',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> competingTxidsElementIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'competingTxids',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> competingTxidsLengthEqualTo(int length) {
+    return QueryBuilder.apply(this, (query) {
+      return query.listLength(
+        r'competingTxids',
+        length,
+        true,
+        length,
+        true,
+      );
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> competingTxidsIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.listLength(
+        r'competingTxids',
+        0,
+        true,
+        0,
+        true,
+      );
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> competingTxidsIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.listLength(
+        r'competingTxids',
+        0,
+        false,
+        999999,
+        true,
+      );
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> competingTxidsLengthLessThan(
+    int length, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.listLength(
+        r'competingTxids',
+        0,
+        true,
+        length,
+        include,
+      );
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> competingTxidsLengthGreaterThan(
+    int length, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.listLength(
+        r'competingTxids',
+        length,
+        include,
+        999999,
+        true,
+      );
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> competingTxidsLengthBetween(
+    int lower,
+    int upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.listLength(
+        r'competingTxids',
+        lower,
+        includeLower,
+        upper,
+        includeUpper,
+      );
     });
   }
 
@@ -7921,6 +8165,13 @@ extension DeferredPaymentEntityQueryWhereDistinct
   }
 
   QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QDistinct>
+      distinctByCompetingTxids() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'competingTxids');
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QDistinct>
       distinctByCreatedAt() {
     return QueryBuilder.apply(this, (query) {
       return query.addDistinctBy(r'createdAt');
@@ -8049,6 +8300,13 @@ extension DeferredPaymentEntityQueryProperty on QueryBuilder<
       amountProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'amount');
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, List<String>, QQueryOperations>
+      competingTxidsProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'competingTxids');
     });
   }
 

@@ -1522,6 +1522,10 @@ class DeferredPaymentDetail {
   List<DeferredPaymentInput> get heldInputs => payment.heldInputs;
   String? get lastNetworkStatus => payment.lastNetworkStatus;
   DateTime? get lastCheckedAt => payment.lastCheckedAt;
+
+  /// The competing transactions ARC named for this payment (bead
+  /// libspiffy-pkum; see [DeferredPayment.competingTxids]).
+  List<String> get competingTxids => payment.competingTxids;
   DeferredPaymentState get state => payment.state;
 }
 
@@ -1571,6 +1575,10 @@ class DeferredPaymentBroadcastEvent extends CoordinatorEvent {
   final bool willRetry;
   final String? error;
 
+  /// The competing transactions ARC named with a DOUBLE_SPEND_ATTEMPTED
+  /// answer (bead libspiffy-pkum); empty otherwise.
+  final List<String> competingTxids;
+
   DeferredPaymentBroadcastEvent({
     required this.walletId,
     required this.txid,
@@ -1581,6 +1589,7 @@ class DeferredPaymentBroadcastEvent extends CoordinatorEvent {
     this.confirmed = false,
     this.willRetry = false,
     this.error,
+    this.competingTxids = const [],
   });
 
   @override
@@ -1613,6 +1622,10 @@ class DeferredPaymentStatusEvent extends CoordinatorEvent {
   final bool confirmed;
   final String? error;
 
+  /// The competing transactions ARC named with a DOUBLE_SPEND_ATTEMPTED
+  /// answer (bead libspiffy-pkum); empty otherwise.
+  final List<String> competingTxids;
+
   DeferredPaymentStatusEvent({
     required this.walletId,
     required this.txid,
@@ -1624,6 +1637,7 @@ class DeferredPaymentStatusEvent extends CoordinatorEvent {
     this.proofStatus,
     this.confirmed = false,
     this.error,
+    this.competingTxids = const [],
   });
 
   @override

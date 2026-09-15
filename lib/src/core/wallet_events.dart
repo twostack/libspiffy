@@ -2182,6 +2182,11 @@ class TransactionNetworkStatusCheckedEvent extends WalletEvent {
   /// True for a user-requested check or broadcast.
   final bool explicit;
 
+  /// The competing transactions ARC named with this status (`competingTxs`,
+  /// reported with DOUBLE_SPEND_ATTEMPTED; bead libspiffy-pkum). Written
+  /// only when there are any; an event journaled before reads back with none.
+  final List<String> competingTxids;
+
   TransactionNetworkStatusCheckedEvent({
     required String walletId,
     required this.txid,
@@ -2190,6 +2195,7 @@ class TransactionNetworkStatusCheckedEvent extends WalletEvent {
     required this.checkedAt,
     this.blockHeight,
     this.explicit = false,
+    this.competingTxids = const [],
     String? eventId,
     DateTime? timestamp,
     int? version,
@@ -2210,6 +2216,7 @@ class TransactionNetworkStatusCheckedEvent extends WalletEvent {
         'checkedAt': checkedAt.toIso8601String(),
         'blockHeight': blockHeight,
         'explicit': explicit,
+        if (competingTxids.isNotEmpty) 'competingTxids': competingTxids,
       };
 
   static TransactionNetworkStatusCheckedEvent fromMap(Map<String, dynamic> map) =>
@@ -2221,6 +2228,10 @@ class TransactionNetworkStatusCheckedEvent extends WalletEvent {
         checkedAt: _deferredDate(map['checkedAt']) ?? DateTime.fromMillisecondsSinceEpoch(0),
         blockHeight: map['blockHeight'] as int?,
         explicit: map['explicit'] as bool? ?? false,
+        competingTxids: [
+          if (map['competingTxids'] case final List<dynamic> txids)
+            for (final txid in txids) txid.toString(),
+        ],
         eventId: map['eventId'] as String?,
         timestamp: _deferredDate(map['timestamp']),
         version: map['version'] as int?,

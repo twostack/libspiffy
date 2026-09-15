@@ -344,6 +344,67 @@ void main() {
         expect(DeferredNetworkStatus.allowsCancel(DeferredNetworkStatus.doubleSpendAttempted), isTrue);
       });
 
+      test('pkum: ARC\'s competing txids are journaled with the status; a new competitor is journaled again, '
+          'the same report is not; a replay keeps them', () async {
+        final wallet = _Wallet();
+        final txid = await wallet.pay([_input]);
+        final rivalA = 'd4' * 32;
+        final rivalB = 'e5' * 32;
+        RecordTransactionNetworkStatusCommand contested(List<String> competing) => RecordTransactionNetworkStatusCommand(
+            walletId: _w, txid: txid, networkStatus: DeferredNetworkStatus.doubleSpendAttempted, competingTxids: competing);
+
+        final first = await wallet.handle(contested([rivalA]));
+        expect((first.single as TransactionNetworkStatusCheckedEvent).competingTxids, [rivalA]);
+        expect(await wallet.handle(contested([rivalA])), isEmpty, reason: 'the same report again: nothing new');
+        final second = await wallet.handle(contested([rivalB, rivalA]));
+        expect((second.single as TransactionNetworkStatusCheckedEvent).competingTxids, [rivalB, rivalA]);
+        expect(wallet.deferred(txid)['competingTxids'], [rivalA, rivalB]);
+        expect(wallet.deferred(txid)['state'], 'outstanding');
+        expect(wallet.utxo(_input).status, UTXOStatus.reserved);
+
+        // Through the journal's serialized form.
+        final stored = [for (final e in wallet.journal) e is TransactionNetworkStatusCheckedEvent
+            ? TransactionNetworkStatusCheckedEvent.fromMap(e.toMap()) : e];
+        expect([for (final e in stored.whereType<TransactionNetworkStatusCheckedEvent>()) e.competingTxids],
+            [[rivalA], [rivalB, rivalA]]);
+        final fresh = _aggregate();
+        for (final e in stored) {
+          fresh.eventHandler(e);
+        }
+        expect(fresh.currentState.metadata['deferredSpends'][txid]['competingTxids'], [rivalA, rivalB]);
+        expect(fresh.currentState.utxos[_input]!.status, UTXOStatus.reserved);
+      });
+
+      test('pkum: a status event journaled before competing txids existed replays with none', () async {
+        final wallet = _Wallet();
+        final txid = await wallet.pay([_input]);
+        final at = DateTime.utc(2026, 3);
+        final v = wallet.aggregate.currentState.version;
+        final written = TransactionNetworkStatusCheckedEvent(
+                walletId: _w, txid: txid, networkStatus: DeferredNetworkStatus.doubleSpendAttempted, source: 'arc',
+                checkedAt: at, version: v + 1, timestamp: at)
+            .toMap();
+        expect(written.containsKey('competingTxids'), isFalse, reason: 'an event without any is written as before');
+        // As the code before pkum wrote it.
+        final old = Map<String, dynamic>.of(written)..remove('competingTxids');
+
+        final event = TransactionNetworkStatusCheckedEvent.fromMap(old);
+        expect(event.competingTxids, isEmpty);
+        wallet.apply([event]);
+        final replayed = wallet.replay().currentState;
+        expect(replayed.metadata['deferredSpends'][txid]['lastNetworkStatus'], DeferredNetworkStatus.doubleSpendAttempted);
+        expect(replayed.metadata['deferredSpends'][txid]['competingTxids'], isNull);
+        expect(replayed.metadata['deferredSpends'][txid]['state'], 'outstanding');
+        expect(replayed.utxos[_input]!.status, UTXOStatus.reserved);
+        expect(replayed.version, v + 1);
+
+        // ARC names the competitor later: journaled, although the status did not change.
+        final named = await wallet.handle(RecordTransactionNetworkStatusCommand(
+            walletId: _w, txid: txid, networkStatus: DeferredNetworkStatus.doubleSpendAttempted,
+            competingTxids: ['f6' * 32]));
+        expect((named.single as TransactionNetworkStatusCheckedEvent).competingTxids, ['f6' * 32]);
+      });
+
       test('a journal where DOUBLE_SPEND_ATTEMPTED already failed the payment replays unchanged', () async {
         final wallet = _Wallet();
         final txid = await wallet.pay([_input]);

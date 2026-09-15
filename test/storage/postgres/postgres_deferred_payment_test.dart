@@ -104,4 +104,51 @@ void main() {
       await pool.close();
     }
   });
+
+  test('pkum: v017 adds competing_txids; a row stored before it reads back with none; rolls back and re-applies',
+      () async {
+    final migrations = PostgresMigrations(config);
+    await migrations.migrate();
+    final pool = await config.createPool();
+    Future<bool> columnExists() async => (await pool.execute(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name = 'deferred_payments' AND column_name = 'competing_txids'"))
+        .isNotEmpty;
+    final walletId = 'w-v017-$run';
+    final txid = contractTxid('v017-$run');
+    try {
+      expect(await columnExists(), isTrue);
+      while (await migrations.getCurrentVersion() >= 17) {
+        await migrations.rollback();
+      }
+      expect(await migrations.getCurrentVersion(), 16);
+      expect(await columnExists(), isFalse);
+      // A row written by the v016 schema.
+      await pool.execute(
+        Sql.named('''
+          INSERT INTO deferred_payments (wallet_id, txid, state, created_at, updated_at, amount, fee,
+            last_network_status, last_network_status_source)
+          VALUES (@w, @t, 'outstanding', NOW(), NOW(), 1000, 10, 'DOUBLE_SPEND_ATTEMPTED', 'arc')
+        '''),
+        parameters: {'w': walletId, 't': txid},
+      );
+
+      await migrations.migrate();
+      expect(await columnExists(), isTrue);
+      final storage = PostgresWalletStorage(config);
+      await storage.initialize();
+      try {
+        final row = await storage.getDeferredPayment(walletId, txid);
+        expect(row!.lastNetworkStatus, DeferredNetworkStatus.doubleSpendAttempted);
+        expect(row.competingTxids, isEmpty);
+        await storage.storeDeferredPayment(row.copyWith(competingTxids: ['ab' * 32]));
+        expect((await storage.getDeferredPayment(walletId, txid))!.competingTxids, ['ab' * 32]);
+        await storage.deleteWallet(walletId);
+      } finally {
+        await storage.close();
+      }
+    } finally {
+      await pool.close();
+    }
+  });
 }

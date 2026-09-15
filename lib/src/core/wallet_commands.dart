@@ -1158,6 +1158,12 @@ class RecordTransactionNetworkStatusCommand extends WalletCommand {
   /// ARC's message for a failure (journaled as the failure reason).
   final String? detail;
 
+  /// The competing transactions ARC named (`competingTxs`, reported with
+  /// DOUBLE_SPEND_ATTEMPTED; bead libspiffy-pkum). Journaled with the status;
+  /// a txid the payment's record does not hold yet journals the status even
+  /// when it is unchanged.
+  final List<String> competingTxids;
+
   RecordTransactionNetworkStatusCommand({
     required String walletId,
     required this.txid,
@@ -1167,6 +1173,7 @@ class RecordTransactionNetworkStatusCommand extends WalletCommand {
     this.blockHeight,
     this.explicit = false,
     this.detail,
+    this.competingTxids = const [],
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,

@@ -24,6 +24,7 @@ import 'migrations/v013_deferred_payments.dart';
 import 'migrations/v014_confirmed_transaction_height_index.dart';
 import 'migrations/v015_transaction_counterparty.dart';
 import 'migrations/v016_merkle_proof_status_height_index.dart';
+import 'migrations/v017_deferred_payment_competing_txids.dart';
 
 /// Base class for database migrations.
 ///
@@ -66,6 +67,7 @@ class PostgresMigrations {
     V014ConfirmedTransactionHeightIndex(),
     V015TransactionCounterparty(),
     V016MerkleProofStatusHeightIndex(),
+    V017DeferredPaymentCompetingTxids(),
   ];
 
   /// Test hook awaited by [migrate] right after it reads the current schema

@@ -20,6 +20,7 @@ import '../services/arc_service.dart';
 import '../services/arc_service_config.dart';
 import '../spv/merkle_proof_header_check.dart';
 import '../storage/read_model_storage.dart';
+import '../storage/transaction_row_rules.dart';
 import '../utils/beef.dart';
 import 'spv_messages.dart' show BlockHeaderStoredMessage;
 import 'wallet_messages.dart';
@@ -56,7 +57,11 @@ class _StatusCheck {
   final ProofHeaderStatus? proofStatus;
   final String? error;
 
-  const _StatusCheck(this.outcome, {this.status, this.blockHeight, this.proofStatus, this.error});
+  /// The competing transactions ARC named with [status] (bead libspiffy-pkum).
+  final List<String> competingTxids;
+
+  const _StatusCheck(this.outcome,
+      {this.status, this.blockHeight, this.proofStatus, this.error, this.competingTxids = const []});
 }
 
 /// Actor that handles ARC service integration for transaction broadcasting and monitoring
@@ -762,9 +767,10 @@ class ARCActor extends Actor {
       final ArcTransactionResponse response = await _arcService!.getTransaction(txid);
       final arcTxStatus = _arcStatusToTransactionStatus(response.status);
       final wireStatus = arcWireStatus(response.status);
+      final competing = response.doubleSpendTxids ?? const <String>[];
       _log.info('  ARC reports: ${response.status} (mapped: ${arcTxStatus?.name}) for ${txid.substring(0, 8)}... (stored: ${currentStatus.name})');
       await _recordNetworkStatus(walletId, txid, wireStatus,
-          explicit: explicit, blockHeight: response.blockHeight, detail: response.message);
+          explicit: explicit, blockHeight: response.blockHeight, detail: response.message, competingTxids: competing);
 
       // SEEN_IN_ORPHAN_MEMPOOL: Attempt remediation on every poll cycle
       if (response.status == ArcTransactionStatus.seenInOrphanMempool) {
@@ -792,15 +798,23 @@ class ARCActor extends Actor {
       // on the network or rejected. A pending one is broadcast now (ARC has
       // it, so no back-off); a status past that is left as it is.
       if (response.status == ArcTransactionStatus.doubleSpendAttempted) {
-        _log.warning('ARC reports a double spend attempt on $txid (competing: '
-            '${response.doubleSpendTxids ?? const []}); still polling, nothing released');
+        _log.warning('ARC reports a double spend attempt on $txid (competing: $competing); '
+            'still polling, nothing released');
         final promote = currentStatus == TransactionStatus.pending;
         if (promote) _updateTransactionStatusFromArc(walletId, txid, response.status);
-        return _StatusCheck(promote ? _CheckOutcome.changed : _CheckOutcome.unchanged, status: wireStatus);
+        return _StatusCheck(promote ? _CheckOutcome.changed : _CheckOutcome.unchanged,
+            status: wireStatus, competingTxids: competing);
       }
 
-      if (arcTxStatus == null) return _StatusCheck(_CheckOutcome.unknown, status: wireStatus);
-      final changed = arcTxStatus != currentStatus;
+      if (arcTxStatus == null) {
+        return _StatusCheck(_CheckOutcome.unknown, status: wireStatus, competingTxids: competing);
+      }
+      // A report the stored row does not take is no change (bead
+      // libspiffy-pkum, 7dj rule): e.g. ARC's status endpoint still answering
+      // STORED for a transaction already seen on the network. Sending it
+      // anyway journaled a status update the projection ignores on every
+      // scan, and counted as progress for the pending back-off.
+      final changed = arcTxStatus != currentStatus && TransactionRowRules.setsStatus(currentStatus, arcTxStatus);
       if (changed) {
         // Update the transaction status in the wallet
         _updateTransactionStatusFromArc(walletId, txid, response.status);
@@ -815,7 +829,8 @@ class ARCActor extends Actor {
         await _applyDeferredSpend(txid, walletId);
       }
 
-      return _StatusCheck(changed ? _CheckOutcome.changed : _CheckOutcome.unchanged, status: wireStatus);
+      return _StatusCheck(changed ? _CheckOutcome.changed : _CheckOutcome.unchanged,
+          status: wireStatus, competingTxids: competing);
     } catch (e) {
       if (e is ArcException && e.isNotFound) {
         // Not known to ARC (yet): the recipient may broadcast later. Not a
@@ -865,7 +880,10 @@ class ARCActor extends Actor {
   Future<ProofHeaderStatus?> _onSubmitResponse(String walletId, String txid, String txHex, ArcSubmitResponse response,
       {bool explicit = false}) async {
     await _recordNetworkStatus(walletId, txid, arcWireStatus(response.status),
-        explicit: explicit, blockHeight: response.blockHeight, detail: response.message);
+        explicit: explicit,
+        blockHeight: response.blockHeight,
+        detail: response.message,
+        competingTxids: response.doubleSpendTxids ?? const []);
     switch (response.status) {
       case ArcTransactionStatus.seenOnNetwork:
         await _applyDeferredSpend(txid, walletId, rawHex: txHex);
@@ -1031,15 +1049,26 @@ class ARCActor extends Actor {
   /// that is not a deferred payment, and one recorded before holds were
   /// journaled has no read-model row yet); any other status only
   /// when the read model has the payment, and, unless [explicit], only when
-  /// it changed, so a scan of a wallet's other transactions does not load
-  /// its aggregate.
+  /// it changed (or names a competing transaction the row does not list), so
+  /// a scan of a wallet's other transactions does not load its aggregate.
+  /// [competingTxids] are the ones ARC named with the status (bead
+  /// libspiffy-pkum).
   Future<void> _recordNetworkStatus(String walletId, String txid, String status,
-      {String source = 'arc', bool explicit = false, int? blockHeight, String? detail}) async {
+      {String source = 'arc',
+      bool explicit = false,
+      int? blockHeight,
+      String? detail,
+      List<String> competingTxids = const []}) async {
     try {
       if (!DeferredNetworkStatus.isDefinitiveFailure(status) && !DeferredNetworkStatus.isContested(status)) {
         final row = await _storage.getDeferredPayment(walletId, txid);
         if (row == null) return;
-        if (!explicit && row.lastNetworkStatus == status && row.lastNetworkStatusSource == source) return;
+        if (!explicit &&
+            row.lastNetworkStatus == status &&
+            row.lastNetworkStatusSource == source &&
+            row.competingTxids.toSet().containsAll(competingTxids)) {
+          return;
+        }
       }
       _walletManager.tell(WalletCommandMessage(walletId, RecordTransactionNetworkStatusCommand(
         walletId: walletId,
@@ -1050,6 +1079,7 @@ class ARCActor extends Actor {
         blockHeight: blockHeight,
         explicit: explicit,
         detail: detail,
+        competingTxids: competingTxids,
       )));
     } catch (e) {
       _log.warning('Could not record network status $status of $txid in wallet $walletId: $e');
@@ -1073,6 +1103,7 @@ class ARCActor extends Actor {
         proofStatus: check.proofStatus?.name,
         confirmed: check.proofStatus == ProofHeaderStatus.verified,
         error: check.error,
+        competingTxids: check.competingTxids,
       );
       final arcKnows = arcResult.success && arcResult.networkStatus != DeferredNetworkStatus.notFound;
       if (via == DeferredPaymentNetworkSource.arc || arcKnows) return arcResult;
@@ -1229,6 +1260,7 @@ class ARCActor extends Actor {
                   DeferredNetworkStatus.isContested(arcWireStatus(response.status))
               ? response.message
               : null,
+          competingTxids: response.doubleSpendTxids ?? const [],
         );
       } catch (e) {
         arcError = e.toString();

@@ -1005,6 +1005,7 @@ class WalletCoordinatorActor extends Actor {
                 ? 'ARC reports ${result.networkStatus} for ${cmd.txid}: a competing transaction spends an input; '
                     'the payment stays outstanding with its inputs held${result.error != null ? ' (${result.error})' : ''}'
                 : result.error,
+        competingTxids: result.competingTxids,
       ));
     } catch (e) {
       _emitEvent(failure('Broadcast of deferred payment ${cmd.txid} failed: $e'));
@@ -1040,6 +1041,7 @@ class WalletCoordinatorActor extends Actor {
         proofStatus: result.proofStatus,
         confirmed: result.confirmed,
         error: result.error,
+        competingTxids: result.competingTxids,
       ));
     } catch (e) {
       _emitEvent(DeferredPaymentStatusEvent(

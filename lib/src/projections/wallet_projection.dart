@@ -842,6 +842,8 @@ class WalletProjection extends Projection<void> {
       lastNetworkStatus: event.networkStatus,
       lastNetworkStatusSource: event.source,
       lastCheckedAt: event.checkedAt,
+      // Every competing txid ARC named so far (bead libspiffy-pkum).
+      competingTxids: DeferredPayment.mergeCompetingTxids(deferred.competingTxids, event.competingTxids),
       updatedAt: event.timestamp,
       state: seen ? DeferredPaymentState.seen : null,
       resolvedAt: seen ? event.timestamp : deferred.resolvedAt,

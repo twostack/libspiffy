@@ -18,12 +18,16 @@ class NetworkArc extends ArcService {
   /// submissions and status queries (e.g. `REJECTED`).
   final Map<String, String> statusOverrides = {};
 
+  /// ARC's `competingTxs` for a txid, answered with its status override.
+  final Map<String, List<String>> competingTxs = {};
+
   @override
   Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl}) async {
     final txid = dartsv.Transaction.fromHex(rawTx).id;
     final override = statusOverrides[txid];
     if (override != null) {
-      return ArcSubmitResponse.fromJson({'txid': txid, 'txStatus': override});
+      return ArcSubmitResponse.fromJson(
+          {'txid': txid, 'txStatus': override, if (competingTxs[txid] != null) 'competingTxs': competingTxs[txid]});
     }
     seen.add(txid);
     return ArcSubmitResponse(
@@ -37,7 +41,8 @@ class NetworkArc extends ArcService {
   Future<ArcTransactionResponse> getTransaction(String txid) async {
     final override = statusOverrides[txid];
     if (override != null) {
-      return ArcTransactionResponse.fromJson({'txid': txid, 'txStatus': override});
+      return ArcTransactionResponse.fromJson(
+          {'txid': txid, 'txStatus': override, if (competingTxs[txid] != null) 'competingTxs': competingTxs[txid]});
     }
     if (!seen.contains(txid)) {
       throw ArcException('Failed to get transaction: {"status":404}', statusCode: 404);

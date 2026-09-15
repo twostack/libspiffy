@@ -202,6 +202,32 @@ void defineDeferredPaymentContract(
       });
     }
 
+    test('pkum: the competing txids ARC reported read back, in order, and are listed; none by default', () async {
+      final walletId = 'w-${unique()}';
+      final plain = contractDeferredPayment(walletId: walletId, txid: contractTxid('plain-${unique()}'));
+      final competing = [contractTxid('rival-a-${unique()}'), contractTxid('rival-b-${unique()}')];
+      final contested = contractDeferredPayment(
+        walletId: walletId,
+        txid: contractTxid('contested-${unique()}'),
+        minutesAfterBase: 5,
+        lastNetworkStatus: DeferredNetworkStatus.doubleSpendAttempted,
+      ).copyWith(competingTxids: competing);
+      await storage().storeDeferredPayment(plain);
+      await storage().storeDeferredPayment(contested);
+
+      expect((await storage().getDeferredPayment(walletId, contested.txid))!.competingTxids, competing);
+      expect(await storage().getDeferredPayment(walletId, contested.txid), contested);
+      expect((await storage().getDeferredPayment(walletId, plain.txid))!.competingTxids, isEmpty);
+      final listed = (await storage().listDeferredPayments(walletId)).payments;
+      expect([for (final p in listed) p.txid], [contested.txid, plain.txid]);
+      expect([for (final p in listed) p.competingTxids], [competing, isEmpty]);
+
+      // Stored again with one more competitor (the projection's union).
+      final more = contested.copyWith(competingTxids: [...competing, contractTxid('rival-c-${unique()}')]);
+      await storage().storeDeferredPayment(more);
+      expect((await storage().getDeferredPayment(walletId, contested.txid))!.competingTxids, more.competingTxids);
+    });
+
     test('a cursor the API did not produce is refused', () async {
       expect(
         () => storage().listDeferredPayments('w-${unique()}', query: const DeferredPaymentQuery(cursor: 'garbage')),

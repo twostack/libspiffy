@@ -419,6 +419,40 @@ void main() {
     expect((await funding()).status, UTXOStatus.reserved);
   });
 
+  test('pkum: ARC DOUBLE_SPEND_ATTEMPTED naming the competing transactions: reported, listed with them and '
+      'journaled (a read model rebuilt from the journal has them)', () async {
+    final ready = await pay('inv-competing');
+    final rival = 'c7' * 32;
+    arc.statusOverrides[ready.txid] = 'DOUBLE_SPEND_ATTEMPTED';
+    arc.competingTxs[ready.txid] = [rival];
+
+    final checked = await send<DeferredPaymentStatusEvent>(
+        CheckDeferredPaymentStatusCommand(walletId: walletId, txid: ready.txid, requestId: 'pk1'),
+        (e) => e.requestId == 'pk1');
+    expect(checked.networkStatus, DeferredNetworkStatus.doubleSpendAttempted);
+    expect(checked.competingTxids, [rival]);
+
+    await until(
+        () async => (await storage().getDeferredPayment(walletId, ready.txid))!.competingTxids.isNotEmpty,
+        'the competing txids recorded');
+    final listed = await list(GetDeferredPaymentsQuery(walletId: walletId, queryId: 'pk2'));
+    expect(listed.payments.single.txid, ready.txid);
+    expect(listed.payments.single.state, DeferredPaymentState.outstanding);
+    expect(listed.payments.single.competingTxids, [rival]);
+    expect((await funding()).status, UTXOStatus.reserved);
+
+    final broadcast = await send<DeferredPaymentBroadcastEvent>(
+        BroadcastDeferredPaymentCommand(walletId: walletId, txid: ready.txid, requestId: 'pk3'),
+        (e) => e.requestId == 'pk3');
+    expect(broadcast.success, isFalse);
+    expect(broadcast.competingTxids, [rival]);
+
+    final rebuilt = await rebuildFromJournal();
+    final row = (await rebuilt.getDeferredPayment(walletId, ready.txid))!;
+    expect(row.lastNetworkStatus, DeferredNetworkStatus.doubleSpendAttempted);
+    expect(row.competingTxids, [rival]);
+  });
+
   test('ARC REJECTED on a status check: the payment fails and its input is released, journaled', () async {
     final ready = await pay('inv-rejected');
     arc.statusOverrides[ready.txid] = 'REJECTED';

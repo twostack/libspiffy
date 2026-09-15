@@ -35,6 +35,8 @@ import '../spv/testnet_proof_fixture.dart';
 const _wallet = 'w';
 const _fundingTxid = '6af69a37518c963234ab5b9e0c6afb6bc7273f1be58e98c42336c29067c0b665';
 const _inputKey = '$_fundingTxid:0';
+final _rivalA = 'a1' * 32;
+final _rivalB = 'b2' * 32;
 
 void main() {
   late LocalActorSystem system;
@@ -222,6 +224,36 @@ void main() {
       expect(spends(), isEmpty);
     });
 
+    test('pkum: DOUBLE_SPEND_ATTEMPTED with ARC\'s competing txids: the recorded status and the result carry them',
+        () async {
+      await handedOver();
+      arc.statuses[kFixtureTxid] = ArcTransactionResponse.fromJson({
+        'txid': kFixtureTxid,
+        'txStatus': 'DOUBLE_SPEND_ATTEMPTED',
+        'competingTxs': [_rivalA, _rivalB],
+      });
+      await spawnActor();
+
+      final result = await check();
+
+      expect(result.networkStatus, DeferredNetworkStatus.doubleSpendAttempted);
+      expect(result.competingTxids, [_rivalA, _rivalB]);
+      final recorded = walletManager.commands.whereType<RecordTransactionNetworkStatusCommand>().single;
+      expect(recorded.competingTxids, [_rivalA, _rivalB]);
+      expect(spends(), isEmpty);
+    });
+
+    test('pkum: a status without competing txids records none', () async {
+      await handedOver();
+      arc.statuses[kFixtureTxid] = status('SEEN_ON_NETWORK');
+      await spawnActor();
+
+      final result = await check();
+
+      expect(result.competingTxids, isEmpty);
+      expect(walletManager.commands.whereType<RecordTransactionNetworkStatusCommand>().single.competingTxids, isEmpty);
+    });
+
     test('ARC unreachable: no status, nothing recorded, an error', () async {
       await handedOver();
       arc.unreachable = true;
@@ -256,6 +288,45 @@ void main() {
 
       expect(statuses(), ['REJECTED/arc']);
       expect(spends(), isEmpty);
+    });
+
+    test('pkum: a contested payment the scan meets reaches the wallet with ARC\'s competing txids', () async {
+      await handedOver();
+      arc.statuses[kFixtureTxid] = ArcTransactionResponse.fromJson(
+          {'txid': kFixtureTxid, 'txStatus': 'DOUBLE_SPEND_ATTEMPTED', 'competingTxs': [_rivalA]});
+      await spawnActor();
+
+      await scan();
+
+      final recorded = walletManager.commands.whereType<RecordTransactionNetworkStatusCommand>().single;
+      expect((recorded.networkStatus, recorded.explicit), (DeferredNetworkStatus.doubleSpendAttempted, false));
+      expect(recorded.competingTxids, [_rivalA]);
+    });
+
+    test('pkum (7dj rule): ARC reporting an earlier status (STORED) for a row already seenOnNetwork sends no '
+        'status command, scan after scan; a later status still does', () async {
+      List<String> updates(String txid) => [
+            for (final c in walletManager.commands.whereType<UpdateTransactionStatusCommand>())
+              if (c.txid == txid) c.newStatus.name,
+          ];
+      // Seen on the network already (e.g. the submit answer); ARC's status
+      // endpoint still answers STORED.
+      await storeTx(kFixture2Txid, kFixture2TxHex, status: TransactionStatus.seenOnNetwork);
+      arc.statuses[kFixture2Txid] = ArcTransactionResponse.fromJson({'txid': kFixture2Txid, 'txStatus': 'STORED'});
+      // Pending: STORED moves it on (the probe does not project, so every
+      // scan finds it pending again).
+      await storeTx(kFixtureTxid, kFixtureTxHex);
+      arc.statuses[kFixtureTxid] = status('STORED');
+      await spawnActor();
+
+      await scan();
+      await scan();
+
+      expect(arc.getTransactionCalls, greaterThanOrEqualTo(4), reason: 'both rows checked on both scans');
+      // Old code: [broadcast, broadcast], a command (and a journaled
+      // TransactionStatusUpdatedEvent) the projection ignores on every pass.
+      expect(updates(kFixture2Txid), isEmpty);
+      expect(updates(kFixtureTxid), ['broadcast', 'broadcast']);
     });
 
     test('an unchanged status is not sent again; a transaction that is not a deferred payment sends none',
@@ -400,6 +471,22 @@ void main() {
       expect(spends(), isEmpty);
     });
 
+    test('pkum: ARC answers DOUBLE_SPEND_ATTEMPTED with competing txids: recorded and reported with them', () async {
+      final beefHex = await beefWithUnconfirmedParent();
+      arc.submitStatus = 'DOUBLE_SPEND_ATTEMPTED';
+      arc.submitCompetingTxs = [_rivalB];
+      await spawnActor();
+
+      final result = await ask(broadcast(beefHex));
+
+      expect(result.networkStatus, DeferredNetworkStatus.doubleSpendAttempted);
+      expect(result.competingTxids, [_rivalB]);
+      final recorded = walletManager.commands.whereType<RecordTransactionNetworkStatusCommand>().single;
+      expect((recorded.txid, recorded.explicit), (kFixture2Txid, true));
+      expect(recorded.competingTxids, [_rivalB]);
+      expect(spends(), isEmpty);
+    });
+
     test('ARC unreachable: failure reported, nothing recorded', () async {
       final beefHex = await beefWithUnconfirmedParent();
       arc.unreachable = true;
@@ -445,6 +532,7 @@ class _FakeArc extends ArcService {
   final Map<String, ArcTransactionResponse> statuses = {};
   final List<String> submitted = [];
   String submitStatus = 'SEEN_ON_NETWORK';
+  List<String>? submitCompetingTxs;
   bool unreachable = false;
   int getTransactionCalls = 0;
 
@@ -452,7 +540,8 @@ class _FakeArc extends ArcService {
   Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl}) async {
     if (unreachable) throw ArcException('ARC unreachable');
     submitted.add(rawTx);
-    return ArcSubmitResponse.fromJson({'txid': 'x', 'txStatus': submitStatus});
+    return ArcSubmitResponse.fromJson(
+        {'txid': 'x', 'txStatus': submitStatus, if (submitCompetingTxs != null) 'competingTxs': submitCompetingTxs});
   }
 
   @override

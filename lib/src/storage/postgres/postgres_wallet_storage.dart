@@ -1736,7 +1736,7 @@ class PostgresWalletStorage implements ReadModelStorage {
     wallet_id, txid, state, created_at, updated_at, invoice_id, purpose,
     recipient_addresses, amount, fee, held_inputs, last_network_status,
     last_network_status_source, last_checked_at, resolved_at,
-    resolution_reason, inferred
+    resolution_reason, inferred, competing_txids
   ''';
 
   /// Set by tests: receives the SQL and parameters of each
@@ -1754,7 +1754,7 @@ class PostgresWalletStorage implements ReadModelStorage {
           @walletId, @txid, @state, @createdAt, @updatedAt, @invoiceId, @purpose,
           CAST(@recipients AS JSONB), @amount, @fee, CAST(@heldInputs AS JSONB),
           @lastNetworkStatus, @lastNetworkStatusSource, @lastCheckedAt,
-          @resolvedAt, @resolutionReason, @inferred
+          @resolvedAt, @resolutionReason, @inferred, CAST(@competingTxids AS JSONB)
         )
         ON CONFLICT (wallet_id, txid) DO UPDATE SET
           state = EXCLUDED.state,
@@ -1770,7 +1770,8 @@ class PostgresWalletStorage implements ReadModelStorage {
           last_checked_at = EXCLUDED.last_checked_at,
           resolved_at = EXCLUDED.resolved_at,
           resolution_reason = EXCLUDED.resolution_reason,
-          inferred = EXCLUDED.inferred
+          inferred = EXCLUDED.inferred,
+          competing_txids = EXCLUDED.competing_txids
       '''),
       parameters: {
         'walletId': payment.walletId,
@@ -1790,6 +1791,7 @@ class PostgresWalletStorage implements ReadModelStorage {
         'resolvedAt': payment.resolvedAt?.toUtc(),
         'resolutionReason': payment.resolutionReason,
         'inferred': payment.inferred,
+        'competingTxids': jsonEncode(payment.competingTxids),
       },
     );
   }
@@ -1905,6 +1907,7 @@ class PostgresWalletStorage implements ReadModelStorage {
       resolvedAt: (row[14] as DateTime?)?.toUtc(),
       resolutionReason: row[15] as String?,
       inferred: row[16] as bool,
+      competingTxids: strings(row[17]),
     );
   }
 

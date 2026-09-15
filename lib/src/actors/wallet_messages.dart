@@ -1223,6 +1223,10 @@ class DeferredPaymentNetworkResult extends ActorResponse {
   @override
   final String? error;
 
+  /// The competing transactions ARC named with [networkStatus]
+  /// (DOUBLE_SPEND_ATTEMPTED; bead libspiffy-pkum).
+  final List<String> competingTxids;
+
   DeferredPaymentNetworkResult({
     required this.walletId,
     required this.txid,
@@ -1234,6 +1238,7 @@ class DeferredPaymentNetworkResult extends ActorResponse {
     this.confirmed = false,
     this.willRetry = false,
     this.error,
+    this.competingTxids = const [],
   }) : super(metadata: {'walletId': walletId, 'txid': txid, 'success': success});
 
   @override

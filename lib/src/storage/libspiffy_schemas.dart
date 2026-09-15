@@ -332,6 +332,10 @@ class DeferredPaymentEntity {
   String? resolutionReason;
   bool inferred = false;
 
+  /// Competing txids ARC named (bead libspiffy-pkum); empty for a row stored
+  /// before the property existed.
+  List<String> competingTxids = [];
+
   DeferredPaymentEntity();
 
   factory DeferredPaymentEntity.fromDomain(DeferredPayment p) => DeferredPaymentEntity()
@@ -351,7 +355,8 @@ class DeferredPaymentEntity {
     ..lastCheckedAt = p.lastCheckedAt
     ..resolvedAt = p.resolvedAt
     ..resolutionReason = p.resolutionReason
-    ..inferred = p.inferred;
+    ..inferred = p.inferred
+    ..competingTxids = List<String>.from(p.competingTxids);
 
   DeferredPayment toDomain() => DeferredPayment(
         walletId: walletId,
@@ -371,6 +376,7 @@ class DeferredPaymentEntity {
         resolvedAt: resolvedAt,
         resolutionReason: resolutionReason,
         inferred: inferred,
+        competingTxids: List<String>.from(competingTxids),
       );
 }
 

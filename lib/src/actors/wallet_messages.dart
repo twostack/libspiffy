@@ -461,6 +461,14 @@ class SPVValidationResult implements Message {
   final BigInt? transactionFee; // Total transaction fee (only when spentUTXOs is not empty)
   final Map<String, dynamic>? transactionData; // Full transaction data for recording history
 
+  /// Outputs of the transaction whose locking script could not be read (a
+  /// script template or a plugin threw), so nobody could tell whether they
+  /// are the wallet's (bead libspiffy-rp6x). One map per output: 'vout',
+  /// 'satoshis', 'script' (hex), 'scriptType' (when something recognised
+  /// the script before failing) and 'reason'. They are not credited; the
+  /// transaction is still recorded whole, so they can be read again later.
+  final List<Map<String, dynamic>> unreadableOutputs;
+
   SPVValidationResult({
     required this.txid,
     required this.isValid,
@@ -470,6 +478,7 @@ class SPVValidationResult implements Message {
     this.targetWalletId,
     this.transactionFee,
     this.transactionData,
+    this.unreadableOutputs = const [],
   });
 
   @override

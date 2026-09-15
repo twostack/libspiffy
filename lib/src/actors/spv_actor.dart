@@ -375,12 +375,63 @@ class SPVActor extends Actor {
           );
         }
 
+        // Outputs nothing could read are listed in the result, not dropped
+        // silently (bead libspiffy-rp6x). The transaction is still
+        // recorded whole, so they can be read again later.
+        final unreadableOutputs = [
+          for (final (vout, lock) in outputLocks.indexed)
+            if (lock.readError case final reason?)
+              {
+                'vout': vout,
+                'satoshis': transaction.outputs[vout].satoshis.toInt(),
+                'script': transaction.outputs[vout].script.toHex(),
+                if (lock.scriptType case final scriptType?) 'scriptType': scriptType,
+                'reason': reason,
+              },
+        ];
+        if (unreadableOutputs.isNotEmpty) {
+          _log.warning('Transaction $txidHex for wallet $walletId: could not read the locking script of '
+              'output(s) ${[for (final o in unreadableOutputs) o['vout']]}; they are not attributed to the wallet '
+              'and are listed in the result: ${[for (final o in unreadableOutputs) '${o['vout']}: ${o['reason']}']}');
+        }
+
+        // A payment for an invoice is checked against that invoice. When the
+        // invoice cannot be looked up (no answer, or no such invoice) the
+        // result fails: validating it with the outputs dropped told the
+        // payer it had paid while nothing was recorded and the invoice
+        // stayed unpaid (bead libspiffy-n8b9).
+        InvoiceDetailsResponse? invoice;
+        if (invoiceId != null) {
+          invoice = await _getInvoiceDetails(invoiceId);
+          final String? lookupError;
+          if (invoice == null) {
+            lookupError = 'the invoice coordinator did not answer. Nothing was recorded; '
+                'receive the transaction again once the invoice can be looked up';
+          } else if (!invoice.found) {
+            lookupError = 'no such invoice${invoice.error == null ? '' : ' (${invoice.error})'}. Nothing was '
+                'recorded; receive the transaction without an invoice id to record it as a payment to the wallet';
+          } else {
+            lookupError = null;
+          }
+          if (lookupError != null) {
+            _log.warning('Transaction $txidHex for wallet $walletId is not received: '
+                'invoice $invoiceId cannot be checked: $lookupError');
+            return SPVValidationResult(
+              txid: txidHex,
+              isValid: false,
+              validationError: 'Cannot check $txidHex against invoice $invoiceId: $lookupError',
+              targetWalletId: walletId,
+              unreadableOutputs: unreadableOutputs,
+            );
+          }
+        }
+
         // If invoice ID is provided, validate outputs match invoice addresses
         // The wallet's UTXOs, and the outputs that pay the invoice: an
         // invoice's multisig output the wallet cannot spend alone pays the
         // invoice but is no wallet UTXO (bead libspiffy-n0p).
         final (:spendableUTXOs, :invoiceOutputs) =
-            await _extractSpendableUTXOs(transaction, outputLocks, ownership, walletId, invoiceId);
+            _extractSpendableUTXOs(transaction, outputLocks, ownership, walletId, invoice);
         final spentUTXOs = _extractSpentUTXOs(transaction, ownership);
         
         // Step 3.5: Calculate transaction fee (if there are spent UTXOs)
@@ -391,15 +442,22 @@ class SPVActor extends Actor {
           }
         }
 
-        // Step 4: If invoice-based, verify payment matches invoice expectations
-        if (invoiceId != null && invoiceOutputs.isNotEmpty) {
-          final invoiceValidation = await _validateInvoicePayment(invoiceId, invoiceOutputs);
+        // Step 4: If invoice-based, verify payment matches invoice
+        // expectations, also when no output pays it (that is an underpayment,
+        // not a valid receive with nothing in it).
+        if (invoiceId != null && invoice != null) {
+          final invoiceValidation = _validateInvoicePayment(invoiceId, invoice, invoiceOutputs);
           if (!invoiceValidation.isValid) {
+            final error = invoiceValidation.error ?? 'Payment does not match invoice $invoiceId';
+            _log.warning('Transaction $txidHex for wallet $walletId is not received: $error');
             return SPVValidationResult(
               txid: txidHex,
               isValid: false,
-              validationError: invoiceValidation.error ?? 'Payment does not match invoice',
+              validationError: unreadableOutputs.isEmpty
+                  ? error
+                  : '$error (output(s) ${[for (final o in unreadableOutputs) o['vout']]} could not be read)',
               targetWalletId: walletId,
+              unreadableOutputs: unreadableOutputs,
             );
           }
           
@@ -431,6 +489,7 @@ class SPVActor extends Actor {
           targetWalletId: walletId,
           transactionFee: transactionFee,
           transactionData: transactionData,
+          unreadableOutputs: unreadableOutputs,
         );
 
 
@@ -674,20 +733,27 @@ class SPVActor extends Actor {
 
   /// [output]'s locking script as attribution reads it: its script type,
   /// the address it pays, its multisig keys, or a plugin's reading of it.
+  ///
+  /// When reading the script throws (a template or a plugin), the lock
+  /// carries the [_OutputLock.readError] and no address: the output is
+  /// attributed to nobody and reported in the result (bead libspiffy-rp6x).
   _OutputLock _decodeOutputLock(dartsv.TransactionOutput output) {
+    String? recognisedAs;
     try {
       // Ensure templates are registered (P2PKH, P2PK, P2SH, etc.)
       // This is idempotent - safe to call multiple times
       dartsv.TemplateRegistry.initialize();
       final templateRegistry = dartsv.ScriptTemplateRegistry();
       final script = output.script;
-      final scriptInfo = templateRegistry.extractScriptInfo(script);
       final scriptType = templateRegistry.identifyScriptType(script);
+      recognisedAs = scriptType;
+      final scriptInfo = templateRegistry.extractScriptInfo(script);
 
       if (scriptInfo == null || scriptType == null) {
         // Fall back to registered plugins
         final pluginResult = PluginRegistry().identifyScript(script);
         if (pluginResult == null) return const _OutputLock();
+        recognisedAs = '${pluginResult.pluginId}:${pluginResult.scriptType}';
         final metadata = PluginRegistry().getPlugin(pluginResult.pluginId)?.extractMetadata(script);
         return _OutputLock(
           scriptType: '${pluginResult.pluginId}:${pluginResult.scriptType}',
@@ -712,15 +778,17 @@ class SPVActor extends Actor {
           }
           break;
         case 'p2pk':
-          final pubkey = scriptInfo['pubKey'];
-          if (pubkey != null) {
-            try {
-              final pubKeyObj = dartsv.SVPublicKey.fromHex(pubkey);
-              address = dartsv.Address.fromPublicKey(pubKeyObj, NetworkName.toDartsv(_networkType)).toBase58();
-            } catch (e) {
-              _log.warning('Failed to derive P2PK address from public key: $e');
-            }
-          }
+          // dartsv names the key 'publicKey' (an SVPublicKey, with the hex
+          // under 'publicKeyHex'); reading 'pubKey' never matched, so no
+          // P2PK output was ever credited (bead libspiffy-4fq). The address
+          // is the key's P2PKH address, which is how the wallet knows it.
+          final pubkey = scriptInfo['publicKey'];
+          final pubKeyObj = pubkey is dartsv.SVPublicKey
+              ? pubkey
+              : pubkey is String
+                  ? dartsv.SVPublicKey.fromHex(pubkey)
+                  : throw StateError('P2PK script info has no public key');
+          address = dartsv.Address.fromPublicKey(pubKeyObj, NetworkName.toDartsv(_networkType)).toBase58();
           break;
         case 'p2sh':
           // P2SH address extraction (placeholder: dartsv may not have
@@ -740,8 +808,7 @@ class SPVActor extends Actor {
       }
       return _OutputLock(scriptType: scriptType, address: address, multisig: multisig);
     } catch (e) {
-      _log.warning('Failed to read an output locking script: $e');
-      return const _OutputLock();
+      return _OutputLock(scriptType: recognisedAs, readError: '$e');
     }
   }
 
@@ -757,29 +824,23 @@ class SPVActor extends Actor {
   /// invoice multisig output the wallet cannot spend alone (bead
   /// libspiffy-n0p), which is attributed to a 'p2ms:m-of-n' descriptor.
   /// Without an invoice both lists hold the wallet UTXOs.
-  Future<({List<Map<String, dynamic>> spendableUTXOs, List<Map<String, dynamic>> invoiceOutputs})>
+  ///
+  /// [invoice] is the invoice the payment is for, already looked up and
+  /// found by the caller.
+  ({List<Map<String, dynamic>> spendableUTXOs, List<Map<String, dynamic>> invoiceOutputs})
       _extractSpendableUTXOs(
     dartsv.Transaction transaction,
     List<_OutputLock> locks,
     WalletOwnershipResponse? ownership,
     String? walletId,
-    String? invoiceId,
-  ) async {
+    InvoiceDetailsResponse? invoice,
+  ) {
     final spendableUTXOs = <Map<String, dynamic>>[];
     final invoiceOutputs = <Map<String, dynamic>>[];
     final result = (spendableUTXOs: spendableUTXOs, invoiceOutputs: invoiceOutputs);
 
     if (walletId == null || ownership == null) {
       return result;
-    }
-
-    // Get invoice details if invoice-based payment
-    InvoiceDetailsResponse? invoice;
-    if (invoiceId != null) {
-      invoice = await _getInvoiceDetails(invoiceId);
-      if (invoice == null || !invoice.found) {
-        return result;
-      }
     }
 
     void addWalletUtxo(Map<String, dynamic> utxo) {
@@ -1429,21 +1490,13 @@ class SPVActor extends Actor {
   int get currentHeight => _currentHeight;
 
   /// Validate that payment matches invoice expectations
-  Future<_InvoiceValidationResult> _validateInvoicePayment(
+  ///
+  /// [invoice] is the found invoice [invoiceId] (looked up once per receive).
+  _InvoiceValidationResult _validateInvoicePayment(
     String invoiceId,
+    InvoiceDetailsResponse invoice,
     List<Map<String, dynamic>> spendableUTXOs,
-  ) async {
-    // Get invoice details
-    final invoice = await _getInvoiceDetails(invoiceId);
-    
-    if (invoice == null || !invoice.found) {
-      return _InvoiceValidationResult(
-        isValid: false,
-        error: 'Invoice $invoiceId not found',
-        totalReceived: BigInt.zero,
-      );
-    }
-    
+  ) {
     if (invoice.status != InvoiceStatus.pending) {
       return _InvoiceValidationResult(
         isValid: false,
@@ -1464,7 +1517,8 @@ class SPVActor extends Actor {
     if (totalReceived < expectedAmount) {
       return _InvoiceValidationResult(
         isValid: false,
-        error: 'Payment amount ($totalReceived sats) is less than invoice amount ($expectedAmount sats)',
+        error: 'Payment amount ($totalReceived sats) is less than invoice amount ($expectedAmount sats) '
+            'of invoice $invoiceId',
         totalReceived: totalReceived,
       );
     }
@@ -1678,12 +1732,17 @@ class _OutputLock {
   final Map<String, dynamic>? pluginMetadata;
   final bool isPlugin;
 
+  /// Why the script could not be read (a template or plugin threw); null
+  /// when it was read, or when nothing recognises it.
+  final String? readError;
+
   const _OutputLock({
     this.scriptType,
     this.address,
     this.multisig,
     this.pluginMetadata,
     this.isPlugin = false,
+    this.readError,
   });
 
   /// The addresses whose ownership decides whether the output is the

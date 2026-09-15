@@ -1527,6 +1527,7 @@ class WalletCoordinatorActor extends Actor {
         validationError: result.validationError,
         spendableUTXOs: result.spendableUTXOs,
         spentUTXOs: result.spentUTXOs,
+        unreadableOutputs: result.unreadableOutputs,
       ));
 
       // Emit TransactionImportedEvent so callers waiting on it get notified.

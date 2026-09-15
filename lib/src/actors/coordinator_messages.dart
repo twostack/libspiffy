@@ -1322,6 +1322,10 @@ class SPVValidationResultEvent extends CoordinatorEvent {
   final List<Map<String, dynamic>> spendableUTXOs;
   final List<Map<String, dynamic>> spentUTXOs;
 
+  /// Outputs whose locking script could not be read, so they were not
+  /// attributed (see SPVValidationResult.unreadableOutputs).
+  final List<Map<String, dynamic>> unreadableOutputs;
+
   SPVValidationResultEvent({
     this.walletId,
     required this.txid,
@@ -1329,6 +1333,7 @@ class SPVValidationResultEvent extends CoordinatorEvent {
     this.validationError,
     this.spendableUTXOs = const [],
     this.spentUTXOs = const [],
+    this.unreadableOutputs = const [],
   });
 
   @override

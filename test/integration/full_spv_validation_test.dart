@@ -237,6 +237,9 @@ void main() {
       // If validation succeeded, invoice should be marked as paid
       // Note: This depends on address matching logic working correctly
       expect(invoiceDetails.found, isTrue);
+      expect(invoiceDetails.status, InvoiceStatus.paid,
+          reason: 'the transaction pays the invoice address the invoice amount');
+      expect([for (final u in result.spendableUTXOs) u['vout']], [0, 1]);
     });
 
     test('validates second real transaction with different merkle proof', () async {
@@ -275,7 +278,10 @@ void main() {
       invoiceManager.tell(
         CreateInvoiceMessage(
           walletId: 'bob-wallet',
-          amount: BigInt.from(3882997), // Real amount
+          // What the transaction pays the address: 3882229 + 150 sats (its
+          // two outputs). 3882997 was never paid; the test passed only while
+          // an invoice payment matching no output validated (libspiffy-n8b9).
+          amount: BigInt.from(3882379),
         ),
         sender: createReceiver,
       );
@@ -509,8 +515,12 @@ BEEF _createBeefFromRealData(Map<String, dynamic> tx, Map<String, dynamic> tscPr
 String _extractP2PKHAddress(dartsv.SVScript script) {
   // Extract address from P2PKH script
   // P2PKH format: OP_DUP OP_HASH160 <pubkeyhash> OP_EQUALVERIFY OP_CHECKSIG
-
- final locker= dartsv.P2PKHLockBuilder.fromScript(script);
+  //
+  // On testnet, the network of these transactions and of the SPVActor under
+  // test. dartsv's default is mainnet: the invoice address then never matched
+  // the output, and the tests passed only because an invoice payment that
+  // paid nothing validated (bead libspiffy-n8b9).
+ final locker= dartsv.P2PKHLockBuilder.fromScript(script, networkType: dartsv.NetworkType.TEST);
  return locker.address?.toBase58() ?? 'unknown';
 
 }

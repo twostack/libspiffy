@@ -314,68 +314,40 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
     throw ArgumentError('Unknown command type: ${command.runtimeType}');
   }
 
+  /// Applies [event] to [state] and returns the next state (bead
+  /// libspiffy-mmb). [state] is never modified; eventador's `eventHandler`
+  /// replaces the aggregate's state with the result once the event has
+  /// applied, so an event that fails midway changes nothing.
   @override
-  void eventHandler(Event event) {
-    // Ensure state is initialized before processing events
-    ensureStateInitialized();
-
+  ChannelState applyEvent(ChannelState state, Event event) {
     if (event is! ChannelEvent) {
       throw ArgumentError('Expected ChannelEvent, got ${event.runtimeType}');
     }
 
-    switch (event) {
-      case final ChannelRequestedEvent evt:
-        _applyChannelRequested(evt);
-        break;
-      case final ChannelAcceptedEvent evt:
-        _applyChannelAccepted(evt);
-        break;
-      case final ChannelRejectedEvent evt:
-        _applyChannelRejected(evt);
-        break;
-      case final ServerAcceptanceRecordedEvent evt:
-        _applyServerAcceptanceRecorded(evt);
-        break;
-      case final RefundBuiltEvent evt:
-        _applyRefundBuilt(evt);
-        break;
-      case final RefundCountersignedEvent evt:
-        _applyRefundCountersigned(evt);
-        break;
-      case final FundingBroadcastStartedEvent evt:
-        _applyFundingBroadcastStarted(evt);
-        break;
-      case final FundingBroadcastFailedEvent evt:
-        _applyFundingBroadcastFailed(evt);
-        break;
-      case final FundingRecordedInWalletEvent evt:
-        _applyFundingRecordedInWallet(evt);
-        break;
-      case final ChannelOpenedEvent evt:
-        _applyChannelOpened(evt);
-        break;
-      case final PaymentRecordedEvent evt:
-        _applyPaymentRecorded(evt);
-        break;
-      case final PaymentAcknowledgedEvent evt:
-        _applyPaymentAcknowledged(evt);
-        break;
-      case final ChannelClosingEvent evt:
-        _applyChannelClosing(evt);
-        break;
-      case final ChannelClosedEvent evt:
-        _applyChannelClosed(evt);
-        break;
-      case final RefundClaimedEvent evt:
-        _applyRefundClaimed(evt);
-        break;
-      case final ChannelExpiredEvent evt:
-        _applyChannelExpired(evt);
-        break;
-      default:
-        throw ArgumentError('Unknown event type: ${event.runtimeType}');
-    }
+    return switch (event) {
+      final ChannelRequestedEvent evt => _applyChannelRequested(state, evt),
+      final ChannelAcceptedEvent evt => _applyChannelAccepted(state, evt),
+      final ChannelRejectedEvent evt => _applyChannelRejected(state, evt),
+      final ServerAcceptanceRecordedEvent evt => _applyServerAcceptanceRecorded(state, evt),
+      final RefundBuiltEvent evt => _applyRefundBuilt(state, evt),
+      final RefundCountersignedEvent evt => _applyRefundCountersigned(state, evt),
+      final FundingBroadcastStartedEvent evt => _applyFundingBroadcastStarted(state, evt),
+      final FundingBroadcastFailedEvent evt => _applyFundingBroadcastFailed(state, evt),
+      final FundingRecordedInWalletEvent evt => _applyFundingRecordedInWallet(state, evt),
+      final ChannelOpenedEvent evt => _applyChannelOpened(state, evt),
+      final PaymentRecordedEvent evt => _applyPaymentRecorded(state, evt),
+      final PaymentAcknowledgedEvent evt => _applyPaymentAcknowledged(state, evt),
+      final ChannelClosingEvent evt => _applyChannelClosing(state, evt),
+      final ChannelClosedEvent evt => _applyChannelClosed(state, evt),
+      final RefundClaimedEvent evt => _applyRefundClaimed(state, evt),
+      final ChannelExpiredEvent evt => _applyChannelExpired(state, evt),
+      _ => throw ArgumentError('Unknown event type: ${event.runtimeType}'),
+    };
   }
+
+  /// Nothing printed: the error is rethrown to the caller.
+  @override
+  void onEventApplicationFailure(Event event, dynamic error) {}
 
   // ==========================================================================
   // COMMAND HANDLERS
@@ -1176,182 +1148,202 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
   }
 
   // ==========================================================================
-  // EVENT HANDLERS (Apply to State)
+  // EVENT HANDLERS (each returns the next state)
   // ==========================================================================
 
-  void _applyChannelRequested(ChannelRequestedEvent event) {
-    currentState.walletId = event.walletId;
-    currentState.status = ChannelStatus.pending;
-    currentState.role = ChannelRole.client;
-    currentState.clientPeerId = event.clientPeerId;
-    currentState.serverPeerId = event.serverPeerId;
-    currentState.clientPubKeyHex = event.clientPubKeyHex;
-    currentState.clientAddressB58 = event.clientAddressB58;
-    currentState.derivationIndex = event.derivationIndex;
-    currentState.fundingAmountSats = event.fundingAmountSats;
-    currentState.lockTimeUnix = event.lockTimeUnix;
-    currentState.context = event.context;
-    currentState.createdAt = event.timestamp;
-    currentState.clientBalanceSats = event.fundingAmountSats;
-    currentState.serverBalanceSats = BigInt.zero;
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+  ChannelState _applyChannelRequested(ChannelState state, ChannelRequestedEvent event) {
+    return state.copyWith(
+      walletId: event.walletId,
+      status: ChannelStatus.pending,
+      role: ChannelRole.client,
+      clientPeerId: event.clientPeerId,
+      serverPeerId: event.serverPeerId,
+      clientPubKeyHex: event.clientPubKeyHex,
+      clientAddressB58: event.clientAddressB58,
+      derivationIndex: event.derivationIndex,
+      fundingAmountSats: event.fundingAmountSats,
+      lockTimeUnix: event.lockTimeUnix,
+      context: event.context,
+      createdAt: event.timestamp,
+      clientBalanceSats: event.fundingAmountSats,
+      serverBalanceSats: BigInt.zero,
+      version: event.version,
+      lastModified: event.timestamp,
+    );
   }
 
-  void _applyChannelAccepted(ChannelAcceptedEvent event) {
-    currentState.walletId ??= event.walletId;
-    currentState.status = ChannelStatus.accepted;
-    currentState.role ??= ChannelRole.server;
-    currentState.clientPeerId ??= event.clientPeerId;
-    currentState.clientPubKeyHex ??= event.clientPubKeyHex;
-    currentState.clientAddressB58 ??= event.clientAddressB58;
-    currentState.serverPubKeyHex = event.serverPubKeyHex;
-    currentState.serverAddressB58 = event.serverAddressB58;
-    currentState.derivationIndex ??= event.derivationIndex;
-    // Set funding amount (server's aggregate needs this from the event)
-    if (currentState.fundingAmountSats == BigInt.zero) {
-      currentState.fundingAmountSats = event.fundingAmountSats;
-    }
-    currentState.lockTimeUnix ??= event.lockTimeUnix;
-    currentState.context ??= event.context;
-    // Set initial balances (server's aggregate needs this from the event)
-    if (currentState.clientBalanceSats == BigInt.zero) {
-      currentState.clientBalanceSats = event.fundingAmountSats;
-    }
-    if (currentState.serverBalanceSats == BigInt.zero) {
-      currentState.serverBalanceSats = BigInt.zero;
-    }
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+  ChannelState _applyChannelAccepted(ChannelState state, ChannelAcceptedEvent event) {
+    return state.copyWith(
+      walletId: state.walletId ?? event.walletId,
+      status: ChannelStatus.accepted,
+      role: state.role ?? ChannelRole.server,
+      clientPeerId: state.clientPeerId ?? event.clientPeerId,
+      clientPubKeyHex: state.clientPubKeyHex ?? event.clientPubKeyHex,
+      clientAddressB58: state.clientAddressB58 ?? event.clientAddressB58,
+      serverPubKeyHex: event.serverPubKeyHex,
+      serverAddressB58: event.serverAddressB58,
+      derivationIndex: state.derivationIndex ?? event.derivationIndex,
+      // Set funding amount (server's aggregate needs this from the event)
+      fundingAmountSats: state.fundingAmountSats == BigInt.zero ? event.fundingAmountSats : null,
+      lockTimeUnix: state.lockTimeUnix ?? event.lockTimeUnix,
+      context: state.context ?? event.context,
+      // Set initial balances (server's aggregate needs this from the event)
+      clientBalanceSats: state.clientBalanceSats == BigInt.zero ? event.fundingAmountSats : null,
+      version: event.version,
+      lastModified: event.timestamp,
+    );
   }
 
-  void _applyChannelRejected(ChannelRejectedEvent event) {
-    currentState.status = ChannelStatus.rejected;
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+  ChannelState _applyChannelRejected(ChannelState state, ChannelRejectedEvent event) {
+    return state.copyWith(
+      status: ChannelStatus.rejected,
+      version: event.version,
+      lastModified: event.timestamp,
+    );
   }
 
-  void _applyServerAcceptanceRecorded(ServerAcceptanceRecordedEvent event) {
-    currentState.serverPubKeyHex = event.serverPubKeyHex;
-    currentState.serverAddressB58 = event.serverAddressB58;
-    currentState.status = ChannelStatus.accepted;
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+  ChannelState _applyServerAcceptanceRecorded(ChannelState state, ServerAcceptanceRecordedEvent event) {
+    return state.copyWith(
+      serverPubKeyHex: event.serverPubKeyHex,
+      serverAddressB58: event.serverAddressB58,
+      status: ChannelStatus.accepted,
+      version: event.version,
+      lastModified: event.timestamp,
+    );
   }
 
-  void _applyRefundBuilt(RefundBuiltEvent event) {
-    currentState.fundingTxId = event.fundingTxId;
-    currentState.fundingOutputIndex = event.fundingOutputIndex;
-    currentState.fundingTxHex = event.fundingTxHex;
-    currentState.fundingInputSats = event.fundingInputSats;
-    currentState.refundTxHex = event.refundTxHex;
-    currentState.refundClientSigHex = event.clientSignatureHex;
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+  ChannelState _applyRefundBuilt(ChannelState state, RefundBuiltEvent event) {
+    return state.copyWith(
+      fundingTxId: event.fundingTxId,
+      fundingOutputIndex: event.fundingOutputIndex,
+      fundingTxHex: event.fundingTxHex,
+      fundingInputSats: event.fundingInputSats,
+      refundTxHex: event.refundTxHex,
+      refundClientSigHex: event.clientSignatureHex,
+      version: event.version,
+      lastModified: event.timestamp,
+    );
   }
 
-  void _applyRefundCountersigned(RefundCountersignedEvent event) {
-    currentState.status = ChannelStatus.refundSigned;
-    currentState.refundServerSigHex = event.serverSignatureHex;
-    currentState.signedRefundTxHex =
-        event.signedRefundTxHex ?? currentState.signedRefundTxHex;
+  ChannelState _applyRefundCountersigned(ChannelState state, RefundCountersignedEvent event) {
     // Server side: the refund it signed and the funding output it spends.
-    if (event.fundingTxId != null) {
-      currentState.fundingTxId = event.fundingTxId;
-      currentState.fundingOutputIndex = event.fundingOutputIndex;
-      currentState.fundingTxHex = event.fundingTxHex ?? currentState.fundingTxHex;
-    }
-    currentState.refundTxHex = event.refundTxHex ?? currentState.refundTxHex;
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+    final serverFunding = event.fundingTxId != null;
+    return state.copyWith(
+      status: ChannelStatus.refundSigned,
+      refundServerSigHex: event.serverSignatureHex,
+      signedRefundTxHex: event.signedRefundTxHex ?? state.signedRefundTxHex,
+      fundingTxId: serverFunding ? event.fundingTxId : state.fundingTxId,
+      fundingOutputIndex: serverFunding ? event.fundingOutputIndex : state.fundingOutputIndex,
+      fundingTxHex: serverFunding ? event.fundingTxHex ?? state.fundingTxHex : state.fundingTxHex,
+      refundTxHex: event.refundTxHex ?? state.refundTxHex,
+      version: event.version,
+      lastModified: event.timestamp,
+    );
   }
 
-  void _applyFundingBroadcastStarted(FundingBroadcastStartedEvent event) {
-    currentState.fundingBroadcastAttempts = event.attempt;
-    currentState.fundingBroadcastInFlight = true;
-    currentState.fundingBroadcastError = null;
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+  ChannelState _applyFundingBroadcastStarted(ChannelState state, FundingBroadcastStartedEvent event) {
+    return state.copyWith(
+      fundingBroadcastAttempts: event.attempt,
+      fundingBroadcastInFlight: true,
+      fundingBroadcastError: null,
+      version: event.version,
+      lastModified: event.timestamp,
+    );
   }
 
-  void _applyFundingBroadcastFailed(FundingBroadcastFailedEvent event) {
-    currentState.fundingBroadcastInFlight = false;
-    currentState.fundingBroadcastError = event.error;
-    currentState.fundingRecordedInWallet =
-        currentState.fundingRecordedInWallet || event.walletRecorded;
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+  ChannelState _applyFundingBroadcastFailed(ChannelState state, FundingBroadcastFailedEvent event) {
+    return state.copyWith(
+      fundingBroadcastInFlight: false,
+      fundingBroadcastError: event.error,
+      fundingRecordedInWallet: state.fundingRecordedInWallet || event.walletRecorded,
+      version: event.version,
+      lastModified: event.timestamp,
+    );
   }
 
-  void _applyFundingRecordedInWallet(FundingRecordedInWalletEvent event) {
-    currentState.fundingRecordedInWallet = true;
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+  ChannelState _applyFundingRecordedInWallet(ChannelState state, FundingRecordedInWalletEvent event) {
+    return state.copyWith(
+      fundingRecordedInWallet: true,
+      version: event.version,
+      lastModified: event.timestamp,
+    );
   }
 
-  void _applyChannelOpened(ChannelOpenedEvent event) {
-    currentState.status = ChannelStatus.open;
-    currentState.fundingBroadcastInFlight = false;
-    if (currentState.role == ChannelRole.client) {
-      currentState.fundingRecordedInWallet = true;
-    }
-    currentState.fundingTxId = event.fundingTxId;
-    currentState.fundingOutputIndex = event.fundingOutputIndex;
-    currentState.fundingTxHex = event.fundingTxHex;
-    currentState.fundingAncestorTxids = event.fundingAncestorTxids;
-    currentState.fundingBeefHex = event.fundingBeefHex;
-    currentState.clientBalanceSats = event.initialClientBalanceSats;
-    currentState.serverBalanceSats = event.initialServerBalanceSats;
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+  ChannelState _applyChannelOpened(ChannelState state, ChannelOpenedEvent event) {
+    return state.copyWith(
+      status: ChannelStatus.open,
+      fundingBroadcastInFlight: false,
+      fundingRecordedInWallet: state.role == ChannelRole.client ? true : null,
+      fundingTxId: event.fundingTxId,
+      fundingOutputIndex: event.fundingOutputIndex,
+      fundingTxHex: event.fundingTxHex,
+      fundingAncestorTxids: event.fundingAncestorTxids,
+      fundingBeefHex: event.fundingBeefHex,
+      clientBalanceSats: event.initialClientBalanceSats,
+      serverBalanceSats: event.initialServerBalanceSats,
+      version: event.version,
+      lastModified: event.timestamp,
+    );
   }
 
-  void _applyPaymentRecorded(PaymentRecordedEvent event) {
-    currentState.clientBalanceSats = event.newClientBalanceSats;
-    currentState.serverBalanceSats = event.newServerBalanceSats;
-    currentState.latestSequenceNumber = event.sequenceNumber;
-    currentState.latestPaymentTxHex = event.paymentTxHex;
-    currentState.latestPaymentTxId = event.paymentTxId;
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+  ChannelState _applyPaymentRecorded(ChannelState state, PaymentRecordedEvent event) {
+    return state.copyWith(
+      clientBalanceSats: event.newClientBalanceSats,
+      serverBalanceSats: event.newServerBalanceSats,
+      latestSequenceNumber: event.sequenceNumber,
+      latestPaymentTxHex: event.paymentTxHex,
+      latestPaymentTxId: event.paymentTxId,
+      version: event.version,
+      lastModified: event.timestamp,
+    );
   }
 
-  void _applyPaymentAcknowledged(PaymentAcknowledgedEvent event) {
-    currentState.clientBalanceSats = event.newClientBalanceSats;
-    currentState.serverBalanceSats = event.newServerBalanceSats;
-    currentState.latestSequenceNumber = event.sequenceNumber;
-    currentState.latestPaymentTxHex = event.fullySignedPaymentTxHex;
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+  ChannelState _applyPaymentAcknowledged(ChannelState state, PaymentAcknowledgedEvent event) {
+    return state.copyWith(
+      clientBalanceSats: event.newClientBalanceSats,
+      serverBalanceSats: event.newServerBalanceSats,
+      latestSequenceNumber: event.sequenceNumber,
+      latestPaymentTxHex: event.fullySignedPaymentTxHex,
+      version: event.version,
+      lastModified: event.timestamp,
+    );
   }
 
-  void _applyChannelClosing(ChannelClosingEvent event) {
-    currentState.status = ChannelStatus.closing;
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+  ChannelState _applyChannelClosing(ChannelState state, ChannelClosingEvent event) {
+    return state.copyWith(
+      status: ChannelStatus.closing,
+      version: event.version,
+      lastModified: event.timestamp,
+    );
   }
 
-  void _applyChannelClosed(ChannelClosedEvent event) {
-    currentState.status = ChannelStatus.closed;
-    currentState.clientBalanceSats = event.finalClientBalanceSats;
-    currentState.serverBalanceSats = event.finalServerBalanceSats;
-    currentState.closedAt = event.timestamp;
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+  ChannelState _applyChannelClosed(ChannelState state, ChannelClosedEvent event) {
+    return state.copyWith(
+      status: ChannelStatus.closed,
+      clientBalanceSats: event.finalClientBalanceSats,
+      serverBalanceSats: event.finalServerBalanceSats,
+      closedAt: event.timestamp,
+      version: event.version,
+      lastModified: event.timestamp,
+    );
   }
 
-  void _applyRefundClaimed(RefundClaimedEvent event) {
-    currentState.status = ChannelStatus.expired;
-    currentState.closedAt = event.timestamp;
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+  ChannelState _applyRefundClaimed(ChannelState state, RefundClaimedEvent event) {
+    return state.copyWith(
+      status: ChannelStatus.expired,
+      closedAt: event.timestamp,
+      version: event.version,
+      lastModified: event.timestamp,
+    );
   }
 
-  void _applyChannelExpired(ChannelExpiredEvent event) {
-    currentState.status = ChannelStatus.expired;
-    currentState.closedAt = event.timestamp;
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+  ChannelState _applyChannelExpired(ChannelState state, ChannelExpiredEvent event) {
+    return state.copyWith(
+      status: ChannelStatus.expired,
+      closedAt: event.timestamp,
+      version: event.version,
+      lastModified: event.timestamp,
+    );
   }
 
   // Helper to get next derivation index

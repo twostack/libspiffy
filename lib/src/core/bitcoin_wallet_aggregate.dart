@@ -13,6 +13,7 @@ import '../models/wallet_state.dart';
 import '../models/bitcoin_utxo.dart';
 import '../models/wallet_type.dart';
 import '../models/deferred_payment.dart' show DeferredNetworkStatus, DeferredPaymentState;
+import '../models/persistent_map.dart';
 import '../services/crypto_service.dart';
 import '../plugin/plugin_registry.dart';
 import '../services/script_type_registry.dart';
@@ -182,19 +183,21 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
   /// (after the event store's CBOR round trip).
   @override
   Future<WalletState> restoreStateFromMap(Map<String, dynamic> map, int sequenceNumber) async {
-    final state = WalletState.fromMap(map);
-    if (state.walletId != aggregateId) {
-      throw StateError('Snapshot at $sequenceNumber belongs to wallet ${state.walletId}, '
+    final restored = WalletState.fromMap(map);
+    if (restored.walletId != aggregateId) {
+      throw StateError('Snapshot at $sequenceNumber belongs to wallet ${restored.walletId}, '
           'not $aggregateId');
     }
+    final state = restored.toBuilder();
     // The round trip hands back untyped maps; the derivation records are
     // read as typed maps.
-    state.metadata[_addressIndicesKey] = _typedEntries<int>(state.metadata[_addressIndicesKey]);
-    state.metadata[_addressChainsKey] = _typedEntries<bool>(state.metadata[_addressChainsKey]);
+    state.metadata = state.metadata
+        .put(_addressIndicesKey, _typedEntries<int>(state.metadata[_addressIndicesKey]))
+        .put(_addressChainsKey, _typedEntries<bool>(state.metadata[_addressChainsKey]));
     // Balances are derived data: recompute them once from the restored UTXOs
     // rather than trusting the cached values in the snapshot.
     _setFullBalances(state);
-    return state;
+    return state.build();
   }
 
   /// A snapshot that cannot be restored must fail recovery. Eventador's
@@ -612,121 +615,135 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
     }
   }
 
-  /// Apply events to internal state (Eventador pattern)
-  /// This method mutates _currentState directly as events are replayed or persisted.
-  /// 
-  /// Note: We override eventHandler instead of using the registry pattern.
-  /// When overriding, we must call ensureStateInitialized() to replicate the base class
-  /// initialization behavior that would normally happen before event application.
+  /// Applies [event] to [current] and returns the next state (Eventador
+  /// pattern; bead libspiffy-mmb).
+  ///
+  /// [current] is never modified: the handlers below fill in a draft of it
+  /// that shares every collection the event does not change, and eventador's
+  /// `eventHandler` replaces the aggregate's state with the result only once
+  /// the whole event has applied. A state handed out earlier (a query, a
+  /// snapshot, a command handler) keeps its contents, and an event that fails
+  /// midway changes nothing.
   @override
-  void eventHandler(Event event) {
-    // Ensure state is initialized before processing events
-    // This is critical during recovery when the first event is replayed
-    ensureStateInitialized();
-    
+  WalletState applyEvent(WalletState current, Event event) {
     if (event is! WalletEvent) {
       throw ArgumentError('Expected WalletEvent, got ${event.runtimeType}');
     }
+    final state = current.toBuilder();
+    final legacyCheckCarries = identical(_noLegacyDeferredSpendsIn, current);
 
     switch (event) {
       case final WalletCreatedEvent evt:
-        _applyWalletCreated(evt);
+        _applyWalletCreated(state, evt);
         break;
       case final WalletDeletedEvent evt:
-        _applyWalletDeleted(evt);
+        _applyWalletDeleted(state, evt);
         break;
       case final WalletConfigurationUpdatedEvent evt:
-        _applyWalletConfigurationUpdated(evt);
+        _applyWalletConfigurationUpdated(state, evt);
         break;
       case final AddressGeneratedEvent evt:
-        _applyAddressGenerated(evt);
+        _applyAddressGenerated(state, evt);
         break;
       case final AddressLabelUpdatedEvent evt:
-        _applyAddressLabelUpdated(evt);
+        _applyAddressLabelUpdated(state, evt);
         break;
       case final WatchAddressAddedEvent evt:
-        _applyWatchAddressAdded(evt);
+        _applyWatchAddressAdded(state, evt);
         break;
       case final UTXOReceivedEvent evt:
-        _applyUTXOReceived(evt);
+        _applyUTXOReceived(state, evt);
         break;
       case final UTXOMarkedAvailableEvent evt:
-        _applyUTXOMarkedAvailable(evt);
+        _applyUTXOMarkedAvailable(state, evt);
         break;
       case final UTXOSpentEvent evt:
-        _applyUTXOSpent(evt);
+        _applyUTXOSpent(state, evt);
         break;
       case final UTXOConfirmationUpdatedEvent evt:
-        _applyUTXOConfirmationUpdated(evt);
+        _applyUTXOConfirmationUpdated(state, evt);
         break;
       case final TransactionSignedEvent evt:
-        _applyTransactionSigned(evt);
+        _applyTransactionSigned(state, evt);
         break;
       case final TransactionBroadcastEvent evt:
-        _applyTransactionBroadcast(evt);
+        _applyTransactionBroadcast(state, evt);
         break;
       case final UTXOReservationPlacedEvent evt:
-        _applyUTXOReservationPlaced(evt);
+        _applyUTXOReservationPlaced(state, evt);
         break;
       case final UTXOReservationReleasedEvent evt:
-        _applyUTXOReservationReleased(evt);
+        _applyUTXOReservationReleased(state, evt);
         break;
       case final UTXOReservationExpiredEvent evt:
-        _applyUTXOReservationExpired(evt);
+        _applyUTXOReservationExpired(state, evt);
         break;
       case final UTXOReservedEvent evt:
-        _applyUTXOReserved(evt);
+        _applyUTXOReserved(state, evt);
         break;
       case final UTXOReleasedEvent evt:
-        _applyUTXOReleased(evt);
+        _applyUTXOReleased(state, evt);
         break;
       case final UTXOReservationRenewedEvent evt:
-        _applyUTXOReservationRenewed(evt);
+        _applyUTXOReservationRenewed(state, evt);
         break;
       case final AddressDiscoveredEvent evt:
-        _applyAddressDiscovered(evt);
+        _applyAddressDiscovered(state, evt);
         break;
       case final TransactionImportedEvent evt:
-        _applyTransactionImported(evt);
+        _applyTransactionImported(state, evt);
         break;
       case final TransactionRecordedEvent evt:
-        _applyTransactionRecorded(evt);
+        _applyTransactionRecorded(state, evt);
         break;
       case final TransactionConfirmedEvent evt:
-        _applyTransactionConfirmed(evt);
+        _applyTransactionConfirmed(state, evt);
         break;
       case TransactionStatusUpdatedEvent():
         // Status update is projection-only — no aggregate state change needed
         break;
       case final TransactionConfirmationRevertedEvent evt:
-        _applyTransactionConfirmationReverted(evt);
+        _applyTransactionConfirmationReverted(state, evt);
         break;
       case final UTXOSplitInitiatedEvent evt:
-        _applyUTXOSplitInitiated(evt);
+        _applyUTXOSplitInitiated(state, evt);
         break;
       case final UTXOSplitCompletedEvent evt:
-        _applyUTXOSplitCompleted(evt);
+        _applyUTXOSplitCompleted(state, evt);
         break;
       case final AllUTXOsSplitCompletedEvent evt:
-        _applyAllUTXOsSplitCompleted(evt);
+        _applyAllUTXOsSplitCompleted(state, evt);
         break;
       case final TransactionSpendDeferredEvent evt:
-        _applyTransactionSpendDeferred(evt);
+        _applyTransactionSpendDeferred(state, evt);
         break;
       case final TransactionNetworkStatusCheckedEvent evt:
-        _applyTransactionNetworkStatusChecked(evt);
+        _applyTransactionNetworkStatusChecked(state, evt);
         break;
       case final DeferredTransactionFailedEvent failed:
-        _applyDeferredResolution(failed.txid, DeferredPaymentState.failed, failed.releasedInputs,
+        _applyDeferredResolution(state, failed.txid, DeferredPaymentState.failed, failed.releasedInputs,
             failed.reason ?? failed.networkStatus, failed);
         break;
       case final DeferredTransactionCancelledEvent cancelled:
-        _applyDeferredResolution(cancelled.txid, DeferredPaymentState.cancelled, cancelled.releasedInputs,
+        _applyDeferredResolution(state, cancelled.txid, DeferredPaymentState.cancelled, cancelled.releasedInputs,
             cancelled.reason, cancelled);
         break;
       default:
         throw ArgumentError('Unknown event type: ${event.runtimeType}');
     }
+    final next = state.build();
+    // The legacy deferred-payment check holds for the next state too unless
+    // the event invalidated it.
+    if (legacyCheckCarries && identical(_noLegacyDeferredSpendsIn, current)) {
+      _noLegacyDeferredSpendsIn = next;
+    }
+    return next;
+  }
+
+  /// Logged instead of eventador's print; the error is rethrown.
+  @override
+  void onEventApplicationFailure(Event event, dynamic error) {
+    _log.warning('Wallet $aggregateId: ${event.runtimeType} could not be applied: $error');
   }
 
   // ==========================================================================
@@ -1741,13 +1758,13 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         if (!currentState.addresses.containsKey(address)) {
           throw StateError('Address $address not found in wallet state');
         }
-        effectiveIndex = _addressIndices()[address] ?? 0;
+        effectiveIndex = _addressIndices(currentState.metadata)[address] ?? 0;
       }
 
       // The chain: caller-supplied, else whatever the aggregate recorded when
       // it generated/discovered the address (receive for the root address and
       // for journals written before the chain was recorded).
-      final effectiveIsChange = isChange ?? _isChangeAddress(address);
+      final effectiveIsChange = isChange ?? _isChangeAddress(currentState, address);
 
       return _getPrivateKeyAtIndex(
         walletId,
@@ -2830,9 +2847,11 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
   }
 
   // ==========================================================================
-  // EVENT APPLICATION (IMPERATIVE STATE MUTATIONS)
+  // EVENT APPLICATION
   // ==========================================================================
-  // These methods mutate _currentState directly as required by Eventador's eventHandler pattern
+  // These methods fill in the draft of the next state that applyEvent builds
+  // (bead libspiffy-mmb): they replace its immutable collections, never
+  // modify them, and never touch the aggregate's current state.
 
   // ==========================================================================
   // ADDRESS DERIVATION RECORDS
@@ -2854,67 +2873,57 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
   /// [GenerateAddressCommand.purpose].
   static const String changePurpose = 'change';
 
-  Map<String, int> _addressIndices() {
-    final existing = currentState.metadata[_addressIndicesKey];
-    if (existing is Map<String, int>) return existing;
-    // A snapshot round-trip can hand back an untyped map; normalise it.
-    final map = <String, int>{};
-    if (existing is Map) {
-      existing.forEach((k, v) {
-        if (v is int) map[k.toString()] = v;
-      });
+  /// The derivation indices in [metadata] as a typed map. A snapshot
+  /// round-trip can hand back an untyped map; its int entries are kept.
+  static PersistentMap<String, int> _addressIndices(Map<String, dynamic> metadata) =>
+      _typedEntries<int>(metadata[_addressIndicesKey]);
+
+  static PersistentMap<String, bool> _addressChains(Map<String, dynamic> metadata) =>
+      _typedEntries<bool>(metadata[_addressChainsKey]);
+
+  /// Stores both derivation records in [state] in their typed form (as the
+  /// first read of an untyped record did).
+  static void _normaliseDerivationRecords(WalletStateBuilder state) {
+    for (final (key, typed) in [
+      (_addressIndicesKey, _addressIndices(state.metadata)),
+      (_addressChainsKey, _addressChains(state.metadata)),
+    ]) {
+      if (!identical(state.metadata[key], typed)) state.metadata = state.metadata.put(key, typed);
     }
-    currentState.metadata[_addressIndicesKey] = map;
-    return map;
   }
 
-  Map<String, bool> _addressChains() {
-    final existing = currentState.metadata[_addressChainsKey];
-    if (existing is Map<String, bool>) return existing;
-    final map = <String, bool>{};
-    if (existing is Map) {
-      existing.forEach((k, v) {
-        if (v is bool) map[k.toString()] = v;
-      });
-    }
-    currentState.metadata[_addressChainsKey] = map;
-    return map;
-  }
-
-  void _recordAddressDerivation(String address, int index, {required bool isChange}) {
-    _addressIndices()[address] = index;
-    _addressChains()[address] = isChange;
+  static void _recordAddressDerivation(WalletStateBuilder state, String address, int index, {required bool isChange}) {
+    state.metadata = state.metadata
+        .put(_addressIndicesKey, _addressIndices(state.metadata).put(address, index))
+        .put(_addressChainsKey, _addressChains(state.metadata).put(address, isChange));
   }
 
   /// Whether [address] was derived on the change chain. Unknown addresses
   /// (and the root address) are receive-chain, matching every journal
   /// written before the chain was recorded.
-  bool _isChangeAddress(String address) => _addressChains()[address] ?? false;
+  static bool _isChangeAddress(WalletState state, String address) =>
+      _addressChains(state.metadata)[address] ?? false;
 
-  void _applyWalletCreated(WalletCreatedEvent event) {
-    currentState.isCreated = true;
-    currentState.name = event.walletName;
-    currentState.rootAddress = event.rootAddress;
-    currentState.walletType = event.walletType;
-    currentState.networkType = NetworkName.canonical(event.walletMetadata?['network'] as String?);
-    currentState.timestamp = event.timestamp;
-    currentState.nextDerivationIndex = 1; // Root address is index 0
-    currentState.metadata.clear();
-    if (event.walletMetadata != null) {
-      currentState.metadata.addAll(event.walletMetadata!);
-    }
+  void _applyWalletCreated(WalletStateBuilder state, WalletCreatedEvent event) {
+    state.isCreated = true;
+    state.name = event.walletName;
+    state.rootAddress = event.rootAddress;
+    state.walletType = event.walletType;
+    state.networkType = NetworkName.canonical(event.walletMetadata?['network'] as String?);
+    state.timestamp = event.timestamp;
+    state.nextDerivationIndex = 1; // Root address is index 0
+    state.metadata = freezeMap(event.walletMetadata ?? const <String, dynamic>{});
 
     // Initialize the derivation records
-    _addressIndices();
-    _addressChains();
+    _normaliseDerivationRecords(state);
 
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+    state.version = event.version;
+    state.lastModified = event.timestamp;
 
     // Add root address to addresses map with derivation index 0 (receive chain)
     if (event.rootAddress.isNotEmpty) {
-      currentState.addresses[event.rootAddress] = null;
-      _recordAddressDerivation(event.rootAddress, 0, isChange: false);
+      state.addresses = state.addresses.put(event.rootAddress, null);
+      _recordAddressDerivation(state, event.rootAddress, 0, isChange: false);
     }
   }
 
@@ -2936,56 +2945,57 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
     ];
   }
 
-  void _applyWalletDeleted(WalletDeletedEvent event) {
-    currentState.isDeleted = true;
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+  void _applyWalletDeleted(WalletStateBuilder state, WalletDeletedEvent event) {
+    state.isDeleted = true;
+    state.version = event.version;
+    state.lastModified = event.timestamp;
   }
 
-  void _applyWalletConfigurationUpdated(WalletConfigurationUpdatedEvent event) {
+  void _applyWalletConfigurationUpdated(WalletStateBuilder state, WalletConfigurationUpdatedEvent event) {
     if (event.newName != null) {
-      currentState.name = event.newName!;
+      state.name = event.newName!;
     }
     if (event.newMetadata != null) {
-      currentState.metadata.addAll(event.newMetadata!);
+      state.metadata = state.metadata.putAll(freezeMap(event.newMetadata!));
     }
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+    state.version = event.version;
+    state.lastModified = event.timestamp;
   }
 
-  void _applyAddressGenerated(AddressGeneratedEvent event) {
-    currentState.addresses[event.address] = event.label;
-    currentState.nextDerivationIndex = event.derivationIndex + 1;
+  void _applyAddressGenerated(WalletStateBuilder state, AddressGeneratedEvent event) {
+    state.addresses = state.addresses.put(event.address, event.label);
+    state.nextDerivationIndex = event.derivationIndex + 1;
 
     // Store the derivation index and chain for key derivation during signing
     _recordAddressDerivation(
+      state,
       event.address,
       event.derivationIndex,
       isChange: event.purpose == changePurpose,
     );
 
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+    state.version = event.version;
+    state.lastModified = event.timestamp;
   }
 
-  void _applyAddressLabelUpdated(AddressLabelUpdatedEvent event) {
-    currentState.addresses[event.address] = event.newLabel;
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+  void _applyAddressLabelUpdated(WalletStateBuilder state, AddressLabelUpdatedEvent event) {
+    state.addresses = state.addresses.put(event.address, event.newLabel);
+    state.version = event.version;
+    state.lastModified = event.timestamp;
   }
 
-  void _applyUTXOReceived(UTXOReceivedEvent event) {
+  void _applyUTXOReceived(WalletStateBuilder state, UTXOReceivedEvent event) {
     _noLegacyDeferredSpendsIn = null;
     final utxoKey = '${event.txid}:${event.vout}';
-    if (currentState.utxos.containsKey(utxoKey)) {
+    if (state.utxos.containsKey(utxoKey)) {
       // First receipt wins (audit 2026-09-14 M9). The command handlers no
       // longer emit a second UTXOReceivedEvent for a known outpoint, but
       // journals written before the fix can hold one (the outgoing-tx
       // scanner re-emitted it); overwriting would reset the UTXO's status
       // and drop its reservation or spent mark. Replay must not throw.
       _log.fine('Ignoring UTXOReceivedEvent for known outpoint $utxoKey');
-      currentState.version = event.version;
-      currentState.lastModified = event.timestamp;
+      state.version = event.version;
+      state.lastModified = event.timestamp;
       return;
     }
     final utxo = BitcoinUtxo.create(
@@ -2998,54 +3008,61 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
       confirmations: event.confirmations ?? 0,
       status: event.initialStatus, // Use the status from the event
       derivationIndex: event.derivationIndex,
-      pluginMetadata: event.pluginMetadata,
+      pluginMetadata: event.pluginMetadata == null
+          ? null
+          : unmodifiableDeepCopy(event.pluginMetadata) as Map<String, dynamic>,
       createdAt: event.timestamp,
     );
 
-    _putUtxo(utxoKey, utxo);
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+    _putUtxo(state, utxoKey, utxo);
+    state.version = event.version;
+    state.lastModified = event.timestamp;
   }
 
-  void _applyUTXOMarkedAvailable(UTXOMarkedAvailableEvent event) {
+  void _applyUTXOMarkedAvailable(WalletStateBuilder state, UTXOMarkedAvailableEvent event) {
     final utxoKey = '${event.txid}:${event.vout}';
-    final utxo = currentState.utxos[utxoKey];
-    
+    final utxo = state.utxos[utxoKey];
+
     if (utxo != null) {
       _putUtxo(
+        state,
         utxoKey,
         utxo.status == UTXOStatus.reserved
             ? utxo.copyWith(statusBeforeReservation: UTXOStatus.available, updatedAt: event.timestamp)
             : utxo.markAvailable(timestamp: event.timestamp),
       );
-      currentState.version = event.version;
-      currentState.lastModified = event.timestamp;
+      state.version = event.version;
+      state.lastModified = event.timestamp;
     }
   }
 
-  void _applyUTXOSpent(UTXOSpentEvent event) {
+  void _applyUTXOSpent(WalletStateBuilder state, UTXOSpentEvent event) {
     final utxoKey = '${event.txid}:${event.vout}';
-    final utxo = currentState.utxos[utxoKey];
+    final utxo = state.utxos[utxoKey];
     if (utxo != null) {
       _putUtxo(
+        state,
         utxoKey,
         utxo.markSpent(timestamp: event.timestamp, spentInTxId: event.spentInTxId),
       );
     }
     // A spent input is held by nobody; a deferred payment whose input the
     // transaction itself spent is on the network (bead libspiffy-7p2).
-    final holds = currentState.metadata[_deferredHoldsKey];
-    if (holds is Map) holds.remove(utxoKey);
-    _markDeferredSeen(event.spentInTxId, event.timestamp);
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+    final holds = state.metadata[_deferredHoldsKey];
+    if (holds is Map && holds.containsKey(utxoKey)) {
+      state.metadata = state.metadata.put(_deferredHoldsKey, _frozen(holds).without(utxoKey));
+    }
+    _markDeferredSeen(state, event.spentInTxId, event.timestamp);
+    state.version = event.version;
+    state.lastModified = event.timestamp;
   }
 
-  void _applyUTXOConfirmationUpdated(UTXOConfirmationUpdatedEvent event) {
+  void _applyUTXOConfirmationUpdated(WalletStateBuilder state, UTXOConfirmationUpdatedEvent event) {
     final utxoKey = '${event.txid}:${event.vout}';
-    final utxo = currentState.utxos[utxoKey];
+    final utxo = state.utxos[utxoKey];
     if (utxo != null) {
       _putUtxo(
+        state,
         utxoKey,
         utxo.updateConfirmations(
           blockHeight: event.blockHeight,
@@ -3054,42 +3071,42 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         ),
       );
     }
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+    state.version = event.version;
+    state.lastModified = event.timestamp;
   }
 
-  void _applyTransactionSigned(TransactionSignedEvent event) {
+  void _applyTransactionSigned(WalletStateBuilder state, TransactionSignedEvent event) {
     // Transaction state is managed separately - just update version
-    currentState.version = event.version;
+    state.version = event.version;
   }
 
-  void _applyTransactionBroadcast(TransactionBroadcastEvent event) {
+  void _applyTransactionBroadcast(WalletStateBuilder state, TransactionBroadcastEvent event) {
     // Transaction state is managed separately - just update version
-    currentState.version = event.version;
+    state.version = event.version;
   }
 
-  void _applyUTXOReservationPlaced(UTXOReservationPlacedEvent event) {
+  void _applyUTXOReservationPlaced(WalletStateBuilder state, UTXOReservationPlacedEvent event) {
     // For now, simply update the state version - full reservation tracking in Phase 1D
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+    state.version = event.version;
+    state.lastModified = event.timestamp;
   }
 
-  void _applyUTXOReservationReleased(UTXOReservationReleasedEvent event) {
+  void _applyUTXOReservationReleased(WalletStateBuilder state, UTXOReservationReleasedEvent event) {
     // For now, simply update the state version - full reservation tracking in Phase 1D
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+    state.version = event.version;
+    state.lastModified = event.timestamp;
   }
 
-  void _applyUTXOReservationExpired(UTXOReservationExpiredEvent event) {
+  void _applyUTXOReservationExpired(WalletStateBuilder state, UTXOReservationExpiredEvent event) {
     // For now, simply update the state version - full reservation tracking in Phase 1D
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+    state.version = event.version;
+    state.lastModified = event.timestamp;
   }
 
-  void _applyUTXOReserved(UTXOReservedEvent event) {
+  void _applyUTXOReserved(WalletStateBuilder state, UTXOReservedEvent event) {
     final utxoKey = '${event.txid}:${event.vout}';
-    final utxo = currentState.utxos[utxoKey];
-    
+    final utxo = state.utxos[utxoKey];
+        
     if (utxo != null) {
       final reservedUtxo = utxo.copyWith(
         status: UTXOStatus.reserved,
@@ -3101,17 +3118,17 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         updatedAt: event.timestamp,
       );
 
-      _putUtxo(utxoKey, reservedUtxo);
+      _putUtxo(state, utxoKey, reservedUtxo);
     }
-    
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+
+    state.version = event.version;
+    state.lastModified = event.timestamp;
   }
 
-  void _applyUTXOReleased(UTXOReleasedEvent event) {
+  void _applyUTXOReleased(WalletStateBuilder state, UTXOReleasedEvent event) {
     final utxoKey = '${event.txid}:${event.vout}';
-    final utxo = currentState.utxos[utxoKey];
-    
+    final utxo = state.utxos[utxoKey];
+        
     if (utxo != null && utxo.status == UTXOStatus.reserved) {
       // Events journaled before restoredStatus existed released to
       // available; replay them that way.
@@ -3119,155 +3136,170 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         restoreStatus: event.restoredStatus ?? UTXOStatus.available,
         timestamp: event.timestamp,
       );
-      _putUtxo(utxoKey, releasedUtxo);
+      _putUtxo(state, utxoKey, releasedUtxo);
     }
-    
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+
+    state.version = event.version;
+    state.lastModified = event.timestamp;
   }
 
-  void _applyUTXOReservationRenewed(UTXOReservationRenewedEvent event) {
+  void _applyUTXOReservationRenewed(WalletStateBuilder state, UTXOReservationRenewedEvent event) {
     final utxoKey = '${event.txid}:${event.vout}';
-    final utxo = currentState.utxos[utxoKey];
-    
+    final utxo = state.utxos[utxoKey];
+        
     if (utxo != null && utxo.status == UTXOStatus.reserved) {
       // The event carries the new expiry; recomputing it from the state
       // (extension added to the current expiry, or to "now" when there was
       // none) made the result depend on when the event was applied (L1).
       // Renewal moves no amount between balances.
-      currentState.utxos[utxoKey] = utxo.copyWith(
-        reservationExpiresAt: event.newExpiresAt,
-        reservationReason: event.renewalReason ?? utxo.reservationReason,
-        updatedAt: event.timestamp,
+      state.utxos = state.utxos.put(
+        utxoKey,
+        utxo.copyWith(
+          reservationExpiresAt: event.newExpiresAt,
+          reservationReason: event.renewalReason ?? utxo.reservationReason,
+          updatedAt: event.timestamp,
+        ),
       );
     }
-    
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+
+    state.version = event.version;
+    state.lastModified = event.timestamp;
   }
 
   // ==========================================================================
   // WALLET IMPORT EVENT HANDLERS
   // ==========================================================================
 
-  void _applyAddressDiscovered(AddressDiscoveredEvent event) {
+  void _applyAddressDiscovered(WalletStateBuilder state, AddressDiscoveredEvent event) {
     // Add discovered address to wallet
-    currentState.addresses[event.address] = 'Imported (${event.isChange ? 'change' : 'receive'} #${event.derivationIndex})';
+    state.addresses = state.addresses
+        .put(event.address, 'Imported (${event.isChange ? 'change' : 'receive'} #${event.derivationIndex})');
 
     // Store the derivation index and chain for key derivation during signing
-    _recordAddressDerivation(event.address, event.derivationIndex, isChange: event.isChange);
-    
+    _recordAddressDerivation(state, event.address, event.derivationIndex, isChange: event.isChange);
+
     // Update next derivation index if this is higher
-    if (event.derivationIndex >= currentState.nextDerivationIndex) {
-      currentState.nextDerivationIndex = event.derivationIndex + 1;
+    if (event.derivationIndex >= state.nextDerivationIndex) {
+      state.nextDerivationIndex = event.derivationIndex + 1;
     }
 
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+    state.version = event.version;
+    state.lastModified = event.timestamp;
   }
 
-  void _applyWatchAddressAdded(WatchAddressAddedEvent event) {
-    currentState.watchAddresses[event.address] = event.scriptType;
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+  void _applyWatchAddressAdded(WalletStateBuilder state, WatchAddressAddedEvent event) {
+    state.watchAddresses = state.watchAddresses.put(event.address, event.scriptType);
+    state.version = event.version;
+    state.lastModified = event.timestamp;
   }
 
   static const String _importedTransactionsKey = 'importedTransactions';
   static const String _outgoingTransactionsKey = 'outgoingTransactions';
 
-  /// The transaction records under metadata[[key]], keyed by txid (audit
-  /// 2026-09-14 M7: they were lists appended on every event and searched
-  /// linearly). A list-shaped value (state built before the change) is
-  /// converted once.
-  Map<String, dynamic> _transactionRecords(String key) {
-    final existing = currentState.metadata[key];
-    if (existing is Map<String, dynamic>) return existing;
-    final records = <String, dynamic>{};
+  /// The transaction records under metadata[[key]] in [state], keyed by
+  /// txid (audit 2026-09-14 M7: they were lists appended on every event and
+  /// searched linearly). A list-shaped value (state built before the change)
+  /// is converted, and the converted records are stored in [state].
+  static PersistentMap<String, dynamic> _transactionRecords(WalletStateBuilder state, String key) {
+    final existing = state.metadata[key];
+    if (existing is PersistentMap<String, dynamic>) return existing;
+    var records = PersistentMap<String, dynamic>.empty();
     if (existing is Map) {
-      existing.forEach((txid, record) => records[txid.toString()] = record);
+      existing.forEach((txid, record) => records = records.put(txid.toString(), freezeDeep(record)));
     } else if (existing is List) {
       for (final record in existing) {
         if (record is Map && record['txid'] != null) {
-          records[record['txid'].toString()] = Map<String, dynamic>.from(record);
+          records = records.put(record['txid'].toString(), freezeDeep(record));
         }
       }
     }
-    currentState.metadata[key] = records;
+    state.metadata = state.metadata.put(key, records);
     return records;
   }
 
-  void _applyTransactionImported(TransactionImportedEvent event) {
+  /// [record] (a frozen map in the state's metadata) as a [PersistentMap].
+  static PersistentMap<String, dynamic> _frozen(Map record) =>
+      record is PersistentMap<String, dynamic> ? record : freezeMap(record);
+
+  void _applyTransactionImported(WalletStateBuilder state, TransactionImportedEvent event) {
     // Store imported transaction in metadata (for audit/history). Records
     // keep first-import order. A repeated import of the same txid keeps the
     // first import time and takes the latest block height.
-    final records = _transactionRecords(_importedTransactionsKey);
+    final records = _transactionRecords(state, _importedTransactionsKey);
     final existing = records[event.txid];
+    final PersistentMap<String, dynamic> record;
     if (existing is Map) {
-      existing['blockHeight'] = event.blockHeight;
-      existing['lastImportedAt'] = event.timestamp.toIso8601String();
+      record = _frozen(existing)
+          .put('blockHeight', event.blockHeight)
+          .put('lastImportedAt', event.timestamp.toIso8601String());
     } else {
-      records[event.txid] = <String, dynamic>{
+      record = freezeMap(<String, dynamic>{
         'txid': event.txid,
         'blockHeight': event.blockHeight,
         'importedAt': event.timestamp.toIso8601String(),
-      };
+      });
     }
+    state.metadata = state.metadata.put(_importedTransactionsKey, records.put(event.txid, record));
 
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+    state.version = event.version;
+    state.lastModified = event.timestamp;
   }
 
-  void _applyTransactionRecorded(TransactionRecordedEvent event) {
+  void _applyTransactionRecorded(WalletStateBuilder state, TransactionRecordedEvent event) {
     _noLegacyDeferredSpendsIn = null;
     // Store outgoing transaction in metadata (for audit/history)
     // Status starts as PENDING - will be updated to CONFIRMED when recipient accepts
-    final records = _transactionRecords(_outgoingTransactionsKey);
-    final details = <String, dynamic>{
+    final records = _transactionRecords(state, _outgoingTransactionsKey);
+    final details = freezeMap(<String, dynamic>{
       'txid': event.txid,
       'recipientAddresses': event.recipientAddresses,
       'paymentAmount': event.paymentAmount,
       'fee': event.fee,
       'spentUtxoKeys': List<String>.from(event.spentUtxoKeys),
       'recordedAt': event.timestamp.toIso8601String(),
-    };
+    });
     final existing = records[event.txid];
+    final PersistentMap<String, dynamic> record;
     if (existing is Map) {
       // Recorded again: refresh the details; keep the first record time and
       // any confirmation.
-      existing.addAll(<String, dynamic>{
-        ...details,
-        'recordedAt': existing['recordedAt'] ?? details['recordedAt'],
-      });
+      record = _frozen(existing)
+          .putAll(details)
+          .put('recordedAt', existing['recordedAt'] ?? details['recordedAt']);
     } else {
-      records[event.txid] = <String, dynamic>{...details, 'status': 'pending'};
+      record = details.put('status', 'pending');
     }
+    state.metadata = state.metadata.put(_outgoingTransactionsKey, records.put(event.txid, record));
 
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+    state.version = event.version;
+    state.lastModified = event.timestamp;
   }
 
   /// The transaction is no longer confirmed: back to pending in the
   /// transaction metadata, and its UTXOs lose their confirmations. A UTXO
   /// that was spendable because of the proof becomes pending (a reserved one
   /// returns to pending on release); spent UTXOs are left alone.
-  void _applyTransactionConfirmationReverted(TransactionConfirmationRevertedEvent event) {
+  void _applyTransactionConfirmationReverted(WalletStateBuilder state, TransactionConfirmationRevertedEvent event) {
     _noLegacyDeferredSpendsIn = null;
-    final deferred = _deferredRecordForUpdate(event.txid);
+    final deferred = _deferredRecordForUpdate(state, event.txid);
     if (deferred != null && deferred['state'] == DeferredPaymentState.mined.name) {
-      deferred['state'] = DeferredPaymentState.seen.name;
+      _putDeferredRecord(state, event.txid, deferred.put('state', DeferredPaymentState.seen.name));
     }
-    final record = _transactionRecords(_outgoingTransactionsKey)[event.txid];
+    final records = _transactionRecords(state, _outgoingTransactionsKey);
+    final record = records[event.txid];
     if (record is Map && record['status'] == 'confirmed') {
-      record['status'] = 'pending';
-      record.remove('blockHeight');
-      record.remove('blockHash');
-      record.remove('confirmedAt');
+      final reverted = _frozen(record)
+          .put('status', 'pending')
+          .without('blockHeight')
+          .without('blockHash')
+          .without('confirmedAt');
+      state.metadata = state.metadata.put(_outgoingTransactionsKey, records.put(event.txid, reverted));
     }
 
-    for (final entry in currentState.utxos.entries.toList()) {
+    for (final entry in state.utxos.entries.toList()) {
       final utxo = entry.value;
       if (utxo.txid != event.txid || utxo.status == UTXOStatus.spent) continue;
-      _putUtxo(entry.key, BitcoinUtxo(
+      _putUtxo(state, entry.key, BitcoinUtxo(
         txid: utxo.txid,
         vout: utxo.vout,
         value: utxo.value,
@@ -3291,27 +3323,31 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
       ));
     }
 
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+    state.version = event.version;
+    state.lastModified = event.timestamp;
   }
 
-  void _applyTransactionConfirmed(TransactionConfirmedEvent event) {
-    final deferred = _deferredRecordForUpdate(event.txid);
+  void _applyTransactionConfirmed(WalletStateBuilder state, TransactionConfirmedEvent event) {
+    final deferred = _deferredRecordForUpdate(state, event.txid);
     if (deferred != null) {
-      deferred['state'] = DeferredPaymentState.mined.name;
-      deferred['resolvedAt'] ??= event.timestamp.toIso8601String();
+      var mined = deferred.put('state', DeferredPaymentState.mined.name);
+      if (mined['resolvedAt'] == null) mined = mined.put('resolvedAt', event.timestamp.toIso8601String());
+      _putDeferredRecord(state, event.txid, mined);
     }
     // Update transaction status from PENDING to CONFIRMED
-    final record = _transactionRecords(_outgoingTransactionsKey)[event.txid];
+    final records = _transactionRecords(state, _outgoingTransactionsKey);
+    final record = records[event.txid];
     if (record is Map) {
-      record['status'] = 'confirmed';
-      record['blockHeight'] = event.blockHeight;
-      record['blockHash'] = event.blockHash;
-      record['confirmedAt'] = event.timestamp.toIso8601String();
+      final confirmed = _frozen(record)
+          .put('status', 'confirmed')
+          .put('blockHeight', event.blockHeight)
+          .put('blockHash', event.blockHash)
+          .put('confirmedAt', event.timestamp.toIso8601String());
+      state.metadata = state.metadata.put(_outgoingTransactionsKey, records.put(event.txid, confirmed));
     }
 
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+    state.version = event.version;
+    state.lastModified = event.timestamp;
   }
 
   
@@ -3601,57 +3637,64 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
     return events;
   }
 
-  /// The deferred-payment records as a typed map (converted once, e.g.
-  /// after a snapshot's untyped round trip; afterwards returned as is, so
-  /// applying an event costs no copy of every record).
-  Map<String, dynamic> _deferredRecordsForUpdate() {
-    final existing = currentState.metadata[_deferredSpendsKey];
-    if (existing is Map<String, dynamic>) return existing;
-    final records = <String, dynamic>{};
+  /// The deferred-payment records in [state] (converted and stored once,
+  /// e.g. after a snapshot's untyped round trip; afterwards returned as is,
+  /// so applying an event costs no copy of every record).
+  static PersistentMap<String, dynamic> _deferredRecordsForUpdate(WalletStateBuilder state) {
+    final existing = state.metadata[_deferredSpendsKey];
+    if (existing is PersistentMap<String, dynamic>) return existing;
+    var records = PersistentMap<String, dynamic>.empty();
     if (existing is Map) {
-      existing.forEach((txid, record) => records[txid.toString()] = record);
+      existing.forEach((txid, record) => records = records.put(txid.toString(), freezeDeep(record)));
     }
-    currentState.metadata[_deferredSpendsKey] = records;
+    state.metadata = state.metadata.put(_deferredSpendsKey, records);
     return records;
   }
 
-  /// The mutable record of [txid], or null (creates no metadata entry).
-  Map<String, dynamic>? _deferredRecordForUpdate(String txid) {
-    if (currentState.metadata[_deferredSpendsKey] is! Map) return null;
-    final records = _deferredRecordsForUpdate();
-    final record = records[txid];
-    if (record is Map<String, dynamic>) return record;
-    if (record is! Map) return null;
-    final typed = <String, dynamic>{for (final e in record.entries) e.key.toString(): e.value};
-    records[txid] = typed;
-    return typed;
+  /// The record of [txid] in [state], or null (creates no metadata entry).
+  /// A changed record is stored back with [_putDeferredRecord].
+  static PersistentMap<String, dynamic>? _deferredRecordForUpdate(WalletStateBuilder state, String txid) {
+    if (state.metadata[_deferredSpendsKey] is! Map) return null;
+    final record = _deferredRecordsForUpdate(state)[txid];
+    return record is Map ? _frozen(record) : null;
   }
 
-  Map<String, dynamic> _deferredHoldsForUpdate() {
-    final existing = currentState.metadata[_deferredHoldsKey];
-    if (existing is Map<String, dynamic>) return existing;
-    final holds = <String, dynamic>{};
+  static void _putDeferredRecord(WalletStateBuilder state, String txid, PersistentMap<String, dynamic> record) {
+    state.metadata = state.metadata.put(_deferredSpendsKey, _deferredRecordsForUpdate(state).put(txid, record));
+  }
+
+  /// The deferred holds in [state] (converted and stored once).
+  static PersistentMap<String, dynamic> _deferredHoldsForUpdate(WalletStateBuilder state) {
+    final existing = state.metadata[_deferredHoldsKey];
+    if (existing is PersistentMap<String, dynamic>) return existing;
+    var holds = PersistentMap<String, dynamic>.empty();
     if (existing is Map) {
-      existing.forEach((key, txid) => holds[key.toString()] = txid.toString());
+      existing.forEach((key, txid) => holds = holds.put(key.toString(), txid.toString()));
     }
-    currentState.metadata[_deferredHoldsKey] = holds;
+    state.metadata = state.metadata.put(_deferredHoldsKey, holds);
     return holds;
   }
 
-  void _applyTransactionSpendDeferred(TransactionSpendDeferredEvent event) {
-    final records = _deferredRecordsForUpdate();
-    final reactivated = event.reactivated ? _deferredRecordForUpdate(event.txid) : null;
+  void _applyTransactionSpendDeferred(WalletStateBuilder state, TransactionSpendDeferredEvent event) {
+    var records = _deferredRecordsForUpdate(state);
+    final reactivated = event.reactivated ? _deferredRecordForUpdate(state, event.txid) : null;
     if (reactivated != null && reactivated['state'] == DeferredPaymentState.cancelled.name) {
       // Outstanding again (bead libspiffy-4r0); the cancellation stays in
       // the journal.
-      reactivated
-        ..['state'] = DeferredPaymentState.outstanding.name
-        ..['heldUtxoKeys'] = event.heldUtxoKeys
-        ..['reactivatedAt'] = event.timestamp.toIso8601String()
-        ..remove('resolvedAt')
-        ..remove('resolutionReason');
+      records = records.put(
+        event.txid,
+        reactivated
+            .put('state', DeferredPaymentState.outstanding.name)
+            .put('heldUtxoKeys', freezeDeep(event.heldUtxoKeys))
+            .put('reactivatedAt', event.timestamp.toIso8601String())
+            .without('resolvedAt')
+            .without('resolutionReason'),
+      );
     }
-    records.putIfAbsent(event.txid, () => <String, dynamic>{
+    if (!records.containsKey(event.txid)) {
+      records = records.put(
+        event.txid,
+        freezeMap(<String, dynamic>{
           'txid': event.txid,
           'heldUtxoKeys': event.heldUtxoKeys,
           'state': DeferredPaymentState.outstanding.name,
@@ -3659,15 +3702,19 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
           'purpose': event.purpose,
           'inferred': event.inferred,
           'recordedAt': event.recordedAt.toIso8601String(),
-        });
-    final holds = _deferredHoldsForUpdate();
+        }),
+      );
+    }
+    state.metadata = state.metadata.put(_deferredSpendsKey, records);
+    var holds = _deferredHoldsForUpdate(state);
     for (final key in event.heldUtxoKeys) {
-      final utxo = currentState.utxos[key];
+      final utxo = state.utxos[key];
       if (utxo == null || utxo.status == UTXOStatus.spent) continue;
       final holder = holds[key];
       if (holder != null && holder != event.txid) continue; // the first hold wins
-      holds[key] = event.txid;
+      holds = holds.put(key, event.txid);
       _putUtxo(
+        state,
         key,
         utxo.copyWith(
           status: UTXOStatus.reserved,
@@ -3680,61 +3727,78 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         ),
       );
     }
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+    state.metadata = state.metadata.put(_deferredHoldsKey, holds);
+    state.version = event.version;
+    state.lastModified = event.timestamp;
   }
 
   /// An outstanding, failed or cancelled deferred payment [txid] is on the
   /// network.
-  void _markDeferredSeen(String txid, DateTime at) {
-    final record = _deferredRecordForUpdate(txid);
+  static void _markDeferredSeen(WalletStateBuilder state, String txid, DateTime at) {
+    final record = _deferredRecordForUpdate(state, txid);
     if (record == null) return;
-    final state = record['state'];
-    if (state == DeferredPaymentState.outstanding.name ||
-        state == DeferredPaymentState.failed.name ||
-        state == DeferredPaymentState.cancelled.name) {
-      record['state'] = DeferredPaymentState.seen.name;
-      record['resolvedAt'] = at.toIso8601String();
+    final paymentState = record['state'];
+    if (paymentState == DeferredPaymentState.outstanding.name ||
+        paymentState == DeferredPaymentState.failed.name ||
+        paymentState == DeferredPaymentState.cancelled.name) {
+      _putDeferredRecord(
+        state,
+        txid,
+        record.put('state', DeferredPaymentState.seen.name).put('resolvedAt', at.toIso8601String()),
+      );
     }
   }
 
-  void _applyTransactionNetworkStatusChecked(TransactionNetworkStatusCheckedEvent event) {
-    final record = _deferredRecordForUpdate(event.txid);
+  void _applyTransactionNetworkStatusChecked(WalletStateBuilder state, TransactionNetworkStatusCheckedEvent event) {
+    final record = _deferredRecordForUpdate(state, event.txid);
     if (record != null) {
-      record['lastNetworkStatus'] = event.networkStatus;
-      record['lastNetworkStatusSource'] = event.source;
-      record['lastCheckedAt'] = event.checkedAt.toIso8601String();
+      _putDeferredRecord(
+        state,
+        event.txid,
+        record
+            .put('lastNetworkStatus', event.networkStatus)
+            .put('lastNetworkStatusSource', event.source)
+            .put('lastCheckedAt', event.checkedAt.toIso8601String()),
+      );
       if (DeferredNetworkStatus.isOnNetwork(event.networkStatus)) {
-        _markDeferredSeen(event.txid, event.timestamp);
+        _markDeferredSeen(state, event.txid, event.timestamp);
       }
     }
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+    state.version = event.version;
+    state.lastModified = event.timestamp;
   }
 
   /// A deferred payment failed or was cancelled: each released input still
   /// reserved by it returns to its recorded status.
-  void _applyDeferredResolution(String txid, DeferredPaymentState state,
+  void _applyDeferredResolution(WalletStateBuilder state, String txid, DeferredPaymentState resolution,
       List<ReleasedDeferredInput> released, String? reason, WalletEvent event) {
-    final record = _deferredRecordForUpdate(txid);
+    final record = _deferredRecordForUpdate(state, txid);
     if (record != null && record['state'] == DeferredPaymentState.outstanding.name) {
-      record['state'] = state.name;
-      record['resolvedAt'] = event.timestamp.toIso8601String();
-      record['resolutionReason'] = reason;
+      _putDeferredRecord(
+        state,
+        txid,
+        record
+            .put('state', resolution.name)
+            .put('resolvedAt', event.timestamp.toIso8601String())
+            .put('resolutionReason', reason),
+      );
     }
-    final holds = currentState.metadata[_deferredHoldsKey];
     for (final input in released) {
-      if (holds is Map && holds[input.utxoKey]?.toString() == txid) holds.remove(input.utxoKey);
-      final utxo = currentState.utxos[input.utxoKey];
+      final holds = state.metadata[_deferredHoldsKey];
+      if (holds is Map && holds[input.utxoKey]?.toString() == txid) {
+        state.metadata = state.metadata.put(_deferredHoldsKey, _frozen(holds).without(input.utxoKey));
+      }
+      final utxo = state.utxos[input.utxoKey];
       if (utxo != null && utxo.status == UTXOStatus.reserved && utxo.reservedByTxId == txid) {
         _putUtxo(
+          state,
           input.utxoKey,
           utxo.releaseReservation(restoreStatus: input.restoredStatus, timestamp: event.timestamp),
         );
       }
     }
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+    state.version = event.version;
+    state.lastModified = event.timestamp;
   }
 
   // ==========================================================================
@@ -3748,19 +3812,19 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
   // matches WalletState.recalculateBalances(); tests compare the two over
   // randomized command sequences.
 
-  /// Stores [utxo] under [key] and moves its amount from the bucket of the
-  /// UTXO it replaces (if any) to its own bucket.
-  void _putUtxo(String key, BitcoinUtxo utxo) {
-    final previous = currentState.utxos[key];
-    if (previous != null) _addToBalances(currentState, previous, negate: true);
-    currentState.utxos[key] = utxo;
-    _addToBalances(currentState, utxo);
+  /// Stores [utxo] under [key] in [state] and moves its amount from the
+  /// bucket of the UTXO it replaces (if any) to its own bucket.
+  static void _putUtxo(WalletStateBuilder state, String key, BitcoinUtxo utxo) {
+    final previous = state.utxos[key];
+    if (previous != null) _addToBalances(state, previous, negate: true);
+    state.utxos = state.utxos.put(key, utxo);
+    _addToBalances(state, utxo);
   }
 
   /// Adds (or with [negate], removes) [utxo]'s amount to its balance bucket:
   /// nothing when spent, reserved when reserved, confirmed with 6 or more
   /// confirmations, unconfirmed otherwise.
-  static void _addToBalances(WalletState state, BitcoinUtxo utxo, {bool negate = false}) {
+  static void _addToBalances(WalletStateBuilder state, BitcoinUtxo utxo, {bool negate = false}) {
     if (utxo.status == UTXOStatus.spent) return;
     final amount = negate ? -utxo.satoshis : utxo.satoshis;
     if (utxo.status == UTXOStatus.reserved) {
@@ -3774,7 +3838,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
 
   /// Sets [state]'s balances from all of its UTXOs (once per snapshot
   /// restore; event application is incremental).
-  static void _setFullBalances(WalletState state) {
+  static void _setFullBalances(WalletStateBuilder state) {
     state.confirmedBalance = dartsv.Coin.ofSat(BigInt.zero);
     state.unconfirmedBalance = dartsv.Coin.ofSat(BigInt.zero);
     state.reservedBalance = dartsv.Coin.ofSat(BigInt.zero);
@@ -3783,14 +3847,15 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
     }
   }
 
-  /// A `Map<String, T>` of the entries of [value] whose values are [T]
-  /// (snapshot data arrives as untyped maps).
-  static Map<String, T> _typedEntries<T>(Object? value) {
-    if (value is Map<String, T>) return value;
-    final map = <String, T>{};
+  /// A `PersistentMap<String, T>` of the entries of [value] whose values are
+  /// [T] (snapshot data arrives as untyped maps); [value] itself when it is
+  /// one already.
+  static PersistentMap<String, T> _typedEntries<T>(Object? value) {
+    if (value is PersistentMap<String, T>) return value;
+    var map = PersistentMap<String, T>.empty();
     if (value is Map) {
       value.forEach((k, v) {
-        if (v is T) map[k.toString()] = v;
+        if (v is T) map = map.put(k.toString(), v);
       });
     }
     return map;
@@ -3912,27 +3977,27 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
   // EVENT APPLICATION METHODS - Benford Splitting
   // ==========================================================================
 
-  void _applyUTXOSplitInitiated(UTXOSplitInitiatedEvent event) {
+  void _applyUTXOSplitInitiated(WalletStateBuilder state, UTXOSplitInitiatedEvent event) {
     // This event is informational - triggers BenfordCoordinatorActor orchestration
     // No direct state changes in the aggregate
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+    state.version = event.version;
+    state.lastModified = event.timestamp;
   }
 
-  void _applyUTXOSplitCompleted(UTXOSplitCompletedEvent event) {
+  void _applyUTXOSplitCompleted(WalletStateBuilder state, UTXOSplitCompletedEvent event) {
     // State changes are handled by separate CQRS commands:
     // - SpendUTXOCommand marks source UTXO as spent
     // - ReceiveUTXOCommand adds new UTXOs
     // - RecordOutgoingTransactionCommand records transaction
     // This event is primarily for UI/reporting purposes
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+    state.version = event.version;
+    state.lastModified = event.timestamp;
   }
 
-  void _applyAllUTXOsSplitCompleted(AllUTXOsSplitCompletedEvent event) {
+  void _applyAllUTXOsSplitCompleted(WalletStateBuilder state, AllUTXOsSplitCompletedEvent event) {
     // This event is informational - final summary
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+    state.version = event.version;
+    state.lastModified = event.timestamp;
   }
 
 }

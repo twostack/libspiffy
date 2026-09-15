@@ -1,88 +1,88 @@
 import 'package:eventador/eventador.dart';
 
 /// State for a payment channel aggregate
-/// 
+///
 /// Represents the current state of a payment channel at a specific point in time.
 /// This state is rebuilt from events during aggregate recovery.
-/// 
-/// NOTE: Fields are mutable to allow direct state updates in eventHandler.
-/// This follows the Eventador AggregateRoot pattern with imperative state management.
+///
+/// Immutable (bead libspiffy-mmb): every field is final and
+/// [fundingAncestorTxids] is an unmodifiable copy. Applying an event produces
+/// a new state with [copyWith].
 class ChannelState extends State {
   final String channelId;
-  String? walletId;
-  ChannelStatus status;
-  ChannelRole? role;
-  
+  final String? walletId;
+  final ChannelStatus status;
+  final ChannelRole? role;
+
   // Peer information
-  String? clientPeerId;
-  String? serverPeerId;
-  
+  final String? clientPeerId;
+  final String? serverPeerId;
+
   // Cryptographic material
-  String? clientPubKeyHex;
-  String? serverPubKeyHex;
-  String? clientAddressB58;
-  String? serverAddressB58;
-  int? derivationIndex;
-  
+  final String? clientPubKeyHex;
+  final String? serverPubKeyHex;
+  final String? clientAddressB58;
+  final String? serverAddressB58;
+  final int? derivationIndex;
+
   // Funding
-  BigInt fundingAmountSats;
-  String? fundingTxId;
-  String? fundingTxHex;
-  int? fundingOutputIndex;
-  List<String> fundingAncestorTxids;
+  final BigInt fundingAmountSats;
+  final String? fundingTxId;
+  final String? fundingTxHex;
+  final int? fundingOutputIndex;
+  final List<String> fundingAncestorTxids;
 
   /// BEEF of the funding transaction journaled with the opening.
-  String? fundingBeefHex;
+  final String? fundingBeefHex;
 
   /// Total input value of the funding transaction, when known.
-  int? fundingInputSats;
+  final int? fundingInputSats;
 
   /// Broadcasts of the funding transaction started so far (client).
-  int fundingBroadcastAttempts;
+  final int fundingBroadcastAttempts;
 
   /// A funding broadcast was started and has not failed (client): the
   /// channel may be opened for it.
-  bool fundingBroadcastInFlight;
+  final bool fundingBroadcastInFlight;
 
   /// Error of the last failed funding broadcast, cleared by the next start.
-  String? fundingBroadcastError;
+  final String? fundingBroadcastError;
 
   /// The funding transaction is recorded in the client wallet.
-  bool fundingRecordedInWallet;
-  
+  final bool fundingRecordedInWallet;
+
   // Refund (T2)
-  int? lockTimeUnix;
+  final int? lockTimeUnix;
 
   /// The refund template as built (unsigned), or on the server side the
   /// refund it signed.
-  String? refundTxHex;
-  String? refundClientSigHex;
-  String? refundServerSigHex;
+  final String? refundTxHex;
+  final String? refundClientSigHex;
+  final String? refundServerSigHex;
 
   /// The fully signed refund the client holds, verified against the funding
   /// output (libspiffy-b83).
-  String? signedRefundTxHex;
-  
+  final String? signedRefundTxHex;
+
   // Current balances
-  BigInt clientBalanceSats;
-  BigInt serverBalanceSats;
-  
+  final BigInt clientBalanceSats;
+  final BigInt serverBalanceSats;
+
   // Payment state
-  int latestSequenceNumber;
-  String? latestPaymentTxHex;
-  String? latestPaymentTxId;
-  
+  final int latestSequenceNumber;
+  final String? latestPaymentTxHex;
+  final String? latestPaymentTxId;
+
   // Metadata
-  String? context;
-  DateTime? createdAt;
-  DateTime? closedAt;
-
-  /// Override parent State version/lastModified with mutable fields
-  @override
-  int version;
+  final String? context;
+  final DateTime? createdAt;
+  final DateTime? closedAt;
 
   @override
-  DateTime lastModified;
+  final int version;
+
+  @override
+  final DateTime lastModified;
 
   ChannelState({
     required this.channelId,
@@ -125,7 +125,7 @@ class ChannelState extends State {
   })  : fundingAmountSats = fundingAmountSats ?? BigInt.zero,
         clientBalanceSats = clientBalanceSats ?? BigInt.zero,
         serverBalanceSats = serverBalanceSats ?? BigInt.zero,
-        fundingAncestorTxids = fundingAncestorTxids ?? [],
+        fundingAncestorTxids = List<String>.unmodifiable(fundingAncestorTxids ?? const <String>[]),
         lastModified = lastModified ?? DateTime.now(),
         super(version: version, lastModified: lastModified ?? DateTime.now());
 
@@ -136,11 +136,90 @@ class ChannelState extends State {
         lastModified: DateTime.now(),
       );
 
+  static const Object _unset = Object();
+
+  /// A copy of this state with the given fields replaced. The nullable
+  /// fields take an explicit null (e.g. `fundingBroadcastError: null`
+  /// clears it); a field not given keeps its value.
   @override
-  State copyWith({int? version, DateTime? lastModified}) {
-    // We don't use copyWith pattern in this implementation
-    // State mutations happen directly in eventHandler
-    throw UnimplementedError('copyWith not used for ChannelState');
+  ChannelState copyWith({
+    int? version,
+    DateTime? lastModified,
+    Object? walletId = _unset,
+    ChannelStatus? status,
+    Object? role = _unset,
+    Object? clientPeerId = _unset,
+    Object? serverPeerId = _unset,
+    Object? clientPubKeyHex = _unset,
+    Object? serverPubKeyHex = _unset,
+    Object? clientAddressB58 = _unset,
+    Object? serverAddressB58 = _unset,
+    Object? derivationIndex = _unset,
+    BigInt? fundingAmountSats,
+    Object? fundingTxId = _unset,
+    Object? fundingTxHex = _unset,
+    Object? fundingOutputIndex = _unset,
+    List<String>? fundingAncestorTxids,
+    Object? fundingBeefHex = _unset,
+    Object? fundingInputSats = _unset,
+    int? fundingBroadcastAttempts,
+    bool? fundingBroadcastInFlight,
+    Object? fundingBroadcastError = _unset,
+    bool? fundingRecordedInWallet,
+    Object? lockTimeUnix = _unset,
+    Object? refundTxHex = _unset,
+    Object? refundClientSigHex = _unset,
+    Object? refundServerSigHex = _unset,
+    Object? signedRefundTxHex = _unset,
+    BigInt? clientBalanceSats,
+    BigInt? serverBalanceSats,
+    int? latestSequenceNumber,
+    Object? latestPaymentTxHex = _unset,
+    Object? latestPaymentTxId = _unset,
+    Object? context = _unset,
+    Object? createdAt = _unset,
+    Object? closedAt = _unset,
+  }) {
+    T? pick<T>(Object? given, T? current) => identical(given, _unset) ? current : given as T?;
+    return ChannelState(
+      channelId: channelId,
+      walletId: pick<String>(walletId, this.walletId),
+      status: status ?? this.status,
+      role: pick<ChannelRole>(role, this.role),
+      clientPeerId: pick<String>(clientPeerId, this.clientPeerId),
+      serverPeerId: pick<String>(serverPeerId, this.serverPeerId),
+      clientPubKeyHex: pick<String>(clientPubKeyHex, this.clientPubKeyHex),
+      serverPubKeyHex: pick<String>(serverPubKeyHex, this.serverPubKeyHex),
+      clientAddressB58: pick<String>(clientAddressB58, this.clientAddressB58),
+      serverAddressB58: pick<String>(serverAddressB58, this.serverAddressB58),
+      derivationIndex: pick<int>(derivationIndex, this.derivationIndex),
+      fundingAmountSats: fundingAmountSats ?? this.fundingAmountSats,
+      fundingTxId: pick<String>(fundingTxId, this.fundingTxId),
+      fundingTxHex: pick<String>(fundingTxHex, this.fundingTxHex),
+      fundingOutputIndex: pick<int>(fundingOutputIndex, this.fundingOutputIndex),
+      fundingAncestorTxids: fundingAncestorTxids ?? this.fundingAncestorTxids,
+      fundingBeefHex: pick<String>(fundingBeefHex, this.fundingBeefHex),
+      fundingInputSats: pick<int>(fundingInputSats, this.fundingInputSats),
+      fundingBroadcastAttempts: fundingBroadcastAttempts ?? this.fundingBroadcastAttempts,
+      fundingBroadcastInFlight: fundingBroadcastInFlight ?? this.fundingBroadcastInFlight,
+      fundingBroadcastError: pick<String>(fundingBroadcastError, this.fundingBroadcastError),
+      fundingRecordedInWallet: fundingRecordedInWallet ?? this.fundingRecordedInWallet,
+      lockTimeUnix: pick<int>(lockTimeUnix, this.lockTimeUnix),
+      refundTxHex: pick<String>(refundTxHex, this.refundTxHex),
+      refundClientSigHex: pick<String>(refundClientSigHex, this.refundClientSigHex),
+      refundServerSigHex: pick<String>(refundServerSigHex, this.refundServerSigHex),
+      signedRefundTxHex: pick<String>(signedRefundTxHex, this.signedRefundTxHex),
+      clientBalanceSats: clientBalanceSats ?? this.clientBalanceSats,
+      serverBalanceSats: serverBalanceSats ?? this.serverBalanceSats,
+      latestSequenceNumber: latestSequenceNumber ?? this.latestSequenceNumber,
+      latestPaymentTxHex: pick<String>(latestPaymentTxHex, this.latestPaymentTxHex),
+      latestPaymentTxId: pick<String>(latestPaymentTxId, this.latestPaymentTxId),
+      context: pick<String>(context, this.context),
+      createdAt: pick<DateTime>(createdAt, this.createdAt),
+      closedAt: pick<DateTime>(closedAt, this.closedAt),
+      version: version ?? this.version,
+      lastModified: lastModified ?? this.lastModified,
+    );
   }
 
   // Computed properties

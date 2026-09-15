@@ -1155,7 +1155,8 @@ void main() {
         final testAddress = dartsv.Address.fromPublicKey(testPubKey, dartsv.NetworkType.TEST).toBase58();
         
         // Add this address to the wallet manually
-        wallet.currentState.addresses[testAddress] = 'P2PK Test Address';
+        await wallet.commandHandler(RegisterDiscoveredAddressCommand(
+            walletId: wallet.currentState.walletId, address: testAddress, derivationIndex: 0, isChange: false, transactionCount: 0));
         
         // Build transaction with P2PK output using P2PKLockBuilder
         final tx = dartsv.Transaction();
@@ -1215,7 +1216,8 @@ void main() {
         final externalPubKey = externalPrivKey.publicKey;
         
         // Add wallet address
-        wallet.currentState.addresses[walletAddr] = 'Multisig Key';
+        await wallet.commandHandler(RegisterDiscoveredAddressCommand(
+            walletId: wallet.currentState.walletId, address: walletAddr, derivationIndex: 0, isChange: false, transactionCount: 0));
         
         // Build transaction with 2-of-2 multisig output
         final tx = dartsv.Transaction();
@@ -1423,7 +1425,8 @@ void main() {
         final clientAddr = dartsv.Address.fromPublicKey(clientPubKey, dartsv.NetworkType.TEST).toBase58();
         
         // Add server address to wallet
-        wallet.currentState.addresses[serverAddr] = 'Payment Channel Server Key';
+        await wallet.commandHandler(RegisterDiscoveredAddressCommand(
+            walletId: wallet.currentState.walletId, address: serverAddr, derivationIndex: 0, isChange: false, transactionCount: 0));
         
         // Create the multisig funding UTXO
         final fundingTxid = 'abcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcd';

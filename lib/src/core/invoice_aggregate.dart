@@ -12,7 +12,8 @@ import 'aggregate_command_failures.dart';
 /// This aggregate manages invoice lifecycle through events:
 /// pending → paid/expired/cancelled
 ///
-/// Follows Eventador's AggregateRoot pattern with imperative state management.
+/// Follows Eventador's AggregateRoot pattern: each event yields a new,
+/// immutable [InvoiceState] (bead libspiffy-mmb).
 class InvoiceAggregate extends AggregateRoot<InvoiceState>
     with CommandFailureContainment<InvoiceState> {
   // Capture sender at start of message processing for use in onCommandProcessed
@@ -223,36 +224,29 @@ class InvoiceAggregate extends AggregateRoot<InvoiceState>
     };
   }
   
+  /// Applies [event] to [state] and returns the next state (bead
+  /// libspiffy-mmb). [state] is never modified; eventador's `eventHandler`
+  /// replaces the aggregate's state with the result once the event has
+  /// applied, so an event that fails midway changes nothing.
   @override
-  void eventHandler(Event event) {
-    // Ensure state is initialized before processing events
-    // This is critical during recovery when the first event is replayed
-    ensureStateInitialized();
-    
+  InvoiceState applyEvent(InvoiceState state, Event event) {
     if (event is! InvoiceEvent) {
       throw ArgumentError('Expected InvoiceEvent, got ${event.runtimeType}');
     }
-    
-    switch (event) {
-      case final InvoiceCreatedEvent evt:
-        _applyInvoiceCreated(evt);
-        break;
-      case final InvoiceStatusChangedEvent evt:
-        _applyInvoiceStatusChanged(evt);
-        break;
-      case final InvoicePaidEvent evt:
-        _applyInvoicePaid(evt);
-        break;
-      case final InvoiceExpiredEvent evt:
-        _applyInvoiceExpired(evt);
-        break;
-      case final InvoiceCancelledEvent evt:
-        _applyInvoiceCancelled(evt);
-        break;
-      default:
-        throw ArgumentError('Unknown event type: ${event.runtimeType}');
-    }
+
+    return switch (event) {
+      final InvoiceCreatedEvent evt => _applyInvoiceCreated(state, evt),
+      final InvoiceStatusChangedEvent evt => _applyInvoiceStatusChanged(state, evt),
+      final InvoicePaidEvent evt => _applyInvoicePaid(state, evt),
+      final InvoiceExpiredEvent evt => _applyInvoiceExpired(state, evt),
+      final InvoiceCancelledEvent evt => _applyInvoiceCancelled(state, evt),
+      _ => throw ArgumentError('Unknown event type: ${event.runtimeType}'),
+    };
   }
+
+  /// Nothing printed: the error is rethrown to the caller.
+  @override
+  void onEventApplicationFailure(Event event, dynamic error) {}
   
   // ==========================================================================
   // COMMAND HANDLERS
@@ -469,52 +463,59 @@ class InvoiceAggregate extends AggregateRoot<InvoiceState>
   }
   
   // ==========================================================================
-  // EVENT HANDLERS (IMPERATIVE STATE MUTATIONS)
+  // EVENT HANDLERS (each returns the next state)
   // ==========================================================================
-  
-  void _applyInvoiceCreated(InvoiceCreatedEvent event) {
-    currentState.isCreated = true;
-    currentState.walletId = event.walletId;
-    currentState.addresses = List.from(event.addresses);
-    currentState.amount = event.amount;
-    currentState.outputs = event.outputs != null ? List.from(event.outputs!) : null;
-    currentState.description = event.description;
-    currentState.status = InvoiceStatus.pending;
-    currentState.createdAt = event.timestamp;
-    currentState.expiresAt = event.expiresAt;
-    currentState.metadata.clear();
-    if (event.invoiceMetadata != null) {
-      currentState.metadata.addAll(event.invoiceMetadata!);
-    }
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+
+  InvoiceState _applyInvoiceCreated(InvoiceState state, InvoiceCreatedEvent event) {
+    return state.copyWith(
+      isCreated: true,
+      walletId: event.walletId,
+      addresses: event.addresses,
+      amount: event.amount,
+      outputs: event.outputs,
+      description: event.description,
+      status: InvoiceStatus.pending,
+      createdAt: event.timestamp,
+      expiresAt: event.expiresAt,
+      metadata: event.invoiceMetadata ?? const <String, dynamic>{},
+      version: event.version,
+      lastModified: event.timestamp,
+    );
   }
-  
-  void _applyInvoiceStatusChanged(InvoiceStatusChangedEvent event) {
-    currentState.status = event.newStatus;
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+
+  InvoiceState _applyInvoiceStatusChanged(InvoiceState state, InvoiceStatusChangedEvent event) {
+    return state.copyWith(
+      status: event.newStatus,
+      version: event.version,
+      lastModified: event.timestamp,
+    );
   }
-  
-  void _applyInvoicePaid(InvoicePaidEvent event) {
-    currentState.status = InvoiceStatus.paid;
-    currentState.paymentTxid = event.txid;
-    currentState.amountReceived = event.amountReceived;
-    currentState.paidAt = event.paidAt;
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+
+  InvoiceState _applyInvoicePaid(InvoiceState state, InvoicePaidEvent event) {
+    return state.copyWith(
+      status: InvoiceStatus.paid,
+      paymentTxid: event.txid,
+      amountReceived: event.amountReceived,
+      paidAt: event.paidAt,
+      version: event.version,
+      lastModified: event.timestamp,
+    );
   }
-  
-  void _applyInvoiceExpired(InvoiceExpiredEvent event) {
-    currentState.status = InvoiceStatus.expired;
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+
+  InvoiceState _applyInvoiceExpired(InvoiceState state, InvoiceExpiredEvent event) {
+    return state.copyWith(
+      status: InvoiceStatus.expired,
+      version: event.version,
+      lastModified: event.timestamp,
+    );
   }
-  
-  void _applyInvoiceCancelled(InvoiceCancelledEvent event) {
-    currentState.status = InvoiceStatus.cancelled;
-    currentState.version = event.version;
-    currentState.lastModified = event.timestamp;
+
+  InvoiceState _applyInvoiceCancelled(InvoiceState state, InvoiceCancelledEvent event) {
+    return state.copyWith(
+      status: InvoiceStatus.cancelled,
+      version: event.version,
+      lastModified: event.timestamp,
+    );
   }
 }
 

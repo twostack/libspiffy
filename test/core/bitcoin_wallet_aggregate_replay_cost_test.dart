@@ -13,7 +13,6 @@
 /// randomized command sequence.
 library;
 
-import 'dart:collection';
 import 'dart:math';
 
 import 'package:dartsv/dartsv.dart' as dartsv;
@@ -22,6 +21,7 @@ import 'package:test/test.dart';
 import 'package:libspiffy/src/core/bitcoin_wallet_aggregate.dart';
 import 'package:libspiffy/src/core/wallet_commands.dart';
 import 'package:libspiffy/src/models/bitcoin_utxo.dart';
+import 'package:libspiffy/src/models/persistent_map.dart';
 import 'package:libspiffy/src/models/wallet_state.dart';
 import 'package:libspiffy/src/models/wallet_type.dart';
 import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
@@ -34,42 +34,10 @@ const _walletId = 'wallet-replay-cost';
 const _mnemonic = 'abandon abandon abandon abandon abandon abandon '
     'abandon abandon abandon abandon abandon about';
 
-/// A UTXO map that counts how many UTXOs are visited through [values].
-class _CountingUtxoMap extends MapBase<String, BitcoinUtxo> {
-  final Map<String, BitcoinUtxo> _inner = {};
-  int visited = 0;
-
-  @override
-  BitcoinUtxo? operator [](Object? key) => _inner[key];
-
-  @override
-  void operator []=(String key, BitcoinUtxo value) => _inner[key] = value;
-
-  @override
-  void clear() => _inner.clear();
-
-  @override
-  Iterable<String> get keys => _inner.keys;
-
-  @override
-  BitcoinUtxo? remove(Object? key) => _inner.remove(key);
-
-  @override
-  bool containsKey(Object? key) => _inner.containsKey(key);
-
-  @override
-  int get length => _inner.length;
-
-  @override
-  Iterable<BitcoinUtxo> get values => _inner.values.map((u) {
-        visited++;
-        return u;
-      });
-}
-
-/// A wallet aggregate whose state tracks UTXO visits.
+/// A wallet aggregate on a testnet initial state. UTXO visits are counted by
+/// PersistentMapStats: the state copies any map it is given into a persistent
+/// map, so a counting map can no longer be injected (bead libspiffy-mmb).
 class _CountingWallet extends BitcoinWalletAggregate {
-  final _CountingUtxoMap utxos = _CountingUtxoMap();
 
   _CountingWallet()
       : super(
@@ -88,7 +56,7 @@ class _CountingWallet extends BitcoinWalletAggregate {
         networkType: 'testnet',
         walletType: WalletType.hd,
         timestamp: DateTime.utc(2020),
-        utxos: utxos,
+        utxos: const {},
         addresses: {},
         nextDerivationIndex: 0,
         metadata: {},
@@ -130,10 +98,12 @@ void main() {
       }
       final utxoEvents = j.events.length - 1;
 
+      PersistentMapStats.reset();
       final wallet = _CountingWallet()..replay(j.events);
+      final visited = PersistentMapStats.iteratedEntries;
 
       expect(wallet.currentState.utxos.length, n);
-      expect(wallet.utxos.visited, lessThan(utxoEvents),
+      expect(visited, lessThan(utxoEvents),
           reason: 'a replay of $utxoEvents UTXO events must visit O(N) UTXOs, '
               'not every UTXO per event');
       _expectBalancesMatchFullRecompute(wallet.currentState, 'after the replay');

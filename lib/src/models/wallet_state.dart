@@ -3,6 +3,7 @@ import 'package:eventador/eventador.dart';
 import 'package:meta/meta.dart';
 import 'bitcoin_utxo.dart';
 import 'persistent_map.dart';
+import 'wallet_balances.dart';
 import 'wallet_type.dart';
 
 /// Represents the current state of a wallet at a specific point in time.
@@ -251,30 +252,14 @@ class WalletState extends State {
         .toList();
   }
 
-  /// Recalculate balances from UTXOs
+  /// Recalculate balances from UTXOs ([WalletBalances]: the rule the wallet
+  /// aggregate keeps its balances by).
   WalletState recalculateBalances() {
-    BigInt confirmed = BigInt.zero;
-    BigInt unconfirmed = BigInt.zero;
-    BigInt reserved = BigInt.zero;
-
-    for (final utxo in utxos.values) {
-      if (utxo.status == UTXOStatus.spent) continue;
-
-      final amount = utxo.value.getValue();
-
-      if (utxo.status == UTXOStatus.reserved) {
-        reserved += amount;
-      } else if (utxo.confirmations != null && utxo.confirmations! >= 6) {
-        confirmed += amount;
-      } else {
-        unconfirmed += amount;
-      }
-    }
-
+    final totals = WalletBalances.totals(utxos.values);
     return copyWithWallet(
-      confirmedBalance: dartsv.Coin.ofSat(confirmed),
-      unconfirmedBalance: dartsv.Coin.ofSat(unconfirmed),
-      reservedBalance: dartsv.Coin.ofSat(reserved),
+      confirmedBalance: dartsv.Coin.ofSat(totals.confirmed),
+      unconfirmedBalance: dartsv.Coin.ofSat(totals.unconfirmed),
+      reservedBalance: dartsv.Coin.ofSat(totals.reserved),
       lastModified: DateTime.now(),
     );
   }
@@ -432,6 +417,43 @@ class WalletStateBuilder {
         reservedBalance = state.reservedBalance,
         version = state.version,
         lastModified = state.lastModified;
+
+  /// Stores [utxo] under [key] and moves its amount from the balance of the
+  /// UTXO it replaces (if any) to its own ([WalletBalances]). Balances are
+  /// kept incrementally this way (audit 2026-09-14 M7): recomputing them from
+  /// every UTXO on each event made recovery O(N^2).
+  void putUtxo(String key, BitcoinUtxo utxo) {
+    final previous = utxos[key];
+    if (previous != null) _addToBalances(previous, negate: true);
+    utxos = utxos.put(key, utxo);
+    _addToBalances(utxo);
+  }
+
+  /// Sets the balances from all UTXOs (once per snapshot restore; applying an
+  /// event is incremental, see [putUtxo]).
+  void recomputeBalances() {
+    confirmedBalance = dartsv.Coin.ofSat(BigInt.zero);
+    unconfirmedBalance = dartsv.Coin.ofSat(BigInt.zero);
+    reservedBalance = dartsv.Coin.ofSat(BigInt.zero);
+    for (final utxo in utxos.values) {
+      _addToBalances(utxo);
+    }
+  }
+
+  /// Adds (or with [negate], removes) [utxo]'s amount to its balance.
+  void _addToBalances(BitcoinUtxo utxo, {bool negate = false}) {
+    final amount = negate ? -utxo.satoshis : utxo.satoshis;
+    switch (WalletBalances.bucketOf(utxo)) {
+      case BalanceBucket.reserved:
+        reservedBalance = dartsv.Coin.ofSat(reservedBalance.getValue() + amount);
+      case BalanceBucket.confirmed:
+        confirmedBalance = dartsv.Coin.ofSat(confirmedBalance.getValue() + amount);
+      case BalanceBucket.unconfirmed:
+        unconfirmedBalance = dartsv.Coin.ofSat(unconfirmedBalance.getValue() + amount);
+      case null:
+        break;
+    }
+  }
 
   WalletState build() => WalletState(
         walletId: walletId,

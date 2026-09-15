@@ -1,0 +1,580 @@
+/// The wallet's transaction records: imported transactions, outgoing
+/// transactions and the wallet outputs they create, confirmations and their
+/// reversal (bead libspiffy-dp4; part of `BitcoinWalletAggregate`).
+library;
+
+import 'package:dartsv/dartsv.dart' as dartsv;
+import 'package:eventador/eventador.dart';
+import 'package:logging/logging.dart';
+
+import '../../models/bitcoin_utxo.dart';
+import '../../models/deferred_payment.dart' show DeferredPaymentState;
+import '../../models/persistent_map.dart';
+import '../../models/wallet_state.dart';
+import '../../plugin/plugin_registry.dart';
+import '../../services/script_type_registry.dart';
+import '../../utils/network_name.dart';
+import '../wallet_commands.dart';
+import '../wallet_events.dart';
+import '../wallet_output_ownership.dart';
+import 'deferred_payments.dart';
+import 'state_records.dart';
+
+final _log = Logger('BitcoinWalletAggregate');
+
+/// Transaction record commands and events of one wallet aggregate.
+class OutgoingTransactions {
+  static const String _importedTransactionsKey = WalletMetadataKeys.importedTransactions;
+  static const String _outgoingTransactionsKey = WalletMetadataKeys.outgoingTransactions;
+
+  final DeferredPayments deferred;
+
+  OutgoingTransactions(this.deferred);
+
+  // ---------------------------------------------------------------------------
+  // Queries
+  // ---------------------------------------------------------------------------
+
+  /// Whether [state] holds the outgoing-transaction record of [txid]
+  /// ([applyRecorded]; a list-shaped record from older state included).
+  static bool isRecorded(WalletState state, String txid) {
+    final records = state.metadata[_outgoingTransactionsKey];
+    if (records is Map) return records.containsKey(txid);
+    if (records is List) {
+      return records.any((r) => r is Map && r['txid']?.toString() == txid);
+    }
+    return false;
+  }
+
+  /// Whether the outgoing transaction [txid] this wallet recorded lists
+  /// [utxoKey] among the UTXOs it spends.
+  static bool recordedTransactionSpends(WalletState state, String txid, String utxoKey) {
+    final records = state.metadata[_outgoingTransactionsKey];
+    final record = records is Map
+        ? records[txid]
+        : records is List
+            ? records.firstWhere((r) => r is Map && r['txid']?.toString() == txid, orElse: () => null)
+            : null;
+    if (record is! Map) return false;
+    final keys = record['spentUtxoKeys'];
+    return keys is List && keys.contains(utxoKey);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Commands
+  // ---------------------------------------------------------------------------
+
+  static List<Event> recordImported(WalletState currentState, RecordImportedTransactionCommand command) {
+    // Business rule: Wallet must exist
+    if (!currentState.isCreated) {
+      throw StateError('Cannot record transaction for non-existent wallet');
+    }
+
+    // Emit TransactionImportedEvent with all the pre-calculated data from ImportActor
+    final event = TransactionImportedEvent(
+      walletId: command.walletId,
+      txid: command.txid,
+      rawHex: command.rawHex,
+      blockHeight: command.blockHeight,
+      bumpProof: command.bumpProofHex,
+      totalOutputSats: command.totalOutputSats,
+      numInputs: command.numInputs,
+      numOutputs: command.numOutputs,
+      txVersion: command.txVersion,
+      txLockTime: command.txLockTime,
+      walletReceivingAddresses: command.walletReceivingAddresses,
+      walletReceivedSats: command.walletReceivedSats,
+      totalInputSats: command.totalInputSats,
+      sendingAddresses: command.sendingAddresses,
+      ancestors: command.ancestors,
+      version: currentState.version + 1,
+      timestamp: DateTime.now(),
+    );
+
+    return [event];
+  }
+
+  /// Handle recording an outgoing transaction (payment created by this wallet)
+  List<Event> recordOutgoing(WalletState currentState, RecordOutgoingTransactionCommand command) {
+    // Business rule: Wallet must exist
+    if (!currentState.isCreated) {
+      throw StateError('Cannot record outgoing transaction for non-existent wallet');
+    }
+
+    // Business rule: a transaction is recorded once (bead libspiffy-viy).
+    // The command is re-sent for a txid the wallet already recorded, e.g. by
+    // a channel funding broadcast resumed after a restart. Recording it
+    // again journaled a second TransactionRecordedEvent (the read model's
+    // history row went back to pending) and spent the inputs again. Only an
+    // input spend the earlier record deferred and this one asks for is
+    // still applied.
+    if (isRecorded(currentState, command.txid)) {
+      return _spendsStillOwed(currentState, command);
+    }
+
+    final events = <Event>[];
+
+    // Phase 4: when the TX was signed externally (plugin's
+    // CallbackTransactionSigner or similar), emit a TransactionSignedEvent
+    // here to fill the audit-trail gap. Wallet-internal flows that came
+    // through SignTransactionCommand already emitted this event; plugin
+    // flows had no canonical signing record until now.
+    if (command.preSigned) {
+      events.add(TransactionSignedEvent(
+        walletId: command.walletId,
+        txid: command.txid,
+        signedRawHex: command.rawHex,
+        version: currentState.version + events.length + 1,
+        timestamp: DateTime.now(),
+        metadata: command.signerMetadata,
+      ));
+    }
+
+    // Emit TransactionRecordedEvent
+    final transactionEvent = TransactionRecordedEvent(
+      walletId: command.walletId,
+      txid: command.txid,
+      rawHex: command.rawHex,
+      totalInputSats: command.totalInputSats,
+      totalOutputSats: command.totalOutputSats,
+      fee: command.fee,
+      numInputs: command.numInputs,
+      numOutputs: command.numOutputs,
+      txVersion: command.txVersion,
+      txLockTime: command.txLockTime,
+      spentUtxoKeys: command.spentUtxoKeys,
+      recipientAddresses: command.recipientAddresses,
+      paymentAmount: command.paymentAmount.toString(),
+      changeAddress: command.changeAddress,
+      changeAmount: command.changeAmount?.toString(),
+      version: currentState.version + events.length + 1,
+      timestamp: DateTime.now(),
+    );
+    events.add(transactionEvent);
+
+    // Mark spent UTXOs — unless deferSpend is true: then the wallet holds
+    // the inputs (no expiry) until the network settles the transaction,
+    // ARC reports it failed, or it is cancelled (bead libspiffy-7p2);
+    // ARCActor issues SpendUTXOCommand when it reaches SEEN_ON_NETWORK.
+    if (command.deferSpend) {
+      final hold = deferred.holdEvent(currentState, command, version: currentState.version + events.length + 1);
+      events.add(hold);
+      _log.fine('Deferred spend for ${command.txid}: ${hold.heldInputs.length} input(s) held');
+    }
+    for (final utxoKey in command.deferSpend ? <String>[] : command.spentUtxoKeys) {
+      final parts = utxoKey.split(':');
+      if (parts.length != 2) {
+        continue;
+      }
+      final utxoTxid = parts[0];
+      final utxoVout = int.tryParse(parts[1]);
+      if (utxoVout == null) {
+        continue;
+      }
+
+      final spentEvent = UTXOSpentEvent(
+        walletId: command.walletId,
+        txid: utxoTxid,
+        vout: utxoVout,
+        spentInTxId: command.txid,
+        version: currentState.version + events.length + 1,
+        timestamp: DateTime.now(),
+      );
+      events.add(spentEvent);
+    }
+
+    _addWalletOutputs(currentState, command, events);
+    return events;
+  }
+
+  /// SCAN ALL OUTPUTS: adds a [UTXOReceivedEvent] to [events] for each output
+  /// of [command]'s transaction that belongs to a wallet address and that
+  /// the wallet does not hold yet. This handles change outputs, settlement
+  /// outputs, self-transfers, and any other scenario where transaction
+  /// outputs belong to this wallet. A transaction that does not parse is
+  /// still recorded; its outputs are not scanned.
+  static void _addWalletOutputs(WalletState currentState, RecordOutgoingTransactionCommand command, List<Event> events) {
+    try {
+      final tx = dartsv.Transaction.fromHex(command.rawHex);
+      final walletAddresses = currentState.addresses.keys.toSet();
+      final network = NetworkName.toDartsv(currentState.networkType);
+
+      // Use ScriptTypeRegistry to identify output types and extract addresses
+      final scriptRegistry = ScriptTypeRegistry(networkType: network);
+
+      for (int i = 0; i < tx.outputs.length; i++) {
+        final output = tx.outputs[i];
+        final satoshis = output.satoshis.toInt();
+
+        if (satoshis <= 0) {
+          continue;
+        }
+
+        // Identify script type
+        final scriptType = scriptRegistry.identifyScriptType(output.script)?.toLowerCase() ?? 'unknown';
+
+        String? outputAddress;
+        bool belongsToWallet = false;
+        Map<String, dynamic>? outputPluginMetadata;
+
+        // Extract address based on script type
+        switch (scriptType) {
+          case 'p2pkh':
+            try {
+              final locker = dartsv.P2PKHLockBuilder.fromScript(output.script, networkType: network);
+              outputAddress = locker.address?.toBase58();
+              if (outputAddress != null && walletAddresses.contains(outputAddress)) {
+                belongsToWallet = true;
+              }
+            } catch (e) {
+              _log.warning('Failed to extract P2PKH address from output: $e');
+            }
+            break;
+
+          case 'p2pk':
+            try {
+              final scriptInfo = scriptRegistry.extractScriptMetadata(output.script);
+              final pubkeyHex = scriptInfo?['pubKey'] ?? scriptInfo?['publicKey'];
+              if (pubkeyHex != null) {
+                final pubKeyObj = dartsv.SVPublicKey.fromHex(pubkeyHex);
+                outputAddress = dartsv.Address.fromPublicKey(pubKeyObj, network).toBase58();
+                if (walletAddresses.contains(outputAddress)) {
+                  belongsToWallet = true;
+                }
+              }
+            } catch (e) {
+              _log.warning('Failed to extract P2PK address from output: $e');
+            }
+            break;
+
+          case 'p2ms':
+            // A bare multisig output is the wallet's only when the wallet
+            // holds as many of its keys as it requires: a payment channel's
+            // 2-of-2 funding output also needs the other party's signature
+            // and is not spendable balance (bead libspiffy-viy). The
+            // transaction itself is recorded whole either way.
+            outputAddress = BareMultisigScript.parse(output.script)?.spendableAloneBy(walletAddresses.contains, network);
+            belongsToWallet = outputAddress != null;
+            break;
+
+          case 'opreturn':
+          case 'op_return':
+            // OP_RETURN outputs don't belong to anyone
+            continue;
+
+          default:
+            // Plugin-aware fallback: ScriptTypeRegistry.identifyScriptType
+            // already consulted PluginRegistry for unknown templates and
+            // returned `pluginId:scriptType` when a plugin claimed the script.
+            // Mirror the SPV inbound path (spv_actor.dart:504-525) so the
+            // aggregate that *built* a plugin-locked output represents it
+            // immediately, without waiting for SPV rediscovery.
+            if (scriptType.contains(':')) {
+              final pluginId = scriptType.split(':').first;
+              final plugin = PluginRegistry().getPlugin(pluginId);
+              final metadata = plugin?.extractMetadata(output.script);
+              final ownerAddress = metadata?['ownerAddress'] as String?;
+              if (ownerAddress != null && walletAddresses.contains(ownerAddress)) {
+                outputAddress = ownerAddress;
+                belongsToWallet = true;
+                outputPluginMetadata = metadata;
+              }
+            }
+            break;
+        }
+
+        // An output the wallet already holds (the transaction was recorded
+        // before, or the UTXO arrived another way) keeps its current state:
+        // re-emitting UTXOReceivedEvent reset its status (audit M9).
+        if (belongsToWallet && currentState.utxos.containsKey('${command.txid}:$i')) {
+          continue;
+        }
+
+        // If output belongs to wallet, create a UTXO for it
+        if (belongsToWallet && outputAddress != null) {
+          final utxoEvent = UTXOReceivedEvent(
+            walletId: command.walletId,
+            txid: command.txid,
+            vout: i,
+            satoshis: satoshis,
+            scriptPubKey: output.script.toHex(),
+            address: outputAddress,
+            blockHeight: null, // Not confirmed yet
+            confirmations: 0,
+            initialStatus: UTXOStatus.pending, // Starts as pending until confirmed
+            pluginMetadata: outputPluginMetadata,
+            version: currentState.version + events.length + 1,
+            timestamp: DateTime.now(),
+          );
+          events.add(utxoEvent);
+        }
+      }
+    } catch (e, stackTrace) {
+      // The transaction is still recorded; its outputs are not scanned.
+      _log.warning('Could not scan the outputs of ${command.txid}: $e', e, stackTrace);
+    }
+  }
+
+  /// For a [command] recording a transaction already recorded: a
+  /// [UTXOSpentEvent] for each of its spent UTXOs the wallet holds unspent,
+  /// unless the spend is deferred. Nothing else is journaled again.
+  List<Event> _spendsStillOwed(WalletState currentState, RecordOutgoingTransactionCommand command) {
+    final events = <Event>[];
+    final record = command.deferSpend ? DeferredPayments.record(currentState, command.txid) : null;
+    if (command.deferSpend && record == null) {
+      // Recorded before its hold was journaled (a journal older than bead
+      // libspiffy-7p2): hold what it still has unspent now.
+      events.add(deferred.holdEvent(currentState, command, version: currentState.version + 1));
+    } else if (record?['state'] == DeferredPaymentState.cancelled.name) {
+      // The same payment handed out again after it was cancelled (the same
+      // inputs signed deterministically give the same transaction, bead
+      // libspiffy-4r0): outstanding again, its inputs held again. Every
+      // input must still be the wallet's to hold, or the transaction could
+      // not settle.
+      for (final key in command.spentUtxoKeys) {
+        final utxo = currentState.utxos[key];
+        final holder = deferred.holderOf(currentState, key);
+        if ((utxo != null && utxo.status == UTXOStatus.spent) || (holder != null && holder != command.txid)) {
+          throw StateError('Deferred payment ${command.txid} was cancelled and cannot be re-activated: '
+              'its input $key is ${holder != null ? 'held by deferred payment $holder' : 'spent'}');
+        }
+      }
+      events.add(deferred.holdEvent(currentState, command, version: currentState.version + 1, reactivated: true));
+    } else if (record?['state'] == DeferredPaymentState.failed.name) {
+      throw StateError('Deferred payment ${command.txid} failed '
+          '(${record?['lastNetworkStatus'] ?? 'rejected by the network'}); '
+          'the same transaction is not recorded as a payment again');
+    }
+    if (!command.deferSpend) {
+      for (final utxoKey in command.spentUtxoKeys) {
+        final utxo = currentState.utxos[utxoKey];
+        if (utxo == null || utxo.status == UTXOStatus.spent) continue;
+        events.add(UTXOSpentEvent(
+          walletId: command.walletId,
+          txid: utxo.txid,
+          vout: utxo.vout,
+          spentInTxId: command.txid,
+          version: currentState.version + events.length + 1,
+          timestamp: DateTime.now(),
+        ));
+      }
+    }
+    _log.info('Outgoing transaction ${command.txid} is already recorded; '
+        '${events.length} spend(s) still applied, nothing else journaled');
+    return events;
+  }
+
+  /// Handle confirming a pending transaction
+  static List<Event> confirm(WalletState currentState, ConfirmTransactionCommand command) {
+    // Business rule: Wallet must exist
+    if (!currentState.isCreated) {
+      throw StateError('Cannot confirm transaction for non-existent wallet');
+    }
+
+    // Emit TransactionConfirmedEvent
+    final event = TransactionConfirmedEvent(
+      walletId: command.walletId,
+      txid: command.txid,
+      blockHeight: command.blockHeight,
+      blockHash: command.blockHash,
+      bumpHex: command.bumpHex,
+      version: currentState.version + 1,
+      timestamp: DateTime.now(),
+    );
+
+    return [event];
+  }
+
+  /// Take back a confirmation whose block left the active chain or whose
+  /// proof does not match its block header (audit 3b0).
+  static List<Event> revertConfirmation(WalletState currentState, RevertTransactionConfirmationCommand command) {
+    if (!currentState.isCreated) {
+      throw StateError('Cannot revert a confirmation for non-existent wallet');
+    }
+    return [
+      TransactionConfirmationRevertedEvent(
+        walletId: command.walletId,
+        txid: command.txid,
+        blockHeight: command.blockHeight,
+        blockHash: command.blockHash,
+        merkleProof: command.merkleProof,
+        reason: command.reason,
+        version: currentState.version + 1,
+        timestamp: DateTime.now(),
+      )
+    ];
+  }
+
+  static List<Event> updateStatus(WalletState currentState, UpdateTransactionStatusCommand command) {
+    if (!currentState.isCreated) {
+      throw StateError('Cannot update transaction status for non-existent wallet');
+    }
+
+    return [
+      TransactionStatusUpdatedEvent(
+        walletId: command.walletId,
+        txid: command.txid,
+        newStatus: command.newStatus,
+        version: currentState.version + 1,
+        timestamp: DateTime.now(),
+      )
+    ];
+  }
+
+  static List<Event> broadcast(WalletState currentState, BroadcastTransactionCommand command) {
+    // Business rule: Wallet must exist
+    if (!currentState.isCreated) {
+      throw StateError('Cannot broadcast transaction for non-existent wallet');
+    }
+
+    final event = TransactionBroadcastEvent(
+      walletId: command.walletId,
+      txid: command.transactionId,
+      broadcastResponse: 'broadcast_success', // Placeholder - will be set by ARC service
+      version: currentState.version + 1,
+      timestamp: DateTime.now(),
+    );
+
+    return [event];
+  }
+
+  // ---------------------------------------------------------------------------
+  // Events
+  // ---------------------------------------------------------------------------
+
+  /// The transaction records under metadata[[key]] in [state], keyed by
+  /// txid (audit 2026-09-14 M7: they were lists appended on every event and
+  /// searched linearly). A list-shaped value (state built before the change)
+  /// is converted, and the converted records are stored in [state].
+  static PersistentMap<String, dynamic> _transactionRecords(WalletStateBuilder state, String key) {
+    final existing = state.metadata[key];
+    if (existing is PersistentMap<String, dynamic>) return existing;
+    var records = PersistentMap<String, dynamic>.empty();
+    if (existing is Map) {
+      existing.forEach((txid, record) => records = records.put(txid.toString(), freezeDeep(record)));
+    } else if (existing is List) {
+      for (final record in existing) {
+        if (record is Map && record['txid'] != null) {
+          records = records.put(record['txid'].toString(), freezeDeep(record));
+        }
+      }
+    }
+    state.metadata = state.metadata.put(key, records);
+    return records;
+  }
+
+  static void applyImported(WalletStateBuilder state, TransactionImportedEvent event) {
+    // Store imported transaction in metadata (for audit/history). Records
+    // keep first-import order. A repeated import of the same txid keeps the
+    // first import time and takes the latest block height.
+    final records = _transactionRecords(state, _importedTransactionsKey);
+    final existing = records[event.txid];
+    final PersistentMap<String, dynamic> record;
+    if (existing is Map) {
+      record = frozenRecord(existing)
+          .put('blockHeight', event.blockHeight)
+          .put('lastImportedAt', event.timestamp.toIso8601String());
+    } else {
+      record = freezeMap(<String, dynamic>{
+        'txid': event.txid,
+        'blockHeight': event.blockHeight,
+        'importedAt': event.timestamp.toIso8601String(),
+      });
+    }
+    state.metadata = state.metadata.put(_importedTransactionsKey, records.put(event.txid, record));
+
+    state.version = event.version;
+    state.lastModified = event.timestamp;
+  }
+
+  static void applyRecorded(WalletStateBuilder state, TransactionRecordedEvent event) {
+    // Store outgoing transaction in metadata (for audit/history)
+    // Status starts as PENDING - will be updated to CONFIRMED when recipient accepts
+    final records = _transactionRecords(state, _outgoingTransactionsKey);
+    final details = freezeMap(<String, dynamic>{
+      'txid': event.txid,
+      'recipientAddresses': event.recipientAddresses,
+      'paymentAmount': event.paymentAmount,
+      'fee': event.fee,
+      'spentUtxoKeys': List<String>.from(event.spentUtxoKeys),
+      'recordedAt': event.timestamp.toIso8601String(),
+    });
+    final existing = records[event.txid];
+    final PersistentMap<String, dynamic> record;
+    if (existing is Map) {
+      // Recorded again: refresh the details; keep the first record time and
+      // any confirmation.
+      record = frozenRecord(existing).putAll(details).put('recordedAt', existing['recordedAt'] ?? details['recordedAt']);
+    } else {
+      record = details.put('status', 'pending');
+    }
+    state.metadata = state.metadata.put(_outgoingTransactionsKey, records.put(event.txid, record));
+
+    state.version = event.version;
+    state.lastModified = event.timestamp;
+  }
+
+  /// The transaction is no longer confirmed: back to pending in the
+  /// transaction metadata, and its UTXOs lose their confirmations. A UTXO
+  /// that was spendable because of the proof becomes pending (a reserved one
+  /// returns to pending on release); spent UTXOs are left alone.
+  static void applyConfirmationReverted(WalletStateBuilder state, TransactionConfirmationRevertedEvent event) {
+    DeferredPayments.applyConfirmationReverted(state, event.txid);
+    final records = _transactionRecords(state, _outgoingTransactionsKey);
+    final record = records[event.txid];
+    if (record is Map && record['status'] == 'confirmed') {
+      final reverted =
+          frozenRecord(record).put('status', 'pending').without('blockHeight').without('blockHash').without('confirmedAt');
+      state.metadata = state.metadata.put(_outgoingTransactionsKey, records.put(event.txid, reverted));
+    }
+
+    for (final entry in state.utxos.entries.toList()) {
+      final utxo = entry.value;
+      if (utxo.txid != event.txid || utxo.status == UTXOStatus.spent) continue;
+      state.putUtxo(
+          entry.key,
+          BitcoinUtxo(
+            txid: utxo.txid,
+            vout: utxo.vout,
+            value: utxo.value,
+            scriptPubKey: utxo.scriptPubKey,
+            address: utxo.address,
+            status: utxo.status == UTXOStatus.available ? UTXOStatus.pending : utxo.status,
+            blockHeight: null,
+            confirmations: 0,
+            createdAt: utxo.createdAt,
+            updatedAt: event.timestamp,
+            reservedByTxId: utxo.reservedByTxId,
+            reservationExpiresAt: utxo.reservationExpiresAt,
+            reservationPriority: utxo.reservationPriority,
+            reservationReason: utxo.reservationReason,
+            derivationIndex: utxo.derivationIndex,
+            pluginMetadata: utxo.pluginMetadata,
+            statusBeforeReservation:
+                utxo.statusBeforeReservation == UTXOStatus.available ? UTXOStatus.pending : utxo.statusBeforeReservation,
+            spentInTxId: utxo.spentInTxId,
+          ));
+    }
+
+    state.version = event.version;
+    state.lastModified = event.timestamp;
+  }
+
+  static void applyConfirmed(WalletStateBuilder state, TransactionConfirmedEvent event) {
+    DeferredPayments.applyConfirmed(state, event.txid, event.timestamp);
+    // Update transaction status from PENDING to CONFIRMED
+    final records = _transactionRecords(state, _outgoingTransactionsKey);
+    final record = records[event.txid];
+    if (record is Map) {
+      final confirmed = frozenRecord(record)
+          .put('status', 'confirmed')
+          .put('blockHeight', event.blockHeight)
+          .put('blockHash', event.blockHash)
+          .put('confirmedAt', event.timestamp.toIso8601String());
+      state.metadata = state.metadata.put(_outgoingTransactionsKey, records.put(event.txid, confirmed));
+    }
+
+    state.version = event.version;
+    state.lastModified = event.timestamp;
+  }
+}

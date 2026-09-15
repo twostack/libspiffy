@@ -319,6 +319,42 @@ void defineReadModelKeyingContract(
       expect((await s.getAddressMetadata(wallet, r0))!.label, 'relabelled');
     });
 
+    test('p4kv: getAddressesByPurpose returns only that wallet\'s rows with that purpose', () async {
+      final s = storage();
+      final u = unique();
+      final wallet = 'kc-purpose-$u';
+      final other = 'kc-purpose-other-$u';
+      final registered = DateTime.utc(2025, 6, 1, 8, 30);
+      AddressMetadata watch(String address, {String? label}) => AddressMetadata(
+            address: address,
+            scriptType: 'p2pk',
+            isChange: false,
+            label: label,
+            purpose: 'watch',
+            usageCount: 2,
+            balance: BigInt.from(1500),
+            createdAt: registered,
+            isWatched: true,
+          );
+
+      await s.upsertAddress(wallet, _address('addr-r0-$u', index: 0));
+      await s.upsertAddress(wallet, _address('addr-c0-$u', index: 0, isChange: true));
+      await s.upsertAddress(wallet, watch('addr-w1-$u', label: 'cold'));
+      await s.upsertAddress(wallet, watch('addr-w2-$u'));
+      await s.upsertAddress(other, watch('addr-w3-$u'));
+
+      final rows = await s.getAddressesByPurpose(wallet, 'watch');
+      expect(rows.map((a) => a.address).toSet(), {'addr-w1-$u', 'addr-w2-$u'});
+      final w1 = rows.firstWhere((a) => a.address == 'addr-w1-$u');
+      expect((w1.scriptType, w1.label, w1.purpose, w1.isChange, w1.usageCount, w1.balance),
+          ('p2pk', 'cold', 'watch', false, 2, BigInt.from(1500)));
+      expect(w1.createdAt.isAtSameMomentAs(registered), isTrue);
+      expect(w1.derivationIndex, isNull);
+
+      expect((await s.getAddressesByPurpose(wallet, 'change')).map((a) => a.address), ['addr-c0-$u']);
+      expect(await s.getAddressesByPurpose('kc-purpose-none-$u', 'watch'), isEmpty);
+    });
+
     // ------------------------------------------------------------------
     // S-13: merkle proofs
     // ------------------------------------------------------------------

@@ -133,10 +133,10 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
   /// Which of [query]'s addresses and outpoints are this wallet's own.
   ///
   /// An address is the wallet's when the wallet created, generated or
-  /// discovered it, or holds a UTXO at it: the addresses the read model's
-  /// address rows are written from, taken here from the journal-backed
-  /// state instead of the lagging projection. An outpoint is the wallet's
-  /// when it is a UTXO the wallet has not spent.
+  /// discovered it, registered it as a watch address, or holds a UTXO at it:
+  /// the addresses the read model's address rows are written from, taken
+  /// here from the journal-backed state instead of the lagging projection.
+  /// An outpoint is the wallet's when it is a UTXO the wallet has not spent.
   WalletOwnershipResponse _answerOwnership(WalletOwnershipQuery query) {
     if (!isInitialized || !currentState.isCreated || currentState.isDeleted) {
       return WalletOwnershipResponse(
@@ -148,7 +148,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
     final state = currentState;
     Set<String>? utxoAddresses;
     bool owns(String address) {
-      if (state.addresses.containsKey(address)) return true;
+      if (state.addresses.containsKey(address) || state.watchAddresses.containsKey(address)) return true;
       utxoAddresses ??= {for (final utxo in state.utxos.values) utxo.address};
       return utxoAddresses!.contains(address);
     }
@@ -281,6 +281,15 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
               releasedUtxoKeys: [for (final r in event.releasedInputs) r.utxoKey],
             ));
           }
+        }
+        // Answered also when nothing was journaled (already watched or owned).
+        if (command is AddWatchAddressCommand) {
+          sender.tell(WatchAddressAddedResponse(
+            walletId: command.walletId,
+            address: command.address,
+            success: true,
+            journaled: events.isNotEmpty,
+          ));
         }
       }
     }
@@ -491,6 +500,13 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         success: false,
         error: errorMessage,
       ));
+    } else if (command is AddWatchAddressCommand) {
+      sender.tell(WatchAddressAddedResponse(
+        walletId: command.walletId,
+        address: command.address,
+        success: false,
+        error: errorMessage,
+      ));
     } else {
       // Fallback for any unhandled command - send a generic error response
       sender.tell(LocalMessage(
@@ -539,6 +555,10 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         return _handleUpdateAddressLabel(currentState, command as UpdateAddressLabelCommand);
       case RegisterDiscoveredAddressCommand:
         return _handleRegisterDiscoveredAddress(currentState, command as RegisterDiscoveredAddressCommand);
+      case AddWatchAddressCommand:
+        return _handleAddWatchAddress(currentState, command as AddWatchAddressCommand);
+      case ReconcileWatchAddressesCommand:
+        return _handleReconcileWatchAddresses(currentState, command as ReconcileWatchAddressesCommand);
       case ReceiveUTXOCommand:
         return _handleReceiveUTXO(currentState, command as ReceiveUTXOCommand);
       case MarkUTXOAvailableCommand:
@@ -623,6 +643,9 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         break;
       case AddressLabelUpdatedEvent:
         _applyAddressLabelUpdated(event as AddressLabelUpdatedEvent);
+        break;
+      case WatchAddressAddedEvent:
+        _applyWatchAddressAdded(event as WatchAddressAddedEvent);
         break;
       case UTXOReceivedEvent:
         _applyUTXOReceived(event as UTXOReceivedEvent);
@@ -1040,6 +1063,67 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
     );
 
     return [event];
+  }
+
+  // ==========================================================================
+  // WATCH ADDRESSES (bead libspiffy-p4kv)
+  // ==========================================================================
+  //
+  // A watch address is attributed to the wallet (it answers ownership for it)
+  // but the wallet holds no key for it: it is kept in state.watchAddresses,
+  // never in state.addresses, whose entries signing derives keys for.
+
+  /// Whether [address] needs no watch-address event: already watched, or an
+  /// address the wallet derived (owned already; its row keeps its index).
+  static bool _ownsWithoutWatch(WalletState state, String address) =>
+      state.watchAddresses.containsKey(address) || state.addresses.containsKey(address);
+
+  List<Event> _handleAddWatchAddress(WalletState currentState, AddWatchAddressCommand command) {
+    if (!currentState.isCreated || currentState.isDeleted) {
+      throw StateError('Cannot add a watch address to non-existent wallet ${command.walletId}');
+    }
+    if (command.address.trim().isEmpty) {
+      throw ArgumentError('A watch address must not be empty');
+    }
+    if (_ownsWithoutWatch(currentState, command.address)) return const [];
+    final now = DateTime.now();
+    return [
+      WatchAddressAddedEvent(
+        walletId: command.walletId,
+        address: command.address,
+        scriptType: command.scriptType,
+        label: command.label,
+        registeredAt: now,
+        version: currentState.version + 1,
+        timestamp: now,
+      ),
+    ];
+  }
+
+  List<Event> _handleReconcileWatchAddresses(WalletState currentState, ReconcileWatchAddressesCommand command) {
+    if (!currentState.isCreated || currentState.isDeleted) return const [];
+    final events = <Event>[];
+    final added = <String>{};
+    for (final legacy in command.addresses) {
+      if (legacy.address.isEmpty || _ownsWithoutWatch(currentState, legacy.address) || !added.add(legacy.address)) {
+        continue;
+      }
+      events.add(WatchAddressAddedEvent(
+        walletId: command.walletId,
+        address: legacy.address,
+        scriptType: legacy.scriptType,
+        label: legacy.label,
+        registeredAt: legacy.registeredAt,
+        reconciled: true,
+        version: currentState.version + events.length + 1,
+        timestamp: DateTime.now(),
+      ));
+    }
+    if (events.isNotEmpty) {
+      _log.info('Wallet ${command.walletId}: journaled ${events.length} watch address(es) '
+          'registered before watch addresses were journaled');
+    }
+    return events;
   }
 
   // ==========================================================================
@@ -3026,7 +3110,13 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
     if (event.derivationIndex >= currentState.nextDerivationIndex) {
       currentState.nextDerivationIndex = event.derivationIndex + 1;
     }
-    
+
+    currentState.version = event.version;
+    currentState.lastModified = event.timestamp;
+  }
+
+  void _applyWatchAddressAdded(WatchAddressAddedEvent event) {
+    currentState.watchAddresses[event.address] = event.scriptType;
     currentState.version = event.version;
     currentState.lastModified = event.timestamp;
   }

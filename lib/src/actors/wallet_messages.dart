@@ -562,6 +562,31 @@ class WalletOwnershipResponse extends LocalMessage {
   dynamic get payload => this;
 }
 
+/// Reply of the wallet aggregate to AddWatchAddressCommand (bead
+/// libspiffy-p4kv).
+class WatchAddressAddedResponse extends LocalMessage {
+  final String walletId;
+  final String address;
+  final bool success;
+
+  /// False when the address needed no event: already a watch address, or
+  /// an address the wallet derived.
+  final bool journaled;
+  final String? error;
+
+  WatchAddressAddedResponse({
+    required this.walletId,
+    required this.address,
+    required this.success,
+    this.journaled = false,
+    this.error,
+  }) : super(payload: null, metadata: {'walletId': walletId, 'address': address, 'success': success});
+
+  /// This object, for dactor's ask().
+  @override
+  dynamic get payload => this;
+}
+
 /// Block header update from SpiffyNode
 class BlockHeaderUpdateMessage implements Message {
   final dynamic blockHeader; // Will be SpiffyNode's BlockHeader type

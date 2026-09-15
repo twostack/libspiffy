@@ -549,6 +549,74 @@ class AddressLabelUpdatedEvent extends WalletEvent {
   }
 }
 
+/// A watch address was added to the wallet (bead libspiffy-p4kv).
+///
+/// A watch address is an address the wallet holds no key for whose payments
+/// it attributes to itself (RegisterWatchAddressCommand on the coordinator).
+/// Journaled so that the wallet aggregate knows it (it answers ownership
+/// for it) and a read model rebuilt from the journal has its row.
+///
+/// [reconciled] is true for an address registered before watch addresses
+/// were journaled: the wallet manager found it in the read model when it
+/// loaded the wallet, and [registeredAt] is that row's creation time.
+class WatchAddressAddedEvent extends WalletEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'wallet.watch_address.added';
+
+  @override
+  String get typeName => stableTypeName;
+
+  final String address;
+  final String scriptType;
+  final String? label;
+  final DateTime registeredAt;
+  final bool reconciled;
+
+  WatchAddressAddedEvent({
+    required String walletId,
+    required this.address,
+    required this.scriptType,
+    this.label,
+    required this.registeredAt,
+    this.reconciled = false,
+    String? eventId,
+    DateTime? timestamp,
+    int? version,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          eventId: eventId,
+          timestamp: timestamp,
+          version: version,
+          metadata: metadata,
+        );
+
+  @override
+  Map<String, dynamic> getWalletEventData() => {
+        'address': address,
+        'scriptType': scriptType,
+        'label': label,
+        'registeredAt': registeredAt.toIso8601String(),
+        'reconciled': reconciled,
+      };
+
+  static DateTime _date(Object? value) => value is DateTime ? value : DateTime.parse(value as String);
+
+  static WatchAddressAddedEvent fromMap(Map<String, dynamic> map) => WatchAddressAddedEvent(
+        walletId: map['walletId'] as String,
+        address: map['address'] as String,
+        scriptType: map['scriptType'] as String,
+        label: map['label'] as String?,
+        registeredAt: _date(map['registeredAt']),
+        reconciled: map['reconciled'] as bool? ?? false,
+        eventId: map['eventId'] as String?,
+        timestamp: map['timestamp'] != null ? _date(map['timestamp']) : null,
+        version: map['version'] as int?,
+        metadata: map['metadata'] as Map<String, dynamic>?,
+      );
+}
+
 // =============================================================================
 // UTXO MANAGEMENT EVENTS
 // =============================================================================

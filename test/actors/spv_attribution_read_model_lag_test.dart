@@ -112,6 +112,9 @@ void main() {
         cryptoService: DartSVCryptoService(),
         secureStorage: InMemorySecureStorage(),
         aggregateIdleTimeout: null,
+        // Read for watch addresses registered before they were journaled
+        // (bead libspiffy-p4kv) when a wallet is loaded from the journal.
+        readModelStorage: readModel,
       ),
     );
     final invoices = await system.spawn('invoices', () => _Sink());
@@ -243,10 +246,29 @@ void main() {
     );
   });
 
-  test('a watch address, which only the read model records, is still credited', () async {
-    await createWallet('watcher', mnemonic: _recipientMnemonic);
+  test('a watch address registered before watch addresses were journaled (a read-model row only) is journaled '
+      'when the wallet loads, and credited', () async {
+    // The wallet's journal, written by an earlier process.
+    final earlier = LocalActorSystem(ActorSystemConfig());
+    final earlierManager = await earlier.spawn(
+      'wallet-manager',
+      () => WalletManagerActor(
+        eventStore: eventStore,
+        cryptoService: DartSVCryptoService(),
+        secureStorage: InMemorySecureStorage(),
+        aggregateIdleTimeout: null,
+      ),
+    );
+    final created = await earlierManager.ask<WalletCreatedMessage>(
+      CreateWalletMessage('watcher', 'watcher', mnemonic: _recipientMnemonic),
+      const Duration(seconds: 10),
+    );
+    expect(created.success, isTrue, reason: created.error);
+    await earlier.shutdown();
+
     final watchAddress = foreignKey.toAddress(dartsv.NetworkType.TEST).toBase58();
-    // What RegisterWatchAddressCommand writes: a read-model row, no event.
+    // What RegisterWatchAddressCommand wrote before bead p4kv: a read-model
+    // row, no event.
     await readModel.upsertAddress('watcher', AddressMetadata(
       address: watchAddress,
       scriptType: 'p2pkh',
@@ -263,6 +285,9 @@ void main() {
     expect(result.isValid, isTrue, reason: result.validationError);
     await settled('watcher', payment.id);
     expect([for (final e in received('watcher', payment.id)) e.address], [watchAddress]);
+    expect([for (final e in journal('watcher').whereType<WatchAddressAddedEvent>()) (e.address, e.reconciled)],
+        [(watchAddress, true)],
+        reason: 'journaled, so a read model rebuilt from the journal keeps it');
   });
 
   test('a payment for a wallet nobody knows fails loudly instead of validating with nothing credited', () async {

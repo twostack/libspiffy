@@ -522,6 +522,9 @@ class LibSpiffyActorSystem {
         aliases: const ['AddressLabelUpdatedEvent']);
     EventRegistry.register<AddressDiscoveredEvent>(AddressDiscoveredEvent.stableTypeName, AddressDiscoveredEvent.fromMap,
         aliases: const ['AddressDiscoveredEvent']);
+    // Watch addresses (bead libspiffy-p4kv)
+    EventRegistry.register<WatchAddressAddedEvent>(WatchAddressAddedEvent.stableTypeName, WatchAddressAddedEvent.fromMap,
+        aliases: const ['WatchAddressAddedEvent']);
     EventRegistry.register<UTXOReceivedEvent>(UTXOReceivedEvent.stableTypeName, UTXOReceivedEvent.fromMap,
         aliases: const ['UTXOReceivedEvent']);
     EventRegistry.register<UTXOMarkedAvailableEvent>(UTXOMarkedAvailableEvent.stableTypeName, UTXOMarkedAvailableEvent.fromMap,
@@ -699,6 +702,7 @@ class LibSpiffyActorSystem {
       eventStore: _eventStore,
       cryptoService: _cryptoService,
       secureStorage: _secureStorage,
+      readModelStorage: _walletStorage,
     ));
     
     // Spawn InvoiceCoordinatorActor (needed for invoice-based payments).

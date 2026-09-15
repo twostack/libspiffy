@@ -12,7 +12,6 @@ import '../core/channel_events.dart';
 import '../core/wallet_commands.dart' as domain;
 import '../core/wallet_events.dart' as domain_events;
 import '../models/wallet_event.dart' as wallet_event_model;
-import '../models/address_metadata.dart';
 import '../models/bitcoin_transaction.dart';
 import '../models/bitcoin_utxo.dart';
 import '../models/invoice_output_spec.dart';
@@ -235,7 +234,7 @@ class WalletCoordinatorActor extends Actor {
       } else if (message is StoreHeadersCommand) {
         await _handleStoreHeaders(message);
       } else if (message is RegisterWatchAddressCommand) {
-        await _handleRegisterWatchAddress(message);
+        unawaited(_handleRegisterWatchAddress(message)); // off the mailbox: wallet and projection round trips
       } else if (message is ReleaseUTXOsCommand) {
         await _handleReleaseUTXOs(message);
       } else if (message is SplitUTXOsCommand) {
@@ -744,27 +743,42 @@ class WalletCoordinatorActor extends Actor {
     }
   }
 
+  /// Journals the watch address in the wallet (bead libspiffy-p4kv; it was
+  /// written to the read model only, so a rebuild lost it) and reports
+  /// success once the read model has its row. Runs off the mailbox.
   Future<void> _handleRegisterWatchAddress(RegisterWatchAddressCommand cmd) async {
     try {
-      await _storage.upsertAddress(
-        cmd.walletId,
-        AddressMetadata(
-          address: cmd.address,
-          scriptType: cmd.scriptType,
-          isChange: false,
-          purpose: 'watch',
-          label: cmd.label,
-          usageCount: 0,
-          balance: BigInt.zero,
-          createdAt: DateTime.now(),
-          isWatched: true,
-        ),
+      final applied = _awaitProjectionApplied(
+        matches: (e) =>
+            e is domain_events.WatchAddressAddedEvent && e.walletId == cmd.walletId && e.address == cmd.address,
+        alreadyApplied: () async => (await _storage.getAddressMetadata(cmd.walletId, cmd.address))?.purpose == 'watch',
       );
+      final response = await _walletManager.ask<wm.WatchAddressAddedResponse>(
+        wm.WalletCommandMessage(
+          cmd.walletId,
+          domain.AddWatchAddressCommand(
+            walletId: cmd.walletId,
+            address: cmd.address,
+            scriptType: cmd.scriptType,
+            label: cmd.label,
+          ),
+        ),
+        const Duration(seconds: 30),
+      );
+      // Nothing journaled (already watched, or an address the wallet
+      // derived): no projection work to wait for.
+      final notApplied = response.success && response.journaled ? await applied : null;
+      if (!response.success || !response.journaled) unawaited(applied.catchError((_) => null));
 
       _emitEvent(WatchAddressRegisteredEvent(
         walletId: cmd.walletId,
         address: cmd.address,
-        success: true,
+        success: response.success,
+        error: !response.success
+            ? response.error ?? 'The wallet refused the watch address'
+            : notApplied == null
+                ? null
+                : 'Registered and journaled, but the read model has not applied it yet: $notApplied',
       ));
     } catch (e) {
       _emitEvent(WatchAddressRegisteredEvent(

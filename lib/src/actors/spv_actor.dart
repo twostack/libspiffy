@@ -676,8 +676,8 @@ class SPVActor extends Actor {
 
   /// Asks the wallet (through WalletManagerActor; the aggregate answers
   /// from its event-sourced state) which of the addresses [locks] pay or are
-  /// keyed to, and which of [transaction]'s inputs, are its own. Watch
-  /// addresses, which only the read model records, are added from there.
+  /// keyed to, and which of [transaction]'s inputs, are its own (watch
+  /// addresses included).
   ///
   /// Throws [_OwnershipUnavailable] when the wallet does not exist or does
   /// not answer within [_walletOwnershipTimeout].
@@ -701,31 +701,10 @@ class SPVActor extends Actor {
     if (!answer.walletFound) {
       throw _OwnershipUnavailable(answer.error ?? 'wallet $walletId not found');
     }
-
-    // Watch addresses (RegisterWatchAddressCommand) are written straight to
-    // the read model, not journaled, so the wallet cannot know them; the
-    // read model still answers for them. This only adds addresses: it never
-    // takes back one the wallet claimed, so its lag cannot drop an output.
-    final unclaimed = query.addresses.difference(answer.ownedAddresses);
-    if (unclaimed.isEmpty) return answer;
-    final Map<String, bool> watched;
-    try {
-      watched = await _storage.checkAddresses(walletId, unclaimed.toList());
-    } catch (e) {
-      _log.warning('Could not look up watch addresses of wallet $walletId: $e');
-      return answer;
-    }
-    if (!watched.containsValue(true)) return answer;
-    return WalletOwnershipResponse(
-      walletId: walletId,
-      walletFound: true,
-      ownedAddresses: {
-        ...answer.ownedAddresses,
-        for (final entry in watched.entries)
-          if (entry.value && unclaimed.contains(entry.key)) entry.key,
-      },
-      unspentOutpoints: answer.unspentOutpoints,
-    );
+    // Watch addresses included: they are journaled and the wallet answers
+    // for them; WalletManagerActor journals the ones registered before that
+    // from the read model when it loads the wallet (bead libspiffy-p4kv).
+    return answer;
   }
 
   /// How long [_askWalletOwnership] waits for the wallet's answer.

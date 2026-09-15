@@ -167,6 +167,16 @@ void main() {
         version: j.events.length + 1,
         timestamp: DateTime.utc(2021, 5, 1),
       ));
+      // A watch address (bead libspiffy-p4kv).
+      j.events.add(WatchAddressAddedEvent(
+        walletId: walletId,
+        address: 'mwatched1',
+        scriptType: 'p2pkh',
+        label: 'cold',
+        registeredAt: DateTime.utc(2021, 5, 2),
+        version: j.events.length + 1,
+        timestamp: DateTime.utc(2021, 5, 2),
+      ));
       j.received(1, 0, sats: 5000, status: UTXOStatus.available, confirmations: 7);
       j.received(2, 1, sats: 3000, pluginMetadata: {
         'pluginId': 'tok',
@@ -212,8 +222,10 @@ void main() {
           reason: 'history before the snapshot must survive the restart');
       expect(restored.currentState.version, before.length + after.length);
       expect(restored.currentState.toMap(), replayed.currentState.toMap());
+      expect(restored.currentState.watchAddresses, {'mwatched1': 'p2pkh'},
+          reason: 'a watch address journaled before the snapshot survives the restart');
 
-      final reserved = restored.currentState.utxos['${WalletJournalBuilder.txid(1)}:0']!;
+      final reserved =restored.currentState.utxos['${WalletJournalBuilder.txid(1)}:0']!;
       expect(reserved.status, UTXOStatus.reserved);
       expect(reserved.reservedByTxId, 'pay-1');
       expect(reserved.reservationPriority, 5);

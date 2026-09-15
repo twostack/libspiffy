@@ -321,6 +321,25 @@ class PostgresWalletStorage implements ReadModelStorage {
   }
 
   @override
+  Future<List<AddressMetadata>> getAddressesByPurpose(String walletId, String purpose) async {
+    _ensureInitialized();
+
+    final result = await _pool!.execute(
+      Sql.named('''
+        SELECT address, script_type, derivation_path, derivation_index,
+               is_change, label, purpose, first_used_at, last_used_at,
+               usage_count, balance, is_watched, created_at
+        FROM addresses
+        WHERE wallet_id = @walletId
+          AND purpose = @purpose
+      '''),
+      parameters: {'walletId': walletId, 'purpose': purpose},
+    );
+
+    return result.map(_rowToAddressMetadata).toList();
+  }
+
+  @override
   Future<void> upsertAddress(String walletId, AddressMetadata metadata) async {
     _ensureInitialized();
 

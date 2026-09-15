@@ -88,6 +88,11 @@ abstract class ReadModelStorage {
     bool isChange = false,
   });
 
+  /// The wallet's address rows whose purpose is [purpose] (for example
+  /// `watch`), in no particular order. Filtered in the backend: only the
+  /// matching rows are loaded (bead libspiffy-p4kv).
+  Future<List<AddressMetadata>> getAddressesByPurpose(String walletId, String purpose);
+
   /// Store or update address metadata
   Future<void> upsertAddress(String walletId, AddressMetadata metadata);
   

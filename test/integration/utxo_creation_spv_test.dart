@@ -22,6 +22,7 @@ import 'package:libspiffy/libspiffy.dart';
 import 'package:libspiffy/src/actors/libspiffy_actor_system.dart';
 import 'package:libspiffy/src/actors/invoice_messages.dart';
 import 'package:libspiffy/src/actors/wallet_messages.dart';
+import 'package:libspiffy/src/core/wallet_commands.dart' show AddWatchAddressCommand;
 import 'package:libspiffy/src/storage/isar_wallet_storage.dart';
 import 'package:libspiffy/src/utils/beef.dart';
 import 'package:libspiffy/src/utils/crypto_utils.dart';
@@ -108,20 +109,11 @@ void main() {
       // For testing with real transaction data, we register the known address
       print('  Registering real transaction address: $realTxRecipientAddress');
       
-      // Directly store the address in the database using wallet storage
-      final storage = bobLibSpiffy.walletStorage as IsarWalletStorage;
-      await storage.upsertAddress(bobWalletId, AddressMetadata(
-        address: realTxRecipientAddress,
-        scriptType: 'p2pkh',
-        derivationIndex: 0,
-        isChange: false,
-        purpose: 'receive',
-        usageCount: 0,
-        balance: BigInt.zero,
-        createdAt: DateTime.now(),
-        isWatched: true,
-      ));
-      
+      // Bob holds no key for it: a watch address, registered with the wallet
+      // (a read-model row alone no longer makes an address the wallet's,
+      // bead libspiffy-p4kv).
+      await _registerWatchAddress(bobLibSpiffy, bobWalletId, realTxRecipientAddress);
+
       print('✓ Address registered in Bob\'s wallet storage');
       
       // Verify address is stored in Bob's database
@@ -304,18 +296,7 @@ void main() {
       const realTxRecipientAddress = 'n49CCQFuncaXbtBoNm39gSP9dvRP2eFFSw';
       
       print('  Registering real transaction address: $realTxRecipientAddress');
-      final storage = IsarWalletStorage(bobIsar);
-      await storage.upsertAddress(bobWalletId, AddressMetadata(
-        address: realTxRecipientAddress,
-        scriptType: 'p2pkh',
-        derivationIndex: 0,
-        isChange: false,
-        purpose: 'receive',
-        usageCount: 0,
-        balance: BigInt.zero,
-        createdAt: DateTime.now(),
-        isWatched: true,
-      ));
+      await _registerWatchAddress(bobLibSpiffy, bobWalletId, realTxRecipientAddress);
       print('✓ Address registered in Bob\'s wallet storage');
       
       // Create and validate BEEF
@@ -393,6 +374,16 @@ void main() {
 // =============================================================================
 
 /// Verify that an address exists in the database for the given wallet
+/// Registers [address] (no key in the wallet) as a watch address of
+/// [walletId] through the wallet, which journals it (bead libspiffy-p4kv).
+Future<void> _registerWatchAddress(LibSpiffyActorSystem libspiffy, String walletId, String address) async {
+  final response = await libspiffy.walletManager.ask<WatchAddressAddedResponse>(
+    WalletCommandMessage(walletId, AddWatchAddressCommand(walletId: walletId, address: address, scriptType: 'p2pkh')),
+    const Duration(seconds: 10),
+  );
+  expect(response.success, isTrue, reason: response.error);
+}
+
 Future<void> _verifyAddressInDatabase({
   required Isar isar,
   required String walletId,

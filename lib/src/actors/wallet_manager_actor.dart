@@ -8,6 +8,7 @@ import '../core/wallet_commands.dart';
 import '../core/wallet_events.dart' show BeefAncestor;
 import '../models/bitcoin_utxo.dart' show UTXOStatus;
 import '../services/crypto_service.dart';
+import '../storage/read_model_storage.dart';
 import '../storage/secure_storage.dart';
 import 'wallet_messages.dart';
 import 'invoice_messages.dart';
@@ -58,17 +59,28 @@ class WalletManagerActor extends Actor {
   /// Last time each loaded aggregate was created, loaded or routed a command.
   final Map<String, DateTime> _lastUsed = {};
 
+  /// The read model, read when a wallet is loaded for the watch addresses
+  /// registered before they were journaled (bead libspiffy-p4kv). Null
+  /// skips that reconciliation.
+  final ReadModelStorage? _readModelStorage;
+
+  /// Wallets loaded while their watch-address rows could not be read; the
+  /// reconciliation is retried before each ownership query for them.
+  final Set<String> _watchReconcilePending = {};
+
   WalletManagerActor({
     required EventStore eventStore,
     required CryptoService cryptoService,
     required SecureStorage secureStorage,
     Duration? aggregateIdleTimeout = const Duration(minutes: 30),
     Duration idleCheckInterval = const Duration(minutes: 1),
+    ReadModelStorage? readModelStorage,
   })  : _eventStore = eventStore,
         _cryptoService = cryptoService,
         _secureStorage = secureStorage,
         _aggregateIdleTimeout = aggregateIdleTimeout,
-        _idleCheckInterval = idleCheckInterval;
+        _idleCheckInterval = idleCheckInterval,
+        _readModelStorage = readModelStorage;
 
   @override
   void preStart() {
@@ -485,7 +497,44 @@ class WalletManagerActor extends Actor {
       ));
       return;
     }
+    // Watch addresses the read model could not supply at load: ahead of the
+    // query in the aggregate's FIFO mailbox (bead libspiffy-p4kv).
+    if (_watchReconcilePending.contains(query.walletId)) {
+      await _reconcileWatchAddresses(query.walletId, walletActor);
+    }
     walletActor.tell(query, sender: asker);
+  }
+
+  /// Tells [walletActor] to journal the watch addresses the read model
+  /// recorded before watch addresses were journaled (bead libspiffy-p4kv):
+  /// rows with purpose `watch`. The aggregate journals only those it does
+  /// not know, so the rows it already has cost no events. The rows are
+  /// never removed. When the read model cannot be read, the wallet is
+  /// marked and retried before its next ownership query.
+  Future<void> _reconcileWatchAddresses(String walletId, ActorRef walletActor) async {
+    final storage = _readModelStorage;
+    if (storage == null) return;
+    final List<LegacyWatchAddress> addresses;
+    try {
+      addresses = [
+        for (final row in await storage.getAddressesByPurpose(walletId, 'watch'))
+          LegacyWatchAddress(
+            address: row.address,
+            scriptType: row.scriptType,
+            label: row.label,
+            registeredAt: row.createdAt,
+          ),
+      ];
+    } catch (e, stackTrace) {
+      _watchReconcilePending.add(walletId);
+      _log.warning('Wallet $walletId: could not read its watch addresses from the read model; '
+          'retrying before its next ownership query: $e', e, stackTrace);
+      return;
+    }
+    _watchReconcilePending.remove(walletId);
+    if (addresses.isNotEmpty) {
+      walletActor.tell(ReconcileWatchAddressesCommand(walletId: walletId, addresses: addresses));
+    }
   }
 
   /// Handle SPV validation results from SPVActor (NEW for correct SPV)
@@ -640,6 +689,7 @@ class WalletManagerActor extends Actor {
       // journaled (bead libspiffy-7p2), ahead of any command queued for the
       // wallet: the mailbox is FIFO. No events when there is nothing to do.
       walletActor.tell(ReconcileDeferredSpendsCommand(walletId: walletId));
+      await _reconcileWatchAddresses(walletId, walletActor);
 
       return walletActor;
 

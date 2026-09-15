@@ -1006,6 +1006,12 @@ _balanceCache.remove(walletId);
   }
 
   @override
+  Future<List<AddressMetadata>> getAddressesByPurpose(String walletId, String purpose) async => [
+        for (final a in _addresses[walletId]?.values ?? const <AddressMetadata>[])
+          if (a.purpose == purpose) a,
+      ];
+
+  @override
   Future<void> upsertAddress(String walletId, AddressMetadata metadata) async {
     await _withLock(walletId, () async {
       _addresses.putIfAbsent(walletId, () => {})[metadata.address] = metadata;

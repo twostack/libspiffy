@@ -24,6 +24,7 @@ const goldenTypeNames = <String, String>{
   'AddressGeneratedEvent': 'wallet.address.generated',
   'AddressLabelUpdatedEvent': 'wallet.address.label_updated',
   'AddressDiscoveredEvent': 'wallet.address.discovered',
+  'WatchAddressAddedEvent': 'wallet.watch_address.added',
   'UTXOReceivedEvent': 'wallet.utxo.received',
   'UTXOMarkedAvailableEvent': 'wallet.utxo.marked_available',
   'UTXOSpentEvent': 'wallet.utxo.spent',
@@ -99,6 +100,9 @@ Map<String, Event> sampleEvents() => <String, Event>{
       'AddressDiscoveredEvent': AddressDiscoveredEvent(
           walletId: _w, address: 'addr', derivationIndex: 2, isChange: false,
           transactionCount: 1, timestamp: _t, version: 6),
+      'WatchAddressAddedEvent': WatchAddressAddedEvent(
+          walletId: _w, address: 'addr', scriptType: 'p2pkh', label: 'l',
+          registeredAt: _t, reconciled: true, timestamp: _t, version: 6),
       'UTXOReceivedEvent': UTXOReceivedEvent(
           walletId: _w, txid: _txid, vout: 0, satoshis: 1000,
           scriptPubKey: '76a9', address: 'addr', blockHeight: 10,

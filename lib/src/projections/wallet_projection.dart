@@ -58,6 +58,7 @@ class WalletProjection extends Projection<void> {
         AddressGeneratedEvent,
         AddressDiscoveredEvent,
         AddressLabelUpdatedEvent,
+        WatchAddressAddedEvent,
         UTXOReceivedEvent,
         UTXOMarkedAvailableEvent,
         UTXOSpentEvent,
@@ -133,6 +134,9 @@ class WalletProjection extends Projection<void> {
         return true;
       case AddressLabelUpdatedEvent:
         // Label updates don't affect read model statistics
+        return true;
+      case WatchAddressAddedEvent:
+        await _handleWatchAddressAdded(event as WatchAddressAddedEvent);
         return true;
       case UTXOReceivedEvent:
         await _handleUTXOReceived(event as UTXOReceivedEvent);
@@ -317,7 +321,26 @@ class WalletProjection extends Projection<void> {
     // Update wallet metadata with new address count (read from storage, update, write back)
     await _updateWalletAddressCount(event.walletId, event.timestamp);
   }
-  
+
+  /// The watch address row (bead libspiffy-p4kv). An existing row (a replay,
+  /// or the row a reconciled legacy registration was read from) keeps its
+  /// usage, balance and creation time.
+  Future<void> _handleWatchAddressAdded(WatchAddressAddedEvent event) async {
+    final metadata = await _preservingUsage(event.walletId, AddressMetadata(
+      address: event.address,
+      scriptType: event.scriptType,
+      isChange: false,
+      label: event.label,
+      purpose: 'watch',
+      usageCount: 0,
+      balance: BigInt.zero,
+      createdAt: event.registeredAt,
+      isWatched: true,
+    ));
+    await _storage.upsertAddress(event.walletId, metadata);
+    await _updateWalletAddressCount(event.walletId, event.timestamp);
+  }
+
   /// Helper: Update wallet address count by reading current count from storage
   Future<void> _updateWalletAddressCount(String walletId, DateTime timestamp) async {
     final existingWallet = await _storage.getWallet(walletId);

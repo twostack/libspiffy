@@ -40,7 +40,13 @@ class WalletState extends State {
   
   /// Generated addresses for this wallet (mutable map: address -> label)
   final Map<String, String?> addresses;
-  
+
+  /// Watch addresses (mutable map: address -> script type): addresses the
+  /// wallet holds no key for whose payments it attributes to itself (bead
+  /// libspiffy-p4kv). Kept apart from [addresses], whose entries the wallet
+  /// derives signing keys for.
+  final Map<String, String> watchAddresses;
+
   /// Next address derivation index
   int nextDerivationIndex;
   
@@ -77,7 +83,9 @@ class WalletState extends State {
     required this.reservedBalance,
     this.version = 0,
     DateTime? lastModified,
+    Map<String, String>? watchAddresses,
   }) : lastModified = lastModified ?? DateTime.now(),
+       watchAddresses = watchAddresses ?? {},
        super(version: version, lastModified: lastModified ?? DateTime.now());
   
   /// Create an empty wallet state (before wallet creation)
@@ -149,6 +157,7 @@ class WalletState extends State {
       timestamp: timestamp,
       utxos: utxos,
       addresses: addresses,
+      watchAddresses: watchAddresses,
       nextDerivationIndex: nextDerivationIndex,
       metadata: metadata,
       confirmedBalance: confirmedBalance,
@@ -171,6 +180,7 @@ class WalletState extends State {
     DateTime? timestamp,
     Map<String, BitcoinUtxo>? utxos,
     Map<String, String?>? addresses,
+    Map<String, String>? watchAddresses,
     int? nextDerivationIndex,
     Map<String, dynamic>? metadata,
     dartsv.Coin? confirmedBalance,
@@ -190,6 +200,7 @@ class WalletState extends State {
       timestamp: timestamp ?? this.timestamp,
       utxos: utxos ?? this.utxos,
       addresses: addresses ?? this.addresses,
+      watchAddresses: watchAddresses ?? this.watchAddresses,
       nextDerivationIndex: nextDerivationIndex ?? this.nextDerivationIndex,
       metadata: metadata ?? this.metadata,
       confirmedBalance: confirmedBalance ?? this.confirmedBalance,
@@ -267,6 +278,7 @@ class WalletState extends State {
       'timestamp': timestamp.toIso8601String(),
       'utxos': utxos.map((key, utxo) => MapEntry(key, utxo.toMap())),
       'addresses': Map<String, String?>.from(addresses),
+      'watchAddresses': Map<String, String>.from(watchAddresses),
       'nextDerivationIndex': nextDerivationIndex,
       'metadata': _deepCopy(metadata),
       'confirmedBalance': confirmedBalance.getValue().toString(),
@@ -316,6 +328,10 @@ class WalletState extends State {
       timestamp: _parseDate(map['timestamp']),
       utxos: utxosMap,
       addresses: Map<String, String?>.from(map['addresses'] ?? {}),
+      // Absent from snapshots written before watch addresses were journaled.
+      watchAddresses: {
+        for (final e in (map['watchAddresses'] as Map? ?? const {}).entries) e.key.toString(): e.value.toString(),
+      },
       nextDerivationIndex: map['nextDerivationIndex'] as int,
       metadata: Map<String, dynamic>.from(map['metadata'] ?? {}),
       confirmedBalance: dartsv.Coin.ofSat(BigInt.parse(map['confirmedBalance'] as String)),

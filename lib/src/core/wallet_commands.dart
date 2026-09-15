@@ -255,6 +255,70 @@ class RegisterDiscoveredAddressCommand extends WalletCommand {
   }
 }
 
+/// Adds a watch address to the wallet (bead libspiffy-p4kv): an address the
+/// wallet holds no key for whose payments it attributes to itself.
+///
+/// Journals a WatchAddressAddedEvent. Idempotent: an address that is already
+/// a watch address, or one the wallet derived itself, journals nothing (the
+/// wallet already owns it, and a derived address keeps its row).
+class AddWatchAddressCommand extends WalletCommand {
+  final String address;
+  final String scriptType;
+  final String? label;
+
+  AddWatchAddressCommand({
+    required String walletId,
+    required this.address,
+    required this.scriptType,
+    this.label,
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(walletId: walletId, commandId: commandId, timestamp: timestamp, metadata: metadata);
+
+  @override
+  String get commandType => 'AddWatchAddressCommand';
+}
+
+/// A watch address the read model recorded before watch addresses were
+/// journaled (an address row with purpose `watch`).
+class LegacyWatchAddress {
+  final String address;
+  final String scriptType;
+  final String? label;
+  final DateTime registeredAt;
+
+  const LegacyWatchAddress({
+    required this.address,
+    required this.scriptType,
+    this.label,
+    required this.registeredAt,
+  });
+}
+
+/// Journals the watch addresses the read model recorded before watch
+/// addresses were journaled (bead libspiffy-p4kv), so that the wallet knows
+/// them and a read model rebuilt from the journal keeps them.
+///
+/// Each address the wallet does not already own gets a WatchAddressAddedEvent
+/// with `reconciled: true`; nothing else is journaled, so sending it again is
+/// harmless. WalletManagerActor sends it when it loads a wallet from the
+/// journal. The read-model rows are never removed.
+class ReconcileWatchAddressesCommand extends WalletCommand {
+  final List<LegacyWatchAddress> addresses;
+
+  ReconcileWatchAddressesCommand({
+    required String walletId,
+    required this.addresses,
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(walletId: walletId, commandId: commandId, timestamp: timestamp, metadata: metadata);
+
+  @override
+  String get commandType => 'ReconcileWatchAddressesCommand';
+}
+
 // =============================================================================
 // UTXO MANAGEMENT COMMANDS
 // =============================================================================

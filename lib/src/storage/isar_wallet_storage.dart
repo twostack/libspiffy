@@ -244,7 +244,19 @@ class IsarWalletStorage implements ReadModelStorage {
         .derivationIndexBetween(startIndex, startIndex + count - 1)
         .sortByDerivationIndex()
         .findAll();
-    
+
+    return entities.map((e) => AddressMetadata.fromEntity(e)).toList();
+  }
+
+  @override
+  Future<List<AddressMetadata>> getAddressesByPurpose(String walletId, String purpose) async {
+    // The walletId index narrows the scan; the purpose filter runs in Isar.
+    final entities = await _isar.addressEntitys
+        .where()
+        .walletIdEqualTo(walletId)
+        .filter()
+        .purposeEqualTo(purpose)
+        .findAll();
     return entities.map((e) => AddressMetadata.fromEntity(e)).toList();
   }
 

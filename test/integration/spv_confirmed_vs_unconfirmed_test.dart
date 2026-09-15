@@ -16,6 +16,7 @@ import 'package:convert/convert.dart';
 import 'package:libspiffy/libspiffy.dart';
 import 'package:libspiffy/src/actors/libspiffy_actor_system.dart';
 import 'package:libspiffy/src/actors/wallet_messages.dart';
+import 'package:libspiffy/src/core/wallet_commands.dart' show AddWatchAddressCommand;
 import 'package:libspiffy/src/storage/isar_wallet_storage.dart';
 import 'package:libspiffy/src/utils/beef.dart';
 import 'package:libspiffy/src/utils/crypto_utils.dart';
@@ -67,20 +68,17 @@ void main() {
         walletName: 'Bob Wallet',
       );
       
-      // Register the real transaction's recipient address in Bob's wallet
+      // Register the real transaction's recipient address in Bob's wallet.
+      // Bob holds no key for it: a watch address, registered with the wallet
+      // (a read-model row alone no longer makes an address the wallet's,
+      // bead libspiffy-p4kv).
       const realTxRecipientAddress = 'n49CCQFuncaXbtBoNm39gSP9dvRP2eFFSw';
-      final storage = bobLibSpiffy.walletStorage as IsarWalletStorage;
-      await storage.upsertAddress(bobWalletId, AddressMetadata(
-        address: realTxRecipientAddress,
-        scriptType: 'p2pkh',
-        derivationIndex: 0,
-        isChange: false,
-        purpose: 'receive',
-        usageCount: 0,
-        balance: BigInt.zero,
-        createdAt: DateTime.now(),
-        isWatched: true,
-      ));
+      final registered = await bobLibSpiffy.walletManager.ask<WatchAddressAddedResponse>(
+        WalletCommandMessage(bobWalletId,
+            AddWatchAddressCommand(walletId: bobWalletId, address: realTxRecipientAddress, scriptType: 'p2pkh')),
+        const Duration(seconds: 10),
+      );
+      expect(registered.success, isTrue, reason: registered.error);
       
       print('✓ Bob system initialized with wallet: $bobWalletId');
       print('✓ Payment address registered: $realTxRecipientAddress');

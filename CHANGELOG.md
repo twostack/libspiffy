@@ -302,6 +302,79 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### P3 correctness wave
+
+Twelve P3 beads in four lanes, each fix with a regression test shown to fail
+on the previous code (report section 11, V-44 to V-51).
+
+- **Balances agree across layers (V-44 to V-46).**
+  - `ReadModelStorage.getBalance`, the wallet row's balance fields and
+    `BalanceResponse` leave out watch-only UTXOs and bare multisig UTXOs the
+    wallet cannot spend alone. The new `getWatchOnlyBalance` reports the
+    watch-only total.
+  - Plugin-managed means the UTXO's metadata names a `pluginId`
+    (`BitcoinUtxo.isPluginManaged`), on both layers.
+  - Inputs of payments recorded before deferred holds existed are excluded
+    from coin selection as soon as the wallet recovers, not only after the
+    startup reconcile.
+- **Stored transaction status (V-47).** A stale record (a late ARC status, or
+  a BEEF re-sent without its proof) no longer lowers a stored transaction's
+  status. Only the confirmation revert can take a confirmation back, through
+  `storeRevertedTransaction`. Postgres stores the other party as the primary
+  counterparty, as Isar does. **Postgres migration v015** recomputes it.
+- **Proofs through reorganizations (V-48).**
+  - An orphaned or rejected proof whose block becomes active again is
+    verified again, and the transaction's confirmation is restored.
+  - A pendingHeader proof whose header is still unknown is no longer marked
+    orphaned.
+  - pendingHeader proofs are re-checked when `SPVActor` starts.
+  - An orphaned proof keeps the block hash it named.
+  - **Postgres migration v016** replaces the proof status index with a
+    (status, block height) index; opening an existing Isar store builds the
+    same index.
+- **Payment flows (V-49 to V-51).**
+  - The Benford splitter records a split, holding its source, before it
+    broadcasts, and reads the wallet from the aggregate.
+  - ARC `DOUBLE_SPEND_ATTEMPTED` no longer fails a deferred payment: its
+    inputs stay held while ARC is polled.
+  - Commands queued to an aggregate that a journal failure took out of
+    service are answered with `AggregateOutOfServiceException` instead of
+    being dropped.
+  - A rejected `MarkInvoicePaid` is answered at once, and invoice creation is
+    answered only after its event is journaled.
+
+#### Breaking changes
+
+- `ReadModelStorage` has three new methods: `getWatchOnlyBalance`,
+  `storeRevertedTransaction` and `getMerkleProofsByStatusBetweenHeights`.
+  Classes that `implements` it must add them.
+- `storeTransaction` never lowers a stored status. Code outside libspiffy
+  that used it to take a confirmation back must call
+  `storeRevertedTransaction`.
+- `getBalance` and the wallet row balances report less for wallets with
+  watch-only funds or multisig outputs they cannot spend alone.
+  `WalletState.availableUtxos` returns only spendable UTXOs.
+  `AggregateSigningClient.pathForAddress` throws for a watch address.
+- A UTXO whose metadata carries no `pluginId` is spendable on the aggregate.
+  A plugin-script UTXO received without metadata is plugin-managed.
+- A deferred payment ARC answers `DOUBLE_SPEND_ATTEMPTED` stays outstanding
+  with its inputs held, and its transaction status is `broadcast`, not
+  `failed`. A broadcast answered that way is reported as unsuccessful.
+- A Benford split is listed as a deferred payment (purpose `benford-split`)
+  until ARC settles it.
+- After a journal failure, the aggregate ref stays alive until its manager
+  retires it. Check `CommandFailureContainment.isRetiring(ref)` instead of
+  `isAlive`.
+- `watchOnlyBalance` is a reserved wallet metadata key.
+
+Additive API: `BalanceUtxos`, `splitBalanceUtxos`,
+`WalletBalances.cannotSpendAlone`, `BitcoinUtxo.isPluginManaged`,
+`TransactionRowRules`, `WalletSpendableUtxosQuery` / `Response`,
+`BenfordCoordinatorActor(walletReplyTimeout:)`,
+`DeferredNetworkStatus.isContested`, `AggregateOutOfServiceException`,
+`CommandFailureContainment.isRetiring` / `retire`,
+`ArcSubmitResponse` competing txids.
+
 ### After wave 4: follow-up fixes
 
 Beads filed during wave 4, each with a regression test shown to fail on the

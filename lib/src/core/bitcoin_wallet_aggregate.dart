@@ -542,71 +542,71 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
   Future<List<Event>> handleCommand(WalletState currentState, Command command) async {
     // DEBUG: Log command routing information
     
-    switch (command.runtimeType) {
-      case CreateWalletCommand:
-        return await _handleCreateWallet(currentState, command as CreateWalletCommand);
-      case DeleteWalletCommand:
-        return _handleDeleteWallet(currentState, command as DeleteWalletCommand);
-      case UpdateWalletConfigurationCommand:
-        return _handleUpdateConfiguration(currentState, command as UpdateWalletConfigurationCommand);
-      case GenerateAddressCommand:
-        return await _handleGenerateAddress(currentState, command as GenerateAddressCommand);
-      case UpdateAddressLabelCommand:
-        return _handleUpdateAddressLabel(currentState, command as UpdateAddressLabelCommand);
-      case RegisterDiscoveredAddressCommand:
-        return _handleRegisterDiscoveredAddress(currentState, command as RegisterDiscoveredAddressCommand);
-      case AddWatchAddressCommand:
-        return _handleAddWatchAddress(currentState, command as AddWatchAddressCommand);
-      case ReconcileWatchAddressesCommand:
-        return _handleReconcileWatchAddresses(currentState, command as ReconcileWatchAddressesCommand);
-      case ReceiveUTXOCommand:
-        return _handleReceiveUTXO(currentState, command as ReceiveUTXOCommand);
-      case MarkUTXOAvailableCommand:
-        return _handleMarkUTXOAvailable(currentState, command as MarkUTXOAvailableCommand);
-      case RecordImportedTransactionCommand:
-        return _handleRecordImportedTransaction(currentState, command as RecordImportedTransactionCommand);
-      case RecordOutgoingTransactionCommand:
-        return _handleRecordOutgoingTransaction(currentState, command as RecordOutgoingTransactionCommand);
-      case ConfirmTransactionCommand:
-        return _handleConfirmTransaction(currentState, command as ConfirmTransactionCommand);
-      case UpdateTransactionStatusCommand:
-        return _handleUpdateTransactionStatus(currentState, command as UpdateTransactionStatusCommand);
-      case RevertTransactionConfirmationCommand:
-        return _handleRevertTransactionConfirmation(currentState, command as RevertTransactionConfirmationCommand);
-      case SpendUTXOCommand:
-        return _handleSpendUTXO(currentState, command as SpendUTXOCommand);
-      case UpdateUTXOConfirmationsCommand:
-        return _handleUpdateUTXOConfirmations(currentState, command as UpdateUTXOConfirmationsCommand);
-      case SignTransactionCommand:
-        return await _handleSignTransaction(currentState, command as SignTransactionCommand);
-      case SignMultisigTransactionCommand:
-        return await _handleSignMultisigTransaction(currentState, command as SignMultisigTransactionCommand);
-      case SignInputCommand:
-        return await _handleSignInput(currentState, command as SignInputCommand);
-      case BuildFundingTransactionCommand:
-        return await _handleBuildFundingTransaction(currentState, command as BuildFundingTransactionCommand);
-      case BroadcastTransactionCommand:
-        return _handleBroadcastTransaction(currentState, command as BroadcastTransactionCommand);
-      case ReserveUTXOsCommand:
-        return _handleReserveUTXOs(currentState, command as ReserveUTXOsCommand);
-      case ReleaseUTXOsCommand:
-        return _handleReleaseUTXOs(currentState, command as ReleaseUTXOsCommand);
-      case ReserveUTXOCommand:
-        return _handleReserveUTXO(currentState, command as ReserveUTXOCommand);
-      case ReleaseUTXOCommand:
-        return _handleReleaseUTXO(currentState, command as ReleaseUTXOCommand);
-      case RenewUTXOReservationCommand:
-        return _handleRenewUTXOReservation(currentState, command as RenewUTXOReservationCommand);
-      case CleanupExpiredReservationsCommand:
-        return _handleCleanupExpiredReservations(currentState, command as CleanupExpiredReservationsCommand);
-      case ReconcileDeferredSpendsCommand:
-        return _handleReconcileDeferredSpends(currentState, command as ReconcileDeferredSpendsCommand);
-      case RecordTransactionNetworkStatusCommand:
-        return _handleRecordTransactionNetworkStatus(currentState, command as RecordTransactionNetworkStatusCommand);
-      case CancelDeferredSpendCommand:
-        return _handleCancelDeferredSpend(currentState, command as CancelDeferredSpendCommand);
-      case SplitUTXOsToBenfordCommand:
-        return await _handleSplitUTXOsToBenford(currentState, command as SplitUTXOsToBenfordCommand);
+    switch (command) {
+      case final CreateWalletCommand cmd:
+        return await _handleCreateWallet(currentState, cmd);
+      case final DeleteWalletCommand cmd:
+        return _handleDeleteWallet(currentState, cmd);
+      case final UpdateWalletConfigurationCommand cmd:
+        return _handleUpdateConfiguration(currentState, cmd);
+      case final GenerateAddressCommand cmd:
+        return await _handleGenerateAddress(currentState, cmd);
+      case final UpdateAddressLabelCommand cmd:
+        return _handleUpdateAddressLabel(currentState, cmd);
+      case final RegisterDiscoveredAddressCommand cmd:
+        return _handleRegisterDiscoveredAddress(currentState, cmd);
+      case final AddWatchAddressCommand cmd:
+        return _handleAddWatchAddress(currentState, cmd);
+      case final ReconcileWatchAddressesCommand cmd:
+        return _handleReconcileWatchAddresses(currentState, cmd);
+      case final ReceiveUTXOCommand cmd:
+        return _handleReceiveUTXO(currentState, cmd);
+      case final MarkUTXOAvailableCommand cmd:
+        return _handleMarkUTXOAvailable(currentState, cmd);
+      case final RecordImportedTransactionCommand cmd:
+        return _handleRecordImportedTransaction(currentState, cmd);
+      case final RecordOutgoingTransactionCommand cmd:
+        return _handleRecordOutgoingTransaction(currentState, cmd);
+      case final ConfirmTransactionCommand cmd:
+        return _handleConfirmTransaction(currentState, cmd);
+      case final UpdateTransactionStatusCommand cmd:
+        return _handleUpdateTransactionStatus(currentState, cmd);
+      case final RevertTransactionConfirmationCommand cmd:
+        return _handleRevertTransactionConfirmation(currentState, cmd);
+      case final SpendUTXOCommand cmd:
+        return _handleSpendUTXO(currentState, cmd);
+      case final UpdateUTXOConfirmationsCommand cmd:
+        return _handleUpdateUTXOConfirmations(currentState, cmd);
+      case final SignTransactionCommand cmd:
+        return await _handleSignTransaction(currentState, cmd);
+      case final SignMultisigTransactionCommand cmd:
+        return await _handleSignMultisigTransaction(currentState, cmd);
+      case final SignInputCommand cmd:
+        return await _handleSignInput(currentState, cmd);
+      case final BuildFundingTransactionCommand cmd:
+        return await _handleBuildFundingTransaction(currentState, cmd);
+      case final BroadcastTransactionCommand cmd:
+        return _handleBroadcastTransaction(currentState, cmd);
+      case final ReserveUTXOsCommand cmd:
+        return _handleReserveUTXOs(currentState, cmd);
+      case final ReleaseUTXOsCommand cmd:
+        return _handleReleaseUTXOs(currentState, cmd);
+      case final ReserveUTXOCommand cmd:
+        return _handleReserveUTXO(currentState, cmd);
+      case final ReleaseUTXOCommand cmd:
+        return _handleReleaseUTXO(currentState, cmd);
+      case final RenewUTXOReservationCommand cmd:
+        return _handleRenewUTXOReservation(currentState, cmd);
+      case final CleanupExpiredReservationsCommand cmd:
+        return _handleCleanupExpiredReservations(currentState, cmd);
+      case final ReconcileDeferredSpendsCommand cmd:
+        return _handleReconcileDeferredSpends(currentState, cmd);
+      case final RecordTransactionNetworkStatusCommand cmd:
+        return _handleRecordTransactionNetworkStatus(currentState, cmd);
+      case final CancelDeferredSpendCommand cmd:
+        return _handleCancelDeferredSpend(currentState, cmd);
+      case final SplitUTXOsToBenfordCommand cmd:
+        return await _handleSplitUTXOsToBenford(currentState, cmd);
       default:
         throw ArgumentError('Unknown command type: ${command.runtimeType}');
     }
@@ -628,101 +628,99 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
       throw ArgumentError('Expected WalletEvent, got ${event.runtimeType}');
     }
 
-    switch (event.runtimeType) {
-      case WalletCreatedEvent:
-        _applyWalletCreated(event as WalletCreatedEvent);
+    switch (event) {
+      case final WalletCreatedEvent evt:
+        _applyWalletCreated(evt);
         break;
-      case WalletDeletedEvent:
-        _applyWalletDeleted(event as WalletDeletedEvent);
+      case final WalletDeletedEvent evt:
+        _applyWalletDeleted(evt);
         break;
-      case WalletConfigurationUpdatedEvent:
-        _applyWalletConfigurationUpdated(event as WalletConfigurationUpdatedEvent);
+      case final WalletConfigurationUpdatedEvent evt:
+        _applyWalletConfigurationUpdated(evt);
         break;
-      case AddressGeneratedEvent:
-        _applyAddressGenerated(event as AddressGeneratedEvent);
+      case final AddressGeneratedEvent evt:
+        _applyAddressGenerated(evt);
         break;
-      case AddressLabelUpdatedEvent:
-        _applyAddressLabelUpdated(event as AddressLabelUpdatedEvent);
+      case final AddressLabelUpdatedEvent evt:
+        _applyAddressLabelUpdated(evt);
         break;
-      case WatchAddressAddedEvent:
-        _applyWatchAddressAdded(event as WatchAddressAddedEvent);
+      case final WatchAddressAddedEvent evt:
+        _applyWatchAddressAdded(evt);
         break;
-      case UTXOReceivedEvent:
-        _applyUTXOReceived(event as UTXOReceivedEvent);
+      case final UTXOReceivedEvent evt:
+        _applyUTXOReceived(evt);
         break;
-      case UTXOMarkedAvailableEvent:
-        _applyUTXOMarkedAvailable(event as UTXOMarkedAvailableEvent);
+      case final UTXOMarkedAvailableEvent evt:
+        _applyUTXOMarkedAvailable(evt);
         break;
-      case UTXOSpentEvent:
-        _applyUTXOSpent(event as UTXOSpentEvent);
+      case final UTXOSpentEvent evt:
+        _applyUTXOSpent(evt);
         break;
-      case UTXOConfirmationUpdatedEvent:
-        _applyUTXOConfirmationUpdated(event as UTXOConfirmationUpdatedEvent);
+      case final UTXOConfirmationUpdatedEvent evt:
+        _applyUTXOConfirmationUpdated(evt);
         break;
-      case TransactionSignedEvent:
-        _applyTransactionSigned(event as TransactionSignedEvent);
+      case final TransactionSignedEvent evt:
+        _applyTransactionSigned(evt);
         break;
-      case TransactionBroadcastEvent:
-        _applyTransactionBroadcast(event as TransactionBroadcastEvent);
+      case final TransactionBroadcastEvent evt:
+        _applyTransactionBroadcast(evt);
         break;
-      case UTXOReservationPlacedEvent:
-        _applyUTXOReservationPlaced(event as UTXOReservationPlacedEvent);
+      case final UTXOReservationPlacedEvent evt:
+        _applyUTXOReservationPlaced(evt);
         break;
-      case UTXOReservationReleasedEvent:
-        _applyUTXOReservationReleased(event as UTXOReservationReleasedEvent);
+      case final UTXOReservationReleasedEvent evt:
+        _applyUTXOReservationReleased(evt);
         break;
-      case UTXOReservationExpiredEvent:
-        _applyUTXOReservationExpired(event as UTXOReservationExpiredEvent);
+      case final UTXOReservationExpiredEvent evt:
+        _applyUTXOReservationExpired(evt);
         break;
-      case UTXOReservedEvent:
-        _applyUTXOReserved(event as UTXOReservedEvent);
+      case final UTXOReservedEvent evt:
+        _applyUTXOReserved(evt);
         break;
-      case UTXOReleasedEvent:
-        _applyUTXOReleased(event as UTXOReleasedEvent);
+      case final UTXOReleasedEvent evt:
+        _applyUTXOReleased(evt);
         break;
-      case UTXOReservationRenewedEvent:
-        _applyUTXOReservationRenewed(event as UTXOReservationRenewedEvent);
+      case final UTXOReservationRenewedEvent evt:
+        _applyUTXOReservationRenewed(evt);
         break;
-      case AddressDiscoveredEvent:
-        _applyAddressDiscovered(event as AddressDiscoveredEvent);
+      case final AddressDiscoveredEvent evt:
+        _applyAddressDiscovered(evt);
         break;
-      case TransactionImportedEvent:
-        _applyTransactionImported(event as TransactionImportedEvent);
+      case final TransactionImportedEvent evt:
+        _applyTransactionImported(evt);
         break;
-      case TransactionRecordedEvent:
-        _applyTransactionRecorded(event as TransactionRecordedEvent);
+      case final TransactionRecordedEvent evt:
+        _applyTransactionRecorded(evt);
         break;
-      case TransactionConfirmedEvent:
-        _applyTransactionConfirmed(event as TransactionConfirmedEvent);
+      case final TransactionConfirmedEvent evt:
+        _applyTransactionConfirmed(evt);
         break;
-      case TransactionStatusUpdatedEvent:
+      case TransactionStatusUpdatedEvent():
         // Status update is projection-only — no aggregate state change needed
         break;
-      case TransactionConfirmationRevertedEvent:
-        _applyTransactionConfirmationReverted(event as TransactionConfirmationRevertedEvent);
+      case final TransactionConfirmationRevertedEvent evt:
+        _applyTransactionConfirmationReverted(evt);
         break;
-      case UTXOSplitInitiatedEvent:
-        _applyUTXOSplitInitiated(event as UTXOSplitInitiatedEvent);
+      case final UTXOSplitInitiatedEvent evt:
+        _applyUTXOSplitInitiated(evt);
         break;
-      case UTXOSplitCompletedEvent:
-        _applyUTXOSplitCompleted(event as UTXOSplitCompletedEvent);
+      case final UTXOSplitCompletedEvent evt:
+        _applyUTXOSplitCompleted(evt);
         break;
-      case AllUTXOsSplitCompletedEvent:
-        _applyAllUTXOsSplitCompleted(event as AllUTXOsSplitCompletedEvent);
+      case final AllUTXOsSplitCompletedEvent evt:
+        _applyAllUTXOsSplitCompleted(evt);
         break;
-      case TransactionSpendDeferredEvent:
-        _applyTransactionSpendDeferred(event as TransactionSpendDeferredEvent);
+      case final TransactionSpendDeferredEvent evt:
+        _applyTransactionSpendDeferred(evt);
         break;
-      case TransactionNetworkStatusCheckedEvent:
-        _applyTransactionNetworkStatusChecked(event as TransactionNetworkStatusCheckedEvent);
+      case final TransactionNetworkStatusCheckedEvent evt:
+        _applyTransactionNetworkStatusChecked(evt);
         break;
-      case DeferredTransactionFailedEvent:
-        final failed = event as DeferredTransactionFailedEvent;
+      case final DeferredTransactionFailedEvent failed:
         _applyDeferredResolution(failed.txid, DeferredPaymentState.failed, failed.releasedInputs,
             failed.reason ?? failed.networkStatus, failed);
         break;
-      case DeferredTransactionCancelledEvent:
-        final cancelled = event as DeferredTransactionCancelledEvent;
+      case final DeferredTransactionCancelledEvent cancelled:
         _applyDeferredResolution(cancelled.txid, DeferredPaymentState.cancelled, cancelled.releasedInputs,
             cancelled.reason, cancelled);
         break;

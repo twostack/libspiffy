@@ -320,48 +320,48 @@ class PaymentChannelManagerActor extends Actor {
   Future<void> onMessage(dynamic message) async {
     
     try {
-      switch (message.runtimeType) {
-        case InitiateChannelMessage:
-          await _handleInitiateChannel(message as InitiateChannelMessage);
+      switch (message) {
+        case final InitiateChannelMessage msg:
+          await _handleInitiateChannel(msg);
           break;
-        case AcceptChannelMessage:
-          await _handleAcceptChannel(message as AcceptChannelMessage);
+        case final AcceptChannelMessage msg:
+          await _handleAcceptChannel(msg);
           break;
-        case RecordServerAcceptanceMessage:
-          await _handleRecordServerAcceptance(message as RecordServerAcceptanceMessage);
+        case final RecordServerAcceptanceMessage msg:
+          await _handleRecordServerAcceptance(msg);
           break;
-        case BuildRefundTransactionMessage:
-          await _handleBuildRefundTransaction(message as BuildRefundTransactionMessage);
+        case final BuildRefundTransactionMessage msg:
+          await _handleBuildRefundTransaction(msg);
           break;
-        case SignRefundTransactionMessage:
-          await _handleSignRefundTransaction(message as SignRefundTransactionMessage);
+        case final SignRefundTransactionMessage msg:
+          await _handleSignRefundTransaction(msg);
           break;
-        case MultisigTransactionSignedResponse:
-          await _handleMultisigSignedResponse(message as MultisigTransactionSignedResponse);
+        case final MultisigTransactionSignedResponse msg:
+          await _handleMultisigSignedResponse(msg);
           break;
-        case RecordRefundSignatureMessage:
-          await _handleRecordRefundSignature(message as RecordRefundSignatureMessage);
+        case final RecordRefundSignatureMessage msg:
+          await _handleRecordRefundSignature(msg);
           break;
-        case OpenChannelMessage:
-          await _handleOpenChannel(message as OpenChannelMessage);
+        case final OpenChannelMessage msg:
+          await _handleOpenChannel(msg);
           break;
-        case RecordPaymentMessage:
-          await _handleRecordPayment(message as RecordPaymentMessage);
+        case final RecordPaymentMessage msg:
+          await _handleRecordPayment(msg);
           break;
-        case AcknowledgePaymentMessage:
-          await _handleAcknowledgePayment(message as AcknowledgePaymentMessage);
+        case final AcknowledgePaymentMessage msg:
+          await _handleAcknowledgePayment(msg);
           break;
-        case CloseChannelMessage:
-          await _handleCloseChannel(message as CloseChannelMessage);
+        case final CloseChannelMessage msg:
+          await _handleCloseChannel(msg);
           break;
-        case ExpireChannelMessage:
-          await _handleExpireChannel(message as ExpireChannelMessage);
+        case final ExpireChannelMessage msg:
+          await _handleExpireChannel(msg);
           break;
-        case QueryChannelStateMessage:
-          await _handleQueryChannelState(message as QueryChannelStateMessage);
+        case final QueryChannelStateMessage msg:
+          await _handleQueryChannelState(msg);
           break;
-        case ChannelDetailsQueryMessage:
-          await _handleChannelDetailsQuery(message as ChannelDetailsQueryMessage);
+        case final ChannelDetailsQueryMessage msg:
+          await _handleChannelDetailsQuery(msg);
           break;
         default:
       }

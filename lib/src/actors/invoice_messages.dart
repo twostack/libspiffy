@@ -1,4 +1,5 @@
 import 'package:dactor/dactor.dart';
+import 'internal_messages.dart';
 import '../models/invoice_output_spec.dart';
 
 /// Messages for invoice/payment request management
@@ -121,7 +122,7 @@ class CreateInvoiceMessage implements Message {
 }
 
 /// Response when an invoice is successfully created
-class InvoiceCreatedMessage implements Message {
+class InvoiceCreatedMessage extends ActorResponse {
   final String invoiceId;
   final String walletId;
 
@@ -137,7 +138,9 @@ class InvoiceCreatedMessage implements Message {
   final String? description;
   final DateTime createdAt;
   final DateTime? expiresAt;
+  @override
   final bool success;
+  @override
   final String? error;
   final Map<String, dynamic>? customMetadata;
 

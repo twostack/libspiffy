@@ -1,5 +1,6 @@
 /// LibSpiffy Actor System Components
 export 'wallet_messages.dart';
+export 'internal_messages.dart';          // Actor reply base and wiring messages
 export 'wallet_manager_actor.dart';
 export 'spv_actor.dart';
 export 'arc_actor.dart';

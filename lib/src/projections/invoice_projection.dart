@@ -58,21 +58,21 @@ class InvoiceProjection extends Projection<InvoiceReadModel> {
     if (event is! InvoiceEvent) return false;
 
     try {
-      switch (event.runtimeType) {
-        case InvoiceCreatedEvent:
-          await _handleInvoiceCreated(event as InvoiceCreatedEvent);
+      switch (event) {
+        case final InvoiceCreatedEvent evt:
+          await _handleInvoiceCreated(evt);
           return true;
-        case InvoiceStatusChangedEvent:
-          await _handleInvoiceStatusChanged(event as InvoiceStatusChangedEvent);
+        case final InvoiceStatusChangedEvent evt:
+          await _handleInvoiceStatusChanged(evt);
           return true;
-        case InvoicePaidEvent:
-          await _handleInvoicePaid(event as InvoicePaidEvent);
+        case final InvoicePaidEvent evt:
+          await _handleInvoicePaid(evt);
           return true;
-        case InvoiceExpiredEvent:
-          await _handleInvoiceExpired(event as InvoiceExpiredEvent);
+        case final InvoiceExpiredEvent evt:
+          await _handleInvoiceExpired(evt);
           return true;
-        case InvoiceCancelledEvent:
-          await _handleInvoiceCancelled(event as InvoiceCancelledEvent);
+        case final InvoiceCancelledEvent evt:
+          await _handleInvoiceCancelled(evt);
           return true;
         default:
           return false;

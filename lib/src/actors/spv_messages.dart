@@ -1,5 +1,6 @@
 import 'package:spiffynode/spiffy_node.dart';
 import 'package:dactor/dactor.dart';
+import 'internal_messages.dart';
 import '../storage/wallet_storage.dart';
 import '../models/bitcoin_transaction.dart';
 
@@ -560,10 +561,12 @@ class RequestSpecificHeaderMessage implements SPVMessage, Message {
 /// 
 /// This message extends LocalMessage to support the ask pattern properly.
 /// The payload getter returns this instance itself for proper type casting.
-class SpecificHeaderResponseMessage extends LocalMessage implements SPVMessage {
+class SpecificHeaderResponseMessage extends ActorResponse implements SPVMessage {
   final int blockHeight;
   final BlockHeader? header;
+  @override
   final bool success;
+  @override
   final String? error;
 
   SpecificHeaderResponseMessage({
@@ -575,15 +578,10 @@ class SpecificHeaderResponseMessage extends LocalMessage implements SPVMessage {
     ActorRef? replyTo,
     Map<String, dynamic>? metadata,
   }) : super(
-         payload: null,  // Will be overridden by getter below
          correlationId: correlationId ?? 'resp_header_${DateTime.now().millisecondsSinceEpoch}',
          replyTo: replyTo,
          metadata: metadata ?? {},
        );
-
-  /// Override payload to return this instance for proper ask pattern support
-  @override
-  dynamic get payload => this;
 
   @override
   String toString() => 'SpecificHeaderResponseMessage(height: $blockHeight, success: $success)';

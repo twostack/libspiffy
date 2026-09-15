@@ -97,33 +97,33 @@ class SPVActor extends Actor {
   @override
   Future<void> onMessage(dynamic message) async {
     try {
-      switch (message.runtimeType) {
-        case ReceiveTransactionMessage:
-          await _handleReceiveTransaction(message as ReceiveTransactionMessage);
+      switch (message) {
+        case final ReceiveTransactionMessage msg:
+          await _handleReceiveTransaction(msg);
           break;
           
-        case BlockHeaderUpdateMessage:
-          await _handleBlockHeaderUpdate(message as BlockHeaderUpdateMessage);
+        case final BlockHeaderUpdateMessage msg:
+          await _handleBlockHeaderUpdate(msg);
           break;
           
-        case BlockHeaderStoredMessage:
-          await _handleBlockHeaderStored(message as BlockHeaderStoredMessage);
+        case final BlockHeaderStoredMessage msg:
+          await _handleBlockHeaderStored(msg);
           break;
 
-        case HeaderChainReorganizedMessage:
-          await _handleHeaderChainReorganized(message as HeaderChainReorganizedMessage);
+        case final HeaderChainReorganizedMessage msg:
+          await _handleHeaderChainReorganized(msg);
           break;
           
-        case SetArcActorForSPVMessage:
-          _handleSetArcActor(message as SetArcActorForSPVMessage);
+        case final SetArcActorForSPVMessage msg:
+          _handleSetArcActor(msg);
           break;
           
-        case SetHeaderSyncActorMessage:
-          _handleSetHeaderSyncActor(message as SetHeaderSyncActorMessage);
+        case final SetHeaderSyncActorMessage msg:
+          _handleSetHeaderSyncActor(msg);
           break;
           
-        case ValidateBEEFMessage:
-          await _handleValidateBEEF(message as ValidateBEEFMessage);
+        case final ValidateBEEFMessage msg:
+          await _handleValidateBEEF(msg);
           break;
           
         default:
@@ -1435,9 +1435,8 @@ class SPVActor extends Actor {
 
   /// Send error response based on message type
   void _sendErrorResponse(dynamic message, String error) {
-    switch (message.runtimeType) {
-      case ReceiveTransactionMessage:
-        final msg = message as ReceiveTransactionMessage;
+    switch (message) {
+      case final ReceiveTransactionMessage msg:
         context.sender?.tell(SPVValidationResult(
           txid: msg.transactionId,
           isValid: false,
@@ -1445,8 +1444,7 @@ class SPVActor extends Actor {
           targetWalletId: msg.targetWalletId,
         ));
         break;
-      case ValidateBEEFMessage:
-        final msg = message as ValidateBEEFMessage;
+      case final ValidateBEEFMessage msg:
         context.sender?.tell(BEEFValidationResult(
           isValid: false,
           error: error,

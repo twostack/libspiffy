@@ -3,6 +3,10 @@ import 'package:libspiffy/libspiffy.dart';
 import '../core/wallet_commands.dart';
 import '../models/deferred_payment.dart';
 
+// The actor wiring messages moved to internal_messages.dart.
+export 'internal_messages.dart'
+    show SetBenfordCoordinatorMessage, SetArcActorForSPVMessage, SetHeaderSyncActorMessage;
+
 /// Messages for coordinating between actors in the LibSpiffy system
 
 // ==========================================================================
@@ -40,10 +44,12 @@ class CreateWalletMessage implements Message {
 }
 
 /// Response containing wallet creation result (from WalletManagerActor to external caller)
-class WalletCreatedMessage implements Message {
+class WalletCreatedMessage extends ActorResponse {
   final String walletId;
   final String rootAddress;
+  @override
   final bool success;
+  @override
   final String? error;
 
   WalletCreatedMessage(this.walletId, this.rootAddress, this.success, {this.error});
@@ -59,10 +65,12 @@ class WalletCreatedMessage implements Message {
 }
 
 /// Response from BitcoinWalletAggregate after processing CreateWalletCommand
-class WalletCreatedResponse implements Message {
+class WalletCreatedResponse extends ActorResponse {
   final String walletId;
   final String rootAddress;
+  @override
   final bool success;
+  @override
   final String? error;
 
   WalletCreatedResponse({
@@ -83,11 +91,13 @@ class WalletCreatedResponse implements Message {
 }
 
 /// Response from BitcoinWalletAggregate after processing GenerateAddressCommand
-class AddressGeneratedResponse extends LocalMessage {
+class AddressGeneratedResponse extends ActorResponse {
   final String walletId;
   final String address;
   final int derivationIndex;
+  @override
   final bool success;
+  @override
   final String? error;
   final String? publicKeyHex; // Included when GenerateAddressCommand.includePublicKey is true
 
@@ -100,7 +110,6 @@ class AddressGeneratedResponse extends LocalMessage {
     this.publicKeyHex,
     Map<String, dynamic>? metadata,
   }) : super(
-          payload: null, // payload getter is overridden below
           metadata: {
             'walletId': walletId,
             'address': address,
@@ -110,19 +119,17 @@ class AddressGeneratedResponse extends LocalMessage {
             ...?metadata,
           },
         );
-  
-  /// Override payload to return this object for DActor's ask() pattern
-  @override
-  dynamic get payload => this;
 }
 
 
 /// Response from BitcoinWalletAggregate after signing transaction
-class TransactionSignedResponse implements Message {
+class TransactionSignedResponse extends ActorResponse {
   final String walletId;
   final String txid;
   final String signedHex;
+  @override
   final bool success;
+  @override
   final String? error;
 
   TransactionSignedResponse({
@@ -144,13 +151,15 @@ class TransactionSignedResponse implements Message {
 }
 
 /// Response for multisig transaction signing
-class MultisigTransactionSignedResponse implements Message {
+class MultisigTransactionSignedResponse extends ActorResponse {
   final String walletId;
   final String txid; // The actual signed transaction ID (hash)
   final String? originalTransactionId; // The transactionId from the original command (for correlation)
   final String signedHex; // Partially or fully signed TX
   final String signatureHex; // Just our signature (for verification/building)
+  @override
   final bool success;
+  @override
   final String? error;
 
   MultisigTransactionSignedResponse({
@@ -175,7 +184,7 @@ class MultisigTransactionSignedResponse implements Message {
 
 /// Reply to `SignInputCommand`: the signature for one input and the public
 /// key of the wallet key that produced it.
-class InputSignedResponse implements Message {
+class InputSignedResponse extends ActorResponse {
   final String walletId;
 
   /// Id of the `SignInputCommand` this answers.
@@ -188,7 +197,9 @@ class InputSignedResponse implements Message {
 
   /// Compressed public key of the signing key (hex); empty on failure.
   final String publicKeyHex;
+  @override
   final bool success;
+  @override
   final String? error;
 
   InputSignedResponse({
@@ -213,14 +224,16 @@ class InputSignedResponse implements Message {
 }
 
 /// Response from building and signing a funding transaction
-class FundingTransactionBuiltResponse implements Message {
+class FundingTransactionBuiltResponse extends ActorResponse {
   final String walletId;
   final String correlationId_;
   final String channelId;
   final String fundingTxHex;
   final String fundingTxId;
   final int fundingOutputIndex; // Always 0 for multisig output
+  @override
   final bool success;
+  @override
   final String? error;
   
   // Fields for recording the transaction and updating UTXOs
@@ -261,9 +274,11 @@ class FundingTransactionBuiltResponse implements Message {
 }
 
 /// Response from BenfordCoordinatorActor or BitcoinWalletAggregate for SplitUTXOsToBenfordCommand
-class SplitUTXOsResponse implements Message {
+class SplitUTXOsResponse extends ActorResponse {
   final String walletId;
+  @override
   final bool success;
+  @override
   final String? error;
   final int? splitCount; // Number of UTXOs created
   final List<String>? txids; // Transaction IDs of split transactions
@@ -289,11 +304,13 @@ class SplitUTXOsResponse implements Message {
 /// Response from BitcoinWalletAggregate after processing ReceiveUTXOCommand
 /// Reply to [ReserveUTXOCommand]. Sent on success as well as failure so
 /// callers no longer have to treat "no reply within 2 s" as success.
-class UTXOReservedResponse implements Message {
+class UTXOReservedResponse extends ActorResponse {
   final String walletId;
   final String utxoKey;
   final String reservedByTxId;
+  @override
   final bool success;
+  @override
   final String? error;
 
   UTXOReservedResponse({
@@ -319,11 +336,13 @@ class UTXOReservedResponse implements Message {
       'UTXOReservedResponse($walletId, $utxoKey, success: $success${error != null ? ', error: $error' : ''})';
 }
 
-class UTXOReceivedResponse implements Message {
+class UTXOReceivedResponse extends ActorResponse {
   final String walletId;
   final String txid;
   final int vout;
+  @override
   final bool success;
+  @override
   final String? error;
 
   UTXOReceivedResponse({
@@ -345,10 +364,12 @@ class UTXOReceivedResponse implements Message {
 }
 
 /// Response from BitcoinWalletAggregate after processing RecordImportedTransactionCommand
-class TransactionRecordedResponse implements Message {
+class TransactionRecordedResponse extends ActorResponse {
   final String walletId;
   final String txid;
+  @override
   final bool success;
+  @override
   final String? error;
 
   TransactionRecordedResponse({
@@ -564,14 +585,16 @@ class WalletOwnershipResponse extends LocalMessage {
 
 /// Reply of the wallet aggregate to AddWatchAddressCommand (bead
 /// libspiffy-p4kv).
-class WatchAddressAddedResponse extends LocalMessage {
+class WatchAddressAddedResponse extends ActorResponse {
   final String walletId;
   final String address;
+  @override
   final bool success;
 
   /// False when the address needed no event: already a watch address, or
   /// an address the wallet derived.
   final bool journaled;
+  @override
   final String? error;
 
   WatchAddressAddedResponse({
@@ -580,11 +603,7 @@ class WatchAddressAddedResponse extends LocalMessage {
     required this.success,
     this.journaled = false,
     this.error,
-  }) : super(payload: null, metadata: {'walletId': walletId, 'address': address, 'success': success});
-
-  /// This object, for dactor's ask().
-  @override
-  dynamic get payload => this;
+  }) : super(metadata: {'walletId': walletId, 'address': address, 'success': success});
 }
 
 /// Block header update from SpiffyNode
@@ -733,10 +752,12 @@ class RetrieveMerkleProofMessage implements Message {
 }
 
 /// Merkle proof retrieved from ARC (NEW)
-class MerkleProofMessage implements Message {
+class MerkleProofMessage extends ActorResponse {
   final String txid;
   final dynamic merkleProof; // Will be MerkleProof type
+  @override
   final bool success;
+  @override
   final String? error;
 
   MerkleProofMessage({
@@ -916,22 +937,6 @@ class BlockchainReorganizationNotification implements Message {
   DateTime get timestamp => DateTime.now();
 } 
 
-/// Message to set the Benford coordinator reference in WalletManager
-class SetBenfordCoordinatorMessage implements Message {
-  final ActorRef benfordCoordinator;
-
-  SetBenfordCoordinatorMessage(this.benfordCoordinator);
-
-  @override
-  String get correlationId => 'set-benford-coordinator-${DateTime.now().millisecondsSinceEpoch}';
-  @override
-  Map<String, dynamic> get metadata => {'actorRef': benfordCoordinator.toString()};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
-}
-
 /// Message to trigger checking all pending UTXOs from storage against Arc
 /// 
 /// Sent when new block headers are received to check if any pending UTXOs
@@ -946,41 +951,6 @@ class CheckStoragePendingUTXOsMessage implements Message {
   String get correlationId => 'check-pending-utxos-${DateTime.now().millisecondsSinceEpoch}';
   @override
   Map<String, dynamic> get metadata => {'triggerBlockHeight': triggerBlockHeight};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
-}
-
-/// Message to set the ARC actor reference in SPVActor
-/// 
-/// Used to wire up the ARCActor reference after actor system initialization,
-/// enabling SPVActor to trigger pending UTXO checks when block headers arrive.
-class SetArcActorForSPVMessage implements Message {
-  final ActorRef arcActor;
-
-  SetArcActorForSPVMessage(this.arcActor);
-
-  @override
-  String get correlationId => 'set-arc-actor-spv-${DateTime.now().millisecondsSinceEpoch}';
-  @override
-  Map<String, dynamic> get metadata => {'arcActorRef': arcActor.toString()};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
-}
-
-/// Message to set HeaderSyncActor reference in SPVActor
-class SetHeaderSyncActorMessage implements Message {
-  final ActorRef headerSyncActor;
-
-  SetHeaderSyncActorMessage(this.headerSyncActor);
-
-  @override
-  String get correlationId => 'set-header-sync-actor-${DateTime.now().millisecondsSinceEpoch}';
-  @override
-  Map<String, dynamic> get metadata => {'headerSyncActorRef': headerSyncActor.toString()};
   @override
   ActorRef? get replyTo => null;
   @override
@@ -1061,10 +1031,12 @@ class TransactionConfirmationsRevertedMessage implements Message {
 // ==========================================================================
 
 /// Reply of the wallet aggregate to [CancelDeferredSpendCommand].
-class DeferredSpendCancelledResponse extends LocalMessage {
+class DeferredSpendCancelledResponse extends ActorResponse {
   final String walletId;
   final String txid;
+  @override
   final bool success;
+  @override
   final String? error;
 
   /// The inputs returned to their pre-reservation status.
@@ -1076,10 +1048,7 @@ class DeferredSpendCancelledResponse extends LocalMessage {
     required this.success,
     this.error,
     this.releasedUtxoKeys = const [],
-  }) : super(payload: null, metadata: {'walletId': walletId, 'txid': txid, 'success': success});
-
-  @override
-  dynamic get payload => this;
+  }) : super(metadata: {'walletId': walletId, 'txid': txid, 'success': success});
 
   @override
   String toString() => 'DeferredSpendCancelledResponse($walletId, $txid, success: $success'
@@ -1143,12 +1112,13 @@ class BroadcastDeferredPaymentMessage implements Message {
 
 /// What ARCActor learned from a [CheckDeferredPaymentStatusMessage] or a
 /// [BroadcastDeferredPaymentMessage].
-class DeferredPaymentNetworkResult extends LocalMessage {
+class DeferredPaymentNetworkResult extends ActorResponse {
   final String walletId;
   final String txid;
 
   /// A source answered (a status, or a definitive "not found"). False when
   /// every source failed ([error]).
+  @override
   final bool success;
 
   /// ARC's wire status, `NOT_FOUND`, or null when no source answered.
@@ -1168,6 +1138,7 @@ class DeferredPaymentNetworkResult extends LocalMessage {
 
   /// The failed broadcast was queued for a durable retry.
   final bool willRetry;
+  @override
   final String? error;
 
   DeferredPaymentNetworkResult({
@@ -1181,10 +1152,7 @@ class DeferredPaymentNetworkResult extends LocalMessage {
     this.confirmed = false,
     this.willRetry = false,
     this.error,
-  }) : super(payload: null, metadata: {'walletId': walletId, 'txid': txid, 'success': success});
-
-  @override
-  dynamic get payload => this;
+  }) : super(metadata: {'walletId': walletId, 'txid': txid, 'success': success});
 
   @override
   String toString() => 'DeferredPaymentNetworkResult($txid, success: $success, status: $networkStatus, '

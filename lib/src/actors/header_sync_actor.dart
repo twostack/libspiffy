@@ -5,59 +5,12 @@ import 'package:logging/logging.dart';
 import 'package:spiffynode/spiffy_node.dart';
 
 import '../spv/block_header_chain.dart';
+import 'internal_messages.dart';
 import 'wallet_messages.dart' show HeaderChainReorganizedMessage;
 
-// =============================================================================
-// HEADER SYNC ACTOR MESSAGES
-// =============================================================================
-
-/// Message to set the SpiffyNode bridge reference after P2P initialization
-class SetSpiffyNodeBridgeMessage implements Message {
-  final dynamic bridge;
-
-  SetSpiffyNodeBridgeMessage(this.bridge);
-
-  @override
-  String get correlationId => 'set-bridge-${DateTime.now().millisecondsSinceEpoch}';
-  @override
-  Map<String, dynamic> get metadata => {};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
-}
-
-/// Message to set the PeerManager reference after P2P initialization
-class SetPeerManagerMessage implements Message {
-  final dynamic peerManager;
-
-  SetPeerManagerMessage(this.peerManager);
-
-  @override
-  String get correlationId => 'set-peer-manager-${DateTime.now().millisecondsSinceEpoch}';
-  @override
-  Map<String, dynamic> get metadata => {};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
-}
-
-/// Message to initiate header sync after P2P setup is complete
-class InitiateHeaderSyncMessage implements Message {
-  final int? startHeight;
-
-  InitiateHeaderSyncMessage({this.startHeight});
-
-  @override
-  String get correlationId => 'initiate-sync-${DateTime.now().millisecondsSinceEpoch}';
-  @override
-  Map<String, dynamic> get metadata => {};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
-}
+// The header sync wiring messages moved to internal_messages.dart.
+export 'internal_messages.dart'
+    show SetSpiffyNodeBridgeMessage, SetPeerManagerMessage, InitiateHeaderSyncMessage;
 
 /// Actor responsible for managing block header synchronization and storage
 /// 
@@ -632,14 +585,14 @@ class HeaderSyncActor extends Actor {
 
   /// Send error response based on message type
   void _sendErrorResponse(dynamic message, String error) {
-    switch (message.runtimeType) {
-      case BlockHeadersReceivedMessage _:
+    switch (message) {
+      case BlockHeadersReceivedMessage():
         context.sender?.tell(SPVErrorMessage(
           operation: 'process_headers',
           error: error,
         ) as dynamic);
         break;
-      case RequestHeaderSyncMessage _:
+      case RequestHeaderSyncMessage():
         context.sender?.tell(SPVErrorMessage(
           operation: 'header_sync_request',
           error: error,

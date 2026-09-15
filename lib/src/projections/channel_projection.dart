@@ -88,55 +88,55 @@ class ChannelProjection extends Projection<void> {
   Future<bool> handle(Event event) async {
     if (event is! ChannelEvent) return false;
 
-    switch (event.runtimeType) {
-      case ChannelRequestedEvent:
-        await _handleChannelRequested(event as ChannelRequestedEvent);
+    switch (event) {
+      case final ChannelRequestedEvent evt:
+        await _handleChannelRequested(evt);
         return true;
-      case ChannelAcceptedEvent:
-        await _handleChannelAccepted(event as ChannelAcceptedEvent);
+      case final ChannelAcceptedEvent evt:
+        await _handleChannelAccepted(evt);
         return true;
-      case ChannelRejectedEvent:
-        await _handleChannelRejected(event as ChannelRejectedEvent);
+      case final ChannelRejectedEvent evt:
+        await _handleChannelRejected(evt);
         return true;
-      case ServerAcceptanceRecordedEvent:
-        await _handleServerAcceptanceRecorded(event as ServerAcceptanceRecordedEvent);
+      case final ServerAcceptanceRecordedEvent evt:
+        await _handleServerAcceptanceRecorded(evt);
         return true;
-      case RefundBuiltEvent:
-        await _handleRefundBuilt(event as RefundBuiltEvent);
+      case final RefundBuiltEvent evt:
+        await _handleRefundBuilt(evt);
         return true;
-      case RefundCountersignedEvent:
-        await _handleRefundCountersigned(event as RefundCountersignedEvent);
+      case final RefundCountersignedEvent evt:
+        await _handleRefundCountersigned(evt);
         return true;
-      case FundingBroadcastStartedEvent:
-        await _handleFundingBroadcastStarted(event as FundingBroadcastStartedEvent);
+      case final FundingBroadcastStartedEvent evt:
+        await _handleFundingBroadcastStarted(evt);
         return true;
-      case FundingBroadcastFailedEvent:
-        await _handleFundingBroadcastFailed(event as FundingBroadcastFailedEvent);
+      case final FundingBroadcastFailedEvent evt:
+        await _handleFundingBroadcastFailed(evt);
         return true;
-      case FundingRecordedInWalletEvent:
+      case FundingRecordedInWalletEvent():
         // Channel-side bookkeeping only; the wallet read model holds the
         // transaction itself.
         return true;
-      case ChannelOpenedEvent:
-        await _handleChannelOpened(event as ChannelOpenedEvent);
+      case final ChannelOpenedEvent evt:
+        await _handleChannelOpened(evt);
         return true;
-      case PaymentRecordedEvent:
-        await _handlePaymentRecorded(event as PaymentRecordedEvent);
+      case final PaymentRecordedEvent evt:
+        await _handlePaymentRecorded(evt);
         return true;
-      case PaymentAcknowledgedEvent:
-        await _handlePaymentAcknowledged(event as PaymentAcknowledgedEvent);
+      case final PaymentAcknowledgedEvent evt:
+        await _handlePaymentAcknowledged(evt);
         return true;
-      case ChannelClosingEvent:
-        await _handleChannelClosing(event as ChannelClosingEvent);
+      case final ChannelClosingEvent evt:
+        await _handleChannelClosing(evt);
         return true;
-      case ChannelClosedEvent:
-        await _handleChannelClosed(event as ChannelClosedEvent);
+      case final ChannelClosedEvent evt:
+        await _handleChannelClosed(evt);
         return true;
-      case RefundClaimedEvent:
-        await _handleRefundClaimed(event as RefundClaimedEvent);
+      case final RefundClaimedEvent evt:
+        await _handleRefundClaimed(evt);
         return true;
-      case ChannelExpiredEvent:
-        await _handleChannelExpired(event as ChannelExpiredEvent);
+      case final ChannelExpiredEvent evt:
+        await _handleChannelExpired(evt);
         return true;
       default:
         return false;

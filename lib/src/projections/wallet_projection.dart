@@ -116,77 +116,75 @@ class WalletProjection extends Projection<void> {
       return false;
     }
 
-    switch (event.runtimeType) {
-      case WalletCreatedEvent:
-        await _handleWalletCreated(event as WalletCreatedEvent);
+    switch (event) {
+      case final WalletCreatedEvent evt:
+        await _handleWalletCreated(evt);
         return true;
-      case WalletDeletedEvent:
-        await _handleWalletDeleted(event as WalletDeletedEvent);
+      case final WalletDeletedEvent evt:
+        await _handleWalletDeleted(evt);
         return true;
-      case WalletConfigurationUpdatedEvent:
-        await _handleWalletConfigurationUpdated(event as WalletConfigurationUpdatedEvent);
+      case final WalletConfigurationUpdatedEvent evt:
+        await _handleWalletConfigurationUpdated(evt);
         return true;
-      case AddressGeneratedEvent:
-        await _handleAddressGenerated(event as AddressGeneratedEvent);
+      case final AddressGeneratedEvent evt:
+        await _handleAddressGenerated(evt);
         return true;
-      case AddressDiscoveredEvent:
-        await _handleAddressDiscovered(event as AddressDiscoveredEvent);
+      case final AddressDiscoveredEvent evt:
+        await _handleAddressDiscovered(evt);
         return true;
-      case AddressLabelUpdatedEvent:
+      case AddressLabelUpdatedEvent():
         // Label updates don't affect read model statistics
         return true;
-      case WatchAddressAddedEvent:
-        await _handleWatchAddressAdded(event as WatchAddressAddedEvent);
+      case final WatchAddressAddedEvent evt:
+        await _handleWatchAddressAdded(evt);
         return true;
-      case UTXOReceivedEvent:
-        await _handleUTXOReceived(event as UTXOReceivedEvent);
+      case final UTXOReceivedEvent evt:
+        await _handleUTXOReceived(evt);
         return true;
-      case UTXOMarkedAvailableEvent:
-        await _handleUTXOMarkedAvailable(event as UTXOMarkedAvailableEvent);
+      case final UTXOMarkedAvailableEvent evt:
+        await _handleUTXOMarkedAvailable(evt);
         return true;
-      case UTXOSpentEvent:
-        await _handleUTXOSpent(event as UTXOSpentEvent);
+      case final UTXOSpentEvent evt:
+        await _handleUTXOSpent(evt);
         return true;
-      case UTXOConfirmationUpdatedEvent:
-        await _handleUTXOConfirmationUpdated(event as UTXOConfirmationUpdatedEvent);
+      case final UTXOConfirmationUpdatedEvent evt:
+        await _handleUTXOConfirmationUpdated(evt);
         return true;
-      case UTXOReservedEvent:
-        await _handleUTXOReserved(event as UTXOReservedEvent);
+      case final UTXOReservedEvent evt:
+        await _handleUTXOReserved(evt);
         return true;
-      case UTXOReleasedEvent:
-        await _handleUTXOReleased(event as UTXOReleasedEvent);
+      case final UTXOReleasedEvent evt:
+        await _handleUTXOReleased(evt);
         return true;
-      case UTXOReservationRenewedEvent:
-        await _handleUTXOReservationRenewed(event as UTXOReservationRenewedEvent);
+      case final UTXOReservationRenewedEvent evt:
+        await _handleUTXOReservationRenewed(evt);
         return true;
-      case TransactionImportedEvent:
-        await _handleTransactionImported(event as TransactionImportedEvent);
+      case final TransactionImportedEvent evt:
+        await _handleTransactionImported(evt);
         return true;
-      case TransactionRecordedEvent:
-        await _handleTransactionRecorded(event as TransactionRecordedEvent);
+      case final TransactionRecordedEvent evt:
+        await _handleTransactionRecorded(evt);
         return true;
-      case TransactionConfirmedEvent:
-        await _handleTransactionConfirmed(event as TransactionConfirmedEvent);
+      case final TransactionConfirmedEvent evt:
+        await _handleTransactionConfirmed(evt);
         return true;
-      case TransactionStatusUpdatedEvent:
-        await _handleTransactionStatusUpdated(event as TransactionStatusUpdatedEvent);
+      case final TransactionStatusUpdatedEvent evt:
+        await _handleTransactionStatusUpdated(evt);
         return true;
-      case TransactionConfirmationRevertedEvent:
-        await _handleTransactionConfirmationReverted(event as TransactionConfirmationRevertedEvent);
+      case final TransactionConfirmationRevertedEvent evt:
+        await _handleTransactionConfirmationReverted(evt);
         return true;
-      case TransactionSpendDeferredEvent:
-        await _handleTransactionSpendDeferred(event as TransactionSpendDeferredEvent);
+      case final TransactionSpendDeferredEvent evt:
+        await _handleTransactionSpendDeferred(evt);
         return true;
-      case TransactionNetworkStatusCheckedEvent:
-        await _handleNetworkStatusChecked(event as TransactionNetworkStatusCheckedEvent);
+      case final TransactionNetworkStatusCheckedEvent evt:
+        await _handleNetworkStatusChecked(evt);
         return true;
-      case DeferredTransactionFailedEvent:
-        final failed = event as DeferredTransactionFailedEvent;
+      case final DeferredTransactionFailedEvent failed:
         await _handleDeferredResolution(failed, failed.txid, DeferredPaymentState.failed,
             failed.releasedInputs, failed.reason ?? failed.networkStatus);
         return true;
-      case DeferredTransactionCancelledEvent:
-        final cancelled = event as DeferredTransactionCancelledEvent;
+      case final DeferredTransactionCancelledEvent cancelled:
         await _handleDeferredResolution(cancelled, cancelled.txid, DeferredPaymentState.cancelled,
             cancelled.releasedInputs, cancelled.reason);
         return true;

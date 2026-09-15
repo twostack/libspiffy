@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 import 'package:dactor/dactor.dart';
+import 'internal_messages.dart';
 import '../models/invoice_output_spec.dart';
 
 /// Request to pay an invoice with BEEF-formatted transaction
@@ -73,7 +74,7 @@ class PayInvoiceMessage implements Message {
 /// 
 /// Contains serialized BEEF with payment transaction, ancestor transactions,
 /// merkle proofs, and block headers for SPV validation.
-class BEEFPaymentResponse implements Message {
+class BEEFPaymentResponse extends ActorResponse {
   /// Invoice being paid
   final String invoiceId;
   
@@ -93,9 +94,11 @@ class BEEFPaymentResponse implements Message {
   final int ancestorCount;
   
   /// Whether payment creation succeeded
+  @override
   final bool success;
   
   /// Error message if payment failed
+  @override
   final String? error;
 
   /// Witness transaction ID (null if no paired witness).
@@ -177,11 +180,13 @@ class ProvisionFundingMessage implements Message {
 }
 
 /// Response from PaymentCoordinatorActor after funding provisioning.
-class ProvisionFundingResponse implements Message {
+class ProvisionFundingResponse extends ActorResponse {
   final String walletId;
   final int transactionCount;
   final int earmarkCount;
+  @override
   final bool success;
+  @override
   final String? error;
 
   ProvisionFundingResponse({

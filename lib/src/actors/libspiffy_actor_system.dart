@@ -45,6 +45,9 @@ import 'payment_channel_manager_actor.dart';
 import 'import_actor.dart';
 import 'wallet_coordinator_actor.dart';
 import 'coordinator_messages.dart' show CoordinatorEvent;
+
+// The actor wiring messages moved to internal_messages.dart.
+export 'internal_messages.dart' show SetInvoiceManagerMessage, SetArcActorMessage;
 import '../services/transaction_import_service.dart';
 
 /// Lifecycle of a [LibSpiffyActorSystem] instance.
@@ -1646,41 +1649,3 @@ Future<void> shutdownLibSpiffy() async {
     _globalInstance = null;
   }
 }
-
-/// Internal message to set InvoiceManager reference in WalletManager
-class SetInvoiceManagerMessage implements Message {
-  final ActorRef invoiceManager;
-  
-  SetInvoiceManagerMessage(this.invoiceManager);
-
-  @override
-  String get correlationId => 'set-invoice-manager-${DateTime.now().millisecondsSinceEpoch}';
-  
-  @override
-  Map<String, dynamic> get metadata => {};
-  
-  @override
-  ActorRef? get replyTo => null;
-  
-  @override
-  DateTime get timestamp => DateTime.now();
-}
-
-/// Internal message to set ARC actor reference in WalletManager
-class SetArcActorMessage implements Message {
-  final ActorRef arcActor;
-  
-  SetArcActorMessage(this.arcActor);
-
-  @override
-  String get correlationId => 'set-arc-actor-${DateTime.now().millisecondsSinceEpoch}';
-  
-  @override
-  Map<String, dynamic> get metadata => {};
-  
-  @override
-  ActorRef? get replyTo => null;
-  
-  @override
-  DateTime get timestamp => DateTime.now();
-} 

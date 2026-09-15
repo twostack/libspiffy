@@ -186,50 +186,49 @@ class ARCActor extends Actor {
   @override
   Future<void> onMessage(dynamic message) async {
     try {
-      switch (message.runtimeType) {
-        case BroadcastTransactionMessage:
-          await _handleBroadcastTransaction(message as BroadcastTransactionMessage);
+      switch (message) {
+        case final BroadcastTransactionMessage msg:
+          await _handleBroadcastTransaction(msg);
           break;
 
-        case BroadcastBEEFMessage:
-          await _handleBroadcastBEEF(message as BroadcastBEEFMessage);
+        case final BroadcastBEEFMessage msg:
+          await _handleBroadcastBEEF(msg);
           break;
 
-        case CheckTransactionStatusMessage:
-          await _handleCheckTransactionStatus(message as CheckTransactionStatusMessage);
+        case final CheckTransactionStatusMessage msg:
+          await _handleCheckTransactionStatus(msg);
           break;
 
-        case RetrieveMerkleProofMessage:
-          await _handleRetrieveMerkleProof(message as RetrieveMerkleProofMessage);
+        case final RetrieveMerkleProofMessage msg:
+          await _handleRetrieveMerkleProof(msg);
           break;
 
-        case GetFeeQuoteMessage:
-          await _handleGetFeeQuote(message as GetFeeQuoteMessage);
+        case final GetFeeQuoteMessage msg:
+          await _handleGetFeeQuote(msg);
           break;
 
-        case EstimateFeeMessage:
-          await _handleEstimateFee(message as EstimateFeeMessage);
+        case final EstimateFeeMessage msg:
+          await _handleEstimateFee(msg);
           break;
 
-        case CheckStoragePendingUTXOsMessage:
-          await _handleCheckStoragePendingUTXOs(message as CheckStoragePendingUTXOsMessage);
+        case final CheckStoragePendingUTXOsMessage msg:
+          await _handleCheckStoragePendingUTXOs(msg);
           break;
 
-        case BlockHeaderStoredMessage:
+        case BlockHeaderStoredMessage():
           await _onHeadersArrived();
           break;
 
-        case TransactionConfirmationsRevertedMessage:
-          _handleConfirmationsReverted(message as TransactionConfirmationsRevertedMessage);
+        case final TransactionConfirmationsRevertedMessage msg:
+          _handleConfirmationsReverted(msg);
           break;
 
-        case CheckDeferredPaymentStatusMessage:
-          final check = message as CheckDeferredPaymentStatusMessage;
+        case final CheckDeferredPaymentStatusMessage check:
           context.sender?.tell(await _checkDeferredPayment(check.walletId, check.txid, check.via));
           break;
 
-        case BroadcastDeferredPaymentMessage:
-          context.sender?.tell(await _broadcastDeferredPayment(message as BroadcastDeferredPaymentMessage));
+        case final BroadcastDeferredPaymentMessage msg:
+          context.sender?.tell(await _broadcastDeferredPayment(msg));
           break;
 
         default:
@@ -1591,26 +1590,23 @@ class ARCActor extends Actor {
 
   /// Send error response based on message type
   void _sendErrorResponse(dynamic message, String error) {
-    switch (message.runtimeType) {
-      case BroadcastTransactionMessage:
-        final msg = message as BroadcastTransactionMessage;
+    switch (message) {
+      case final BroadcastTransactionMessage msg:
         context.sender?.tell(BroadcastFailedMessage(msg.txid, error));
         break;
-      case BroadcastBEEFMessage:
-        final msg = message as BroadcastBEEFMessage;
+      case final BroadcastBEEFMessage msg:
         context.sender?.tell(BroadcastFailedMessage(msg.txid, error));
         break;
-      case CheckTransactionStatusMessage:
-        final msg = message as CheckTransactionStatusMessage;
+      case final CheckTransactionStatusMessage msg:
         context.sender?.tell(TransactionStatusMessage(
           txid: msg.txid,
           status: 'error',
         ));
         break;
-      case GetFeeQuoteMessage:
+      case GetFeeQuoteMessage():
         context.sender?.tell(FeeQuoteMessage({'error': error}));
         break;
-      case EstimateFeeMessage:
+      case EstimateFeeMessage():
         context.sender?.tell(FeeEstimateMessage(BigInt.zero));
         break;
     }

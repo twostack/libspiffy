@@ -186,55 +186,55 @@ class WalletManagerActor extends Actor {
       return;
     }
     try {
-      switch (message.runtimeType) {
-        case CreateWalletMessage:
-          await _handleCreateWallet(message as CreateWalletMessage);
+      switch (message) {
+        case final CreateWalletMessage msg:
+          await _handleCreateWallet(msg);
           break;
           
-        case WalletCommandMessage:
-          await _handleWalletCommand(message as WalletCommandMessage);
+        case final WalletCommandMessage msg:
+          await _handleWalletCommand(msg);
           break;
           
-        case ListWalletsMessage:
-          await _handleListWallets(message as ListWalletsMessage);
+        case final ListWalletsMessage msg:
+          await _handleListWallets(msg);
           break;
 
-        case SPVValidationResult:
-          await _handleSPVValidationResult(message as SPVValidationResult);
+        case final SPVValidationResult msg:
+          await _handleSPVValidationResult(msg);
           break;
 
-        case WalletOwnershipQuery:
-          await _handleWalletOwnershipQuery(message as WalletOwnershipQuery);
+        case final WalletOwnershipQuery msg:
+          await _handleWalletOwnershipQuery(msg);
           break;
 
-        case WalletCreatedResponse:
-          await _handleWalletCreatedResponse(message as WalletCreatedResponse);
+        case final WalletCreatedResponse msg:
+          await _handleWalletCreatedResponse(msg);
           break;
         
-        case CreateInvoiceMessage:
-          await _handleCreateInvoice(message as CreateInvoiceMessage);
+        case final CreateInvoiceMessage msg:
+          await _handleCreateInvoice(msg);
           break;
           
-        case CheckInvoiceMessage:
-        case CancelInvoiceMessage:
-        case ListInvoicesMessage:
+        case CheckInvoiceMessage():
+        case CancelInvoiceMessage():
+        case ListInvoicesMessage():
           // Forward invoice queries directly to InvoiceManager
           _invoiceManager?.tell(message, sender: context.sender);
           break;
         
-        case SetInvoiceManagerMessage:
+        case final SetInvoiceManagerMessage msg:
           // Internal message to set invoice manager reference
-          _invoiceManager = (message as SetInvoiceManagerMessage).invoiceManager;
+          _invoiceManager = msg.invoiceManager;
           break;
           
-        case SetArcActorMessage:
+        case final SetArcActorMessage msg:
           // Internal message to set ARC actor reference
-          _arcActor = (message as SetArcActorMessage).arcActor;
+          _arcActor = msg.arcActor;
           break;
           
-        case SetBenfordCoordinatorMessage:
+        case final SetBenfordCoordinatorMessage msg:
           // Internal message to set Benford coordinator reference
-          _benfordCoordinator = (message as SetBenfordCoordinatorMessage).benfordCoordinator;
+          _benfordCoordinator = msg.benfordCoordinator;
           break;
           
         default:
@@ -364,8 +364,12 @@ class WalletManagerActor extends Actor {
         _benfordCoordinator!.tell(msg.command, sender: context.sender);
         return; // Don't send to aggregate
       } else {
-        context.sender?.tell(LocalMessage(
-          payload: {'error': 'Benford coordinator not available'},
+        // The same reply the Benford coordinator gives when a split fails,
+        // which is what callers (WalletCoordinatorActor) handle.
+        context.sender?.tell(SplitUTXOsResponse(
+          walletId: msg.walletId,
+          success: false,
+          error: 'Benford coordinator not available',
         ));
         return;
       }

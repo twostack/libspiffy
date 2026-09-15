@@ -5,6 +5,7 @@
 /// and PaymentChannelAggregate.
 
 import 'package:dactor/dactor.dart';
+import 'internal_messages.dart';
 
 // =============================================================================
 // CHANNEL LIFECYCLE MESSAGES
@@ -35,13 +36,15 @@ class InitiateChannelMessage extends LocalMessage {
 }
 
 /// Response to channel initiation
-class ChannelInitiatedResponse extends LocalMessage {
+class ChannelInitiatedResponse extends ActorResponse {
   final String channelId;
   final String clientPubKeyHex;
   final String clientAddressB58;
   final int derivationIndex;
   final int lockTimeUnix;
+  @override
   final bool success;
+  @override
   final String? error;
 
   ChannelInitiatedResponse({
@@ -52,10 +55,7 @@ class ChannelInitiatedResponse extends LocalMessage {
     required this.lockTimeUnix,
     required this.success,
     this.error,
-  }) : super(payload: null);
-
-  @override
-  dynamic get payload => this;
+  });
 }
 
 /// Request to accept a channel as server
@@ -89,12 +89,14 @@ class AcceptChannelMessage extends LocalMessage {
 }
 
 /// Response to channel acceptance
-class ChannelAcceptedResponse extends LocalMessage {
+class ChannelAcceptedResponse extends ActorResponse {
   final String channelId;
   final String serverPubKeyHex;
   final String serverAddressB58;
   final int derivationIndex;
+  @override
   final bool success;
+  @override
   final String? error;
 
   ChannelAcceptedResponse({
@@ -104,10 +106,7 @@ class ChannelAcceptedResponse extends LocalMessage {
     required this.derivationIndex,
     required this.success,
     this.error,
-  }) : super(payload: null);
-
-  @override
-  dynamic get payload => this;
+  });
 }
 
 /// Client records that server accepted the channel (stores server pubkey/address)
@@ -128,19 +127,18 @@ class RecordServerAcceptanceMessage extends LocalMessage {
 
 /// Response to [RecordServerAcceptanceMessage]: `success: false` carries the
 /// channel aggregate's rejection (e.g. the channel is not pending).
-class ServerAcceptanceRecordedResponse extends LocalMessage {
+class ServerAcceptanceRecordedResponse extends ActorResponse {
   final String channelId;
+  @override
   final bool success;
+  @override
   final String? error;
 
   ServerAcceptanceRecordedResponse({
     required this.channelId,
     required this.success,
     this.error,
-  }) : super(payload: null);
-
-  @override
-  dynamic get payload => this;
+  });
 }
 
 // =============================================================================
@@ -191,10 +189,12 @@ class BuildRefundTransactionMessage extends LocalMessage {
 }
 
 /// Response with built refund transaction
-class RefundTransactionBuiltResponse extends LocalMessage {
+class RefundTransactionBuiltResponse extends ActorResponse {
   final String channelId;
   final String refundTxHex;
+  @override
   final bool success;
+  @override
   final String? error;
 
   RefundTransactionBuiltResponse({
@@ -202,10 +202,7 @@ class RefundTransactionBuiltResponse extends LocalMessage {
     required this.refundTxHex,
     required this.success,
     this.error,
-  }) : super(payload: null);
-
-  @override
-  dynamic get payload => this;
+  });
 }
 
 /// Request to sign refund transaction (server side)
@@ -254,10 +251,12 @@ class SignRefundTransactionMessage extends LocalMessage {
 }
 
 /// Response with refund signature
-class RefundTransactionSignedResponse extends LocalMessage {
+class RefundTransactionSignedResponse extends ActorResponse {
   final String channelId;
   final String serverSignatureHex;
+  @override
   final bool success;
+  @override
   final String? error;
 
   RefundTransactionSignedResponse({
@@ -265,10 +264,7 @@ class RefundTransactionSignedResponse extends LocalMessage {
     required this.serverSignatureHex,
     required this.success,
     this.error,
-  }) : super(payload: null);
-
-  @override
-  dynamic get payload => this;
+  });
 }
 
 /// Request to record server's refund signature (client side, received via P2P)
@@ -286,19 +282,18 @@ class RecordRefundSignatureMessage extends LocalMessage {
 }
 
 /// Response to recording refund signature
-class RefundSignatureRecordedResponse extends LocalMessage {
+class RefundSignatureRecordedResponse extends ActorResponse {
   final String channelId;
+  @override
   final bool success;
+  @override
   final String? error;
 
   RefundSignatureRecordedResponse({
     required this.channelId,
     required this.success,
     this.error,
-  }) : super(payload: null);
-
-  @override
-  dynamic get payload => this;
+  });
 }
 
 // =============================================================================
@@ -330,19 +325,18 @@ class OpenChannelMessage extends LocalMessage {
 }
 
 /// Response to channel opening
-class ChannelOpenedResponse extends LocalMessage {
+class ChannelOpenedResponse extends ActorResponse {
   final String channelId;
+  @override
   final bool success;
+  @override
   final String? error;
 
   ChannelOpenedResponse({
     required this.channelId,
     required this.success,
     this.error,
-  }) : super(payload: null);
-
-  @override
-  dynamic get payload => this;
+  });
 }
 
 // =============================================================================
@@ -370,7 +364,7 @@ class RecordPaymentMessage extends LocalMessage {
 }
 
 /// Response to payment recording
-class PaymentRecordedResponse extends LocalMessage {
+class PaymentRecordedResponse extends ActorResponse {
   final String channelId;
   final BigInt amountSats;
   final int sequenceNumber;
@@ -378,7 +372,9 @@ class PaymentRecordedResponse extends LocalMessage {
   final String clientSignatureHex;
   final BigInt newClientBalanceSats;
   final BigInt newServerBalanceSats;
+  @override
   final bool success;
+  @override
   final String? error;
 
   PaymentRecordedResponse({
@@ -391,10 +387,7 @@ class PaymentRecordedResponse extends LocalMessage {
     required this.newServerBalanceSats,
     required this.success,
     this.error,
-  }) : super(payload: null);
-
-  @override
-  dynamic get payload => this;
+  });
 }
 
 /// Request to acknowledge a payment as server
@@ -424,12 +417,14 @@ class AcknowledgePaymentMessage extends LocalMessage {
 }
 
 /// Response to payment acknowledgment
-class PaymentAcknowledgedResponse extends LocalMessage {
+class PaymentAcknowledgedResponse extends ActorResponse {
   final String channelId;
   final int sequenceNumber;
   final String fullySignedPaymentTxHex;
   final String serverSignatureHex;
+  @override
   final bool success;
+  @override
   final String? error;
 
   PaymentAcknowledgedResponse({
@@ -439,10 +434,7 @@ class PaymentAcknowledgedResponse extends LocalMessage {
     this.serverSignatureHex = '',
     required this.success,
     this.error,
-  }) : super(payload: null);
-
-  @override
-  dynamic get payload => this;
+  });
 }
 
 // =============================================================================
@@ -484,35 +476,33 @@ class ExpireChannelMessage extends LocalMessage {
 }
 
 /// Response to channel expiry recording
-class ChannelExpiredResponse extends LocalMessage {
+class ChannelExpiredResponse extends ActorResponse {
   final String channelId;
+  @override
   final bool success;
+  @override
   final String? error;
 
   ChannelExpiredResponse({
     required this.channelId,
     required this.success,
     this.error,
-  }) : super(payload: null);
-
-  @override
-  dynamic get payload => this;
+  });
 }
 
 /// Response to channel close
-class ChannelClosedResponse extends LocalMessage {
+class ChannelClosedResponse extends ActorResponse {
   final String channelId;
+  @override
   final bool success;
+  @override
   final String? error;
 
   ChannelClosedResponse({
     required this.channelId,
     required this.success,
     this.error,
-  }) : super(payload: null);
-
-  @override
-  dynamic get payload => this;
+  });
 }
 
 // =============================================================================
@@ -532,13 +522,15 @@ class QueryChannelStateMessage extends LocalMessage {
 }
 
 /// Response with channel state
-class ChannelStateResponse extends LocalMessage {
+class ChannelStateResponse extends ActorResponse {
   final String channelId;
   final String status;
   final BigInt? clientBalanceSats;
   final BigInt? serverBalanceSats;
   final int? latestSequenceNumber;
+  @override
   final bool success;
+  @override
   final String? error;
 
   ChannelStateResponse({
@@ -549,10 +541,7 @@ class ChannelStateResponse extends LocalMessage {
     this.latestSequenceNumber,
     required this.success,
     this.error,
-  }) : super(payload: null);
-
-  @override
-  dynamic get payload => this;
+  });
 }
 
 /// Asks the channel manager for a channel's full journaled state (the
@@ -584,7 +573,7 @@ class ChannelStateQuery extends LocalMessage {
 }
 
 /// Full channel state response from aggregate (for building transactions)
-class FullChannelStateResponse extends LocalMessage {
+class FullChannelStateResponse extends ActorResponse {
   final String channelId;
   final String walletId;
   final String status;
@@ -627,7 +616,9 @@ class FullChannelStateResponse extends LocalMessage {
   /// BEEF of the funding transaction journaled with the opening.
   final String? fundingBeefHex;
 
+  @override
   final bool success;
+  @override
   final String? error;
 
   FullChannelStateResponse({
@@ -659,9 +650,6 @@ class FullChannelStateResponse extends LocalMessage {
     this.fundingBeefHex,
     required this.success,
     this.error,
-  }) : super(payload: null);
-
-  @override
-  dynamic get payload => this;
+  });
 }
 

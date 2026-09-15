@@ -80,29 +80,29 @@ class InvoiceCoordinatorActor extends Actor {
       return;
     }
     try {
-      switch (message.runtimeType) {
-        case CreateInvoiceMessage:
-          await _handleCreateInvoice(message as CreateInvoiceMessage);
+      switch (message) {
+        case final CreateInvoiceMessage msg:
+          await _handleCreateInvoice(msg);
           break;
 
-        case CheckInvoiceMessage:
-          await _handleCheckInvoice(message as CheckInvoiceMessage);
+        case final CheckInvoiceMessage msg:
+          await _handleCheckInvoice(msg);
           break;
 
-        case MarkInvoicePaidMessage:
-          await _handleMarkInvoicePaid(message as MarkInvoicePaidMessage);
+        case final MarkInvoicePaidMessage msg:
+          await _handleMarkInvoicePaid(msg);
           break;
           
-        case CancelInvoiceMessage:
-          await _handleCancelInvoice(message as CancelInvoiceMessage);
+        case final CancelInvoiceMessage msg:
+          await _handleCancelInvoice(msg);
           break;
           
-        case ListInvoicesMessage:
-          await _handleListInvoices(message as ListInvoicesMessage);
+        case final ListInvoicesMessage msg:
+          await _handleListInvoices(msg);
           break;
           
-        case AddressGeneratedResponse:
-          await _handleAddressGenerated(message as AddressGeneratedResponse);
+        case final AddressGeneratedResponse msg:
+          await _handleAddressGenerated(msg);
           break;
           
         default:

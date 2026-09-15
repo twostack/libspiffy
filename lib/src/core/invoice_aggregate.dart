@@ -214,11 +214,11 @@ class InvoiceAggregate extends AggregateRoot<InvoiceState>
 
   @override
   Future<List<Event>> handleCommand(InvoiceState currentState, Command command) async {
-    return switch (command.runtimeType) {
-      CreateInvoiceCommand => _handleCreateInvoice(currentState, command as CreateInvoiceCommand),
-      MarkInvoicePaidCommand => _handleMarkInvoicePaid(currentState, command as MarkInvoicePaidCommand),
-      CancelInvoiceCommand => _handleCancelInvoice(currentState, command as CancelInvoiceCommand),
-      ExpireInvoiceCommand => _handleExpireInvoice(currentState, command as ExpireInvoiceCommand),
+    return switch (command) {
+      final CreateInvoiceCommand cmd => _handleCreateInvoice(currentState, cmd),
+      final MarkInvoicePaidCommand cmd => _handleMarkInvoicePaid(currentState, cmd),
+      final CancelInvoiceCommand cmd => _handleCancelInvoice(currentState, cmd),
+      final ExpireInvoiceCommand cmd => _handleExpireInvoice(currentState, cmd),
       _ => throw ArgumentError('Unknown command type: ${command.runtimeType}'),
     };
   }
@@ -233,21 +233,21 @@ class InvoiceAggregate extends AggregateRoot<InvoiceState>
       throw ArgumentError('Expected InvoiceEvent, got ${event.runtimeType}');
     }
     
-    switch (event.runtimeType) {
-      case InvoiceCreatedEvent:
-        _applyInvoiceCreated(event as InvoiceCreatedEvent);
+    switch (event) {
+      case final InvoiceCreatedEvent evt:
+        _applyInvoiceCreated(evt);
         break;
-      case InvoiceStatusChangedEvent:
-        _applyInvoiceStatusChanged(event as InvoiceStatusChangedEvent);
+      case final InvoiceStatusChangedEvent evt:
+        _applyInvoiceStatusChanged(evt);
         break;
-      case InvoicePaidEvent:
-        _applyInvoicePaid(event as InvoicePaidEvent);
+      case final InvoicePaidEvent evt:
+        _applyInvoicePaid(evt);
         break;
-      case InvoiceExpiredEvent:
-        _applyInvoiceExpired(event as InvoiceExpiredEvent);
+      case final InvoiceExpiredEvent evt:
+        _applyInvoiceExpired(evt);
         break;
-      case InvoiceCancelledEvent:
-        _applyInvoiceCancelled(event as InvoiceCancelledEvent);
+      case final InvoiceCancelledEvent evt:
+        _applyInvoiceCancelled(evt);
         break;
       default:
         throw ArgumentError('Unknown event type: ${event.runtimeType}');

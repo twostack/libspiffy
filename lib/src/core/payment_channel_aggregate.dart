@@ -323,54 +323,54 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       throw ArgumentError('Expected ChannelEvent, got ${event.runtimeType}');
     }
 
-    switch (event.runtimeType) {
-      case ChannelRequestedEvent:
-        _applyChannelRequested(event as ChannelRequestedEvent);
+    switch (event) {
+      case final ChannelRequestedEvent evt:
+        _applyChannelRequested(evt);
         break;
-      case ChannelAcceptedEvent:
-        _applyChannelAccepted(event as ChannelAcceptedEvent);
+      case final ChannelAcceptedEvent evt:
+        _applyChannelAccepted(evt);
         break;
-      case ChannelRejectedEvent:
-        _applyChannelRejected(event as ChannelRejectedEvent);
+      case final ChannelRejectedEvent evt:
+        _applyChannelRejected(evt);
         break;
-      case ServerAcceptanceRecordedEvent:
-        _applyServerAcceptanceRecorded(event as ServerAcceptanceRecordedEvent);
+      case final ServerAcceptanceRecordedEvent evt:
+        _applyServerAcceptanceRecorded(evt);
         break;
-      case RefundBuiltEvent:
-        _applyRefundBuilt(event as RefundBuiltEvent);
+      case final RefundBuiltEvent evt:
+        _applyRefundBuilt(evt);
         break;
-      case RefundCountersignedEvent:
-        _applyRefundCountersigned(event as RefundCountersignedEvent);
+      case final RefundCountersignedEvent evt:
+        _applyRefundCountersigned(evt);
         break;
-      case FundingBroadcastStartedEvent:
-        _applyFundingBroadcastStarted(event as FundingBroadcastStartedEvent);
+      case final FundingBroadcastStartedEvent evt:
+        _applyFundingBroadcastStarted(evt);
         break;
-      case FundingBroadcastFailedEvent:
-        _applyFundingBroadcastFailed(event as FundingBroadcastFailedEvent);
+      case final FundingBroadcastFailedEvent evt:
+        _applyFundingBroadcastFailed(evt);
         break;
-      case FundingRecordedInWalletEvent:
-        _applyFundingRecordedInWallet(event as FundingRecordedInWalletEvent);
+      case final FundingRecordedInWalletEvent evt:
+        _applyFundingRecordedInWallet(evt);
         break;
-      case ChannelOpenedEvent:
-        _applyChannelOpened(event as ChannelOpenedEvent);
+      case final ChannelOpenedEvent evt:
+        _applyChannelOpened(evt);
         break;
-      case PaymentRecordedEvent:
-        _applyPaymentRecorded(event as PaymentRecordedEvent);
+      case final PaymentRecordedEvent evt:
+        _applyPaymentRecorded(evt);
         break;
-      case PaymentAcknowledgedEvent:
-        _applyPaymentAcknowledged(event as PaymentAcknowledgedEvent);
+      case final PaymentAcknowledgedEvent evt:
+        _applyPaymentAcknowledged(evt);
         break;
-      case ChannelClosingEvent:
-        _applyChannelClosing(event as ChannelClosingEvent);
+      case final ChannelClosingEvent evt:
+        _applyChannelClosing(evt);
         break;
-      case ChannelClosedEvent:
-        _applyChannelClosed(event as ChannelClosedEvent);
+      case final ChannelClosedEvent evt:
+        _applyChannelClosed(evt);
         break;
-      case RefundClaimedEvent:
-        _applyRefundClaimed(event as RefundClaimedEvent);
+      case final RefundClaimedEvent evt:
+        _applyRefundClaimed(evt);
         break;
-      case ChannelExpiredEvent:
-        _applyChannelExpired(event as ChannelExpiredEvent);
+      case final ChannelExpiredEvent evt:
+        _applyChannelExpired(evt);
         break;
       default:
         throw ArgumentError('Unknown event type: ${event.runtimeType}');

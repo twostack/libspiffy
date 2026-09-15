@@ -302,6 +302,62 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### After wave 4: follow-up fixes
+
+Beads filed during wave 4, each with a regression test shown to fail on the
+previous code (report section 11, V-40 to V-43).
+
+- **Spendable balance agrees with coin selection (V-40, libspiffy-ad07).**
+  `WalletState.availableBalance` and `hasSufficientBalance` are now the total
+  of the UTXOs the aggregate's coin selection may pick: status available, no
+  plugin metadata, not watch-only (`WalletBalances.isSpendable`). Before,
+  reserved amounts were subtracted twice, and pending, plugin-managed and
+  watch-only UTXOs were counted. The confirmed/unconfirmed/reserved buckets
+  and the read-side balances are unchanged. `spv-understanding.md`
+  ("Balances") gives the rule for each API.
+- **Reserved wallet metadata keys (V-41, libspiffy-hfai).**
+  `UpdateWalletConfigurationCommand.newMetadata` and
+  `CreateWalletCommand.walletMetadata` could overwrite the wallet's own
+  records (`address_indices`, `outgoingTransactions`, deferred holds, …) and
+  the read model's derived values. Journaled events from before this change
+  replay with those keys skipped; no event is dropped.
+- **Invoice creation errors are correlated (V-42, libspiffy-q5jv).** A
+  wallet-manager error fails only the invoice whose address request it
+  answers. Before, an error without `walletId` failed every pending invoice.
+- **SPV reorg and proof rechecks read only affected rows (V-43,
+  libspiffy-ctkm).** `SPVActor` no longer lists every wallet's confirmed
+  history on a reorganization, per failing proof, or when sweeping rejected
+  proofs. **Postgres migration v014** adds a partial index on confirmed
+  transactions' `block_height`. Opening an existing Isar store builds a new
+  `(status, blockHeight)` index.
+
+#### Breaking changes
+
+- `availableBalance` / `hasSufficientBalance` report less for wallets holding
+  pending, plugin-managed or watch-only UTXOs, and no longer under-report
+  wallets with reservations. `availableBalance` is a `late final` field
+  instead of a getter.
+- Wallet creation and configuration updates throw `ArgumentError` when the
+  metadata names a reserved key (`WalletMetadataKeys.reserved`, which includes
+  read-model names such as `walletType` and `lastUpdated`). Creation may
+  still pass `network`.
+- An invoice whose address request gets no answer fails after
+  `addressRequestTimeout` (default 60 s) instead of staying pending.
+  `AddressGeneratedResponse` or error maps told to `InvoiceCoordinatorActor`
+  directly are ignored.
+- `ReadModelStorage` has two new methods, `getTransactionsByTxids` and
+  `getConfirmedTransactionsFromHeight`. Classes that `extends` it inherit
+  fallbacks; classes that `implements` it must add them.
+
+Additive API: `WalletBalances.isSpendable` / `isWatchOnly` / `spendableTotal`,
+`WalletMetadataKeys` (`addressIndices`, `addressChains`, `network`,
+`readModel`, `reserved`, `creationInputs`, `reservedIn`,
+`requireHostMetadata`, `hostEntries`),
+`WalletLifecycle.requireHostCreationMetadata`,
+`InvoiceCoordinatorActor(addressRequestTimeout:)`; test seams
+`InMemoryWalletStorage.transactionRowsRead`,
+`PostgresWalletStorage.onTransactionLookupQuery`.
+
 ### Wave 4: refactors
 
 Structural work that keeps behaviour (the existing suite passes unchanged;

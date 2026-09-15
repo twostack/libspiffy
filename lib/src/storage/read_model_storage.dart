@@ -505,9 +505,12 @@ abstract class ReadModelStorage {
   /// proof without a block hash matches any [blockHash]); with
   /// [onlyIfMerkleProof] only while its `merkleProof` equals that list. So a
   /// newer proof stored in the meantime (the transaction re-mined on the
-  /// active chain) is left alone. [at] is recorded as `statusChangedAt`
-  /// (default now). Returns whether a proof was marked; marking again is a
-  /// no-op that returns false.
+  /// active chain) is left alone. A marked proof without a block hash
+  /// records [blockHash] (the block that left the chain; a read model rebuilt
+  /// from the journal meets such a proof before its header, bead
+  /// libspiffy-yix) unless another row of [txid] already names that block.
+  /// [at] is recorded as `statusChangedAt` (default now). Returns whether a
+  /// proof was marked; marking again is a no-op that returns false.
   Future<bool> markMerkleProofOrphaned(
     String txid, {
     String? blockHash,
@@ -545,6 +548,27 @@ abstract class ReadModelStorage {
   /// Every proof row with [status] (for example the
   /// [MerkleProofStatus.pendingHeader] proofs to check once headers arrive).
   Future<List<MerkleProof>> getMerkleProofsByStatus(MerkleProofStatus status);
+
+  /// The proof rows with [status] whose block height is between [fromHeight]
+  /// and [toHeight] (both inclusive), oldest first (bead libspiffy-hg0).
+  ///
+  /// Serves header-chain reorganizations: the orphaned and rejected proofs at
+  /// the heights whose active header changed are checked again without
+  /// reading every orphaned or rejected proof ever stored. Backends read only
+  /// those rows (a (status, block height) index).
+  ///
+  /// The default implementation filters [getMerkleProofsByStatus]; the
+  /// libspiffy backends override it.
+  Future<List<MerkleProof>> getMerkleProofsByStatusBetweenHeights(
+    MerkleProofStatus status,
+    int fromHeight,
+    int toHeight,
+  ) async {
+    return [
+      for (final proof in await getMerkleProofsByStatus(status))
+        if (proof.blockHeight >= fromHeight && proof.blockHeight <= toHeight) proof,
+    ];
+  }
 
   /// The current ([MerkleProof.isCurrent]) proofs that name [blockHash].
   ///
@@ -744,7 +768,9 @@ abstract class ReadModelStorage {
 /// arrives (SPVActor). A [verified] proof becomes [orphaned] when its block
 /// leaves the active chain. A later proof of the transaction that verifies
 /// (the same one against a new active header, or another one) becomes
-/// current whatever the earlier rows say.
+/// current whatever the earlier rows say: SPVActor stores an [orphaned] or
+/// [rejected] proof verified again when a reorganization makes active a
+/// header at its height that it verifies against (beads hg0, 10r).
 enum MerkleProofStatus {
   /// Its root matches the header at its height on the active chain.
   verified,
@@ -768,7 +794,8 @@ enum MerkleProofStatus {
   /// It was never verified on our chain (a forged proof, or one for a block
   /// we do not have), so it has no block hash. Kept for the record; never a
   /// transaction's current proof, never put in a BEEF, never backing a
-  /// confirmation, and it never displaces a current proof.
+  /// confirmation, and it never displaces a current proof. If the header at
+  /// its height changes to one it verifies against, it becomes [verified].
   rejected,
 }
 

@@ -222,6 +222,77 @@ void defineMerkleProofRetentionContract(
           isNot(contains(txid)));
     });
 
+    test('yix: marking a proof without a block hash orphaned in a named block records that block', () async {
+      final s = storage();
+      final u = unique();
+      final txid = contractHex64('ret-orphan-named-$u');
+      final block = contractHex64('ret-orphan-named-block-$u');
+      final bump = bumpHex('orphan-named-$u');
+      // A rebuild met the proof before its header (pendingHeader, no block
+      // hash); the journaled revert names the block it was verified in.
+      await s.storeMerkleProof(txid, proof(txid, null, bump));
+
+      final at = DateTime.utc(2026, 9, 15, 8);
+      expect(await s.markMerkleProofOrphaned(txid, blockHash: block, onlyIfMerkleProof: [bump], at: at), isTrue);
+
+      final history = await s.getMerkleProofHistory(txid);
+      expect([for (final p in history) (p.blockHash, p.status, p.merkleProof.join())],
+          [(block, MerkleProofStatus.orphaned, bump)], reason: 'the orphaned row names the block that left the chain');
+      expect(history.single.statusChangedAt!.isAtSameMomentAs(at), isTrue);
+      expect(await s.getMerkleProofsForBlock(block), isEmpty, reason: 'an orphaned proof is not current');
+      expect(await s.markMerkleProofOrphaned(txid, blockHash: block, onlyIfMerkleProof: [bump]), isFalse);
+    });
+
+    test('yix: a proof without a block hash marked orphaned keeps none when another row already names that block',
+        () async {
+      final s = storage();
+      final u = unique();
+      final txid = contractHex64('ret-orphan-taken-$u');
+      final block = contractHex64('ret-orphan-taken-block-$u');
+      await s.storeMerkleProof(txid, proof(txid, block, bumpHex('taken-a-$u')));
+      expect(await s.markMerkleProofOrphaned(txid, blockHash: block), isTrue);
+      await s.storeMerkleProof(txid, proof(txid, null, bumpHex('taken-b-$u'), height: 12));
+
+      expect(await s.markMerkleProofOrphaned(txid, blockHash: block, onlyIfMerkleProof: [bumpHex('taken-b-$u')]),
+          isTrue);
+      expect([for (final p in await s.getMerkleProofHistory(txid)) (p.blockHash, p.status)], [
+        (block, MerkleProofStatus.orphaned),
+        (null, MerkleProofStatus.orphaned),
+      ], reason: 'one row per (txid, block)');
+    });
+
+    test('hg0: proofs of one status at a range of heights, oldest first', () async {
+      final s = storage();
+      final u = unique();
+      String t(String tag) => contractHex64('ret-range-$tag-$u');
+      final block = contractHex64('ret-range-block-$u');
+      // orphaned at 100, 101, 103; rejected at 101; verified at 102; a
+      // pendingHeader at 101.
+      for (final (tag, height) in [('o103', 103), ('o100', 100), ('o101', 101)]) {
+        await s.storeMerkleProof(t(tag), proof(t(tag), block, bumpHex('$tag-$u'), height: height));
+        expect(await s.markMerkleProofOrphaned(t(tag)), isTrue);
+      }
+      await s.storeMerkleProof(t('r101'), proof(t('r101'), null, bumpHex('r101-$u'), height: 101, status: MerkleProofStatus.rejected));
+      await s.storeMerkleProof(t('v102'), proof(t('v102'), block, bumpHex('v102-$u'), height: 102));
+      await s.storeMerkleProof(t('p101'), proof(t('p101'), null, bumpHex('p101-$u'), height: 101));
+      final mine = {for (final tag in ['o100', 'o101', 'o103', 'r101', 'v102', 'p101']) t(tag): tag};
+
+      Future<List<String>> between(MerkleProofStatus status, int from, int to) async {
+        final rows = await s.getMerkleProofsByStatusBetweenHeights(status, from, to);
+        expect(rows.every((p) => p.status == status && p.blockHeight >= from && p.blockHeight <= to), isTrue,
+            reason: 'every row returned has that status and a height in range');
+        return [for (final p in rows) if (mine[p.txid] case final tag?) tag];
+      }
+
+      expect(await between(MerkleProofStatus.orphaned, 101, 103), ['o103', 'o101'], reason: 'store order');
+      expect(await between(MerkleProofStatus.orphaned, 100, 100), ['o100']);
+      expect(await between(MerkleProofStatus.orphaned, 104, 200), isEmpty);
+      expect(await between(MerkleProofStatus.rejected, 101, 101), ['r101']);
+      expect(await between(MerkleProofStatus.verified, 100, 103), ['v102']);
+      expect(await between(MerkleProofStatus.pendingHeader, 101, 102), ['p101']);
+      expect(await s.getMerkleProofsByStatusBetweenHeights(MerkleProofStatus.orphaned, 103, 101), isEmpty);
+    });
+
     // azl (libspiffy-azl): a proof the header at its height contradicts was
     // stored as pendingHeader and stayed the current proof (BEEFs used it).
     Future<List<(String?, MerkleProofStatus, String)>> shape(ReadModelStorage s, String txid) async =>

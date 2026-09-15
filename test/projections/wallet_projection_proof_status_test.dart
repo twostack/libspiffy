@@ -300,6 +300,20 @@ void main() {
           reason: 'a second replay changes nothing');
     });
 
+    test('yix: a rebuild without the header at its height still records the reverted proof on its block', () async {
+      // Live: verified in the fixture block, then orphaned there. A rebuild
+      // before headers are synced stores the proof pendingHeader (no block
+      // hash); the revert names the block, and the orphaned row keeps it.
+      await projection.handle(imported());
+      await projection.handle(reverted());
+
+      expect(rows(await storage.getMerkleProofHistory(kFixtureTxid)), [(kFixtureBlockHash, 'orphaned', bumpHex)]);
+      await projection.handle(imported());
+      await projection.handle(reverted());
+      expect(rows(await storage.getMerkleProofHistory(kFixtureTxid)), [(kFixtureBlockHash, 'orphaned', bumpHex)],
+          reason: 'a second replay changes nothing');
+    });
+
     test('a received ancestor whose BUMP contradicts the stored header is not a current proof', () async {
       await storage.storeBlockHeader(fixtureHeader(), kFixtureHeight);
       await projection.handle(TransactionImportedEvent(

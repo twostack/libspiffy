@@ -31,6 +31,7 @@ import 'package:libspiffy/src/models/deferred_payment.dart';
 import 'package:libspiffy/src/models/transaction_address_link.dart';
 import 'package:libspiffy/src/storage/isar_wallet_storage.dart';
 import 'package:libspiffy/src/storage/libspiffy_schemas.dart';
+import 'package:libspiffy/src/storage/read_model_storage.dart' show MerkleProof, MerkleProofStatus;
 
 import '../integration/isar_test_helper.dart';
 import 'channel_read_model_contract.dart' show fullFieldChannel;
@@ -554,5 +555,33 @@ void main() {
       });
       expect([for (final q in queries) await q.rowsInRange()], [2]);
     });
+  });
+
+  test('hg0: orphaned proofs at a range of heights are read from the (status, blockHeight) index', () async {
+    // A long orphaned history below the reorganized heights, and current
+    // proofs at them.
+    for (var i = 0; i < 80; i++) {
+      final txid = _txid('orphaned-history-$i');
+      await storage.storeMerkleProof(txid, MerkleProof(
+          txid: txid, blockHash: _txid('old-block-$i'), blockHeight: 100 + i, position: 0, merkleProof: ['fe$i']));
+      await storage.markMerkleProofOrphaned(txid);
+    }
+    for (var h = 1000; h <= 1003; h++) {
+      final txid = _txid('verified-$h');
+      await storage.storeMerkleProof(
+          txid, MerkleProof(txid: txid, blockHash: _txid('block-$h'), blockHeight: h, position: 0, merkleProof: ['fe$h']));
+    }
+    for (final h in [1001, 1002]) {
+      final txid = _txid('orphaned-$h');
+      await storage.storeMerkleProof(
+          txid, MerkleProof(txid: txid, blockHash: _txid('orphaned-block-$h'), blockHeight: h, position: 0, merkleProof: ['ff$h']));
+      await storage.markMerkleProofOrphaned(txid);
+    }
+
+    final queries = await queriesOf(() async {
+      expect([for (final p in await storage.getMerkleProofsByStatusBetweenHeights(MerkleProofStatus.orphaned, 1001, 1003)) p.txid],
+          [_txid('orphaned-1001'), _txid('orphaned-1002')]);
+    });
+    expect([for (final q in queries) await q.rowsInRange()], [2]);
   });
 }

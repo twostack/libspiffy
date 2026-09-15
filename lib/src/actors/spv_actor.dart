@@ -17,9 +17,11 @@ import 'wallet_messages.dart';
 import 'invoice_messages.dart';
 import '../utils/network_name.dart';
 import '../utils/unique_id.dart';
-import '../core/wallet_commands.dart' show RevertTransactionConfirmationCommand;
+import '../core/wallet_commands.dart'
+    show ConfirmTransactionCommand, MarkUTXOAvailableCommand, RevertTransactionConfirmationCommand;
 import '../core/wallet_events.dart' show BeefAncestor;
 import '../models/bitcoin_transaction.dart' show BitcoinTransaction, TransactionStatus;
+import '../models/bitcoin_utxo.dart' show UTXOStatus;
 import '../spv/merkle_proof_header_check.dart';
 import '../core/wallet_output_ownership.dart' show BareMultisigScript;
 
@@ -89,9 +91,16 @@ class SPVActor extends Actor {
     _headerSyncActor = msg.headerSyncActor;
   }
 
+  /// Loads the chain height, then checks the pendingHeader proofs up to it
+  /// (bead libspiffy-yix): headers that arrived while the node was down, or a
+  /// check a shutdown interrupted, are not left until the next header
+  /// notification. Runs before the first message is handled.
   @override
-  void preStart() {
-    _loadInitialState();
+  Future<void> preStart() async {
+    await _loadCurrentChainState();
+    if (_currentHeight > 0) {
+      await _recheckUnverifiedProofs(_currentHeight);
+    }
   }
 
   @override
@@ -137,19 +146,10 @@ class SPVActor extends Actor {
     }
   }
 
-  /// Load initial SPV state from storage
-  /// 
+  /// Load current chain state from storage
+  ///
   /// Note: Block header synchronization is handled by SpiffyNode, not the SPV actor.
   /// The SPV actor only consumes headers that SpiffyNode has already stored.
-  void _loadInitialState() {
-    
-    // Load current chain state from storage (async)
-    _loadCurrentChainState().then((_) {
-    }).catchError((e) {
-    });
-  }
-  
-  /// Load current chain state from storage
   Future<void> _loadCurrentChainState() async {
     try {
       _currentHeight = await _storage.getBestHeight();
@@ -1049,7 +1049,14 @@ class SPVActor extends Actor {
       // this notification. Proofs accepted before their header was known are
       // checked now that headers have arrived (zvj).
       await _recheckUnverifiedProofs(msg.height);
-      
+
+      // Heights above the previous tip: a block a reorganization orphaned
+      // (or whose header contradicted a proof) may be active there now,
+      // arriving in a later batch than the reorganization (hg0, 10r).
+      if (msg.height > _currentHeight) {
+        await _reviveProofs(_currentHeight + 1, msg.height);
+      }
+
       // Update chain tip if this is a new highest block
       if (msg.height > _currentHeight) {
         _currentHeight = msg.height;
@@ -1108,8 +1115,15 @@ class SPVActor extends Actor {
   /// the transactions whose proofs name an orphaned block
   /// ([ReadModelStorage.getTransactionsByTxids]), not the confirmed history
   /// of every wallet (bead ctkm).
+  ///
+  /// A pendingHeader proof whose header is still unknown is left as it is
+  /// (bead 10r). Then orphaned and rejected proofs above the fork point that
+  /// verify on the new active chain are verified again and their
+  /// confirmations restored ([_reviveProofs], beads hg0 and 10r).
   Future<void> _handleHeaderChainReorganized(HeaderChainReorganizedMessage msg) async {
     _currentHeight = msg.newTipHeight;
+    final reverted = <String>[];
+    final revertedRows = <(String, String)>{}; // (wallet, txid)
     try {
       final orphaned = msg.orphanedBlockHashes.toSet();
       final onOrphanedBlocks = <String, MerkleProof>{};
@@ -1139,7 +1153,6 @@ class SPVActor extends Actor {
         }
       }
 
-      final reverted = <String>[];
       for (final entry in candidates.entries) {
         final walletIds = [for (final tx in entry.value) tx.walletId!];
         final proof = await _storage.getMerkleProof(entry.key);
@@ -1153,8 +1166,11 @@ class SPVActor extends Actor {
         } else {
           final outcome = await _recheckProof(proof);
           if (outcome == null) continue; // still proven on the active chain
-          if (proof.blockHeight <= msg.forkHeight && !orphaned.contains(proof.blockHash) &&
-              outcome.status == ProofHeaderStatus.headerUnknown) {
+          if (outcome.status == ProofHeaderStatus.headerUnknown &&
+              ((proof.blockHeight <= msg.forkHeight && !orphaned.contains(proof.blockHash)) ||
+                  // Never checked against a header and still none at its
+                  // height: nothing it rests on changed (10r).
+                  (proof.status == MerkleProofStatus.pendingHeader && proof.blockHash == null))) {
             continue;
           }
           reason = 'reorganization at height ${msg.forkHeight}: ${outcome.status.name}'
@@ -1166,10 +1182,11 @@ class SPVActor extends Actor {
           } else {
             await _markOrphaned(proof);
           }
-          _rejectionsHandled.add(entry.key);
         }
         _revertConfirmation(entry.key, walletIds, proof, reason);
+        _noteReverted(entry.value);
         reverted.add(entry.key);
+        revertedRows.addAll([for (final walletId in walletIds) (walletId, entry.key)]);
       }
 
       // Proofs on orphaned blocks of transactions no wallet holds as
@@ -1188,6 +1205,94 @@ class SPVActor extends Actor {
     } catch (e, st) {
       _log.severe('Failed to re-check confirmations after the reorganization at height ${msg.forkHeight}: $e', e, st);
     }
+    // After the proofs on the orphaned blocks are marked: a transaction whose
+    // current proof was just orphaned may be proven again by an older proof
+    // (its rows still read confirmed until the revert above is applied).
+    await _reviveProofs(msg.forkHeight + 1, msg.newTipHeight, justReverted: revertedRows);
+  }
+
+  /// Orphaned and rejected proofs at heights [fromHeight]..[toHeight], whose
+  /// active headers just changed, are checked against the active chain again
+  /// (beads hg0 and 10r): an orphaned proof whose block is active again (a
+  /// reorganization of a reorganization), or a rejected proof the header
+  /// that contradicted it no longer does, verifies. It is stored verified
+  /// with the active block's hash (its own row when that row names this
+  /// block or none; no row is deleted), unless the transaction has a current
+  /// proof.
+  ///
+  /// The confirmation is restored the way a proof ARC supplies confirms:
+  /// each wallet holding the transaction unconfirmed (not failed) is sent
+  /// ConfirmTransactionCommand with the BUMP (journaled in
+  /// TransactionConfirmedEvent, so a rebuilt read model has the proof) and
+  /// MarkUTXOAvailableCommand for its pending outputs of the transaction
+  /// (the reverted confirmation had made them pending).
+  ///
+  /// A row in [justReverted] ((wallet, txid) whose revert was just sent, not
+  /// yet applied) is restored although it still reads confirmed, and its
+  /// available outputs are made available again after the revert.
+  ///
+  /// Reads the proofs of those statuses at those heights only
+  /// ([ReadModelStorage.getMerkleProofsByStatusBetweenHeights]), and the
+  /// transaction rows of the proofs that verify.
+  Future<void> _reviveProofs(int fromHeight, int toHeight, {Set<(String, String)> justReverted = const {}}) async {
+    if (toHeight < fromHeight) return;
+    try {
+      final candidates = [
+        ...await _storage.getMerkleProofsByStatusBetweenHeights(MerkleProofStatus.orphaned, fromHeight, toHeight),
+        ...await _storage.getMerkleProofsByStatusBetweenHeights(MerkleProofStatus.rejected, fromHeight, toHeight),
+      ];
+      if (candidates.isEmpty) return;
+      final current = await _storage.getMerkleProofsBatch({for (final p in candidates) p.txid}.toList());
+
+      final revived = <String, (MerkleProof, ProofHeaderCheck)>{};
+      for (final proof in candidates) {
+        if (current.containsKey(proof.txid) || revived.containsKey(proof.txid)) continue;
+        final check = await _checkProof(proof);
+        if (check.isVerified) revived[proof.txid] = (proof, check);
+      }
+      if (revived.isEmpty) return;
+
+      final restore = <String, Set<String>>{}; // walletId -> txids
+      for (final tx in await _storage.getTransactionsByTxids(revived.keys.toList())) {
+        final walletId = tx.walletId;
+        if (walletId == null || walletId.isEmpty) continue;
+        final unconfirmed = tx.status != TransactionStatus.confirmed || justReverted.contains((walletId, tx.txid));
+        if (!unconfirmed || tx.status == TransactionStatus.failed) continue;
+        restore.putIfAbsent(walletId, () => {}).add(tx.txid);
+      }
+      for (final MapEntry(key: walletId, value: txids) in restore.entries) {
+        for (final txid in txids) {
+          final (proof, check) = revived[txid]!;
+          _walletManager.tell(WalletCommandMessage(walletId, ConfirmTransactionCommand(
+            walletId: walletId,
+            txid: txid,
+            blockHeight: check.blockHeight,
+            blockHash: check.blockHash,
+            bumpHex: proof.merkleProof.single,
+          )));
+        }
+        for (final utxo in await _storage.getUTXOs(walletId)) {
+          if (!txids.contains(utxo.txid)) continue;
+          // A revert just sent (not applied yet) makes an available output
+          // pending before this command reaches the wallet.
+          final demoted = justReverted.contains((walletId, utxo.txid))
+              ? const {UTXOStatus.pending, UTXOStatus.available}
+              : const {UTXOStatus.pending};
+          final pendingOutput = demoted.contains(utxo.status) ||
+              (utxo.status == UTXOStatus.reserved && demoted.contains(utxo.statusBeforeReservation));
+          if (!pendingOutput) continue;
+          _walletManager.tell(WalletCommandMessage(walletId, MarkUTXOAvailableCommand(
+            walletId: walletId,
+            txid: utxo.txid,
+            vout: utxo.vout,
+          )));
+        }
+      }
+      _log.warning('${revived.length} orphaned or rejected proof(s) at heights $fromHeight-$toHeight verify on the '
+          'active chain again: ${revived.keys.toList()}; confirmation restored in ${restore.length} wallet(s)');
+    } catch (e, st) {
+      _log.warning('Failed to re-check orphaned and rejected proofs at heights $fromHeight-$toHeight: $e', e, st);
+    }
   }
 
   /// Proofs stored before their block header was known have the status
@@ -1203,6 +1308,7 @@ class SPVActor extends Actor {
   /// The wallets holding the failed transactions as confirmed are read once,
   /// by txid, after the checks: not the confirmed history per proof (ctkm).
   Future<void> _recheckUnverifiedProofs(int upToHeight) async {
+    final reverted = <String>[];
     try {
       final unverified = await _storage.getMerkleProofsByStatus(MerkleProofStatus.pendingHeader);
 
@@ -1220,14 +1326,14 @@ class SPVActor extends Actor {
         failed.add((proof, outcome));
       }
 
-      final reverted = <String>[];
       if (failed.isNotEmpty) {
-        final wallets = await _confirmedWallets([for (final (proof, _) in failed) proof.txid]);
+        final confirmed = _confirmedRowsOf(await _storage.getTransactionsByTxids([for (final (proof, _) in failed) proof.txid]));
         for (final (proof, outcome) in failed) {
-          _revertConfirmation(proof.txid, wallets[proof.txid] ?? const [], proof,
+          final rows = confirmed[proof.txid] ?? const <BitcoinTransaction>[];
+          _revertConfirmation(proof.txid, [for (final tx in rows) tx.walletId!], proof,
               'proof imported before its block header does not match header at height '
               '${proof.blockHeight}: ${outcome.status.name}${outcome.detail == null ? '' : ' (${outcome.detail})'}');
-          _rejectionsHandled.add(proof.txid);
+          _noteReverted(rows);
           reverted.add(proof.txid);
         }
       }
@@ -1239,15 +1345,27 @@ class SPVActor extends Actor {
     } catch (e, st) {
       _log.warning('Failed to re-check unverified proofs: $e', e, st);
     }
-    await _revertRejectedConfirmations();
+    // The rows of the txids just reverted were read above: every confirmed
+    // one was reverted, so they are not read again.
+    await _revertRejectedConfirmations(alreadyReverted: reverted.toSet());
   }
 
-  /// Txids whose rejected proofs [_revertRejectedConfirmations] has dealt
-  /// with in this actor's lifetime (a revert was sent, or the transaction has
-  /// a current proof), so later header notifications do not revert the same
-  /// confirmation again before the projection has applied the first revert.
-  /// After a restart the read model shows those transactions unconfirmed.
-  final Set<String> _rejectionsHandled = {};
+  /// The confirmations a revert was sent for: (wallet, txid) -> `updatedAt`
+  /// of the confirmed row it was sent for. Later header notifications do not
+  /// revert that same confirmation again before the projection has applied
+  /// the first revert; a later confirmation of the transaction (its row
+  /// written again) is a different one and is reverted too if it also rests
+  /// only on a rejected proof (bead 10r: the guard was per txid, for the
+  /// actor's lifetime).
+  final Map<(String, String), DateTime> _revertsSent = {};
+
+  /// Record that a revert was sent for each confirmed row of [rows].
+  void _noteReverted(Iterable<BitcoinTransaction> rows) {
+    for (final tx in rows) {
+      final walletId = tx.walletId;
+      if (walletId != null && walletId.isNotEmpty) _revertsSent[(walletId, tx.txid)] = tx.updatedAt;
+    }
+  }
 
   /// A transaction held as confirmed whose proof is
   /// [MerkleProofStatus.rejected] and which has no current proof is not
@@ -1256,34 +1374,43 @@ class SPVActor extends Actor {
   /// changed, or a header change between the live check and the event).
   /// Each wallet holding it as confirmed has the confirmation reverted, as
   /// for a pendingHeader proof that fails its header, and ARCActor is asked
-  /// to poll for a real proof.
-  Future<void> _revertRejectedConfirmations() async {
+  /// to poll for a real proof. Txids in [alreadyReverted] (their confirmed
+  /// rows were just reverted) are skipped.
+  Future<void> _revertRejectedConfirmations({Set<String> alreadyReverted = const {}}) async {
     try {
       final rejected = <String, MerkleProof>{
         for (final proof in await _storage.getMerkleProofsByStatus(MerkleProofStatus.rejected))
-          if (!_rejectionsHandled.contains(proof.txid)) proof.txid: proof,
+          if (!alreadyReverted.contains(proof.txid)) proof.txid: proof,
       };
       if (rejected.isEmpty) return;
 
       for (final txid in (await _storage.getMerkleProofsBatch(rejected.keys.toList())).keys) {
         rejected.remove(txid); // a current proof backs the transaction
-        _rejectionsHandled.add(txid);
       }
+      if (rejected.isEmpty) return;
       // The rows of those transactions only (ctkm). A rejected proof of a
       // received ancestor belongs to no wallet transaction.
       final rows = await _storage.getTransactionsByTxids(rejected.keys.toList());
-      final held = {for (final tx in rows) tx.txid};
-      rejected.removeWhere((txid, _) => !held.contains(txid));
-      if (rejected.isEmpty) return;
-
-      final wallets = _confirmedWalletsOf(rows);
+      for (final tx in rows) {
+        // A row that changed since its revert was sent: the revert was
+        // applied (or the transaction confirmed again), so forget it.
+        final key = (tx.walletId ?? '', tx.txid);
+        final sentFor = _revertsSent[key];
+        if (sentFor != null && (tx.status != TransactionStatus.confirmed || sentFor != tx.updatedAt)) {
+          _revertsSent.remove(key);
+        }
+      }
+      final wallets = _confirmedRowsOf([
+        for (final tx in rows)
+          if (_revertsSent[(tx.walletId ?? '', tx.txid)] != tx.updatedAt) tx,
+      ]);
       if (wallets.isEmpty) return;
 
       for (final entry in wallets.entries) {
         final proof = rejected[entry.key]!;
-        _revertConfirmation(entry.key, entry.value, proof,
+        _revertConfirmation(entry.key, [for (final tx in entry.value) tx.walletId!], proof,
             'its only proof does not match the block header at height ${proof.blockHeight} (rejected)');
-        _rejectionsHandled.add(entry.key);
+        _noteReverted(entry.value);
       }
       _log.severe('${wallets.length} confirmation(s) rested only on rejected proofs; reverted: ${wallets.keys.toList()}');
       _arcActor?.tell(TransactionConfirmationsRevertedMessage(wallets.keys.toList()));
@@ -1321,6 +1448,12 @@ class SPVActor extends Actor {
   /// when it verifies (after recording it as verified with the active
   /// block's hash, if it was not already), otherwise the failed check.
   Future<ProofHeaderCheck?> _recheckProof(MerkleProof proof) async {
+    final check = await _checkProof(proof);
+    return check.isVerified ? null : check;
+  }
+
+  /// [_recheckProof], returning the check whatever its outcome.
+  Future<ProofHeaderCheck> _checkProof(MerkleProof proof) async {
     // A proof that is not a single stored BUMP (pre-SPV-06 layout) does not
     // parse and comes back malformed.
     final check = await checkBumpHexAgainstHeaders(
@@ -1341,25 +1474,20 @@ class SPVActor extends Actor {
         status: MerkleProofStatus.verified,
       ));
     }
-    return null;
+    return check;
   }
 
-  /// txid -> the wallets holding it as confirmed, for [txids]: one read of
-  /// their rows, never the confirmed history.
-  Future<Map<String, List<String>>> _confirmedWallets(List<String> txids) async =>
-      _confirmedWalletsOf(await _storage.getTransactionsByTxids(txids));
-
-  /// txid -> ids of the wallets whose row in [rows] is confirmed, newest row
-  /// first (the order the confirmed listing gave before ctkm).
-  static Map<String, List<String>> _confirmedWalletsOf(List<BitcoinTransaction> rows) {
-    final wallets = <String, List<String>>{};
+  /// txid -> the confirmed rows in [rows] (each with a wallet id), newest
+  /// row first (the order the confirmed listing gave before ctkm).
+  static Map<String, List<BitcoinTransaction>> _confirmedRowsOf(List<BitcoinTransaction> rows) {
+    final confirmed = <String, List<BitcoinTransaction>>{};
     for (final tx in _newestFirst(rows)) {
       final walletId = tx.walletId;
       if (tx.status == TransactionStatus.confirmed && walletId != null && walletId.isNotEmpty) {
-        wallets.putIfAbsent(tx.txid, () => []).add(walletId);
+        confirmed.putIfAbsent(tx.txid, () => []).add(tx);
       }
     }
-    return wallets;
+    return confirmed;
   }
 
   /// [rows] sorted newest first (`createdAt` descending); rows with equal

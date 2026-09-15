@@ -17,6 +17,7 @@ import 'package:libspiffy/src/models/address_metadata.dart';
 import 'package:libspiffy/src/models/bitcoin_transaction.dart';
 import 'package:libspiffy/src/storage/isar_wallet_storage.dart';
 import 'package:libspiffy/src/storage/libspiffy_schemas.dart';
+import 'package:libspiffy/src/storage/read_model_storage.dart' show MerkleProof, MerkleProofStatus;
 
 import '../integration/isar_test_helper.dart';
 
@@ -193,5 +194,46 @@ void main() {
     expect((await storage.getConfirmedTransactionsFromHeight(501)).map((t) => t.txid), ['t2', 't1']);
     expect((await storage.getConfirmedTransactionsFromHeight(0, includeWithoutHeight: true)).map((t) => t.txid),
         ['t3', 't2', 't1', 't0']);
+  });
+
+  test('hg0: a store written with the former merkle proof status index answers the status lookups with every row',
+      () async {
+    const name = 'proof_status_height_index_migration';
+    final former = await Isar.open([
+      for (final schema in LibSpiffySchemas.allSchemas)
+        if (schema.name == MerkleProofEntitySchema.name)
+          _withIndexes<MerkleProofEntity>(MerkleProofEntitySchema, {
+            for (final e in MerkleProofEntitySchema.indexes.entries)
+              if (e.key != 'status_blockHeight') e.key: e.value,
+            // The id libspiffy_schemas.g.dart gave the index before hg0.
+            'status': _hashIndex(-107785170620420283, 'status'),
+          })
+        else
+          schema,
+    ], directory: dir.path, name: name);
+    expect(former.merkleProofEntitys.schema.indexes.keys, isNot(contains('status_blockHeight')));
+    await former.writeTxn(() async {
+      for (var i = 0; i < 6; i++) {
+        final txid = '${'0' * 63}$i';
+        await former.merkleProofEntitys.put(MerkleProofEntity.fromMerkleProof(MerkleProof(
+          txid: txid,
+          blockHash: i.isEven ? '${'b' * 63}$i' : null,
+          blockHeight: 500 + i,
+          position: 0,
+          merkleProof: ['fe$i'],
+          status: i < 4 ? MerkleProofStatus.orphaned : MerkleProofStatus.pendingHeader,
+        )));
+      }
+    });
+    await former.close();
+
+    final isar = await Isar.open(LibSpiffySchemas.allSchemas, directory: dir.path, name: name);
+    addTearDown(() => isar.close(deleteFromDisk: true));
+    expect(isar.merkleProofEntitys.schema.indexes.keys, contains('status_blockHeight'));
+    final storage = IsarWalletStorage(isar);
+
+    expect([for (final p in await storage.getMerkleProofsByStatusBetweenHeights(MerkleProofStatus.orphaned, 501, 510)) p.blockHeight],
+        [501, 502, 503]);
+    expect([for (final p in await storage.getMerkleProofsByStatus(MerkleProofStatus.pendingHeader)) p.blockHeight], [504, 505]);
   });
 }

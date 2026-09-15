@@ -1520,14 +1520,15 @@ class PostgresWalletStorage implements ReadModelStorage {
 
     return _pool!.runTx((session) async {
       final (ids, rows) = await _lockMerkleProofRows(session, txid);
-      final i = findMerkleProofToOrphan(rows, blockHash: blockHash, onlyIfMerkleProof: onlyIfMerkleProof);
-      if (i == null) return false;
+      final plan = planMerkleProofOrphan(rows,
+          blockHash: blockHash, onlyIfMerkleProof: onlyIfMerkleProof, at: at ?? DateTime.now());
+      if (plan == null) return false;
       await session.execute(
         Sql.named('''
-          UPDATE merkle_proofs SET status = 'orphaned', status_changed_at = @at
+          UPDATE merkle_proofs SET status = 'orphaned', status_changed_at = @at, block_hash = @blockHash
           WHERE id = @id
         '''),
-        parameters: {'id': ids[i], 'at': at ?? DateTime.now()},
+        parameters: {'id': ids[plan.index], 'at': plan.row.statusChangedAt, 'blockHash': plan.row.blockHash},
       );
       return true;
     });
@@ -1603,6 +1604,29 @@ class PostgresWalletStorage implements ReadModelStorage {
         ORDER BY id
       '''),
       parameters: {'status': status.name},
+    );
+    return result.map(_rowToMerkleProof).toList();
+  }
+
+  /// `idx_merkle_proofs_status_height` (v016): the rows of [status] at
+  /// those heights only (bead hg0).
+  @override
+  Future<List<MerkleProof>> getMerkleProofsByStatusBetweenHeights(
+    MerkleProofStatus status,
+    int fromHeight,
+    int toHeight,
+  ) async {
+    _ensureInitialized();
+    if (toHeight < fromHeight) return [];
+
+    final result = await _pool!.execute(
+      Sql.named('''
+        SELECT $_merkleProofColumns
+        FROM merkle_proofs
+        WHERE status = @status AND block_height BETWEEN @fromHeight AND @toHeight
+        ORDER BY id
+      '''),
+      parameters: {'status': status.name, 'fromHeight': fromHeight, 'toHeight': toHeight},
     );
     return result.map(_rowToMerkleProof).toList();
   }

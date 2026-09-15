@@ -1902,9 +1902,9 @@ const MerkleProofEntitySchema = CollectionSchema(
         )
       ],
     ),
-    r'status': IndexSchema(
-      id: -107785170620420283,
-      name: r'status',
+    r'status_blockHeight': IndexSchema(
+      id: -318198381693723374,
+      name: r'status_blockHeight',
       unique: false,
       replace: false,
       properties: [
@@ -1912,6 +1912,11 @@ const MerkleProofEntitySchema = CollectionSchema(
           name: r'status',
           type: IndexType.hash,
           caseSensitive: true,
+        ),
+        IndexPropertySchema(
+          name: r'blockHeight',
+          type: IndexType.value,
+          caseSensitive: false,
         )
       ],
     )
@@ -2216,20 +2221,20 @@ extension MerkleProofEntityQueryWhere
   }
 
   QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterWhereClause>
-      statusIsNull() {
+      statusIsNullAnyBlockHeight() {
     return QueryBuilder.apply(this, (query) {
       return query.addWhereClause(IndexWhereClause.equalTo(
-        indexName: r'status',
+        indexName: r'status_blockHeight',
         value: [null],
       ));
     });
   }
 
   QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterWhereClause>
-      statusIsNotNull() {
+      statusIsNotNullAnyBlockHeight() {
     return QueryBuilder.apply(this, (query) {
       return query.addWhereClause(IndexWhereClause.between(
-        indexName: r'status',
+        indexName: r'status_blockHeight',
         lower: [null],
         includeLower: false,
         upper: [],
@@ -2238,28 +2243,28 @@ extension MerkleProofEntityQueryWhere
   }
 
   QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterWhereClause>
-      statusEqualTo(String? status) {
+      statusEqualToAnyBlockHeight(String? status) {
     return QueryBuilder.apply(this, (query) {
       return query.addWhereClause(IndexWhereClause.equalTo(
-        indexName: r'status',
+        indexName: r'status_blockHeight',
         value: [status],
       ));
     });
   }
 
   QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterWhereClause>
-      statusNotEqualTo(String? status) {
+      statusNotEqualToAnyBlockHeight(String? status) {
     return QueryBuilder.apply(this, (query) {
       if (query.whereSort == Sort.asc) {
         return query
             .addWhereClause(IndexWhereClause.between(
-              indexName: r'status',
+              indexName: r'status_blockHeight',
               lower: [],
               upper: [status],
               includeUpper: false,
             ))
             .addWhereClause(IndexWhereClause.between(
-              indexName: r'status',
+              indexName: r'status_blockHeight',
               lower: [status],
               includeLower: false,
               upper: [],
@@ -2267,18 +2272,114 @@ extension MerkleProofEntityQueryWhere
       } else {
         return query
             .addWhereClause(IndexWhereClause.between(
-              indexName: r'status',
+              indexName: r'status_blockHeight',
               lower: [status],
               includeLower: false,
               upper: [],
             ))
             .addWhereClause(IndexWhereClause.between(
-              indexName: r'status',
+              indexName: r'status_blockHeight',
               lower: [],
               upper: [status],
               includeUpper: false,
             ));
       }
+    });
+  }
+
+  QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterWhereClause>
+      statusBlockHeightEqualTo(String? status, int blockHeight) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'status_blockHeight',
+        value: [status, blockHeight],
+      ));
+    });
+  }
+
+  QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterWhereClause>
+      statusEqualToBlockHeightNotEqualTo(String? status, int blockHeight) {
+    return QueryBuilder.apply(this, (query) {
+      if (query.whereSort == Sort.asc) {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'status_blockHeight',
+              lower: [status],
+              upper: [status, blockHeight],
+              includeUpper: false,
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'status_blockHeight',
+              lower: [status, blockHeight],
+              includeLower: false,
+              upper: [status],
+            ));
+      } else {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'status_blockHeight',
+              lower: [status, blockHeight],
+              includeLower: false,
+              upper: [status],
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'status_blockHeight',
+              lower: [status],
+              upper: [status, blockHeight],
+              includeUpper: false,
+            ));
+      }
+    });
+  }
+
+  QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterWhereClause>
+      statusEqualToBlockHeightGreaterThan(
+    String? status,
+    int blockHeight, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.between(
+        indexName: r'status_blockHeight',
+        lower: [status, blockHeight],
+        includeLower: include,
+        upper: [status],
+      ));
+    });
+  }
+
+  QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterWhereClause>
+      statusEqualToBlockHeightLessThan(
+    String? status,
+    int blockHeight, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.between(
+        indexName: r'status_blockHeight',
+        lower: [status],
+        upper: [status, blockHeight],
+        includeUpper: include,
+      ));
+    });
+  }
+
+  QueryBuilder<MerkleProofEntity, MerkleProofEntity, QAfterWhereClause>
+      statusEqualToBlockHeightBetween(
+    String? status,
+    int lowerBlockHeight,
+    int upperBlockHeight, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.between(
+        indexName: r'status_blockHeight',
+        lower: [status, lowerBlockHeight],
+        includeLower: includeLower,
+        upper: [status, upperBlockHeight],
+        includeUpper: includeUpper,
+      ));
     });
   }
 }

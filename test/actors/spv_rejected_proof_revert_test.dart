@@ -36,6 +36,8 @@ void main() {
   late _Recorder walletManager;
   late _Recorder arc;
   late ActorRef spv;
+  late ActorRef walletManagerRef;
+  late ActorRef arcRef;
 
   BitcoinTransaction confirmedRow(String walletId, String txid, String rawHex) => BitcoinTransaction(
         walletId: walletId,
@@ -72,8 +74,8 @@ void main() {
     final tag = DateTime.now().microsecondsSinceEpoch;
     walletManager = _Recorder();
     arc = _Recorder();
-    final walletManagerRef = await system.spawn('wm-$tag', () => walletManager);
-    final arcRef = await system.spawn('arc-$tag', () => arc);
+    walletManagerRef = await system.spawn('wm-$tag', () => walletManager);
+    arcRef = await system.spawn('arc-$tag', () => arc);
     spv = await system.spawn('spv-$tag',
         () => SPVActor(walletManager: walletManagerRef, invoiceCoordinator: walletManagerRef, storage: storage, arcActor: arcRef));
   });
@@ -81,7 +83,9 @@ void main() {
   tearDown(() => system.shutdown());
 
   /// One header notification, and wait until SPVActor has handled it (its
-  /// mailbox is sequential: the reply to a later message comes after).
+  /// mailbox is sequential: the reply to a later message comes after), then
+  /// until the recorders have received what it sent (bead snhj: a recorder
+  /// may not have run yet when SPVActor's barrier reply arrives).
   Future<void> notifyHeaderStored() async {
     spv.tell(BlockHeaderStoredMessage(header: fixtureHeader(), height: kFixtureHeight + 1));
     final done = Completer<void>();
@@ -95,6 +99,11 @@ void main() {
       sender: barrier,
     );
     await done.future.timeout(const Duration(seconds: 10));
+    for (final recorder in [walletManagerRef, arcRef]) {
+      final flushed = _Flush();
+      recorder.tell(flushed);
+      await flushed.done.future.timeout(const Duration(seconds: 10));
+    }
   }
 
   List<RevertTransactionConfirmationCommand> reverts() => [
@@ -180,8 +189,28 @@ class _Recorder extends Actor {
 
   @override
   Future<void> onMessage(dynamic message) async {
-    messages.add(message);
+    if (message is _Flush) {
+      message.done.complete();
+    } else {
+      messages.add(message);
+    }
   }
+}
+
+/// Completed by the recorder that receives it: every message told to it
+/// before has been recorded.
+class _Flush implements Message {
+  final done = Completer<void>();
+  final DateTime _timestamp = DateTime.now();
+
+  @override
+  String get correlationId => 'flush-${_timestamp.microsecondsSinceEpoch}';
+  @override
+  Map<String, dynamic> get metadata => const {};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => _timestamp;
 }
 
 class _Barrier extends Actor {

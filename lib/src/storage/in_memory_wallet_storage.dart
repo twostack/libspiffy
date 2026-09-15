@@ -800,9 +800,12 @@ _balanceCache.remove(walletId);
     return _withGlobalLock(() async {
       final rows = _merkleProofs[txid];
       if (rows == null) return false;
-      final i = findMerkleProofToOrphan(rows, blockHash: blockHash, onlyIfMerkleProof: onlyIfMerkleProof);
-      if (i == null) return false;
-      rows[i] = rows[i].copyWith(status: MerkleProofStatus.orphaned, statusChangedAt: at ?? DateTime.now());
+      final plan = planMerkleProofOrphan(rows,
+          blockHash: blockHash, onlyIfMerkleProof: onlyIfMerkleProof, at: at ?? DateTime.now());
+      if (plan == null) return false;
+      rows[plan.index] = plan.row;
+      final hash = plan.row.blockHash;
+      if (hash != null) _blockToProofs.putIfAbsent(hash, () => {}).add(txid);
       return true;
     });
   }
@@ -833,6 +836,19 @@ _balanceCache.remove(walletId);
       for (final rows in _merkleProofs.values)
         for (final r in rows)
           if (r.status == status) r,
+    ];
+  }
+
+  @override
+  Future<List<MerkleProof>> getMerkleProofsByStatusBetweenHeights(
+    MerkleProofStatus status,
+    int fromHeight,
+    int toHeight,
+  ) async {
+    return [
+      for (final rows in _merkleProofs.values)
+        for (final r in rows)
+          if (r.status == status && r.blockHeight >= fromHeight && r.blockHeight <= toHeight) r,
     ];
   }
 

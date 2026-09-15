@@ -92,6 +92,40 @@ int? findMerkleProofToOrphan(
   );
 }
 
+/// What [planMerkleProofOrphan] decided: overwrite the row at [index] with
+/// [row].
+typedef MerkleProofOrphanPlan = ({int index, MerkleProof row});
+
+/// How `ReadModelStorage.markMerkleProofOrphaned` changes [rows] (every
+/// stored row of one txid, oldest first), or null when no current row
+/// matches ([findMerkleProofToOrphan]).
+///
+/// The row becomes orphaned at [at]. A row without a block hash marked with
+/// a [blockHash] records that block (bead libspiffy-yix): an orphaned proof
+/// names the block that left the active chain, also when a read model
+/// rebuilt from the journal met the proof before its header (pendingHeader)
+/// and then the revert naming its block. It keeps no block hash when another
+/// row of the txid already names [blockHash] (one row per (txid, block)).
+MerkleProofOrphanPlan? planMerkleProofOrphan(
+  List<MerkleProof> rows, {
+  String? blockHash,
+  List<String>? onlyIfMerkleProof,
+  required DateTime at,
+}) {
+  final i = findMerkleProofToOrphan(rows, blockHash: blockHash, onlyIfMerkleProof: onlyIfMerkleProof);
+  if (i == null) return null;
+  final hash = blockHash == MerkleProof.legacyPendingBlockHash ? null : blockHash;
+  final record = rows[i].blockHash == null && hash != null && !rows.any((r) => r.blockHash == hash);
+  return (
+    index: i,
+    row: rows[i].copyWith(
+      blockHash: record ? hash : null,
+      status: MerkleProofStatus.orphaned,
+      statusChangedAt: at,
+    ),
+  );
+}
+
 /// The current row of a txid: the newest [MerkleProof.isCurrent] one (a
 /// store written before bead mny may hold several).
 MerkleProof? currentMerkleProof(Iterable<MerkleProof> rows) {

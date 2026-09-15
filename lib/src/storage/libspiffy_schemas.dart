@@ -183,7 +183,12 @@ class MerkleProofEntity {
   /// [MerkleProofStatus] name. Null on rows written before bead mny, which
   /// read as `pendingHeader` when [blockHash] is 'pending' and as `verified`
   /// otherwise.
-  @Index()
+  ///
+  /// The composite (status, blockHeight) index serves the status queries
+  /// (prefix) and the proofs of one status at the heights a reorganization
+  /// changed, without reading every orphaned or rejected proof (bead
+  /// libspiffy-hg0).
+  @Index(composite: [CompositeIndex('blockHeight')])
   String? status;
 
   /// When [status] last changed.

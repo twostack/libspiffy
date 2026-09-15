@@ -18,6 +18,12 @@
 /// rejected (kept, never current) and the confirmation it backed is taken
 /// back.
 ///
+/// hg0 (libspiffy-hg0) and 10r (libspiffy-10r): an orphaned proof whose
+/// block becomes active again (a reorganization of a reorganization), or a
+/// rejected proof that verifies on the chain a reorganization makes active,
+/// is verified again and the confirmation is restored through the wallet
+/// (TransactionConfirmedEvent), without ARC.
+///
 /// The transaction is the real testnet fixture transaction; each test puts
 /// it in a regtest block of its own (a two-leaf merkle tree) so that the
 /// block header commits to it.
@@ -391,6 +397,74 @@ void main() {
           [(null, 'rejected')], reason: 'it never verified on any chain of ours');
       await Future<void>.delayed(const Duration(milliseconds: 300));
       expect((await journal()).whereType<TransactionConfirmationRevertedEvent>(), hasLength(1));
+    });
+  });
+
+  group('a proof whose block becomes active again (hg0, 10r)', () {
+    test('a reorganization back to the confirming block verifies the orphaned proof and restores the confirmation',
+        () async {
+      final (bump, root) = blockFor(2);
+      final a1 = RegtestMiner.mine(parent: genesis, seed: 'A1');
+      final a2 = RegtestMiner.mine(parent: a1, merkleRoot: root);
+      final a3 = RegtestMiner.mine(parent: a2, seed: 'A3');
+      await sendHeaders([a1, a2, a3], 3);
+      await receiveWithProof(bump);
+      await _until(() async => (await tx())?.status == TransactionStatus.confirmed &&
+          (await walletUtxo())?.status == UTXOStatus.available, 'confirmed');
+
+      // B orphans A2; the confirmation is taken back.
+      final b = RegtestMiner.mineChain(a1, 3, seed: 'B');
+      await sendHeaders(b, 4);
+      await _until(() async => (await tx())?.status == TransactionStatus.pending &&
+          (await walletUtxo())?.status == UTXOStatus.pending, 'confirmation taken back');
+      expect([for (final p in await storage().getMerkleProofHistory(kFixtureTxid)) p.status.name], ['orphaned']);
+
+      // A outgrows B: A2 is active again.
+      final a = [a1, a2, a3, ...RegtestMiner.mineChain(a3, 2, seed: 'A')];
+      await sendHeaders(a, 5);
+
+      await _until(() async => (await tx())?.status == TransactionStatus.confirmed &&
+          (await walletUtxo())?.status == UTXOStatus.available, 'confirmation restored');
+      expect((await tx())!.blockHeight, 2);
+      final history = await storage().getMerkleProofHistory(kFixtureTxid);
+      expect([for (final p in history) (p.blockHash, p.status, p.merkleProof.join())],
+          [(a2.blockHash().toString(), MerkleProofStatus.verified, bump.toHex())],
+          reason: 'the orphaned row itself is verified again: kept, not copied');
+      expect((await storage().getMerkleProof(kFixtureTxid))!.blockHash, a2.blockHash().toString());
+
+      final events = await journal();
+      final revertAt = events.lastIndexWhere((e) => e is TransactionConfirmationRevertedEvent);
+      final confirmed = events.skip(revertAt + 1).whereType<TransactionConfirmedEvent>().toList();
+      expect(confirmed, hasLength(1), reason: 'the restored confirmation is journaled, so a replay keeps it');
+      expect((confirmed.single.blockHeight, confirmed.single.blockHash, confirmed.single.bumpHex),
+          (2, a2.blockHash().toString(), bump.toHex()));
+    });
+
+    test('a rejected proof that verifies on the chain a reorganization makes active restores the confirmation',
+        () async {
+      final (bump, root) = blockFor(2);
+      final other = RegtestMiner.mineChain(genesis, 3, seed: 'other');
+      await sendHeaders(other.sublist(0, 2), 2); // height 2 does not contain the transaction
+      importWithProof(bump);
+      await _until(() async => (await storage().getMerkleProofHistory(kFixtureTxid)).isNotEmpty &&
+          (await walletUtxo())?.status == UTXOStatus.available, 'imported');
+      expect([for (final p in await storage().getMerkleProofHistory(kFixtureTxid)) p.status.name], ['rejected']);
+      await sendHeaders(other, 3); // the next notification takes the confirmation back
+      await _until(() async => (await tx())?.status == TransactionStatus.pending &&
+          (await walletUtxo())?.status == UTXOStatus.pending, 'confirmation taken back');
+
+      // A branch whose block 2 contains the transaction outgrows it.
+      final a1 = RegtestMiner.mine(parent: genesis, seed: 'A1');
+      final a2 = RegtestMiner.mine(parent: a1, merkleRoot: root);
+      await sendHeaders([a1, a2, ...RegtestMiner.mineChain(a2, 2, seed: 'A')], 4);
+
+      await _until(() async => (await tx())?.status == TransactionStatus.confirmed &&
+          (await walletUtxo())?.status == UTXOStatus.available, 'confirmation restored');
+      expect([for (final p in await storage().getMerkleProofHistory(kFixtureTxid)) (p.blockHash, p.status)],
+          [(a2.blockHash().toString(), MerkleProofStatus.verified)]);
+      final events = await journal();
+      final revertAt = events.lastIndexWhere((e) => e is TransactionConfirmationRevertedEvent);
+      expect(events.skip(revertAt + 1).whereType<TransactionConfirmedEvent>().map((e) => e.bumpHex), [bump.toHex()]);
     });
   });
 }

@@ -959,12 +959,10 @@ class IsarWalletStorage implements ReadModelStorage {
   }) async {
     return _isar.writeTxn(() async {
       final entities = await _merkleProofRows(txid);
-      final i = findMerkleProofToOrphan([for (final e in entities) e.toMerkleProof()],
-          blockHash: blockHash, onlyIfMerkleProof: onlyIfMerkleProof);
-      if (i == null) return false;
-      await _isar.merkleProofEntitys.put(entities[i]
-        ..setFrom(entities[i].toMerkleProof().copyWith(
-            status: MerkleProofStatus.orphaned, statusChangedAt: at ?? DateTime.now())));
+      final plan = planMerkleProofOrphan([for (final e in entities) e.toMerkleProof()],
+          blockHash: blockHash, onlyIfMerkleProof: onlyIfMerkleProof, at: at ?? DateTime.now());
+      if (plan == null) return false;
+      await _isar.merkleProofEntitys.put(entities[plan.index]..setFrom(plan.row));
       return true;
     });
   }
@@ -1004,7 +1002,7 @@ class IsarWalletStorage implements ReadModelStorage {
 
   @override
   Future<List<MerkleProof>> getMerkleProofsByStatus(MerkleProofStatus status) async {
-    final entities = await _traced('getMerkleProofsByStatus', _isar.merkleProofEntitys.where().statusEqualTo(status.name)).findAll();
+    final entities = await _traced('getMerkleProofsByStatus', _isar.merkleProofEntitys.where().statusEqualToAnyBlockHeight(status.name)).findAll();
     // Rows written before bead mny have no status (see MerkleProofEntity).
     if (status == MerkleProofStatus.pendingHeader) {
       entities.addAll(await _traced('getMerkleProofsByStatus', _isar.merkleProofEntitys
@@ -1016,10 +1014,36 @@ class IsarWalletStorage implements ReadModelStorage {
     } else if (status == MerkleProofStatus.verified) {
       entities.addAll(await _traced('getMerkleProofsByStatus', _isar.merkleProofEntitys
           .where()
-          .statusIsNull()
+          .statusIsNullAnyBlockHeight()
           .filter()
           .not()
           .blockHashEqualTo(MerkleProof.legacyPendingBlockHash))
+          .findAll());
+    }
+    entities.sort((a, b) => a.id.compareTo(b.id));
+    return [for (final e in entities) e.toMerkleProof()];
+  }
+
+  @override
+  Future<List<MerkleProof>> getMerkleProofsByStatusBetweenHeights(
+    MerkleProofStatus status,
+    int fromHeight,
+    int toHeight,
+  ) async {
+    if (toHeight < fromHeight) return [];
+    // The (status, blockHeight) index: the rows of that status at those
+    // heights only (hg0).
+    final entities = await _traced('getMerkleProofsByStatusBetweenHeights', _isar.merkleProofEntitys
+        .where()
+        .statusEqualToBlockHeightBetween(status.name, fromHeight, toHeight))
+        .findAll();
+    // Rows written before bead mny have no status (see MerkleProofEntity);
+    // they are pendingHeader or verified.
+    if (status == MerkleProofStatus.pendingHeader || status == MerkleProofStatus.verified) {
+      final legacy = _isar.merkleProofEntitys.where().statusIsNullAnyBlockHeight().filter().blockHeightBetween(fromHeight, toHeight);
+      entities.addAll(await _traced('getMerkleProofsByStatusBetweenHeights', status == MerkleProofStatus.pendingHeader
+              ? legacy.blockHashEqualTo(MerkleProof.legacyPendingBlockHash)
+              : legacy.not().blockHashEqualTo(MerkleProof.legacyPendingBlockHash))
           .findAll());
     }
     entities.sort((a, b) => a.id.compareTo(b.id));

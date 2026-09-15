@@ -210,6 +210,11 @@ class _ScriptedStorage implements ReadModelStorage {
   Future<Map<String, dynamic>?> getWallet(String walletId) async =>
       {'walletId': walletId, 'walletType': 'wif', 'network': 'testnet'};
 
+  /// No watch addresses: the payment coordinator leaves watch-only UTXOs
+  /// out (bead libspiffy-87a2).
+  @override
+  Future<List<AddressMetadata>> getAddressesByPurpose(String walletId, String purpose) async => const [];
+
   @override
   dynamic noSuchMethod(Invocation invocation) =>
       throw UnimplementedError('ReadModelStorage.${invocation.memberName} not expected');

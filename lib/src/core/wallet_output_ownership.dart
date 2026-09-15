@@ -105,3 +105,35 @@ bool needsNonP2pkhUnlock(String scriptHex) {
     return false;
   }
 }
+
+/// Whether the wallet cannot sign for the output locked by [scriptHex] and
+/// attributed to [address] because the key it needs belongs to a watch
+/// address (bead libspiffy-87a2): watch-only funds.
+///
+/// A watch address is attributed to the wallet (it is credited with the
+/// payments it receives) but the wallet holds no key for it.
+/// [isWatchAddress] names the wallet's watch addresses and [hasKeyFor] the
+/// addresses the wallet derives keys for.
+///
+/// * A bare multisig output is watch-only when at least one of its keys is a
+///   watch address and the keys the wallet holds do not meet the threshold. The address it is attributed to does not
+///   matter: a 1-of-2 over a watch address and a wallet key is attributed
+///   to the watch address when that key comes first, yet the wallet signs
+///   it alone.
+/// * Any other output is watch-only when [address] is a watch address the
+///   wallet has no key for.
+bool isWatchOnlyOutput({
+  required String scriptHex,
+  required String address,
+  required bool Function(String address) isWatchAddress,
+  required bool Function(String address) hasKeyFor,
+  required dartsv.NetworkType network,
+}) {
+  final multisig = BareMultisigScript.parseHex(scriptHex);
+  if (multisig != null) {
+    final keyAddresses = multisig.keyAddresses(network);
+    if (!keyAddresses.any((a) => a != null && isWatchAddress(a))) return false;
+    return multisig.spendableAloneBy(hasKeyFor, network) == null;
+  }
+  return isWatchAddress(address) && !hasKeyFor(address);
+}

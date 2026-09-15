@@ -19,6 +19,7 @@ import '../plugin/provisioned_transaction.dart';
 import '../storage/read_model_storage.dart';
 import '../storage/secure_storage.dart';
 import '../services/ancestor_chain_service.dart';
+import '../services/watch_only_funds.dart';
 import '../utils/beef.dart';
 import '../utils/bump.dart';
 import '../utils/crypto_utils.dart';
@@ -117,19 +118,23 @@ class PaymentCoordinatorActor extends Actor {
 
     // 1. Get available UTXOs
     final utxoSw = Stopwatch()..start();
-    var utxos = await _storage.getPaymentUTXOs(msg.walletId);
-    _log.info('[pay ${msg.invoiceId}] getUTXOs: ${utxoSw.elapsedMilliseconds}ms, count=${utxos.length}');
+    // UTXOs at watch addresses are watch-only funds: the wallet holds no key
+    // for them, so no path selects them (bead libspiffy-87a2).
+    final paymentUtxos = await splitWatchOnlyUtxos(_storage, msg.walletId, await _storage.getPaymentUTXOs(msg.walletId));
+    var utxos = paymentUtxos.signable;
+    _log.info('[pay ${msg.invoiceId}] getUTXOs: ${utxoSw.elapsedMilliseconds}ms, count=${utxos.length}, '
+        'watch-only=${paymentUtxos.watchOnly.length}');
     // A TransactionBuilderPlugin gets one public key per funding UTXO and
     // unlocks each as P2PKH, so a bare multisig or P2PK wallet UTXO (bead
     // libspiffy-nlp) cannot fund it; the standard path signs those with
     // their own unlocking scripts.
-    var excludedNote = '';
+    var excludedNote = paymentUtxos.watchOnlyNote;
     if (_isPluginTransaction(msg)) {
       final excluded = utxos.where((u) => needsNonP2pkhUnlock(u.scriptPubKey)).toList();
       if (excluded.isNotEmpty) {
         utxos = utxos.where((u) => !needsNonP2pkhUnlock(u.scriptPubKey)).toList();
         final sats = excluded.fold<BigInt>(BigInt.zero, (sum, u) => sum + u.satoshis);
-        excludedNote = ' ($sats satoshis in ${excluded.length} bare multisig or P2PK UTXO(s) '
+        excludedNote += ' ($sats satoshis in ${excluded.length} bare multisig or P2PK UTXO(s) '
             'cannot fund a plugin transaction)';
       }
     }
@@ -1383,11 +1388,14 @@ class PaymentCoordinatorActor extends Actor {
       // 2. Get available UTXOs and select the largest
       // (bare multisig and P2PK UTXOs excluded: the plugin unlocks as
       // P2PKH, bead libspiffy-nlp)
-      final spendable = await _storage.getPaymentUTXOs(walletId);
+      // (UTXOs at watch addresses excluded: watch-only funds, bead
+      // libspiffy-87a2)
+      final paymentUtxos = await splitWatchOnlyUtxos(_storage, walletId, await _storage.getPaymentUTXOs(walletId));
+      final spendable = paymentUtxos.signable;
       final availableUtxos = spendable.where((u) => !needsNonP2pkhUnlock(u.scriptPubKey)).toList();
       if (availableUtxos.isEmpty) {
         throw Exception(spendable.isEmpty
-            ? 'No available UTXOs for provisioning'
+            ? 'No available UTXOs for provisioning${paymentUtxos.watchOnlyNote}'
             : 'No available UTXOs for provisioning: the ${spendable.length} spendable UTXO(s) '
                 'are bare multisig or P2PK outputs, which plugin transactions cannot spend');
       }

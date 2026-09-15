@@ -1043,7 +1043,12 @@ class ImportTransactionConfirmedEvent extends CoordinatorEvent {
   DateTime get eventTimestamp => DateTime.now();
 }
 
-/// Balance query response
+/// Balance query response.
+///
+/// [confirmedBalance], [unconfirmedBalance] and [totalBalance] are the
+/// spendable balance: UTXOs at watch addresses, which the wallet holds no
+/// key for, are left out and reported in [watchOnlyBalance] (bead
+/// libspiffy-87a2).
 class BalanceResponse extends CoordinatorEvent {
   @override
   final String walletId;
@@ -1052,13 +1057,18 @@ class BalanceResponse extends CoordinatorEvent {
   final BigInt unconfirmedBalance;
   final BigInt totalBalance;
 
+  /// Value of the wallet's unspent UTXOs at watch addresses: credited to the
+  /// wallet but not spendable by it, and not part of [totalBalance].
+  final BigInt watchOnlyBalance;
+
   BalanceResponse({
     required this.walletId,
     required this.queryId,
     required this.confirmedBalance,
     required this.unconfirmedBalance,
     required this.totalBalance,
-  });
+    BigInt? watchOnlyBalance,
+  }) : watchOnlyBalance = watchOnlyBalance ?? BigInt.zero;
 
   @override
   DateTime get eventTimestamp => DateTime.now();

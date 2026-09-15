@@ -1793,24 +1793,15 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         if (utxo == null) {
           throw StateError('UTXO $utxoKey not found in wallet state');
         }
-        
-        // Get private key for this UTXO's address
-        // Use command-provided derivation index if available (from read model)
-        final cmdDerivationIndex = (i < command.derivationIndices.length)
-            ? command.derivationIndices[i]
-            : null;
-        // Chain flag is optional: absent means "resolve from aggregate state".
-        final cmdIsChange = (i < command.isChangeFlags.length)
-            ? command.isChangeFlags[i]
-            : null;
-        final privateKey = await _getPrivateKeyForAddress(
-          utxo.address,
-          command.walletId,
-          currentState,
-          derivationIndex: cmdDerivationIndex,
-          isChange: cmdIsChange,
-        );
-        
+
+        // Watch-only funds (bead libspiffy-87a2): no key to derive. Before,
+        // the key at the caller's derivation index (m/0/0 for a watch
+        // address row) signed the input and the interpreter refused it.
+        if (_isWatchOnlyUtxo(currentState, utxo)) {
+          throw StateError('Cannot sign UTXO $utxoKey: it is at watch address ${utxo.address}, '
+              'which the wallet holds no key for (watch-only funds)');
+        }
+
         // Create TransactionOutput for the UTXO being spent
         final lockingScript = dartsv.SVScript.fromHex(utxo.scriptPubKey);
         final utxoOutput = dartsv.TransactionOutput(
@@ -1829,10 +1820,34 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
 
         final utxoScript = dartsv.SVScript.fromHex(utxo.scriptPubKey);
         final scriptType = registry.identifyScriptType(utxoScript);
+        final multisig = scriptType?.toLowerCase() == 'p2ms' ? BareMultisigScript.parse(utxoScript) : null;
+
+        // Get private key for this UTXO's address
+        // Use command-provided derivation index if available (from read model)
+        final cmdDerivationIndex = (i < command.derivationIndices.length)
+            ? command.derivationIndices[i]
+            : null;
+        // Chain flag is optional: absent means "resolve from aggregate state".
+        final cmdIsChange = (i < command.isChangeFlags.length)
+            ? command.isChangeFlags[i]
+            : null;
+        // A multisig UTXO may be attributed to a watch address among its
+        // keys; its signing keys are then all resolved from the wallet's own
+        // address records (see _multisigSigningKeys).
+        final privateKey = multisig != null && !currentState.addresses.containsKey(utxo.address)
+            ? null
+            : await _getPrivateKeyForAddress(
+                utxo.address,
+                command.walletId,
+                currentState,
+                derivationIndex: cmdDerivationIndex,
+                isChange: cmdIsChange,
+              );
 
         if (scriptType?.toLowerCase() == 'p2pkh') {
           // Derive public key from the private key (no need to pass it in command)
-          final publicKey = privateKey.publicKey;
+          final publicKey = privateKey!.publicKey;
+          _requireKeyForP2pkh(utxoKey, utxo.address, utxoScript, publicKey);
           final unlocker = dartsv.P2PKHUnlockBuilder(publicKey);
 
           final txInput = dartsv.TransactionInput(
@@ -1847,7 +1862,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         }
 
         final sighashType = dartsv.SighashType.SIGHASH_ALL.value | dartsv.SighashType.SIGHASH_FORKID.value;
-        final multisig = scriptType?.toLowerCase() == 'p2ms' ? BareMultisigScript.parse(utxoScript) : null;
         if (multisig != null) {
           // A bare multisig UTXO the wallet can spend alone (bead
           // libspiffy-nlp): `OP_0 <sig>...`, one signature per required key,
@@ -1872,10 +1886,10 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
             dartsv.TransactionInput.MAX_SEQ_NUMBER,
             scriptBuilder: _SignatureOnlyUnlockBuilder(),
           );
-          signedTx = dartsv.DefaultTransactionSigner(sighashType, privateKey).sign(unsignedTx, utxoOutput, i);
+          signedTx = dartsv.DefaultTransactionSigner(sighashType, privateKey!).sign(unsignedTx, utxoOutput, i);
         } else {
           // Sign the transaction at this input index
-          signedTx = dartsv.DefaultTransactionSigner(sighashType, privateKey).sign(unsignedTx, utxoOutput, i);
+          signedTx = dartsv.DefaultTransactionSigner(sighashType, privateKey!).sign(unsignedTx, utxoOutput, i);
         }
 
         //perform a sanity check to see if we're correctly spending the utxo
@@ -1961,19 +1975,21 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
   /// The wallet keys that sign [utxo], a bare [multisig] output: the first
   /// `threshold` script key positions holding a wallet key, in script order
   /// (a key listed twice signs for both positions). [utxoAddressKey] is the
-  /// key already resolved for the UTXO's attributed address; every other
-  /// key comes from the aggregate's own address records. Throws when the
-  /// wallet holds fewer than `threshold` of the keys.
+  /// key already resolved for the UTXO's attributed address (null when that
+  /// address is not one the wallet derives keys for, e.g. a watch address);
+  /// every other key comes from the aggregate's own address records. Throws
+  /// when the wallet holds fewer than `threshold` of the keys.
   Future<List<dartsv.SVPrivateKey>> _multisigSigningKeys(BareMultisigScript multisig, BitcoinUtxo utxo,
-      String walletId, WalletState currentState, dartsv.SVPrivateKey utxoAddressKey) async {
+      String walletId, WalletState currentState, dartsv.SVPrivateKey? utxoAddressKey) async {
     final network = NetworkName.toDartsv(currentState.networkType);
     final addresses = multisig.keyAddresses(network);
     final keys = <dartsv.SVPrivateKey>[];
     for (var j = 0; j < addresses.length && keys.length < multisig.threshold; j++) {
       final address = addresses[j];
       if (address == null || !currentState.addresses.containsKey(address)) continue;
-      final key =
-          address == utxo.address ? utxoAddressKey : await _getPrivateKeyForAddress(address, walletId, currentState);
+      final key = address == utxo.address && utxoAddressKey != null
+          ? utxoAddressKey
+          : await _getPrivateKeyForAddress(address, walletId, currentState);
       if (key.publicKey.toHex().toLowerCase() != multisig.publicKeysHex[j].toLowerCase()) {
         throw StateError('The wallet key for $address does not match key ${j + 1} of multisig UTXO ${utxo.key}');
       }
@@ -1984,6 +2000,38 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
           'the wallet holds ${keys.length} of the keys it needs');
     }
     return keys;
+  }
+
+  /// Whether [utxo] is watch-only funds: attributed to the wallet through a
+  /// watch address the wallet holds no key for (bead libspiffy-87a2). Such a
+  /// UTXO is kept (with its transaction and proof) but never funds a
+  /// transaction. A bare multisig UTXO over a watch address is not
+  /// watch-only when the wallet's own keys meet its threshold.
+  static bool _isWatchOnlyUtxo(WalletState state, BitcoinUtxo utxo) =>
+      state.watchAddresses.isNotEmpty &&
+      isWatchOnlyOutput(
+        scriptHex: utxo.scriptPubKey,
+        address: utxo.address,
+        isWatchAddress: state.watchAddresses.containsKey,
+        hasKeyFor: state.addresses.containsKey,
+        network: NetworkName.toDartsv(state.networkType),
+      );
+
+  /// Throws unless [publicKey] (compressed or not) hashes to the key hash
+  /// [p2pkhScript] locks to: the key resolved for [address] is not the one
+  /// that controls the UTXO, so the wallet holds no key for it.
+  static void _requireKeyForP2pkh(
+      String utxoKey, String address, dartsv.SVScript p2pkhScript, dartsv.SVPublicKey publicKey) {
+    final chunks = p2pkhScript.chunks;
+    final lockedHash = chunks.length == 5 ? chunks[2].buf : null;
+    if (lockedHash == null) return; // Not a standard P2PKH script; the interpreter checks the spend.
+    final locked = hex.encode(lockedHash);
+    bool hashesTo(bool compressed) =>
+        hex.encode(dartsv.hash160(hex.decode(publicKey.getEncoded(compressed)))) == locked;
+    if (!hashesTo(true) && !hashesTo(false)) {
+      throw StateError('Cannot sign UTXO $utxoKey at $address: the wallet holds no key for it '
+          '(the key derived for $address does not control its script)');
+    }
   }
 
   /// Handle signing a multisig transaction input
@@ -2210,20 +2258,25 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
       
       // Get available UTXOs and sort by value descending (largest first for efficient selection)
       // Inputs are signed as P2PKH below, so a bare multisig or P2PK wallet
-      // UTXO (bead libspiffy-nlp) does not fund a channel.
-      final spendable = currentState.utxos.values
+      // UTXO (bead libspiffy-nlp) does not fund a channel, and a UTXO at a
+      // watch address (watch-only funds, bead libspiffy-87a2) funds nothing.
+      final unspent = currentState.utxos.values
           .where((u) => u.isAvailable && !u.isSpent && !u.isReserved &&
               _deferredHolderOf(currentState, u.key) == null)
           .toList();
+      final spendable = unspent.where((u) => !_isWatchOnlyUtxo(currentState, u)).toList();
       final availableUtxos = spendable.where((u) => !needsNonP2pkhUnlock(u.scriptPubKey)).toList()
         ..sort((a, b) => b.value.getValue().compareTo(a.value.getValue()));
 
 
       if (availableUtxos.isEmpty) {
-        throw StateError(spendable.isEmpty
+        throw StateError(unspent.isEmpty
             ? 'No available UTXOs for funding'
-            : 'No available UTXOs for funding: the ${spendable.length} spendable UTXO(s) are bare '
-                'multisig or P2PK outputs, which cannot fund a channel');
+            : spendable.isEmpty
+                ? 'No available UTXOs for funding: the ${unspent.length} available UTXO(s) are at watch '
+                    'addresses, watch-only funds the wallet holds no key for'
+                : 'No available UTXOs for funding: the ${spendable.length} spendable UTXO(s) are bare '
+                    'multisig or P2PK outputs, which cannot fund a channel');
       }
       
       final fundingAmount = BigInt.from(command.fundingAmountSats);
@@ -3761,10 +3814,12 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
     return utxo != null && utxo.status == UTXOStatus.available;
   }
 
-  /// Get available UTXOs for spending (excludes plugin-managed UTXOs like tokens)
+  /// Get available UTXOs for spending (excludes plugin-managed UTXOs like
+  /// tokens, and watch-only UTXOs at watch addresses, bead libspiffy-87a2)
   List<BitcoinUtxo> getAvailableUTXOs(WalletState state) {
     return state.utxos.values
-        .where((utxo) => utxo.status == UTXOStatus.available && !utxo.hasPluginMetadata)
+        .where((utxo) =>
+            utxo.status == UTXOStatus.available && !utxo.hasPluginMetadata && !_isWatchOnlyUtxo(state, utxo))
         .toList();
   }
 
@@ -3832,7 +3887,13 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
     // Get all available UTXOs
     final availableUtxos = getAvailableUTXOs(currentState);
     if (availableUtxos.isEmpty) {
-      throw StateError('No available UTXOs to split');
+      final watchOnly = currentState.utxos.values
+          .where((u) => u.status == UTXOStatus.available && !u.hasPluginMetadata && _isWatchOnlyUtxo(currentState, u))
+          .length;
+      throw StateError(watchOnly == 0
+          ? 'No available UTXOs to split'
+          : 'No available UTXOs to split: the $watchOnly available UTXO(s) are at watch addresses, '
+              'watch-only funds the wallet holds no key for');
     }
 
 

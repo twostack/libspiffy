@@ -7,6 +7,7 @@ import '../core/wallet_commands.dart';
 import '../core/wallet_events.dart';
 import '../models/bitcoin_utxo.dart';
 import '../storage/secure_storage.dart';
+import '../services/watch_only_funds.dart';
 import '../storage/read_model_storage.dart';
 import '../utils/benford_distribution.dart';
 import 'aggregate_signing_client.dart';
@@ -78,11 +79,14 @@ class BenfordCoordinatorActor extends Actor {
       return;
     }
     
-    // Get available UTXOs from read model
-    final availableUtxos = await _storage.getPaymentUTXOs(command.walletId);
+    // Get available UTXOs from read model, leaving out watch-only UTXOs at
+    // watch addresses: the wallet holds no key for them (bead libspiffy-87a2)
+    final paymentUtxos =
+        await splitWatchOnlyUtxos(_storage, command.walletId, await _storage.getPaymentUTXOs(command.walletId));
+    final availableUtxos = paymentUtxos.signable;
 
     if (availableUtxos.isEmpty) {
-      _sendErrorResponse(command, 'No available UTXOs to split');
+      _sendErrorResponse(command, 'No available UTXOs to split${paymentUtxos.watchOnlyNote}');
       return;
     }
 

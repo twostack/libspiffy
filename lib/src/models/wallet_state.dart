@@ -141,32 +141,18 @@ class WalletState extends State {
     );
   }
   
-  /// Override the base State copyWith method (only version and lastModified)
+  /// Override the base State copyWith method (only version and lastModified).
+  ///
+  /// Delegates to [copyWithWallet] so every other field is carried over from
+  /// one place: this copy used to list the fields itself and dropped
+  /// [isDeleted], so a copy of a deleted wallet's state (e.g. through
+  /// `nextVersion`) was not deleted (bead libspiffy-bn03).
   @override
   WalletState copyWith({
     int? version,
     DateTime? lastModified,
-  }) {
-    return WalletState(
-      walletId: walletId,
-      name: name,
-      rootAddress: rootAddress,
-      isCreated: isCreated,
-      networkType: networkType,
-      walletType: walletType,
-      timestamp: timestamp,
-      utxos: utxos,
-      addresses: addresses,
-      watchAddresses: watchAddresses,
-      nextDerivationIndex: nextDerivationIndex,
-      metadata: metadata,
-      confirmedBalance: confirmedBalance,
-      unconfirmedBalance: unconfirmedBalance,
-      reservedBalance: reservedBalance,
-      version: version ?? this.version,
-      lastModified: lastModified ?? this.lastModified,
-    );
-  }
+  }) =>
+      copyWithWallet(version: version, lastModified: lastModified);
   
   /// Create a copy of this state with updated wallet-specific fields
   WalletState copyWithWallet({

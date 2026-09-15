@@ -24,6 +24,7 @@ import 'package:isar/isar.dart';
 import 'package:spiffynode/spiffy_node.dart' show BlockHeader, Hash;
 import 'package:test/test.dart';
 
+import 'package:libspiffy/coordinator.dart' as coord;
 import 'package:libspiffy/libspiffy.dart';
 import 'package:libspiffy/src/actors/benford_coordinator_actor.dart';
 import 'package:libspiffy/src/actors/payment_messages.dart';
@@ -622,6 +623,242 @@ void main() {
       final split = plugin.lastProvision!;
       expect('${split.inputs.single.prevTxnId}:${split.inputs.single.prevTxnOutputIndex}', p2pkh);
       expect(verifyInputs(split), isEmpty);
+    });
+  });
+
+  group('87a2: UTXOs at watch addresses are watch-only funds', () {
+    /// A key the wallet does not hold; its address is watched.
+    final watchKey = dartsv.SVPrivateKey.fromHex('22' * 32, dartsv.NetworkType.TEST).publicKey;
+    final watchAddress = watchKey.toAddress(dartsv.NetworkType.TEST).toBase58();
+    final hd = dartsv.HDPrivateKey.fromXpriv(kTestXpriv);
+    final rootKey = hd.deriveChildNumber(0).deriveChildNumber(0).privateKey.publicKey;
+
+    Future<void> watch(String walletId, String address) async {
+      final response = await _tellAndAwait<WatchAddressAddedResponse>(
+        actorSystem,
+        libspiffy.walletManager,
+        WalletCommandMessage(walletId, AddWatchAddressCommand(walletId: walletId, address: address, scriptType: 'p2pkh')),
+      );
+      expect(response.success, isTrue, reason: response.error);
+      await eventually(
+          () async => (await libspiffy.walletStorage.getAddressMetadata(walletId, address))?.purpose == 'watch',
+          'watch address $address in the read model');
+    }
+
+    Future<coord.BalanceResponse> balance(String walletId) async {
+      final queryId = 'balance-${DateTime.now().microsecondsSinceEpoch}';
+      final response = libspiffy.coordinatorEvents!
+          .where((e) => e is coord.BalanceResponse && e.queryId == queryId)
+          .cast<coord.BalanceResponse>()
+          .first
+          .timeout(const Duration(seconds: 10));
+      libspiffy.coordinator.tell(coord.GetBalanceQuery(walletId: walletId, queryId: queryId));
+      return response;
+    }
+
+    test('a payment from a wallet with a small derived UTXO and a larger watch-address UTXO spends the derived one',
+        () async {
+      const walletId = 'watch-standard';
+      final root = await createXprivWallet(walletId);
+      await watch(walletId, watchAddress);
+      final watched = await fundWithImportedParent(walletId, watchAddress, satoshis: 90000, seed: 40);
+      final derived = await fundWithImportedParent(walletId, root, satoshis: 40000, seed: 41);
+
+      final response = await pay(PayInvoiceMessage(
+        walletId: walletId,
+        invoiceId: 'watch-standard-${DateTime.now().microsecondsSinceEpoch}',
+        addresses: const [_externalAddress],
+        amount: BigInt.from(20000),
+      ));
+      expect(response.success, isTrue, reason: response.error);
+
+      final tx = primaryTx(response);
+      expect(tx.inputs.map((i) => '${i.prevTxnId}:${i.prevTxnOutputIndex}'), ['$derived:0']);
+      expect(verifyInputs(tx), isEmpty);
+      final watchUtxo = (await libspiffy.walletStorage.getUTXOs(walletId)).singleWhere((u) => u.key == '$watched:0');
+      expect(watchUtxo.status, UTXOStatus.available, reason: 'the watch-only UTXO is kept, untouched');
+    });
+
+    test('a payment from a wallet whose only UTXO is at a watch address fails naming watch-only funds', () async {
+      const walletId = 'watch-only-standard';
+      await createXprivWallet(walletId);
+      await watch(walletId, watchAddress);
+      final watched = await fundWithImportedParent(walletId, watchAddress, satoshis: 90000, seed: 42);
+
+      final started = DateTime.now();
+      final response = await pay(PayInvoiceMessage(
+        walletId: walletId,
+        invoiceId: 'watch-only-${DateTime.now().microsecondsSinceEpoch}',
+        addresses: const [_externalAddress],
+        amount: BigInt.from(20000),
+      ));
+      expect(response.success, isFalse);
+      expect(response.error, contains('watch-only'));
+      expect(response.error, startsWith('Insufficient funds'), reason: 'refused at selection, not at signing');
+      expect(DateTime.now().difference(started), lessThan(const Duration(seconds: 5)));
+      final utxo = (await libspiffy.walletStorage.getUTXOs(walletId)).singleWhere((u) => u.key == '$watched:0');
+      expect(utxo.status, UTXOStatus.available, reason: 'nothing was reserved');
+    });
+
+    test('the balance leaves watch-address UTXOs out of the spendable total and reports them apart', () async {
+      const walletId = 'watch-balance';
+      final root = await createXprivWallet(walletId);
+      await watch(walletId, watchAddress);
+      await fund(walletId, watchAddress, txid: _fakeTxid(40), satoshis: 90000);
+      await fund(walletId, root, txid: _fakeTxid(41), satoshis: 40000);
+
+      final response = await balance(walletId);
+      expect(response.totalBalance, BigInt.from(40000));
+      expect(response.confirmedBalance + response.unconfirmedBalance, BigInt.from(40000));
+      expect(response.watchOnlyBalance, BigInt.from(90000));
+    });
+
+    test('the wallet refuses to sign an input at a watch address, naming it', () async {
+      const walletId = 'watch-sign';
+      await createXprivWallet(walletId);
+      await watch(walletId, watchAddress);
+      final key = await fund(walletId, watchAddress, txid: _fakeTxid(43), satoshis: 90000);
+
+      final unsigned = dartsv.Transaction()
+        ..version = 1
+        ..nLockTime = 0;
+      unsigned.inputs.add(dartsv.TransactionInput(_fakeTxid(43), 0, dartsv.TransactionInput.MAX_SEQ_NUMBER));
+      unsigned.outputs.add(dartsv.TransactionOutput(
+          BigInt.from(80000), dartsv.SVScript.fromHex(_p2pkhScriptHex(_externalAddress))));
+      // The read model's path for a watch address row is index 0 on the
+      // receive chain, which the aggregate used to sign with.
+      final response = await _tellAndAwait<TransactionSignedResponse>(
+        actorSystem,
+        libspiffy.walletManager,
+        WalletCommandMessage(
+          walletId,
+          SignTransactionCommand(
+            walletId: walletId,
+            transactionId: unsigned.id,
+            rawTransaction: unsigned.serialize(),
+            utxoKeys: [key],
+            publicKeys: const [],
+            addresses: [watchAddress],
+            derivationIndices: const [0],
+            isChangeFlags: const [false],
+          ),
+        ),
+      );
+      expect(response.success, isFalse);
+      expect(response.error, contains('watch address $watchAddress'));
+      expect(response.error, contains('no key'));
+    });
+
+    test('a plugin payment is funded from a derived UTXO, not a larger watch-address one', () async {
+      const walletId = 'watch-plugin';
+      final root = await createXprivWallet(walletId);
+      await watch(walletId, watchAddress);
+      await fund(walletId, watchAddress, txid: _fakeTxid(44), satoshis: 90000);
+      final derived = await fund(walletId, root, txid: _fakeTxid(45), satoshis: 40000);
+
+      final response = await pay(pluginPayment(walletId, 10000));
+      expect(response.success, isTrue, reason: response.error);
+
+      final tx = primaryTx(response);
+      expect(tx.inputs.map((i) => '${i.prevTxnId}:${i.prevTxnOutputIndex}'), [derived]);
+      expect(verifyInputs(tx), isEmpty);
+    });
+
+    test('ProvisionFundingMessage provisions from a derived UTXO, not a larger watch-address one', () async {
+      final plugin = _SpendAllPlugin();
+      PluginRegistry().unregister(_pluginId);
+      PluginRegistry().register(plugin);
+
+      const walletId = 'watch-provision';
+      final root = await createXprivWallet(walletId);
+      await watch(walletId, watchAddress);
+      await fund(walletId, watchAddress, txid: _fakeTxid(46), satoshis: 90000);
+      final derived = await fund(walletId, root, txid: _fakeTxid(47), satoshis: 50000);
+
+      final response = await _tellAndAwait<ProvisionFundingResponse>(
+        actorSystem,
+        libspiffy.paymentCoordinator,
+        ProvisionFundingMessage(walletId: walletId, pluginId: _pluginId, pluginParams: const {}),
+        timeout: const Duration(seconds: 30),
+      );
+      expect(response.success, isTrue, reason: response.error);
+      final split = plugin.lastProvision!;
+      expect('${split.inputs.single.prevTxnId}:${split.inputs.single.prevTxnOutputIndex}', derived);
+      expect(verifyInputs(split), isEmpty);
+    });
+
+    Future<(SplitUTXOsResponse, _Recorder)> split(String walletId) async {
+      final arc = _Recorder();
+      final arcRef = await actorSystem.spawn('watch-benford-arc-$walletId', () => arc);
+      final benford = await actorSystem.spawn(
+        'watch-benford-$walletId',
+        () => BenfordCoordinatorActor(
+          walletManager: libspiffy.walletManager,
+          arcActor: arcRef,
+          secureStorage: libspiffy.secureStorage,
+          storage: libspiffy.walletStorage,
+        ),
+      );
+      final response = await _tellAndAwait<SplitUTXOsResponse>(
+        actorSystem,
+        benford,
+        SplitUTXOsToBenfordCommand(walletId: walletId, targetUtxoCount: 3),
+        timeout: const Duration(seconds: 30),
+      );
+      return (response, arc);
+    }
+
+    test('a Benford split of a wallet whose only UTXO is at a watch address is refused naming watch-only funds',
+        () async {
+      const walletId = 'watch-benford';
+      await createXprivWallet(walletId);
+      await watch(walletId, watchAddress);
+      await fund(walletId, watchAddress, txid: _fakeTxid(48), satoshis: 90000);
+
+      final (response, arc) = await split(walletId);
+      expect(response.success, isFalse);
+      expect(response.error, contains('watch-only'));
+      expect(arc.received.whereType<BroadcastTransactionMessage>(), isEmpty);
+    });
+
+    test('a 1-of-2 multisig UTXO over a watch address and a wallet key is still spent (the wallet signs it alone)',
+        () async {
+      const walletId = 'watch-multisig';
+      await createXprivWallet(walletId);
+      await watch(walletId, watchAddress);
+      final scriptHex = dartsv.P2MSLockBuilder([watchKey, rootKey], 1, sorting: false).getScriptPubkey().toHex();
+      // Attributed to the first owned key's address, the watch address, as
+      // the receive path does.
+      final received = await _tellAndAwait<UTXOReceivedResponse>(
+        actorSystem,
+        libspiffy.walletManager,
+        WalletCommandMessage(
+          walletId,
+          ReceiveUTXOCommand(
+            walletId: walletId,
+            txid: _fakeTxid(49),
+            vout: 0,
+            satoshis: BigInt.from(100000),
+            scriptPubKey: scriptHex,
+            address: watchAddress,
+            blockHeight: 1239645,
+            confirmations: 10,
+            initialStatus: UTXOStatus.available,
+          ),
+        ),
+      );
+      expect(received.success, isTrue, reason: received.error);
+      final key = '${_fakeTxid(49)}:0';
+      funded[key] = (scriptHex: scriptHex, satoshis: 100000);
+      await eventually(() async => (await libspiffy.walletStorage.getPaymentUTXOs(walletId)).any((u) => u.key == key),
+          'multisig UTXO projected');
+
+      expect((await balance(walletId)).totalBalance, BigInt.from(100000));
+      final (response, arc) = await split(walletId);
+      expect(response.success, isTrue, reason: response.error);
+      final tx = dartsv.Transaction.fromHex(arc.received.whereType<BroadcastTransactionMessage>().single.txHex);
+      expect('${tx.inputs.single.prevTxnId}:${tx.inputs.single.prevTxnOutputIndex}', key);
+      expect(verifyInputs(tx), isEmpty);
     });
   });
 }

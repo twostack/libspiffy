@@ -16,6 +16,7 @@ import '../models/bitcoin_transaction.dart';
 import '../models/bitcoin_utxo.dart';
 import '../models/invoice_output_spec.dart';
 import '../services/ancestor_chain_service.dart';
+import '../services/watch_only_funds.dart';
 import '../storage/read_model_storage.dart';
 import '../utils/beef.dart';
 import 'channel_p2p_adapter.dart';
@@ -485,11 +486,14 @@ class WalletCoordinatorActor extends Actor {
 
   Future<void> _handleGetBalance(GetBalanceQuery query) async {
     try {
-      final utxos = await _storage.getPaymentUTXOs(query.walletId);
+      // Spendable balance: UTXOs at watch addresses are reported apart, as
+      // watch-only (bead libspiffy-87a2).
+      final paymentUtxos =
+          await splitWatchOnlyUtxos(_storage, query.walletId, await _storage.getPaymentUTXOs(query.walletId));
       BigInt confirmed = BigInt.zero;
       BigInt unconfirmed = BigInt.zero;
 
-      for (final utxo in utxos) {
+      for (final utxo in paymentUtxos.signable) {
         final amount = utxo.satoshis;
         if (utxo.blockHeight != null && utxo.blockHeight! > 0) {
           confirmed += amount;
@@ -504,6 +508,7 @@ class WalletCoordinatorActor extends Actor {
         confirmedBalance: confirmed,
         unconfirmedBalance: unconfirmed,
         totalBalance: confirmed + unconfirmed,
+        watchOnlyBalance: paymentUtxos.watchOnlySatoshis,
       ));
     } catch (e) {
       _emitEvent(ErrorEvent(

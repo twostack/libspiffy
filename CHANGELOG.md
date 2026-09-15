@@ -306,7 +306,7 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 
 Structural work that keeps behaviour (the existing suite passes unchanged;
 characterization tests pin reply shapes, merkle walks and header-chain
-results). Defects found on the way are report section 11, V-35 to V-37.
+results). Defects found on the way are report section 11, V-35 to V-39.
 
 - **Pattern-matching dispatch (A-L6, libspiffy-r1l).** Aggregates,
   projections and actors dispatch with type patterns instead of
@@ -326,6 +326,13 @@ results). Defects found on the way are report section 11, V-35 to V-37.
 - **SPV hot paths (SPV-15, libspiffy-780).** BEEF transactions keep their
   received bytes (V-37) and each txid is hashed once; bulk header imports no
   longer reload the header cache per chunk.
+- **No polling (libspiffy-a5l).** `initialize()` returns once stored wallets
+  are preloaded instead of sleeping 100 ms (V-38); the wallet manager waits
+  on one shared load future per wallet.
+- **Immutable aggregate state (libspiffy-mmb).** `WalletState`,
+  `InvoiceState` and `ChannelState` are copy-on-write: each event yields a
+  new state, exposed collections are unmodifiable, and a state you hold never
+  changes (V-39). Replay copies only what each event touches.
 
 #### Breaking changes in wave 4
 
@@ -336,12 +343,21 @@ results). Defects found on the way are report section 11, V-35 to V-37.
   encoded transaction the txid changes to the one the sender computed.
 - Subclasses of commands, events and messages are handled like their parent
   instead of falling through to the unknown-message path.
+- `WalletState` fields are final; `utxos`, `addresses`, `watchAddresses` and
+  `metadata` are unmodifiable (`PersistentMap`, deep-frozen) and maps passed
+  in are copied. `InvoiceState` fields are final with unmodifiable lists;
+  `ChannelState` fields are final. Aggregates implement
+  `applyEvent(state, event)` instead of overriding `eventHandler`.
+- A `PreloadWalletCommand` sent with a sender is answered with
+  `WalletPreloadedResponse`.
 
 Additive API: `ActorResponse`, `lib/src/spv/merkle.dart` (`hash256`,
 `txidInternalBytes`, `txidDisplayBytes`, `merkleParent`, `merkleRootFromPath`,
 `merklePathForIndex`), `hex_utils` `reverseBytes` / `displayToInternal` /
 `internalToDisplay` / `bytesEqual`, `NetworkParams.checkProofOfWork`,
-`ProofOfWorkCheck`, `ProofOfWorkFailure`, `BUMP.siblingAt`. Deprecated:
+`ProofOfWorkCheck`, `ProofOfWorkFailure`, `BUMP.siblingAt`,
+`WalletPreloadedResponse`, `InvoiceState.copyWith` (every field),
+`ChannelState.copyWith`. Deprecated:
 `CdnHeaderSyncConfig.concurrentDownloads`.
 
 ### Follow-ups before wave 4

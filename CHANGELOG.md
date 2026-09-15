@@ -304,7 +304,7 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 
 ### Follow-ups before wave 4
 
-Defects found by the wave 3 lanes and this batch (report section 11, V-8 to V-26), each with
+Defects found by the wave 3 lanes and this batch (report section 11, V-8 to V-32), each with
 a regression test shown to fail on the previous code.
 
 - **Rejected commands (V-8, V-11).** A command an aggregate rejects is
@@ -404,6 +404,27 @@ a regression test shown to fail on the previous code.
   exist (or does not answer within 30 s) now returns `isValid: false`
   ("Cannot tell which outputs of <txid> belong to wallet <id>") instead of
   a valid result with nothing recorded.
+- **P2PK receives (V-27).** P2PK outputs received through SPV are credited;
+  before, none was.
+- **Invoice receives (V-28).** Receiving a transaction for an invoice that
+  cannot be looked up, does not exist, or that no output pays now returns
+  `isValid: false` naming the invoice, instead of a valid result with
+  nothing recorded (and a BEEF broadcast).
+- **Unreadable outputs (V-29).** Outputs whose locking script cannot be read
+  are listed in `SPVValidationResult.unreadableOutputs` and
+  `SPVValidationResultEvent.unreadableOutputs`; the transaction is still
+  recorded.
+- **Multisig and P2PK spends (V-30).** Payments and splits sign bare
+  multisig and P2PK wallet UTXOs with their own unlocking scripts; before,
+  they were signed as P2PKH and the payment failed. Plugin payments,
+  funding provisioning and channel funding do not select them.
+- **Paying again after a cancel (V-31).** Paying the same invoice again
+  after cancelling its deferred payment re-activates that payment at once
+  (same transaction, inputs held again); after a network rejection it fails
+  at once.
+- **Watch addresses journaled (V-32).** Watch address registration is
+  recorded in the wallet's journal, so a rebuilt read model keeps it;
+  addresses registered earlier are journaled when their wallet is loaded.
 
 #### Breaking changes
 
@@ -465,6 +486,16 @@ a regression test shown to fail on the previous code.
   after 30 s), and a transaction for a wallet that does not exist is
   reported invalid, not valid with nothing recorded; on the BEEF path it is
   then not broadcast.
+- A receive with an invoice id that no output pays, or whose invoice cannot
+  be looked up, is invalid. `RegisterWatchAddressCommand` goes through the
+  wallet (fails for an unknown wallet; registering an address the wallet
+  derives or already watches changes nothing, labels included); writing a
+  row with `upsertAddress` no longer makes an address the wallet's.
+  `ReadModelStorage.getAddressesByPurpose` is added (abstract). A wallet
+  must be loaded once after upgrading before its read model is rebuilt
+  from the journal, so its earlier watch addresses are journaled. Plugin
+  payments, `ProvisionFundingMessage` and channel funding no longer spend
+  bare multisig or P2PK UTXOs.
 
 Additive API: `MerkleProofStatus`, `MerkleProof.status` / `statusChangedAt`,
 `PostgresEventStore(livePollInterval:)`, `ServerAcceptanceRecordedResponse`,
@@ -492,7 +523,13 @@ walletProjection:, broadcastTimeout:)`, `TransactionConfirmedEvent.bumpHex`,
 `DeferredPayment`, `DeferredPaymentState`, `DeferredPaymentNetworkSource`,
 `ARCActor(dataSource:)`, `RecordOutgoingTransactionCommand.invoiceId` / `purpose`,
 `ArcException.statusCode` / `isNotFound`, `DataSourceException.notFound`,
-`WalletOwnershipQuery` / `WalletOwnershipResponse`.
+`WalletOwnershipQuery` / `WalletOwnershipResponse`,
+`SPVValidationResult.unreadableOutputs`, `SPVValidationResultEvent.unreadableOutputs`,
+`needsNonP2pkhUnlock`, `BareMultisigScript.parseHex`,
+`TransactionSpendDeferredEvent.reactivated`, `WatchAddressAddedEvent`,
+`AddWatchAddressCommand`, `ReconcileWatchAddressesCommand`, `LegacyWatchAddress`,
+`WatchAddressAddedResponse`, `WalletState.watchAddresses`,
+`WalletManagerActor(readModelStorage:)`.
 
 ## 2.0.0
 

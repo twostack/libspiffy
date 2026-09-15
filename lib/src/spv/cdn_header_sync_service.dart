@@ -423,9 +423,12 @@ class CdnHeaderSyncService {
       }
     }
 
+    // Each header is hashed once for continuity and proof of work.
+    final hashes = [for (final h in headers) h.blockHash().toString()];
+
     // Validate intra-chunk continuity
     for (var i = 1; i < headers.length; i++) {
-      final prevHash = headers[i - 1].blockHash().toString();
+      final prevHash = hashes[i - 1];
       final headerPrevHash = headers[i].prevBlock.toString();
 
       if (prevHash != headerPrevHash) {
@@ -437,7 +440,7 @@ class CdnHeaderSyncService {
     // Validate proof-of-work
     if (config.validateProofOfWork) {
       for (var i = 0; i < headers.length; i++) {
-        final failure = _proofOfWorkFailure(headers[i]);
+        final failure = _proofOfWorkFailure(headers[i], hashes[i]);
         if (failure != null) {
           return 'proof-of-work validation failed at height ${startHeight + i}: '
               '$failure';
@@ -480,23 +483,21 @@ class CdnHeaderSyncService {
   /// the network's [NetworkParams.powLimit].
   ///
   /// Returns null if the header is acceptable, otherwise the reason.
-  String? _proofOfWorkFailure(BlockHeader header) {
+  String? _proofOfWorkFailure(BlockHeader header, String blockHash) {
     final bits = header.bits;
-    final target = NetworkParams.bitsToTarget(bits);
-    if (target == BigInt.zero) {
-      return 'bits 0x${bits.toRadixString(16)} encode no valid target';
+    switch (networkParams.checkProofOfWork(bits, blockHash).failure) {
+      case null:
+        return null;
+      case ProofOfWorkFailure.noTarget:
+        return 'bits 0x${bits.toRadixString(16)} encode no valid target';
+      case ProofOfWorkFailure.aboveLimit:
+        return 'bits 0x${bits.toRadixString(16)} are easier than the '
+            '${networkParams.name} powLimit '
+            '0x${networkParams.powLimitBits.toRadixString(16)}';
+      case ProofOfWorkFailure.hashAboveTarget:
+        return 'hash $blockHash exceeds target for bits '
+            '0x${bits.toRadixString(16)}';
     }
-    if (target > networkParams.powLimit) {
-      return 'bits 0x${bits.toRadixString(16)} are easier than the '
-          '${networkParams.name} powLimit '
-          '0x${networkParams.powLimitBits.toRadixString(16)}';
-    }
-    final blockHash = header.blockHash().toString();
-    if (NetworkParams.hashToBigInt(blockHash) > target) {
-      return 'hash $blockHash exceeds target for bits '
-          '0x${bits.toRadixString(16)}';
-    }
-    return null;
   }
 
   void _reportProgress(int current, int total, CdnSyncPhase phase) {

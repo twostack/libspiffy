@@ -3,6 +3,9 @@ import 'package:buffer/buffer.dart';
 import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart';
 
+import '../spv/merkle.dart';
+import 'hex_utils.dart' as hex_utils;
+
 class BUMPException implements Exception {
   final String message;
 
@@ -111,13 +114,11 @@ class BUMP {
     required List<String> nodes,
   }) {
     Uint8List internal(String displayHex, String what) {
-      final List<int> bytes;
       try {
-        bytes = hex.decode(displayHex);
+        return hex_utils.displayToInternal(displayHex);
       } catch (e) {
         throw BUMPException('Invalid hex for $what: $displayHex');
       }
-      return Uint8List.fromList(bytes.reversed.toList());
     }
 
     return BUMP.fromMerklePath(
@@ -165,7 +166,7 @@ class BUMP {
           }
           if (!existing.duplicate &&
               !leaf.duplicate &&
-              !_bytesEqual(existing.hash!, leaf.hash!)) {
+              !hex_utils.bytesEqual(existing.hash!, leaf.hash!)) {
             throw BUMPException(
                 'Conflicting hashes at height $height offset ${leaf.offset}');
           }
@@ -189,12 +190,14 @@ class BUMP {
   // Serialization
   // ---------------------------------------------------------------------------
 
-  /// Parse a BUMP from a list of bytes
+  /// Parse a BUMP from a list of bytes. Any failure is a [BUMPException]
+  /// whose message starts with `Failed to parse BUMP`. Bytes after the BUMP
+  /// are ignored.
   static BUMP fromBytes(Uint8List bytes) {
     try {
       final reader = ByteDataReader();
       reader.add(bytes);
-      return parse(reader);
+      return _parse(reader);
     } catch (e) {
       throw BUMPException('Failed to parse BUMP: $e');
     }
@@ -203,8 +206,21 @@ class BUMP {
   /// Parse a BUMP from its hex encoding
   static BUMP fromHex(String bumpHex) => fromBytes(Uint8List.fromList(hex.decode(bumpHex)));
 
-  /// Parse a BUMP from a reader
+  /// Parse a BUMP from a reader, leaving it positioned after the BUMP.
+  ///
+  /// Throws [BUMPException] when the reader runs out of bytes or holds
+  /// something that is not a BUMP; the message keeps the underlying reason.
   static BUMP parse(ByteDataReader reader) {
+    try {
+      return _parse(reader);
+    } on BUMPException {
+      rethrow;
+    } catch (e) {
+      throw BUMPException('Malformed BUMP: $e');
+    }
+  }
+
+  static BUMP _parse(ByteDataReader reader) {
     final blockHeight = readVarIntNum(reader);
     final treeHeight = reader.readUint8();
     final path = <Level>[];
@@ -280,10 +296,10 @@ class BUMP {
   /// to the same leaf.
   Leaf? findTxidLeaf(Uint8List txid) {
     if (path.isEmpty || txid.length != 32) return null;
-    final reversed = Uint8List.fromList(txid.reversed.toList());
+    final reversed = hex_utils.reverseBytes(txid);
     for (final leaf in path[0].leaves) {
       if (leaf.duplicate || leaf.hash == null) continue;
-      if (_bytesEqual(leaf.hash!, txid) || _bytesEqual(leaf.hash!, reversed)) {
+      if (hex_utils.bytesEqual(leaf.hash!, txid) || hex_utils.bytesEqual(leaf.hash!, reversed)) {
         return leaf;
       }
     }
@@ -310,47 +326,49 @@ class BUMP {
     }
 
     final index = txidLeaf.offset;
-    var working = txidLeaf.hash!;
 
     // Single-transaction block: the sole leaf is the root.
     if (path.length == 1 && path[0].leaves.length == 1 && index == 0) {
-      return working;
+      return txidLeaf.hash!;
     }
 
+    final siblings = <Uint8List?>[];
     for (var height = 0; height < path.length; height++) {
-      final position = index >> height;
-      final siblingOffset = position ^ 1;
-
-      Leaf? sibling;
-      for (final leaf in path[height].leaves) {
-        if (leaf.offset == siblingOffset) {
-          sibling = leaf;
-          break;
-        }
-      }
+      final siblingOffset = (index >> height) ^ 1;
+      final sibling = siblingAt(height, index);
       if (sibling == null) {
         throw BUMPException(
             'Missing sibling at height $height (offset $siblingOffset) for txid position $index');
       }
-
       if (sibling.duplicate) {
-        working = _hashPair(working, working);
+        siblings.add(null);
       } else {
         final siblingHash = sibling.hash;
         if (siblingHash == null || siblingHash.length != 32) {
           throw BUMPException('Sibling at height $height offset $siblingOffset has no 32-byte hash');
         }
-        working = position.isOdd ? _hashPair(siblingHash, working) : _hashPair(working, siblingHash);
+        siblings.add(siblingHash);
       }
     }
 
-    return working;
+    return merkleRootFromPath(txidLeaf.hash!, index, siblings);
+  }
+
+  /// The leaf at [height] that the walk from level-0 position [index] pairs
+  /// with (offset `(index >> height) ^ 1`), or null when the BUMP lacks it.
+  Leaf? siblingAt(int height, int index) {
+    if (height < 0 || height >= path.length) return null;
+    final siblingOffset = (index >> height) ^ 1;
+    for (final leaf in path[height].leaves) {
+      if (leaf.offset == siblingOffset) return leaf;
+    }
+    return null;
   }
 
   /// Compute the merkle root for [txid] and return it as display-format hex
   /// (the byte-reversed form shown by block explorers).
   String computeMerkleRootForBlockHeader(Uint8List txid) =>
-      hex.encode(computeMerkleRoot(txid).reversed.toList());
+      hex_utils.internalToDisplay(computeMerkleRoot(txid));
 
   /// Validate the merkle path for [txid].
   ///
@@ -367,29 +385,13 @@ class BUMP {
       return false;
     }
     if (expectedMerkleRoot != null) {
-      return _bytesEqual(root, expectedMerkleRoot);
-    }
-    return true;
-  }
-
-  /// Hash a pair of hashes as per Bitcoin merkle tree algorithm
-  Uint8List _hashPair(Uint8List left, Uint8List right) {
-    final combined = Uint8List(64);
-    combined.setRange(0, 32, left);
-    combined.setRange(32, 64, right);
-    return Uint8List.fromList(sha256(sha256(combined)));
-  }
-
-  static bool _bytesEqual(Uint8List a, Uint8List b) {
-    if (a.length != b.length) return false;
-    for (int i = 0; i < a.length; i++) {
-      if (a[i] != b[i]) return false;
+      return hex_utils.bytesEqual(root, expectedMerkleRoot);
     }
     return true;
   }
 
   /// Compare two Uint8List for equality
-  bool listEquals(Uint8List a, Uint8List b) => _bytesEqual(a, b);
+  bool listEquals(Uint8List a, Uint8List b) => hex_utils.bytesEqual(a, b);
 }
 
 /// Represents a level in the merkle tree

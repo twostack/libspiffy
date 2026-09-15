@@ -5,9 +5,10 @@ import 'dart:typed_data';
 import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart';
 import 'package:logging/logging.dart' hide Level;
-import 'package:crypto/crypto.dart' as crypto;
+import '../spv/merkle.dart' as merkle;
 import '../storage/read_model_storage.dart' show MerkleProof;
 import 'bump.dart';
+import 'hex_utils.dart' as hex_utils;
 
 final _cryptoLog = Logger('CryptoUtils');
 
@@ -256,18 +257,11 @@ class CryptoUtils {
     // Path hashes are display format; "*" marks a duplicate.
     final List<String> path = [];
     for (int h = 0; h < bump.path.length; h++) {
-      final siblingOffset = (index >> h) ^ 1;
-      Leaf? sibling;
-      for (final leaf in bump.path[h].leaves) {
-        if (leaf.offset == siblingOffset) {
-          sibling = leaf;
-          break;
-        }
-      }
+      final sibling = bump.siblingAt(h, index);
       if (sibling == null) {
         throw Exception('BUMP is missing the sibling at height $h for txid $txid');
       }
-      path.add(sibling.duplicate ? '*' : hex.encode(sibling.hash!.reversed.toList()));
+      path.add(sibling.duplicate ? '*' : hex_utils.internalToDisplay(sibling.hash!));
     }
 
     return {
@@ -305,44 +299,23 @@ class CryptoUtils {
     // Extract the index and path from the BRC-71 format
     final index = brc71Path['index'] as int;
     final path = (brc71Path['path'] as List).map((node) => node.toString()).toList();
-    
-    // Start with the transaction hash
-    String currentHash = txid;
-    int currentIndex = index;
-    
-    // Apply each proof step with byte reversal for Bitcoin's little-endian format
-    for (int i = 0; i < path.length; i++) {
-      final node = path[i];
 
-      // Determine if we need to concatenate left+right or right+left
-      bool isLeftSide = (currentIndex % 2 == 0);
-      String concatenated;
+    // A single-transaction block: the root is the txid, as given.
+    if (path.isEmpty) return txid;
+    return hex_utils.internalToDisplay(_walkDisplayPath(txid, path, index));
+  }
 
-      // First, reverse both hashes (to get little-endian format)
-      // A "*" node is a duplicate: the working hash is paired with itself.
-      String reversedCurrentHash = reverseBytes(currentHash);
-      String reversedNode = node == '*' ? reversedCurrentHash : reverseBytes(node);
-
-      if (isLeftSide) {
-        // Our txid is on the left side, so concatenate with the right sibling
-        concatenated = reversedCurrentHash + reversedNode;
-      } else {
-        // Our txid is on the right side, so concatenate with the left sibling
-        concatenated = reversedNode + reversedCurrentHash;
-      }
-      
-      // Double-SHA256 hash the concatenated value
-      String hashedValue = doubleSha256(concatenated);
-      
-      // Convert back to big-endian format for the next round
-      currentHash = reverseBytes(hashedValue);
-      
-      // Update the index for the next level of the tree
-      currentIndex = currentIndex ~/ 2;
-    }
-    
-    // Return the computed merkle root
-    return currentHash;
+  /// The merkle root (internal order) of [txid] and TSC/BRC-71 [path], both
+  /// display hex with "*" for a duplicate, through the shared merkle walk.
+  /// Odd-length hex throws as [reverseBytes] does; other bad hex throws
+  /// [FormatException].
+  static Uint8List _walkDisplayPath(String txid, List<String> path, int index) {
+    List<int> internal(String displayHex) => hex.decode(reverseBytes(displayHex));
+    return merkle.merkleRootFromPath(
+      internal(txid),
+      index,
+      [for (final node in path) node == '*' ? null : internal(node)],
+    );
   }
 
   /// Compute the merkle root from a BUMP format for a specific transaction
@@ -383,26 +356,11 @@ class CryptoUtils {
   static BUMP combineBumps(List<BUMP> bumps) => BUMP.merge(bumps);
 
   /// Double SHA-256 hash of a hex string
-  static String doubleSha256(String hexString) {
-    final bytes = hex.decode(hexString);
-    final hash1 = crypto.sha256.convert(bytes);
-    final hash2 = crypto.sha256.convert(hash1.bytes);
-    return hex.encode(hash2.bytes);
-  }
+  static String doubleSha256(String hexString) => hex.encode(merkle.hash256(hex.decode(hexString)));
 
-  /// Reverses bytes in a hex string (for Bitcoin's little-endian format)
-  static String reverseBytes(String hexString) {
-    if (hexString.length % 2 != 0) {
-      throw Exception('Hex string must have an even number of characters');
-    }
-    
-    final result = StringBuffer();
-    for (int i = hexString.length - 2; i >= 0; i -= 2) {
-      result.write(hexString.substring(i, i + 2));
-    }
-    
-    return result.toString();
-  }
+  /// Reverses bytes in a hex string (for Bitcoin's little-endian format).
+  /// Forwards to `hex_utils.reverseHexBytes`.
+  static String reverseBytes(String hexString) => hex_utils.reverseHexBytes(hexString);
 
   /// Validates a merkle proof using Bitcoin's little-endian byte order
   /// 
@@ -419,41 +377,11 @@ class CryptoUtils {
     String merkleRoot, 
     int index
   ) {
-    // Reverse bytes for Bitcoin's little-endian format ("*" = duplicate)
-    String reversedTxid = reverseBytes(txid);
-    List<String> reversedNodes =
-        merkleProof.map((node) => node == '*' ? '*' : reverseBytes(node)).toList();
-    String reversedMerkleRoot = reverseBytes(merkleRoot);
-
-    // Start with the transaction hash
-    String currentHash = reversedTxid;
-    int currentIndex = index;
-
-    // Apply each proof step
-    for (int i = 0; i < reversedNodes.length; i++) {
-      final node = reversedNodes[i] == '*' ? currentHash : reversedNodes[i];
-
-      // Determine if we need to concatenate left+right or right+left
-      bool isLeftSide = (currentIndex % 2 == 0);
-      String concatenated;
-      
-      if (isLeftSide) {
-        // Our txid is on the left side, so concatenate with the right sibling
-        concatenated = currentHash + node;
-      } else {
-        // Our txid is on the right side, so concatenate with the left sibling
-        concatenated = node + currentHash;
-      }
-      
-      // Double-SHA256 hash the concatenated value
-      currentHash = doubleSha256(concatenated);
-      
-      // Update the index for the next level of the tree
-      currentIndex = currentIndex ~/ 2;
-    }
-    
-    // Check if our computed merkle root matches the expected merkle root
-    return currentHash == reversedMerkleRoot;
+    // Compared as internal-order hex strings, as before: a single-tx path
+    // compares the txid as given, a computed root is lower-case hex.
+    final reversedMerkleRoot = reverseBytes(merkleRoot);
+    if (merkleProof.isEmpty) return reverseBytes(txid) == reversedMerkleRoot;
+    return hex.encode(_walkDisplayPath(txid, merkleProof, index)) == reversedMerkleRoot;
   }
 
   /// Create a BUMP directly from a TSC proof
@@ -509,45 +437,21 @@ class CryptoUtils {
   /// @param tscProof The merkle proof in TSC format (from WhatsOnChain API)
   /// @returns A Map containing the computed merkle root and the transaction index
   static Map<String, dynamic> computeMerkleRootFromTscProof(Map<String, dynamic> tscProof) {
-    // Use the TSC proof directly without byte reversal for the calculation
+    // txOrId and nodes are display hex ("*" = duplicate). This used to hash
+    // the display bytes and shift the index twice per level, so it returned
+    // a wrong root for any real proof (audit SPV-16); it now uses the shared
+    // merkle walk.
     final txid = tscProof['txOrId'] as String;
     final txIndex = tscProof['index'] as int;
     final nodes = (tscProof['nodes'] as List<dynamic>).cast<String>();
-    
-    // Start with the transaction hash - already in correct format for calculation
-    String currentHash = txid;
-    int currentIndex = txIndex;
-    
-    for (int i = 0; i < nodes.length; i++) {
-      // Determine if sibling is left or right ("*" = pair with self)
-      final isRight = ((currentIndex >> i) & 1) == 0;
-      final siblingHash = nodes[i] == '*' ? currentHash : nodes[i];
-      
-      // Combine current hash with sibling hash in correct order
-      String concatenated;
-      if (isRight) {
-        // Current hash is on left, sibling on right
-        concatenated = currentHash + siblingHash;
-      } else {
-        // Sibling on left, current hash on right
-        concatenated = siblingHash + currentHash;
-      }
-      
-      // Double-SHA256 hash the concatenated value
-      currentHash = doubleSha256(concatenated);
-      
-      // Move to parent index
-      currentIndex = currentIndex >> 1;
-    }
-    
-    // The block header merkle root is in a specific byte order (display format)
-    // Our computation gives the internal format, which needs to be byte-reversed to match
-    // the block header format for direct comparison
-    final blockHeaderFormatRoot = reverseBytes(currentHash);
-    
+
+    final internalRoot = nodes.isEmpty
+        ? hex.encode(hex.decode(reverseBytes(txid)))
+        : hex.encode(_walkDisplayPath(txid, nodes, txIndex));
+
     return {
-      'merkleRoot': blockHeaderFormatRoot, // Return in block header format for direct comparison
-      'internalMerkleRoot': currentHash,   // Also include internal format for reference
+      'merkleRoot': reverseBytes(internalRoot), // display order, as in the block header
+      'internalMerkleRoot': internalRoot,
       'txIndex': txIndex
     };
   }

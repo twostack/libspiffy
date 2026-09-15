@@ -1,11 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
 
-import 'package:convert/convert.dart';
 import 'package:http/http.dart' as http;
 
 import '../utils/bump.dart';
+import '../utils/hex_utils.dart' as hex_utils;
 
 import 'arc_service_config.dart';
 
@@ -520,8 +519,7 @@ class ArcService {
     }
     var root = '';
     try {
-      root = bump.computeMerkleRootForBlockHeader(
-          Uint8List.fromList(hex.decode(txid).reversed.toList()));
+      root = bump.computeMerkleRootForBlockHeader(hex_utils.displayToInternal(txid));
     } catch (_) {
       // txid not in the path: leave the root empty; a header check rejects it.
     }

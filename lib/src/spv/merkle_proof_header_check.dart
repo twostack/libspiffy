@@ -1,9 +1,9 @@
 import 'dart:typed_data';
 
-import 'package:convert/convert.dart';
 import 'package:spiffynode/spiffy_node.dart';
 
 import '../utils/bump.dart';
+import '../utils/hex_utils.dart' as hex_utils;
 
 /// Outcome of checking a merkle proof against the local header chain.
 enum ProofHeaderStatus {
@@ -73,7 +73,7 @@ Future<ProofHeaderCheck> checkBumpAgainstHeaders({
 }) async {
   final Uint8List txidInternal;
   try {
-    txidInternal = Uint8List.fromList(hex.decode(txid).reversed.toList());
+    txidInternal = hex_utils.displayToInternal(txid);
   } catch (_) {
     return ProofHeaderCheck._(ProofHeaderStatus.malformed, detail: 'txid is not hex: $txid');
   }
@@ -90,7 +90,7 @@ Future<ProofHeaderCheck> checkBumpAgainstHeaders({
   // reversed form, which must not let a leaf holding the display bytes pass.
   final leaf = bump.path.isEmpty
       ? null
-      : bump.path[0].leaves.where((l) => !l.duplicate && l.hash != null && _equal(l.hash!, txidInternal)).firstOrNull;
+      : bump.path[0].leaves.where((l) => !l.duplicate && l.hash != null && hex_utils.bytesEqual(l.hash!, txidInternal)).firstOrNull;
   if (leaf == null) {
     return ProofHeaderCheck._(ProofHeaderStatus.malformed,
         blockHeight: bump.blockHeight, detail: 'txid $txid is not proved by the BUMP');
@@ -116,12 +116,12 @@ Future<ProofHeaderCheck> checkBumpAgainstHeaders({
         blockHeight: bump.blockHeight, txIndex: leaf.offset, detail: 'no header at height ${bump.blockHeight}');
   }
 
-  if (!_equal(root, header.merkleRoot.bytes)) {
+  if (!hex_utils.bytesEqual(root, header.merkleRoot.bytes)) {
     return ProofHeaderCheck._(ProofHeaderStatus.rootMismatch,
         header: header,
         blockHeight: bump.blockHeight,
         txIndex: leaf.offset,
-        detail: 'computed root ${hex.encode(root.reversed.toList())} != header root ${header.merkleRoot}');
+        detail: 'computed root ${hex_utils.internalToDisplay(root)} != header root ${header.merkleRoot}');
   }
   return ProofHeaderCheck._(ProofHeaderStatus.verified,
       header: header, blockHeight: bump.blockHeight, txIndex: leaf.offset);
@@ -143,12 +143,4 @@ Future<ProofHeaderCheck> checkBumpHexAgainstHeaders({
   }
   return checkBumpAgainstHeaders(
       txid: txid, bump: bump, headerAt: headerAt, claimedHeight: claimedHeight);
-}
-
-bool _equal(Uint8List a, Uint8List b) {
-  if (a.length != b.length) return false;
-  for (var i = 0; i < a.length; i++) {
-    if (a[i] != b[i]) return false;
-  }
-  return true;
 }

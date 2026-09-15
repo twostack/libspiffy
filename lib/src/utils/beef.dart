@@ -3,7 +3,9 @@ import 'package:buffer/buffer.dart';
 import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart' as dartsv hide BlockHeader;
 import 'package:spiffynode/spiffy_node.dart';
+import '../spv/merkle.dart' as merkle;
 import 'bump.dart';
+import 'hex_utils.dart' as hex_utils;
 
 /// BeefMagicAndVersion is the magic bytes and version for BEEF format (0100BEEF)
 const int beefMagicAndVersion = 0x0100BEEF;
@@ -36,6 +38,17 @@ class BEEF {
   /// The BUMP index for each transaction that has a merkle proof
   final List<int> bumpIndex;
 
+  // Txid index (audit SPV-15): each transaction's display txid is hashed at
+  // most once, on first use, and the txid -> position map is built on the
+  // first lookup by txid. Rebuilt when transactions are appended; replacing
+  // a list element in place after a lookup is not detected.
+  List<Uint8List?> _txids = const [];
+  Map<String, int>? _indexByTxid;
+  Map<Uint8List, int> _indexByIdentity = Map.identity();
+  List<int> _bumpOrdinal = const [];
+  int _indexedTxCount = -1;
+  int _indexedMerkleCount = -1;
+
   /// Creates a new BEEF instance
   BEEF({
     required this.version,
@@ -45,8 +58,24 @@ class BEEF {
     required this.bumpIndex,
   });
 
-  /// Parse a BEEF format byte array
+  /// Parse a BEEF (BRC-62, version 1) from [data].
+  ///
+  /// Every malformed input is reported as a [BEEFException]: too short, a
+  /// wrong magic/version, truncated or garbage BUMPs or transactions, a BUMP
+  /// index beyond the BUMP list, and bytes left over after the last
+  /// transaction. The message keeps the underlying reason (for a truncation,
+  /// the reader's `Not enough bytes to read`).
   static BEEF parse(Uint8List data) {
+    try {
+      return _parse(data);
+    } on BEEFException {
+      rethrow;
+    } catch (e) {
+      throw BEEFException('Malformed BEEF: $e');
+    }
+  }
+
+  static BEEF _parse(Uint8List data) {
     if (data.length < 4) {
       throw BEEFException('Invalid BEEF format: data too short');
     }
@@ -87,13 +116,12 @@ class BEEF {
     final bumpIndex = <int>[];
 
     for (var i = 0; i < nTxs; i++) {
-      // Read transaction
-      // For simplicity, we'll read the transaction as a raw byte array
-      // In a real implementation, you would parse this into a Transaction object
-      final tx = dartsv.Transaction.fromBufferReader(reader);
-      // final txSize = readVarIntNum(reader);
-      // final tx = reader.readBytes(txSize);
-      txs.add(Uint8List.fromList(hex.decode(tx.serialize())));
+      // A BEEF transaction has no length prefix: parse it to find its end,
+      // then keep the bytes exactly as sent (re-serialising would rewrite a
+      // non-minimal encoding and change the txid, audit SPV-15).
+      final start = data.length - reader.remainingLength;
+      dartsv.Transaction.fromBufferReader(reader);
+      txs.add(data.sublist(start, data.length - reader.remainingLength));
 
       // Read Has BUMP flag
       final hasBump = reader.readUint8() == 1;
@@ -103,10 +131,15 @@ class BEEF {
       if (hasBump) {
         final idx = dartsv.readVarIntNum(reader);
         if (idx >= nBumps) {
-          throw Exception('Invalid BUMP index $idx for tx $i: exceeds number of BUMPs');
+          throw BEEFException('Invalid BUMP index $idx for tx $i: exceeds number of BUMPs');
         }
         bumpIndex.add(idx);
       }
+    }
+
+    if (reader.remainingLength != 0) {
+      throw BEEFException(
+          'Invalid BEEF: ${reader.remainingLength} trailing byte(s) after the last transaction');
     }
 
     return BEEF(
@@ -203,31 +236,54 @@ class BEEF {
   
   /// Calculate the transaction ID (TXID) for a transaction
   /// TXID is the double SHA-256 hash of the transaction
+  ///
+  /// For one of this BEEF's own transactions (the same [Uint8List] object as
+  /// in [txs]) the txid comes from the index, hashed once per transaction.
   Uint8List calculateTxid(Uint8List txData) {
-    final firstHash = dartsv.sha256(txData);
-    final secondHash = dartsv.sha256(firstHash);
-    
-    // Bitcoin uses little-endian for TXIDs, so we need to reverse the bytes
-    final txid = Uint8List.fromList(secondHash.reversed.toList());
-    return txid;
+    _ensureLayout();
+    final i = _indexByIdentity[txData];
+    if (i != null) return Uint8List.fromList(_txidAt(i));
+    return merkle.txidDisplayBytes(txData);
   }
-  
+
   /// Find a transaction by its TXID
   /// Returns the transaction data and its index, or null if not found
   Map<String, dynamic>? findTransactionByTxid(Uint8List txid) {
-    for (int i = 0; i < txs.length; i++) {
-      final calculatedTxid = calculateTxid(txs[i]);
-      if (listEquals(calculatedTxid, txid)) {
-        return {
-          'txData': txs[i],
-          'index': i,
-          'hasMerkleProof': hasMerkle[i],
-          'bumpIndex': hasMerkle[i] ? bumpIndex[hasMerkle.sublist(0, i).where((has) => has).length] : null,
-        };
-      }
-    }
-    return null;
+    _ensureLayout();
+    final byTxid = _indexByTxid ??= {
+      for (var i = txs.length - 1; i >= 0; i--) hex.encode(_txidAt(i)): i,
+    };
+    final i = byTxid[hex.encode(txid)];
+    if (i == null) return null;
+    return {
+      'txData': txs[i],
+      'index': i,
+      'hasMerkleProof': hasMerkle[i],
+      'bumpIndex': hasMerkle[i] ? bumpIndex[_bumpOrdinal[i]] : null,
+    };
   }
+
+  /// Positions by identity and BUMP-index ordinals (no hashing); resets the
+  /// txid caches when transactions or flags were added or removed.
+  void _ensureLayout() {
+    if (_indexedTxCount == txs.length && _indexedMerkleCount == hasMerkle.length) return;
+    final byIdentity = Map<Uint8List, int>.identity();
+    final ordinals = <int>[];
+    var proven = 0;
+    for (var i = 0; i < txs.length; i++) {
+      byIdentity.putIfAbsent(txs[i], () => i);
+      ordinals.add(proven);
+      if (i < hasMerkle.length && hasMerkle[i]) proven++;
+    }
+    _indexByIdentity = byIdentity;
+    _bumpOrdinal = ordinals;
+    _txids = List<Uint8List?>.filled(txs.length, null);
+    _indexByTxid = null;
+    _indexedTxCount = txs.length;
+    _indexedMerkleCount = hasMerkle.length;
+  }
+
+  Uint8List _txidAt(int i) => _txids[i] ??= merkle.txidDisplayBytes(txs[i]);
   
   /// Validate that a transaction with the given TXID is included in this BEEF
   /// and has a valid merkle proof
@@ -250,8 +306,7 @@ class BEEF {
     // (what calculateTxid returns); BUMP leaves are internal byte order.
     // Without a block header this is a structural check only: the path must
     // contain the txid and every sibling the walk needs.
-    final txidInternal = Uint8List.fromList(txid.reversed.toList());
-    return bumps[bumpIdx].validateMerklePath(txidInternal);
+    return bumps[bumpIdx].validateMerklePath(hex_utils.reverseBytes(txid));
   }
   
   /// Get all transactions that have merkle proofs
@@ -298,8 +353,8 @@ class BEEF {
     final bump = bumps[bumpIdx];
 
     // Convert TXID from display format (big-endian) to internal format (little-endian) for BUMP validation
-    final txidInternal = Uint8List.fromList(txid.reversed.toList());
-    
+    final txidInternal = hex_utils.reverseBytes(txid);
+
     // Validate the merkle path for this transaction (uses internal format)
     if (!bump.validateMerklePath(txidInternal)) {
       return false; // Invalid merkle path
@@ -310,28 +365,11 @@ class BEEF {
     // Returns bytes in internal format (little-endian)
     final computedMerkleRoot = bump.computeMerkleRoot(txidInternal);
 
-    // Convert both to hex for comparison (both in internal format)
-    // blockHeader.merkleRoot.bytes is already in internal format
-    final computedMerkleRootHex = hex.encode(computedMerkleRoot);
-    final expectedMerkleRootHex = hex.encode(blockHeader.merkleRoot.bytes);
-
-    // Compare with the merkle root in the block header
-    return computedMerkleRootHex == expectedMerkleRootHex;
+    // Compare with the merkle root in the block header (both internal order)
+    return hex_utils.bytesEqual(computedMerkleRoot, blockHeader.merkleRoot.bytes);
 
   }
 
   /// Compare two Uint8List for equality
-  bool listEquals(Uint8List a, Uint8List b) {
-    if (a.length != b.length) {
-      return false;
-    }
-    
-    for (int i = 0; i < a.length; i++) {
-      if (a[i] != b[i]) {
-        return false;
-      }
-    }
-    
-    return true;
-  }
+  bool listEquals(Uint8List a, Uint8List b) => hex_utils.bytesEqual(a, b);
 }

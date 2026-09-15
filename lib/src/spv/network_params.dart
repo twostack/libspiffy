@@ -160,4 +160,55 @@ class NetworkParams {
   /// Interpret a display-order block hash as the 256-bit number that must
   /// be at or below the target.
   static BigInt hashToBigInt(String displayHexHash) => BigInt.parse(displayHexHash, radix: 16);
+
+  /// The proof-of-work check every header-sync path applies (audit SPV-16:
+  /// the P2P chain and the CDN import used to carry their own copies).
+  ///
+  /// `bits` must decode to a non-zero target no easier than [powLimit], and
+  /// the header hash ([blockHash], display order) must be at or below that
+  /// target. The target is checked first; the verdict names the first rule
+  /// that fails. Difficulty-adjustment rules are separate
+  /// (`DifficultyRules`).
+  ProofOfWorkCheck checkProofOfWork(int bits, String blockHash) {
+    final target = bitsToTarget(bits);
+    if (target <= BigInt.zero) {
+      return ProofOfWorkCheck._(target, ProofOfWorkFailure.noTarget);
+    }
+    if (target > powLimit) {
+      return ProofOfWorkCheck._(target, ProofOfWorkFailure.aboveLimit);
+    }
+    if (hashToBigInt(blockHash) > target) {
+      return ProofOfWorkCheck._(target, ProofOfWorkFailure.hashAboveTarget);
+    }
+    return ProofOfWorkCheck._(target, null);
+  }
+}
+
+/// Why a header fails [NetworkParams.checkProofOfWork].
+enum ProofOfWorkFailure {
+  /// `bits` encode no usable target (zero, negative or overflowing).
+  noTarget,
+
+  /// The target is easier than the network's `powLimit`.
+  aboveLimit,
+
+  /// The block hash is above the header's own target.
+  hashAboveTarget,
+}
+
+/// Result of [NetworkParams.checkProofOfWork].
+class ProofOfWorkCheck {
+  /// The decoded target (zero when `bits` encode none).
+  final BigInt target;
+
+  /// The first failed rule, or null when the header passes.
+  final ProofOfWorkFailure? failure;
+
+  const ProofOfWorkCheck._(this.target, this.failure);
+
+  bool get ok => failure == null;
+
+  /// Whether the failure is about `bits` rather than the hash.
+  bool get invalidTarget =>
+      failure == ProofOfWorkFailure.noTarget || failure == ProofOfWorkFailure.aboveLimit;
 }

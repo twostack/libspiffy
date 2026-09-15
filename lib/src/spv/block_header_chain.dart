@@ -390,8 +390,8 @@ class BlockHeaderChain {
       BlockHeader? prev, HeaderAncestry ancestry) async {
     if (_skipProofOfWorkValidation) return null;
 
-    final target = NetworkParams.bitsToTarget(header.bits);
-    if (target <= BigInt.zero || target > params.powLimit) {
+    final pow = params.checkProofOfWork(header.bits, hash);
+    if (pow.invalidTarget) {
       return HeaderAcceptResult.rejected(HeaderRejectReason.invalidTarget,
           'bits 0x${header.bits.toRadixString(16)} at height $height decode to a target outside '
           '(0, powLimit]',
@@ -407,7 +407,7 @@ class BlockHeaderChain {
       }
     }
 
-    if (NetworkParams.hashToBigInt(hash) > target) {
+    if (pow.failure == ProofOfWorkFailure.hashAboveTarget) {
       return HeaderAcceptResult.rejected(HeaderRejectReason.insufficientWork,
           'hash $hash at height $height is above its target', height: height);
     }
@@ -726,6 +726,13 @@ class BlockHeaderChain {
       if (headers.isEmpty) return;
     }
 
+    // The common CDN case: the headers extend the current tip. Then storage
+    // above the old tip holds exactly [headers], and the cache can be
+    // updated from them instead of re-read from storage (audit SPV-15).
+    final extendsTip = _chainTip != null &&
+        startHeight == _bestHeight + 1 &&
+        headers.first.prevBlock.toString() == _chainTip!.blockHash().toString();
+
     _logger.info('Bulk importing ${headers.length} headers starting at height $startHeight');
 
     const batchSize = 1000;
@@ -745,10 +752,22 @@ class BlockHeaderChain {
     }
     _activeWorkAboveFork.clear();
 
-    _headerCache.clear();
-    _heightToHash.clear();
-    _hashToHeight.clear();
-    await _loadRecentHeadersIntoCache();
+    if (extendsTip) {
+      // Cache the newest headers (as many as a reload would load); every
+      // header already cached stays on the active chain.
+      final from = headers.length > _maxCacheSize ~/ 2 ? headers.length - _maxCacheSize ~/ 2 : 0;
+      for (var i = from; i < headers.length; i++) {
+        _cacheActive(headers[i], startHeight + i);
+      }
+      _maintainCacheSize();
+    } else {
+      // Anything else (overlapping or replacing stored heights, an empty
+      // chain): what storage now holds decides.
+      _headerCache.clear();
+      _heightToHash.clear();
+      _hashToHeight.clear();
+      await _loadRecentHeadersIntoCache();
+    }
 
     _logger.info('Bulk import complete: ${headers.length} headers, tip at height $_bestHeight');
   }

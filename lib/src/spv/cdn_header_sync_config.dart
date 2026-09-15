@@ -35,7 +35,14 @@ class CdnHeaderSyncConfig {
   /// downloaded headers are checked against.
   final String network;
 
-  /// Number of concurrent chunk downloads (default: 4)
+  /// Unused: chunks are downloaded one at a time.
+  ///
+  /// `CdnHeaderSyncService` validates and imports each chunk before it
+  /// fetches the next, because every chunk must link to the one before it
+  /// and the service holds one chunk (~8 MB) in memory at a time. Parallel
+  /// downloads would multiply that peak without speeding up validation, so
+  /// this value has never been read (audit SPV-16).
+  @Deprecated('Unused: CDN chunks are downloaded sequentially. Will be removed.')
   final int concurrentDownloads;
 
   /// Timeout per chunk download

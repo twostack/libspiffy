@@ -1,12 +1,11 @@
 import 'dart:convert';
-import 'dart:typed_data';
 
-import 'package:convert/convert.dart';
-import 'package:crypto/crypto.dart';
 import 'package:http/http.dart' as http;
 import 'package:logging/logging.dart';
 
 import '../models/blockchain_data_models.dart';
+import '../spv/merkle.dart' as merkle;
+import '../utils/hex_utils.dart' as hex_utils;
 import 'blockchain_data_source.dart';
 
 /// BSV node JSON-RPC implementation of [BlockchainDataSource].
@@ -282,60 +281,10 @@ class NodeRpcDataSource implements BlockchainDataSource {
   /// (audit SPV-14: the txid must not be reported as its own sibling, which
   /// would make the root hash(txid || txid)).
   List<String> _computeMerkleProof(List<String> txids, int targetIndex) {
-    if (txids.length == 1) {
-      return const [];
-    }
-
-    // Convert display-format txids (big-endian) to internal byte arrays (little-endian)
-    var level = txids.map(_displayToInternal).toList();
-    var idx = targetIndex;
-    final siblings = <String>[];
-
-    while (level.length > 1) {
-      // If odd count, duplicate last element
-      final wasOdd = level.length.isOdd;
-      if (wasOdd) {
-        level.add(Uint8List.fromList(level.last));
-      }
-
-      // Record sibling; the padded copy of the last hash is a TSC "*"
-      final siblingIdx = idx ^ 1;
-      if (wasOdd && siblingIdx == level.length - 1) {
-        siblings.add('*');
-      } else {
-        siblings.add(_internalToDisplay(level[siblingIdx]));
-      }
-
-      // Build next level
-      final nextLevel = <Uint8List>[];
-      for (var i = 0; i < level.length; i += 2) {
-        nextLevel.add(_doubleSha256(
-          Uint8List.fromList([...level[i], ...level[i + 1]]),
-        ));
-      }
-
-      level = nextLevel;
-      idx = idx ~/ 2;
-    }
-
-    return siblings;
-  }
-
-  /// Double SHA-256 hash (Bitcoin standard).
-  Uint8List _doubleSha256(Uint8List data) {
-    final first = sha256.convert(data);
-    final second = sha256.convert(first.bytes);
-    return Uint8List.fromList(second.bytes);
-  }
-
-  /// Convert big-endian display hex to little-endian internal bytes.
-  Uint8List _displayToInternal(String displayHex) {
-    final bytes = hex.decode(displayHex);
-    return Uint8List.fromList(bytes.reversed.toList());
-  }
-
-  /// Convert little-endian internal bytes to big-endian display hex.
-  String _internalToDisplay(Uint8List internalBytes) {
-    return hex.encode(internalBytes.reversed.toList());
+    final leaves = txids.map(hex_utils.displayToInternal).toList();
+    return [
+      for (final sibling in merkle.merklePathForIndex(leaves, targetIndex))
+        sibling == null ? '*' : hex_utils.internalToDisplay(sibling),
+    ];
   }
 }

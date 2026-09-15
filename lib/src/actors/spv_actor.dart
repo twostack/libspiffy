@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:typed_data';
 import 'package:convert/convert.dart';
-import 'package:crypto/crypto.dart';
 import 'package:dactor/dactor.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:logging/logging.dart';
@@ -1013,24 +1012,6 @@ class SPVActor extends Actor {
     ];
   }
 
-  /// Calculate transaction ID (TXID) from raw transaction data
-  /// 
-  /// Bitcoin transaction IDs are calculated as the double SHA256 hash
-  /// of the raw transaction data, with bytes reversed (little-endian).
-  String _calculateTransactionId(Uint8List transactionData) {
-    // First SHA256
-    final firstHash = sha256.convert(transactionData);
-    
-    // Second SHA256 (double hash)
-    final secondHash = sha256.convert(firstHash.bytes);
-    
-    // Reverse bytes for little-endian representation
-    final reversedBytes = secondHash.bytes.reversed.toList();
-
-    // Convert to hex string
-    return hex.encode(reversedBytes);
-  }
-
   /// Handle block header updates from SpiffyNode
   Future<void> _handleBlockHeaderUpdate(BlockHeaderUpdateMessage msg) async {
 
@@ -1391,7 +1372,7 @@ class SPVActor extends Actor {
         final txHex = hex.encode(txData);
         
         // Calculate transaction ID (double SHA256 of raw transaction data)
-        final txid = _calculateTransactionId(txData);
+        final txid = hex.encode(beef.calculateTxid(txData));
         
         extractedTransactions.add({
           'transactionId': txid,           // The TXID for ReceiveTransactionMessage

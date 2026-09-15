@@ -39,6 +39,17 @@ class BareMultisigScript {
     return BareMultisigScript._(m, keys);
   }
 
+  /// [scriptHex] as a bare multisig script, or null when it is not one or
+  /// is not valid hex.
+  static BareMultisigScript? parseHex(String scriptHex) {
+    if (scriptHex.isEmpty) return null;
+    try {
+      return parse(dartsv.SVScript.fromHex(scriptHex));
+    } catch (_) {
+      return null;
+    }
+  }
+
   static int? _smallInt(dartsv.ScriptChunk chunk) {
     final op = chunk.opcodenum;
     if (op >= dartsv.OpCodes.OP_1 && op <= dartsv.OpCodes.OP_16) {
@@ -75,5 +86,22 @@ class BareMultisigScript {
       held++;
     }
     return held >= threshold ? first : null;
+  }
+}
+
+/// Whether [scriptHex] locks an output that a P2PKH unlocking script cannot
+/// spend although it can be a wallet UTXO: a bare multisig script or a P2PK
+/// script (`<key> OP_CHECKSIG`). Paths that sign every input as P2PKH
+/// (plugin funding, channel funding) do not select such UTXOs (bead
+/// libspiffy-nlp).
+bool needsNonP2pkhUnlock(String scriptHex) {
+  if (BareMultisigScript.parseHex(scriptHex) != null) return true;
+  if (scriptHex.isEmpty) return false;
+  try {
+    final chunks = dartsv.SVScript.fromHex(scriptHex).chunks;
+    final key = chunks.length == 2 ? chunks.first.buf : null;
+    return key != null && (key.length == 33 || key.length == 65) && chunks.last.opcodenum == dartsv.OpCodes.OP_CHECKSIG;
+  } catch (_) {
+    return false;
   }
 }

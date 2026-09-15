@@ -366,6 +366,79 @@ void main() {
       expect(wallet.utxo(_input).status, UTXOStatus.spent);
       expect(wallet.deferred(txid)['state'], 'seen');
     });
+
+    test('4r0: recorded again after cancellation: outstanding again, its inputs held, journaled', () async {
+      final wallet = _Wallet();
+      final txid = await wallet.pay([_input, _pendingInput]);
+      await wallet.handle(CancelDeferredSpendCommand(walletId: _w, txid: txid, reason: 'no answer'));
+
+      final txid2 = await wallet.pay([_input, _pendingInput]);
+
+      expect(txid2, txid);
+      final hold = wallet.journal.whereType<TransactionSpendDeferredEvent>().last;
+      expect(hold.reactivated, isTrue);
+      expect(hold.heldUtxoKeys, [_input, _pendingInput]);
+      expect(TransactionSpendDeferredEvent.fromMap(hold.toMap()).reactivated, isTrue);
+      expect(wallet.journal.whereType<TransactionRecordedEvent>(), hasLength(1));
+      expect(wallet.journal.whereType<DeferredTransactionCancelledEvent>(), hasLength(1));
+      expect(wallet.deferred(txid)['state'], 'outstanding');
+      expect(wallet.deferred(txid)['resolutionReason'], isNull);
+      for (final key in [_input, _pendingInput]) {
+        expect(wallet.utxo(key).reservedByTxId, txid);
+        expect(wallet.utxo(key).reservationExpiresAt, isNull);
+      }
+      final replayed = wallet.replay();
+      expect(replayed.currentState.utxos[_input]!.reservedByTxId, txid);
+
+      final again = await wallet.handle(CancelDeferredSpendCommand(walletId: _w, txid: txid));
+      expect((again.single as DeferredTransactionCancelledEvent).releasedInputs.map((r) => r.restoredStatus),
+          [UTXOStatus.available, UTXOStatus.pending]);
+    });
+
+    test('4r0: not re-activated when an input was spent or is held by another payment since', () async {
+      final wallet = _Wallet();
+      final txid = await wallet.pay([_input, _other]);
+      await wallet.handle(CancelDeferredSpendCommand(walletId: _w, txid: txid));
+      await wallet.pay([_other], sats: 2000);
+
+      await expectLater(wallet.pay([_input, _other]), throwsA(isA<StateError>()));
+      expect(wallet.deferred(txid)['state'], 'cancelled');
+
+      final spentWallet = _Wallet();
+      final spentTxid = await spentWallet.pay([_input]);
+      await spentWallet.handle(CancelDeferredSpendCommand(walletId: _w, txid: spentTxid));
+      await spentWallet.handle(
+          SpendUTXOCommand(walletId: _w, utxoKey: _input, spendingTxId: 'ff' * 32, fee: BigInt.zero));
+      await expectLater(spentWallet.handle(RecordOutgoingTransactionCommand(
+        walletId: _w,
+        txid: spentTxid,
+        rawHex: _paymentHex([_input]),
+        totalInputSats: 20000,
+        totalOutputSats: 1000,
+        fee: 100,
+        numInputs: 1,
+        numOutputs: 1,
+        txVersion: 1,
+        txLockTime: 0,
+        spentUtxoKeys: [_input],
+        recipientAddresses: const [],
+        paymentAmount: BigInt.from(1000),
+        deferSpend: true,
+      )), throwsA(isA<StateError>()));
+      expect(spentWallet.deferred(spentTxid)['state'], 'cancelled');
+    });
+
+    test('4r0: a failed payment recorded again is refused', () async {
+      final wallet = _Wallet();
+      final txid = await wallet.pay([_input]);
+      await wallet.handle(RecordTransactionNetworkStatusCommand(
+          walletId: _w, txid: txid, networkStatus: DeferredNetworkStatus.rejected, source: 'arc'));
+      expect(wallet.deferred(txid)['state'], 'failed');
+
+      await expectLater(wallet.pay([_input]), throwsA(isA<StateError>()));
+      expect(wallet.utxo(_input).status, isNot(UTXOStatus.spent));
+      expect(wallet.deferred(txid)['state'], 'failed');
+    });
   });
 
   group('journals written before holds', () {

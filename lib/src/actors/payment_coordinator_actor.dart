@@ -23,6 +23,7 @@ import '../utils/beef.dart';
 import '../utils/bump.dart';
 import '../utils/crypto_utils.dart';
 import '../core/wallet_commands.dart';
+import '../core/wallet_output_ownership.dart';
 import '../services/transaction/builder/op_return_lockbuilder.dart';
 import 'aggregate_signing_client.dart';
 import 'payment_messages.dart';
@@ -116,10 +117,24 @@ class PaymentCoordinatorActor extends Actor {
 
     // 1. Get available UTXOs
     final utxoSw = Stopwatch()..start();
-    final utxos = await _storage.getPaymentUTXOs(msg.walletId);
+    var utxos = await _storage.getPaymentUTXOs(msg.walletId);
     _log.info('[pay ${msg.invoiceId}] getUTXOs: ${utxoSw.elapsedMilliseconds}ms, count=${utxos.length}');
+    // A TransactionBuilderPlugin gets one public key per funding UTXO and
+    // unlocks each as P2PKH, so a bare multisig or P2PK wallet UTXO (bead
+    // libspiffy-nlp) cannot fund it; the standard path signs those with
+    // their own unlocking scripts.
+    var excludedNote = '';
+    if (_isPluginTransaction(msg)) {
+      final excluded = utxos.where((u) => needsNonP2pkhUnlock(u.scriptPubKey)).toList();
+      if (excluded.isNotEmpty) {
+        utxos = utxos.where((u) => !needsNonP2pkhUnlock(u.scriptPubKey)).toList();
+        final sats = excluded.fold<BigInt>(BigInt.zero, (sum, u) => sum + u.satoshis);
+        excludedNote = ' ($sats satoshis in ${excluded.length} bare multisig or P2PK UTXO(s) '
+            'cannot fund a plugin transaction)';
+      }
+    }
     if (utxos.isEmpty) {
-      _sendError(msg.invoiceId, 'Insufficient funds', sender: originalSender);
+      _sendError(msg.invoiceId, 'Insufficient funds$excludedNote', sender: originalSender);
       return;
     }
 
@@ -132,7 +147,7 @@ class PaymentCoordinatorActor extends Actor {
       );
       _sendError(
         msg.invoiceId,
-        'Insufficient funds: need $effectiveAmount satoshis, have $totalBalance',
+        'Insufficient funds: need $effectiveAmount satoshis, have $totalBalance$excludedNote',
         sender: originalSender,
       );
       return;
@@ -204,13 +219,7 @@ class PaymentCoordinatorActor extends Actor {
     // Check if this payment will be handled by a TransactionBuilderPlugin.
     // Plugin-built transactions manage their own inputs — ancestor chain
     // validation and BEEF construction are not applicable.
-    final isPluginTransaction = msg.outputs != null &&
-        msg.outputs!.whereType<PluginOutputSpec>().any((p) {
-          final plugin = PluginRegistry().getPlugin(p.pluginId);
-          return plugin is TransactionBuilderPlugin &&
-              p.params.containsKey('action') &&
-              plugin.supportedActions.contains(p.params['action']);
-        });
+    final isPluginTransaction = _isPluginTransaction(msg);
 
     late final dynamic ancestorResult;
     if (!isPluginTransaction) {
@@ -324,24 +333,30 @@ class PaymentCoordinatorActor extends Actor {
     // Phase 4: when this TX was built by a plugin (preSigned=true), emit a
     // TransactionSignedEvent alongside the recording for audit-trail parity
     // with the SignTransactionCommand path.
-    await _recordOutgoingTransaction(
-      walletId: msg.walletId,
-      transaction: signedPaymentTx,
-      spentUtxoKeys: spentUtxoKeys,
-      recipientAddresses: recipientAddresses,
-      paymentAmount: effectiveAmount,
-      changeAddress: actualChangeAddress,
-      deferSpend: true, // inputs held; ARCActor marks spent on SEEN_ON_NETWORK
-      purpose: 'invoice-payment',
-      preSigned: preSigned,
-      signerMetadata: preSigned
-          ? {
-              'signerType': 'plugin-callback',
-              'role': 'primary',
-              'derivationIndex': primaryDerivationIndex,
-            }
-          : null,
-    );
+    try {
+      await _recordOutgoingTransaction(
+        walletId: msg.walletId,
+        transaction: signedPaymentTx,
+        spentUtxoKeys: spentUtxoKeys,
+        recipientAddresses: recipientAddresses,
+        paymentAmount: effectiveAmount,
+        changeAddress: actualChangeAddress,
+        deferSpend: true, // inputs held; ARCActor marks spent on SEEN_ON_NETWORK
+        purpose: 'invoice-payment',
+        preSigned: preSigned,
+        signerMetadata: preSigned
+            ? {
+                'signerType': 'plugin-callback',
+                'role': 'primary',
+                'derivationIndex': primaryDerivationIndex,
+              }
+            : null,
+      );
+    } on _RecordingRefused catch (refused) {
+      _sendError(msg.invoiceId, 'The wallet refused to record payment transaction ${signedPaymentTx.txid}: '
+          '${refused.error}', sender: originalSender);
+      return false;
+    }
 
     if (preSigned) {
       // Plugin-built transaction — return raw tx bytes as a minimal BEEF.
@@ -477,6 +492,16 @@ class PaymentCoordinatorActor extends Actor {
       }
     }
   }
+
+  /// Whether a TransactionBuilderPlugin builds [msg]'s whole transaction.
+  static bool _isPluginTransaction(PayInvoiceMessage msg) =>
+      msg.outputs != null &&
+      msg.outputs!.whereType<PluginOutputSpec>().any((p) {
+        final plugin = PluginRegistry().getPlugin(p.pluginId);
+        return plugin is TransactionBuilderPlugin &&
+            p.params.containsKey('action') &&
+            plugin.supportedActions.contains(p.params['action']);
+      });
 
   AggregateSigningClient _signingClient() => AggregateSigningClient(
         system: context.system,
@@ -1295,7 +1320,11 @@ class PaymentCoordinatorActor extends Actor {
     final txid = transaction.txid;
     final applied = _walletProjection.ask<dynamic>(
       AwaitEventApplied(
-        (e) => e is wevent.TransactionRecordedEvent && e.txid == txid,
+        // A cancelled deferred payment recorded again is re-activated
+        // instead of recorded twice (bead libspiffy-4r0).
+        (e) =>
+            e is wevent.TransactionRecordedEvent && e.txid == txid ||
+            e is wevent.TransactionSpendDeferredEvent && e.reactivated && e.txid == txid,
         timeout: _recordPersistTimeout,
       ),
       // Ask timeout must outlast the awaiter's own window, otherwise dactor's
@@ -1303,13 +1332,29 @@ class PaymentCoordinatorActor extends Actor {
       _recordPersistTimeout + const Duration(seconds: 2),
     );
 
-    _walletManager.tell(
-      WalletCommandMessage(walletId, command),
-      sender: context.self,
+    // The wallet's refusal is answered to this receiver, so a refused
+    // recording fails the payment at once instead of after the wait above.
+    final refusal = Completer<String>();
+    final receiver = await context.system.spawn(
+      'record-receiver-$txid-${DateTime.now().microsecondsSinceEpoch}',
+      () => _RecordingRefusalReceiver(refusal),
     );
-
-    if (deferSpend) _inFlightPayment?.deferredTxids.add(txid);
-    final response = await applied;
+    final dynamic response;
+    try {
+      _walletManager.tell(
+        WalletCommandMessage(walletId, command),
+        sender: receiver,
+      );
+      if (deferSpend) _inFlightPayment?.deferredTxids.add(txid);
+      response = await Future.any<dynamic>([applied, refusal.future.then(_RecordingRefused.new)]);
+    } finally {
+      await context.system.stop(receiver);
+    }
+    if (response is _RecordingRefused) {
+      // Nothing was held by this recording: nothing to cancel.
+      if (deferSpend) _inFlightPayment?.deferredTxids.remove(txid);
+      throw response;
+    }
     if (response is AwaitFailed) {
       throw StateError(
         'Failed to persist outgoing transaction $txid in wallet read model: '
@@ -1336,9 +1381,15 @@ class PaymentCoordinatorActor extends Actor {
       }
 
       // 2. Get available UTXOs and select the largest
-      final availableUtxos = await _storage.getPaymentUTXOs(walletId);
+      // (bare multisig and P2PK UTXOs excluded: the plugin unlocks as
+      // P2PKH, bead libspiffy-nlp)
+      final spendable = await _storage.getPaymentUTXOs(walletId);
+      final availableUtxos = spendable.where((u) => !needsNonP2pkhUnlock(u.scriptPubKey)).toList();
       if (availableUtxos.isEmpty) {
-        throw Exception('No available UTXOs for provisioning');
+        throw Exception(spendable.isEmpty
+            ? 'No available UTXOs for provisioning'
+            : 'No available UTXOs for provisioning: the ${spendable.length} spendable UTXO(s) '
+                'are bare multisig or P2PK outputs, which plugin transactions cannot spend');
       }
       final sortedUtxos = List<BitcoinUtxo>.from(availableUtxos)
         ..sort((a, b) => b.satoshis.compareTo(a.satoshis));
@@ -1491,6 +1542,36 @@ class _ReservationReceiverActor extends Actor {
       completer.completeError(StateError(payload['error'].toString()));
     }
   }
+}
+
+/// Completes with the error of the wallet aggregate's refusal of a
+/// RecordOutgoingTransactionCommand (its generic failure reply).
+class _RecordingRefusalReceiver extends Actor {
+  final Completer<String> refusal;
+
+  _RecordingRefusalReceiver(this.refusal);
+
+  @override
+  Future<void> onMessage(dynamic message) async {
+    if (refusal.isCompleted) return;
+    if (message is TransactionRecordedResponse && !message.success) {
+      refusal.complete(message.error ?? 'recording refused');
+      return;
+    }
+    final payload = message is LocalMessage ? message.payload : message;
+    if (payload is Map && payload.containsKey('error')) {
+      refusal.complete(payload['error'].toString());
+    }
+  }
+}
+
+/// The wallet aggregate refused to record an outgoing transaction.
+class _RecordingRefused implements Exception {
+  final String error;
+  _RecordingRefused(this.error);
+
+  @override
+  String toString() => error;
 }
 
 /// A payment in progress and the deferred-spend transactions it recorded

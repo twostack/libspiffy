@@ -486,6 +486,144 @@ void main() {
       expect(verifyInputs(tx), isEmpty);
     });
   });
+
+  group('nlp: a bare multisig or P2PK UTXO the wallet can spend alone', () {
+    /// Gives the wallet a UTXO locked by [scriptHex], attributed to
+    /// [firstWalletAddress].
+    Future<String> fundScript(String walletId, String scriptHex, String firstWalletAddress,
+        {required String txid, required int satoshis}) async {
+      final received = await _tellAndAwait<UTXOReceivedResponse>(
+        actorSystem,
+        libspiffy.walletManager,
+        WalletCommandMessage(
+          walletId,
+          ReceiveUTXOCommand(
+            walletId: walletId,
+            txid: txid,
+            vout: 0,
+            satoshis: BigInt.from(satoshis),
+            scriptPubKey: scriptHex,
+            address: firstWalletAddress,
+            blockHeight: 1239645,
+            confirmations: 10,
+            initialStatus: UTXOStatus.available,
+          ),
+        ),
+      );
+      expect(received.success, isTrue, reason: received.error);
+      final key = '$txid:0';
+      funded[key] = (scriptHex: scriptHex, satoshis: satoshis);
+      await eventually(
+          () async => (await libspiffy.walletStorage.getPaymentUTXOs(walletId)).any((u) => u.key == key),
+          'UTXO $key to be spendable');
+      return key;
+    }
+
+    /// Gives the wallet a UTXO locked by a bare multisig script over
+    /// [keys] (in that order) needing [threshold] signatures.
+    Future<String> fundMultisig(String walletId, List<dartsv.SVPublicKey> keys, int threshold,
+            {required String txid, required int satoshis}) =>
+        fundScript(walletId, dartsv.P2MSLockBuilder(keys, threshold, sorting: false).getScriptPubkey().toHex(),
+            keys.first.toAddress(dartsv.NetworkType.TEST).toBase58(),
+            txid: txid, satoshis: satoshis);
+
+    final hd = dartsv.HDPrivateKey.fromXpriv(kTestXpriv);
+    final rootKey = hd.deriveChildNumber(0).deriveChildNumber(0).privateKey.publicKey;
+    final otherKey = dartsv.SVPrivateKey.fromHex('11' * 32, dartsv.NetworkType.TEST).publicKey;
+
+    test('a Benford split of a 1-of-2 multisig UTXO is signed as multisig', () async {
+      const walletId = 'nlp-benford';
+      await createXprivWallet(walletId);
+      final sourceKey = await fundMultisig(walletId, [rootKey, otherKey], 1, txid: _fakeTxid(20), satoshis: 100000);
+
+      final arc = _Recorder();
+      final arcRef = await actorSystem.spawn('nlp-benford-arc', () => arc);
+      final benford = await actorSystem.spawn(
+        'nlp-benford-under-test',
+        () => BenfordCoordinatorActor(
+          walletManager: libspiffy.walletManager,
+          arcActor: arcRef,
+          secureStorage: libspiffy.secureStorage,
+          storage: libspiffy.walletStorage,
+        ),
+      );
+
+      final response = await _tellAndAwait<SplitUTXOsResponse>(
+        actorSystem,
+        benford,
+        SplitUTXOsToBenfordCommand(walletId: walletId, targetUtxoCount: 3),
+        timeout: const Duration(seconds: 30),
+      );
+      expect(response.success, isTrue, reason: response.error);
+      expect(response.txids, hasLength(1), reason: 'the multisig UTXO must be split');
+      final tx = dartsv.Transaction.fromHex(
+          arc.received.whereType<BroadcastTransactionMessage>().single.txHex);
+      expect('${tx.inputs.single.prevTxnId}:${tx.inputs.single.prevTxnOutputIndex}', sourceKey);
+      expect(verifyInputs(tx), isEmpty);
+    });
+
+    test('a plugin payment is funded from P2PKH UTXOs only: plugins sign P2PKH inputs', () async {
+      const walletId = 'nlp-plugin';
+      final root = await createXprivWallet(walletId);
+      await fundMultisig(walletId, [rootKey, otherKey], 1, txid: _fakeTxid(21), satoshis: 90000);
+      final p2pkh = await fund(walletId, root, txid: _fakeTxid(22), satoshis: 40000);
+
+      final response = await pay(pluginPayment(walletId, 10000));
+      expect(response.success, isTrue, reason: response.error);
+
+      final tx = primaryTx(response);
+      expect(tx.inputs.map((i) => '${i.prevTxnId}:${i.prevTxnOutputIndex}'), [p2pkh]);
+      expect(verifyInputs(tx), isEmpty);
+    });
+
+    test('a plugin payment is funded from a P2PKH UTXO, not a larger P2PK one', () async {
+      const walletId = 'nlp-plugin-p2pk';
+      final root = await createXprivWallet(walletId);
+      await fundScript(walletId, '21${rootKey.toHex()}ac', root, txid: _fakeTxid(26), satoshis: 90000);
+      final p2pkh = await fund(walletId, root, txid: _fakeTxid(27), satoshis: 40000);
+
+      final response = await pay(pluginPayment(walletId, 10000));
+      expect(response.success, isTrue, reason: response.error);
+
+      final tx = primaryTx(response);
+      expect(tx.inputs.map((i) => '${i.prevTxnId}:${i.prevTxnOutputIndex}'), [p2pkh]);
+      expect(verifyInputs(tx), isEmpty);
+    });
+
+    test('a plugin payment from a wallet whose only UTXO is multisig fails with the reason', () async {
+      const walletId = 'nlp-plugin-only-multisig';
+      await createXprivWallet(walletId);
+      final multisigKey = await fundMultisig(walletId, [rootKey, otherKey], 1, txid: _fakeTxid(23), satoshis: 90000);
+
+      final response = await pay(pluginPayment(walletId, 10000));
+      expect(response.success, isFalse);
+      expect(response.error, contains('multisig'));
+      final utxo = (await libspiffy.walletStorage.getUTXOs(walletId)).singleWhere((u) => u.key == multisigKey);
+      expect(utxo.status, UTXOStatus.available, reason: 'nothing was reserved');
+    });
+
+    test('ProvisionFundingMessage provisions from a P2PKH UTXO, not a larger multisig one', () async {
+      final plugin = _SpendAllPlugin();
+      PluginRegistry().unregister(_pluginId);
+      PluginRegistry().register(plugin);
+
+      const walletId = 'nlp-provision';
+      final root = await createXprivWallet(walletId);
+      await fundMultisig(walletId, [rootKey, otherKey], 1, txid: _fakeTxid(24), satoshis: 90000);
+      final p2pkh = await fund(walletId, root, txid: _fakeTxid(25), satoshis: 50000);
+
+      final response = await _tellAndAwait<ProvisionFundingResponse>(
+        actorSystem,
+        libspiffy.paymentCoordinator,
+        ProvisionFundingMessage(walletId: walletId, pluginId: _pluginId, pluginParams: const {}),
+        timeout: const Duration(seconds: 30),
+      );
+      expect(response.success, isTrue, reason: response.error);
+      final split = plugin.lastProvision!;
+      expect('${split.inputs.single.prevTxnId}:${split.inputs.single.prevTxnOutputIndex}', p2pkh);
+      expect(verifyInputs(split), isEmpty);
+    });
+  });
 }
 
 /// Plugin whose transaction spends every funding UTXO to one P2PKH output,

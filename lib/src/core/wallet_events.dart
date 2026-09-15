@@ -1991,7 +1991,9 @@ class ReleasedDeferredInput {
 /// cancels it ([DeferredTransactionCancelledEvent]).
 ///
 /// Journaled with the `TransactionRecordedEvent` of a `deferSpend` recording,
-/// or later with [inferred] true for a record journaled before holds existed.
+/// or later with [inferred] true for a record journaled before holds existed,
+/// or with [reactivated] true when a cancelled deferred payment is recorded
+/// again (bead libspiffy-4r0).
 class TransactionSpendDeferredEvent extends WalletEvent {
   static const String stableTypeName = 'wallet.transaction.spend_deferred';
 
@@ -2014,6 +2016,12 @@ class TransactionSpendDeferredEvent extends WalletEvent {
   /// True when inferred from an older journal (see class doc).
   final bool inferred;
 
+  /// True when the same transaction, a cancelled deferred payment, was
+  /// recorded again with a deferred spend: the payment is outstanding again
+  /// and holds [heldInputs]. The cancellation stays in the journal before
+  /// it (bead libspiffy-4r0).
+  final bool reactivated;
+
   /// When the transaction was recorded (the record's time for an inferred
   /// hold; otherwise the event time).
   final DateTime recordedAt;
@@ -2028,6 +2036,7 @@ class TransactionSpendDeferredEvent extends WalletEvent {
     this.invoiceId,
     this.purpose,
     this.inferred = false,
+    this.reactivated = false,
     DateTime? recordedAt,
     String? eventId,
     DateTime? timestamp,
@@ -2055,6 +2064,7 @@ class TransactionSpendDeferredEvent extends WalletEvent {
         'invoiceId': invoiceId,
         'purpose': purpose,
         'inferred': inferred,
+        if (reactivated) 'reactivated': true,
         'recordedAt': recordedAt.toIso8601String(),
       };
 
@@ -2071,6 +2081,7 @@ class TransactionSpendDeferredEvent extends WalletEvent {
         invoiceId: map['invoiceId'] as String?,
         purpose: map['purpose'] as String?,
         inferred: map['inferred'] as bool? ?? false,
+        reactivated: map['reactivated'] as bool? ?? false,
         recordedAt: _deferredDate(map['recordedAt']),
         eventId: map['eventId'] as String?,
         timestamp: _deferredDate(map['timestamp']),

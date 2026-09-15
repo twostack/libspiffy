@@ -694,6 +694,20 @@ class WalletProjection extends Projection<void> {
         updatedAt: event.timestamp,
         inferred: event.inferred,
       ));
+    } else if (event.reactivated && existing.state == DeferredPaymentState.cancelled) {
+      // A cancelled payment recorded again is outstanding again (bead
+      // libspiffy-4r0). On a replay over a later state (seen, mined, or
+      // cancelled again) the events after this one bring the row back there.
+      await _storage.storeDeferredPayment(existing.copyWith(
+        state: DeferredPaymentState.outstanding,
+        heldInputs: [
+          for (final input in event.heldInputs)
+            DeferredPaymentInput.fromMap(input),
+        ],
+        updatedAt: event.timestamp,
+        resolvedAt: null,
+        resolutionReason: null,
+      ));
     }
     // A replay re-applies the hold even to a resolved payment: the event that
     // resolved it follows in the journal and releases the inputs again.

@@ -1,4 +1,6 @@
 
+import 'dart:typed_data';
+
 import 'package:convert/convert.dart';
 import 'package:eventador/eventador.dart';
 import 'package:logging/logging.dart';
@@ -1491,10 +1493,30 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
   /// unless the spend is deferred. Nothing else is journaled again.
   List<Event> _spendsStillOwed(WalletState currentState, RecordOutgoingTransactionCommand command) {
     final events = <Event>[];
-    if (command.deferSpend && _deferredRecord(currentState, command.txid) == null) {
+    final deferred = command.deferSpend ? _deferredRecord(currentState, command.txid) : null;
+    if (command.deferSpend && deferred == null) {
       // Recorded before its hold was journaled (a journal older than bead
       // libspiffy-7p2): hold what it still has unspent now.
       events.add(_deferredHoldEvent(currentState, command, version: currentState.version + 1));
+    } else if (deferred?['state'] == DeferredPaymentState.cancelled.name) {
+      // The same payment handed out again after it was cancelled (the same
+      // inputs signed deterministically give the same transaction, bead
+      // libspiffy-4r0): outstanding again, its inputs held again. Every
+      // input must still be the wallet's to hold, or the transaction could
+      // not settle.
+      for (final key in command.spentUtxoKeys) {
+        final utxo = currentState.utxos[key];
+        final holder = _deferredHolderOf(currentState, key);
+        if ((utxo != null && utxo.status == UTXOStatus.spent) || (holder != null && holder != command.txid)) {
+          throw StateError('Deferred payment ${command.txid} was cancelled and cannot be re-activated: '
+              'its input $key is ${holder != null ? 'held by deferred payment $holder' : 'spent'}');
+        }
+      }
+      events.add(_deferredHoldEvent(currentState, command, version: currentState.version + 1, reactivated: true));
+    } else if (deferred?['state'] == DeferredPaymentState.failed.name) {
+      throw StateError('Deferred payment ${command.txid} failed '
+          '(${deferred?['lastNetworkStatus'] ?? 'rejected by the network'}); '
+          'the same transaction is not recorded as a payment again');
     }
     if (!command.deferSpend) {
       for (final utxoKey in command.spentUtxoKeys) {
@@ -1740,14 +1762,37 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
           unsignedTx.inputs[i] = txInput;
         }
 
-        // Create signer and sign this input
-        final signer = dartsv.DefaultTransactionSigner(
-          dartsv.SighashType.SIGHASH_ALL.value | dartsv.SighashType.SIGHASH_FORKID.value,
-          privateKey,
-        );
-
-        // Sign the transaction at this input index
-        signedTx = signer.sign(unsignedTx, utxoOutput, i);
+        final sighashType = dartsv.SighashType.SIGHASH_ALL.value | dartsv.SighashType.SIGHASH_FORKID.value;
+        final multisig = scriptType?.toLowerCase() == 'p2ms' ? BareMultisigScript.parse(utxoScript) : null;
+        if (multisig != null) {
+          // A bare multisig UTXO the wallet can spend alone (bead
+          // libspiffy-nlp): `OP_0 <sig>...`, one signature per required key,
+          // in script key order, from the wallet's own keys.
+          unsignedTx.inputs[i] = dartsv.TransactionInput(
+            utxo.txid,
+            utxo.vout,
+            dartsv.TransactionInput.MAX_SEQ_NUMBER,
+            scriptBuilder: dartsv.P2MSUnlockBuilder(),
+          );
+          final keys = await _multisigSigningKeys(multisig, utxo, command.walletId, currentState, privateKey);
+          for (final key in keys) {
+            dartsv.DefaultTransactionSigner(sighashType, key).sign(unsignedTx, utxoOutput, i);
+          }
+          signedTx = unsignedTx;
+        } else if (scriptType?.toLowerCase() == 'p2pk') {
+          // `<key> OP_CHECKSIG` is unlocked by the signature alone (dartsv's
+          // P2PKUnlockBuilder adds the public key as well).
+          unsignedTx.inputs[i] = dartsv.TransactionInput(
+            utxo.txid,
+            utxo.vout,
+            dartsv.TransactionInput.MAX_SEQ_NUMBER,
+            scriptBuilder: _SignatureOnlyUnlockBuilder(),
+          );
+          signedTx = dartsv.DefaultTransactionSigner(sighashType, privateKey).sign(unsignedTx, utxoOutput, i);
+        } else {
+          // Sign the transaction at this input index
+          signedTx = dartsv.DefaultTransactionSigner(sighashType, privateKey).sign(unsignedTx, utxoOutput, i);
+        }
 
         //perform a sanity check to see if we're correctly spending the utxo
         var scriptFlags = <dartsv.VerifyFlag>{}..addAll([
@@ -1827,6 +1872,34 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
       // Only rethrow if not in actor system (for unit tests that expect exceptions)
       throw StateError('Failed to sign transaction: $e');
     }
+  }
+
+  /// The wallet keys that sign [utxo], a bare [multisig] output: the first
+  /// `threshold` script key positions holding a wallet key, in script order
+  /// (a key listed twice signs for both positions). [utxoAddressKey] is the
+  /// key already resolved for the UTXO's attributed address; every other
+  /// key comes from the aggregate's own address records. Throws when the
+  /// wallet holds fewer than `threshold` of the keys.
+  Future<List<dartsv.SVPrivateKey>> _multisigSigningKeys(BareMultisigScript multisig, BitcoinUtxo utxo,
+      String walletId, WalletState currentState, dartsv.SVPrivateKey utxoAddressKey) async {
+    final network = NetworkName.toDartsv(currentState.networkType);
+    final addresses = multisig.keyAddresses(network);
+    final keys = <dartsv.SVPrivateKey>[];
+    for (var j = 0; j < addresses.length && keys.length < multisig.threshold; j++) {
+      final address = addresses[j];
+      if (address == null || !currentState.addresses.containsKey(address)) continue;
+      final key =
+          address == utxo.address ? utxoAddressKey : await _getPrivateKeyForAddress(address, walletId, currentState);
+      if (key.publicKey.toHex().toLowerCase() != multisig.publicKeysHex[j].toLowerCase()) {
+        throw StateError('The wallet key for $address does not match key ${j + 1} of multisig UTXO ${utxo.key}');
+      }
+      keys.add(key);
+    }
+    if (keys.length < multisig.threshold) {
+      throw StateError('UTXO ${utxo.key} is a ${multisig.threshold}-of-${addresses.length} multisig output; '
+          'the wallet holds ${keys.length} of the keys it needs');
+    }
+    return keys;
   }
 
   /// Handle signing a multisig transaction input
@@ -2052,15 +2125,21 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
       final changeAddress = dartsv.Address.fromBase58(command.changeAddressBase58);
       
       // Get available UTXOs and sort by value descending (largest first for efficient selection)
-      final availableUtxos = currentState.utxos.values
+      // Inputs are signed as P2PKH below, so a bare multisig or P2PK wallet
+      // UTXO (bead libspiffy-nlp) does not fund a channel.
+      final spendable = currentState.utxos.values
           .where((u) => u.isAvailable && !u.isSpent && !u.isReserved &&
               _deferredHolderOf(currentState, u.key) == null)
-          .toList()
+          .toList();
+      final availableUtxos = spendable.where((u) => !needsNonP2pkhUnlock(u.scriptPubKey)).toList()
         ..sort((a, b) => b.value.getValue().compareTo(a.value.getValue()));
-      
-      
+
+
       if (availableUtxos.isEmpty) {
-        throw StateError('No available UTXOs for funding');
+        throw StateError(spendable.isEmpty
+            ? 'No available UTXOs for funding'
+            : 'No available UTXOs for funding: the ${spendable.length} spendable UTXO(s) are bare '
+                'multisig or P2PK outputs, which cannot fund a channel');
       }
       
       final fundingAmount = BigInt.from(command.fundingAmountSats);
@@ -3210,6 +3289,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
     WalletState state,
     RecordOutgoingTransactionCommand command, {
     required int version,
+    bool reactivated = false,
   }) {
     final held = <String>[];
     for (final key in command.spentUtxoKeys.toSet()) {
@@ -3233,6 +3313,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
       fee: command.fee,
       invoiceId: command.invoiceId,
       purpose: command.purpose,
+      reactivated: reactivated,
       recordedAt: now,
       version: version,
       timestamp: now,
@@ -3418,6 +3499,17 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
 
   void _applyTransactionSpendDeferred(TransactionSpendDeferredEvent event) {
     final records = _deferredRecordsForUpdate();
+    final reactivated = event.reactivated ? _deferredRecordForUpdate(event.txid) : null;
+    if (reactivated != null && reactivated['state'] == DeferredPaymentState.cancelled.name) {
+      // Outstanding again (bead libspiffy-4r0); the cancellation stays in
+      // the journal.
+      reactivated
+        ..['state'] = DeferredPaymentState.outstanding.name
+        ..['heldUtxoKeys'] = event.heldUtxoKeys
+        ..['reactivatedAt'] = event.timestamp.toIso8601String()
+        ..remove('resolvedAt')
+        ..remove('resolutionReason');
+    }
     records.putIfAbsent(event.txid, () => <String, dynamic>{
           'txid': event.txid,
           'heldUtxoKeys': event.heldUtxoKeys,
@@ -3694,6 +3786,17 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
     currentState.lastModified = event.timestamp;
   }
 
+}
+
+/// The unlocking script `<sig>` of a P2PK output.
+class _SignatureOnlyUnlockBuilder extends dartsv.UnlockingScriptBuilder {
+  @override
+  dartsv.SVScript getScriptSig() => signatures.isEmpty
+      ? dartsv.ScriptBuilder().build()
+      : dartsv.ScriptBuilder().addData(Uint8List.fromList(hex.decode(signatures.first.toTxFormat()))).build();
+
+  @override
+  void parse(dartsv.SVScript script) {}
 }
 
 /// An outgoing transaction recorded with a deferred spend before holds were

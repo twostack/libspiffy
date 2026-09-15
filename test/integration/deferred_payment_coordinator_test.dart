@@ -13,6 +13,7 @@ import 'package:test/test.dart';
 
 import 'package:libspiffy/libspiffy.dart';
 import 'package:libspiffy/coordinator.dart';
+import 'package:libspiffy/src/core/wallet_events.dart' as we;
 import 'package:libspiffy/src/storage/isar_wallet_storage.dart';
 import 'package:libspiffy/src/utils/beef.dart';
 
@@ -246,6 +247,111 @@ void main() {
 
     final rebuilt = await rebuildFromJournal();
     expect((await rebuilt.getDeferredPayment(walletId, ready.txid))!.state, DeferredPaymentState.cancelled);
+  });
+
+  /// Pays [invoiceId] like [pay], but waits no longer than 10 s (the
+  /// coordinator waited 30 s for a recording that never came) and does not
+  /// expect success.
+  Future<PaymentReadyEvent> payAgain(String invoiceId, {int amount = 100000}) async {
+    final ready = events
+        .where((e) => e is PaymentReadyEvent && e.invoiceId == invoiceId)
+        .cast<PaymentReadyEvent>()
+        .first
+        .timeout(const Duration(seconds: 10));
+    libspiffy.coordinator.tell(PayInvoiceCommand(
+      walletId: walletId,
+      invoiceId: invoiceId,
+      addresses: const [_recipient],
+      amount: BigInt.from(amount),
+    ));
+    return ready;
+  }
+
+  Future<List<Type>> journalOf(String txid) async => [
+        for (final e in await libspiffy.eventStore.getEvents('BitcoinWallet_$walletId'))
+          if (e is we.TransactionRecordedEvent && e.txid == txid ||
+              e is we.TransactionSpendDeferredEvent && e.txid == txid ||
+              e is we.DeferredTransactionCancelledEvent && e.txid == txid ||
+              e is we.DeferredTransactionFailedEvent && e.txid == txid)
+            e.runtimeType,
+      ];
+
+  test(
+      '4r0: paying the same invoice again after cancelling re-activates the payment at once: '
+      'outstanding, its input held again, the cancellation kept in the journal', () async {
+    final first = await pay('inv-repay');
+    final cancelled = await send<DeferredPaymentCancelledEvent>(
+        CancelDeferredPaymentCommand(walletId: walletId, txid: first.txid, reason: 'changed my mind', requestId: 'r1'),
+        (e) => e.requestId == 'r1');
+    expect(cancelled.success, isTrue, reason: cancelled.error);
+    expect((await funding()).status, UTXOStatus.available);
+
+    // The same payment again: the same input, a byte-identical transaction.
+    final second = await payAgain('inv-repay');
+
+    expect(second.success, isTrue, reason: second.error);
+    expect(second.txid, first.txid, reason: 'deterministic signing over the same input');
+    expect(second.beefBytes, first.beefBytes);
+    await until(
+        () async =>
+            (await storage().getDeferredPayment(walletId, first.txid))!.state == DeferredPaymentState.outstanding,
+        'the payment outstanding again');
+    final row = (await storage().getDeferredPayment(walletId, first.txid))!;
+    expect(row.heldInputs.single.utxoKey, _fundingKey);
+    expect(row.resolvedAt, isNull);
+    expect(row.resolutionReason, isNull);
+    final held = await funding();
+    expect(held.status, UTXOStatus.reserved);
+    expect(held.reservedByTxId, first.txid);
+    expect(held.reservationExpiresAt, isNull, reason: 'a hold, not an expiring reservation');
+    final listed = await list(GetDeferredPaymentsQuery(walletId: walletId, queryId: 'r2'));
+    expect(listed.payments.map((p) => p.txid), [first.txid]);
+
+    // History: recorded once, held, cancelled, held again.
+    expect(await journalOf(first.txid), [
+      we.TransactionRecordedEvent,
+      we.TransactionSpendDeferredEvent,
+      we.DeferredTransactionCancelledEvent,
+      we.TransactionSpendDeferredEvent,
+    ]);
+
+    final rebuilt = await rebuildFromJournal();
+    expect((await rebuilt.getDeferredPayment(walletId, first.txid))!.state, DeferredPaymentState.outstanding);
+    final rebuiltInput = (await rebuilt.getUTXOs(walletId)).singleWhere((u) => u.key == _fundingKey);
+    expect(rebuiltInput.status, UTXOStatus.reserved);
+    expect(rebuiltInput.reservedByTxId, first.txid);
+
+    // It can be cancelled again.
+    final cancelledAgain = await send<DeferredPaymentCancelledEvent>(
+        CancelDeferredPaymentCommand(walletId: walletId, txid: first.txid, requestId: 'r3'),
+        (e) => e.requestId == 'r3');
+    expect(cancelledAgain.success, isTrue, reason: cancelledAgain.error);
+    expect(cancelledAgain.releasedUtxoKeys, [_fundingKey]);
+    expect((await funding()).status, UTXOStatus.available);
+  });
+
+  test(
+      '4r0: paying the same invoice again after the network rejected the payment fails at once '
+      'with the reason, and the input stays available', () async {
+    final first = await pay('inv-repay-rejected');
+    arc.statusOverrides[first.txid] = 'REJECTED';
+    final checked = await send<DeferredPaymentStatusEvent>(
+        CheckDeferredPaymentStatusCommand(walletId: walletId, txid: first.txid, requestId: 'r4'),
+        (e) => e.requestId == 'r4');
+    expect(checked.networkStatus, DeferredNetworkStatus.rejected);
+    await until(() async => (await funding()).status == UTXOStatus.available, 'the input released');
+
+    final second = await payAgain('inv-repay-rejected');
+
+    expect(second.success, isFalse);
+    expect(second.error, allOf(contains(first.txid), contains('failed')));
+    expect((await storage().getDeferredPayment(walletId, first.txid))!.state, DeferredPaymentState.failed);
+    await until(() async => (await funding()).status == UTXOStatus.available, 'the input available');
+    expect(await journalOf(first.txid), [
+      we.TransactionRecordedEvent,
+      we.TransactionSpendDeferredEvent,
+      we.DeferredTransactionFailedEvent,
+    ], reason: 'nothing held again');
   });
 
   test('cancel is refused while ARC knows the transaction (any status but not found)', () async {

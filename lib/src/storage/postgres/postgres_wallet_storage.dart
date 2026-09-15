@@ -22,6 +22,7 @@ import '../../models/invoice_read_model.dart';
 import '../../models/payment_channel.dart';
 import '../read_model_storage.dart';
 import '../merkle_proof_rows.dart';
+import '../transaction_row_rules.dart';
 import 'postgres_config.dart';
 
 /// PostgreSQL implementation of ReadModelStorage.
@@ -1017,8 +1018,32 @@ class PostgresWalletStorage implements ReadModelStorage {
   Future<void> storeTransaction(
     String walletId,
     BitcoinTransaction transaction,
-  ) async {
+  ) =>
+      _storeTransaction(walletId, transaction, reverting: false);
+
+  @override
+  Future<void> storeRevertedTransaction(String walletId, BitcoinTransaction transaction) =>
+      _storeTransaction(walletId, transaction, reverting: true);
+
+  /// An update whose status [TransactionRowRules.setsStatus] refuses keeps
+  /// the stored status, block height, block hash and confirmations (7dj),
+  /// unless [reverting].
+  Future<void> _storeTransaction(
+    String walletId,
+    BitcoinTransaction transaction, {
+    required bool reverting,
+  }) async {
     _ensureInitialized();
+
+    // Whether the update sets the status, on the stored row (every SET
+    // expression reads the row as it was). The status names are enum
+    // names, never user input.
+    final setsStatus = reverting
+        ? 'TRUE'
+        : 'bitcoin_transactions.status IN (${[
+            for (final s in TransactionRowRules.statusesSetBy(transaction.status)) "'${s.name}'"
+          ].join(', ')})';
+    final counterparty = TransactionRowRules.primaryCounterpartyOf(transaction);
 
     await _pool!.execute(
       Sql.named('''
@@ -1038,22 +1063,26 @@ class PostgresWalletStorage implements ReadModelStorage {
           -- SPV wallet cannot fetch them again.
           raw_hex = COALESCE(NULLIF(EXCLUDED.raw_hex, ''), bitcoin_transactions.raw_hex),
           updated_at = EXCLUDED.updated_at,
-          -- A confirmed update without a height keeps the stored one; a
-          -- non-confirmed update clears it (reorg, audit 3b0).
-          block_height = CASE WHEN EXCLUDED.status = 'confirmed'
+          -- A refused status keeps the stored status, height and
+          -- confirmations (7dj). A confirmed update without a height keeps
+          -- the stored one; a non-confirmed update clears it (reorg, 3b0).
+          block_height = CASE WHEN NOT ($setsStatus) THEN bitcoin_transactions.block_height
+              WHEN EXCLUDED.status = 'confirmed'
               THEN COALESCE(EXCLUDED.block_height, bitcoin_transactions.block_height)
               ELSE EXCLUDED.block_height END,
-          block_hash = CASE WHEN EXCLUDED.status = 'confirmed'
+          block_hash = CASE WHEN NOT ($setsStatus) THEN bitcoin_transactions.block_hash
+              WHEN EXCLUDED.status = 'confirmed'
               THEN COALESCE(EXCLUDED.block_hash, bitcoin_transactions.block_hash)
               ELSE EXCLUDED.block_hash END,
-          confirmations = @confirmations,
+          confirmations = CASE WHEN $setsStatus THEN EXCLUDED.confirmations
+              ELSE bitcoin_transactions.confirmations END,
           total_input = @totalInput,
           total_output = @totalOutput,
           fee = @fee,
           net_amount = @netAmount,
           is_incoming = @isIncoming,
           is_outgoing = @isOutgoing,
-          status = @status,
+          status = CASE WHEN $setsStatus THEN EXCLUDED.status ELSE bitcoin_transactions.status END,
           confirmed_at = COALESCE(@confirmedAt, bitcoin_transactions.confirmed_at),
           notes = @notes,
           receiving_addresses = @receivingAddresses,
@@ -1080,13 +1109,14 @@ class PostgresWalletStorage implements ReadModelStorage {
             ? DateTime.now()
             : null,
         'broadcastAt': null,
-        'counterparty': null,
+        // Set once, on insert, as the Isar backend does.
+        'counterparty': counterparty,
         'notes': transaction.memo,
         'receivingAddresses': jsonEncode(transaction.receivingAddresses),
         'sendingAddresses': jsonEncode(transaction.sendingAddresses),
-        'primaryCounterparty': transaction.receivingAddresses.isNotEmpty
-            ? transaction.receivingAddresses.first
-            : null,
+        // The rule every backend shares (7dj): the first receiving address
+        // was stored for incoming transactions too (our own address).
+        'primaryCounterparty': counterparty,
       },
     );
   }

@@ -14,6 +14,7 @@ import '../actors/invoice_messages.dart';
 import 'read_model_storage.dart';
 import 'libspiffy_schemas.dart';
 import 'merkle_proof_rows.dart';
+import 'transaction_row_rules.dart';
 import 'isar_config.dart';
 import 'payment_channel_entity.dart';
 
@@ -734,7 +735,17 @@ class IsarWalletStorage implements ReadModelStorage {
   }
 
   @override
-  Future<void> storeTransaction(String walletId, BitcoinTransaction transaction) async {
+  Future<void> storeTransaction(String walletId, BitcoinTransaction transaction) =>
+      _storeTransaction(walletId, transaction, reverting: false);
+
+  @override
+  Future<void> storeRevertedTransaction(String walletId, BitcoinTransaction transaction) =>
+      _storeTransaction(walletId, transaction, reverting: true);
+
+  /// An update whose status [TransactionRowRules.setsStatus] refuses keeps
+  /// the stored status, block height and confirmations (7dj), unless
+  /// [reverting].
+  Future<void> _storeTransaction(String walletId, BitcoinTransaction transaction, {required bool reverting}) async {
     await _isar.writeTxn(() async {
       // Check if this wallet already has the transaction. Rows are keyed by
       // (walletId, txid): another wallet's row for the same txid is a
@@ -747,7 +758,21 @@ class IsarWalletStorage implements ReadModelStorage {
       // One conversion for both paths (audit S-21): createdAt and
       // counterparty are set once, on insert.
       if (existing != null) {
-        await _isar.bitcoinTransactionEntitys.put(existing..applyDomain(transaction));
+        final stored = TransactionStatus.values
+            .firstWhere((s) => s.name == existing.status, orElse: () => transaction.status);
+        if (!reverting && !TransactionRowRules.setsStatus(stored, transaction.status)) {
+          final (height, confirmations, confirmedAt) =
+              (existing.blockHeight, existing.confirmations, existing.confirmedAt);
+          existing.applyDomain(transaction);
+          existing
+            ..status = stored.name
+            ..blockHeight = height
+            ..confirmations = confirmations
+            ..confirmedAt = confirmedAt;
+        } else {
+          existing.applyDomain(transaction);
+        }
+        await _isar.bitcoinTransactionEntitys.put(existing);
       } else {
         await _isar.bitcoinTransactionEntitys
             .put(BitcoinTransactionEntity.fromDomain(transaction, walletId: walletId));

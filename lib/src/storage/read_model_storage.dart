@@ -345,10 +345,31 @@ abstract class ReadModelStorage {
   /// Inserts or updates the row keyed by ([walletId], txid); another
   /// wallet's row for the same txid is never touched.
   ///
+  /// An update never lowers the stored status (bead libspiffy-7dj,
+  /// `TransactionRowRules.setsStatus`): a confirmed row keeps its status,
+  /// block height and confirmations whatever a later record says, and a row
+  /// does not go back along created, signed, broadcast / pending,
+  /// seenOnNetwork. Take a confirmation back with
+  /// [storeRevertedTransaction]. An update without raw hex keeps the stored
+  /// bytes; a confirmed update without a block height keeps the stored one.
+  ///
   /// Parameters:
   /// - [walletId]: Wallet ID this transaction belongs to
   /// - [transaction]: Transaction to store
   Future<void> storeTransaction(String walletId, BitcoinTransaction transaction);
+
+  /// Stores [transaction] as the row of ([walletId], txid) with the status,
+  /// block height and confirmations it carries, even when that lowers a
+  /// confirmed status: the one way a confirmation is taken back, used for a
+  /// reorganization past the confirming block or a proof its block header
+  /// contradicts (audit 3b0, bead libspiffy-7dj). A non-confirmed record
+  /// clears the stored block height. Raw hex and the other rules of
+  /// [storeTransaction] apply; nothing is deleted.
+  ///
+  /// The default implementation calls [storeTransaction] (for a backend
+  /// without the status rule); the libspiffy backends override it.
+  Future<void> storeRevertedTransaction(String walletId, BitcoinTransaction transaction) =>
+      storeTransaction(walletId, transaction);
 
   // ========================================
   // Block Header Storage (SPV)

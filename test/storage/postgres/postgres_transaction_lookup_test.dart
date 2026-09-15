@@ -16,6 +16,7 @@ import 'package:libspiffy/src/storage/postgres/postgres_wallet_storage.dart';
 
 import '../read_model_keying_contract.dart' show contractHex64;
 import '../transaction_lookup_contract.dart';
+import '../transaction_status_contract.dart';
 
 void main() {
   final config = PostgresConfig(
@@ -47,6 +48,20 @@ void main() {
     });
 
     defineTransactionLookupContract(() => storage, unique: () => 'p$run-${counter++}');
+    defineTransactionStatusContract(() => storage, unique: () => 'ps$run-${counter++}',
+        storedCounterparty: (walletId, txid) async {
+      final pool = await config.createPool();
+      try {
+        final rows = await pool.execute(
+            Sql.named('SELECT primary_counterparty, counterparty FROM bitcoin_transactions '
+                'WHERE wallet_id = @walletId AND txid = @txid'),
+            parameters: {'walletId': walletId, 'txid': txid});
+        if (rows.isEmpty) return null;
+        return (primaryCounterparty: rows.single[0] as String?, counterparty: rows.single[1] as String?);
+      } finally {
+        await pool.close();
+      }
+    });
 
     /// The plan of the last lookup query [body] ran, with sequential scans
     /// forbidden (a small table is always cheaper to scan).
@@ -116,6 +131,68 @@ void main() {
       expect(plan, contains('idx_transactions_txid'), reason: plan);
       expect(plan, isNot(contains('Seq Scan')), reason: plan);
     });
+  });
+
+  test('v015 recomputes the counterparty columns of rows stored with the earlier rule (7dj)', () async {
+    final migrations = PostgresMigrations(config);
+    await migrations.migrate();
+    final storage = PostgresWalletStorage(config);
+    await storage.initialize();
+    final pool = await config.createPool();
+    final walletId = 'w-cp-migration-$run';
+    BitcoinTransaction row(String txid, int net, List<String> receiving, List<String> sending) => BitcoinTransaction(
+          txid: txid,
+          rawHex: '0100000000000000000000',
+          status: TransactionStatus.pending,
+          inputValue: BigInt.from(5000),
+          outputValue: BigInt.from(4800),
+          fee: BigInt.from(200),
+          receivingAddresses: receiving,
+          sendingAddresses: sending,
+          netAmount: BigInt.from(net),
+          createdAt: DateTime.utc(2026, 9, 15),
+          updatedAt: DateTime.utc(2026, 9, 15),
+          lockTime: 0,
+          version: 1,
+        );
+    final incoming = contractHex64('cp-mig-in-$run');
+    final outgoing = contractHex64('cp-mig-out-$run');
+    final self = contractHex64('cp-mig-self-$run');
+    Future<(String?, String?)> columns(String txid) async {
+      final r = await pool.execute(
+          Sql.named('SELECT primary_counterparty, counterparty FROM bitcoin_transactions '
+              'WHERE wallet_id = @w AND txid = @t'),
+          parameters: {'w': walletId, 't': txid});
+      return (r.single[0] as String?, r.single[1] as String?);
+    }
+
+    try {
+      await storage.storeTransaction(walletId, row(incoming, 3000, ['ours-1', 'ours-2'], ['sender-1', 'sender-2']));
+      await storage.storeTransaction(walletId, row(outgoing, -2200, ['payee-1', 'payee-2'], ['ours-3']));
+      await storage.storeTransaction(walletId, row(self, 0, ['ours-5'], ['ours-1']));
+      // As the earlier rule stored them: the first receiving address, no
+      // counterparty.
+      await pool.execute(
+          Sql.named('UPDATE bitcoin_transactions SET primary_counterparty = receiving_addresses->>0, '
+              'counterparty = NULL WHERE wallet_id = @w'),
+          parameters: {'w': walletId});
+      expect(await columns(incoming), ('ours-1', null));
+
+      while (await migrations.getCurrentVersion() >= 15) {
+        await migrations.rollback();
+      }
+      await migrations.migrate();
+
+      expect(await columns(incoming), ('sender-1', 'sender-1'));
+      expect(await columns(outgoing), ('payee-1', 'payee-1'));
+      expect(await columns(self), (null, null));
+      final stored = (await storage.getTransaction(incoming, walletId: walletId))!;
+      expect(stored.receivingAddresses, ['ours-1', 'ours-2'], reason: 'the addresses the columns derive from are unchanged');
+      expect(stored.sendingAddresses, ['sender-1', 'sender-2']);
+    } finally {
+      await pool.close();
+      await storage.close();
+    }
   });
 
   test('v014 rolls back and re-applies', () async {

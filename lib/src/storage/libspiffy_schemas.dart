@@ -6,6 +6,7 @@ import 'package:spiffynode/spiffy_node.dart';
 import 'package:eventador/eventador.dart';
 import 'package:duraq_isar/duraq_isar.dart' show IsarStorage;
 import 'read_model_storage.dart';
+import 'transaction_row_rules.dart';
 import '../models/bitcoin_utxo.dart';
 import '../models/bitcoin_transaction.dart';
 import '../models/invoice_output_spec.dart';
@@ -745,15 +746,8 @@ class BitcoinTransactionEntity {
   /// The other party of [tx] from the wallet's perspective: the first
   /// sending address of an incoming transaction, the first receiving
   /// address of an outgoing one, null otherwise.
-  static String? primaryCounterpartyOf(BitcoinTransaction tx) {
-    final net = tx.netAmount;
-    if (net > BigInt.zero) {
-      return tx.sendingAddresses.isNotEmpty ? tx.sendingAddresses.first : null;
-    } else if (net < BigInt.zero) {
-      return tx.receivingAddresses.isNotEmpty ? tx.receivingAddresses.first : null;
-    }
-    return null;
-  }
+  /// The rule every backend shares ([TransactionRowRules.primaryCounterpartyOf]).
+  static String? primaryCounterpartyOf(BitcoinTransaction tx) => TransactionRowRules.primaryCounterpartyOf(tx);
 
   /// Convert back to domain model BitcoinTransaction
   BitcoinTransaction toDomain() {

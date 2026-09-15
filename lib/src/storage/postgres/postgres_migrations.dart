@@ -22,6 +22,7 @@ import 'migrations/v011_utxo_reservation_columns.dart';
 import 'migrations/v012_merkle_proof_rejected_status.dart';
 import 'migrations/v013_deferred_payments.dart';
 import 'migrations/v014_confirmed_transaction_height_index.dart';
+import 'migrations/v015_transaction_counterparty.dart';
 
 /// Base class for database migrations.
 ///
@@ -62,6 +63,7 @@ class PostgresMigrations {
     V012MerkleProofRejectedStatus(),
     V013DeferredPayments(),
     V014ConfirmedTransactionHeightIndex(),
+    V015TransactionCounterparty(),
   ];
 
   /// Test hook awaited by [migrate] right after it reads the current schema

@@ -604,7 +604,8 @@ void defineWalletLifecycleContract(
       await s.upsertUTXO(wallet,
           _utxo(txid, 0, createdAt: _at(10), blockHeight: 800200, confirmations: 3));
 
-      await s.storeTransaction(wallet,
+      // The revert path (7dj): an ordinary store keeps a confirmation.
+      await s.storeRevertedTransaction(wallet,
           _tx(txid, _at(10), updatedAt: _at(60), rawHex: '', blockHeight: null,
               status: TransactionStatus.pending));
       await s.upsertUTXO(wallet,

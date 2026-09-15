@@ -186,7 +186,7 @@ void defineTransactionLookupContract(
       // Confirmation reverted (reorg): pending, height cleared.
       await s.storeTransaction(walletB, _tx(t('y'), height: fork + 1, minute: 2));
       expect(await fromFork(), [(walletB, t('y'), fork + 1)]);
-      await s.storeTransaction(walletB, _tx(t('y'), status: TransactionStatus.pending, minute: 2));
+      await s.storeRevertedTransaction(walletB, _tx(t('y'), status: TransactionStatus.pending, minute: 2));
       expect(await fromFork(), isEmpty);
       expect((await s.getTransactionsByTxids([t('y')])).single.blockHeight, isNull);
 

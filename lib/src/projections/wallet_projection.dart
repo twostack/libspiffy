@@ -1148,7 +1148,8 @@ class WalletProjection extends Projection<void> {
     } else if (existingTx.status == TransactionStatus.confirmed ||
         existingTx.blockHeight != null ||
         (existingTx.confirmations ?? 0) > 0) {
-      await _storage.storeTransaction(event.walletId, BitcoinTransaction(
+      // The one path that lowers a confirmed row (7dj).
+      await _storage.storeRevertedTransaction(event.walletId, BitcoinTransaction(
         walletId: existingTx.walletId,
         txid: existingTx.txid,
         rawHex: existingTx.rawHex,

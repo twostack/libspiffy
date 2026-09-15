@@ -14,6 +14,7 @@ import '../models/deferred_payment.dart';
 import '../actors/invoice_messages.dart';
 import 'wallet_storage.dart';
 import 'merkle_proof_rows.dart';
+import 'transaction_row_rules.dart';
 
 /// In-memory implementation of WalletStorage for development and testing.
 /// 
@@ -591,25 +592,56 @@ _balanceCache.remove(walletId);
     });
   }
 
+  @override
+  Future<void> storeRevertedTransaction(String walletId, BitcoinTransaction transaction) async {
+    await _withLock(walletId, () async {
+      _putTransaction(walletId, transaction, reverting: true);
+    });
+  }
+
   /// Insert or replace the ([walletId], txid) row. Returns true when new.
   ///
   /// The stored copy carries [walletId] whatever the caller's model says,
   /// as the persistent backends return it (audit S-20). An update without
   /// raw hex keeps the stored bytes: an SPV wallet cannot fetch the
-  /// transaction again. A confirmed update without a block height keeps the
+  /// transaction again. An update whose status [TransactionRowRules.setsStatus]
+  /// refuses keeps the stored status, block height and confirmations (7dj),
+  /// unless [reverting]. A confirmed update without a block height keeps the
   /// stored height; a non-confirmed one clears it (a reorg took the
   /// confirmation back, audit 3b0).
-  bool _putTransaction(String walletId, BitcoinTransaction transaction) {
+  bool _putTransaction(String walletId, BitcoinTransaction transaction, {bool reverting = false}) {
     final walletTxs = _transactions.putIfAbsent(walletId, () => {});
     final existing = walletTxs[transaction.txid];
     final isNew = existing == null;
     if (existing != null) _unindexConfirmed(walletId, existing);
-    final stored = walletTxs[transaction.txid] = transaction.copyWith(
-      walletId: walletId,
-      rawHex: transaction.rawHex.isEmpty ? existing?.rawHex : null,
-      blockHeight: transaction.blockHeight ??
-          (transaction.status == TransactionStatus.confirmed ? existing?.blockHeight : null),
-    );
+    final keepsStatus =
+        existing != null && !reverting && !TransactionRowRules.setsStatus(existing.status, transaction.status);
+    final stored = walletTxs[transaction.txid] = keepsStatus
+        ? BitcoinTransaction(
+            walletId: walletId,
+            txid: transaction.txid,
+            rawHex: transaction.rawHex.isEmpty ? existing.rawHex : transaction.rawHex,
+            status: existing.status,
+            blockHeight: existing.blockHeight,
+            confirmations: existing.confirmations,
+            inputValue: transaction.inputValue,
+            outputValue: transaction.outputValue,
+            fee: transaction.fee,
+            receivingAddresses: transaction.receivingAddresses,
+            sendingAddresses: transaction.sendingAddresses,
+            netAmount: transaction.netAmount,
+            createdAt: transaction.createdAt,
+            updatedAt: transaction.updatedAt,
+            memo: transaction.memo,
+            lockTime: transaction.lockTime,
+            version: transaction.version,
+          )
+        : transaction.copyWith(
+            walletId: walletId,
+            rawHex: transaction.rawHex.isEmpty ? existing?.rawHex : null,
+            blockHeight: transaction.blockHeight ??
+                (transaction.status == TransactionStatus.confirmed ? existing?.blockHeight : null),
+          );
     _indexConfirmed(walletId, stored);
     if (isNew) {
       _txidWallets.putIfAbsent(transaction.txid, () => []).add(walletId);

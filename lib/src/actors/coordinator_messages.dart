@@ -1799,7 +1799,11 @@ class UTXOSplitStartedEvent extends CoordinatorEvent {
   DateTime get eventTimestamp => DateTime.now();
 }
 
-/// Benford UTXO split completed
+/// Benford UTXO split completed.
+///
+/// [success] follows ARC's answer to every split transaction (bead
+/// libspiffy-wdch): a split ARC accepted or queued for a retry succeeds, one
+/// it rejected or reports contested does not; [splits] tells each apart.
 class UTXOSplitCompleteEvent extends CoordinatorEvent {
   @override
   final String walletId;
@@ -1809,6 +1813,13 @@ class UTXOSplitCompleteEvent extends CoordinatorEvent {
   final bool success;
   final String? error;
 
+  /// The split transactions ARC accepted or queued for a retry.
+  final List<String> txids;
+
+  /// How each split transaction that was built and signed ended, in the
+  /// order the source UTXOs were split.
+  final List<SplitTransactionOutcome> splits;
+
   UTXOSplitCompleteEvent({
     required this.walletId,
     required this.transactionCount,
@@ -1816,10 +1827,78 @@ class UTXOSplitCompleteEvent extends CoordinatorEvent {
     required this.totalFeePaid,
     required this.success,
     this.error,
+    this.txids = const [],
+    this.splits = const [],
   });
 
   @override
   DateTime get eventTimestamp => DateTime.now();
+}
+
+/// How one Benford split transaction ended (bead libspiffy-wdch). A split is
+/// recorded as a deferred payment before it is broadcast (bead
+/// libspiffy-ypp), so every status but [notRecorded] names a transaction the
+/// wallet lists (`GetDeferredPaymentsQuery`) until the network settles it.
+enum SplitTransactionStatus {
+  /// ARC accepted the broadcast: `SEEN_ON_NETWORK`, `MINED`, or another
+  /// status of a transaction ARC holds on its way to miners.
+  accepted,
+
+  /// ARC could not be reached; ARCActor queued the broadcast for a durable
+  /// retry. The split holds its source meanwhile.
+  queued,
+
+  /// ARC reports `DOUBLE_SPEND_ATTEMPTED`: a competing transaction spends
+  /// the source. Not final (bead libspiffy-ey2): the source stays held until
+  /// ARC reports one of them mined, or the split is cancelled.
+  contested,
+
+  /// ARC reports `REJECTED`: the split failed and its source is released.
+  rejected,
+
+  /// Recorded (its source held) but neither broadcast nor queued: no ARC
+  /// service, or a failed submission with no retry queue. Broadcast it with
+  /// `BroadcastDeferredPaymentCommand` or cancel it with
+  /// `CancelDeferredPaymentCommand`.
+  notBroadcast,
+
+  /// ARCActor did not answer the broadcast in time. The split is recorded
+  /// and holds its source; its network status is not known yet.
+  unanswered,
+
+  /// The wallet refused the recording, or did not acknowledge it in time;
+  /// not broadcast. A recording the wallet journals late is cancelled.
+  notRecorded,
+}
+
+/// One Benford split transaction and how it ended ([SplitTransactionStatus]).
+class SplitTransactionOutcome {
+  final String txid;
+
+  /// The UTXO the transaction splits (`txid:vout`).
+  final String sourceUtxoKey;
+  final SplitTransactionStatus status;
+
+  /// ARC's status, when ARC answered with one.
+  final String? networkStatus;
+
+  /// Why the split did not succeed, or what ARC said about it.
+  final String? error;
+
+  const SplitTransactionOutcome({
+    required this.txid,
+    required this.sourceUtxoKey,
+    required this.status,
+    this.networkStatus,
+    this.error,
+  });
+
+  /// ARC accepted the split or queued it for a retry.
+  bool get isSuccess => status == SplitTransactionStatus.accepted || status == SplitTransactionStatus.queued;
+
+  @override
+  String toString() => 'SplitTransactionOutcome($txid of $sourceUtxoKey: ${status.name}'
+      '${networkStatus != null ? ' $networkStatus' : ''}${error != null ? ', $error' : ''})';
 }
 
 // --- Archive Events ---

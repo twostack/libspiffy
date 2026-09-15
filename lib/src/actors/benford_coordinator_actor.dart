@@ -8,7 +8,6 @@ import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:logging/logging.dart';
 
 import '../core/wallet_commands.dart';
-import '../core/wallet_events.dart';
 import '../models/bitcoin_utxo.dart';
 import '../models/wallet_type.dart';
 import '../storage/secure_storage.dart';
@@ -29,13 +28,23 @@ import 'wallet_messages.dart';
 ///    the wallet aggregate sign it
 /// 4. Records the transaction with a deferred spend and waits until the
 ///    wallet has journaled it
-/// 5. Broadcasts it via ARCActor
+/// 5. Broadcasts it via ARCActor ([BroadcastDeferredPaymentMessage])
 ///
 /// The split is a deferred payment like any other (bead libspiffy-ypp): the
 /// wallet holds its source until ARC reports it on the network (the spend
 /// applies, V-16) or rejected (the source is released), or the user cancels
 /// it. It is never broadcast before it is recorded, so a split that reaches
 /// miners always has its record in the journal.
+///
+/// The reply ([SplitUTXOsResponse]) follows ARC's answer to each broadcast
+/// (bead libspiffy-wdch; [SplitTransactionStatus]): a split ARC accepted,
+/// or could not reach and queued for a retry, succeeds; one ARC rejected or
+/// reports contested (DOUBLE_SPEND_ATTEMPTED), or that was recorded but
+/// neither broadcast nor queued, does not. ARC's answer is awaited outside
+/// the mailbox and handed back through it, so the coordinator keeps serving
+/// other requests meanwhile. A recording the wallet did not acknowledge in
+/// time is not broadcast and is cancelled, so a recording journaled late
+/// does not hold the source for a transaction nobody broadcasts.
 class BenfordCoordinatorActor extends Actor {
   final _log = Logger('BenfordCoordinatorActor');
   final ActorRef _walletManager;
@@ -43,6 +52,11 @@ class BenfordCoordinatorActor extends Actor {
   final ReadModelStorage _storage;
   final Duration _signingReplyTimeout;
   final Duration _walletReplyTimeout;
+  final Duration _broadcastReplyTimeout;
+
+  /// Split requests waiting for ARC's answers, by request id.
+  final Map<int, _PendingSplitReply> _pendingReplies = {};
+  int _nextRequestId = 0;
 
   /// [secureStorage] is no longer used: split transactions are signed by the
   /// wallet aggregate, which alone reads key material (audit A-H8).
@@ -54,11 +68,13 @@ class BenfordCoordinatorActor extends Actor {
     required ReadModelStorage storage,
     Duration signingReplyTimeout = const Duration(seconds: 20),
     Duration walletReplyTimeout = const Duration(seconds: 30),
+    Duration broadcastReplyTimeout = const Duration(minutes: 2),
   })  : _walletManager = walletManager,
         _arcActor = arcActor,
         _storage = storage,
         _signingReplyTimeout = signingReplyTimeout,
-        _walletReplyTimeout = walletReplyTimeout;
+        _walletReplyTimeout = walletReplyTimeout,
+        _broadcastReplyTimeout = broadcastReplyTimeout;
 
   @override
   void preStart() {
@@ -67,12 +83,11 @@ class BenfordCoordinatorActor extends Actor {
   @override
   Future<void> onMessage(dynamic message) async {
     try {
-      if (message is UTXOSplitInitiatedEvent) {
-        await _handleSplitInitiated(message);
-      } else if (message is SplitUTXOsToBenfordCommand) {
+      if (message is SplitUTXOsToBenfordCommand) {
         // Command can be sent directly to coordinator
         await _handleSplitCommand(message);
-      } else {
+      } else if (message is _SplitBroadcastOutcome) {
+        _handleBroadcastOutcome(message);
       }
     } catch (e, stackTrace) {
       _log.warning('Failed to handle message: $e', e, stackTrace);
@@ -132,62 +147,143 @@ class BenfordCoordinatorActor extends Actor {
         ? availableUtxos.take(command.maxUtxosToSplit!).toList()
         : availableUtxos;
 
-    // Process each UTXO and track results
-    final txids = <String>[];
-    int successfulSplits = 0;
-
-    for (final sourceUtxo in utxosToSplit) {
-      final txid = await _splitSingleUtxo(
-        walletId: command.walletId,
-        walletType: wallet.walletType!,
-        sourceUtxo: sourceUtxo,
-        targetCount: command.targetUtxoCount,
-        feeRate: command.feeRate ?? BigInt.one,
-      );
-
-      if (txid != null) {
-        txids.add(txid);
-        successfulSplits++;
+    // Split each UTXO. A split that is recorded is broadcast; ARC's answer
+    // comes back through the mailbox, and the reply waits for every one.
+    final requestId = _nextRequestId++;
+    final pending = _PendingSplitReply(sender, command);
+    _pendingReplies[requestId] = pending;
+    try {
+      for (final sourceUtxo in utxosToSplit) {
+        final attempt = await _splitSingleUtxo(
+          walletId: command.walletId,
+          walletType: wallet.walletType!,
+          sourceUtxo: sourceUtxo,
+          targetCount: command.targetUtxoCount,
+          feeRate: command.feeRate ?? BigInt.one,
+        );
+        if (attempt == null) continue;
+        final index = pending.outcomes.length;
+        pending.outcomes.add(attempt.notRecorded);
+        if (attempt.notRecorded == null) {
+          pending.awaiting++;
+          unawaited(_awaitBroadcast(context.self, requestId, index, command.walletId, attempt));
+        }
       }
+    } catch (_) {
+      _pendingReplies.remove(requestId);
+      rethrow;
     }
+    pending.allStarted = true;
+    _replyIfSettled(requestId);
+  }
 
-    sender?.tell(SplitUTXOsResponse(
-      walletId: command.walletId,
-      success: true,
-      splitCount: successfulSplits * command.targetUtxoCount,
-      txids: txids,
+  /// Runs outside the mailbox: broadcasts [split] through ARCActor, waits
+  /// for its answer and hands it to the mailbox ([_SplitBroadcastOutcome]).
+  Future<void> _awaitBroadcast(ActorRef self, int requestId, int index, String walletId, _SplitAttempt split) async {
+    DeferredPaymentNetworkResult? result;
+    String? failure;
+    try {
+      result = await _arcActor.ask<DeferredPaymentNetworkResult>(
+        BroadcastDeferredPaymentMessage(
+          walletId: walletId,
+          txid: split.txid,
+          rawTxHex: split.txHex,
+          via: DeferredPaymentNetworkSource.arc,
+        ),
+        _broadcastReplyTimeout,
+      );
+    } on TimeoutException {
+      failure = 'ARC did not answer within $_broadcastReplyTimeout';
+    } catch (e) {
+      failure = 'ARC did not answer: $e';
+    }
+    try {
+      self.tell(LocalMessage(payload: _SplitBroadcastOutcome(requestId, index, split, result, failure)));
+    } catch (e) {
+      _log.fine('Benford coordinator gone; dropping the broadcast outcome of ${split.txid}: $e');
+    }
+  }
+
+  /// Mailbox half of a broadcast: records its outcome and replies once the
+  /// request has none outstanding.
+  void _handleBroadcastOutcome(_SplitBroadcastOutcome outcome) {
+    final pending = _pendingReplies[outcome.requestId];
+    if (pending == null) {
+      _log.fine('Broadcast outcome of ${outcome.split.txid} answers no pending split request');
+      return;
+    }
+    pending.outcomes[outcome.index] = _classify(outcome);
+    pending.awaiting--;
+    _replyIfSettled(outcome.requestId);
+  }
+
+  /// The status of the split [outcome] answers for.
+  static SplitTransactionOutcome _classify(_SplitBroadcastOutcome outcome) {
+    final split = outcome.split;
+    final result = outcome.result;
+    SplitTransactionOutcome of(SplitTransactionStatus status, {String? networkStatus, String? error}) =>
+        SplitTransactionOutcome(
+          txid: split.txid,
+          sourceUtxoKey: split.sourceUtxoKey,
+          status: status,
+          networkStatus: networkStatus,
+          error: error,
+        );
+    final name = 'Benford split ${split.txid} of ${split.sourceUtxoKey}';
+    if (result == null) {
+      return of(SplitTransactionStatus.unanswered,
+          error: '$name: ${outcome.failure}; it is recorded and holds its source until its network status '
+              'settles it (GetDeferredPaymentsQuery lists it)');
+    }
+    final status = result.networkStatus;
+    if (!result.success) {
+      if (result.willRetry) {
+        return of(SplitTransactionStatus.queued, error: result.error);
+      }
+      return of(SplitTransactionStatus.notBroadcast,
+          error: '$name is recorded and holds its source but was not broadcast (${result.error}); '
+              'broadcast it with BroadcastDeferredPaymentCommand or cancel it with CancelDeferredPaymentCommand');
+    }
+    final reason = result.error ?? 'no reason given';
+    if (DeferredNetworkStatus.isDefinitiveFailure(status)) {
+      return of(SplitTransactionStatus.rejected,
+          networkStatus: status, error: '$name rejected by ARC ($status: $reason); its source is released');
+    }
+    if (DeferredNetworkStatus.isContested(status)) {
+      return of(SplitTransactionStatus.contested,
+          networkStatus: status,
+          error: '$name contested: ARC reports $status ($reason). A competing transaction spends its source, '
+              'which stays held until ARC reports one of them mined or the split is cancelled '
+              '(CancelDeferredPaymentCommand)');
+    }
+    // Any other status is one of a transaction ARC holds on its way to
+    // miners (see DeferredNetworkStatus.allowsCancel).
+    return of(SplitTransactionStatus.accepted, networkStatus: status);
+  }
+
+  /// Answers the request [requestId] once every source UTXO has been
+  /// attempted and ARC has answered each broadcast.
+  void _replyIfSettled(int requestId) {
+    final pending = _pendingReplies[requestId];
+    if (pending == null || !pending.allStarted || pending.awaiting > 0) return;
+    _pendingReplies.remove(requestId);
+    final outcomes = [for (final o in pending.outcomes) o!];
+    final made = [for (final o in outcomes) if (o.isSuccess) o.txid];
+    final failed = [for (final o in outcomes) if (!o.isSuccess) o.error ?? '${o.txid}: ${o.status.name}'];
+    pending.sender?.tell(SplitUTXOsResponse(
+      walletId: pending.command.walletId,
+      success: failed.isEmpty,
+      error: failed.isEmpty ? null : failed.join('; '),
+      splitCount: made.length * pending.command.targetUtxoCount,
+      txids: made,
+      splits: outcomes,
     ));
   }
 
-  /// Handle UTXOSplitInitiatedEvent from aggregate
-  Future<void> _handleSplitInitiated(UTXOSplitInitiatedEvent event) async {
-    final wallet = await _walletSpendableUtxos(event.walletId);
-    if (!wallet.walletFound || wallet.walletType == null) {
-      _log.warning('Split of wallet ${event.walletId} not started: ${wallet.error}');
-      return;
-    }
-    final utxoMap = {for (final u in wallet.spendable) u.key: u};
-
-    // Process each UTXO key
-    for (final utxoKey in event.utxoKeysToSplit) {
-      final sourceUtxo = utxoMap[utxoKey];
-      if (sourceUtxo == null) {
-        continue;
-      }
-
-      await _splitSingleUtxo(
-        walletId: event.walletId,
-        walletType: wallet.walletType!,
-        sourceUtxo: sourceUtxo,
-        targetCount: event.targetUtxoCount,
-        feeRate: event.feeRate,
-      );
-    }
-  }
-
-  /// Split a single UTXO into multiple outputs following Benford distribution
-  /// Returns the transaction ID if successful, null otherwise
-  Future<String?> _splitSingleUtxo({
+  /// Split a single UTXO into multiple outputs following Benford distribution.
+  /// Returns the signed split and whether it was recorded, or null when no
+  /// transaction was built (too small, not reserved, not signed).
+  Future<_SplitAttempt?> _splitSingleUtxo({
     required String walletId,
     required WalletType walletType,
     required BitcoinUtxo sourceUtxo,
@@ -253,7 +349,7 @@ class BenfordCoordinatorActor extends Actor {
       // network (the spend applies), or rejected (the source is released).
       // The aggregate registers the outputs paying its own addresses as
       // pending UTXOs from the recorded transaction.
-      final recordError = await _recordSplit(RecordOutgoingTransactionCommand(
+      final record = await _recordSplit(RecordOutgoingTransactionCommand(
         walletId: walletId,
         txid: txid,
         rawHex: txHex,
@@ -270,24 +366,42 @@ class BenfordCoordinatorActor extends Actor {
         deferSpend: true,
         purpose: 'benford-split',
       ));
-      if (recordError != null) {
-        // Not broadcast: nothing reached the network. A recording that was
-        // journaled after all holds the source by the txid; releasing the
-        // reservation id does not touch that hold.
-        _log.warning('Benford split $txid of ${sourceUtxo.key} not recorded, not broadcast: $recordError');
+      if (record.error != null) {
+        // Not broadcast: nothing reached the network.
+        _log.warning('Benford split $txid of ${sourceUtxo.key} not recorded, not broadcast: ${record.error}');
+        var error = 'Benford split $txid of ${sourceUtxo.key} was not recorded (${record.error}); not broadcast';
+        if (!record.answered) {
+          // The wallet may still journal the recording, which would hold
+          // the source for a transaction nobody broadcasts (bead
+          // libspiffy-wdch). The cancellation reaches the wallet after the
+          // recording, in command order: it releases a recording journaled
+          // late, and is refused when there is none. Cancelled rather than
+          // broadcast: this split never left the process, and a broadcast
+          // follows only an acknowledged recording (bead libspiffy-ypp).
+          _walletManager.tell(WalletCommandMessage(
+            walletId,
+            CancelDeferredSpendCommand(
+              walletId: walletId,
+              txid: txid,
+              reason: 'Benford split never broadcast: the wallet did not acknowledge its recording in time',
+            ),
+          ));
+          error += '; a recording the wallet journals late is cancelled';
+        }
         _releaseReservation(walletId: walletId, reservationId: reservationId);
-        return null;
+        return _SplitAttempt(txid, txHex, sourceUtxo.key,
+            notRecorded: SplitTransactionOutcome(
+              txid: txid,
+              sourceUtxoKey: sourceUtxo.key,
+              status: SplitTransactionStatus.notRecorded,
+              error: error,
+            ));
       }
 
-      // 7. Broadcast via ARCActor. Its answer settles the hold; a failed
+      // 7. Broadcast via ARCActor: the caller does, and waits for ARC's
+      // answer outside the mailbox. ARC's answer settles the hold; a failed
       // submission is retried from ARCActor's queue.
-      _arcActor.tell(BroadcastTransactionMessage(
-        walletId,
-        txHex,
-        txid,
-      ));
-
-      return txid;
+      return _SplitAttempt(txid, txHex, sourceUtxo.key);
 
     } catch (e) {
       _log.warning('Failed to build or record Benford split transaction: $e');
@@ -296,9 +410,10 @@ class BenfordCoordinatorActor extends Actor {
     }
   }
 
-  /// Sends [command] to the wallet and waits until it is journaled. Returns
-  /// null once it is, or why it is not (refused, or no answer).
-  Future<String?> _recordSplit(RecordOutgoingTransactionCommand command) async {
+  /// Sends [command] to the wallet and waits until it is journaled. The
+  /// error is null once it is, or says why it is not; [answered] is false
+  /// when the wallet did not answer in time (it may still journal it).
+  Future<({String? error, bool answered})> _recordSplit(RecordOutgoingTransactionCommand command) async {
     final completer = Completer<String?>();
     final receiver = await context.system.spawn(
       'benford-record-${command.txid}-${DateTime.now().microsecondsSinceEpoch}',
@@ -306,8 +421,10 @@ class BenfordCoordinatorActor extends Actor {
     );
     try {
       _walletManager.tell(WalletCommandMessage(command.walletId, command), sender: receiver);
-      return await completer.future.timeout(_walletReplyTimeout,
-          onTimeout: () => 'no answer from the wallet within $_walletReplyTimeout');
+      final error = await completer.future.timeout(_walletReplyTimeout);
+      return (error: error, answered: true);
+    } on TimeoutException {
+      return (error: 'no answer from the wallet within $_walletReplyTimeout', answered: false);
     } finally {
       await context.system.stop(receiver);
     }
@@ -527,6 +644,42 @@ class BenfordCoordinatorActor extends Actor {
       error: error,
     ));
   }
+}
+
+/// A split transaction that was built and signed: recorded, or not
+/// ([notRecorded]).
+class _SplitAttempt {
+  final String txid;
+  final String txHex;
+  final String sourceUtxoKey;
+  final SplitTransactionOutcome? notRecorded;
+  _SplitAttempt(this.txid, this.txHex, this.sourceUtxoKey, {this.notRecorded});
+}
+
+/// A split request waiting for ARC's answers to its broadcasts.
+class _PendingSplitReply {
+  final ActorRef? sender;
+  final SplitUTXOsToBenfordCommand command;
+
+  /// One per split transaction, in split order; null while its broadcast
+  /// is unanswered.
+  final List<SplitTransactionOutcome?> outcomes = [];
+  int awaiting = 0;
+
+  /// Every source UTXO has been attempted.
+  bool allStarted = false;
+  _PendingSplitReply(this.sender, this.command);
+}
+
+/// Mailbox half of one broadcast: ARCActor's [result], or why none came
+/// ([failure]).
+class _SplitBroadcastOutcome {
+  final int requestId;
+  final int index;
+  final _SplitAttempt split;
+  final DeferredPaymentNetworkResult? result;
+  final String? failure;
+  const _SplitBroadcastOutcome(this.requestId, this.index, this.split, this.result, this.failure);
 }
 
 /// Completes with null once the wallet acknowledges the recording of [txid]

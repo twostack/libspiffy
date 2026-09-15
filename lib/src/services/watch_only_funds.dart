@@ -13,16 +13,22 @@ import '../models/bitcoin_utxo.dart';
 import '../storage/read_model_storage.dart';
 import '../utils/network_name.dart';
 
-/// A wallet's UTXOs split into those it can sign for and watch-only ones.
+/// A wallet's UTXOs split into those it can sign for, watch-only ones, and
+/// bare multisig ones it cannot spend alone.
 class SignableUtxos {
-  /// UTXOs the wallet holds the keys for, in their original order.
+  /// UTXOs the wallet can spend with its own keys, in their original order.
   final List<BitcoinUtxo> signable;
 
   /// UTXOs at watch addresses (see [isWatchOnlyOutput]), in their original
   /// order.
   final List<BitcoinUtxo> watchOnly;
 
-  const SignableUtxos(this.signable, this.watchOnly);
+  /// Bare multisig UTXOs whose threshold the wallet's keys do not meet
+  /// ([BalanceUtxos.notSpendableAlone], bead libspiffy-wdch), in their
+  /// original order.
+  final List<BitcoinUtxo> notSpendableAlone;
+
+  const SignableUtxos(this.signable, this.watchOnly, [this.notSpendableAlone = const []]);
 
   /// Total value of [watchOnly].
   BigInt get watchOnlySatoshis => watchOnly.fold(BigInt.zero, (sum, u) => sum + u.satoshis);
@@ -34,53 +40,26 @@ class SignableUtxos {
       ? ''
       : ' ($watchOnlySatoshis satoshis in ${watchOnly.length} UTXO(s) at watch addresses '
           'are watch-only funds: the wallet holds no key for them)';
+
+  /// [watchOnlyNote], followed by ' (N satoshis in M bare multisig UTXO(s)
+  /// need signatures the wallet does not hold)' when [notSpendableAlone] is
+  /// not empty. Appended to a funding failure.
+  String get excludedNote {
+    if (notSpendableAlone.isEmpty) return watchOnlyNote;
+    final sats = notSpendableAlone.fold(BigInt.zero, (sum, u) => sum + u.satoshis);
+    return '$watchOnlyNote ($sats satoshis in ${notSpendableAlone.length} bare multisig UTXO(s) '
+        'need signatures the wallet does not hold: it cannot spend them alone)';
+  }
 }
 
 /// Splits [utxos], UTXOs of wallet [walletId] from [storage], into the ones
-/// the wallet can sign for and the watch-only ones.
-///
-/// Watch addresses come from the read model's `watch` address rows. The row
-/// is written from the wallet's WatchAddressAddedEvent, which precedes every
-/// UTXO the wallet attributes to that address in the same journal, so a UTXO
-/// row at a watch address never exists without its address row. Costs one
-/// address query, plus one batch address check when a bare multisig UTXO
-/// names a watch address.
+/// the wallet can sign for, the watch-only ones and the bare multisig ones
+/// it cannot spend alone: the read side's rule, [splitBalanceUtxos] (bead
+/// libspiffy-wdch; before, a multisig UTXO the wallet cannot spend alone was
+/// listed as signable, and a funding selection that picked it failed later).
 Future<SignableUtxos> splitWatchOnlyUtxos(ReadModelStorage storage, String walletId, List<BitcoinUtxo> utxos) async {
-  if (utxos.isEmpty) return const SignableUtxos([], []);
-  final watch = {for (final row in await storage.getAddressesByPurpose(walletId, 'watch')) row.address};
-  if (watch.isEmpty) return SignableUtxos(List.of(utxos), const []);
-
-  // Wallet addresses named by multisig UTXOs that also name a watch address:
-  // the only case that needs to know which other addresses hold keys.
-  dartsv.NetworkType? network;
-  final multisigKeyAddresses = <String>{};
-  for (final utxo in utxos) {
-    final multisig = BareMultisigScript.parseHex(utxo.scriptPubKey);
-    if (multisig == null) continue;
-    network ??= NetworkName.toDartsv(await _walletNetwork(storage, walletId));
-    final addresses = multisig.keyAddresses(network).whereType<String>().toList();
-    if (addresses.any(watch.contains)) multisigKeyAddresses.addAll(addresses.where((a) => !watch.contains(a)));
-  }
-  final keyed = multisigKeyAddresses.isEmpty
-      ? const <String>{}
-      : {
-          for (final e in (await storage.checkAddresses(walletId, multisigKeyAddresses.toList())).entries)
-            if (e.value) e.key,
-        };
-
-  final signable = <BitcoinUtxo>[];
-  final watchOnly = <BitcoinUtxo>[];
-  for (final utxo in utxos) {
-    final isWatchOnly = isWatchOnlyOutput(
-      scriptHex: utxo.scriptPubKey,
-      address: utxo.address,
-      isWatchAddress: watch.contains,
-      hasKeyFor: (a) => !watch.contains(a) && keyed.contains(a),
-      network: network ?? dartsv.NetworkType.TEST,
-    );
-    (isWatchOnly ? watchOnly : signable).add(utxo);
-  }
-  return SignableUtxos(signable, watchOnly);
+  final split = await splitBalanceUtxos(storage, walletId, utxos);
+  return SignableUtxos(split.spendable, split.watchOnly, split.notSpendableAlone);
 }
 
 Future<String?> _walletNetwork(ReadModelStorage storage, String walletId) async {
@@ -120,9 +99,11 @@ class BalanceUtxos {
 /// read-side balance counts them ([BalanceUtxos]). The wallet aggregate's
 /// rule is `WalletBalances.isSpendable`; spv-understanding.md, "Balances".
 ///
-/// Watch addresses come from the read model's `watch` address rows (see
-/// [splitWatchOnlyUtxos]); the keys the wallet holds, from its other address
-/// rows. Costs one address query, plus one wallet read and one batch address
+/// Watch addresses come from the read model's `watch` address rows. The row
+/// is written from the wallet's WatchAddressAddedEvent, which precedes every
+/// UTXO the wallet attributes to that address in the same journal, so a UTXO
+/// row at a watch address never exists without its address row. The keys
+/// the wallet holds come from its other address rows. Costs one address query, plus one wallet read and one batch address
 /// check when a bare multisig UTXO is among [utxos]. Leaving out
 /// plugin-managed UTXOs is the caller's part.
 Future<BalanceUtxos> splitBalanceUtxos(ReadModelStorage storage, String walletId, List<BitcoinUtxo> utxos) async {

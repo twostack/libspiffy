@@ -128,7 +128,7 @@ class PaymentCoordinatorActor extends Actor {
     // unlocks each as P2PKH, so a bare multisig or P2PK wallet UTXO (bead
     // libspiffy-nlp) cannot fund it; the standard path signs those with
     // their own unlocking scripts.
-    var excludedNote = paymentUtxos.watchOnlyNote;
+    var excludedNote = paymentUtxos.excludedNote;
     if (_isPluginTransaction(msg)) {
       final excluded = utxos.where((u) => needsNonP2pkhUnlock(u.scriptPubKey)).toList();
       if (excluded.isNotEmpty) {
@@ -1395,7 +1395,7 @@ class PaymentCoordinatorActor extends Actor {
       final availableUtxos = spendable.where((u) => !needsNonP2pkhUnlock(u.scriptPubKey)).toList();
       if (availableUtxos.isEmpty) {
         throw Exception(spendable.isEmpty
-            ? 'No available UTXOs for provisioning${paymentUtxos.watchOnlyNote}'
+            ? 'No available UTXOs for provisioning${paymentUtxos.excludedNote}'
             : 'No available UTXOs for provisioning: the ${spendable.length} spendable UTXO(s) '
                 'are bare multisig or P2PK outputs, which plugin transactions cannot spend');
       }

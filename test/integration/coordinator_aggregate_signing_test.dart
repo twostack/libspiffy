@@ -477,9 +477,9 @@ void main() {
       expect(response.success, isTrue, reason: response.error);
       expect(response.txids, hasLength(1), reason: 'the one funded UTXO must be split');
 
-      final broadcasts = arc.received.whereType<BroadcastTransactionMessage>().toList();
+      final broadcasts = arc.received.whereType<BroadcastDeferredPaymentMessage>().toList();
       expect(broadcasts, hasLength(1));
-      final tx = dartsv.Transaction.fromHex(broadcasts.single.txHex);
+      final tx = dartsv.Transaction.fromHex(broadcasts.single.rawTxHex);
       expect(tx.id, equals(response.txids!.single));
       expect(tx.outputs, hasLength(3));
       expect('${tx.inputs.single.prevTxnId}:${tx.inputs.single.prevTxnOutputIndex}',
@@ -558,7 +558,7 @@ void main() {
       expect(response.success, isTrue, reason: response.error);
       expect(response.txids, hasLength(1), reason: 'the multisig UTXO must be split');
       final tx = dartsv.Transaction.fromHex(
-          arc.received.whereType<BroadcastTransactionMessage>().single.txHex);
+          arc.received.whereType<BroadcastDeferredPaymentMessage>().single.rawTxHex);
       expect('${tx.inputs.single.prevTxnId}:${tx.inputs.single.prevTxnOutputIndex}', sourceKey);
       expect(verifyInputs(tx), isEmpty);
     });
@@ -856,7 +856,7 @@ void main() {
       final (response, arc) = await split(walletId);
       expect(response.success, isFalse);
       expect(response.error, contains('watch-only'));
-      expect(arc.received.whereType<BroadcastTransactionMessage>(), isEmpty);
+      expect(arc.received.whereType<BroadcastDeferredPaymentMessage>(), isEmpty);
     });
 
     test('a 1-of-2 multisig UTXO over a watch address and a wallet key is still spent (the wallet signs it alone)',
@@ -894,7 +894,7 @@ void main() {
       expect((await balance(walletId)).totalBalance, BigInt.from(100000));
       final (response, arc) = await split(walletId);
       expect(response.success, isTrue, reason: response.error);
-      final tx = dartsv.Transaction.fromHex(arc.received.whereType<BroadcastTransactionMessage>().single.txHex);
+      final tx = dartsv.Transaction.fromHex(arc.received.whereType<BroadcastDeferredPaymentMessage>().single.rawTxHex);
       expect('${tx.inputs.single.prevTxnId}:${tx.inputs.single.prevTxnOutputIndex}', key);
       expect(verifyInputs(tx), isEmpty);
     });
@@ -995,7 +995,15 @@ class _SpendAllPlugin extends TransactionBuilderPlugin {
 class _Recorder extends Actor {
   final List<dynamic> received = [];
   @override
-  Future<void> onMessage(dynamic message) async => received.add(message);
+  Future<void> onMessage(dynamic message) async {
+    received.add(message);
+    // The Benford coordinator waits for ARC's answer (bead libspiffy-wdch).
+    if (message is BroadcastDeferredPaymentMessage) {
+      // ignore: invalid_use_of_internal_member
+      context.sender?.tell(DeferredPaymentNetworkResult(
+          walletId: message.walletId, txid: message.txid, success: true, networkStatus: 'SEEN_ON_NETWORK'));
+    }
+  }
 }
 
 /// Sends [message] to [target] from a throwaway receiver and returns the

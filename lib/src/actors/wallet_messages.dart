@@ -6,6 +6,10 @@ import '../models/deferred_payment.dart';
 // The actor wiring messages moved to internal_messages.dart.
 export 'internal_messages.dart'
     show SetBenfordCoordinatorMessage, SetArcActorForSPVMessage, SetHeaderSyncActorMessage;
+// A Benford split's per-transaction outcome (bead libspiffy-wdch), shared
+// with the public UTXOSplitCompleteEvent.
+export 'coordinator_messages.dart' show SplitTransactionOutcome, SplitTransactionStatus;
+import 'coordinator_messages.dart' show SplitTransactionOutcome;
 
 /// Messages for coordinating between actors in the LibSpiffy system
 
@@ -281,7 +285,13 @@ class SplitUTXOsResponse extends ActorResponse {
   @override
   final String? error;
   final int? splitCount; // Number of UTXOs created
-  final List<String>? txids; // Transaction IDs of split transactions
+  final List<String>? txids; // Split transactions ARC accepted or queued
+
+  /// How each split transaction that was built and signed ended (bead
+  /// libspiffy-wdch), in the order the source UTXOs were split. [success] is
+  /// false when any of them did not succeed
+  /// ([SplitTransactionOutcome.isSuccess]); [error] names each.
+  final List<SplitTransactionOutcome> splits;
 
   SplitUTXOsResponse({
     required this.walletId,
@@ -289,6 +299,7 @@ class SplitUTXOsResponse extends ActorResponse {
     this.error,
     this.splitCount,
     this.txids,
+    this.splits = const [],
   });
 
   @override

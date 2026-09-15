@@ -1688,6 +1688,8 @@ class WalletCoordinatorActor extends Actor {
       totalFeePaid: BigInt.zero,
       success: response.success,
       error: response.error,
+      txids: response.txids ?? const [],
+      splits: response.splits,
     ));
   }
 

@@ -186,8 +186,10 @@ void main() {
     arc.submitStatus = 'REJECTED';
 
     final response = await split();
-    expect(response.success, isTrue, reason: response.error);
-    final txid = response.txids!.single;
+    // The reply follows ARC's answer (bead libspiffy-wdch).
+    expect(response.success, isFalse);
+    final txid = response.splits.single.txid;
+    expect(response.splits.single.status, SplitTransactionStatus.rejected);
     final deadline = DateTime.now().add(_wait);
     while (!journal().any((e) => e is DeferredTransactionFailedEvent && e.txid == txid) &&
         DateTime.now().isBefore(deadline)) {

@@ -304,7 +304,7 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 
 ### Follow-ups before wave 4
 
-Defects found by the wave 3 lanes and this batch (report section 11, V-8 to V-25), each with
+Defects found by the wave 3 lanes and this batch (report section 11, V-8 to V-26), each with
 a regression test shown to fail on the previous code.
 
 - **Rejected commands (V-8, V-11).** A command an aggregate rejects is
@@ -397,6 +397,13 @@ a regression test shown to fail on the previous code.
   already knows the transaction; it does not revoke the copy the recipient
   holds) (**Postgres migration v013**; new Isar collection
   `DeferredPaymentEntity`).
+- **Receive attribution (V-26).** A received transaction's outputs and
+  spent inputs are attributed by the wallet itself, not the read model, so a
+  payment to a wallet created or an address generated moments earlier is
+  credited. Receiving or importing a transaction for a wallet that does not
+  exist (or does not answer within 30 s) now returns `isValid: false`
+  ("Cannot tell which outputs of <txid> belong to wallet <id>") instead of
+  a valid result with nothing recorded.
 
 #### Breaking changes
 
@@ -452,6 +459,12 @@ a regression test shown to fail on the previous code.
 - `ReadModelStorage.storeAncestorTransaction` and
   `getAncestorTransactionsBatch` added (abstract). Hosts opening Isar with
   their own schema list must add `AncestorTransactionEntity`.
+- A receive or import for a target wallet asks that wallet which outputs
+  and inputs are its own: SPVActor needs a wallet manager that answers
+  `WalletOwnershipQuery` (a stand-in that ignores it gets a failed result
+  after 30 s), and a transaction for a wallet that does not exist is
+  reported invalid, not valid with nothing recorded; on the BEEF path it is
+  then not broadcast.
 
 Additive API: `MerkleProofStatus`, `MerkleProof.status` / `statusChangedAt`,
 `PostgresEventStore(livePollInterval:)`, `ServerAcceptanceRecordedResponse`,
@@ -478,7 +491,8 @@ walletProjection:, broadcastTimeout:)`, `TransactionConfirmedEvent.bumpHex`,
 `CancelDeferredPaymentCommand` / `DeferredPaymentCancelledEvent`,
 `DeferredPayment`, `DeferredPaymentState`, `DeferredPaymentNetworkSource`,
 `ARCActor(dataSource:)`, `RecordOutgoingTransactionCommand.invoiceId` / `purpose`,
-`ArcException.statusCode` / `isNotFound`, `DataSourceException.notFound`.
+`ArcException.statusCode` / `isNotFound`, `DataSourceException.notFound`,
+`WalletOwnershipQuery` / `WalletOwnershipResponse`.
 
 ## 2.0.0
 

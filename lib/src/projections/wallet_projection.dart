@@ -845,6 +845,14 @@ class WalletProjection extends Projection<void> {
 
   /// Recalculate statistics and persist for a specific wallet
   ///
+  /// The read model's balance rule (spv-understanding.md, "Balances"): the
+  /// write model's buckets (`WalletBalances.bucketOf`: reserved when
+  /// reserved, confirmed from 6 confirmations, unconfirmed otherwise,
+  /// pending UTXOs included) over the wallet's unspent UTXOs, leaving out
+  /// UTXOs whose plugin metadata names a `pluginId`. Watch-only UTXOs count
+  /// (they are not filtered here). `totalBalance` is
+  /// confirmed + unconfirmed; it is not a spendable amount.
+  ///
   /// [utxos], when given, must be the wallet's rows (includeSpent: true) with
   /// the handler's own writes applied; it saves a second scan.
   Future<void> _recalculateAndPersistForWallet(

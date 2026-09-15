@@ -67,7 +67,10 @@ void main() {
         );
 
         expect(state.balance, equals(BigInt.from(150000))); // confirmed + unconfirmed
-        expect(state.availableBalance, equals(BigInt.from(125000))); // total - reserved
+        // libspiffy-ad07: the available balance is the total of the UTXOs
+        // coin selection can pick, not derived from the cached buckets
+        // (this state holds no UTXO; it was 125000, total - reserved).
+        expect(state.availableBalance, equals(BigInt.zero));
       });
 
       test('should handle zero balances', () {
@@ -77,15 +80,22 @@ void main() {
         expect(state.availableBalance, equals(BigInt.zero));
       });
 
-      test('should calculate available balance correctly when reserved exceeds total', () {
+      test('available balance sums the available UTXOs without plugin metadata, whatever their confirmations', () {
         final state = _createTestWalletState(
-          confirmedBalance: dartsv.Coin.ofSat(BigInt.from(50000)),
-          unconfirmedBalance: dartsv.Coin.ofSat(BigInt.from(30000)),
-          reservedBalance: dartsv.Coin.ofSat(BigInt.from(100000)),
-        );
+          utxos: {
+            'tx1:0': _createTestUTXO('tx1', 0, BigInt.from(50000), UTXOStatus.available, confirmations: 10),
+            'tx2:0': _createTestUTXO('tx2', 0, BigInt.from(30000), UTXOStatus.available, confirmations: 0),
+            'tx3:0': _createTestUTXO('tx3', 0, BigInt.from(100000), UTXOStatus.reserved, confirmations: 10),
+            'tx4:0': _createTestUTXO('tx4', 0, BigInt.from(20000), UTXOStatus.pending, confirmations: 0),
+            'tx5:0': _createTestUTXO('tx5', 0, BigInt.from(75000), UTXOStatus.spent, confirmations: 10),
+            'tx6:0': _createTestUTXO('tx6', 0, BigInt.from(9000), UTXOStatus.available, confirmations: 10)
+                .copyWith(pluginMetadata: {'pluginId': 'tok'}),
+          },
+        ).recalculateBalances();
 
-        expect(state.balance, equals(BigInt.from(80000))); // 50000 + 30000
-        expect(state.availableBalance, equals(BigInt.zero)); // max(0, 80000 - 100000)
+        expect(state.balance, equals(BigInt.from(109000))); // 50000 + 30000 + 20000 + 9000
+        expect(state.reservedBalance.getValue(), equals(BigInt.from(100000)));
+        expect(state.availableBalance, equals(BigInt.from(80000))); // 50000 + 30000
       });
     });
 

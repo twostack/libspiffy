@@ -216,8 +216,12 @@ abstract class ReadModelStorage {
 
   /// Calculate the total balance for a wallet.
   ///
-  /// This should return the sum of all available (unspent) UTXOs
-  /// for the wallet, excluding reserved UTXOs.
+  /// The sum of the wallet's [getPaymentUTXOs]: UTXOs with status available
+  /// (not pending, reserved or spent), whatever their confirmations, except
+  /// those whose plugin metadata names a `pluginId`. Watch-only UTXOs count:
+  /// this sum does not filter them (the coordinator's `BalanceResponse`
+  /// reports them apart). See spv-understanding.md,
+  /// "Balances", for how the other balance APIs differ.
   ///
   /// Parameters:
   /// - [walletId]: Unique identifier for the wallet

@@ -317,6 +317,8 @@ _balanceCache.remove(walletId);
     });
   }
 
+  /// The sum of the available UTXOs without a `pluginId`
+  /// ([ReadModelStorage.getBalance]); same rule as the other backends.
   @override
   Future<BigInt> getBalance(String walletId) async {
     return await _withLock(walletId, () async {

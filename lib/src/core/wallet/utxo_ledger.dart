@@ -9,6 +9,7 @@ import 'package:eventador/eventador.dart';
 import 'package:logging/logging.dart';
 
 import '../../models/bitcoin_utxo.dart';
+import '../../models/wallet_balances.dart';
 import '../../models/wallet_state.dart';
 import '../../models/wallet_type.dart';
 import '../../models/persistent_map.dart';
@@ -27,28 +28,15 @@ abstract final class UtxoLedger {
   // Queries
   // ---------------------------------------------------------------------------
 
-  /// Whether [utxo] is watch-only funds: attributed to the wallet through a
-  /// watch address the wallet holds no key for (bead libspiffy-87a2). Such a
-  /// UTXO is kept (with its transaction and proof) but never funds a
-  /// transaction. A bare multisig UTXO over a watch address is not
-  /// watch-only when the wallet's own keys meet its threshold.
-  static bool isWatchOnly(WalletState state, BitcoinUtxo utxo) =>
-      state.watchAddresses.isNotEmpty &&
-      isWatchOnlyOutput(
-        scriptHex: utxo.scriptPubKey,
-        address: utxo.address,
-        isWatchAddress: state.watchAddresses.containsKey,
-        hasKeyFor: state.addresses.containsKey,
-        network: NetworkName.toDartsv(state.networkType),
-      );
+  /// Whether [utxo] is watch-only funds ([WalletBalances.isWatchOnly]).
+  static bool isWatchOnly(WalletState state, BitcoinUtxo utxo) => WalletBalances.isWatchOnly(state, utxo);
 
-  /// Available UTXOs for spending (excludes plugin-managed UTXOs like
-  /// tokens, and watch-only UTXOs at watch addresses, bead libspiffy-87a2),
-  /// in state order.
+  /// Available UTXOs for spending ([WalletBalances.isSpendable]: excludes
+  /// plugin-managed UTXOs like tokens, and watch-only UTXOs at watch
+  /// addresses, bead libspiffy-87a2), in state order. Their total is
+  /// [WalletState.availableBalance].
   static List<BitcoinUtxo> available(WalletState state) {
-    return state.utxos.values
-        .where((utxo) => utxo.status == UTXOStatus.available && !utxo.hasPluginMetadata && !isWatchOnly(state, utxo))
-        .toList();
+    return state.utxos.values.where((utxo) => WalletBalances.isSpendable(state, utxo)).toList();
   }
 
   /// [available] UTXOs, largest first, until they cover [amount].

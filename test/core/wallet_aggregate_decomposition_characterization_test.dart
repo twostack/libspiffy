@@ -276,15 +276,17 @@ void main() {
       expect(agg.canReserveUTXO(state, 'missing:0'), isFalse);
       expect(agg.getReservedUTXOs(state, 'res-5').map((u) => u.key), [_key(5)]);
       expect(_balances(state), _b(179000, 59000, 8000));
-      expect(state.availableBalance, BigInt.from(230000));
-      expect(agg.hasSufficientBalance(state, BigInt.from(230000)), isTrue);
-      expect(agg.hasSufficientBalance(state, BigInt.from(230001)), isFalse);
+      // libspiffy-ad07: the amount selection can fund (was 230000, the
+      // buckets less the reserved amount, counting pending, plugin-managed
+      // and watch-only UTXOs).
+      expect(state.availableBalance, BigInt.from(18000));
+      expect(agg.hasSufficientBalance(state, BigInt.from(18000)), isTrue);
+      expect(agg.hasSufficientBalance(state, BigInt.from(18001)), isFalse);
     });
 
-    // Defect found by libspiffy-dp4 (not fixed here: a behaviour change of
-    // the public WalletState.availableBalance): confirmed and unconfirmed
-    // balances already leave reserved UTXOs out, and availableBalance
-    // subtracts them a second time.
+    // Defect found by libspiffy-dp4, fixed by libspiffy-ad07: confirmed and
+    // unconfirmed balances already leave reserved UTXOs out, and
+    // availableBalance subtracted them a second time.
     test('defect: availableBalance subtracts reserved amounts the confirmed and unconfirmed balances already exclude',
         () async {
       final wallet = await _Wallet.create();
@@ -295,7 +297,7 @@ void main() {
       expect(_balances(wallet.state), _b(10000, 0, 4000));
       expect(wallet.state.availableBalance, BigInt.from(10000));
       expect(wallet.aggregate.hasSufficientBalance(wallet.state, BigInt.from(10000)), isTrue);
-    }, skip: 'defect: availableBalance double-subtracts reserved UTXOs (libspiffy-ad07)');
+    });
 
     test('Benford split initiation lists the available UTXOs in state order with the default fee rate', () async {
       final wallet = await stocked();

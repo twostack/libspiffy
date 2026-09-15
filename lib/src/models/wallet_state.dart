@@ -63,9 +63,17 @@ class WalletState extends State {
   /// included)
   final PersistentMap<String, dynamic> metadata;
 
-  /// Cached balance calculations
+  /// Cached balance buckets ([WalletBalances.bucketOf]): every unspent UTXO
+  /// counts in exactly one of them, plugin-managed and watch-only UTXOs
+  /// included. Confirmed: unreserved with [WalletBalances.confirmedAt] (6)
+  /// or more confirmations.
   final dartsv.Coin confirmedBalance;
+
+  /// Unreserved, fewer than [WalletBalances.confirmedAt] confirmations
+  /// (pending UTXOs included).
   final dartsv.Coin unconfirmedBalance;
+
+  /// Reserved, including inputs a deferred payment holds.
   final dartsv.Coin reservedBalance;
 
   @override
@@ -232,20 +240,28 @@ class WalletState extends State {
   @internal
   WalletStateBuilder toBuilder() => WalletStateBuilder._(this);
 
-  /// Get total balance in satoshis (confirmed + unconfirmed)
+  /// [confirmedBalance] + [unconfirmedBalance]: every unspent, unreserved
+  /// UTXO, whether or not it is spendable (see [availableBalance]).
   BigInt get balance {
     return confirmedBalance.getValue() + unconfirmedBalance.getValue();
   }
 
-  /// Get total available balance (confirmed + unconfirmed - reserved)
-  BigInt get availableBalance {
-    final available = confirmedBalance.getValue() +
-                     unconfirmedBalance.getValue() -
-                     reservedBalance.getValue();
-    return available > BigInt.zero ? available : BigInt.zero;
-  }
+  /// The amount the wallet aggregate's coin selection can fund: the total
+  /// of the UTXOs `BitcoinWalletAggregate.selectUTXOsForAmount` may select
+  /// ([WalletBalances.isSpendable]: available, no plugin metadata, not
+  /// watch-only, any number of confirmations), so a selection of up to this
+  /// amount succeeds and one satoshi more fails.
+  ///
+  /// Not derived from [confirmedBalance], [unconfirmedBalance] and
+  /// [reservedBalance], which count every unspent UTXO (pending,
+  /// plugin-managed and watch-only ones included) and are not a spendable
+  /// amount (bead libspiffy-ad07). Computed once per state (the state is
+  /// immutable).
+  late final BigInt availableBalance = WalletBalances.spendableTotal(this);
 
-  /// Get all available (spendable) UTXOs
+  /// UTXOs whose status is available, plugin-managed and watch-only ones
+  /// included. The UTXOs coin selection may pick are the ones
+  /// [WalletBalances.isSpendable] accepts (see [availableBalance]).
   List<BitcoinUtxo> get availableUtxos {
     return utxos.values
         .where((utxo) => utxo.status == UTXOStatus.available)

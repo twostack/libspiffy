@@ -223,6 +223,20 @@ LibSpiffy uses **event sourcing** for the write model and **CQRS** for read/writ
 
 **Storage backends**: Isar (mobile/local), PostgreSQL (server), In-Memory (testing).
 
+### Balances
+
+Each balance API has one rule, documented where it is defined. They differ on purpose: the write model answers "what can this aggregate fund", the read side answers "what does the wallet show".
+
+| API | Counts | Confirmed means |
+|-----|--------|-----------------|
+| `WalletState.availableBalance`, `BitcoinWalletAggregate.hasSufficientBalance` | Exactly the UTXOs the aggregate's coin selection (`selectUTXOsForAmount`) may pick, one predicate (`WalletBalances.isSpendable`): status available, no plugin metadata, not watch-only, any confirmations. Pending, reserved, deferred-held and spent UTXOs are out. A selection of up to `availableBalance` succeeds; one satoshi more fails. | n/a |
+| `WalletState.confirmedBalance` / `unconfirmedBalance` / `reservedBalance` (`WalletBalances.bucketOf`, journaled in snapshots) | Every unspent UTXO in exactly one bucket, pending, plugin-managed and watch-only included. Not a spendable amount. | Unreserved with 6+ confirmations (`WalletBalances.confirmedAt`) |
+| Read model wallet row (`WalletProjection`: `confirmedBalance`, `unconfirmedBalance`, `reservedBalance`, `totalBalance`) | The same buckets over unspent UTXOs, leaving out UTXOs whose plugin metadata names a `pluginId`; watch-only UTXOs count. | 6+ confirmations |
+| `BalanceResponse` (`GetBalanceQuery`) | Payment UTXOs (`getPaymentUTXOs`: available, no `pluginId`), watch-only UTXOs reported apart in `watchOnlyBalance`. | Has a block height (mined) |
+| `ReadModelStorage.getBalance` | Sum of the payment UTXOs (available, no `pluginId`); watch-only UTXOs count. | n/a |
+
+Script type is not part of any balance rule: a bare multisig or P2PK UTXO the wallet can spend alone counts everywhere, although the paths that sign every input as P2PKH (channel funding, the payment coordinator) do not select it.
+
 ## Plugin System
 
 LibSpiffy supports external token and script protocols through a plugin architecture:

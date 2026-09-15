@@ -1043,18 +1043,34 @@ class ImportTransactionConfirmedEvent extends CoordinatorEvent {
   DateTime get eventTimestamp => DateTime.now();
 }
 
-/// Balance query response.
+/// Balance query response, computed from the read model.
 ///
 /// [confirmedBalance], [unconfirmedBalance] and [totalBalance] are the
-/// spendable balance: UTXOs at watch addresses, which the wallet holds no
-/// key for, are left out and reported in [watchOnlyBalance] (bead
-/// libspiffy-87a2).
+/// spendable balance: the wallet's payment UTXOs
+/// (`ReadModelStorage.getPaymentUTXOs`: status available, no plugin
+/// metadata naming a `pluginId`), any number of confirmations. Pending,
+/// reserved (a deferred payment's held inputs included) and spent UTXOs are
+/// left out; UTXOs at watch addresses, which the wallet holds no key for,
+/// are left out and reported in [watchOnlyBalance] (bead libspiffy-87a2).
+///
+/// This is not the write model's rule (spv-understanding.md, "Balances"):
+/// the confirmed/unconfirmed split here is by block height, not by the six
+/// confirmations of `WalletBalances.confirmedAt`, and unlike
+/// `WalletState.availableBalance` a UTXO with script-analysis metadata but
+/// no `pluginId` counts.
 class BalanceResponse extends CoordinatorEvent {
   @override
   final String walletId;
   final String queryId;
+
+  /// Payment UTXOs with a block height (greater than zero): mined, however
+  /// few confirmations they have.
   final BigInt confirmedBalance;
+
+  /// Payment UTXOs with no block height (not known to be mined).
   final BigInt unconfirmedBalance;
+
+  /// [confirmedBalance] + [unconfirmedBalance].
   final BigInt totalBalance;
 
   /// Value of the wallet's unspent UTXOs at watch addresses: credited to the

@@ -910,7 +910,9 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
   List<BitcoinUtxo> getReservedUTXOs(WalletState state, String reservationId) =>
       UtxoLedger.reservedBy(state, reservationId);
 
-  /// Check if wallet has sufficient available balance
+  /// Whether [selectUTXOsForAmount] can cover [requiredAmount]:
+  /// [WalletState.availableBalance], the total of the UTXOs it may select,
+  /// is at least [requiredAmount]. Fees are the caller's to add.
   bool hasSufficientBalance(WalletState state, BigInt requiredAmount) {
     return state.availableBalance >= requiredAmount;
   }

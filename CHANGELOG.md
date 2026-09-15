@@ -302,6 +302,48 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### Wave 4: refactors
+
+Structural work that keeps behaviour (the existing suite passes unchanged;
+characterization tests pin reply shapes, merkle walks and header-chain
+results). Defects found on the way are report section 11, V-35 to V-37.
+
+- **Pattern-matching dispatch (A-L6, libspiffy-r1l).** Aggregates,
+  projections and actors dispatch with type patterns instead of
+  `runtimeType`; a subclass of a command, event or message now reaches its
+  parent's handler. Header sync failures name their operation (V-35).
+- **Reply convention (A-L6, partial, libspiffy-pgt).** Replies extend the new
+  `ActorResponse` (`success`, `error`, payload is the reply); 14 replies that
+  could not answer `ask()` now can. Wiring messages (`Set*Message`,
+  `InitiateHeaderSyncMessage`) moved to `internal_messages.dart` and are
+  re-exported from their old libraries. Without a Benford coordinator a split
+  is answered with a failed `SplitUTXOsResponse`.
+- **SPV primitives (SPV-16, libspiffy-dq0).** One merkle module, one
+  byte-order utility, one proof-of-work check. `BEEF.parse` throws only
+  `BEEFException`, including for trailing bytes after the last transaction;
+  `BUMP.parse` throws only `BUMPException`.
+  `CryptoUtils.computeMerkleRootFromTscProof` is correct (V-36).
+- **SPV hot paths (SPV-15, libspiffy-780).** BEEF transactions keep their
+  received bytes (V-37) and each txid is hashed once; bulk header imports no
+  longer reload the header cache per chunk.
+
+#### Breaking changes in wave 4
+
+- `BEEF.parse` rejects a BEEF with bytes after its last transaction, and
+  throws `BEEFException` (not `StateError` / `Exception`) for malformed
+  input; `BUMP.parse` throws `BUMPException`.
+- A `BEEF`'s transactions hold the bytes as received; for a non-minimally
+  encoded transaction the txid changes to the one the sender computed.
+- Subclasses of commands, events and messages are handled like their parent
+  instead of falling through to the unknown-message path.
+
+Additive API: `ActorResponse`, `lib/src/spv/merkle.dart` (`hash256`,
+`txidInternalBytes`, `txidDisplayBytes`, `merkleParent`, `merkleRootFromPath`,
+`merklePathForIndex`), `hex_utils` `reverseBytes` / `displayToInternal` /
+`internalToDisplay` / `bytesEqual`, `NetworkParams.checkProofOfWork`,
+`ProofOfWorkCheck`, `ProofOfWorkFailure`, `BUMP.siblingAt`. Deprecated:
+`CdnHeaderSyncConfig.concurrentDownloads`.
+
 ### Follow-ups before wave 4
 
 Defects found by the wave 3 lanes and this batch (report section 11, V-8 to V-34), each with

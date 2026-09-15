@@ -56,17 +56,23 @@ class InvoiceCoordinatorActor extends Actor {
   /// between are skipped (A-M10).
   bool _expirySweepInFlight = false;
 
+  /// How long an invoice waits for WalletManager to answer one of its
+  /// address requests before it fails (libspiffy-q5jv).
+  final Duration _addressRequestTimeout;
+
   InvoiceCoordinatorActor({
     required ActorRef walletManager,
     required ReadModelStorage storage,
     required EventStore eventStore,
     ActorRef? invoiceProjection,
     Duration expirySweepInterval = const Duration(minutes: 5),
+    Duration addressRequestTimeout = const Duration(seconds: 60),
   })  : _walletManager = walletManager,
         _storage = storage,
         _eventStore = eventStore,
         _invoiceProjection = invoiceProjection,
-        _expirySweepInterval = expirySweepInterval;
+        _expirySweepInterval = expirySweepInterval,
+        _addressRequestTimeout = addressRequestTimeout;
 
   @override
   void preStart() {
@@ -101,17 +107,22 @@ class InvoiceCoordinatorActor extends Actor {
           await _handleListInvoices(msg);
           break;
           
-        case final AddressGeneratedResponse msg:
-          await _handleAddressGenerated(msg);
+        case final _AddressRequestOutcome outcome:
+          await _handleAddressRequestOutcome(outcome);
           break;
-          
+
         default:
-          if (message is Map && message['error'] != null) {
-            _handleWalletManagerError(message);
+          // Replies to address requests come back through their own ask
+          // (see [_requestAddress]); an error map or address told to this
+          // actor answers no request of an invoice, so it fails none.
+          if ((message is Map && message['error'] != null) ||
+              message is AddressGeneratedResponse) {
+            _log.warning('Ignoring a wallet-manager reply that answers no '
+                'pending invoice request: $message');
           }
       }
     } catch (e, stackTrace) {
-      
+      _log.warning('Failed to handle ${message.runtimeType}: $e', e, stackTrace);
       // Send error response to sender if applicable
       if (context.sender != null) {
         _sendErrorResponse(message, e.toString());
@@ -136,7 +147,7 @@ class InvoiceCoordinatorActor extends Actor {
 
       if (needsAddressGeneration) {
         // Store the pending request - will complete when addresses arrive
-        _pendingRequests[invoiceId] = _PendingInvoiceRequest(
+        final pending = _PendingInvoiceRequest(
           invoiceId: invoiceId,
           walletId: msg.walletId,
           amount: msg.effectiveAmount,
@@ -148,22 +159,10 @@ class InvoiceCoordinatorActor extends Actor {
           metadata: msg.metadata,
           numberOfAddressesNeeded: _countAddressesNeeded(outputs, msg.numberOfAddresses),
         );
+        _pendingRequests[invoiceId] = pending;
 
         // Request address generation from WalletManager
-        _walletManager.tell(
-          WalletCommandMessage(
-            msg.walletId,
-            GenerateAddressCommand(
-              walletId: msg.walletId,
-              label: 'invoice-$invoiceId',
-              metadata: {
-                'invoiceId': invoiceId,
-                'purpose': 'invoice',
-              },
-            ),
-          ),
-          sender: context.self,
-        );
+        _requestAddress(pending, 'invoice-$invoiceId');
       } else {
         // All outputs have addresses (or are P2MS) - create invoice directly
         await _createInvoiceDirectly(
@@ -323,63 +322,113 @@ class InvoiceCoordinatorActor extends Actor {
     }
   }
 
-  /// WalletManager replies `{'error': ..., 'walletId': ...}` when a wallet
-  /// cannot be loaded. Any invoice waiting on an address from that wallet
-  /// will never get one, so fail it now instead of leaking the pending
-  /// request and leaving the caller without a reply.
-  void _handleWalletManagerError(Map<dynamic, dynamic> reply) {
-    final walletId = reply['walletId']?.toString();
-    final error = reply['error'].toString();
-    final affected = _pendingRequests.entries
-        .where((e) => walletId == null || e.value.walletId == walletId)
-        .toList();
-    for (final entry in affected) {
-      _pendingRequests.remove(entry.key);
-      final request = entry.value;
-      _log.warning('Invoice ${entry.key} failed: wallet manager reported "$error"');
-      request.originalSender?.tell(InvoiceCreatedMessage(
-        invoiceId: entry.key,
-        walletId: request.walletId,
-        addresses: request.collectedAddresses,
-        amount: request.amount,
-        description: request.description,
-        createdAt: DateTime.now(),
-        expiresAt: request.expiresAt,
-        success: false,
-        error: error,
-      ));
+  /// Asks WalletManager for the next address of [pending] (libspiffy-q5jv).
+  ///
+  /// Each request is its own `ask`, so whatever answers it — the address,
+  /// WalletManager's `{'error': ...}` map (wallet not found, load failure,
+  /// its catch-all) or the ask's timeout — belongs to this invoice and to no
+  /// other. The ask is not awaited here: its outcome comes back through the
+  /// mailbox as an [_AddressRequestOutcome], so the coordinator keeps
+  /// handling other messages meanwhile and outcomes are applied in order.
+  void _requestAddress(_PendingInvoiceRequest pending, String label) {
+    final command = GenerateAddressCommand(
+      walletId: pending.walletId,
+      label: label,
+      metadata: {
+        'invoiceId': pending.invoiceId,
+        'purpose': 'invoice',
+      },
+    );
+    pending.awaitingCommandId = command.commandId;
+    unawaited(_awaitAddress(
+      context.self,
+      pending.invoiceId,
+      command.commandId,
+      WalletCommandMessage(pending.walletId, command),
+    ));
+  }
+
+  /// Runs outside the mailbox: waits for the reply to one address request
+  /// and hands it to the mailbox.
+  Future<void> _awaitAddress(
+    ActorRef self,
+    String invoiceId,
+    String commandId,
+    WalletCommandMessage request,
+  ) async {
+    _AddressRequestOutcome outcome;
+    try {
+      final reply =
+          await _walletManager.ask<dynamic>(request, _addressRequestTimeout);
+      outcome = _AddressRequestOutcome(invoiceId, commandId, reply: reply);
+    } on TimeoutException {
+      outcome = _AddressRequestOutcome(invoiceId, commandId,
+          failure: 'Address generation timed out after '
+              '${_addressRequestTimeout.inMilliseconds} ms');
+    } catch (e) {
+      outcome = _AddressRequestOutcome(invoiceId, commandId,
+          failure: 'Address generation failed: $e');
+    }
+    try {
+      self.tell(LocalMessage(payload: outcome));
+    } catch (e) {
+      _log.fine('Coordinator gone; dropping address outcome for $invoiceId: $e');
     }
   }
 
-  /// Handle address generation response - Step 2: Create the aggregate
-  Future<void> _handleAddressGenerated(AddressGeneratedResponse msg) async {
-    // Find the pending invoice request
-    final invoiceId = msg.metadata['invoiceId'] as String?;
-    if (invoiceId == null) {
+  /// Mailbox half of an address request: applies its outcome to the invoice
+  /// that made it, and only to that invoice.
+  Future<void> _handleAddressRequestOutcome(_AddressRequestOutcome outcome) async {
+    final invoiceId = outcome.invoiceId;
+    final pending = _pendingRequests[invoiceId];
+    if (pending == null || pending.awaitingCommandId != outcome.commandId) {
+      _log.fine('Address outcome for invoice $invoiceId answers no pending request');
       return;
     }
+    pending.awaitingCommandId = null;
 
-    final pendingRequest = _pendingRequests[invoiceId];
-    if (pendingRequest == null) {
-      return;
+    final reply = outcome.reply;
+    if (outcome.failure != null) {
+      _failPendingInvoice(pending, outcome.failure!);
+    } else if (reply is AddressGeneratedResponse) {
+      await _handleAddressGenerated(pending, reply);
+    } else if (reply is Map && reply['error'] != null) {
+      // WalletManager could not serve this request (unknown wallet, load
+      // failure, or its catch-all): this invoice will get no address.
+      _failPendingInvoice(pending, reply['error'].toString());
+    } else {
+      _failPendingInvoice(pending,
+          'Address generation failed: unexpected reply ${reply.runtimeType}');
     }
+  }
+
+  /// Removes [pending] and answers its caller with a failed invoice.
+  void _failPendingInvoice(_PendingInvoiceRequest pending, String error) {
+    _pendingRequests.remove(pending.invoiceId);
+    _log.warning('Invoice ${pending.invoiceId} failed: $error');
+    pending.originalSender?.tell(InvoiceCreatedMessage(
+      invoiceId: pending.invoiceId,
+      walletId: pending.walletId,
+      addresses: pending.collectedAddresses,
+      amount: pending.amount,
+      description: pending.description,
+      createdAt: DateTime.now(),
+      expiresAt: pending.expiresAt,
+      success: false,
+      error: error,
+    ));
+  }
+
+  /// Handle address generation response - Step 2: Create the aggregate
+  Future<void> _handleAddressGenerated(
+      _PendingInvoiceRequest pendingRequest, AddressGeneratedResponse msg) async {
+    final invoiceId = pendingRequest.invoiceId;
 
     if (!msg.success || msg.address.isEmpty) {
       // Previously the empty address was appended and the invoice was
       // created with an unpayable output while reporting success.
-      _pendingRequests.remove(invoiceId);
-      _log.warning('Address generation failed for invoice $invoiceId: ${msg.error}');
-      pendingRequest.originalSender?.tell(InvoiceCreatedMessage(
-        invoiceId: invoiceId,
-        walletId: pendingRequest.walletId,
-        addresses: pendingRequest.collectedAddresses,
-        amount: pendingRequest.amount,
-        description: pendingRequest.description,
-        createdAt: DateTime.now(),
-        expiresAt: pendingRequest.expiresAt,
-        success: false,
-        error: 'Address generation failed: ${msg.error ?? 'unknown error'}',
-      ));
+      _failPendingInvoice(pendingRequest,
+          'Address generation failed: ${msg.error ?? 'unknown error'}');
       return;
     }
 
@@ -389,20 +438,8 @@ class InvoiceCoordinatorActor extends Actor {
     // Check if we have all addresses we need
     if (pendingRequest.collectedAddresses.length < pendingRequest.numberOfAddressesNeeded) {
       // Request more addresses
-      _walletManager.tell(
-        WalletCommandMessage(
-          pendingRequest.walletId,
-          GenerateAddressCommand(
-            walletId: pendingRequest.walletId,
-            label: 'invoice-$invoiceId-${pendingRequest.collectedAddresses.length}',
-            metadata: {
-              'invoiceId': invoiceId,
-              'purpose': 'invoice',
-            },
-          ),
-        ),
-        sender: context.self,
-      );
+      _requestAddress(pendingRequest,
+          'invoice-$invoiceId-${pendingRequest.collectedAddresses.length}');
       return;
     }
 
@@ -595,7 +632,7 @@ class InvoiceCoordinatorActor extends Actor {
     // inside this handler; the aggregate's reply can only be processed
     // once this handler returns). Instead we await on the InvoicePaidEvent
     // matched by the projection — same data, post-applied, no deadlock.
-    final applied = _invoiceProjection!.ask<dynamic>(
+    final applied = _invoiceProjection.ask<dynamic>(
       AwaitEventApplied(
         (e) => e is InvoicePaidEvent && e.invoiceId == msg.invoiceId,
         timeout: const Duration(seconds: 10),
@@ -841,6 +878,17 @@ class _ExpireInvoices {
   const _ExpireInvoices(this.invoiceIds);
 }
 
+/// Mailbox half of one address request: WalletManager's [reply], or why no
+/// reply came ([failure]: timeout, manager unreachable).
+class _AddressRequestOutcome {
+  final String invoiceId;
+  final String commandId;
+  final Object? reply;
+  final String? failure;
+  const _AddressRequestOutcome(this.invoiceId, this.commandId,
+      {this.reply, this.failure});
+}
+
 /// Tracks a pending invoice creation request while waiting for address generation
 class _PendingInvoiceRequest {
   final String invoiceId;
@@ -854,6 +902,10 @@ class _PendingInvoiceRequest {
   final Map<String, dynamic>? metadata;
   final int numberOfAddressesNeeded;
   final List<String> collectedAddresses = [];
+
+  /// Command id of the address request in flight; outcomes of any other
+  /// request are not applied to this invoice.
+  String? awaitingCommandId;
 
   _PendingInvoiceRequest({
     required this.invoiceId,

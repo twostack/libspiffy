@@ -609,6 +609,62 @@ class WalletOwnershipResponse extends LocalMessage {
   dynamic get payload => this;
 }
 
+/// Asks a wallet for its type and the UTXOs it can spend now (bead
+/// libspiffy-ypp). Sent by BenfordCoordinatorActor to WalletManagerActor,
+/// which hands it to the wallet aggregate; the aggregate answers from its
+/// event-sourced state with a [WalletSpendableUtxosResponse], after every
+/// command it has already acknowledged (the read model lags the journal, so
+/// a wallet created or funded moments earlier looked unknown or empty).
+class WalletSpendableUtxosQuery implements Message {
+  final String walletId;
+
+  WalletSpendableUtxosQuery({required this.walletId});
+
+  @override
+  String get correlationId => 'wallet-spendable-utxos-$walletId';
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+/// The answer to a [WalletSpendableUtxosQuery].
+class WalletSpendableUtxosResponse extends LocalMessage {
+  final String walletId;
+
+  /// False when no such wallet exists (never created, or deleted); [error]
+  /// says why.
+  final bool walletFound;
+
+  /// The wallet's type; null when [walletFound] is false.
+  final WalletType? walletType;
+
+  /// The wallet's available UTXOs it can sign for: not reserved, held,
+  /// pending or spent, not plugin-managed, not watch-only (the UTXOs the
+  /// aggregate itself would select), in state order.
+  final List<BitcoinUtxo> spendable;
+
+  /// Available UTXOs left out because they sit at watch addresses.
+  final List<BitcoinUtxo> watchOnly;
+
+  final String? error;
+
+  WalletSpendableUtxosResponse({
+    required this.walletId,
+    required this.walletFound,
+    this.walletType,
+    this.spendable = const [],
+    this.watchOnly = const [],
+    this.error,
+  }) : super(payload: null, metadata: {'walletId': walletId, 'walletFound': walletFound});
+
+  /// This object, for dactor's ask().
+  @override
+  dynamic get payload => this;
+}
+
 /// Reply of the wallet aggregate to AddWatchAddressCommand (bead
 /// libspiffy-p4kv).
 class WatchAddressAddedResponse extends ActorResponse {
@@ -1085,8 +1141,8 @@ class DeferredSpendCancelledResponse extends ActorResponse {
 /// now, instead of waiting for the periodic scan. The wallet is updated as
 /// for a scan result (spend applied on SEEN_ON_NETWORK / MINED, a MINED
 /// merkle proof checked against the local headers before confirming, the
-/// payment failed on REJECTED / DOUBLE_SPEND_ATTEMPTED), and the status is
-/// journaled. Replied with [DeferredPaymentNetworkResult].
+/// payment failed on REJECTED; DOUBLE_SPEND_ATTEMPTED keeps it outstanding),
+/// and the status is journaled. Replied with [DeferredPaymentNetworkResult].
 class CheckDeferredPaymentStatusMessage implements Message {
   final String walletId;
   final String txid;

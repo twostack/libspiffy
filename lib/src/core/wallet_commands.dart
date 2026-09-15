@@ -460,8 +460,8 @@ class RecordOutgoingTransactionCommand extends WalletCommand {
   /// (TransactionSpendDeferredEvent, bead libspiffy-7p2): reserved by the
   /// txid with no expiry, so no reservation expiry, cleanup or other
   /// reservation can release or take them. The hold ends when the network
-  /// reports the transaction, when ARC reports it REJECTED or
-  /// DOUBLE_SPEND_ATTEMPTED, or when it is cancelled
+  /// reports the transaction, when ARC reports it REJECTED, or when it is
+  /// cancelled (DOUBLE_SPEND_ATTEMPTED keeps it held, bead libspiffy-ey2)
   /// ([CancelDeferredSpendCommand]).
   final bool deferSpend;
 
@@ -1139,9 +1139,10 @@ class ReconcileDeferredSpendsCommand extends WalletCommand {
 ///
 /// Only a deferred payment of this wallet is affected; any other txid is a
 /// no-op. The status is journaled when [explicit] or when it differs from the
-/// last recorded one. REJECTED and DOUBLE_SPEND_ATTEMPTED on an outstanding
-/// payment also fail it and release its inputs. Every other status (404 /
-/// NOT_FOUND, orphan mempool, in-flight statuses) leaves the hold in place.
+/// last recorded one. REJECTED on an outstanding payment also fails it and
+/// releases its inputs. Every other status (404 / NOT_FOUND, orphan mempool,
+/// in-flight statuses, DOUBLE_SPEND_ATTEMPTED, which ARC documents as not
+/// final: bead libspiffy-ey2) leaves the hold in place.
 class RecordTransactionNetworkStatusCommand extends WalletCommand {
   final String txid;
 

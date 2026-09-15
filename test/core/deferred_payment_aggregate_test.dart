@@ -255,7 +255,7 @@ void main() {
       expect(wallet.replay().currentState.metadata['deferredSpends'][txid]['state'], 'seen');
     });
 
-    for (final status in [DeferredNetworkStatus.rejected, DeferredNetworkStatus.doubleSpendAttempted]) {
+    for (final status in [DeferredNetworkStatus.rejected]) {
       test('ARC $status: the payment fails and its inputs return to their previous status, journaled', () async {
         final wallet = _Wallet();
         final txid = await wallet.pay([_input, _pendingInput]);
@@ -279,6 +279,95 @@ void main() {
         await wallet.handle(ReserveUTXOCommand(walletId: _w, utxoKey: _input, reservedByTxId: 'next'));
       });
     }
+
+    group('ey2: DOUBLE_SPEND_ATTEMPTED is not final (ARC may still mine the payment)', () {
+      test('recorded and journaled; the payment stays outstanding with its inputs held', () async {
+        final wallet = _Wallet();
+        final txid = await wallet.pay([_input, _pendingInput]);
+
+        final events = await wallet.handle(RecordTransactionNetworkStatusCommand(
+            walletId: _w, txid: txid, networkStatus: DeferredNetworkStatus.doubleSpendAttempted, detail: 'contested'));
+
+        // Old code: [TransactionNetworkStatusCheckedEvent, DeferredTransactionFailedEvent], inputs released.
+        expect(events.map((e) => e.runtimeType), [TransactionNetworkStatusCheckedEvent]);
+        expect(wallet.utxo(_input).status, UTXOStatus.reserved);
+        expect(wallet.utxo(_input).reservedByTxId, txid);
+        expect(wallet.utxo(_pendingInput).status, UTXOStatus.reserved);
+        expect(wallet.deferred(txid)['state'], 'outstanding');
+        expect(wallet.deferred(txid)['lastNetworkStatus'], DeferredNetworkStatus.doubleSpendAttempted);
+        expect(() => wallet.handle(ReserveUTXOCommand(walletId: _w, utxoKey: _input, reservedByTxId: 'third')),
+            throwsA(isA<StateError>()), reason: 'a contested input is not handed to a third spend');
+        final replayed = wallet.replay().currentState;
+        expect(replayed.utxos[_input]!.status, UTXOStatus.reserved);
+        expect(replayed.metadata['deferredSpends'][txid]['state'], 'outstanding');
+      });
+
+      test('then ARC reports ours on the network: the spend applies (seen)', () async {
+        final wallet = _Wallet();
+        final txid = await wallet.pay([_input]);
+        await wallet.handle(RecordTransactionNetworkStatusCommand(
+            walletId: _w, txid: txid, networkStatus: DeferredNetworkStatus.doubleSpendAttempted));
+
+        await wallet.handle(RecordTransactionNetworkStatusCommand(
+            walletId: _w, txid: txid, networkStatus: DeferredNetworkStatus.mined));
+        await wallet.handle(SpendUTXOCommand(walletId: _w, utxoKey: _input, spendingTxId: txid, fee: BigInt.zero));
+
+        expect(wallet.utxo(_input).status, UTXOStatus.spent);
+        expect(wallet.deferred(txid)['state'], 'seen');
+      });
+
+      test('then ARC reports ours REJECTED: failed, inputs released', () async {
+        final wallet = _Wallet();
+        final txid = await wallet.pay([_input]);
+        await wallet.handle(RecordTransactionNetworkStatusCommand(
+            walletId: _w, txid: txid, networkStatus: DeferredNetworkStatus.doubleSpendAttempted));
+
+        final events = await wallet.handle(RecordTransactionNetworkStatusCommand(
+            walletId: _w, txid: txid, networkStatus: DeferredNetworkStatus.rejected));
+
+        expect(events.last, isA<DeferredTransactionFailedEvent>());
+        expect(wallet.utxo(_input).status, UTXOStatus.available);
+        expect(wallet.deferred(txid)['state'], 'failed');
+      });
+
+      test('the user may cancel a contested payment: inputs released', () async {
+        final wallet = _Wallet();
+        final txid = await wallet.pay([_input]);
+        await wallet.handle(RecordTransactionNetworkStatusCommand(
+            walletId: _w, txid: txid, networkStatus: DeferredNetworkStatus.doubleSpendAttempted));
+
+        final events = await wallet.handle(CancelDeferredSpendCommand(
+            walletId: _w, txid: txid, networkStatus: DeferredNetworkStatus.doubleSpendAttempted));
+
+        expect(events.single, isA<DeferredTransactionCancelledEvent>());
+        expect(wallet.utxo(_input).status, UTXOStatus.available);
+        expect(DeferredNetworkStatus.allowsCancel(DeferredNetworkStatus.doubleSpendAttempted), isTrue);
+      });
+
+      test('a journal where DOUBLE_SPEND_ATTEMPTED already failed the payment replays unchanged', () async {
+        final wallet = _Wallet();
+        final txid = await wallet.pay([_input]);
+        final at = DateTime.utc(2026, 3);
+        final v = wallet.aggregate.currentState.version;
+        // Written by the code before ey2.
+        wallet.apply([
+          TransactionNetworkStatusCheckedEvent(
+              walletId: _w, txid: txid, networkStatus: DeferredNetworkStatus.doubleSpendAttempted, source: 'arc',
+              checkedAt: at, version: v + 1, timestamp: at),
+          DeferredTransactionFailedEvent.fromMap(DeferredTransactionFailedEvent(
+              walletId: _w, txid: txid, networkStatus: DeferredNetworkStatus.doubleSpendAttempted,
+              reason: 'arc reported DOUBLE_SPEND_ATTEMPTED',
+              releasedInputs: [ReleasedDeferredInput(utxoKey: _input, restoredStatus: UTXOStatus.available)],
+              version: v + 2, timestamp: at).toMap()),
+        ]);
+
+        final replayed = wallet.replay().currentState;
+        expect(replayed.utxos[_input]!.status, UTXOStatus.available);
+        expect(replayed.metadata['deferredSpends'][txid]['state'], 'failed');
+        expect(replayed.metadata['deferredSpends'][txid]['lastNetworkStatus'], DeferredNetworkStatus.doubleSpendAttempted);
+        expect(replayed.version, v + 2);
+      });
+    });
 
     for (final status in [
       DeferredNetworkStatus.notFound,

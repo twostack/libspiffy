@@ -143,6 +143,11 @@ class InvoiceAggregate extends AggregateRoot<InvoiceState>
     // Intentionally empty - using override pattern instead of registry pattern
   }
 
+  /// [InvoiceStatusMessage.statusMessage] of the reply to a
+  /// [CreateInvoiceCommand] whose [InvoiceCreatedEvent] is journaled (a
+  /// failed creation is answered 'Command failed: ...').
+  static const String invoiceCreatedStatusMessage = 'Invoice created';
+
   /// Send response after successful command processing
   @override
   Future<void> onCommandProcessed(Command command, List<Event> events) async {
@@ -154,7 +159,15 @@ class InvoiceAggregate extends AggregateRoot<InvoiceState>
     if (sender == null) return;
 
     for (final event in events) {
-      if (event is InvoicePaidEvent) {
+      if (event is InvoiceCreatedEvent) {
+        // Sent once the creation is journaled (bead libspiffy-u0x): the
+        // coordinator answers its caller only then.
+        sender.tell(InvoiceStatusMessage(
+          invoiceId: event.invoiceId,
+          status: InvoiceStatus.pending,
+          statusMessage: invoiceCreatedStatusMessage,
+        ));
+      } else if (event is InvoicePaidEvent) {
         sender.tell(InvoiceStatusMessage(
           invoiceId: event.invoiceId,
           status: InvoiceStatus.paid,

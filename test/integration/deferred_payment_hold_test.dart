@@ -279,7 +279,54 @@ void main() {
     await barrier();
   }
 
-  for (final failure in ['REJECTED', 'DOUBLE_SPEND_ATTEMPTED']) {
+  /// Scans until ARC was asked about [txid] once more.
+  Future<void> arcScanOf(String txid) async {
+    final calls = arc.queriesOf(txid);
+    final deadline = DateTime.now().add(const Duration(seconds: 10));
+    var nextTrigger = DateTime.now();
+    while (arc.queriesOf(txid) <= calls) {
+      if (DateTime.now().isAfter(deadline)) fail('ARC was not asked about $txid again');
+      // A trigger restarts the scan's debounce: not more than once a second.
+      if (!DateTime.now().isBefore(nextTrigger)) {
+        libspiffy.arcActor.tell(CheckStoragePendingUTXOsMessage(triggerBlockHeight: 1));
+        nextTrigger = DateTime.now().add(const Duration(seconds: 1));
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+    await barrier();
+  }
+
+  test('ey2: ARC reports DOUBLE_SPEND_ATTEMPTED: the input stays held, the status is recorded, ARC keeps '
+      'being asked, and SEEN_ON_NETWORK of ours then spends the input', () async {
+    final first = await pay('invoice-1');
+    expect(first.success, isTrue, reason: first.error);
+    arc.status[first.txid] = 'DOUBLE_SPEND_ATTEMPTED';
+
+    await arcScanOf(first.txid);
+
+    // Old code: the payment failed and its input was released for reuse.
+    expect((await fundingUtxo())!.status, UTXOStatus.reserved);
+    final row = (await storage().getDeferredPayment(walletId, first.txid))!;
+    expect(row.state, DeferredPaymentState.outstanding);
+    expect(row.lastNetworkStatus, 'DOUBLE_SPEND_ATTEMPTED');
+    expect((await storage().getTransaction(first.txid, walletId: walletId))!.status,
+        isNot(TransactionStatus.failed), reason: 'a failed transaction is no longer polled');
+    await cleanupPastExpiry();
+    await expectSecondPaymentDoesNotReuse(_fundingKey);
+
+    arc.status[first.txid] = 'SEEN_ON_NETWORK';
+    await arcScanOf(first.txid);
+
+    final deadline = DateTime.now().add(const Duration(seconds: 10));
+    while ((await fundingUtxo())!.status != UTXOStatus.spent) {
+      if (DateTime.now().isAfter(deadline)) fail('the contested payment seen on the network did not spend its input');
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    }
+    expect((await storage().getDeferredPayment(walletId, first.txid))!.state, DeferredPaymentState.seen);
+  });
+
+  for (final failure in ['REJECTED']) {
     test('ARC reports $failure: the payment\'s input is released at once, and it can pay again', () async {
       final first = await pay('invoice-1');
       expect(first.success, isTrue, reason: first.error);
@@ -320,6 +367,9 @@ class _ScriptedArc extends ArcService {
   final Map<String, String> status = {};
   bool unreachable = false;
   int statusQueries = 0;
+  final Map<String, int> _queries = {};
+
+  int queriesOf(String txid) => _queries[txid] ?? 0;
 
   @override
   Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl}) async {
@@ -329,6 +379,7 @@ class _ScriptedArc extends ArcService {
   @override
   Future<ArcTransactionResponse> getTransaction(String txid) async {
     statusQueries++;
+    _queries[txid] = queriesOf(txid) + 1;
     if (unreachable) throw ArcException('ARC unreachable');
     final txStatus = status[txid];
     if (txStatus == null) throw ArcException('Failed to get transaction: {"status":404}');

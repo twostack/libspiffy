@@ -3,6 +3,7 @@ import 'package:dactor/dactor.dart';
 import 'package:eventador/eventador.dart';
 import 'package:logging/logging.dart';
 
+import '../core/aggregate_command_failures.dart';
 import '../core/bitcoin_wallet_aggregate.dart';
 import '../core/wallet_commands.dart';
 import '../core/wallet_events.dart' show BeefAncestor;
@@ -63,6 +64,11 @@ class WalletManagerActor extends Actor {
   /// Last time each loaded aggregate was created, loaded or routed a command.
   final Map<String, DateTime> _lastUsed = {};
 
+  /// Aggregates a journal failure took out of service, being retired: each
+  /// answers the commands already queued to it, then stops. A replacement
+  /// is spawned only after that (bead libspiffy-u0x).
+  final Map<String, (ActorRef, Future<void>)> _retiringWallets = {};
+
   /// The read model, read when a wallet is loaded for the watch addresses
   /// registered before they were journaled (bead libspiffy-p4kv). Null
   /// skips that reconciliation.
@@ -106,16 +112,38 @@ class WalletManagerActor extends Actor {
 
   /// The loaded aggregate for [walletId], or null when none is loaded.
   ///
-  /// An aggregate stops itself when a journal write fails (a rejected command
-  /// leaves it running, libspiffy-201); a cached ref that is no longer alive
-  /// is forgotten here so the caller loads a replacement from the journal
-  /// instead of telling a dead actor (whose messages go to dead letters).
+  /// A journal write failure takes an aggregate out of service (a rejected
+  /// command leaves it running, libspiffy-201). Such an aggregate, or a
+  /// cached ref that is no longer alive, is forgotten here so the caller
+  /// loads a replacement from the journal. An out-of-service one is retired
+  /// now: it answers every command this manager already told it (the retire
+  /// request is queued behind them) and then stops, so none is lost (bead
+  /// libspiffy-u0x). No command is told to it after this.
   ActorRef? _loadedWallet(String walletId) {
     final ref = _walletActors[walletId];
-    if (ref == null || ref.isAlive) return ref;
+    if (ref == null) return null;
+    if (ref.isAlive && !CommandFailureContainment.isRetiring(ref)) return ref;
     _walletActors.remove(walletId);
     _lastUsed.remove(walletId);
+    if (ref.isAlive) {
+      _log.warning('Wallet $walletId: its aggregate is out of service after a journal failure; '
+          'retiring it and recovering a replacement from the journal');
+      _retiringWallets[walletId] = (ref, CommandFailureContainment.retire(ref));
+    }
     return null;
+  }
+
+  /// Waits until the retired aggregate of [walletId], if any, has stopped,
+  /// so its replacement can take the actor name.
+  Future<void> _awaitRetired(String walletId) async {
+    final retiring = _retiringWallets.remove(walletId);
+    if (retiring == null) return;
+    final (ref, stopped) = retiring;
+    await stopped.timeout(const Duration(seconds: 30), onTimeout: () async {
+      _log.severe('Wallet $walletId: the out-of-service aggregate did not stop within 30 s; stopping it');
+      // ignore: invalid_use_of_internal_member
+      await context.system.stop(ref);
+    });
   }
 
   /// Stops aggregates idle for longer than [_aggregateIdleTimeout].
@@ -136,6 +164,11 @@ class WalletManagerActor extends Actor {
       _lastUsed.remove(walletId);
       if (ref == null) continue;
       try {
+        if (CommandFailureContainment.isRetiring(ref)) {
+          // Answers what is queued to it before it stops.
+          await CommandFailureContainment.retire(ref);
+          continue;
+        }
         await context.system.stop(ref);
         _log.fine('Evicted idle wallet aggregate $walletId');
       } catch (e, stackTrace) {
@@ -210,6 +243,10 @@ class WalletManagerActor extends Actor {
           await _handleWalletOwnershipQuery(msg);
           break;
 
+        case final WalletSpendableUtxosQuery msg:
+          await _handleWalletSpendableUtxosQuery(msg);
+          break;
+
         case final WalletCreatedResponse msg:
           await _handleWalletCreatedResponse(msg);
           break;
@@ -277,6 +314,7 @@ class WalletManagerActor extends Actor {
       }
 
       // Spawn wallet aggregate as actor (AggregateRoot extends Actor)
+      if (loaded == null) await _awaitRetired(msg.walletId);
       final walletActor = loaded ?? await context.system.spawn(
         'wallet-${msg.walletId}',
         () => BitcoinWalletAggregate(
@@ -454,6 +492,29 @@ class WalletManagerActor extends Actor {
     walletActor.tell(query, sender: asker);
   }
 
+  /// Hands a [WalletSpendableUtxosQuery] to the wallet's aggregate, which
+  /// answers the asker from its event-sourced state (bead libspiffy-ypp). A
+  /// wallet with no journal is answered here as not found.
+  Future<void> _handleWalletSpendableUtxosQuery(WalletSpendableUtxosQuery query) async {
+    // ignore: invalid_use_of_internal_member
+    final asker = context.sender;
+    final walletActor = await _getOrLoadWallet(query.walletId);
+    if (walletActor == null) {
+      asker?.tell(WalletSpendableUtxosResponse(
+        walletId: query.walletId,
+        walletFound: false,
+        error: 'Wallet ${query.walletId} not found',
+      ));
+      return;
+    }
+    // Watch addresses the read model could not supply at load come first, as
+    // for an ownership query (bead libspiffy-p4kv).
+    if (_watchReconcilePending.contains(query.walletId)) {
+      await _reconcileWatchAddresses(query.walletId, walletActor);
+    }
+    walletActor.tell(query, sender: asker);
+  }
+
   /// Tells [walletActor] to journal the watch addresses the read model
   /// recorded before watch addresses were journaled (bead libspiffy-p4kv):
   /// rows with purpose `watch`. The aggregate journals only those it does
@@ -622,7 +683,9 @@ class WalletManagerActor extends Actor {
 
       // Spawn wallet aggregate as actor (AggregateRoot extends Actor).
       // Recovery runs inside preStart and spawn() awaits it (dactor 1.3), so
-      // the returned ref is fully recovered.
+      // the returned ref is fully recovered. An out-of-service predecessor
+      // has stopped first.
+      await _awaitRetired(walletId);
       final walletActor = await context.system.spawn(
         'wallet-$walletId',
         () => BitcoinWalletAggregate(

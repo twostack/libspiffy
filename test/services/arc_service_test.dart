@@ -652,6 +652,16 @@ void main() {
       });
 
       group('ArcSubmitResponse', () {
+        test('ey2: reads the competing transactions ARC names competingTxs', () {
+          final response = ArcSubmitResponse.fromJson({
+            'txid': testTxId,
+            'txStatus': 'DOUBLE_SPEND_ATTEMPTED',
+            'competingTxs': ['c1'],
+          });
+          // Old code read only 'doubleSpendTxids': null.
+          expect(response.doubleSpendTxids, ['c1']);
+        });
+
         test('should parse complete response', () {
           const json = {
             'txid': testTxId,

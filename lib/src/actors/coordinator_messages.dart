@@ -660,7 +660,9 @@ class GetDeferredPaymentsQuery implements Message {
 /// reported as such. Answered with [DeferredPaymentBroadcastEvent].
 ///
 /// On an on-network answer the payment's inputs are marked spent; ARC's
-/// REJECTED or DOUBLE_SPEND_ATTEMPTED fails the payment and releases them.
+/// REJECTED fails the payment and releases them. DOUBLE_SPEND_ATTEMPTED (a
+/// competing transaction; not final) keeps the payment outstanding with its
+/// inputs held, and is reported with success false.
 /// With [via] including the data source, a transaction ARC refuses to take
 /// is submitted to the configured `BlockchainDataSource`.
 class BroadcastDeferredPaymentCommand implements Message {
@@ -692,8 +694,9 @@ class BroadcastDeferredPaymentCommand implements Message {
 /// The wallet is updated as for a scan result: SEEN_ON_NETWORK or MINED
 /// spends the inputs; a MINED merkle proof is checked against the local
 /// headers and confirms the transaction only when it matches (never on a
-/// status string alone, whichever source reported it); REJECTED or
-/// DOUBLE_SPEND_ATTEMPTED fails the payment and releases its inputs. The
+/// status string alone, whichever source reported it); REJECTED fails the
+/// payment and releases its inputs; DOUBLE_SPEND_ATTEMPTED is recorded and
+/// keeps them held (ARC may still mine the payment). The
 /// status is journaled. [via]: ARC, the configured `BlockchainDataSource`
 /// (does it know the transaction; its merkle proof), or ARC then the data
 /// source when ARC fails or does not know it.
@@ -724,7 +727,8 @@ class CheckDeferredPaymentStatusCommand implements Message {
 /// with [DeferredPaymentCancelledEvent].
 ///
 /// The network is checked first ([via]); the cancellation is refused when
-/// the transaction is known to it (any status other than "not found"), and
+/// the transaction is known to it (any status other than "not found" and
+/// DOUBLE_SPEND_ATTEMPTED, where a competing transaction contests it), and
 /// when the check fails, unless [force]. The cancellation is journaled.
 ///
 /// **Cancelling does not revoke the signed transaction the recipient

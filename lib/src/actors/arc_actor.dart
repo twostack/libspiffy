@@ -747,9 +747,11 @@ class ARCActor extends Actor {
   ///
   /// Deferred payments (bead libspiffy-7p2): the status is recorded in the
   /// wallet when it changed, or always when [explicit] (a user-requested
-  /// check). REJECTED and DOUBLE_SPEND_ATTEMPTED fail an outstanding deferred
-  /// payment and release its inputs; ARC not knowing the transaction (404)
-  /// or failing to answer leaves the hold in place.
+  /// check). REJECTED fails an outstanding deferred payment and releases its
+  /// inputs; ARC not knowing the transaction (404) or failing to answer
+  /// leaves the hold in place. DOUBLE_SPEND_ATTEMPTED is not final (bead
+  /// libspiffy-ey2): recorded, the hold stays, and the transaction keeps
+  /// being polled (a pending one moves to broadcast: ARC has it).
   Future<_StatusCheck> _checkAndUpdateTransactionStatus(String txid, String walletId, TransactionStatus currentStatus,
       {bool explicit = false}) async {
     if (_arcService == null) {
@@ -782,6 +784,19 @@ class ARCActor extends Actor {
         final proofStatus = await _handleMinedReport(txid, walletId, response);
         return _StatusCheck(_CheckOutcome.changed,
             status: wireStatus, blockHeight: response.blockHeight, proofStatus: proofStatus);
+      }
+
+      // DOUBLE_SPEND_ATTEMPTED: a competing transaction spends an input, and
+      // either may still be mined (bead libspiffy-ey2). Nothing is spent or
+      // released; the transaction stays in the scan until ARC reports ours
+      // on the network or rejected. A pending one is broadcast now (ARC has
+      // it, so no back-off); a status past that is left as it is.
+      if (response.status == ArcTransactionStatus.doubleSpendAttempted) {
+        _log.warning('ARC reports a double spend attempt on $txid (competing: '
+            '${response.doubleSpendTxids ?? const []}); still polling, nothing released');
+        final promote = currentStatus == TransactionStatus.pending;
+        if (promote) _updateTransactionStatusFromArc(walletId, txid, response.status);
+        return _StatusCheck(promote ? _CheckOutcome.changed : _CheckOutcome.unchanged, status: wireStatus);
       }
 
       if (arcTxStatus == null) return _StatusCheck(_CheckOutcome.unknown, status: wireStatus);
@@ -844,8 +859,9 @@ class ARCActor extends Actor {
   /// spends nothing.
   ///
   /// The status is recorded for a deferred payment ([explicit] for a
-  /// user-requested broadcast); REJECTED or DOUBLE_SPEND_ATTEMPTED fails it
-  /// (bead libspiffy-7p2). Returns the proof check of a MINED answer.
+  /// user-requested broadcast); REJECTED fails it (bead libspiffy-7p2),
+  /// DOUBLE_SPEND_ATTEMPTED keeps it held (bead libspiffy-ey2). Returns the
+  /// proof check of a MINED answer.
   Future<ProofHeaderStatus?> _onSubmitResponse(String walletId, String txid, String txHex, ArcSubmitResponse response,
       {bool explicit = false}) async {
     await _recordNetworkStatus(walletId, txid, arcWireStatus(response.status),
@@ -1010,16 +1026,17 @@ class ARCActor extends Actor {
 
   /// Records [status] of [txid] in [walletId]'s aggregate
   /// (RecordTransactionNetworkStatusCommand) when [txid] is a deferred
-  /// payment there. A definitive failure is always sent (the aggregate
-  /// ignores a txid that is not a deferred payment, and one recorded before
-  /// holds were journaled has no read-model row yet); any other status only
+  /// payment there. A definitive failure or a contested status
+  /// (DOUBLE_SPEND_ATTEMPTED) is always sent (the aggregate ignores a txid
+  /// that is not a deferred payment, and one recorded before holds were
+  /// journaled has no read-model row yet); any other status only
   /// when the read model has the payment, and, unless [explicit], only when
   /// it changed, so a scan of a wallet's other transactions does not load
   /// its aggregate.
   Future<void> _recordNetworkStatus(String walletId, String txid, String status,
       {String source = 'arc', bool explicit = false, int? blockHeight, String? detail}) async {
     try {
-      if (!DeferredNetworkStatus.isDefinitiveFailure(status)) {
+      if (!DeferredNetworkStatus.isDefinitiveFailure(status) && !DeferredNetworkStatus.isContested(status)) {
         final row = await _storage.getDeferredPayment(walletId, txid);
         if (row == null) return;
         if (!explicit && row.lastNetworkStatus == status && row.lastNetworkStatusSource == source) return;
@@ -1163,8 +1180,9 @@ class ARCActor extends Actor {
   /// Broadcasts a deferred payment through [BroadcastDeferredPaymentMessage.via]:
   /// the BEEF's unproven ancestors first (a failure there is logged, the
   /// source may know them already), then the payment. The answer is handled
-  /// like any submit answer (spend, proof check, failure on REJECTED /
-  /// DOUBLE_SPEND_ATTEMPTED). A failed ARC submission is queued for retry.
+  /// like any submit answer (spend, proof check, failure on REJECTED; the
+  /// hold kept on DOUBLE_SPEND_ATTEMPTED). A failed ARC submission is queued
+  /// for retry.
   Future<DeferredPaymentNetworkResult> _broadcastDeferredPayment(BroadcastDeferredPaymentMessage msg) async {
     final ancestors = <String>[];
     if (msg.beefHex != null && msg.beefHex!.isNotEmpty) {
@@ -1207,7 +1225,10 @@ class ARCActor extends Actor {
           blockHeight: response.blockHeight,
           proofStatus: proofStatus?.name,
           confirmed: proofStatus == ProofHeaderStatus.verified,
-          error: DeferredNetworkStatus.isDefinitiveFailure(arcWireStatus(response.status)) ? response.message : null,
+          error: DeferredNetworkStatus.isDefinitiveFailure(arcWireStatus(response.status)) ||
+                  DeferredNetworkStatus.isContested(arcWireStatus(response.status))
+              ? response.message
+              : null,
         );
       } catch (e) {
         arcError = e.toString();
@@ -1342,8 +1363,10 @@ class ARCActor extends Actor {
         return TransactionStatus.confirmed;
       case ArcTransactionStatus.seenInOrphanMempool:
         return TransactionStatus.orphaned;
-      case ArcTransactionStatus.rejected:
       case ArcTransactionStatus.doubleSpendAttempted:
+        // Not final (bead libspiffy-ey2): ARC holds the transaction.
+        return TransactionStatus.broadcast;
+      case ArcTransactionStatus.rejected:
         return TransactionStatus.failed;
       default:
         return null;
@@ -1375,8 +1398,13 @@ class ARCActor extends Actor {
       case ArcTransactionStatus.seenInOrphanMempool:
         txStatus = TransactionStatus.orphaned;
         break;
-      case ArcTransactionStatus.rejected:
       case ArcTransactionStatus.doubleSpendAttempted:
+        // Not final (bead libspiffy-ey2): ARC holds the transaction and may
+        // still mine it, so it stays in the status scan (a failed one is not
+        // polled).
+        txStatus = TransactionStatus.broadcast;
+        break;
+      case ArcTransactionStatus.rejected:
         txStatus = TransactionStatus.failed;
         break;
       default:

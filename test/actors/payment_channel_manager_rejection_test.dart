@@ -300,6 +300,25 @@ void main() {
           isTrue);
     });
 
+    test('a journal write failure fails the command, and the next command is '
+        'served by an aggregate recovered from the journal (libspiffy-u0x)',
+        () async {
+      await openServerChannel();
+      final recoveries = eventStore.reads('PaymentChannel_$_channelId');
+
+      eventStore.failPersist = true;
+      final failed = await acknowledge(sequence: 1, client: 99000, server: 1000);
+      expect(failed.success, isFalse);
+      expect(failed.error, contains('journal unavailable'));
+
+      eventStore.failPersist = false;
+      // The out-of-service aggregate is retired, not told this command.
+      final valid = await acknowledge(sequence: 1, client: 99000, server: 1000);
+      expect(valid.success, isTrue, reason: valid.error);
+      expect(eventStore.reads('PaymentChannel_$_channelId'), equals(recoveries + 1));
+      await expectState('open', sequence: 1, client: 99000, server: 1000);
+    });
+
     test('client: recording a payment the aggregate rejects fails, and the '
         'channel still closes', () async {
       // A lock time of "now": the channel is expired as soon as it exists.
@@ -578,6 +597,21 @@ class _SigningWalletManager extends Actor {
 /// In-memory journal that counts event reads (one per aggregate recovery).
 class _ReadCountingEventStore extends InMemoryEventStore {
   final Map<String, int> _reads = {};
+
+  /// Makes every journal write fail.
+  bool failPersist = false;
+
+  @override
+  Future<void> persistEvents(String persistenceId, List<Event> events, int expectedVersion) async {
+    if (failPersist) throw StateError('journal unavailable');
+    await super.persistEvents(persistenceId, events, expectedVersion);
+  }
+
+  @override
+  Future<void> persistEvent(String persistenceId, Event event, int expectedVersion) async {
+    if (failPersist) throw StateError('journal unavailable');
+    await super.persistEvent(persistenceId, event, expectedVersion);
+  }
 
   int reads(String persistenceId) => _reads[persistenceId] ?? 0;
 

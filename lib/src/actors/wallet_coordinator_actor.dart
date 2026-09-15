@@ -987,16 +987,24 @@ class WalletCoordinatorActor extends Actor {
         _deferredNetworkTimeout,
       );
       final rejected = DeferredNetworkStatus.isDefinitiveFailure(result.networkStatus);
+      // A competing transaction contests it (bead libspiffy-ey2): not
+      // accepted, not failed either; the payment stays held.
+      final contested = DeferredNetworkStatus.isContested(result.networkStatus);
       _emitEvent(DeferredPaymentBroadcastEvent(
         walletId: cmd.walletId,
         txid: cmd.txid,
         requestId: requestId,
-        success: result.success && !rejected,
+        success: result.success && !rejected && !contested,
         networkStatus: result.networkStatus,
         source: result.source,
         confirmed: result.confirmed,
         willRetry: result.willRetry,
-        error: rejected ? (result.error ?? 'The network rejected ${cmd.txid} (${result.networkStatus})') : result.error,
+        error: rejected
+            ? (result.error ?? 'The network rejected ${cmd.txid} (${result.networkStatus})')
+            : contested
+                ? 'ARC reports ${result.networkStatus} for ${cmd.txid}: a competing transaction spends an input; '
+                    'the payment stays outstanding with its inputs held${result.error != null ? ' (${result.error})' : ''}'
+                : result.error,
       ));
     } catch (e) {
       _emitEvent(failure('Broadcast of deferred payment ${cmd.txid} failed: $e'));

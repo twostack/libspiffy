@@ -22,9 +22,9 @@ import 'dart:convert';
 ///                  |outstanding|  or an input spent by the transaction
 ///                  +-----------+ -------------------------------------+
 ///                   |         |                                       |
-///  ARC REJECTED or  |         | CancelDeferredSpendCommand            v
-///  DOUBLE_SPEND_    |         | (network does not know it)        +------+
-///  ATTEMPTED        v         v                                   | seen |
+///  ARC REJECTED     |         | CancelDeferredSpendCommand            v
+///                   |         | (network does not know it, or ARC +------+
+///                   v         v  reports DOUBLE_SPEND_ATTEMPTED)  | seen |
 ///              +------+   +---------+   network reports it later  +------+
 ///              |failed|   |cancelled| --------------------------->   |  ^
 ///              +------+   +---------+                                 |  |
@@ -38,6 +38,12 @@ import 'dart:convert';
 /// Inputs are held only while [outstanding]. [failed] and [cancelled]
 /// released them; [seen] and [mined] spent them. Evidence from the network
 /// wins: a failed or cancelled payment the network later reports is [seen].
+///
+/// ARC's DOUBLE_SPEND_ATTEMPTED (a competing transaction spends an input) is
+/// not final: either transaction may still be mined. The payment stays
+/// [outstanding] with its inputs held and the status recorded (bead
+/// libspiffy-ey2); ARC keeps being polled. Journals written before that,
+/// where DOUBLE_SPEND_ATTEMPTED failed the payment, replay as they were.
 enum DeferredPaymentState {
   /// Signed and handed over; not yet known to be on the network. Inputs held.
   outstanding,
@@ -49,7 +55,8 @@ enum DeferredPaymentState {
   /// Confirmed by a merkle proof checked against the local header chain.
   mined,
 
-  /// ARC reported REJECTED or DOUBLE_SPEND_ATTEMPTED; inputs released.
+  /// ARC reported REJECTED (or, in a journal written before bead
+  /// libspiffy-ey2, DOUBLE_SPEND_ATTEMPTED); inputs released.
   failed,
 
   /// Cancelled by the user while the network did not know the transaction;
@@ -91,20 +98,28 @@ abstract final class DeferredNetworkStatus {
   /// Filter value matching payments never checked (no recorded status).
   static const String unchecked = 'UNCHECKED';
 
-  /// Statuses that settle a deferred payment as failed. Everything else
-  /// (404, network errors, orphan mempool, in-flight statuses) is not.
-  static bool isDefinitiveFailure(String? status) =>
-      status == rejected || status == doubleSpendAttempted;
+  /// Statuses that settle a deferred payment as failed: REJECTED only.
+  /// Everything else (404, network errors, orphan mempool, in-flight
+  /// statuses, DOUBLE_SPEND_ATTEMPTED) is not.
+  static bool isDefinitiveFailure(String? status) => status == rejected;
+
+  /// ARC saw a competing transaction spending an input (bead libspiffy-ey2).
+  /// Not final: ARC documents that the payment may still be mined. The
+  /// payment stays outstanding with its inputs held, the status is recorded
+  /// and ARC keeps being polled.
+  static bool isContested(String? status) => status == doubleSpendAttempted;
 
   /// Statuses that mean the network has the transaction (the deferred spend
   /// applies).
   static bool isOnNetwork(String? status) => status == seenOnNetwork || status == mined;
 
-  /// Whether a payment with this status may be cancelled: only when the
-  /// source said it does not know the transaction. Any status ARC reports
-  /// for a transaction it holds (queued, stored, sent, seen, mined, orphan
-  /// mempool, ...) means it may still reach miners.
-  static bool allowsCancel(String? status) => status == notFound;
+  /// Whether a payment with this status may be cancelled: when the source
+  /// said it does not know the transaction, or when ARC reports it contested
+  /// (DOUBLE_SPEND_ATTEMPTED, bead libspiffy-ey2: the user may give it up;
+  /// if it is mined anyway, the wallet records it as seen). Any other status
+  /// ARC reports for a transaction it holds (queued, stored, sent, seen,
+  /// mined, orphan mempool, ...) means it is on its way to miners.
+  static bool allowsCancel(String? status) => status == notFound || status == doubleSpendAttempted;
 }
 
 /// One input a deferred payment holds.

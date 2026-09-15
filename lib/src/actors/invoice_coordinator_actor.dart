@@ -4,6 +4,7 @@ import 'package:eventador/eventador.dart';
 import 'package:logging/logging.dart';
 import 'package:uuid/uuid.dart';
 import '../storage/read_model_storage.dart';
+import '../core/aggregate_command_failures.dart';
 import '../core/invoice_aggregate.dart';
 import '../core/invoice_commands.dart';
 import '../core/invoice_events.dart';
@@ -228,20 +229,6 @@ class InvoiceCoordinatorActor extends Actor {
     required ActorRef? originalSender,
   }) async {
     try {
-      // Spawn the InvoiceAggregate actor
-      final aggregateActor = await context.system.spawn(
-        'invoice-aggregate-$invoiceId',
-        () => InvoiceAggregate(
-          aggregateId: invoiceId,
-          aggregateType: 'Invoice',
-          eventStore: _eventStore,
-        ),
-      );
-
-      _invoiceAggregates[invoiceId] = aggregateActor;
-      // spawn() returns once recovery has completed (dactor 1.3 awaits
-      // preStart), so no settle delay is needed before sending commands.
-
       // Extract P2PKH addresses for legacy compatibility
       final addresses = outputs
           .whereType<P2PKHOutputSpec>()
@@ -249,22 +236,7 @@ class InvoiceCoordinatorActor extends Actor {
           .toList();
       final totalAmount = outputs.fold(BigInt.zero, (sum, o) => sum + o.amount);
 
-      // Register projection-applied awaiter BEFORE telling the aggregate.
-      // Resolves only after the InvoiceProjection has written the row to
-      // _storage, so callers that synchronously query via CheckInvoiceMessage
-      // after receiving InvoiceCreatedMessage see the row.
-      final applied = _invoiceProjection?.ask<dynamic>(
-        AwaitEventApplied(
-          (e) => e is InvoiceCreatedEvent && e.invoiceId == invoiceId,
-          timeout: const Duration(seconds: 10),
-        ),
-        // Ask timeout must outlast the awaiter's own window, otherwise dactor's
-        // default (5 s) fires first and a slow projection looks like a failure.
-        const Duration(seconds: 12),
-      );
-
-      // Send CreateInvoiceCommand to the aggregate
-      final command = CreateInvoiceCommand(
+      final notCreated = await _createInAggregate(CreateInvoiceCommand(
         invoiceId: invoiceId,
         walletId: walletId,
         addresses: addresses,
@@ -273,20 +245,8 @@ class InvoiceCoordinatorActor extends Actor {
         description: description,
         expiresIn: expiresIn,
         invoiceMetadata: metadata,
-      );
-
-      aggregateActor.tell(command, sender: context.self);
-
-      // Wait for the projection to apply InvoiceCreatedEvent before
-      // responding. If no projection was wired (legacy test setup), this
-      // is skipped — same back-compat shape as PaymentChannelManagerActor.
-      if (applied != null) {
-        final result = await applied;
-        if (result is AwaitFailed) {
-          _log.warning(
-              'InvoiceProjection apply timeout for $invoiceId: ${result.reason}');
-        }
-      }
+      ));
+      if (notCreated != null) throw _InvoiceNotCreated(notCreated);
 
       // Send success response
       if (originalSender != null) {
@@ -319,6 +279,93 @@ class InvoiceCoordinatorActor extends Actor {
           error: e.toString(),
         ));
       }
+    }
+  }
+
+  /// Spawns the aggregate of a new invoice and creates the invoice in it.
+  ///
+  /// Returns null once the aggregate has journaled [command]'s
+  /// InvoiceCreatedEvent and, with the invoice projection wired, the
+  /// projection has applied it (or gave up waiting: logged), so a caller
+  /// told the invoice exists can look it up. Otherwise returns why it was
+  /// not created (bead libspiffy-u0x: the caller used to be told success
+  /// before the event was persisted, and even when persisting it failed).
+  Future<String?> _createInAggregate(CreateInvoiceCommand command) async {
+    final invoiceId = command.invoiceId;
+    // spawn() returns once recovery has completed (dactor 1.3 awaits
+    // preStart), so no settle delay is needed before sending commands.
+    // ignore: invalid_use_of_internal_member
+    final aggregateActor = await context.system.spawn(
+      'invoice-aggregate-$invoiceId',
+      () => InvoiceAggregate(
+        aggregateId: invoiceId,
+        aggregateType: 'Invoice',
+        eventStore: _eventStore,
+      ),
+    );
+    _invoiceAggregates[invoiceId] = aggregateActor;
+
+    // Registered BEFORE telling the aggregate, so the event cannot be missed.
+    final applied = _invoiceProjection?.ask<dynamic>(
+      AwaitEventApplied(
+        (e) => e is InvoiceCreatedEvent && e.invoiceId == invoiceId,
+        timeout: const Duration(seconds: 10),
+      ),
+      // Ask timeout must outlast the awaiter's own window, otherwise dactor's
+      // default (5 s) fires first and a slow projection looks like a failure.
+      const Duration(seconds: 12),
+    );
+
+    final reply = await _commandAggregate(aggregateActor, command);
+    if (reply?.statusMessage != InvoiceAggregate.invoiceCreatedStatusMessage) {
+      if (applied != null) unawaited(applied.then<void>((_) {}, onError: (_) {}));
+      // Not created: no aggregate is kept for it. One a journal failure took
+      // out of service answers what is queued to it first.
+      if (identical(_invoiceAggregates[invoiceId], aggregateActor)) {
+        _invoiceAggregates.remove(invoiceId);
+      }
+      if (CommandFailureContainment.isRetiring(aggregateActor)) {
+        await CommandFailureContainment.retire(aggregateActor);
+      } else if (aggregateActor.isAlive) {
+        // ignore: invalid_use_of_internal_member
+        await context.system.stop(aggregateActor);
+      }
+      return reply?.statusMessage ?? 'The invoice aggregate did not answer the creation of $invoiceId';
+    }
+
+    if (applied != null) {
+      final result = await applied;
+      if (result is AwaitFailed) {
+        _log.warning('InvoiceProjection apply timeout for $invoiceId: ${result.reason}');
+      }
+    }
+    return null;
+  }
+
+  var _replyReceivers = 0;
+
+  /// Tells [command] to [aggregate] and waits for the aggregate's own
+  /// answer, sent once the command's events are journaled or the command
+  /// failed. Null when none comes within [timeout].
+  ///
+  /// The answer goes to a receiver actor, not this coordinator's mailbox,
+  /// which stays blocked in the calling handler meanwhile.
+  Future<InvoiceStatusMessage?> _commandAggregate(ActorRef aggregate, Command command,
+      {Duration timeout = const Duration(seconds: 30)}) async {
+    final reply = Completer<InvoiceStatusMessage>();
+    // ignore: invalid_use_of_internal_member
+    final receiver = await context.system.spawn(
+      'invoice-reply-${_replyReceivers++}-${DateTime.now().microsecondsSinceEpoch}',
+      () => _InvoiceReplyReceiver(reply),
+    );
+    try {
+      aggregate.tell(command, sender: receiver);
+      return await reply.future.timeout(timeout);
+    } on TimeoutException {
+      return null;
+    } finally {
+      // ignore: invalid_use_of_internal_member
+      await context.system.stop(receiver);
     }
   }
 
@@ -450,37 +497,13 @@ class InvoiceCoordinatorActor extends Actor {
       // Build final outputs with addresses filled in
       final finalOutputs = _buildFinalOutputs(pendingRequest);
 
-      // Spawn the InvoiceAggregate actor
-      final aggregateActor = await context.system.spawn(
-        'invoice-aggregate-$invoiceId',
-        () => InvoiceAggregate(
-          aggregateId: invoiceId,
-          aggregateType: 'Invoice',
-          eventStore: _eventStore,
-        ),
-      );
-
-      _invoiceAggregates[invoiceId] = aggregateActor;
-
       // Extract addresses for legacy compatibility
       final addresses = finalOutputs
           .whereType<P2PKHOutputSpec>()
           .map((o) => o.address)
           .toList();
 
-      // Register projection-applied awaiter BEFORE telling the aggregate.
-      final applied = _invoiceProjection?.ask<dynamic>(
-        AwaitEventApplied(
-          (e) => e is InvoiceCreatedEvent && e.invoiceId == invoiceId,
-          timeout: const Duration(seconds: 10),
-        ),
-        // Ask timeout must outlast the awaiter's own window, otherwise dactor's
-        // default (5 s) fires first and a slow projection looks like a failure.
-        const Duration(seconds: 12),
-      );
-
-      // Send CreateInvoiceCommand to the aggregate
-      final command = CreateInvoiceCommand(
+      final notCreated = await _createInAggregate(CreateInvoiceCommand(
         invoiceId: invoiceId,
         walletId: pendingRequest.walletId,
         addresses: addresses,
@@ -489,18 +512,8 @@ class InvoiceCoordinatorActor extends Actor {
         description: pendingRequest.description,
         expiresIn: pendingRequest.expiresIn,
         invoiceMetadata: pendingRequest.metadata,
-      );
-
-      aggregateActor.tell(command, sender: context.self);
-
-      // Wait for the projection to apply InvoiceCreatedEvent before responding.
-      if (applied != null) {
-        final result = await applied;
-        if (result is AwaitFailed) {
-          _log.warning(
-              'InvoiceProjection apply timeout for $invoiceId: ${result.reason}');
-        }
-      }
+      ));
+      if (notCreated != null) throw _InvoiceNotCreated(notCreated);
 
       // Send success response to original sender
       if (pendingRequest.originalSender != null) {
@@ -627,11 +640,6 @@ class InvoiceCoordinatorActor extends Actor {
     }
 
     // Register projection-applied awaiter BEFORE telling the aggregate.
-    // We can't await the aggregate's own InvoiceStatusMessage reply here
-    // because that would deadlock (the coordinator's mailbox is blocked
-    // inside this handler; the aggregate's reply can only be processed
-    // once this handler returns). Instead we await on the InvoicePaidEvent
-    // matched by the projection — same data, post-applied, no deadlock.
     final applied = _invoiceProjection.ask<dynamic>(
       AwaitEventApplied(
         (e) => e is InvoicePaidEvent && e.invoiceId == msg.invoiceId,
@@ -642,36 +650,38 @@ class InvoiceCoordinatorActor extends Actor {
       const Duration(seconds: 12),
     );
 
-    // Tell aggregate with a null/no sender so its onCommandProcessed reply
-    // is dropped (we synthesise our own from the matched event below).
-    // We intentionally do not pass `sender: originalSender` either: the
-    // aggregate would race ahead and reply before the projection has
-    // applied, re-introducing the bug we're fixing.
-    aggregateActor.tell(command);
+    // The aggregate's own answer comes first (to a receiver actor, so this
+    // blocked mailbox is no obstacle). A rejection journals nothing for the
+    // projection to apply: it is passed on at once (bead libspiffy-u0x; the
+    // caller used to get 'Mark-paid projection timeout' after 10 s).
+    final reply = await _commandAggregate(aggregateActor, command);
+    if (reply == null || reply.status != InvoiceStatus.paid) {
+      unawaited(applied.then<void>((_) {}, onError: (_) {}));
+      originalSender?.tell(reply ??
+          InvoiceStatusMessage(
+            invoiceId: msg.invoiceId,
+            status: InvoiceStatus.pending,
+            statusMessage: 'The invoice aggregate did not answer the payment of ${msg.invoiceId}',
+          ));
+      return;
+    }
 
+    // Paid and journaled: answer once the projection has applied it, so a
+    // CheckInvoiceMessage right after the answer sees the paid invoice.
     final result = await applied;
     if (result is AwaitFailed) {
       _log.warning(
           'InvoiceProjection apply timeout for ${msg.invoiceId}: ${result.reason}');
       originalSender?.tell(InvoiceStatusMessage(
-        invoiceId: msg.invoiceId,
-        status: InvoiceStatus.pending,
-        statusMessage: 'Mark-paid projection timeout: ${result.reason}',
+        invoiceId: reply.invoiceId,
+        status: InvoiceStatus.paid,
+        paidAt: reply.paidAt,
+        txid: reply.txid,
+        statusMessage: 'Invoice marked as paid; the read model has not applied it yet: ${result.reason}',
       ));
       return;
     }
-
-    // Construct the response from the matched event — same fields the
-    // aggregate's onCommandProcessed would have populated.
-    final paidEvent = (result as EventAppliedResponse).matchedEvent
-        as InvoicePaidEvent;
-    originalSender?.tell(InvoiceStatusMessage(
-      invoiceId: paidEvent.invoiceId,
-      status: InvoiceStatus.paid,
-      paidAt: paidEvent.paidAt,
-      txid: paidEvent.txid,
-      statusMessage: 'Invoice marked as paid',
-    ));
+    originalSender?.tell(reply);
   }
 
   /// Handle cancel invoice - Route to aggregate
@@ -773,16 +783,23 @@ class InvoiceCoordinatorActor extends Actor {
   }
 
   /// The loaded aggregate of an existing invoice, or one recovered from its
-  /// journal now. An aggregate stops itself when a journal write fails (a
-  /// rejected command leaves it running, libspiffy-201), so a cached ref that
-  /// is no longer alive is replaced rather than told commands that would go
-  /// to dead letters. An invoice with no journal is a [StateError]: no
-  /// aggregate is spawned (and kept running) for an unknown id.
+  /// journal now. A journal write failure takes an aggregate out of service
+  /// (a rejected command leaves it running, libspiffy-201), so a cached ref
+  /// that is out of service or no longer alive is replaced rather than told
+  /// commands. An out-of-service one is retired first: it answers the
+  /// commands already queued to it, then stops (bead libspiffy-u0x). An
+  /// invoice with no journal is a [StateError]: no aggregate is spawned (and
+  /// kept running) for an unknown id.
   Future<ActorRef> _invoiceAggregate(String invoiceId) async {
     final cached = _invoiceAggregates[invoiceId];
     if (cached != null) {
-      if (cached.isAlive) return cached;
+      if (cached.isAlive && !CommandFailureContainment.isRetiring(cached)) return cached;
       _invoiceAggregates.remove(invoiceId);
+      if (cached.isAlive) {
+        await CommandFailureContainment.retire(cached).timeout(const Duration(seconds: 30),
+            // ignore: invalid_use_of_internal_member
+            onTimeout: () => context.system.stop(cached));
+      }
     }
     if (await _eventStore.getHighestSequenceNumber('Invoice_$invoiceId') == 0) {
       throw StateError('Invoice $invoiceId not found');
@@ -869,6 +886,27 @@ class InvoiceCoordinatorActor extends Actor {
     } catch (e) {
       return null;
     }
+  }
+}
+
+/// Why an invoice aggregate did not create an invoice (its answer, as is).
+class _InvoiceNotCreated implements Exception {
+  final String reason;
+  const _InvoiceNotCreated(this.reason);
+
+  @override
+  String toString() => reason;
+}
+
+/// Completes with the first [InvoiceStatusMessage] an invoice aggregate
+/// answers a command with.
+class _InvoiceReplyReceiver extends Actor {
+  final Completer<InvoiceStatusMessage> reply;
+  _InvoiceReplyReceiver(this.reply);
+
+  @override
+  Future<void> onMessage(dynamic message) async {
+    if (message is InvoiceStatusMessage && !reply.isCompleted) reply.complete(message);
   }
 }
 

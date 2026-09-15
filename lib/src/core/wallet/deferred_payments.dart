@@ -24,10 +24,12 @@ final _log = Logger('BitcoinWalletAggregate');
 /// A transaction recorded with deferSpend was handed to its recipient, who
 /// normally broadcasts it (spv-understanding.md). Its inputs are held until
 /// exactly one of: the network reports it (the spend applies), ARC reports
-/// it REJECTED / DOUBLE_SPEND_ATTEMPTED (failed, inputs released), or the
-/// user cancels it (inputs released). Reservation expiry, cleanup and
-/// reservations of any priority never touch a held input; the aggregate,
-/// not a coordinator, enforces it, so it survives restarts and replays.
+/// it REJECTED (failed, inputs released), or the user cancels it (inputs
+/// released). DOUBLE_SPEND_ATTEMPTED is recorded and changes nothing else:
+/// ARC may still mine the payment (bead libspiffy-ey2). Reservation expiry,
+/// cleanup and reservations of any priority never touch a held input; the
+/// aggregate, not a coordinator, enforces it, so it survives restarts and
+/// replays.
 ///
 /// State: metadata['deferredSpends'] (txid -> record with state, held keys,
 /// last network status) and metadata['deferredHolds'] (utxoKey -> txid of

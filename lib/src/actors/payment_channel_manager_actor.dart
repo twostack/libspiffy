@@ -18,6 +18,7 @@ import 'package:eventador/eventador.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:logging/logging.dart';
 
+import '../core/aggregate_command_failures.dart';
 import '../core/payment_channel_aggregate.dart';
 import '../core/channel_commands.dart';
 import '../core/channel_events.dart';
@@ -1949,12 +1950,19 @@ class PaymentChannelManagerActor extends Actor {
   }
 
   /// Get or spawn a channel aggregate actor. A cached aggregate that is no
-  /// longer alive (it stops itself when a journal write fails) is replaced.
+  /// longer alive, or that a journal write failure took out of service, is
+  /// replaced; an out-of-service one first answers what is queued to it and
+  /// stops (bead libspiffy-u0x).
   Future<ActorRef> _getOrSpawnChannelAggregate(String channelId) async {
     final cached = _channelAggregates[channelId];
     if (cached != null) {
-      if (cached.isAlive) return cached;
+      if (cached.isAlive && !CommandFailureContainment.isRetiring(cached)) return cached;
       _channelAggregates.remove(channelId);
+      if (cached.isAlive) {
+        await CommandFailureContainment.retire(cached).timeout(const Duration(seconds: 30),
+            // ignore: invalid_use_of_internal_member
+            onTimeout: () => context.system.stop(cached));
+      }
     }
 
     final aggregateRef = await context.system.spawn(

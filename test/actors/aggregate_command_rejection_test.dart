@@ -12,8 +12,10 @@
 /// journal) is answered once and the aggregate keeps running with its state
 /// untouched: no journal recovery per bad command. A failure while writing
 /// to the journal still fails the command, and the aggregate takes itself
-/// out of service before the failure reply leaves, so the manager replaces it
-/// (recovering from the journal) on the next command.
+/// out of service (marked retiring) before the failure reply leaves, so the
+/// manager replaces it (recovering from the journal) on the next command. The
+/// out-of-service incarnation stops once retired, after answering what was
+/// queued to it (libspiffy-u0x, aggregate_journal_failure_queue_test.dart).
 library;
 
 import 'dart:async';
@@ -27,6 +29,7 @@ import 'package:libspiffy/src/actors/invoice_coordinator_actor.dart';
 import 'package:libspiffy/src/actors/invoice_messages.dart';
 import 'package:libspiffy/src/actors/wallet_manager_actor.dart';
 import 'package:libspiffy/src/actors/wallet_messages.dart';
+import 'package:libspiffy/src/core/aggregate_command_failures.dart';
 import 'package:libspiffy/src/core/bitcoin_wallet_aggregate.dart';
 import 'package:libspiffy/src/core/invoice_events.dart';
 import 'package:libspiffy/src/core/wallet_commands.dart';
@@ -204,7 +207,7 @@ void main() {
       store.failPersist = true;
       recorder.onReceive = (message) {
         if (message is AddressGeneratedResponse) {
-          recorder.aliveAtReply.add(ref.isAlive);
+          recorder.aliveAtReply.add(!CommandFailureContainment.isRetiring(ref));
         }
       };
 
@@ -215,9 +218,18 @@ void main() {
       expect(failed.success, isFalse);
       expect(recorder.received.whereType<AddressGeneratedResponse>(), hasLength(1));
       expect(recorder.aliveAtReply, [false],
-          reason: 'a manager that sees the failure must already see a dead ref, '
-              'so its next command respawns instead of being dead-lettered');
+          reason: 'a manager that sees the failure must already see the aggregate '
+              'out of service, so its next command goes to a recovered replacement');
+
+      // It stops once retired (libspiffy-u0x: stopping at once discarded the
+      // commands queued behind the failed one).
+      ref.tell(GenerateAddressCommand(walletId: _walletId), sender: recorderRef);
+      await CommandFailureContainment.retire(ref).timeout(_wait);
       expect(ref.isAlive, isFalse);
+      final replies = recorder.received.whereType<AddressGeneratedResponse>().toList();
+      expect(replies, hasLength(2), reason: 'the command queued before the retirement is answered');
+      expect(replies.last.success, isFalse);
+      expect(replies.last.error, contains('not processed'));
     });
 
     test('an optimistic concurrency conflict counts as an infrastructure '
@@ -230,8 +242,10 @@ void main() {
 
       expect((reply as Map)['error'], contains('OptimisticConcurrencyException'));
       expect(recorder.received.whereType<Map>(), hasLength(1));
-      expect(ref.isAlive, isFalse,
+      expect(CommandFailureContainment.isRetiring(ref), isTrue,
           reason: 'a version conflict means the in-memory state may be stale');
+      await CommandFailureContainment.retire(ref).timeout(_wait);
+      expect(ref.isAlive, isFalse);
     });
   });
 

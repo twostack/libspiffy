@@ -146,6 +146,11 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
       context.sender?.tell(_answerOwnership(message));
       return;
     }
+    if (message is WalletSpendableUtxosQuery) {
+      // ignore: invalid_use_of_internal_member
+      context.sender?.tell(_answerSpendableUtxos(message));
+      return;
+    }
     await super.queryHandler(message);
   }
 
@@ -180,6 +185,29 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         for (final key in query.outpoints)
           if (state.utxos[key] case final utxo? when utxo.status != UTXOStatus.spent) key,
       },
+    );
+  }
+
+  /// This wallet's type and the UTXOs it can spend now (bead libspiffy-ypp).
+  WalletSpendableUtxosResponse _answerSpendableUtxos(WalletSpendableUtxosQuery query) {
+    if (!isInitialized || !currentState.isCreated || currentState.isDeleted) {
+      return WalletSpendableUtxosResponse(
+        walletId: query.walletId,
+        walletFound: false,
+        error: 'Wallet ${query.walletId} does not exist',
+      );
+    }
+    final state = currentState;
+    return WalletSpendableUtxosResponse(
+      walletId: query.walletId,
+      walletFound: true,
+      walletType: state.walletType,
+      spendable: UtxoLedger.available(state),
+      watchOnly: [
+        for (final utxo in state.utxos.values)
+          if (utxo.status == UTXOStatus.available && !utxo.hasPluginMetadata && UtxoLedger.isWatchOnly(state, utxo))
+            utxo,
+      ],
     );
   }
 
@@ -302,6 +330,16 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
               releasedUtxoKeys: [for (final r in event.releasedInputs) r.utxoKey],
             ));
           }
+        }
+        // The recording is journaled (or was already, bead libspiffy-viy):
+        // a caller that must not act before it (BenfordCoordinatorActor
+        // broadcasts only after this, bead libspiffy-ypp) waits for this.
+        if (command is RecordOutgoingTransactionCommand) {
+          sender.tell(TransactionRecordedResponse(
+            walletId: command.walletId,
+            txid: command.txid,
+            success: true,
+          ));
         }
         // Answered also when nothing was journaled (already watched or owned).
         if (command is AddWatchAddressCommand) {

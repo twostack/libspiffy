@@ -1,3 +1,7 @@
+// An actor reaching its own context is the intended use of dactor's
+// @internal `Actor.context`.
+// ignore_for_file: invalid_use_of_internal_member
+
 import 'dart:async';
 import 'package:dactor/dactor.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
@@ -6,6 +10,7 @@ import 'package:logging/logging.dart';
 import '../core/wallet_commands.dart';
 import '../core/wallet_events.dart';
 import '../models/bitcoin_utxo.dart';
+import '../models/wallet_type.dart';
 import '../storage/secure_storage.dart';
 import '../services/watch_only_funds.dart';
 import '../storage/read_model_storage.dart';
@@ -14,21 +19,30 @@ import 'aggregate_signing_client.dart';
 import 'wallet_messages.dart';
 
 /// Coordinator actor for Benford UTXO splitting operations
-/// 
+///
 /// This actor handles the orchestration of splitting UTXOs according to
-/// Benford's Law distribution. It listens for UTXOSplitInitiatedEvent and:
-/// 1. Fetches UTXO details from read model storage
-/// 2. Generates new addresses for outputs
-/// 3. Calculates Benford-distributed amounts
-/// 4. Builds and signs transactions
-/// 5. Broadcasts via ARCActor
-/// 6. Sends CQRS commands to update wallet state
+/// Benford's Law distribution. For each UTXO to split it:
+/// 1. Asks the wallet aggregate (through WalletManagerActor) for the wallet
+///    type and the UTXOs it can spend now
+/// 2. Reserves the source UTXO and generates new addresses for outputs
+/// 3. Calculates Benford-distributed amounts, builds the transaction and has
+///    the wallet aggregate sign it
+/// 4. Records the transaction with a deferred spend and waits until the
+///    wallet has journaled it
+/// 5. Broadcasts it via ARCActor
+///
+/// The split is a deferred payment like any other (bead libspiffy-ypp): the
+/// wallet holds its source until ARC reports it on the network (the spend
+/// applies, V-16) or rejected (the source is released), or the user cancels
+/// it. It is never broadcast before it is recorded, so a split that reaches
+/// miners always has its record in the journal.
 class BenfordCoordinatorActor extends Actor {
   final _log = Logger('BenfordCoordinatorActor');
   final ActorRef _walletManager;
   final ActorRef _arcActor;
   final ReadModelStorage _storage;
   final Duration _signingReplyTimeout;
+  final Duration _walletReplyTimeout;
 
   /// [secureStorage] is no longer used: split transactions are signed by the
   /// wallet aggregate, which alone reads key material (audit A-H8).
@@ -39,10 +53,12 @@ class BenfordCoordinatorActor extends Actor {
     SecureStorage? secureStorage,
     required ReadModelStorage storage,
     Duration signingReplyTimeout = const Duration(seconds: 20),
+    Duration walletReplyTimeout = const Duration(seconds: 30),
   })  : _walletManager = walletManager,
         _arcActor = arcActor,
         _storage = storage,
-        _signingReplyTimeout = signingReplyTimeout;
+        _signingReplyTimeout = signingReplyTimeout,
+        _walletReplyTimeout = walletReplyTimeout;
 
   @override
   void preStart() {
@@ -59,34 +75,55 @@ class BenfordCoordinatorActor extends Actor {
       } else {
       }
     } catch (e, stackTrace) {
-      _log.warning('Failed to handle message: $e');
+      _log.warning('Failed to handle message: $e', e, stackTrace);
+      if (message is SplitUTXOsToBenfordCommand) {
+        _sendErrorResponse(message, 'Split failed: $e');
+      }
+    }
+  }
+
+  /// The wallet's type and spendable UTXOs, from its aggregate (bead
+  /// libspiffy-ypp): the read model lags the journal, so a wallet created or
+  /// funded moments earlier looked unknown or empty there.
+  Future<WalletSpendableUtxosResponse> _walletSpendableUtxos(String walletId) async {
+    try {
+      return await _walletManager.ask<WalletSpendableUtxosResponse>(
+        WalletSpendableUtxosQuery(walletId: walletId),
+        _walletReplyTimeout,
+      );
+    } catch (e) {
+      return WalletSpendableUtxosResponse(
+        walletId: walletId,
+        walletFound: false,
+        error: 'The wallet did not answer: $e',
+      );
     }
   }
 
   /// Handle SplitUTXOsToBenfordCommand sent directly to coordinator
   Future<void> _handleSplitCommand(SplitUTXOsToBenfordCommand command) async {
-    
-    // Get wallet info to check wallet type
-    final wallet = await _storage.getWallet(command.walletId);
-    if (wallet == null) {
-      _sendErrorResponse(command, 'Wallet not found: ${command.walletId}');
-      return;
-    }
-    
-    // Business rule: Watch-only (xpub) wallets cannot sign transactions
-    if (wallet['walletType'] == 'xpub') {
-      _sendErrorResponse(command, 'Signing (split) not supported for watch-only wallets');
-      return;
-    }
-    
-    // Get available UTXOs from read model, leaving out watch-only UTXOs at
-    // watch addresses: the wallet holds no key for them (bead libspiffy-87a2)
-    final paymentUtxos =
-        await splitWatchOnlyUtxos(_storage, command.walletId, await _storage.getPaymentUTXOs(command.walletId));
-    final availableUtxos = paymentUtxos.signable;
+    final sender = context.sender;
 
+    final wallet = await _walletSpendableUtxos(command.walletId);
+    if (!wallet.walletFound) {
+      _reply(sender, command, error: 'Wallet not found: ${command.walletId}'
+          '${wallet.error != null ? ' (${wallet.error})' : ''}');
+      return;
+    }
+
+    // Business rule: Watch-only (xpub) wallets cannot sign transactions
+    if (wallet.walletType == WalletType.xpub) {
+      _reply(sender, command, error: 'Signing (split) not supported for watch-only wallets');
+      return;
+    }
+
+    // Available UTXOs the wallet can sign for: watch-only UTXOs at watch
+    // addresses are left out, the wallet holds no key for them (bead
+    // libspiffy-87a2).
+    final availableUtxos = wallet.spendable;
     if (availableUtxos.isEmpty) {
-      _sendErrorResponse(command, 'No available UTXOs to split${paymentUtxos.watchOnlyNote}');
+      _reply(sender, command,
+          error: 'No available UTXOs to split${SignableUtxos(const [], wallet.watchOnly).watchOnlyNote}');
       return;
     }
 
@@ -95,46 +132,41 @@ class BenfordCoordinatorActor extends Actor {
         ? availableUtxos.take(command.maxUtxosToSplit!).toList()
         : availableUtxos;
 
-    if (command.maxUtxosToSplit != null) {
-    }
-
     // Process each UTXO and track results
     final txids = <String>[];
     int successfulSplits = 0;
-    
+
     for (final sourceUtxo in utxosToSplit) {
       final txid = await _splitSingleUtxo(
         walletId: command.walletId,
+        walletType: wallet.walletType!,
         sourceUtxo: sourceUtxo,
         targetCount: command.targetUtxoCount,
         feeRate: command.feeRate ?? BigInt.one,
       );
-      
+
       if (txid != null) {
         txids.add(txid);
         successfulSplits++;
       }
     }
-    
-    // Send success response
-    final sender = context.sender;
-    if (sender != null) {
-      sender.tell(SplitUTXOsResponse(
-        walletId: command.walletId,
-        success: true,
-        splitCount: successfulSplits * command.targetUtxoCount,
-        txids: txids,
-      ));
-    }
-    
+
+    sender?.tell(SplitUTXOsResponse(
+      walletId: command.walletId,
+      success: true,
+      splitCount: successfulSplits * command.targetUtxoCount,
+      txids: txids,
+    ));
   }
 
   /// Handle UTXOSplitInitiatedEvent from aggregate
   Future<void> _handleSplitInitiated(UTXOSplitInitiatedEvent event) async {
-    
-    // Fetch UTXO details from read model
-    final allUtxos = await _storage.getUTXOs(event.walletId);
-    final utxoMap = {for (var u in allUtxos) u.key: u};
+    final wallet = await _walletSpendableUtxos(event.walletId);
+    if (!wallet.walletFound || wallet.walletType == null) {
+      _log.warning('Split of wallet ${event.walletId} not started: ${wallet.error}');
+      return;
+    }
+    final utxoMap = {for (final u in wallet.spendable) u.key: u};
 
     // Process each UTXO key
     for (final utxoKey in event.utxoKeysToSplit) {
@@ -145,6 +177,7 @@ class BenfordCoordinatorActor extends Actor {
 
       await _splitSingleUtxo(
         walletId: event.walletId,
+        walletType: wallet.walletType!,
         sourceUtxo: sourceUtxo,
         targetCount: event.targetUtxoCount,
         feeRate: event.feeRate,
@@ -156,6 +189,7 @@ class BenfordCoordinatorActor extends Actor {
   /// Returns the transaction ID if successful, null otherwise
   Future<String?> _splitSingleUtxo({
     required String walletId,
+    required WalletType walletType,
     required BitcoinUtxo sourceUtxo,
     required int targetCount,
     required BigInt feeRate,
@@ -189,6 +223,7 @@ class BenfordCoordinatorActor extends Actor {
       // 4. Generate new addresses
       final outputAddresses = await _generateAddresses(
         walletId: walletId,
+        walletType: walletType,
         count: targetCount,
         sourceAddress: sourceUtxo.address,
       );
@@ -210,76 +245,71 @@ class BenfordCoordinatorActor extends Actor {
       final txid = txResult['txid'] as String;
       final txHex = txResult['txHex'] as String;
       final actualFee = txResult['actualFee'] as BigInt;
+      final totalOutput = outputAmounts.fold<BigInt>(BigInt.zero, (sum, amount) => sum + amount);
 
-      // 6. Broadcast via ARCActor
+      // 6. Record the split before anything else learns of it (bead
+      // libspiffy-ypp). deferSpend: the wallet holds the source (the hold
+      // supersedes the reservation) until ARC reports the split on the
+      // network (the spend applies), or rejected (the source is released).
+      // The aggregate registers the outputs paying its own addresses as
+      // pending UTXOs from the recorded transaction.
+      final recordError = await _recordSplit(RecordOutgoingTransactionCommand(
+        walletId: walletId,
+        txid: txid,
+        rawHex: txHex,
+        totalInputSats: sourceUtxo.satoshis.toInt(),
+        totalOutputSats: totalOutput.toInt(),
+        fee: actualFee.toInt(),
+        numInputs: 1,
+        numOutputs: outputAmounts.length,
+        txVersion: 2,
+        txLockTime: 0,
+        spentUtxoKeys: [sourceUtxo.key],
+        recipientAddresses: outputAddresses,
+        paymentAmount: totalOutput,
+        deferSpend: true,
+        purpose: 'benford-split',
+      ));
+      if (recordError != null) {
+        // Not broadcast: nothing reached the network. A recording that was
+        // journaled after all holds the source by the txid; releasing the
+        // reservation id does not touch that hold.
+        _log.warning('Benford split $txid of ${sourceUtxo.key} not recorded, not broadcast: $recordError');
+        _releaseReservation(walletId: walletId, reservationId: reservationId);
+        return null;
+      }
+
+      // 7. Broadcast via ARCActor. Its answer settles the hold; a failed
+      // submission is retried from ARCActor's queue.
       _arcActor.tell(BroadcastTransactionMessage(
         walletId,
         txHex,
         txid,
       ));
 
-      // 7. Send CQRS commands to update wallet state
-      // SpendUTXOCommand supersedes the reservation — no explicit release needed
-
-      // 7a. Mark source UTXO as spent
-      _walletManager.tell(WalletCommandMessage(
-        walletId,
-        SpendUTXOCommand(
-          walletId: walletId,
-          utxoKey: sourceUtxo.key,
-          spendingTxId: txid,
-          fee: actualFee,
-        ),
-      ));
-
-      // 7b. Register new UTXOs (pending status)
-      for (int i = 0; i < outputAmounts.length; i++) {
-        _walletManager.tell(WalletCommandMessage(
-          walletId,
-          ReceiveUTXOCommand(
-            walletId: walletId,
-            txid: txid,
-            vout: i,
-            satoshis: outputAmounts[i],
-            scriptPubKey: _createScriptPubKeyHex(outputAddresses[i]),
-            address: outputAddresses[i],
-            initialStatus: UTXOStatus.pending,
-          ),
-        ));
-      }
-
-      // 7c. Record transaction
-      _walletManager.tell(WalletCommandMessage(
-        walletId,
-        RecordOutgoingTransactionCommand(
-          walletId: walletId,
-          txid: txid,
-          rawHex: txHex,
-          totalInputSats: sourceUtxo.satoshis.toInt(),
-          totalOutputSats: outputAmounts.fold<BigInt>(
-            BigInt.zero,
-            (sum, amount) => sum + amount,
-          ).toInt(),
-          fee: actualFee.toInt(),
-          numInputs: 1,
-          numOutputs: outputAmounts.length,
-          txVersion: 2,
-          txLockTime: 0,
-          spentUtxoKeys: [sourceUtxo.key],
-          recipientAddresses: outputAddresses,
-          paymentAmount: outputAmounts.fold<BigInt>(
-            BigInt.zero,
-            (sum, amount) => sum + amount,
-          ),
-        ),
-      ));
-
       return txid;
 
-    } catch (e, stackTrace) {
-      _log.warning('Failed to build and broadcast Benford split transaction: $e');
+    } catch (e) {
+      _log.warning('Failed to build or record Benford split transaction: $e');
       _releaseReservation(walletId: walletId, reservationId: reservationId);
       return null;
+    }
+  }
+
+  /// Sends [command] to the wallet and waits until it is journaled. Returns
+  /// null once it is, or why it is not (refused, or no answer).
+  Future<String?> _recordSplit(RecordOutgoingTransactionCommand command) async {
+    final completer = Completer<String?>();
+    final receiver = await context.system.spawn(
+      'benford-record-${command.txid}-${DateTime.now().microsecondsSinceEpoch}',
+      () => _RecordingReceiverActor(command.txid, completer),
+    );
+    try {
+      _walletManager.tell(WalletCommandMessage(command.walletId, command), sender: receiver);
+      return await completer.future.timeout(_walletReplyTimeout,
+          onTimeout: () => 'no answer from the wallet within $_walletReplyTimeout');
+    } finally {
+      await context.system.stop(receiver);
     }
   }
 
@@ -289,21 +319,15 @@ class BenfordCoordinatorActor extends Actor {
   /// to ensure addresses are in the database before transactions are broadcast.
   Future<List<String>> _generateAddresses({
     required String walletId,
+    required WalletType walletType,
     required int count,
     required String sourceAddress,
   }) async {
     final addresses = <String>[];
-    
-    // Get wallet info to determine wallet type
-    final wallet = await _storage.getWallet(walletId);
-    if (wallet == null) {
-      throw StateError('Wallet not found: $walletId');
-    }
-
 
     // A WIF wallet has a single key and therefore a single address, the one
     // the source UTXO sits on: all outputs go back to it.
-    if (wallet['walletType'] == 'wif') {
+    if (walletType == WalletType.wif) {
       for (int i = 0; i < count; i++) {
         addresses.add(sourceAddress);
       }
@@ -436,13 +460,6 @@ class BenfordCoordinatorActor extends Actor {
     }
   }
 
-  /// Create script pubkey hex for an address
-  String _createScriptPubKeyHex(String address) {
-    final addr = dartsv.Address.fromBase58(address);
-    final script = dartsv.P2PKHLockBuilder.fromAddress(addr).getScriptPubkey();
-    return script.toHex();
-  }
-  
   /// Reserve a single UTXO via the wallet aggregate.
   ///
   /// The aggregate replies with [UTXOReservedResponse] on success and on
@@ -499,14 +516,38 @@ class BenfordCoordinatorActor extends Actor {
   }
 
   /// Send error response back to the sender
-  void _sendErrorResponse(SplitUTXOsToBenfordCommand command, String error) {
-    final sender = context.sender;
-    if (sender != null) {
-      sender.tell(SplitUTXOsResponse(
-        walletId: command.walletId,
-        success: false,
-        error: error,
-      ));
+  void _sendErrorResponse(SplitUTXOsToBenfordCommand command, String error) =>
+      _reply(context.sender, command, error: error);
+
+  /// Answers [sender] that [command] failed with [error].
+  void _reply(ActorRef? sender, SplitUTXOsToBenfordCommand command, {required String error}) {
+    sender?.tell(SplitUTXOsResponse(
+      walletId: command.walletId,
+      success: false,
+      error: error,
+    ));
+  }
+}
+
+/// Completes with null once the wallet acknowledges the recording of [txid]
+/// ([TransactionRecordedResponse]), or with the wallet's refusal.
+class _RecordingReceiverActor extends Actor {
+  final String txid;
+  final Completer<String?> completer;
+
+  _RecordingReceiverActor(this.txid, this.completer);
+
+  @override
+  Future<void> onMessage(dynamic message) async {
+    if (completer.isCompleted) return;
+    if (message is TransactionRecordedResponse && message.txid == txid) {
+      completer.complete(message.success ? null : (message.error ?? 'recording refused'));
+      return;
+    }
+    // The aggregate's generic failure reply.
+    final payload = message is LocalMessage ? message.payload : message;
+    if (payload is Map && payload.containsKey('error')) {
+      completer.complete(payload['error'].toString());
     }
   }
 }

@@ -2228,9 +2228,10 @@ class TransactionNetworkStatusCheckedEvent extends WalletEvent {
       );
 }
 
-/// ARC reported a deferred payment definitively failed (REJECTED or
-/// DOUBLE_SPEND_ATTEMPTED): its held inputs return to the status they had
-/// before they were reserved.
+/// ARC reported a deferred payment definitively failed (REJECTED; journals
+/// written before bead libspiffy-ey2 also hold this event for
+/// DOUBLE_SPEND_ATTEMPTED and replay it as written): its held inputs return
+/// to the status they had before they were reserved.
 class DeferredTransactionFailedEvent extends WalletEvent {
   static const String stableTypeName = 'wallet.transaction.deferred_failed';
 

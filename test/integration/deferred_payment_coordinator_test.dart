@@ -367,6 +367,58 @@ void main() {
     expect((await funding()).status, UTXOStatus.reserved);
   });
 
+  test('ey2: ARC DOUBLE_SPEND_ATTEMPTED on a status check: listed as outstanding with the status, the input held; '
+      'the user may still cancel it', () async {
+    final ready = await pay('inv-contested');
+    arc.statusOverrides[ready.txid] = 'DOUBLE_SPEND_ATTEMPTED';
+
+    final checked = await send<DeferredPaymentStatusEvent>(
+        CheckDeferredPaymentStatusCommand(walletId: walletId, txid: ready.txid, requestId: 'ds1'),
+        (e) => e.requestId == 'ds1');
+    expect(checked.networkStatus, DeferredNetworkStatus.doubleSpendAttempted);
+
+    await until(
+        () async =>
+            (await storage().getDeferredPayment(walletId, ready.txid))!.lastNetworkStatus ==
+            DeferredNetworkStatus.doubleSpendAttempted,
+        'the status recorded');
+    final listed = await list(GetDeferredPaymentsQuery(walletId: walletId, queryId: 'ds2'));
+    // Old code: failed (not listed as outstanding) and its input released.
+    expect(listed.payments.map((p) => (p.txid, p.state, p.lastNetworkStatus)),
+        [(ready.txid, DeferredPaymentState.outstanding, DeferredNetworkStatus.doubleSpendAttempted)]);
+    expect((await funding()).status, UTXOStatus.reserved);
+    expect((await funding()).reservedByTxId, ready.txid);
+    expect(await journalOf(ready.txid), [we.TransactionRecordedEvent, we.TransactionSpendDeferredEvent]);
+
+    final cancelled = await send<DeferredPaymentCancelledEvent>(
+        CancelDeferredPaymentCommand(walletId: walletId, txid: ready.txid, reason: 'lost the race', requestId: 'ds3'),
+        (e) => e.requestId == 'ds3');
+    expect(cancelled.success, isTrue, reason: cancelled.error);
+    expect(cancelled.networkStatus, DeferredNetworkStatus.doubleSpendAttempted);
+    expect(cancelled.releasedUtxoKeys, [_fundingKey]);
+    expect((await funding()).status, UTXOStatus.available);
+  });
+
+  test('ey2: broadcasting a payment ARC answers DOUBLE_SPEND_ATTEMPTED: reported unsuccessful, still held', () async {
+    final ready = await pay('inv-contested-broadcast');
+    arc.statusOverrides[ready.txid] = 'DOUBLE_SPEND_ATTEMPTED';
+
+    final broadcast = await send<DeferredPaymentBroadcastEvent>(
+        BroadcastDeferredPaymentCommand(walletId: walletId, txid: ready.txid, requestId: 'ds4'),
+        (e) => e.requestId == 'ds4');
+
+    expect(broadcast.success, isFalse);
+    expect(broadcast.networkStatus, DeferredNetworkStatus.doubleSpendAttempted);
+    expect(broadcast.error, contains('DOUBLE_SPEND_ATTEMPTED'));
+    await until(
+        () async =>
+            (await storage().getDeferredPayment(walletId, ready.txid))!.lastNetworkStatus ==
+            DeferredNetworkStatus.doubleSpendAttempted,
+        'the status recorded');
+    expect((await storage().getDeferredPayment(walletId, ready.txid))!.state, DeferredPaymentState.outstanding);
+    expect((await funding()).status, UTXOStatus.reserved);
+  });
+
   test('ARC REJECTED on a status check: the payment fails and its input is released, journaled', () async {
     final ready = await pay('inv-rejected');
     arc.statusOverrides[ready.txid] = 'REJECTED';

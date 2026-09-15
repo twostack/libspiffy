@@ -114,9 +114,11 @@ class ArcSubmitResponse {
           : json['blockHeight'] as int?,
       blockHash: json['blockHash'],
       timestamp: json['timestamp']?.toString(),  // Keep as date-time string
-      doubleSpendTxids: json['doubleSpendTxids'] != null
-          ? List<String>.from(json['doubleSpendTxids'])
-          : null,
+      // ARC names them 'competingTxs' (as in [ArcTransactionResponse]).
+      doubleSpendTxids: switch (json['competingTxs'] ?? json['doubleSpendTxids']) {
+        final List<dynamic> list => [for (final e in list) e.toString()],
+        _ => null,
+      },
       merklePath: switch (json['merklePath']) {
         final List<dynamic> list => [for (final e in list) e.toString()],
         final String s when s.isNotEmpty => [s],

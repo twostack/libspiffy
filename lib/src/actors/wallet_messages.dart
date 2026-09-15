@@ -406,6 +406,32 @@ class WalletCommandMessage implements Message {
   DateTime get timestamp => DateTime.now();
 }
 
+/// WalletManagerActor's reply to a [PreloadWalletCommand] that was sent with
+/// a sender (a plain `tell` without one gets no reply). [success] is true
+/// when the wallet's aggregate is loaded; otherwise [error] says why.
+class WalletPreloadedResponse extends ActorResponse {
+  final String walletId;
+  @override
+  final bool success;
+  @override
+  final String? error;
+
+  WalletPreloadedResponse({
+    required this.walletId,
+    required this.success,
+    this.error,
+  });
+
+  @override
+  String get correlationId => 'wallet-preloaded-$walletId';
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
 /// Request list of all wallets
 class ListWalletsMessage implements Message {
   @override

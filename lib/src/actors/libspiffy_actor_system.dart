@@ -908,17 +908,35 @@ class LibSpiffyActorSystem {
       }
       
       
-      // Send PreloadWalletCommand for each wallet
-      for (final walletId in walletIds) {
+      // Send PreloadWalletCommand for each wallet. The manager's mailbox is
+      // FIFO, so a command sent after initialize() returns is handled after
+      // the preloads whether or not they have finished.
+      for (final walletId in walletIds.take(walletIds.length - 1)) {
         _walletManager!.tell(WalletCommandMessage(
           walletId,
           PreloadWalletCommand(walletId: walletId),
         ));
       }
-      
-      // Brief yield to let the actor message pump process preload commands
-      await Future.delayed(const Duration(milliseconds: 100));
-      
+      final lastWalletId = walletIds.last;
+
+      // Give the preloads up to 100 ms, as before, but return as soon as the
+      // manager has handled them (bead libspiffy-a5l): it answers the last
+      // preload after the earlier ones. The ask's own timeout is well past
+      // the cap, so an AskConfig with retries does not re-send the preload
+      // while initialize() waits; a reply after the cap is ignored.
+      final preloaded = _walletManager!.ask<WalletPreloadedResponse>(
+        WalletCommandMessage(
+          lastWalletId,
+          PreloadWalletCommand(walletId: lastWalletId),
+        ),
+        const Duration(seconds: 30),
+      );
+      try {
+        await preloaded.timeout(const Duration(milliseconds: 100));
+      } on TimeoutException {
+        // Still loading: commands queue behind the preloads.
+      }
+
     } catch (e, stackTrace) {
       // Non-fatal - wallets will load on-demand if preload fails
       Logger('LibSpiffyActorSystem')

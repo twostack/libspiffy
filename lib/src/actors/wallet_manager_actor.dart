@@ -25,13 +25,17 @@ class WalletManagerActor extends Actor {
   // Track pending wallet creation requests to route responses back to original callers
   final Map<String, ActorRef?> _pendingWalletCreations = {};
   
-  // Track wallets that are currently being loaded to prevent duplicate load attempts
-  final Set<String> _loadingWallets = {};
-  
-  // Queue of commands waiting for a wallet to finish loading
-  // Key: walletId, Value: list of (command, sender) pairs
-  final Map<String, List<_PendingCommand>> _pendingCommands = {};
-  
+  /// Wallet loads in progress (bead libspiffy-a5l). Every request that needs
+  /// an unloaded wallet awaits the same future, so the journal is read once
+  /// and all of them are released when the load settles: with the aggregate,
+  /// with null (no journal), or with the load's error. The entry is removed
+  /// as the load settles, whatever the outcome.
+  final Map<String, Future<ActorRef?>> _walletLoads = {};
+
+  /// How long a request waits for a load another request started before it
+  /// gives up and treats the wallet as not loaded.
+  static const _loadWaitTimeout = Duration(seconds: 5);
+
   // Invoice manager reference for invoice-based payments
   ActorRef? _invoiceManager;
 
@@ -121,9 +125,8 @@ class WalletManagerActor extends Actor {
     final cutoff = DateTime.now().subtract(idleTimeout);
     final idle = [
       for (final walletId in _walletActors.keys)
-        if (!_loadingWallets.contains(walletId) &&
+        if (!_walletLoads.containsKey(walletId) &&
             !_pendingWalletCreations.containsKey(walletId) &&
-            !_pendingCommands.containsKey(walletId) &&
             (_lastUsed[walletId] ?? DateTime.fromMillisecondsSinceEpoch(0))
                 .isBefore(cutoff))
           walletId,
@@ -375,73 +378,24 @@ class WalletManagerActor extends Actor {
       }
     }
     
+    // Loaded, or loaded now. A command that arrives while the wallet is
+    // loading is told to the aggregate after the load, in arrival order.
+    final sender = context.sender;
     try {
-      var walletActor = _loadedWallet(msg.walletId);
-      
-      // Check if wallet is already loaded
-      if (walletActor != null) {
-        // Forward command directly
-        _touch(msg.walletId);
-        walletActor.tell(msg.command, sender: context.sender);
+      final walletActor = await _getOrLoadWallet(msg.walletId);
+      if (walletActor == null) {
+        sender?.tell(LocalMessage(
+          payload: {'error': 'Wallet not found', 'walletId': msg.walletId},
+        ));
         return;
       }
-      
-      // Check if wallet is currently being loaded (race condition prevention)
-      if (_loadingWallets.contains(msg.walletId)) {
-        _pendingCommands.putIfAbsent(msg.walletId, () => []);
-        _pendingCommands[msg.walletId]!.add(_PendingCommand(msg.command, context.sender));
-        return;
-      }
-      
-      // Start loading the wallet
-      _loadingWallets.add(msg.walletId);
-      
-      // Queue the current command to be processed after loading
-      _pendingCommands.putIfAbsent(msg.walletId, () => []);
-      _pendingCommands[msg.walletId]!.add(_PendingCommand(msg.command, context.sender));
-      
-      // Load wallet asynchronously
-      walletActor = await _loadWalletFromEventStore(msg.walletId);
-      
-      // Remove from loading set
-      _loadingWallets.remove(msg.walletId);
-      
-      if (walletActor != null) {
-        _walletActors[msg.walletId] = walletActor;
-        _touch(msg.walletId);
-
-        // Process all queued commands for this wallet
-        final queuedCommands = _pendingCommands.remove(msg.walletId) ?? [];
-        
-        for (final pending in queuedCommands) {
-          walletActor.tell(pending.command, sender: pending.sender);
-        }
-        
-      } else {
-        
-        // Notify all waiting senders that wallet was not found
-        final queuedCommands = _pendingCommands.remove(msg.walletId) ?? [];
-        for (final pending in queuedCommands) {
-          pending.sender?.tell(LocalMessage(
-            payload: {'error': 'Wallet not found', 'walletId': msg.walletId},
-          ));
-        }
-      }
-
+      walletActor.tell(msg.command, sender: sender);
     } catch (e, stackTrace) {
       _log.warning('Failed to route command for wallet ${msg.walletId}: $e',
           e, stackTrace);
-
-      // Clean up loading state on error
-      _loadingWallets.remove(msg.walletId);
-      
-      // Notify all waiting senders of the error
-      final queuedCommands = _pendingCommands.remove(msg.walletId) ?? [];
-      for (final pending in queuedCommands) {
-        pending.sender?.tell(LocalMessage(
-          payload: {'error': e.toString(), 'walletId': msg.walletId},
-        ));
-      }
+      sender?.tell(LocalMessage(
+        payload: {'error': e.toString(), 'walletId': msg.walletId},
+      ));
     }
   }
 
@@ -452,37 +406,28 @@ class WalletManagerActor extends Actor {
   }
 
   /// Handle wallet preloading - loads the wallet aggregate without forwarding any command
-  /// 
+  ///
   /// This is used during system startup to ensure wallet aggregates are ready
-  /// before real commands arrive, eliminating race conditions.
+  /// before real commands arrive, eliminating race conditions. A preload sent
+  /// with a sender is answered with a [WalletPreloadedResponse] once it has
+  /// been handled, which is what LibSpiffyActorSystem waits for.
   Future<void> _handlePreloadWallet(String walletId) async {
-    // Already loaded?
-    if (_loadedWallet(walletId) != null) {
-      return;
-    }
-    
-    // Already being loaded?
-    if (_loadingWallets.contains(walletId)) {
-      return;
-    }
-    
-    // Load the wallet
-    _loadingWallets.add(walletId);
-    
-    try {
-      final walletActor = await _loadWalletFromEventStore(walletId);
-      
-      _loadingWallets.remove(walletId);
-      
-      if (walletActor != null) {
-        _walletActors[walletId] = walletActor;
-        _touch(walletId);
-      } else {
+    final sender = context.sender;
+    // Already loaded, or being loaded: nothing to do.
+    if (_loadedWallet(walletId) == null && !_walletLoads.containsKey(walletId)) {
+      try {
+        await _getOrLoadWallet(walletId);
+      } catch (e, stackTrace) {
+        _log.warning('Failed to preload wallet $walletId: $e', e, stackTrace);
       }
-    } catch (e, stackTrace) {
-      _log.warning('Failed to preload wallet $walletId: $e', e, stackTrace);
-      _loadingWallets.remove(walletId);
     }
+    if (sender == null) return;
+    final loaded = _loadedWallet(walletId) != null;
+    sender.tell(WalletPreloadedResponse(
+      walletId: walletId,
+      success: loaded,
+      error: loaded ? null : 'Wallet $walletId not loaded',
+    ));
   }
 
   /// Hands a [WalletOwnershipQuery] to the wallet's aggregate, which answers
@@ -703,55 +648,57 @@ class WalletManagerActor extends Actor {
     }
   }
   
-  /// Get wallet actor from memory, or load it safely with race condition protection.
-  /// 
-  /// This helper ensures that only one load attempt happens at a time for a given wallet.
-  /// If a load is already in progress, this method waits for it to complete.
+  /// The wallet's aggregate: the loaded one, or one loaded now from the
+  /// journal. Null when the wallet has no journal.
+  ///
+  /// Only one load runs per wallet. A request that finds a load in progress
+  /// awaits that load's future (bead libspiffy-a5l; it used to poll every
+  /// 50 ms) and is released when the load settles, with the load's error if
+  /// it failed. It waits at most [_loadWaitTimeout] and then answers with
+  /// whatever is loaded (null if nothing). Callers resume in the order they
+  /// asked, the one that started the load first.
+  ///
+  /// dactor runs one handler of this actor at a time and every caller awaits
+  /// this inside its handler, so a handler never finds a load in progress
+  /// today (the mailbox holds later requests until the load is done). The
+  /// shared future keeps a caller that does not hold the mailbox correct.
   Future<ActorRef?> _getOrLoadWallet(String walletId) async {
-    // Check if already loaded
-    var walletActor = _loadedWallet(walletId);
-    if (walletActor != null) {
+    final loaded = _loadedWallet(walletId);
+    if (loaded != null) {
       _touch(walletId);
+      return loaded;
+    }
+
+    final inFlight = _walletLoads[walletId];
+    if (inFlight != null) {
+      final walletActor = await inFlight.timeout(_loadWaitTimeout,
+          onTimeout: () => _loadedWallet(walletId));
+      if (walletActor != null) _touch(walletId);
       return walletActor;
     }
-    
-    // Check if currently being loaded - wait for it
-    if (_loadingWallets.contains(walletId)) {
-      // Poll until loading completes (with timeout)
-      const maxWaitMs = 5000;
-      const pollIntervalMs = 50;
-      var waitedMs = 0;
-      
-      while (_loadingWallets.contains(walletId) && waitedMs < maxWaitMs) {
-        await Future.delayed(const Duration(milliseconds: pollIntervalMs));
-        waitedMs += pollIntervalMs;
-      }
-      
-      // Check if loaded now
-      walletActor = _loadedWallet(walletId);
-      if (walletActor != null) {
-        _touch(walletId);
-        return walletActor;
-      }
-      
-      return null;
-    }
-    
-    // Not loaded and not loading - start loading
-    _loadingWallets.add(walletId);
-    
+
+    final load = Completer<ActorRef?>();
+    _walletLoads[walletId] = load.future;
+    unawaited(_loadInto(walletId, load));
+    return load.future;
+  }
+
+  /// Runs the load [_getOrLoadWallet] registered for [walletId], completes
+  /// [load] with its outcome and removes the registration.
+  Future<void> _loadInto(String walletId, Completer<ActorRef?> load) async {
     try {
-      walletActor = await _loadWalletFromEventStore(walletId);
-      
+      final walletActor = await _loadWalletFromEventStore(walletId);
       if (walletActor != null) {
         _walletActors[walletId] = walletActor;
         _touch(walletId);
       }
-
-      return walletActor;
-      
+      load.complete(walletActor);
+    } catch (e, stackTrace) {
+      load.completeError(e, stackTrace);
     } finally {
-      _loadingWallets.remove(walletId);
+      if (identical(_walletLoads[walletId], load.future)) {
+        _walletLoads.remove(walletId);
+      }
     }
   }
 
@@ -824,11 +771,3 @@ class WalletManagerActor extends Actor {
 class _EvictIdleAggregates {
   const _EvictIdleAggregates();
 }
-
-/// Helper class to store pending commands while wallet is loading
-class _PendingCommand {
-  final WalletCommand command;
-  final ActorRef? sender;
-  
-  _PendingCommand(this.command, this.sender);
-} 

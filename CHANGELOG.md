@@ -304,7 +304,7 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 
 ### Follow-ups before wave 4
 
-Defects found by the wave 3 lanes and this batch (report section 11, V-8 to V-32), each with
+Defects found by the wave 3 lanes and this batch (report section 11, V-8 to V-34), each with
 a regression test shown to fail on the previous code.
 
 - **Rejected commands (V-8, V-11).** A command an aggregate rejects is
@@ -425,6 +425,16 @@ a regression test shown to fail on the previous code.
 - **Watch addresses journaled (V-32).** Watch address registration is
   recorded in the wallet's journal, so a rebuilt read model keeps it;
   addresses registered earlier are journaled when their wallet is loaded.
+- **Watch-only funds (V-33).** UTXOs at watch addresses are no longer
+  spent or counted as spendable balance; `BalanceResponse.watchOnlyBalance`
+  reports them. Payments that only watch-only funds could cover fail with a
+  message naming them.
+- **Wallet state copies (V-34).** `WalletState.copyWith` keeps `isDeleted`.
+- **Isar queries (S-16).** Isar queries read only the rows they need
+  (address purpose, transaction status, invoices, deferred payments, plugin
+  UTXOs). Two Isar indexes change (`AddressEntity` `(walletId, purpose)`,
+  `BitcoinTransactionEntity` `(status, walletId)`); Isar rebuilds them on
+  the first open.
 
 #### Breaking changes
 
@@ -496,6 +506,15 @@ a regression test shown to fail on the previous code.
   from the journal, so its earlier watch addresses are journaled. Plugin
   payments, `ProvisionFundingMessage` and channel funding no longer spend
   bare multisig or P2PK UTXOs.
+- `GetBalanceQuery` balances exclude watch-only UTXOs;
+  `BitcoinWalletAggregate.getAvailableUTXOs` excludes them;
+  `SignTransactionCommand` refuses an input at a watch address. Generated
+  Isar where clauses renamed: `AddressEntity` `walletIdEqualTo` /
+  `walletIdNotEqualTo` → `walletIdEqualToAnyPurpose` /
+  `walletIdNotEqualToAnyPurpose`, `BitcoinTransactionEntity` `statusEqualTo`
+  / `statusNotEqualTo` → `statusEqualToAnyWalletId` /
+  `statusNotEqualToAnyWalletId` (the old names remain as deprecated
+  extensions). Hosts opening Isar with their own schema list must rebuild.
 
 Additive API: `MerkleProofStatus`, `MerkleProof.status` / `statusChangedAt`,
 `PostgresEventStore(livePollInterval:)`, `ServerAcceptanceRecordedResponse`,
@@ -529,7 +548,8 @@ walletProjection:, broadcastTimeout:)`, `TransactionConfirmedEvent.bumpHex`,
 `TransactionSpendDeferredEvent.reactivated`, `WatchAddressAddedEvent`,
 `AddWatchAddressCommand`, `ReconcileWatchAddressesCommand`, `LegacyWatchAddress`,
 `WatchAddressAddedResponse`, `WalletState.watchAddresses`,
-`WalletManagerActor(readModelStorage:)`.
+`WalletManagerActor(readModelStorage:)`, `BalanceResponse.watchOnlyBalance`,
+`isWatchOnlyOutput`, `splitWatchOnlyUtxos` / `SignableUtxos`, `IsarWalletStorage.onQuery` (test seam).
 
 ## 2.0.0
 

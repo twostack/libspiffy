@@ -304,7 +304,7 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 
 ### Follow-ups before wave 4
 
-Defects found by the wave 3 lanes and this batch (report section 11, V-8 to V-24), each with
+Defects found by the wave 3 lanes and this batch (report section 11, V-8 to V-25), each with
 a regression test shown to fail on the previous code.
 
 - **Rejected commands (V-8, V-11).** A command an aggregate rejects is
@@ -384,6 +384,19 @@ a regression test shown to fail on the previous code.
   stored header at its height is kept with the new status `rejected`: it is
   never used in a BEEF or as a confirmation, and a confirmation resting
   only on it is reverted (**Postgres migration v012**).
+- **Deferred payments (V-25).** The inputs of a payment handed to its
+  recipient stay reserved until the network reports the transaction, ARC
+  rejects it, or you cancel it; before, they were released after 2 minutes
+  and could be spent again. New coordinator API to find and act on
+  payments whose recipient has not broadcast them:
+  `GetDeferredPaymentsQuery` (filter by state, age, network status, invoice,
+  recipient; paged; raw hex and BEEF included), `BroadcastDeferredPaymentCommand`,
+  `CheckDeferredPaymentStatusCommand` (ARC, or the configured blockchain
+  data source; a mined answer is confirmed only with a proof that matches
+  our headers) and `CancelDeferredPaymentCommand` (refused when the network
+  already knows the transaction; it does not revoke the copy the recipient
+  holds) (**Postgres migration v013**; new Isar collection
+  `DeferredPaymentEntity`).
 
 #### Breaking changes
 
@@ -416,6 +429,15 @@ a regression test shown to fail on the previous code.
   for a recorded txid emits no `TransactionRecordedEvent` (do not wait for
   one). A reserved or pending UTXO can be spent by a transaction the wallet
   recorded as spending it.
+- Deferred-spend inputs are no longer freed by reservation expiry, cleanup,
+  `ReleaseUTXOsCommand` or a higher-priority reservation; a failed channel
+  funding broadcast keeps its inputs until cancelled. On first load after
+  upgrade, wallets journal holds for outstanding deferred payments recorded
+  earlier. `ReadModelStorage` gains `storeDeferredPayment`,
+  `getDeferredPayment` and `listDeferredPayments` (abstract);
+  `BlockchainDataSource` implementations should set
+  `DataSourceException.notFound`. Hosts opening Isar with their own schema
+  list must add `DeferredPaymentEntity`.
 - `MerkleProofStatus.rejected` is a new enum value (exhaustive switches
   must handle it); `MerkleProof.isCurrent` excludes it; `getMerkleProof`
   and `getMerkleProofsBatch` no longer return a proof the stored header
@@ -449,7 +471,14 @@ walletProjection:, broadcastTimeout:)`, `TransactionConfirmedEvent.bumpHex`,
 `AcceptChannelCommand.serverPeerId`, `ChannelAcceptedEvent.serverPeerId`,
 `RecordFundingInWalletCommand`, `FundingRecordedInWalletEvent`,
 `ChannelDetailsQueryMessage`, new optional fields on `FullChannelStateResponse`,
-`Bip32` (lib/src/utils/bip32.dart), `MerkleProofStatus.rejected`.
+`Bip32` (lib/src/utils/bip32.dart), `MerkleProofStatus.rejected`,
+`GetDeferredPaymentsQuery` / `DeferredPaymentsResponse` / `DeferredPaymentDetail`,
+`BroadcastDeferredPaymentCommand` / `DeferredPaymentBroadcastEvent`,
+`CheckDeferredPaymentStatusCommand` / `DeferredPaymentStatusEvent`,
+`CancelDeferredPaymentCommand` / `DeferredPaymentCancelledEvent`,
+`DeferredPayment`, `DeferredPaymentState`, `DeferredPaymentNetworkSource`,
+`ARCActor(dataSource:)`, `RecordOutgoingTransactionCommand.invoiceId` / `purpose`,
+`ArcException.statusCode` / `isNotFound`, `DataSourceException.notFound`.
 
 ## 2.0.0
 

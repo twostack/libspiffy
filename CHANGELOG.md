@@ -302,6 +302,59 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### Follow-ups of the P3 correctness wave
+
+Report section 11, V-52 to V-55; each fix has a regression test shown to fail
+on the previous code.
+
+- **Benford splits (V-52).**
+  - The reply now comes after ARC answers and carries a per-split
+    `SplitTransactionOutcome`: accepted, queued, rejected, contested,
+    notBroadcast, unanswered or notRecorded.
+  - A recording the wallet did not acknowledge in time is cancelled, so it
+    never holds the source for a split nobody broadcast.
+  - `splitWatchOnlyUtxos` no longer lists multisig UTXOs the wallet cannot
+    spend alone, so a payment is never funded from an escrow.
+- **Read-model rows (V-53).**
+  - `confirmedAt` is set by the first confirmation, from the record's time.
+  - Wallet row balances follow a new key that makes a multisig UTXO
+    spendable.
+  - `storeWallet` converts derived metadata values, or rejects them with an
+    `ArgumentError` naming the key, the same way on all three backends.
+- **ARC (V-54).**
+  - Competing txids reported with DOUBLE_SPEND_ATTEMPTED are journaled and
+    listed with the deferred payment. **Postgres migration v017** adds the
+    column, and Isar gains the property.
+  - ARC scans no longer journal status updates the row would not take.
+- **Proofs (V-55).**
+  - A proof that verifies on the active chain re-confirms a failed
+    transaction and spends the inputs its failure released.
+  - The rejected-proof sweep reads only proofs whose status changed since the
+    previous check, with an hourly full sweep. **Postgres migration v018** adds
+    the index.
+
+#### Breaking changes
+
+- `ReadModelStorage` has a new method, `getMerkleProofsByStatusChangedSince`.
+  Classes that `implements` it must add it.
+- A Benford split reply is sent only after ARC answers. A split without an
+  ARC service, or whose recording is refused or times out, is now reported
+  as a failure.
+- `ConfirmTransactionCommand` may journal `UTXOSpentEvent`s for recorded
+  inputs that are still unspent, before `TransactionConfirmedEvent`.
+- `storeWallet` rejects metadata values that are not JSON on every backend,
+  including in-memory.
+- Postgres `confirmedAt` is the confirming record's time, not the store time.
+
+Additive API: `SplitTransactionStatus`, `SplitTransactionOutcome`,
+`SplitUTXOsResponse.splits`, `UTXOSplitCompleteEvent.txids` / `splits`,
+`BenfordCoordinatorActor(broadcastReplyTimeout:)`,
+`SignableUtxos.notSpendableAlone` / `excludedNote`,
+`TransactionRowRules.confirmedAtAfter`, `WalletRowRules`, `competingTxids` on
+the deferred payment command, event, model and results,
+`DeferredPayment.mergeCompetingTxids`,
+`SPVActor(rejectedProofFullSweepInterval:, clock:)`.
+
 ### P3 correctness wave
 
 Twelve P3 beads in four lanes, each fix with a regression test shown to fail

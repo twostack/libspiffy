@@ -9,8 +9,6 @@ import 'package:libspiffy/libspiffy.dart';
 import 'package:libspiffy/src/actors/payment_messages.dart';
 import 'package:libspiffy/src/actors/wallet_messages.dart';
 import 'package:libspiffy/src/core/wallet_commands.dart';
-import 'package:libspiffy/src/core/wallet_events.dart' show WalletCreatedEvent;
-import 'package:eventador/eventador.dart' show AwaitEventApplied, AwaitFailed;
 import 'package:libspiffy/src/storage/isar_wallet_storage.dart';
 import 'package:libspiffy/src/storage/libspiffy_schemas.dart';
 import 'package:libspiffy/src/utils/crypto_utils.dart';
@@ -294,18 +292,6 @@ void main() {
         () => _TestReceiverActor<WalletCreatedMessage>(createRecipientCompleter),
       );
       
-      // SPVActor attributes outputs through the read model (the coordinator's
-      // CreateWalletCommand waits for the projection; this test talks to the
-      // wallet manager directly, so it waits itself; libspiffy-29t tracks the
-      // library side). Registered before the command so the event cannot be
-      // missed.
-      final recipientProjected = libspiffy.walletProjectionRef!.ask<dynamic>(
-        AwaitEventApplied(
-          (e) => e is WalletCreatedEvent && e.walletId == recipientWalletId,
-          timeout: const Duration(seconds: 10),
-        ),
-        const Duration(seconds: 12),
-      );
       libspiffy.walletManager.tell(
         CreateWalletMessage(
           recipientWalletId,
@@ -316,8 +302,6 @@ void main() {
       );
       
       final recipientResponse = await createRecipientCompleter.future.timeout(Duration(seconds: 5));
-      expect(await recipientProjected, isNot(isA<AwaitFailed>()),
-          reason: 'the recipient wallet must reach the read model');
       expect(recipientResponse.success, isTrue, reason: 'Recipient wallet creation should succeed');
       print('✓ Recipient wallet created: ${recipientResponse.walletId}');
       

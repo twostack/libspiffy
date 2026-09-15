@@ -354,13 +354,34 @@ class SPVActor extends Actor {
         }
         
 
-        // Step 3: Extract spendable UTXOs for the target wallet
+        // Step 3: Which outputs and inputs are the target wallet's. The
+        // wallet decides from its own event-sourced state: the read model
+        // lags its journal, and a payment to a freshly created wallet or a
+        // just-generated address validated with nothing credited (bead
+        // libspiffy-29t). A wallet that cannot answer fails the result
+        // rather than letting it through with the wallet's outputs dropped.
+        final outputLocks = [for (final output in transaction.outputs) _decodeOutputLock(output)];
+        final WalletOwnershipResponse? ownership;
+        try {
+          ownership = walletId == null ? null : await _askWalletOwnership(walletId, transaction, outputLocks);
+        } on _OwnershipUnavailable catch (e) {
+          _log.warning('Transaction $txidHex for wallet $walletId is not received: ${e.reason}');
+          return SPVValidationResult(
+            txid: txidHex,
+            isValid: false,
+            validationError: 'Cannot tell which outputs of $txidHex belong to wallet $walletId: '
+                '${e.reason}. Nothing was recorded; receive the transaction again once the wallet can answer',
+            targetWalletId: walletId,
+          );
+        }
+
         // If invoice ID is provided, validate outputs match invoice addresses
         // The wallet's UTXOs, and the outputs that pay the invoice: an
         // invoice's multisig output the wallet cannot spend alone pays the
         // invoice but is no wallet UTXO (bead libspiffy-n0p).
-        final (:spendableUTXOs, :invoiceOutputs) = await _extractSpendableUTXOs(transaction, walletId, invoiceId);
-        final spentUTXOs = await _extractSpentUTXOs(transaction, walletId);
+        final (:spendableUTXOs, :invoiceOutputs) =
+            await _extractSpendableUTXOs(transaction, outputLocks, ownership, walletId, invoiceId);
+        final spentUTXOs = _extractSpentUTXOs(transaction, ownership);
         
         // Step 3.5: Calculate transaction fee (if there are spent UTXOs)
         BigInt? transactionFee;
@@ -594,10 +615,142 @@ class SPVActor extends Actor {
 
   }
 
+  /// Asks the wallet (through WalletManagerActor; the aggregate answers
+  /// from its event-sourced state) which of the addresses [locks] pay or are
+  /// keyed to, and which of [transaction]'s inputs, are its own. Watch
+  /// addresses, which only the read model records, are added from there.
+  ///
+  /// Throws [_OwnershipUnavailable] when the wallet does not exist or does
+  /// not answer within [_walletOwnershipTimeout].
+  Future<WalletOwnershipResponse> _askWalletOwnership(
+    String walletId,
+    dartsv.Transaction transaction,
+    List<_OutputLock> locks,
+  ) async {
+    final network = NetworkName.toDartsv(_networkType);
+    final query = WalletOwnershipQuery(
+      walletId: walletId,
+      addresses: {for (final lock in locks) ...lock.candidateAddresses(network)},
+      outpoints: {for (final input in transaction.inputs) '${input.prevTxnId}:${input.prevTxnOutputIndex}'},
+    );
+    final WalletOwnershipResponse answer;
+    try {
+      answer = await _walletManager.ask<WalletOwnershipResponse>(query, _walletOwnershipTimeout);
+    } catch (e) {
+      throw _OwnershipUnavailable('wallet $walletId did not answer ($e)');
+    }
+    if (!answer.walletFound) {
+      throw _OwnershipUnavailable(answer.error ?? 'wallet $walletId not found');
+    }
+
+    // Watch addresses (RegisterWatchAddressCommand) are written straight to
+    // the read model, not journaled, so the wallet cannot know them; the
+    // read model still answers for them. This only adds addresses: it never
+    // takes back one the wallet claimed, so its lag cannot drop an output.
+    final unclaimed = query.addresses.difference(answer.ownedAddresses);
+    if (unclaimed.isEmpty) return answer;
+    final Map<String, bool> watched;
+    try {
+      watched = await _storage.checkAddresses(walletId, unclaimed.toList());
+    } catch (e) {
+      _log.warning('Could not look up watch addresses of wallet $walletId: $e');
+      return answer;
+    }
+    if (!watched.containsValue(true)) return answer;
+    return WalletOwnershipResponse(
+      walletId: walletId,
+      walletFound: true,
+      ownedAddresses: {
+        ...answer.ownedAddresses,
+        for (final entry in watched.entries)
+          if (entry.value && unclaimed.contains(entry.key)) entry.key,
+      },
+      unspentOutpoints: answer.unspentOutpoints,
+    );
+  }
+
+  /// How long [_askWalletOwnership] waits for the wallet's answer.
+  static const _walletOwnershipTimeout = Duration(seconds: 30);
+
+  /// [output]'s locking script as attribution reads it: its script type,
+  /// the address it pays, its multisig keys, or a plugin's reading of it.
+  _OutputLock _decodeOutputLock(dartsv.TransactionOutput output) {
+    try {
+      // Ensure templates are registered (P2PKH, P2PK, P2SH, etc.)
+      // This is idempotent - safe to call multiple times
+      dartsv.TemplateRegistry.initialize();
+      final templateRegistry = dartsv.ScriptTemplateRegistry();
+      final script = output.script;
+      final scriptInfo = templateRegistry.extractScriptInfo(script);
+      final scriptType = templateRegistry.identifyScriptType(script);
+
+      if (scriptInfo == null || scriptType == null) {
+        // Fall back to registered plugins
+        final pluginResult = PluginRegistry().identifyScript(script);
+        if (pluginResult == null) return const _OutputLock();
+        final metadata = PluginRegistry().getPlugin(pluginResult.pluginId)?.extractMetadata(script);
+        return _OutputLock(
+          scriptType: '${pluginResult.pluginId}:${pluginResult.scriptType}',
+          address: metadata?['ownerAddress'] as String?,
+          pluginMetadata: metadata,
+          isPlugin: true,
+        );
+      }
+
+      String? address;
+      BareMultisigScript? multisig;
+      switch (scriptType.toLowerCase()) {
+        case 'p2pkh':
+          // Extract address from pubkey hash
+          final pubkeyHash = scriptInfo['pubKeyHash'];
+          if (pubkeyHash != null) {
+            try {
+              address = dartsv.Address.fromPubkeyHash(hex.encode(pubkeyHash), NetworkName.toDartsv(_networkType)).toBase58();
+            } catch (e) {
+              _log.warning('Failed to derive P2PKH address from pubkey hash: $e');
+            }
+          }
+          break;
+        case 'p2pk':
+          final pubkey = scriptInfo['pubKey'];
+          if (pubkey != null) {
+            try {
+              final pubKeyObj = dartsv.SVPublicKey.fromHex(pubkey);
+              address = dartsv.Address.fromPublicKey(pubKeyObj, NetworkName.toDartsv(_networkType)).toBase58();
+            } catch (e) {
+              _log.warning('Failed to derive P2PK address from public key: $e');
+            }
+          }
+          break;
+        case 'p2sh':
+          // P2SH address extraction (placeholder: dartsv may not have
+          // direct P2SH address support)
+          final scriptHash = scriptInfo['scriptHash'];
+          if (scriptHash != null) {
+            address = 'p2sh:$scriptHash';
+          }
+          break;
+        case 'p2ms':
+          // A bare multisig output. Parsed here, not from dartsv's script
+          // info: that names the keys 'publicKeys' (as SVPublicKey), so
+          // reading 'pubKeys' never matched and an invoice paid with its
+          // multisig output went unrecognised.
+          multisig = BareMultisigScript.parse(script);
+          break;
+      }
+      return _OutputLock(scriptType: scriptType, address: address, multisig: multisig);
+    } catch (e) {
+      _log.warning('Failed to read an output locking script: $e');
+      return const _OutputLock();
+    }
+  }
+
   /// Extract UTXOs we can spend from this transaction
   ///
-  /// This method analyzes transaction outputs to identify those that belong
-  /// to the specified wallet (via invoice matching if invoiceId provided).
+  /// This method analyzes transaction outputs ([locks], one per output) to
+  /// identify those that belong to the specified wallet: by the invoice's
+  /// addresses when invoiceId is provided, otherwise by the wallet's own
+  /// answer ([ownership]); multisig keys always by the wallet's answer.
   ///
   /// [spendableUTXOs] are the wallet's UTXOs. [invoiceOutputs] are the
   /// outputs that pay the invoice: the wallet UTXOs among them plus any
@@ -607,6 +760,8 @@ class SPVActor extends Actor {
   Future<({List<Map<String, dynamic>> spendableUTXOs, List<Map<String, dynamic>> invoiceOutputs})>
       _extractSpendableUTXOs(
     dartsv.Transaction transaction,
+    List<_OutputLock> locks,
+    WalletOwnershipResponse? ownership,
     String? walletId,
     String? invoiceId,
   ) async {
@@ -614,7 +769,7 @@ class SPVActor extends Actor {
     final invoiceOutputs = <Map<String, dynamic>>[];
     final result = (spendableUTXOs: spendableUTXOs, invoiceOutputs: invoiceOutputs);
 
-    if (walletId == null) {
+    if (walletId == null || ownership == null) {
       return result;
     }
 
@@ -632,153 +787,80 @@ class SPVActor extends Actor {
       invoiceOutputs.add(utxo);
     }
 
-    try {
-      // Ensure templates are registered (P2PKH, P2PK, P2SH, etc.)
-      // This is idempotent - safe to call multiple times
-      dartsv.TemplateRegistry.initialize();
-      final templateRegistry = dartsv.ScriptTemplateRegistry();
-      
-      for (int outputIndex = 0; outputIndex < transaction.outputs.length; outputIndex++) {
-        final output = transaction.outputs[outputIndex];
-        final script = output.script;
-        
-        // Analyze script to determine if it belongs to our wallet
-        final scriptInfo = templateRegistry.extractScriptInfo(script);
-        final scriptType = templateRegistry.identifyScriptType(script);
-        
-        if (scriptInfo == null || scriptType == null) {
-          // Fall back to registered plugins before skipping
-          final pluginResult = PluginRegistry().identifyScript(script);
-          if (pluginResult != null) {
-            final plugin = PluginRegistry().getPlugin(pluginResult.pluginId);
-            final metadata = plugin?.extractMetadata(script);
-            final ownerAddress = metadata?['ownerAddress'] as String?;
-            if (ownerAddress != null) {
-              final belongsToUs = await _checkOutputOwnership(
-                  ownerAddress, walletId, invoice);
-              if (belongsToUs) {
-                addWalletUtxo({
-                  'txid': transaction.id,
-                  'vout': outputIndex,
-                  'satoshis': output.satoshis.toInt(),
-                  'script': output.script.toHex(),
-                  'scriptType':
-                      '${pluginResult.pluginId}:${pluginResult.scriptType}',
-                  'address': ownerAddress,
-                  'pluginMetadata': metadata,
-                });
-              }
-            }
-          }
+    // An output paying [address] is ours: with an invoice when the address
+    // is one of the invoice's, otherwise when the wallet says it is its own.
+    bool paysUs(String address) =>
+        invoice != null ? invoice.addresses.contains(address) : ownership.ownedAddresses.contains(address);
+
+    final network = NetworkName.toDartsv(_networkType);
+    for (int outputIndex = 0; outputIndex < transaction.outputs.length; outputIndex++) {
+      final output = transaction.outputs[outputIndex];
+      final lock = locks[outputIndex];
+      final address = lock.address;
+
+      if (lock.isPlugin) {
+        if (address != null && paysUs(address)) {
+          addWalletUtxo({
+            'txid': transaction.id,
+            'vout': outputIndex,
+            'satoshis': output.satoshis.toInt(),
+            'script': output.script.toHex(),
+            'scriptType': lock.scriptType,
+            'address': address,
+            'pluginMetadata': lock.pluginMetadata,
+          });
+        }
+        continue;
+      }
+
+      final multisig = lock.multisig;
+      if (multisig != null) {
+        // With an invoice only its outputs count, as for P2PKH.
+        if (invoice != null &&
+            !_matchesP2MSInvoiceOutput(multisig.publicKeysHex, multisig.threshold, invoice.outputs ?? const [])) {
           continue;
         }
-
-        String? address;
-
-        switch (scriptType.toLowerCase()) {
-          case 'p2pkh':
-            // Extract address from pubkey hash
-            final pubkeyHash = scriptInfo['pubKeyHash'];
-            if (pubkeyHash != null) {
-              try {
-                // Create Address from pubkeyhash
-                address = dartsv.Address.fromPubkeyHash(hex.encode(pubkeyHash), NetworkName.toDartsv(_networkType)).toBase58();
-              } catch (e) {
-                _log.warning('Failed to derive P2PKH address from pubkey hash: $e');
-              }
-            }
-            break;
-          case 'p2pk':
-            // For P2PK, we'd need to derive address from pubkey
-            final pubkey = scriptInfo['pubKey'];
-            if (pubkey != null) {
-              try {
-                final pubKeyObj = dartsv.SVPublicKey.fromHex(pubkey);
-                address = dartsv.Address.fromPublicKey(pubKeyObj, NetworkName.toDartsv(_networkType)).toBase58();
-              } catch (e) {
-                _log.warning('Failed to derive P2PK address from public key: $e');
-              }
-            }
-            break;
-          case 'p2sh':
-            // P2SH address extraction
-            final scriptHash = scriptInfo['scriptHash'];
-            if (scriptHash != null) {
-              // Note: dartsv may not have direct P2SH address support
-              // This is a simplified approach
-              address = 'p2sh:$scriptHash'; // Placeholder
-            }
-            break;
-          case 'p2ms':
-            // A bare multisig output. Parsed here, not from dartsv's script
-            // info: that names the keys 'publicKeys' (as SVPublicKey), so
-            // reading 'pubKeys' never matched and an invoice paid with its
-            // multisig output went unrecognised.
-            final multisig = BareMultisigScript.parse(script);
-            if (multisig == null) continue;
-            // With an invoice only its outputs count, as for P2PKH.
-            if (invoice != null &&
-                !_matchesP2MSInvoiceOutput(multisig.publicKeysHex, multisig.threshold, invoice.outputs ?? const [])) {
-              continue;
-            }
-            // One ownership rule for every path (beads viy, n0p): the output
-            // is a wallet UTXO only when the wallet holds at least m of its
-            // keys. An escrow the wallet cannot spend alone still pays the
-            // invoice; the transaction is recorded whole either way.
-            final network = NetworkName.toDartsv(_networkType);
-            final walletKeyAddresses = <String>{};
-            for (final keyAddress in multisig.keyAddresses(network)) {
-              if (keyAddress != null && await _isWalletAddress(walletId, keyAddress)) {
-                walletKeyAddresses.add(keyAddress);
-              }
-            }
-            final owner = multisig.spendableAloneBy(walletKeyAddresses.contains, network);
-            Map<String, dynamic> entry(String address) => {
-                  'txid': transaction.id,
-                  'vout': outputIndex,
-                  'satoshis': output.satoshis.toInt(),
-                  'script': output.script.toHex(),
-                  'scriptType': scriptType,
-                  'address': address,
-                  'publicKeys': multisig.publicKeysHex,
-                  'threshold': multisig.threshold,
-                };
-            // The invoice is paid to its multisig output, named by shape;
-            // a wallet UTXO is attributed to the first wallet key, as on
-            // every other path.
-            if (owner != null) spendableUTXOs.add(entry(owner));
-            if (invoice != null) {
-              invoiceOutputs.add(entry('p2ms:${multisig.threshold}-of-${multisig.publicKeysHex.length}'));
-            } else if (owner != null) {
-              invoiceOutputs.add(entry(owner));
-            } else {
-              _log.info('Multisig output ${transaction.id}:$outputIndex is not spendable by '
-                  'wallet $walletId alone; not a wallet UTXO');
-            }
-            continue;
-          default:
-            // Skip unknown script types
-            continue;
-        }
-
-        if (address != null) {
-          // Check if address matches invoice (if invoice-based) or wallet
-          final belongsToUs = await _checkOutputOwnership(address, walletId, invoice);
-          
-          if (belongsToUs) {
-            addWalletUtxo({
+        // One ownership rule for every path (beads viy, n0p): the output
+        // is a wallet UTXO only when the wallet holds at least m of its
+        // keys. An escrow the wallet cannot spend alone still pays the
+        // invoice; the transaction is recorded whole either way.
+        final owner = multisig.spendableAloneBy(ownership.ownedAddresses.contains, network);
+        Map<String, dynamic> entry(String address) => {
               'txid': transaction.id,
-              'vout': outputIndex,  // Use 'vout' to match WalletManagerActor expectation
+              'vout': outputIndex,
               'satoshis': output.satoshis.toInt(),
               'script': output.script.toHex(),
-              'scriptType': scriptType,
+              'scriptType': lock.scriptType,
               'address': address,
-            });
-          }
+              'publicKeys': multisig.publicKeysHex,
+              'threshold': multisig.threshold,
+            };
+        // The invoice is paid to its multisig output, named by shape;
+        // a wallet UTXO is attributed to the first wallet key, as on
+        // every other path.
+        if (owner != null) spendableUTXOs.add(entry(owner));
+        if (invoice != null) {
+          invoiceOutputs.add(entry('p2ms:${multisig.threshold}-of-${multisig.publicKeysHex.length}'));
+        } else if (owner != null) {
+          invoiceOutputs.add(entry(owner));
+        } else {
+          _log.info('Multisig output ${transaction.id}:$outputIndex is not spendable by '
+              'wallet $walletId alone; not a wallet UTXO');
         }
+        continue;
       }
-    } catch (e) {
-      _log.warning('Failed to extract spendable UTXOs: $e');
+
+      // Check if address matches invoice (if invoice-based) or wallet
+      if (address != null && paysUs(address)) {
+        addWalletUtxo({
+          'txid': transaction.id,
+          'vout': outputIndex,  // Use 'vout' to match WalletManagerActor expectation
+          'satoshis': output.satoshis.toInt(),
+          'script': output.script.toHex(),
+          'scriptType': lock.scriptType,
+          'address': address,
+        });
+      }
     }
 
     return result;
@@ -836,37 +918,6 @@ class SPVActor extends Actor {
     }
   }
   
-  /// Check if an output address belongs to us
-  /// For invoice-based payments, check against invoice addresses
-  /// Otherwise, query wallet storage for address ownership
-  Future<bool> _checkOutputOwnership(
-    String address, 
-    String walletId,
-    InvoiceDetailsResponse? invoice,
-  ) async {
-    // Invoice-based matching (primary flow - most reliable)
-    if (invoice != null) {
-      final matchesInvoice = invoice.addresses.contains(address);
-      if (matchesInvoice) {
-      }
-      return matchesInvoice;
-    }
-    
-    // Fallback: Query wallet storage to check if address belongs to wallet
-    // This handles cases where invoice is not found or not provided
-    return _isWalletAddress(walletId, address);
-  }
-
-  /// Whether [address] is one of [walletId]'s addresses; false when the
-  /// read model cannot answer.
-  Future<bool> _isWalletAddress(String walletId, String address) async {
-    try {
-      return await _storage.isWalletAddress(walletId, address);
-    } catch (e) {
-      return false;
-    }
-  }
-  
   /// Get invoice details from InvoiceManager
   Future<InvoiceDetailsResponse?> _getInvoiceDetails(String invoiceId) async {
     try {
@@ -902,49 +953,24 @@ class SPVActor extends Actor {
   }
 
   /// Extract UTXOs that were spent in this transaction
-  /// 
-  /// This method analyzes transaction inputs to identify UTXOs that belonged
-  /// to the specified wallet and are being spent by this transaction.
-  /// 
+  ///
+  /// The inputs of [transaction] that spend UTXOs the wallet holds unspent,
+  /// by the wallet's own answer ([ownership]; bead libspiffy-29t: the read
+  /// model may not have a UTXO the wallet received moments earlier).
+  ///
   /// CRITICAL: Only returns inputs that the wallet actually owns. When receiving
   /// a payment, this will return empty list since inputs belong to the sender.
-  Future<List<Map<String, dynamic>>> _extractSpentUTXOs(dartsv.Transaction transaction, String? walletId) async {
-    final spentUTXOs = <Map<String, dynamic>>[];
-    
-    if (walletId == null) {
-      return spentUTXOs;
-    }
-
-    try {
-      // Get wallet's current UTXOs to check ownership
-      final walletUtxos = await _storage.getUTXOs(walletId, includeSpent: false);
-      
-      // Build a set of UTXO keys for O(1) lookup
-      final walletUtxoKeys = walletUtxos.map((utxo) => '${utxo.txid}:${utxo.vout}').toSet();
-      
-      
-      // Check each transaction input to see if it belongs to this wallet
-      for (int inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex++) {
-        final input = transaction.inputs[inputIndex];
-        final prevTxId = input.prevTxnId;
-        final prevOutputIndex = input.prevTxnOutputIndex;
-        final utxoKey = '$prevTxId:$prevOutputIndex';
-
-        // Only add to spentUTXOs if this wallet actually owns the UTXO being spent
-        if (walletUtxoKeys.contains(utxoKey)) {
-          spentUTXOs.add({
-            'txid': prevTxId,
-            'vout': prevOutputIndex,
+  List<Map<String, dynamic>> _extractSpentUTXOs(dartsv.Transaction transaction, WalletOwnershipResponse? ownership) {
+    if (ownership == null) return [];
+    return [
+      for (final (inputIndex, input) in transaction.inputs.indexed)
+        if (ownership.unspentOutpoints.contains('${input.prevTxnId}:${input.prevTxnOutputIndex}'))
+          {
+            'txid': input.prevTxnId,
+            'vout': input.prevTxnOutputIndex,
             'inputIndex': inputIndex,
-          });
-        }
-      }
-      
-    } catch (e) {
-      _log.warning('Failed to extract spent UTXOs: $e');
-    }
-
-    return spentUTXOs;
+          },
+    ];
   }
 
   /// Calculate transaction ID (TXID) from raw transaction data
@@ -1634,4 +1660,47 @@ class _InvoiceQueryReceiver extends Actor {
       }
     }
   }
+}
+/// An output's locking script as SPVActor reads it for attribution.
+class _OutputLock {
+  /// dartsv's template type ('p2pkh', 'p2ms', ...), or
+  /// '<pluginId>:<scriptType>' for a script a plugin recognises; null when
+  /// nothing recognises the script.
+  final String? scriptType;
+
+  /// The address the output pays: a P2PKH or P2PK address, a 'p2sh:<hash>'
+  /// placeholder, or a plugin script's owner address.
+  final String? address;
+
+  /// The script as bare multisig, when it is one.
+  final BareMultisigScript? multisig;
+
+  final Map<String, dynamic>? pluginMetadata;
+  final bool isPlugin;
+
+  const _OutputLock({
+    this.scriptType,
+    this.address,
+    this.multisig,
+    this.pluginMetadata,
+    this.isPlugin = false,
+  });
+
+  /// The addresses whose ownership decides whether the output is the
+  /// wallet's: the address it pays and, for multisig, each key's address.
+  Iterable<String> candidateAddresses(dartsv.NetworkType network) => [
+        if (address case final address?) address,
+        if (multisig case final multisig?)
+          for (final keyAddress in multisig.keyAddresses(network))
+            if (keyAddress != null) keyAddress,
+      ];
+}
+
+/// The target wallet cannot say which outputs are its own ([reason]).
+class _OwnershipUnavailable implements Exception {
+  final String reason;
+  _OwnershipUnavailable(this.reason);
+
+  @override
+  String toString() => reason;
 }

@@ -114,6 +114,54 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
     }
   }
 
+  /// Non-command messages. [WalletOwnershipQuery] is answered from this
+  /// aggregate's state (bead libspiffy-29t): the mailbox is FIFO, so the
+  /// answer reflects every command handled before it, including an address
+  /// generation already acknowledged to its caller.
+  @override
+  Future<void> queryHandler(dynamic message) async {
+    if (message is WalletOwnershipQuery) {
+      // ignore: invalid_use_of_internal_member
+      context.sender?.tell(_answerOwnership(message));
+      return;
+    }
+    await super.queryHandler(message);
+  }
+
+  /// Which of [query]'s addresses and outpoints are this wallet's own.
+  ///
+  /// An address is the wallet's when the wallet created, generated or
+  /// discovered it, or holds a UTXO at it: the addresses the read model's
+  /// address rows are written from, taken here from the journal-backed
+  /// state instead of the lagging projection. An outpoint is the wallet's
+  /// when it is a UTXO the wallet has not spent.
+  WalletOwnershipResponse _answerOwnership(WalletOwnershipQuery query) {
+    if (!isInitialized || !currentState.isCreated || currentState.isDeleted) {
+      return WalletOwnershipResponse(
+        walletId: query.walletId,
+        walletFound: false,
+        error: 'Wallet ${query.walletId} does not exist',
+      );
+    }
+    final state = currentState;
+    Set<String>? utxoAddresses;
+    bool owns(String address) {
+      if (state.addresses.containsKey(address)) return true;
+      utxoAddresses ??= {for (final utxo in state.utxos.values) utxo.address};
+      return utxoAddresses!.contains(address);
+    }
+
+    return WalletOwnershipResponse(
+      walletId: query.walletId,
+      walletFound: true,
+      ownedAddresses: {for (final address in query.addresses) if (owns(address)) address},
+      unspentOutpoints: {
+        for (final key in query.outpoints)
+          if (state.utxos[key] case final utxo? when utxo.status != UTXOStatus.spent) key,
+      },
+    );
+  }
+
   /// Create initial empty wallet state
   @override
   WalletState createInitialState() {

@@ -191,6 +191,10 @@ class WalletManagerActor extends Actor {
           await _handleSPVValidationResult(message as SPVValidationResult);
           break;
 
+        case WalletOwnershipQuery:
+          await _handleWalletOwnershipQuery(message as WalletOwnershipQuery);
+          break;
+
         case WalletCreatedResponse:
           await _handleWalletCreatedResponse(message as WalletCreatedResponse);
           break;
@@ -465,6 +469,25 @@ class WalletManagerActor extends Actor {
     }
   }
 
+  /// Hands a [WalletOwnershipQuery] to the wallet's aggregate, which answers
+  /// the asker from its event-sourced state (bead libspiffy-29t). A wallet
+  /// with no journal is answered here as not found.
+  Future<void> _handleWalletOwnershipQuery(WalletOwnershipQuery query) async {
+    // ignore: invalid_use_of_internal_member
+    final asker = context.sender;
+    final walletActor = await _getOrLoadWallet(query.walletId);
+    if (walletActor == null) {
+      _log.warning('Ownership query for unknown wallet ${query.walletId}');
+      asker?.tell(WalletOwnershipResponse(
+        walletId: query.walletId,
+        walletFound: false,
+        error: 'Wallet ${query.walletId} not found',
+      ));
+      return;
+    }
+    walletActor.tell(query, sender: asker);
+  }
+
   /// Handle SPV validation results from SPVActor (NEW for correct SPV)
   Future<void> _handleSPVValidationResult(SPVValidationResult result) async {
     
@@ -498,6 +521,8 @@ class WalletManagerActor extends Actor {
       final walletActor = await _getOrLoadWallet(walletId);
 
       if (walletActor == null) {
+        _log.warning('SPV result ${result.txid} names wallet $walletId, which '
+            'does not exist; not recorded');
         return;
       }
 

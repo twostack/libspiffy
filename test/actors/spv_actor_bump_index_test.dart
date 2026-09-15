@@ -22,6 +22,7 @@ import 'package:libspiffy/src/utils/bump.dart';
 import 'package:test/test.dart';
 
 import '../spv/testnet_proof_fixture.dart';
+import 'wallet_ownership_stub.dart';
 
 const _xpriv =
     'tprv8ZgxMBicQKsPeMiDjtXBGAyFY1wEMGgomjwf54ZmiZfKTNYvVdBa6GqWUwnvtHm6NKVkQkhCKxaobd9JPxNEXgDfVgJ5RNHJ3ivogSG3V1R';
@@ -116,10 +117,9 @@ void main() {
   });
 }
 
-class _Sink extends Actor {
-  @override
-  Future<void> onMessage(dynamic message) async {}
-}
+/// Wallet manager and invoice coordinator stand-in; answers SPVActor's
+/// ownership query (every wallet exists and owns nothing).
+class _Sink extends WalletOwnershipStub {}
 
 class _Receiver extends Actor {
   final Completer<SPVValidationResult> done;

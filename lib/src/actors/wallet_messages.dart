@@ -485,6 +485,74 @@ class SPVValidationResult implements Message {
   DateTime get timestamp => DateTime.now();
 }
 
+/// Asks a wallet which of [addresses] and [outpoints] are its own (bead
+/// libspiffy-29t). Sent by SPVActor to WalletManagerActor, which hands it
+/// to the wallet aggregate; the aggregate answers from its event-sourced
+/// state with a [WalletOwnershipResponse].
+///
+/// The read model cannot answer this: the wallet projection lags the
+/// wallet's journal, so a payment to a freshly created wallet or a receive
+/// address generated moments earlier looked like nobody's. The aggregate
+/// handles the query in its mailbox after every command it has already
+/// acknowledged, so an address a caller was handed is always known.
+class WalletOwnershipQuery implements Message {
+  final String walletId;
+
+  /// Candidate addresses (output addresses, multisig key addresses, plugin
+  /// owner addresses).
+  final Set<String> addresses;
+
+  /// Candidate outpoints, as 'txid:vout' (the inputs of a transaction).
+  final Set<String> outpoints;
+
+  WalletOwnershipQuery({
+    required this.walletId,
+    required this.addresses,
+    required this.outpoints,
+  });
+
+  @override
+  String get correlationId => 'wallet-ownership-$walletId';
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+/// The answer to a [WalletOwnershipQuery].
+class WalletOwnershipResponse extends LocalMessage {
+  final String walletId;
+
+  /// False when no such wallet exists (never created, or deleted); the
+  /// owned sets are then empty and [error] says why.
+  final bool walletFound;
+
+  /// The queried addresses that are the wallet's: addresses it created,
+  /// generated or discovered, and addresses it holds a UTXO at (the same
+  /// addresses the read model's address rows are written from).
+  final Set<String> ownedAddresses;
+
+  /// The queried outpoints that are unspent UTXOs of the wallet (reserved
+  /// or held ones included).
+  final Set<String> unspentOutpoints;
+
+  final String? error;
+
+  WalletOwnershipResponse({
+    required this.walletId,
+    required this.walletFound,
+    this.ownedAddresses = const {},
+    this.unspentOutpoints = const {},
+    this.error,
+  }) : super(payload: null, metadata: {'walletId': walletId, 'walletFound': walletFound});
+
+  /// This object, for dactor's ask().
+  @override
+  dynamic get payload => this;
+}
+
 /// Block header update from SpiffyNode
 class BlockHeaderUpdateMessage implements Message {
   final dynamic blockHeader; // Will be SpiffyNode's BlockHeader type

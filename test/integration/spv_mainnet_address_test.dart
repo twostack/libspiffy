@@ -23,6 +23,8 @@ import 'package:libspiffy/src/utils/crypto_utils.dart';
 import 'package:spiffynode/spiffy_node.dart' show BlockHeader, Hash;
 import 'package:test/test.dart';
 
+import '../actors/wallet_ownership_stub.dart';
+
 const _walletId = 'mainnet-wallet';
 const _blockHeight = 800000;
 
@@ -33,14 +35,16 @@ const _privHex =
 void main() {
   group('SPVActor on mainnet', () {
     late LocalActorSystem actorSystem;
-    late _AddressAwareStorage storage;
+    late InMemoryWalletStorage storage;
+    late Map<String, Set<String>> ownedAddresses;
     late ActorRef spvActor;
     late ActorRef sink;
 
     setUp(() async {
       actorSystem = LocalActorSystem(ActorSystemConfig());
-      storage = _AddressAwareStorage();
-      sink = await actorSystem.spawn('sink', () => _SinkActor());
+      storage = InMemoryWalletStorage();
+      ownedAddresses = {};
+      sink = await actorSystem.spawn('sink', () => WalletOwnershipStub(ownedAddresses));
       spvActor = await actorSystem.spawn(
         'spv-actor-mainnet',
         () => SPVActor(
@@ -65,7 +69,7 @@ void main() {
       ).toBase58();
       expect(mainnetAddress, startsWith('1'),
           reason: 'fixture must be a mainnet P2PKH address');
-      storage.ownedAddresses[_walletId] = {mainnetAddress};
+      ownedAddresses[_walletId] = {mainnetAddress};
 
       final outputScript = dartsv.P2PKHLockBuilder.fromAddress(
         dartsv.Address(mainnetAddress),
@@ -134,21 +138,6 @@ void main() {
       expect(credited.single, startsWith('1'));
     });
   });
-}
-
-/// InMemoryWalletStorage stubs `isWalletAddress` to false; the SPV actor's
-/// ownership fallback needs a real answer.
-class _AddressAwareStorage extends InMemoryWalletStorage {
-  final Map<String, Set<String>> ownedAddresses = {};
-
-  @override
-  Future<bool> isWalletAddress(String walletId, String address) async =>
-      ownedAddresses[walletId]?.contains(address) ?? false;
-}
-
-class _SinkActor extends Actor {
-  @override
-  Future<void> onMessage(dynamic message) async {}
 }
 
 class _ReceiverActor extends Actor {

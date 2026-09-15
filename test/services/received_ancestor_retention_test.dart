@@ -32,6 +32,7 @@ import 'package:spiffynode/spiffy_node.dart' show BlockHeader, Hash;
 import 'package:test/test.dart';
 
 import '../actors/in_memory_event_store.dart';
+import '../actors/wallet_ownership_stub.dart';
 import '../spv/testnet_proof_fixture.dart';
 
 const _xpriv =
@@ -289,10 +290,9 @@ BitcoinTransaction _record(dartsv.Transaction tx) => BitcoinTransaction(
       version: 1,
     );
 
-class _Sink extends Actor {
-  @override
-  Future<void> onMessage(dynamic message) async {}
-}
+/// Wallet manager and invoice coordinator stand-in; answers SPVActor's
+/// ownership query (every wallet exists and owns nothing).
+class _Sink extends WalletOwnershipStub {}
 
 class _Receiver extends Actor {
   final Completer<SPVValidationResult> done;

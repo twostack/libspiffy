@@ -461,14 +461,27 @@ class _TestReceiverActor<T> extends Actor {
 
 class _MockWalletManagerActor extends Actor {
   int _addressCounter = 0;
-  
+  final Map<String, Set<String>> _generated = {};
+
   @override
   Future<void> onMessage(dynamic message) async {
+    if (message is WalletOwnershipQuery) {
+      // SPVActor asks the wallet which outputs are its own (libspiffy-29t):
+      // the addresses this mock generated for it.
+      // ignore: invalid_use_of_internal_member
+      context.sender?.tell(WalletOwnershipResponse(
+        walletId: message.walletId,
+        walletFound: true,
+        ownedAddresses: message.addresses.intersection(_generated[message.walletId] ?? const {}),
+      ));
+      return;
+    }
     if (message is WalletCommandMessage) {
       final command = message.command;
       if (command is GenerateAddressCommand) {
         _addressCounter++;
         final address = 'n${_addressCounter}MockAddr${DateTime.now().millisecondsSinceEpoch}';
+        _generated.putIfAbsent(message.walletId, () => {}).add(address);
         
         context.sender?.tell(AddressGeneratedResponse(
           walletId: message.walletId,

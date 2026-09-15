@@ -520,9 +520,21 @@ class _MockWalletManagerActor extends Actor {
   int _addressCounter = 0;
   // Track expected addresses for address generation requests
   final Map<String, List<String>> _expectedAddresses = {};
+  final Map<String, Set<String>> _generated = {};
 
   @override
   Future<void> onMessage(dynamic message) async {
+    if (message is WalletOwnershipQuery) {
+      // SPVActor asks the wallet which outputs are its own (libspiffy-29t):
+      // the addresses this mock generated for it.
+      // ignore: invalid_use_of_internal_member
+      context.sender?.tell(WalletOwnershipResponse(
+        walletId: message.walletId,
+        walletFound: true,
+        ownedAddresses: message.addresses.intersection(_generated[message.walletId] ?? const {}),
+      ));
+      return;
+    }
     if (message is _RegisterExpectedAddressMessage) {
       // Pre-register an expected address for the next address generation
       _expectedAddresses.putIfAbsent(message.walletId, () => []).add(message.expectedAddress);
@@ -539,6 +551,7 @@ class _MockWalletManagerActor extends Actor {
             : 'n${_addressCounter}Mock${DateTime.now().millisecondsSinceEpoch}';
         
         print('MockWalletManager: Generating address for ${message.walletId}: $address');
+        _generated.putIfAbsent(message.walletId, () => {}).add(address);
         
         // Preserve metadata from the command (contains invoiceId for invoice coordinator)
         context.sender?.tell(AddressGeneratedResponse(

@@ -184,6 +184,19 @@ void defineTransactionStatusContract(
       expect((await s.getTransaction(txid, walletId: wallet))!.blockHeight, 900);
     });
 
+    test('hccp: a failed transaction is confirmed by a confirmation record (its proof outranks REJECTED)', () async {
+      final s = storage();
+      final u = unique();
+      final wallet = 'ts-failed-$u';
+      await s.storeWallet(wallet, 'W');
+      final txid = contractHex64('ts-failed-tx-$u');
+      await s.storeTransaction(wallet, _tx(txid, status: TransactionStatus.failed, second: 0));
+      await s.storeTransaction(wallet, _tx(txid, status: TransactionStatus.confirmed, height: 910, confirmations: 1, second: 1));
+      final row = (await s.getTransaction(txid, walletId: wallet))!;
+      expect((row.status, row.blockHeight), (TransactionStatus.confirmed, 910));
+      expect(await s.getTransactionsByStatus(TransactionStatus.failed, walletId: wallet), isEmpty);
+    });
+
     test('only a reverted record takes the confirmation back; the row is kept and can confirm again', () async {
       final s = storage();
       final u = unique();

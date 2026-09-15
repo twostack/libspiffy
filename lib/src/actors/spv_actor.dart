@@ -64,12 +64,24 @@ class SPVActor extends Actor {
     ActorRef? arcActor,
     ActorRef? headerSyncActor,
     String networkType = 'test',
+    Duration rejectedProofFullSweepInterval = const Duration(hours: 1),
+    DateTime Function()? clock,
   }) : _walletManager = walletManager,
        _invoiceCoordinator = invoiceCoordinator,
        _storage = storage,
        _networkType = networkType,
        _arcActor = arcActor,
-       _headerSyncActor = headerSyncActor;
+       _headerSyncActor = headerSyncActor,
+       _rejectedProofFullSweepInterval = rejectedProofFullSweepInterval,
+       _clock = clock ?? DateTime.now;
+
+  /// How long a check for confirmations resting only on rejected proofs may
+  /// go on reading only recent status changes before one reads every
+  /// rejected proof again ([_revertRejectedConfirmations], bead hccp).
+  final Duration _rejectedProofFullSweepInterval;
+
+  /// The time source of those checks (injectable for tests).
+  final DateTime Function() _clock;
   
   /// Set the ARC actor reference (called after actor system initialization)
   void setArcActor(ActorRef arcActor) {
@@ -1221,7 +1233,8 @@ class SPVActor extends Actor {
   /// proof.
   ///
   /// The confirmation is restored the way a proof ARC supplies confirms:
-  /// each wallet holding the transaction unconfirmed (not failed) is sent
+  /// each wallet holding the transaction unconfirmed (failed included: a
+  /// proof on the active chain outranks ARC's REJECTED, bead hccp) is sent
   /// ConfirmTransactionCommand with the BUMP (journaled in
   /// TransactionConfirmedEvent, so a rebuilt read model has the proof) and
   /// MarkUTXOAvailableCommand for its pending outputs of the transaction
@@ -1256,8 +1269,11 @@ class SPVActor extends Actor {
       for (final tx in await _storage.getTransactionsByTxids(revived.keys.toList())) {
         final walletId = tx.walletId;
         if (walletId == null || walletId.isEmpty) continue;
+        // A failed row is confirmed too (bead hccp): the proof verifies
+        // against the active chain, so the transaction is mined whatever ARC
+        // reported (a REJECTED can be stale, a competing spend can lose).
         final unconfirmed = tx.status != TransactionStatus.confirmed || justReverted.contains((walletId, tx.txid));
-        if (!unconfirmed || tx.status == TransactionStatus.failed) continue;
+        if (!unconfirmed) continue;
         restore.putIfAbsent(walletId, () => {}).add(tx.txid);
       }
       for (final MapEntry(key: walletId, value: txids) in restore.entries) {
@@ -1376,47 +1392,116 @@ class SPVActor extends Actor {
   /// for a pendingHeader proof that fails its header, and ARCActor is asked
   /// to poll for a real proof. Txids in [alreadyReverted] (their confirmed
   /// rows were just reverted) are skipped.
+  ///
+  /// Proofs read (bead hccp): the first check of an actor (at start, or on
+  /// its first header notification) reads every rejected proof. After that
+  /// such a confirmation can only form when a proof becomes rejected (the
+  /// projection or this actor stores it so) or when the current proof of a
+  /// transaction that also has a rejected proof stops being current
+  /// (orphaned), with the transaction row written confirmed around that
+  /// time; the height of a new header says nothing about it. So later checks
+  /// read only the proofs whose status became rejected or orphaned since
+  /// [_rejectedProofRecheckOverlap] before the previous check started
+  /// ([ReadModelStorage.getMerkleProofsByStatusChangedSince]), the rows of
+  /// their transactions, and the proof history of those they revert.
+  ///
+  /// A confirmation written confirmed long after its proof became rejected
+  /// (a replay whose journal lacks the revert) is outside that feed. So a
+  /// check reads every rejected proof again once the last such full read is
+  /// older than the full-sweep interval (constructor parameter, default one
+  /// hour, timed by the injectable clock): that case is caught within the
+  /// interval while the actor runs, not only at its next start.
   Future<void> _revertRejectedConfirmations({Set<String> alreadyReverted = const {}}) async {
+    // Storage stamps status changes with the wall clock, so the feed's
+    // starting point does too; the injectable clock times the full sweeps.
+    final startedAt = DateTime.now();
+    final now = _clock();
+    final lastFull = _lastFullRejectedProofSweep;
+    final full = _rejectedProofsCheckedFrom == null ||
+        lastFull == null ||
+        now.difference(lastFull) >= _rejectedProofFullSweepInterval;
     try {
-      final rejected = <String, MerkleProof>{
-        for (final proof in await _storage.getMerkleProofsByStatus(MerkleProofStatus.rejected))
-          if (!alreadyReverted.contains(proof.txid)) proof.txid: proof,
-      };
-      if (rejected.isEmpty) return;
-
-      for (final txid in (await _storage.getMerkleProofsBatch(rejected.keys.toList())).keys) {
-        rejected.remove(txid); // a current proof backs the transaction
-      }
-      if (rejected.isEmpty) return;
-      // The rows of those transactions only (ctkm). A rejected proof of a
-      // received ancestor belongs to no wallet transaction.
-      final rows = await _storage.getTransactionsByTxids(rejected.keys.toList());
-      for (final tx in rows) {
-        // A row that changed since its revert was sent: the revert was
-        // applied (or the transaction confirmed again), so forget it.
-        final key = (tx.walletId ?? '', tx.txid);
-        final sentFor = _revertsSent[key];
-        if (sentFor != null && (tx.status != TransactionStatus.confirmed || sentFor != tx.updatedAt)) {
-          _revertsSent.remove(key);
-        }
-      }
-      final wallets = _confirmedRowsOf([
-        for (final tx in rows)
-          if (_revertsSent[(tx.walletId ?? '', tx.txid)] != tx.updatedAt) tx,
-      ]);
-      if (wallets.isEmpty) return;
-
-      for (final entry in wallets.entries) {
-        final proof = rejected[entry.key]!;
-        _revertConfirmation(entry.key, [for (final tx in entry.value) tx.walletId!], proof,
-            'its only proof does not match the block header at height ${proof.blockHeight} (rejected)');
-        _noteReverted(entry.value);
-      }
-      _log.severe('${wallets.length} confirmation(s) rested only on rejected proofs; reverted: ${wallets.keys.toList()}');
-      _arcActor?.tell(TransactionConfirmationsRevertedMessage(wallets.keys.toList()));
+      await _revertRejectedConfirmationsSince(full ? null : _rejectedProofsCheckedFrom, alreadyReverted);
+      _rejectedProofsCheckedFrom = startedAt.subtract(_rejectedProofRecheckOverlap);
+      if (full) _lastFullRejectedProofSweep = now;
     } catch (e, st) {
+      // The next check reads from the same point again.
       _log.warning('Failed to revert confirmations resting on rejected proofs: $e', e, st);
     }
+  }
+
+  /// Status changes this long before the previous check started are read
+  /// again by the next ([_revertRejectedConfirmations]): a proof whose write
+  /// committed after that check read the proofs, or whose transaction row
+  /// was written confirmed after that check read the rows, is not missed.
+  static const Duration _rejectedProofRecheckOverlap = Duration(minutes: 10);
+
+  /// Where the next [_revertRejectedConfirmations] starts reading status
+  /// changes; null until a check of this actor has completed (the next then
+  /// reads every rejected proof).
+  DateTime? _rejectedProofsCheckedFrom;
+
+  /// When ([_clock]) the last check that read every rejected proof ran.
+  DateTime? _lastFullRejectedProofSweep;
+
+  Future<void> _revertRejectedConfirmationsSince(DateTime? since, Set<String> alreadyReverted) async {
+    // txid -> its newest rejected proof, when every rejected proof is read.
+    final rejected = <String, MerkleProof>{};
+    final candidates = <String>{};
+    if (since == null) {
+      for (final proof in await _storage.getMerkleProofsByStatus(MerkleProofStatus.rejected)) {
+        rejected[proof.txid] = proof;
+      }
+      candidates.addAll(rejected.keys);
+    } else {
+      for (final status in const [MerkleProofStatus.rejected, MerkleProofStatus.orphaned]) {
+        for (final proof in await _storage.getMerkleProofsByStatusChangedSince(status, since)) {
+          candidates.add(proof.txid);
+        }
+      }
+    }
+    candidates.removeAll(alreadyReverted);
+    if (candidates.isEmpty) return;
+
+    for (final txid in (await _storage.getMerkleProofsBatch(candidates.toList())).keys) {
+      candidates.remove(txid); // a current proof backs the transaction
+    }
+    if (candidates.isEmpty) return;
+    // The rows of those transactions only (ctkm). A rejected proof of a
+    // received ancestor belongs to no wallet transaction.
+    final rows = await _storage.getTransactionsByTxids(candidates.toList());
+    for (final tx in rows) {
+      // A row that changed since its revert was sent: the revert was
+      // applied (or the transaction confirmed again), so forget it.
+      final key = (tx.walletId ?? '', tx.txid);
+      final sentFor = _revertsSent[key];
+      if (sentFor != null && (tx.status != TransactionStatus.confirmed || sentFor != tx.updatedAt)) {
+        _revertsSent.remove(key);
+      }
+    }
+    final wallets = _confirmedRowsOf([
+      for (final tx in rows)
+        if (_revertsSent[(tx.walletId ?? '', tx.txid)] != tx.updatedAt) tx,
+    ]);
+    if (wallets.isEmpty) return;
+
+    final reverted = <String>[];
+    for (final entry in wallets.entries) {
+      var proof = rejected[entry.key];
+      if (proof == null && since != null) {
+        for (final row in await _storage.getMerkleProofHistory(entry.key)) {
+          if (row.status == MerkleProofStatus.rejected) proof = row; // the newest
+        }
+      }
+      if (proof == null) continue; // orphaned proofs only: not this rule
+      _revertConfirmation(entry.key, [for (final tx in entry.value) tx.walletId!], proof,
+          'its only proof does not match the block header at height ${proof.blockHeight} (rejected)');
+      _noteReverted(entry.value);
+      reverted.add(entry.key);
+    }
+    if (reverted.isEmpty) return;
+    _log.severe('${reverted.length} confirmation(s) rested only on rejected proofs; reverted: $reverted');
+    _arcActor?.tell(TransactionConfirmationsRevertedMessage(reverted));
   }
 
   /// Mark the pendingHeader [proof] (no block hash) rejected: the header at

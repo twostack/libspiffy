@@ -292,6 +292,49 @@ void main() {
       ], reason: 'the row still reads confirmed when the revert is sent; the wallet applies revert then confirm');
     });
 
+    test('hccp (1): a failed transaction whose proof verifies again is confirmed through the wallet', () async {
+      await spawnSpv();
+      await activate('N100', 100);
+      final (bumpF, rootF) = _proofFor(tx('F'), 101);
+      final (bumpR, rootR) = _proofFor(tx('R'), 101);
+      // F was confirmed in X101 and reverted by a reorganization; ARC then
+      // reported it REJECTED (stale, or a competing transaction won on the
+      // other branch): its row is failed in w1, pending in w2. R's proof was
+      // rejected against the header active then; its row is failed.
+      final x101 = _header('X101', merkleRoot: rootF).blockHash().toString();
+      tags[x101] = 'X101';
+      await storage.storeMerkleProof(tx('F'), proof(tx('F'), 101, MerkleProofStatus.verified, hash: x101));
+      await storage.markMerkleProofOrphaned(tx('F'), blockHash: x101);
+      await storage.storeTransaction('w1', _row('w1', tx('F'), TransactionStatus.failed, null, DateTime.utc(2026, 9, 2)));
+      await storage.storeTransaction('w2', _row('w2', tx('F'), pending, null, DateTime.utc(2026, 9, 2)));
+      await storage.upsertUTXO('w1', _utxo(tx('F'), 0, UTXOStatus.pending));
+      await storage.storeMerkleProof(tx('R'), proof(tx('R'), 101, MerkleProofStatus.rejected));
+      await storage.storeTransaction('w1', _row('w1', tx('R'), TransactionStatus.failed, null, DateTime.utc(2026, 9, 2)));
+      await storage.upsertUTXO('w1', _utxo(tx('R'), 1, UTXOStatus.pending));
+
+      // The proof in a block of the active chain is authoritative: mined,
+      // whatever ARC said. F's block becomes active again.
+      await activate('X101', 101, merkleRoot: rootF);
+      await deliver(HeaderChainReorganizedMessage(
+          forkHeight: 100, orphanedBlockHashes: [blockHash('B101')], newTipHeight: 101));
+
+      expect(await proofHistory(tx('F')), ['verified:X101']);
+      expect(commands()..sort(), [
+        'available w1 F:0',
+        'confirm w1 F h=101 hash=X101 bump=$bumpF',
+        'confirm w2 F h=101 hash=X101 bump=$bumpF',
+      ]);
+
+      // R's block (another branch) becomes active in a later batch.
+      walletManager.messages.clear();
+      final r101 = _header('R101', merkleRoot: rootR);
+      await storage.storeBlockHeader(r101, 101);
+      tags[r101.blockHash().toString()] = 'R101';
+      await deliver(HeaderChainReorganizedMessage(
+          forkHeight: 100, orphanedBlockHashes: [x101], newTipHeight: 101));
+      expect(commands(), containsAll(['confirm w1 R h=101 hash=R101 bump=$bumpR', 'available w1 R:1']));
+    });
+
     test('an orphaned proof is not revived over a current proof of the transaction', () async {
       await spawnSpv();
       final (_, rootO) = _proofFor(tx('O'), 101);

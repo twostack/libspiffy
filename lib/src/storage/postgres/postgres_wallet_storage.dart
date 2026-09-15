@@ -1646,6 +1646,24 @@ class PostgresWalletStorage implements ReadModelStorage {
     return result.map(_rowToMerkleProof).toList();
   }
 
+  /// `idx_merkle_proofs_status_changed` (v018): the rows of [status] changed
+  /// at or after [since] only (bead hccp).
+  @override
+  Future<List<MerkleProof>> getMerkleProofsByStatusChangedSince(MerkleProofStatus status, DateTime since) async {
+    _ensureInitialized();
+
+    final result = await _pool!.execute(
+      Sql.named('''
+        SELECT $_merkleProofColumns
+        FROM merkle_proofs
+        WHERE status = @status AND status_changed_at >= @since
+        ORDER BY id
+      '''),
+      parameters: {'status': status.name, 'since': since.toUtc()},
+    );
+    return result.map(_rowToMerkleProof).toList();
+  }
+
   @override
   Future<Map<String, MerkleProof>> getMerkleProofsBatch(List<String> txids) async {
     if (txids.isEmpty) return {};

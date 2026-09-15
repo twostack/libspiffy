@@ -64,6 +64,13 @@ class InMemoryWalletStorage implements WalletStorage {
   @visibleForTesting
   int transactionRowsRead = 0;
 
+  /// Merkle proof rows the proof list queries (by status, by status and
+  /// height or change time, history) have returned since this storage was
+  /// created: the rows a backend with an index on those columns reads. Lets
+  /// a test observe how many proofs an operation reads; tests may reset it.
+  @visibleForTesting
+  int merkleProofRowsRead = 0;
+
   // Block header storage: height -> BlockHeader
   final Map<int, BlockHeader> _blockHeaders = {};
   
@@ -831,16 +838,21 @@ _balanceCache.remove(walletId);
 
   @override
   Future<List<MerkleProof>> getMerkleProofHistory(String txid) async {
-    return List.unmodifiable(_merkleProofs[txid] ?? const <MerkleProof>[]);
+    return _countProofRows(List.unmodifiable(_merkleProofs[txid] ?? const <MerkleProof>[]));
+  }
+
+  List<MerkleProof> _countProofRows(List<MerkleProof> rows) {
+    merkleProofRowsRead += rows.length;
+    return rows;
   }
 
   @override
   Future<List<MerkleProof>> getMerkleProofsByStatus(MerkleProofStatus status) async {
-    return [
+    return _countProofRows([
       for (final rows in _merkleProofs.values)
         for (final r in rows)
           if (r.status == status) r,
-    ];
+    ]);
   }
 
   @override
@@ -849,11 +861,20 @@ _balanceCache.remove(walletId);
     int fromHeight,
     int toHeight,
   ) async {
-    return [
+    return _countProofRows([
       for (final rows in _merkleProofs.values)
         for (final r in rows)
           if (r.status == status && r.blockHeight >= fromHeight && r.blockHeight <= toHeight) r,
-    ];
+    ]);
+  }
+
+  @override
+  Future<List<MerkleProof>> getMerkleProofsByStatusChangedSince(MerkleProofStatus status, DateTime since) async {
+    return _countProofRows([
+      for (final rows in _merkleProofs.values)
+        for (final r in rows)
+          if (r.status == status && r.statusChangedAt != null && !r.statusChangedAt!.isBefore(since)) r,
+    ]);
   }
 
   @override

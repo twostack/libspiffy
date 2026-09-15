@@ -48,16 +48,21 @@ class OutgoingTransactions {
 
   /// Whether the outgoing transaction [txid] this wallet recorded lists
   /// [utxoKey] among the UTXOs it spends.
-  static bool recordedTransactionSpends(WalletState state, String txid, String utxoKey) {
+  static bool recordedTransactionSpends(WalletState state, String txid, String utxoKey) =>
+      _recordedSpentKeys(state, txid).contains(utxoKey);
+
+  /// The UTXO keys the outgoing transaction [txid] this wallet recorded
+  /// spends; empty when it recorded none.
+  static List<String> _recordedSpentKeys(WalletState state, String txid) {
     final records = state.metadata[_outgoingTransactionsKey];
     final record = records is Map
         ? records[txid]
         : records is List
             ? records.firstWhere((r) => r is Map && r['txid']?.toString() == txid, orElse: () => null)
             : null;
-    if (record is! Map) return false;
+    if (record is! Map) return const [];
     final keys = record['spentUtxoKeys'];
-    return keys is List && keys.contains(utxoKey);
+    return keys is List ? [for (final k in keys) k.toString()] : const [];
   }
 
   // ---------------------------------------------------------------------------
@@ -364,25 +369,78 @@ class OutgoingTransactions {
     return events;
   }
 
-  /// Handle confirming a pending transaction
+  /// Confirm a transaction: its merkle proof verified against the active
+  /// header chain, so it is mined, whatever the network reported before.
+  ///
+  /// A confirmation is authoritative (bead hccp): an outgoing transaction
+  /// this wallet recorded spends its inputs, so each of them the wallet still
+  /// holds unspent is spent by it (UTXOSpentEvent before the
+  /// TransactionConfirmedEvent). That applies the spend of a deferred payment
+  /// ARC reported REJECTED, or the user cancelled, whose inputs were
+  /// released; a payment whose spend already applied spends nothing again.
+  /// An input recorded as spent by another transaction is a double spend
+  /// with that one: logged severe and left as recorded (that spend is not
+  /// rewritten). An input another deferred payment holds is spent by this
+  /// transaction (that payment can no longer settle), logged severe; an
+  /// input under another reservation is spent too, logged as a warning.
   static List<Event> confirm(WalletState currentState, ConfirmTransactionCommand command) {
     // Business rule: Wallet must exist
     if (!currentState.isCreated) {
       throw StateError('Cannot confirm transaction for non-existent wallet');
     }
 
-    // Emit TransactionConfirmedEvent
-    final event = TransactionConfirmedEvent(
+    final events = <Event>[];
+    for (final key in _recordedSpentKeys(currentState, command.txid).toSet()) {
+      final utxo = currentState.utxos[key];
+      if (utxo == null) continue;
+      if (utxo.status == UTXOStatus.spent) {
+        final spender = utxo.spentInTxId;
+        if (spender != null && spender != command.txid) {
+          _log.severe('Double spend in wallet ${command.walletId}: transaction ${command.txid} is confirmed by a '
+              'merkle proof on the active header chain, but its input $key is recorded as spent by $spender. '
+              'The confirmation stands; the spend by $spender is left as recorded');
+        }
+        continue;
+      }
+      final holder = DeferredPayments.explicitHolder(currentState, key);
+      final reservedBy = utxo.status == UTXOStatus.reserved ? utxo.reservedByTxId : null;
+      if (holder != null && holder != command.txid) {
+        _log.severe('Double spend in wallet ${command.walletId}: transaction ${command.txid} is confirmed by a '
+            'merkle proof on the active header chain and spends input $key, which deferred payment $holder holds; '
+            '$holder can no longer settle');
+      } else if (reservedBy != null && reservedBy != command.txid) {
+        // A reservation (the payment coordinator reserves under a payment id
+        // before the txid exists, so this may be the transaction's own).
+        _log.warning('Transaction ${command.txid} is confirmed in wallet ${command.walletId} and spends input '
+            '$key, reserved by $reservedBy');
+      }
+      final sep = key.lastIndexOf(':');
+      final vout = sep > 0 ? int.tryParse(key.substring(sep + 1)) : null;
+      if (vout == null) continue;
+      events.add(UTXOSpentEvent(
+        walletId: command.walletId,
+        txid: key.substring(0, sep),
+        vout: vout,
+        spentInTxId: command.txid,
+        version: currentState.version + events.length + 1,
+        timestamp: DateTime.now(),
+      ));
+    }
+    if (events.isNotEmpty) {
+      _log.info('Transaction ${command.txid} confirmed in wallet ${command.walletId}: '
+          '${events.length} input(s) it spends were still unspent and are spent now');
+    }
+
+    events.add(TransactionConfirmedEvent(
       walletId: command.walletId,
       txid: command.txid,
       blockHeight: command.blockHeight,
       blockHash: command.blockHash,
       bumpHex: command.bumpHex,
-      version: currentState.version + 1,
+      version: currentState.version + events.length + 1,
       timestamp: DateTime.now(),
-    );
-
-    return [event];
+    ));
+    return events;
   }
 
   /// Take back a confirmation whose block left the active chain or whose

@@ -8,6 +8,7 @@ library;
 
 import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:eventador/eventador.dart';
+import 'package:logging/logging.dart';
 import 'package:test/test.dart';
 
 import 'package:libspiffy/src/core/bitcoin_wallet_aggregate.dart';
@@ -588,6 +589,93 @@ void main() {
       await expectLater(wallet.pay([_input]), throwsA(isA<StateError>()));
       expect(wallet.utxo(_input).status, isNot(UTXOStatus.spent));
       expect(wallet.deferred(txid)['state'], 'failed');
+    });
+  });
+
+  // hccp (libspiffy-hccp, from hg0/10r): a merkle proof that verifies
+  // against the active header chain is authoritative. A payment ARC
+  // reported REJECTED (stale, or a competing spend that lost) or that the
+  // user cancelled was mined after all: its confirmation spends the inputs
+  // the failure or cancellation released. Old code journaled only
+  // TransactionConfirmedEvent and left them available to spend again.
+  group('hccp: a confirmation of a failed or cancelled payment', () {
+    for (final resolution in ['failed', 'cancelled']) {
+      test('$resolution, then confirmed: the released inputs are spent by it, journaled, mined', () async {
+        final wallet = _Wallet();
+        final txid = await wallet.pay([_input, _pendingInput]);
+        if (resolution == 'failed') {
+          await wallet.handle(RecordTransactionNetworkStatusCommand(
+              walletId: _w, txid: txid, networkStatus: DeferredNetworkStatus.rejected));
+        } else {
+          await wallet.handle(CancelDeferredSpendCommand(walletId: _w, txid: txid));
+        }
+        expect(wallet.utxo(_input).status, UTXOStatus.available);
+        expect(wallet.deferred(txid)['state'], resolution);
+
+        final events = await wallet.handle(
+            ConfirmTransactionCommand(walletId: _w, txid: txid, blockHeight: 10, blockHash: 'h', bumpHex: 'bump'));
+
+        expect(
+            [
+              for (final e in events)
+                switch (e) {
+                  final UTXOSpentEvent s => 'spent ${s.txid}:${s.vout} in ${s.spentInTxId}',
+                  final TransactionConfirmedEvent c => 'confirmed ${c.txid} h=${c.blockHeight} bump=${c.bumpHex}',
+                  final other => other.runtimeType.toString(),
+                },
+            ],
+            ['spent $_input in $txid', 'spent $_pendingInput in $txid', 'confirmed $txid h=10 bump=bump']);
+        for (final state in [wallet.aggregate.currentState, wallet.replay().currentState]) {
+          for (final key in [_input, _pendingInput]) {
+            expect((state.utxos[key]!.status, state.utxos[key]!.spentInTxId), (UTXOStatus.spent, txid));
+          }
+          expect(state.metadata['deferredSpends'][txid]['state'], 'mined');
+          expect(state.availableBalance, BigInt.from(7000), reason: 'only the untouched UTXO is spendable');
+        }
+
+        // Confirmed again (another proof report): nothing more to spend.
+        final again = await wallet.handle(ConfirmTransactionCommand(walletId: _w, txid: txid, blockHeight: 10));
+        expect(again.map((e) => e.runtimeType), [TransactionConfirmedEvent]);
+      });
+    }
+
+    test('an input another transaction spent meanwhile is a double spend: logged severe, left as it is; '
+        'an input another payment holds is spent by the mined one', () async {
+      final wallet = _Wallet();
+      final mined = await wallet.pay([_input, _other]);
+      await wallet.handle(RecordTransactionNetworkStatusCommand(
+          walletId: _w, txid: mined, networkStatus: DeferredNetworkStatus.rejected));
+      // The released inputs were used again: _input by a payment the network
+      // took, _other by a payment still outstanding.
+      final spender = await wallet.pay([_input], sats: 2000);
+      await wallet.handle(SpendUTXOCommand(walletId: _w, utxoKey: _input, spendingTxId: spender, fee: BigInt.zero));
+      final holder = await wallet.pay([_other], sats: 3000);
+      expect(wallet.utxo(_other).reservedByTxId, holder);
+
+      final severe = <String>[];
+      final sub = Logger.root.onRecord.where((r) => r.level >= Level.SEVERE).listen((r) => severe.add(r.message));
+      final List<Event> events;
+      try {
+        events = await wallet.handle(ConfirmTransactionCommand(walletId: _w, txid: mined, blockHeight: 10));
+      } finally {
+        await sub.cancel();
+      }
+
+      expect([for (final e in events) e is UTXOSpentEvent ? 'spent ${e.txid}:${e.vout} in ${e.spentInTxId}' : '${e.runtimeType}'],
+          ['spent $_other in $mined', 'TransactionConfirmedEvent']);
+      for (final state in [wallet.aggregate.currentState, wallet.replay().currentState]) {
+        expect((state.utxos[_input]!.status, state.utxos[_input]!.spentInTxId), (UTXOStatus.spent, spender),
+            reason: 'the other spend is not rewritten');
+        expect((state.utxos[_other]!.status, state.utxos[_other]!.spentInTxId), (UTXOStatus.spent, mined));
+        expect(state.metadata['deferredSpends'][mined]['state'], 'mined');
+        expect(state.metadata['deferredSpends'][spender]['state'], 'seen');
+        expect(state.metadata['deferredSpends'][holder]['state'], 'outstanding',
+            reason: 'it can no longer settle; its status comes from the network');
+        expect((state.metadata['deferredHolds'] as Map).containsKey(_other), isFalse);
+      }
+      expect(severe, hasLength(2));
+      expect(severe.firstWhere((m) => m.contains(_input)), allOf(contains(mined), contains(spender), contains('Double spend')));
+      expect(severe.firstWhere((m) => m.contains(_other)), allOf(contains(mined), contains(holder)));
     });
   });
 

@@ -104,7 +104,8 @@ void main() {
 
   String tagOf(String? h) => h == null ? 'null' : (tags[h] ?? hashTags[h] ?? h);
 
-  MerkleProof proof(String txid, int height, MerkleProofStatus status, {String? hash, String? bumpHex}) =>
+  MerkleProof proof(String txid, int height, MerkleProofStatus status,
+          {String? hash, String? bumpHex, DateTime? statusChangedAt}) =>
       MerkleProof(
         txid: txid,
         blockHash: hash,
@@ -112,6 +113,7 @@ void main() {
         position: 0,
         merkleProof: [bumpHex ?? _proofFor(txid, height).$1],
         status: status,
+        statusChangedAt: statusChangedAt,
       );
 
   setUp(() async {
@@ -344,6 +346,145 @@ void main() {
     });
   });
 
+  // hccp (libspiffy-hccp, part 2): every header notification read every
+  // rejected proof ever stored (getMerkleProofsByStatus(rejected)) to find
+  // confirmations resting only on one. The first check of an actor still
+  // reads them all; later ones read the proofs whose status became rejected
+  // or orphaned since shortly before the previous check. The first test
+  // observes the proof rows read; the others pin behaviour that passed on
+  // the code before and must keep passing.
+  group('hccp: rejected proofs read per header notification', () {
+    final longAgo = DateTime.utc(2026, 1, 1);
+
+    Future<void> spawnSpvAgain() async {
+      spv = await system.spawn('spv-again-${DateTime.now().microsecondsSinceEpoch}',
+          () => SPVActor(walletManager: walletManagerRef, invoiceCoordinator: walletManagerRef, storage: storage, arcActor: arcRef));
+    }
+
+    test('a notification reads the rejected proofs whose status changed since the previous check, not all of them',
+        () async {
+      await storage.storeBlockHeader(_header(200), 200);
+      // Rejected proofs of received ancestors, stored long ago: no wallet
+      // transaction rests on them.
+      for (var i = 0; i < 300; i++) {
+        final ancestor = _hex64('ancestor-$i');
+        await storage.storeAncestorTransaction(ancestor, '0100000000000000000000');
+        await storage.storeMerkleProof(ancestor, proof(ancestor, 150, MerkleProofStatus.rejected, statusChangedAt: longAgo));
+      }
+      await deliver(headerStored()); // the actor's first check reads them all
+      expect(reverts(), isEmpty);
+
+      await storage.storeTransaction('w1', _row('w1', tx('x'), TransactionStatus.confirmed, 200, 1));
+      await storage.storeMerkleProof(tx('x'), proof(tx('x'), 200, MerkleProofStatus.rejected));
+      storage.resetCounters();
+      await deliver(headerStored());
+
+      expect(reverts(), ['w1 x h=200 hash=null proof=true its only proof does not match the block header at height 200']);
+      expect(storage.merkleProofRowsRead, lessThanOrEqualTo(3), reason: 'merkle proof rows read');
+
+      storage.resetCounters();
+      await deliver(headerStored());
+      expect(reverts(), hasLength(1));
+      expect(storage.merkleProofRowsRead, lessThanOrEqualTo(3), reason: 'merkle proof rows read');
+    });
+
+    test('the first check of an actor reverts a confirmation resting on a proof rejected long ago', () async {
+      await storage.storeBlockHeader(_header(200), 200);
+      await storage.storeTransaction('w1', _row('w1', tx('old'), TransactionStatus.confirmed, 200, 1));
+      await storage.storeMerkleProof(tx('old'), proof(tx('old'), 200, MerkleProofStatus.rejected, statusChangedAt: longAgo));
+      await storage.storeTransaction('w1', _row('w1', tx('old2'), TransactionStatus.confirmed, 200, 2));
+      await storage.storeMerkleProof(tx('old2'), proof(tx('old2'), 200, MerkleProofStatus.rejected, statusChangedAt: longAgo));
+
+      await spawnSpvAgain(); // checks at start (a header is stored)
+      await deliver(headerStored());
+      // The actor spawned in setUp (no header then) checks on its first
+      // notification; each reverts once.
+      expect(reverts().map((r) => r.split(' ').take(2).join(' ')).toSet(), {'w1 old', 'w1 old2'});
+    });
+
+    test('once the full-sweep interval has elapsed, a confirmation resting on a proof rejected long before the '
+        'previous check is reverted', () async {
+      var now = DateTime.utc(2026, 9, 16, 12);
+      await storage.storeBlockHeader(_header(200), 200);
+      spv = await system.spawn('spv-clock-${DateTime.now().microsecondsSinceEpoch}',
+          () => SPVActor(
+              walletManager: walletManagerRef,
+              invoiceCoordinator: walletManagerRef,
+              storage: storage,
+              arcActor: arcRef,
+              rejectedProofFullSweepInterval: const Duration(hours: 1),
+              clock: () => now)); // full check at start
+      // Rejected long ago; its row is written confirmed later (a replay whose
+      // journal lacks the revert): no status change for the feed to see.
+      await storage.storeTransaction('w1', _row('w1', tx('stale'), TransactionStatus.pending, null, 1));
+      await storage.storeMerkleProof(tx('stale'), proof(tx('stale'), 200, MerkleProofStatus.rejected, statusChangedAt: longAgo));
+      await deliver(headerStored());
+      await storage.storeTransaction('w1', _row('w1', tx('stale'), TransactionStatus.confirmed, 200, 2));
+
+      now = now.add(const Duration(minutes: 59));
+      storage.resetCounters();
+      await deliver(headerStored());
+      expect(reverts(), isEmpty, reason: 'inside the interval the check reads the changed-since feed only');
+      expect(storage.merkleProofRowsRead, 0, reason: 'merkle proof rows read inside the interval');
+
+      now = now.add(const Duration(minutes: 1));
+      await deliver(headerStored());
+      expect(reverts(), ['w1 stale h=200 hash=null proof=true its only proof does not match the block header at height 200']);
+      expect(arcPolls(), [
+        ['stale']
+      ]);
+
+      // The next full sweep is an interval later; the revert is not repeated.
+      now = now.add(const Duration(minutes: 30));
+      storage.resetCounters();
+      await deliver(headerStored());
+      expect(reverts(), hasLength(1));
+      expect(storage.merkleProofRowsRead, 0);
+    });
+
+    test('a rejected proof whose row is confirmed after a check read it is reverted at the next notification',
+        () async {
+      await storage.storeBlockHeader(_header(200), 200);
+      await deliver(headerStored());
+      // The projection stores the proof, then (after this check) the row.
+      await storage.storeTransaction('w1', _row('w1', tx('late'), TransactionStatus.pending, null, 1));
+      await storage.storeMerkleProof(tx('late'), proof(tx('late'), 200, MerkleProofStatus.rejected));
+      await deliver(headerStored());
+      expect(reverts(), isEmpty);
+
+      await storage.storeTransaction('w1', _row('w1', tx('late'), TransactionStatus.confirmed, 200, 2));
+      await deliver(headerStored());
+
+      expect(reverts(), ['w1 late h=200 hash=null proof=true its only proof does not match the block header at height 200']);
+    });
+
+    test('a confirmation whose current proof is orphaned without a revert is reverted on its older rejected proof',
+        () async {
+      await storage.storeBlockHeader(_header(200), 200);
+      final (bumpRejected, _) = _proofFor(tx('Y'), 199);
+      await storage.storeMerkleProof(tx('Y'), proof(tx('Y'), 199, MerkleProofStatus.rejected, statusChangedAt: longAgo));
+      await storage.storeMerkleProof(tx('Y'), proof(tx('Y'), 200, MerkleProofStatus.verified, hash: blockHash('Y200')));
+      await storage.storeTransaction('w1', _row('w1', tx('Y'), TransactionStatus.confirmed, 200, 1));
+      await deliver(headerStored());
+      expect(reverts(), isEmpty, reason: 'a current proof backs it');
+
+      // As WalletProjection marks a replayed proof whose block left the
+      // active chain (no revert of its own).
+      expect(await storage.markMerkleProofOrphaned(tx('Y'), blockHash: blockHash('Y200')), isTrue);
+      await deliver(headerStored());
+
+      final revert = walletManager.messages
+          .whereType<WalletCommandMessage>()
+          .map((m) => m.command)
+          .whereType<RevertTransactionConfirmationCommand>()
+          .single;
+      expect((revert.walletId, tagOf(revert.txid), revert.blockHeight, revert.merkleProof?.join()), ('w1', 'Y', 199, bumpRejected));
+      expect(arcPolls(), [
+        ['Y']
+      ]);
+    });
+  });
+
   group('ctkm: reads are bounded by the rows acted on', () {
     /// [count] confirmed transactions of one wallet, well below any fork.
     Future<void> seedHistory(int count) async {
@@ -407,6 +548,7 @@ class _CountingStorage extends InMemoryWalletStorage {
   void resetCounters() {
     confirmedHistoryScans = 0;
     transactionRowsRead = 0;
+    merkleProofRowsRead = 0;
   }
 
   @override

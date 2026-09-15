@@ -1071,6 +1071,21 @@ class IsarWalletStorage implements ReadModelStorage {
     return [for (final e in entities) e.toMerkleProof()];
   }
 
+  /// The rows of [status] (the status prefix of the (status, blockHeight)
+  /// index) changed at or after [since] (bead hccp). Rows written before bead
+  /// mny have no status and no change time, so none qualifies.
+  @override
+  Future<List<MerkleProof>> getMerkleProofsByStatusChangedSince(MerkleProofStatus status, DateTime since) async {
+    final entities = await _traced('getMerkleProofsByStatusChangedSince', _isar.merkleProofEntitys
+        .where()
+        .statusEqualToAnyBlockHeight(status.name)
+        .filter()
+        .statusChangedAtGreaterThan(since, include: true))
+        .findAll();
+    entities.sort((a, b) => a.id.compareTo(b.id));
+    return [for (final e in entities) e.toMerkleProof()];
+  }
+
   @override
   Future<List<MerkleProof>> getMerkleProofsForBlock(String blockHash) async {
     final entities = await _traced('getMerkleProofsForBlock', _isar.merkleProofEntitys

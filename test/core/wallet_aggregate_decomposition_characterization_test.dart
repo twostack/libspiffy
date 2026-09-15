@@ -573,7 +573,13 @@ void main() {
       final wallet3 = await _Wallet.create();
       await wallet3.receive(2, 2000);
       final txid = legacyRecord(wallet3, [_key(2)], DateTime.utc(2025));
-      await wallet3.handle(ConfirmTransactionCommand(walletId: _w, txid: txid, blockHeight: 5, blockHash: 'h'));
+      // A confirmation journaled before bead hccp, which did not spend the
+      // inputs (a ConfirmTransactionCommand now spends them).
+      wallet3.apply([
+        TransactionConfirmedEvent(
+            walletId: _w, txid: txid, blockHeight: 5, blockHash: 'h',
+            version: wallet3.state.version + 1, timestamp: DateTime.utc(2025, 2)),
+      ]);
       await expectReservable(wallet3, _key(2), true);
       await wallet3.handle(RevertTransactionConfirmationCommand(walletId: _w, txid: txid, reason: 'reorg'));
       await expectReservable(wallet3, _key(2), false);

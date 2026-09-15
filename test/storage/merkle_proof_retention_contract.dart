@@ -293,6 +293,54 @@ void defineMerkleProofRetentionContract(
       expect(await s.getMerkleProofsByStatusBetweenHeights(MerkleProofStatus.orphaned, 103, 101), isEmpty);
     });
 
+    test('hccp: proofs of one status whose status changed at or after a time, oldest first', () async {
+      final s = storage();
+      final u = unique();
+      String t(String tag) => contractHex64('ret-changed-$tag-$u');
+      final block = contractHex64('ret-changed-block-$u');
+      final early = DateTime.utc(2026, 9, 10, 8);
+      final cut = DateTime.utc(2026, 9, 10, 9);
+      final late = DateTime.utc(2026, 9, 10, 10);
+      MerkleProof at(String tag, MerkleProofStatus status, DateTime changedAt, {String? hash}) => MerkleProof(
+          txid: t(tag),
+          blockHash: hash,
+          blockHeight: 10,
+          merkleProof: [bumpHex('$tag-$u')],
+          position: 1,
+          status: status,
+          statusChangedAt: changedAt);
+
+      await s.storeMerkleProof(t('rLate'), at('rLate', MerkleProofStatus.rejected, late));
+      await s.storeMerkleProof(t('rEarly'), at('rEarly', MerkleProofStatus.rejected, early));
+      await s.storeMerkleProof(t('rCut'), at('rCut', MerkleProofStatus.rejected, cut));
+      await s.storeMerkleProof(t('vLate'), at('vLate', MerkleProofStatus.verified, late, hash: block));
+      // Verified long ago, orphaned late.
+      await s.storeMerkleProof(t('oLate'), at('oLate', MerkleProofStatus.verified, early, hash: block));
+      expect(await s.markMerkleProofOrphaned(t('oLate'), at: late), isTrue);
+      // A pendingHeader proof (changed early) that becomes rejected late: the
+      // same row, its change time moves.
+      await s.storeMerkleProof(t('pr'), at('pr', MerkleProofStatus.pendingHeader, early));
+      await s.storeMerkleProof(t('pr'), at('pr', MerkleProofStatus.rejected, late));
+      // Stored again with the same status: the change time stays.
+      await s.storeMerkleProof(t('rEarly'), at('rEarly', MerkleProofStatus.rejected, late));
+      final mine = {for (final tag in ['rLate', 'rEarly', 'rCut', 'vLate', 'oLate', 'pr']) t(tag): tag};
+
+      Future<List<String>> since(MerkleProofStatus status, DateTime from) async {
+        final rows = await s.getMerkleProofsByStatusChangedSince(status, from);
+        expect(rows.every((p) => p.status == status && !p.statusChangedAt!.isBefore(from)), isTrue,
+            reason: 'every row returned has that status and changed at or after the time');
+        return [for (final p in rows) if (mine[p.txid] case final tag?) tag];
+      }
+
+      expect(await since(MerkleProofStatus.rejected, cut), ['rLate', 'rCut', 'pr'], reason: 'store order, bound included');
+      expect(await since(MerkleProofStatus.rejected, early), ['rLate', 'rEarly', 'rCut', 'pr']);
+      expect(await since(MerkleProofStatus.rejected, late.add(const Duration(seconds: 1))), isEmpty);
+      expect(await since(MerkleProofStatus.orphaned, cut), ['oLate']);
+      expect(await since(MerkleProofStatus.verified, cut), ['vLate']);
+      expect([for (final p in await s.getMerkleProofHistory(t('pr'))) (p.status, p.statusChangedAt!.toUtc())],
+          [(MerkleProofStatus.rejected, late)]);
+    });
+
     // azl (libspiffy-azl): a proof the header at its height contradicts was
     // stored as pendingHeader and stayed the current proof (BEEFs used it).
     Future<List<(String?, MerkleProofStatus, String)>> shape(ReadModelStorage s, String txid) async =>

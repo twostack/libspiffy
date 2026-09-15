@@ -167,6 +167,8 @@ All third-party interaction flows through a single unified facade — **WalletCo
 6. Coordinator emits TransactionConfirmedEvent on public stream
 ```
 
+A merkle proof that verifies against the active header chain is authoritative: the transaction is mined, so it is confirmed even when it is marked failed (ARC's REJECTED can be stale, or a competing spend can lose), for example when a reorganization makes its block active again. The confirmation spends the inputs a failed or cancelled deferred payment had released; an input another transaction spent meanwhile is a double spend, logged and left as recorded.
+
 ## Data Models (Current Implementation)
 
 ### BitcoinUtxo

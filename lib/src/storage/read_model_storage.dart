@@ -570,6 +570,28 @@ abstract class ReadModelStorage {
     ];
   }
 
+  /// The proof rows with [status] whose status changed at or after [since]
+  /// ([MerkleProof.statusChangedAt]), oldest first (bead libspiffy-hccp).
+  /// Rows without a `statusChangedAt` are not returned.
+  ///
+  /// Serves SPVActor's check for confirmations resting only on a rejected
+  /// proof: each header notification reads the proofs that became rejected
+  /// (or orphaned) since the previous check, not every rejected proof ever
+  /// stored. Backends read only those rows (a (status, status changed at)
+  /// index).
+  ///
+  /// The default implementation filters [getMerkleProofsByStatus]; the
+  /// libspiffy backends override it.
+  Future<List<MerkleProof>> getMerkleProofsByStatusChangedSince(
+    MerkleProofStatus status,
+    DateTime since,
+  ) async {
+    return [
+      for (final proof in await getMerkleProofsByStatus(status))
+        if (proof.statusChangedAt case final changedAt? when !changedAt.isBefore(since)) proof,
+    ];
+  }
+
   /// The current ([MerkleProof.isCurrent]) proofs that name [blockHash].
   ///
   /// Parameters:

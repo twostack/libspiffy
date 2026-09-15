@@ -333,6 +333,11 @@ results). Defects found on the way are report section 11, V-35 to V-39.
   `InvoiceState` and `ChannelState` are copy-on-write: each event yields a
   new state, exposed collections are unmodifiable, and a state you hold never
   changes (V-39). Replay copies only what each event touches.
+- **Wallet aggregate decomposed (L5, libspiffy-dp4).** `BitcoinWalletAggregate`
+  delegates to collaborators in `lib/src/core/wallet/` (keys, address book,
+  UTXO ledger, reservations, deferred payments, outgoing transactions,
+  signer, channel funding); one wallet is still one aggregate with the same
+  journal. The write model's balances share one rule (`WalletBalances`).
 
 #### Breaking changes in wave 4
 

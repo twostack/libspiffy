@@ -1,6 +1,7 @@
 import 'package:dactor/dactor.dart';
 import 'package:libspiffy/libspiffy.dart';
 import '../core/wallet_commands.dart';
+import '../models/deferred_payment.dart';
 
 /// Messages for coordinating between actors in the LibSpiffy system
 
@@ -951,4 +952,139 @@ class TransactionConfirmationsRevertedMessage implements Message {
   ActorRef? get replyTo => null;
   @override
   DateTime get timestamp => _timestamp;
+}
+
+// ==========================================================================
+// DEFERRED PAYMENTS (bead libspiffy-7p2)
+// ==========================================================================
+
+/// Reply of the wallet aggregate to [CancelDeferredSpendCommand].
+class DeferredSpendCancelledResponse extends LocalMessage {
+  final String walletId;
+  final String txid;
+  final bool success;
+  final String? error;
+
+  /// The inputs returned to their pre-reservation status.
+  final List<String> releasedUtxoKeys;
+
+  DeferredSpendCancelledResponse({
+    required this.walletId,
+    required this.txid,
+    required this.success,
+    this.error,
+    this.releasedUtxoKeys = const [],
+  }) : super(payload: null, metadata: {'walletId': walletId, 'txid': txid, 'success': success});
+
+  @override
+  dynamic get payload => this;
+
+  @override
+  String toString() => 'DeferredSpendCancelledResponse($walletId, $txid, success: $success'
+      '${error != null ? ', error: $error' : ''})';
+}
+
+/// Asks ARCActor to query the network status of the deferred payment [txid]
+/// now, instead of waiting for the periodic scan. The wallet is updated as
+/// for a scan result (spend applied on SEEN_ON_NETWORK / MINED, a MINED
+/// merkle proof checked against the local headers before confirming, the
+/// payment failed on REJECTED / DOUBLE_SPEND_ATTEMPTED), and the status is
+/// journaled. Replied with [DeferredPaymentNetworkResult].
+class CheckDeferredPaymentStatusMessage implements Message {
+  final String walletId;
+  final String txid;
+  final DeferredPaymentNetworkSource via;
+
+  CheckDeferredPaymentStatusMessage({
+    required this.walletId,
+    required this.txid,
+    this.via = DeferredPaymentNetworkSource.arc,
+  });
+
+  @override
+  String get correlationId => 'check-deferred-$txid';
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId, 'txid': txid, 'via': via.name};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+/// Asks ARCActor to broadcast the deferred payment [txid] itself: the
+/// unproven transactions of [beefHex] (its unconfirmed ancestors) first,
+/// then [rawTxHex]. Idempotent. Replied with [DeferredPaymentNetworkResult].
+class BroadcastDeferredPaymentMessage implements Message {
+  final String walletId;
+  final String txid;
+  final String rawTxHex;
+  final String? beefHex;
+  final DeferredPaymentNetworkSource via;
+
+  BroadcastDeferredPaymentMessage({
+    required this.walletId,
+    required this.txid,
+    required this.rawTxHex,
+    this.beefHex,
+    this.via = DeferredPaymentNetworkSource.arc,
+  });
+
+  @override
+  String get correlationId => 'broadcast-deferred-$txid';
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId, 'txid': txid, 'via': via.name};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+/// What ARCActor learned from a [CheckDeferredPaymentStatusMessage] or a
+/// [BroadcastDeferredPaymentMessage].
+class DeferredPaymentNetworkResult extends LocalMessage {
+  final String walletId;
+  final String txid;
+
+  /// A source answered (a status, or a definitive "not found"). False when
+  /// every source failed ([error]).
+  final bool success;
+
+  /// ARC's wire status, `NOT_FOUND`, or null when no source answered.
+  final String? networkStatus;
+
+  /// `arc` or `dataSource`.
+  final String? source;
+  final int? blockHeight;
+
+  /// Result of checking a MINED merkle proof against the local headers:
+  /// `verified`, `headerUnknown`, `rootMismatch`, `malformed`, or null when
+  /// there was no proof to check.
+  final String? proofStatus;
+
+  /// A confirmation was issued: the proof walked to the stored header.
+  final bool confirmed;
+
+  /// The failed broadcast was queued for a durable retry.
+  final bool willRetry;
+  final String? error;
+
+  DeferredPaymentNetworkResult({
+    required this.walletId,
+    required this.txid,
+    required this.success,
+    this.networkStatus,
+    this.source,
+    this.blockHeight,
+    this.proofStatus,
+    this.confirmed = false,
+    this.willRetry = false,
+    this.error,
+  }) : super(payload: null, metadata: {'walletId': walletId, 'txid': txid, 'success': success});
+
+  @override
+  dynamic get payload => this;
+
+  @override
+  String toString() => 'DeferredPaymentNetworkResult($txid, success: $success, status: $networkStatus, '
+      'source: $source, proof: $proofStatus, confirmed: $confirmed${error != null ? ', error: $error' : ''})';
 }

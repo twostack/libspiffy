@@ -1946,3 +1946,316 @@ class TransactionConfirmationRevertedEvent extends WalletEvent {
     );
   }
 }
+
+// =============================================================================
+// DEFERRED PAYMENTS (bead libspiffy-7p2)
+// =============================================================================
+
+DateTime? _deferredDate(Object? value) => value == null
+    ? null
+    : value is DateTime
+        ? value
+        : DateTime.parse(value.toString());
+
+/// A UTXO a deferred payment's failure or cancellation released, and the
+/// status it returned to.
+class ReleasedDeferredInput {
+  final String utxoKey;
+  final UTXOStatus restoredStatus;
+
+  const ReleasedDeferredInput({required this.utxoKey, required this.restoredStatus});
+
+  Map<String, dynamic> toMap() => {'utxoKey': utxoKey, 'restoredStatus': restoredStatus.name};
+
+  factory ReleasedDeferredInput.fromMap(Map<dynamic, dynamic> map) => ReleasedDeferredInput(
+        utxoKey: map['utxoKey'].toString(),
+        restoredStatus: UTXOStatus.values.firstWhere(
+          (s) => s.name == map['restoredStatus'],
+          orElse: () => UTXOStatus.available,
+        ),
+      );
+
+  static List<ReleasedDeferredInput> listFrom(Object? value) => value is List
+      ? [for (final e in value) if (e is Map) ReleasedDeferredInput.fromMap(e)]
+      : const [];
+}
+
+/// A recorded outgoing transaction's spend is deferred: the wallet holds its
+/// inputs until the network settles it (bead libspiffy-7p2).
+///
+/// Each held input becomes reserved by [txid] with no expiry, so reservation
+/// expiry, `CleanupExpiredReservationsCommand` and higher-priority
+/// reservations cannot release or take it. The hold ends when the network
+/// reports the transaction (the inputs are spent), when ARC reports it
+/// definitively failed ([DeferredTransactionFailedEvent]) or when the user
+/// cancels it ([DeferredTransactionCancelledEvent]).
+///
+/// Journaled with the `TransactionRecordedEvent` of a `deferSpend` recording,
+/// or later with [inferred] true for a record journaled before holds existed.
+class TransactionSpendDeferredEvent extends WalletEvent {
+  static const String stableTypeName = 'wallet.transaction.spend_deferred';
+
+  @override
+  String get typeName => stableTypeName;
+
+  final String txid;
+
+  /// The inputs held (`{'utxoKey': 'txid:vout', 'satoshis': '1000'}`): the
+  /// wallet's unspent UTXOs the transaction spends that no other deferred
+  /// payment already holds.
+  final List<Map<String, dynamic>> heldInputs;
+
+  final List<String> recipientAddresses;
+  final String paymentAmount;
+  final int fee;
+  final String? invoiceId;
+  final String? purpose;
+
+  /// True when inferred from an older journal (see class doc).
+  final bool inferred;
+
+  /// When the transaction was recorded (the record's time for an inferred
+  /// hold; otherwise the event time).
+  final DateTime recordedAt;
+
+  TransactionSpendDeferredEvent({
+    required String walletId,
+    required this.txid,
+    required this.heldInputs,
+    this.recipientAddresses = const [],
+    this.paymentAmount = '0',
+    this.fee = 0,
+    this.invoiceId,
+    this.purpose,
+    this.inferred = false,
+    DateTime? recordedAt,
+    String? eventId,
+    DateTime? timestamp,
+    int? version,
+    Map<String, dynamic>? metadata,
+  })  : recordedAt = recordedAt ?? timestamp ?? DateTime.now(),
+        super(
+          walletId: walletId,
+          eventId: eventId,
+          timestamp: timestamp,
+          version: version,
+          metadata: metadata,
+        );
+
+  /// `txid:vout` of every held input.
+  List<String> get heldUtxoKeys => [for (final i in heldInputs) i['utxoKey'].toString()];
+
+  @override
+  Map<String, dynamic> getWalletEventData() => {
+        'txid': txid,
+        'heldInputs': heldInputs,
+        'recipientAddresses': recipientAddresses,
+        'paymentAmount': paymentAmount,
+        'fee': fee,
+        'invoiceId': invoiceId,
+        'purpose': purpose,
+        'inferred': inferred,
+        'recordedAt': recordedAt.toIso8601String(),
+      };
+
+  static TransactionSpendDeferredEvent fromMap(Map<String, dynamic> map) => TransactionSpendDeferredEvent(
+        walletId: map['walletId'] as String,
+        txid: map['txid'] as String,
+        heldInputs: [
+          for (final e in (map['heldInputs'] as List? ?? const []))
+            if (e is Map) {for (final entry in e.entries) entry.key.toString(): entry.value},
+        ],
+        recipientAddresses: List<String>.from(map['recipientAddresses'] as List? ?? const []),
+        paymentAmount: map['paymentAmount']?.toString() ?? '0',
+        fee: (map['fee'] as num?)?.toInt() ?? 0,
+        invoiceId: map['invoiceId'] as String?,
+        purpose: map['purpose'] as String?,
+        inferred: map['inferred'] as bool? ?? false,
+        recordedAt: _deferredDate(map['recordedAt']),
+        eventId: map['eventId'] as String?,
+        timestamp: _deferredDate(map['timestamp']),
+        version: map['version'] as int?,
+        metadata: map['metadata'] as Map<String, dynamic>?,
+      );
+}
+
+/// A network status observed for a deferred payment (ARC or the configured
+/// data source). The periodic status scan journals a status only when it
+/// differs from the last one; an explicit check or broadcast always does.
+///
+/// SEEN_ON_NETWORK and MINED move an outstanding (or failed / cancelled)
+/// payment to seen. MINED is never a confirmation: that takes a merkle proof
+/// checked against the local headers (TransactionConfirmedEvent).
+class TransactionNetworkStatusCheckedEvent extends WalletEvent {
+  static const String stableTypeName = 'wallet.transaction.network_status_checked';
+
+  @override
+  String get typeName => stableTypeName;
+
+  final String txid;
+  final String networkStatus;
+
+  /// `arc` or `dataSource`.
+  final String source;
+  final DateTime checkedAt;
+  final int? blockHeight;
+
+  /// True for a user-requested check or broadcast.
+  final bool explicit;
+
+  TransactionNetworkStatusCheckedEvent({
+    required String walletId,
+    required this.txid,
+    required this.networkStatus,
+    required this.source,
+    required this.checkedAt,
+    this.blockHeight,
+    this.explicit = false,
+    String? eventId,
+    DateTime? timestamp,
+    int? version,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          eventId: eventId,
+          timestamp: timestamp,
+          version: version,
+          metadata: metadata,
+        );
+
+  @override
+  Map<String, dynamic> getWalletEventData() => {
+        'txid': txid,
+        'networkStatus': networkStatus,
+        'source': source,
+        'checkedAt': checkedAt.toIso8601String(),
+        'blockHeight': blockHeight,
+        'explicit': explicit,
+      };
+
+  static TransactionNetworkStatusCheckedEvent fromMap(Map<String, dynamic> map) =>
+      TransactionNetworkStatusCheckedEvent(
+        walletId: map['walletId'] as String,
+        txid: map['txid'] as String,
+        networkStatus: map['networkStatus'] as String,
+        source: map['source'] as String? ?? 'arc',
+        checkedAt: _deferredDate(map['checkedAt']) ?? DateTime.fromMillisecondsSinceEpoch(0),
+        blockHeight: map['blockHeight'] as int?,
+        explicit: map['explicit'] as bool? ?? false,
+        eventId: map['eventId'] as String?,
+        timestamp: _deferredDate(map['timestamp']),
+        version: map['version'] as int?,
+        metadata: map['metadata'] as Map<String, dynamic>?,
+      );
+}
+
+/// ARC reported a deferred payment definitively failed (REJECTED or
+/// DOUBLE_SPEND_ATTEMPTED): its held inputs return to the status they had
+/// before they were reserved.
+class DeferredTransactionFailedEvent extends WalletEvent {
+  static const String stableTypeName = 'wallet.transaction.deferred_failed';
+
+  @override
+  String get typeName => stableTypeName;
+
+  final String txid;
+  final String networkStatus;
+  final String? reason;
+  final List<ReleasedDeferredInput> releasedInputs;
+
+  DeferredTransactionFailedEvent({
+    required String walletId,
+    required this.txid,
+    required this.networkStatus,
+    this.reason,
+    this.releasedInputs = const [],
+    String? eventId,
+    DateTime? timestamp,
+    int? version,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          eventId: eventId,
+          timestamp: timestamp,
+          version: version,
+          metadata: metadata,
+        );
+
+  @override
+  Map<String, dynamic> getWalletEventData() => {
+        'txid': txid,
+        'networkStatus': networkStatus,
+        'reason': reason,
+        'releasedInputs': [for (final r in releasedInputs) r.toMap()],
+      };
+
+  static DeferredTransactionFailedEvent fromMap(Map<String, dynamic> map) => DeferredTransactionFailedEvent(
+        walletId: map['walletId'] as String,
+        txid: map['txid'] as String,
+        networkStatus: map['networkStatus'] as String,
+        reason: map['reason'] as String?,
+        releasedInputs: ReleasedDeferredInput.listFrom(map['releasedInputs']),
+        eventId: map['eventId'] as String?,
+        timestamp: _deferredDate(map['timestamp']),
+        version: map['version'] as int?,
+        metadata: map['metadata'] as Map<String, dynamic>?,
+      );
+}
+
+/// The user cancelled an outstanding deferred payment the network did not
+/// know (or the wallet cancelled a payment it never handed over): its held
+/// inputs return to the status they had before they were reserved. This does
+/// not revoke a signed transaction the recipient holds.
+class DeferredTransactionCancelledEvent extends WalletEvent {
+  static const String stableTypeName = 'wallet.transaction.deferred_cancelled';
+
+  @override
+  String get typeName => stableTypeName;
+
+  final String txid;
+  final String? reason;
+
+  /// The status the network check before the cancellation returned (null
+  /// when the cancellation did not check, e.g. a payment never handed over).
+  final String? networkStatus;
+  final List<ReleasedDeferredInput> releasedInputs;
+
+  DeferredTransactionCancelledEvent({
+    required String walletId,
+    required this.txid,
+    this.reason,
+    this.networkStatus,
+    this.releasedInputs = const [],
+    String? eventId,
+    DateTime? timestamp,
+    int? version,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          eventId: eventId,
+          timestamp: timestamp,
+          version: version,
+          metadata: metadata,
+        );
+
+  @override
+  Map<String, dynamic> getWalletEventData() => {
+        'txid': txid,
+        'reason': reason,
+        'networkStatus': networkStatus,
+        'releasedInputs': [for (final r in releasedInputs) r.toMap()],
+      };
+
+  static DeferredTransactionCancelledEvent fromMap(Map<String, dynamic> map) =>
+      DeferredTransactionCancelledEvent(
+        walletId: map['walletId'] as String,
+        txid: map['txid'] as String,
+        reason: map['reason'] as String?,
+        networkStatus: map['networkStatus'] as String?,
+        releasedInputs: ReleasedDeferredInput.listFrom(map['releasedInputs']),
+        eventId: map['eventId'] as String?,
+        timestamp: _deferredDate(map['timestamp']),
+        version: map['version'] as int?,
+        metadata: map['metadata'] as Map<String, dynamic>?,
+      );
+}

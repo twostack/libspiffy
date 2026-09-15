@@ -92,6 +92,7 @@ All third-party interaction flows through a single unified facade — **WalletCo
 - `ValidateBEEFCommand`, `RecordOutgoingCommand`
 - `StoreHeadersCommand`, `SplitUTXOsCommand`, `TimestampCommand`
 - `OpenChannelCommand`, `ChannelPayCommand`, `CloseChannelCommand`
+- `GetDeferredPaymentsQuery`, `BroadcastDeferredPaymentCommand`, `CheckDeferredPaymentStatusCommand`, `CancelDeferredPaymentCommand` (payments handed to a recipient that the network has not settled yet)
 
 **Key Events (emitted on stream):**
 - `WalletCreatedEvent`, `BalanceResponse`, `TransactionsResponse`
@@ -99,6 +100,7 @@ All third-party interaction flows through a single unified facade — **WalletCo
 - `SPVValidationResultEvent`, `TransactionReceivedEvent`, `TransactionConfirmedEvent`
 - `UTXOSplitCompleteEvent`, `TimestampCompleteEvent`
 - `ChannelOpenedEvent`, `ChannelPaymentEvent`, `ChannelClosedEvent`
+- `DeferredPaymentsResponse`, `DeferredPaymentBroadcastEvent`, `DeferredPaymentStatusEvent`, `DeferredPaymentCancelledEvent`
 
 ### Actor Responsibilities
 
@@ -151,6 +153,8 @@ All third-party interaction flows through a single unified facade — **WalletCo
 ```
 
 **Key insight**: PaymentCoordinatorActor builds the BEEF but does **not** auto-broadcast. The app decides whether to transmit peer-to-peer, broadcast via ARC, or both.
+
+**Deferred payments.** The payment is recorded with a deferred spend: the wallet aggregate holds its inputs (reserved by the txid, no expiry) until exactly one of: ARC (or, on an explicit check, the configured data source) reports it `SEEN_ON_NETWORK`/`MINED` and the spend applies; ARC reports it `REJECTED`/`DOUBLE_SPEND_ATTEMPTED` and it fails, releasing the inputs; or the user cancels it. Reservation expiry and cleanup never release a held input, so a later payment cannot double-spend the one the recipient holds. `GetDeferredPaymentsQuery` lists them (e.g. `olderThan` to find recipients who have not broadcast); `BroadcastDeferredPaymentCommand` broadcasts one yourself; `CheckDeferredPaymentStatusCommand` asks the network now (a MINED claim confirms only with a merkle proof that matches our headers); `CancelDeferredPaymentCommand` releases the inputs of a payment the network does not know. Cancelling does not revoke the signed transaction the recipient holds: if it still reaches miners, it spends those inputs.
 
 ### Confirmation Flow
 

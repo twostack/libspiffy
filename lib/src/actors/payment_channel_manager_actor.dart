@@ -1449,6 +1449,7 @@ class PaymentChannelManagerActor extends Actor {
       changeAmount: change > BigInt.zero ? change : null,
       // The inputs stay reserved by this transaction until ARC accepts it.
       deferSpend: true,
+      purpose: 'channel-funding',
     );
 
     final applied = _awaitApplied(

@@ -146,6 +146,7 @@ class WhatsOnChainDataSource implements BlockchainDataSource {
           throw DataSourceException(
             'Transaction not found',
             txid: txid,
+            notFound: true,
           );
         } else {
           throw DataSourceException(

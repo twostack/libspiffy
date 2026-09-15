@@ -11,6 +11,7 @@ import '../models/bitcoin_utxo.dart';
 import '../models/bitcoin_transaction.dart';
 import '../models/address_metadata.dart';
 import '../models/transaction_address_link.dart';
+import '../models/deferred_payment.dart';
 import '../storage/read_model_storage.dart';
 import '../spv/merkle_proof_header_check.dart';
 import '../utils/bump.dart';
@@ -69,6 +70,10 @@ class WalletProjection extends Projection<void> {
         TransactionConfirmedEvent,
         TransactionStatusUpdatedEvent,
         TransactionConfirmationRevertedEvent,
+        TransactionSpendDeferredEvent,
+        TransactionNetworkStatusCheckedEvent,
+        DeferredTransactionFailedEvent,
+        DeferredTransactionCancelledEvent,
       ];
   
   @override
@@ -164,6 +169,22 @@ class WalletProjection extends Projection<void> {
         return true;
       case TransactionConfirmationRevertedEvent:
         await _handleTransactionConfirmationReverted(event as TransactionConfirmationRevertedEvent);
+        return true;
+      case TransactionSpendDeferredEvent:
+        await _handleTransactionSpendDeferred(event as TransactionSpendDeferredEvent);
+        return true;
+      case TransactionNetworkStatusCheckedEvent:
+        await _handleNetworkStatusChecked(event as TransactionNetworkStatusCheckedEvent);
+        return true;
+      case DeferredTransactionFailedEvent:
+        final failed = event as DeferredTransactionFailedEvent;
+        await _handleDeferredResolution(failed, failed.txid, DeferredPaymentState.failed,
+            failed.releasedInputs, failed.reason ?? failed.networkStatus);
+        return true;
+      case DeferredTransactionCancelledEvent:
+        final cancelled = event as DeferredTransactionCancelledEvent;
+        await _handleDeferredResolution(cancelled, cancelled.txid, DeferredPaymentState.cancelled,
+            cancelled.releasedInputs, cancelled.reason);
         return true;
       default:
         return false;
@@ -547,6 +568,7 @@ class WalletProjection extends Projection<void> {
     // replayed spend cannot debit twice.
     await _syncAddress(event.walletId, utxo.address, rows.all);
     await _recalculateAndPersistForWallet(event.walletId, event.timestamp, rows.all);
+    await _markDeferredSeen(event.walletId, event.spentInTxId, event.timestamp);
   }
 
   Future<void> _handleUTXOConfirmationUpdated(UTXOConfirmationUpdatedEvent event) async {
@@ -639,6 +661,151 @@ class WalletProjection extends Projection<void> {
         updatedAt: event.timestamp,
       ),
     );
+  }
+
+
+  // ==========================================================================
+  // DEFERRED PAYMENTS (bead libspiffy-7p2)
+  // ==========================================================================
+  //
+  // Mirrors the wallet aggregate: a hold makes each held input reserved by
+  // the transaction with no expiry, and a deferred-payment row outstanding;
+  // a spend by the transaction or an on-network status makes it seen, a
+  // verified confirmation mined, a failure or cancellation releases the
+  // inputs still reserved by it. Every handler is idempotent: a row already
+  // in a later state is not taken back.
+
+  Future<void> _handleTransactionSpendDeferred(TransactionSpendDeferredEvent event) async {
+    final existing = await _storage.getDeferredPayment(event.walletId, event.txid);
+    if (existing == null) {
+      await _storage.storeDeferredPayment(DeferredPayment(
+        walletId: event.walletId,
+        txid: event.txid,
+        invoiceId: event.invoiceId,
+        purpose: event.purpose,
+        recipientAddresses: event.recipientAddresses,
+        amount: BigInt.tryParse(event.paymentAmount) ?? BigInt.zero,
+        fee: BigInt.from(event.fee),
+        heldInputs: [
+          for (final input in event.heldInputs)
+            DeferredPaymentInput.fromMap(input),
+        ],
+        createdAt: event.recordedAt,
+        updatedAt: event.timestamp,
+        inferred: event.inferred,
+      ));
+    }
+    // A replay re-applies the hold even to a resolved payment: the event that
+    // resolved it follows in the journal and releases the inputs again.
+
+    final rows = await _loadUtxoRows(event.walletId);
+    var changed = false;
+    for (final key in event.heldUtxoKeys) {
+      final sep = key.lastIndexOf(':');
+      final vout = sep > 0 ? int.tryParse(key.substring(sep + 1)) : null;
+      if (vout == null) continue;
+      final utxo = rows.find(key.substring(0, sep), vout);
+      if (utxo == null) {
+        _warnMissingUtxo(event, key.substring(0, sep), vout);
+        continue;
+      }
+      if (utxo.status == UTXOStatus.spent) continue;
+      if (utxo.status == UTXOStatus.reserved &&
+          utxo.reservedByTxId == event.txid &&
+          utxo.reservationExpiresAt == null) {
+        continue; // replayed
+      }
+      final held = utxo.copyWith(
+        status: UTXOStatus.reserved,
+        statusBeforeReservation: utxo.statusToRestoreOnRelease,
+        reservedByTxId: event.txid,
+        reservationExpiresAt: null,
+        reservationPriority: _deferredHoldPriority,
+        reservationReason: _deferredHoldReason,
+        updatedAt: event.timestamp,
+      );
+      await _storage.upsertUTXO(event.walletId, held);
+      rows.put(held);
+      changed = true;
+    }
+    if (changed) {
+      await _recalculateAndPersistForWallet(event.walletId, event.timestamp, rows.all);
+    }
+  }
+
+  /// Same values as BitcoinWalletAggregate.deferredHoldPriority / Reason.
+  static const int _deferredHoldPriority = 1 << 30;
+  static const String _deferredHoldReason = 'deferred-spend';
+
+  Future<void> _markDeferredSeen(String walletId, String txid, DateTime at) async {
+    final deferred = await _storage.getDeferredPayment(walletId, txid);
+    if (deferred == null) return;
+    if (deferred.state == DeferredPaymentState.outstanding ||
+        deferred.state == DeferredPaymentState.failed ||
+        deferred.state == DeferredPaymentState.cancelled) {
+      await _storage.storeDeferredPayment(deferred.copyWith(
+        state: DeferredPaymentState.seen,
+        updatedAt: at,
+        resolvedAt: at,
+      ));
+    }
+  }
+
+  Future<void> _handleNetworkStatusChecked(TransactionNetworkStatusCheckedEvent event) async {
+    final deferred = await _storage.getDeferredPayment(event.walletId, event.txid);
+    if (deferred == null) {
+      _log.warning('Network status for ${event.txid} in ${event.walletId}: no deferred payment row; skipped');
+      return;
+    }
+    final lastChecked = deferred.lastCheckedAt;
+    if (lastChecked != null && !event.checkedAt.isAfter(lastChecked)) {
+      return; // replayed, or older than the observation the row holds
+    }
+    final seen = DeferredNetworkStatus.isOnNetwork(event.networkStatus) &&
+        (deferred.state == DeferredPaymentState.outstanding ||
+            deferred.state == DeferredPaymentState.failed ||
+            deferred.state == DeferredPaymentState.cancelled);
+    await _storage.storeDeferredPayment(deferred.copyWith(
+      lastNetworkStatus: event.networkStatus,
+      lastNetworkStatusSource: event.source,
+      lastCheckedAt: event.checkedAt,
+      updatedAt: event.timestamp,
+      state: seen ? DeferredPaymentState.seen : null,
+      resolvedAt: seen ? event.timestamp : deferred.resolvedAt,
+    ));
+  }
+
+  Future<void> _handleDeferredResolution(WalletEvent event, String txid, DeferredPaymentState state,
+      List<ReleasedDeferredInput> released, String? reason) async {
+    final deferred = await _storage.getDeferredPayment(event.walletId, txid);
+    if (deferred == null) {
+      _log.warning('${event.runtimeType} for $txid in ${event.walletId}: no deferred payment row; '
+          'inputs still released');
+    } else if (deferred.state == DeferredPaymentState.outstanding) {
+      await _storage.storeDeferredPayment(deferred.copyWith(
+        state: state,
+        updatedAt: event.timestamp,
+        resolvedAt: event.timestamp,
+        resolutionReason: reason,
+      ));
+    }
+
+    final rows = await _loadUtxoRows(event.walletId);
+    var changed = false;
+    for (final input in released) {
+      final sep = input.utxoKey.lastIndexOf(':');
+      final vout = sep > 0 ? int.tryParse(input.utxoKey.substring(sep + 1)) : null;
+      if (vout == null) continue;
+      final utxo = rows.find(input.utxoKey.substring(0, sep), vout);
+      if (utxo == null || utxo.status != UTXOStatus.reserved || utxo.reservedByTxId != txid) continue;
+      final restored = utxo.releaseReservation(restoreStatus: input.restoredStatus, timestamp: event.timestamp);
+      await _storage.upsertUTXO(event.walletId, restored);
+      rows.put(restored);
+      changed = true;
+    }
+    if (changed) {
+      await _recalculateAndPersistForWallet(event.walletId, event.timestamp, rows.all);
+    }
   }
 
   /// Recalculate statistics and persist for a specific wallet
@@ -874,6 +1041,14 @@ class WalletProjection extends Projection<void> {
   /// before the BUMP was carried have none and store no proof. Replaying the
   /// event again writes the same row.
   Future<void> _handleTransactionConfirmed(TransactionConfirmedEvent event) async {
+    final deferred = await _storage.getDeferredPayment(event.walletId, event.txid);
+    if (deferred != null && deferred.state != DeferredPaymentState.mined) {
+      await _storage.storeDeferredPayment(deferred.copyWith(
+        state: DeferredPaymentState.mined,
+        updatedAt: event.timestamp,
+        resolvedAt: deferred.resolvedAt ?? event.timestamp,
+      ));
+    }
     final bumpHex = event.bumpHex;
     if (bumpHex != null && bumpHex.isNotEmpty) {
       await _storeMerkleProofFromBump(event.txid, bumpHex);
@@ -913,6 +1088,11 @@ class WalletProjection extends Projection<void> {
   /// current. Idempotent: a
   /// replay finds nothing left to mark.
   Future<void> _handleTransactionConfirmationReverted(TransactionConfirmationRevertedEvent event) async {
+    final deferred = await _storage.getDeferredPayment(event.walletId, event.txid);
+    if (deferred != null && deferred.state == DeferredPaymentState.mined) {
+      await _storage.storeDeferredPayment(
+          deferred.copyWith(state: DeferredPaymentState.seen, updatedAt: event.timestamp));
+    }
     final existingTx = await _storage.getTransaction(event.txid, walletId: event.walletId);
     if (existingTx == null) {
       _log.warning('TransactionConfirmationReverted for ${event.txid}: no transaction row in '

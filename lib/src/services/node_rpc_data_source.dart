@@ -85,6 +85,8 @@ class NodeRpcDataSource implements BlockchainDataSource {
       final err = result['error'] as Map<String, dynamic>;
       throw DataSourceException(
         'RPC error in $method: ${err['message']}',
+        // RPC_INVALID_ADDRESS_OR_KEY: "No such mempool or blockchain transaction"
+        notFound: method == 'getrawtransaction' && err['code'] == -5,
       );
     }
 

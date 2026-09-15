@@ -44,6 +44,10 @@ const goldenTypeNames = <String, String>{
   'UTXOSplitInitiatedEvent': 'wallet.utxo_split.initiated',
   'UTXOSplitCompletedEvent': 'wallet.utxo_split.completed',
   'AllUTXOsSplitCompletedEvent': 'wallet.utxo_split.all_completed',
+  'TransactionSpendDeferredEvent': 'wallet.transaction.spend_deferred',
+  'TransactionNetworkStatusCheckedEvent': 'wallet.transaction.network_status_checked',
+  'DeferredTransactionFailedEvent': 'wallet.transaction.deferred_failed',
+  'DeferredTransactionCancelledEvent': 'wallet.transaction.deferred_cancelled',
   // Invoice
   'InvoiceCreatedEvent': 'invoice.created',
   'InvoiceStatusChangedEvent': 'invoice.status_changed',
@@ -170,6 +174,28 @@ Map<String, Event> sampleEvents() => <String, Event>{
           walletId: _w, totalUtxosSplit: 1, totalOutputsCreated: 3,
           totalFeesPaid: '1', transactionIds: [_txid], timestamp: _t,
           version: 25),
+      'TransactionSpendDeferredEvent': TransactionSpendDeferredEvent(
+          walletId: _w, txid: _txid,
+          heldInputs: [{'utxoKey': '$_txid:0', 'satoshis': '1000'}],
+          recipientAddresses: ['other'], paymentAmount: '900', fee: 100,
+          invoiceId: _i, purpose: 'invoice-payment', inferred: false,
+          recordedAt: _t, timestamp: _t, version: 101),
+      'TransactionNetworkStatusCheckedEvent': TransactionNetworkStatusCheckedEvent(
+          walletId: _w, txid: _txid, networkStatus: 'SEEN_ON_NETWORK',
+          source: 'arc', checkedAt: _t, blockHeight: 12, explicit: true,
+          timestamp: _t, version: 102),
+      'DeferredTransactionFailedEvent': DeferredTransactionFailedEvent(
+          walletId: _w, txid: _txid, networkStatus: 'REJECTED', reason: 'r',
+          releasedInputs: const [
+            ReleasedDeferredInput(utxoKey: '$_txid:0', restoredStatus: UTXOStatus.available),
+          ],
+          timestamp: _t, version: 103),
+      'DeferredTransactionCancelledEvent': DeferredTransactionCancelledEvent(
+          walletId: _w, txid: _txid, reason: 'r', networkStatus: 'NOT_FOUND',
+          releasedInputs: const [
+            ReleasedDeferredInput(utxoKey: '$_txid:0', restoredStatus: UTXOStatus.pending),
+          ],
+          timestamp: _t, version: 104),
       'InvoiceCreatedEvent': InvoiceCreatedEvent(
           invoiceId: _i, walletId: _w, addresses: ['addr'],
           amount: BigInt.from(10), description: 'd', timestamp: _t,

@@ -48,6 +48,10 @@ class PaymentCoordinatorActor extends Actor {
   /// transaction event before treating the recording as failed.
   static const _recordPersistTimeout = Duration(seconds: 30);
 
+  /// The payment [_handlePayInvoice] is building (messages are handled one at
+  /// a time), with the transactions it recorded with a deferred spend.
+  _InFlightPayment? _inFlightPayment;
+
   /// How long to wait for the aggregate's reply to a ReserveUTXOCommand.
   /// Injectable so tests can exercise the no-reply path quickly.
   final Duration _reservationReplyTimeout;
@@ -146,6 +150,8 @@ class PaymentCoordinatorActor extends Actor {
     // payment handed back to the caller (audit A-M7): failures reported by
     // the steps below and any unexpected exception alike.
     var paymentDelivered = false;
+    final inFlight = _InFlightPayment(msg.invoiceId);
+    _inFlightPayment = inFlight;
     try {
       paymentDelivered = await _payWithReservedUtxos(
         msg: msg,
@@ -157,7 +163,22 @@ class PaymentCoordinatorActor extends Actor {
       _log.warning('[pay ${msg.invoiceId}] failed after reserving UTXOs: $e\n$stackTrace');
       _sendError(msg.invoiceId, 'Internal error: $e', sender: originalSender);
     } finally {
+      _inFlightPayment = null;
       if (!paymentDelivered) {
+        // A transaction recorded with a deferred spend holds its inputs
+        // until it is settled or cancelled (bead libspiffy-7p2); one that was
+        // never handed to anyone is cancelled here, newest first, so the
+        // reservation release below finds its inputs again.
+        for (final txid in inFlight.deferredTxids.reversed) {
+          _walletManager.tell(WalletCommandMessage(
+            msg.walletId,
+            CancelDeferredSpendCommand(
+              walletId: msg.walletId,
+              txid: txid,
+              reason: 'payment for invoice ${msg.invoiceId} failed before it was handed over',
+            ),
+          ));
+        }
         _releaseReservation(walletId: msg.walletId, reservationId: reservationId);
       }
     }
@@ -310,7 +331,8 @@ class PaymentCoordinatorActor extends Actor {
       recipientAddresses: recipientAddresses,
       paymentAmount: effectiveAmount,
       changeAddress: actualChangeAddress,
-      deferSpend: true, // UTXOs stay reserved; ARCActor marks spent on SEEN_ON_NETWORK
+      deferSpend: true, // inputs held; ARCActor marks spent on SEEN_ON_NETWORK
+      purpose: 'invoice-payment',
       preSigned: preSigned,
       signerMetadata: preSigned
           ? {
@@ -1161,6 +1183,7 @@ class PaymentCoordinatorActor extends Actor {
       paymentAmount: BigInt.zero,
       changeAddress: sourceUtxo.address,
       deferSpend: true,
+      purpose: 'provisioning-split',
       preSigned: true,
       signerMetadata: {
         'signerType': 'plugin-callback',
@@ -1197,6 +1220,7 @@ class PaymentCoordinatorActor extends Actor {
         paymentAmount: BigInt.zero,
         changeAddress: sourceUtxo.address,
         deferSpend: true,
+        purpose: 'provisioning-earmark',
         preSigned: true,
         signerMetadata: {
           'signerType': 'plugin-callback',
@@ -1232,6 +1256,7 @@ class PaymentCoordinatorActor extends Actor {
     required BigInt paymentAmount,
     String? changeAddress,
     bool deferSpend = false,
+    String? purpose,
     bool preSigned = false,
     Map<String, dynamic>? signerMetadata,
   }) async {
@@ -1257,6 +1282,8 @@ class PaymentCoordinatorActor extends Actor {
       deferSpend: deferSpend,
       preSigned: preSigned,
       signerMetadata: signerMetadata,
+      invoiceId: deferSpend ? _inFlightPayment?.invoiceId : null,
+      purpose: purpose,
     );
 
     // Register the awaiter BEFORE telling the command, so we cannot miss the
@@ -1281,6 +1308,7 @@ class PaymentCoordinatorActor extends Actor {
       sender: context.self,
     );
 
+    if (deferSpend) _inFlightPayment?.deferredTxids.add(txid);
     final response = await applied;
     if (response is AwaitFailed) {
       throw StateError(
@@ -1465,3 +1493,11 @@ class _ReservationReceiverActor extends Actor {
   }
 }
 
+/// A payment in progress and the deferred-spend transactions it recorded
+/// (cancelled if the payment is not handed over).
+class _InFlightPayment {
+  final String invoiceId;
+  final List<String> deferredTxids = [];
+
+  _InFlightPayment(this.invoiceId);
+}

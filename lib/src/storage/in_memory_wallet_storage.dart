@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:collection';
 import 'package:collection/collection.dart' show mergeSort;
+import 'package:meta/meta.dart' show visibleForTesting;
 import 'package:spiffynode/spiffy_node.dart';
 import '../models/wallet_event.dart';
 import '../models/bitcoin_utxo.dart';
@@ -9,6 +10,7 @@ import '../models/address_metadata.dart';
 import '../models/transaction_address_link.dart';
 import '../models/invoice_read_model.dart';
 import '../models/payment_channel.dart';
+import '../models/deferred_payment.dart';
 import '../actors/invoice_messages.dart';
 import 'wallet_storage.dart';
 import 'merkle_proof_rows.dart';
@@ -180,6 +182,8 @@ _balanceCache.remove(walletId);
     _walletMetadata.remove(walletId);
     _walletIds.remove(walletId);
     _walletInvoices.remove(walletId);
+    _deferredPayments.remove(walletId);
+    _deferredPaymentsByState.remove(walletId);
 
     // Drop the wallet from the txid index (other wallets keep their rows)
     if (txids != null) {
@@ -744,6 +748,56 @@ _balanceCache.remove(walletId);
   }
 
   // ========================================
+  // Deferred payments (bead libspiffy-7p2)
+  // ========================================
+
+  /// walletId -> txid -> payment.
+  final Map<String, Map<String, DeferredPayment>> _deferredPayments = {};
+
+  /// walletId -> state -> txids in that state (the index the listing reads).
+  final Map<String, Map<DeferredPaymentState, Set<String>>> _deferredPaymentsByState = {};
+
+  /// Rows [listDeferredPayments] has read (test hook: a query reads only the
+  /// rows of the states it asks for).
+  @visibleForTesting
+  int deferredPaymentRowsRead = 0;
+
+  @override
+  Future<void> storeDeferredPayment(DeferredPayment payment) async {
+    final rows = _deferredPayments.putIfAbsent(payment.walletId, () => {});
+    final index = _deferredPaymentsByState.putIfAbsent(payment.walletId, () => {});
+    final previous = rows[payment.txid];
+    if (previous != null) index[previous.state]?.remove(payment.txid);
+    rows[payment.txid] = payment;
+    index.putIfAbsent(payment.state, () => <String>{}).add(payment.txid);
+  }
+
+  @override
+  Future<DeferredPayment?> getDeferredPayment(String walletId, String txid) async =>
+      _deferredPayments[walletId]?[txid];
+
+  @override
+  Future<DeferredPaymentPage> listDeferredPayments(
+    String walletId, {
+    DeferredPaymentQuery query = const DeferredPaymentQuery(),
+  }) async {
+    DeferredPaymentQuery.decodeCursor(query.cursor); // rejects a foreign cursor
+    final rows = _deferredPayments[walletId];
+    final index = _deferredPaymentsByState[walletId];
+    if (rows == null || index == null) return const DeferredPaymentPage(payments: []);
+    final candidates = <DeferredPayment>[];
+    for (final state in query.states) {
+      for (final txid in index[state] ?? const <String>{}) {
+        deferredPaymentRowsRead++;
+        final row = rows[txid];
+        if (row != null && query.matches(row)) candidates.add(row);
+      }
+    }
+    candidates.sort(query.compare);
+    return query.page(candidates);
+  }
+
+  // ========================================
   // Transaction Management Methods (Internal)
   // ========================================
 
@@ -1064,6 +1118,8 @@ _balanceCache.remove(walletId);
     _merkleProofs.clear();
     _blockToProofs.clear();
     _ancestorTransactions.clear();
+    _deferredPayments.clear();
+    _deferredPaymentsByState.clear();
     _balanceCache.clear();
     _walletIds.clear();
     _invoices.clear();

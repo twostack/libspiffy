@@ -4,8 +4,11 @@ import '../models/address_metadata.dart';
 import '../models/transaction_address_link.dart';
 import '../models/invoice_read_model.dart';
 import '../models/payment_channel.dart';
+import '../models/deferred_payment.dart';
 import '../actors/invoice_messages.dart' show InvoiceStatus;
 import 'package:spiffynode/spiffy_node.dart';
+
+export '../models/deferred_payment.dart';
 
 /// Abstract interface for read-model storage operations.
 ///
@@ -491,6 +494,32 @@ abstract class ReadModelStorage {
   /// The raw hex of every stored ancestor transaction among [txids], as a
   /// map txid → rawHex (txids without a row are absent).
   Future<Map<String, String>> getAncestorTransactionsBatch(List<String> txids);
+
+  // ========================================
+  // Deferred payments (bead libspiffy-7p2)
+  // ========================================
+  //
+  // Outgoing transactions recorded with a deferred spend, projected from the
+  // wallet journal (TransactionSpendDeferredEvent and the events resolving
+  // it). Rows are keyed by (walletId, txid) and never deleted except by
+  // [deleteWallet]: resolved payments stay listable with their state.
+
+  /// Insert or replace the row of [payment] (key: walletId, txid).
+  Future<void> storeDeferredPayment(DeferredPayment payment);
+
+  /// The deferred payment [txid] of [walletId], or null.
+  Future<DeferredPayment?> getDeferredPayment(String walletId, String txid);
+
+  /// A page of [walletId]'s deferred payments matching [query], in its
+  /// order (createdAt, then txid; newest first unless
+  /// [DeferredPaymentQuery.oldestFirst]). Backends answer the default
+  /// outstanding-only query from an index on (wallet, state, createdAt),
+  /// never by reading every row. Throws [FormatException] for a cursor this
+  /// API did not produce.
+  Future<DeferredPaymentPage> listDeferredPayments(
+    String walletId, {
+    DeferredPaymentQuery query = const DeferredPaymentQuery(),
+  });
 
   // ========================================
   // Wallet Management

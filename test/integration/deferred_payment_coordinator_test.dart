@@ -1,0 +1,286 @@
+/// Bead libspiffy-7p2 end to end through the coordinator facade: list the
+/// payments handed to recipients, check one now, broadcast it ourselves,
+/// cancel one, and see ARC's REJECTED fail one; journaled, so a read model
+/// rebuilt from the journal agrees. ARC is the no-network stand-in: a
+/// transaction nobody submitted is unknown (404).
+import 'dart:async';
+import 'dart:io';
+
+import 'package:dactor/dactor.dart';
+import 'package:eventador/eventador.dart' show Event;
+import 'package:isar/isar.dart';
+import 'package:test/test.dart';
+
+import 'package:libspiffy/libspiffy.dart';
+import 'package:libspiffy/coordinator.dart';
+import 'package:libspiffy/src/storage/isar_wallet_storage.dart';
+import 'package:libspiffy/src/utils/beef.dart';
+
+import '../mocks/network_arc.dart';
+import 'isar_test_helper.dart';
+import 'p2p_test_helpers.dart';
+
+const _fundingKey = 'a05924fcc63712d3e4b94b0c88baad234c2c8ad3d369704f53765e21a53a2101:1';
+const _recipient = 'muq9kAb9ri62VChAMRkuwK5bTve4iDLWBg';
+
+void main() {
+  late Directory dir;
+  late LibSpiffyActorSystem libspiffy;
+  late LocalActorSystem actorSystem;
+  late NetworkArc arc;
+  late String walletId;
+  late Stream<CoordinatorEvent> events;
+
+  setUpAll(() async {
+    await ensureIsarInitialized();
+  });
+
+  setUp(() async {
+    dir = await Directory.systemTemp.createTemp('deferred_coordinator_');
+    actorSystem = LocalActorSystem(ActorSystemConfig());
+    final isar = await Isar.open(
+      LibSpiffySchemas.allSchemas,
+      directory: dir.path,
+      name: 'deferred_coordinator_${DateTime.now().microsecondsSinceEpoch}',
+    );
+    arc = NetworkArc();
+    libspiffy = LibSpiffyActorSystem();
+    await libspiffy.initialize(
+      actorSystem: actorSystem,
+      isar: isar,
+      dataDirectory: dir.path,
+      enableP2P: false,
+      arcService: arc,
+      secureStorage: InMemorySecureStorage(),
+    );
+    await setupTestHeaders(libspiffy.walletStorage as IsarWalletStorage);
+    events = libspiffy.coordinatorEvents!;
+    walletId = 'deferred-${DateTime.now().microsecondsSinceEpoch}';
+    await createWallet(
+      walletManager: libspiffy.walletManager,
+      actorSystem: actorSystem,
+      walletId: walletId,
+      walletName: 'Deferred',
+      xpriv: kTestXpriv,
+    );
+    await fundWallet(
+      walletManager: libspiffy.walletManager,
+      actorSystem: actorSystem,
+      walletId: walletId,
+      amount: BigInt.from(1000000),
+    );
+  });
+
+  tearDown(() async {
+    await libspiffy.shutdown();
+    try {
+      await dir.delete(recursive: true);
+    } catch (_) {}
+  });
+
+  ReadModelStorage storage() => libspiffy.walletStorage;
+
+  /// Sends [command] and returns the first coordinator event of type [T]
+  /// matching [where].
+  Future<T> send<T extends CoordinatorEvent>(Message command, [bool Function(T e)? where]) async {
+    final result = events
+        .where((e) => e is T && (where == null || where(e)))
+        .cast<T>()
+        .first
+        .timeout(const Duration(seconds: 30));
+    libspiffy.coordinator.tell(command);
+    return result;
+  }
+
+  Future<void> until(Future<bool> Function() condition, String what) async {
+    final deadline = DateTime.now().add(const Duration(seconds: 10));
+    while (!await condition()) {
+      if (DateTime.now().isAfter(deadline)) fail('Timed out waiting for $what');
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+    }
+  }
+
+  Future<BitcoinUtxo> funding() async =>
+      (await storage().getUTXOs(walletId, includeSpent: true)).firstWhere((u) => u.key == _fundingKey);
+
+  Future<PaymentReadyEvent> pay(String invoiceId, {int amount = 100000}) async {
+    final ready = await send<PaymentReadyEvent>(
+      PayInvoiceCommand(
+        walletId: walletId,
+        invoiceId: invoiceId,
+        addresses: const [_recipient],
+        amount: BigInt.from(amount),
+      ),
+      (e) => e.invoiceId == invoiceId,
+    );
+    expect(ready.success, isTrue, reason: ready.error);
+    // The hold is projected right after the recording the payment waited for.
+    await until(() async => (await storage().getDeferredPayment(walletId, ready.txid)) != null,
+        'the deferred payment row');
+    return ready;
+  }
+
+  Future<DeferredPaymentsResponse> list(GetDeferredPaymentsQuery query) =>
+      send<DeferredPaymentsResponse>(query, (e) => e.queryId == query.correlationId);
+
+  /// Every wallet journal event replayed into a fresh read model.
+  Future<InMemoryWalletStorage> rebuildFromJournal() async {
+    final fresh = InMemoryWalletStorage();
+    final projection = WalletProjection(
+      projectionId: 'rebuild-${DateTime.now().microsecondsSinceEpoch}',
+      eventStore: libspiffy.eventStore,
+      storage: fresh,
+    );
+    final List<Event> journal = await libspiffy.eventStore.getEvents('BitcoinWallet_$walletId');
+    for (final event in journal) {
+      await projection.handle(event);
+    }
+    return fresh;
+  }
+
+  test('list and search, check now, broadcast ourselves: outstanding -> seen, the input spent once', () async {
+    final ready = await pay('inv-list');
+
+    final listed = await list(GetDeferredPaymentsQuery(walletId: walletId, queryId: 'q1'));
+    expect(listed.nextCursor, isNull);
+    final detail = listed.payments.single;
+    expect(detail.txid, ready.txid);
+    expect(detail.invoiceId, 'inv-list');
+    expect(detail.state, DeferredPaymentState.outstanding);
+    expect(detail.recipientAddresses, [_recipient]);
+    expect(detail.amount, BigInt.from(100000));
+    expect(detail.heldInputs.single.utxoKey, _fundingKey);
+    expect(detail.heldInputs.single.satoshis, BigInt.from(1000000));
+    expect(detail.lastNetworkStatus, isNull);
+    expect(detail.rawTxHex, isNotEmpty);
+    expect(detail.beef, isNotNull, reason: detail.beefError);
+    expect(BEEF.parse(detail.beef!).txs, hasLength(2), reason: 'the payment and its proven parent');
+
+    // Search: not older than an hour; by invoice and recipient; not checked yet.
+    expect((await list(GetDeferredPaymentsQuery(
+            walletId: walletId, olderThan: const Duration(hours: 1), queryId: 'q2')))
+        .payments, isEmpty);
+    expect((await list(GetDeferredPaymentsQuery(
+            walletId: walletId,
+            invoiceId: 'inv-list',
+            recipientAddress: _recipient,
+            lastNetworkStatuses: const {DeferredNetworkStatus.unchecked},
+            includeBeef: false,
+            queryId: 'q3')))
+        .payments
+        .single
+        .beef, isNull);
+
+    // Check now: the recipient has not broadcast it, ARC does not know it.
+    final checked = await send<DeferredPaymentStatusEvent>(
+        CheckDeferredPaymentStatusCommand(walletId: walletId, txid: ready.txid, requestId: 'c1'),
+        (e) => e.requestId == 'c1');
+    expect(checked.success, isTrue, reason: checked.error);
+    expect(checked.networkStatus, DeferredNetworkStatus.notFound);
+    await until(() async => (await storage().getDeferredPayment(walletId, ready.txid))!.lastCheckedAt != null,
+        'the status projected');
+    final notFound = (await list(GetDeferredPaymentsQuery(
+            walletId: walletId, lastNetworkStatuses: const {DeferredNetworkStatus.notFound}, queryId: 'q4')))
+        .payments
+        .single;
+    expect(notFound.state, DeferredPaymentState.outstanding);
+    expect((await funding()).status, UTXOStatus.reserved);
+
+    // Broadcast ourselves.
+    final broadcast = await send<DeferredPaymentBroadcastEvent>(
+        BroadcastDeferredPaymentCommand(walletId: walletId, txid: ready.txid, requestId: 'b1'),
+        (e) => e.requestId == 'b1');
+    expect(broadcast.success, isTrue, reason: broadcast.error);
+    expect(broadcast.networkStatus, DeferredNetworkStatus.seenOnNetwork);
+    expect(arc.seen, contains(ready.txid));
+    await until(() async => (await funding()).status == UTXOStatus.spent, 'the input spent');
+    expect((await funding()).spentInTxId, ready.txid);
+    await until(
+        () async => (await storage().getDeferredPayment(walletId, ready.txid))!.state == DeferredPaymentState.seen,
+        'the payment seen');
+
+    // Again: idempotent.
+    final again = await send<DeferredPaymentBroadcastEvent>(
+        BroadcastDeferredPaymentCommand(walletId: walletId, txid: ready.txid, requestId: 'b2'),
+        (e) => e.requestId == 'b2');
+    expect(again.success, isTrue);
+
+    expect((await list(GetDeferredPaymentsQuery(walletId: walletId, queryId: 'q5'))).payments, isEmpty,
+        reason: 'no longer outstanding');
+    final resolved = await list(GetDeferredPaymentsQuery(walletId: walletId, includeResolved: true, queryId: 'q6'));
+    expect(resolved.payments.single.state, DeferredPaymentState.seen);
+
+    // Cancelling a payment the network has is refused.
+    final refused = await send<DeferredPaymentCancelledEvent>(
+        CancelDeferredPaymentCommand(walletId: walletId, txid: ready.txid, requestId: 'x1'),
+        (e) => e.requestId == 'x1');
+    expect(refused.success, isFalse);
+
+    final rebuilt = await rebuildFromJournal();
+    final rebuiltPayment = (await rebuilt.getDeferredPayment(walletId, ready.txid))!;
+    expect(rebuiltPayment.state, DeferredPaymentState.seen);
+    expect(rebuiltPayment.lastNetworkStatus, DeferredNetworkStatus.seenOnNetwork);
+  });
+
+  test('cancel: checks the network, then journals the cancellation and releases the input', () async {
+    final ready = await pay('inv-cancel');
+
+    final cancelled = await send<DeferredPaymentCancelledEvent>(
+        CancelDeferredPaymentCommand(
+            walletId: walletId, txid: ready.txid, reason: 'recipient never answered', requestId: 'x2'),
+        (e) => e.requestId == 'x2');
+
+    expect(cancelled.success, isTrue, reason: cancelled.error);
+    expect(cancelled.networkStatus, DeferredNetworkStatus.notFound);
+    expect(cancelled.releasedUtxoKeys, [_fundingKey]);
+    expect(cancelled.error, isNull, reason: 'the read model applied the cancellation before the event');
+    expect((await funding()).status, UTXOStatus.available);
+    final row = (await storage().getDeferredPayment(walletId, ready.txid))!;
+    expect(row.state, DeferredPaymentState.cancelled);
+    expect(row.resolutionReason, 'recipient never answered');
+
+    // The input can pay again (another amount: the same payment would be the
+    // same transaction).
+    final next = await pay('inv-after-cancel-2', amount: 90000);
+    expect(next.txid, isNot(ready.txid));
+
+    final rebuilt = await rebuildFromJournal();
+    expect((await rebuilt.getDeferredPayment(walletId, ready.txid))!.state, DeferredPaymentState.cancelled);
+  });
+
+  test('cancel is refused while ARC knows the transaction (any status but not found)', () async {
+    final ready = await pay('inv-stored');
+    arc.statusOverrides[ready.txid] = 'STORED';
+
+    final refused = await send<DeferredPaymentCancelledEvent>(
+        CancelDeferredPaymentCommand(walletId: walletId, txid: ready.txid, requestId: 'x3'),
+        (e) => e.requestId == 'x3');
+
+    expect(refused.success, isFalse);
+    expect(refused.networkStatus, 'STORED');
+    expect((await funding()).status, UTXOStatus.reserved);
+  });
+
+  test('ARC REJECTED on a status check: the payment fails and its input is released, journaled', () async {
+    final ready = await pay('inv-rejected');
+    arc.statusOverrides[ready.txid] = 'REJECTED';
+
+    final checked = await send<DeferredPaymentStatusEvent>(
+        CheckDeferredPaymentStatusCommand(walletId: walletId, txid: ready.txid, requestId: 'c2'),
+        (e) => e.requestId == 'c2');
+    expect(checked.networkStatus, DeferredNetworkStatus.rejected);
+
+    await until(() async => (await funding()).status == UTXOStatus.available, 'the input released');
+    await until(
+        () async => (await storage().getDeferredPayment(walletId, ready.txid))!.state == DeferredPaymentState.failed,
+        'the payment failed');
+    final failed = await list(GetDeferredPaymentsQuery(
+        walletId: walletId, states: const {DeferredPaymentState.failed}, queryId: 'q7'));
+    expect(failed.payments.single.lastNetworkStatus, DeferredNetworkStatus.rejected);
+
+    final rebuilt = await rebuildFromJournal();
+    expect((await rebuilt.getDeferredPayment(walletId, ready.txid))!.state, DeferredPaymentState.failed);
+    expect((await rebuilt.getUTXOs(walletId)).where((u) => u.key == _fundingKey).single.status,
+        UTXOStatus.available);
+  });
+}

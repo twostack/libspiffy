@@ -391,8 +391,22 @@ class RecordOutgoingTransactionCommand extends WalletCommand {
   final BigInt? changeAmount;
   /// When true, do NOT emit UTXOSpentEvents for spentUtxoKeys.
   /// The spent marking is deferred to ARCActor when the tx reaches SEEN_ON_NETWORK.
-  /// UTXOs should already be in 'reserved' status from prior reservation.
+  ///
+  /// The wallet holds the inputs it has unspent for this transaction
+  /// (TransactionSpendDeferredEvent, bead libspiffy-7p2): reserved by the
+  /// txid with no expiry, so no reservation expiry, cleanup or other
+  /// reservation can release or take them. The hold ends when the network
+  /// reports the transaction, when ARC reports it REJECTED or
+  /// DOUBLE_SPEND_ATTEMPTED, or when it is cancelled
+  /// ([CancelDeferredSpendCommand]).
   final bool deferSpend;
+
+  /// Invoice this transaction pays, if any (listed with the deferred payment).
+  final String? invoiceId;
+
+  /// What recorded the transaction (`invoice-payment`, `channel-funding`,
+  /// ...), listed with the deferred payment.
+  final String? purpose;
 
   /// When true, this transaction was signed externally (e.g., by a plugin's
   /// `CallbackTransactionSigner`) without going through [SignTransactionCommand].
@@ -425,6 +439,8 @@ class RecordOutgoingTransactionCommand extends WalletCommand {
     this.deferSpend = false,
     this.preSigned = false,
     this.signerMetadata,
+    this.invoiceId,
+    this.purpose,
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,
@@ -1026,4 +1042,101 @@ class RevertTransactionConfirmationCommand extends WalletCommand {
 
   @override
   String get commandType => 'RevertTransactionConfirmationCommand';
+}
+
+// =============================================================================
+// DEFERRED PAYMENTS (bead libspiffy-7p2)
+// =============================================================================
+
+/// Journals the holds of outgoing transactions recorded with a deferred spend
+/// before holds were journaled (journals written before bead libspiffy-7p2).
+///
+/// A record with no hold whose inputs the wallet still has unspent (and that
+/// is not confirmed) is an outstanding deferred payment: a non-deferred
+/// record spent its inputs in the same command. Each gets a
+/// TransactionSpendDeferredEvent with `inferred: true`, even when its
+/// reservation already expired or was released. No events when there is
+/// nothing to reconcile. WalletManagerActor sends this when it loads a wallet
+/// from the journal; the reservation commands apply the same inference, so
+/// the hold is enforced before it is journaled too.
+class ReconcileDeferredSpendsCommand extends WalletCommand {
+  ReconcileDeferredSpendsCommand({
+    required String walletId,
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(walletId: walletId, commandId: commandId, timestamp: timestamp, metadata: metadata);
+
+  @override
+  String get commandType => 'ReconcileDeferredSpendsCommand';
+}
+
+/// Records a network status observed for [txid] (ARC or the data source).
+///
+/// Only a deferred payment of this wallet is affected; any other txid is a
+/// no-op. The status is journaled when [explicit] or when it differs from the
+/// last recorded one. REJECTED and DOUBLE_SPEND_ATTEMPTED on an outstanding
+/// payment also fail it and release its inputs. Every other status (404 /
+/// NOT_FOUND, orphan mempool, in-flight statuses) leaves the hold in place.
+class RecordTransactionNetworkStatusCommand extends WalletCommand {
+  final String txid;
+
+  /// ARC's wire name (`SEEN_ON_NETWORK`, `REJECTED`, ...) or `NOT_FOUND`.
+  final String networkStatus;
+
+  /// `arc` or `dataSource`.
+  final String source;
+  final DateTime checkedAt;
+  final int? blockHeight;
+  final bool explicit;
+
+  /// ARC's message for a failure (journaled as the failure reason).
+  final String? detail;
+
+  RecordTransactionNetworkStatusCommand({
+    required String walletId,
+    required this.txid,
+    required this.networkStatus,
+    this.source = 'arc',
+    DateTime? checkedAt,
+    this.blockHeight,
+    this.explicit = false,
+    this.detail,
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  })  : checkedAt = checkedAt ?? DateTime.now(),
+        super(walletId: walletId, commandId: commandId, timestamp: timestamp, metadata: metadata);
+
+  @override
+  String get commandType => 'RecordTransactionNetworkStatusCommand';
+}
+
+/// Cancels the outstanding deferred payment [txid] and releases its inputs.
+///
+/// The aggregate refuses a payment that is not outstanding, or whose last
+/// recorded network status says the network has it. It does not query the
+/// network itself: `CancelDeferredPaymentCommand` on the coordinator checks
+/// first and passes the answer as [networkStatus].
+///
+/// Cancelling does not revoke the signed transaction the recipient holds. If
+/// it is broadcast later and reaches miners it spends those inputs, and a
+/// later payment that reused them fails.
+class CancelDeferredSpendCommand extends WalletCommand {
+  final String txid;
+  final String? reason;
+  final String? networkStatus;
+
+  CancelDeferredSpendCommand({
+    required String walletId,
+    required this.txid,
+    this.reason,
+    this.networkStatus,
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(walletId: walletId, commandId: commandId, timestamp: timestamp, metadata: metadata);
+
+  @override
+  String get commandType => 'CancelDeferredSpendCommand';
 }

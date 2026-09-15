@@ -36,6 +36,7 @@ class LibSpiffySchemas {
       BlockHeaderEntitySchema,
       MerkleProofEntitySchema,
       AncestorTransactionEntitySchema,
+      DeferredPaymentEntitySchema,
       BitcoinUtxoEntitySchema,
       BitcoinTransactionEntitySchema,
       WalletMetadataEntitySchema,
@@ -284,6 +285,87 @@ class AncestorTransactionEntity {
   late DateTime createdAt;
 
   AncestorTransactionEntity();
+}
+
+/// A deferred payment (bead libspiffy-7p2): an outgoing transaction recorded
+/// with a deferred spend, with the inputs it holds and its state. Rows are
+/// never deleted except with their wallet.
+@collection
+class DeferredPaymentEntity {
+  Id id = Isar.autoIncrement;
+
+  /// (walletId, txid) is the key; (walletId, state, createdAt) serves the
+  /// listing, so an outstanding-only query reads only outstanding rows.
+  @Index(unique: true, replace: true, composite: [CompositeIndex('txid')])
+  @Index(composite: [CompositeIndex('state'), CompositeIndex('createdAt')])
+  late String walletId;
+
+  late String txid;
+
+  /// [DeferredPaymentState] name.
+  late String state;
+
+  late DateTime createdAt;
+  late DateTime updatedAt;
+
+  String? invoiceId;
+  String? purpose;
+  List<String> recipientAddresses = [];
+
+  /// Decimal satoshis.
+  late String amount;
+  late String fee;
+
+  /// JSON list of `{utxoKey, satoshis}`.
+  late String heldInputsJson;
+
+  String? lastNetworkStatus;
+  String? lastNetworkStatusSource;
+  DateTime? lastCheckedAt;
+  DateTime? resolvedAt;
+  String? resolutionReason;
+  bool inferred = false;
+
+  DeferredPaymentEntity();
+
+  factory DeferredPaymentEntity.fromDomain(DeferredPayment p) => DeferredPaymentEntity()
+    ..walletId = p.walletId
+    ..txid = p.txid
+    ..state = p.state.name
+    ..createdAt = p.createdAt
+    ..updatedAt = p.updatedAt
+    ..invoiceId = p.invoiceId
+    ..purpose = p.purpose
+    ..recipientAddresses = List<String>.from(p.recipientAddresses)
+    ..amount = p.amount.toString()
+    ..fee = p.fee.toString()
+    ..heldInputsJson = p.heldInputsJson
+    ..lastNetworkStatus = p.lastNetworkStatus
+    ..lastNetworkStatusSource = p.lastNetworkStatusSource
+    ..lastCheckedAt = p.lastCheckedAt
+    ..resolvedAt = p.resolvedAt
+    ..resolutionReason = p.resolutionReason
+    ..inferred = p.inferred;
+
+  DeferredPayment toDomain() => DeferredPayment(
+        walletId: walletId,
+        txid: txid,
+        invoiceId: invoiceId,
+        purpose: purpose,
+        recipientAddresses: List<String>.from(recipientAddresses),
+        amount: BigInt.tryParse(amount) ?? BigInt.zero,
+        fee: BigInt.tryParse(fee) ?? BigInt.zero,
+        heldInputs: DeferredPayment.heldInputsFromJson(heldInputsJson),
+        state: DeferredPayment.stateFromName(state),
+        lastNetworkStatus: lastNetworkStatus,
+        lastNetworkStatusSource: lastNetworkStatusSource,
+        lastCheckedAt: lastCheckedAt,
+        createdAt: createdAt,
+        updatedAt: updatedAt,
+        resolvedAt: resolvedAt,
+        resolutionReason: resolutionReason,
+        inferred: inferred,
+      );
 }
 
 /// Bitcoin UTXO storage entity

@@ -4,8 +4,11 @@ import 'package:dactor/dactor.dart';
 
 import '../models/bitcoin_transaction.dart';
 import '../models/bitcoin_utxo.dart';
+import '../models/deferred_payment.dart';
 import '../models/invoice_output_spec.dart';
 import 'invoice_messages.dart' show InvoiceStatus;
+
+export '../models/deferred_payment.dart';
 
 /// Base class for all coordinator events emitted on the event stream.
 ///
@@ -538,6 +541,222 @@ class ShutdownCommand implements Message {
   String get correlationId => 'shutdown';
   @override
   Map<String, dynamic> get metadata => {};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+
+// ==========================================================================
+// DEFERRED PAYMENT COMMANDS (bead libspiffy-7p2)
+// ==========================================================================
+//
+// A payment built by PayInvoiceCommand is handed to the recipient, who
+// normally broadcasts it (spv-understanding.md). Until the network has it,
+// the wallet holds its inputs: no reservation expiry or other payment can
+// take them. These messages list those payments, broadcast one yourself,
+// check its status now, or cancel it.
+
+/// List or search the wallet's deferred payments. Answered with
+/// [DeferredPaymentsResponse] (or an [ErrorEvent] with source
+/// `getDeferredPayments`).
+///
+/// By default only outstanding payments (still held, not known to be on the
+/// network), newest first, 50 per page. Use [olderThan] or [createdBefore]
+/// to find the payments whose recipient has not broadcast them yet, and
+/// [includeResolved] (or [states]) to include seen, mined, failed and
+/// cancelled ones: nothing is ever deleted.
+class GetDeferredPaymentsQuery implements Message {
+  final String walletId;
+
+  /// States to list; overrides [includeResolved]. Default: outstanding only.
+  final Set<DeferredPaymentState>? states;
+
+  /// List every state (outstanding, seen, mined, failed, cancelled).
+  final bool includeResolved;
+
+  /// Only payments recorded strictly before this instant.
+  final DateTime? createdBefore;
+
+  /// Only payments recorded at or after this instant.
+  final DateTime? createdAfter;
+
+  /// Only payments recorded more than this long ago (combined with
+  /// [createdBefore]: the earlier bound wins).
+  final Duration? olderThan;
+
+  /// Only payments whose last recorded network status is one of these
+  /// (ARC names such as `SEEN_ON_NETWORK`, `NOT_FOUND`, or
+  /// [DeferredNetworkStatus.unchecked] for never checked).
+  final Set<String>? lastNetworkStatuses;
+  final String? invoiceId;
+
+  /// Only payments paying this address.
+  final String? recipientAddress;
+
+  /// Page size (1 to 1000).
+  final int limit;
+
+  /// [DeferredPaymentsResponse.nextCursor] of the previous page.
+  final String? cursor;
+  final bool oldestFirst;
+
+  /// Rebuild each payment's BEEF from the stored ancestors and proofs.
+  final bool includeBeef;
+  final String? queryId;
+
+  GetDeferredPaymentsQuery({
+    required this.walletId,
+    this.states,
+    this.includeResolved = false,
+    this.createdBefore,
+    this.createdAfter,
+    this.olderThan,
+    this.lastNetworkStatuses,
+    this.invoiceId,
+    this.recipientAddress,
+    this.limit = 50,
+    this.cursor,
+    this.oldestFirst = false,
+    this.includeBeef = true,
+    this.queryId,
+  });
+
+  /// The storage query this message asks for, evaluated at [now].
+  DeferredPaymentQuery toStorageQuery({DateTime? now}) {
+    DateTime? before = createdBefore;
+    if (olderThan != null) {
+      final cutoff = (now ?? DateTime.now()).subtract(olderThan!);
+      if (before == null || cutoff.isBefore(before)) before = cutoff;
+    }
+    return DeferredPaymentQuery(
+      states: states ??
+          (includeResolved ? DeferredPaymentQuery.allStates : const {DeferredPaymentState.outstanding}),
+      createdBefore: before,
+      createdAfter: createdAfter,
+      lastNetworkStatuses: lastNetworkStatuses,
+      invoiceId: invoiceId,
+      recipientAddress: recipientAddress,
+      limit: limit,
+      cursor: cursor,
+      oldestFirst: oldestFirst,
+    );
+  }
+
+  @override
+  String get correlationId => queryId ?? 'get-deferred-payments-$walletId';
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+/// Broadcast a deferred payment yourself, e.g. when the recipient is slow to
+/// do it. Its unconfirmed ancestors (from the BEEF rebuilt from storage) are
+/// submitted first. Idempotent: a transaction the network already has is
+/// reported as such. Answered with [DeferredPaymentBroadcastEvent].
+///
+/// On an on-network answer the payment's inputs are marked spent; ARC's
+/// REJECTED or DOUBLE_SPEND_ATTEMPTED fails the payment and releases them.
+/// With [via] including the data source, a transaction ARC refuses to take
+/// is submitted to the configured `BlockchainDataSource`.
+class BroadcastDeferredPaymentCommand implements Message {
+  final String walletId;
+  final String txid;
+  final DeferredPaymentNetworkSource via;
+  final String? requestId;
+
+  BroadcastDeferredPaymentCommand({
+    required this.walletId,
+    required this.txid,
+    this.via = DeferredPaymentNetworkSource.arc,
+    this.requestId,
+  });
+
+  @override
+  String get correlationId => requestId ?? 'broadcast-deferred-$txid';
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId, 'txid': txid};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+/// Ask the network about a deferred payment now instead of waiting for the
+/// periodic ARC scan. Answered with [DeferredPaymentStatusEvent].
+///
+/// The wallet is updated as for a scan result: SEEN_ON_NETWORK or MINED
+/// spends the inputs; a MINED merkle proof is checked against the local
+/// headers and confirms the transaction only when it matches (never on a
+/// status string alone, whichever source reported it); REJECTED or
+/// DOUBLE_SPEND_ATTEMPTED fails the payment and releases its inputs. The
+/// status is journaled. [via]: ARC, the configured `BlockchainDataSource`
+/// (does it know the transaction; its merkle proof), or ARC then the data
+/// source when ARC fails or does not know it.
+class CheckDeferredPaymentStatusCommand implements Message {
+  final String walletId;
+  final String txid;
+  final DeferredPaymentNetworkSource via;
+  final String? requestId;
+
+  CheckDeferredPaymentStatusCommand({
+    required this.walletId,
+    required this.txid,
+    this.via = DeferredPaymentNetworkSource.arc,
+    this.requestId,
+  });
+
+  @override
+  String get correlationId => requestId ?? 'check-deferred-$txid';
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId, 'txid': txid};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+/// Cancel an outstanding deferred payment and release its inputs. Answered
+/// with [DeferredPaymentCancelledEvent].
+///
+/// The network is checked first ([via]); the cancellation is refused when
+/// the transaction is known to it (any status other than "not found"), and
+/// when the check fails, unless [force]. The cancellation is journaled.
+///
+/// **Cancelling does not revoke the signed transaction the recipient
+/// holds.** If they broadcast it later and it still reaches miners, it
+/// spends those inputs, and a later payment that reused them will fail (the
+/// wallet then records the original payment as seen). To make the old
+/// transaction unspendable, spend its inputs back to yourself instead (not
+/// provided by this command).
+class CancelDeferredPaymentCommand implements Message {
+  final String walletId;
+  final String txid;
+  final String? reason;
+  final DeferredPaymentNetworkSource via;
+
+  /// Cancel even when the network could not be asked (never when it knows
+  /// the transaction).
+  final bool force;
+  final String? requestId;
+
+  CancelDeferredPaymentCommand({
+    required this.walletId,
+    required this.txid,
+    this.reason,
+    this.via = DeferredPaymentNetworkSource.arc,
+    this.force = false,
+    this.requestId,
+  });
+
+  @override
+  String get correlationId => requestId ?? 'cancel-deferred-$txid';
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId, 'txid': txid};
   @override
   ActorRef? get replyTo => null;
   @override
@@ -1228,6 +1447,172 @@ class WatchAddressRegisteredEvent extends CoordinatorEvent {
     required this.walletId,
     required this.address,
     required this.success,
+    this.error,
+  });
+
+  @override
+  DateTime get eventTimestamp => DateTime.now();
+}
+
+
+// --- Deferred Payment Events (bead libspiffy-7p2) ---
+
+/// One deferred payment in a [DeferredPaymentsResponse], with what is needed
+/// to act on it.
+class DeferredPaymentDetail {
+  final DeferredPayment payment;
+
+  /// The signed transaction (null only if its row is missing).
+  final String? rawTxHex;
+
+  /// The BEEF rebuilt from stored ancestors and proofs, when requested and
+  /// the chain back to proven ancestors is stored.
+  final Uint8List? beef;
+
+  /// Why [beef] is null although it was requested.
+  final String? beefError;
+
+  const DeferredPaymentDetail({required this.payment, this.rawTxHex, this.beef, this.beefError});
+
+  String get txid => payment.txid;
+  String? get invoiceId => payment.invoiceId;
+  List<String> get recipientAddresses => payment.recipientAddresses;
+  BigInt get amount => payment.amount;
+  BigInt get fee => payment.fee;
+  DateTime get createdAt => payment.createdAt;
+  List<DeferredPaymentInput> get heldInputs => payment.heldInputs;
+  String? get lastNetworkStatus => payment.lastNetworkStatus;
+  DateTime? get lastCheckedAt => payment.lastCheckedAt;
+  DeferredPaymentState get state => payment.state;
+}
+
+/// Answer to [GetDeferredPaymentsQuery].
+class DeferredPaymentsResponse extends CoordinatorEvent {
+  @override
+  final String walletId;
+  final String queryId;
+  final List<DeferredPaymentDetail> payments;
+
+  /// Pass as [GetDeferredPaymentsQuery.cursor] for the next page; null on
+  /// the last page.
+  final String? nextCursor;
+
+  DeferredPaymentsResponse({
+    required this.walletId,
+    required this.queryId,
+    required this.payments,
+    this.nextCursor,
+  });
+
+  @override
+  DateTime get eventTimestamp => DateTime.now();
+}
+
+/// Result of [BroadcastDeferredPaymentCommand].
+class DeferredPaymentBroadcastEvent extends CoordinatorEvent {
+  @override
+  final String walletId;
+  final String txid;
+  final String requestId;
+
+  /// The source took the transaction (or already had it).
+  final bool success;
+
+  /// The source's answer (`SEEN_ON_NETWORK`, `MINED`, `REJECTED`, ...).
+  final String? networkStatus;
+
+  /// `arc` or `dataSource`.
+  final String? source;
+
+  /// A MINED answer's merkle proof checked against the local headers
+  /// confirmed the transaction.
+  final bool confirmed;
+
+  /// The failed broadcast was queued for a durable retry.
+  final bool willRetry;
+  final String? error;
+
+  DeferredPaymentBroadcastEvent({
+    required this.walletId,
+    required this.txid,
+    required this.requestId,
+    required this.success,
+    this.networkStatus,
+    this.source,
+    this.confirmed = false,
+    this.willRetry = false,
+    this.error,
+  });
+
+  @override
+  DateTime get eventTimestamp => DateTime.now();
+}
+
+/// Result of [CheckDeferredPaymentStatusCommand].
+class DeferredPaymentStatusEvent extends CoordinatorEvent {
+  @override
+  final String walletId;
+  final String txid;
+  final String requestId;
+
+  /// A source answered ([networkStatus] set).
+  final bool success;
+
+  /// `SEEN_ON_NETWORK`, `MINED`, `REJECTED`, `NOT_FOUND`, ...
+  final String? networkStatus;
+
+  /// `arc` or `dataSource`.
+  final String? source;
+  final int? blockHeight;
+
+  /// Outcome of checking a MINED merkle proof against the local headers:
+  /// `verified`, `headerUnknown` (confirmed once the header arrives),
+  /// `rootMismatch` or `malformed` (not confirmed), or null without a proof.
+  final String? proofStatus;
+
+  /// The proof matched the stored header and the transaction is confirmed.
+  final bool confirmed;
+  final String? error;
+
+  DeferredPaymentStatusEvent({
+    required this.walletId,
+    required this.txid,
+    required this.requestId,
+    required this.success,
+    this.networkStatus,
+    this.source,
+    this.blockHeight,
+    this.proofStatus,
+    this.confirmed = false,
+    this.error,
+  });
+
+  @override
+  DateTime get eventTimestamp => DateTime.now();
+}
+
+/// Result of [CancelDeferredPaymentCommand].
+class DeferredPaymentCancelledEvent extends CoordinatorEvent {
+  @override
+  final String walletId;
+  final String txid;
+  final String requestId;
+  final bool success;
+
+  /// What the network check before the cancellation answered.
+  final String? networkStatus;
+
+  /// Inputs returned to their previous status.
+  final List<String> releasedUtxoKeys;
+  final String? error;
+
+  DeferredPaymentCancelledEvent({
+    required this.walletId,
+    required this.txid,
+    required this.requestId,
+    required this.success,
+    this.networkStatus,
+    this.releasedUtxoKeys = const [],
     this.error,
   });
 

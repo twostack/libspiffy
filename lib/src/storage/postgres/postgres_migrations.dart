@@ -20,6 +20,7 @@ import 'migrations/v009_merkle_proof_status.dart';
 import 'migrations/v010_ancestor_transactions.dart';
 import 'migrations/v011_utxo_reservation_columns.dart';
 import 'migrations/v012_merkle_proof_rejected_status.dart';
+import 'migrations/v013_deferred_payments.dart';
 
 /// Base class for database migrations.
 ///
@@ -58,6 +59,7 @@ class PostgresMigrations {
     V010AncestorTransactions(),
     V011UtxoReservationColumns(),
     V012MerkleProofRejectedStatus(),
+    V013DeferredPayments(),
   ];
 
   /// Test hook awaited by [migrate] right after it reads the current schema

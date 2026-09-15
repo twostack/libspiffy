@@ -611,6 +611,10 @@ class WalletManagerActor extends Actor {
         ),
       );
 
+      // Journal the holds of deferred payments recorded before holds were
+      // journaled (bead libspiffy-7p2), ahead of any command queued for the
+      // wallet: the mailbox is FIFO. No events when there is nothing to do.
+      walletActor.tell(ReconcileDeferredSpendsCommand(walletId: walletId));
 
       return walletActor;
 

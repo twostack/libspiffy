@@ -562,6 +562,15 @@ class LibSpiffyActorSystem {
         aliases: const ['UTXOSplitCompletedEvent']);
     EventRegistry.register<AllUTXOsSplitCompletedEvent>(AllUTXOsSplitCompletedEvent.stableTypeName, AllUTXOsSplitCompletedEvent.fromMap,
         aliases: const ['AllUTXOsSplitCompletedEvent']);
+    // Deferred payments (bead libspiffy-7p2)
+    EventRegistry.register<TransactionSpendDeferredEvent>(TransactionSpendDeferredEvent.stableTypeName, TransactionSpendDeferredEvent.fromMap,
+        aliases: const ['TransactionSpendDeferredEvent']);
+    EventRegistry.register<TransactionNetworkStatusCheckedEvent>(TransactionNetworkStatusCheckedEvent.stableTypeName, TransactionNetworkStatusCheckedEvent.fromMap,
+        aliases: const ['TransactionNetworkStatusCheckedEvent']);
+    EventRegistry.register<DeferredTransactionFailedEvent>(DeferredTransactionFailedEvent.stableTypeName, DeferredTransactionFailedEvent.fromMap,
+        aliases: const ['DeferredTransactionFailedEvent']);
+    EventRegistry.register<DeferredTransactionCancelledEvent>(DeferredTransactionCancelledEvent.stableTypeName, DeferredTransactionCancelledEvent.fromMap,
+        aliases: const ['DeferredTransactionCancelledEvent']);
 
     // INVOICE EVENTS (5)
     EventRegistry.register<InvoiceCreatedEvent>(InvoiceCreatedEvent.stableTypeName, InvoiceCreatedEvent.fromMap,
@@ -745,6 +754,10 @@ class LibSpiffyActorSystem {
       arcConfig: _arcConfig,
       arcService: _arcService,  // ← Pass mock service for testing
       isar: _isarInstance,  // For duraq broadcast retry queue
+      // Explicit fallback for deferred payment checks and broadcasts.
+      dataSource: _blockchainDataSource is BlockchainDataSource
+          ? _blockchainDataSource as BlockchainDataSource
+          : null,
     ));
     
     // Wire up ARC actor reference in WalletManager

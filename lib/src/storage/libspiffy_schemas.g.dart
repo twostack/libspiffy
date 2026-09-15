@@ -4399,6 +4399,3672 @@ extension AncestorTransactionEntityQueryProperty on QueryBuilder<
 // coverage:ignore-file
 // ignore_for_file: duplicate_ignore, non_constant_identifier_names, constant_identifier_names, invalid_use_of_protected_member, unnecessary_cast, prefer_const_constructors, lines_longer_than_80_chars, require_trailing_commas, inference_failure_on_function_invocation, unnecessary_parenthesis, unnecessary_raw_strings, unnecessary_null_checks, join_return_with_assignment, prefer_final_locals, avoid_js_rounded_ints, avoid_positional_boolean_parameters, always_specify_types
 
+extension GetDeferredPaymentEntityCollection on Isar {
+  IsarCollection<DeferredPaymentEntity> get deferredPaymentEntitys =>
+      this.collection();
+}
+
+const DeferredPaymentEntitySchema = CollectionSchema(
+  name: r'DeferredPaymentEntity',
+  id: -8714373721752675531,
+  properties: {
+    r'amount': PropertySchema(
+      id: 0,
+      name: r'amount',
+      type: IsarType.string,
+    ),
+    r'createdAt': PropertySchema(
+      id: 1,
+      name: r'createdAt',
+      type: IsarType.dateTime,
+    ),
+    r'fee': PropertySchema(
+      id: 2,
+      name: r'fee',
+      type: IsarType.string,
+    ),
+    r'heldInputsJson': PropertySchema(
+      id: 3,
+      name: r'heldInputsJson',
+      type: IsarType.string,
+    ),
+    r'inferred': PropertySchema(
+      id: 4,
+      name: r'inferred',
+      type: IsarType.bool,
+    ),
+    r'invoiceId': PropertySchema(
+      id: 5,
+      name: r'invoiceId',
+      type: IsarType.string,
+    ),
+    r'lastCheckedAt': PropertySchema(
+      id: 6,
+      name: r'lastCheckedAt',
+      type: IsarType.dateTime,
+    ),
+    r'lastNetworkStatus': PropertySchema(
+      id: 7,
+      name: r'lastNetworkStatus',
+      type: IsarType.string,
+    ),
+    r'lastNetworkStatusSource': PropertySchema(
+      id: 8,
+      name: r'lastNetworkStatusSource',
+      type: IsarType.string,
+    ),
+    r'purpose': PropertySchema(
+      id: 9,
+      name: r'purpose',
+      type: IsarType.string,
+    ),
+    r'recipientAddresses': PropertySchema(
+      id: 10,
+      name: r'recipientAddresses',
+      type: IsarType.stringList,
+    ),
+    r'resolutionReason': PropertySchema(
+      id: 11,
+      name: r'resolutionReason',
+      type: IsarType.string,
+    ),
+    r'resolvedAt': PropertySchema(
+      id: 12,
+      name: r'resolvedAt',
+      type: IsarType.dateTime,
+    ),
+    r'state': PropertySchema(
+      id: 13,
+      name: r'state',
+      type: IsarType.string,
+    ),
+    r'txid': PropertySchema(
+      id: 14,
+      name: r'txid',
+      type: IsarType.string,
+    ),
+    r'updatedAt': PropertySchema(
+      id: 15,
+      name: r'updatedAt',
+      type: IsarType.dateTime,
+    ),
+    r'walletId': PropertySchema(
+      id: 16,
+      name: r'walletId',
+      type: IsarType.string,
+    )
+  },
+  estimateSize: _deferredPaymentEntityEstimateSize,
+  serialize: _deferredPaymentEntitySerialize,
+  deserialize: _deferredPaymentEntityDeserialize,
+  deserializeProp: _deferredPaymentEntityDeserializeProp,
+  idName: r'id',
+  indexes: {
+    r'walletId_txid': IndexSchema(
+      id: -4567513073908314813,
+      name: r'walletId_txid',
+      unique: true,
+      replace: true,
+      properties: [
+        IndexPropertySchema(
+          name: r'walletId',
+          type: IndexType.hash,
+          caseSensitive: true,
+        ),
+        IndexPropertySchema(
+          name: r'txid',
+          type: IndexType.hash,
+          caseSensitive: true,
+        )
+      ],
+    ),
+    r'walletId_state_createdAt': IndexSchema(
+      id: 1794878121247757105,
+      name: r'walletId_state_createdAt',
+      unique: false,
+      replace: false,
+      properties: [
+        IndexPropertySchema(
+          name: r'walletId',
+          type: IndexType.hash,
+          caseSensitive: true,
+        ),
+        IndexPropertySchema(
+          name: r'state',
+          type: IndexType.hash,
+          caseSensitive: true,
+        ),
+        IndexPropertySchema(
+          name: r'createdAt',
+          type: IndexType.value,
+          caseSensitive: false,
+        )
+      ],
+    )
+  },
+  links: {},
+  embeddedSchemas: {},
+  getId: _deferredPaymentEntityGetId,
+  getLinks: _deferredPaymentEntityGetLinks,
+  attach: _deferredPaymentEntityAttach,
+  version: '3.1.0+1',
+);
+
+int _deferredPaymentEntityEstimateSize(
+  DeferredPaymentEntity object,
+  List<int> offsets,
+  Map<Type, List<int>> allOffsets,
+) {
+  var bytesCount = offsets.last;
+  bytesCount += 3 + object.amount.length * 3;
+  bytesCount += 3 + object.fee.length * 3;
+  bytesCount += 3 + object.heldInputsJson.length * 3;
+  {
+    final value = object.invoiceId;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
+  {
+    final value = object.lastNetworkStatus;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
+  {
+    final value = object.lastNetworkStatusSource;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
+  {
+    final value = object.purpose;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
+  bytesCount += 3 + object.recipientAddresses.length * 3;
+  {
+    for (var i = 0; i < object.recipientAddresses.length; i++) {
+      final value = object.recipientAddresses[i];
+      bytesCount += value.length * 3;
+    }
+  }
+  {
+    final value = object.resolutionReason;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
+  bytesCount += 3 + object.state.length * 3;
+  bytesCount += 3 + object.txid.length * 3;
+  bytesCount += 3 + object.walletId.length * 3;
+  return bytesCount;
+}
+
+void _deferredPaymentEntitySerialize(
+  DeferredPaymentEntity object,
+  IsarWriter writer,
+  List<int> offsets,
+  Map<Type, List<int>> allOffsets,
+) {
+  writer.writeString(offsets[0], object.amount);
+  writer.writeDateTime(offsets[1], object.createdAt);
+  writer.writeString(offsets[2], object.fee);
+  writer.writeString(offsets[3], object.heldInputsJson);
+  writer.writeBool(offsets[4], object.inferred);
+  writer.writeString(offsets[5], object.invoiceId);
+  writer.writeDateTime(offsets[6], object.lastCheckedAt);
+  writer.writeString(offsets[7], object.lastNetworkStatus);
+  writer.writeString(offsets[8], object.lastNetworkStatusSource);
+  writer.writeString(offsets[9], object.purpose);
+  writer.writeStringList(offsets[10], object.recipientAddresses);
+  writer.writeString(offsets[11], object.resolutionReason);
+  writer.writeDateTime(offsets[12], object.resolvedAt);
+  writer.writeString(offsets[13], object.state);
+  writer.writeString(offsets[14], object.txid);
+  writer.writeDateTime(offsets[15], object.updatedAt);
+  writer.writeString(offsets[16], object.walletId);
+}
+
+DeferredPaymentEntity _deferredPaymentEntityDeserialize(
+  Id id,
+  IsarReader reader,
+  List<int> offsets,
+  Map<Type, List<int>> allOffsets,
+) {
+  final object = DeferredPaymentEntity();
+  object.amount = reader.readString(offsets[0]);
+  object.createdAt = reader.readDateTime(offsets[1]);
+  object.fee = reader.readString(offsets[2]);
+  object.heldInputsJson = reader.readString(offsets[3]);
+  object.id = id;
+  object.inferred = reader.readBool(offsets[4]);
+  object.invoiceId = reader.readStringOrNull(offsets[5]);
+  object.lastCheckedAt = reader.readDateTimeOrNull(offsets[6]);
+  object.lastNetworkStatus = reader.readStringOrNull(offsets[7]);
+  object.lastNetworkStatusSource = reader.readStringOrNull(offsets[8]);
+  object.purpose = reader.readStringOrNull(offsets[9]);
+  object.recipientAddresses = reader.readStringList(offsets[10]) ?? [];
+  object.resolutionReason = reader.readStringOrNull(offsets[11]);
+  object.resolvedAt = reader.readDateTimeOrNull(offsets[12]);
+  object.state = reader.readString(offsets[13]);
+  object.txid = reader.readString(offsets[14]);
+  object.updatedAt = reader.readDateTime(offsets[15]);
+  object.walletId = reader.readString(offsets[16]);
+  return object;
+}
+
+P _deferredPaymentEntityDeserializeProp<P>(
+  IsarReader reader,
+  int propertyId,
+  int offset,
+  Map<Type, List<int>> allOffsets,
+) {
+  switch (propertyId) {
+    case 0:
+      return (reader.readString(offset)) as P;
+    case 1:
+      return (reader.readDateTime(offset)) as P;
+    case 2:
+      return (reader.readString(offset)) as P;
+    case 3:
+      return (reader.readString(offset)) as P;
+    case 4:
+      return (reader.readBool(offset)) as P;
+    case 5:
+      return (reader.readStringOrNull(offset)) as P;
+    case 6:
+      return (reader.readDateTimeOrNull(offset)) as P;
+    case 7:
+      return (reader.readStringOrNull(offset)) as P;
+    case 8:
+      return (reader.readStringOrNull(offset)) as P;
+    case 9:
+      return (reader.readStringOrNull(offset)) as P;
+    case 10:
+      return (reader.readStringList(offset) ?? []) as P;
+    case 11:
+      return (reader.readStringOrNull(offset)) as P;
+    case 12:
+      return (reader.readDateTimeOrNull(offset)) as P;
+    case 13:
+      return (reader.readString(offset)) as P;
+    case 14:
+      return (reader.readString(offset)) as P;
+    case 15:
+      return (reader.readDateTime(offset)) as P;
+    case 16:
+      return (reader.readString(offset)) as P;
+    default:
+      throw IsarError('Unknown property with id $propertyId');
+  }
+}
+
+Id _deferredPaymentEntityGetId(DeferredPaymentEntity object) {
+  return object.id;
+}
+
+List<IsarLinkBase<dynamic>> _deferredPaymentEntityGetLinks(
+    DeferredPaymentEntity object) {
+  return [];
+}
+
+void _deferredPaymentEntityAttach(
+    IsarCollection<dynamic> col, Id id, DeferredPaymentEntity object) {
+  object.id = id;
+}
+
+extension DeferredPaymentEntityByIndex
+    on IsarCollection<DeferredPaymentEntity> {
+  Future<DeferredPaymentEntity?> getByWalletIdTxid(
+      String walletId, String txid) {
+    return getByIndex(r'walletId_txid', [walletId, txid]);
+  }
+
+  DeferredPaymentEntity? getByWalletIdTxidSync(String walletId, String txid) {
+    return getByIndexSync(r'walletId_txid', [walletId, txid]);
+  }
+
+  Future<bool> deleteByWalletIdTxid(String walletId, String txid) {
+    return deleteByIndex(r'walletId_txid', [walletId, txid]);
+  }
+
+  bool deleteByWalletIdTxidSync(String walletId, String txid) {
+    return deleteByIndexSync(r'walletId_txid', [walletId, txid]);
+  }
+
+  Future<List<DeferredPaymentEntity?>> getAllByWalletIdTxid(
+      List<String> walletIdValues, List<String> txidValues) {
+    final len = walletIdValues.length;
+    assert(
+        txidValues.length == len, 'All index values must have the same length');
+    final values = <List<dynamic>>[];
+    for (var i = 0; i < len; i++) {
+      values.add([walletIdValues[i], txidValues[i]]);
+    }
+
+    return getAllByIndex(r'walletId_txid', values);
+  }
+
+  List<DeferredPaymentEntity?> getAllByWalletIdTxidSync(
+      List<String> walletIdValues, List<String> txidValues) {
+    final len = walletIdValues.length;
+    assert(
+        txidValues.length == len, 'All index values must have the same length');
+    final values = <List<dynamic>>[];
+    for (var i = 0; i < len; i++) {
+      values.add([walletIdValues[i], txidValues[i]]);
+    }
+
+    return getAllByIndexSync(r'walletId_txid', values);
+  }
+
+  Future<int> deleteAllByWalletIdTxid(
+      List<String> walletIdValues, List<String> txidValues) {
+    final len = walletIdValues.length;
+    assert(
+        txidValues.length == len, 'All index values must have the same length');
+    final values = <List<dynamic>>[];
+    for (var i = 0; i < len; i++) {
+      values.add([walletIdValues[i], txidValues[i]]);
+    }
+
+    return deleteAllByIndex(r'walletId_txid', values);
+  }
+
+  int deleteAllByWalletIdTxidSync(
+      List<String> walletIdValues, List<String> txidValues) {
+    final len = walletIdValues.length;
+    assert(
+        txidValues.length == len, 'All index values must have the same length');
+    final values = <List<dynamic>>[];
+    for (var i = 0; i < len; i++) {
+      values.add([walletIdValues[i], txidValues[i]]);
+    }
+
+    return deleteAllByIndexSync(r'walletId_txid', values);
+  }
+
+  Future<Id> putByWalletIdTxid(DeferredPaymentEntity object) {
+    return putByIndex(r'walletId_txid', object);
+  }
+
+  Id putByWalletIdTxidSync(DeferredPaymentEntity object,
+      {bool saveLinks = true}) {
+    return putByIndexSync(r'walletId_txid', object, saveLinks: saveLinks);
+  }
+
+  Future<List<Id>> putAllByWalletIdTxid(List<DeferredPaymentEntity> objects) {
+    return putAllByIndex(r'walletId_txid', objects);
+  }
+
+  List<Id> putAllByWalletIdTxidSync(List<DeferredPaymentEntity> objects,
+      {bool saveLinks = true}) {
+    return putAllByIndexSync(r'walletId_txid', objects, saveLinks: saveLinks);
+  }
+}
+
+extension DeferredPaymentEntityQueryWhereSort
+    on QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QWhere> {
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterWhere>
+      anyId() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(const IdWhereClause.any());
+    });
+  }
+}
+
+extension DeferredPaymentEntityQueryWhere on QueryBuilder<DeferredPaymentEntity,
+    DeferredPaymentEntity, QWhereClause> {
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterWhereClause>
+      idEqualTo(Id id) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IdWhereClause.between(
+        lower: id,
+        upper: id,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterWhereClause>
+      idNotEqualTo(Id id) {
+    return QueryBuilder.apply(this, (query) {
+      if (query.whereSort == Sort.asc) {
+        return query
+            .addWhereClause(
+              IdWhereClause.lessThan(upper: id, includeUpper: false),
+            )
+            .addWhereClause(
+              IdWhereClause.greaterThan(lower: id, includeLower: false),
+            );
+      } else {
+        return query
+            .addWhereClause(
+              IdWhereClause.greaterThan(lower: id, includeLower: false),
+            )
+            .addWhereClause(
+              IdWhereClause.lessThan(upper: id, includeUpper: false),
+            );
+      }
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterWhereClause>
+      idGreaterThan(Id id, {bool include = false}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(
+        IdWhereClause.greaterThan(lower: id, includeLower: include),
+      );
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterWhereClause>
+      idLessThan(Id id, {bool include = false}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(
+        IdWhereClause.lessThan(upper: id, includeUpper: include),
+      );
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterWhereClause>
+      idBetween(
+    Id lowerId,
+    Id upperId, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IdWhereClause.between(
+        lower: lowerId,
+        includeLower: includeLower,
+        upper: upperId,
+        includeUpper: includeUpper,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterWhereClause>
+      walletIdEqualToAnyTxid(String walletId) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'walletId_txid',
+        value: [walletId],
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterWhereClause>
+      walletIdNotEqualToAnyTxid(String walletId) {
+    return QueryBuilder.apply(this, (query) {
+      if (query.whereSort == Sort.asc) {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_txid',
+              lower: [],
+              upper: [walletId],
+              includeUpper: false,
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_txid',
+              lower: [walletId],
+              includeLower: false,
+              upper: [],
+            ));
+      } else {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_txid',
+              lower: [walletId],
+              includeLower: false,
+              upper: [],
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_txid',
+              lower: [],
+              upper: [walletId],
+              includeUpper: false,
+            ));
+      }
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterWhereClause>
+      walletIdTxidEqualTo(String walletId, String txid) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'walletId_txid',
+        value: [walletId, txid],
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterWhereClause>
+      walletIdEqualToTxidNotEqualTo(String walletId, String txid) {
+    return QueryBuilder.apply(this, (query) {
+      if (query.whereSort == Sort.asc) {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_txid',
+              lower: [walletId],
+              upper: [walletId, txid],
+              includeUpper: false,
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_txid',
+              lower: [walletId, txid],
+              includeLower: false,
+              upper: [walletId],
+            ));
+      } else {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_txid',
+              lower: [walletId, txid],
+              includeLower: false,
+              upper: [walletId],
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_txid',
+              lower: [walletId],
+              upper: [walletId, txid],
+              includeUpper: false,
+            ));
+      }
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterWhereClause>
+      walletIdEqualToAnyStateCreatedAt(String walletId) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'walletId_state_createdAt',
+        value: [walletId],
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterWhereClause>
+      walletIdNotEqualToAnyStateCreatedAt(String walletId) {
+    return QueryBuilder.apply(this, (query) {
+      if (query.whereSort == Sort.asc) {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_state_createdAt',
+              lower: [],
+              upper: [walletId],
+              includeUpper: false,
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_state_createdAt',
+              lower: [walletId],
+              includeLower: false,
+              upper: [],
+            ));
+      } else {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_state_createdAt',
+              lower: [walletId],
+              includeLower: false,
+              upper: [],
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_state_createdAt',
+              lower: [],
+              upper: [walletId],
+              includeUpper: false,
+            ));
+      }
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterWhereClause>
+      walletIdStateEqualToAnyCreatedAt(String walletId, String state) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'walletId_state_createdAt',
+        value: [walletId, state],
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterWhereClause>
+      walletIdEqualToStateNotEqualToAnyCreatedAt(
+          String walletId, String state) {
+    return QueryBuilder.apply(this, (query) {
+      if (query.whereSort == Sort.asc) {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_state_createdAt',
+              lower: [walletId],
+              upper: [walletId, state],
+              includeUpper: false,
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_state_createdAt',
+              lower: [walletId, state],
+              includeLower: false,
+              upper: [walletId],
+            ));
+      } else {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_state_createdAt',
+              lower: [walletId, state],
+              includeLower: false,
+              upper: [walletId],
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_state_createdAt',
+              lower: [walletId],
+              upper: [walletId, state],
+              includeUpper: false,
+            ));
+      }
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterWhereClause>
+      walletIdStateCreatedAtEqualTo(
+          String walletId, String state, DateTime createdAt) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'walletId_state_createdAt',
+        value: [walletId, state, createdAt],
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterWhereClause>
+      walletIdStateEqualToCreatedAtNotEqualTo(
+          String walletId, String state, DateTime createdAt) {
+    return QueryBuilder.apply(this, (query) {
+      if (query.whereSort == Sort.asc) {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_state_createdAt',
+              lower: [walletId, state],
+              upper: [walletId, state, createdAt],
+              includeUpper: false,
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_state_createdAt',
+              lower: [walletId, state, createdAt],
+              includeLower: false,
+              upper: [walletId, state],
+            ));
+      } else {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_state_createdAt',
+              lower: [walletId, state, createdAt],
+              includeLower: false,
+              upper: [walletId, state],
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_state_createdAt',
+              lower: [walletId, state],
+              upper: [walletId, state, createdAt],
+              includeUpper: false,
+            ));
+      }
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterWhereClause>
+      walletIdStateEqualToCreatedAtGreaterThan(
+    String walletId,
+    String state,
+    DateTime createdAt, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.between(
+        indexName: r'walletId_state_createdAt',
+        lower: [walletId, state, createdAt],
+        includeLower: include,
+        upper: [walletId, state],
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterWhereClause>
+      walletIdStateEqualToCreatedAtLessThan(
+    String walletId,
+    String state,
+    DateTime createdAt, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.between(
+        indexName: r'walletId_state_createdAt',
+        lower: [walletId, state],
+        upper: [walletId, state, createdAt],
+        includeUpper: include,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterWhereClause>
+      walletIdStateEqualToCreatedAtBetween(
+    String walletId,
+    String state,
+    DateTime lowerCreatedAt,
+    DateTime upperCreatedAt, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.between(
+        indexName: r'walletId_state_createdAt',
+        lower: [walletId, state, lowerCreatedAt],
+        includeLower: includeLower,
+        upper: [walletId, state, upperCreatedAt],
+        includeUpper: includeUpper,
+      ));
+    });
+  }
+}
+
+extension DeferredPaymentEntityQueryFilter on QueryBuilder<
+    DeferredPaymentEntity, DeferredPaymentEntity, QFilterCondition> {
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> amountEqualTo(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'amount',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> amountGreaterThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'amount',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> amountLessThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'amount',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> amountBetween(
+    String lower,
+    String upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'amount',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> amountStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'amount',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> amountEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'amount',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+          QAfterFilterCondition>
+      amountContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'amount',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+          QAfterFilterCondition>
+      amountMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'amount',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> amountIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'amount',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> amountIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'amount',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> createdAtEqualTo(DateTime value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'createdAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> createdAtGreaterThan(
+    DateTime value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'createdAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> createdAtLessThan(
+    DateTime value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'createdAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> createdAtBetween(
+    DateTime lower,
+    DateTime upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'createdAt',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> feeEqualTo(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'fee',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> feeGreaterThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'fee',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> feeLessThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'fee',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> feeBetween(
+    String lower,
+    String upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'fee',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> feeStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'fee',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> feeEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'fee',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+          QAfterFilterCondition>
+      feeContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'fee',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+          QAfterFilterCondition>
+      feeMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'fee',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> feeIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'fee',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> feeIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'fee',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> heldInputsJsonEqualTo(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'heldInputsJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> heldInputsJsonGreaterThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'heldInputsJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> heldInputsJsonLessThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'heldInputsJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> heldInputsJsonBetween(
+    String lower,
+    String upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'heldInputsJson',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> heldInputsJsonStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'heldInputsJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> heldInputsJsonEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'heldInputsJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+          QAfterFilterCondition>
+      heldInputsJsonContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'heldInputsJson',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+          QAfterFilterCondition>
+      heldInputsJsonMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'heldInputsJson',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> heldInputsJsonIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'heldInputsJson',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> heldInputsJsonIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'heldInputsJson',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> idEqualTo(Id value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'id',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> idGreaterThan(
+    Id value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'id',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> idLessThan(
+    Id value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'id',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> idBetween(
+    Id lower,
+    Id upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'id',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> inferredEqualTo(bool value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'inferred',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> invoiceIdIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'invoiceId',
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> invoiceIdIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'invoiceId',
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> invoiceIdEqualTo(
+    String? value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'invoiceId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> invoiceIdGreaterThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'invoiceId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> invoiceIdLessThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'invoiceId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> invoiceIdBetween(
+    String? lower,
+    String? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'invoiceId',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> invoiceIdStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'invoiceId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> invoiceIdEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'invoiceId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+          QAfterFilterCondition>
+      invoiceIdContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'invoiceId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+          QAfterFilterCondition>
+      invoiceIdMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'invoiceId',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> invoiceIdIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'invoiceId',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> invoiceIdIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'invoiceId',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> lastCheckedAtIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'lastCheckedAt',
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> lastCheckedAtIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'lastCheckedAt',
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> lastCheckedAtEqualTo(DateTime? value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'lastCheckedAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> lastCheckedAtGreaterThan(
+    DateTime? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'lastCheckedAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> lastCheckedAtLessThan(
+    DateTime? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'lastCheckedAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> lastCheckedAtBetween(
+    DateTime? lower,
+    DateTime? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'lastCheckedAt',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> lastNetworkStatusIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'lastNetworkStatus',
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> lastNetworkStatusIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'lastNetworkStatus',
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> lastNetworkStatusEqualTo(
+    String? value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'lastNetworkStatus',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> lastNetworkStatusGreaterThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'lastNetworkStatus',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> lastNetworkStatusLessThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'lastNetworkStatus',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> lastNetworkStatusBetween(
+    String? lower,
+    String? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'lastNetworkStatus',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> lastNetworkStatusStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'lastNetworkStatus',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> lastNetworkStatusEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'lastNetworkStatus',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+          QAfterFilterCondition>
+      lastNetworkStatusContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'lastNetworkStatus',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+          QAfterFilterCondition>
+      lastNetworkStatusMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'lastNetworkStatus',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> lastNetworkStatusIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'lastNetworkStatus',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> lastNetworkStatusIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'lastNetworkStatus',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> lastNetworkStatusSourceIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'lastNetworkStatusSource',
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> lastNetworkStatusSourceIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'lastNetworkStatusSource',
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> lastNetworkStatusSourceEqualTo(
+    String? value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'lastNetworkStatusSource',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> lastNetworkStatusSourceGreaterThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'lastNetworkStatusSource',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> lastNetworkStatusSourceLessThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'lastNetworkStatusSource',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> lastNetworkStatusSourceBetween(
+    String? lower,
+    String? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'lastNetworkStatusSource',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> lastNetworkStatusSourceStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'lastNetworkStatusSource',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> lastNetworkStatusSourceEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'lastNetworkStatusSource',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+          QAfterFilterCondition>
+      lastNetworkStatusSourceContains(String value,
+          {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'lastNetworkStatusSource',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+          QAfterFilterCondition>
+      lastNetworkStatusSourceMatches(String pattern,
+          {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'lastNetworkStatusSource',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> lastNetworkStatusSourceIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'lastNetworkStatusSource',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> lastNetworkStatusSourceIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'lastNetworkStatusSource',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> purposeIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'purpose',
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> purposeIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'purpose',
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> purposeEqualTo(
+    String? value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'purpose',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> purposeGreaterThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'purpose',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> purposeLessThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'purpose',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> purposeBetween(
+    String? lower,
+    String? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'purpose',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> purposeStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'purpose',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> purposeEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'purpose',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+          QAfterFilterCondition>
+      purposeContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'purpose',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+          QAfterFilterCondition>
+      purposeMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'purpose',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> purposeIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'purpose',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> purposeIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'purpose',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> recipientAddressesElementEqualTo(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'recipientAddresses',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> recipientAddressesElementGreaterThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'recipientAddresses',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> recipientAddressesElementLessThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'recipientAddresses',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> recipientAddressesElementBetween(
+    String lower,
+    String upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'recipientAddresses',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> recipientAddressesElementStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'recipientAddresses',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> recipientAddressesElementEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'recipientAddresses',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+          QAfterFilterCondition>
+      recipientAddressesElementContains(String value,
+          {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'recipientAddresses',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+          QAfterFilterCondition>
+      recipientAddressesElementMatches(String pattern,
+          {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'recipientAddresses',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> recipientAddressesElementIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'recipientAddresses',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> recipientAddressesElementIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'recipientAddresses',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> recipientAddressesLengthEqualTo(int length) {
+    return QueryBuilder.apply(this, (query) {
+      return query.listLength(
+        r'recipientAddresses',
+        length,
+        true,
+        length,
+        true,
+      );
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> recipientAddressesIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.listLength(
+        r'recipientAddresses',
+        0,
+        true,
+        0,
+        true,
+      );
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> recipientAddressesIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.listLength(
+        r'recipientAddresses',
+        0,
+        false,
+        999999,
+        true,
+      );
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> recipientAddressesLengthLessThan(
+    int length, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.listLength(
+        r'recipientAddresses',
+        0,
+        true,
+        length,
+        include,
+      );
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> recipientAddressesLengthGreaterThan(
+    int length, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.listLength(
+        r'recipientAddresses',
+        length,
+        include,
+        999999,
+        true,
+      );
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> recipientAddressesLengthBetween(
+    int lower,
+    int upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.listLength(
+        r'recipientAddresses',
+        lower,
+        includeLower,
+        upper,
+        includeUpper,
+      );
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> resolutionReasonIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'resolutionReason',
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> resolutionReasonIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'resolutionReason',
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> resolutionReasonEqualTo(
+    String? value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'resolutionReason',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> resolutionReasonGreaterThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'resolutionReason',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> resolutionReasonLessThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'resolutionReason',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> resolutionReasonBetween(
+    String? lower,
+    String? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'resolutionReason',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> resolutionReasonStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'resolutionReason',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> resolutionReasonEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'resolutionReason',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+          QAfterFilterCondition>
+      resolutionReasonContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'resolutionReason',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+          QAfterFilterCondition>
+      resolutionReasonMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'resolutionReason',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> resolutionReasonIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'resolutionReason',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> resolutionReasonIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'resolutionReason',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> resolvedAtIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'resolvedAt',
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> resolvedAtIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'resolvedAt',
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> resolvedAtEqualTo(DateTime? value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'resolvedAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> resolvedAtGreaterThan(
+    DateTime? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'resolvedAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> resolvedAtLessThan(
+    DateTime? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'resolvedAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> resolvedAtBetween(
+    DateTime? lower,
+    DateTime? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'resolvedAt',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> stateEqualTo(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'state',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> stateGreaterThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'state',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> stateLessThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'state',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> stateBetween(
+    String lower,
+    String upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'state',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> stateStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'state',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> stateEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'state',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+          QAfterFilterCondition>
+      stateContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'state',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+          QAfterFilterCondition>
+      stateMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'state',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> stateIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'state',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> stateIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'state',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> txidEqualTo(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'txid',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> txidGreaterThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'txid',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> txidLessThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'txid',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> txidBetween(
+    String lower,
+    String upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'txid',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> txidStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'txid',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> txidEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'txid',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+          QAfterFilterCondition>
+      txidContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'txid',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+          QAfterFilterCondition>
+      txidMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'txid',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> txidIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'txid',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> txidIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'txid',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> updatedAtEqualTo(DateTime value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'updatedAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> updatedAtGreaterThan(
+    DateTime value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'updatedAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> updatedAtLessThan(
+    DateTime value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'updatedAt',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> updatedAtBetween(
+    DateTime lower,
+    DateTime upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'updatedAt',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> walletIdEqualTo(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'walletId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> walletIdGreaterThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'walletId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> walletIdLessThan(
+    String value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'walletId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> walletIdBetween(
+    String lower,
+    String upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'walletId',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> walletIdStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'walletId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> walletIdEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'walletId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+          QAfterFilterCondition>
+      walletIdContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'walletId',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+          QAfterFilterCondition>
+      walletIdMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'walletId',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> walletIdIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'walletId',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> walletIdIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'walletId',
+        value: '',
+      ));
+    });
+  }
+}
+
+extension DeferredPaymentEntityQueryObject on QueryBuilder<
+    DeferredPaymentEntity, DeferredPaymentEntity, QFilterCondition> {}
+
+extension DeferredPaymentEntityQueryLinks on QueryBuilder<DeferredPaymentEntity,
+    DeferredPaymentEntity, QFilterCondition> {}
+
+extension DeferredPaymentEntityQuerySortBy
+    on QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QSortBy> {
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      sortByAmount() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'amount', Sort.asc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      sortByAmountDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'amount', Sort.desc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      sortByCreatedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'createdAt', Sort.asc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      sortByCreatedAtDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'createdAt', Sort.desc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      sortByFee() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'fee', Sort.asc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      sortByFeeDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'fee', Sort.desc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      sortByHeldInputsJson() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'heldInputsJson', Sort.asc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      sortByHeldInputsJsonDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'heldInputsJson', Sort.desc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      sortByInferred() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'inferred', Sort.asc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      sortByInferredDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'inferred', Sort.desc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      sortByInvoiceId() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'invoiceId', Sort.asc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      sortByInvoiceIdDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'invoiceId', Sort.desc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      sortByLastCheckedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'lastCheckedAt', Sort.asc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      sortByLastCheckedAtDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'lastCheckedAt', Sort.desc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      sortByLastNetworkStatus() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'lastNetworkStatus', Sort.asc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      sortByLastNetworkStatusDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'lastNetworkStatus', Sort.desc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      sortByLastNetworkStatusSource() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'lastNetworkStatusSource', Sort.asc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      sortByLastNetworkStatusSourceDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'lastNetworkStatusSource', Sort.desc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      sortByPurpose() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'purpose', Sort.asc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      sortByPurposeDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'purpose', Sort.desc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      sortByResolutionReason() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'resolutionReason', Sort.asc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      sortByResolutionReasonDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'resolutionReason', Sort.desc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      sortByResolvedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'resolvedAt', Sort.asc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      sortByResolvedAtDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'resolvedAt', Sort.desc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      sortByState() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'state', Sort.asc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      sortByStateDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'state', Sort.desc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      sortByTxid() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'txid', Sort.asc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      sortByTxidDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'txid', Sort.desc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      sortByUpdatedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'updatedAt', Sort.asc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      sortByUpdatedAtDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'updatedAt', Sort.desc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      sortByWalletId() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'walletId', Sort.asc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      sortByWalletIdDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'walletId', Sort.desc);
+    });
+  }
+}
+
+extension DeferredPaymentEntityQuerySortThenBy
+    on QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QSortThenBy> {
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      thenByAmount() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'amount', Sort.asc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      thenByAmountDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'amount', Sort.desc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      thenByCreatedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'createdAt', Sort.asc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      thenByCreatedAtDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'createdAt', Sort.desc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      thenByFee() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'fee', Sort.asc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      thenByFeeDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'fee', Sort.desc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      thenByHeldInputsJson() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'heldInputsJson', Sort.asc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      thenByHeldInputsJsonDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'heldInputsJson', Sort.desc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      thenById() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'id', Sort.asc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      thenByIdDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'id', Sort.desc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      thenByInferred() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'inferred', Sort.asc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      thenByInferredDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'inferred', Sort.desc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      thenByInvoiceId() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'invoiceId', Sort.asc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      thenByInvoiceIdDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'invoiceId', Sort.desc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      thenByLastCheckedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'lastCheckedAt', Sort.asc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      thenByLastCheckedAtDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'lastCheckedAt', Sort.desc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      thenByLastNetworkStatus() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'lastNetworkStatus', Sort.asc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      thenByLastNetworkStatusDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'lastNetworkStatus', Sort.desc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      thenByLastNetworkStatusSource() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'lastNetworkStatusSource', Sort.asc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      thenByLastNetworkStatusSourceDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'lastNetworkStatusSource', Sort.desc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      thenByPurpose() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'purpose', Sort.asc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      thenByPurposeDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'purpose', Sort.desc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      thenByResolutionReason() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'resolutionReason', Sort.asc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      thenByResolutionReasonDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'resolutionReason', Sort.desc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      thenByResolvedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'resolvedAt', Sort.asc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      thenByResolvedAtDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'resolvedAt', Sort.desc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      thenByState() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'state', Sort.asc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      thenByStateDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'state', Sort.desc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      thenByTxid() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'txid', Sort.asc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      thenByTxidDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'txid', Sort.desc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      thenByUpdatedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'updatedAt', Sort.asc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      thenByUpdatedAtDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'updatedAt', Sort.desc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      thenByWalletId() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'walletId', Sort.asc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      thenByWalletIdDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'walletId', Sort.desc);
+    });
+  }
+}
+
+extension DeferredPaymentEntityQueryWhereDistinct
+    on QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QDistinct> {
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QDistinct>
+      distinctByAmount({bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'amount', caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QDistinct>
+      distinctByCreatedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'createdAt');
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QDistinct>
+      distinctByFee({bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'fee', caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QDistinct>
+      distinctByHeldInputsJson({bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'heldInputsJson',
+          caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QDistinct>
+      distinctByInferred() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'inferred');
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QDistinct>
+      distinctByInvoiceId({bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'invoiceId', caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QDistinct>
+      distinctByLastCheckedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'lastCheckedAt');
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QDistinct>
+      distinctByLastNetworkStatus({bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'lastNetworkStatus',
+          caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QDistinct>
+      distinctByLastNetworkStatusSource({bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'lastNetworkStatusSource',
+          caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QDistinct>
+      distinctByPurpose({bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'purpose', caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QDistinct>
+      distinctByRecipientAddresses() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'recipientAddresses');
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QDistinct>
+      distinctByResolutionReason({bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'resolutionReason',
+          caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QDistinct>
+      distinctByResolvedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'resolvedAt');
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QDistinct>
+      distinctByState({bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'state', caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QDistinct>
+      distinctByTxid({bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'txid', caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QDistinct>
+      distinctByUpdatedAt() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'updatedAt');
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QDistinct>
+      distinctByWalletId({bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'walletId', caseSensitive: caseSensitive);
+    });
+  }
+}
+
+extension DeferredPaymentEntityQueryProperty on QueryBuilder<
+    DeferredPaymentEntity, DeferredPaymentEntity, QQueryProperty> {
+  QueryBuilder<DeferredPaymentEntity, int, QQueryOperations> idProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'id');
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, String, QQueryOperations>
+      amountProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'amount');
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DateTime, QQueryOperations>
+      createdAtProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'createdAt');
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, String, QQueryOperations> feeProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'fee');
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, String, QQueryOperations>
+      heldInputsJsonProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'heldInputsJson');
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, bool, QQueryOperations>
+      inferredProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'inferred');
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, String?, QQueryOperations>
+      invoiceIdProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'invoiceId');
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DateTime?, QQueryOperations>
+      lastCheckedAtProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'lastCheckedAt');
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, String?, QQueryOperations>
+      lastNetworkStatusProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'lastNetworkStatus');
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, String?, QQueryOperations>
+      lastNetworkStatusSourceProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'lastNetworkStatusSource');
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, String?, QQueryOperations>
+      purposeProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'purpose');
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, List<String>, QQueryOperations>
+      recipientAddressesProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'recipientAddresses');
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, String?, QQueryOperations>
+      resolutionReasonProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'resolutionReason');
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DateTime?, QQueryOperations>
+      resolvedAtProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'resolvedAt');
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, String, QQueryOperations>
+      stateProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'state');
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, String, QQueryOperations> txidProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'txid');
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DateTime, QQueryOperations>
+      updatedAtProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'updatedAt');
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, String, QQueryOperations>
+      walletIdProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'walletId');
+    });
+  }
+}
+
+// coverage:ignore-file
+// ignore_for_file: duplicate_ignore, non_constant_identifier_names, constant_identifier_names, invalid_use_of_protected_member, unnecessary_cast, prefer_const_constructors, lines_longer_than_80_chars, require_trailing_commas, inference_failure_on_function_invocation, unnecessary_parenthesis, unnecessary_raw_strings, unnecessary_null_checks, join_return_with_assignment, prefer_final_locals, avoid_js_rounded_ints, avoid_positional_boolean_parameters, always_specify_types
+
 extension GetBitcoinUtxoEntityCollection on Isar {
   IsarCollection<BitcoinUtxoEntity> get bitcoinUtxoEntitys => this.collection();
 }

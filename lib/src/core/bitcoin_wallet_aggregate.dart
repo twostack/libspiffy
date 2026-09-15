@@ -10,6 +10,7 @@ import '../models/wallet_event.dart';
 import '../models/wallet_state.dart';
 import '../models/bitcoin_utxo.dart';
 import '../models/wallet_type.dart';
+import '../models/deferred_payment.dart' show DeferredNetworkStatus, DeferredPaymentState;
 import '../services/crypto_service.dart';
 import '../plugin/plugin_registry.dart';
 import '../services/script_type_registry.dart';
@@ -222,6 +223,13 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
               reservedByTxId: event.reservedByTxId,
               success: true,
             ));
+          } else if (event is DeferredTransactionCancelledEvent) {
+            sender.tell(DeferredSpendCancelledResponse(
+              walletId: event.walletId,
+              txid: event.txid,
+              success: true,
+              releasedUtxoKeys: [for (final r in event.releasedInputs) r.utxoKey],
+            ));
           }
         }
       }
@@ -420,6 +428,13 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         success: false,
         error: errorMessage,
       ));
+    } else if (command is CancelDeferredSpendCommand) {
+      sender.tell(DeferredSpendCancelledResponse(
+        walletId: command.walletId,
+        txid: command.txid,
+        success: false,
+        error: errorMessage,
+      ));
     } else if (command is SplitUTXOsToBenfordCommand) {
       sender.tell(SplitUTXOsResponse(
         walletId: command.walletId,
@@ -514,6 +529,12 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         return _handleRenewUTXOReservation(currentState, command as RenewUTXOReservationCommand);
       case CleanupExpiredReservationsCommand:
         return _handleCleanupExpiredReservations(currentState, command as CleanupExpiredReservationsCommand);
+      case ReconcileDeferredSpendsCommand:
+        return _handleReconcileDeferredSpends(currentState, command as ReconcileDeferredSpendsCommand);
+      case RecordTransactionNetworkStatusCommand:
+        return _handleRecordTransactionNetworkStatus(currentState, command as RecordTransactionNetworkStatusCommand);
+      case CancelDeferredSpendCommand:
+        return _handleCancelDeferredSpend(currentState, command as CancelDeferredSpendCommand);
       case SplitUTXOsToBenfordCommand:
         return await _handleSplitUTXOsToBenford(currentState, command as SplitUTXOsToBenfordCommand);
       default:
@@ -615,6 +636,22 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         break;
       case AllUTXOsSplitCompletedEvent:
         _applyAllUTXOsSplitCompleted(event as AllUTXOsSplitCompletedEvent);
+        break;
+      case TransactionSpendDeferredEvent:
+        _applyTransactionSpendDeferred(event as TransactionSpendDeferredEvent);
+        break;
+      case TransactionNetworkStatusCheckedEvent:
+        _applyTransactionNetworkStatusChecked(event as TransactionNetworkStatusCheckedEvent);
+        break;
+      case DeferredTransactionFailedEvent:
+        final failed = event as DeferredTransactionFailedEvent;
+        _applyDeferredResolution(failed.txid, DeferredPaymentState.failed, failed.releasedInputs,
+            failed.reason ?? failed.networkStatus, failed);
+        break;
+      case DeferredTransactionCancelledEvent:
+        final cancelled = event as DeferredTransactionCancelledEvent;
+        _applyDeferredResolution(cancelled.txid, DeferredPaymentState.cancelled, cancelled.releasedInputs,
+            cancelled.reason, cancelled);
         break;
       default:
         throw ArgumentError('Unknown event type: ${event.runtimeType}');
@@ -1228,10 +1265,15 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
     );
     events.add(transactionEvent);
 
-    // Mark spent UTXOs — unless deferSpend is true (UTXOs stay reserved,
-    // ARCActor will issue SpendUTXOCommand when tx reaches SEEN_ON_NETWORK)
+    // Mark spent UTXOs — unless deferSpend is true: then the wallet holds
+    // the inputs (no expiry) until the network settles the transaction,
+    // ARC reports it failed, or it is cancelled (bead libspiffy-7p2);
+    // ARCActor issues SpendUTXOCommand when it reaches SEEN_ON_NETWORK.
     if (command.deferSpend) {
-      _log.fine('Deferred spend for ${command.txid}: ${command.spentUtxoKeys.length} UTXO(s) stay reserved');
+      final hold = _deferredHoldEvent(currentState, command,
+          version: currentState.version + events.length + 1);
+      events.add(hold);
+      _log.fine('Deferred spend for ${command.txid}: ${hold.heldInputs.length} input(s) held');
     }
     for (final utxoKey in command.deferSpend ? <String>[] : command.spentUtxoKeys) {
       final parts = utxoKey.split(':');
@@ -1401,6 +1443,11 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
   /// unless the spend is deferred. Nothing else is journaled again.
   List<Event> _spendsStillOwed(WalletState currentState, RecordOutgoingTransactionCommand command) {
     final events = <Event>[];
+    if (command.deferSpend && _deferredRecord(currentState, command.txid) == null) {
+      // Recorded before its hold was journaled (a journal older than bead
+      // libspiffy-7p2): hold what it still has unspent now.
+      events.add(_deferredHoldEvent(currentState, command, version: currentState.version + 1));
+    }
     if (!command.deferSpend) {
       for (final utxoKey in command.spentUtxoKeys) {
         final utxo = currentState.utxos[utxoKey];
@@ -1958,7 +2005,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
       
       // Get available UTXOs and sort by value descending (largest first for efficient selection)
       final availableUtxos = currentState.utxos.values
-          .where((u) => u.isAvailable && !u.isSpent && !u.isReserved)
+          .where((u) => u.isAvailable && !u.isSpent && !u.isReserved &&
+              _deferredHolderOf(currentState, u.key) == null)
           .toList()
         ..sort((a, b) => b.value.getValue().compareTo(a.value.getValue()));
       
@@ -2294,8 +2342,14 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
     }
 
     final events = <Event>[];
+    final legacyHeld = {for (final l in _legacyDeferredSpends(currentState)) ...l.heldKeys};
     for (final utxo in currentState.utxos.values) {
       if (utxo.status != UTXOStatus.reserved || utxo.reservedByTxId != command.reservationId) {
+        continue;
+      }
+      // A deferred payment's hold is released only by its failure or
+      // cancellation (bead libspiffy-7p2).
+      if (_explicitHolder(currentState, utxo.key) != null || legacyHeld.contains(utxo.key)) {
         continue;
       }
       events.add(UTXOReleasedEvent(
@@ -2332,6 +2386,14 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
 
     if (utxo.status == UTXOStatus.spent) {
       throw StateError('Cannot reserve spent UTXO $utxoKey');
+    }
+
+    // A deferred payment's input is not reservable at any priority, whatever
+    // its (possibly expired) reservation says (bead libspiffy-7p2).
+    final holder = _deferredHolderOf(currentState, utxoKey);
+    if (holder != null) {
+      throw StateError('UTXO $utxoKey is held by deferred payment $holder until the network '
+          'settles it, ARC reports it failed, or it is cancelled');
     }
 
     if (utxo.status == UTXOStatus.reserved && !utxo.isReservationExpired) {
@@ -2391,6 +2453,12 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
       throw StateError('UTXO ${command.utxoKey} is not reserved and cannot be released');
     }
 
+    final holder = _deferredHolderOf(currentState, command.utxoKey);
+    if (holder != null) {
+      throw StateError('UTXO ${command.utxoKey} is held by deferred payment $holder; '
+          'cancel the payment to release it');
+    }
+
     // Parse txid and vout from utxoKey
     final parts = command.utxoKey.split(':');
     final txid = parts[0];
@@ -2426,6 +2494,12 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
       throw StateError('UTXO ${command.utxoKey} is not reserved and cannot be renewed');
     }
 
+    final holder = _deferredHolderOf(currentState, command.utxoKey);
+    if (holder != null) {
+      throw StateError('UTXO ${command.utxoKey} is held by deferred payment $holder, '
+          'which has no expiry to renew');
+    }
+
     // Parse txid and vout from utxoKey
     final parts = command.utxoKey.split(':');
     final txid = parts[0];
@@ -2455,13 +2529,24 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
     }
 
     final cutoffTime = command.cutoffTime ?? DateTime.now();
-    final events = <Event>[];
+
+    // Holds a journal written before bead libspiffy-7p2 did not record are
+    // journaled first, and nothing a deferred payment holds is released.
+    final events = <Event>[
+      ..._inferredHoldEvents(currentState, command.walletId, currentState.version + 1),
+    ];
+    final legacyHeld = {
+      for (final e in events) ...(e as TransactionSpendDeferredEvent).heldUtxoKeys,
+    };
 
     // Find expired reservations
     for (final utxo in currentState.utxos.values) {
       if (utxo.status == UTXOStatus.reserved && 
           utxo.reservationExpiresAt != null && 
           cutoffTime.isAfter(utxo.reservationExpiresAt!)) {
+        if (_explicitHolder(currentState, utxo.key) != null || legacyHeld.contains(utxo.key)) {
+          continue;
+        }
         
         // Create release event for expired reservation
         final event = UTXOReleasedEvent(
@@ -2628,6 +2713,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
   }
 
   void _applyUTXOReceived(UTXOReceivedEvent event) {
+    _noLegacyDeferredSpendsIn = null;
     final utxoKey = '${event.txid}:${event.vout}';
     if (currentState.utxos.containsKey(utxoKey)) {
       // First receipt wins (audit 2026-09-14 M9). The command handlers no
@@ -2684,6 +2770,11 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         utxo.markSpent(timestamp: event.timestamp, spentInTxId: event.spentInTxId),
       );
     }
+    // A spent input is held by nobody; a deferred payment whose input the
+    // transaction itself spent is on the network (bead libspiffy-7p2).
+    final holds = currentState.metadata[_deferredHoldsKey];
+    if (holds is Map) holds.remove(utxoKey);
+    _markDeferredSeen(event.spentInTxId, event.timestamp);
     currentState.version = event.version;
     currentState.lastModified = event.timestamp;
   }
@@ -2859,6 +2950,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
   }
 
   void _applyTransactionRecorded(TransactionRecordedEvent event) {
+    _noLegacyDeferredSpendsIn = null;
     // Store outgoing transaction in metadata (for audit/history)
     // Status starts as PENDING - will be updated to CONFIRMED when recipient accepts
     final records = _transactionRecords(_outgoingTransactionsKey);
@@ -2891,6 +2983,11 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
   /// that was spendable because of the proof becomes pending (a reserved one
   /// returns to pending on release); spent UTXOs are left alone.
   void _applyTransactionConfirmationReverted(TransactionConfirmationRevertedEvent event) {
+    _noLegacyDeferredSpendsIn = null;
+    final deferred = _deferredRecordForUpdate(event.txid);
+    if (deferred != null && deferred['state'] == DeferredPaymentState.mined.name) {
+      deferred['state'] = DeferredPaymentState.seen.name;
+    }
     final record = _transactionRecords(_outgoingTransactionsKey)[event.txid];
     if (record is Map && record['status'] == 'confirmed') {
       record['status'] = 'pending';
@@ -2931,6 +3028,11 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
   }
 
   void _applyTransactionConfirmed(TransactionConfirmedEvent event) {
+    final deferred = _deferredRecordForUpdate(event.txid);
+    if (deferred != null) {
+      deferred['state'] = DeferredPaymentState.mined.name;
+      deferred['resolvedAt'] ??= event.timestamp.toIso8601String();
+    }
     // Update transaction status from PENDING to CONFIRMED
     final record = _transactionRecords(_outgoingTransactionsKey)[event.txid];
     if (record is Map) {
@@ -2945,6 +3047,415 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
   }
 
   
+  // ==========================================================================
+  // DEFERRED PAYMENTS (bead libspiffy-7p2)
+  // ==========================================================================
+  //
+  // A transaction recorded with deferSpend was handed to its recipient, who
+  // normally broadcasts it (spv-understanding.md). Its inputs are held until
+  // exactly one of: the network reports it (the spend applies), ARC reports
+  // it REJECTED / DOUBLE_SPEND_ATTEMPTED (failed, inputs released), or the
+  // user cancels it (inputs released). Reservation expiry, cleanup and
+  // reservations of any priority never touch a held input; the aggregate,
+  // not a coordinator, enforces it, so it survives restarts and replays.
+  //
+  // State: metadata['deferredSpends'] (txid -> record with state, held keys,
+  // last network status) and metadata['deferredHolds'] (utxoKey -> txid of
+  // the outstanding payment holding it).
+
+  static const String _deferredSpendsKey = 'deferredSpends';
+  static const String _deferredHoldsKey = 'deferredHolds';
+
+  /// `reservationReason` of a held input.
+  static const String deferredHoldReason = 'deferred-spend';
+
+  /// `reservationPriority` of a held input. Informational: a hold is refused
+  /// to every reservation by rule, not by priority.
+  static const int deferredHoldPriority = 1 << 30;
+
+  /// The deferred-payment record of [txid] in [state], or null.
+  static Map? _deferredRecord(WalletState state, String txid) {
+    final records = state.metadata[_deferredSpendsKey];
+    final record = records is Map ? records[txid] : null;
+    return record is Map ? record : null;
+  }
+
+  /// The outstanding deferred payment holding [utxoKey], journaled holds only.
+  static String? _explicitHolder(WalletState state, String utxoKey) {
+    final holds = state.metadata[_deferredHoldsKey];
+    return holds is Map ? holds[utxoKey]?.toString() : null;
+  }
+
+  /// The outstanding deferred payment holding [utxoKey]: a journaled hold, or
+  /// one inferred from a journal older than the holds.
+  String? _deferredHolderOf(WalletState state, String utxoKey) {
+    final explicit = _explicitHolder(state, utxoKey);
+    if (explicit != null) return explicit;
+    for (final legacy in _legacyDeferredSpends(state)) {
+      if (legacy.heldKeys.contains(utxoKey)) return legacy.txid;
+    }
+    return null;
+  }
+
+  /// The state last found to hold no un-journaled deferred payment, so the
+  /// inference below runs once per state change that could create one (a
+  /// recorded transaction, a received UTXO, a reverted confirmation).
+  WalletState? _noLegacyDeferredSpendsIn;
+
+  /// Outgoing transactions recorded with a deferred spend before holds were
+  /// journaled, still outstanding: a record with no deferred-payment record,
+  /// not confirmed, whose inputs the wallet still has unspent. A record
+  /// without deferSpend spent its inputs in its own command, so it never
+  /// qualifies. Oldest record first; an input two records list is held by
+  /// the older one.
+  List<_LegacyDeferredSpend> _legacyDeferredSpends(WalletState state) {
+    if (identical(_noLegacyDeferredSpendsIn, state)) return const [];
+    final records = state.metadata[_outgoingTransactionsKey];
+    final deferred = state.metadata[_deferredSpendsKey];
+    final holds = state.metadata[_deferredHoldsKey];
+
+    // One pass over the records keeps the candidates (usually none); only
+    // those are ordered.
+    bool unheldUnspent(Object? key) {
+      final utxo = state.utxos[key.toString()];
+      return utxo != null &&
+          utxo.status != UTXOStatus.spent &&
+          !(holds is Map && holds.containsKey(key.toString()));
+    }
+
+    final candidates = <Map>[
+      for (final record in <Object?>[
+        if (records is Map) ...records.values,
+        if (records is List) ...records,
+      ])
+        if (record is Map &&
+            record['txid'] != null &&
+            !(deferred is Map && deferred.containsKey(record['txid'].toString())) &&
+            record['status'] != 'confirmed' &&
+            record['spentUtxoKeys'] is List &&
+            (record['spentUtxoKeys'] as List).any(unheldUnspent))
+          record,
+    ]..sort((a, b) => (a['recordedAt']?.toString() ?? '').compareTo(b['recordedAt']?.toString() ?? ''));
+
+    final claimed = <String>{};
+    final result = <_LegacyDeferredSpend>[];
+    for (final record in candidates) {
+      final held = <String>[
+        for (final k in record['spentUtxoKeys'] as List)
+          if (unheldUnspent(k) && claimed.add(k.toString())) k.toString(),
+      ];
+      if (held.isNotEmpty) result.add(_LegacyDeferredSpend(record['txid'].toString(), held, record));
+    }
+    if (result.isEmpty) _noLegacyDeferredSpendsIn = state;
+    return result;
+  }
+
+  /// `{'utxoKey', 'satoshis'}` of each of [keys].
+  static List<Map<String, dynamic>> _heldInputMaps(WalletState state, Iterable<String> keys) => [
+        for (final key in keys)
+          {'utxoKey': key, 'satoshis': (state.utxos[key]?.satoshis ?? BigInt.zero).toString()},
+      ];
+
+  /// The hold of [command]'s transaction: the wallet's unspent inputs it
+  /// spends that no other deferred payment holds.
+  TransactionSpendDeferredEvent _deferredHoldEvent(
+    WalletState state,
+    RecordOutgoingTransactionCommand command, {
+    required int version,
+  }) {
+    final held = <String>[];
+    for (final key in command.spentUtxoKeys.toSet()) {
+      final utxo = state.utxos[key];
+      if (utxo == null || utxo.status == UTXOStatus.spent) continue;
+      final holder = _deferredHolderOf(state, key);
+      if (holder != null && holder != command.txid) {
+        _log.warning('Input $key of ${command.txid} is already held by deferred payment $holder; '
+            'not held again');
+        continue;
+      }
+      held.add(key);
+    }
+    final now = DateTime.now();
+    return TransactionSpendDeferredEvent(
+      walletId: command.walletId,
+      txid: command.txid,
+      heldInputs: _heldInputMaps(state, held),
+      recipientAddresses: command.recipientAddresses,
+      paymentAmount: command.paymentAmount.toString(),
+      fee: command.fee,
+      invoiceId: command.invoiceId,
+      purpose: command.purpose,
+      recordedAt: now,
+      version: version,
+      timestamp: now,
+    );
+  }
+
+  /// Hold events for every un-journaled outstanding deferred payment
+  /// ([_legacyDeferredSpends]), versions from [firstVersion].
+  List<TransactionSpendDeferredEvent> _inferredHoldEvents(WalletState state, String walletId, int firstVersion) {
+    final legacy = _legacyDeferredSpends(state);
+    final now = DateTime.now();
+    return [
+      for (var i = 0; i < legacy.length; i++)
+        TransactionSpendDeferredEvent(
+          walletId: walletId,
+          txid: legacy[i].txid,
+          heldInputs: _heldInputMaps(state, legacy[i].heldKeys),
+          recipientAddresses: [
+            for (final a in (legacy[i].record['recipientAddresses'] as List? ?? const [])) a.toString(),
+          ],
+          paymentAmount: legacy[i].record['paymentAmount']?.toString() ?? '0',
+          fee: (legacy[i].record['fee'] as num?)?.toInt() ?? 0,
+          purpose: 'legacy',
+          inferred: true,
+          recordedAt: DateTime.tryParse(legacy[i].record['recordedAt']?.toString() ?? '') ?? now,
+          version: firstVersion + i,
+          timestamp: now,
+        ),
+    ];
+  }
+
+  /// The inputs [txid] holds and the status each returns to on release.
+  /// [inferredKeys] are the keys of a hold journaled in the same command.
+  static List<ReleasedDeferredInput> _releasableInputs(WalletState state, String txid,
+      {List<String>? inferredKeys}) {
+    final holds = state.metadata[_deferredHoldsKey];
+    final keys = inferredKeys ??
+        [
+          if (holds is Map)
+            for (final entry in holds.entries)
+              if (entry.value?.toString() == txid) entry.key.toString(),
+        ];
+    return [
+      for (final key in keys)
+        if (state.utxos[key] case final utxo? when utxo.status != UTXOStatus.spent)
+          ReleasedDeferredInput(utxoKey: key, restoredStatus: utxo.statusToRestoreOnRelease),
+    ];
+  }
+
+  List<Event> _handleReconcileDeferredSpends(WalletState currentState, ReconcileDeferredSpendsCommand command) {
+    if (!currentState.isCreated) return const [];
+    final events = _inferredHoldEvents(currentState, command.walletId, currentState.version + 1);
+    if (events.isNotEmpty) {
+      _log.info('Wallet ${command.walletId}: ${events.length} deferred payment(s) recorded before '
+          'holds were journaled are held now: ${[for (final e in events) e.txid]}');
+    }
+    return events;
+  }
+
+  List<Event> _handleRecordTransactionNetworkStatus(
+      WalletState currentState, RecordTransactionNetworkStatusCommand command) {
+    if (!currentState.isCreated) {
+      throw StateError('Cannot record a network status for non-existent wallet');
+    }
+    final events = <Event>[];
+    final record = _deferredRecord(currentState, command.txid);
+    List<String>? inferredKeys;
+    if (record == null) {
+      final inferred = _inferredHoldEvents(currentState, command.walletId, currentState.version + 1);
+      final own = inferred.where((e) => e.txid == command.txid).firstOrNull;
+      if (own == null) return const []; // not a deferred payment of this wallet
+      events.addAll(inferred);
+      inferredKeys = own.heldUtxoKeys;
+    }
+
+    final state = record?['state']?.toString() ?? DeferredPaymentState.outstanding.name;
+    final definitiveFailure = DeferredNetworkStatus.isDefinitiveFailure(command.networkStatus) &&
+        state == DeferredPaymentState.outstanding.name;
+    if (command.explicit || definitiveFailure || record?['lastNetworkStatus'] != command.networkStatus) {
+      events.add(TransactionNetworkStatusCheckedEvent(
+        walletId: command.walletId,
+        txid: command.txid,
+        networkStatus: command.networkStatus,
+        source: command.source,
+        checkedAt: command.checkedAt,
+        blockHeight: command.blockHeight,
+        explicit: command.explicit,
+        version: currentState.version + events.length + 1,
+        timestamp: DateTime.now(),
+      ));
+    }
+    if (definitiveFailure) {
+      final released = _releasableInputs(currentState, command.txid, inferredKeys: inferredKeys);
+      events.add(DeferredTransactionFailedEvent(
+        walletId: command.walletId,
+        txid: command.txid,
+        networkStatus: command.networkStatus,
+        reason: command.detail ?? '${command.source} reported ${command.networkStatus}',
+        releasedInputs: released,
+        version: currentState.version + events.length + 1,
+        timestamp: DateTime.now(),
+      ));
+      _log.warning('Deferred payment ${command.txid} failed (${command.networkStatus}); '
+          'released ${released.length} input(s)');
+    }
+    return events;
+  }
+
+  List<Event> _handleCancelDeferredSpend(WalletState currentState, CancelDeferredSpendCommand command) {
+    if (!currentState.isCreated) {
+      throw StateError('Cannot cancel a deferred payment of non-existent wallet');
+    }
+    final events = <Event>[];
+    final record = _deferredRecord(currentState, command.txid);
+    List<String>? inferredKeys;
+    if (record == null) {
+      final inferred = _inferredHoldEvents(currentState, command.walletId, currentState.version + 1);
+      final own = inferred.where((e) => e.txid == command.txid).firstOrNull;
+      if (own == null) {
+        throw StateError('Transaction ${command.txid} is not a deferred payment of wallet ${command.walletId}');
+      }
+      events.addAll(inferred);
+      inferredKeys = own.heldUtxoKeys;
+    }
+    final state = record?['state']?.toString() ?? DeferredPaymentState.outstanding.name;
+    if (state != DeferredPaymentState.outstanding.name) {
+      throw StateError('Deferred payment ${command.txid} is $state, not outstanding; nothing to cancel');
+    }
+    final lastStatus = record?['lastNetworkStatus']?.toString();
+    if (DeferredNetworkStatus.isOnNetwork(lastStatus) || DeferredNetworkStatus.isOnNetwork(command.networkStatus)) {
+      throw StateError('Deferred payment ${command.txid} is known to the network '
+          '(${command.networkStatus ?? lastStatus}); it cannot be cancelled');
+    }
+    final released = _releasableInputs(currentState, command.txid, inferredKeys: inferredKeys);
+    events.add(DeferredTransactionCancelledEvent(
+      walletId: command.walletId,
+      txid: command.txid,
+      reason: command.reason,
+      networkStatus: command.networkStatus,
+      releasedInputs: released,
+      version: currentState.version + events.length + 1,
+      timestamp: DateTime.now(),
+    ));
+    return events;
+  }
+
+  /// The deferred-payment records as a typed map (converted once, e.g.
+  /// after a snapshot's untyped round trip; afterwards returned as is, so
+  /// applying an event costs no copy of every record).
+  Map<String, dynamic> _deferredRecordsForUpdate() {
+    final existing = currentState.metadata[_deferredSpendsKey];
+    if (existing is Map<String, dynamic>) return existing;
+    final records = <String, dynamic>{};
+    if (existing is Map) {
+      existing.forEach((txid, record) => records[txid.toString()] = record);
+    }
+    currentState.metadata[_deferredSpendsKey] = records;
+    return records;
+  }
+
+  /// The mutable record of [txid], or null (creates no metadata entry).
+  Map<String, dynamic>? _deferredRecordForUpdate(String txid) {
+    if (currentState.metadata[_deferredSpendsKey] is! Map) return null;
+    final records = _deferredRecordsForUpdate();
+    final record = records[txid];
+    if (record is Map<String, dynamic>) return record;
+    if (record is! Map) return null;
+    final typed = <String, dynamic>{for (final e in record.entries) e.key.toString(): e.value};
+    records[txid] = typed;
+    return typed;
+  }
+
+  Map<String, dynamic> _deferredHoldsForUpdate() {
+    final existing = currentState.metadata[_deferredHoldsKey];
+    if (existing is Map<String, dynamic>) return existing;
+    final holds = <String, dynamic>{};
+    if (existing is Map) {
+      existing.forEach((key, txid) => holds[key.toString()] = txid.toString());
+    }
+    currentState.metadata[_deferredHoldsKey] = holds;
+    return holds;
+  }
+
+  void _applyTransactionSpendDeferred(TransactionSpendDeferredEvent event) {
+    final records = _deferredRecordsForUpdate();
+    records.putIfAbsent(event.txid, () => <String, dynamic>{
+          'txid': event.txid,
+          'heldUtxoKeys': event.heldUtxoKeys,
+          'state': DeferredPaymentState.outstanding.name,
+          'invoiceId': event.invoiceId,
+          'purpose': event.purpose,
+          'inferred': event.inferred,
+          'recordedAt': event.recordedAt.toIso8601String(),
+        });
+    final holds = _deferredHoldsForUpdate();
+    for (final key in event.heldUtxoKeys) {
+      final utxo = currentState.utxos[key];
+      if (utxo == null || utxo.status == UTXOStatus.spent) continue;
+      final holder = holds[key];
+      if (holder != null && holder != event.txid) continue; // the first hold wins
+      holds[key] = event.txid;
+      _putUtxo(
+        key,
+        utxo.copyWith(
+          status: UTXOStatus.reserved,
+          statusBeforeReservation: utxo.statusToRestoreOnRelease,
+          reservedByTxId: event.txid,
+          reservationExpiresAt: null,
+          reservationPriority: deferredHoldPriority,
+          reservationReason: deferredHoldReason,
+          updatedAt: event.timestamp,
+        ),
+      );
+    }
+    currentState.version = event.version;
+    currentState.lastModified = event.timestamp;
+  }
+
+  /// An outstanding, failed or cancelled deferred payment [txid] is on the
+  /// network.
+  void _markDeferredSeen(String txid, DateTime at) {
+    final record = _deferredRecordForUpdate(txid);
+    if (record == null) return;
+    final state = record['state'];
+    if (state == DeferredPaymentState.outstanding.name ||
+        state == DeferredPaymentState.failed.name ||
+        state == DeferredPaymentState.cancelled.name) {
+      record['state'] = DeferredPaymentState.seen.name;
+      record['resolvedAt'] = at.toIso8601String();
+    }
+  }
+
+  void _applyTransactionNetworkStatusChecked(TransactionNetworkStatusCheckedEvent event) {
+    final record = _deferredRecordForUpdate(event.txid);
+    if (record != null) {
+      record['lastNetworkStatus'] = event.networkStatus;
+      record['lastNetworkStatusSource'] = event.source;
+      record['lastCheckedAt'] = event.checkedAt.toIso8601String();
+      if (DeferredNetworkStatus.isOnNetwork(event.networkStatus)) {
+        _markDeferredSeen(event.txid, event.timestamp);
+      }
+    }
+    currentState.version = event.version;
+    currentState.lastModified = event.timestamp;
+  }
+
+  /// A deferred payment failed or was cancelled: each released input still
+  /// reserved by it returns to its recorded status.
+  void _applyDeferredResolution(String txid, DeferredPaymentState state,
+      List<ReleasedDeferredInput> released, String? reason, WalletEvent event) {
+    final record = _deferredRecordForUpdate(txid);
+    if (record != null && record['state'] == DeferredPaymentState.outstanding.name) {
+      record['state'] = state.name;
+      record['resolvedAt'] = event.timestamp.toIso8601String();
+      record['resolutionReason'] = reason;
+    }
+    final holds = currentState.metadata[_deferredHoldsKey];
+    for (final input in released) {
+      if (holds is Map && holds[input.utxoKey]?.toString() == txid) holds.remove(input.utxoKey);
+      final utxo = currentState.utxos[input.utxoKey];
+      if (utxo != null && utxo.status == UTXOStatus.reserved && utxo.reservedByTxId == txid) {
+        _putUtxo(
+          input.utxoKey,
+          utxo.releaseReservation(restoreStatus: input.restoredStatus, timestamp: event.timestamp),
+        );
+      }
+    }
+    currentState.version = event.version;
+    currentState.lastModified = event.timestamp;
+  }
+
   // ==========================================================================
   // BALANCES (audit 2026-09-14 M7)
   // ==========================================================================
@@ -3135,4 +3646,14 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
     currentState.lastModified = event.timestamp;
   }
 
-} 
+}
+
+/// An outgoing transaction recorded with a deferred spend before holds were
+/// journaled, with the inputs it still holds ([BitcoinWalletAggregate]).
+class _LegacyDeferredSpend {
+  final String txid;
+  final List<String> heldKeys;
+  final Map record;
+
+  _LegacyDeferredSpend(this.txid, this.heldKeys, this.record);
+}

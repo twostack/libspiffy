@@ -11,6 +11,10 @@ import 'package:logging/logging.dart';
 import '../core/wallet_commands.dart';
 import '../models/bitcoin_transaction.dart';
 import '../models/bitcoin_utxo.dart' show UTXOStatus;
+import '../models/deferred_payment.dart';
+import '../models/blockchain_data_models.dart' show MerkleProofData;
+import '../services/blockchain_data_source.dart';
+import '../utils/tsc_converter.dart';
 
 import '../services/arc_service.dart';
 import '../services/arc_service_config.dart';
@@ -41,6 +45,20 @@ class _Backoff {
 /// What one status check of a transaction found.
 enum _CheckOutcome { changed, unchanged, unknown }
 
+/// One status check of a transaction: the scan uses [outcome], an explicit
+/// deferred-payment check the rest.
+class _StatusCheck {
+  final _CheckOutcome outcome;
+
+  /// ARC's wire status, `NOT_FOUND`, or null when ARC could not be asked.
+  final String? status;
+  final int? blockHeight;
+  final ProofHeaderStatus? proofStatus;
+  final String? error;
+
+  const _StatusCheck(this.outcome, {this.status, this.blockHeight, this.proofStatus, this.error});
+}
+
 /// Actor that handles ARC service integration for transaction broadcasting and monitoring
 ///
 /// Confirmation (SPV-09): a MINED report is only acted on after the BRC-74
@@ -68,6 +86,10 @@ class ARCActor extends Actor {
   final ArcServiceConfig? _arcConfig;
   final ReadModelStorage _storage;
   final Isar? _isar;
+
+  /// Optional fallback for explicit deferred-payment checks and broadcasts
+  /// ([DeferredPaymentNetworkSource.dataSource]); never used by the scan.
+  final BlockchainDataSource? _dataSource;
 
   // ARC service client (dynamic to allow mock services in tests)
   dynamic _arcService;
@@ -146,11 +168,13 @@ class ARCActor extends Actor {
     Isar? isar,
     this.statusCheckInterval = const Duration(seconds: 30),
     this.headerTriggerDebounce = const Duration(milliseconds: 500),
+    BlockchainDataSource? dataSource,
   })  : _walletManager = walletManager,
         _storage = storage,
         _arcConfig = arcConfig,
         _arcService = arcService,
-        _isar = isar;
+        _isar = isar,
+        _dataSource = dataSource;
 
   @override
   void preStart() {
@@ -197,6 +221,15 @@ class ARCActor extends Actor {
 
         case TransactionConfirmationsRevertedMessage:
           _handleConfirmationsReverted(message as TransactionConfirmationsRevertedMessage);
+          break;
+
+        case CheckDeferredPaymentStatusMessage:
+          final check = message as CheckDeferredPaymentStatusMessage;
+          context.sender?.tell(await _checkDeferredPayment(check.walletId, check.txid, check.via));
+          break;
+
+        case BroadcastDeferredPaymentMessage:
+          context.sender?.tell(await _broadcastDeferredPayment(message as BroadcastDeferredPaymentMessage));
           break;
 
         default:
@@ -686,7 +719,7 @@ class ARCActor extends Actor {
 
         checked++;
         _log.fine('  Checking tx ${tx.txid.substring(0, 8)}... stored=${tx.status.name} wallet=$walletId');
-        final outcome = await _checkAndUpdateTransactionStatus(tx.txid, walletId, tx.status);
+        final outcome = (await _checkAndUpdateTransactionStatus(tx.txid, walletId, tx.status)).outcome;
 
         if (isPending) {
           if (outcome == _CheckOutcome.changed) {
@@ -712,13 +745,25 @@ class ARCActor extends Actor {
   /// Check and update status for a specific transaction.
   /// Compares the current stored status with ARC's reported status and takes
   /// appropriate action on transitions (deferred spend, confirmation, orphan remediation).
-  Future<_CheckOutcome> _checkAndUpdateTransactionStatus(String txid, String walletId, TransactionStatus currentStatus) async {
-    if (_arcService == null) return _CheckOutcome.unknown;
+  ///
+  /// Deferred payments (bead libspiffy-7p2): the status is recorded in the
+  /// wallet when it changed, or always when [explicit] (a user-requested
+  /// check). REJECTED and DOUBLE_SPEND_ATTEMPTED fail an outstanding deferred
+  /// payment and release its inputs; ARC not knowing the transaction (404)
+  /// or failing to answer leaves the hold in place.
+  Future<_StatusCheck> _checkAndUpdateTransactionStatus(String txid, String walletId, TransactionStatus currentStatus,
+      {bool explicit = false}) async {
+    if (_arcService == null) {
+      return const _StatusCheck(_CheckOutcome.unknown, error: 'ARC service not available');
+    }
 
     try {
       final ArcTransactionResponse response = await _arcService!.getTransaction(txid);
       final arcTxStatus = _arcStatusToTransactionStatus(response.status);
+      final wireStatus = arcWireStatus(response.status);
       _log.info('  ARC reports: ${response.status} (mapped: ${arcTxStatus?.name}) for ${txid.substring(0, 8)}... (stored: ${currentStatus.name})');
+      await _recordNetworkStatus(walletId, txid, wireStatus,
+          explicit: explicit, blockHeight: response.blockHeight, detail: response.message);
 
       // SEEN_IN_ORPHAN_MEMPOOL: Attempt remediation on every poll cycle
       if (response.status == ArcTransactionStatus.seenInOrphanMempool) {
@@ -726,7 +771,7 @@ class ARCActor extends Actor {
           _updateTransactionStatusFromArc(walletId, txid, response.status);
         }
         _handleOrphanedTransaction(txid);
-        return _CheckOutcome.changed;
+        return _StatusCheck(_CheckOutcome.changed, status: wireStatus);
       }
 
       // MINED: the transaction is on the network, so its deferred spend
@@ -735,11 +780,12 @@ class ARCActor extends Actor {
       if (response.status == ArcTransactionStatus.mined) {
         _orphanRemediationAttempts.remove(txid);
         await _applyDeferredSpend(txid, walletId);
-        await _handleMinedReport(txid, walletId, response);
-        return _CheckOutcome.changed;
+        final proofStatus = await _handleMinedReport(txid, walletId, response);
+        return _StatusCheck(_CheckOutcome.changed,
+            status: wireStatus, blockHeight: response.blockHeight, proofStatus: proofStatus);
       }
 
-      if (arcTxStatus == null) return _CheckOutcome.unknown;
+      if (arcTxStatus == null) return _StatusCheck(_CheckOutcome.unknown, status: wireStatus);
       final changed = arcTxStatus != currentStatus;
       if (changed) {
         // Update the transaction status in the wallet
@@ -755,26 +801,35 @@ class ARCActor extends Actor {
         await _applyDeferredSpend(txid, walletId);
       }
 
-      return changed ? _CheckOutcome.changed : _CheckOutcome.unchanged;
+      return _StatusCheck(changed ? _CheckOutcome.changed : _CheckOutcome.unchanged, status: wireStatus);
     } catch (e) {
+      if (e is ArcException && e.isNotFound) {
+        // Not known to ARC (yet): the recipient may broadcast later. Not a
+        // failure; the hold stays.
+        await _recordNetworkStatus(walletId, txid, DeferredNetworkStatus.notFound, explicit: explicit);
+        return const _StatusCheck(_CheckOutcome.unknown, status: DeferredNetworkStatus.notFound);
+      }
       _log.warning('Failed to check transaction $txid: $e');
-      return _CheckOutcome.unknown;
+      return _StatusCheck(_CheckOutcome.unknown, error: e.toString());
     }
   }
 
   /// ARC says [txid] is MINED: verify its merkle path against the stored
   /// header at that height before confirming (SPV-09).
-  Future<void> _handleMinedReport(String txid, String walletId, ArcTransactionResponse response) =>
+  Future<ProofHeaderStatus?> _handleMinedReport(String txid, String walletId, ArcTransactionResponse response) =>
       _handleMinedProof(txid, walletId, response.merklePathHex, response.blockHeight, response.blockHash);
 
-  Future<void> _handleMinedProof(
+  /// The result of the proof check, or null without a proof ([bumpHex]
+  /// null). A confirmation issued within the reconfirm window counts as
+  /// verified.
+  Future<ProofHeaderStatus?> _handleMinedProof(
       String txid, String walletId, String? bumpHex, int? blockHeight, String? blockHash) async {
-    if (_confirmedRecently(walletId, txid)) return;
+    if (_confirmedRecently(walletId, txid)) return ProofHeaderStatus.verified;
     if (bumpHex == null) {
       _log.warning('ARC reports $txid MINED without a merklePath; not confirming until a proof is available');
-      return;
+      return null;
     }
-    await _applyProofCheck(txid, _PendingProof({walletId}, bumpHex, blockHeight), arcBlockHash: blockHash);
+    return _applyProofCheck(txid, _PendingProof({walletId}, bumpHex, blockHeight), arcBlockHash: blockHash);
   }
 
   /// ARC answered a submission of [txid] (raw [txHex]) for [walletId] with
@@ -788,24 +843,31 @@ class ARCActor extends Actor {
   /// [_updateTransactionStatusFromArc] scheduled fetches the proof.
   /// Any other status (rejected, double spend, orphan, still in flight)
   /// spends nothing.
-  Future<void> _onSubmitResponse(String walletId, String txid, String txHex, ArcSubmitResponse response) async {
+  ///
+  /// The status is recorded for a deferred payment ([explicit] for a
+  /// user-requested broadcast); REJECTED or DOUBLE_SPEND_ATTEMPTED fails it
+  /// (bead libspiffy-7p2). Returns the proof check of a MINED answer.
+  Future<ProofHeaderStatus?> _onSubmitResponse(String walletId, String txid, String txHex, ArcSubmitResponse response,
+      {bool explicit = false}) async {
+    await _recordNetworkStatus(walletId, txid, arcWireStatus(response.status),
+        explicit: explicit, blockHeight: response.blockHeight, detail: response.message);
     switch (response.status) {
       case ArcTransactionStatus.seenOnNetwork:
         await _applyDeferredSpend(txid, walletId, rawHex: txHex);
-        break;
+        return null;
       case ArcTransactionStatus.mined:
         await _applyDeferredSpend(txid, walletId, rawHex: txHex);
         if (response.merklePathHex != null) {
-          await _handleMinedProof(txid, walletId, response.merklePathHex, response.blockHeight, response.blockHash);
+          return _handleMinedProof(txid, walletId, response.merklePathHex, response.blockHeight, response.blockHash);
         }
-        break;
+        return null;
       default:
-        break;
+        return null;
     }
   }
 
   /// Check a held or fresh proof against the headers and act on the result.
-  Future<void> _applyProofCheck(String txid, _PendingProof proof, {String? arcBlockHash}) async {
+  Future<ProofHeaderStatus> _applyProofCheck(String txid, _PendingProof proof, {String? arcBlockHash}) async {
     final check = await checkBumpHexAgainstHeaders(
       txid: txid,
       bumpHex: proof.bumpHex,
@@ -842,6 +904,7 @@ class ARCActor extends Actor {
         _log.severe('ARC proof for $txid is invalid: ${check.detail}. Not confirming.');
         break;
     }
+    return check.status;
   }
 
   Future<void> _confirmVerified(String txid, _PendingProof proof, ProofHeaderCheck check) async {
@@ -938,6 +1001,306 @@ class ARCActor extends Actor {
       }
     } catch (e) {
       _log.warning('Failed to apply the deferred spend of transaction $txid: $e');
+    }
+  }
+
+
+  // ==========================================================================
+  // DEFERRED PAYMENTS (bead libspiffy-7p2)
+  // ==========================================================================
+
+  /// Records [status] of [txid] in [walletId]'s aggregate
+  /// (RecordTransactionNetworkStatusCommand) when [txid] is a deferred
+  /// payment there. A definitive failure is always sent (the aggregate
+  /// ignores a txid that is not a deferred payment, and one recorded before
+  /// holds were journaled has no read-model row yet); any other status only
+  /// when the read model has the payment, and, unless [explicit], only when
+  /// it changed, so a scan of a wallet's other transactions does not load
+  /// its aggregate.
+  Future<void> _recordNetworkStatus(String walletId, String txid, String status,
+      {String source = 'arc', bool explicit = false, int? blockHeight, String? detail}) async {
+    try {
+      if (!DeferredNetworkStatus.isDefinitiveFailure(status)) {
+        final row = await _storage.getDeferredPayment(walletId, txid);
+        if (row == null) return;
+        if (!explicit && row.lastNetworkStatus == status && row.lastNetworkStatusSource == source) return;
+      }
+      _walletManager.tell(WalletCommandMessage(walletId, RecordTransactionNetworkStatusCommand(
+        walletId: walletId,
+        txid: txid,
+        networkStatus: status,
+        source: source,
+        checkedAt: DateTime.now(),
+        blockHeight: blockHeight,
+        explicit: explicit,
+        detail: detail,
+      )));
+    } catch (e) {
+      _log.warning('Could not record network status $status of $txid in wallet $walletId: $e');
+    }
+  }
+
+  /// Checks [txid] now through [via] (see [CheckDeferredPaymentStatusMessage]).
+  Future<DeferredPaymentNetworkResult> _checkDeferredPayment(
+      String walletId, String txid, DeferredPaymentNetworkSource via) async {
+    DeferredPaymentNetworkResult? arcResult;
+    if (via != DeferredPaymentNetworkSource.dataSource) {
+      final stored = (await _storage.getTransaction(txid, walletId: walletId))?.status ?? TransactionStatus.pending;
+      final check = await _checkAndUpdateTransactionStatus(txid, walletId, stored, explicit: true);
+      arcResult = DeferredPaymentNetworkResult(
+        walletId: walletId,
+        txid: txid,
+        success: check.status != null,
+        networkStatus: check.status,
+        source: check.status != null ? 'arc' : null,
+        blockHeight: check.blockHeight,
+        proofStatus: check.proofStatus?.name,
+        confirmed: check.proofStatus == ProofHeaderStatus.verified,
+        error: check.error,
+      );
+      final arcKnows = arcResult.success && arcResult.networkStatus != DeferredNetworkStatus.notFound;
+      if (via == DeferredPaymentNetworkSource.arc || arcKnows) return arcResult;
+    }
+    final fromDataSource = await _checkViaDataSource(walletId, txid);
+    if (!fromDataSource.success && arcResult != null && arcResult.success) {
+      // ARC answered (not found); the data source could not: ARC's answer stands.
+      return DeferredPaymentNetworkResult(
+        walletId: walletId,
+        txid: txid,
+        success: true,
+        networkStatus: arcResult.networkStatus,
+        source: 'arc',
+        error: fromDataSource.error,
+      );
+    }
+    if (!fromDataSource.success && arcResult?.error != null) {
+      return DeferredPaymentNetworkResult(
+        walletId: walletId,
+        txid: txid,
+        success: false,
+        error: 'ARC: ${arcResult!.error}; data source: ${fromDataSource.error}',
+      );
+    }
+    return fromDataSource;
+  }
+
+  /// Looks [txid] up in the configured data source. Known: the deferred
+  /// spend applies; with a merkle proof, the proof is checked against the
+  /// local headers like an ARC proof and confirms only when it matches (a
+  /// data source's claim alone confirms nothing).
+  Future<DeferredPaymentNetworkResult> _checkViaDataSource(String walletId, String txid) async {
+    DeferredPaymentNetworkResult failure(String error) =>
+        DeferredPaymentNetworkResult(walletId: walletId, txid: txid, success: false, error: error);
+    final dataSource = _dataSource;
+    if (dataSource == null) return failure('No blockchain data source is configured');
+
+    final String rawHex;
+    try {
+      rawHex = await dataSource.getRawTransaction(txid);
+    } catch (e) {
+      if (e is DataSourceException && e.notFound) {
+        await _recordNetworkStatus(walletId, txid, DeferredNetworkStatus.notFound,
+            source: 'dataSource', explicit: true);
+        return DeferredPaymentNetworkResult(
+            walletId: walletId, txid: txid, success: true,
+            networkStatus: DeferredNetworkStatus.notFound, source: 'dataSource');
+      }
+      return failure('Data source lookup failed: $e');
+    }
+    try {
+      if (dartsv.Transaction.fromHex(rawHex).id != txid) {
+        return failure('The data source returned a different transaction for $txid');
+      }
+    } catch (e) {
+      return failure('The data source returned an unparseable transaction for $txid: $e');
+    }
+
+    // Known to the network: the spend applies (as for ARC SEEN_ON_NETWORK).
+    await _applyDeferredSpend(txid, walletId, rawHex: rawHex);
+    final stored = (await _storage.getTransaction(txid, walletId: walletId))?.status;
+    if (stored != null && stored != TransactionStatus.seenOnNetwork && stored != TransactionStatus.confirmed) {
+      _updateTransactionStatusFromArc(walletId, txid, ArcTransactionStatus.seenOnNetwork);
+    }
+
+    MerkleProofData? proofData;
+    try {
+      proofData = await dataSource.getMerkleProof(txid);
+    } catch (e) {
+      _log.fine('Data source has no merkle proof for $txid (unconfirmed or unavailable): $e');
+    }
+    if (proofData == null) {
+      await _recordNetworkStatus(walletId, txid, DeferredNetworkStatus.seenOnNetwork,
+          source: 'dataSource', explicit: true);
+      return DeferredPaymentNetworkResult(
+          walletId: walletId, txid: txid, success: true,
+          networkStatus: DeferredNetworkStatus.seenOnNetwork, source: 'dataSource');
+    }
+
+    await _recordNetworkStatus(walletId, txid, DeferredNetworkStatus.mined,
+        source: 'dataSource', explicit: true, blockHeight: proofData.blockHeight);
+    ProofHeaderStatus? proofStatus;
+    String? proofError;
+    try {
+      final bumpHex = TscConverter().convertToBump(proofData).toHex();
+      proofStatus = await _handleMinedProof(txid, walletId, bumpHex, proofData.blockHeight, null);
+    } catch (e) {
+      proofStatus = ProofHeaderStatus.malformed;
+      proofError = 'The data source merkle proof for $txid is invalid: $e';
+      _log.severe(proofError);
+    }
+    return DeferredPaymentNetworkResult(
+      walletId: walletId,
+      txid: txid,
+      success: true,
+      networkStatus: DeferredNetworkStatus.mined,
+      source: 'dataSource',
+      blockHeight: proofData.blockHeight,
+      proofStatus: proofStatus?.name,
+      confirmed: proofStatus == ProofHeaderStatus.verified,
+      error: proofError,
+    );
+  }
+
+  /// Broadcasts a deferred payment through [BroadcastDeferredPaymentMessage.via]:
+  /// the BEEF's unproven ancestors first (a failure there is logged, the
+  /// source may know them already), then the payment. The answer is handled
+  /// like any submit answer (spend, proof check, failure on REJECTED /
+  /// DOUBLE_SPEND_ATTEMPTED). A failed ARC submission is queued for retry.
+  Future<DeferredPaymentNetworkResult> _broadcastDeferredPayment(BroadcastDeferredPaymentMessage msg) async {
+    final ancestors = <String>[];
+    if (msg.beefHex != null && msg.beefHex!.isNotEmpty) {
+      try {
+        final beef = BEEF.parse(Uint8List.fromList(hex.decode(msg.beefHex!)));
+        for (var i = 0; i < beef.txs.length; i++) {
+          final proven = i < beef.hasMerkle.length && beef.hasMerkle[i];
+          final txHex = hex.encode(beef.txs[i]);
+          if (!proven && txHex != msg.rawTxHex) ancestors.add(txHex);
+        }
+      } catch (e) {
+        _log.warning('BEEF of deferred payment ${msg.txid} does not parse; broadcasting the transaction alone: $e');
+      }
+    }
+
+    String? arcError;
+    if (msg.via != DeferredPaymentNetworkSource.dataSource && _arcService != null) {
+      for (final ancestor in ancestors) {
+        try {
+          await _arcService!.submitTransaction(ancestor);
+        } catch (e) {
+          _log.info('Ancestor of deferred payment ${msg.txid} not accepted by ARC (it may know it already): $e');
+        }
+      }
+      try {
+        final response = await _arcService!.submitTransaction(msg.rawTxHex);
+        _walletManager.tell(WalletCommandMessage(msg.walletId, BroadcastTransactionCommand(
+          walletId: msg.walletId,
+          transactionId: msg.txid,
+          signedTransaction: msg.rawTxHex,
+        )));
+        _updateTransactionStatusFromArc(msg.walletId, msg.txid, response.status);
+        final proofStatus = await _onSubmitResponse(msg.walletId, msg.txid, msg.rawTxHex, response, explicit: true);
+        return DeferredPaymentNetworkResult(
+          walletId: msg.walletId,
+          txid: msg.txid,
+          success: true,
+          networkStatus: arcWireStatus(response.status),
+          source: 'arc',
+          blockHeight: response.blockHeight,
+          proofStatus: proofStatus?.name,
+          confirmed: proofStatus == ProofHeaderStatus.verified,
+          error: DeferredNetworkStatus.isDefinitiveFailure(arcWireStatus(response.status)) ? response.message : null,
+        );
+      } catch (e) {
+        arcError = e.toString();
+        _log.warning('ARC broadcast of deferred payment ${msg.txid} failed: $e');
+      }
+      if (msg.via == DeferredPaymentNetworkSource.arc) {
+        await _enqueueForRetry(msg.txid, msg.walletId, msg.rawTxHex);
+        return DeferredPaymentNetworkResult(
+          walletId: msg.walletId,
+          txid: msg.txid,
+          success: false,
+          willRetry: _broadcastQueue != null,
+          error: arcError,
+        );
+      }
+    } else if (msg.via == DeferredPaymentNetworkSource.arc) {
+      return DeferredPaymentNetworkResult(
+          walletId: msg.walletId, txid: msg.txid, success: false, error: 'ARC service not available');
+    }
+
+    final dataSource = _dataSource;
+    if (dataSource == null) {
+      return DeferredPaymentNetworkResult(
+        walletId: msg.walletId,
+        txid: msg.txid,
+        success: false,
+        error: [if (arcError != null) 'ARC: $arcError', 'No blockchain data source is configured'].join('; '),
+      );
+    }
+    for (final ancestor in ancestors) {
+      try {
+        await dataSource.submitTransaction(ancestor);
+      } catch (e) {
+        _log.info('Ancestor of deferred payment ${msg.txid} not accepted by the data source: $e');
+      }
+    }
+    String? dataSourceError;
+    try {
+      await dataSource.submitTransaction(msg.rawTxHex);
+    } catch (e) {
+      dataSourceError = e.toString();
+    }
+    // Accepted, or refused because the source already has it: the lookup
+    // tells (and applies the spend and any proof exactly like a check).
+    final check = await _checkViaDataSource(msg.walletId, msg.txid);
+    final known = check.success && check.networkStatus != DeferredNetworkStatus.notFound;
+    if (known) return check;
+    return DeferredPaymentNetworkResult(
+      walletId: msg.walletId,
+      txid: msg.txid,
+      success: false,
+      networkStatus: check.networkStatus,
+      source: check.source,
+      error: [
+        if (arcError != null) 'ARC: $arcError',
+        'data source: ${dataSourceError ?? check.error ?? 'transaction not known after submission'}',
+      ].join('; '),
+    );
+  }
+
+  /// ARC's wire name of [status] (`SEEN_ON_NETWORK`, ...), as recorded for
+  /// deferred payments.
+  static String arcWireStatus(ArcTransactionStatus status) {
+    switch (status) {
+      case ArcTransactionStatus.queued:
+        return 'QUEUED';
+      case ArcTransactionStatus.received:
+        return 'RECEIVED';
+      case ArcTransactionStatus.stored:
+        return 'STORED';
+      case ArcTransactionStatus.announcedToNetwork:
+        return 'ANNOUNCED_TO_NETWORK';
+      case ArcTransactionStatus.requestedByNetwork:
+        return 'REQUESTED_BY_NETWORK';
+      case ArcTransactionStatus.sentToNetwork:
+        return 'SENT_TO_NETWORK';
+      case ArcTransactionStatus.acceptedByNetwork:
+        return 'ACCEPTED_BY_NETWORK';
+      case ArcTransactionStatus.seenInOrphanMempool:
+        return DeferredNetworkStatus.seenInOrphanMempool;
+      case ArcTransactionStatus.seenOnNetwork:
+        return DeferredNetworkStatus.seenOnNetwork;
+      case ArcTransactionStatus.doubleSpendAttempted:
+        return DeferredNetworkStatus.doubleSpendAttempted;
+      case ArcTransactionStatus.minedInStaleBlock:
+        return 'MINED_IN_STALE_BLOCK';
+      case ArcTransactionStatus.rejected:
+        return DeferredNetworkStatus.rejected;
+      case ArcTransactionStatus.mined:
+        return DeferredNetworkStatus.mined;
+      case ArcTransactionStatus.unknown:
+        return 'UNKNOWN';
     }
   }
 

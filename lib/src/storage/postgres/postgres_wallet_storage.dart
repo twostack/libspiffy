@@ -1585,6 +1585,186 @@ class PostgresWalletStorage implements ReadModelStorage {
     return {for (final row in result) row[0] as String: row[1] as String};
   }
 
+  // ============================================================================
+  // Deferred payments (bead libspiffy-7p2, migration v013)
+  // ============================================================================
+
+  static const _deferredPaymentColumns = '''
+    wallet_id, txid, state, created_at, updated_at, invoice_id, purpose,
+    recipient_addresses, amount, fee, held_inputs, last_network_status,
+    last_network_status_source, last_checked_at, resolved_at,
+    resolution_reason, inferred
+  ''';
+
+  /// Set by tests: receives the SQL and parameters of each
+  /// [listDeferredPayments] query.
+  @visibleForTesting
+  void Function(String sql, Map<String, dynamic> parameters)? onDeferredPaymentQuery;
+
+  @override
+  Future<void> storeDeferredPayment(DeferredPayment payment) async {
+    _ensureInitialized();
+    await _pool!.execute(
+      Sql.named('''
+        INSERT INTO deferred_payments ($_deferredPaymentColumns)
+        VALUES (
+          @walletId, @txid, @state, @createdAt, @updatedAt, @invoiceId, @purpose,
+          CAST(@recipients AS JSONB), @amount, @fee, CAST(@heldInputs AS JSONB),
+          @lastNetworkStatus, @lastNetworkStatusSource, @lastCheckedAt,
+          @resolvedAt, @resolutionReason, @inferred
+        )
+        ON CONFLICT (wallet_id, txid) DO UPDATE SET
+          state = EXCLUDED.state,
+          updated_at = EXCLUDED.updated_at,
+          invoice_id = EXCLUDED.invoice_id,
+          purpose = EXCLUDED.purpose,
+          recipient_addresses = EXCLUDED.recipient_addresses,
+          amount = EXCLUDED.amount,
+          fee = EXCLUDED.fee,
+          held_inputs = EXCLUDED.held_inputs,
+          last_network_status = EXCLUDED.last_network_status,
+          last_network_status_source = EXCLUDED.last_network_status_source,
+          last_checked_at = EXCLUDED.last_checked_at,
+          resolved_at = EXCLUDED.resolved_at,
+          resolution_reason = EXCLUDED.resolution_reason,
+          inferred = EXCLUDED.inferred
+      '''),
+      parameters: {
+        'walletId': payment.walletId,
+        'txid': payment.txid,
+        'state': payment.state.name,
+        'createdAt': payment.createdAt.toUtc(),
+        'updatedAt': payment.updatedAt.toUtc(),
+        'invoiceId': payment.invoiceId,
+        'purpose': payment.purpose,
+        'recipients': jsonEncode(payment.recipientAddresses),
+        'amount': payment.amount.toInt(),
+        'fee': payment.fee.toInt(),
+        'heldInputs': payment.heldInputsJson,
+        'lastNetworkStatus': payment.lastNetworkStatus,
+        'lastNetworkStatusSource': payment.lastNetworkStatusSource,
+        'lastCheckedAt': payment.lastCheckedAt?.toUtc(),
+        'resolvedAt': payment.resolvedAt?.toUtc(),
+        'resolutionReason': payment.resolutionReason,
+        'inferred': payment.inferred,
+      },
+    );
+  }
+
+  @override
+  Future<DeferredPayment?> getDeferredPayment(String walletId, String txid) async {
+    _ensureInitialized();
+    final result = await _pool!.execute(
+      Sql.named('SELECT $_deferredPaymentColumns FROM deferred_payments '
+          'WHERE wallet_id = @walletId AND txid = @txid'),
+      parameters: {'walletId': walletId, 'txid': txid},
+    );
+    return result.isEmpty ? null : _deferredPaymentFromRow(result.first);
+  }
+
+  @override
+  Future<DeferredPaymentPage> listDeferredPayments(
+    String walletId, {
+    DeferredPaymentQuery query = const DeferredPaymentQuery(),
+  }) async {
+    _ensureInitialized();
+    final cursor = DeferredPaymentQuery.decodeCursor(query.cursor);
+    if (query.states.isEmpty) return const DeferredPaymentPage(payments: []);
+    final params = <String, dynamic>{'walletId': walletId};
+    final where = <String>['wallet_id = @walletId'];
+
+    final states = query.states.toList();
+    final statePlaceholders = <String>[];
+    for (var i = 0; i < states.length; i++) {
+      statePlaceholders.add('@state$i');
+      params['state$i'] = states[i].name;
+    }
+    where.add('state IN (${statePlaceholders.join(', ')})');
+    if (query.createdBefore != null) {
+      where.add('created_at < @createdBefore');
+      params['createdBefore'] = query.createdBefore!.toUtc();
+    }
+    if (query.createdAfter != null) {
+      where.add('created_at >= @createdAfter');
+      params['createdAfter'] = query.createdAfter!.toUtc();
+    }
+    final statuses = query.lastNetworkStatuses?.toList();
+    if (statuses != null) {
+      if (statuses.isEmpty) return const DeferredPaymentPage(payments: []);
+      final statusPlaceholders = <String>[];
+      for (var i = 0; i < statuses.length; i++) {
+        statusPlaceholders.add('@status$i');
+        params['status$i'] = statuses[i];
+      }
+      params['unchecked'] = DeferredNetworkStatus.unchecked;
+      where.add('COALESCE(last_network_status, @unchecked) IN (${statusPlaceholders.join(', ')})');
+    }
+    if (query.invoiceId != null) {
+      where.add('invoice_id = @invoiceId');
+      params['invoiceId'] = query.invoiceId;
+    }
+    if (query.recipientAddress != null) {
+      where.add('jsonb_exists(recipient_addresses, @recipient)');
+      params['recipient'] = query.recipientAddress;
+    }
+    if (cursor != null) {
+      where.add(query.oldestFirst
+          ? '(created_at, txid) > (@cursorAt, @cursorTxid)'
+          : '(created_at, txid) < (@cursorAt, @cursorTxid)');
+      params['cursorAt'] = DateTime.fromMicrosecondsSinceEpoch(cursor.$1, isUtc: true);
+      params['cursorTxid'] = cursor.$2;
+    }
+    final direction = query.oldestFirst ? 'ASC' : 'DESC';
+    final limit = query.effectiveLimit;
+    final sql = 'SELECT $_deferredPaymentColumns FROM deferred_payments '
+        'WHERE ${where.join(' AND ')} '
+        'ORDER BY created_at $direction, txid $direction '
+        'LIMIT ${limit + 1}';
+    onDeferredPaymentQuery?.call(sql, params);
+    final result = await _pool!.execute(Sql.named(sql), parameters: params);
+    final rows = [for (final row in result) _deferredPaymentFromRow(row)];
+    final hasMore = rows.length > limit;
+    final payments = hasMore ? rows.sublist(0, limit) : rows;
+    return DeferredPaymentPage(
+      payments: payments,
+      nextCursor: hasMore ? DeferredPaymentQuery.cursorAfter(payments.last) : null,
+    );
+  }
+
+  DeferredPayment _deferredPaymentFromRow(ResultRow row) {
+    List<String> strings(Object? cell) {
+      final decoded = cell is String ? jsonDecode(cell) : cell;
+      return decoded is List ? [for (final e in decoded) e.toString()] : const [];
+    }
+
+    final held = row[10];
+    return DeferredPayment(
+      walletId: row[0] as String,
+      txid: row[1] as String,
+      state: DeferredPayment.stateFromName(row[2] as String),
+      createdAt: (row[3] as DateTime).toUtc(),
+      updatedAt: (row[4] as DateTime).toUtc(),
+      invoiceId: row[5] as String?,
+      purpose: row[6] as String?,
+      recipientAddresses: strings(row[7]),
+      amount: BigInt.from(row[8] as int),
+      fee: BigInt.from(row[9] as int),
+      heldInputs: held is String
+          ? DeferredPayment.heldInputsFromJson(held)
+          : [
+              if (held is List)
+                for (final e in held)
+                  if (e is Map) DeferredPaymentInput.fromMap(e),
+            ],
+      lastNetworkStatus: row[11] as String?,
+      lastNetworkStatusSource: row[12] as String?,
+      lastCheckedAt: (row[13] as DateTime?)?.toUtc(),
+      resolvedAt: (row[14] as DateTime?)?.toUtc(),
+      resolutionReason: row[15] as String?,
+      inferred: row[16] as bool,
+    );
+  }
+
   @override
   Future<int> getMerkleProofCount({String? walletId}) async {
     _ensureInitialized();
@@ -1656,6 +1836,10 @@ class PostgresWalletStorage implements ReadModelStorage {
       );
       await session.execute(
         Sql.named('DELETE FROM payment_channels WHERE wallet_id = @walletId'),
+        parameters: {'walletId': walletId},
+      );
+      await session.execute(
+        Sql.named('DELETE FROM deferred_payments WHERE wallet_id = @walletId'),
         parameters: {'walletId': walletId},
       );
       await session.execute(

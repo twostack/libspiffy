@@ -13,8 +13,10 @@ import '../core/wallet_commands.dart' as domain;
 import '../core/wallet_events.dart' as domain_events;
 import '../models/wallet_event.dart' as wallet_event_model;
 import '../models/address_metadata.dart';
+import '../models/bitcoin_transaction.dart';
 import '../models/bitcoin_utxo.dart';
 import '../models/invoice_output_spec.dart';
+import '../services/ancestor_chain_service.dart';
 import '../storage/read_model_storage.dart';
 import '../utils/beef.dart';
 import 'channel_p2p_adapter.dart';
@@ -246,6 +248,17 @@ class WalletCoordinatorActor extends Actor {
         await _handleSettleBEEF(message);
       } else if (message is RefreshWalletCommand) {
         await _handleRefreshWallet(message);
+      }
+      // Deferred payments (bead libspiffy-7p2): answered off the mailbox
+      // (storage reads, BEEF rebuilds, network round trips).
+      else if (message is GetDeferredPaymentsQuery) {
+        unawaited(_handleGetDeferredPayments(message));
+      } else if (message is BroadcastDeferredPaymentCommand) {
+        unawaited(_handleBroadcastDeferredPayment(message));
+      } else if (message is CheckDeferredPaymentStatusCommand) {
+        unawaited(_handleCheckDeferredPaymentStatus(message));
+      } else if (message is CancelDeferredPaymentCommand) {
+        unawaited(_handleCancelDeferredPayment(message));
       } else if (message is ShutdownCommand) {
         await _handleShutdown();
       }
@@ -855,6 +868,239 @@ class WalletCoordinatorActor extends Actor {
     ));
 
     await _eventStream.close();
+  }
+
+
+  // ==========================================================================
+  // DEFERRED PAYMENTS (bead libspiffy-7p2)
+  // ==========================================================================
+
+  /// How long a broadcast or status check through ARCActor may take (ARC
+  /// requests time out after 30 s each; a broadcast submits ancestors too).
+  static const _deferredNetworkTimeout = Duration(minutes: 2);
+
+  Future<void> _handleGetDeferredPayments(GetDeferredPaymentsQuery query) async {
+    try {
+      final page = await _storage.listDeferredPayments(query.walletId, query: query.toStorageQuery());
+      final details = <DeferredPaymentDetail>[];
+      for (final payment in page.payments) {
+        final tx = await _storage.getTransaction(payment.txid, walletId: query.walletId);
+        Uint8List? beef;
+        String? beefError;
+        if (query.includeBeef) {
+          if (tx == null || tx.rawHex.isEmpty) {
+            beefError = 'The transaction row of ${payment.txid} is missing';
+          } else {
+            (beef, beefError) = await _rebuildDeferredBeef(tx);
+          }
+        }
+        details.add(DeferredPaymentDetail(
+          payment: payment,
+          rawTxHex: tx?.rawHex,
+          beef: beef,
+          beefError: beefError,
+        ));
+      }
+      _emitEvent(DeferredPaymentsResponse(
+        walletId: query.walletId,
+        queryId: query.correlationId,
+        payments: details,
+        nextCursor: page.nextCursor,
+      ));
+    } catch (e) {
+      _emitEvent(ErrorEvent(
+        walletId: query.walletId,
+        source: 'getDeferredPayments',
+        message: e.toString(),
+      ));
+    }
+  }
+
+  /// The BEEF of the stored transaction [tx]: its ancestors back to proven
+  /// ones, from the read model. (null, reason) when the chain is incomplete.
+  Future<(Uint8List?, String?)> _rebuildDeferredBeef(BitcoinTransaction tx) async {
+    try {
+      final parsed = dartsv.Transaction.fromHex(tx.rawHex);
+      final parents = {for (final input in parsed.inputs) input.prevTxnId}.toList();
+      final service = AncestorChainService(storage: _storage);
+      final chain = await service.collectAncestorChainForUtxos(parents);
+      if (!chain.isValid) return (null, 'Incomplete transaction chain: ${chain.error}');
+      final result = await service.createBeefWithAncestry(
+        newTransaction: tx,
+        ancestorTransactions: chain.ancestorTransactions,
+        merkleProofs: chain.merkleProofs,
+      );
+      return result.success ? (result.beefBytes, null) : (null, result.error);
+    } catch (e) {
+      return (null, 'BEEF could not be rebuilt: $e');
+    }
+  }
+
+  Future<void> _handleBroadcastDeferredPayment(BroadcastDeferredPaymentCommand cmd) async {
+    final requestId = cmd.correlationId;
+    DeferredPaymentBroadcastEvent failure(String error) => DeferredPaymentBroadcastEvent(
+        walletId: cmd.walletId, txid: cmd.txid, requestId: requestId, success: false, error: error);
+    try {
+      final payment = await _storage.getDeferredPayment(cmd.walletId, cmd.txid);
+      if (payment == null) {
+        _emitEvent(failure('Transaction ${cmd.txid} is not a deferred payment of wallet ${cmd.walletId}'));
+        return;
+      }
+      final tx = await _storage.getTransaction(cmd.txid, walletId: cmd.walletId);
+      if (tx == null || tx.rawHex.isEmpty) {
+        _emitEvent(failure('The signed transaction ${cmd.txid} is not stored'));
+        return;
+      }
+      final (beef, beefError) = await _rebuildDeferredBeef(tx);
+      if (beefError != null) {
+        _log.info('Broadcasting deferred payment ${cmd.txid} without ancestors: $beefError');
+      }
+      final result = await _arcActor.ask<wm.DeferredPaymentNetworkResult>(
+        wm.BroadcastDeferredPaymentMessage(
+          walletId: cmd.walletId,
+          txid: cmd.txid,
+          rawTxHex: tx.rawHex,
+          beefHex: beef == null ? null : hex.encode(beef),
+          via: cmd.via,
+        ),
+        _deferredNetworkTimeout,
+      );
+      final rejected = DeferredNetworkStatus.isDefinitiveFailure(result.networkStatus);
+      _emitEvent(DeferredPaymentBroadcastEvent(
+        walletId: cmd.walletId,
+        txid: cmd.txid,
+        requestId: requestId,
+        success: result.success && !rejected,
+        networkStatus: result.networkStatus,
+        source: result.source,
+        confirmed: result.confirmed,
+        willRetry: result.willRetry,
+        error: rejected ? (result.error ?? 'The network rejected ${cmd.txid} (${result.networkStatus})') : result.error,
+      ));
+    } catch (e) {
+      _emitEvent(failure('Broadcast of deferred payment ${cmd.txid} failed: $e'));
+    }
+  }
+
+  Future<void> _handleCheckDeferredPaymentStatus(CheckDeferredPaymentStatusCommand cmd) async {
+    final requestId = cmd.correlationId;
+    try {
+      final payment = await _storage.getDeferredPayment(cmd.walletId, cmd.txid);
+      if (payment == null) {
+        _emitEvent(DeferredPaymentStatusEvent(
+          walletId: cmd.walletId,
+          txid: cmd.txid,
+          requestId: requestId,
+          success: false,
+          error: 'Transaction ${cmd.txid} is not a deferred payment of wallet ${cmd.walletId}',
+        ));
+        return;
+      }
+      final result = await _arcActor.ask<wm.DeferredPaymentNetworkResult>(
+        wm.CheckDeferredPaymentStatusMessage(walletId: cmd.walletId, txid: cmd.txid, via: cmd.via),
+        _deferredNetworkTimeout,
+      );
+      _emitEvent(DeferredPaymentStatusEvent(
+        walletId: cmd.walletId,
+        txid: cmd.txid,
+        requestId: requestId,
+        success: result.success,
+        networkStatus: result.networkStatus,
+        source: result.source,
+        blockHeight: result.blockHeight,
+        proofStatus: result.proofStatus,
+        confirmed: result.confirmed,
+        error: result.error,
+      ));
+    } catch (e) {
+      _emitEvent(DeferredPaymentStatusEvent(
+        walletId: cmd.walletId,
+        txid: cmd.txid,
+        requestId: requestId,
+        success: false,
+        error: 'Status check of deferred payment ${cmd.txid} failed: $e',
+      ));
+    }
+  }
+
+  Future<void> _handleCancelDeferredPayment(CancelDeferredPaymentCommand cmd) async {
+    final requestId = cmd.correlationId;
+    String? networkStatus;
+    DeferredPaymentCancelledEvent refused(String error) => DeferredPaymentCancelledEvent(
+          walletId: cmd.walletId,
+          txid: cmd.txid,
+          requestId: requestId,
+          success: false,
+          networkStatus: networkStatus,
+          error: error,
+        );
+    try {
+      final payment = await _storage.getDeferredPayment(cmd.walletId, cmd.txid);
+      if (payment == null) {
+        _emitEvent(refused('Transaction ${cmd.txid} is not a deferred payment of wallet ${cmd.walletId}'));
+        return;
+      }
+      if (!payment.isOutstanding) {
+        _emitEvent(refused('Deferred payment ${cmd.txid} is ${payment.state.name}; only an outstanding '
+            'payment can be cancelled'));
+        return;
+      }
+
+      // The network first: a transaction it knows may still be mined.
+      final check = await _arcActor.ask<wm.DeferredPaymentNetworkResult>(
+        wm.CheckDeferredPaymentStatusMessage(walletId: cmd.walletId, txid: cmd.txid, via: cmd.via),
+        _deferredNetworkTimeout,
+      );
+      networkStatus = check.networkStatus;
+      if (check.success) {
+        if (!DeferredNetworkStatus.allowsCancel(check.networkStatus)) {
+          _emitEvent(refused('Deferred payment ${cmd.txid} is known to the network '
+              '(${check.networkStatus} from ${check.source}); it cannot be cancelled'));
+          return;
+        }
+      } else if (!cmd.force) {
+        _emitEvent(refused('The network status of ${cmd.txid} could not be checked (${check.error}); '
+            'not cancelled (set force to cancel anyway)'));
+        return;
+      }
+
+      final applied = _awaitProjectionApplied(
+        matches: (e) => e is domain_events.DeferredTransactionCancelledEvent && e.txid == cmd.txid,
+        alreadyApplied: () async =>
+            (await _storage.getDeferredPayment(cmd.walletId, cmd.txid))?.state == DeferredPaymentState.cancelled,
+      );
+      final response = await _walletManager.ask<wm.DeferredSpendCancelledResponse>(
+        wm.WalletCommandMessage(
+          cmd.walletId,
+          domain.CancelDeferredSpendCommand(
+            walletId: cmd.walletId,
+            txid: cmd.txid,
+            reason: cmd.reason,
+            networkStatus: check.success ? check.networkStatus : null,
+          ),
+        ),
+        const Duration(seconds: 30),
+      );
+      if (!response.success) {
+        unawaited(applied.catchError((_) => null));
+        _emitEvent(refused(response.error ?? 'The wallet refused to cancel ${cmd.txid}'));
+        return;
+      }
+      final notApplied = await applied;
+      _emitEvent(DeferredPaymentCancelledEvent(
+        walletId: cmd.walletId,
+        txid: cmd.txid,
+        requestId: requestId,
+        success: true,
+        networkStatus: networkStatus,
+        releasedUtxoKeys: response.releasedUtxoKeys,
+        error: notApplied == null
+            ? null
+            : 'Cancelled and journaled, but the read model has not applied it yet: $notApplied',
+      ));
+    } catch (e) {
+      _emitEvent(refused('Cancellation of deferred payment ${cmd.txid} failed: $e'));
+    }
   }
 
   // ==========================================================================

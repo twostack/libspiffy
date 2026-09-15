@@ -694,6 +694,44 @@ await broadcastTransaction(
 8. **State Update**: Wallet state updated via event sourcing
 9. **Invoice Marking**: Invoice marked as paid
 
+### Payments Handed to the Recipient (Deferred Payments)
+
+A payment built with `PayInvoiceCommand` is handed to the recipient, who normally
+broadcasts it. Until the network has it, the wallet holds its inputs: they are
+reserved by the transaction with no expiry, and neither the reservation cleanup
+nor another payment can take them. The hold ends when ARC reports the
+transaction `SEEN_ON_NETWORK` or `MINED` (inputs spent), when ARC reports it
+`REJECTED` or `DOUBLE_SPEND_ATTEMPTED` (payment failed, inputs released), or
+when you cancel it. Every step is journaled; resolved payments stay listable.
+
+```dart
+// Payments the recipient has not broadcast after an hour
+coordinator.tell(GetDeferredPaymentsQuery(
+  walletId: 'alice-wallet',
+  olderThan: const Duration(hours: 1),
+  queryId: 'stale',
+));
+// -> DeferredPaymentsResponse: txid, invoice, recipients, amount, fee, held
+//    inputs, last network status and check time, state, raw tx, BEEF
+
+// Ask the network now (ARC; or via: DeferredPaymentNetworkSource.arcThenDataSource)
+coordinator.tell(CheckDeferredPaymentStatusCommand(walletId: 'alice-wallet', txid: txid));
+// -> DeferredPaymentStatusEvent (MINED confirms only when the merkle proof
+//    matches the local header chain)
+
+// Broadcast it yourself
+coordinator.tell(BroadcastDeferredPaymentCommand(walletId: 'alice-wallet', txid: txid));
+// -> DeferredPaymentBroadcastEvent
+
+// Give up on it: refused if the network knows the transaction
+coordinator.tell(CancelDeferredPaymentCommand(walletId: 'alice-wallet', txid: txid, reason: 'expired'));
+// -> DeferredPaymentCancelledEvent
+```
+
+Cancelling does not revoke the signed transaction the recipient holds: if they
+broadcast it later and it still reaches miners, it spends those inputs, and a
+later payment that reused them fails.
+
 ### Benefits
 
 - **Simplified Verification**: No need to scan entire blockchain for transactions
@@ -1134,6 +1172,12 @@ All events are persisted to EventStore and streamed to Projections for read-mode
 - **UTXOReleasedEvent**: UTXO released from reservation
 - **UTXOReservationRenewedEvent**: UTXO reservation extended
 
+#### Deferred Payment Events (BitcoinWalletAggregate)
+- **TransactionSpendDeferredEvent** (`wallet.transaction.spend_deferred`): inputs of a handed-over payment held
+- **TransactionNetworkStatusCheckedEvent** (`wallet.transaction.network_status_checked`): network status observed
+- **DeferredTransactionFailedEvent** (`wallet.transaction.deferred_failed`): ARC rejected it; inputs released
+- **DeferredTransactionCancelledEvent** (`wallet.transaction.deferred_cancelled`): cancelled; inputs released
+
 #### Invoice Events (InvoiceAggregate)
 - **InvoiceCreatedEvent**: Invoice created with payment addresses
 - **InvoiceStatusChangedEvent**: Invoice status transition
@@ -1162,6 +1206,7 @@ All events are persisted to EventStore and streamed to Projections for read-mode
 ### UTXO Management
 - **Atomic UTXO Selection**: Reservation prevents double-spending
 - **Automatic Cleanup**: Expired reservations released automatically
+- **Deferred-Payment Holds**: Inputs of a payment handed to a recipient are never released by expiry; only the network's answer or a cancellation ends the hold
 - **Event-Sourced Tracking**: Full history of UTXO lifecycle
 - **Fee Calculation**: Accurate fee computation from BEEF data
 

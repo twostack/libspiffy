@@ -467,7 +467,8 @@ class ArcService {
     if (response.statusCode == 200 || response.statusCode == 201) {
       return ArcSubmitResponse.fromJson(jsonDecode(response.body));
     } else {
-      throw ArcException('Failed to submit transaction: ${response.body}');
+      throw ArcException('Failed to submit transaction: ${response.body}',
+          statusCode: response.statusCode);
     }
   }
 
@@ -486,7 +487,8 @@ class ArcService {
     if (response.statusCode == 200) {
       return ArcTransactionResponse.fromJson(jsonDecode(response.body));
     } else {
-      throw ArcException('Failed to get transaction: ${response.body}');
+      throw ArcException('Failed to get transaction: ${response.body}',
+          statusCode: response.statusCode);
     }
   }
 
@@ -647,8 +649,15 @@ class ArcService {
 /// Exception thrown by ARC service operations
 class ArcException implements Exception {
   final String message;
-  
-  ArcException(this.message);
+
+  /// HTTP status of the failed request, when there was a response (404: ARC
+  /// does not know the transaction).
+  final int? statusCode;
+
+  ArcException(this.message, {this.statusCode});
+
+  /// ARC answered 404: the transaction is not known to it (yet).
+  bool get isNotFound => statusCode == 404;
   
   @override
   String toString() => 'ArcException: $message';

@@ -8,6 +8,7 @@ import '../models/address_metadata.dart';
 import '../models/transaction_address_link.dart';
 import '../models/invoice_read_model.dart';
 import '../models/payment_channel.dart';
+import '../models/deferred_payment.dart';
 import '../actors/invoice_messages.dart';
 import 'read_model_storage.dart';
 import 'libspiffy_schemas.dart';
@@ -463,6 +464,11 @@ class IsarWalletStorage implements ReadModelStorage {
       await _isar.paymentChannelEntitys
           .where()
           .walletIdEqualTo(walletId)
+          .deleteAll();
+
+      await _isar.deferredPaymentEntitys
+          .where()
+          .walletIdEqualToAnyTxid(walletId)
           .deleteAll();
     });
   }
@@ -951,6 +957,56 @@ class IsarWalletStorage implements ReadModelStorage {
         .anyOf(txids, (q, txid) => q.txidEqualTo(txid))
         .findAll();
     return {for (final e in entities) e.txid: e.rawHex};
+  }
+
+  // ========================================
+  // Deferred payments (bead libspiffy-7p2)
+  // ========================================
+
+  @override
+  Future<void> storeDeferredPayment(DeferredPayment payment) async {
+    await _isar.writeTxn(() async {
+      final entity = DeferredPaymentEntity.fromDomain(payment);
+      final existing =
+          await _isar.deferredPaymentEntitys.getByWalletIdTxid(payment.walletId, payment.txid);
+      if (existing != null) entity.id = existing.id;
+      await _isar.deferredPaymentEntitys.put(entity);
+    });
+  }
+
+  @override
+  Future<DeferredPayment?> getDeferredPayment(String walletId, String txid) async =>
+      (await _isar.deferredPaymentEntitys.getByWalletIdTxid(walletId, txid))?.toDomain();
+
+  @override
+  Future<DeferredPaymentPage> listDeferredPayments(
+    String walletId, {
+    DeferredPaymentQuery query = const DeferredPaymentQuery(),
+  }) async {
+    // Each requested state is one range of the (walletId, state, createdAt)
+    // index, bounded (inclusively) by the time filters and the cursor; the
+    // exact filters and the cursor are applied to the rows read.
+    final cursor = DeferredPaymentQuery.decodeCursor(query.cursor);
+    var lower = query.createdAfter ?? DateTime.fromMicrosecondsSinceEpoch(0, isUtc: true);
+    var upper = query.createdBefore ?? DateTime.utc(9999);
+    if (cursor != null) {
+      final at = DateTime.fromMicrosecondsSinceEpoch(cursor.$1, isUtc: true);
+      if (query.oldestFirst && at.isAfter(lower)) lower = at;
+      if (!query.oldestFirst && at.isBefore(upper)) upper = at;
+    }
+    final candidates = <DeferredPayment>[];
+    for (final state in query.states) {
+      final rows = await _isar.deferredPaymentEntitys
+          .where()
+          .walletIdStateEqualToCreatedAtBetween(walletId, state.name, lower, upper)
+          .findAll();
+      for (final row in rows) {
+        final payment = row.toDomain();
+        if (query.matches(payment)) candidates.add(payment);
+      }
+    }
+    candidates.sort(query.compare);
+    return query.page(candidates);
   }
 
   // ========================================

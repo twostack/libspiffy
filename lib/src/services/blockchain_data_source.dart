@@ -150,11 +150,16 @@ class DataSourceException implements Exception {
   final String? address;
   final dynamic originalError;
 
+  /// The source answered that the transaction does not exist (as opposed to
+  /// a request that failed).
+  final bool notFound;
+
   DataSourceException(
     this.message, {
     this.txid,
     this.address,
     this.originalError,
+    this.notFound = false,
   });
 
   @override

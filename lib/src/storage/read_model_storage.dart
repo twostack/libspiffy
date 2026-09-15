@@ -1,3 +1,5 @@
+import 'package:collection/collection.dart' show mergeSort;
+
 import '../models/bitcoin_utxo.dart';
 import '../models/bitcoin_transaction.dart';
 import '../models/address_metadata.dart';
@@ -291,6 +293,49 @@ abstract class ReadModelStorage {
     TransactionStatus status, {
     String? walletId,
   });
+
+  /// Every wallet's row for each of [txids] (bead libspiffy-ctkm).
+  ///
+  /// Unlike [getTransactionsBatch], a txid several wallets hold returns one
+  /// row per wallet, each with its `walletId`. Txids no wallet holds return
+  /// nothing (ancestor transactions are not wallet rows). Rows come newest
+  /// first (`createdAt` descending). Backends read only the rows of [txids]
+  /// (the txid index), never a wallet's or every wallet's history.
+  ///
+  /// The default implementation reads every row through
+  /// [getTransactionsByStatus]; the libspiffy backends override it.
+  Future<List<BitcoinTransaction>> getTransactionsByTxids(List<String> txids) async {
+    final wanted = txids.toSet();
+    if (wanted.isEmpty) return [];
+    final rows = [
+      for (final status in TransactionStatus.values)
+        for (final tx in await getTransactionsByStatus(status))
+          if (wanted.contains(tx.txid)) tx,
+    ];
+    mergeSort<BitcoinTransaction>(rows, compare: (a, b) => b.createdAt.compareTo(a.createdAt));
+    return rows;
+  }
+
+  /// Confirmed rows of every wallet whose `blockHeight` is at least
+  /// [minHeight]; with [includeWithoutHeight], also confirmed rows that have
+  /// no block height (bead libspiffy-ctkm). Rows come newest first
+  /// (`createdAt` descending).
+  ///
+  /// Serves header-chain reorganizations: the confirmations that may rest on
+  /// a changed block are found without reading the confirmed history.
+  /// Backends read only those rows (a (status, block height) index).
+  ///
+  /// The default implementation filters
+  /// [getTransactionsByStatus]; the libspiffy backends override it.
+  Future<List<BitcoinTransaction>> getConfirmedTransactionsFromHeight(
+    int minHeight, {
+    bool includeWithoutHeight = false,
+  }) async {
+    return [
+      for (final tx in await getTransactionsByStatus(TransactionStatus.confirmed))
+        if (tx.blockHeight == null ? includeWithoutHeight : tx.blockHeight! >= minHeight) tx,
+    ];
+  }
 
   /// Store a raw transaction in the read model.
   ///

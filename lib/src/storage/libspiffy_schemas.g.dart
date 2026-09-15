@@ -12908,6 +12908,24 @@ const BitcoinTransactionEntitySchema = CollectionSchema(
         )
       ],
     ),
+    r'status_blockHeight': IndexSchema(
+      id: -318198381693723374,
+      name: r'status_blockHeight',
+      unique: false,
+      replace: false,
+      properties: [
+        IndexPropertySchema(
+          name: r'status',
+          type: IndexType.hash,
+          caseSensitive: true,
+        ),
+        IndexPropertySchema(
+          name: r'blockHeight',
+          type: IndexType.value,
+          caseSensitive: false,
+        )
+      ],
+    ),
     r'createdAt': IndexSchema(
       id: -3433535483987302584,
       name: r'createdAt',
@@ -13712,6 +13730,173 @@ extension BitcoinTransactionEntityQueryWhere on QueryBuilder<
               includeUpper: false,
             ));
       }
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterWhereClause> statusEqualToAnyBlockHeight(String status) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'status_blockHeight',
+        value: [status],
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterWhereClause> statusNotEqualToAnyBlockHeight(String status) {
+    return QueryBuilder.apply(this, (query) {
+      if (query.whereSort == Sort.asc) {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'status_blockHeight',
+              lower: [],
+              upper: [status],
+              includeUpper: false,
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'status_blockHeight',
+              lower: [status],
+              includeLower: false,
+              upper: [],
+            ));
+      } else {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'status_blockHeight',
+              lower: [status],
+              includeLower: false,
+              upper: [],
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'status_blockHeight',
+              lower: [],
+              upper: [status],
+              includeUpper: false,
+            ));
+      }
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterWhereClause> statusEqualToBlockHeightIsNull(String status) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'status_blockHeight',
+        value: [status, null],
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterWhereClause> statusEqualToBlockHeightIsNotNull(String status) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.between(
+        indexName: r'status_blockHeight',
+        lower: [status, null],
+        includeLower: false,
+        upper: [
+          status,
+        ],
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+          QAfterWhereClause>
+      statusBlockHeightEqualTo(String status, int? blockHeight) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'status_blockHeight',
+        value: [status, blockHeight],
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+          QAfterWhereClause>
+      statusEqualToBlockHeightNotEqualTo(String status, int? blockHeight) {
+    return QueryBuilder.apply(this, (query) {
+      if (query.whereSort == Sort.asc) {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'status_blockHeight',
+              lower: [status],
+              upper: [status, blockHeight],
+              includeUpper: false,
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'status_blockHeight',
+              lower: [status, blockHeight],
+              includeLower: false,
+              upper: [status],
+            ));
+      } else {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'status_blockHeight',
+              lower: [status, blockHeight],
+              includeLower: false,
+              upper: [status],
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'status_blockHeight',
+              lower: [status],
+              upper: [status, blockHeight],
+              includeUpper: false,
+            ));
+      }
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterWhereClause> statusEqualToBlockHeightGreaterThan(
+    String status,
+    int? blockHeight, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.between(
+        indexName: r'status_blockHeight',
+        lower: [status, blockHeight],
+        includeLower: include,
+        upper: [status],
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterWhereClause> statusEqualToBlockHeightLessThan(
+    String status,
+    int? blockHeight, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.between(
+        indexName: r'status_blockHeight',
+        lower: [status],
+        upper: [status, blockHeight],
+        includeUpper: include,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterWhereClause> statusEqualToBlockHeightBetween(
+    String status,
+    int? lowerBlockHeight,
+    int? upperBlockHeight, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.between(
+        indexName: r'status_blockHeight',
+        lower: [status, lowerBlockHeight],
+        includeLower: includeLower,
+        upper: [status, upperBlockHeight],
+        includeUpper: includeUpper,
+      ));
     });
   }
 

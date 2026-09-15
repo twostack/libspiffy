@@ -657,8 +657,12 @@ class BitcoinTransactionEntity {
   ///
   /// The composite (status, walletId) index serves status queries across
   /// every wallet (prefix) and for one wallet, so a wallet's query does not
-  /// read other wallets' rows (audit S-16).
+  /// read other wallets' rows (audit S-16). The composite (status,
+  /// blockHeight) index serves the confirmed rows at or above a height (a
+  /// header-chain reorganization) without reading the confirmed history
+  /// (bead libspiffy-ctkm).
   @Index(composite: [CompositeIndex('walletId')])
+  @Index(composite: [CompositeIndex('blockHeight')])
   late String status;
 
   /// When this transaction was created/received

@@ -963,6 +963,56 @@ class PostgresWalletStorage implements ReadModelStorage {
     return result.map(_rowToTransaction).toList();
   }
 
+  /// Set by tests: receives the SQL and parameters of each
+  /// [getTransactionsByTxids] and [getConfirmedTransactionsFromHeight]
+  /// query.
+  @visibleForTesting
+  void Function(String sql, Map<String, dynamic> parameters)? onTransactionLookupQuery;
+
+  @override
+  Future<List<BitcoinTransaction>> getTransactionsByTxids(List<String> txids) async {
+    final wanted = txids.toSet().toList();
+    if (wanted.isEmpty) return [];
+    _ensureInitialized();
+
+    // idx_transactions_txid: every wallet's row of each txid (ctkm).
+    final params = <String, dynamic>{
+      for (var i = 0; i < wanted.length; i++) 'txid$i': wanted[i],
+    };
+    final sql = '''
+      SELECT $_transactionColumns
+      FROM bitcoin_transactions
+      WHERE txid IN (${[for (var i = 0; i < wanted.length; i++) '@txid$i'].join(', ')})
+      ORDER BY created_at DESC, id
+    ''';
+    onTransactionLookupQuery?.call(sql, params);
+    final result = await _pool!.execute(Sql.named(sql), parameters: params);
+    return result.map(_rowToTransaction).toList();
+  }
+
+  @override
+  Future<List<BitcoinTransaction>> getConfirmedTransactionsFromHeight(
+    int minHeight, {
+    bool includeWithoutHeight = false,
+  }) async {
+    _ensureInitialized();
+
+    // idx_transactions_confirmed_height (v014, partial on status =
+    // 'confirmed'): the literal status lets the planner match the index
+    // predicate (ctkm).
+    final params = <String, dynamic>{'minHeight': minHeight};
+    final sql = '''
+      SELECT $_transactionColumns
+      FROM bitcoin_transactions
+      WHERE status = 'confirmed'
+        AND (block_height >= @minHeight${includeWithoutHeight ? ' OR block_height IS NULL' : ''})
+      ORDER BY created_at DESC, id
+    ''';
+    onTransactionLookupQuery?.call(sql, params);
+    final result = await _pool!.execute(Sql.named(sql), parameters: params);
+    return result.map(_rowToTransaction).toList();
+  }
+
   @override
   Future<void> storeTransaction(
     String walletId,

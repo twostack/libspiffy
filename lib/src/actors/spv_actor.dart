@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:typed_data';
+import 'package:collection/collection.dart' show mergeSort;
 import 'package:convert/convert.dart';
 import 'package:dactor/dactor.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
@@ -18,7 +19,7 @@ import '../utils/network_name.dart';
 import '../utils/unique_id.dart';
 import '../core/wallet_commands.dart' show RevertTransactionConfirmationCommand;
 import '../core/wallet_events.dart' show BeefAncestor;
-import '../models/bitcoin_transaction.dart' show TransactionStatus;
+import '../models/bitcoin_transaction.dart' show BitcoinTransaction, TransactionStatus;
 import '../spv/merkle_proof_header_check.dart';
 import '../core/wallet_output_ownership.dart' show BareMultisigScript;
 
@@ -1100,6 +1101,13 @@ class SPVActor extends Actor {
   /// is then told to poll the transactions again; a new proof it obtains is
   /// verified against the active chain before the transaction is confirmed
   /// again.
+  ///
+  /// Only the rows that may rest on a changed block are read: confirmed rows
+  /// above the fork point or without a height
+  /// ([ReadModelStorage.getConfirmedTransactionsFromHeight]) and the rows of
+  /// the transactions whose proofs name an orphaned block
+  /// ([ReadModelStorage.getTransactionsByTxids]), not the confirmed history
+  /// of every wallet (bead ctkm).
   Future<void> _handleHeaderChainReorganized(HeaderChainReorganizedMessage msg) async {
     _currentHeight = msg.newTipHeight;
     try {
@@ -1111,26 +1119,36 @@ class SPVActor extends Actor {
         }
       }
 
-      final candidates = <String, List<String>>{}; // txid -> wallet ids
-      for (final tx in await _storage.getTransactionsByStatus(TransactionStatus.confirmed)) {
+      // Confirmed rows above the fork point or without a height, and the
+      // confirmed rows of transactions proven on orphaned blocks; newest
+      // first, one entry per (wallet, txid).
+      final rows = [
+        ...await _storage.getConfirmedTransactionsFromHeight(msg.forkHeight + 1, includeWithoutHeight: true),
+        if (onOrphanedBlocks.isNotEmpty)
+          for (final tx in await _storage.getTransactionsByTxids(onOrphanedBlocks.keys.toList()))
+            if (tx.status == TransactionStatus.confirmed) tx,
+      ];
+      final candidates = <String, List<BitcoinTransaction>>{}; // txid -> confirmed rows
+      final seen = <(String, String)>{};
+      for (final tx in _newestFirst(rows)) {
         final walletId = tx.walletId;
-        if (walletId == null || walletId.isEmpty) continue;
+        if (walletId == null || walletId.isEmpty || !seen.add((walletId, tx.txid))) continue;
         final height = tx.blockHeight;
         if (onOrphanedBlocks.containsKey(tx.txid) || height == null || height > msg.forkHeight) {
-          candidates.putIfAbsent(tx.txid, () => []).add(walletId);
+          candidates.putIfAbsent(tx.txid, () => []).add(tx);
         }
       }
 
       final reverted = <String>[];
       for (final entry in candidates.entries) {
+        final walletIds = [for (final tx in entry.value) tx.walletId!];
         final proof = await _storage.getMerkleProof(entry.key);
         final String reason;
         if (proof == null) {
           // Nothing to re-verify. Only a confirmation recorded above the fork
           // point can rest on a changed block; one with no height is left
           // alone rather than reverted on every reorganization.
-          final heights = await _confirmedHeights(entry.key, entry.value);
-          if (!heights.any((h) => h > msg.forkHeight)) continue;
+          if (!entry.value.any((tx) => tx.blockHeight != null && tx.blockHeight! > msg.forkHeight)) continue;
           reason = 'reorganization at height ${msg.forkHeight}: confirmed above the fork point with no stored proof';
         } else {
           final outcome = await _recheckProof(proof);
@@ -1150,7 +1168,7 @@ class SPVActor extends Actor {
           }
           _rejectionsHandled.add(entry.key);
         }
-        _revertConfirmation(entry.key, entry.value, proof, reason);
+        _revertConfirmation(entry.key, walletIds, proof, reason);
         reverted.add(entry.key);
       }
 
@@ -1181,11 +1199,14 @@ class SPVActor extends Actor {
   /// and reverts the confirmation like a reorganization does. Proofs whose
   /// header is still unknown stay as they are. Then confirmations whose only
   /// proof is rejected are taken back ([_revertRejectedConfirmations]).
+  ///
+  /// The wallets holding the failed transactions as confirmed are read once,
+  /// by txid, after the checks: not the confirmed history per proof (ctkm).
   Future<void> _recheckUnverifiedProofs(int upToHeight) async {
     try {
       final unverified = await _storage.getMerkleProofsByStatus(MerkleProofStatus.pendingHeader);
 
-      final reverted = <String>[];
+      final failed = <(MerkleProof, ProofHeaderCheck)>[];
       for (final proof in unverified) {
         if (proof.blockHeight > upToHeight) continue;
         final outcome = await _recheckProof(proof);
@@ -1196,16 +1217,19 @@ class SPVActor extends Actor {
         } else {
           await _markOrphaned(proof);
         }
+        failed.add((proof, outcome));
+      }
 
-        final wallets = [
-          for (final tx in await _storage.getTransactionsByStatus(TransactionStatus.confirmed))
-            if (tx.txid == proof.txid && tx.walletId != null && tx.walletId!.isNotEmpty) tx.walletId!,
-        ];
-        _revertConfirmation(proof.txid, wallets, proof,
-            'proof imported before its block header does not match header at height '
-            '${proof.blockHeight}: ${outcome.status.name}${outcome.detail == null ? '' : ' (${outcome.detail})'}');
-        _rejectionsHandled.add(proof.txid);
-        reverted.add(proof.txid);
+      final reverted = <String>[];
+      if (failed.isNotEmpty) {
+        final wallets = await _confirmedWallets([for (final (proof, _) in failed) proof.txid]);
+        for (final (proof, outcome) in failed) {
+          _revertConfirmation(proof.txid, wallets[proof.txid] ?? const [], proof,
+              'proof imported before its block header does not match header at height '
+              '${proof.blockHeight}: ${outcome.status.name}${outcome.detail == null ? '' : ' (${outcome.detail})'}');
+          _rejectionsHandled.add(proof.txid);
+          reverted.add(proof.txid);
+        }
       }
       if (reverted.isNotEmpty) {
         _log.severe('${reverted.length} imported proof(s) do not match the block headers that arrived; '
@@ -1245,18 +1269,14 @@ class SPVActor extends Actor {
         rejected.remove(txid); // a current proof backs the transaction
         _rejectionsHandled.add(txid);
       }
-      // A rejected proof of a received ancestor belongs to no wallet transaction.
-      final held = (await _storage.getTransactionsBatch(rejected.keys.toList())).keys.toSet();
+      // The rows of those transactions only (ctkm). A rejected proof of a
+      // received ancestor belongs to no wallet transaction.
+      final rows = await _storage.getTransactionsByTxids(rejected.keys.toList());
+      final held = {for (final tx in rows) tx.txid};
       rejected.removeWhere((txid, _) => !held.contains(txid));
       if (rejected.isEmpty) return;
 
-      final wallets = <String, List<String>>{};
-      for (final tx in await _storage.getTransactionsByStatus(TransactionStatus.confirmed)) {
-        final walletId = tx.walletId;
-        if (rejected.containsKey(tx.txid) && walletId != null && walletId.isNotEmpty) {
-          wallets.putIfAbsent(tx.txid, () => []).add(walletId);
-        }
-      }
+      final wallets = _confirmedWalletsOf(rows);
       if (wallets.isEmpty) return;
 
       for (final entry in wallets.entries) {
@@ -1324,13 +1344,30 @@ class SPVActor extends Actor {
     return null;
   }
 
-  Future<List<int>> _confirmedHeights(String txid, List<String> walletIds) async {
-    final heights = <int>[];
-    for (final walletId in walletIds) {
-      final height = (await _storage.getTransaction(txid, walletId: walletId))?.blockHeight;
-      if (height != null) heights.add(height);
+  /// txid -> the wallets holding it as confirmed, for [txids]: one read of
+  /// their rows, never the confirmed history.
+  Future<Map<String, List<String>>> _confirmedWallets(List<String> txids) async =>
+      _confirmedWalletsOf(await _storage.getTransactionsByTxids(txids));
+
+  /// txid -> ids of the wallets whose row in [rows] is confirmed, newest row
+  /// first (the order the confirmed listing gave before ctkm).
+  static Map<String, List<String>> _confirmedWalletsOf(List<BitcoinTransaction> rows) {
+    final wallets = <String, List<String>>{};
+    for (final tx in _newestFirst(rows)) {
+      final walletId = tx.walletId;
+      if (tx.status == TransactionStatus.confirmed && walletId != null && walletId.isNotEmpty) {
+        wallets.putIfAbsent(tx.txid, () => []).add(walletId);
+      }
     }
-    return heights;
+    return wallets;
+  }
+
+  /// [rows] sorted newest first (`createdAt` descending); rows with equal
+  /// times keep their order. Storage returns them in this order already.
+  static List<BitcoinTransaction> _newestFirst(List<BitcoinTransaction> rows) {
+    final sorted = List.of(rows);
+    mergeSort<BitcoinTransaction>(sorted, compare: (a, b) => b.createdAt.compareTo(a.createdAt));
+    return sorted;
   }
 
   void _revertConfirmation(String txid, List<String> walletIds, MerkleProof? proof, String reason) {

@@ -13,6 +13,7 @@ import 'channel_read_model_contract.dart';
 import 'invoice_read_model_contract.dart';
 import 'header_reorg_contract.dart';
 import 'read_model_keying_contract.dart';
+import 'transaction_lookup_contract.dart';
 import 'wallet_lifecycle_contract.dart';
 
 /// Builds a syntactically valid header chained to [prev]; [nonce] makes the
@@ -216,6 +217,7 @@ void main() {
 
     defineReadModelKeyingContract(() => storage, unique: () => 'i${counter++}');
     defineWalletLifecycleContract(() => storage, unique: () => 'il${counter++}');
+    defineTransactionLookupContract(() => storage, unique: () => 'it${counter++}');
 
     test('0v3: BlockHeaderChain reorg A -> B -> A persists branch A across a restart',
         () async {

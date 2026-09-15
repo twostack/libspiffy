@@ -43,6 +43,24 @@ class InMemoryWalletStorage implements WalletStorage {
   // (getTransaction without a wallet id returns the first).
   final Map<String, List<String>> _txidWallets = {};
 
+  // Confirmed rows by block height, as (walletId, txid) keys, and confirmed
+  // rows without a height: the rows a reorganization may have changed are
+  // found without reading the confirmed history (bead libspiffy-ctkm).
+  // Maintained by _putTransaction, deleteWallet and clear.
+  final SplayTreeMap<int, Set<(String, String)>> _confirmedByHeight = SplayTreeMap();
+  final Set<(String, String)> _confirmedWithoutHeight = {};
+
+  // Store order of each (walletId, txid) row: breaks createdAt ties in the
+  // newest-first lookups.
+  final Map<(String, String), int> _txStoreOrder = {};
+  int _nextTxStoreOrder = 0;
+
+  /// Transaction rows the transaction read queries have visited (scanned or
+  /// returned) since this storage was created. Lets a test observe how many
+  /// rows an operation reads; tests may reset it.
+  @visibleForTesting
+  int transactionRowsRead = 0;
+
   // Block header storage: height -> BlockHeader
   final Map<int, BlockHeader> _blockHeaders = {};
   
@@ -170,6 +188,9 @@ class InMemoryWalletStorage implements WalletStorage {
   Future<void> deleteWallet(String walletId) async {
     // Read associations BEFORE removing maps
     final txids = _transactions[walletId]?.keys.toList();
+    for (final tx in _transactions[walletId]?.values ?? const <BitcoinTransaction>[]) {
+      _unindexConfirmed(walletId, tx);
+    }
     final invoiceIds = _walletInvoices[walletId];
 
     // Remove wallet data (a hard delete, as every backend: audit S-15)
@@ -188,6 +209,7 @@ _balanceCache.remove(walletId);
     // Drop the wallet from the txid index (other wallets keep their rows)
     if (txids != null) {
       for (final txid in txids) {
+        _txStoreOrder.remove((walletId, txid));
         final owners = _txidWallets[txid];
         owners?.remove(walletId);
         if (owners != null && owners.isEmpty) _txidWallets.remove(txid);
@@ -454,6 +476,7 @@ _balanceCache.remove(walletId);
       // empty for an unknown wallet (audit S-15, S-19).
       final sorted = (_transactions[walletId]?.values ?? const <BitcoinTransaction>[])
           .toList();
+      transactionRowsRead += sorted.length;
       mergeSort<BitcoinTransaction>(sorted,
           compare: (a, b) => b.createdAt.compareTo(a.createdAt));
       Iterable<BitcoinTransaction> txs = sorted;
@@ -474,10 +497,15 @@ _balanceCache.remove(walletId);
 
   @override
   Future<BitcoinTransaction?> getTransaction(String txid, {String? walletId}) async {
-    if (walletId != null) return _transactions[walletId]?[txid];
-    final owners = _txidWallets[txid];
-    if (owners == null || owners.isEmpty) return null;
-    return _transactions[owners.first]?[txid];
+    final BitcoinTransaction? tx;
+    if (walletId != null) {
+      tx = _transactions[walletId]?[txid];
+    } else {
+      final owners = _txidWallets[txid];
+      tx = owners == null || owners.isEmpty ? null : _transactions[owners.first]?[txid];
+    }
+    if (tx != null) transactionRowsRead++;
+    return tx;
   }
 
   @override
@@ -507,10 +535,53 @@ _balanceCache.remove(walletId);
     }
     
     // Filter by status and sort by creation date (descending, stable)
-    final filtered = transactions.where((tx) => tx.status == status).toList();
+    final filtered = transactions.where((tx) {
+      transactionRowsRead++;
+      return tx.status == status;
+    }).toList();
     mergeSort<BitcoinTransaction>(filtered,
         compare: (a, b) => b.createdAt.compareTo(a.createdAt));
     return filtered;
+  }
+
+  @override
+  Future<List<BitcoinTransaction>> getTransactionsByTxids(List<String> txids) async {
+    final rows = <BitcoinTransaction>[
+      for (final txid in txids.toSet())
+        for (final walletId in _txidWallets[txid] ?? const <String>[])
+          if (_transactions[walletId]?[txid] case final tx?) tx,
+    ];
+    return _transactionsNewestFirst(rows);
+  }
+
+  @override
+  Future<List<BitcoinTransaction>> getConfirmedTransactionsFromHeight(
+    int minHeight, {
+    bool includeWithoutHeight = false,
+  }) async {
+    // Walks the heights from minHeight up only.
+    final keys = <(String, String)>[
+      for (int? height = _confirmedByHeight.containsKey(minHeight) ? minHeight : _confirmedByHeight.firstKeyAfter(minHeight);
+          height != null;
+          height = _confirmedByHeight.firstKeyAfter(height))
+        ..._confirmedByHeight[height]!,
+      if (includeWithoutHeight) ..._confirmedWithoutHeight,
+    ];
+    return _transactionsNewestFirst([
+      for (final (walletId, txid) in keys) _transactions[walletId]![txid]!,
+    ]);
+  }
+
+  /// [rows] newest first (createdAt descending, then store order), counted
+  /// as read.
+  List<BitcoinTransaction> _transactionsNewestFirst(List<BitcoinTransaction> rows) {
+    transactionRowsRead += rows.length;
+    int order(BitcoinTransaction tx) => _txStoreOrder[(tx.walletId!, tx.txid)] ?? 0;
+    rows.sort((a, b) {
+      final byTime = b.createdAt.compareTo(a.createdAt);
+      return byTime != 0 ? byTime : order(a).compareTo(order(b));
+    });
+    return rows;
   }
 
   @override
@@ -532,16 +603,43 @@ _balanceCache.remove(walletId);
     final walletTxs = _transactions.putIfAbsent(walletId, () => {});
     final existing = walletTxs[transaction.txid];
     final isNew = existing == null;
-    walletTxs[transaction.txid] = transaction.copyWith(
+    if (existing != null) _unindexConfirmed(walletId, existing);
+    final stored = walletTxs[transaction.txid] = transaction.copyWith(
       walletId: walletId,
       rawHex: transaction.rawHex.isEmpty ? existing?.rawHex : null,
       blockHeight: transaction.blockHeight ??
           (transaction.status == TransactionStatus.confirmed ? existing?.blockHeight : null),
     );
+    _indexConfirmed(walletId, stored);
     if (isNew) {
       _txidWallets.putIfAbsent(transaction.txid, () => []).add(walletId);
+      _txStoreOrder[(walletId, transaction.txid)] = _nextTxStoreOrder++;
     }
     return isNew;
+  }
+
+  /// Add the stored row [tx] of [walletId] to the confirmed-height index.
+  void _indexConfirmed(String walletId, BitcoinTransaction tx) {
+    if (tx.status != TransactionStatus.confirmed) return;
+    final key = (walletId, tx.txid);
+    final height = tx.blockHeight;
+    if (height == null) {
+      _confirmedWithoutHeight.add(key);
+    } else {
+      _confirmedByHeight.putIfAbsent(height, () => {}).add(key);
+    }
+  }
+
+  /// Remove the stored row [tx] of [walletId] from the confirmed-height index.
+  void _unindexConfirmed(String walletId, BitcoinTransaction tx) {
+    final key = (walletId, tx.txid);
+    _confirmedWithoutHeight.remove(key);
+    final height = tx.blockHeight;
+    if (height == null) return;
+    final keys = _confirmedByHeight[height];
+    if (keys == null) return;
+    keys.remove(key);
+    if (keys.isEmpty) _confirmedByHeight.remove(height);
   }
 
   // ========================================
@@ -1118,6 +1216,9 @@ _balanceCache.remove(walletId);
     _utxos.clear();
     _transactions.clear();
     _txidWallets.clear();
+    _confirmedByHeight.clear();
+    _confirmedWithoutHeight.clear();
+    _txStoreOrder.clear();
     _addresses.clear();
     _txAddresses.clear();
     _blockHeaders.clear();

@@ -160,4 +160,38 @@ void main() {
         // ignore: deprecated_member_use_from_same_package
         await isar.bitcoinTransactionEntitys.where().statusNotEqualTo(TransactionStatus.pending.name).count(), 6);
   });
+
+  test('ctkm: a store written before the (status, blockHeight) index answers the height lookup with every row',
+      () async {
+    const name = 'height_index_migration';
+    final former = await Isar.open([
+      for (final schema in LibSpiffySchemas.allSchemas)
+        if (schema.name == BitcoinTransactionEntitySchema.name)
+          _withIndexes<BitcoinTransactionEntity>(BitcoinTransactionEntitySchema, {
+            for (final e in BitcoinTransactionEntitySchema.indexes.entries)
+              if (e.key != 'status_blockHeight') e.key: e.value,
+          })
+        else
+          schema,
+    ], directory: dir.path, name: name);
+    expect(former.bitcoinTransactionEntitys.schema.indexes.keys, isNot(contains('status_blockHeight')));
+    await former.writeTxn(() async {
+      for (var i = 0; i < 6; i++) {
+        final status = i < 4 ? TransactionStatus.confirmed : TransactionStatus.pending;
+        await former.bitcoinTransactionEntitys.put(BitcoinTransactionEntity.fromDomain(
+            _tx('t$i', status, i).copyWith(blockHeight: i == 3 ? null : 500 + i),
+            walletId: 'w${i % 2}'));
+      }
+    });
+    await former.close();
+
+    final isar = await Isar.open(LibSpiffySchemas.allSchemas, directory: dir.path, name: name);
+    addTearDown(() => isar.close(deleteFromDisk: true));
+    expect(isar.bitcoinTransactionEntitys.schema.indexes.keys, contains('status_blockHeight'));
+    final storage = IsarWalletStorage(isar);
+
+    expect((await storage.getConfirmedTransactionsFromHeight(501)).map((t) => t.txid), ['t2', 't1']);
+    expect((await storage.getConfirmedTransactionsFromHeight(0, includeWithoutHeight: true)).map((t) => t.txid),
+        ['t3', 't2', 't1', 't0']);
+  });
 }

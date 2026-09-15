@@ -83,6 +83,7 @@ void main() {
 
     try {
       // --- the pre-v009 shape, with a 'pending' placeholder row ----------
+      expect(await migrations.rollback(), isTrue); // v014
       expect(await migrations.rollback(), isTrue); // v013
       expect(await migrations.rollback(), isTrue); // v012
       expect(await migrations.rollback(), isTrue); // v011
@@ -99,7 +100,7 @@ void main() {
 
       // --- up -------------------------------------------------------------
       await migrations.migrate();
-      expect(await migrations.getCurrentVersion(), equals(13));
+      expect(await migrations.getCurrentVersion(), equals(14));
       expect(await rawRows(pendingTx, 'block_hash, status'), [
         [null, 'pendingHeader']
       ]);
@@ -142,6 +143,7 @@ void main() {
       await expectRejected(orphanOnlyTx, null, 'bogus', 'fe07'); // unknown status
 
       // --- down -----------------------------------------------------------
+      expect(await migrations.rollback(), isTrue); // v014
       expect(await migrations.rollback(), isTrue); // v013
       expect(await migrations.rollback(), isTrue); // v012
       expect(await migrations.rollback(), isTrue); // v011
@@ -161,7 +163,7 @@ void main() {
 
       // --- up again, leaving the database at the latest version ----------
       await migrations.migrate();
-      expect(await migrations.getCurrentVersion(), equals(13));
+      expect(await migrations.getCurrentVersion(), equals(14));
       expect((await storage.getMerkleProof(pendingTx))!.status, MerkleProofStatus.pendingHeader);
     } finally {
       await migrations.migrate();
@@ -203,7 +205,7 @@ void main() {
         );
 
     try {
-      expect(await migrations.getCurrentVersion(), equals(13));
+      expect(await migrations.getCurrentVersion(), equals(14));
       await storage.storeMerkleProof(txid, MerkleProof(
           txid: txid, blockHash: block, blockHeight: 9, position: 0, merkleProof: ['fe12']));
       await storage.storeMerkleProof(txid, MerkleProof(
@@ -227,6 +229,7 @@ void main() {
       await expectLater(insert(null, 'bogus', 'fe16'), throwsA(isA<ServerException>()));
 
       // --- down: rejected rows become orphaned, none is deleted ----------
+      expect(await migrations.rollback(), isTrue); // v014
       expect(await migrations.rollback(), isTrue); // v013
       expect(await migrations.rollback(), isTrue); // v012
       expect(await migrations.getCurrentVersion(), equals(11));
@@ -240,7 +243,7 @@ void main() {
 
       // --- up again ------------------------------------------------------
       await migrations.migrate();
-      expect(await migrations.getCurrentVersion(), equals(13));
+      expect(await migrations.getCurrentVersion(), equals(14));
       await insert(null, 'rejected', 'fe18');
       expect((await storage.getMerkleProof(txid))!.merkleProof, ['fe12']);
     } finally {

@@ -508,4 +508,51 @@ void main() {
       expect(returned.fold<int>(0, (a, b) => a + b), lessThanOrEqualTo(2 * 3), reason: '$returned');
     });
   });
+
+  group('ctkm: SPVActor lookups read the rows they return, not the confirmed history', () {
+    // _tx gives confirmed rows a height; a pending row has none to keep.
+    BitcoinTransaction confirmedAt(String txid, int? height, {int minute = 0}) =>
+        _tx(txid, minute: minute, status: TransactionStatus.pending)
+            .copyWith(status: TransactionStatus.confirmed, blockHeight: height);
+
+    setUp(() async {
+      // Two wallets with a long confirmed history below height 1000.
+      for (final wallet in ['h1', 'h2']) {
+        for (var i = 0; i < 60; i++) {
+          await storage.storeTransaction(wallet, confirmedAt(_txid('$wallet-hist-$i'), 100 + i, minute: i));
+        }
+      }
+    });
+
+    test('confirmed rows from a height (and without one) are read from the (status, blockHeight) index', () async {
+      await storage.storeTransaction('h1', confirmedAt(_txid('fork'), 1000, minute: 1));
+      await storage.storeTransaction('h2', confirmedAt(_txid('fork'), 1000, minute: 2));
+      await storage.storeTransaction('h2', confirmedAt(_txid('above'), 1003, minute: 3));
+      await storage.storeTransaction('h1', confirmedAt(_txid('no-height'), null, minute: 4));
+      await storage.storeTransaction(
+          'h1', _tx(_txid('pending-high'), status: TransactionStatus.pending, minute: 5).copyWith(blockHeight: 2000));
+
+      final withHeight = await queriesOf(() async {
+        expect((await storage.getConfirmedTransactionsFromHeight(1000)).map((t) => (t.walletId, t.txid)),
+            [('h2', _txid('above')), ('h2', _txid('fork')), ('h1', _txid('fork'))]);
+      });
+      expect([for (final q in withHeight) await q.rowsInRange()], [3]);
+
+      final withoutHeight = await queriesOf(() async {
+        expect((await storage.getConfirmedTransactionsFromHeight(1001, includeWithoutHeight: true)).map((t) => t.txid),
+            [_txid('no-height'), _txid('above')]);
+      });
+      expect([for (final q in withoutHeight) await q.rowsInRange()], [2]);
+    });
+
+    test('rows by txid are read from the txid index: every wallet\'s row of those txids only', () async {
+      final queries = await queriesOf(() async {
+        expect(
+            (await storage.getTransactionsByTxids([_txid('h1-hist-7'), _txid('h2-hist-7'), _txid('h1-hist-7')]))
+                .map((t) => t.walletId),
+            ['h1', 'h2']);
+      });
+      expect([for (final q in queries) await q.rowsInRange()], [2]);
+    });
+  });
 }

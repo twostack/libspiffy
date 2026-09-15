@@ -694,6 +694,46 @@ class IsarWalletStorage implements ReadModelStorage {
   }
 
   @override
+  Future<List<BitcoinTransaction>> getTransactionsByTxids(List<String> txids) async {
+    final wanted = txids.toSet().toList();
+    if (wanted.isEmpty) return [];
+    // The txid index: every wallet's row of each txid, and no other row.
+    final entities = await _traced('getTransactionsByTxids', _isar.bitcoinTransactionEntitys
+        .where()
+        .anyOf(wanted, (q, txid) => q.txidEqualTo(txid)))
+        .findAll();
+    return _transactionsNewestFirst(entities);
+  }
+
+  @override
+  Future<List<BitcoinTransaction>> getConfirmedTransactionsFromHeight(
+    int minHeight, {
+    bool includeWithoutHeight = false,
+  }) async {
+    // The (status, blockHeight) index: the confirmed rows from minHeight up
+    // (and those without a height), not the confirmed history (ctkm).
+    final confirmed = TransactionStatus.confirmed.name;
+    final fromHeight = _isar.bitcoinTransactionEntitys
+        .where()
+        .statusEqualToBlockHeightGreaterThan(confirmed, minHeight, include: true);
+    final entities = await _traced('getConfirmedTransactionsFromHeight', (includeWithoutHeight
+            ? fromHeight.or().statusEqualToBlockHeightIsNull(confirmed)
+            : fromHeight))
+        .findAll();
+    return _transactionsNewestFirst(entities);
+  }
+
+  /// [entities] (only the rows a lookup matched) newest first: createdAt
+  /// descending, then store order.
+  static List<BitcoinTransaction> _transactionsNewestFirst(List<BitcoinTransactionEntity> entities) {
+    entities.sort((a, b) {
+      final byTime = b.createdAt.compareTo(a.createdAt);
+      return byTime != 0 ? byTime : a.id.compareTo(b.id);
+    });
+    return entities.map((e) => e.toDomain()).toList();
+  }
+
+  @override
   Future<void> storeTransaction(String walletId, BitcoinTransaction transaction) async {
     await _isar.writeTxn(() async {
       // Check if this wallet already has the transaction. Rows are keyed by

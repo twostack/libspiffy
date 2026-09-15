@@ -96,6 +96,10 @@ class _Node {
 
   ActorRef get coordinator => system.coordinator;
 
+  /// False while this node's system is shut down (between [_halt] and
+  /// [_boot], and after [stop]).
+  bool running = false;
+
   /// The current incarnation's coordinator events (closed by a restart).
   Stream<CoordinatorEvent> get stream => system.coordinatorEvents!;
 
@@ -173,9 +177,11 @@ class _Node {
     for (final w in _wiring) {
       w();
     }
+    running = true;
   }
 
   Future<void> _halt() async {
+    running = false;
     for (final s in subs) {
       await s.cancel();
     }
@@ -217,6 +223,10 @@ void _link(_Node from, _Node to) {
       delivery = delivery.then((_) async {
         final tamper = from.tamper;
         if (tamper != null) payload = await tamper(m.messageType, payload);
+        // A message still in flight when [to] is stopped is lost, as on a
+        // wire; tearDown stops one node while the other may still be
+        // sending (it failed the test after it had passed).
+        if (!to.running) return;
         to.coordinator.tell(ChannelP2PReceived(
           fromPeerId: from.peerId,
           messageType: m.messageType,

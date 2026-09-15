@@ -4,6 +4,7 @@ import 'package:eventador/eventador.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:libspiffy/src/services/script_type_registry.dart';
 import 'package:logging/logging.dart';
+import '../core/wallet/state_records.dart';
 import '../core/wallet_events.dart';
 import '../models/wallet_event.dart';
 import '../models/wallet_type.dart';
@@ -225,7 +226,9 @@ class WalletProjection extends Projection<void> {
       rootAddress: event.rootAddress,
       networkType: NetworkName.canonical(event.walletMetadata?['network'] as String?),
       metadata: {
-        ...event.walletMetadata ?? {},
+        // Reserved keys in a creation journaled before they were rejected
+        // are not written (bead libspiffy-hfai).
+        ...WalletMetadataKeys.hostEntries(event.walletMetadata ?? const {}, creation: true),
         'walletType': event.walletType.toStorageString(),
         'confirmedBalance': '0',
         'unconfirmedBalance': '0',
@@ -266,7 +269,9 @@ class WalletProjection extends Projection<void> {
       networkType: (existingWallet['network'] ?? existingWallet['networkType']) as String?,
       metadata: {
         ...existingMetadata,
-        if (event.newMetadata != null) ...event.newMetadata!,
+        // Reserved keys in an update journaled before they were rejected
+        // do not overwrite derived values (bead libspiffy-hfai).
+        if (event.newMetadata != null) ...WalletMetadataKeys.hostEntries(event.newMetadata!),
         'lastUpdated': event.timestamp.toIso8601String(),
       },
     );

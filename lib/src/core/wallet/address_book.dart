@@ -33,8 +33,8 @@ final _log = Logger('BitcoinWalletAggregate');
 /// it: it is kept in state.watchAddresses, never in state.addresses, whose
 /// entries signing derives keys for.
 abstract final class AddressBook {
-  static const String addressIndicesKey = 'address_indices';
-  static const String addressChainsKey = 'address_chains';
+  static const String addressIndicesKey = WalletMetadataKeys.addressIndices;
+  static const String addressChainsKey = WalletMetadataKeys.addressChains;
 
   /// Chain discriminator on [AddressGeneratedEvent.purpose] /
   /// [GenerateAddressCommand.purpose].

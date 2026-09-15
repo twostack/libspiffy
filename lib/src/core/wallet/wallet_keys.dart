@@ -17,6 +17,7 @@ import '../../utils/network_name.dart';
 import '../wallet_commands.dart';
 import '../wallet_events.dart';
 import 'address_book.dart';
+import 'state_records.dart';
 
 final _log = Logger('BitcoinWalletAggregate');
 
@@ -124,7 +125,7 @@ class WalletKeys {
     final metadata = command.walletMetadata ?? {};
     // Accept 'main'/'mainnet' (and 'test'/'testnet'); persist the canonical
     // spelling so every later reader resolves the same network.
-    final networkTypeStr = NetworkName.canonical(metadata['network'] as String?);
+    final networkTypeStr = NetworkName.canonical(metadata[WalletMetadataKeys.network] as String?);
     final networkType = NetworkName.toDartsv(networkTypeStr);
 
     // Account xpub: goes to secure storage only, never into the event (KM-8)

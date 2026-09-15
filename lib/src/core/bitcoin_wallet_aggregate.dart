@@ -665,6 +665,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
 
   Future<List<Event>> _handleCreateWallet(WalletState currentState, CreateWalletCommand command) async {
     WalletLifecycle.requireNotCreated(currentState, command);
+    WalletLifecycle.requireHostCreationMetadata(command);
     final root = await _keys.walletRoot(command);
 
     // Store the secrets BEFORE the event is persisted. If this throws the

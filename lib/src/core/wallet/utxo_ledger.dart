@@ -185,9 +185,14 @@ abstract final class UtxoLedger {
     // (beads libspiffy-viy, libspiffy-n0p).
     rejectMultisigNotSpendableAlone(currentState, command.scriptPubKey, utxoKey);
 
-    // Use the initialStatus provided by the caller (defaults to pending)
-    // The caller (e.g., wallet_manager_actor for SPV-validated UTXOs) is responsible
-    // for determining the appropriate status based on merkle proof verification
+    // The status is the caller's (it defaults to pending) and is never
+    // derived from the command's block height or confirmation count: only
+    // the sender knows whether a merkle proof verified against our header
+    // chain, and a height or a count it merely asserts is a claim, not
+    // evidence (spv-understanding.md). The command itself refuses the one
+    // combination that cannot be true — a block height with pending — so a
+    // caller cannot end up holding mined funds the wallet will not spend
+    // (bead libspiffy-5ry).
     final initialStatus = command.initialStatus;
 
     final event = UTXOReceivedEvent(

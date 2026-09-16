@@ -303,6 +303,35 @@ abstract class ReadModelStorage {
     String? walletId,
   });
 
+  /// The rows with [status] last updated at or after [since], newest first
+  /// (`updatedAt` descending), at most [limit] of them (bead libspiffy-5bju).
+  ///
+  /// A bounded feed of recently changed rows, for work that must revisit a
+  /// terminal state without ever reading its whole history: ARCActor polls
+  /// recently failed transactions this way, because a transaction ARC
+  /// reported REJECTED can still be mined (a competing spend loses, or the
+  /// report was stale) and nothing else would ever ask again. Reading every
+  /// failed row the wallet ever had, on a timer, is what the window and the
+  /// cap exist to prevent.
+  ///
+  /// [limit] must be positive. Rows whose `updatedAt` was never stored are
+  /// read as their `createdAt` (the backends store it that way).
+  ///
+  /// The default implementation filters [getTransactionsByStatus] and so is
+  /// not bounded at the storage layer; the libspiffy backends override it.
+  Future<List<BitcoinTransaction>> getTransactionsByStatusSince(
+    TransactionStatus status,
+    DateTime since, {
+    int limit = 100,
+  }) async {
+    final rows = [
+      for (final tx in await getTransactionsByStatus(status))
+        if (!tx.updatedAt.isBefore(since)) tx,
+    ];
+    mergeSort<BitcoinTransaction>(rows, compare: (a, b) => b.updatedAt.compareTo(a.updatedAt));
+    return rows.length <= limit ? rows : rows.sublist(0, limit);
+  }
+
   /// Every wallet's row for each of [txids] (bead libspiffy-ctkm).
   ///
   /// Unlike [getTransactionsBatch], a txid several wallets hold returns one

@@ -174,8 +174,15 @@ class SPVActor extends Actor {
   }
 
   /// Handle transaction received directly from counterparty (CORE SPV)
-  Future<void> _handleReceiveTransaction(ReceiveTransactionMessage msg) async {
-    
+  Future<void> _handleReceiveTransaction(ReceiveTransactionMessage msg) async =>
+      _runReceive(msg, context.sender);
+
+  /// One pass of the receive: validate, then tell the wallet manager and
+  /// [replyTo]. Called for a fresh delivery and again for a receive that was
+  /// parked waiting for a block header (bead libspiffy-68mz), which is why
+  /// the sender is a parameter rather than `context.sender`.
+  Future<void> _runReceive(ReceiveTransactionMessage msg, ActorRef? replyTo) async {
+    _awaitingHeaderHeight = null;
     try {
       // This is the core SPV process
       final validationResult = await _validateReceivedTransaction(
@@ -184,27 +191,31 @@ class SPVActor extends Actor {
         msg.targetWalletId,
         msg.invoiceId,
       );
-      
+
+      if (_awaitingHeaderHeight case final height?) {
+        _awaitingHeaderHeight = null;
+        _parkReceive(msg, replyTo, height);
+      }
+
       // Send validation result to WalletManager
       _walletManager.tell(validationResult);
-      
+
       // Also respond to sender if this was a request
-      if (context.sender != null) {
-        context.sender!.tell(validationResult);
-      }
-      
-      
+      replyTo?.tell(validationResult);
+
+
     } catch (e) {
-      
+      _awaitingHeaderHeight = null;
+
       final errorResult = SPVValidationResult(
         txid: msg.transactionId, // Placeholder
         isValid: false,
         validationError: e.toString(),
         targetWalletId: msg.targetWalletId,
       );
-      
+
       _walletManager.tell(errorResult);
-      context.sender?.tell(errorResult);
+      replyTo?.tell(errorResult);
     }
   }
 
@@ -214,39 +225,49 @@ class SPVActor extends Actor {
   /// HeaderSyncActor is available, attempts to fetch the header from the Bitcoin
   /// P2P network. This enables SPV validation to succeed even when the counterparty
   /// references block headers we haven't synced yet.
+  /// Throws [_HeaderUnavailable] when we have no header at [blockHeight] and
+  /// none can be fetched (bead libspiffy-68mz): that proves nothing either
+  /// way, unlike a header we hold that contradicts a proof, and callers keep
+  /// the evidence and try again once the header arrives.
   Future<BlockHeader> _getBlockHeader(int blockHeight) async {
+    // Try local storage first
+    final BlockHeader? header;
     try {
-      // Try local storage first
-      final header = await _storage.getBlockHeaderByHeight(blockHeight);
-      
-      if (header != null) {
-        return header;
-      }
-      
-      // Header not found locally - try opportunistic fetch from P2P network
-      
-      if (_headerSyncActor == null) {
-        throw Exception('Block header not found at height $blockHeight and HeaderSyncActor not available for opportunistic fetch');
-      }
-      
-      // Request specific header from HeaderSyncActor
-      final response = await _headerSyncActor!.ask<SpecificHeaderResponseMessage>(
+      header = await _storage.getBlockHeaderByHeight(blockHeight);
+    } catch (e) {
+      throw _HeaderUnavailable(blockHeight, 'reading the stored header failed: $e');
+    }
+    if (header != null) {
+      return header;
+    }
+
+    // Header not found locally - try opportunistic fetch from P2P network
+
+    if (_headerSyncActor == null) {
+      throw _HeaderUnavailable(blockHeight, 'not synced, and no HeaderSyncActor for an opportunistic fetch');
+    }
+
+    // Request specific header from HeaderSyncActor. A reply that is not a
+    // SpecificHeaderResponseMessage (an older HeaderSyncActor answering with
+    // SPVErrorMessage, bead libspiffy-lplr) throws a cast error here; it
+    // means the same thing as an unsuccessful response: no header.
+    final SpecificHeaderResponseMessage response;
+    try {
+      response = await _headerSyncActor!.ask<SpecificHeaderResponseMessage>(
         RequestSpecificHeaderMessage(
           blockHeight: blockHeight,
           timeout: Duration(seconds: 10),
         ),
         Duration(seconds: 15),
       );
-      
-      if (response.success && response.header != null) {
-        return response.header!;
-      } else {
-        throw Exception('Failed to fetch block header from P2P network: ${response.error}');
-      }
-      
     } catch (e) {
-      throw Exception('Failed to retrieve block header at height $blockHeight: $e');
+      throw _HeaderUnavailable(blockHeight, 'the header sync actor did not answer: $e');
     }
+
+    if (response.success && response.header != null) {
+      return response.header!;
+    }
+    throw _HeaderUnavailable(blockHeight, 'not synced and no peer supplied it: ${response.error}');
   }
 
   /// Validate received transaction using SPV principles with invoice-based payment verification
@@ -300,7 +321,16 @@ class SPVActor extends Actor {
           // This transaction has a proof - validate it directly via SPV
 
           final bump = _bumpFor(beef, txIndex);
-          final blockHeader = await _getBlockHeader(bump.blockHeight);
+          final BlockHeader blockHeader;
+          try {
+            blockHeader = await _getBlockHeader(bump.blockHeight);
+          } on _HeaderUnavailable catch (e) {
+            // Not synced that far: the proof is neither good nor bad yet
+            // (bead libspiffy-68mz). Keep the BEEF and try again when the
+            // header lands, rather than dropping evidence nothing can hand
+            // us again.
+            return await _retainUntilHeaders(beef, txidHex, walletId, {e.blockHeight}, e.toString());
+          }
 
 
           // Validate this transaction's merkle proof
@@ -346,7 +376,18 @@ class SPVActor extends Actor {
           // This transaction has NO proof (unconfirmed payment transaction)
           // Validate that all its ancestors (inputs) have valid merkle proofs
           
-          // Validate ALL transactions in BEEF that have proofs
+          // Validate ALL transactions in BEEF that have proofs.
+          //
+          // Two failures that used to look alike are told apart (bead
+          // libspiffy-68mz): a header we hold that contradicts the proof is
+          // fatal — the counterparty's evidence is wrong — while a height we
+          // have not synced to proves nothing either way, so the BEEF is
+          // retained and the receive tried again when the header arrives.
+          // The proven-subject branch is already lenient about a member it
+          // cannot verify (V-56); the two branches now agree on what "we
+          // have no header there" means.
+          final missingHeights = <int>{};
+          final unavailable = <String>[];
           for (int i = 0; i < beef.txs.length; i++) {
             if (!beef.hasMerkle[i]) {
               continue; // Skip transactions without proofs (like this payment tx)
@@ -362,9 +403,16 @@ class SPVActor extends Actor {
                 validationError: 'Ancestor transaction at index $i failed merkle proof validation',
                 targetWalletId: walletId,
               );
+            } on _HeaderUnavailable catch (e) {
+              missingHeights.add(e.blockHeight);
+              unavailable.add('index $i: $e');
+              continue;
             }
             provenTxids.add(member.txid);
             proven.add(member);
+          }
+          if (missingHeights.isNotEmpty) {
+            return await _retainUntilHeaders(beef, txidHex, walletId, missingHeights, unavailable.join('; '));
           }
 
           // A valid proof somewhere in the BEEF says nothing about *this*
@@ -552,6 +600,126 @@ class SPVActor extends Actor {
         validationError: 'SPV validation failed: $e',
         targetWalletId: walletId,
       );
+    }
+  }
+
+  /// The BEEF cannot be judged yet because we hold no header at [heights]
+  /// (bead libspiffy-68mz).
+  ///
+  /// Nothing is dropped: every transaction of the BEEF goes into the shared
+  /// ancestor store and every BUMP is filed as a
+  /// [MerkleProofStatus.pendingHeader] proof, so the evidence survives even
+  /// if this process dies before the header arrives — the counterparty
+  /// cannot hand it to us again. The receive itself is parked
+  /// ([_parkReceive], set up by [_handleReceiveTransaction]) and replayed
+  /// from [_handleBlockHeaderStored], so the wallet is credited without the
+  /// counterparty re-sending.
+  ///
+  /// The caller is still answered now, with an invalid result naming the
+  /// missing heights: a receive that silently never answers is worse than
+  /// one that says "not yet".
+  Future<SPVValidationResult> _retainUntilHeaders(
+      BEEF beef, String txidHex, String? walletId, Set<int> heights, String detail) async {
+    final needed = heights.reduce((a, b) => a > b ? a : b);
+    try {
+      await _retainBeef(beef);
+    } catch (e, st) {
+      _log.severe('Failed to retain the BEEF carrying $txidHex while its block header(s) '
+          '${heights.toList()..sort()} are missing: $e', e, st);
+    }
+    _awaitingHeaderHeight = needed;
+    _log.info('Transaction $txidHex is retained until the block header(s) '
+        '${heights.toList()..sort()} arrive: $detail');
+    return SPVValidationResult(
+      txid: txidHex,
+      isValid: false,
+      validationError: 'Block header(s) at height(s) ${(heights.toList()..sort()).join(', ')} are not synced yet, '
+          'so the merkle proof(s) in this BEEF prove nothing yet. The BEEF is retained and the receive is '
+          'retried automatically once the headers arrive ($detail)',
+      targetWalletId: walletId,
+    );
+  }
+
+  /// Store every transaction of [beef] as ancestor evidence and every BUMP
+  /// it carries as a pendingHeader proof (bead libspiffy-68mz).
+  ///
+  /// A transaction that already has a current proof keeps it: this never
+  /// displaces a verified proof, and never deletes anything.
+  Future<void> _retainBeef(BEEF beef) async {
+    final txids = [for (final tx in beef.txs) hex.encode(beef.calculateTxid(tx))];
+    for (var i = 0; i < beef.txs.length; i++) {
+      await _storage.storeAncestorTransaction(txids[i], hex.encode(beef.txs[i]));
+    }
+    final current = await _storage.getMerkleProofsBatch(txids);
+    for (var i = 0; i < beef.txs.length; i++) {
+      if (!beef.hasMerkle[i] || current.containsKey(txids[i])) continue;
+      final BUMP bump;
+      try {
+        bump = _bumpFor(beef, i);
+      } catch (e) {
+        _log.warning('BUMP of ${txids[i]} not retained: $e');
+        continue;
+      }
+      final check = await checkBumpAgainstHeaders(
+        txid: txids[i],
+        bump: bump,
+        headerAt: _storage.getBlockHeaderByHeight,
+      );
+      // Only a proof we genuinely cannot judge is filed as pendingHeader; a
+      // malformed one proves nothing ever, and a contradicted one never
+      // reaches here (it fails the receive).
+      if (check.status != ProofHeaderStatus.headerUnknown || check.txIndex == null) continue;
+      await _storage.storeMerkleProof(txids[i], MerkleProof(
+        txid: txids[i],
+        blockHash: null,
+        blockHeight: bump.blockHeight,
+        position: check.txIndex!,
+        merkleProof: [bump.toHex()],
+        status: MerkleProofStatus.pendingHeader,
+      ));
+    }
+  }
+
+  /// Set by [_retainUntilHeaders] while a receive is being validated: the
+  /// header height that receive is waiting for. Read (and cleared) by
+  /// [_handleReceiveTransaction], which holds the message and the sender.
+  /// Safe as actor state because a message is handled to completion before
+  /// the next one is taken from the mailbox.
+  int? _awaitingHeaderHeight;
+
+  /// Receives waiting for a block header ([_retainUntilHeaders]).
+  final List<_ParkedReceive> _parkedReceives = [];
+
+  /// How many receives may wait for headers at once. Beyond this the oldest
+  /// is dropped from the queue — its transactions and proofs are already
+  /// retained in storage, so no evidence is lost, only the automatic retry.
+  static const int _maxParkedReceives = 64;
+
+  void _parkReceive(ReceiveTransactionMessage msg, ActorRef? sender, int neededHeight) {
+    _parkedReceives.removeWhere((p) => p.msg.transactionId == msg.transactionId &&
+        p.msg.targetWalletId == msg.targetWalletId);
+    _parkedReceives.add(_ParkedReceive(msg, sender, neededHeight));
+    while (_parkedReceives.length > _maxParkedReceives) {
+      final dropped = _parkedReceives.removeAt(0);
+      _log.warning('More than $_maxParkedReceives receives are waiting for block headers; '
+          '${dropped.msg.transactionId} is no longer retried automatically (its transactions and '
+          'proofs are retained; deliver it again once headers reach ${dropped.neededHeight})');
+    }
+  }
+
+  /// Replays the receives parked for headers up to [height]
+  /// (bead libspiffy-68mz). Each runs the full validation again, so a BEEF
+  /// whose proofs now check out is recorded exactly as a fresh delivery
+  /// would be, without the counterparty re-sending.
+  Future<void> _replayParkedReceives(int height) async {
+    if (_parkedReceives.isEmpty) return;
+    final ready = [for (final p in _parkedReceives) if (p.neededHeight <= height) p];
+    if (ready.isEmpty) return;
+    _parkedReceives.removeWhere(ready.contains);
+    for (final parked in ready) {
+      _log.info('Block headers reached $height: retrying the retained receive of '
+          '${parked.msg.transactionId}');
+      await _runReceive(parked.msg, parked.sender);
     }
   }
 
@@ -1134,7 +1302,12 @@ class SPVActor extends Actor {
         _currentHeight = msg.height;
         _currentTip = msg.header;
       }
-      
+
+      // A BEEF held back because we had no header at a proof's height is
+      // judged now (bead libspiffy-68mz): the counterparty does not have to
+      // deliver it again.
+      await _replayParkedReceives(msg.height);
+
       // CRITICAL: Trigger check of pending UTXOs with Arc
       // This is the key link between receiving block headers and checking
       // if pending UTXOs have been mined
@@ -1325,50 +1498,81 @@ class SPVActor extends Actor {
       }
       if (revived.isEmpty) return;
 
-      final restore = <String, Set<String>>{}; // walletId -> txids
-      for (final tx in await _storage.getTransactionsByTxids(revived.keys.toList())) {
-        final walletId = tx.walletId;
-        if (walletId == null || walletId.isEmpty) continue;
-        // A failed row is confirmed too (bead hccp): the proof verifies
-        // against the active chain, so the transaction is mined whatever ARC
-        // reported (a REJECTED can be stale, a competing spend can lose).
-        final unconfirmed = tx.status != TransactionStatus.confirmed || justReverted.contains((walletId, tx.txid));
-        if (!unconfirmed) continue;
-        restore.putIfAbsent(walletId, () => {}).add(tx.txid);
-      }
-      for (final MapEntry(key: walletId, value: txids) in restore.entries) {
-        for (final txid in txids) {
-          final (proof, check) = revived[txid]!;
-          _walletManager.tell(WalletCommandMessage(walletId, ConfirmTransactionCommand(
-            walletId: walletId,
-            txid: txid,
-            blockHeight: check.blockHeight,
-            blockHash: check.blockHash,
-            bumpHex: proof.merkleProof.single,
-          )));
-        }
-        for (final utxo in await _storage.getUTXOs(walletId)) {
-          if (!txids.contains(utxo.txid)) continue;
-          // A revert just sent (not applied yet) makes an available output
-          // pending before this command reaches the wallet.
-          final demoted = justReverted.contains((walletId, utxo.txid))
-              ? const {UTXOStatus.pending, UTXOStatus.available}
-              : const {UTXOStatus.pending};
-          final pendingOutput = demoted.contains(utxo.status) ||
-              (utxo.status == UTXOStatus.reserved && demoted.contains(utxo.statusBeforeReservation));
-          if (!pendingOutput) continue;
-          _walletManager.tell(WalletCommandMessage(walletId, MarkUTXOAvailableCommand(
-            walletId: walletId,
-            txid: utxo.txid,
-            vout: utxo.vout,
-          )));
-        }
-      }
+      final wallets = await _confirmFromVerifiedProofs(revived, justReverted: justReverted);
       _log.warning('${revived.length} orphaned or rejected proof(s) at heights $fromHeight-$toHeight verify on the '
-          'active chain again: ${revived.keys.toList()}; confirmation restored in ${restore.length} wallet(s)');
+          'active chain again: ${revived.keys.toList()}; confirmation restored in $wallets wallet(s)');
     } catch (e, st) {
       _log.warning('Failed to re-check orphaned and rejected proofs at heights $fromHeight-$toHeight: $e', e, st);
     }
+  }
+
+  /// Confirm the transactions of [verified] (txid -> the stored proof and the
+  /// check that verified it against our active header chain) in every wallet
+  /// holding them unconfirmed. Returns the number of wallets written to.
+  ///
+  /// A merkle proof on the active chain is the authority (V-55/V-56): a
+  /// failed row is confirmed too, since ARC's REJECTED can be stale and a
+  /// competing spend can lose. Each wallet is sent
+  /// ConfirmTransactionCommand with the BUMP (journaled in
+  /// TransactionConfirmedEvent, so a read model rebuilt from the journal
+  /// keeps the proof) and MarkUTXOAvailableCommand for its pending outputs
+  /// of the transaction.
+  ///
+  /// A row in [justReverted] ((wallet, txid) whose revert was just sent, not
+  /// yet applied) is confirmed although it still reads confirmed, and its
+  /// available outputs are made available again after the revert.
+  ///
+  /// Shared by the two paths that can turn a stored proof into a
+  /// confirmation without asking anybody: a proof whose block came back onto
+  /// the active chain ([_reviveProofs]) and a pendingHeader proof whose
+  /// header has now arrived ([_recheckUnverifiedProofs], bead libspiffy-65ji
+  /// — that path rewrote the proof row as verified and then waited for ARC,
+  /// which inverts the SPV model).
+  Future<int> _confirmFromVerifiedProofs(
+    Map<String, (MerkleProof, ProofHeaderCheck)> verified, {
+    Set<(String, String)> justReverted = const {},
+  }) async {
+    if (verified.isEmpty) return 0;
+    final restore = <String, Set<String>>{}; // walletId -> txids
+    for (final tx in await _storage.getTransactionsByTxids(verified.keys.toList())) {
+      final walletId = tx.walletId;
+      if (walletId == null || walletId.isEmpty) continue;
+      // A failed row is confirmed too (bead hccp): the proof verifies
+      // against the active chain, so the transaction is mined whatever ARC
+      // reported (a REJECTED can be stale, a competing spend can lose).
+      final unconfirmed = tx.status != TransactionStatus.confirmed || justReverted.contains((walletId, tx.txid));
+      if (!unconfirmed) continue;
+      restore.putIfAbsent(walletId, () => {}).add(tx.txid);
+    }
+    for (final MapEntry(key: walletId, value: txids) in restore.entries) {
+      for (final txid in txids) {
+        final (proof, check) = verified[txid]!;
+        _walletManager.tell(WalletCommandMessage(walletId, ConfirmTransactionCommand(
+          walletId: walletId,
+          txid: txid,
+          blockHeight: check.blockHeight,
+          blockHash: check.blockHash,
+          bumpHex: proof.merkleProof.single,
+        )));
+      }
+      for (final utxo in await _storage.getUTXOs(walletId)) {
+        if (!txids.contains(utxo.txid)) continue;
+        // A revert just sent (not applied yet) makes an available output
+        // pending before this command reaches the wallet.
+        final demoted = justReverted.contains((walletId, utxo.txid))
+            ? const {UTXOStatus.pending, UTXOStatus.available}
+            : const {UTXOStatus.pending};
+        final pendingOutput = demoted.contains(utxo.status) ||
+            (utxo.status == UTXOStatus.reserved && demoted.contains(utxo.statusBeforeReservation));
+        if (!pendingOutput) continue;
+        _walletManager.tell(WalletCommandMessage(walletId, MarkUTXOAvailableCommand(
+          walletId: walletId,
+          txid: utxo.txid,
+          vout: utxo.vout,
+        )));
+      }
+    }
+    return restore.length;
   }
 
   /// Proofs stored before their block header was known have the status
@@ -1389,17 +1593,35 @@ class SPVActor extends Actor {
       final unverified = await _storage.getMerkleProofsByStatus(MerkleProofStatus.pendingHeader);
 
       final failed = <(MerkleProof, ProofHeaderCheck)>[];
+      // The proofs that just verified: a merkle proof on our active header
+      // chain is authority enough to confirm (bead libspiffy-65ji).
+      final settled = <String, (MerkleProof, ProofHeaderCheck)>{};
       for (final proof in unverified) {
         if (proof.blockHeight > upToHeight) continue;
-        final outcome = await _recheckProof(proof);
-        if (outcome == null || outcome.status == ProofHeaderStatus.headerUnknown) continue;
+        final check = await _checkProof(proof);
+        if (check.isVerified) {
+          settled.putIfAbsent(proof.txid, () => (proof, check));
+          continue;
+        }
+        if (check.status == ProofHeaderStatus.headerUnknown) continue;
 
         if (proof.blockHash == null) {
           await _markRejected(proof);
         } else {
           await _markOrphaned(proof);
         }
-        failed.add((proof, outcome));
+        failed.add((proof, check));
+      }
+
+      // Confirm before reverting: the two sets are disjoint (a proof either
+      // verified or did not), and a transaction whose proof just verified
+      // must not wait for ARC — a proof beats any status string.
+      if (settled.isNotEmpty) {
+        final wallets = await _confirmFromVerifiedProofs(settled);
+        if (wallets > 0) {
+          _log.info('${settled.length} proof(s) imported before their block header verify now that headers reach '
+              '$upToHeight: ${settled.keys.toList()}; confirmed in $wallets wallet(s)');
+        }
       }
 
       if (failed.isNotEmpty) {
@@ -1443,31 +1665,45 @@ class SPVActor extends Actor {
     }
   }
 
-  /// A transaction held as confirmed whose proof is
-  /// [MerkleProofStatus.rejected] and which has no current proof is not
-  /// confirmed (bead azl). WalletProjection stores such a proof when the
-  /// header at its height contradicts it (a replay after that header
-  /// changed, or a header change between the live check and the event).
-  /// Each wallet holding it as confirmed has the confirmation reverted, as
-  /// for a pendingHeader proof that fails its header, and ARCActor is asked
-  /// to poll for a real proof. Txids in [alreadyReverted] (their confirmed
-  /// rows were just reverted) are skipped.
+  /// The rule (bead libspiffy-5bju, extending azl): **a confirmation must
+  /// rest on at least one proof that is verified on the active header chain**
+  /// — [MerkleProofStatus.verified] or a [MerkleProofStatus.pendingHeader]
+  /// row that still may become one, which is exactly
+  /// [ReadModelStorage.getMerkleProof] returning something. When a
+  /// transaction held as confirmed has no such proof and does have a
+  /// [MerkleProofStatus.rejected] or [MerkleProofStatus.orphaned] one, every
+  /// wallet holding it as confirmed has the confirmation reverted
+  /// (RevertTransactionConfirmationCommand) and ARCActor is asked to poll for
+  /// a real proof. Txids in [alreadyReverted] (their confirmed rows were just
+  /// reverted) are skipped.
+  ///
+  /// * rejected: the header at that height contradicts the proof
+  ///   (WalletProjection stores it so on a replay after that header changed,
+  ///   or on a header change between the live check and the event);
+  /// * orphaned: the proof's block left the active chain. A reorganization
+  ///   normally reverts the confirmation itself, but a confirmation whose
+  ///   last supporting proof was orphaned without that (another path marked
+  ///   it, or the reorganization predates the confirmation's row) was
+  ///   covered by no rule at all before 5bju.
+  ///
+  /// The proof row is never deleted either way (bead mny): an orphaned block
+  /// can become active again, and [_reviveProofs] restores the confirmation
+  /// from that very row.
   ///
   /// Proofs read (bead hccp): the first check of an actor (at start, or on
-  /// its first header notification) reads every rejected proof. After that
-  /// such a confirmation can only form when a proof becomes rejected (the
-  /// projection or this actor stores it so) or when the current proof of a
-  /// transaction that also has a rejected proof stops being current
-  /// (orphaned), with the transaction row written confirmed around that
-  /// time; the height of a new header says nothing about it. So later checks
-  /// read only the proofs whose status became rejected or orphaned since
+  /// its first header notification) reads every rejected and orphaned proof.
+  /// After that such a confirmation can only form when a proof becomes
+  /// rejected or orphaned (the projection or this actor stores it so) with
+  /// the transaction row written confirmed around that time; the height of a
+  /// new header says nothing about it. So later checks read only the proofs
+  /// whose status became rejected or orphaned since
   /// [_rejectedProofRecheckOverlap] before the previous check started
   /// ([ReadModelStorage.getMerkleProofsByStatusChangedSince]), the rows of
   /// their transactions, and the proof history of those they revert.
   ///
   /// A confirmation written confirmed long after its proof became rejected
   /// (a replay whose journal lacks the revert) is outside that feed. So a
-  /// check reads every rejected proof again once the last such full read is
+  /// check reads every such proof again once the last full read is
   /// older than the full-sweep interval (constructor parameter, default one
   /// hour, timed by the injectable clock): that case is caught within the
   /// interval while the actor runs, not only at its next start.
@@ -1505,14 +1741,19 @@ class SPVActor extends Actor {
   DateTime? _lastFullRejectedProofSweep;
 
   Future<void> _revertRejectedConfirmationsSince(DateTime? since, Set<String> alreadyReverted) async {
-    // txid -> its newest rejected proof, when every rejected proof is read.
-    final rejected = <String, MerkleProof>{};
+    // txid -> the proof that says the confirmation has lost its footing
+    // (rejected preferred over orphaned, for the message), when every such
+    // proof is read.
+    final unsupported = <String, MerkleProof>{};
     final candidates = <String>{};
     if (since == null) {
-      for (final proof in await _storage.getMerkleProofsByStatus(MerkleProofStatus.rejected)) {
-        rejected[proof.txid] = proof;
+      for (final status in const [MerkleProofStatus.orphaned, MerkleProofStatus.rejected]) {
+        for (final proof in await _storage.getMerkleProofsByStatus(status)) {
+          final held = unsupported[proof.txid];
+          if (held == null || held.status != MerkleProofStatus.rejected) unsupported[proof.txid] = proof;
+        }
       }
-      candidates.addAll(rejected.keys);
+      candidates.addAll(unsupported.keys);
     } else {
       for (final status in const [MerkleProofStatus.rejected, MerkleProofStatus.orphaned]) {
         for (final proof in await _storage.getMerkleProofsByStatusChangedSince(status, since)) {
@@ -1547,20 +1788,43 @@ class SPVActor extends Actor {
 
     final reverted = <String>[];
     for (final entry in wallets.entries) {
-      var proof = rejected[entry.key];
+      var proof = unsupported[entry.key];
       if (proof == null && since != null) {
+        MerkleProof? orphanedRow;
         for (final row in await _storage.getMerkleProofHistory(entry.key)) {
           if (row.status == MerkleProofStatus.rejected) proof = row; // the newest
+          if (row.status == MerkleProofStatus.orphaned) orphanedRow = row; // the newest
         }
+        // A confirmation resting only on an orphaned proof is reverted too
+        // (bead libspiffy-5bju): the rule is the same either way, and the
+        // proof row itself is kept — a reorganization can put its block back
+        // on the active chain, and [_reviveProofs] needs it to do so.
+        proof ??= orphanedRow;
       }
-      if (proof == null) continue; // orphaned proofs only: not this rule
+      if (proof == null) continue; // nothing says this confirmation lost its proof
+      // The rule is about the active chain now, not about a status written
+      // earlier: a header stored since (a reorganization back onto this
+      // proof's branch) can make the proof verify again, and then the
+      // confirmation stands. Read-only on purpose — marking the row verified
+      // here would take it out of [_reviveProofs]' feed, which is what
+      // restores the wallets that did lose the confirmation.
+      final onChain = await checkBumpHexAgainstHeaders(
+        txid: entry.key,
+        bumpHex: proof.merkleProof.length == 1 ? proof.merkleProof.single : '',
+        headerAt: _storage.getBlockHeaderByHeight,
+      );
+      if (onChain.isVerified) continue;
       _revertConfirmation(entry.key, [for (final tx in entry.value) tx.walletId!], proof,
-          'its only proof does not match the block header at height ${proof.blockHeight} (rejected)');
+          proof.status == MerkleProofStatus.rejected
+              ? 'its only proof does not match the block header at height ${proof.blockHeight} (rejected)'
+              : 'no proof of it is on the active header chain: its last supporting proof, at height '
+                  '${proof.blockHeight}, left the chain (orphaned)');
       _noteReverted(entry.value);
       reverted.add(entry.key);
     }
     if (reverted.isEmpty) return;
-    _log.severe('${reverted.length} confirmation(s) rested only on rejected proofs; reverted: $reverted');
+    _log.severe('${reverted.length} confirmation(s) rested on no proof that is verified on the active chain; '
+        'reverted: $reverted');
     _arcActor?.tell(TransactionConfirmationsRevertedMessage(reverted));
   }
 
@@ -2040,4 +2304,28 @@ class _ProofRejected implements Exception {
 
   @override
   String toString() => reason;
+}
+
+/// A receive waiting for the block header at [neededHeight]
+/// ([SPVActor._retainUntilHeaders], bead libspiffy-68mz).
+class _ParkedReceive {
+  final ReceiveTransactionMessage msg;
+  final ActorRef? sender;
+  final int neededHeight;
+  _ParkedReceive(this.msg, this.sender, this.neededHeight);
+}
+
+/// We hold no block header at [blockHeight] and none could be fetched
+/// ([SPVActor._getBlockHeader], bead libspiffy-68mz).
+///
+/// Unlike [_ProofRejected] this says nothing about the proof: it may well be
+/// sound, and the header that would settle it can arrive at any time. A
+/// receive that hits it keeps the evidence and is tried again then.
+class _HeaderUnavailable implements Exception {
+  final int blockHeight;
+  final String reason;
+  _HeaderUnavailable(this.blockHeight, this.reason);
+
+  @override
+  String toString() => 'no block header at height $blockHeight: $reason';
 }

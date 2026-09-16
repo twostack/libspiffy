@@ -584,8 +584,37 @@ class HeaderSyncActor extends Actor {
   }
 
   /// Send error response based on message type
+  ///
+  /// A specific-header request is answered with the message its caller asks
+  /// for (bead libspiffy-lplr). SPVActor._getBlockHeader does a typed
+  /// `ask<SpecificHeaderResponseMessage>`, so an SPVErrorMessage here threw a
+  /// cast error at the caller instead of taking its `response.error` path,
+  /// and "we have not synced that header" could not be told apart from a
+  /// real failure. The height is read defensively: whatever made the handler
+  /// fail may be the very field that cannot be read.
   void _sendErrorResponse(dynamic message, String error) {
     switch (message) {
+      case RequestSpecificHeaderMessage():
+        int height;
+        String? correlationId;
+        try {
+          height = message.blockHeight;
+        } catch (_) {
+          height = -1;
+        }
+        try {
+          correlationId = message.correlationId;
+        } catch (_) {
+          correlationId = null;
+        }
+        context.sender?.tell(SpecificHeaderResponseMessage(
+          blockHeight: height,
+          header: null,
+          success: false,
+          error: error,
+          correlationId: correlationId,
+        ) as dynamic);
+        break;
       case BlockHeadersReceivedMessage():
         context.sender?.tell(SPVErrorMessage(
           operation: 'process_headers',

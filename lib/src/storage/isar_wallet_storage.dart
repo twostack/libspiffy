@@ -700,6 +700,24 @@ class IsarWalletStorage implements ReadModelStorage {
   }
 
   @override
+  Future<List<BitcoinTransaction>> getTransactionsByStatusSince(
+    TransactionStatus status,
+    DateTime since, {
+    int limit = 100,
+  }) async {
+    if (limit <= 0) return const [];
+    // The (status, updatedAt) index: the rows of the status updated in the
+    // window, newest first, capped (bead libspiffy-5bju). Rows older than
+    // the window are never read.
+    final entities = await _traced('getTransactionsByStatusSince', _isar.bitcoinTransactionEntitys
+            .where(sort: Sort.desc)
+            .statusEqualToUpdatedAtGreaterThan(status.name, since, include: true)
+            .limit(limit))
+        .findAll();
+    return entities.map((e) => e.toDomain()).toList();
+  }
+
+  @override
   Future<List<BitcoinTransaction>> getTransactionsByTxids(List<String> txids) async {
     final wanted = txids.toSet().toList();
     if (wanted.isEmpty) return [];

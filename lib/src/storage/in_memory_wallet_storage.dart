@@ -53,6 +53,16 @@ class InMemoryWalletStorage implements WalletStorage {
   final SplayTreeMap<int, Set<(String, String)>> _confirmedByHeight = SplayTreeMap();
   final Set<(String, String)> _confirmedWithoutHeight = {};
 
+  // Rows by status and last update, as (walletId, txid) keys ordered by
+  // (updatedAt, store order): a bounded feed of the rows with a status that
+  // changed recently, without reading that status's whole history (bead
+  // libspiffy-5bju, [getTransactionsByStatusSince]). Maintained by
+  // _putTransaction, deleteWallet and clear.
+  final Map<TransactionStatus, SplayTreeMap<(int, int), (String, String)>> _byStatusUpdatedAt = {};
+
+  static int _compareUpdateKeys((int, int) a, (int, int) b) =>
+      a.$1 != b.$1 ? a.$1.compareTo(b.$1) : a.$2.compareTo(b.$2);
+
   // Store order of each (walletId, txid) row: breaks createdAt ties in the
   // newest-first lookups.
   final Map<(String, String), int> _txStoreOrder = {};
@@ -205,6 +215,7 @@ class InMemoryWalletStorage implements WalletStorage {
     final txids = _transactions[walletId]?.keys.toList();
     for (final tx in _transactions[walletId]?.values ?? const <BitcoinTransaction>[]) {
       _unindexConfirmed(walletId, tx);
+      _unindexByUpdate(walletId, tx);
     }
     final invoiceIds = _walletInvoices[walletId];
 
@@ -540,6 +551,31 @@ _balanceCache.remove(walletId);
   }
 
   @override
+  Future<List<BitcoinTransaction>> getTransactionsByStatusSince(
+    TransactionStatus status,
+    DateTime since, {
+    int limit = 100,
+  }) async {
+    // Walks the (status, updatedAt) index backwards from the newest row and
+    // stops at [since] or [limit]: the rows older than the window are never
+    // visited (bead libspiffy-5bju).
+    final byUpdate = _byStatusUpdatedAt[status];
+    if (byUpdate == null || limit <= 0) return const [];
+    final sinceMicros = since.microsecondsSinceEpoch;
+    final rows = <BitcoinTransaction>[];
+    for ((int, int)? key = byUpdate.lastKey(); key != null; key = byUpdate.lastKeyBefore(key)) {
+      if (key.$1 < sinceMicros) break;
+      final (walletId, txid) = byUpdate[key]!;
+      final tx = _transactions[walletId]?[txid];
+      if (tx == null) continue;
+      transactionRowsRead++;
+      rows.add(tx);
+      if (rows.length >= limit) break;
+    }
+    return rows;
+  }
+
+  @override
   Future<List<BitcoinTransaction>> getTransactionsByTxids(List<String> txids) async {
     final rows = <BitcoinTransaction>[
       for (final txid in txids.toSet())
@@ -607,7 +643,10 @@ _balanceCache.remove(walletId);
     final walletTxs = _transactions.putIfAbsent(walletId, () => {});
     final existing = walletTxs[transaction.txid];
     final isNew = existing == null;
-    if (existing != null) _unindexConfirmed(walletId, existing);
+    if (existing != null) {
+      _unindexConfirmed(walletId, existing);
+      _unindexByUpdate(walletId, existing);
+    }
     final keepsStatus =
         existing != null && !reverting && !TransactionRowRules.setsStatus(existing.status, transaction.status);
     final stored = walletTxs[transaction.txid] = keepsStatus
@@ -641,7 +680,27 @@ _balanceCache.remove(walletId);
       _txidWallets.putIfAbsent(transaction.txid, () => []).add(walletId);
       _txStoreOrder[(walletId, transaction.txid)] = _nextTxStoreOrder++;
     }
+    _indexByUpdate(walletId, stored);
     return isNew;
+  }
+
+  /// The key of the stored row [tx] of [walletId] in [_byStatusUpdatedAt].
+  (int, int) _updateKey(String walletId, BitcoinTransaction tx) =>
+      (tx.updatedAt.microsecondsSinceEpoch, _txStoreOrder[(walletId, tx.txid)] ?? 0);
+
+  /// Add the stored row [tx] of [walletId] to the (status, updatedAt) index.
+  void _indexByUpdate(String walletId, BitcoinTransaction tx) {
+    _byStatusUpdatedAt
+        .putIfAbsent(tx.status, () => SplayTreeMap(_compareUpdateKeys))[_updateKey(walletId, tx)] =
+        (walletId, tx.txid);
+  }
+
+  /// Remove the stored row [tx] of [walletId] from that index.
+  void _unindexByUpdate(String walletId, BitcoinTransaction tx) {
+    final byUpdate = _byStatusUpdatedAt[tx.status];
+    if (byUpdate == null) return;
+    byUpdate.remove(_updateKey(walletId, tx));
+    if (byUpdate.isEmpty) _byStatusUpdatedAt.remove(tx.status);
   }
 
   /// Add the stored row [tx] of [walletId] to the confirmed-height index.
@@ -1274,6 +1333,7 @@ _balanceCache.remove(walletId);
     _txidWallets.clear();
     _confirmedByHeight.clear();
     _confirmedWithoutHeight.clear();
+    _byStatusUpdatedAt.clear();
     _txStoreOrder.clear();
     _addresses.clear();
     _txAddresses.clear();

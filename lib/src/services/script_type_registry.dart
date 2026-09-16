@@ -134,10 +134,11 @@ class ScriptTypeRegistry {
       final pluginResult = PluginRegistry().identifyScript(script);
       if (pluginResult == null) return null;
 
-      final plugin = PluginRegistry().getPlugin(pluginResult.pluginId);
-      if (plugin == null) return null;
+      if (!PluginRegistry().isRegistered(pluginResult.pluginId)) return null;
 
-      final pluginMeta = plugin.extractMetadata(script);
+      // Guarded: a plugin that throws reading its own script leaves the
+      // script attributed to it with no metadata (bead libspiffy-u150).
+      final pluginMeta = PluginRegistry().extractMetadata(pluginResult.pluginId, script);
       return <String, dynamic>{
         'scriptType': '${pluginResult.pluginId}:${pluginResult.scriptType}'.toLowerCase(),
         'bitcoinScriptType': 'custom',

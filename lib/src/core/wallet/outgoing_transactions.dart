@@ -286,8 +286,9 @@ class OutgoingTransactions {
             // immediately, without waiting for SPV rediscovery.
             if (scriptType.contains(':')) {
               final pluginId = scriptType.split(':').first;
-              final plugin = PluginRegistry().getPlugin(pluginId);
-              final metadata = plugin?.extractMetadata(output.script);
+              // Guarded: a plugin that throws must not fail the recording of
+              // our own outgoing transaction (bead libspiffy-u150).
+              final metadata = PluginRegistry().extractMetadata(pluginId, output.script);
               final ownerAddress = metadata?['ownerAddress'] as String?;
               if (ownerAddress != null && walletAddresses.contains(ownerAddress)) {
                 outputAddress = ownerAddress;

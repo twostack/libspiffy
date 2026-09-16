@@ -973,9 +973,34 @@ class PostgresWalletStorage implements ReadModelStorage {
     return result.map(_rowToTransaction).toList();
   }
 
+  @override
+  Future<List<BitcoinTransaction>> getTransactionsByStatusSince(
+    TransactionStatus status,
+    DateTime since, {
+    int limit = 100,
+  }) async {
+    if (limit <= 0) return const [];
+    _ensureInitialized();
+
+    // idx_transactions_status_updated (v019): the rows of [status] updated
+    // in the window, newest first, capped (bead libspiffy-5bju). Rows older
+    // than the window are never read.
+    final params = <String, dynamic>{'status': status.name, 'since': since.toUtc(), 'rowLimit': limit};
+    final sql = '''
+      SELECT $_transactionColumns
+      FROM bitcoin_transactions
+      WHERE status = @status AND updated_at >= @since
+      ORDER BY updated_at DESC, id DESC
+      LIMIT @rowLimit
+    ''';
+    onTransactionLookupQuery?.call(sql, params);
+    final result = await _pool!.execute(Sql.named(sql), parameters: params);
+    return result.map(_rowToTransaction).toList();
+  }
+
   /// Set by tests: receives the SQL and parameters of each
-  /// [getTransactionsByTxids] and [getConfirmedTransactionsFromHeight]
-  /// query.
+  /// [getTransactionsByTxids], [getConfirmedTransactionsFromHeight] and
+  /// [getTransactionsByStatusSince] query.
   @visibleForTesting
   void Function(String sql, Map<String, dynamic> parameters)? onTransactionLookupQuery;
 

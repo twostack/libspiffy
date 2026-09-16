@@ -173,6 +173,7 @@ void main() {
             address: 'test_address_001',
             blockHeight: 750000,
             confirmations: 6,
+            initialStatus: UTXOStatus.available, // proven: it has a height (bead libspiffy-5ry)
           ));
 
           await wallet.commandHandler(ReceiveUTXOCommand(

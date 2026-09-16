@@ -112,6 +112,28 @@ class ARCActor extends Actor {
   /// Header notifications within this window coalesce into one scan.
   final Duration headerTriggerDebounce;
 
+  /// How often the recently failed transactions are polled
+  /// ([_checkRecentFailedTransactions], bead libspiffy-5bju). Deliberately
+  /// much longer than [statusCheckInterval]: this is speculative work on a
+  /// terminal state.
+  final Duration failedCheckInterval;
+
+  /// How far back that poll looks: only rows whose status last changed
+  /// within this window are read.
+  final Duration failedCheckWindow;
+
+  /// The most rows that poll reads (and so the most ARC queries it makes) in
+  /// one pass. Zero or less turns the poll off.
+  final int failedCheckLimit;
+
+  /// Time source of the poll's interval (injectable for tests). The window
+  /// itself is measured with the wall clock, since storage stamps
+  /// `updatedAt` with it.
+  final DateTime Function() _clock;
+
+  /// When ([_clock]) the last failed-transaction poll ran.
+  DateTime? _lastFailedCheck;
+
   static const Duration _maxPendingBackoff = Duration(minutes: 30);
   static const Duration _minReconfirmWindow = Duration(minutes: 2);
 
@@ -173,12 +195,17 @@ class ARCActor extends Actor {
     Isar? isar,
     this.statusCheckInterval = const Duration(seconds: 30),
     this.headerTriggerDebounce = const Duration(milliseconds: 500),
+    this.failedCheckInterval = const Duration(minutes: 30),
+    this.failedCheckWindow = const Duration(days: 7),
+    this.failedCheckLimit = 25,
+    DateTime Function()? clock,
     BlockchainDataSource? dataSource,
   })  : _walletManager = walletManager,
         _storage = storage,
         _arcConfig = arcConfig,
         _arcService = arcService,
         _isar = isar,
+        _clock = clock ?? DateTime.now,
         _dataSource = dataSource;
 
   @override
@@ -309,6 +336,7 @@ class ARCActor extends Actor {
       do {
         _rescanRequested = false;
         await _checkNonTerminalTransactions();
+        await _checkRecentFailedTransactions();
         if (fromTimer) await _processRetryQueue();
       } while (_rescanRequested && !_stopped);
     } finally {
@@ -743,6 +771,56 @@ class ARCActor extends Actor {
       }
     } catch (e) {
       _log.warning('Failed to check non-terminal transactions: $e');
+    }
+  }
+
+  /// Poll the recently failed transactions (bead libspiffy-5bju).
+  ///
+  /// ARC's REJECTED is not the last word: a competing spend can lose, the
+  /// report can be stale, and a transaction of ours can be mined anyway. The
+  /// main scan walks only the non-terminal states, so nothing ever asked
+  /// about a failed row again — it took a proof arriving through SPV proof
+  /// revival or an explicit CheckDeferredPaymentStatusCommand.
+  ///
+  /// Bounded three ways, because this is speculative work on a terminal
+  /// state: it runs at most once per [failedCheckInterval] (much longer than
+  /// [statusCheckInterval]), and each pass issues ONE indexed storage query
+  /// that reads only the rows whose status changed within
+  /// [failedCheckWindow], at most [failedCheckLimit] of them
+  /// ([ReadModelStorage.getTransactionsByStatusSince]). It never reads a
+  /// wallet's whole failed history, and never makes more than
+  /// [failedCheckLimit] ARC queries per pass.
+  ///
+  /// A MINED answer confirms nothing by itself (V-55): [_handleMinedReport]
+  /// confirms only on a merkle path that matches our own headers.
+  Future<void> _checkRecentFailedTransactions() async {
+    if (_arcService == null || failedCheckLimit <= 0 || _stopped) return;
+    final now = _clock();
+    final last = _lastFailedCheck;
+    if (last != null && now.difference(last) < failedCheckInterval) return;
+    _lastFailedCheck = now;
+
+    try {
+      final rows = await _storage.getTransactionsByStatusSince(
+        TransactionStatus.failed,
+        DateTime.now().subtract(failedCheckWindow),
+        limit: failedCheckLimit,
+      );
+      var checked = 0;
+      for (final tx in rows) {
+        if (_stopped) return;
+        final walletId = tx.walletId;
+        if (walletId == null || walletId.isEmpty) continue;
+        checked++;
+        await _checkAndUpdateTransactionStatus(tx.txid, walletId, tx.status);
+      }
+      if (checked > 0) {
+        _log.info('Re-checked $checked recently failed transaction(s) against ARC '
+            '(window ${failedCheckWindow.inHours}h, cap $failedCheckLimit)');
+      }
+    } catch (e) {
+      // The next pass reads the same window again.
+      _log.warning('Failed to re-check recently failed transactions: $e');
     }
   }
 

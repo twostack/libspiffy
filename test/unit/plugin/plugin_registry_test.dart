@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:logging/logging.dart' as log;
 import 'package:test/test.dart';
 import 'package:dartsv/dartsv.dart';
 import 'package:libspiffy/libspiffy.dart';
@@ -180,4 +183,161 @@ void main() {
       expect(registry.getPlugin('reusable'), same(newPlugin));
     });
   });
+
+  /// libspiffy-u150: one faulty third-party plugin must never take out the
+  /// registry. Every method that hands a script to a plugin catches what the
+  /// plugin throws, logs it against the plugin, and carries on: a plugin that
+  /// throws while identifying a script must not stop the plugins behind it
+  /// from claiming that script (the output was reported unreadable instead of
+  /// attributed, found in libspiffy-rp6x).
+  group('libspiffy-u150: a faulty plugin does not take out the registry', () {
+    /// `<"boom"> OP_DROP OP_1`: no dartsv template recognises it, so script
+    /// identification falls through to the plugins.
+    final script = SVScript.fromHex('04626f6f6d7551');
+    late List<log.LogRecord> logs;
+    late log.Level rootLevel;
+    late StreamSubscription<log.LogRecord> logSub;
+
+    setUp(() {
+      logs = [];
+      rootLevel = log.Logger.root.level;
+      log.Logger.root.level = log.Level.ALL;
+      logSub = log.Logger.root.onRecord.listen(logs.add);
+    });
+
+    tearDown(() async {
+      await logSub.cancel();
+      log.Logger.root.level = rootLevel;
+    });
+
+    /// The registry with [FaultyPlugin] registered ahead of a plugin that
+    /// claims [script] as `claimed`.
+    void registerFaultyThenGood() {
+      registry.register(FaultyPlugin());
+      registry.register(MockScriptPlugin(
+        pluginId: 'second',
+        scriptTypes: ['claimed'],
+        identifyScript: (s) => s.toHex() == script.toHex() ? 'claimed' : null,
+      ));
+    }
+
+    test('identifyScript skips the plugin that throws and lets the next one claim the script', () {
+      registerFaultyThenGood();
+
+      final result = registry.identifyScript(script);
+
+      expect(result?.pluginId, 'second');
+      expect(result?.scriptType, 'claimed');
+      expect(
+        logs.where((r) => r.level >= log.Level.WARNING).map((r) => r.message),
+        contains(allOf(contains(FaultyPlugin.id), contains('identify exploded'))),
+        reason: 'the throw is logged against the plugin, not propagated',
+      );
+    });
+
+    test('ScriptTypeRegistry attributes the script to the working plugin', () {
+      registerFaultyThenGood();
+
+      expect(ScriptTypeRegistry().identifyScriptType(script), 'second:claimed');
+      expect(ScriptTypeRegistry().extractScriptMetadata(script)?['pluginId'], 'second');
+    });
+
+    test('extractMetadata of a plugin that throws is null, and the caller keeps its reading', () {
+      registry.register(BrokenReadingPlugin());
+
+      expect(registry.extractMetadata(BrokenReadingPlugin.id, script), isNull);
+      expect(
+        logs.where((r) => r.level >= log.Level.WARNING).map((r) => r.message),
+        contains(allOf(contains(BrokenReadingPlugin.id), contains('metadata exploded'))),
+      );
+      // The script is still the faulty plugin's, and ScriptTypeRegistry says so
+      // instead of throwing its caller's read of the transaction away.
+      final metadata = ScriptTypeRegistry().extractScriptMetadata(script);
+      expect(metadata?['pluginId'], BrokenReadingPlugin.id);
+      expect(metadata?['scriptType'], '${BrokenReadingPlugin.id}:boom');
+    });
+
+    test('createLockBuilder and createUnlockBuilder of a plugin that throws are null', () {
+      registry.register(BrokenReadingPlugin());
+
+      expect(
+        registry.createLockBuilder(PluginOutputSpec(
+          pluginId: BrokenReadingPlugin.id,
+          pluginScriptType: 'boom',
+          params: const {},
+          amount: BigInt.from(1000),
+        )),
+        isNull,
+      );
+      expect(
+        registry.createUnlockBuilder(PluginUnlockSpec(
+          pluginId: BrokenReadingPlugin.id,
+          scriptType: 'boom',
+          lockingScript: script,
+          satoshis: BigInt.from(1000),
+          params: const {},
+        )),
+        isNull,
+      );
+      expect(logs.where((r) => r.level >= log.Level.WARNING).map((r) => r.message),
+          contains(allOf(contains(BrokenReadingPlugin.id), contains('lock exploded'))));
+      expect(logs.where((r) => r.level >= log.Level.WARNING).map((r) => r.message),
+          contains(allOf(contains(BrokenReadingPlugin.id), contains('unlock exploded'))));
+    });
+
+    test('an unregistered plugin id is null, not an error', () {
+      expect(registry.extractMetadata('nobody', script), isNull);
+      expect(
+        registry.createLockBuilder(PluginOutputSpec(
+          pluginId: 'nobody',
+          pluginScriptType: 'boom',
+          params: const {},
+          amount: BigInt.from(1000),
+        )),
+        isNull,
+      );
+    });
+  });
+}
+
+/// A third-party plugin that throws from every method libspiffy calls,
+/// script identification included.
+class FaultyPlugin extends ScriptPlugin {
+  static const id = 'faulty';
+
+  @override
+  String get pluginId => id;
+  @override
+  String get displayName => 'Faulty';
+  @override
+  List<String> get scriptTypes => const ['boom'];
+  @override
+  String? identifyScript(SVScript script) => throw StateError('identify exploded');
+  @override
+  Map<String, dynamic>? extractMetadata(SVScript script) => throw StateError('metadata exploded');
+  @override
+  LockingScriptBuilder? createLockBuilder(PluginOutputSpec spec) => throw StateError('lock exploded');
+  @override
+  UnlockingScriptBuilder? createUnlockBuilder(PluginUnlockSpec spec) => throw StateError('unlock exploded');
+}
+
+/// A plugin that recognises its own script but throws on everything it is
+/// then asked about it.
+class BrokenReadingPlugin extends ScriptPlugin {
+  static const id = 'broken';
+
+  @override
+  String get pluginId => id;
+  @override
+  String get displayName => 'Broken reading';
+  @override
+  List<String> get scriptTypes => const ['boom'];
+  @override
+  String? identifyScript(SVScript script) => script.toHex() == '04626f6f6d7551' ? 'boom' : null;
+  @override
+  Map<String, dynamic>? extractMetadata(SVScript script) => throw StateError('metadata exploded');
+  @override
+  LockingScriptBuilder? createLockBuilder(PluginOutputSpec spec) => throw StateError('lock exploded');
+  @override
+  UnlockingScriptBuilder? createUnlockBuilder(PluginUnlockSpec spec) => throw StateError('unlock exploded');
 }

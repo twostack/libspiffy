@@ -141,6 +141,29 @@ void main() {
       expect(plan, contains('idx_transactions_txid'), reason: plan);
       expect(plan, isNot(contains('Seq Scan')), reason: plan);
     });
+
+    /// Bead libspiffy-5bju: ARCActor's poll of recently failed transactions
+    /// must never read a wallet's whole failed history. The v019 index on
+    /// (status, updated_at DESC) serves the window, and the LIMIT caps the
+    /// page.
+    test('rows by status since a time are read through the v019 index, with a LIMIT', () async {
+      final walletId = 'w-plan-failed-$run';
+      for (var i = 0; i < 20; i++) {
+        await storage.storeTransaction(
+            walletId,
+            tx(contractHex64('plan-f$i-$run'), null).copyWith(
+              status: TransactionStatus.failed,
+              updatedAt: DateTime.utc(2026, 9, 15, 12, i),
+            ));
+      }
+
+      final plan = await planOf(() => storage.getTransactionsByStatusSince(
+          TransactionStatus.failed, DateTime.utc(2026, 9, 15, 12, 15),
+          limit: 3));
+      expect(plan, contains('idx_transactions_status_updated'), reason: plan);
+      expect(plan, isNot(contains('Seq Scan')), reason: plan);
+      expect(plan, contains('Limit'), reason: plan);
+    });
   });
 
   test('v015 recomputes the counterparty columns of rows stored with the earlier rule (7dj)', () async {

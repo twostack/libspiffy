@@ -197,5 +197,58 @@ void defineTransactionLookupContract(
       await s.deleteWallet(walletA);
       expect(await fromFork(), [(walletB, t('z'), fork + 3)]);
     });
+
+    /// [ReadModelStorage.getTransactionsByStatusSince] (bead libspiffy-5bju):
+    /// a bounded feed of the rows with a status that changed recently, so
+    /// ARCActor can poll recently failed transactions without ever reading a
+    /// wallet's whole failed history.
+    test('rows by status since a time: newest first, the window and the cap hold, and the feed follows updates',
+        () async {
+      final s = storage();
+      final u = unique();
+      final wallet = 'tl-s-$u';
+      await s.storeWallet(wallet, 'S');
+      String t(String tag) => contractHex64('tl-s-$tag-$u');
+      final base = DateTime.utc(2026, 9, 15, 12);
+
+      BitcoinTransaction failed(String tag, int minute) => _tx(t(tag),
+          status: TransactionStatus.failed, minute: minute);
+
+      // Four failed rows, one a minute; one confirmed row in the window.
+      for (final (tag, minute) in [('old', 1), ('mid', 2), ('new', 3), ('newest', 4)]) {
+        await s.storeTransaction(wallet, failed(tag, minute));
+      }
+      await s.storeTransaction(wallet, _tx(t('confirmed'), height: 10, minute: 4));
+
+      Future<List<String>> since(DateTime from, {int limit = 100}) async => [
+            for (final tx in await s.getTransactionsByStatusSince(TransactionStatus.failed, from, limit: limit))
+              if (tx.walletId == wallet) tx.txid,
+          ];
+
+      // Newest first, and the window excludes what is older than it.
+      expect(await since(base), [t('newest'), t('new'), t('mid'), t('old')],
+          reason: 'a confirmed row must not appear in the failed feed');
+      expect(await since(base.add(const Duration(minutes: 3))), [t('newest'), t('new')]);
+      expect(await since(base.add(const Duration(minutes: 5))), isEmpty);
+
+      // The cap holds. The feed spans every wallet, and a Postgres database
+      // outlives a run, so the capped page is checked on its own terms:
+      // at most [limit] rows, newest first.
+      final capped = await s.getTransactionsByStatusSince(TransactionStatus.failed, base, limit: 2);
+      expect(capped, hasLength(2));
+      expect(capped.first.updatedAt.isBefore(capped.last.updatedAt), isFalse);
+      expect(await s.getTransactionsByStatusSince(TransactionStatus.failed, base, limit: 0), isEmpty);
+
+      // The feed follows the row: a later update moves it to the front, and
+      // a row that leaves the status leaves the feed.
+      await s.storeTransaction(wallet, _tx(t('old'),
+          status: TransactionStatus.failed, minute: 9));
+      expect(await since(base), [t('old'), t('newest'), t('new'), t('mid')]);
+      await s.storeRevertedTransaction(wallet, _tx(t('old'), height: 11, minute: 9));
+      expect(await since(base), [t('newest'), t('new'), t('mid')]);
+
+      await s.deleteWallet(wallet);
+      expect(await since(base), isEmpty);
+    });
   });
 }

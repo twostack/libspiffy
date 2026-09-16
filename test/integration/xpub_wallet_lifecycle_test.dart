@@ -293,6 +293,7 @@ void main() {
               address: rootAddress,
               blockHeight: 800000,
               confirmations: 6,
+              initialStatus: UTXOStatus.available, // proven: it has a height (bead libspiffy-5ry)
             ),
           ),
           sender: receiver,

@@ -151,6 +151,7 @@ void main() {
       address: writer.currentState.rootAddress!,
       blockHeight: 100,
       confirmations: 1,
+      initialStatus: UTXOStatus.available, // proven: it has a height (bead libspiffy-5ry)
       derivationIndex: 0,
     ));
 

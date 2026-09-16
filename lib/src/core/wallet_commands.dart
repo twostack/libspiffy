@@ -323,16 +323,37 @@ class ReconcileWatchAddressesCommand extends WalletCommand {
 // UTXO MANAGEMENT COMMANDS
 // =============================================================================
 
-/// Command to record a received UTXO
+/// Command to record a received UTXO.
+///
+/// [initialStatus] is the caller's, not derived from [blockHeight] or
+/// [confirmations]: a height or a confirmation count a caller hands us is a
+/// claim, not evidence, and only a merkle proof that verified against our
+/// active header chain makes a UTXO spendable (spv-understanding.md). The
+/// sender of this command is the one that verified the proof — see
+/// `WalletManagerActor._processSPVResultForWallet`, which passes
+/// `initialStatus: available` together with the height exactly when the BEEF
+/// carried a proof, and `pending` with no height when it did not.
+///
+/// So the two must agree, and a [blockHeight] with `pending` is rejected at
+/// construction (bead libspiffy-5ry): taking a height and a confirmation
+/// count while defaulting the status to `pending` left callers with a wallet
+/// that quietly reported nothing spendable and no explanation.
 class ReceiveUTXOCommand extends WalletCommand {
   final String txid;
   final int vout;
   final BigInt satoshis;
   final String scriptPubKey;
   final String address;
-  final int? blockHeight; // null for unconfirmed
+
+  /// The height of the block a verified merkle proof placed this UTXO's
+  /// transaction in; null while it is unproven.
+  final int? blockHeight;
   final int? confirmations;
-  final UTXOStatus initialStatus; // Status to set when creating the UTXO
+
+  /// Status to set when creating the UTXO: `available` when a verified
+  /// merkle proof backs [blockHeight], `pending` while the transaction is
+  /// unproven (and then without a [blockHeight]).
+  final UTXOStatus initialStatus;
   final int? derivationIndex;
   final Map<String, dynamic>? pluginMetadata;
 
@@ -356,7 +377,24 @@ class ReceiveUTXOCommand extends WalletCommand {
           commandId: commandId,
           timestamp: timestamp,
           metadata: metadata,
-        );
+        ) {
+    // A block height is a verified merkle proof's fingerprint, so it cannot
+    // sit on a UTXO the wallet is holding as unproven. The status is not
+    // derived from the height (that would conjure spendable funds out of a
+    // caller's claim); the contradiction is refused instead, and here rather
+    // than in the aggregate because the senders of this command `tell()` it
+    // with no sender to answer to, so an error raised there is dropped.
+    if (blockHeight != null && initialStatus == UTXOStatus.pending) {
+      throw ArgumentError(
+        'ReceiveUTXOCommand for $txid:$vout carries blockHeight $blockHeight while '
+        'initialStatus is pending. A block height is recorded only from a merkle proof '
+        'that verified against our header chain, and a UTXO with such a proof is '
+        'spendable. Pass initialStatus: UTXOStatus.available when a verified proof backs '
+        'this height, or leave blockHeight (and confirmations) unset while the '
+        'transaction is unproven, so the UTXO stays pending until a proof confirms it.',
+      );
+    }
+  }
 
   @override
   String get commandType => 'ReceiveUTXOCommand';

@@ -689,7 +689,8 @@ void main() {
           satoshis: BigInt.from(100000), // 0.001 BTC
           scriptPubKey: '76a914000000000000000000000000000000000000000088ac',
           address: address,
-          blockHeight: 800000,
+          // No block height: the transaction is unproven, so the UTXO stays
+          // pending (a height needs a verified proof, bead libspiffy-5ry).
           confirmations: 1,
         );
 
@@ -721,6 +722,9 @@ void main() {
           address: address,
           blockHeight: 800000,
           confirmations: 1,
+          // A height comes from a verified proof, so the UTXO is available
+          // (bead libspiffy-5ry).
+          initialStatus: UTXOStatus.available,
         ));
 
         // Update confirmations

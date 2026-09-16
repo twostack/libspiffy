@@ -13285,6 +13285,24 @@ const BitcoinTransactionEntitySchema = CollectionSchema(
         )
       ],
     ),
+    r'status_updatedAt': IndexSchema(
+      id: 1133798230109377966,
+      name: r'status_updatedAt',
+      unique: false,
+      replace: false,
+      properties: [
+        IndexPropertySchema(
+          name: r'status',
+          type: IndexType.hash,
+          caseSensitive: true,
+        ),
+        IndexPropertySchema(
+          name: r'updatedAt',
+          type: IndexType.value,
+          caseSensitive: false,
+        )
+      ],
+    ),
     r'createdAt': IndexSchema(
       id: -3433535483987302584,
       name: r'createdAt',
@@ -14254,6 +14272,173 @@ extension BitcoinTransactionEntityQueryWhere on QueryBuilder<
         lower: [status, lowerBlockHeight],
         includeLower: includeLower,
         upper: [status, upperBlockHeight],
+        includeUpper: includeUpper,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterWhereClause> statusEqualToAnyUpdatedAt(String status) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'status_updatedAt',
+        value: [status],
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterWhereClause> statusNotEqualToAnyUpdatedAt(String status) {
+    return QueryBuilder.apply(this, (query) {
+      if (query.whereSort == Sort.asc) {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'status_updatedAt',
+              lower: [],
+              upper: [status],
+              includeUpper: false,
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'status_updatedAt',
+              lower: [status],
+              includeLower: false,
+              upper: [],
+            ));
+      } else {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'status_updatedAt',
+              lower: [status],
+              includeLower: false,
+              upper: [],
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'status_updatedAt',
+              lower: [],
+              upper: [status],
+              includeUpper: false,
+            ));
+      }
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterWhereClause> statusEqualToUpdatedAtIsNull(String status) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'status_updatedAt',
+        value: [status, null],
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterWhereClause> statusEqualToUpdatedAtIsNotNull(String status) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.between(
+        indexName: r'status_updatedAt',
+        lower: [status, null],
+        includeLower: false,
+        upper: [
+          status,
+        ],
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+          QAfterWhereClause>
+      statusUpdatedAtEqualTo(String status, DateTime? updatedAt) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'status_updatedAt',
+        value: [status, updatedAt],
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+          QAfterWhereClause>
+      statusEqualToUpdatedAtNotEqualTo(String status, DateTime? updatedAt) {
+    return QueryBuilder.apply(this, (query) {
+      if (query.whereSort == Sort.asc) {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'status_updatedAt',
+              lower: [status],
+              upper: [status, updatedAt],
+              includeUpper: false,
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'status_updatedAt',
+              lower: [status, updatedAt],
+              includeLower: false,
+              upper: [status],
+            ));
+      } else {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'status_updatedAt',
+              lower: [status, updatedAt],
+              includeLower: false,
+              upper: [status],
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'status_updatedAt',
+              lower: [status],
+              upper: [status, updatedAt],
+              includeUpper: false,
+            ));
+      }
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterWhereClause> statusEqualToUpdatedAtGreaterThan(
+    String status,
+    DateTime? updatedAt, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.between(
+        indexName: r'status_updatedAt',
+        lower: [status, updatedAt],
+        includeLower: include,
+        upper: [status],
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterWhereClause> statusEqualToUpdatedAtLessThan(
+    String status,
+    DateTime? updatedAt, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.between(
+        indexName: r'status_updatedAt',
+        lower: [status],
+        upper: [status, updatedAt],
+        includeUpper: include,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterWhereClause> statusEqualToUpdatedAtBetween(
+    String status,
+    DateTime? lowerUpdatedAt,
+    DateTime? upperUpdatedAt, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.between(
+        indexName: r'status_updatedAt',
+        lower: [status, lowerUpdatedAt],
+        includeLower: includeLower,
+        upper: [status, upperUpdatedAt],
         includeUpper: includeUpper,
       ));
     });

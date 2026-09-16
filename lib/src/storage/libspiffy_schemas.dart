@@ -672,9 +672,13 @@ class BitcoinTransactionEntity {
   /// read other wallets' rows (audit S-16). The composite (status,
   /// blockHeight) index serves the confirmed rows at or above a height (a
   /// header-chain reorganization) without reading the confirmed history
-  /// (bead libspiffy-ctkm).
+  /// (bead libspiffy-ctkm). The composite (status, updatedAt) index serves a
+  /// bounded window of the rows with a status that changed recently (bead
+  /// libspiffy-5bju: ARCActor polling recently failed transactions) without
+  /// reading that status's whole history.
   @Index(composite: [CompositeIndex('walletId')])
   @Index(composite: [CompositeIndex('blockHeight')])
+  @Index(composite: [CompositeIndex('updatedAt')])
   late String status;
 
   /// When this transaction was created/received

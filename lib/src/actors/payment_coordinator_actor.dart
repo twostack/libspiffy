@@ -747,7 +747,9 @@ class PaymentCoordinatorActor extends Actor {
               if (pluginInstance == null) {
                 throw Exception('No plugin registered for "${plugin.pluginId}"');
               }
-              final lockBuilder = pluginInstance.createLockBuilder(plugin);
+              // Guarded: what the plugin throws is logged against it and
+              // reported as "cannot build lock" (bead libspiffy-u150).
+              final lockBuilder = PluginRegistry().createLockBuilder(plugin);
               if (lockBuilder == null) {
                 throw Exception(
                   'Plugin "${plugin.pluginId}" cannot build lock for '

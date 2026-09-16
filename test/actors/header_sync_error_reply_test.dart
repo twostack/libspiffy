@@ -50,6 +50,19 @@ void main() {
     expect(reply.error, contains('headers unavailable'));
   });
 
+  /// libspiffy-lplr: a failed specific-header request must be answered with
+  /// the message SPVActor._getBlockHeader asks for. The catch-all replied
+  /// with SPVErrorMessage, which is not a SpecificHeaderResponseMessage, so
+  /// the typed `ask` threw a cast error and the graceful `response.error`
+  /// path in _getBlockHeader was dead code.
+  test('a failure escaping the specific-header handler is answered with SpecificHeaderResponseMessage',
+      () async {
+    final reply = await headerSync.ask<SpecificHeaderResponseMessage>(
+        _ThrowingSpecificHeaderRequest(), const Duration(seconds: 5));
+    expect(reply.success, isFalse);
+    expect(reply.error, contains('height unavailable'));
+  });
+
   test('a failure escaping the sync request handler is reported as header_sync_request',
       () async {
     final reply = await errorReplyFor(_ThrowingSyncRequest());
@@ -81,4 +94,13 @@ class _ThrowingHeadersMessage extends BlockHeadersReceivedMessage {
 class _ThrowingSyncRequest extends RequestHeaderSyncMessage {
   @override
   int? get fromHeight => throw StateError('stop hash unavailable');
+}
+
+/// A specific-header request whose height cannot be read. The handler logs it
+/// before its own try block, so the failure reaches onMessage's catch.
+class _ThrowingSpecificHeaderRequest extends RequestSpecificHeaderMessage {
+  _ThrowingSpecificHeaderRequest() : super(blockHeight: 0);
+
+  @override
+  int get blockHeight => throw StateError('height unavailable');
 }

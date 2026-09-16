@@ -392,10 +392,16 @@ void main() {
       expect(wallet.currentState.utxos.length, 1);
     });
 
-    test('ReceiveUTXOCommand for a known outpoint is rejected with no event', () async {
+    // Bead libspiffy-fggl: the second receipt used to throw. The senders of
+    // the command tell() it with no sender to reply to, so the error was
+    // dropped and only the sibling commands of the same receive ran; and a
+    // counterparty handing back a BEEF with a transaction of ours in it
+    // re-receives our own change output on the normal path. It is a no-op
+    // now: the row is still never overwritten, and nothing is journaled.
+    test('ReceiveUTXOCommand for a known outpoint journals nothing and keeps the row', () async {
       final k = await receive(_txid('1'), 0);
       final eventsBefore = store.allEvents.length;
-      await expectLater(receive(_txid('1'), 0, status: UTXOStatus.pending), throwsA(isA<StateError>()));
+      await receive(_txid('1'), 0, status: UTXOStatus.pending);
       expect(store.allEvents.length, eventsBefore);
       expect(statusOf(k), UTXOStatus.available);
     });

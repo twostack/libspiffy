@@ -37,13 +37,23 @@ class OutgoingTransactions {
 
   /// Whether [state] holds the outgoing-transaction record of [txid]
   /// ([applyRecorded]; a list-shaped record from older state included).
-  static bool isRecorded(WalletState state, String txid) {
+  static bool isRecorded(WalletState state, String txid) => outgoingRecord(state, txid) != null;
+
+  /// The outgoing-transaction record of [txid] in [state], or null when the
+  /// wallet did not record it ([applyRecorded]; a list-shaped record from
+  /// older state included).
+  static Map<dynamic, dynamic>? outgoingRecord(WalletState state, String txid) {
     final records = state.metadata[_outgoingTransactionsKey];
-    if (records is Map) return records.containsKey(txid);
-    if (records is List) {
-      return records.any((r) => r is Map && r['txid']?.toString() == txid);
+    if (records is Map) {
+      final record = records[txid];
+      return record is Map ? record : (records.containsKey(txid) ? const {} : null);
     }
-    return false;
+    if (records is List) {
+      for (final record in records) {
+        if (record is Map && record['txid']?.toString() == txid) return record;
+      }
+    }
+    return null;
   }
 
   /// Whether the outgoing transaction [txid] this wallet recorded lists
@@ -383,10 +393,31 @@ class OutgoingTransactions {
   /// rewritten). An input another deferred payment holds is spent by this
   /// transaction (that payment can no longer settle), logged severe; an
   /// input under another reservation is spent too, logged as a warning.
+  ///
+  /// The transaction's own outputs this wallet holds pending become
+  /// available (bead libspiffy-fggl): a proof on the active chain says they
+  /// are in a block, so the change of a payment we deferred is spendable
+  /// from the moment the proof reaches us. A UTXO that is already available
+  /// or spent is left alone.
+  ///
+  /// With [ConfirmTransactionCommand.onlyIfRecorded] nothing is journaled
+  /// unless the wallet recorded the transaction itself and has not confirmed
+  /// it yet: the confirmation then comes from a proof nobody asked for (a
+  /// BUMP in a received BEEF), which mostly proves other people's
+  /// transactions, and the same BEEF may arrive twice.
   static List<Event> confirm(WalletState currentState, ConfirmTransactionCommand command) {
     // Business rule: Wallet must exist
     if (!currentState.isCreated) {
       throw StateError('Cannot confirm transaction for non-existent wallet');
+    }
+
+    if (command.onlyIfRecorded) {
+      final record = outgoingRecord(currentState, command.txid);
+      if (record == null || record['status'] == 'confirmed') {
+        _log.fine('Proof for ${command.txid} offered to wallet ${command.walletId}: '
+            '${record == null ? 'not a transaction this wallet recorded' : 'already confirmed'}; nothing journaled');
+        return const [];
+      }
     }
 
     final events = <Event>[];
@@ -429,6 +460,25 @@ class OutgoingTransactions {
     if (events.isNotEmpty) {
       _log.info('Transaction ${command.txid} confirmed in wallet ${command.walletId}: '
           '${events.length} input(s) it spends were still unspent and are spent now');
+    }
+
+    // Its outputs are in a block: a pending one of this wallet's becomes
+    // spendable (bead libspiffy-fggl). A pending UTXO under a reservation
+    // keeps the reservation and is available once it is released, as
+    // MarkUTXOAvailableCommand does it (UTXOLedger.markAvailable).
+    for (final entry in currentState.utxos.entries) {
+      final utxo = entry.value;
+      if (utxo.txid != command.txid) continue;
+      final pendingUnderReservation =
+          utxo.status == UTXOStatus.reserved && utxo.statusBeforeReservation == UTXOStatus.pending;
+      if (utxo.status != UTXOStatus.pending && !pendingUnderReservation) continue;
+      events.add(UTXOMarkedAvailableEvent(
+        walletId: command.walletId,
+        txid: utxo.txid,
+        vout: utxo.vout,
+        version: currentState.version + events.length + 1,
+        timestamp: DateTime.now(),
+      ));
     }
 
     events.add(TransactionConfirmedEvent(

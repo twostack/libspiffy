@@ -155,9 +155,24 @@ abstract final class UtxoLedger {
 
     final utxoKey = '${command.txid}:${command.vout}';
 
-    // Business rule: Cannot receive duplicate UTXO
+    // Business rule: an outpoint is received once. A second receipt is a
+    // no-op, not an error (bead libspiffy-fggl): it happens on the normal
+    // path, when a counterparty hands back a BEEF holding a transaction of
+    // ours whose change output we recorded when we built it, or redelivers a
+    // payment we already hold. The stored row is never overwritten — it may
+    // be reserved, spent, or confirmed, and its reservation and spending
+    // history are not re-fetchable. A proof that arrives with the second
+    // delivery advances it through the confirmation path
+    // (ConfirmTransactionCommand / MarkUTXOAvailableCommand), which is
+    // checked against our header chain; a bare redelivery says nothing new.
+    //
+    // It used to throw. The throw was reported nowhere: the senders of this
+    // command tell() it without a sender to reply to, so the error was
+    // dropped and the sibling commands of the same receive still ran.
     if (currentState.utxos.containsKey(utxoKey)) {
-      throw StateError('UTXO $utxoKey already exists in wallet');
+      _log.info('UTXO $utxoKey is already in wallet ${command.walletId}; the stored row is kept as it is '
+          'and nothing is journaled');
+      return const [];
     }
 
     // Business rule: Amount must be positive

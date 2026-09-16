@@ -285,15 +285,23 @@ class SPVActor extends Actor {
         final hasProof = beef.hasMerkle[txIndex];
 
         // The ancestors (and their BUMPs) an unproven transaction's outputs
-        // cannot be spent without (bead zsh); none for a proven one.
+        // cannot be spent without (bead zsh); for a proven subject they are
+        // retained too (bead libspiffy-fggl), since nothing can hand us a
+        // BEEF's transactions and proofs again.
         var ancestors = const <BeefAncestor>[];
+
+        // The BEEF members whose BUMP verifies against our active header
+        // chain, subject and ancestor alike (bead libspiffy-fggl): each is
+        // proven mined, and the wallet confirms the ones it recorded itself.
+        final provenTxids = <String>{};
+        final proven = <ProvenTransaction>[];
 
         if (hasProof) {
           // This transaction has a proof - validate it directly via SPV
-          
+
           final bump = _bumpFor(beef, txIndex);
           final blockHeader = await _getBlockHeader(bump.blockHeight);
-          
+
 
           // Validate this transaction's merkle proof
           final isValidTx = await beef.validateTransactionWithBlockHeader(txid, blockHeader);
@@ -306,27 +314,48 @@ class SPVActor extends Actor {
               targetWalletId: walletId,
             );
           }
-          
-          
+          provenTxids.add(txidHex);
+          proven.add(ProvenTransaction(
+            txid: txidHex,
+            bumpHex: bump.toHex(),
+            blockHeight: bump.blockHeight,
+            blockHash: blockHeader.blockHash().toString(),
+          ));
+
+          // The rest of the BEEF is examined too (bead libspiffy-fggl): it
+          // held proofs we cannot fetch again, and one of its members may be
+          // a transaction of ours that is mined. Only the subject's own
+          // proof decides whether this receive is valid, so a member whose
+          // block header we do not have, or whose proof does not match, is
+          // retained unproven (its BUMP is still kept) instead of failing
+          // the receive.
+          for (var i = 0; i < beef.txs.length; i++) {
+            if (i == txIndex || !beef.hasMerkle[i]) continue;
+            try {
+              final member = await _verifyProvenMember(beef, i);
+              provenTxids.add(member.txid);
+              proven.add(member);
+            } catch (e) {
+              _log.warning('Transaction $i of the BEEF carrying $txidHex is not proven against our '
+                  'headers, and is retained unconfirmed: $e');
+            }
+          }
+
+          ancestors = _ancestorsToRetain(beef, txidHex, provenTxids);
         } else {
           // This transaction has NO proof (unconfirmed payment transaction)
           // Validate that all its ancestors (inputs) have valid merkle proofs
           
           // Validate ALL transactions in BEEF that have proofs
-          final provenTxids = <String>{};
           for (int i = 0; i < beef.txs.length; i++) {
             if (!beef.hasMerkle[i]) {
               continue; // Skip transactions without proofs (like this payment tx)
             }
-            
-            final ancestorTxid = beef.calculateTxid(beef.txs[i]);
-            final bump = _bumpFor(beef, i);
-            final blockHeader = await _getBlockHeader(bump.blockHeight);
-            
-            
-            final isValid = await beef.validateTransactionWithBlockHeader(ancestorTxid, blockHeader);
-            
-            if (!isValid) {
+
+            final ProvenTransaction member;
+            try {
+              member = await _verifyProvenMember(beef, i);
+            } on _ProofRejected {
               return SPVValidationResult(
                 txid: txidHex,
                 isValid: false,
@@ -334,7 +363,8 @@ class SPVActor extends Actor {
                 targetWalletId: walletId,
               );
             }
-            provenTxids.add(hex.encode(ancestorTxid));
+            provenTxids.add(member.txid);
+            proven.add(member);
           }
 
           // A valid proof somewhere in the BEEF says nothing about *this*
@@ -502,6 +532,7 @@ class SPVActor extends Actor {
           transactionFee: transactionFee,
           transactionData: transactionData,
           unreadableOutputs: unreadableOutputs,
+          provenTransactions: proven,
         );
 
 
@@ -522,6 +553,29 @@ class SPVActor extends Actor {
         targetWalletId: walletId,
       );
     }
+  }
+
+  /// Verifies the BUMP of the BEEF member at [index] against our active
+  /// header chain and returns what it proves (bead libspiffy-fggl).
+  ///
+  /// Throws [_ProofRejected] when the proof does not reproduce the merkle
+  /// root of the header at its height, and whatever [_getBlockHeader] throws
+  /// when we do not have that header: neither proves anything, and a caller
+  /// that can carry on without this member catches both.
+  Future<ProvenTransaction> _verifyProvenMember(BEEF beef, int index) async {
+    final memberTxid = beef.calculateTxid(beef.txs[index]);
+    final bump = _bumpFor(beef, index);
+    final blockHeader = await _getBlockHeader(bump.blockHeight);
+    if (!await beef.validateTransactionWithBlockHeader(memberTxid, blockHeader)) {
+      throw _ProofRejected('the BUMP of ${hex.encode(memberTxid)} does not match the header at '
+          'height ${bump.blockHeight}');
+    }
+    return ProvenTransaction(
+      txid: hex.encode(memberTxid),
+      bumpHex: bump.toHex(),
+      blockHeight: bump.blockHeight,
+      blockHash: blockHeader.blockHash().toString(),
+    );
   }
 
   /// The BUMP proving the proven transaction at [txIndex].
@@ -590,6 +644,12 @@ class SPVActor extends Actor {
   /// We cannot fetch these again (no block scanning, no indexer, and ARC
   /// knows only transactions it mined or we broadcast), so they are
   /// journaled with the received transaction.
+  ///
+  /// Every BUMP the BEEF carries is kept, [provenTxids] or not (bead
+  /// libspiffy-fggl): a proof for a block whose header we have not synced
+  /// cannot be fetched again either, and the projection stores it
+  /// pendingHeader until the header arrives. Only [provenTxids] stops the
+  /// walk, so an ancestor we could not verify is still followed back.
   List<BeefAncestor> _ancestorsToRetain(BEEF beef, String subjectTxid, Set<String> provenTxids) {
     final indexByTxid = <String, int>{};
     for (var i = 0; i < beef.txs.length; i++) {
@@ -615,7 +675,7 @@ class SPVActor extends Actor {
           BeefAncestor(
             txid: entry.key,
             rawHex: hex.encode(beef.txs[entry.value]),
-            bumpHex: provenTxids.contains(entry.key) ? _bumpFor(beef, entry.value).toHex() : '',
+            bumpHex: beef.hasMerkle[entry.value] ? _bumpFor(beef, entry.value).toHex() : '',
           ),
     ];
   }
@@ -1967,6 +2027,16 @@ class _OutputLock {
 class _OwnershipUnavailable implements Exception {
   final String reason;
   _OwnershipUnavailable(this.reason);
+
+  @override
+  String toString() => reason;
+}
+
+/// A BUMP in a received BEEF that does not match the block header at its
+/// height on our active chain ([SPVActor._verifyProvenMember]).
+class _ProofRejected implements Exception {
+  final String reason;
+  _ProofRejected(this.reason);
 
   @override
   String toString() => reason;

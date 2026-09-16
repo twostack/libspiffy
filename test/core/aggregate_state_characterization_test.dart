@@ -231,6 +231,26 @@ void _expectSameWalletState(WalletState actual, WalletState expected, String wha
   expect(actual.availableBalance, expected.availableBalance, reason: '$what: available balance');
 }
 
+/// A command the aggregate accepts and answers with no event, leaving the
+/// state and the journal exactly as they were (bead libspiffy-fggl: a second
+/// receipt of an outpoint the wallet already holds is a no-op, not an error —
+/// the stored row, with its reservation and spending history, is never
+/// overwritten).
+Future<void> _expectNoOp(
+  AggregateRoot aggregate,
+  InMemoryEventStore store,
+  Command command,
+  Map<String, dynamic> Function() snapshot,
+) async {
+  final before = snapshot();
+  final version = aggregate.currentState.version;
+  final journalLength = store.allEvents.length;
+  await aggregate.commandHandler(command);
+  expect(snapshot(), before, reason: 'a no-op ${command.runtimeType} leaves the state unchanged');
+  expect(aggregate.currentState.version, version);
+  expect(store.allEvents.length, journalLength, reason: 'a no-op ${command.runtimeType} journals nothing');
+}
+
 Future<void> _expectRejected(
   AggregateRoot aggregate,
   InMemoryEventStore store,
@@ -291,9 +311,6 @@ void main() {
         CreateWalletCommand(walletId: _walletId, walletName: 'again', mnemonic: _mnemonic),
         UpdateWalletConfigurationCommand(walletId: _walletId),
         ReceiveUTXOCommand(
-            walletId: _walletId, txid: _key(8, 0).split(':').first, vout: 0,
-            satoshis: BigInt.one, scriptPubKey: _p2pkhScript(root), address: root),
-        ReceiveUTXOCommand(
             walletId: _walletId, txid: 'dd' * 32, vout: 0,
             satoshis: BigInt.zero, scriptPubKey: _p2pkhScript(root), address: root),
         MarkUTXOAvailableCommand(walletId: _walletId, txid: 'ee' * 32, vout: 0),
@@ -331,6 +348,16 @@ void main() {
       for (final command in rejected) {
         await _expectRejected(wallet, store, command, snapshot);
       }
+
+      // Receiving an outpoint the wallet already holds is accepted and
+      // journals nothing (bead libspiffy-fggl); it used to throw.
+      await _expectNoOp(
+          wallet,
+          store,
+          ReceiveUTXOCommand(
+              walletId: _walletId, txid: _key(8, 0).split(':').first, vout: 0,
+              satoshis: BigInt.one, scriptPubKey: _p2pkhScript(root), address: root),
+          snapshot);
 
       await wallet.commandHandler(DeleteWalletCommand(walletId: _walletId, reason: 'done'));
       await _expectRejected(wallet, store, DeleteWalletCommand(walletId: _walletId), snapshot);

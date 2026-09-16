@@ -660,6 +660,28 @@ class WalletManagerActor extends Actor {
     } else {
     }
 
+    // Every BUMP of the BEEF that verified against our active header chain,
+    // subject and ancestor alike (bead libspiffy-fggl). A verified proof is
+    // the strongest evidence there is that a transaction is mined, and a
+    // counterparty handing us one for a payment of ours is how the
+    // peer-to-peer model settles it: no scanning, no polling. The wallet
+    // confirms the ones it recorded itself (`onlyIfRecorded`, so the
+    // counterparty's own ancestors journal nothing, and a BEEF delivered
+    // twice confirms once), which spends the inputs its deferred payment
+    // holds, moves that payment to mined and makes its change spendable.
+    // Sent after the receive and record commands above so the aggregate
+    // handles it with the transaction's outputs already in its state.
+    for (final proven in result.provenTransactions) {
+      walletActor.tell(ConfirmTransactionCommand(
+        walletId: walletId,
+        txid: proven.txid,
+        blockHeight: proven.blockHeight,
+        blockHash: proven.blockHash,
+        bumpHex: proven.bumpHex,
+        onlyIfRecorded: true,
+      ));
+    }
+
   } catch (e, stackTrace) {
     _log.warning('Failed to process SPV result ${result.txid} for wallet '
         '$walletId: $e', e, stackTrace);

@@ -508,6 +508,40 @@ class ReceiveTransactionMessage implements Message {
 }
 
 
+/// A transaction a received BEEF carried with a BUMP that verifies against
+/// our active header chain (bead libspiffy-fggl).
+///
+/// A verified BUMP proves that transaction is mined, whatever position it
+/// holds in the BEEF: the subject a counterparty is paying us with, or an
+/// ancestor of it. When the wallet recorded the transaction itself (our own
+/// outgoing payment, handed back to us inside a counterparty's BEEF) this is
+/// the first hard evidence we get that it was mined, and it outranks any
+/// status string a broadcaster reports.
+class ProvenTransaction {
+  /// Display-order txid.
+  final String txid;
+
+  /// Hex of the BRC-74 BUMP that proves it.
+  final String bumpHex;
+
+  /// The height of the block the BUMP names.
+  final int blockHeight;
+
+  /// The hash of the header at [blockHeight] on our active chain, whose
+  /// merkle root the BUMP reproduces.
+  final String blockHash;
+
+  const ProvenTransaction({
+    required this.txid,
+    required this.bumpHex,
+    required this.blockHeight,
+    required this.blockHash,
+  });
+
+  @override
+  String toString() => 'ProvenTransaction($txid at $blockHeight)';
+}
+
 /// SPV validation result after processing received transaction
 class SPVValidationResult implements Message {
   final String txid;
@@ -527,6 +561,13 @@ class SPVValidationResult implements Message {
   /// transaction is still recorded whole, so they can be read again later.
   final List<Map<String, dynamic>> unreadableOutputs;
 
+  /// Every transaction of the BEEF whose BUMP verifies against our active
+  /// header chain, subject and ancestors alike (bead libspiffy-fggl). The
+  /// ones the wallet recorded itself are confirmed from these proofs; a
+  /// member whose block header we have not synced is not listed (its BUMP is
+  /// still retained, stored as a pendingHeader proof).
+  final List<ProvenTransaction> provenTransactions;
+
   SPVValidationResult({
     required this.txid,
     required this.isValid,
@@ -537,6 +578,7 @@ class SPVValidationResult implements Message {
     this.transactionFee,
     this.transactionData,
     this.unreadableOutputs = const [],
+    this.provenTransactions = const [],
   });
 
   @override

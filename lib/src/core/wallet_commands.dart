@@ -530,12 +530,24 @@ class ConfirmTransactionCommand extends WalletCommand {
   /// rebuilt from the journal keeps the proof (bead libspiffy-9ek).
   final String? bumpHex;
 
+  /// Confirm only a transaction this wallet recorded as an outgoing
+  /// transaction and has not confirmed yet; otherwise journal nothing (bead
+  /// libspiffy-fggl).
+  ///
+  /// Set when the proof was not asked for but handed to us: every BUMP of a
+  /// received BEEF that verifies against our header chain is offered to the
+  /// wallet, and most of them prove transactions of counterparties, which
+  /// are no business of this wallet's journal. It also makes the same BEEF
+  /// delivered twice journal one confirmation.
+  final bool onlyIfRecorded;
+
   ConfirmTransactionCommand({
     required String walletId,
     required this.txid,
     this.blockHeight,
     this.blockHash,
     this.bumpHex,
+    this.onlyIfRecorded = false,
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,

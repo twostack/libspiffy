@@ -138,10 +138,17 @@ void main() {
       BeefAncestor(txid: u.id, rawHex: u.serialize()),
     ]);
 
-    // A proven transaction needs no ancestors.
+    // A proven transaction needs no ancestors to validate — its own proof
+    // settles that — but the rest of the BEEF is still retained (bead
+    // libspiffy-fggl). Nothing can hand us those transactions and proofs
+    // again, and one of them may be a transaction of ours that is mined:
+    // a counterparty spending what we paid them hands back our own payment
+    // as a proven ancestor, which is how that payment settles.
     final proven = await receive(await headers(), kFixture2Txid, receivedBeef());
     expect(proven.isValid, isTrue, reason: proven.validationError);
-    expect(proven.transactionData!['ancestors'], isEmpty);
+    expect(proven.transactionData!['ancestors'], [
+      BeefAncestor(txid: kFixtureTxid, rawHex: kFixtureTxHex, bumpHex: fixtureBumpHex()),
+    ], reason: 'a proven subject discarded the rest of the BEEF');
   });
 
   test('zsh: the journaled ancestors are stored apart from wallet transactions, and a BEEF spending P validates',

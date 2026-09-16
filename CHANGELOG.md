@@ -302,6 +302,73 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### SPV proof lifecycle
+
+Report section 11, V-57 to V-62; each fix has a regression test shown to fail
+on the previous code.
+
+- **A BEEF whose proof is above our chain tip is retained and retried, not
+  dropped (V-57).** `_getBlockHeader` reported "we hold no header here" and
+  "a header we hold contradicts this proof" identically, so the
+  unproven-subject branch treated both as fatal and stored nothing — losing
+  transactions and proofs nothing can hand us again. The two are now
+  distinct: a contradicted proof still fails the receive; a missing header
+  retains the whole BEEF (transactions to the ancestor store, BUMPs as
+  `pendingHeader` proofs) and replays the receive once the headers arrive, so
+  the wallet is credited without the counterparty re-sending.
+- **A proof that arrives before its header now confirms when the header
+  lands (V-58).** It was marked verified and left there; only the
+  orphaned/rejected revival path issued a confirmation, so such a
+  transaction waited for ARC.
+- **A confirmation resting only on an orphaned proof is reverted (V-59).**
+  One rule: a confirmation must rest on at least one proof verified on the
+  active header chain. The orphaned proof row is kept — a reorganization can
+  put its block back — and is re-checked read-only before the revert, since
+  a header stored meanwhile may have restored it.
+- **ARC re-polls recently failed transactions (V-59).** A transaction ARC
+  reported REJECTED that was mined after all previously settled only if a
+  proof happened to arrive another way. The poll is bounded three ways —
+  interval, time window, row cap — and a MINED answer still confirms only
+  through a merkle path that matches our headers, never on the status
+  string.
+- **`ReceiveUTXOCommand` no longer strands mined funds (V-60).** It took a
+  block height and a confirmation count while defaulting the status to
+  pending, so callers ended up with a wallet reporting nothing spendable and
+  no explanation.
+- **One faulty plugin no longer takes out the registry (V-61).**
+  `identifyScript` did not catch a plugin's exception, so a script went
+  unattributed and was reported unreadable. `extractMetadata`,
+  `createLockBuilder` and `createUnlockBuilder` gained the same guard.
+- **A failed specific-header request is answered with the right message
+  type (V-62).** The caller's typed `ask` threw a cast error instead of
+  taking its error path.
+
+Breaking changes:
+
+- `ReceiveUTXOCommand` throws `ArgumentError` when a `blockHeight` is passed
+  with `initialStatus: pending` (the default). A height is recorded only
+  from a merkle proof that verified against our active header chain, and a
+  UTXO with such a proof is spendable, so the two cannot disagree. The
+  status is never derived from a caller-supplied height — that would conjure
+  spendable funds from a claim. Old journals replay unchanged: the check is
+  on the command, not on `UTXOReceivedEvent`.
+- A received BEEF whose proof sits above our chain tip is retained and
+  retried. The immediate result is still `isValid: false` and says so, but a
+  second `SPVValidationResult` (and `TransactionImportedEvent`) follows for
+  the same txid when the header arrives. Code that consumes only the first
+  verdict per txid will now see a later success.
+
+Additive API:
+
+- `ReadModelStorage.getTransactionsByStatusSince(status, since, {limit})`, a
+  bounded recent-changes feed, implemented on all three backends.
+  **Postgres migration v019** adds `idx_transactions_status_updated` on
+  `bitcoin_transactions (status, updated_at DESC)`; Isar gains the matching
+  composite index.
+- `ARCActor(failedCheckInterval:, failedCheckWindow:, failedCheckLimit:,
+  clock:)`, all defaulted.
+- `PluginRegistry.extractMetadata`, `createLockBuilder`, `createUnlockBuilder`.
+
 ### A peer-delivered merkle proof settles our own payment
 
 Report section 11, V-56; each fix has a regression test shown to fail on the

@@ -302,6 +302,64 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### A peer-delivered merkle proof settles our own payment
+
+Report section 11, V-56; each fix has a regression test shown to fail on the
+previous code.
+
+- **A BEEF's proof now confirms a transaction this wallet recorded (V-56).**
+  A counterparty spending what we paid them hands our own payment back as a
+  proven ancestor of their new transaction. That BUMP is the strongest
+  evidence there is that the payment was mined, and it is how the
+  peer-to-peer model settles — no scanning, no polling. Nothing compared a
+  BEEF member's txid against the wallet's own transactions, so the proof was
+  filed in the ancestor store and the deferred payment stayed outstanding,
+  marked `seen` at best by the weaker inference that its inputs were spent.
+  `mined` was reachable only from ARC's MINED report or reorg revival, so
+  only ARC could settle a payment. One rule now holds: a BUMP that verifies
+  against our active header chain confirms that txid if the wallet recorded
+  it, wherever it sits in the BEEF. The subject's own outputs stay pending —
+  a BEEF proof proves funding history, not settlement.
+- **A proven subject no longer discards the rest of the BEEF (V-56).** The
+  validation loop short-circuited when the subject carried its own BUMP,
+  dropping every other transaction and proof in the BEEF; nothing can hand
+  those to us again. A member we cannot verify is retained unproven rather
+  than failing the receive, since only the subject's own proof decides
+  whether the receive is valid. This extends V-15, which retained ancestors
+  only for an unproven subject.
+- **The write model no longer lags the read model on a proven subject
+  (V-56).** When the BEEF's subject was a transaction we had recorded, the
+  read-model row flipped to `confirmed` while the aggregate journaled
+  nothing, so the wallet displayed a confirmation its own journal did not
+  hold until ARC caught up.
+- **Confirming a transaction makes its own pending outputs available
+  (V-56).** The change output of a deferred payment is spendable from the
+  moment the proof reaches us. ARC and reorg revival already sent
+  `MarkUTXOAvailableCommand` alongside the confirmation; the rule now lives
+  in one place.
+
+Breaking changes:
+
+- `ReceiveUTXOCommand` for an outpoint the wallet already holds is a no-op
+  instead of throwing `StateError`. It happens on the normal path — a
+  counterparty hands back a BEEF holding a transaction of ours whose change
+  we recorded when we built it — and the throw was observable nowhere, since
+  its senders `tell()` it with no sender to reply to. The stored row is
+  never overwritten: its reservation and spending history are not
+  re-fetchable, and a proof arriving with the second delivery advances it
+  through the confirmation path instead.
+
+Additive API:
+
+- `ProvenTransaction` and `SPVValidationResult.provenTransactions` (default
+  `const []`): the BEEF members whose BUMP verified against our active
+  header chain.
+- `ConfirmTransactionCommand.onlyIfRecorded` (default `false`): journal
+  nothing unless the wallet recorded the transaction itself and has not
+  already confirmed it, so a counterparty's own ancestors journal nothing
+  and the same BEEF delivered twice confirms once.
+- `OutgoingTransactions.outgoingRecord(state, txid)`.
+
 ### Follow-ups of the P3 correctness wave
 
 Report section 11, V-52 to V-55; each fix has a regression test shown to fail

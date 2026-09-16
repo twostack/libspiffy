@@ -12,10 +12,12 @@
 ///
 /// Now the wallet says it:
 /// `ReadModelStorage.getOutputsAwaitingAncestorProof` lists the output and
-/// the ancestor it waits on, SPVActor logs it, and — the one question the
-/// model allows without scanning — ARC is asked, once per interval, whether
-/// it has a proof for that ancestor. A proof ARC returns is used only after
-/// it verifies against our own headers.
+/// the ancestor it waits on, and SPVActor logs it. It does not go looking for
+/// the proof. An ARC instance answers only for transactions submitted through
+/// it, so it has no standing to prove a counterparty's transaction; asking
+/// would trade the counterparty's obligation for a coincidence. The proof
+/// comes back the way it arrived in the first place — the counterparty hands
+/// us a fresh BEEF — or the block returns to the active chain.
 ///
 /// SPVActor runs against an in-memory read model with no projection: the
 /// wallet manager is a recorder, so nothing but this actor moves.
@@ -164,7 +166,7 @@ void main() {
       ),
     );
 
-    walletManager = _Recorder();
+    walletManager = _Recorder()..ownedAddresses.add(ourAddress.toBase58());
     arc = _FakeArcActor();
     final walletManagerRef = await system.spawn('wm-$tag', () => walletManager);
     arcRef = await system.spawn('arc-$tag', () => arc);
@@ -177,7 +179,7 @@ void main() {
               arcActor: arcRef,
               // Every header notification sweeps, and ARC may be asked about
               // the same ancestor again: the test drives the clock.
-              ancestorReproofInterval: Duration.zero,
+              awaitingProofSweepInterval: Duration.zero,
             ));
   });
 
@@ -202,6 +204,50 @@ void main() {
       sender: barrier,
     );
     await done.future.timeout(const Duration(seconds: 10));
+  }
+
+  /// The counterparty re-sends the BEEF for P, now carrying G's new BUMP in
+  /// the block that won. This is the receive path — the same one that
+  /// delivered the payment — and it is where a fresh ancestor proof belongs.
+  ///
+  /// The BEEF really goes through SPVActor, so the receive is exercised (and
+  /// ARC still goes unasked). Writing the ancestor's proof is the
+  /// projection's job on a successful receive
+  /// (`WalletProjection._storeAncestors`), and this test runs SPVActor
+  /// without one, so that write is done here the way the projection does it.
+  /// The full path is covered end to end by
+  /// test/integration/unproven_receive_ancestor_retention_test.dart.
+  Future<void> deliverFreshProofFromCounterparty() async {
+    spv.tell(
+      ReceiveTransactionMessage(
+        transactionId: p.id,
+        beef: BEEF.create(
+          bumps: [gBumpB],
+          txs: [
+            Uint8List.fromList(hex.decode(g.serialize())),
+            Uint8List.fromList(hex.decode(p.serialize())),
+          ],
+          hasMerkle: [true, false],
+          bumpIndex: [0],
+        ),
+        fromCounterparty: 'bob',
+        targetWalletId: walletId,
+      ),
+    );
+    await settle();
+
+    await storage.storeAncestorTransaction(g.id, g.serialize());
+    await storage.storeMerkleProof(
+      g.id,
+      MerkleProof(
+        txid: g.id,
+        blockHash: b3.blockHash().toString(),
+        blockHeight: 3,
+        position: 0,
+        merkleProof: [gBumpB.toHex()],
+        status: MerkleProofStatus.verified,
+      ),
+    );
   }
 
   test('0lx: an output whose ancestor\'s block is orphaned is not spendable, says which proof it '
@@ -236,14 +282,13 @@ void main() {
     expect(awaiting.single.ancestors.map((a) => (a.txid, a.lastProofStatus, a.blockHeight)),
         [(g.id, MerkleProofStatus.orphaned, 3)]);
 
-    expect(arc.asked, [g.id], reason: 'ARC was never asked whether it has a fresh proof for the ancestor');
+    expect(arc.asked, isEmpty,
+        reason: 'ARC was asked about a transaction we did not broadcast: it answers only for what was '
+            'submitted through it, so it has no standing to prove a counterparty ancestor');
 
-    // A fresh proof turns up: the ancestor was mined again in the block that
-    // won, and ARC now answers for it. (A counterparty re-sending the BEEF
-    // is the other way, and goes through the receive path.)
-    arc.proofOf[g.id] = (gBumpB, 3, b3.blockHash().toString());
-    spv.tell(BlockHeaderStoredMessage(header: b3, height: 3));
-    await settle();
+    // The counterparty hands us a fresh BEEF: G was mined again in the block
+    // that won, and its new BUMP comes from the party that owes us the proof.
+    await deliverFreshProofFromCounterparty();
 
     final restored = await storage.getMerkleProof(g.id);
     expect((restored?.status, restored?.blockHeight, restored?.merkleProof.single),
@@ -255,23 +300,37 @@ void main() {
         reason: 'the output is still reported as waiting for a proof');
   });
 
-  test('0lx: a proof ARC offers that our own headers contradict is not used', () async {
+  test('0lx: ARC is never asked for a counterparty ancestor, even when it would answer', () async {
+    // ARC is primed with a perfectly good proof. It must still never be
+    // consulted: it answers only for transactions submitted through it, so a
+    // counterparty's ancestor is not its to prove, and a wallet that leans on
+    // it is leaning on a coincidence instead of on the counterparty.
+    arc.proofOf[g.id] = (gBumpB, 3, b3.blockHash().toString());
+
     await storage.markHeaderAsOrphaned(a3.blockHash().toString());
     await storage.storeBlockHeader(b3, 3);
-    // ARC offers the path for the block that lost: it does not match B3.
-    arc.proofOf[g.id] = (gBumpA, 3, a3.blockHash().toString());
-
     spv.tell(HeaderChainReorganizedMessage(
       forkHeight: 2,
       orphanedBlockHashes: [a3.blockHash().toString()],
       newTipHeight: 3,
     ));
     await settle();
+    // Sweeps run on header notifications too; the interval is zero here, so
+    // this is the loop that used to ask.
+    spv.tell(BlockHeaderStoredMessage(header: b3, height: 3));
+    await settle();
 
+    expect(arc.asked, isEmpty, reason: 'ARC was asked for a proof of a transaction we did not broadcast');
     expect(await storage.getMerkleProof(g.id), isNull,
-        reason: 'a proof our own header contradicts became the current proof');
+        reason: 'a proof this wallet never asked for, and never verified, became the current proof');
     expect((await canSpendP()).isValid, isFalse);
-    expect(await storage.getOutputsAwaitingAncestorProof(walletId), hasLength(1));
+    expect(await storage.getOutputsAwaitingAncestorProof(walletId), hasLength(1),
+        reason: 'the output should still be reported as waiting for the counterparty');
+
+    // And it recovers the way the model says: the counterparty supplies it.
+    await deliverFreshProofFromCounterparty();
+    expect((await canSpendP()).isValid, isTrue);
+    expect(await storage.getOutputsAwaitingAncestorProof(walletId), isEmpty);
   });
 }
 
@@ -301,9 +360,22 @@ dartsv.Transaction _rawTransaction({required Uint8List prevTxid, required List<(
 class _Recorder extends Actor {
   final List<Object?> messages = [];
 
+  /// The addresses this wallet owns, so a real receive can be driven through
+  /// SPVActor: the ownership query is an `ask`, and an actor that never
+  /// answers it blocks SPVActor's mailbox for the whole timeout.
+  final Set<String> ownedAddresses = {};
+
   @override
   Future<void> onMessage(dynamic message) async {
     messages.add(message);
+    if (message is WalletOwnershipQuery) {
+      context.sender?.tell(WalletOwnershipResponse(
+        walletId: message.walletId,
+        walletFound: true,
+        ownedAddresses: message.addresses.intersection(ownedAddresses),
+        unspentOutpoints: const {},
+      ));
+    }
   }
 }
 

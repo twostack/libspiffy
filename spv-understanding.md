@@ -45,6 +45,8 @@ The receiver validates by:
 3. **If match**: Accept that Transaction₀ is in the chain
 4. **Validate** Transaction₁ can legitimately spend from Transaction₀
 
+**ARC is asked only about transactions we broadcast ourselves.** An ARC instance answers for the transactions submitted through it and no others, so it has no standing to prove a counterparty's transaction, and a `NOT_FOUND` from it means nothing about whether that transaction was mined. A transaction reaching us from a counterparty arrives with the proofs its ancestry needs, or we reject it: supplying them is the sender's obligation, not something we go and fetch. When a proof we hold later leaves the active chain, we say which output is blocked and on which ancestor — and wait for the counterparty or for the block to return. We never fill the gap from a service.
+
 ### 4. Broadcasting & Settlement
 
 - **Primary**: Broadcast via **ARC Service**
@@ -179,7 +181,7 @@ A confirmation must rest on at least one proof that is verified on the active he
 
 Nothing a counterparty hands us is thrown away, not even when we refuse it. A BEEF whose proof a header we hold contradicts still fails the receive, but its transactions and that contradicted BUMP are kept as a `rejected` row: it is the record of what we were given, and no one can hand it to us again. A receive parked until its headers arrive is kept the same way — the BEEF exactly as it reached us, replayed when the headers land and after a restart, so the counterparty never has to send it twice.
 
-When an output cannot be walked back to a proof because an ancestor's block left the chain, the wallet says so rather than holding an unspendable output in silence: it names the ancestor and what its last proof said. A fresh proof can arrive three ways, none of them scanning — the block comes back and the kept row is restored, a later BEEF carries a new BUMP, or ARC answers when asked. An answer from ARC is checked against our own headers before it is stored; a service's word is not evidence.
+When an output cannot be walked back to a proof because an ancestor's block left the chain, the wallet says so rather than holding an unspendable output in silence: it names the ancestor and what its last proof said. A fresh proof arrives one of two ways, neither of them scanning and neither of them a question to a service: the block comes back and the kept row is restored, or the counterparty hands us a new BEEF carrying a fresh BUMP. The obligation is the counterparty's, and the wallet's job is to make the gap visible so it can be asked.
 
 ## Data Models (Current Implementation)
 

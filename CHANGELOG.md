@@ -322,10 +322,11 @@ on the previous code.
   still fails: this is retention, not acceptance.
 - **An output whose ancestor's block was orphaned now says what it is waiting
   for (V-65).** `getOutputsAwaitingAncestorProof` names each unspent output
-  that cannot be walked back to a proof and which ancestor blocks it. ARC is
-  asked for a fresh proof — bounded to ten txids a pass and once per txid per
-  interval — and an answer is stored only after its BUMP is checked against
-  our own headers. ARC's `headerVerified` flag is not trusted. Asking a
+  that cannot be walked back to a proof and which ancestor blocks it. The
+  wallet does not go looking for that proof: an ARC instance answers only for
+  transactions submitted through it, so it has no standing to prove a
+  counterparty's transaction. A fresh proof comes from the counterparty, in a
+  new BEEF, or from the block returning to the active chain. Asking a
   counterparty for a re-proof needs a peer message the library does not have;
   that remains open.
 - **Outgoing BEEFs merge the BUMPs of ancestors from the same block (V-66).**
@@ -363,7 +364,7 @@ Additive API:
 
 - `PendingReceive`, `OutputAwaitingProof`, `AwaitedAncestorProof`, and
   `outputsAwaitingAncestorProof(storage, walletId)`.
-- `SPVActor(ancestorReproofInterval:)`.
+- `SPVActor(awaitingProofSweepInterval:)`.
 - `BeefBumps` in `lib/src/utils/beef.dart`; `AncestorChainService.buildBeef`
   is now public and is the single outgoing BEEF builder.
 - `OutgoingTransactions.importedRecord(state, txid)`.

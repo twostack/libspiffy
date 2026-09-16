@@ -68,7 +68,7 @@ class SPVActor extends Actor {
     ActorRef? headerSyncActor,
     String networkType = 'test',
     Duration rejectedProofFullSweepInterval = const Duration(hours: 1),
-    Duration ancestorReproofInterval = const Duration(minutes: 30),
+    Duration awaitingProofSweepInterval = const Duration(minutes: 30),
     DateTime Function()? clock,
   }) : _walletManager = walletManager,
        _invoiceCoordinator = invoiceCoordinator,
@@ -77,7 +77,7 @@ class SPVActor extends Actor {
        _arcActor = arcActor,
        _headerSyncActor = headerSyncActor,
        _rejectedProofFullSweepInterval = rejectedProofFullSweepInterval,
-       _ancestorReproofInterval = ancestorReproofInterval,
+       _awaitingProofSweepInterval = awaitingProofSweepInterval,
        _clock = clock ?? DateTime.now;
 
   /// How long a check for confirmations resting only on rejected proofs may
@@ -1845,47 +1845,43 @@ class SPVActor extends Actor {
   /// proven through it cannot be spent until a fresh proof for it arrives
   /// (bead libspiffy-0lx).
   ///
-  /// The model allows exactly three ways for that proof to come, and none of
-  /// them is a block scan:
+  /// The model allows exactly two ways for that proof to come, and neither
+  /// of them is a block scan or a question to a service:
   /// * the reorganization puts the block back, or the transaction is mined
   ///   again in a block whose header we hold — [_reviveProofs] and
   ///   [_recheckUnverifiedProofs] restore the proof from the row we kept;
-  /// * a later BEEF carries a fresh BUMP for it, which the receive path
-  ///   stores;
-  /// * ARC answers for it. ARC's only proof endpoint is
-  ///   `GET /v1/tx/{txid}` (`ArcService.getMerkleProof`), which is not
-  ///   restricted to transactions we broadcast — but an ARC instance answers
-  ///   only for transactions it knows, so a counterparty's ancestor is
-  ///   usually `NOT_FOUND`. It is worth one bounded question each time a
-  ///   proof leaves the chain, and the answer is checked against our own
-  ///   headers before anything rests on it.
+  /// * the counterparty who supplied the transaction hands us a fresh BEEF
+  ///   carrying a new BUMP for it, which the receive path stores.
   ///
-  /// Until then the wallet must *say* it is waiting instead of holding an
-  /// output that quietly cannot be paid with: every affected output is
-  /// logged, and
+  /// ARC is **not** one of them. An ARC instance answers only for
+  /// transactions submitted through it, so it has no standing to prove a
+  /// counterparty's transaction, and asking would make the wallet depend on
+  /// a coincidence instead of on the counterparty's obligation. ARC is asked
+  /// only about transactions this wallet broadcast itself.
+  ///
+  /// So the wallet must *say* it is waiting instead of holding an output
+  /// that quietly cannot be paid with: every affected output is logged, and
   /// [ReadModelStorage.getOutputsAwaitingAncestorProof] lists them with the
   /// ancestor each is waiting for. Asking the counterparty for a fresh proof
   /// needs a message the library does not have yet; that is the one part of
   /// the recovery left to the application.
   Future<void> _reportOutputsAwaitingProof(Set<String> leftTheChain) async {
     if (leftTheChain.isEmpty) return;
-    final blocking = await _logOutputsAwaitingProof();
-    await _askArcForProofs(blocking.intersection(leftTheChain));
+    await _logOutputsAwaitingProof();
   }
 
-  /// The same check on a timer ([_ancestorReproofInterval], from the
+  /// The same check on a timer ([_awaitingProofSweepInterval], from the
   /// injectable clock), run from a header notification: an output can be
   /// waiting for a proof that left the chain long before this actor started,
-  /// and a proof ARC did not have then it may have now. One sweep per
-  /// interval, at most [_maxAncestorReproofs] questions to ARC.
+  /// and the outputs it blocks are worth naming again.
   Future<void> _sweepOutputsAwaitingProof() async {
     final now = _clock();
     if (_lastAwaitingProofSweep case final last?
-        when now.difference(last) < _ancestorReproofInterval) {
+        when now.difference(last) < _awaitingProofSweepInterval) {
       return;
     }
     _lastAwaitingProofSweep = now;
-    await _askArcForProofs(await _logOutputsAwaitingProof());
+    await _logOutputsAwaitingProof();
   }
 
   /// When the last sweep ran.
@@ -1913,102 +1909,10 @@ class SPVActor extends Actor {
     return blocking;
   }
 
-  /// Transactions ARC was asked about for a fresh proof, and when: the same
-  /// ancestor is not asked about again within [_ancestorReproofInterval].
-  final Map<String, DateTime> _ancestorReproofAsked = {};
-
-  /// How long before ARC is asked about the same transaction again, and how
-  /// often a header notification sweeps for outputs waiting on a proof
+  /// How often a header notification sweeps for outputs waiting on a proof
   /// (constructor parameter, default 30 minutes; timed by the injectable
   /// clock).
-  final Duration _ancestorReproofInterval;
-
-  /// The most transactions one pass asks ARC about: speculative work, since
-  /// ARC usually does not know a counterparty's transaction.
-  static const int _maxAncestorReproofs = 10;
-
-  /// Ask ARC for a proof of each of [txids] and store the ones that verify
-  /// against our active header chain (bead libspiffy-0lx).
-  ///
-  /// ARCActor checks the BUMP against our headers before answering, and the
-  /// row is only written when it did verify: a proof is never taken on ARC's
-  /// word. An ancestor is not a wallet transaction, so no journal carries its
-  /// proof — this is the one path that writes it. A transaction the wallet
-  /// did record is confirmed from the proof as well
-  /// ([_confirmFromVerifiedProofs]).
-  Future<void> _askArcForProofs(Set<String> txids) async {
-    final arc = _arcActor;
-    if (arc == null || txids.isEmpty) return;
-    final now = _clock();
-    final verified = <String, (MerkleProof, ProofHeaderCheck)>{};
-    var asked = 0;
-    for (final txid in txids) {
-      if (asked >= _maxAncestorReproofs) break;
-      if (_ancestorReproofAsked[txid] case final at? when now.difference(at) < _ancestorReproofInterval) {
-        continue;
-      }
-      _ancestorReproofAsked[txid] = now;
-      asked++;
-      final MerkleProofMessage answer;
-      try {
-        answer = await arc.ask<MerkleProofMessage>(
-          wmsg.RetrieveMerkleProofMessage(txid: txid, walletId: ''),
-          const Duration(seconds: 20),
-        );
-      } catch (e) {
-        _log.info('ARC was asked for a fresh proof of $txid and did not answer: $e');
-        continue;
-      }
-      final proofMap = answer.merkleProof;
-      if (!answer.success || proofMap is! Map) {
-        _log.info('ARC has no proof for $txid (${answer.error ?? 'no proof returned'}); it stays unproven '
-            'until a counterparty supplies one');
-        continue;
-      }
-      final height = proofMap['blockHeight'];
-      final path = proofMap['merklePath'];
-      if (height is! int || path is! List || path.length != 1) {
-        _log.warning('ARC returned a proof for $txid this wallet cannot store: $proofMap');
-        continue;
-      }
-      // Checked here against our own headers, whatever ARC says about it: a
-      // proof is never taken on a service's word.
-      final candidate = MerkleProof(
-        txid: txid,
-        blockHash: null,
-        blockHeight: height,
-        position: 0,
-        merkleProof: [path.single.toString()],
-        status: MerkleProofStatus.pendingHeader,
-      );
-      final check = await checkBumpHexAgainstHeaders(
-        txid: txid,
-        bumpHex: candidate.merkleProof.single,
-        headerAt: _storage.getBlockHeaderByHeight,
-        claimedHeight: height,
-      );
-      if (!check.isVerified || check.txIndex == null) {
-        _log.warning('The proof ARC returned for $txid does not match our own header chain ($check); '
-            'it is not used, and the transaction stays unproven until a counterparty supplies a proof');
-        continue;
-      }
-      final proof = MerkleProof(
-        txid: txid,
-        blockHash: check.blockHash,
-        blockHeight: check.blockHeight ?? height,
-        position: check.txIndex!,
-        merkleProof: candidate.merkleProof,
-        status: MerkleProofStatus.verified,
-      );
-      await _storage.storeMerkleProof(txid, proof);
-      _log.warning('ARC supplied a fresh merkle proof for $txid at height ${proof.blockHeight}; outputs that '
-          'rest on it can be spent again');
-      verified[txid] = (proof, check);
-    }
-    // A transaction of ours among them is confirmed by that proof, the way
-    // any proof on the active chain confirms.
-    if (verified.isNotEmpty) await _confirmFromVerifiedProofs(verified);
-  }
+  final Duration _awaitingProofSweepInterval;
 
   /// The confirmations a revert was sent for: (wallet, txid) -> `updatedAt`
   /// of the confirmed row it was sent for. Later header notifications do not

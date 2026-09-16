@@ -302,6 +302,72 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### Retention, re-proof and imported confirmations
+
+Report section 11, V-63 to V-67; each fix has a regression test shown to fail
+on the previous code.
+
+- **A receive parked for block headers survives a restart (V-63).** The
+  evidence was already durable, but the parked receive itself was in memory,
+  so a restart credited nothing and a 64-entry bound dropped the oldest
+  retry outright. A durable `PendingReceive` row now holds the BEEF as it was
+  handed to us; the replay runs on every header notification and at startup.
+  Reconstructing the receive from the retained ancestor rows was rejected —
+  it cannot recover the target wallet or the invoice, so it would guess at
+  who was paid.
+- **A BEEF refused because a header contradicts its proof is retained
+  (V-64).** A rejected proof records that a counterparty handed us something
+  that does not match our chain, and it cannot be re-fetched. One retention
+  rule now serves the wait-for-headers path and both fatal paths. The receive
+  still fails: this is retention, not acceptance.
+- **An output whose ancestor's block was orphaned now says what it is waiting
+  for (V-65).** `getOutputsAwaitingAncestorProof` names each unspent output
+  that cannot be walked back to a proof and which ancestor blocks it. ARC is
+  asked for a fresh proof — bounded to ten txids a pass and once per txid per
+  interval — and an answer is stored only after its BUMP is checked against
+  our own headers. ARC's `headerVerified` flag is not trusted. Asking a
+  counterparty for a re-proof needs a peer message the library does not have;
+  that remains open.
+- **Outgoing BEEFs merge the BUMPs of ancestors from the same block (V-66).**
+  One multi-leaf BRC-74 BUMP per block instead of a repeated path per
+  ancestor. Grouping is by height *and* computed merkle root, so a fork at
+  one height never merges, and every merge is verified afterwards — any doubt
+  falls back to separate BUMPs, because a bigger BEEF beats an unverifiable
+  one.
+- **A proof for a transaction the wallet received now confirms it in the
+  journal (V-67).** The confirm gate looked only in the outgoing record map,
+  so a received payment stayed unspendable even with a verified proof on our
+  chain, and a read model rebuilt from the journal lost the confirmation.
+  Confirming a receipt makes its outputs spendable and spends none of our
+  inputs.
+
+Breaking changes:
+
+- `ReadModelStorage` gains five members — `storePendingReceive`,
+  `getPendingReceive`, `getPendingReceivesUpToHeight`,
+  `resolvePendingReceive`, `getOutputsAwaitingAncestorProof`. Third-party
+  implementations of the interface must add them; all three in-tree backends
+  do. **Postgres migration v020** adds `pending_receives`; Isar gains
+  `PendingReceiveEntity` (hosts listing schemas by hand must add it).
+- `beef.bumps.length` is no longer the number of proven transactions: several
+  transactions now share a BUMP index. Code counting BUMPs to count proofs
+  must change. The wire format is unchanged BRC-62/BRC-74.
+- A merkle proof for a received transaction now journals a
+  `TransactionConfirmedEvent` and a `UTXOMarkedAvailableEvent` per pending
+  output where it previously journaled nothing, so journal event counts
+  differ and received payments become spendable as soon as a proof arrives.
+- A receive replayed after a restart credits the wallet but emits no
+  coordinator event: the original reply target is gone with the process.
+
+Additive API:
+
+- `PendingReceive`, `OutputAwaitingProof`, `AwaitedAncestorProof`, and
+  `outputsAwaitingAncestorProof(storage, walletId)`.
+- `SPVActor(ancestorReproofInterval:)`.
+- `BeefBumps` in `lib/src/utils/beef.dart`; `AncestorChainService.buildBeef`
+  is now public and is the single outgoing BEEF builder.
+- `OutgoingTransactions.importedRecord(state, txid)`.
+
 ### SPV proof lifecycle
 
 Report section 11, V-57 to V-62; each fix has a regression test shown to fail

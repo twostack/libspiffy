@@ -14,6 +14,9 @@ import '../utils/bump.dart';
 import '../models/invoice_output_spec.dart';
 import 'spv_messages.dart' hide ValidateBEEFMessage, BEEFValidationResult;
 import 'wallet_messages.dart';
+// Both message libraries declare RetrieveMerkleProofMessage; ARCActor handles
+// the one in wallet_messages.dart (bead libspiffy-0lx).
+import 'wallet_messages.dart' as wmsg show RetrieveMerkleProofMessage;
 import 'invoice_messages.dart';
 import '../utils/network_name.dart';
 import '../utils/unique_id.dart';
@@ -65,6 +68,7 @@ class SPVActor extends Actor {
     ActorRef? headerSyncActor,
     String networkType = 'test',
     Duration rejectedProofFullSweepInterval = const Duration(hours: 1),
+    Duration ancestorReproofInterval = const Duration(minutes: 30),
     DateTime Function()? clock,
   }) : _walletManager = walletManager,
        _invoiceCoordinator = invoiceCoordinator,
@@ -73,6 +77,7 @@ class SPVActor extends Actor {
        _arcActor = arcActor,
        _headerSyncActor = headerSyncActor,
        _rejectedProofFullSweepInterval = rejectedProofFullSweepInterval,
+       _ancestorReproofInterval = ancestorReproofInterval,
        _clock = clock ?? DateTime.now;
 
   /// How long a check for confirmations resting only on rejected proofs may
@@ -104,14 +109,19 @@ class SPVActor extends Actor {
   }
 
   /// Loads the chain height, then checks the pendingHeader proofs up to it
-  /// (bead libspiffy-yix): headers that arrived while the node was down, or a
-  /// check a shutdown interrupted, are not left until the next header
-  /// notification. Runs before the first message is handled.
+  /// (bead libspiffy-yix) and replays the receives parked for headers we now
+  /// hold (bead libspiffy-vfai): headers that arrived while the node was
+  /// down, or a check a shutdown interrupted, are not left until the next
+  /// header notification. Runs before the first message is handled.
   @override
   Future<void> preStart() async {
     await _loadCurrentChainState();
     if (_currentHeight > 0) {
       await _recheckUnverifiedProofs(_currentHeight);
+      // Receives parked before the last shutdown whose headers have arrived
+      // since (bead libspiffy-vfai): the wallet is credited without the
+      // counterparty sending the BEEF again.
+      await _replayParkedReceives(_currentHeight);
     }
   }
 
@@ -194,7 +204,13 @@ class SPVActor extends Actor {
 
       if (_awaitingHeaderHeight case final height?) {
         _awaitingHeaderHeight = null;
-        _parkReceive(msg, replyTo, height);
+        await _parkReceive(msg, replyTo, height);
+      } else {
+        // A verdict more headers cannot change: the receive stops waiting
+        // (bead libspiffy-vfai). The row is kept with what became of it.
+        await _resolveParked(msg, validationResult.isValid
+            ? 'recorded'
+            : 'failed: ${validationResult.validationError}');
       }
 
       // Send validation result to WalletManager
@@ -206,6 +222,7 @@ class SPVActor extends Actor {
 
     } catch (e) {
       _awaitingHeaderHeight = null;
+      await _resolveParked(msg, 'failed: $e');
 
       final errorResult = SPVValidationResult(
         txid: msg.transactionId, // Placeholder
@@ -337,6 +354,13 @@ class SPVActor extends Actor {
           final isValidTx = await beef.validateTransactionWithBlockHeader(txid, blockHeader);
 
           if (!isValidTx) {
+            // The header we hold at that height contradicts the subject's own
+            // proof. The receive fails, but the BEEF is kept first (bead
+            // libspiffy-b81q): its transactions and its contradicted BUMPs
+            // are evidence of what a counterparty handed us, and nothing can
+            // hand them to us again.
+            await _retainContradictedBeef(beef, txidHex,
+                'its own merkle proof does not match the header at that height');
             return SPVValidationResult(
               txid: txidHex,
               isValid: false,
@@ -396,7 +420,13 @@ class SPVActor extends Actor {
             final ProvenTransaction member;
             try {
               member = await _verifyProvenMember(beef, i);
-            } on _ProofRejected {
+            } on _ProofRejected catch (rejected) {
+              // A header we hold contradicts this ancestor's proof: fatal,
+              // and it stays fatal. The BEEF is retained first (bead
+              // libspiffy-b81q), transactions and contradicted BUMPs alike,
+              // as the proven-subject branch has done since V-56: a rejected
+              // proof is evidence, and it cannot be fetched again.
+              await _retainContradictedBeef(beef, txidHex, '$rejected');
               return SPVValidationResult(
                 txid: txidHex,
                 isValid: false,
@@ -641,10 +671,25 @@ class SPVActor extends Actor {
   }
 
   /// Store every transaction of [beef] as ancestor evidence and every BUMP
-  /// it carries as a pendingHeader proof (bead libspiffy-68mz).
+  /// it carries as a proof row (beads libspiffy-68mz and libspiffy-b81q).
   ///
-  /// A transaction that already has a current proof keeps it: this never
-  /// displaces a verified proof, and never deletes anything.
+  /// One retention rule for a received BEEF, whatever the verdict on the
+  /// receive: nothing can hand us these transactions and proofs again.
+  /// Each BUMP is filed under the same rule the projection uses for the
+  /// proofs it journals:
+  /// * it verifies against the active header at its height: stored
+  ///   [MerkleProofStatus.verified] with that block's hash;
+  /// * we hold no header there: stored [MerkleProofStatus.pendingHeader], to
+  ///   be checked when the header arrives;
+  /// * the header we hold contradicts it, or it cannot be walked at all:
+  ///   stored [MerkleProofStatus.rejected] — evidence that a counterparty
+  ///   handed us something that does not match our chain, which is exactly
+  ///   what the receive was failed for.
+  ///
+  /// A transaction that already has a current proof keeps it: a verified or
+  /// pendingHeader row is never displaced here, and a rejected row never
+  /// becomes the current proof (`storeMerkleProof` stores it without a block
+  /// hash and leaves the current proof alone). Nothing is ever deleted.
   Future<void> _retainBeef(BEEF beef) async {
     final txids = [for (final tx in beef.txs) hex.encode(beef.calculateTxid(tx))];
     for (var i = 0; i < beef.txs.length; i++) {
@@ -652,7 +697,7 @@ class SPVActor extends Actor {
     }
     final current = await _storage.getMerkleProofsBatch(txids);
     for (var i = 0; i < beef.txs.length; i++) {
-      if (!beef.hasMerkle[i] || current.containsKey(txids[i])) continue;
+      if (!beef.hasMerkle[i]) continue;
       final BUMP bump;
       try {
         bump = _bumpFor(beef, i);
@@ -665,18 +710,50 @@ class SPVActor extends Actor {
         bump: bump,
         headerAt: _storage.getBlockHeaderByHeight,
       );
-      // Only a proof we genuinely cannot judge is filed as pendingHeader; a
-      // malformed one proves nothing ever, and a contradicted one never
-      // reaches here (it fails the receive).
-      if (check.status != ProofHeaderStatus.headerUnknown || check.txIndex == null) continue;
+      if (check.txIndex == null) {
+        // The BUMP does not place this txid in a block at all: there is no
+        // row to write (a proof row is keyed by its position).
+        _log.warning('BUMP of ${txids[i]} not retained: it does not prove that transaction ($check)');
+        continue;
+      }
+      final MerkleProofStatus status;
+      switch (check.status) {
+        case ProofHeaderStatus.verified:
+        case ProofHeaderStatus.headerUnknown:
+          // Never displace the transaction's current proof.
+          if (current.containsKey(txids[i])) continue;
+          status = check.isVerified ? MerkleProofStatus.verified : MerkleProofStatus.pendingHeader;
+        case ProofHeaderStatus.rootMismatch:
+        case ProofHeaderStatus.malformed:
+          status = MerkleProofStatus.rejected;
+      }
       await _storage.storeMerkleProof(txids[i], MerkleProof(
         txid: txids[i],
-        blockHash: null,
+        blockHash: check.isVerified ? check.blockHash : null,
         blockHeight: bump.blockHeight,
         position: check.txIndex!,
         merkleProof: [bump.toHex()],
-        status: MerkleProofStatus.pendingHeader,
+        status: status,
       ));
+    }
+  }
+
+  /// A BEEF whose proof our own header chain contradicts (bead
+  /// libspiffy-b81q). The receive fails — that is not in question — but the
+  /// evidence is kept first: the transactions go to the ancestor store and
+  /// the contradicted BUMPs are filed as rejected proof rows, which is what
+  /// the proven-subject branch has done since V-56 (through the journal).
+  /// A rejected row never displaces a verified one.
+  ///
+  /// Retention must never turn a bad receive into a good one, so a failure
+  /// here is logged and the receive still fails.
+  Future<void> _retainContradictedBeef(BEEF beef, String txidHex, String reason) async {
+    try {
+      await _retainBeef(beef);
+      _log.warning('The receive of $txidHex is refused ($reason); its transactions and its '
+          'contradicted proof(s) are retained as evidence');
+    } catch (e, st) {
+      _log.severe('Failed to retain the BEEF carrying $txidHex after refusing it ($reason): $e', e, st);
     }
   }
 
@@ -687,39 +764,138 @@ class SPVActor extends Actor {
   /// the next one is taken from the mailbox.
   int? _awaitingHeaderHeight;
 
-  /// Receives waiting for a block header ([_retainUntilHeaders]).
-  final List<_ParkedReceive> _parkedReceives = [];
+  /// The reply targets of the receives this process parked, by
+  /// [_parkKey]. In memory only: an ActorRef cannot be stored, and after a
+  /// restart there is nobody left waiting for an answer. The receive itself
+  /// is durable ([PendingReceive]), so losing an entry here loses the direct
+  /// reply, never the retry.
+  final Map<String, ActorRef> _parkedSenders = {};
 
-  /// How many receives may wait for headers at once. Beyond this the oldest
-  /// is dropped from the queue — its transactions and proofs are already
-  /// retained in storage, so no evidence is lost, only the automatic retry.
-  static const int _maxParkedReceives = 64;
+  /// The receives this process parked or replayed ([_parkKey]), so a verdict
+  /// on one of them resolves its stored row and a fresh delivery that never
+  /// waited writes nothing.
+  final Set<String> _parkedKeys = {};
 
-  void _parkReceive(ReceiveTransactionMessage msg, ActorRef? sender, int neededHeight) {
-    _parkedReceives.removeWhere((p) => p.msg.transactionId == msg.transactionId &&
-        p.msg.targetWalletId == msg.targetWalletId);
-    _parkedReceives.add(_ParkedReceive(msg, sender, neededHeight));
-    while (_parkedReceives.length > _maxParkedReceives) {
-      final dropped = _parkedReceives.removeAt(0);
-      _log.warning('More than $_maxParkedReceives receives are waiting for block headers; '
-          '${dropped.msg.transactionId} is no longer retried automatically (its transactions and '
-          'proofs are retained; deliver it again once headers reach ${dropped.neededHeight})');
+  /// How many reply targets are remembered. Beyond this the oldest is
+  /// forgotten: its receive is still replayed from storage, and its result
+  /// still reaches the wallet manager, but the original caller is not told.
+  static const int _maxParkedSenders = 64;
+
+  /// How many parked receives one header notification replays. The rest are
+  /// read by the next notification (and at the next start), so the bound
+  /// costs time, never a receive.
+  static const int _maxReplayedPerNotification = 64;
+
+  /// Key of a parked receive: the wallet it names (empty for none) and the
+  /// subject txid, exactly as [PendingReceive] is keyed.
+  static String _parkKey(String? walletId, String txid) => '${walletId ?? ''}|$txid';
+
+  /// Park [msg] until headers reach [neededHeight] (bead libspiffy-vfai).
+  ///
+  /// The receive is stored as it was handed to us, so the header arriving
+  /// after a restart still credits the wallet: nothing can ask the
+  /// counterparty to send the BEEF again. Re-parking the same (wallet, txid)
+  /// updates that row rather than queueing it twice, so a BEEF delivered
+  /// twice is replayed once.
+  Future<void> _parkReceive(ReceiveTransactionMessage msg, ActorRef? sender, int neededHeight) async {
+    final key = _parkKey(msg.targetWalletId, msg.transactionId);
+    _parkedKeys.add(key);
+    if (sender != null) {
+      _parkedSenders[key] = sender;
+      while (_parkedSenders.length > _maxParkedSenders) {
+        final dropped = _parkedSenders.keys.first;
+        _parkedSenders.remove(dropped);
+        _log.info('More than $_maxParkedSenders receives are waiting for block headers; the caller that '
+            'delivered $dropped is no longer told its outcome directly (the receive itself is stored '
+            'and still replayed when the headers arrive)');
+      }
+    }
+    final now = DateTime.now();
+    try {
+      await _storage.storePendingReceive(PendingReceive(
+        walletId: msg.targetWalletId ?? '',
+        txid: msg.transactionId,
+        beefHex: hex.encode(msg.beef.serialize()),
+        fromCounterparty: msg.fromCounterparty,
+        invoiceId: msg.invoiceId,
+        neededHeight: neededHeight,
+        createdAt: now,
+        updatedAt: now,
+      ));
+    } catch (e, st) {
+      _log.severe('The receive of ${msg.transactionId} waiting for the header at height $neededHeight '
+          'could not be stored: it is retried only while this process lives ($e)', e, st);
+      _parkedSendersFallback[key] = (msg, sender, neededHeight);
+    }
+  }
+
+  /// Receives that could not be stored (the storage refused): retried from
+  /// memory, so a storage failure is not also a lost retry.
+  final Map<String, (ReceiveTransactionMessage, ActorRef?, int)> _parkedSendersFallback = {};
+
+  /// Record what became of the receive of [msg], if it was parked. Keeps the
+  /// row (evidence of what a counterparty handed us) and stops it being
+  /// replayed by every later header.
+  Future<void> _resolveParked(ReceiveTransactionMessage msg, String resolution) async {
+    final key = _parkKey(msg.targetWalletId, msg.transactionId);
+    _parkedSendersFallback.remove(key);
+    // Only a receive this process parked or replayed can have a row; a fresh
+    // delivery that never waited costs no write.
+    if (!_parkedKeys.remove(key)) return;
+    try {
+      await _storage.resolvePendingReceive(
+          msg.targetWalletId ?? '', msg.transactionId, resolution);
+    } catch (e) {
+      _log.warning('Could not record the outcome of the parked receive of ${msg.transactionId}: $e');
     }
   }
 
   /// Replays the receives parked for headers up to [height]
-  /// (bead libspiffy-68mz). Each runs the full validation again, so a BEEF
-  /// whose proofs now check out is recorded exactly as a fresh delivery
-  /// would be, without the counterparty re-sending.
+  /// (beads libspiffy-68mz and libspiffy-vfai). Each runs the full validation
+  /// again, so a BEEF whose proofs now check out is recorded exactly as a
+  /// fresh delivery would be, without the counterparty re-sending — after a
+  /// restart too, since the parked receives are read from storage.
   Future<void> _replayParkedReceives(int height) async {
-    if (_parkedReceives.isEmpty) return;
-    final ready = [for (final p in _parkedReceives) if (p.neededHeight <= height) p];
-    if (ready.isEmpty) return;
-    _parkedReceives.removeWhere(ready.contains);
-    for (final parked in ready) {
-      _log.info('Block headers reached $height: retrying the retained receive of '
-          '${parked.msg.transactionId}');
-      await _runReceive(parked.msg, parked.sender);
+    final List<PendingReceive> waiting;
+    try {
+      waiting = await _storage.getPendingReceivesUpToHeight(height, limit: _maxReplayedPerNotification);
+    } catch (e, st) {
+      _log.warning('Could not read the receives waiting for block headers up to $height: $e', e, st);
+      return;
+    }
+    final fallback = [
+      for (final entry in _parkedSendersFallback.entries.toList())
+        if (entry.value.$3 <= height) entry,
+    ];
+    if (waiting.isEmpty && fallback.isEmpty) return;
+
+    for (final row in waiting) {
+      final ReceiveTransactionMessage msg;
+      try {
+        msg = ReceiveTransactionMessage(
+          transactionId: row.txid,
+          beef: BEEF.parse(Uint8List.fromList(hex.decode(row.beefHex))),
+          fromCounterparty: row.fromCounterparty,
+          targetWalletId: row.walletId.isEmpty ? null : row.walletId,
+          invoiceId: row.invoiceId,
+        );
+      } catch (e) {
+        _log.severe('The stored BEEF of the parked receive of ${row.txid} does not parse: $e');
+        await _storage.resolvePendingReceive(row.walletId, row.txid, 'the stored BEEF does not parse: $e');
+        continue;
+      }
+      _log.info('Block headers reached $height: retrying the retained receive of ${row.txid}');
+      final key = _parkKey(msg.targetWalletId, row.txid);
+      _parkedKeys.add(key);
+      await _runReceive(msg, _parkedSenders.remove(key));
+    }
+
+    for (final entry in fallback) {
+      final (msg, sender, _) = entry.value;
+      _parkedSendersFallback.remove(entry.key);
+      _log.info('Block headers reached $height: retrying the receive of ${msg.transactionId} '
+          'that could not be stored');
+      await _runReceive(msg, sender);
     }
   }
 
@@ -1304,9 +1480,14 @@ class SPVActor extends Actor {
       }
 
       // A BEEF held back because we had no header at a proof's height is
-      // judged now (bead libspiffy-68mz): the counterparty does not have to
-      // deliver it again.
+      // judged now (beads libspiffy-68mz, libspiffy-vfai): the counterparty
+      // does not have to deliver it again.
       await _replayParkedReceives(msg.height);
+
+      // Outputs that cannot be proven because an ancestor's proof left the
+      // active chain (bead libspiffy-0lx): logged, and ARC asked once per
+      // interval whether it has a fresh proof.
+      await _sweepOutputsAwaitingProof();
 
       // CRITICAL: Trigger check of pending UTXOs with Arc
       // This is the key link between receiving block headers and checking
@@ -1369,6 +1550,10 @@ class SPVActor extends Actor {
     _currentHeight = msg.newTipHeight;
     final reverted = <String>[];
     final revertedRows = <(String, String)>{}; // (wallet, txid)
+    // The transactions whose proof left the active chain here: outputs of
+    // ours that are only provable through one of them cannot be spent until
+    // a fresh proof arrives (bead libspiffy-0lx).
+    final leftTheChain = <String>{};
     try {
       final orphaned = msg.orphanedBlockHashes.toSet();
       final onOrphanedBlocks = <String, MerkleProof>{};
@@ -1427,6 +1612,7 @@ class SPVActor extends Actor {
           } else {
             await _markOrphaned(proof);
           }
+          leftTheChain.add(proof.txid);
         }
         _revertConfirmation(entry.key, walletIds, proof, reason);
         _noteReverted(entry.value);
@@ -1439,7 +1625,10 @@ class SPVActor extends Actor {
       // must still say its block left the active chain.
       for (final proof in onOrphanedBlocks.values) {
         if (candidates.containsKey(proof.txid)) continue;
-        if (await _recheckProof(proof) != null) await _markOrphaned(proof);
+        if (await _recheckProof(proof) != null) {
+          await _markOrphaned(proof);
+          leftTheChain.add(proof.txid);
+        }
       }
 
       if (reverted.isNotEmpty) {
@@ -1454,6 +1643,7 @@ class SPVActor extends Actor {
     // current proof was just orphaned may be proven again by an older proof
     // (its rows still read confirmed until the revert above is applied).
     await _reviveProofs(msg.forkHeight + 1, msg.newTipHeight, justReverted: revertedRows);
+    await _reportOutputsAwaitingProof(leftTheChain);
   }
 
   /// Orphaned and rejected proofs at heights [fromHeight]..[toHeight], whose
@@ -1646,6 +1836,178 @@ class SPVActor extends Actor {
     // The rows of the txids just reverted were read above: every confirmed
     // one was reverted, so they are not read again.
     await _revertRejectedConfirmations(alreadyReverted: reverted.toSet());
+    // A proof the arriving header contradicts leaves outputs that rest on it
+    // unprovable (bead libspiffy-0lx).
+    await _reportOutputsAwaitingProof(reverted.toSet());
+  }
+
+  /// A proof left the active header chain, so outputs that can only be
+  /// proven through it cannot be spent until a fresh proof for it arrives
+  /// (bead libspiffy-0lx).
+  ///
+  /// The model allows exactly three ways for that proof to come, and none of
+  /// them is a block scan:
+  /// * the reorganization puts the block back, or the transaction is mined
+  ///   again in a block whose header we hold — [_reviveProofs] and
+  ///   [_recheckUnverifiedProofs] restore the proof from the row we kept;
+  /// * a later BEEF carries a fresh BUMP for it, which the receive path
+  ///   stores;
+  /// * ARC answers for it. ARC's only proof endpoint is
+  ///   `GET /v1/tx/{txid}` (`ArcService.getMerkleProof`), which is not
+  ///   restricted to transactions we broadcast — but an ARC instance answers
+  ///   only for transactions it knows, so a counterparty's ancestor is
+  ///   usually `NOT_FOUND`. It is worth one bounded question each time a
+  ///   proof leaves the chain, and the answer is checked against our own
+  ///   headers before anything rests on it.
+  ///
+  /// Until then the wallet must *say* it is waiting instead of holding an
+  /// output that quietly cannot be paid with: every affected output is
+  /// logged, and
+  /// [ReadModelStorage.getOutputsAwaitingAncestorProof] lists them with the
+  /// ancestor each is waiting for. Asking the counterparty for a fresh proof
+  /// needs a message the library does not have yet; that is the one part of
+  /// the recovery left to the application.
+  Future<void> _reportOutputsAwaitingProof(Set<String> leftTheChain) async {
+    if (leftTheChain.isEmpty) return;
+    final blocking = await _logOutputsAwaitingProof();
+    await _askArcForProofs(blocking.intersection(leftTheChain));
+  }
+
+  /// The same check on a timer ([_ancestorReproofInterval], from the
+  /// injectable clock), run from a header notification: an output can be
+  /// waiting for a proof that left the chain long before this actor started,
+  /// and a proof ARC did not have then it may have now. One sweep per
+  /// interval, at most [_maxAncestorReproofs] questions to ARC.
+  Future<void> _sweepOutputsAwaitingProof() async {
+    final now = _clock();
+    if (_lastAwaitingProofSweep case final last?
+        when now.difference(last) < _ancestorReproofInterval) {
+      return;
+    }
+    _lastAwaitingProofSweep = now;
+    await _askArcForProofs(await _logOutputsAwaitingProof());
+  }
+
+  /// When the last sweep ran.
+  DateTime? _lastAwaitingProofSweep;
+
+  /// Logs every wallet output waiting for a fresh ancestor proof and returns
+  /// the ancestors they are waiting on. Reads each wallet's unspent UTXO rows
+  /// and the proofs and raw transactions on the way back to a proof.
+  Future<Set<String>> _logOutputsAwaitingProof() async {
+    final blocking = <String>{};
+    try {
+      for (final walletId in await _storage.listWallets()) {
+        final awaiting = await _storage.getOutputsAwaitingAncestorProof(walletId);
+        if (awaiting.isEmpty) continue;
+        final waitingOn = {for (final output in awaiting) for (final a in output.ancestors) a.txid};
+        blocking.addAll(waitingOn);
+        _log.warning('${awaiting.length} output(s) of wallet $walletId cannot be spent until a fresh merkle '
+            'proof arrives for ${waitingOn.toList()}: ${[for (final o in awaiting) o.outpoint]}. '
+            'Ask the counterparty that supplied them for a new BEEF, or wait for the block to come back; '
+            'ReadModelStorage.getOutputsAwaitingAncestorProof lists them.');
+      }
+    } catch (e, st) {
+      _log.warning('Could not work out which outputs are waiting for a fresh proof: $e', e, st);
+    }
+    return blocking;
+  }
+
+  /// Transactions ARC was asked about for a fresh proof, and when: the same
+  /// ancestor is not asked about again within [_ancestorReproofInterval].
+  final Map<String, DateTime> _ancestorReproofAsked = {};
+
+  /// How long before ARC is asked about the same transaction again, and how
+  /// often a header notification sweeps for outputs waiting on a proof
+  /// (constructor parameter, default 30 minutes; timed by the injectable
+  /// clock).
+  final Duration _ancestorReproofInterval;
+
+  /// The most transactions one pass asks ARC about: speculative work, since
+  /// ARC usually does not know a counterparty's transaction.
+  static const int _maxAncestorReproofs = 10;
+
+  /// Ask ARC for a proof of each of [txids] and store the ones that verify
+  /// against our active header chain (bead libspiffy-0lx).
+  ///
+  /// ARCActor checks the BUMP against our headers before answering, and the
+  /// row is only written when it did verify: a proof is never taken on ARC's
+  /// word. An ancestor is not a wallet transaction, so no journal carries its
+  /// proof — this is the one path that writes it. A transaction the wallet
+  /// did record is confirmed from the proof as well
+  /// ([_confirmFromVerifiedProofs]).
+  Future<void> _askArcForProofs(Set<String> txids) async {
+    final arc = _arcActor;
+    if (arc == null || txids.isEmpty) return;
+    final now = _clock();
+    final verified = <String, (MerkleProof, ProofHeaderCheck)>{};
+    var asked = 0;
+    for (final txid in txids) {
+      if (asked >= _maxAncestorReproofs) break;
+      if (_ancestorReproofAsked[txid] case final at? when now.difference(at) < _ancestorReproofInterval) {
+        continue;
+      }
+      _ancestorReproofAsked[txid] = now;
+      asked++;
+      final MerkleProofMessage answer;
+      try {
+        answer = await arc.ask<MerkleProofMessage>(
+          wmsg.RetrieveMerkleProofMessage(txid: txid, walletId: ''),
+          const Duration(seconds: 20),
+        );
+      } catch (e) {
+        _log.info('ARC was asked for a fresh proof of $txid and did not answer: $e');
+        continue;
+      }
+      final proofMap = answer.merkleProof;
+      if (!answer.success || proofMap is! Map) {
+        _log.info('ARC has no proof for $txid (${answer.error ?? 'no proof returned'}); it stays unproven '
+            'until a counterparty supplies one');
+        continue;
+      }
+      final height = proofMap['blockHeight'];
+      final path = proofMap['merklePath'];
+      if (height is! int || path is! List || path.length != 1) {
+        _log.warning('ARC returned a proof for $txid this wallet cannot store: $proofMap');
+        continue;
+      }
+      // Checked here against our own headers, whatever ARC says about it: a
+      // proof is never taken on a service's word.
+      final candidate = MerkleProof(
+        txid: txid,
+        blockHash: null,
+        blockHeight: height,
+        position: 0,
+        merkleProof: [path.single.toString()],
+        status: MerkleProofStatus.pendingHeader,
+      );
+      final check = await checkBumpHexAgainstHeaders(
+        txid: txid,
+        bumpHex: candidate.merkleProof.single,
+        headerAt: _storage.getBlockHeaderByHeight,
+        claimedHeight: height,
+      );
+      if (!check.isVerified || check.txIndex == null) {
+        _log.warning('The proof ARC returned for $txid does not match our own header chain ($check); '
+            'it is not used, and the transaction stays unproven until a counterparty supplies a proof');
+        continue;
+      }
+      final proof = MerkleProof(
+        txid: txid,
+        blockHash: check.blockHash,
+        blockHeight: check.blockHeight ?? height,
+        position: check.txIndex!,
+        merkleProof: candidate.merkleProof,
+        status: MerkleProofStatus.verified,
+      );
+      await _storage.storeMerkleProof(txid, proof);
+      _log.warning('ARC supplied a fresh merkle proof for $txid at height ${proof.blockHeight}; outputs that '
+          'rest on it can be spent again');
+      verified[txid] = (proof, check);
+    }
+    // A transaction of ours among them is confirmed by that proof, the way
+    // any proof on the active chain confirms.
+    if (verified.isNotEmpty) await _confirmFromVerifiedProofs(verified);
   }
 
   /// The confirmations a revert was sent for: (wallet, txid) -> `updatedAt`
@@ -2304,15 +2666,6 @@ class _ProofRejected implements Exception {
 
   @override
   String toString() => reason;
-}
-
-/// A receive waiting for the block header at [neededHeight]
-/// ([SPVActor._retainUntilHeaders], bead libspiffy-68mz).
-class _ParkedReceive {
-  final ReceiveTransactionMessage msg;
-  final ActorRef? sender;
-  final int neededHeight;
-  _ParkedReceive(this.msg, this.sender, this.neededHeight);
 }
 
 /// We hold no block header at [blockHeight] and none could be fetched

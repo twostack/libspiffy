@@ -231,6 +231,7 @@ _balanceCache.remove(walletId);
     _walletInvoices.remove(walletId);
     _deferredPayments.remove(walletId);
     _deferredPaymentsByState.remove(walletId);
+    _pendingReceives.remove(walletId);
 
     // Drop the wallet from the txid index (other wallets keep their rows)
     if (txids != null) {
@@ -962,6 +963,70 @@ _balanceCache.remove(walletId);
     };
   }
 
+  @override
+  Future<List<OutputAwaitingProof>> getOutputsAwaitingAncestorProof(
+    String walletId, {
+    int maxDepth = 20,
+  }) =>
+      outputsAwaitingAncestorProof(this, walletId, maxDepth: maxDepth);
+
+  // ========================================
+  // Parked receives (bead libspiffy-vfai)
+  // ========================================
+
+  /// walletId -> txid -> parked receive.
+  final Map<String, Map<String, PendingReceive>> _pendingReceives = {};
+
+  @override
+  Future<void> storePendingReceive(PendingReceive receive) async {
+    final rows = _pendingReceives.putIfAbsent(receive.walletId, () => {});
+    final previous = rows[receive.txid];
+    rows[receive.txid] = previous == null
+        ? receive
+        : PendingReceive(
+            walletId: receive.walletId,
+            txid: receive.txid,
+            beefHex: receive.beefHex,
+            fromCounterparty: receive.fromCounterparty,
+            invoiceId: receive.invoiceId,
+            neededHeight: receive.neededHeight,
+            createdAt: previous.createdAt,
+            updatedAt: receive.updatedAt,
+            resolvedAt: receive.resolvedAt,
+            resolution: receive.resolution,
+          );
+  }
+
+  @override
+  Future<PendingReceive?> getPendingReceive(String walletId, String txid) async =>
+      _pendingReceives[walletId]?[txid];
+
+  @override
+  Future<List<PendingReceive>> getPendingReceivesUpToHeight(int height, {int limit = 64}) async {
+    if (limit <= 0) throw ArgumentError.value(limit, 'limit', 'must be positive');
+    final waiting = [
+      for (final rows in _pendingReceives.values)
+        for (final row in rows.values)
+          if (row.isWaiting && row.neededHeight <= height) row,
+    ]..sort((a, b) {
+        final byTime = a.createdAt.compareTo(b.createdAt);
+        return byTime != 0 ? byTime : a.txid.compareTo(b.txid);
+      });
+    return waiting.take(limit).toList();
+  }
+
+  @override
+  Future<bool> resolvePendingReceive(String walletId, String txid, String resolution, {DateTime? at}) async {
+    final row = _pendingReceives[walletId]?[txid];
+    if (row == null || !row.isWaiting) return false;
+    _pendingReceives[walletId]![txid] = row.copyWith(
+      resolvedAt: at ?? DateTime.now(),
+      resolution: resolution,
+      updatedAt: at ?? DateTime.now(),
+    );
+    return true;
+  }
+
   // ========================================
   // Deferred payments (bead libspiffy-7p2)
   // ========================================
@@ -1345,6 +1410,7 @@ _balanceCache.remove(walletId);
     _ancestorTransactions.clear();
     _deferredPayments.clear();
     _deferredPaymentsByState.clear();
+    _pendingReceives.clear();
     _balanceCache.clear();
     _walletIds.clear();
     _invoices.clear();

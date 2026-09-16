@@ -37,6 +37,7 @@ class LibSpiffySchemas {
       BlockHeaderEntitySchema,
       MerkleProofEntitySchema,
       AncestorTransactionEntitySchema,
+      PendingReceiveEntitySchema,
       DeferredPaymentEntitySchema,
       BitcoinUtxoEntitySchema,
       BitcoinTransactionEntitySchema,
@@ -291,6 +292,72 @@ class AncestorTransactionEntity {
   late DateTime createdAt;
 
   AncestorTransactionEntity();
+}
+
+/// A receive parked until the block header(s) its merkle proof(s) need arrive
+/// (bead libspiffy-vfai): the BEEF exactly as a counterparty handed it to us,
+/// so the wallet is still credited when the header lands after a restart.
+/// Keyed by (walletId, txid); rows are never deleted except with their wallet.
+@collection
+class PendingReceiveEntity {
+  Id id = Isar.autoIncrement;
+
+  /// The wallet the receive is for; empty when it names none.
+  @Index(unique: true, replace: true, composite: [CompositeIndex('txid')])
+  late String walletId;
+
+  late String txid;
+
+  /// The BEEF as received, hex encoded.
+  late String beefHex;
+
+  /// Who handed it to us.
+  late String fromCounterparty;
+
+  String? invoiceId;
+
+  /// The highest block height a proof in the BEEF needs. The replay reads the
+  /// waiting rows at or below the chain height through this index.
+  @Index(composite: [CompositeIndex('neededHeight')])
+  late bool waiting;
+
+  late int neededHeight;
+
+  late DateTime createdAt;
+
+  late DateTime updatedAt;
+
+  DateTime? resolvedAt;
+
+  String? resolution;
+
+  PendingReceiveEntity();
+
+  factory PendingReceiveEntity.fromDomain(PendingReceive receive) => PendingReceiveEntity()
+    ..walletId = receive.walletId
+    ..txid = receive.txid
+    ..beefHex = receive.beefHex
+    ..fromCounterparty = receive.fromCounterparty
+    ..invoiceId = receive.invoiceId
+    ..waiting = receive.isWaiting
+    ..neededHeight = receive.neededHeight
+    ..createdAt = receive.createdAt
+    ..updatedAt = receive.updatedAt
+    ..resolvedAt = receive.resolvedAt
+    ..resolution = receive.resolution;
+
+  PendingReceive toDomain() => PendingReceive(
+        walletId: walletId,
+        txid: txid,
+        beefHex: beefHex,
+        fromCounterparty: fromCounterparty,
+        invoiceId: invoiceId,
+        neededHeight: neededHeight,
+        createdAt: createdAt,
+        updatedAt: updatedAt,
+        resolvedAt: resolvedAt,
+        resolution: resolution,
+      );
 }
 
 /// A deferred payment (bead libspiffy-7p2): an outgoing transaction recorded

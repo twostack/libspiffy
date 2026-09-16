@@ -42,8 +42,23 @@ class OutgoingTransactions {
   /// The outgoing-transaction record of [txid] in [state], or null when the
   /// wallet did not record it ([applyRecorded]; a list-shaped record from
   /// older state included).
-  static Map<dynamic, dynamic>? outgoingRecord(WalletState state, String txid) {
-    final records = state.metadata[_outgoingTransactionsKey];
+  static Map<dynamic, dynamic>? outgoingRecord(WalletState state, String txid) =>
+      _recordOf(state, _outgoingTransactionsKey, txid);
+
+  /// The imported-transaction record of [txid] in [state], or null when the
+  /// wallet did not receive it ([applyImported]; a list-shaped record from
+  /// older state included).
+  ///
+  /// A received transaction is one the wallet recorded, in the other
+  /// direction: it creates wallet outputs and spends none of ours. Bead
+  /// libspiffy-73bj — a merkle proof confirms it exactly as it confirms a
+  /// payment we sent.
+  static Map<dynamic, dynamic>? importedRecord(WalletState state, String txid) =>
+      _recordOf(state, _importedTransactionsKey, txid);
+
+  /// The record of [txid] under metadata[[key]] in [state], or null.
+  static Map<dynamic, dynamic>? _recordOf(WalletState state, String key, String txid) {
+    final records = state.metadata[key];
     if (records is Map) {
       final record = records[txid];
       return record is Map ? record : (records.containsKey(txid) ? const {} : null);
@@ -401,11 +416,19 @@ class OutgoingTransactions {
   /// from the moment the proof reaches us. A UTXO that is already available
   /// or spent is left alone.
   ///
+  /// A transaction the wallet RECEIVED is confirmed the same way (bead
+  /// libspiffy-73bj), and only the second half applies: it creates wallet
+  /// outputs and spends nothing of ours, so no input is spent (an imported
+  /// record lists no spent UTXO keys) and its pending outputs become
+  /// spendable. A proof is a proof wherever it reaches us — in the BEEF that
+  /// paid us, re-delivered once the payment is mined, or as an ancestor of a
+  /// later transaction that spends it.
+  ///
   /// With [ConfirmTransactionCommand.onlyIfRecorded] nothing is journaled
-  /// unless the wallet recorded the transaction itself and has not confirmed
-  /// it yet: the confirmation then comes from a proof nobody asked for (a
-  /// BUMP in a received BEEF), which mostly proves other people's
-  /// transactions, and the same BEEF may arrive twice.
+  /// unless the wallet recorded the transaction itself — sent or received —
+  /// and has not confirmed it yet: the confirmation then comes from a proof
+  /// nobody asked for (a BUMP in a received BEEF), which mostly proves other
+  /// people's transactions, and the same BEEF may arrive twice.
   static List<Event> confirm(WalletState currentState, ConfirmTransactionCommand command) {
     // Business rule: Wallet must exist
     if (!currentState.isCreated) {
@@ -413,7 +436,10 @@ class OutgoingTransactions {
     }
 
     if (command.onlyIfRecorded) {
-      final record = outgoingRecord(currentState, command.txid);
+      // What the wallet sent, else what it received: a transaction that is
+      // both keeps the outgoing record's verdict, since that one also spends
+      // inputs.
+      final record = outgoingRecord(currentState, command.txid) ?? importedRecord(currentState, command.txid);
       if (record == null || record['status'] == 'confirmed') {
         _log.fine('Proof for ${command.txid} offered to wallet ${command.walletId}: '
             '${record == null ? 'not a transaction this wallet recorded' : 'already confirmed'}; nothing journaled');
@@ -575,13 +601,19 @@ class OutgoingTransactions {
   static void applyImported(WalletStateBuilder state, TransactionImportedEvent event) {
     // Store imported transaction in metadata (for audit/history). Records
     // keep first-import order. A repeated import of the same txid keeps the
-    // first import time and takes the latest block height.
+    // first import time and takes the latest block height — unless a merkle
+    // proof already confirmed it (bead libspiffy-73bj): a re-delivery
+    // without a proof carries block height 0 and must not lower the height
+    // the proof established, the same rule bead libspiffy-7dj gives the read
+    // model's row. Records written before 73bj carry no 'status', so older
+    // journals keep taking the latest height as they always did.
     final records = _transactionRecords(state, _importedTransactionsKey);
     final existing = records[event.txid];
     final PersistentMap<String, dynamic> record;
     if (existing is Map) {
+      final confirmed = existing['status'] == 'confirmed';
       record = frozenRecord(existing)
-          .put('blockHeight', event.blockHeight)
+          .put('blockHeight', confirmed ? existing['blockHeight'] : event.blockHeight)
           .put('lastImportedAt', event.timestamp.toIso8601String());
     } else {
       record = freezeMap(<String, dynamic>{
@@ -629,12 +661,18 @@ class OutgoingTransactions {
   /// returns to pending on release); spent UTXOs are left alone.
   static void applyConfirmationReverted(WalletStateBuilder state, TransactionConfirmationRevertedEvent event) {
     DeferredPayments.applyConfirmationReverted(state, event.txid);
-    final records = _transactionRecords(state, _outgoingTransactionsKey);
-    final record = records[event.txid];
-    if (record is Map && record['status'] == 'confirmed') {
+    // Both records, so a received transaction whose block left the chain can
+    // be confirmed again when a proof puts it back (bead libspiffy-73bj). A
+    // record that never reached 'confirmed' is left exactly as it is, so
+    // older journals revert nothing they did not revert before.
+    for (final key in const [_outgoingTransactionsKey, _importedTransactionsKey]) {
+      if (state.metadata[key] == null) continue; // no records of that kind to revert
+      final records = _transactionRecords(state, key);
+      final record = records[event.txid];
+      if (record is! Map || record['status'] != 'confirmed') continue;
       final reverted =
           frozenRecord(record).put('status', 'pending').without('blockHeight').without('blockHash').without('confirmedAt');
-      state.metadata = state.metadata.put(_outgoingTransactionsKey, records.put(event.txid, reverted));
+      state.metadata = state.metadata.put(key, records.put(event.txid, reverted));
     }
 
     for (final entry in state.utxos.entries.toList()) {
@@ -671,16 +709,23 @@ class OutgoingTransactions {
 
   static void applyConfirmed(WalletStateBuilder state, TransactionConfirmedEvent event) {
     DeferredPayments.applyConfirmed(state, event.txid, event.timestamp);
-    // Update transaction status from PENDING to CONFIRMED
-    final records = _transactionRecords(state, _outgoingTransactionsKey);
-    final record = records[event.txid];
-    if (record is Map) {
+    // Update transaction status from PENDING to CONFIRMED, in whichever
+    // record the wallet keeps of the transaction: the one it sent, the one
+    // it received, or both (bead libspiffy-73bj). A record written before
+    // that bead carries no 'status', so replaying an older journal reaches
+    // the same decisions it always did; the imported record simply gains the
+    // confirmation the write model used to drop.
+    for (final key in const [_outgoingTransactionsKey, _importedTransactionsKey]) {
+      if (state.metadata[key] == null) continue; // no records of that kind to update
+      final records = _transactionRecords(state, key);
+      final record = records[event.txid];
+      if (record is! Map) continue;
       final confirmed = frozenRecord(record)
           .put('status', 'confirmed')
           .put('blockHeight', event.blockHeight)
           .put('blockHash', event.blockHash)
           .put('confirmedAt', event.timestamp.toIso8601String());
-      state.metadata = state.metadata.put(_outgoingTransactionsKey, records.put(event.txid, confirmed));
+      state.metadata = state.metadata.put(key, records.put(event.txid, confirmed));
     }
 
     state.version = event.version;

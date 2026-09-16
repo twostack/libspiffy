@@ -1771,6 +1771,116 @@ class PostgresWalletStorage implements ReadModelStorage {
     return {for (final row in result) row[0] as String: row[1] as String};
   }
 
+  @override
+  Future<List<OutputAwaitingProof>> getOutputsAwaitingAncestorProof(
+    String walletId, {
+    int maxDepth = 20,
+  }) =>
+      outputsAwaitingAncestorProof(this, walletId, maxDepth: maxDepth);
+
+  // ============================================================================
+  // Parked receives (bead libspiffy-vfai, migration v020)
+  // ============================================================================
+
+  static const _pendingReceiveColumns = '''
+    wallet_id, txid, beef_hex, from_counterparty, invoice_id, needed_height,
+    created_at, updated_at, resolved_at, resolution
+  ''';
+
+  static PendingReceive _pendingReceiveOf(List<dynamic> row) => PendingReceive(
+        walletId: row[0] as String,
+        txid: row[1] as String,
+        beefHex: row[2] as String,
+        fromCounterparty: row[3] as String,
+        invoiceId: row[4] as String?,
+        neededHeight: (row[5] as num).toInt(),
+        createdAt: row[6] as DateTime,
+        updatedAt: row[7] as DateTime,
+        resolvedAt: row[8] as DateTime?,
+        resolution: row[9] as String?,
+      );
+
+  @override
+  Future<void> storePendingReceive(PendingReceive receive) async {
+    _ensureInitialized();
+    await _pool!.execute(
+      Sql.named('''
+        INSERT INTO pending_receives ($_pendingReceiveColumns)
+        VALUES (
+          @walletId, @txid, @beefHex, @fromCounterparty, @invoiceId, @neededHeight,
+          @createdAt, @updatedAt, @resolvedAt, @resolution
+        )
+        ON CONFLICT (wallet_id, txid) DO UPDATE SET
+          beef_hex = EXCLUDED.beef_hex,
+          from_counterparty = EXCLUDED.from_counterparty,
+          invoice_id = EXCLUDED.invoice_id,
+          needed_height = EXCLUDED.needed_height,
+          updated_at = EXCLUDED.updated_at,
+          resolved_at = EXCLUDED.resolved_at,
+          resolution = EXCLUDED.resolution
+      '''),
+      parameters: {
+        'walletId': receive.walletId,
+        'txid': receive.txid,
+        'beefHex': receive.beefHex,
+        'fromCounterparty': receive.fromCounterparty,
+        'invoiceId': receive.invoiceId,
+        'neededHeight': receive.neededHeight,
+        'createdAt': receive.createdAt.toUtc(),
+        'updatedAt': receive.updatedAt.toUtc(),
+        'resolvedAt': receive.resolvedAt?.toUtc(),
+        'resolution': receive.resolution,
+      },
+    );
+  }
+
+  @override
+  Future<PendingReceive?> getPendingReceive(String walletId, String txid) async {
+    _ensureInitialized();
+    final result = await _pool!.execute(
+      Sql.named('''
+        SELECT $_pendingReceiveColumns FROM pending_receives
+        WHERE wallet_id = @walletId AND txid = @txid
+      '''),
+      parameters: {'walletId': walletId, 'txid': txid},
+    );
+    return result.isEmpty ? null : _pendingReceiveOf(result.first);
+  }
+
+  /// Reads `idx_pending_receives_waiting` (v020): only the waiting rows at or
+  /// below [height], oldest first, capped at [limit].
+  @override
+  Future<List<PendingReceive>> getPendingReceivesUpToHeight(int height, {int limit = 64}) async {
+    if (limit <= 0) throw ArgumentError.value(limit, 'limit', 'must be positive');
+    _ensureInitialized();
+    final result = await _pool!.execute(
+      Sql.named('''
+        SELECT $_pendingReceiveColumns FROM pending_receives
+        WHERE resolved_at IS NULL AND needed_height <= @height
+        ORDER BY created_at ASC, txid ASC
+        LIMIT @limit
+      '''),
+      parameters: {'height': height, 'limit': limit},
+    );
+    return [for (final row in result) _pendingReceiveOf(row)];
+  }
+
+  @override
+  Future<bool> resolvePendingReceive(String walletId, String txid, String resolution,
+      {DateTime? at}) async {
+    _ensureInitialized();
+    final now = (at ?? DateTime.now()).toUtc();
+    final result = await _pool!.execute(
+      Sql.named('''
+        UPDATE pending_receives
+        SET resolved_at = @at, resolution = @resolution, updated_at = @at
+        WHERE wallet_id = @walletId AND txid = @txid AND resolved_at IS NULL
+      '''),
+      parameters: {'walletId': walletId, 'txid': txid, 'resolution': resolution, 'at': now},
+    );
+    return result.affectedRows > 0;
+  }
+
   // ============================================================================
   // Deferred payments (bead libspiffy-7p2, migration v013)
   // ============================================================================
@@ -2029,6 +2139,10 @@ class PostgresWalletStorage implements ReadModelStorage {
       );
       await session.execute(
         Sql.named('DELETE FROM deferred_payments WHERE wallet_id = @walletId'),
+        parameters: {'walletId': walletId},
+      );
+      await session.execute(
+        Sql.named('DELETE FROM pending_receives WHERE wallet_id = @walletId'),
         parameters: {'walletId': walletId},
       );
       await session.execute(

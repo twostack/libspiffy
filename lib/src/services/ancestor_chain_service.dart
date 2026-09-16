@@ -300,27 +300,31 @@ class AncestorChainService {
 
   /// Raw transactions, BUMPs, has-BUMP flags and BUMP indices for a BEEF of
   /// [ancestors] (reordered parents first) followed by [unproven], in order.
-  static BEEF _buildBeef(
+  ///
+  /// Ancestors mined in the same block share one BRC-74 multi-leaf BUMP
+  /// instead of one BUMP each (see [BeefBumps]); the BEEF is the single
+  /// place every outgoing BEEF of the library is assembled, so they all do.
+  static BEEF buildBeef(
     List<BitcoinTransaction> ancestors,
     List<BitcoinTransaction> unproven,
     List<MerkleProof> merkleProofs,
   ) {
     final ordered = orderParentsFirst(ancestors);
     final proofs = _proofsInTransactionOrder(ordered, merkleProofs);
-    final proofIndex = <String, int>{};
-    final bumps = <BUMP>[];
+    final bumpByTxid = <String, BUMP>{};
     for (final proof in proofs) {
-      if (proofIndex.containsKey(proof.txid)) continue;
-      proofIndex[proof.txid] = bumps.length;
-      bumps.add(CryptoUtils.buildBUMPFromMerkleProof(proof));
+      if (bumpByTxid.containsKey(proof.txid)) continue;
+      bumpByTxid[proof.txid] = CryptoUtils.buildBUMPFromMerkleProof(proof);
     }
+    final merged = BeefBumps.of(bumpByTxid);
+    final bumps = merged.bumps;
 
     final txBytes = <Uint8List>[];
     final hasMerkle = <bool>[];
     final bumpIndex = <int>[];
     for (final tx in ordered) {
       txBytes.add(Uint8List.fromList(hex.decode(tx.rawHex)));
-      final idx = proofIndex[tx.txid];
+      final idx = merged.indexFor(tx.txid);
       hasMerkle.add(idx != null);
       if (idx != null) bumpIndex.add(idx);
     }
@@ -354,7 +358,7 @@ class AncestorChainService {
     required List<MerkleProof> merkleProofs,
   }) async {
     try {
-      final serialized = _buildBeef(ancestorTransactions, [newTransaction], merkleProofs).serialize();
+      final serialized = buildBeef(ancestorTransactions, [newTransaction], merkleProofs).serialize();
 
       // Sanity check: the BEEF must parse.
       try {
@@ -383,7 +387,7 @@ class AncestorChainService {
     required List<MerkleProof> merkleProofs,
   }) async {
     try {
-      final serialized = _buildBeef(ancestorTransactions, newTransactions, merkleProofs).serialize();
+      final serialized = buildBeef(ancestorTransactions, newTransactions, merkleProofs).serialize();
 
       try {
         BEEF.parse(serialized);

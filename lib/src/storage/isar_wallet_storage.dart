@@ -512,6 +512,11 @@ class IsarWalletStorage implements ReadModelStorage {
           .where()
           .walletIdEqualToAnyTxid(walletId))
           .deleteAll();
+
+      await _traced('deleteWallet', _isar.pendingReceiveEntitys
+          .where()
+          .walletIdEqualToAnyTxid(walletId))
+          .deleteAll();
     });
   }
 
@@ -1141,6 +1146,67 @@ class IsarWalletStorage implements ReadModelStorage {
         .anyOf(txids, (q, txid) => q.txidEqualTo(txid)))
         .findAll();
     return {for (final e in entities) e.txid: e.rawHex};
+  }
+
+  @override
+  Future<List<OutputAwaitingProof>> getOutputsAwaitingAncestorProof(
+    String walletId, {
+    int maxDepth = 20,
+  }) =>
+      outputsAwaitingAncestorProof(this, walletId, maxDepth: maxDepth);
+
+  // ========================================
+  // Parked receives (bead libspiffy-vfai)
+  // ========================================
+
+  @override
+  Future<void> storePendingReceive(PendingReceive receive) async {
+    await _isar.writeTxn(() async {
+      final existing =
+          await _isar.pendingReceiveEntitys.getByWalletIdTxid(receive.walletId, receive.txid);
+      final entity = PendingReceiveEntity.fromDomain(
+          existing == null ? receive : receive.copyWith(createdAt: existing.createdAt));
+      if (existing != null) entity.id = existing.id;
+      await _isar.pendingReceiveEntitys.put(entity);
+    });
+  }
+
+  @override
+  Future<PendingReceive?> getPendingReceive(String walletId, String txid) async =>
+      (await _isar.pendingReceiveEntitys.getByWalletIdTxid(walletId, txid))?.toDomain();
+
+  @override
+  Future<List<PendingReceive>> getPendingReceivesUpToHeight(int height, {int limit = 64}) async {
+    if (limit <= 0) throw ArgumentError.value(limit, 'limit', 'must be positive');
+    // The (waiting, neededHeight) index: only the waiting rows at or below
+    // the chain height are read, oldest first.
+    final entities = await _traced(
+            'getPendingReceivesUpToHeight',
+            _isar.pendingReceiveEntitys
+                .where()
+                .waitingEqualToNeededHeightLessThan(true, height, include: true)
+                .sortByCreatedAt()
+                .thenByTxid()
+                .limit(limit))
+        .findAll();
+    return [for (final e in entities) e.toDomain()];
+  }
+
+  @override
+  Future<bool> resolvePendingReceive(String walletId, String txid, String resolution,
+      {DateTime? at}) async {
+    return _isar.writeTxn(() async {
+      final existing = await _isar.pendingReceiveEntitys.getByWalletIdTxid(walletId, txid);
+      if (existing == null || !existing.waiting) return false;
+      final now = at ?? DateTime.now();
+      existing
+        ..waiting = false
+        ..resolvedAt = now
+        ..resolution = resolution
+        ..updatedAt = now;
+      await _isar.pendingReceiveEntitys.put(existing);
+      return true;
+    });
   }
 
   // ========================================

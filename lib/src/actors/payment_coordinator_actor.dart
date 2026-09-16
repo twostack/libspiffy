@@ -21,8 +21,6 @@ import '../storage/secure_storage.dart';
 import '../services/ancestor_chain_service.dart';
 import '../services/watch_only_funds.dart';
 import '../utils/beef.dart';
-import '../utils/bump.dart';
-import '../utils/crypto_utils.dart';
 import '../core/wallet_commands.dart';
 import '../core/wallet_output_ownership.dart';
 import '../services/transaction/builder/op_return_lockbuilder.dart';
@@ -919,83 +917,32 @@ class PaymentCoordinatorActor extends Actor {
     return ordered;
   }
 
-  /// Create BEEF package from transactions, proofs, and headers
+  /// Create BEEF package from transactions, proofs, and headers.
+  ///
+  /// Assembled by [AncestorChainService.buildBeef], the one BEEF builder in
+  /// the library: ancestors parents first, the payment last with no proof,
+  /// and one BRC-74 multi-leaf BUMP per block rather than one per proven
+  /// ancestor (audit finding libspiffy-0lx).
   Future<Uint8List> _createBEEF({
     required BitcoinTransaction paymentTransaction,
     required List<BitcoinTransaction> ancestorTransactions,
     required List<MerkleProof> merkleProofs,
     required List<spiffy.BlockHeader> blockHeaders,
   }) async {
+    final serialized = AncestorChainService.buildBeef(
+      ancestorTransactions,
+      [paymentTransaction],
+      merkleProofs,
+    ).serialize();
+
+    // Sanity check: the BEEF must parse.
     try {
-      for (final ancestor in ancestorTransactions) {
-      }
-      for (final proof in merkleProofs) {
-      }
-      
-      // 1. Convert all transactions to raw bytes
-      final txBytes = <Uint8List>[];
-      
-      // Add ancestor transactions first (in order they were collected)
-      for (final tx in ancestorTransactions) {
-        txBytes.add(Uint8List.fromList(hex.decode(tx.rawHex)));
-      }
-      
-      // Add payment transaction last (the new transaction being created)
-      txBytes.add(Uint8List.fromList(hex.decode(paymentTransaction.rawHex)));
-      
-      // 2. Build BUMPs from merkle proofs
-      final bumps = <BUMP>[];
-      for (final proof in merkleProofs) {
-        bumps.add(CryptoUtils.buildBUMPFromMerkleProof(proof));
-      }
-      
-      // 3. Set hasMerkle flags - only ancestors with proofs have true
-      final hasMerkle = <bool>[];
-      for (final ancestor in ancestorTransactions) {
-        final hasProof = merkleProofs.any((p) => p.txid == ancestor.txid);
-        hasMerkle.add(hasProof);
-      }
-      // Payment transaction doesn't have a merkle proof yet (unconfirmed)
-      hasMerkle.add(false);
-      
-      // 4. Build bumpIndex array - maps transactions with proofs to their BUMP index
-      final bumpIndex = <int>[];
-      for (int i = 0; i < ancestorTransactions.length; i++) {
-        if (hasMerkle[i]) {
-          // Find which BUMP this transaction corresponds to
-          final proofIdx = merkleProofs.indexWhere((p) => p.txid == ancestorTransactions[i].txid);
-          if (proofIdx != -1) {
-            bumpIndex.add(proofIdx);
-          }
-        }
-      }
-      
-      // Debug: Log what we're passing to BEEF.create()
-      for (int i = 0; i < txBytes.length; i++) {
-      }
-
-
-      // 5. Create BEEF using the existing BEEF.create() method
-      final beef = BEEF.create(
-        bumps: bumps,
-        txs: txBytes,
-        hasMerkle: hasMerkle,
-        bumpIndex: bumpIndex,
-      );
-      
-      // 6. Serialize BEEF
-      final serialized = beef.serialize();
-      // 7. Verify BEEF can be parsed (sanity check)
-      try {
-        final parsed = BEEF.parse(serialized);
-      } catch (e, stackTrace) {
-        throw Exception('Created BEEF is invalid: $e');
-      }
-      
-      return serialized;
+      BEEF.parse(serialized);
     } catch (e) {
-      rethrow;
+      throw Exception('Created BEEF is invalid: $e');
     }
+
+    return serialized;
   }
 
 

@@ -2,6 +2,7 @@ import 'dart:typed_data';
 import 'package:buffer/buffer.dart';
 import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart' as dartsv hide BlockHeader;
+import 'package:logging/logging.dart';
 import 'package:spiffynode/spiffy_node.dart';
 import '../spv/merkle.dart' as merkle;
 import 'bump.dart';
@@ -10,15 +11,132 @@ import 'hex_utils.dart' as hex_utils;
 /// BeefMagicAndVersion is the magic bytes and version for BEEF format (0100BEEF)
 const int beefMagicAndVersion = 0x0100BEEF;
 
-
+final _beefLog = Logger('BEEF');
 
 class BEEFException implements Exception {
   final String message;
-  
+
   BEEFException(this.message);
-  
+
   @override
   String toString() => 'BEEFException: $message';
+}
+
+/// The BUMPs of a BEEF: one per block, not one per proven transaction.
+///
+/// A BUMP is a merkle path inside a single block and BRC-74 lets one BUMP
+/// carry the paths of several transactions of that block — level 0 holds a
+/// txid leaf (flag `0x02`) for each of them and the levels above are shared
+/// instead of repeated. [of] groups the per-transaction BUMPs by block,
+/// merges each group and keeps the BEEF's BUMP index for every transaction
+/// ([indexFor]), so an outgoing BEEF never repeats a block's merkle path
+/// (audit finding libspiffy-0lx).
+///
+/// Merging is only done where it is provably safe: every source BUMP must
+/// prove its own transaction, all of a group must compute the same merkle
+/// root (two blocks at the same height do not), and the merged BUMP must
+/// still walk every one of those transactions to that root with its leaf
+/// still flagged as a txid. A group that fails any of these keeps one BUMP
+/// per transaction, exactly as before — a bigger BEEF is always better than
+/// one the recipient cannot verify.
+class BeefBumps {
+  /// The BUMPs to put in the BEEF, in BEEF order.
+  final List<BUMP> bumps;
+
+  final Map<String, int> _indexByTxid;
+
+  const BeefBumps._(this.bumps, this._indexByTxid);
+
+  /// The BUMP index for [txid] (hex, either byte order as the caller keyed
+  /// it), or null when no BUMP proves it.
+  int? indexFor(String txid) => _indexByTxid[txid.toLowerCase()];
+
+  /// Whether [txid] is proven by one of [bumps].
+  bool proves(String txid) => _indexByTxid.containsKey(txid.toLowerCase());
+
+  /// Group [bumpByTxid] (txid hex to the BUMP proving it, in the order the
+  /// BEEF should carry them) into one BUMP per block where that is safe.
+  static BeefBumps of(Map<String, BUMP> bumpByTxid) {
+    // Group by the block itself — height AND merkle root — so that two
+    // blocks at one height (a fork) never land in the same BUMP, and a BUMP
+    // that does not prove its own transaction is left alone.
+    final byBlock = <String, List<String>>{};
+    var ungrouped = 0;
+    for (final entry in bumpByTxid.entries) {
+      final key = _blockKey(entry.key, entry.value) ?? 'unkeyed:${ungrouped++}';
+      byBlock.putIfAbsent(key, () => <String>[]).add(entry.key);
+    }
+
+    final bumps = <BUMP>[];
+    final indexByTxid = <String, int>{};
+    for (final group in byBlock.values) {
+      if (group.length > 1) {
+        final merged = _mergeGroup(group, bumpByTxid);
+        if (merged != null) {
+          final index = bumps.length;
+          bumps.add(merged);
+          for (final txid in group) {
+            indexByTxid[txid.toLowerCase()] = index;
+          }
+          continue;
+        }
+      }
+      for (final txid in group) {
+        indexByTxid[txid.toLowerCase()] = bumps.length;
+        bumps.add(bumpByTxid[txid]!);
+      }
+    }
+    return BeefBumps._(bumps, indexByTxid);
+  }
+
+  /// The block [bump] proves [txid] into — its height and merkle root — or
+  /// null when it does not prove [txid] at all (such a BUMP is never
+  /// merged; it is passed through untouched).
+  ///
+  /// Leaves are stored in internal byte order; findTxidLeaf (used by
+  /// computeMerkleRoot) accepts either order, so a caller keying by display
+  /// hex and one keying by internal hex both resolve.
+  static String? _blockKey(String txid, BUMP bump) {
+    try {
+      final root = bump.computeMerkleRoot(hex_utils.displayToInternal(txid));
+      return '${bump.blockHeight}:${hex.encode(root)}';
+    } catch (e) {
+      _beefLog.warning('BUMP at height ${bump.blockHeight} does not prove $txid ($e); '
+          'it is kept as its own BUMP');
+      return null;
+    }
+  }
+
+  /// The single BUMP proving every txid of [group], or null when merging
+  /// them is not provably safe (the caller then keeps them separate).
+  static BUMP? _mergeGroup(List<String> group, Map<String, BUMP> bumpByTxid) {
+    try {
+      final sources = [for (final txid in group) bumpByTxid[txid]!];
+      final txids = [for (final txid in group) hex_utils.displayToInternal(txid)];
+      // Every source proves its transaction into the same block: the group
+      // key is (block height, merkle root).
+      final root = sources.first.computeMerkleRoot(txids.first);
+
+      final merged = BUMP.merge(sources);
+      for (var i = 0; i < sources.length; i++) {
+        final leaf = merged.findTxidLeaf(txids[i]);
+        if (leaf == null || !leaf.isTxid) {
+          _beefLog.warning('Not merging the BUMPs at height ${sources[i].blockHeight}: '
+              'the merged path does not mark ${group[i]} as a txid');
+          return null;
+        }
+        if (!hex_utils.bytesEqual(merged.computeMerkleRoot(txids[i]), root)) {
+          _beefLog.warning('Not merging the BUMPs at height ${sources[i].blockHeight}: '
+              'the merged path does not walk ${group[i]} to the block merkle root');
+          return null;
+        }
+      }
+      return merged;
+    } catch (e) {
+      _beefLog.warning('Not merging the BUMPs of ${group.length} transactions: $e');
+      return null;
+    }
+  }
 }
 
 /// Represents a Background Evaluation Extended Format transaction

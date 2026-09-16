@@ -15,9 +15,8 @@ import 'package:dartsv/dartsv.dart' as dartsv;
 import '../models/bitcoin_transaction.dart';
 import '../models/bitcoin_utxo.dart';
 import '../storage/read_model_storage.dart';
+import 'ancestor_chain_service.dart';
 import '../utils/beef.dart';
-import '../utils/bump.dart';
-import '../utils/crypto_utils.dart';
 import 'crypto_service.dart';
 
 /// Thrown when a payment channel transaction cannot be built (insufficient
@@ -654,71 +653,21 @@ class PaymentChannelBuilder {
     required List<MerkleProof> ancestorProofs,
   }) async {
 
-    // 1. Order transactions correctly:
-    //    - Ancestors (with proofs) first
+    // 1. Assemble the BEEF with the library's one BEEF builder:
+    //    - Ancestors (with proofs) first, parents before children
     //    - Funding transaction (no proof yet)
     //    - Payment transaction (no proof)
-    final txBytes = <Uint8List>[];
+    //    Ancestors mined in the same block share one BRC-74 multi-leaf BUMP
+    //    instead of repeating that block's merkle path (libspiffy-0lx).
+    final serialized = AncestorChainService.buildBeef(
+      fundingAncestors,
+      [fundingTransaction, _paymentRecord(paymentTx)],
+      ancestorProofs,
+    ).serialize();
 
-    // Add ancestors
-    for (final ancestor in fundingAncestors) {
-      txBytes.add(Uint8List.fromList(hex.decode(ancestor.rawHex)));
-    }
-
-    // Add funding transaction
-    txBytes.add(Uint8List.fromList(hex.decode(fundingTransaction.rawHex)));
-
-    // Add payment transaction
-    txBytes.add(Uint8List.fromList(hex.decode(paymentTx.transactionHex)));
-
-    // 2. Build BUMPs from merkle proofs
-    final bumps = <BUMP>[];
-    for (final proof in ancestorProofs) {
-      bumps.add(CryptoUtils.buildBUMPFromMerkleProof(proof));
-    }
-
-    // 3. Set hasMerkle flags
-    final hasMerkle = <bool>[];
-
-    // Ancestors: check which ones have proofs
-    for (final ancestor in fundingAncestors) {
-      final hasProof = ancestorProofs.any((p) => p.txid == ancestor.txid);
-      hasMerkle.add(hasProof);
-    }
-
-    // Funding transaction: no proof yet (unconfirmed)
-    hasMerkle.add(false);
-
-    // Payment transaction: no proof (just created)
-    hasMerkle.add(false);
-
-    // 4. Build bumpIndex array
-    final bumpIndex = <int>[];
-    for (int i = 0; i < fundingAncestors.length; i++) {
-      if (hasMerkle[i]) {
-        final proofIdx =
-            ancestorProofs.indexWhere((p) => p.txid == fundingAncestors[i].txid);
-        if (proofIdx != -1) {
-          bumpIndex.add(proofIdx);
-        }
-      }
-    }
-
-
-    // 5. Create BEEF
-    final beef = BEEF.create(
-      bumps: bumps,
-      txs: txBytes,
-      hasMerkle: hasMerkle,
-      bumpIndex: bumpIndex,
-    );
-
-    // 6. Serialize
-    final serialized = beef.serialize();
-
-    // 7. Verify
+    // 2. Verify
     try {
-      final parsed = BEEF.parse(serialized);
+      BEEF.parse(serialized);
     } catch (e) {
       throw Exception('Created BEEF is invalid: $e');
     }
@@ -731,6 +680,26 @@ class PaymentChannelBuilder {
     );
   }
 
+  /// The just-built channel transaction as the record the BEEF builder
+  /// takes; only [BitcoinTransaction.txid] and `rawHex` are read.
+  static BitcoinTransaction _paymentRecord(ChannelTransactionResult paymentTx) {
+    final now = DateTime.now();
+    return BitcoinTransaction(
+      txid: paymentTx.txid,
+      rawHex: paymentTx.transactionHex,
+      status: TransactionStatus.pending,
+      inputValue: BigInt.zero,
+      outputValue: BigInt.zero,
+      fee: paymentTx.fee,
+      receivingAddresses: const [],
+      sendingAddresses: const [],
+      netAmount: BigInt.zero,
+      createdAt: now,
+      updatedAt: now,
+      lockTime: paymentTx.transaction.nLockTime,
+      version: paymentTx.transaction.version,
+    );
+  }
 }
 
 /// Result of building a payment transaction with BEEF ancestry

@@ -1,4 +1,5 @@
 import 'package:collection/collection.dart' show mergeSort;
+import 'package:dartsv/dartsv.dart' as dartsv;
 
 import '../models/bitcoin_utxo.dart';
 import '../models/bitcoin_transaction.dart';
@@ -7,10 +8,12 @@ import '../models/transaction_address_link.dart';
 import '../models/invoice_read_model.dart';
 import '../models/payment_channel.dart';
 import '../models/deferred_payment.dart';
+import '../models/pending_receive.dart';
 import '../actors/invoice_messages.dart' show InvoiceStatus;
 import 'package:spiffynode/spiffy_node.dart';
 
 export '../models/deferred_payment.dart';
+export '../models/pending_receive.dart';
 
 /// Abstract interface for read-model storage operations.
 ///
@@ -655,6 +658,87 @@ abstract class ReadModelStorage {
   Future<Map<String, String>> getAncestorTransactionsBatch(List<String> txids);
 
   // ========================================
+  // Parked receives (bead libspiffy-vfai)
+  // ========================================
+  //
+  // A BEEF whose merkle proof names a block our headers have not reached
+  // proves nothing yet, so the receive waits (bead libspiffy-68mz). Its
+  // evidence is retained above; these rows are the waiting receive itself, so
+  // that the wallet is still credited when the header arrives after a
+  // restart. Keyed by (walletId, txid), never deleted except by
+  // [deleteWallet] (a row of a receive that named no wallet is not a wallet's
+  // row and survives even that).
+
+  /// Park [receive] until headers reach its `neededHeight`, or update the row
+  /// already parked for its (walletId, txid).
+  ///
+  /// An update keeps the stored `createdAt` and clears any resolution: the
+  /// receive is waiting again. Storing a receive the caller has judged
+  /// (`resolvedAt` set) records that outcome.
+  Future<void> storePendingReceive(PendingReceive receive);
+
+  /// The parked receive of ([walletId], [txid]), resolved or not.
+  Future<PendingReceive?> getPendingReceive(String walletId, String txid);
+
+  /// The receives still waiting ([PendingReceive.isWaiting]) whose
+  /// `neededHeight` is at most [height], oldest first, at most [limit] of
+  /// them.
+  ///
+  /// SPVActor replays these when headers reach [height]. The cap bounds one
+  /// replay pass: the rest are read by the next header notification, so
+  /// nothing is lost. [limit] must be positive.
+  Future<List<PendingReceive>> getPendingReceivesUpToHeight(int height, {int limit = 64});
+
+  /// Record that the receive of ([walletId], [txid]) stopped waiting:
+  /// [resolution] says why (it was recorded, or it failed for a reason more
+  /// headers cannot change). The row is kept, and no longer replayed.
+  ///
+  /// A no-op when no row is parked for that key. Returns whether a waiting
+  /// row was resolved.
+  Future<bool> resolvePendingReceive(String walletId, String txid, String resolution, {DateTime? at});
+
+  // ========================================
+  // Outputs waiting for a proof (bead libspiffy-0lx)
+  // ========================================
+
+  /// The wallet's unspent outputs that cannot be proven to a counterparty
+  /// right now, each with the ancestors that stand in the way
+  /// (bead libspiffy-0lx).
+  ///
+  /// Spending a received output means handing the counterparty a BEEF that
+  /// walks back from it to transactions with merkle proofs
+  /// (`AncestorChainService`). While the output's own transaction is not
+  /// mined, that walk rests on the proofs its BEEF carried for its
+  /// ancestors. When a reorganization orphans such an ancestor's block, its
+  /// proof is kept but no longer counts (`getMerkleProof` returns nothing),
+  /// and the output silently becomes unspendable: nothing fetches a new
+  /// proof, because ARC answers for transactions we broadcast and the
+  /// counterparty is not asked again. This query is how the wallet *says*
+  /// so, instead of holding an output that quietly cannot be paid with.
+  ///
+  /// An output is listed when the walk from its transaction reaches an
+  /// ancestor that has no current proof and whose raw transaction is not
+  /// stored either, or when the walk runs past [maxDepth]. Each
+  /// [OutputAwaitingProof.ancestors] entry names that ancestor and what its
+  /// last proof said ([MerkleProofStatus.orphaned] after a reorganization,
+  /// [MerkleProofStatus.rejected] when our header contradicted it, none when
+  /// no proof was ever stored). The list is empty when every unspent output
+  /// can be proven; spent outputs are not listed.
+  ///
+  /// An output leaves the list by itself once a fresh proof for the ancestor
+  /// is stored, wherever it comes from: a reorganization that puts the block
+  /// back (SPVActor revives the proof), a later BEEF carrying a new BUMP, or
+  /// ARC answering for the transaction.
+  ///
+  /// Reads the wallet's unspent UTXO rows and, per distinct transaction in
+  /// the walk, its proof and raw bytes; results are memoised across outputs
+  /// that share ancestry.
+  Future<List<OutputAwaitingProof>> getOutputsAwaitingAncestorProof(
+    String walletId, {
+    int maxDepth = 20,
+  });
+
+  // ========================================
   // Deferred payments (bead libspiffy-7p2)
   // ========================================
   //
@@ -802,6 +886,164 @@ abstract class ReadModelStorage {
 
   /// Delete a payment channel
   Future<void> deletePaymentChannel(String channelId);
+}
+
+/// The shared implementation of
+/// [ReadModelStorage.getOutputsAwaitingAncestorProof], in terms of the
+/// interface's own reads, so every backend answers it the same way
+/// (bead libspiffy-0lx). Backends call it from their override.
+Future<List<OutputAwaitingProof>> outputsAwaitingAncestorProof(
+  ReadModelStorage storage,
+  String walletId, {
+  int maxDepth = 20,
+}) async {
+  final utxos = await storage.getUTXOs(walletId);
+  if (utxos.isEmpty) return const [];
+
+  final memo = <String, List<AwaitedAncestorProof>>{};
+
+  Future<AwaitedAncestorProof> gap(String txid, String reason) async {
+    MerkleProof? last;
+    for (final proof in await storage.getMerkleProofHistory(txid)) {
+      last = proof;
+    }
+    return AwaitedAncestorProof(
+      txid: txid,
+      lastProofStatus: last?.status,
+      blockHeight: last?.blockHeight,
+      reason: reason,
+    );
+  }
+
+  Future<List<AwaitedAncestorProof>> gapsOf(String txid, int depth, Set<String> onPath) async {
+    final cached = memo[txid];
+    if (cached != null) return cached;
+    if (!onPath.add(txid)) return const []; // a cycle cannot happen in a tx graph
+
+    Future<List<AwaitedAncestorProof>> done(List<AwaitedAncestorProof> result) async {
+      onPath.remove(txid);
+      memo[txid] = result;
+      return result;
+    }
+
+    // A current proof (verified, or pendingHeader while no header is known
+    // at its height) ends the walk: this branch can go into a BEEF.
+    if (await storage.getMerkleProof(txid) != null) return done(const []);
+
+    final rawHex = (await storage.getTransaction(txid))?.rawHex ??
+        (await storage.getAncestorTransactionsBatch([txid]))[txid];
+    if (rawHex == null || rawHex.isEmpty) {
+      return done([
+        await gap(txid, 'no merkle proof on the active chain and no stored transaction to walk back from: '
+            'a fresh proof for this transaction is needed before the output can be spent')
+      ]);
+    }
+    if (depth >= maxDepth) {
+      return done([await gap(txid, 'the ancestor walk reached its depth limit ($maxDepth) without a proof')]);
+    }
+
+    final List<String> parents;
+    try {
+      parents = [for (final input in dartsv.Transaction.fromHex(rawHex).inputs) input.prevTxnId];
+    } catch (e) {
+      return done([await gap(txid, 'the stored transaction does not parse: $e')]);
+    }
+
+    final deeper = <AwaitedAncestorProof>[];
+    final seen = <String>{};
+    for (final parent in parents) {
+      if (!seen.add(parent)) continue;
+      for (final entry in await gapsOf(parent, depth + 1, onPath)) {
+        if (!deeper.any((e) => e.txid == entry.txid)) deeper.add(entry);
+      }
+    }
+    if (deeper.isEmpty) return done(const []);
+
+    // This transaction's own proof left the active chain (orphaned by a
+    // reorganization, or rejected by a header that contradicts it). A fresh
+    // proof for *it* unblocks the whole branch, so it is what the output is
+    // named as waiting for, rather than whatever the walk ran into behind it.
+    final history = await storage.getMerkleProofHistory(txid);
+    if (history.isNotEmpty) {
+      final last = history.last;
+      return done([
+        AwaitedAncestorProof(
+          txid: txid,
+          lastProofStatus: last.status,
+          blockHeight: last.blockHeight,
+          reason: 'its merkle proof is ${last.status.name}: the block at height ${last.blockHeight} it names is '
+              'not on the active chain, so a fresh proof for this transaction is needed before the output '
+              'can be spent',
+        )
+      ]);
+    }
+    return done(deeper);
+  }
+
+  final awaiting = <OutputAwaitingProof>[];
+  for (final utxo in utxos) {
+    if (utxo.status == UTXOStatus.spent) continue;
+    final gaps = await gapsOf(utxo.txid, 0, <String>{});
+    if (gaps.isEmpty) continue;
+    awaiting.add(OutputAwaitingProof(txid: utxo.txid, vout: utxo.vout, ancestors: gaps));
+  }
+  return awaiting;
+}
+
+/// One of a wallet's unspent outputs that cannot be proven to a counterparty
+/// right now (bead libspiffy-0lx): the walk back from its transaction to a
+/// merkle proof on the active header chain does not complete.
+///
+/// Returned by [ReadModelStorage.getOutputsAwaitingAncestorProof]. The output
+/// is still the wallet's and its row is untouched; it simply cannot be put
+/// into a BEEF until one of [ancestors] has a proof again.
+class OutputAwaitingProof {
+  /// The output's transaction.
+  final String txid;
+
+  /// The output's index in that transaction.
+  final int vout;
+
+  /// The ancestors the walk could not get past, in the order it met them.
+  final List<AwaitedAncestorProof> ancestors;
+
+  const OutputAwaitingProof({required this.txid, required this.vout, required this.ancestors});
+
+  /// The outpoint, `txid:vout`.
+  String get outpoint => '$txid:$vout';
+
+  @override
+  String toString() => '$outpoint awaits a proof for ${[for (final a in ancestors) a.txid]}';
+}
+
+/// An ancestor transaction a spend is waiting on, and what its last stored
+/// proof said (bead libspiffy-0lx).
+class AwaitedAncestorProof {
+  /// The ancestor transaction.
+  final String txid;
+
+  /// The status of the last proof stored for it: [MerkleProofStatus.orphaned]
+  /// when a reorganization took its block off the active chain,
+  /// [MerkleProofStatus.rejected] when a header we hold contradicted it, null
+  /// when no proof was ever stored.
+  final MerkleProofStatus? lastProofStatus;
+
+  /// The block height that proof named, if there was one.
+  final int? blockHeight;
+
+  /// Why the walk stopped here, in words.
+  final String reason;
+
+  const AwaitedAncestorProof({
+    required this.txid,
+    required this.reason,
+    this.lastProofStatus,
+    this.blockHeight,
+  });
+
+  @override
+  String toString() => '$txid (${lastProofStatus?.name ?? 'no proof'}'
+      '${blockHeight == null ? '' : ' at height $blockHeight'}): $reason';
 }
 
 /// Where a stored [MerkleProof] stands against the local header chain

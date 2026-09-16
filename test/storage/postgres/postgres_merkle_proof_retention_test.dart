@@ -15,6 +15,7 @@ import 'package:libspiffy/src/storage/postgres/postgres_wallet_storage.dart';
 import 'package:libspiffy/src/storage/read_model_storage.dart';
 
 import '../ancestor_transaction_contract.dart';
+import '../pending_receive_contract.dart';
 import '../merkle_proof_retention_contract.dart';
 
 void main() {
@@ -48,6 +49,7 @@ void main() {
 
     defineMerkleProofRetentionContract(() => storage, unique: () => 'p$run-${counter++}');
     defineAncestorTransactionContract(() => storage, unique: () => 'p$run-${counter++}');
+    definePendingReceiveContract(() => storage, unique: () => 'p$run-${counter++}');
   });
 
   test('v009 turns pending placeholders into pendingHeader, keeps orphaned rows, and rolls back', () async {
@@ -83,6 +85,7 @@ void main() {
 
     try {
       // --- the pre-v009 shape, with a 'pending' placeholder row ----------
+      expect(await migrations.rollback(), isTrue); // v020 (pending receives)
       expect(await migrations.rollback(), isTrue); // v019
       expect(await migrations.rollback(), isTrue); // v018
       expect(await migrations.rollback(), isTrue); // v017
@@ -105,7 +108,7 @@ void main() {
 
       // --- up -------------------------------------------------------------
       await migrations.migrate();
-      expect(await migrations.getCurrentVersion(), equals(19));
+      expect(await migrations.getCurrentVersion(), equals(20));
       expect(await rawRows(pendingTx, 'block_hash, status'), [
         [null, 'pendingHeader']
       ]);
@@ -148,6 +151,7 @@ void main() {
       await expectRejected(orphanOnlyTx, null, 'bogus', 'fe07'); // unknown status
 
       // --- down -----------------------------------------------------------
+      expect(await migrations.rollback(), isTrue); // v020 (pending receives)
       expect(await migrations.rollback(), isTrue); // v019
       expect(await migrations.rollback(), isTrue); // v018
       expect(await migrations.rollback(), isTrue); // v017
@@ -173,7 +177,7 @@ void main() {
 
       // --- up again, leaving the database at the latest version ----------
       await migrations.migrate();
-      expect(await migrations.getCurrentVersion(), equals(19));
+      expect(await migrations.getCurrentVersion(), equals(20));
       expect((await storage.getMerkleProof(pendingTx))!.status, MerkleProofStatus.pendingHeader);
     } finally {
       await migrations.migrate();
@@ -215,7 +219,7 @@ void main() {
         );
 
     try {
-      expect(await migrations.getCurrentVersion(), equals(19));
+      expect(await migrations.getCurrentVersion(), equals(20));
       await storage.storeMerkleProof(txid, MerkleProof(
           txid: txid, blockHash: block, blockHeight: 9, position: 0, merkleProof: ['fe12']));
       await storage.storeMerkleProof(txid, MerkleProof(
@@ -239,6 +243,7 @@ void main() {
       await expectLater(insert(null, 'bogus', 'fe16'), throwsA(isA<ServerException>()));
 
       // --- down: rejected rows become orphaned, none is deleted ----------
+      expect(await migrations.rollback(), isTrue); // v020 (pending receives)
       expect(await migrations.rollback(), isTrue); // v019
       expect(await migrations.rollback(), isTrue); // v018
       expect(await migrations.rollback(), isTrue); // v017
@@ -258,7 +263,7 @@ void main() {
 
       // --- up again ------------------------------------------------------
       await migrations.migrate();
-      expect(await migrations.getCurrentVersion(), equals(19));
+      expect(await migrations.getCurrentVersion(), equals(20));
       await insert(null, 'rejected', 'fe18');
       expect((await storage.getMerkleProof(txid))!.merkleProof, ['fe12']);
     } finally {
@@ -281,8 +286,9 @@ void main() {
             row[0] as String,
         ];
     try {
-      expect(await migrations.getCurrentVersion(), equals(19));
+      expect(await migrations.getCurrentVersion(), equals(20));
       expect(await indexes(), ['idx_merkle_proofs_status_height']);
+      expect(await migrations.rollback(), isTrue); // v020 (pending receives)
       expect(await migrations.rollback(), isTrue); // v019
       expect(await migrations.rollback(), isTrue); // v018
       expect(await migrations.rollback(), isTrue); // v017
@@ -307,8 +313,9 @@ void main() {
             row[0] as String,
         ];
     try {
-      expect(await migrations.getCurrentVersion(), equals(19));
+      expect(await migrations.getCurrentVersion(), equals(20));
       expect(await indexColumns(), [contains('(status, status_changed_at)')]);
+      expect(await migrations.rollback(), isTrue); // v020 (pending receives)
       expect(await migrations.rollback(), isTrue); // v019
       expect(await migrations.rollback(), isTrue); // v018
       expect(await indexColumns(), isEmpty);

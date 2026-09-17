@@ -22,6 +22,7 @@ import '../utils/beef.dart';
 import 'aggregate_signing_client.dart';
 import 'channel_p2p_adapter.dart';
 import 'coordinator_messages.dart';
+import 'proof_p2p_adapter.dart';
 import 'invoice_messages.dart' as inv;
 import 'payment_messages.dart' as pay;
 import 'wallet_messages.dart' as wm;
@@ -55,6 +56,11 @@ class WalletCoordinatorActor extends Actor {
 
   // Channel P2P adapter (composed, not a separate actor)
   ChannelP2PAdapter? _channelAdapter;
+
+  /// Merkle-proof request/response over the app's transport (bead
+  /// libspiffy-a2v3). Composed like the channel adapter, but always present:
+  /// it needs nothing but storage and the SPV actor.
+  late final ProofP2PAdapter _proofAdapter;
 
   // Event broadcasting
   final StreamController<CoordinatorEvent> _eventStream =
@@ -156,6 +162,11 @@ class WalletCoordinatorActor extends Actor {
         _importWalletFromXpriv = importWalletFromXpriv,
         _importWalletFromWif = importWalletFromWif,
         _importNotifications = importNotifications {
+    _proofAdapter = ProofP2PAdapter(
+      storage: storage,
+      spvActor: spvActor,
+      emitEvent: _emitEvent,
+    );
     // Initialize channel P2P adapter if channel events stream provided
     if (channelEvents != null) {
       _channelAdapter = ChannelP2PAdapter(
@@ -183,6 +194,7 @@ class WalletCoordinatorActor extends Actor {
     // The adapter is built in the constructor, before this actor has a
     // context; wallet command replies it triggers must come back here.
     _channelAdapter?.updateReplyTo(context.self);
+    _proofAdapter.updateReplyTo(context.self);
   }
 
   /// Release subscriptions, timers and the event stream when the actor is
@@ -200,6 +212,7 @@ class WalletCoordinatorActor extends Actor {
     _pendingSettlements.clear();
     _childToParentSettlement.clear();
     _channelAdapter?.dispose();
+    _proofAdapter.dispose();
     if (!_eventStream.isClosed) {
       unawaited(_eventStream.close());
     }
@@ -278,9 +291,22 @@ class WalletCoordinatorActor extends Actor {
         _channelAdapter?.handleAcceptRequest(message);
       } else if (message is RejectChannelCommand) {
         _channelAdapter?.handleRejectRequest(message);
-      } else if (message is ChannelP2PReceived) {
-        _channelAdapter?.handleP2PMessage(
-            message.fromPeerId, message.messageType, message.payload);
+      }
+      // Inbound P2P, routed by message type (bead libspiffy-a2v3).
+      // ChannelP2PReceived is a P2PMessageReceived, so an app that already
+      // wraps everything its transport delivers in the channel-named class
+      // reaches the proof protocol too. Proof work is storage reads, a BEEF
+      // rebuild and a receive round trip, so it goes off the mailbox.
+      else if (message is P2PMessageReceived) {
+        if (ProofP2PAdapter.handles(message.messageType)) {
+          unawaited(_proofAdapter.handleP2PMessage(
+              message.fromPeerId, message.messageType, message.payload));
+        } else {
+          _channelAdapter?.handleP2PMessage(
+              message.fromPeerId, message.messageType, message.payload);
+        }
+      } else if (message is RequestAncestorProofCommand) {
+        unawaited(_proofAdapter.handleRequestProof(message));
       }
       // === RESPONSES FROM INTERNAL ACTORS ===
       else if (message is wm.WalletCreatedMessage) {
@@ -1751,6 +1777,11 @@ class WalletCoordinatorActor extends Actor {
 
   void _handleSPVValidationResult(wm.SPVValidationResult result) {
     _log.info('SPV validation result: txid=${result.txid} valid=${result.isValid}');
+
+    // A proof response this coordinator put through the receive path (bead
+    // libspiffy-a2v3) waits for its verdict here; the ordinary import events
+    // below are emitted for it too, as for any other standalone receive.
+    _proofAdapter.handleReceiveResult(result);
 
     final queued = _spvProcessingCorrelation[result.txid];
     final correlation =

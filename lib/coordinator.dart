@@ -22,3 +22,4 @@ library coordinator;
 export 'src/actors/coordinator_messages.dart';
 export 'src/actors/wallet_coordinator_actor.dart';
 export 'src/actors/channel_p2p_adapter.dart';
+export 'src/actors/proof_p2p_adapter.dart';

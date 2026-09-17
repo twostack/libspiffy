@@ -989,14 +989,34 @@ Future<List<OutputAwaitingProof>> outputsAwaitingAncestorProof(
     return done(deeper);
   }
 
-  final awaiting = <OutputAwaitingProof>[];
+  final blocked = <(String, int, List<AwaitedAncestorProof>)>[];
   for (final utxo in utxos) {
     if (utxo.status == UTXOStatus.spent) continue;
     final gaps = await gapsOf(utxo.txid, 0, <String>{});
     if (gaps.isEmpty) continue;
-    awaiting.add(OutputAwaitingProof(txid: utxo.txid, vout: utxo.vout, ancestors: gaps));
+    blocked.add((utxo.txid, utxo.vout, gaps));
   }
-  return awaiting;
+  if (blocked.isEmpty) return const [];
+
+  // Who to ask for a fresh proof (bead libspiffy-a2v3): the counterparty of
+  // *this* transaction, not of the ancestor that lost its proof — the
+  // ancestor is usually a stranger's transaction we have no marker for. One
+  // batch read for the blocked transactions, not one per output, and this
+  // wallet's rows only: two wallets that hold the same transaction each have
+  // their own counterparty for it ([ReadModelStorage.getTransactionsByTxids]).
+  final markers = <String, String?>{
+    for (final row in await storage.getTransactionsByTxids({for (final b in blocked) b.$1}.toList()))
+      if (row.walletId == walletId) row.txid: row.counterpartyMarker,
+  };
+  return [
+    for (final (txid, vout, gaps) in blocked)
+      OutputAwaitingProof(
+        txid: txid,
+        vout: vout,
+        ancestors: gaps,
+        counterpartyMarker: markers[txid],
+      ),
+  ];
 }
 
 /// One of a wallet's unspent outputs that cannot be proven to a counterparty
@@ -1016,13 +1036,33 @@ class OutputAwaitingProof {
   /// The ancestors the walk could not get past, in the order it met them.
   final List<AwaitedAncestorProof> ancestors;
 
-  const OutputAwaitingProof({required this.txid, required this.vout, required this.ancestors});
+  /// Who to ask for a fresh proof (bead libspiffy-a2v3):
+  /// [BitcoinTransaction.counterpartyMarker] on [txid]'s own row — the
+  /// counterparty who handed us *this* transaction and owed us the proofs
+  /// its ancestry needs. Not the orphaned ancestor's counterparty, who is
+  /// almost always a stranger we never dealt with and hold no marker for.
+  ///
+  /// Null when none was recorded (a payment taken in before markers existed,
+  /// or an app that supplied none). Then nobody can be asked and the output
+  /// is unrecoverable by request: only its ancestor's block returning to the
+  /// active chain restores it.
+  ///
+  /// `RequestAncestorProofCommand` is how the wallet asks.
+  final String? counterpartyMarker;
+
+  const OutputAwaitingProof({
+    required this.txid,
+    required this.vout,
+    required this.ancestors,
+    this.counterpartyMarker,
+  });
 
   /// The outpoint, `txid:vout`.
   String get outpoint => '$txid:$vout';
 
   @override
-  String toString() => '$outpoint awaits a proof for ${[for (final a in ancestors) a.txid]}';
+  String toString() => '$outpoint awaits a proof for ${[for (final a in ancestors) a.txid]}'
+      '${counterpartyMarker == null ? ' (no counterparty recorded to ask)' : ', ask $counterpartyMarker'}';
 }
 
 /// An ancestor transaction a spend is waiting on, and what its last stored

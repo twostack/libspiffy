@@ -940,22 +940,104 @@ class RejectChannelCommand implements Message {
   DateTime get timestamp => DateTime.now();
 }
 
-/// Incoming P2P message for a payment channel
-class ChannelP2PReceived implements Message {
+/// An inbound peer-to-peer message the app received on its own transport and
+/// hands to the library (bead libspiffy-a2v3).
+///
+/// libspiffy owns no transport: the app carries bytes between peers and
+/// describes what arrived as `(fromPeerId, messageType, payload)`. The
+/// coordinator routes it by [messageType] — `proof_request` and
+/// `proof_response` to the merkle-proof protocol (`ProofP2PAdapter`),
+/// everything else to the payment-channel protocol (`ChannelP2PAdapter`).
+///
+/// [ChannelP2PReceived] is the same thing under its original, channel-named
+/// class; it is kept so existing apps compile unchanged, and it is routed by
+/// [messageType] exactly like this one.
+class P2PMessageReceived implements Message {
+  /// The peer that sent it, as the app names peers. The proof protocol
+  /// compares this to the counterparty marker recorded on a transaction, so
+  /// it must be drawn from the same identity scheme the app puts in
+  /// `BitcoinTransaction.counterpartyMarker`.
   final String fromPeerId;
   final String messageType;
   final Map<String, dynamic> payload;
 
-  ChannelP2PReceived({
+  P2PMessageReceived({
     required this.fromPeerId,
     required this.messageType,
     required this.payload,
   });
 
   @override
-  String get correlationId => 'channel-p2p-${DateTime.now().millisecondsSinceEpoch}';
+  String get correlationId => 'p2p-${DateTime.now().millisecondsSinceEpoch}';
   @override
   Map<String, dynamic> get metadata => {'fromPeerId': fromPeerId, 'messageType': messageType};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+/// Incoming P2P message for a payment channel.
+///
+/// A [P2PMessageReceived] under its original name: the coordinator routes
+/// both by `messageType`, so an app that already wraps everything its
+/// transport delivers in this class also reaches the proof protocol.
+class ChannelP2PReceived extends P2PMessageReceived {
+  ChannelP2PReceived({
+    required super.fromPeerId,
+    required super.messageType,
+    required super.payload,
+  });
+
+  @override
+  String get correlationId => 'channel-p2p-${DateTime.now().millisecondsSinceEpoch}';
+}
+
+/// Ask the counterparty who handed us [txid] for a fresh merkle proof for its
+/// ancestry (bead libspiffy-a2v3).
+///
+/// When a reorganization takes an ancestor's block off the active chain the
+/// wallet can no longer walk [txid] back to a proof, so the outputs it gave
+/// us cannot go into a BEEF and cannot be spent
+/// (`ReadModelStorage.getOutputsAwaitingAncestorProof` lists them). There are
+/// exactly two recoveries: the block comes back, or **the counterparty who
+/// sent us the payment supplies a fresh BEEF**. This command is the second.
+///
+/// It is app-triggered: libspiffy never polls a peer for proofs.
+///
+/// Who is asked is `BitcoinTransaction.counterpartyMarker` on [txid]'s row —
+/// the sender of *that* payment, who owed us its ancestry's proofs in the
+/// first place, not the ancestor's own (unknown) counterparty. The request
+/// goes out as a [P2PMessageToSendEvent] with `messageType` `proof_request`
+/// addressed to the marker; the app delivers it. When no marker is recorded
+/// (a payment received before markers existed, or an app that supplied none)
+/// nobody can be asked: [AncestorProofRequestedEvent] reports the output as
+/// unrecoverable by request.
+class RequestAncestorProofCommand implements Message {
+  final String walletId;
+
+  /// The transaction *we received* whose ancestry no longer reaches a proof.
+  final String txid;
+
+  /// The ancestors a proof is wanted for. Informational — the responder
+  /// rebuilds the whole BEEF for [txid] — and filled in from
+  /// `ReadModelStorage.getOutputsAwaitingAncestorProof` when left empty.
+  final List<String> ancestorTxids;
+
+  /// Correlates the answer with this request; generated when omitted.
+  final String? requestId;
+
+  RequestAncestorProofCommand({
+    required this.walletId,
+    required this.txid,
+    this.ancestorTxids = const [],
+    this.requestId,
+  });
+
+  @override
+  String get correlationId => requestId ?? 'proof-request-$txid';
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId, 'txid': txid};
   @override
   ActorRef? get replyTo => null;
   @override
@@ -1788,18 +1870,143 @@ class ChannelClosedEvent extends CoordinatorEvent {
   DateTime get eventTimestamp => DateTime.now();
 }
 
-/// Outgoing P2P message that the app must transmit to the peer
-class ChannelP2PMessageToSendEvent extends CoordinatorEvent {
+/// An outgoing peer-to-peer message the app must transmit to [toPeerId] on
+/// its own transport (bead libspiffy-a2v3).
+///
+/// The library builds the payload and names the peer; carrying it is the
+/// app's job. [ChannelP2PMessageToSendEvent] is this event under its
+/// original, channel-named class, so an app that listens for the channel
+/// class keeps working; the merkle-proof protocol emits this base class with
+/// `messageType` `proof_request` / `proof_response`, so **an app that wants
+/// proof recovery must listen for [P2PMessageToSendEvent]**.
+class P2PMessageToSendEvent extends CoordinatorEvent {
   @override
   String? get walletId => null;
   final String toPeerId;
   final String messageType;
   final Map<String, dynamic> payload;
 
-  ChannelP2PMessageToSendEvent({
+  P2PMessageToSendEvent({
     required this.toPeerId,
     required this.messageType,
     required this.payload,
+  });
+
+  @override
+  DateTime get eventTimestamp => DateTime.now();
+}
+
+/// Outgoing P2P message that the app must transmit to the peer
+class ChannelP2PMessageToSendEvent extends P2PMessageToSendEvent {
+  ChannelP2PMessageToSendEvent({
+    required super.toPeerId,
+    required super.messageType,
+    required super.payload,
+  });
+}
+
+/// What became of a [RequestAncestorProofCommand] (bead libspiffy-a2v3).
+///
+/// [success] only says the request went out (as a [P2PMessageToSendEvent] to
+/// [toPeerId]); the answer arrives later as an [AncestorProofResponseEvent].
+/// [success] is false, with [toPeerId] null, when nobody can be asked: the
+/// transaction is not stored, or its row carries no counterparty marker, in
+/// which case the output is unrecoverable by request and only the block
+/// returning to the active chain can restore it.
+class AncestorProofRequestedEvent extends CoordinatorEvent {
+  @override
+  final String walletId;
+
+  /// The received transaction whose ancestry is missing a proof.
+  final String txid;
+
+  /// The counterparty marker recorded on [txid], which is who was asked.
+  /// Null when there is none to ask.
+  final String? toPeerId;
+
+  /// The ancestors named in the request.
+  final List<String> ancestorTxids;
+
+  final String requestId;
+  final bool success;
+  final String? error;
+
+  AncestorProofRequestedEvent({
+    required this.walletId,
+    required this.txid,
+    required this.requestId,
+    required this.success,
+    this.toPeerId,
+    this.ancestorTxids = const [],
+    this.error,
+  });
+
+  @override
+  DateTime get eventTimestamp => DateTime.now();
+}
+
+/// What became of a `proof_response` a counterparty sent back
+/// (bead libspiffy-a2v3).
+///
+/// The BEEF went through the ordinary receive path, so it was verified
+/// against our own header chain like every other incoming proof. [success] is
+/// true only when it verified and the fresh proof was stored; a response that
+/// does not verify is rejected here (the output stays awaiting a proof) and
+/// the BEEF is still retained as evidence of what the counterparty handed us.
+class AncestorProofResponseEvent extends CoordinatorEvent {
+  @override
+  final String? walletId;
+
+  /// The transaction the response was about.
+  final String txid;
+
+  /// The peer that answered.
+  final String fromPeerId;
+
+  /// The request this answers, when it named one.
+  final String? requestId;
+
+  final bool success;
+  final String? error;
+
+  AncestorProofResponseEvent({
+    required this.walletId,
+    required this.txid,
+    required this.fromPeerId,
+    required this.success,
+    this.requestId,
+    this.error,
+  });
+
+  @override
+  DateTime get eventTimestamp => DateTime.now();
+}
+
+/// A `proof_request` a peer sent us, and what we did about it
+/// (bead libspiffy-a2v3).
+///
+/// Emitted on the *responder*. [answered] is false when the request was
+/// refused: we hold no such transaction, its row records no counterparty
+/// marker, the requester is not the counterparty we recorded for it, or we
+/// cannot prove it ourselves either. [reason] says which, for our own logs
+/// only: the refusal that goes back on the wire is uniform, so a peer cannot
+/// learn which transactions we know by asking.
+class AncestorProofRequestReceivedEvent extends CoordinatorEvent {
+  @override
+  String? get walletId => null;
+
+  final String fromPeerId;
+  final String txid;
+  final String? requestId;
+  final bool answered;
+  final String? reason;
+
+  AncestorProofRequestReceivedEvent({
+    required this.fromPeerId,
+    required this.txid,
+    required this.answered,
+    this.requestId,
+    this.reason,
   });
 
   @override

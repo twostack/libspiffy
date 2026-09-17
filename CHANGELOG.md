@@ -328,7 +328,9 @@ on the previous code.
   counterparty's transaction. A fresh proof comes from the counterparty, in a
   new BEEF, or from the block returning to the active chain. Asking a
   counterparty for a re-proof needs a peer message the library does not have;
-  that remains open.
+  that remains open. The recovery itself is verified end to end: a fresh
+  verified proof from a re-sent BEEF supersedes the orphaned row, which is
+  kept, and the output becomes spendable again.
 - **Outgoing BEEFs merge the BUMPs of ancestors from the same block (V-66).**
   One multi-leaf BRC-74 BUMP per block instead of a repeated path per
   ancestor. Grouping is by height *and* computed merkle root, so a fork at

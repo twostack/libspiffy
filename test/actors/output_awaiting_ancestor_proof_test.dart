@@ -215,8 +215,9 @@ void main() {
   /// projection's job on a successful receive
   /// (`WalletProjection._storeAncestors`), and this test runs SPVActor
   /// without one, so that write is done here the way the projection does it.
-  /// The full path is covered end to end by
-  /// test/integration/unproven_receive_ancestor_retention_test.dart.
+  /// The full path — including that a fresh verified proof supersedes the
+  /// orphaned row — is covered end to end, through a real projection, by
+  /// test/integration/orphaned_ancestor_reproof_test.dart.
   Future<void> deliverFreshProofFromCounterparty() async {
     spv.tell(
       ReceiveTransactionMessage(

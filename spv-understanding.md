@@ -80,6 +80,21 @@ LibSpiffy must maintain:
    - Kept in sync via SpiffyNode integration
    - Used for merkle proof validation
 
+5. **A Counterparty Marker On Every Payment, In Both Directions**
+   - Every payment the wallet records, incoming and outgoing, carries a marker
+     identifying the counterparty it was with.
+   - The marker is an **opaque string chosen by the app**: an Ed25519 identity
+     key, an email address, a peer id, an internal account id — libspiffy does
+     not interpret it and does not validate its form.
+   - It is a **marker, not an identity record**. Names, contact details,
+     key material, verification state and every other piece of identity
+     metadata stay with the app. The wallet stores exactly enough to trace a
+     payment back to whoever the app says it was with.
+   - It is retained like everything else: never deleted, never overwritten
+     (see Data Retention). It is what makes it possible, later, to ask the
+     right counterparty for a fresh merkle proof when an ancestor's block is
+     orphaned — the only recovery route there is besides the block returning.
+
 ## Current Architecture (Implemented)
 
 ### Public API: WalletCoordinatorActor
@@ -331,7 +346,30 @@ The fundamental paradigm shift:
 - ✅ Receive transactions directly from counterparties
 - ✅ Validate received transactions using proofs
 
-### 3. Full Transaction History Required
+### 3. This Is BSV: No Replace-By-Fee, First Seen Wins
+
+LibSpiffy targets **Bitcoin SV**, and several habits carried over from BTC and
+Ethereum are simply wrong here:
+
+- ❌ There is **no replace-by-fee**. A transaction cannot be displaced from the
+  mempool by a later conflicting one paying a higher fee.
+- ❌ There is therefore **no fee auction and no front-running**. Paying more does
+  not buy priority over a conflicting spend that miners already hold.
+- ✅ **First seen wins.** Of two transactions spending the same input, the one
+  that reached the network first is the one that gets mined; the later one is
+  rejected as a double spend, whatever fee it carries.
+
+The consequence for design: where two spends of the same input compete, the
+question is only *which was broadcast first*, never *which pays more*. Do not
+add fee bumping, fee escalation, priority fees, or "win the race" logic — a
+standard policy fee is correct in every case, including a reclaim or any other
+deliberate double spend of our own held inputs. Fees are for getting a
+transaction accepted at all, not for outbidding anyone.
+
+If a design of yours turns on outpacing a competing transaction by fee, stop:
+that is a BTC model, and it does not describe this network.
+
+### 4. Full Transaction History Required
 
 Unlike traditional SPV descriptions, LibSpiffy needs complete history:
 - Store every transaction ever processed
@@ -339,7 +377,7 @@ Unlike traditional SPV descriptions, LibSpiffy needs complete history:
 - Enable spending from any historical UTXO
 - Support wallet restoration from transaction history
 
-### 4. Offline Capability
+### 5. Offline Capability
 
 As noted in the BSV Wiki:
 > "By storing Transaction₀ locally, a user will be able to sign Transaction₁ offline"

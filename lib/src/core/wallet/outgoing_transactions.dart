@@ -127,7 +127,13 @@ class OutgoingTransactions {
   }
 
   /// Handle recording an outgoing transaction (payment created by this wallet)
-  List<Event> recordOutgoing(WalletState currentState, RecordOutgoingTransactionCommand command) {
+  ///
+  /// [supersedesDeferred] is the one deferred payment whose hold on these
+  /// inputs this recording takes over: the payment a reclaim's self-spend
+  /// reclaims (bead libspiffy-87a). Everywhere else an input another
+  /// deferred payment holds is left to it.
+  List<Event> recordOutgoing(WalletState currentState, RecordOutgoingTransactionCommand command,
+      {String? supersedesDeferred}) {
     // Business rule: Wallet must exist
     if (!currentState.isCreated) {
       throw StateError('Cannot record outgoing transaction for non-existent wallet');
@@ -191,7 +197,8 @@ class OutgoingTransactions {
     // ARC reports it failed, or it is cancelled (bead libspiffy-7p2);
     // ARCActor issues SpendUTXOCommand when it reaches SEEN_ON_NETWORK.
     if (command.deferSpend) {
-      final hold = deferred.holdEvent(currentState, command, version: currentState.version + events.length + 1);
+      final hold = deferred.holdEvent(currentState, command,
+          version: currentState.version + events.length + 1, supersedes: supersedesDeferred);
       events.add(hold);
       _log.fine('Deferred spend for ${command.txid}: ${hold.heldInputs.length} input(s) held');
     }

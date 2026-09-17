@@ -243,6 +243,10 @@ class ARCActor extends Actor {
           await _handleEstimateFee(msg);
           break;
 
+        case final EstimatePolicyFeeMessage msg:
+          context.sender?.tell(await _quotePolicyFee(msg));
+          break;
+
         case final CheckStoragePendingUTXOsMessage msg:
           await _handleCheckStoragePendingUTXOs(msg);
           break;
@@ -710,6 +714,34 @@ class ARCActor extends Actor {
 
     } catch (e) {
       context.sender?.tell(FeeEstimateMessage(BigInt.zero));
+    }
+  }
+
+  /// ARC's policy fee for a transaction of [msg]'s shape (bead
+  /// libspiffy-87a). Unlike [_handleEstimateFee] it does not fall back to a
+  /// guessed rate: a policy ARC could not be asked for is answered as a
+  /// failure, so a caller never builds a transaction at a fee nobody quoted.
+  ///
+  /// The policy fee is the whole fee. There is no replace-by-fee on this
+  /// network, so nothing is ever added to outbid a conflicting transaction.
+  Future<PolicyFeeQuote> _quotePolicyFee(EstimatePolicyFeeMessage msg) async {
+    final sizeBytes = (msg.inputCount * 148) + (msg.outputCount * 34) + 10 + msg.dataSize;
+    if (_arcService == null) {
+      return PolicyFeeQuote(
+          fee: BigInt.zero, sizeBytes: sizeBytes, success: false, error: 'ARC service not available');
+    }
+    try {
+      final fee = (await _arcService!.getPolicy()).miningFee;
+      return PolicyFeeQuote(
+        fee: fee.feeFor(sizeBytes),
+        sizeBytes: sizeBytes,
+        success: true,
+        feeSatoshis: fee.satoshis,
+        feeBytes: fee.bytes,
+      );
+    } catch (e) {
+      return PolicyFeeQuote(
+          fee: BigInt.zero, sizeBytes: sizeBytes, success: false, error: "ARC's policy could not be read: $e");
     }
   }
 
@@ -1746,6 +1778,12 @@ class ARCActor extends Actor {
         break;
       case EstimateFeeMessage():
         context.sender?.tell(FeeEstimateMessage(BigInt.zero));
+      case final EstimatePolicyFeeMessage msg:
+        context.sender?.tell(PolicyFeeQuote(
+            fee: BigInt.zero,
+            sizeBytes: (msg.inputCount * 148) + (msg.outputCount * 34) + 10 + msg.dataSize,
+            success: false,
+            error: error));
         break;
     }
   }

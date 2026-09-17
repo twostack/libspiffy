@@ -475,4 +475,119 @@ void main() {
     expect((await rebuilt.getUTXOs(walletId)).where((u) => u.key == _fundingKey).single.status,
         UTXOStatus.available);
   });
+
+  // Bead libspiffy-87a. Cancelling releases the hold but leaves the signed
+  // transaction the recipient holds spendable. A reclaim spends its inputs
+  // back to us, so their copy can no longer be mined.
+  //
+  // This is Bitcoin SV: first seen wins, so the reclaim pays the standard
+  // ARC policy fee and nothing more (NetworkArc publishes 50 sat/1000 bytes
+  // and rejects the later of two spends of one input, whatever it pays).
+  test('87a: reclaim an outstanding payment: the self-spend pays the ARC policy fee, the payment is '
+      'reclaimed once the network has it, the recipient\'s copy is then rejected as a double spend, '
+      'and the balance is restored less the fee', () async {
+    final ready = await pay('inv-reclaim');
+    expect((await funding()).status, UTXOStatus.reserved);
+    final policyFee = (await arc.getPolicy()).miningFee.feeFor(148 + 34 + 10);
+    expect(policyFee, BigInt.from(10), reason: '50 sat/1000 bytes over one input and one output');
+
+    final reclaimed = await send<DeferredPaymentReclaimedEvent>(
+        ReclaimDeferredPaymentCommand(
+            walletId: walletId, txid: ready.txid, reason: 'recipient never broadcast it', requestId: 'rc1'),
+        (e) => e.requestId == 'rc1');
+
+    expect(reclaimed.success, isTrue, reason: reclaimed.error);
+    expect(reclaimed.txid, ready.txid);
+    expect(reclaimed.reclaimTxid, isNot(ready.txid));
+    expect(reclaimed.reclaimedUtxoKeys, [_fundingKey]);
+    expect(reclaimed.fee, policyFee, reason: 'the standard policy fee, not raised to outbid anything');
+    expect(reclaimed.reclaimedSatoshis, BigInt.from(1000000) - policyFee);
+    expect(reclaimed.networkStatus, DeferredNetworkStatus.seenOnNetwork);
+    expect(arc.seen, contains(reclaimed.reclaimTxid));
+    final reclaimTxid = reclaimed.reclaimTxid!;
+
+    // The network has the self-spend: the input is spent by it and the
+    // payment is reclaimed. Not before: that is the one resolution point.
+    await until(() async => (await funding()).status == UTXOStatus.spent, 'the held input spent');
+    expect((await funding()).spentInTxId, reclaimTxid);
+    await until(
+        () async =>
+            (await storage().getDeferredPayment(walletId, ready.txid))!.state == DeferredPaymentState.reclaimed,
+        'the payment reclaimed');
+    final row = (await storage().getDeferredPayment(walletId, ready.txid))!;
+    expect(row.resolutionReason, contains(reclaimTxid));
+    expect(row.resolvedAt, isNotNull);
+    expect(row.heldInputs.single.utxoKey, _fundingKey, reason: 'its record is kept as it was');
+
+    // Retention: the reclaimed payment's signed transaction is still stored,
+    // with its raw hex, and both txids stay listable.
+    final original = (await storage().getTransaction(ready.txid, walletId: walletId))!;
+    expect(original.rawHex, isNotEmpty);
+    final listed = await list(
+        GetDeferredPaymentsQuery(walletId: walletId, includeResolved: true, queryId: 'rc2'));
+    expect(listed.payments.map((p) => (p.txid, p.state)).toSet(), {
+      (ready.txid, DeferredPaymentState.reclaimed),
+      (reclaimTxid, DeferredPaymentState.seen),
+    });
+    expect(listed.payments.firstWhere((p) => p.txid == reclaimTxid).payment.purpose, 'reclaim:${ready.txid}');
+
+    // Balance restored less the fee.
+    await until(
+        () async => (await storage().getPaymentUTXOs(walletId))
+            .any((u) => u.satoshis == BigInt.from(1000000) - policyFee),
+        'the reclaimed output spendable');
+    expect((await storage().getPaymentUTXOs(walletId)).map((u) => u.satoshis),
+        [BigInt.from(1000000) - policyFee]);
+
+    // The recipient broadcasts their copy now: it spends an input the
+    // network already saw spent, so it is rejected. First seen wins.
+    final late_ = await send<DeferredPaymentBroadcastEvent>(
+        BroadcastDeferredPaymentCommand(walletId: walletId, txid: ready.txid, requestId: 'rc3'),
+        (e) => e.requestId == 'rc3');
+    expect(late_.success, isFalse);
+    expect(late_.networkStatus, DeferredNetworkStatus.rejected);
+    expect(late_.competingTxids, [reclaimTxid]);
+    expect((await storage().getDeferredPayment(walletId, ready.txid))!.state, DeferredPaymentState.reclaimed,
+        reason: 'a rejection does not take a reclaimed payment back');
+
+    // Journaled: a read model rebuilt from the journal agrees.
+    final rebuilt = await rebuildFromJournal();
+    expect((await rebuilt.getDeferredPayment(walletId, ready.txid))!.state, DeferredPaymentState.reclaimed);
+    expect((await rebuilt.getDeferredPayment(walletId, reclaimTxid))!.purpose, 'reclaim:${ready.txid}');
+    expect((await rebuilt.getUTXOs(walletId, includeSpent: true)).firstWhere((u) => u.key == _fundingKey).status,
+        UTXOStatus.spent);
+  });
+
+  test('87a: reclaiming is refused for a payment that is not outstanding, and cancelling one being '
+      'reclaimed is refused', () async {
+    final ready = await pay('inv-reclaim-refused');
+    final reclaimed = await send<DeferredPaymentReclaimedEvent>(
+        ReclaimDeferredPaymentCommand(walletId: walletId, txid: ready.txid, requestId: 'rf1'),
+        (e) => e.requestId == 'rf1');
+    expect(reclaimed.success, isTrue, reason: reclaimed.error);
+
+    // While the reclaim is in flight the payment stays outstanding, but it
+    // can no longer be cancelled: its inputs are the reclaim's now.
+    final refusedCancel = await send<DeferredPaymentCancelledEvent>(
+        CancelDeferredPaymentCommand(walletId: walletId, txid: ready.txid, requestId: 'rf2'),
+        (e) => e.requestId == 'rf2');
+    expect(refusedCancel.success, isFalse);
+    expect(refusedCancel.error, contains('reclaim'));
+
+    await until(
+        () async =>
+            (await storage().getDeferredPayment(walletId, ready.txid))!.state == DeferredPaymentState.reclaimed,
+        'the payment reclaimed');
+    final again = await send<DeferredPaymentReclaimedEvent>(
+        ReclaimDeferredPaymentCommand(walletId: walletId, txid: ready.txid, requestId: 'rf3'),
+        (e) => e.requestId == 'rf3');
+    expect(again.success, isFalse);
+    expect(again.error, contains('reclaimed'));
+
+    final unknown = await send<DeferredPaymentReclaimedEvent>(
+        ReclaimDeferredPaymentCommand(walletId: walletId, txid: 'ab' * 32, requestId: 'rf4'),
+        (e) => e.requestId == 'rf4');
+    expect(unknown.success, isFalse);
+    expect(unknown.error, contains('not a deferred payment'));
+  });
 }

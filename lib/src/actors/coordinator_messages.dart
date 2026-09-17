@@ -761,8 +761,8 @@ class CheckDeferredPaymentStatusCommand implements Message {
 /// holds.** If they broadcast it later and it still reaches miners, it
 /// spends those inputs, and a later payment that reused them will fail (the
 /// wallet then records the original payment as seen). To make the old
-/// transaction unspendable, spend its inputs back to yourself instead (not
-/// provided by this command).
+/// transaction unspendable, spend its inputs back to yourself:
+/// [ReclaimDeferredPaymentCommand] does that.
 class CancelDeferredPaymentCommand implements Message {
   final String walletId;
   final String txid;
@@ -2004,6 +2004,133 @@ class ErrorEvent extends CoordinatorEvent {
     required this.source,
     required this.message,
     this.stackTrace,
+  });
+
+  @override
+  DateTime get eventTimestamp => DateTime.now();
+}
+
+// ==========================================================================
+// RECLAIMING A DEFERRED PAYMENT (bead libspiffy-87a)
+// ==========================================================================
+
+/// Reclaim an outstanding deferred payment: spend the inputs it holds back
+/// into this wallet and broadcast that transaction. Answered with
+/// [DeferredPaymentReclaimedEvent].
+///
+/// **Immediate and irreversible.** There is no confirmation step, no dry
+/// run: the self-spend is built, signed, journaled and broadcast by this one
+/// command. libspiffy does not own confirmation UX — warn the user first if
+/// your app wants that.
+///
+/// **It invalidates the signed transaction the recipient holds.** Both spend
+/// the same inputs, and only one of two transactions spending an input can
+/// be mined. Unlike [CancelDeferredPaymentCommand], which only releases the
+/// hold and leaves the recipient's copy spendable, a reclaim takes the coins
+/// out of its reach.
+///
+/// This is Bitcoin SV: there is no replace-by-fee, and **first seen wins**.
+/// The self-spend pays the standard ARC policy fee, like every other
+/// transaction the wallet builds; paying more would buy nothing. If the
+/// recipient already got their copy to the network first, theirs is the one
+/// that is mined and the self-spend is the one rejected — an ordering fact,
+/// decided before this command was sent.
+///
+/// The payment is **not** resolved at broadcast time: it stays outstanding,
+/// with its inputs now held by the self-spend, until the network reports the
+/// self-spend. It is then [DeferredPaymentState.reclaimed] and the coins are
+/// back in the wallet, less the fee.
+///
+/// Nothing is deleted: the reclaimed payment keeps its row, its stored
+/// transaction and its raw hex, and both txids stay queryable
+/// ([GetDeferredPaymentsQuery] with `includeResolved`).
+class ReclaimDeferredPaymentCommand implements Message {
+  final String walletId;
+
+  /// The outstanding deferred payment to reclaim.
+  final String txid;
+
+  /// Where the self-spend is broadcast.
+  final DeferredPaymentNetworkSource via;
+
+  /// Recorded as the reclaimed payment's resolution reason.
+  final String? reason;
+  final String? requestId;
+
+  ReclaimDeferredPaymentCommand({
+    required this.walletId,
+    required this.txid,
+    this.via = DeferredPaymentNetworkSource.arc,
+    this.reason,
+    this.requestId,
+  });
+
+  @override
+  String get correlationId => requestId ?? 'reclaim-deferred-$txid';
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId, 'txid': txid};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+/// Result of [ReclaimDeferredPaymentCommand].
+///
+/// [success] says the self-spend was journaled and the network took it, not
+/// that the payment is reclaimed yet: it resolves as
+/// [DeferredPaymentState.reclaimed] when the network reports the self-spend
+/// (watch it with [GetDeferredPaymentsQuery] or
+/// [CheckDeferredPaymentStatusCommand] on [reclaimTxid]).
+class DeferredPaymentReclaimedEvent extends CoordinatorEvent {
+  @override
+  final String walletId;
+
+  /// The deferred payment being reclaimed.
+  final String txid;
+
+  /// The wallet's self-spend of its held inputs, null when none was built.
+  final String? reclaimTxid;
+  final String requestId;
+  final bool success;
+
+  /// The inputs the self-spend spends.
+  final List<String> reclaimedUtxoKeys;
+
+  /// What comes back to the wallet: the held satoshis less [fee].
+  final BigInt? reclaimedSatoshis;
+
+  /// The standard policy fee the self-spend pays (ARC's published mining
+  /// fee for its size). Never raised to outbid anything: on BSV a
+  /// conflicting transaction cannot be displaced by paying more.
+  final BigInt? fee;
+
+  /// The wallet address the self-spend pays.
+  final String? toAddress;
+
+  /// The network's answer to the broadcast of the self-spend.
+  final String? networkStatus;
+  final String? source;
+
+  /// Transactions the network named as spending the same inputs — the
+  /// recipient's copy, when they got it out first.
+  final List<String> competingTxids;
+  final String? error;
+
+  DeferredPaymentReclaimedEvent({
+    required this.walletId,
+    required this.txid,
+    required this.requestId,
+    required this.success,
+    this.reclaimTxid,
+    this.reclaimedUtxoKeys = const [],
+    this.reclaimedSatoshis,
+    this.fee,
+    this.toAddress,
+    this.networkStatus,
+    this.source,
+    this.competingTxids = const [],
+    this.error,
   });
 
   @override

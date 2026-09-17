@@ -105,6 +105,50 @@ void defineDeferredPaymentContract(
       expect(all.payments, [failed]);
     });
 
+    test('87a: a reclaimed payment round-trips, with the reclaim naming it in its purpose', () async {
+      final walletId = 'w-${unique()}';
+      final t = unique();
+      final txid = contractTxid('reclaimed$t');
+      final reclaimTxid = contractTxid('reclaim-of$t');
+      final payment = contractDeferredPayment(walletId: walletId, txid: txid).copyWith(
+        state: DeferredPaymentState.reclaimed,
+        resolvedAt: DateTime.utc(2026, 9, 2),
+        resolutionReason: DeferredPayment.reclaimedBy(reclaimTxid),
+        updatedAt: DateTime.utc(2026, 9, 2),
+      );
+      final selfSpend = DeferredPayment(
+        walletId: walletId,
+        txid: reclaimTxid,
+        purpose: DeferredPaymentPurpose.reclaimOf(txid),
+        amount: BigInt.from(20436),
+        fee: BigInt.from(110),
+        heldInputs: payment.heldInputs,
+        state: DeferredPaymentState.seen,
+        createdAt: DateTime.utc(2026, 9, 2),
+        updatedAt: DateTime.utc(2026, 9, 2),
+        resolvedAt: DateTime.utc(2026, 9, 2),
+      );
+      await storage().storeDeferredPayment(payment);
+      await storage().storeDeferredPayment(selfSpend);
+
+      expect(await storage().getDeferredPayment(walletId, txid), payment);
+      final readSelfSpend = (await storage().getDeferredPayment(walletId, reclaimTxid))!;
+      expect(readSelfSpend, selfSpend);
+      expect(readSelfSpend.purpose, hasLength(72), reason: 'reclaim: plus a 64-character txid');
+      expect(DeferredPaymentPurpose.reclaimedTxid(readSelfSpend.purpose), txid);
+      expect(
+          [
+            for (final p in (await storage().listDeferredPayments(walletId,
+                    query: const DeferredPaymentQuery(states: {DeferredPaymentState.reclaimed})))
+                .payments)
+              p.txid
+          ],
+          [txid],
+          reason: 'reclaimed is a state the listing filters on');
+      expect((await storage().listDeferredPayments(walletId)).payments, isEmpty,
+          reason: 'reclaimed is resolved, not outstanding');
+    });
+
     test('filters: states, created before/after, last network status (and unchecked), invoice, recipient',
         () async {
       final walletId = 'w-${unique()}';

@@ -679,6 +679,198 @@ void main() {
     });
   });
 
+  // Bead libspiffy-87a: cancelling releases the inputs but leaves the signed
+  // transaction the recipient holds spendable. A reclaim spends those inputs
+  // back to the wallet, so that copy can no longer be mined.
+  //
+  // This is Bitcoin SV: first seen wins, so the self-spend pays the standard
+  // policy fee and nothing more. Which of the two transactions is mined is
+  // decided by which reached the network first.
+  group('reclaim', () {
+    /// The wallet's own self-spend of [inputs], paying [sats] back (the rest
+    /// is the policy fee).
+    (String, String) selfSpend(List<String> inputs, {required int sats}) {
+      final rawHex = _paymentHex(inputs, sats: sats);
+      return (dartsv.Transaction.fromHex(rawHex).id, rawHex);
+    }
+
+    Future<(String, String, String)> outstandingThenReclaim(_Wallet wallet, {String? reason}) async {
+      final txid = await wallet.pay([_input]);
+      final (reclaimTxid, rawHex) = selfSpend([_input], sats: 19900);
+      await wallet.handle(ReclaimDeferredSpendCommand(
+          walletId: _w, txid: txid, reclaimTxid: reclaimTxid, rawHex: rawHex,
+          recipientAddresses: const ['mrootaddress0000000000000000000000'], reason: reason));
+      return (txid, reclaimTxid, rawHex);
+    }
+
+    test('the self-spend is recorded and takes over the hold; the payment stays outstanding until the '
+        'network has it', () async {
+      final wallet = _Wallet();
+      final txid = await wallet.pay([_input]);
+      final (reclaimTxid, rawHex) = selfSpend([_input], sats: 19900);
+
+      final events = await wallet.handle(ReclaimDeferredSpendCommand(
+          walletId: _w, txid: txid, reclaimTxid: reclaimTxid, rawHex: rawHex,
+          recipientAddresses: const ['mrootaddress0000000000000000000000'], reason: 'recipient vanished'));
+
+      final recorded = events.whereType<TransactionRecordedEvent>().single;
+      expect(recorded.txid, reclaimTxid);
+      expect(recorded.spentUtxoKeys, [_input]);
+      expect(recorded.fee, 100, reason: '20000 in, 19900 out: the policy fee, derived from the transaction');
+      final hold = events.whereType<TransactionSpendDeferredEvent>().single;
+      expect((hold.txid, hold.supersedes), (reclaimTxid, txid));
+      expect(hold.heldUtxoKeys, [_input]);
+      expect(hold.purpose, 'reclaim:$txid');
+      final reclaimed = events.whereType<DeferredSpendReclaimedEvent>().single;
+      expect((reclaimed.txid, reclaimed.reclaimTxid, reclaimed.reason), (txid, reclaimTxid, 'recipient vanished'));
+      expect(reclaimed.reclaimedUtxoKeys, [_input]);
+      expect(events.whereType<UTXOSpentEvent>(), isEmpty, reason: 'nothing is spent before the network has it');
+
+      expect(wallet.utxo(_input).status, UTXOStatus.reserved);
+      expect(wallet.utxo(_input).reservedByTxId, reclaimTxid, reason: 'the hold moved to the self-spend');
+      expect(wallet.utxo(_input).reservationExpiresAt, isNull);
+      expect(wallet.deferred(txid)['state'], 'outstanding', reason: 'not resolved at broadcast time');
+      expect(wallet.deferred(txid)['reclaimTxid'], reclaimTxid);
+      expect(wallet.deferred(reclaimTxid)['reclaimOf'], txid);
+      expect((wallet.aggregate.currentState.metadata['deferredHolds'] as Map)[_input], reclaimTxid);
+    });
+
+    test('the payment is reclaimed once the network has the self-spend; the original payment is kept', () async {
+      final wallet = _Wallet();
+      final (txid, reclaimTxid, rawHex) = await outstandingThenReclaim(wallet, reason: 'recipient vanished');
+
+      // ARC reports the self-spend, and ARCActor spends its inputs.
+      await wallet.handle(
+          SpendUTXOCommand(walletId: _w, utxoKey: _input, spendingTxId: reclaimTxid, fee: BigInt.zero));
+
+      for (final state in [wallet.aggregate.currentState, wallet.replay().currentState]) {
+        expect((state.utxos[_input]!.status, state.utxos[_input]!.spentInTxId), (UTXOStatus.spent, reclaimTxid));
+        expect(state.metadata['deferredSpends'][txid]['state'], 'reclaimed');
+        expect(state.metadata['deferredSpends'][txid]['resolutionReason'], contains(reclaimTxid));
+        expect(state.metadata['deferredSpends'][reclaimTxid]['state'], 'seen');
+        // Retention: the reclaimed payment keeps its record and its link.
+        expect(state.metadata['deferredSpends'][txid]['txid'], txid);
+        expect(state.metadata['deferredSpends'][txid]['reclaimTxid'], reclaimTxid);
+      }
+      expect(rawHex, isNotEmpty);
+    });
+
+    test('a status report of the self-spend reclaims the payment too', () async {
+      final wallet = _Wallet();
+      final (txid, reclaimTxid, _) = await outstandingThenReclaim(wallet);
+
+      await wallet.handle(RecordTransactionNetworkStatusCommand(
+          walletId: _w, txid: reclaimTxid, networkStatus: DeferredNetworkStatus.seenOnNetwork));
+
+      expect(wallet.deferred(reclaimTxid)['state'], 'seen');
+      expect(wallet.deferred(txid)['state'], 'reclaimed');
+    });
+
+    test('a self-spend that never reaches the network leaves the payment outstanding, its inputs held by '
+        'the self-spend', () async {
+      final wallet = _Wallet();
+      final (txid, reclaimTxid, _) = await outstandingThenReclaim(wallet);
+
+      expect(wallet.deferred(txid)['state'], 'outstanding');
+      expect(wallet.utxo(_input).status, UTXOStatus.reserved);
+      expect(wallet.utxo(_input).reservedByTxId, reclaimTxid);
+      // No other payment can take the input while the reclaim is in flight:
+      // only the two UTXOs the payment never touched are spendable.
+      expect(wallet.aggregate.currentState.availableBalance, BigInt.from(7000));
+    });
+
+    test('cancelling a payment being reclaimed is refused', () async {
+      final wallet = _Wallet();
+      final (txid, reclaimTxid, _) = await outstandingThenReclaim(wallet);
+
+      expect(() => wallet.handle(CancelDeferredSpendCommand(walletId: _w, txid: txid)),
+          throwsA(isA<StateError>()));
+      // And the reclaim itself cannot be cancelled: it is irreversible, and
+      // releasing its inputs would strand the payment it reclaims.
+      expect(() => wallet.handle(CancelDeferredSpendCommand(walletId: _w, txid: reclaimTxid)),
+          throwsA(isA<StateError>()));
+      expect(wallet.deferred(txid)['reclaimTxid'], reclaimTxid);
+      expect(wallet.utxo(_input).status, UTXOStatus.reserved);
+      expect(wallet.utxo(_input).reservedByTxId, reclaimTxid);
+    });
+
+    test('refused: an unknown payment, one not outstanding, one already being reclaimed', () async {
+      final wallet = _Wallet();
+      final (unknownTxid, unknownHex) = selfSpend([_input], sats: 19000);
+      expect(
+          () => wallet.handle(ReclaimDeferredSpendCommand(
+              walletId: _w, txid: 'ee' * 32, reclaimTxid: unknownTxid, rawHex: unknownHex)),
+          throwsA(isA<StateError>()));
+
+      final wallet2 = _Wallet();
+      final (txid, reclaimTxid, _) = await outstandingThenReclaim(wallet2);
+      final (secondTxid, secondHex) = selfSpend([_input], sats: 19800);
+      expect(
+          () => wallet2.handle(ReclaimDeferredSpendCommand(
+              walletId: _w, txid: txid, reclaimTxid: secondTxid, rawHex: secondHex)),
+          throwsA(isA<StateError>()),
+          reason: 'already being reclaimed by $reclaimTxid');
+
+      final wallet3 = _Wallet();
+      final cancelled = await wallet3.pay([_other], sats: 3000);
+      await wallet3.handle(CancelDeferredSpendCommand(walletId: _w, txid: cancelled));
+      final (afterCancel, afterCancelHex) = selfSpend([_other], sats: 6900);
+      expect(
+          () => wallet3.handle(ReclaimDeferredSpendCommand(
+              walletId: _w, txid: cancelled, reclaimTxid: afterCancel, rawHex: afterCancelHex)),
+          throwsA(isA<StateError>()),
+          reason: 'cancelled, not outstanding');
+    });
+
+    test('refused: a transaction that does not spend exactly the held inputs, or pays no fee', () async {
+      final wallet = _Wallet();
+      final txid = await wallet.pay([_input]);
+
+      final (wrongInputs, wrongInputsHex) = selfSpend([_input, _other], sats: 19900);
+      expect(
+          () => wallet.handle(ReclaimDeferredSpendCommand(
+              walletId: _w, txid: txid, reclaimTxid: wrongInputs, rawHex: wrongInputsHex)),
+          throwsA(isA<StateError>()),
+          reason: 'it spends an input the payment does not hold');
+
+      final (noFee, noFeeHex) = selfSpend([_input], sats: 20000);
+      expect(
+          () => wallet.handle(ReclaimDeferredSpendCommand(
+              walletId: _w, txid: txid, reclaimTxid: noFee, rawHex: noFeeHex)),
+          throwsA(isA<StateError>()),
+          reason: 'it pays out everything and leaves no fee');
+
+      final (real, realHex) = selfSpend([_input], sats: 19900);
+      expect(
+          () => wallet.handle(ReclaimDeferredSpendCommand(
+              walletId: _w, txid: txid, reclaimTxid: 'ff' * 32, rawHex: realHex)),
+          throwsA(isA<ArgumentError>()),
+          reason: 'the named txid is not the transaction\'s own id');
+      expect(real, isNotEmpty);
+      expect(wallet.utxo(_input).reservedByTxId, txid, reason: 'nothing was journaled');
+    });
+
+    test('journals written before reclaims replay unchanged', () async {
+      final wallet = _Wallet();
+      final txid = await wallet.pay([_input, _pendingInput]);
+      await wallet.handle(CancelDeferredSpendCommand(walletId: _w, txid: txid));
+
+      // Every hold in such a journal reads back with no superseded payment.
+      for (final hold in wallet.journal.whereType<TransactionSpendDeferredEvent>()) {
+        expect(hold.supersedes, isNull);
+        final beforeReclaims = Map<String, dynamic>.from(hold.toMap())..remove('supersedes');
+        expect(TransactionSpendDeferredEvent.fromMap(beforeReclaims).supersedes, isNull);
+      }
+      final replayed = wallet.replay().currentState;
+      expect(replayed.metadata['deferredSpends'][txid]['state'], 'cancelled');
+      expect(replayed.metadata['deferredSpends'][txid].containsKey('reclaimTxid'), isFalse);
+      expect(replayed.utxos[_input]!.status, UTXOStatus.available);
+      expect(replayed.utxos[_pendingInput]!.status, UTXOStatus.pending);
+      expect(DeferredPayment.stateFromName('cancelled'), DeferredPaymentState.cancelled);
+      expect(DeferredPayment.stateFromName(null), DeferredPaymentState.outstanding);
+    });
+  });
+
   group('journals written before holds', () {
     /// The old payment flow: 2-minute reservation (long expired), recording
     /// without a hold, and optionally the old cleanup's release.

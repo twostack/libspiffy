@@ -33,11 +33,28 @@ import 'dart:convert';
 ///                                                                   +-----+
 ///                                                                   |mined|
 ///                                                                   +-----+
+///
+///                  +-----------+  ReclaimDeferredSpendCommand: the wallet's
+///                  |outstanding|  own self-spend of the held inputs is
+///                  +-----------+  recorded and broadcast; once the network
+///                        |        has THAT transaction (it is seen or mined)
+///                        v
+///                  +---------+
+///                  |reclaimed|  terminal; the inputs are back in the wallet
+///                  +---------+
 /// ```
 ///
 /// Inputs are held only while [outstanding]. [failed] and [cancelled]
 /// released them; [seen] and [mined] spent them. Evidence from the network
 /// wins: a failed or cancelled payment the network later reports is [seen].
+///
+/// [reclaimed] is the one resolution that spends the held inputs elsewhere:
+/// the wallet built and broadcast its own transaction paying them back to
+/// itself (bead libspiffy-87a). It is reached only once that self-spend is
+/// on the network, so until then the payment is still [outstanding] with the
+/// reclaim in flight. The original payment, its signed transaction and its
+/// raw hex are kept; the reclaim's own record names it (its purpose is
+/// `reclaim:<txid>`, see [DeferredPaymentPurpose]).
 ///
 /// ARC's DOUBLE_SPEND_ATTEMPTED (a competing transaction spends an input) is
 /// not final: either transaction may still be mined. The payment stays
@@ -62,6 +79,37 @@ enum DeferredPaymentState {
   /// Cancelled by the user while the network did not know the transaction;
   /// inputs released. The recipient still holds the signed transaction.
   cancelled,
+
+  /// The wallet spent the held inputs back to itself and the network has
+  /// that self-spend (bead libspiffy-87a). Terminal: the signed transaction
+  /// the recipient holds can no longer be mined, because its inputs are
+  /// gone. Reached only when the self-spend is seen or mined, never at
+  /// broadcast time.
+  ///
+  /// Appended after [cancelled]: states are journaled and stored by name,
+  /// so a journal or a row written before this state replays unchanged.
+  reclaimed,
+}
+
+/// The `purpose` a deferred payment carries, for the values the wallet
+/// itself sets and reads back.
+///
+/// A reclaim's self-spend is recorded with `reclaim:<txid of the payment it
+/// reclaims>`: that is how the payment it resolves stays queryable from the
+/// read model without a schema change, and how the projection finds the
+/// payment to resolve when the self-spend reaches the network.
+abstract final class DeferredPaymentPurpose {
+  /// Purpose prefix of a reclaim's self-spend.
+  static const String reclaimPrefix = 'reclaim:';
+
+  /// The purpose of the self-spend that reclaims [txid].
+  static String reclaimOf(String txid) => '$reclaimPrefix$txid';
+
+  /// The payment [purpose] reclaims, or null when it is not a reclaim.
+  static String? reclaimedTxid(String? purpose) =>
+      purpose != null && purpose.startsWith(reclaimPrefix) && purpose.length > reclaimPrefix.length
+          ? purpose.substring(reclaimPrefix.length)
+          : null;
 }
 
 /// Where a network check or a broadcast of a deferred payment goes.
@@ -298,6 +346,11 @@ class DeferredPayment {
     return added ? merged : null;
   }
 
+  /// The resolution reason recorded when a payment is reclaimed by the
+  /// wallet's own self-spend [reclaimTxid] (bead libspiffy-87a).
+  static String reclaimedBy(String reclaimTxid) =>
+      "Reclaimed by the wallet's own transaction $reclaimTxid, which spends its inputs back to the wallet";
+
   static DeferredPaymentState stateFromName(String? name) => DeferredPaymentState.values
       .firstWhere((s) => s.name == name, orElse: () => DeferredPaymentState.outstanding);
 
@@ -388,6 +441,7 @@ class DeferredPaymentQuery {
     DeferredPaymentState.mined,
     DeferredPaymentState.failed,
     DeferredPaymentState.cancelled,
+    DeferredPaymentState.reclaimed,
   };
 
   int get effectiveLimit => limit < 1 ? 1 : (limit > 1000 ? 1000 : limit);

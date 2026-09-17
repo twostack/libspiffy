@@ -152,6 +152,42 @@ void main() {
 
   tearDown(() => system.shutdown());
 
+  // Bead libspiffy-87a: what a transaction the wallet builds pays. There is
+  // no replace-by-fee on this network, so the published policy fee is the
+  // whole fee; and a policy ARC could not be asked for is an error, not a
+  // licence to guess a rate.
+  group('policy fee quote (87a)', () {
+    Future<PolicyFeeQuote> quote({int inputs = 1, int outputs = 1}) => arcActor.ask<PolicyFeeQuote>(
+        EstimatePolicyFeeMessage(inputCount: inputs, outputCount: outputs), const Duration(seconds: 10));
+
+    test("ARC's published miningFee, rounded up, for the transaction's size", () async {
+      arc.miningFee = const ArcFeeAmount(satoshis: 50, bytes: 1000);
+      await spawnActor();
+
+      final one = await quote();
+
+      expect(one.success, isTrue, reason: one.error);
+      expect(one.sizeBytes, 148 + 34 + 10);
+      expect(one.fee, BigInt.from(10), reason: '192 bytes at 50 sat/1000 bytes, rounded up');
+      expect((one.feeSatoshis, one.feeBytes), (50, 1000));
+
+      final two = await quote(inputs: 2);
+      expect(two.sizeBytes, 2 * 148 + 34 + 10);
+      expect(two.fee, BigInt.from(17));
+    });
+
+    test('a policy ARC cannot be asked for is a failure, not a guessed rate', () async {
+      arc.unreachable = true;
+      await spawnActor();
+
+      final answer = await quote();
+
+      expect(answer.success, isFalse);
+      expect(answer.fee, BigInt.zero);
+      expect(answer.error, contains('policy'));
+    });
+  });
+
   group('check status now (ARC)', () {
     test('SEEN_ON_NETWORK: recorded (explicit) and the deferred spend applies', () async {
       await handedOver();
@@ -531,6 +567,7 @@ class _FakeArc extends ArcService {
 
   final Map<String, ArcTransactionResponse> statuses = {};
   final List<String> submitted = [];
+  ArcFeeAmount miningFee = const ArcFeeAmount(satoshis: 1, bytes: 1000);
   String submitStatus = 'SEEN_ON_NETWORK';
   List<String>? submitCompetingTxs;
   bool unreachable = false;
@@ -542,6 +579,18 @@ class _FakeArc extends ArcService {
     submitted.add(rawTx);
     return ArcSubmitResponse.fromJson(
         {'txid': 'x', 'txStatus': submitStatus, if (submitCompetingTxs != null) 'competingTxs': submitCompetingTxs});
+  }
+
+  @override
+  Future<ArcPolicyResponse> getPolicy() async {
+    if (unreachable) throw ArcException('ARC unreachable');
+    return ArcPolicyResponse(
+      maxScriptSize: 500000,
+      maxTxSigopsCount: 4294967295,
+      maxTxSize: 10000000,
+      miningFee: miningFee,
+      standardFormatSupported: true,
+    );
   }
 
   @override

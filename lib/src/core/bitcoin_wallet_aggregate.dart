@@ -286,7 +286,13 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         if (awaitingPersist != null) {
           sender.tell(awaitingPersist);
         }
-        for (final event in events) {
+        // A reclaim journals a whole recording (its transaction, its wallet
+        // outputs and its hold) and answers once, with the reclaim
+        // (libspiffy-87a); the per-event replies below would answer the ask
+        // with the first of those instead.
+        for (final event in command is ReclaimDeferredSpendCommand
+            ? events.whereType<DeferredSpendReclaimedEvent>()
+            : events) {
           if (event is WalletCreatedEvent) {
             sender.tell(WalletCreatedResponse(
               walletId: event.walletId,
@@ -328,6 +334,14 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
               txid: event.txid,
               success: true,
               releasedUtxoKeys: [for (final r in event.releasedInputs) r.utxoKey],
+            ));
+          } else if (event is DeferredSpendReclaimedEvent) {
+            sender.tell(DeferredSpendReclaimedResponse(
+              walletId: event.walletId,
+              txid: event.txid,
+              reclaimTxid: event.reclaimTxid,
+              success: true,
+              reclaimedUtxoKeys: event.reclaimedUtxoKeys,
             ));
           }
         }
@@ -486,6 +500,14 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         success: false,
         error: errorMessage,
       ));
+    } else if (command is ReclaimDeferredSpendCommand) {
+      sender.tell(DeferredSpendReclaimedResponse(
+        walletId: command.walletId,
+        txid: command.txid,
+        reclaimTxid: command.reclaimTxid,
+        success: false,
+        error: errorMessage,
+      ));
     } else if (command is SplitUTXOsToBenfordCommand) {
       sender.tell(SplitUTXOsResponse(
         walletId: command.walletId,
@@ -595,6 +617,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         return _deferred.recordNetworkStatus(currentState, cmd);
       case final CancelDeferredSpendCommand cmd:
         return _deferred.cancel(currentState, cmd);
+      case final ReclaimDeferredSpendCommand cmd:
+        return _deferred.reclaim(currentState, cmd, _transactions);
       case final SplitUTXOsToBenfordCommand cmd:
         return UtxoLedger.splitToBenford(currentState, cmd);
       default:
@@ -678,6 +702,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         DeferredPayments.applyFailed(state, failed);
       case final DeferredTransactionCancelledEvent cancelled:
         DeferredPayments.applyCancelled(state, cancelled);
+      case final DeferredSpendReclaimedEvent reclaimed:
+        DeferredPayments.applyReclaimed(state, reclaimed);
       default:
         throw ArgumentError('Unknown event type: ${event.runtimeType}');
     }

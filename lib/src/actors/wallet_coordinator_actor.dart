@@ -19,6 +19,7 @@ import '../services/ancestor_chain_service.dart';
 import '../services/watch_only_funds.dart';
 import '../storage/read_model_storage.dart';
 import '../utils/beef.dart';
+import 'aggregate_signing_client.dart';
 import 'channel_p2p_adapter.dart';
 import 'coordinator_messages.dart';
 import 'invoice_messages.dart' as inv;
@@ -259,6 +260,8 @@ class WalletCoordinatorActor extends Actor {
         unawaited(_handleCheckDeferredPaymentStatus(message));
       } else if (message is CancelDeferredPaymentCommand) {
         unawaited(_handleCancelDeferredPayment(message));
+      } else if (message is ReclaimDeferredPaymentCommand) {
+        unawaited(_handleReclaimDeferredPayment(message));
       } else if (message is ShutdownCommand) {
         await _handleShutdown();
       }
@@ -1141,6 +1144,228 @@ class WalletCoordinatorActor extends Actor {
       ));
     } catch (e) {
       _emitEvent(refused('Cancellation of deferred payment ${cmd.txid} failed: $e'));
+    }
+  }
+
+  /// Reclaims an outstanding deferred payment (bead libspiffy-87a): builds
+  /// and signs a transaction spending exactly the inputs it holds back into
+  /// this wallet, has the wallet journal it (the hold moves to it), and
+  /// broadcasts it. One shot: there is no build-then-confirm step.
+  ///
+  /// The fee is the standard ARC policy fee for the transaction's size
+  /// (ARCActor's fee estimate, from ARC's published `miningFee`). It is not
+  /// raised, and there is no caller override: this is Bitcoin SV, where a
+  /// conflicting transaction cannot be displaced by paying more and the
+  /// transaction that reached the network first is the one that is mined.
+  ///
+  /// The payment is not resolved here. It becomes
+  /// [DeferredPaymentState.reclaimed] when the network reports the
+  /// self-spend, which is also when its outputs become spendable.
+  Future<void> _handleReclaimDeferredPayment(ReclaimDeferredPaymentCommand cmd) async {
+    final requestId = cmd.correlationId;
+    DeferredPaymentReclaimedEvent failure(String error, {String? reclaimTxid}) =>
+        DeferredPaymentReclaimedEvent(
+          walletId: cmd.walletId,
+          txid: cmd.txid,
+          reclaimTxid: reclaimTxid,
+          requestId: requestId,
+          success: false,
+          error: error,
+        );
+    try {
+      final payment = await _storage.getDeferredPayment(cmd.walletId, cmd.txid);
+      if (payment == null) {
+        _emitEvent(failure('Transaction ${cmd.txid} is not a deferred payment of wallet ${cmd.walletId}'));
+        return;
+      }
+      if (!payment.isOutstanding) {
+        _emitEvent(failure('Deferred payment ${cmd.txid} is ${payment.state.name}; only an outstanding '
+            'payment can be reclaimed'));
+        return;
+      }
+      if (payment.heldInputs.isEmpty) {
+        _emitEvent(failure('Deferred payment ${cmd.txid} holds no inputs; there is nothing to reclaim'));
+        return;
+      }
+
+      // The inputs it holds, as the wallet has them now.
+      final rows = {for (final u in await _storage.getUTXOs(cmd.walletId)) u.key: u};
+      final inputs = <BitcoinUtxo>[];
+      for (final held in payment.heldInputs) {
+        final utxo = rows[held.utxoKey];
+        if (utxo == null || utxo.status == UTXOStatus.spent) {
+          _emitEvent(failure('Input ${held.utxoKey} of deferred payment ${cmd.txid} is spent or unknown; '
+              'it cannot be reclaimed'));
+          return;
+        }
+        inputs.add(utxo);
+      }
+      final total = inputs.fold(BigInt.zero, (sum, u) => sum + u.satoshis);
+
+      // The standard policy fee for a transaction of this shape, from ARC's
+      // published policy. No bump, no override: there is no fee auction on
+      // this network, and no fee makes a conflicting transaction go away.
+      final wm.PolicyFeeQuote quote;
+      try {
+        quote = await _arcActor.ask<wm.PolicyFeeQuote>(
+            wm.EstimatePolicyFeeMessage(inputCount: inputs.length, outputCount: 1), _deferredNetworkTimeout);
+      } catch (e) {
+        _emitEvent(failure('The policy fee for the reclaim of ${cmd.txid} could not be quoted ($e); '
+            'nothing was built or broadcast'));
+        return;
+      }
+      final fee = quote.fee;
+      if (!quote.success || fee <= BigInt.zero) {
+        _emitEvent(failure('The policy fee for the reclaim of ${cmd.txid} could not be quoted '
+            '(${quote.error ?? 'quoted as $fee'}); nothing was built or broadcast'));
+        return;
+      }
+      final amount = total - fee;
+      if (amount <= BigInt.zero) {
+        _emitEvent(failure('The $total satoshi(s) deferred payment ${cmd.txid} holds do not cover the '
+            '$fee satoshi policy fee of the reclaim'));
+        return;
+      }
+
+      // Back to an address of ours.
+      final wm.AddressGeneratedResponse address;
+      try {
+        address = await _walletManager.ask<wm.AddressGeneratedResponse>(
+          wm.WalletCommandMessage(
+            cmd.walletId,
+            domain.GenerateAddressCommand(
+              walletId: cmd.walletId,
+              label: 'reclaim of ${cmd.txid}',
+              commandId: 'reclaim-address-${cmd.txid}-${DateTime.now().microsecondsSinceEpoch}',
+            ),
+          ),
+          const Duration(seconds: 30),
+        );
+      } catch (e) {
+        _emitEvent(failure('No address to reclaim ${cmd.txid} to: $e'));
+        return;
+      }
+      if (!address.success || address.address.isEmpty) {
+        _emitEvent(failure('No address to reclaim ${cmd.txid} to: ${address.error ?? 'the wallet gave none'}'));
+        return;
+      }
+
+      final unsigned = dartsv.Transaction();
+      for (final utxo in inputs) {
+        unsigned.addInput(
+            dartsv.TransactionInput(utxo.txid, utxo.vout, dartsv.TransactionInput.MAX_SEQ_NUMBER));
+      }
+      unsigned.addOutput(dartsv.TransactionOutput(
+        amount,
+        dartsv.P2PKHLockBuilder.fromAddress(dartsv.Address.fromBase58(address.address)).getScriptPubkey(),
+      ));
+      final unsignedHex = unsigned.serialize();
+
+      final String signedHex;
+      try {
+        signedHex = await AggregateSigningClient(
+          system: context.system,
+          walletManager: _walletManager,
+          storage: _storage,
+          replyTimeout: const Duration(seconds: 30),
+        ).signTransaction(
+          walletId: cmd.walletId,
+          transactionId: dartsv.Transaction.fromHex(unsignedHex).id,
+          unsignedTxHex: unsignedHex,
+          utxos: inputs,
+        );
+      } catch (e) {
+        _emitEvent(failure('The reclaim of ${cmd.txid} could not be signed: $e'));
+        return;
+      }
+      final reclaimTxid = dartsv.Transaction.fromHex(signedHex).id;
+
+      // Journal it before anything reaches the network: a self-spend that is
+      // broadcast is always in the journal first.
+      final applied = _awaitProjectionApplied(
+        matches: (e) => e is domain_events.DeferredSpendReclaimedEvent && e.txid == cmd.txid,
+        alreadyApplied: () async =>
+            (await _storage.getDeferredPayment(cmd.walletId, reclaimTxid)) != null,
+      );
+      final wm.DeferredSpendReclaimedResponse response;
+      try {
+        response = await _walletManager.ask<wm.DeferredSpendReclaimedResponse>(
+          wm.WalletCommandMessage(
+            cmd.walletId,
+            domain.ReclaimDeferredSpendCommand(
+              walletId: cmd.walletId,
+              txid: cmd.txid,
+              reclaimTxid: reclaimTxid,
+              rawHex: signedHex,
+              recipientAddresses: [address.address],
+              reason: cmd.reason,
+            ),
+          ),
+          const Duration(seconds: 30),
+        );
+      } catch (e) {
+        unawaited(applied.catchError((_) => null));
+        _emitEvent(failure('The wallet did not answer the reclaim of ${cmd.txid}: $e', reclaimTxid: reclaimTxid));
+        return;
+      }
+      if (!response.success) {
+        unawaited(applied.catchError((_) => null));
+        _emitEvent(failure(response.error ?? 'The wallet refused to reclaim ${cmd.txid}', reclaimTxid: reclaimTxid));
+        return;
+      }
+      final notApplied = await applied;
+
+      // Its ancestry, so a counterparty-funded input can be proved to ARC.
+      Uint8List? beef;
+      final stored = await _storage.getTransaction(reclaimTxid, walletId: cmd.walletId);
+      if (stored != null && stored.rawHex.isNotEmpty) {
+        final (bytes, beefError) = await _rebuildDeferredBeef(stored);
+        beef = bytes;
+        if (beefError != null) {
+          _log.info('Broadcasting the reclaim $reclaimTxid without ancestors: $beefError');
+        }
+      }
+
+      final result = await _arcActor.ask<wm.DeferredPaymentNetworkResult>(
+        wm.BroadcastDeferredPaymentMessage(
+          walletId: cmd.walletId,
+          txid: reclaimTxid,
+          rawTxHex: signedHex,
+          beefHex: beef == null ? null : hex.encode(beef),
+          via: cmd.via,
+        ),
+        _deferredNetworkTimeout,
+      );
+      final rejected = DeferredNetworkStatus.isDefinitiveFailure(result.networkStatus);
+      final contested = DeferredNetworkStatus.isContested(result.networkStatus);
+      _emitEvent(DeferredPaymentReclaimedEvent(
+        walletId: cmd.walletId,
+        txid: cmd.txid,
+        reclaimTxid: reclaimTxid,
+        requestId: requestId,
+        success: result.success && !rejected && !contested,
+        reclaimedUtxoKeys: response.reclaimedUtxoKeys,
+        reclaimedSatoshis: amount,
+        fee: fee,
+        toAddress: address.address,
+        networkStatus: result.networkStatus,
+        source: result.source,
+        competingTxids: result.competingTxids,
+        error: rejected
+            ? (result.error ?? 'The network rejected the reclaim $reclaimTxid (${result.networkStatus}); '
+                'deferred payment ${cmd.txid} stays outstanding, its inputs now held by the reclaim')
+            : contested
+                ? 'The network reports ${result.networkStatus} for the reclaim $reclaimTxid: another '
+                    'transaction spends the same inputs. Of two spends of one input the one that reached '
+                    'the network first is mined; deferred payment ${cmd.txid} stays outstanding until that '
+                    'is settled'
+                : result.error ??
+                    (notApplied == null
+                        ? null
+                        : 'Reclaimed and journaled, but the read model has not applied it yet: $notApplied'),
+      ));
+    } catch (e) {
+      _emitEvent(failure('The reclaim of deferred payment ${cmd.txid} failed: $e'));
     }
   }
 

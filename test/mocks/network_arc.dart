@@ -8,6 +8,12 @@ import 'package:libspiffy/src/services/arc_service.dart';
 /// that did not submit a transaction learn its status only through their
 /// ARCActor's status scan, as in the peer-to-peer SPV flow where the
 /// recipient broadcasts.
+///
+/// First seen wins (spv-understanding.md, Critical Implementation Note 3):
+/// of two transactions spending the same input, the one submitted first is
+/// the one the network keeps; the later one is rejected as a double spend,
+/// whatever either pays. There is no replace-by-fee, so no fee this mock is
+/// told about can change that.
 class NetworkArc extends ArcService {
   NetworkArc() : super(baseUrl: 'fake://arc');
 
@@ -21,15 +27,55 @@ class NetworkArc extends ArcService {
   /// ARC's `competingTxs` for a txid, answered with its status override.
   final Map<String, List<String>> competingTxs = {};
 
+  /// The published mining fee, as ARC's `GET /v1/policy` returns it.
+  ArcFeeAmount miningFee = const ArcFeeAmount(satoshis: 50, bytes: 1000);
+
+  /// Reject a submission spending an outpoint a transaction already
+  /// submitted spends. Set false for a test that submits conflicting
+  /// transactions deliberately.
+  bool firstSeenWins = true;
+
+  /// The transaction each spent outpoint (`txid:vout`) went to.
+  final Map<String, String> spentOutpoints = {};
+
+  @override
+  Future<ArcPolicyResponse> getPolicy() async => ArcPolicyResponse(
+        timestamp: DateTime.now().toIso8601String(),
+        maxScriptSize: 500000,
+        maxTxSigopsCount: 4294967295,
+        maxTxSize: 10000000,
+        miningFee: miningFee,
+        standardFormatSupported: true,
+      );
+
   @override
   Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl}) async {
-    final txid = dartsv.Transaction.fromHex(rawTx).id;
+    final tx = dartsv.Transaction.fromHex(rawTx);
+    final txid = tx.id;
     final override = statusOverrides[txid];
     if (override != null) {
       return ArcSubmitResponse.fromJson(
           {'txid': txid, 'txStatus': override, if (competingTxs[txid] != null) 'competingTxs': competingTxs[txid]});
     }
+    final outpoints = [for (final i in tx.inputs) '${i.prevTxnId}:${i.prevTxnOutputIndex}'];
+    if (firstSeenWins && !seen.contains(txid)) {
+      final winners = <String>{
+        for (final outpoint in outpoints)
+          if (spentOutpoints[outpoint] case final winner? when winner != txid) winner,
+      };
+      if (winners.isNotEmpty) {
+        return ArcSubmitResponse.fromJson({
+          'txid': txid,
+          'txStatus': 'REJECTED',
+          'extraInfo': 'double spend attempted',
+          'competingTxs': winners.toList(),
+        });
+      }
+    }
     seen.add(txid);
+    for (final outpoint in outpoints) {
+      spentOutpoints.putIfAbsent(outpoint, () => txid);
+    }
     return ArcSubmitResponse(
       txid: txid,
       status: ArcTransactionStatus.seenOnNetwork,

@@ -1323,3 +1323,101 @@ class DeferredPaymentNetworkResult extends ActorResponse {
   String toString() => 'DeferredPaymentNetworkResult($txid, success: $success, status: $networkStatus, '
       'source: $source, proof: $proofStatus, confirmed: $confirmed${error != null ? ', error: $error' : ''})';
 }
+
+/// Reply to a `ReclaimDeferredSpendCommand` (bead libspiffy-87a): the
+/// wallet journaled the self-spend, moved the hold on the reclaimed
+/// payment's inputs to it, and journaled the reclaim.
+///
+/// The reclaimed payment is not resolved yet; it becomes
+/// `DeferredPaymentState.reclaimed` once the network has the self-spend.
+class DeferredSpendReclaimedResponse extends ActorResponse {
+  final String walletId;
+
+  /// The deferred payment being reclaimed.
+  final String txid;
+
+  /// The wallet's self-spend of its held inputs.
+  final String reclaimTxid;
+  @override
+  final bool success;
+  @override
+  final String? error;
+
+  /// The inputs the self-spend took over and spends.
+  final List<String> reclaimedUtxoKeys;
+
+  DeferredSpendReclaimedResponse({
+    required this.walletId,
+    required this.txid,
+    required this.reclaimTxid,
+    required this.success,
+    this.error,
+    this.reclaimedUtxoKeys = const [],
+  }) : super(metadata: {'walletId': walletId, 'txid': txid, 'reclaimTxid': reclaimTxid, 'success': success});
+
+  @override
+  String toString() => 'DeferredSpendReclaimedResponse($walletId, $txid -> $reclaimTxid, success: $success'
+      '${error != null ? ', error: $error' : ''})';
+}
+
+/// Asks ARCActor for the standard policy fee of a transaction with
+/// [inputCount] P2PKH inputs and [outputCount] P2PKH outputs, from ARC's
+/// published policy (`GET /v1/policy`, its `miningFee`). Replied with
+/// [PolicyFeeQuote].
+///
+/// The one fee a transaction the wallet builds pays. This is Bitcoin SV:
+/// there is no replace-by-fee, so paying above the policy buys nothing —
+/// of two spends of one input the one that reached the network first is the
+/// one that is mined. Unlike [EstimateFeeMessage] it does not fall back to a
+/// guessed rate: a policy ARC could not be asked for is an error, and the
+/// caller decides what to do rather than building a transaction at a fee
+/// nobody quoted.
+class EstimatePolicyFeeMessage implements Message {
+  final int inputCount;
+  final int outputCount;
+
+  /// Extra bytes beyond the P2PKH inputs and outputs (OP_RETURN data, ...).
+  final int dataSize;
+
+  EstimatePolicyFeeMessage({required this.inputCount, required this.outputCount, this.dataSize = 0});
+
+  @override
+  String get correlationId => 'policy-fee-$inputCount-$outputCount-${DateTime.now().microsecondsSinceEpoch}';
+  @override
+  Map<String, dynamic> get metadata => {'inputCount': inputCount, 'outputCount': outputCount};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+/// Reply to [EstimatePolicyFeeMessage]: ARC's policy fee for the transaction
+/// size asked about.
+class PolicyFeeQuote extends ActorResponse {
+  /// The fee in satoshis, rounded up; zero when [success] is false.
+  final BigInt fee;
+
+  /// The size the fee was quoted for.
+  final int sizeBytes;
+
+  /// ARC's published `miningFee`: [feeSatoshis] per [feeBytes].
+  final int feeSatoshis;
+  final int feeBytes;
+  @override
+  final bool success;
+  @override
+  final String? error;
+
+  PolicyFeeQuote({
+    required this.fee,
+    required this.sizeBytes,
+    required this.success,
+    this.feeSatoshis = 0,
+    this.feeBytes = 0,
+    this.error,
+  }) : super(metadata: {'fee': fee.toString(), 'sizeBytes': sizeBytes, 'success': success});
+
+  @override
+  String toString() => 'PolicyFeeQuote($fee sat for $sizeBytes bytes at $feeSatoshis/$feeBytes, '
+      'success: $success${error != null ? ', error: $error' : ''})';
+}

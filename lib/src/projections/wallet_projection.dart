@@ -77,6 +77,7 @@ class WalletProjection extends Projection<void> {
         TransactionNetworkStatusCheckedEvent,
         DeferredTransactionFailedEvent,
         DeferredTransactionCancelledEvent,
+        DeferredSpendReclaimedEvent,
       ];
   
   @override
@@ -189,6 +190,9 @@ class WalletProjection extends Projection<void> {
       case final DeferredTransactionCancelledEvent cancelled:
         await _handleDeferredResolution(cancelled, cancelled.txid, DeferredPaymentState.cancelled,
             cancelled.releasedInputs, cancelled.reason);
+        return true;
+      case final DeferredSpendReclaimedEvent reclaimed:
+        await _handleDeferredSpendReclaimed(reclaimed);
         return true;
       default:
         return false;
@@ -842,6 +846,48 @@ class WalletProjection extends Projection<void> {
         resolvedAt: at,
       ));
     }
+    await _resolveReclaimedBy(walletId, deferred, at);
+  }
+
+  /// [selfSpend] is on the network: if it is a reclaim's self-spend (bead
+  /// libspiffy-87a), the deferred payment its purpose names is reclaimed
+  /// now. That is the moment the signed transaction the recipient holds can
+  /// no longer be mined, and the one place the payment resolves — never at
+  /// broadcast time. Terminal and idempotent: a payment already resolved
+  /// some other way is left as it is.
+  Future<void> _resolveReclaimedBy(String walletId, DeferredPayment selfSpend, DateTime at) async {
+    final reclaimedTxid = DeferredPaymentPurpose.reclaimedTxid(selfSpend.purpose);
+    if (reclaimedTxid == null) return;
+    final payment = await _storage.getDeferredPayment(walletId, reclaimedTxid);
+    if (payment == null) {
+      _log.warning('Reclaim ${selfSpend.txid} in $walletId names $reclaimedTxid, which has no deferred '
+          'payment row; nothing resolved');
+      return;
+    }
+    if (payment.state != DeferredPaymentState.outstanding) return;
+    await _storage.storeDeferredPayment(payment.copyWith(
+      state: DeferredPaymentState.reclaimed,
+      updatedAt: at,
+      resolvedAt: at,
+      resolutionReason: DeferredPayment.reclaimedBy(selfSpend.txid),
+    ));
+  }
+
+  /// A reclaim was journaled (bead libspiffy-87a). The link between the two
+  /// payments is already on the self-spend's row (its purpose), and the hold
+  /// moved with the self-spend's own TransactionSpendDeferredEvent, so
+  /// nothing is written here — except when this replays after the self-spend
+  /// already reached the network, where the payment resolves now.
+  Future<void> _handleDeferredSpendReclaimed(DeferredSpendReclaimedEvent event) async {
+    final selfSpend = await _storage.getDeferredPayment(event.walletId, event.reclaimTxid);
+    if (selfSpend == null) {
+      _log.warning('Reclaim of ${event.txid} in ${event.walletId}: no deferred payment row for its '
+          'self-spend ${event.reclaimTxid}');
+      return;
+    }
+    if (selfSpend.state == DeferredPaymentState.seen || selfSpend.state == DeferredPaymentState.mined) {
+      await _resolveReclaimedBy(event.walletId, selfSpend, event.timestamp);
+    }
   }
 
   Future<void> _handleNetworkStatusChecked(TransactionNetworkStatusCheckedEvent event) async {
@@ -868,6 +914,7 @@ class WalletProjection extends Projection<void> {
       state: seen ? DeferredPaymentState.seen : null,
       resolvedAt: seen ? event.timestamp : deferred.resolvedAt,
     ));
+    if (seen) await _resolveReclaimedBy(event.walletId, deferred, event.timestamp);
   }
 
   Future<void> _handleDeferredResolution(WalletEvent event, String txid, DeferredPaymentState state,
@@ -1169,6 +1216,7 @@ class WalletProjection extends Projection<void> {
         resolvedAt: deferred.resolvedAt ?? event.timestamp,
       ));
     }
+    if (deferred != null) await _resolveReclaimedBy(event.walletId, deferred, event.timestamp);
     final bumpHex = event.bumpHex;
     if (bumpHex != null && bumpHex.isNotEmpty) {
       await _storeMerkleProofFromBump(event.txid, bumpHex);

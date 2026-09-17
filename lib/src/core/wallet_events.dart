@@ -2139,6 +2139,13 @@ class TransactionSpendDeferredEvent extends WalletEvent {
   /// hold; otherwise the event time).
   final DateTime recordedAt;
 
+  /// The deferred payment whose hold on these inputs this one takes over:
+  /// the payment being reclaimed by this self-spend (bead libspiffy-87a).
+  /// Null for every other hold, and for every hold journaled before
+  /// reclaims existed, so the rule "the first hold wins" is unchanged
+  /// everywhere else.
+  final String? supersedes;
+
   TransactionSpendDeferredEvent({
     required String walletId,
     required this.txid,
@@ -2150,6 +2157,7 @@ class TransactionSpendDeferredEvent extends WalletEvent {
     this.purpose,
     this.inferred = false,
     this.reactivated = false,
+    this.supersedes,
     DateTime? recordedAt,
     String? eventId,
     DateTime? timestamp,
@@ -2178,6 +2186,7 @@ class TransactionSpendDeferredEvent extends WalletEvent {
         'purpose': purpose,
         'inferred': inferred,
         if (reactivated) 'reactivated': true,
+        if (supersedes != null) 'supersedes': supersedes,
         'recordedAt': recordedAt.toIso8601String(),
       };
 
@@ -2195,6 +2204,7 @@ class TransactionSpendDeferredEvent extends WalletEvent {
         purpose: map['purpose'] as String?,
         inferred: map['inferred'] as bool? ?? false,
         reactivated: map['reactivated'] as bool? ?? false,
+        supersedes: map['supersedes'] as String?,
         recordedAt: _deferredDate(map['recordedAt']),
         eventId: map['eventId'] as String?,
         timestamp: _deferredDate(map['timestamp']),
@@ -2389,6 +2399,77 @@ class DeferredTransactionCancelledEvent extends WalletEvent {
         reason: map['reason'] as String?,
         networkStatus: map['networkStatus'] as String?,
         releasedInputs: ReleasedDeferredInput.listFrom(map['releasedInputs']),
+        eventId: map['eventId'] as String?,
+        timestamp: _deferredDate(map['timestamp']),
+        version: map['version'] as int?,
+        metadata: map['metadata'] as Map<String, dynamic>?,
+      );
+}
+
+/// A deferred payment is being reclaimed: the wallet recorded its own
+/// transaction ([reclaimTxid]) spending that payment's held inputs back to
+/// itself, and the hold on those inputs moved to it (bead libspiffy-87a).
+///
+/// Journaled together with the self-spend's own record and hold, before it
+/// is broadcast. It does NOT resolve the payment: the payment becomes
+/// [DeferredPaymentState.reclaimed] only once the network has the
+/// self-spend (it is seen or mined). Nothing is deleted or overwritten — the
+/// reclaimed payment keeps its record, its stored transaction and its raw
+/// hex, and its txid stays queryable.
+///
+/// **This is Bitcoin SV: first seen wins.** The self-spend pays the standard
+/// policy fee. Whether it or the recipient's copy is mined is decided by
+/// which reached the network first, never by what either pays.
+class DeferredSpendReclaimedEvent extends WalletEvent {
+  static const String stableTypeName = 'wallet.transaction.deferred_reclaimed';
+
+  @override
+  String get typeName => stableTypeName;
+
+  /// The deferred payment being reclaimed.
+  final String txid;
+
+  /// The wallet's self-spend of that payment's held inputs.
+  final String reclaimTxid;
+
+  /// The inputs whose hold moved from [txid] to [reclaimTxid].
+  final List<String> reclaimedUtxoKeys;
+
+  /// Why the payment was reclaimed (recorded as the resolution reason).
+  final String? reason;
+
+  DeferredSpendReclaimedEvent({
+    required String walletId,
+    required this.txid,
+    required this.reclaimTxid,
+    this.reclaimedUtxoKeys = const [],
+    this.reason,
+    String? eventId,
+    DateTime? timestamp,
+    int? version,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          eventId: eventId,
+          timestamp: timestamp,
+          version: version,
+          metadata: metadata,
+        );
+
+  @override
+  Map<String, dynamic> getWalletEventData() => {
+        'txid': txid,
+        'reclaimTxid': reclaimTxid,
+        'reclaimedUtxoKeys': reclaimedUtxoKeys,
+        'reason': reason,
+      };
+
+  static DeferredSpendReclaimedEvent fromMap(Map<String, dynamic> map) => DeferredSpendReclaimedEvent(
+        walletId: map['walletId'] as String,
+        txid: map['txid'] as String,
+        reclaimTxid: map['reclaimTxid'] as String,
+        reclaimedUtxoKeys: [for (final k in (map['reclaimedUtxoKeys'] as List? ?? const [])) k.toString()],
+        reason: map['reason'] as String?,
         eventId: map['eventId'] as String?,
         timestamp: _deferredDate(map['timestamp']),
         version: map['version'] as int?,

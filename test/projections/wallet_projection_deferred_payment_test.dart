@@ -170,6 +170,98 @@ void main() {
     });
   }
 
+  // Bead libspiffy-87a: the wallet spends the held inputs back to itself.
+  final _reclaimTxid = 'ee' * 32;
+
+  /// [handedOver], then the reclaim: the self-spend's own record and hold
+  /// (which takes over the payment's inputs) and the reclaim event.
+  _Journal reclaimed() {
+    final j = handedOver();
+    j.add((v, at) => TransactionRecordedEvent(
+        walletId: _w, txid: _reclaimTxid, rawHex: '00', totalInputSats: 10000, totalOutputSats: 9900,
+        fee: 100, numInputs: 2, numOutputs: 1, txVersion: 1, txLockTime: 0,
+        spentUtxoKeys: [_input, _pending], recipientAddresses: const ['mroot'], paymentAmount: '9900',
+        version: v, timestamp: at));
+    j.add((v, at) => TransactionSpendDeferredEvent(
+        walletId: _w, txid: _reclaimTxid,
+        heldInputs: [
+          {'utxoKey': _input, 'satoshis': '5000'},
+          {'utxoKey': _pending, 'satoshis': '5000'},
+        ],
+        recipientAddresses: const ['mroot'], paymentAmount: '9900', fee: 100,
+        purpose: DeferredPaymentPurpose.reclaimOf(_txid), supersedes: _txid,
+        recordedAt: at, version: v, timestamp: at));
+    j.add((v, at) => DeferredSpendReclaimedEvent(
+        walletId: _w, txid: _txid, reclaimTxid: _reclaimTxid, reclaimedUtxoKeys: [_input, _pending],
+        reason: 'recipient vanished', version: v, timestamp: at));
+    return j;
+  }
+
+  test('87a: the reclaim moves the hold to the self-spend and leaves the payment outstanding', () async {
+    final j = reclaimed();
+    await project(j.events);
+
+    final payment = (await storage.getDeferredPayment(_w, _txid))!;
+    expect(payment.state, DeferredPaymentState.outstanding, reason: 'not resolved at broadcast time');
+    expect(payment.heldInputs.map((i) => i.utxoKey), [_input, _pending], reason: 'its record is kept');
+    final selfSpend = (await storage.getDeferredPayment(_w, _reclaimTxid))!;
+    expect(selfSpend.state, DeferredPaymentState.outstanding);
+    expect(selfSpend.purpose, 'reclaim:$_txid');
+    expect(DeferredPaymentPurpose.reclaimedTxid(selfSpend.purpose), _txid);
+    final rows = await utxos();
+    for (final key in [_input, _pending]) {
+      expect(rows[key]!.status, UTXOStatus.reserved);
+      expect(rows[key]!.reservedByTxId, _reclaimTxid);
+      expect(rows[key]!.reservationExpiresAt, isNull);
+    }
+    expect(await storage.getPaymentUTXOs(_w), isEmpty);
+  });
+
+  for (final via in ['a spend by the self-spend', 'a SEEN_ON_NETWORK status', 'a confirmation']) {
+    test('87a: $via reclaims the payment; both rows are kept', () async {
+      final j = reclaimed();
+      switch (via) {
+        case 'a spend by the self-spend':
+          j.add((v, at) => UTXOSpentEvent(
+              walletId: _w, txid: 'a1' * 32, vout: 0, spentInTxId: _reclaimTxid, version: v, timestamp: at));
+        case 'a SEEN_ON_NETWORK status':
+          j.add((v, at) => TransactionNetworkStatusCheckedEvent(
+              walletId: _w, txid: _reclaimTxid, networkStatus: 'SEEN_ON_NETWORK', source: 'arc',
+              checkedAt: at, version: v, timestamp: at));
+        default:
+          j.add((v, at) => TransactionConfirmedEvent(
+              walletId: _w, txid: _reclaimTxid, blockHeight: 5, blockHash: 'h', version: v, timestamp: at));
+      }
+      await project(j.events);
+
+      final payment = (await storage.getDeferredPayment(_w, _txid))!;
+      expect(payment.state, DeferredPaymentState.reclaimed);
+      expect(payment.resolutionReason, contains(_reclaimTxid));
+      expect(payment.resolvedAt, isNotNull);
+      expect(payment.amount, BigInt.from(9000), reason: 'the reclaimed payment is not rewritten');
+      expect((await storage.getDeferredPayment(_w, _reclaimTxid))!.state,
+          via == 'a confirmation' ? DeferredPaymentState.mined : DeferredPaymentState.seen);
+
+      // Replaying changes nothing.
+      await project(j.events);
+      expect((await storage.getDeferredPayment(_w, _txid))!.state, DeferredPaymentState.reclaimed);
+    });
+  }
+
+  test('87a: the reclaim event replayed after the self-spend is already seen resolves the payment', () async {
+    final j = reclaimed();
+    final reclaimEvent = j.events.last;
+    j.add((v, at) => TransactionNetworkStatusCheckedEvent(
+        walletId: _w, txid: _reclaimTxid, networkStatus: 'SEEN_ON_NETWORK', source: 'arc',
+        checkedAt: at, version: v, timestamp: at));
+    await project(j.events);
+    expect((await storage.getDeferredPayment(_w, _txid))!.state, DeferredPaymentState.reclaimed);
+
+    await project([reclaimEvent]);
+
+    expect((await storage.getDeferredPayment(_w, _txid))!.state, DeferredPaymentState.reclaimed);
+  });
+
   test('replaying the whole journal again changes nothing', () async {
     final j = handedOver();
     j.add((v, at) => TransactionNetworkStatusCheckedEvent(

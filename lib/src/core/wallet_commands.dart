@@ -1276,7 +1276,11 @@ class RecordTransactionNetworkStatusCommand extends WalletCommand {
 ///
 /// Cancelling does not revoke the signed transaction the recipient holds. If
 /// it is broadcast later and reaches miners it spends those inputs, and a
-/// later payment that reused them fails.
+/// later payment that reused them fails. [ReclaimDeferredSpendCommand]
+/// spends the held inputs back to the wallet instead, which does revoke it.
+///
+/// Refused for a payment being reclaimed, and for a reclaim's own
+/// self-spend: a reclaim is immediate and irreversible.
 class CancelDeferredSpendCommand extends WalletCommand {
   final String txid;
   final String? reason;
@@ -1294,4 +1298,50 @@ class CancelDeferredSpendCommand extends WalletCommand {
 
   @override
   String get commandType => 'CancelDeferredSpendCommand';
+}
+
+/// Reclaims the outstanding deferred payment [txid]: records [rawHex], the
+/// wallet's own signed transaction spending that payment's held inputs back
+/// to itself, and moves the hold on those inputs to it (bead libspiffy-87a).
+///
+/// The aggregate refuses a payment that is not outstanding, one already
+/// being reclaimed, and a transaction whose inputs are not exactly the
+/// inputs the payment holds. Everything else about the self-spend (its
+/// totals, its fee, its version and lock time, and which of its outputs are
+/// the wallet's) is derived from [rawHex] and the wallet's own state, so a
+/// caller cannot misdescribe it.
+///
+/// The payment is NOT resolved here: it becomes
+/// `DeferredPaymentState.reclaimed` when the network has the self-spend.
+/// Nothing is deleted — the reclaimed payment keeps its record, its stored
+/// transaction and its raw hex.
+class ReclaimDeferredSpendCommand extends WalletCommand {
+  /// The outstanding deferred payment being reclaimed.
+  final String txid;
+
+  /// Txid of [rawHex]; it must be the transaction's own id.
+  final String reclaimTxid;
+
+  /// The signed self-spend, paying the held inputs back to [recipientAddresses].
+  final String rawHex;
+
+  /// The wallet addresses the self-spend pays (recorded with it).
+  final List<String> recipientAddresses;
+
+  final String? reason;
+
+  ReclaimDeferredSpendCommand({
+    required String walletId,
+    required this.txid,
+    required this.reclaimTxid,
+    required this.rawHex,
+    this.recipientAddresses = const [],
+    this.reason,
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(walletId: walletId, commandId: commandId, timestamp: timestamp, metadata: metadata);
+
+  @override
+  String get commandType => 'ReclaimDeferredSpendCommand';
 }

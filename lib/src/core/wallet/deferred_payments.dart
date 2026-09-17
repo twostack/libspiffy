@@ -2,17 +2,20 @@
 /// split out of `BitcoinWalletAggregate` by bead libspiffy-dp4).
 library;
 
+import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:eventador/eventador.dart';
 import 'package:logging/logging.dart';
 
 import '../../models/bitcoin_utxo.dart';
-import '../../models/deferred_payment.dart' show DeferredNetworkStatus, DeferredPayment, DeferredPaymentState;
+import '../../models/deferred_payment.dart'
+    show DeferredNetworkStatus, DeferredPayment, DeferredPaymentPurpose, DeferredPaymentState;
 import '../../models/persistent_map.dart';
 import '../../models/wallet_event.dart';
 import '../../models/wallet_state.dart';
 import '../wallet_commands.dart';
 import '../wallet_events.dart';
 import 'legacy_deferred_spends.dart';
+import 'outgoing_transactions.dart';
 import 'state_records.dart';
 
 export 'legacy_deferred_spends.dart' show LegacyDeferredSpend;
@@ -31,9 +34,16 @@ final _log = Logger('BitcoinWalletAggregate');
 /// aggregate, not a coordinator, enforces it, so it survives restarts and
 /// replays.
 ///
+/// A reclaim (bead libspiffy-87a) is the one way a hold moves rather than
+/// ends: the wallet records its own transaction spending the held inputs
+/// back to itself, the hold moves to that self-spend, and the payment
+/// resolves as [DeferredPaymentState.reclaimed] once the network has it.
+///
 /// State: metadata['deferredSpends'] (txid -> record with state, held keys,
-/// last network status) and metadata['deferredHolds'] (utxoKey -> txid of
-/// the outstanding payment holding it).
+/// last network status; `reclaimTxid` on a payment being reclaimed and
+/// `reclaimOf` on the self-spend that reclaims it) and
+/// metadata['deferredHolds'] (utxoKey -> txid of the outstanding payment
+/// holding it).
 ///
 /// Payments a journal recorded before holds were journaled are inferred from
 /// the state ([legacySpends]) and hold their inputs like journaled ones.
@@ -99,18 +109,23 @@ class DeferredPayments {
 
   /// The hold of [command]'s transaction: the wallet's unspent inputs it
   /// spends that no other deferred payment holds.
+  ///
+  /// [supersedes] is the one deferred payment whose hold this transaction
+  /// takes over: the payment a reclaim's self-spend reclaims (bead
+  /// libspiffy-87a). For every other payment the first hold still wins.
   TransactionSpendDeferredEvent holdEvent(
     WalletState state,
     RecordOutgoingTransactionCommand command, {
     required int version,
     bool reactivated = false,
+    String? supersedes,
   }) {
     final held = <String>[];
     for (final key in command.spentUtxoKeys.toSet()) {
       final utxo = state.utxos[key];
       if (utxo == null || utxo.status == UTXOStatus.spent) continue;
       final holder = holderOf(state, key);
-      if (holder != null && holder != command.txid) {
+      if (holder != null && holder != command.txid && holder != supersedes) {
         _log.warning('Input $key of ${command.txid} is already held by deferred payment $holder; '
             'not held again');
         continue;
@@ -128,6 +143,7 @@ class DeferredPayments {
       invoiceId: command.invoiceId,
       purpose: command.purpose,
       reactivated: reactivated,
+      supersedes: supersedes,
       recordedAt: now,
       version: version,
       timestamp: now,
@@ -266,6 +282,19 @@ class DeferredPayments {
     if (state != DeferredPaymentState.outstanding.name) {
       throw StateError('Deferred payment ${command.txid} is $state, not outstanding; nothing to cancel');
     }
+    final reclaimedBy = record?['reclaimTxid']?.toString();
+    if (reclaimedBy != null) {
+      throw StateError('Deferred payment ${command.txid} is being reclaimed by $reclaimedBy; '
+          'it cannot be cancelled (the reclaim resolves it once the network has the self-spend)');
+    }
+    // A reclaim is immediate and irreversible: cancelling the self-spend
+    // would release the inputs it took over and leave the payment it
+    // reclaims stranded, held by nothing and reclaimable by nothing.
+    final reclaimOf = record?['reclaimOf']?.toString();
+    if (reclaimOf != null) {
+      throw StateError('Transaction ${command.txid} is the reclaim of deferred payment $reclaimOf; '
+          'a reclaim cannot be cancelled');
+    }
     final lastStatus = record?['lastNetworkStatus']?.toString();
     if (DeferredNetworkStatus.isOnNetwork(lastStatus) || DeferredNetworkStatus.isOnNetwork(command.networkStatus)) {
       throw StateError('Deferred payment ${command.txid} is known to the network '
@@ -281,6 +310,120 @@ class DeferredPayments {
       version: currentState.version + events.length + 1,
       timestamp: DateTime.now(),
     ));
+    return events;
+  }
+
+  /// Reclaims the outstanding deferred payment [command]`.txid`: records the
+  /// wallet's own self-spend of its held inputs, moves the hold to that
+  /// transaction and journals the reclaim (bead libspiffy-87a).
+  ///
+  /// The payment is not resolved here. It becomes
+  /// [DeferredPaymentState.reclaimed] when the network has the self-spend
+  /// (seen or mined), so a self-spend that never reaches the network leaves
+  /// the payment outstanding with its inputs still held — by the self-spend.
+  ///
+  /// Refused for a payment that is not outstanding, one already being
+  /// reclaimed, one whose hold was never journaled (run
+  /// [ReconcileDeferredSpendsCommand] first), and for a transaction that
+  /// does not spend exactly the inputs the payment holds or pays no fee.
+  List<Event> reclaim(
+      WalletState currentState, ReclaimDeferredSpendCommand command, OutgoingTransactions outgoing) {
+    if (!currentState.isCreated) {
+      throw StateError('Cannot reclaim a deferred payment of non-existent wallet');
+    }
+    final record = DeferredPayments.record(currentState, command.txid);
+    if (record == null) {
+      throw StateError('Transaction ${command.txid} is not a journaled deferred payment of wallet '
+          '${command.walletId}; reconcile the wallet (ReconcileDeferredSpendsCommand) before reclaiming it');
+    }
+    final state = record['state']?.toString() ?? DeferredPaymentState.outstanding.name;
+    if (state != DeferredPaymentState.outstanding.name) {
+      throw StateError('Deferred payment ${command.txid} is $state, not outstanding; nothing to reclaim');
+    }
+    final inFlight = record['reclaimTxid']?.toString();
+    if (inFlight != null) {
+      throw StateError('Deferred payment ${command.txid} is already being reclaimed by $inFlight');
+    }
+    if (command.reclaimTxid == command.txid) {
+      throw ArgumentError('The reclaim of ${command.txid} cannot be the payment itself');
+    }
+
+    final holds = currentState.metadata[_deferredHoldsKey];
+    final heldKeys = <String>[
+      if (holds is Map)
+        for (final entry in holds.entries)
+          if (entry.value?.toString() == command.txid) entry.key.toString(),
+    ]..sort();
+    if (heldKeys.isEmpty) {
+      throw StateError('Deferred payment ${command.txid} holds no inputs; there is nothing to reclaim');
+    }
+    for (final key in heldKeys) {
+      final utxo = currentState.utxos[key];
+      if (utxo == null || utxo.status == UTXOStatus.spent) {
+        throw StateError('Input $key of deferred payment ${command.txid} is spent or unknown; '
+            'it cannot be reclaimed');
+      }
+    }
+
+    final dartsv.Transaction parsed;
+    try {
+      parsed = dartsv.Transaction.fromHex(command.rawHex);
+    } catch (e) {
+      throw ArgumentError('The reclaim transaction of ${command.txid} does not parse: $e');
+    }
+    if (parsed.id != command.reclaimTxid) {
+      throw ArgumentError('The reclaim transaction is ${parsed.id}, not ${command.reclaimTxid}');
+    }
+    final spends = <String>{
+      for (final input in parsed.inputs) '${input.prevTxnId}:${input.prevTxnOutputIndex}',
+    };
+    if (spends.length != heldKeys.length || !spends.containsAll(heldKeys)) {
+      throw StateError('The reclaim ${command.reclaimTxid} spends $spends, not exactly the inputs '
+          'deferred payment ${command.txid} holds ($heldKeys)');
+    }
+
+    final totalIn = heldKeys.fold(BigInt.zero, (sum, k) => sum + (currentState.utxos[k]?.satoshis ?? BigInt.zero));
+    final totalOut = parsed.outputs.fold(BigInt.zero, (sum, o) => sum + o.satoshis);
+    if (totalOut >= totalIn) {
+      throw StateError('The reclaim ${command.reclaimTxid} pays out $totalOut of $totalIn satoshis; '
+          'it leaves no fee');
+    }
+
+    // The self-spend is an outgoing transaction like any other, recorded
+    // with a deferred spend so its inputs are not marked spent before the
+    // network has it; its hold takes over the reclaimed payment's.
+    final events = outgoing.recordOutgoing(
+      currentState,
+      RecordOutgoingTransactionCommand(
+        walletId: command.walletId,
+        txid: command.reclaimTxid,
+        rawHex: command.rawHex,
+        totalInputSats: totalIn.toInt(),
+        totalOutputSats: totalOut.toInt(),
+        fee: (totalIn - totalOut).toInt(),
+        numInputs: parsed.inputs.length,
+        numOutputs: parsed.outputs.length,
+        txVersion: parsed.version,
+        txLockTime: parsed.nLockTime,
+        spentUtxoKeys: heldKeys,
+        recipientAddresses: command.recipientAddresses,
+        paymentAmount: totalOut,
+        deferSpend: true,
+        purpose: DeferredPaymentPurpose.reclaimOf(command.txid),
+      ),
+      supersedesDeferred: command.txid,
+    );
+    events.add(DeferredSpendReclaimedEvent(
+      walletId: command.walletId,
+      txid: command.txid,
+      reclaimTxid: command.reclaimTxid,
+      reclaimedUtxoKeys: heldKeys,
+      reason: command.reason,
+      version: currentState.version + events.length + 1,
+      timestamp: DateTime.now(),
+    ));
+    _log.info('Deferred payment ${command.txid} is being reclaimed by ${command.reclaimTxid}: '
+        '${heldKeys.length} input(s), ${totalIn - totalOut} satoshis fee');
     return events;
   }
 
@@ -362,7 +505,9 @@ class DeferredPayments {
       final utxo = state.utxos[key];
       if (utxo == null || utxo.status == UTXOStatus.spent) continue;
       final holder = holds[key];
-      if (holder != null && holder != event.txid) continue; // the first hold wins
+      // The first hold wins, except where a reclaim's self-spend takes over
+      // the hold of the payment it reclaims (bead libspiffy-87a).
+      if (holder != null && holder != event.txid && holder != event.supersedes) continue;
       holds = holds.put(key, event.txid);
       state.putUtxo(
         key,
@@ -383,7 +528,9 @@ class DeferredPayments {
   }
 
   /// An outstanding, failed or cancelled deferred payment [txid] is on the
-  /// network.
+  /// network. When [txid] is a reclaim's self-spend, the payment it reclaims
+  /// resolves now (bead libspiffy-87a): that is the moment the recipient's
+  /// copy can no longer be mined.
   static void _markSeen(WalletStateBuilder state, String txid, DateTime at) {
     final record = _recordForUpdate(state, txid);
     if (record == null) return;
@@ -397,6 +544,47 @@ class DeferredPayments {
         record.put('state', DeferredPaymentState.seen.name).put('resolvedAt', at.toIso8601String()),
       );
     }
+    final reclaims = record['reclaimOf']?.toString();
+    if (reclaims != null) _resolveReclaimed(state, reclaims, txid, at);
+  }
+
+  /// The deferred payment [txid] is reclaimed: [reclaimTxid], the wallet's
+  /// own self-spend of its inputs, is on the network. Terminal; a payment
+  /// already resolved otherwise is left as it is.
+  static void _resolveReclaimed(WalletStateBuilder state, String txid, String reclaimTxid, DateTime at) {
+    final record = _recordForUpdate(state, txid);
+    if (record == null || record['state'] != DeferredPaymentState.outstanding.name) return;
+    _putRecord(
+      state,
+      txid,
+      record
+          .put('state', DeferredPaymentState.reclaimed.name)
+          .put('resolvedAt', at.toIso8601String())
+          .put('resolutionReason', DeferredPayment.reclaimedBy(reclaimTxid)),
+    );
+  }
+
+  /// A reclaim was journaled: the reclaimed payment names its self-spend and
+  /// the self-spend names the payment it reclaims. Neither is resolved here.
+  static void applyReclaimed(WalletStateBuilder state, DeferredSpendReclaimedEvent event) {
+    final reclaimed = _recordForUpdate(state, event.txid);
+    if (reclaimed != null && reclaimed['reclaimTxid'] == null) {
+      _putRecord(state, event.txid, reclaimed.put('reclaimTxid', event.reclaimTxid));
+    }
+    final self = _recordForUpdate(state, event.reclaimTxid);
+    if (self != null) {
+      if (self['reclaimOf'] == null) {
+        _putRecord(state, event.reclaimTxid, self.put('reclaimOf', event.txid));
+      }
+      // Replayed (or journaled) after the self-spend already reached the
+      // network: the payment is reclaimed now.
+      final selfState = self['state'];
+      if (selfState == DeferredPaymentState.seen.name || selfState == DeferredPaymentState.mined.name) {
+        _resolveReclaimed(state, event.txid, event.reclaimTxid, event.timestamp);
+      }
+    }
+    state.version = event.version;
+    state.lastModified = event.timestamp;
   }
 
   /// [utxoKey] was spent by [spentInTxId]: a spent input is held by nobody,
@@ -417,6 +605,8 @@ class DeferredPayments {
       var mined = deferred.put('state', DeferredPaymentState.mined.name);
       if (mined['resolvedAt'] == null) mined = mined.put('resolvedAt', at.toIso8601String());
       _putRecord(state, txid, mined);
+      final reclaims = deferred['reclaimOf']?.toString();
+      if (reclaims != null) _resolveReclaimed(state, reclaims, txid, at);
     }
   }
 

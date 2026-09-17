@@ -1061,7 +1061,10 @@ class PostgresWalletStorage implements ReadModelStorage {
 
   /// An update whose status [TransactionRowRules.setsStatus] refuses keeps
   /// the stored status, block height, block hash and confirmations (7dj),
-  /// unless [reverting].
+  /// unless [reverting]. The opaque counterparty marker (v021, bead
+  /// libspiffy-cq16) is set once, by the first record that carries one, and
+  /// no update blanks it or replaces it
+  /// ([TransactionRowRules.counterpartyMarkerAfter]).
   Future<void> _storeTransaction(
     String walletId,
     BitcoinTransaction transaction, {
@@ -1085,12 +1088,14 @@ class PostgresWalletStorage implements ReadModelStorage {
           wallet_id, txid, raw_hex, block_height, block_hash, confirmations,
           total_input, total_output, fee, net_amount, is_incoming, is_outgoing,
           status, created_at, confirmed_at, broadcast_at, counterparty, notes,
-          receiving_addresses, sending_addresses, primary_counterparty, updated_at
+          receiving_addresses, sending_addresses, primary_counterparty, updated_at,
+          counterparty_marker
         ) VALUES (
           @walletId, @txid, @rawHex, @blockHeight, @blockHash, @confirmations,
           @totalInput, @totalOutput, @fee, @netAmount, @isIncoming, @isOutgoing,
           @status, @createdAt, @confirmedAt, @broadcastAt, @counterparty, @notes,
-          @receivingAddresses, @sendingAddresses, @primaryCounterparty, @updatedAt
+          @receivingAddresses, @sendingAddresses, @primaryCounterparty, @updatedAt,
+          @counterpartyMarker
         )
         ON CONFLICT (wallet_id, txid) DO UPDATE SET
           -- An update without the raw transaction keeps the stored bytes: an
@@ -1130,7 +1135,13 @@ class PostgresWalletStorage implements ReadModelStorage {
           notes = @notes,
           receiving_addresses = @receivingAddresses,
           sending_addresses = @sendingAddresses,
-          primary_counterparty = @primaryCounterparty
+          primary_counterparty = @primaryCounterparty,
+          -- The opaque marker (cq16): set once, by the first record that
+          -- carries one. A record without one keeps the stored marker; a
+          -- record naming somebody else never replaces it. Nothing, a
+          -- revert included, blanks it.
+          counterparty_marker =
+              COALESCE(bitcoin_transactions.counterparty_marker, NULLIF(EXCLUDED.counterparty_marker, ''))
       '''),
       parameters: {
         'walletId': walletId,
@@ -1162,6 +1173,9 @@ class PostgresWalletStorage implements ReadModelStorage {
         // The rule every backend shares (7dj): the first receiving address
         // was stored for incoming transactions too (our own address).
         'primaryCounterparty': counterparty,
+        // Not an address (cq16): the app's opaque identity marker, stored
+        // verbatim and never interpreted.
+        'counterpartyMarker': transaction.counterpartyMarker,
       },
     );
   }
@@ -1172,7 +1186,7 @@ class PostgresWalletStorage implements ReadModelStorage {
         total_input, total_output, fee, net_amount, is_incoming,
         is_outgoing, status, created_at, confirmed_at, broadcast_at,
         counterparty, notes, receiving_addresses, sending_addresses,
-        wallet_id, updated_at''';
+        wallet_id, updated_at, counterparty_marker''';
 
   BitcoinTransaction _rowToTransaction(ResultRow row) {
     final now = DateTime.now();
@@ -1197,6 +1211,9 @@ class PostgresWalletStorage implements ReadModelStorage {
       receivingAddresses: _parseJsonList(row[17]),
       sendingAddresses: _parseJsonList(row[18]),
       memo: row[16] as String?,
+      // The app's opaque counterparty marker (v021, cq16); null on rows
+      // stored before the column existed.
+      counterpartyMarker: row[21] as String?,
       lockTime: 0, // Not stored in DB, default to 0
       version: 1, // Not stored in DB, default to 1
     );

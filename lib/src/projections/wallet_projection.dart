@@ -482,9 +482,29 @@ class WalletProjection extends Projection<void> {
       rows.put(utxo);
     }
 
+    await _stampCounterpartyMarker(event.walletId, event.txid, event.counterpartyMarker);
+
     await _syncAddress(event.walletId, event.address, rows.all,
         newUseAt: existing == null ? event.timestamp : null);
     await _recalculateAndPersistForWallet(event.walletId, event.timestamp, rows.all);
+  }
+
+  /// Records [marker] on the transaction row of [txid] (bead libspiffy-cq16).
+  ///
+  /// A receive names its counterparty on the UTXO event; the payment's own
+  /// row is written by the sibling TransactionImportedEvent, which carries
+  /// the same marker, so this only has to cover the order in which the row
+  /// already exists without one (a transaction of ours whose output a
+  /// counterparty later pays back to us, a receive replayed after the row
+  /// was written). Nothing is created here: a receive with no row yet leaves
+  /// none. The marker is set once and never replaced
+  /// ([TransactionRowRules.counterpartyMarkerAfter]), so a replay converges
+  /// and a second receipt naming somebody else cannot overwrite it.
+  Future<void> _stampCounterpartyMarker(String walletId, String txid, String? marker) async {
+    if (marker == null || marker.isEmpty) return;
+    final existing = await _storage.getTransaction(txid, walletId: walletId);
+    if (existing == null || (existing.counterpartyMarker ?? '').isNotEmpty) return;
+    await _storage.storeTransaction(walletId, existing.copyWith(counterpartyMarker: marker));
   }
 
   /// The wallet's UTXO rows (spent included), loaded once per event.
@@ -1016,6 +1036,9 @@ class WalletProjection extends Projection<void> {
         updatedAt: event.timestamp,
         lockTime: event.txLockTime,
         version: event.txVersion,
+        // Who handed the payment to us, as the app names them (bead
+        // libspiffy-cq16). The backends set it once and never blank it.
+        counterpartyMarker: event.counterpartyMarker,
       );
       
       // The ancestors its BEEF carried, before the transaction that needs
@@ -1115,6 +1138,9 @@ class WalletProjection extends Projection<void> {
         updatedAt: event.timestamp,
         lockTime: event.txLockTime,
         version: event.txVersion,
+        // Who we paid, as the app names them (bead libspiffy-cq16). A
+        // record without one never blanks the stored marker.
+        counterpartyMarker: event.counterpartyMarker ?? existing?.counterpartyMarker,
       );
       
       

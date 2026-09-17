@@ -37,8 +37,10 @@ BitcoinTransaction _tx(
   String rawHex = '0100000000000000000000',
   List<String> receiving = const [],
   List<String> sending = const [],
+  String? counterpartyMarker,
 }) =>
     BitcoinTransaction(
+      counterpartyMarker: counterpartyMarker,
       txid: txid,
       rawHex: rawHex,
       status: status,
@@ -327,5 +329,119 @@ void defineTransactionStatusContract(
         expect(await storedCounterparty(wallet, incoming), (primaryCounterparty: 'sender-1', counterparty: 'sender-1'));
       });
     }
+
+    // Bead libspiffy-cq16: the opaque app-chosen counterparty marker, which
+    // is NOT the address-derived counterparty above. Every backend keeps it
+    // the same way: set once by the first record that carries one, never
+    // blanked and never replaced by a later record (spv-understanding.md,
+    // "Core Data Management" requirement 5, and Data Retention).
+    group('counterparty marker (cq16)', () {
+      const marker = 'ed25519:9f3a1c7e-alice@example.com';
+      const other = 'peer:bob-2f91';
+
+      test('an incoming and an outgoing row each store the marker and return it', () async {
+        final s = storage();
+        final u = unique();
+        final wallet = 'ts-cqm-$u';
+        await s.storeWallet(wallet, 'W');
+        final incoming = contractHex64('ts-cqm-in-$u');
+        final outgoing = contractHex64('ts-cqm-out-$u');
+
+        await s.storeTransaction(wallet, _tx(incoming,
+            status: TransactionStatus.pending,
+            net: 3000,
+            receiving: const ['ours-1'],
+            sending: const ['sender-1'],
+            counterpartyMarker: marker));
+        await s.storeTransaction(wallet, _tx(outgoing,
+            status: TransactionStatus.pending,
+            net: -2200,
+            receiving: const ['payee-1'],
+            sending: const ['ours-3'],
+            counterpartyMarker: other));
+
+        expect((await s.getTransaction(incoming, walletId: wallet))!.counterpartyMarker, marker);
+        expect((await s.getTransaction(outgoing, walletId: wallet))!.counterpartyMarker, other);
+        // It is not the address-derived counterparty: both are stored.
+        expect((await s.getTransaction(incoming, walletId: wallet))!.sendingAddresses, ['sender-1']);
+        // A row stored without one has none.
+        final plain = contractHex64('ts-cqm-plain-$u');
+        await s.storeTransaction(wallet, _tx(plain, status: TransactionStatus.pending));
+        expect((await s.getTransaction(plain, walletId: wallet))!.counterpartyMarker, isNull);
+      });
+
+      test('no later record blanks or replaces a stored marker, a revert included', () async {
+        final s = storage();
+        final u = unique();
+        final wallet = 'ts-cqm-keep-$u';
+        await s.storeWallet(wallet, 'W');
+        final txid = contractHex64('ts-cqm-keep-tx-$u');
+        Future<String?> stored() async => (await s.getTransaction(txid, walletId: wallet))!.counterpartyMarker;
+
+        await s.storeTransaction(wallet, _tx(txid, status: TransactionStatus.pending, counterpartyMarker: marker));
+        expect(await stored(), marker);
+
+        // Every later record: a status update, a confirmation, a stale
+        // report, a record naming somebody else, and a reorganization.
+        await s.storeTransaction(wallet, _tx(txid, status: TransactionStatus.seenOnNetwork, second: 1));
+        expect(await stored(), marker, reason: 'a status update with no marker');
+        await s.storeTransaction(wallet,
+            _tx(txid, status: TransactionStatus.confirmed, height: 950, confirmations: 1, second: 2));
+        expect(await stored(), marker, reason: 'a confirmation');
+        await s.storeTransaction(wallet, _tx(txid, status: TransactionStatus.failed, second: 3));
+        expect(await stored(), marker, reason: 'a stale REJECTED report the status rule refuses');
+        await s.storeTransaction(wallet,
+            _tx(txid, status: TransactionStatus.confirmed, height: 950, second: 4, counterpartyMarker: other));
+        expect(await stored(), marker, reason: 'a later record naming somebody else');
+        await s.storeRevertedTransaction(wallet, _tx(txid, status: TransactionStatus.pending, second: 5));
+        expect(await stored(), marker, reason: 'a reorganization blanks nothing');
+      });
+
+      test('a row stored without a marker takes the first one a later record carries', () async {
+        final s = storage();
+        final u = unique();
+        final wallet = 'ts-cqm-late-$u';
+        await s.storeWallet(wallet, 'W');
+        final txid = contractHex64('ts-cqm-late-tx-$u');
+
+        await s.storeTransaction(wallet, _tx(txid, status: TransactionStatus.pending));
+        expect((await s.getTransaction(txid, walletId: wallet))!.counterpartyMarker, isNull);
+        await s.storeTransaction(wallet,
+            _tx(txid, status: TransactionStatus.seenOnNetwork, second: 1, counterpartyMarker: marker));
+        expect((await s.getTransaction(txid, walletId: wallet))!.counterpartyMarker, marker);
+        await s.storeTransaction(wallet,
+            _tx(txid, status: TransactionStatus.confirmed, height: 960, second: 2, counterpartyMarker: other));
+        expect((await s.getTransaction(txid, walletId: wallet))!.counterpartyMarker, marker);
+      });
+
+      test("the marker is per wallet: another wallet's row for the same txid is untouched", () async {
+        final s = storage();
+        final u = unique();
+        final wallet = 'ts-cqm-w1-$u';
+        final other2 = 'ts-cqm-w2-$u';
+        await s.storeWallet(wallet, 'W1');
+        await s.storeWallet(other2, 'W2');
+        final txid = contractHex64('ts-cqm-shared-$u');
+
+        await s.storeTransaction(wallet, _tx(txid, status: TransactionStatus.pending, counterpartyMarker: marker));
+        await s.storeTransaction(other2, _tx(txid, status: TransactionStatus.pending, counterpartyMarker: other));
+        expect((await s.getTransaction(txid, walletId: wallet))!.counterpartyMarker, marker);
+        expect((await s.getTransaction(txid, walletId: other2))!.counterpartyMarker, other);
+      });
+
+      test('the marker is returned by the history and status list queries too', () async {
+        final s = storage();
+        final u = unique();
+        final wallet = 'ts-cqm-list-$u';
+        await s.storeWallet(wallet, 'W');
+        final txid = contractHex64('ts-cqm-list-tx-$u');
+        await s.storeTransaction(wallet, _tx(txid, status: TransactionStatus.pending, counterpartyMarker: marker));
+
+        final history = await s.getTransactionHistory(wallet);
+        expect([for (final t in history) if (t.txid == txid) t.counterpartyMarker], [marker]);
+        final byStatus = await s.getTransactionsByStatus(TransactionStatus.pending, walletId: wallet);
+        expect([for (final t in byStatus) if (t.txid == txid) t.counterpartyMarker], [marker]);
+      });
+    });
   });
 }

@@ -213,6 +213,15 @@ class PayInvoiceCommand implements Message {
   final Map<String, dynamic>? paymentMetadata;
   final BigInt? feeEstimateSats;
 
+  /// The app's opaque marker for the counterparty of this payment (bead
+  /// libspiffy-cq16, spv-understanding.md "Core Data Management"
+  /// requirement 5): an Ed25519 identity key, an email address, a peer id,
+  /// an internal account id — whatever the app uses for identity. It is
+  /// stored with the payment and returned by the transaction queries;
+  /// libspiffy never interprets, validates or parses it, and the identity
+  /// record itself stays with the app. Null when none is supplied.
+  final String? counterpartyMarker;
+
   PayInvoiceCommand({
     required this.walletId,
     required this.invoiceId,
@@ -222,6 +231,7 @@ class PayInvoiceCommand implements Message {
     this.changeAddress,
     this.paymentMetadata,
     this.feeEstimateSats,
+    this.counterpartyMarker,
   });
 
   @override
@@ -267,10 +277,16 @@ class ValidateBEEFCommand implements Message {
   final String beefHex;
   final String? invoiceId;
 
+  /// The app's opaque marker for the counterparty that handed us this BEEF
+  /// (bead libspiffy-cq16), journaled with the payment the receive records.
+  /// Null when the app supplies none — no placeholder is invented.
+  final String? fromCounterparty;
+
   ValidateBEEFCommand({
     required this.walletId,
     required this.beefHex,
     this.invoiceId,
+    this.fromCounterparty,
   });
 
   @override
@@ -325,6 +341,15 @@ class RecordOutgoingCommand implements Message {
   final String? changeAddress;
   final int? changeAmount;
 
+  /// The app's opaque marker for the counterparty of this payment (bead
+  /// libspiffy-cq16, spv-understanding.md "Core Data Management"
+  /// requirement 5): an Ed25519 identity key, an email address, a peer id,
+  /// an internal account id — whatever the app uses for identity. It is
+  /// stored with the payment and returned by the transaction queries;
+  /// libspiffy never interprets, validates or parses it, and the identity
+  /// record itself stays with the app. Null when none is supplied.
+  final String? counterpartyMarker;
+
   RecordOutgoingCommand({
     required this.walletId,
     required this.txid,
@@ -341,6 +366,7 @@ class RecordOutgoingCommand implements Message {
     required this.paymentAmount,
     this.changeAddress,
     this.changeAmount,
+    this.counterpartyMarker,
   });
 
   @override

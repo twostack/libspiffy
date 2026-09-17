@@ -609,6 +609,8 @@ class WalletManagerActor extends Actor {
           // - Have proof: immediately available (SPV validated with proof in hand)
           // - No proof: pending (will be upgraded by ARCActor when proof is fetched)
           initialStatus: hasMerkleProof ? UTXOStatus.available : UTXOStatus.pending,
+          // Who paid us, as the app names them (bead libspiffy-cq16).
+          counterpartyMarker: result.counterpartyMarker,
         );
         
         walletActor.tell(command);
@@ -654,6 +656,8 @@ class WalletManagerActor extends Actor {
         totalInputSats: txData['totalInputSats'] ?? 0,
         sendingAddresses: List<String>.from(txData['sendingAddresses'] ?? []),
         ancestors: List<BeefAncestor>.from(txData['ancestors'] ?? const <BeefAncestor>[]),
+        // The payment's own row keeps who handed it to us (cq16).
+        counterpartyMarker: result.counterpartyMarker,
       );
       
       walletActor.tell(command);

@@ -639,7 +639,8 @@ _balanceCache.remove(walletId);
   /// refuses keeps the stored status, block height and confirmations (7dj),
   /// unless [reverting]. A confirmed update without a block height keeps the
   /// stored height; a non-confirmed one clears it (a reorg took the
-  /// confirmation back, audit 3b0).
+  /// confirmation back, audit 3b0). The counterparty marker is set once and
+  /// never blanked or replaced (cq16).
   bool _putTransaction(String walletId, BitcoinTransaction transaction, {bool reverting = false}) {
     final walletTxs = _transactions.putIfAbsent(walletId, () => {});
     final existing = walletTxs[transaction.txid];
@@ -650,6 +651,10 @@ _balanceCache.remove(walletId);
     }
     final keepsStatus =
         existing != null && !reverting && !TransactionRowRules.setsStatus(existing.status, transaction.status);
+    // Set once, by the first record that carries one; never blanked, never
+    // replaced (bead libspiffy-cq16).
+    final counterpartyMarker = TransactionRowRules.counterpartyMarkerAfter(
+        existing?.counterpartyMarker, transaction.counterpartyMarker);
     final stored = walletTxs[transaction.txid] = keepsStatus
         ? BitcoinTransaction(
             walletId: walletId,
@@ -669,12 +674,14 @@ _balanceCache.remove(walletId);
             memo: transaction.memo,
             lockTime: transaction.lockTime,
             version: transaction.version,
+            counterpartyMarker: counterpartyMarker,
           )
         : transaction.copyWith(
             walletId: walletId,
             rawHex: transaction.rawHex.isEmpty ? existing?.rawHex : null,
             blockHeight: transaction.blockHeight ??
                 (transaction.status == TransactionStatus.confirmed ? existing?.blockHeight : null),
+            counterpartyMarker: counterpartyMarker,
           );
     _indexConfirmed(walletId, stored);
     if (isNew) {

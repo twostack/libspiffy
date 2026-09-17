@@ -595,6 +595,8 @@ class WalletCoordinatorActor extends Actor {
         changeAddress: cmd.changeAddress,
         paymentMetadata: cmd.paymentMetadata,
         feeEstimateSats: cmd.feeEstimateSats,
+        // Who we are paying, as the app names them (bead libspiffy-cq16).
+        counterpartyMarker: cmd.counterpartyMarker,
       ),
       sender: context.self,
     );
@@ -609,6 +611,7 @@ class WalletCoordinatorActor extends Actor {
       walletId: cmd.walletId,
       beefHex: cmd.beefHex,
       invoiceId: cmd.invoiceId,
+      fromCounterparty: cmd.fromCounterparty,
     );
 
     _spvActor.tell(
@@ -637,7 +640,10 @@ class WalletCoordinatorActor extends Actor {
         wm.ReceiveTransactionMessage(
           transactionId: paymentTxid,
           beef: beef,
-          fromCounterparty: cmd.fromCounterparty ?? 'unknown',
+          // No placeholder (bead libspiffy-cq16): the marker is persisted
+          // now, and a stored 'unknown' on every payment is worse than no
+          // marker at all. Blank means the app supplied none.
+          fromCounterparty: cmd.fromCounterparty ?? '',
           targetWalletId: cmd.walletId,
           invoiceId: cmd.invoiceId,
           receivedAt: DateTime.now(),
@@ -673,6 +679,8 @@ class WalletCoordinatorActor extends Actor {
           paymentAmount: BigInt.from(cmd.paymentAmount),
           changeAddress: cmd.changeAddress,
           changeAmount: cmd.changeAmount != null ? BigInt.from(cmd.changeAmount!) : null,
+          // Who we paid, as the app names them (bead libspiffy-cq16).
+          counterpartyMarker: cmd.counterpartyMarker,
         ),
       ),
     );
@@ -689,7 +697,9 @@ class WalletCoordinatorActor extends Actor {
         wm.ReceiveTransactionMessage(
           transactionId: cmd.transactionId,
           beef: beef,
-          fromCounterparty: cmd.fromCounterparty ?? 'import',
+          // No placeholder: a stored 'import' would name a counterparty
+          // nobody can be asked anything (bead libspiffy-cq16).
+          fromCounterparty: cmd.fromCounterparty ?? '',
           targetWalletId: cmd.walletId,
           receivedAt: DateTime.now(),
         ),
@@ -1493,7 +1503,10 @@ class WalletCoordinatorActor extends Actor {
           wm.ReceiveTransactionMessage(
             transactionId: txid,
             beef: beef,
-            fromCounterparty: 'counterparty',
+            // The marker the ValidateBEEFCommand carried, if any: the
+            // literal 'counterparty' that stood here named nobody and is
+            // now persisted evidence, so it is gone (bead libspiffy-cq16).
+            fromCounterparty: pending.fromCounterparty ?? '',
             targetWalletId: walletId,
             invoiceId: invoiceId,
             receivedAt: DateTime.now(),
@@ -1749,10 +1762,15 @@ class _PendingBeefValidation {
   final String beefHex;
   final String? invoiceId;
 
+  /// The app's opaque counterparty marker the command carried, if any
+  /// (bead libspiffy-cq16).
+  final String? fromCounterparty;
+
   _PendingBeefValidation({
     required this.walletId,
     required this.beefHex,
     required this.invoiceId,
+    this.fromCounterparty,
   });
 }
 

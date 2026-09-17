@@ -33,6 +33,10 @@ class PayInvoiceMessage implements Message {
   /// Fee estimate in satoshis (defaults to 1000 sats if not specified)
   final BigInt? feeEstimateSats;
 
+  /// The app's opaque marker for the payee (bead libspiffy-cq16), journaled
+  /// with the transaction this payment records. Never interpreted.
+  final String? counterpartyMarker;
+
   PayInvoiceMessage({
     required this.walletId,
     required this.invoiceId,
@@ -42,6 +46,7 @@ class PayInvoiceMessage implements Message {
     this.changeAddress,
     this.paymentMetadata,
     this.feeEstimateSats,
+    this.counterpartyMarker,
   });
 
   /// Get effective total amount to pay

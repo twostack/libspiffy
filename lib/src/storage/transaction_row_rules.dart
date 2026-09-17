@@ -82,6 +82,25 @@ abstract final class TransactionRowRules {
           if (setsStatus(stored, incoming)) stored,
       ];
 
+  /// The opaque counterparty marker a row stores after a record carrying
+  /// [incoming], given the [stored] one (bead libspiffy-cq16).
+  ///
+  /// Set once, by the first record that carries one, and kept from then on:
+  /// no later record blanks it (a status update, a confirmation, a stale ARC
+  /// report, a re-delivered BEEF, an import replay, a reorganization) and
+  /// none replaces it with a different value. It is wallet data like any
+  /// other, and no service can be asked for an identity we dropped
+  /// (spv-understanding.md, Data Retention).
+  ///
+  /// A blank string is not a marker: it is what an actor message carries
+  /// when the app supplied nothing, and it is read as absent. The value is
+  /// otherwise opaque — never parsed, validated or interpreted.
+  static String? counterpartyMarkerAfter(String? stored, String? incoming) {
+    if (stored != null && stored.isNotEmpty) return stored;
+    if (incoming != null && incoming.isNotEmpty) return incoming;
+    return null;
+  }
+
   /// The other party of [tx] from the wallet's perspective: the first
   /// sending address of an incoming transaction, the first receiving
   /// address of an outgoing one, null otherwise. Stored as the primary

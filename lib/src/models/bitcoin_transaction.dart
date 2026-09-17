@@ -113,7 +113,23 @@ class BitcoinTransaction {
   
   /// Transaction version
   final int version;
-  
+
+  /// The app's opaque marker for the counterparty this payment was with
+  /// (bead libspiffy-cq16, spv-understanding.md "Core Data Management"
+  /// requirement 5): an Ed25519 identity key, an email address, a peer id,
+  /// an internal account id — whatever the app uses for identity. libspiffy
+  /// stores it, returns it, and never interprets, validates or parses it.
+  ///
+  /// It is NOT [sendingAddresses]/[receivingAddresses] nor the
+  /// address-derived `counterparty` / `primary_counterparty` columns of
+  /// migration v015: an address is not an identity. Null when the app
+  /// supplied none, and on rows written before the field existed.
+  ///
+  /// Retained like every other wallet datum: a backend sets it once, from
+  /// the first record that carries one, and no later update blanks it or
+  /// replaces it ([TransactionRowRules.counterpartyMarkerAfter]).
+  final String? counterpartyMarker;
+
   const BitcoinTransaction({
     this.walletId,
     required this.txid,
@@ -132,6 +148,7 @@ class BitcoinTransaction {
     this.memo,
     required this.lockTime,
     required this.version,
+    this.counterpartyMarker,
   });
   
   /// Create a transaction from a DartSV Transaction object
@@ -146,6 +163,7 @@ class BitcoinTransaction {
     int? confirmations,
     String? memo,
     BigInt? inputValue, // Must be provided since TransactionInput.satoshis is not available
+    String? counterpartyMarker,
   }) {
     final now = DateTime.now();
     
@@ -174,6 +192,7 @@ class BitcoinTransaction {
       memo: memo,
       lockTime: transaction.nLockTime,
       version: transaction.version,
+      counterpartyMarker: counterpartyMarker,
     );
   }
   
@@ -217,6 +236,7 @@ class BitcoinTransaction {
     String? memo,
     int? lockTime,
     int? version,
+    String? counterpartyMarker,
   }) {
     return BitcoinTransaction(
       walletId: walletId ?? this.walletId,
@@ -236,6 +256,8 @@ class BitcoinTransaction {
       memo: memo ?? this.memo,
       lockTime: lockTime ?? this.lockTime,
       version: version ?? this.version,
+      // Never blanked: a copy without a marker keeps the stored one (cq16).
+      counterpartyMarker: counterpartyMarker ?? this.counterpartyMarker,
     );
   }
   
@@ -281,6 +303,7 @@ class BitcoinTransaction {
       'memo': memo,
       'lockTime': lockTime,
       'version': version,
+      if (counterpartyMarker != null) 'counterpartyMarker': counterpartyMarker,
     };
   }
   
@@ -307,6 +330,8 @@ class BitcoinTransaction {
       memo: map['memo'] as String?,
       lockTime: map['lockTime'] as int,
       version: map['version'] as int,
+      // Absent on maps written before cq16.
+      counterpartyMarker: map['counterpartyMarker'] as String?,
     );
   }
   

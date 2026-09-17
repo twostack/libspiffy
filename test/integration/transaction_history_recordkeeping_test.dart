@@ -379,6 +379,10 @@ void main() {
       expect(incomingTx.netAmount, greaterThan(BigInt.zero), reason: 'Net amount should be POSITIVE for incoming');
       expect(incomingTx.netAmount, equals(BigInt.from(200000000)), reason: 'Should receive exactly 2 BSV (200M sats)');
       expect(incomingTx.receivingAddresses, contains(recipientAddress), reason: 'Should include recipient address');
+      // Bead libspiffy-cq16: the payment records who handed it to us, the
+      // app's opaque marker, end to end from ReceiveTransactionMessage.
+      expect(incomingTx.counterpartyMarker, 'test-sender',
+          reason: 'the counterparty marker must survive the whole receive');
       
       // Step 7: Verify UTXOs were created
       final recipientUtxos = await storage.getAvailableUTXOs(recipientWalletId);

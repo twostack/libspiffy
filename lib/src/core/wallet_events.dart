@@ -334,6 +334,17 @@ class TransactionImportedEvent extends WalletEvent {
   /// empty, so such rows and events without ancestors serialize as before).
   final List<BeefAncestor> ancestors;
 
+  /// The app's opaque marker for the counterparty this payment was with
+  /// (bead libspiffy-cq16, spv-understanding.md "Core Data Management"
+  /// requirement 5): an Ed25519 identity key, an email address, a peer id,
+  /// an internal account id. libspiffy stores it and never interprets it.
+  /// It is not an address and not the address-derived counterparty columns
+  /// of the read model. Null when the app supplied none, and on rows
+  /// journaled before the field existed, which replay unchanged: the key is
+  /// written only when there is a marker, so an event without one
+  /// serializes exactly as before.
+  final String? counterpartyMarker;
+
   TransactionImportedEvent({
     required String walletId,
     required this.txid,
@@ -350,6 +361,7 @@ class TransactionImportedEvent extends WalletEvent {
     required this.totalInputSats,
     required this.sendingAddresses,
     this.ancestors = const [],
+    this.counterpartyMarker,
     String? eventId,
     DateTime? timestamp,
     int? version,
@@ -379,6 +391,7 @@ class TransactionImportedEvent extends WalletEvent {
       'totalInputSats': totalInputSats,
       'sendingAddresses': sendingAddresses,
       if (ancestors.isNotEmpty) 'ancestors': [for (final a in ancestors) a.toMap()],
+      if (counterpartyMarker != null) 'counterpartyMarker': counterpartyMarker,
     };
   }
 
@@ -402,6 +415,8 @@ class TransactionImportedEvent extends WalletEvent {
         for (final a in (map['ancestors'] as List<dynamic>? ?? const []))
           BeefAncestor.fromMap(a as Map<dynamic, dynamic>),
       ],
+      // Absent on rows journaled before cq16: they replay with no marker.
+      counterpartyMarker: map['counterpartyMarker'] as String?,
       eventId: map['eventId'] as String?,
       timestamp: map['timestamp'] != null
           ? (map['timestamp'] is String
@@ -641,6 +656,17 @@ class UTXOReceivedEvent extends WalletEvent {
   final int? derivationIndex;
   final Map<String, dynamic>? pluginMetadata;
 
+  /// The app's opaque marker for the counterparty this payment was with
+  /// (bead libspiffy-cq16, spv-understanding.md "Core Data Management"
+  /// requirement 5): an Ed25519 identity key, an email address, a peer id,
+  /// an internal account id. libspiffy stores it and never interprets it.
+  /// It is not an address and not the address-derived counterparty columns
+  /// of the read model. Null when the app supplied none, and on rows
+  /// journaled before the field existed, which replay unchanged: the key is
+  /// written only when there is a marker, so an event without one
+  /// serializes exactly as before.
+  final String? counterpartyMarker;
+
   UTXOReceivedEvent({
     required String walletId,
     required this.txid,
@@ -653,6 +679,7 @@ class UTXOReceivedEvent extends WalletEvent {
     this.initialStatus = UTXOStatus.pending, // Default to pending
     this.derivationIndex,
     this.pluginMetadata,
+    this.counterpartyMarker,
     String? eventId,
     DateTime? timestamp,
     int? version,
@@ -678,6 +705,7 @@ class UTXOReceivedEvent extends WalletEvent {
       'initialStatus': initialStatus.name,
       'derivationIndex': derivationIndex,
       'pluginMetadata': pluginMetadata,
+      if (counterpartyMarker != null) 'counterpartyMarker': counterpartyMarker,
     };
   }
 
@@ -704,6 +732,8 @@ class UTXOReceivedEvent extends WalletEvent {
       initialStatus: initialStatus,
       derivationIndex: map['derivationIndex'] as int?,
       pluginMetadata: map['pluginMetadata'] as Map<String, dynamic>?,
+      // Absent on rows journaled before cq16: they replay with no marker.
+      counterpartyMarker: map['counterpartyMarker'] as String?,
       eventId: map['eventId'] as String?,
       timestamp: map['timestamp'] != null
           ? (map['timestamp'] is String 
@@ -1245,6 +1275,17 @@ class TransactionRecordedEvent extends WalletEvent {
   final String? changeAddress;
   final String? changeAmount;
 
+  /// The app's opaque marker for the counterparty this payment was with
+  /// (bead libspiffy-cq16, spv-understanding.md "Core Data Management"
+  /// requirement 5): an Ed25519 identity key, an email address, a peer id,
+  /// an internal account id. libspiffy stores it and never interprets it.
+  /// It is not an address and not the address-derived counterparty columns
+  /// of the read model. Null when the app supplied none, and on rows
+  /// journaled before the field existed, which replay unchanged: the key is
+  /// written only when there is a marker, so an event without one
+  /// serializes exactly as before.
+  final String? counterpartyMarker;
+
   TransactionRecordedEvent({
     required String walletId,
     required this.txid,
@@ -1261,6 +1302,7 @@ class TransactionRecordedEvent extends WalletEvent {
     required this.paymentAmount,
     this.changeAddress,
     this.changeAmount,
+    this.counterpartyMarker,
     String? eventId,
     DateTime? timestamp,
     int? version,
@@ -1290,6 +1332,7 @@ class TransactionRecordedEvent extends WalletEvent {
       'paymentAmount': paymentAmount,
       'changeAddress': changeAddress,
       'changeAmount': changeAmount,
+      if (counterpartyMarker != null) 'counterpartyMarker': counterpartyMarker,
     };
   }
 
@@ -1310,6 +1353,8 @@ class TransactionRecordedEvent extends WalletEvent {
       paymentAmount: map['paymentAmount'] as String,
       changeAddress: map['changeAddress'] as String?,
       changeAmount: map['changeAmount'] as String?,
+      // Absent on rows journaled before cq16: they replay with no marker.
+      counterpartyMarker: map['counterpartyMarker'] as String?,
       eventId: map['eventId'] as String?,
       timestamp: map['timestamp'] != null
           ? (map['timestamp'] is String 

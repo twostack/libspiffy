@@ -568,6 +568,13 @@ class SPVValidationResult implements Message {
   /// still retained, stored as a pendingHeader proof).
   final List<ProvenTransaction> provenTransactions;
 
+  /// The app's opaque marker for the counterparty that handed us this
+  /// transaction (bead libspiffy-cq16), carried from
+  /// [ReceiveTransactionMessage.fromCounterparty] so the wallet can journal
+  /// it with the payment. Null when the app supplied none; never
+  /// interpreted, validated or parsed.
+  final String? counterpartyMarker;
+
   SPVValidationResult({
     required this.txid,
     required this.isValid,
@@ -579,7 +586,25 @@ class SPVValidationResult implements Message {
     this.transactionData,
     this.unreadableOutputs = const [],
     this.provenTransactions = const [],
+    this.counterpartyMarker,
   });
+
+  /// This result with [marker] as its [counterpartyMarker] (a blank marker
+  /// is no marker). Applied in one place, where the receive answers, so
+  /// every branch that builds a result carries it (bead libspiffy-cq16).
+  SPVValidationResult withCounterpartyMarker(String? marker) => SPVValidationResult(
+        txid: txid,
+        isValid: isValid,
+        validationError: validationError,
+        spendableUTXOs: spendableUTXOs,
+        spentUTXOs: spentUTXOs,
+        targetWalletId: targetWalletId,
+        transactionFee: transactionFee,
+        transactionData: transactionData,
+        unreadableOutputs: unreadableOutputs,
+        provenTransactions: provenTransactions,
+        counterpartyMarker: (marker == null || marker.isEmpty) ? null : marker,
+      );
 
   @override
   String get correlationId => 'spv-validation-$txid';

@@ -778,6 +778,16 @@ class BitcoinTransactionEntity {
   @Index()
   String? primaryCounterparty;
 
+  /// The app's opaque marker for the counterparty this payment was with
+  /// (bead libspiffy-cq16, spv-understanding.md "Core Data Management"
+  /// requirement 5). Distinct from [counterparty] and
+  /// [primaryCounterparty], which are derived from bitcoin ADDRESSES (v015):
+  /// an address is not an identity. Set once, by the first record that
+  /// carries one, and never blanked or replaced
+  /// ([TransactionRowRules.counterpartyMarkerAfter]). Null on rows written
+  /// before the field existed.
+  String? counterpartyMarker;
+
   BitcoinTransactionEntity();
 
   /// Create from domain model BitcoinTransaction
@@ -800,8 +810,9 @@ class BitcoinTransactionEntity {
   /// Copies the mutable state of [tx] onto this row (the insert and the
   /// update path of the storage share it). History is not erased: an empty
   /// raw hex or a null block height keeps the stored value (an SPV wallet
-  /// cannot fetch the transaction again), and `confirmedAt` is set once the
-  /// transaction has a block height and is not cleared.
+  /// cannot fetch the transaction again), `confirmedAt` is set once the
+  /// transaction has a block height and is not cleared, and the counterparty
+  /// marker is set once and never blanked or replaced (cq16).
   void applyDomain(BitcoinTransaction tx) {
     final net = tx.netAmount;
     if (tx.rawHex.isNotEmpty) rawHex = tx.rawHex;
@@ -818,6 +829,8 @@ class BitcoinTransactionEntity {
     receivingAddressesJson = jsonEncode(tx.receivingAddresses);
     sendingAddressesJson = jsonEncode(tx.sendingAddresses);
     primaryCounterparty = primaryCounterpartyOf(tx);
+    // Set once, never blanked, never replaced (cq16).
+    counterpartyMarker = TransactionRowRules.counterpartyMarkerAfter(counterpartyMarker, tx.counterpartyMarker);
     notes = tx.memo;
     updatedAt = tx.updatedAt;
     if (tx.blockHeight != null && tx.blockHeight! > 0) {
@@ -858,6 +871,7 @@ class BitcoinTransactionEntity {
       memo: notes,
       lockTime: 0, // Would need to parse from rawHex or store separately
       version: 1, // Would need to parse from rawHex or store separately
+      counterpartyMarker: counterpartyMarker,
     );
   }
 
@@ -886,6 +900,7 @@ class BitcoinTransactionEntity {
       'receivingAddressesJson': receivingAddressesJson,
       'sendingAddressesJson': sendingAddressesJson,
       'primaryCounterparty': primaryCounterparty,
+      'counterpartyMarker': counterpartyMarker,
     };
   }
 

@@ -195,12 +195,16 @@ class SPVActor extends Actor {
     _awaitingHeaderHeight = null;
     try {
       // This is the core SPV process
-      final validationResult = await _validateReceivedTransaction(
+      final validated = await _validateReceivedTransaction(
         msg.transactionId,
         msg.beef,
         msg.targetWalletId,
         msg.invoiceId,
       );
+      // Who handed it to us, carried to the wallet so the payment is
+      // journaled with its counterparty marker (bead libspiffy-cq16). One
+      // place, so every branch above that builds a result carries it.
+      final validationResult = validated.withCounterpartyMarker(msg.fromCounterparty);
 
       if (_awaitingHeaderHeight case final height?) {
         _awaitingHeaderHeight = null;
@@ -229,7 +233,7 @@ class SPVActor extends Actor {
         isValid: false,
         validationError: e.toString(),
         targetWalletId: msg.targetWalletId,
-      );
+      ).withCounterpartyMarker(msg.fromCounterparty);
 
       _walletManager.tell(errorResult);
       replyTo?.tell(errorResult);

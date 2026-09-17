@@ -151,15 +151,16 @@ void main() {
       // v014 confirmed transaction height index, v015 transaction counterparty,
       // v016 merkle proof status height index, v017 deferred payment
       // competing txids, v018 merkle proof status changed index,
-      // v019 transaction status updated index, v020 pending receives
+      // v019 transaction status updated index, v020 pending receives,
+      // v021 transaction counterparty marker
       final version = await migrations.getCurrentVersion();
-      expect(version, equals(20));
+      expect(version, equals(21));
 
       // Verify applied migrations
       final applied = await migrations.getAppliedMigrations();
-      expect(applied, hasLength(20));
+      expect(applied, hasLength(21));
       expect(applied.first.name, equals('initial_schema'));
-      expect(applied.last.name, equals('pending_receives'));
+      expect(applied.last.name, equals('transaction_counterparty_marker'));
     });
 
     test('should handle re-running migrations idempotently', () async {
@@ -170,13 +171,16 @@ void main() {
       await migrations.migrate();
 
       final version = await migrations.getCurrentVersion();
-      expect(version, equals(20));
+      expect(version, equals(21));
     });
 
     test('should rollback migrations one at a time', () async {
       final migrations = PostgresMigrations(config);
 
       await migrations.migrate();
+      expect(await migrations.getCurrentVersion(), equals(21));
+
+      expect(await migrations.rollback(), isTrue);
       expect(await migrations.getCurrentVersion(), equals(20));
 
       expect(await migrations.rollback(), isTrue);
@@ -247,7 +251,7 @@ void main() {
         () async {
       final migrations = PostgresMigrations(config);
       await migrations.migrate();
-      expect(await migrations.getCurrentVersion(), equals(20));
+      expect(await migrations.getCurrentVersion(), equals(21));
 
       final storage = PostgresWalletStorage(config);
       await storage.initialize();
@@ -288,6 +292,7 @@ void main() {
 
       // v018, v017, v016, v015, v014, v013, v012, v011, v010, v009, v008, v007 and v006 first;
       // then v005's down keeps the first-stored row so the global keys can be restored.
+      expect(await migrations.rollback(), isTrue); // v021 (transaction counterparty marker)
       expect(await migrations.rollback(), isTrue); // v020 (pending receives)
       expect(await migrations.rollback(), isTrue); // v019
       expect(await migrations.rollback(), isTrue); // v018
@@ -321,7 +326,7 @@ void main() {
 
         // Up again, and leave the database at the latest version.
         await migrations.migrate();
-        expect(await migrations.getCurrentVersion(), equals(20));
+        expect(await migrations.getCurrentVersion(), equals(21));
         await pool.execute(
           Sql.named('DELETE FROM bitcoin_transactions WHERE txid = @txid'),
           parameters: {'txid': txid},
@@ -367,7 +372,8 @@ void main() {
         expect(await serverKeyColumn(), isNull);
 
         // Down restores NOT NULL with the old '' placeholder.
-        expect(await migrations.rollback(), isTrue); // v020 (pending receives)
+        expect(await migrations.rollback(), isTrue); // v021 (transaction counterparty marker)
+      expect(await migrations.rollback(), isTrue); // v020 (pending receives)
       expect(await migrations.rollback(), isTrue); // v019
         expect(await migrations.rollback(), isTrue); // v018
         expect(await migrations.rollback(), isTrue); // v017
@@ -386,7 +392,7 @@ void main() {
 
         // Up turns the placeholder back into NULL.
         await migrations.migrate();
-        expect(await migrations.getCurrentVersion(), equals(20));
+        expect(await migrations.getCurrentVersion(), equals(21));
         expect(await serverKeyColumn(), isNull);
         expect((await storage.getPaymentChannel(channelId))!.serverPubKeyHex,
             isNull);

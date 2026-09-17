@@ -394,6 +394,15 @@ abstract class ReadModelStorage {
   /// [storeRevertedTransaction]. An update without raw hex keeps the stored
   /// bytes; a confirmed update without a block height keeps the stored one.
   ///
+  /// [BitcoinTransaction.counterpartyMarker] — the app's opaque marker for
+  /// the counterparty the payment was with (bead libspiffy-cq16,
+  /// spv-understanding.md requirement 5) — is set once, by the first record
+  /// that carries one, and no later update blanks it or replaces it with a
+  /// different value, a revert included
+  /// ([TransactionRowRules.counterpartyMarkerAfter]). It is stored verbatim
+  /// and never interpreted, and it is not the address-derived counterparty
+  /// a backend may also keep.
+  ///
   /// Parameters:
   /// - [walletId]: Wallet ID this transaction belongs to
   /// - [transaction]: Transaction to store

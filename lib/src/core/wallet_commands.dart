@@ -357,6 +357,16 @@ class ReceiveUTXOCommand extends WalletCommand {
   final int? derivationIndex;
   final Map<String, dynamic>? pluginMetadata;
 
+  /// The app's opaque marker for the counterparty this payment is with
+  /// (bead libspiffy-cq16, spv-understanding.md "Core Data Management"
+  /// requirement 5): an Ed25519 identity key, an email address, a peer id,
+  /// an internal account id — whatever the app uses for identity. libspiffy
+  /// journals it and returns it; it never interprets, validates or parses
+  /// it, and the identity record itself stays with the app. Not an address:
+  /// it is kept apart from the address-derived counterparty columns of the
+  /// read model. Null when the app supplies none.
+  final String? counterpartyMarker;
+
   ReceiveUTXOCommand({
     required String walletId,
     required this.txid,
@@ -369,6 +379,7 @@ class ReceiveUTXOCommand extends WalletCommand {
     this.initialStatus = UTXOStatus.pending, // Default to pending for new receives
     this.derivationIndex,
     this.pluginMetadata,
+    this.counterpartyMarker,
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,
@@ -444,6 +455,16 @@ class RecordImportedTransactionCommand extends WalletCommand {
   /// libspiffy-zsh). Journaled on the TransactionImportedEvent.
   final List<BeefAncestor> ancestors;
 
+  /// The app's opaque marker for the counterparty this payment is with
+  /// (bead libspiffy-cq16, spv-understanding.md "Core Data Management"
+  /// requirement 5): an Ed25519 identity key, an email address, a peer id,
+  /// an internal account id — whatever the app uses for identity. libspiffy
+  /// journals it and returns it; it never interprets, validates or parses
+  /// it, and the identity record itself stays with the app. Not an address:
+  /// it is kept apart from the address-derived counterparty columns of the
+  /// read model. Null when the app supplies none.
+  final String? counterpartyMarker;
+
   RecordImportedTransactionCommand({
     required String walletId,
     required this.txid,
@@ -460,6 +481,7 @@ class RecordImportedTransactionCommand extends WalletCommand {
     required this.totalInputSats,
     required this.sendingAddresses,
     this.ancestors = const [],
+    this.counterpartyMarker,
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,
@@ -522,6 +544,16 @@ class RecordOutgoingTransactionCommand extends WalletCommand {
   /// Propagated to [TransactionSignedEvent.metadata] when [preSigned] is true.
   final Map<String, dynamic>? signerMetadata;
 
+  /// The app's opaque marker for the counterparty this payment is with
+  /// (bead libspiffy-cq16, spv-understanding.md "Core Data Management"
+  /// requirement 5): an Ed25519 identity key, an email address, a peer id,
+  /// an internal account id — whatever the app uses for identity. libspiffy
+  /// journals it and returns it; it never interprets, validates or parses
+  /// it, and the identity record itself stays with the app. Not an address:
+  /// it is kept apart from the address-derived counterparty columns of the
+  /// read model. Null when the app supplies none.
+  final String? counterpartyMarker;
+
   RecordOutgoingTransactionCommand({
     required String walletId,
     required this.txid,
@@ -543,6 +575,7 @@ class RecordOutgoingTransactionCommand extends WalletCommand {
     this.signerMetadata,
     this.invoiceId,
     this.purpose,
+    this.counterpartyMarker,
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,

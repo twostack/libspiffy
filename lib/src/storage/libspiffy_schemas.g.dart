@@ -15417,83 +15417,88 @@ const BitcoinTransactionEntitySchema = CollectionSchema(
       name: r'counterparty',
       type: IsarType.string,
     ),
-    r'createdAt': PropertySchema(
+    r'counterpartyMarker': PropertySchema(
       id: 6,
+      name: r'counterpartyMarker',
+      type: IsarType.string,
+    ),
+    r'createdAt': PropertySchema(
+      id: 7,
       name: r'createdAt',
       type: IsarType.dateTime,
     ),
     r'fee': PropertySchema(
-      id: 7,
+      id: 8,
       name: r'fee',
       type: IsarType.string,
     ),
     r'isIncoming': PropertySchema(
-      id: 8,
+      id: 9,
       name: r'isIncoming',
       type: IsarType.bool,
     ),
     r'isOutgoing': PropertySchema(
-      id: 9,
+      id: 10,
       name: r'isOutgoing',
       type: IsarType.bool,
     ),
     r'netAmount': PropertySchema(
-      id: 10,
+      id: 11,
       name: r'netAmount',
       type: IsarType.string,
     ),
     r'notes': PropertySchema(
-      id: 11,
+      id: 12,
       name: r'notes',
       type: IsarType.string,
     ),
     r'primaryCounterparty': PropertySchema(
-      id: 12,
+      id: 13,
       name: r'primaryCounterparty',
       type: IsarType.string,
     ),
     r'rawHex': PropertySchema(
-      id: 13,
+      id: 14,
       name: r'rawHex',
       type: IsarType.string,
     ),
     r'receivingAddressesJson': PropertySchema(
-      id: 14,
+      id: 15,
       name: r'receivingAddressesJson',
       type: IsarType.string,
     ),
     r'sendingAddressesJson': PropertySchema(
-      id: 15,
+      id: 16,
       name: r'sendingAddressesJson',
       type: IsarType.string,
     ),
     r'status': PropertySchema(
-      id: 16,
+      id: 17,
       name: r'status',
       type: IsarType.string,
     ),
     r'totalInput': PropertySchema(
-      id: 17,
+      id: 18,
       name: r'totalInput',
       type: IsarType.string,
     ),
     r'totalOutput': PropertySchema(
-      id: 18,
+      id: 19,
       name: r'totalOutput',
       type: IsarType.string,
     ),
     r'txid': PropertySchema(
-      id: 19,
+      id: 20,
       name: r'txid',
       type: IsarType.string,
     ),
     r'updatedAt': PropertySchema(
-      id: 20,
+      id: 21,
       name: r'updatedAt',
       type: IsarType.dateTime,
     ),
     r'walletId': PropertySchema(
-      id: 21,
+      id: 22,
       name: r'walletId',
       type: IsarType.string,
     )
@@ -15673,6 +15678,12 @@ int _bitcoinTransactionEntityEstimateSize(
       bytesCount += 3 + value.length * 3;
     }
   }
+  {
+    final value = object.counterpartyMarker;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
   bytesCount += 3 + object.fee.length * 3;
   bytesCount += 3 + object.netAmount.length * 3;
   {
@@ -15710,22 +15721,23 @@ void _bitcoinTransactionEntitySerialize(
   writer.writeLong(offsets[3], object.confirmations);
   writer.writeDateTime(offsets[4], object.confirmedAt);
   writer.writeString(offsets[5], object.counterparty);
-  writer.writeDateTime(offsets[6], object.createdAt);
-  writer.writeString(offsets[7], object.fee);
-  writer.writeBool(offsets[8], object.isIncoming);
-  writer.writeBool(offsets[9], object.isOutgoing);
-  writer.writeString(offsets[10], object.netAmount);
-  writer.writeString(offsets[11], object.notes);
-  writer.writeString(offsets[12], object.primaryCounterparty);
-  writer.writeString(offsets[13], object.rawHex);
-  writer.writeString(offsets[14], object.receivingAddressesJson);
-  writer.writeString(offsets[15], object.sendingAddressesJson);
-  writer.writeString(offsets[16], object.status);
-  writer.writeString(offsets[17], object.totalInput);
-  writer.writeString(offsets[18], object.totalOutput);
-  writer.writeString(offsets[19], object.txid);
-  writer.writeDateTime(offsets[20], object.updatedAt);
-  writer.writeString(offsets[21], object.walletId);
+  writer.writeString(offsets[6], object.counterpartyMarker);
+  writer.writeDateTime(offsets[7], object.createdAt);
+  writer.writeString(offsets[8], object.fee);
+  writer.writeBool(offsets[9], object.isIncoming);
+  writer.writeBool(offsets[10], object.isOutgoing);
+  writer.writeString(offsets[11], object.netAmount);
+  writer.writeString(offsets[12], object.notes);
+  writer.writeString(offsets[13], object.primaryCounterparty);
+  writer.writeString(offsets[14], object.rawHex);
+  writer.writeString(offsets[15], object.receivingAddressesJson);
+  writer.writeString(offsets[16], object.sendingAddressesJson);
+  writer.writeString(offsets[17], object.status);
+  writer.writeString(offsets[18], object.totalInput);
+  writer.writeString(offsets[19], object.totalOutput);
+  writer.writeString(offsets[20], object.txid);
+  writer.writeDateTime(offsets[21], object.updatedAt);
+  writer.writeString(offsets[22], object.walletId);
 }
 
 BitcoinTransactionEntity _bitcoinTransactionEntityDeserialize(
@@ -15741,23 +15753,24 @@ BitcoinTransactionEntity _bitcoinTransactionEntityDeserialize(
   object.confirmations = reader.readLong(offsets[3]);
   object.confirmedAt = reader.readDateTimeOrNull(offsets[4]);
   object.counterparty = reader.readStringOrNull(offsets[5]);
-  object.createdAt = reader.readDateTime(offsets[6]);
-  object.fee = reader.readString(offsets[7]);
+  object.counterpartyMarker = reader.readStringOrNull(offsets[6]);
+  object.createdAt = reader.readDateTime(offsets[7]);
+  object.fee = reader.readString(offsets[8]);
   object.id = id;
-  object.isIncoming = reader.readBool(offsets[8]);
-  object.isOutgoing = reader.readBool(offsets[9]);
-  object.netAmount = reader.readString(offsets[10]);
-  object.notes = reader.readStringOrNull(offsets[11]);
-  object.primaryCounterparty = reader.readStringOrNull(offsets[12]);
-  object.rawHex = reader.readString(offsets[13]);
-  object.receivingAddressesJson = reader.readString(offsets[14]);
-  object.sendingAddressesJson = reader.readString(offsets[15]);
-  object.status = reader.readString(offsets[16]);
-  object.totalInput = reader.readString(offsets[17]);
-  object.totalOutput = reader.readString(offsets[18]);
-  object.txid = reader.readString(offsets[19]);
-  object.updatedAt = reader.readDateTimeOrNull(offsets[20]);
-  object.walletId = reader.readString(offsets[21]);
+  object.isIncoming = reader.readBool(offsets[9]);
+  object.isOutgoing = reader.readBool(offsets[10]);
+  object.netAmount = reader.readString(offsets[11]);
+  object.notes = reader.readStringOrNull(offsets[12]);
+  object.primaryCounterparty = reader.readStringOrNull(offsets[13]);
+  object.rawHex = reader.readString(offsets[14]);
+  object.receivingAddressesJson = reader.readString(offsets[15]);
+  object.sendingAddressesJson = reader.readString(offsets[16]);
+  object.status = reader.readString(offsets[17]);
+  object.totalInput = reader.readString(offsets[18]);
+  object.totalOutput = reader.readString(offsets[19]);
+  object.txid = reader.readString(offsets[20]);
+  object.updatedAt = reader.readDateTimeOrNull(offsets[21]);
+  object.walletId = reader.readString(offsets[22]);
   return object;
 }
 
@@ -15781,21 +15794,21 @@ P _bitcoinTransactionEntityDeserializeProp<P>(
     case 5:
       return (reader.readStringOrNull(offset)) as P;
     case 6:
-      return (reader.readDateTime(offset)) as P;
+      return (reader.readStringOrNull(offset)) as P;
     case 7:
-      return (reader.readString(offset)) as P;
+      return (reader.readDateTime(offset)) as P;
     case 8:
-      return (reader.readBool(offset)) as P;
+      return (reader.readString(offset)) as P;
     case 9:
       return (reader.readBool(offset)) as P;
     case 10:
-      return (reader.readString(offset)) as P;
+      return (reader.readBool(offset)) as P;
     case 11:
-      return (reader.readStringOrNull(offset)) as P;
+      return (reader.readString(offset)) as P;
     case 12:
       return (reader.readStringOrNull(offset)) as P;
     case 13:
-      return (reader.readString(offset)) as P;
+      return (reader.readStringOrNull(offset)) as P;
     case 14:
       return (reader.readString(offset)) as P;
     case 15:
@@ -15809,8 +15822,10 @@ P _bitcoinTransactionEntityDeserializeProp<P>(
     case 19:
       return (reader.readString(offset)) as P;
     case 20:
-      return (reader.readDateTimeOrNull(offset)) as P;
+      return (reader.readString(offset)) as P;
     case 21:
+      return (reader.readDateTimeOrNull(offset)) as P;
+    case 22:
       return (reader.readString(offset)) as P;
     default:
       throw IsarError('Unknown property with id $propertyId');
@@ -17511,6 +17526,162 @@ extension BitcoinTransactionEntityQueryFilter on QueryBuilder<
     return QueryBuilder.apply(this, (query) {
       return query.addFilterCondition(FilterCondition.greaterThan(
         property: r'counterparty',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> counterpartyMarkerIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'counterpartyMarker',
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> counterpartyMarkerIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'counterpartyMarker',
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> counterpartyMarkerEqualTo(
+    String? value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'counterpartyMarker',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> counterpartyMarkerGreaterThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'counterpartyMarker',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> counterpartyMarkerLessThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'counterpartyMarker',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> counterpartyMarkerBetween(
+    String? lower,
+    String? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'counterpartyMarker',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> counterpartyMarkerStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'counterpartyMarker',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> counterpartyMarkerEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'counterpartyMarker',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+          QAfterFilterCondition>
+      counterpartyMarkerContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'counterpartyMarker',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+          QAfterFilterCondition>
+      counterpartyMarkerMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'counterpartyMarker',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> counterpartyMarkerIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'counterpartyMarker',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> counterpartyMarkerIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'counterpartyMarker',
         value: '',
       ));
     });
@@ -19510,6 +19681,20 @@ extension BitcoinTransactionEntityQuerySortBy on QueryBuilder<
   }
 
   QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterSortBy>
+      sortByCounterpartyMarker() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'counterpartyMarker', Sort.asc);
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterSortBy>
+      sortByCounterpartyMarkerDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'counterpartyMarker', Sort.desc);
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterSortBy>
       sortByCreatedAt() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'createdAt', Sort.asc);
@@ -19821,6 +20006,20 @@ extension BitcoinTransactionEntityQuerySortThenBy on QueryBuilder<
   }
 
   QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterSortBy>
+      thenByCounterpartyMarker() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'counterpartyMarker', Sort.asc);
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterSortBy>
+      thenByCounterpartyMarkerDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'counterpartyMarker', Sort.desc);
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterSortBy>
       thenByCreatedAt() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'createdAt', Sort.asc);
@@ -20104,6 +20303,14 @@ extension BitcoinTransactionEntityQueryWhereDistinct on QueryBuilder<
   }
 
   QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QDistinct>
+      distinctByCounterpartyMarker({bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'counterpartyMarker',
+          caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QDistinct>
       distinctByCreatedAt() {
     return QueryBuilder.apply(this, (query) {
       return query.addDistinctBy(r'createdAt');
@@ -20266,6 +20473,13 @@ extension BitcoinTransactionEntityQueryProperty on QueryBuilder<
       counterpartyProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'counterparty');
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, String?, QQueryOperations>
+      counterpartyMarkerProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'counterpartyMarker');
     });
   }
 

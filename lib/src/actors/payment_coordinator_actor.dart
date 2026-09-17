@@ -168,7 +168,7 @@ class PaymentCoordinatorActor extends Actor {
     // payment handed back to the caller (audit A-M7): failures reported by
     // the steps below and any unexpected exception alike.
     var paymentDelivered = false;
-    final inFlight = _InFlightPayment(msg.invoiceId);
+    final inFlight = _InFlightPayment(msg.invoiceId, msg.counterpartyMarker);
     _inFlightPayment = inFlight;
     try {
       paymentDelivered = await _payWithReservedUtxos(
@@ -1263,6 +1263,10 @@ class PaymentCoordinatorActor extends Actor {
       signerMetadata: signerMetadata,
       invoiceId: deferSpend ? _inFlightPayment?.invoiceId : null,
       purpose: purpose,
+      // Who the in-flight payment is to, as the app named them (cq16).
+      // Null for the recordings that are not a payment to a counterparty
+      // (a UTXO split, a channel funding): no placeholder is invented.
+      counterpartyMarker: _inFlightPayment?.counterpartyMarker,
     );
 
     // Register the awaiter BEFORE telling the command, so we cannot miss the
@@ -1535,7 +1539,12 @@ class _RecordingRefused implements Exception {
 /// (cancelled if the payment is not handed over).
 class _InFlightPayment {
   final String invoiceId;
+
+  /// The app's opaque marker for the payee (bead libspiffy-cq16), journaled
+  /// with each transaction this payment records.
+  final String? counterpartyMarker;
+
   final List<String> deferredTxids = [];
 
-  _InFlightPayment(this.invoiceId);
+  _InFlightPayment(this.invoiceId, [this.counterpartyMarker]);
 }

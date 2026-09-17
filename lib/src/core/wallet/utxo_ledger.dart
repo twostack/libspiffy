@@ -207,6 +207,9 @@ abstract final class UtxoLedger {
       confirmations: command.confirmations,
       derivationIndex: command.derivationIndex,
       pluginMetadata: command.pluginMetadata,
+      // Who paid us, as the app names them (bead libspiffy-cq16). Journaled
+      // verbatim and never interpreted.
+      counterpartyMarker: command.counterpartyMarker,
       version: currentState.version + 1,
       timestamp: DateTime.now(),
     );

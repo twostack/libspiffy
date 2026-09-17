@@ -117,6 +117,8 @@ class OutgoingTransactions {
       totalInputSats: command.totalInputSats,
       sendingAddresses: command.sendingAddresses,
       ancestors: command.ancestors,
+      // Who handed us the transaction, as the app names them (cq16).
+      counterpartyMarker: command.counterpartyMarker,
       version: currentState.version + 1,
       timestamp: DateTime.now(),
     );
@@ -177,6 +179,8 @@ class OutgoingTransactions {
       paymentAmount: command.paymentAmount.toString(),
       changeAddress: command.changeAddress,
       changeAmount: command.changeAmount?.toString(),
+      // Who we paid, as the app names them (cq16).
+      counterpartyMarker: command.counterpartyMarker,
       version: currentState.version + events.length + 1,
       timestamp: DateTime.now(),
     );

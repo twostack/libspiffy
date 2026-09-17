@@ -302,6 +302,41 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### Counterparty identity and reclaiming a deferred payment
+
+Report section 11, V-68 to V-69; each fix has a regression test shown to fail
+on the previous code.
+
+- **Every payment records who it was with, in both directions (V-68).** The
+  wallet could not say who a payment was with: `fromCounterparty` was
+  persisted only on a parked receive, so a transaction that received cleanly
+  kept no record of its sender, and the outgoing side had no such field at
+  all. `counterpartyMarker` is an opaque string the app chooses - an Ed25519
+  identity, an email address, a peer id, an account id - which libspiffy
+  stores and returns but never parses, validates or interprets. It is a
+  marker, not an identity record: names, contacts, key material and
+  verification state stay with the app. It is deliberately **not** the
+  existing `counterparty` / `primary_counterparty` columns, which are derived
+  from bitcoin addresses and are untouched. Set once by the first record that
+  carries one and never blanked or replaced thereafter, because no service
+  can be asked for an identity we dropped. Postgres migration v021; existing
+  rows keep a null marker, and no backfill is possible by design. The
+  placeholder values `'unknown'`, `'import'` and a hardcoded `'counterparty'`
+  are gone - a stored "unknown" on every transaction is worse than a null.
+- **A deferred payment can be reclaimed, revoking the recipient's copy
+  (V-69).** Cancelling released the held inputs but left the recipient
+  holding a signed transaction that still spent them if it reached miners.
+  `ReclaimDeferredPaymentCommand` broadcasts a self-spend of exactly those
+  inputs back to the wallet, one shot, resolving the payment as `reclaimed`
+  only once the network has the self-spend. **The fee is ARC's published
+  policy fee and nothing else**: this is Bitcoin SV, there is no
+  replace-by-fee, so no transaction displaces another by paying more. First
+  seen wins; there is no race and no front-running, and the command has no
+  fee parameter. If ARC's policy cannot be read the reclaim refuses to build
+  anything rather than guess a rate. Cancel is now refused for a payment
+  being reclaimed and for a reclaim's own self-spend. Nothing is deleted:
+  both payments keep their records, raw hex and held-input lists.
+
 ### Retention, re-proof and imported confirmations
 
 Report section 11, V-63 to V-67; each fix has a regression test shown to fail

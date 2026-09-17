@@ -302,6 +302,31 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### Asking a counterparty for a fresh merkle proof
+
+Report section 11, V-70.
+
+- **An orphaned ancestor can now be recovered by asking the counterparty
+  (V-70).** When a reorganization takes an ancestor's block off the active
+  chain, a received output can no longer be walked back to a proof and cannot
+  be spent. Until now the only recovery was the block returning. The other
+  legitimate one - and there are only two, neither of them a lookup service -
+  is the counterparty who handed us the transaction supplying a fresh BEEF,
+  which is the sender's obligation. `RequestAncestorProofCommand` asks the
+  peer named by the payment's `counterpartyMarker`, and `OutputAwaitingProof`
+  now names who to ask. **libspiffy still owns no transport**: the request
+  goes out as a `P2PMessageToSendEvent` for the app to deliver and comes back
+  as a `P2PMessageReceived`, exactly like the channel protocol, whose
+  `ChannelP2PReceived` / `ChannelP2PMessageToSendEvent` now extend the new
+  generic base classes unchanged. Both halves are implemented, so a libspiffy
+  wallet answers these requests as well as making them - but only from the
+  counterparty actually recorded for that transaction, and every refusal reads
+  the same on the wire so it discloses nothing. A response is verified against
+  our own header chain through the ordinary receive path; one that does not
+  verify is rejected and retained, never trusted because we asked for it.
+  Apps wanting proof recovery must listen for the base
+  `P2PMessageToSendEvent`, not only the channel subclass.
+
 ### Counterparty identity and reclaiming a deferred payment
 
 Report section 11, V-68 to V-69; each fix has a regression test shown to fail

@@ -302,6 +302,22 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### A plugin's outputs are not the wallet's spending money
+
+Report section 11, V-85.
+
+- **A plugin-managed UTXO can no longer fund a payment channel (V-85).**
+  Channel funding selected with its own hand-rolled predicate instead of
+  `WalletBalances.isSpendable`, and that predicate left out plugin-managed
+  outputs — so a token output or a funding earmark could be picked as
+  ordinary funding and spent as plain satoshis, destroying the token behind
+  the plugin's state. Selection now uses the shared rule, narrowed by the two
+  conditions funding adds on top, so the two cannot drift apart again.
+- **Behaviour:** a wallet whose only funds are plugin-managed now refuses to
+  fund a channel and says so, where it previously built the transaction. The
+  "nothing to fund with" message names plugin-managed outputs alongside
+  watch-only funds and outputs the wallet cannot unlock alone.
+
 ### A rejected channel command takes back its projection awaiter
 
 Report section 11, V-84.

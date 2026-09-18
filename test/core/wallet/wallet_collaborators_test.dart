@@ -68,7 +68,8 @@ BitcoinUtxo _utxo(int n, int sats,
         int? provenHeight = 900000,
         int? confirmations,
         String? address,
-        String? script}) =>
+        String? script,
+        Map<String, dynamic>? pluginMetadata}) =>
     BitcoinUtxo.create(
       txid: _txid(n),
       vout: 0,
@@ -78,6 +79,7 @@ BitcoinUtxo _utxo(int n, int sats,
       blockHeight: provenHeight,
       confirmations: confirmations,
       status: status,
+      pluginMetadata: pluginMetadata,
       createdAt: _t0,
     );
 
@@ -364,6 +366,30 @@ void main() {
           throwsA(isA<StateError>().having((e) => e.message, 'message', contains('cannot unlock on its own'))));
       expect(() => funding.fundingCandidates(base),
           throwsA(isA<StateError>().having((e) => e.message, 'message', 'No available UTXOs for funding')));
+    });
+
+    // A token output or a funding earmark is its plugin's to spend (bead
+    // libspiffy-ecy8): `WalletBalances.isSpendable` leaves it out of every
+    // other selection the wallet makes, and channel funding now selects by
+    // that same rule (bead libspiffy-qfmb). Spending one as plain satoshis
+    // consumes the output the plugin's state stands on.
+    final token = _utxo(9, 500, pluginMetadata: {'pluginId': 'token-protocol', 'tokenId': 't1'});
+
+    test('a wallet whose only funds are plugin-managed cannot fund a channel, and the error says why', () {
+      final funding = ChannelFunding(
+          WalletKeys(cryptoService: DartSVCryptoService(), secureStorage: InMemorySecureStorage()), DeferredPayments());
+      final onlyToken = _withUtxos(_created(), [token]);
+      expect(WalletBalances.isSpendable(onlyToken, token), isFalse, reason: 'the shared rule already excludes it');
+      expect(() => funding.fundingCandidates(onlyToken),
+          throwsA(isA<StateError>().having((e) => e.message, 'message', contains('plugin-managed'))));
+    });
+
+    test('a wallet holding a plugin-managed and an ordinary UTXO funds from the ordinary one only', () {
+      final funding = ChannelFunding(
+          WalletKeys(cryptoService: DartSVCryptoService(), secureStorage: InMemorySecureStorage()), DeferredPayments());
+      final mixed = _withUtxos(_created(), [token, _utxo(10, 100)]);
+      expect(funding.fundingCandidates(mixed).map((u) => u.key), [_key(10)],
+          reason: 'the larger plugin-managed output is not the wallet\'s to spend, however it is sorted');
     });
   });
 

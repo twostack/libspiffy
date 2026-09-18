@@ -65,29 +65,57 @@ class ChannelFunding {
     return true;
   }
 
-  /// The UTXOs a funding transaction may spend, largest first. A UTXO at a
-  /// watch address (watch-only funds, bead libspiffy-87a2) funds nothing, and
-  /// neither does one the wallet cannot unlock on its own ([_unlocksAlone]).
+  /// The UTXOs a funding transaction may spend, largest first: the wallet's
+  /// own spendable funds, by the one rule the rest of the wallet selects by
+  /// ([WalletBalances.isSpendable], `UtxoLedger.available`), narrowed to the
+  /// ones the wallet can also unlock alone ([_unlocksAlone]).
+  ///
+  /// Funding used to hand-roll its own predicate and so left out only what
+  /// it had thought of. The shared rule leaves out a plugin-managed output —
+  /// a token, a funding earmark, its plugin's to spend (bead
+  /// libspiffy-ecy8) — which funding did not: such an output could be
+  /// selected as plain satoshis and consumed, destroying the token behind
+  /// the plugin's state (bead libspiffy-qfmb). It equally leaves out
+  /// watch-only funds (bead libspiffy-87a2), a bare multisig the wallet's
+  /// keys do not meet (bead libspiffy-0k8) and a deferred payment's held
+  /// input (bead libspiffy-7p2, journaled hold or inferred).
+  ///
   /// Throws, naming the reason, when there is none.
   List<BitcoinUtxo> fundingCandidates(WalletState currentState) {
-    final unspent = currentState.utxos.values
-        .where((u) => u.isAvailable && !u.isSpent && !u.isReserved && deferred.holderOf(currentState, u.key) == null)
-        .toList();
-    final spendable = unspent.where((u) => !UtxoLedger.isWatchOnly(currentState, u)).toList();
-    final availableUtxos = spendable.where((u) => _unlocksAlone(currentState, u)).toList()
+    final availableUtxos = currentState.utxos.values
+        .where((u) =>
+            WalletBalances.isSpendable(currentState, u) &&
+            deferred.holderOf(currentState, u.key) == null &&
+            _unlocksAlone(currentState, u))
+        .toList()
       ..sort((a, b) => b.value.getValue().compareTo(a.value.getValue()));
 
-    if (availableUtxos.isEmpty) {
-      throw StateError(unspent.isEmpty
-          ? 'No available UTXOs for funding'
-          : spendable.isEmpty
-              ? 'No available UTXOs for funding: the ${unspent.length} available UTXO(s) are at watch '
-                  'addresses, watch-only funds the wallet holds no key for'
-              : 'No available UTXOs for funding: the ${spendable.length} spendable UTXO(s) are outputs '
-                  'the wallet cannot unlock on its own, such as a multisig output another party must '
-                  'also sign');
-    }
+    if (availableUtxos.isEmpty) throw StateError(_noCandidatesReason(currentState));
     return availableUtxos;
+  }
+
+  /// Why [fundingCandidates] found nothing: the first exclusion that emptied
+  /// the wallet's unspent funds, so the caller is told what kind of output it
+  /// is holding rather than only that it has none. Walked once, on the error
+  /// path only.
+  String _noCandidatesReason(WalletState currentState) {
+    const noneMessage = 'No available UTXOs for funding';
+    final unspent = currentState.utxos.values
+        .where((u) => u.isAvailable && deferred.holderOf(currentState, u.key) == null)
+        .toList();
+    if (unspent.isEmpty) return noneMessage;
+    final ownFunds = unspent.where((u) => !u.isPluginManaged).toList();
+    if (ownFunds.isEmpty) {
+      return '$noneMessage: the ${unspent.length} available UTXO(s) are plugin-managed outputs (a '
+          'token, a funding earmark) their plugin spends, not ordinary funds';
+    }
+    final spendable = ownFunds.where((u) => !UtxoLedger.isWatchOnly(currentState, u)).toList();
+    if (spendable.isEmpty) {
+      return '$noneMessage: the ${ownFunds.length} available UTXO(s) are at watch addresses, '
+          'watch-only funds the wallet holds no key for';
+    }
+    return '$noneMessage: the ${spendable.length} spendable UTXO(s) are outputs the wallet cannot '
+        'unlock on its own, such as a multisig output another party must also sign';
   }
 
   /// The bytes a signed input spending [utxo] adds to a transaction.

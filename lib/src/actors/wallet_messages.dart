@@ -822,6 +822,60 @@ class BlockHeaderUpdateMessage implements Message {
   DateTime get timestamp => DateTime.now();
 }
 
+/// Ask SPVActor to judge a transaction a counterparty handed us WITHOUT
+/// receiving it (bead libspiffy-6e5).
+///
+/// Same checks as [ReceiveTransactionMessage] — every merkle proof in the
+/// BEEF against our header chain, every input covered back to a proven
+/// transaction, the input scripts — but nothing is credited to any wallet
+/// and the WalletManager is never told: the verdict goes to the sender only,
+/// as an [SPVValidationResult] with no target wallet.
+///
+/// This is what a validation that is not a receive needs: the server judging
+/// the funding transaction of a channel a client asks it to open owns none
+/// of its outputs, so a receive of it names no wallet, credits nobody, and
+/// made the WalletManager log a rejected result on every channel open.
+///
+/// The evidence the BEEF carries is still retained exactly as a receive
+/// retains it (transactions and proofs are filed), because nothing can hand
+/// them to us again. What is not done is the receive: no wallet bookkeeping,
+/// and no parked retry — a caller that asked a question gets an answer now.
+class ValidateCounterpartyTransactionMessage implements Message {
+  /// The transaction the verdict is about, in display (big-endian) form.
+  final String transactionId;
+
+  /// The BEEF carrying it and the ancestry its proofs rest on.
+  final BEEF beef;
+
+  /// Who handed it to us, for the log and for the result's marker.
+  final String fromCounterparty;
+
+  /// Caller's own id, echoed on the [SPVValidationResult].
+  final String? requestId;
+
+  final DateTime receivedAt;
+
+  ValidateCounterpartyTransactionMessage({
+    required this.transactionId,
+    required this.beef,
+    required this.fromCounterparty,
+    this.requestId,
+    DateTime? receivedAt,
+  }) : receivedAt = receivedAt ?? DateTime.now();
+
+  @override
+  String get correlationId => 'validate-tx-$transactionId-$fromCounterparty';
+  @override
+  Map<String, dynamic> get metadata => {
+        'counterparty': fromCounterparty,
+        'txid': transactionId,
+      };
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => receivedAt;
+}
+
 /// Request BEEF validation (enhanced transaction format)
 class ValidateBEEFMessage implements Message {
   final String beefData;

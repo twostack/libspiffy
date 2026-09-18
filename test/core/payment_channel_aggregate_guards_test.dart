@@ -108,6 +108,41 @@ AcknowledgePaymentCommand _ack({
       proposedServerBalance: BigInt.from(server),
     );
 
+/// Journal of a client-side channel that is open with balances
+/// client = funding, server = 0 (the client journals its own request).
+List<Event> _openClientChannel() => [
+      _requested(lockTimeUnix: _nowUnix() + 86400),
+      _serverAcceptanceRecorded(),
+      RefundCountersignedEvent(
+          channelId: _channelId, serverSignatureHex: '30' * 36, version: 3),
+      ChannelOpenedEvent(
+        channelId: _channelId,
+        fundingTxId: _fundingTxId,
+        fundingOutputIndex: 0,
+        fundingTxHex: '',
+        initialClientBalanceSats: _funding,
+        initialServerBalanceSats: BigInt.zero,
+        version: 4,
+      ),
+    ];
+
+RecordPaymentCommand _record({
+  required int amount,
+  required int client,
+  required int server,
+  int sequence = 1,
+}) =>
+    RecordPaymentCommand(
+      channelId: _channelId,
+      amountSats: BigInt.from(amount),
+      sequenceNumber: sequence,
+      paymentTxHex: '00',
+      paymentTxId: 'ab' * 32,
+      clientSignatureHex: '30' * 36,
+      newClientBalanceSats: BigInt.from(client),
+      newServerBalanceSats: BigInt.from(server),
+    );
+
 void main() {
   late InMemoryEventStore store;
   late TestActorSystem system;
@@ -196,6 +231,55 @@ void main() {
       final event = (reply as List).single as PaymentAcknowledgedEvent;
       expect(event.newServerBalanceSats, BigInt.from(1000));
       expect(journalLength(), 4);
+    });
+  });
+
+  group('kyw: RecordPaymentCommand amount', () {
+    test('rejects a payment of zero', () async {
+      final ref = await spawn(_openClientChannel());
+      final reply = await ref.ask<dynamic>(
+          _record(amount: 0, client: 100000, server: 0), _ask);
+      expectRejected(reply, 'positive');
+      expect(journalLength(), 4,
+          reason: 'a payment that moves nothing is journaled as nothing');
+    });
+
+    test('rejects a payment of a negative amount, which every other guard '
+        'lets through', () async {
+      final ref = await spawn([
+        ..._openClientChannel(),
+        PaymentRecordedEvent(
+          channelId: _channelId,
+          amountSats: BigInt.from(5000),
+          newClientBalanceSats: BigInt.from(95000),
+          newServerBalanceSats: BigInt.from(5000),
+          sequenceNumber: 1,
+          paymentTxHex: '00',
+          paymentTxId: 'ab' * 32,
+          clientSignatureHex: '30' * 36,
+          version: 5,
+        ),
+      ]);
+      // Balances that match the arithmetic exactly: the "payment" moves
+      // 6000 sats back from the server, which holds 5000, to the client.
+      final reply = await ref.ask<dynamic>(
+          _record(amount: -6000, client: 101000, server: -1000, sequence: 2),
+          _ask);
+      expectRejected(reply, 'positive');
+      expect(journalLength(), 5,
+          reason: 'the client cannot claw back what it paid by journaling a '
+              'negative payment');
+    });
+
+    test('a positive payment is still recorded', () async {
+      final ref = await spawn(_openClientChannel());
+      final reply = await ref.ask<dynamic>(
+          _record(amount: 1000, client: 99000, server: 1000), _ask);
+      expect(reply, isA<List>(), reason: '$reply');
+      final event = (reply as List).single as PaymentRecordedEvent;
+      expect(event.amountSats, BigInt.from(1000));
+      expect(event.newServerBalanceSats, BigInt.from(1000));
+      expect(journalLength(), 5);
     });
   });
 

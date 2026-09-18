@@ -216,6 +216,129 @@ void main() {
     });
   });
 
+  group('kyw: a failed step tells the counterparty', () {
+    const serverChannelId = 'chan-3';
+    const clientChannelId = 'chan-4';
+
+    /// Server side: the aggregate accepted a channel a client asked for, so
+    /// the adapter holds the server record and the client's peer id.
+    Future<void> acceptedServerChannel() async {
+      channelEvents.add(ch.ChannelAcceptedEvent(
+        channelId: serverChannelId,
+        walletId: 'server-wallet',
+        clientPeerId: 'the-client-peer',
+        clientPubKeyHex: '02' * 33,
+        clientAddressB58: 'mqCnSf8i6kmaQaJ54HjQ8EUJnuK4AnCv12',
+        serverPubKeyHex: '03' * 33,
+        serverAddressB58: 'mkHS9ne12qx9pS9VojpwU5xtRd4T7X7ZUt',
+        derivationIndex: 3,
+        fundingAmountSats: BigInt.from(50000),
+        lockTimeUnix: 1700000000,
+      ));
+      await Future.delayed(const Duration(milliseconds: 50));
+      channelManagerProbe.received.clear();
+      emitted.clear();
+    }
+
+    /// Client side after channel_accept: the server peer is known.
+    Future<void> acceptedClientChannel() async {
+      channelEvents.add(ch.ChannelRequestedEvent(
+        channelId: clientChannelId,
+        walletId: 'client-wallet',
+        clientPeerId: 'client-peer',
+        serverPeerId: 'server-peer',
+        clientPubKeyHex: '02' * 33,
+        clientAddressB58: 'mqCnSf8i6kmaQaJ54HjQ8EUJnuK4AnCv12',
+        derivationIndex: 7,
+        fundingAmountSats: BigInt.from(50000),
+        lockTimeUnix: 1700000000,
+      ));
+      await Future.delayed(const Duration(milliseconds: 50));
+      adapter.handleP2PMessage('server-peer', 'channel_accept', {
+        'channelId': clientChannelId,
+        'serverPubKey': '03' * 33,
+        'serverAddress': 'mkHS9ne12qx9pS9VojpwU5xtRd4T7X7ZUt',
+        'derivationIndex': 3,
+      });
+      await Future.delayed(const Duration(milliseconds: 50));
+      channelManagerProbe.received.clear();
+      emitted.clear();
+    }
+
+    List<coord.ChannelP2PMessageToSendEvent> channelErrors() => emitted
+        .whereType<coord.ChannelP2PMessageToSendEvent>()
+        .where((e) => e.messageType == 'channel_error')
+        .toList();
+
+    test('the server that refuses to open a channel tells the client',
+        () async {
+      await acceptedServerChannel();
+
+      adapter.handleChannelOpenedResponse(ChannelOpenedResponse(
+        channelId: serverChannelId,
+        success: false,
+        error: 'Funding transaction f00 failed SPV validation: '
+            'no merkle proof',
+      ));
+      await Future.delayed(const Duration(milliseconds: 100));
+
+      final errors = channelErrors();
+      expect(errors, hasLength(1),
+          reason: 'the client is waiting for a channel that was refused '
+              '(bead libspiffy-kyw)');
+      expect(errors.single.toPeerId, 'the-client-peer');
+      expect(errors.single.payload['channelId'], serverChannelId);
+      expect(errors.single.payload['error'], contains('failed SPV validation'));
+      // Still reported locally, as before.
+      expect(emitted.whereType<coord.ErrorEvent>(), hasLength(1));
+    });
+
+    test('the client whose own open failed tells the server', () async {
+      await acceptedClientChannel();
+
+      adapter.handleChannelOpenedResponse(ChannelOpenedResponse(
+        channelId: clientChannelId,
+        success: false,
+        error: 'Funding broadcast failed: ARC rejected the transaction',
+      ));
+      await Future.delayed(const Duration(milliseconds: 100));
+
+      final errors = channelErrors();
+      expect(errors, hasLength(1));
+      expect(errors.single.toPeerId, 'server-peer',
+          reason: 'the server accepted and waits for channel_open');
+      expect(errors.single.payload['error'], contains('ARC rejected'));
+    });
+
+    test('a failed refund build tells the server too', () async {
+      await acceptedClientChannel();
+
+      adapter.handleRefundTransactionBuilt(RefundTransactionBuiltResponse(
+        channelId: clientChannelId,
+        refundTxHex: '',
+        success: false,
+        error: 'Bad state: Channel aggregate not found',
+      ));
+      await Future.delayed(const Duration(milliseconds: 100));
+
+      final errors = channelErrors();
+      expect(errors, hasLength(1));
+      expect(errors.single.toPeerId, 'server-peer');
+    });
+
+    test('a step that fails on a channel this adapter has no record of '
+        'sends nothing', () async {
+      adapter.handleChannelOpenedResponse(ChannelOpenedResponse(
+        channelId: 'never-heard-of',
+        success: false,
+        error: 'whatever',
+      ));
+      await Future.delayed(const Duration(milliseconds: 200));
+
+      expect(channelErrors(), isEmpty);
+    });
+  });
+
   test('channel_accept for an unknown channel sends nothing', () async {
     adapter.handleP2PMessage('server-peer', 'channel_accept', {
       'channelId': 'never-requested',

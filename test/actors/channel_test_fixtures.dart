@@ -295,22 +295,42 @@ class ChannelRefundFixture {
   );
 }
 
-/// An SPVActor stand-in: answers every [ReceiveTransactionMessage] with a
-/// [SPVValidationResult], valid unless [invalidWith] is set, and records
-/// the requests.
+/// An SPVActor stand-in: answers every [ValidateCounterpartyTransactionMessage]
+/// (and, so a caller that still uses the receive path is answered too, every
+/// [ReceiveTransactionMessage]) with a [SPVValidationResult], valid unless
+/// [invalidWith] is set, and records every request it was sent in
+/// [requests].
 class ScriptedSpvActor extends Actor {
-  final List<ReceiveTransactionMessage> requests = [];
+  /// Every message this actor was asked to judge, of either kind.
+  final List<dynamic> requests = [];
+
+  /// The requests that asked for a receive rather than a verdict: the
+  /// server's funding-BEEF check must use none (bead libspiffy-6e5).
+  List<ReceiveTransactionMessage> get receives =>
+      requests.whereType<ReceiveTransactionMessage>().toList();
+
   String? invalidWith;
 
   @override
   Future<void> onMessage(dynamic message) async {
-    if (message is! ReceiveTransactionMessage) return;
+    final String txid;
+    final String? targetWalletId;
+    switch (message) {
+      case final ValidateCounterpartyTransactionMessage msg:
+        txid = msg.transactionId;
+        targetWalletId = null;
+      case final ReceiveTransactionMessage msg:
+        txid = msg.transactionId;
+        targetWalletId = msg.targetWalletId;
+      default:
+        return;
+    }
     requests.add(message);
     context.sender?.tell(SPVValidationResult(
-      txid: message.transactionId,
+      txid: txid,
       isValid: invalidWith == null,
       validationError: invalidWith,
-      targetWalletId: message.targetWalletId,
+      targetWalletId: targetWalletId,
     ));
   }
 }

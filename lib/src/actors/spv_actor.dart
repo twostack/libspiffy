@@ -156,7 +156,11 @@ class SPVActor extends Actor {
         case final ValidateBEEFMessage msg:
           await _handleValidateBEEF(msg);
           break;
-          
+
+        case final ValidateCounterpartyTransactionMessage msg:
+          await _handleValidateCounterpartyTransaction(msg);
+          break;
+
         default:
       }
     } catch (e) {
@@ -240,6 +244,44 @@ class SPVActor extends Actor {
     }
   }
 
+  /// Judge a transaction without receiving it (bead libspiffy-6e5).
+  ///
+  /// The same validation a receive runs, with two deliberate differences:
+  /// the WalletManager is not told (nothing is credited, and an untargeted
+  /// result told to it is only logged and dropped), and the request is not
+  /// parked for a missing header. A caller asking a question is answered
+  /// now, with the honest verdict — including "the header at height N is not
+  /// synced, so this proof proves nothing yet" — and asks again if it wants
+  /// to. The BEEF's transactions and proofs are retained by the validation
+  /// itself, exactly as for a receive: nothing can hand them to us again.
+  Future<void> _handleValidateCounterpartyTransaction(
+      ValidateCounterpartyTransactionMessage msg) async {
+    final replyTo = context.sender;
+    // A verdict that is not a receive never parks; the flag is actor state
+    // the receive path reads, so it is cleared on both sides of the call.
+    _awaitingHeaderHeight = null;
+    SPVValidationResult result;
+    try {
+      result = await _validateReceivedTransaction(
+        msg.transactionId,
+        msg.beef,
+        null, // No target wallet: this credits nobody.
+        null,
+        // Nothing parks a verdict, so it must not promise a retry.
+        willRetry: false,
+      );
+    } catch (e) {
+      result = SPVValidationResult(
+        txid: msg.transactionId,
+        isValid: false,
+        validationError: e.toString(),
+      );
+    }
+    _awaitingHeaderHeight = null;
+    replyTo?.tell(
+        result.withCounterpartyMarker(msg.fromCounterparty, requestId: msg.requestId));
+  }
+
   /// Retrieve Block header from storage with opportunistic P2P fetch fallback
   /// 
   /// First tries to retrieve the header from local storage. If not found and
@@ -299,7 +341,12 @@ class SPVActor extends Actor {
     BEEF beef,  //The BEEF containing the Transaction that should be validated
     String? walletId,
     String? invoiceId, // Invoice ID for payment matching
-  )   async {
+    {
+    /// False when the caller asked for a verdict rather than a receive
+    /// (bead libspiffy-6e5): nothing parks it, so the answer must not
+    /// promise a retry that will never happen.
+    bool willRetry = true,
+  })   async {
 
     // CRITICAL: beef.validateTransactionWithBlockHeader() expects TXID in display format (big-endian)
     // It handles the internal conversion to BUMP's internal format internally
@@ -350,7 +397,8 @@ class SPVActor extends Actor {
             // (bead libspiffy-68mz). Keep the BEEF and try again when the
             // header lands, rather than dropping evidence nothing can hand
             // us again.
-            return await _retainUntilHeaders(beef, txidHex, walletId, {e.blockHeight}, e.toString());
+            return await _retainUntilHeaders(
+                beef, txidHex, walletId, {e.blockHeight}, e.toString(), willRetry: willRetry);
           }
 
 
@@ -446,7 +494,8 @@ class SPVActor extends Actor {
             proven.add(member);
           }
           if (missingHeights.isNotEmpty) {
-            return await _retainUntilHeaders(beef, txidHex, walletId, missingHeights, unavailable.join('; '));
+            return await _retainUntilHeaders(
+                beef, txidHex, walletId, missingHeights, unavailable.join('; '), willRetry: willRetry);
           }
 
           // A valid proof somewhere in the BEEF says nothing about *this*
@@ -653,7 +702,8 @@ class SPVActor extends Actor {
   /// missing heights: a receive that silently never answers is worse than
   /// one that says "not yet".
   Future<SPVValidationResult> _retainUntilHeaders(
-      BEEF beef, String txidHex, String? walletId, Set<int> heights, String detail) async {
+      BEEF beef, String txidHex, String? walletId, Set<int> heights, String detail,
+      {bool willRetry = true}) async {
     final needed = heights.reduce((a, b) => a > b ? a : b);
     try {
       await _retainBeef(beef);
@@ -668,8 +718,9 @@ class SPVActor extends Actor {
       txid: txidHex,
       isValid: false,
       validationError: 'Block header(s) at height(s) ${(heights.toList()..sort()).join(', ')} are not synced yet, '
-          'so the merkle proof(s) in this BEEF prove nothing yet. The BEEF is retained and the receive is '
-          'retried automatically once the headers arrive ($detail)',
+          'so the merkle proof(s) in this BEEF prove nothing yet. The BEEF is retained${willRetry ? ' and the '
+              'receive is retried automatically once the headers arrive' : '; ask again once the headers '
+              'arrive'} ($detail)',
       targetWalletId: walletId,
     );
   }
@@ -2267,6 +2318,13 @@ class SPVActor extends Actor {
           isValid: false,
           validationError: error,
           targetWalletId: msg.targetWalletId,
+        ));
+        break;
+      case final ValidateCounterpartyTransactionMessage msg:
+        context.sender?.tell(SPVValidationResult(
+          txid: msg.transactionId,
+          isValid: false,
+          validationError: error,
         ));
         break;
       case final ValidateBEEFMessage msg:

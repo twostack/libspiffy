@@ -908,7 +908,10 @@ class ChannelP2PAdapter {
 
     // A failed build has no funding transaction to refund (libspiffy-lhd).
     if (!response.success) {
-      _reportFailure(channelId, 'building the funding transaction', response.error);
+      // The server accepted this channel and is waiting for the refund it
+      // must sign; it never arrives (bead libspiffy-kyw).
+      _reportFailure(channelId, 'building the funding transaction',
+          response.error, tellPeer: true);
       return;
     }
 
@@ -966,7 +969,8 @@ class ChannelP2PAdapter {
     // The channel manager failed: there is no refund for the server to sign,
     // so the peer is not asked to (libspiffy-lhd).
     if (!response.success) {
-      _reportFailure(channelId, 'building the refund transaction', response.error);
+      _reportFailure(channelId, 'building the refund transaction',
+          response.error, tellPeer: true);
       return;
     }
 
@@ -986,7 +990,10 @@ class ChannelP2PAdapter {
       _sequenced(
           response.channelId,
           () => _reportFailure(response.channelId,
-              'recording the server refund signature', response.error));
+              'recording the server refund signature', response.error,
+              // The server signed and waits for channel_open; this client
+              // will not send one.
+              tellPeer: true));
     }
   }
 
@@ -998,7 +1005,11 @@ class ChannelP2PAdapter {
       _sequenced(
           response.channelId,
           () => _reportFailure(
-              response.channelId, 'opening the channel', response.error));
+              response.channelId, 'opening the channel', response.error,
+              // The server refused the funding transaction, or the client
+              // could not broadcast it: either way the counterparty is
+              // waiting for a channel that is not coming (libspiffy-kyw).
+              tellPeer: true));
     }
   }
 
@@ -1016,7 +1027,13 @@ class ChannelP2PAdapter {
 
   /// Logs a failed channel step and surfaces it as a coordinator
   /// [coord.ErrorEvent].
-  void _reportFailure(String channelId, String step, String? error) {
+  ///
+  /// With [tellPeer], the counterparty is also sent a `channel_error`: every
+  /// step this reports is one this side has abandoned, and the peer is
+  /// waiting for what comes next (bead libspiffy-kyw). A failure the peer
+  /// cannot be waiting for reports locally only.
+  void _reportFailure(String channelId, String step, String? error,
+      {bool tellPeer = false}) {
     final message =
         'Channel $channelId: $step failed: ${error ?? 'unknown error'}';
     _log.warning(message);
@@ -1025,6 +1042,56 @@ class ChannelP2PAdapter {
       source: 'ChannelP2PAdapter',
       message: message,
     ));
+    if (tellPeer) _tellPeerChannelError(channelId, message);
+  }
+
+  /// The peer on the other side of [channelId]: the client of a channel this
+  /// node is the server of, the server of one it is the client of. Null when
+  /// the channel is known to neither side's records.
+  String? _counterpartyPeer(String channelId) {
+    final peers = _channelPeers[channelId];
+    final serverInfo = _serverChannelInfo[channelId];
+    if (serverInfo != null) {
+      for (final candidate in [
+        serverInfo.clientPeerId,
+        peers?.clientPeerId,
+        _pendingRequests[channelId]?.clientPeerId,
+      ]) {
+        if (candidate != null && candidate.isNotEmpty) return candidate;
+      }
+      return null;
+    }
+    if (_clientChannelInfo.containsKey(channelId)) {
+      final serverPeerId = peers?.serverPeerId;
+      return (serverPeerId == null || serverPeerId.isEmpty)
+          ? null
+          : serverPeerId;
+    }
+    final pending = _pendingRequests[channelId]?.clientPeerId;
+    return (pending == null || pending.isEmpty) ? null : pending;
+  }
+
+  /// Tells the counterparty that this side has given up on [channelId], with
+  /// the reason (bead libspiffy-kyw).
+  ///
+  /// The inbound half of this message has always existed
+  /// ([_handleChannelError]); nothing sent it. A server that refuses a
+  /// channel open — the funding transaction failed SPV validation, say —
+  /// left the client waiting for a channel that will never open, and a
+  /// client whose own step failed left the server waiting for the next
+  /// message of the handshake. The local records are kept: this says the
+  /// step failed, not that the channel is gone.
+  void _tellPeerChannelError(String channelId, String message) {
+    final peer = _counterpartyPeer(channelId);
+    if (peer == null) {
+      _log.warning(
+          'Channel $channelId: no counterparty to tell that it failed');
+      return;
+    }
+    _emitP2PMessage(peer, 'channel_error', {
+      'channelId': channelId,
+      'error': message,
+    });
   }
 
   /// The wallet a channel belongs to (the one that requested or accepted

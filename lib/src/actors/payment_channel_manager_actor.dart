@@ -1167,13 +1167,16 @@ class PaymentChannelManagerActor extends Actor {
 
     final reply = await _request(
       spvActor,
-      ReceiveTransactionMessage(
+      // A question, not a receive (bead libspiffy-6e5): the server owns
+      // nothing in the client's funding transaction, so there is no wallet
+      // to credit. ValidateCounterpartyTransactionMessage runs the same
+      // checks and answers this actor only; the receive path told the
+      // WalletManager a result naming no wallet, which it logged and dropped
+      // on every channel open.
+      ValidateCounterpartyTransactionMessage(
         transactionId: msg.fundingTxId,
         beef: beef,
         fromCounterparty: state.clientPeerId ?? '',
-        // No target wallet: nothing is credited, the transaction is only
-        // validated (WalletManager ignores a result without one).
-        targetWalletId: null,
       ),
       accept: (r) => r is SPVValidationResult && r.txid == msg.fundingTxId,
       what: 'SPV validation of funding transaction ${msg.fundingTxId}',

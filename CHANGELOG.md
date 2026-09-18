@@ -302,6 +302,30 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### Judging a transaction is not receiving it
+
+Report section 11, V-82.
+
+- **A channel server no longer "receives" the funding transaction it is only
+  judging (V-82).** `_verifyFundingBeef` sent SPVActor a receive with no
+  target wallet, so every channel open told the WalletManager a result it
+  logged and dropped. New internal `ValidateCounterpartyTransactionMessage`
+  runs the same SPV validation and answers the sender only — nothing is
+  credited, nothing is parked, and the BEEF's transactions and proofs are
+  retained exactly as before. A verdict that cannot be reached yet no longer
+  claims the receive "is retried automatically", which was never true on a
+  path that does not park.
+- **A channel payment of zero or a negative amount is rejected.**
+  `RecordPaymentCommand` had no positivity guard, and none of the other
+  guards catches a negative amount: the balance check cannot trigger and the
+  arithmetic runs backwards, raising the client's balance and lowering the
+  server's.
+- **A refused or failed channel step now tells the counterparty.** The
+  adapter raised a local error event and sent nothing on the wire, so the
+  peer waited for a handshake message that was never coming. All four
+  failure paths now send `channel_error`, which the inbound half has always
+  understood.
+
 ### A channel's closing transaction, and channels that outlive 2038
 
 Report section 11, V-81.

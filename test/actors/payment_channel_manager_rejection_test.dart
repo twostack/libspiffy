@@ -253,6 +253,42 @@ void main() {
         fixture.openClientJournal(walletId: _walletId), 0);
   }
 
+  group('6e5: the server validates the funding BEEF, it does not receive it',
+      () {
+    test('the SPV actor is asked for a verdict, never for a receive',
+        () async {
+      await openServerChannel();
+
+      expect(spv.requests, hasLength(1),
+          reason: 'the server SPV-validates the funding transaction once');
+      expect(spv.receives, isEmpty,
+          reason: 'a receive tells the WalletManager its result. The server '
+              'owns nothing in the client funding transaction, so that '
+              'result names no wallet and the WalletManager logs and drops '
+              'it on every channel open (bead libspiffy-6e5)');
+      final request =
+          spv.requests.single as ValidateCounterpartyTransactionMessage;
+      expect(request.transactionId, fundingTx.txid);
+      expect(request.fromCounterparty, 'client-peer');
+    });
+
+    test('a funding transaction the SPV actor refuses does not open the '
+        'channel', () async {
+      await spawn(asClient: false);
+      spv.invalidWith = 'merkle proof does not match our chain';
+      final accepted = await acceptChannel();
+      expect(accepted.success, isTrue, reason: accepted.error);
+      final signed = await signRefund(await buildRefund());
+      expect(signed.success, isTrue, reason: signed.error);
+
+      final opened = await openChannel();
+
+      expect(opened.success, isFalse);
+      expect(opened.error, contains('merkle proof does not match our chain'));
+      expect(spv.receives, isEmpty);
+    });
+  });
+
   group('lhd: rejected commands fail the caller', () {
     test('server: acknowledging a payment whose balances do not sum to the '
         'funding amount fails, and a valid acknowledgement still works',

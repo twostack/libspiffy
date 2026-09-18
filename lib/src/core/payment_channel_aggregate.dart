@@ -922,6 +922,18 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       throw StateError('Only client can initiate payments');
     }
 
+    // Business rule: a payment moves a positive amount from the client to
+    // the server, as the server's own handler requires (bead libspiffy-kyw;
+    // the mirror is _handleAcknowledgePayment). Without this, a zero payment
+    // burned a sequence number for nothing, and a negative one passed every
+    // other guard — 'Insufficient balance' is never true for a negative
+    // amount — and journaled a "payment" that moved the amount back from the
+    // server to the client, taking the server's balance below zero if it
+    // held less than was clawed back.
+    if (cmd.amountSats <= BigInt.zero) {
+      throw StateError('Payment amount must be positive');
+    }
+
     // Business rule: Sufficient balance
     if (currentState.clientBalanceSats < cmd.amountSats) {
       throw StateError('Insufficient balance');

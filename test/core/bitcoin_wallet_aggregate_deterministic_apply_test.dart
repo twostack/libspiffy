@@ -45,7 +45,9 @@ void main() {
 
       final confirmedA = j.confirmed(1, 0, 3);
       wallet.replay(j.events);
-      expect(utxo(1).status, UTXOStatus.available);
+      expect(utxo(1).status, UTXOStatus.pending,
+          reason: 'a reported confirmation count moves no status (bead libspiffy-8oaq); '
+              'it still stamps the row, which is what this test pins');
       expect(utxo(1).updatedAt, confirmedA.timestamp, reason: 'updateConfirmations');
       expect(utxo(1).createdAt, receivedA.timestamp);
 

@@ -741,6 +741,8 @@ void main() {
         final utxo = wallet.currentState.utxos['0000000000000000000000000000000000000000000000000000000000000123:0'];
         expect(utxo!.confirmations, equals(6));
         expect(utxo.blockHeight, equals(800005));
+        // The claim is recorded; it moves no status (bead libspiffy-8oaq).
+        expect(utxo.status, equals(UTXOStatus.available), reason: 'the status it already had');
       });
 
       test('should spend UTXO', () async {
@@ -757,12 +759,13 @@ void main() {
           confirmations: 0,
         ));
 
-        // Confirm the UTXO to make it available for spending
-        await wallet.commandHandler(UpdateUTXOConfirmationsCommand(
+        // Make the UTXO available for spending. ARC/SPV saw its transaction
+        // on the network; a confirmation count a caller reports would not do
+        // it (bead libspiffy-8oaq).
+        await wallet.commandHandler(MarkUTXOAvailableCommand(
           walletId: 'wallet-123',
-          utxoKey: '0000000000000000000000000000000000000000000000000000000000000123:0',
-          confirmations: 6,
-          blockHeight: 800000,
+          txid: '0000000000000000000000000000000000000000000000000000000000000123',
+          vout: 0,
         ));
 
         // Spend UTXO
@@ -775,7 +778,7 @@ void main() {
 
         await wallet.commandHandler(spendCommand);
 
-        expect(wallet.currentState.version, equals(5)); // +1 for confirmation update
+        expect(wallet.currentState.version, equals(5)); // +1 for the availability event
         final utxo = wallet.currentState.utxos['0000000000000000000000000000000000000000000000000000000000000123:0'];
         expect(utxo!.status, equals(UTXOStatus.spent));
       });
@@ -836,12 +839,12 @@ void main() {
           confirmations: 0,
         ));
 
-        // Confirm the UTXO to make it available for transactions
-        await wallet.commandHandler(UpdateUTXOConfirmationsCommand(
+        // Make the UTXO available for transactions (bead libspiffy-8oaq: a
+        // reported confirmation count cannot).
+        await wallet.commandHandler(MarkUTXOAvailableCommand(
           walletId: 'wallet-123',
-          utxoKey: '0000000000000000000000000000000000000000000000000000000000000123:0',
-          confirmations: 6,
-          blockHeight: 800000,
+          txid: '0000000000000000000000000000000000000000000000000000000000000123',
+          vout: 0,
         ));
       });
 
@@ -1884,11 +1887,10 @@ void main() {
           confirmations: 0,
         ));
         final utxoKey = '$txid:$vout';
-        await wallet.commandHandler(UpdateUTXOConfirmationsCommand(
+        await wallet.commandHandler(MarkUTXOAvailableCommand(
           walletId: wallet.aggregateId,
-          utxoKey: utxoKey,
-          confirmations: 6,
-          blockHeight: 800000,
+          txid: txid,
+          vout: vout,
         ));
         expect(wallet.currentState.utxos[utxoKey]!.status, equals(UTXOStatus.available));
         return utxoKey;

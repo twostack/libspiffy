@@ -299,6 +299,12 @@ abstract final class UtxoLedger {
     return [event];
   }
 
+  /// Records a confirmation count a caller reports for a UTXO.
+  ///
+  /// Nothing about the count or the height is verified — they come straight
+  /// from the caller — so the event they are journaled in changes no status
+  /// (see [applyConfirmationUpdated] and [UpdateUTXOConfirmationsCommand],
+  /// bead libspiffy-8oaq).
   static List<Event> updateConfirmations(WalletState currentState, UpdateUTXOConfirmationsCommand command) {
     // Business rule: Wallet must exist
     if (!currentState.isCreated) {
@@ -323,7 +329,10 @@ abstract final class UtxoLedger {
       txid: txid,
       vout: vout,
       confirmations: command.confirmations,
-      blockHeight: command.blockHeight ?? 0,
+      // An absent height is journaled as absent. It used to be journaled as
+      // 0 — the genesis block — which said the output was mined in January
+      // 2009 (bead libspiffy-8oaq).
+      blockHeight: command.blockHeight,
       version: currentState.version + 1,
       timestamp: DateTime.now(),
     );
@@ -444,6 +453,10 @@ abstract final class UtxoLedger {
     state.lastModified = event.timestamp;
   }
 
+  /// Writes the reported count, and the reported height when the event
+  /// carries one, onto the row. The status is deliberately untouched: a
+  /// count nobody checked cannot make an output spendable, and it cannot
+  /// un-void one (bead libspiffy-8oaq).
   static void applyConfirmationUpdated(WalletStateBuilder state, UTXOConfirmationUpdatedEvent event) {
     final utxoKey = '${event.txid}:${event.vout}';
     final utxo = state.utxos[utxoKey];

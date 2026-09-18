@@ -89,11 +89,12 @@ void main() {
       confirmations: 0,
     ));
     final utxoKey = '$txid:$vout';
-    await wallet.commandHandler(UpdateUTXOConfirmationsCommand(
+    // ARC/SPV saw the transaction on the network. A confirmation count a
+    // caller reports would leave it pending (bead libspiffy-8oaq).
+    await wallet.commandHandler(MarkUTXOAvailableCommand(
       walletId: wallet.aggregateId,
-      utxoKey: utxoKey,
-      confirmations: 6,
-      blockHeight: 800000,
+      txid: txid,
+      vout: vout,
     ));
     expect(wallet.currentState.utxos[utxoKey]!.status, equals(UTXOStatus.available));
     return utxoKey;

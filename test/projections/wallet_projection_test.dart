@@ -449,13 +449,37 @@ void _tolerantAndIdempotentGroups() {
       expect((wallet!['metadata'] as Map)['totalBalance'], equals('0'));
     });
 
-    test('a pending UTXO becomes available', () async {
+    // Bead libspiffy-8oaq, read-model side: the count and the height in this
+    // event come straight from a caller and were verified against nothing, so
+    // the row records them and keeps its status. The read model must agree
+    // with the aggregate, or the wallet would show as spendable an output the
+    // aggregate refuses to select.
+    test('a pending UTXO stays pending: a reported count is not evidence', () async {
       await fx.projection.handle(_receivedAt(address, 0, 50000));
       expect((await utxo(0)).status, equals(UTXOStatus.pending));
       await fx.projection.handle(_confirmed(0, 1));
       final u = await utxo(0);
-      expect(u.status, equals(UTXOStatus.available));
-      expect(u.confirmations, equals(1));
+      expect(u.status, equals(UTXOStatus.pending));
+      expect(u.confirmations, equals(1), reason: 'the claim is still recorded');
+      expect(u.blockHeight, equals(800000));
+    });
+
+    test('UTXOMarkedAvailableEvent is what makes a pending UTXO available', () async {
+      await fx.projection.handle(_receivedAt(address, 0, 50000));
+      await fx.projection.handle(_confirmed(0, 1));
+      await fx.projection.handle(UTXOMarkedAvailableEvent(
+        walletId: _walletId, txid: _txid, vout: 0, version: 60, timestamp: DateTime.utc(2026, 1, 5)));
+      expect((await utxo(0)).status, equals(UTXOStatus.available));
+    });
+
+    test('an event with no block height does not stamp the row with the genesis block', () async {
+      await fx.projection.handle(_receivedAt(address, 0, 50000));
+      await fx.projection.handle(UTXOConfirmationUpdatedEvent(
+        walletId: _walletId, txid: _txid, vout: 0, confirmations: 1,
+        version: 61, timestamp: DateTime.utc(2026, 1, 5)));
+      final u = await utxo(0);
+      expect(u.blockHeight, isNull, reason: 'no height given is not height 0');
+      expect(u.isConfirmed, isFalse);
     });
   });
 

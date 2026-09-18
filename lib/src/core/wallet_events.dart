@@ -856,7 +856,13 @@ class UTXOSpentEvent extends WalletEvent {
   }
 }
 
-/// Event fired when UTXO confirmation count is updated
+/// Event fired when a confirmation count reported for a UTXO is recorded.
+///
+/// It records a **claim**, never evidence (bead libspiffy-8oaq): applying it
+/// writes the count and the height onto the row and deliberately leaves the
+/// status alone, so it cannot make anything spendable. Availability comes
+/// from [UTXOMarkedAvailableEvent] or from [TransactionConfirmedEvent], whose
+/// height is derived from a merkle proof checked against our own headers.
 class UTXOConfirmationUpdatedEvent extends WalletEvent {
   /// Journal identifier of this event type. Stored with every event and
   /// independent of the class name; never change it (audit 2026-09-14 M8).
@@ -868,14 +874,18 @@ class UTXOConfirmationUpdatedEvent extends WalletEvent {
   final String txid;
   final int vout;
   final int confirmations;
-  final int blockHeight;
+
+  /// The height the count was reported at, or null when none was given.
+  /// Null is "no height", not height 0: journaling an absent height as 0 said
+  /// the output was mined in the genesis block (bead libspiffy-8oaq).
+  final int? blockHeight;
 
   UTXOConfirmationUpdatedEvent({
     required String walletId,
     required this.txid,
     required this.vout,
     required this.confirmations,
-    required this.blockHeight,
+    this.blockHeight,
     String? eventId,
     DateTime? timestamp,
     int? version,
@@ -904,7 +914,7 @@ class UTXOConfirmationUpdatedEvent extends WalletEvent {
       txid: map['txid'] as String,
       vout: map['vout'] as int,
       confirmations: map['confirmations'] as int,
-      blockHeight: map['blockHeight'] as int,
+      blockHeight: map['blockHeight'] as int?,
       eventId: map['eventId'] as String?,
       timestamp: map['timestamp'] != null
           ? (map['timestamp'] is String 

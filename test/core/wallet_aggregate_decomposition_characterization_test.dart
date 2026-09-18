@@ -193,10 +193,23 @@ void main() {
       await expectBalances('confirmed receive', _b(20000, 11000, 0));
       await wallet.receive(3, 5000, confirmations: 2, pluginMetadata: {'pluginId': 'tok'});
       await expectBalances('plugin receive', _b(20000, 16000, 0));
+      // A reported count moves the UTXO between the confirmed and unconfirmed
+      // buckets (which count everything the wallet holds, pending included)
+      // and changes nothing about spendability: it was promoted to available
+      // when this characterization was written, and bead libspiffy-8oaq
+      // reverses that.
       await wallet.handle(UpdateUTXOConfirmationsCommand(walletId: _w, utxoKey: _key(1), confirmations: 7));
       await expectBalances('confirmations updated', _b(30000, 6000, 0));
+      expect(wallet.state.utxos[_key(1)]!.status, UTXOStatus.pending,
+          reason: 'a caller-supplied count is a claim, not evidence');
+      expect(wallet.state.availableBalance, BigInt.from(21000),
+          reason: 'only the genuinely available UTXOs can fund a payment');
       await wallet.handle(MarkUTXOAvailableCommand(walletId: _w, txid: _txid(1), vout: 0));
       await expectBalances('marked available', _b(30000, 6000, 0));
+      expect(wallet.state.utxos[_key(1)]!.status, UTXOStatus.available,
+          reason: 'this is the path that does make it spendable');
+      expect(wallet.state.availableBalance, BigInt.from(31000),
+          reason: 'the promoted 10000 joins them');
       await wallet.handle(ReserveUTXOCommand(walletId: _w, utxoKey: _key(2), reservedByTxId: 'r'));
       await expectBalances('reserved', _b(10000, 6000, 20000));
       await wallet.handle(RenewUTXOReservationCommand(

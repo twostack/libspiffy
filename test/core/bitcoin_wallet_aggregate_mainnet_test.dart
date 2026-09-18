@@ -148,11 +148,13 @@ void main() {
       ));
       final utxoKey = '${funding.id}:0';
       expect(wallet.currentState.utxos[utxoKey], isNotNull);
-      await wallet.commandHandler(UpdateUTXOConfirmationsCommand(
+      // ARC/SPV saw the funding transaction on the network. This, not a
+      // confirmation count a caller reports, is what makes an output
+      // spendable (bead libspiffy-8oaq).
+      await wallet.commandHandler(MarkUTXOAvailableCommand(
         walletId: wallet.aggregateId,
-        utxoKey: utxoKey,
-        confirmations: 6,
-        blockHeight: 900000,
+        txid: funding.id,
+        vout: 0,
       ));
       expect(wallet.currentState.utxos[utxoKey]!.status, equals(UTXOStatus.available));
 

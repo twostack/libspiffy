@@ -705,9 +705,13 @@ class WalletProjection extends Projection<void> {
       return;
     }
 
-    // Confirmations and height only; the status moves solely from pending to
-    // available (BitcoinUtxo.updateConfirmations, the aggregate's rule).
-    // Forcing `available` resurrected spent and reserved UTXOs (audit M1).
+    // Confirmations and the reported height only; the status never moves
+    // (BitcoinUtxo.updateConfirmations, the aggregate's rule). Forcing
+    // `available` resurrected spent and reserved UTXOs (audit M1), and even
+    // the narrower pending-to-available promotion let a caller's unverified
+    // count conjure spendable funds (bead libspiffy-8oaq). Spendability on
+    // the read side comes from UTXOMarkedAvailableEvent or from a
+    // proof-backed TransactionConfirmedEvent, exactly as in the aggregate.
     final updatedUtxo = utxo.updateConfirmations(
       blockHeight: event.blockHeight,
       confirmations: event.confirmations,

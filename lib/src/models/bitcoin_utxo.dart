@@ -364,33 +364,33 @@ class BitcoinUtxo {
     return remaining.isNegative ? Duration.zero : remaining;
   }
   
-  /// Update confirmation information
-  /// When confirmations > 0 and UTXO is pending, it becomes available
+  /// Record a reported confirmation count, and the block height it was
+  /// reported at when one is given.
+  ///
+  /// **The status never moves** (bead libspiffy-8oaq). A confirmation count
+  /// handed to the wallet is a claim, not evidence: nothing about it has been
+  /// checked against our own header chain, so promoting a [UTXOStatus.pending]
+  /// output to [UTXOStatus.available] on the strength of it would conjure
+  /// spendable funds with no proof anywhere — the mistake bead libspiffy-5ry
+  /// (V-60) refused for `ReceiveUTXOCommand`. Un-voiding a [UTXOStatus.voided]
+  /// output is worse still: bead libspiffy-3arz designed that output to be
+  /// revivable only by a merkle proof that outranks the resolution which
+  /// voided it.
+  ///
+  /// Spendability comes from `MarkUTXOAvailableCommand` ([markAvailable],
+  /// driven by ARC/SPV) or from a confirmation verified against our own
+  /// headers (`ConfirmTransactionCommand`). Never from a count.
+  ///
+  /// A null [blockHeight] means "no height was given" and leaves the recorded
+  /// height as it is — it is emphatically not height 0, the genesis block.
+  /// What the caller did say is kept on the row (Data Retention); it simply
+  /// carries no authority.
   BitcoinUtxo updateConfirmations({
-    required int blockHeight,
+    int? blockHeight,
     required int confirmations,
     DateTime? timestamp,
   }) {
-    // If UTXO is pending and now has confirmations, make it available. A
-    // voided output whose transaction turns out to be mined after all is
-    // available too (bead libspiffy-3arz): the proof outranks the resolution
-    // that voided it.
-    final newStatus =
-        ((status == UTXOStatus.pending || status == UTXOStatus.voided) && confirmations > 0)
-            ? UTXOStatus.available
-            : status;
-    // A reserved UTXO stays reserved, but what its release restores follows
-    // the confirmation: a pending coin confirmed while reserved is available
-    // once released.
-    final restore = (status == UTXOStatus.reserved &&
-            statusBeforeReservation == UTXOStatus.pending &&
-            confirmations > 0)
-        ? UTXOStatus.available
-        : statusBeforeReservation;
-
     return copyWith(
-      status: newStatus,
-      statusBeforeReservation: restore,
       blockHeight: blockHeight,
       confirmations: confirmations,
       updatedAt: timestamp ?? DateTime.now(),

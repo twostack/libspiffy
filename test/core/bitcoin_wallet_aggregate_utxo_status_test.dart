@@ -247,7 +247,12 @@ void main() {
       expect(statusOf(k), UTXOStatus.available);
     });
 
-    test('a pending UTXO confirmed while reserved is available after release', () async {
+    // Bead libspiffy-8oaq: what a release restores may not be decided by a
+    // confirmation count a caller reports. The M4 rule stands — the release
+    // restores the status held before the reservation — and an unverified
+    // count does not change that status, so a pending UTXO comes back
+    // pending. The next test is the path that does promote it.
+    test('a pending UTXO given a confirmation count while reserved is pending after release', () async {
       final k = await receive(_txid('1'), 0, status: UTXOStatus.pending);
       await wallet.commandHandler(ReserveUTXOCommand(
         walletId: _walletId,
@@ -260,10 +265,10 @@ void main() {
         confirmations: 1,
         blockHeight: 800000,
       ));
-      expect(statusOf(k), UTXOStatus.reserved, reason: 'confirmation must not drop the reservation');
+      expect(statusOf(k), UTXOStatus.reserved, reason: 'a reported count must not drop the reservation');
 
       await wallet.commandHandler(ReleaseUTXOCommand(walletId: _walletId, utxoKey: k));
-      expect(statusOf(k), UTXOStatus.available);
+      expect(statusOf(k), UTXOStatus.pending, reason: 'a claim conjured no spendable funds');
     });
 
     test('a pending UTXO marked available while reserved is available after release', () async {

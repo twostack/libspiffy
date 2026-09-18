@@ -207,11 +207,34 @@ void main() {
         expect(overridden.releaseReservation().status, equals(UTXOStatus.pending));
       });
 
-      test('confirming a reserved pending UTXO makes its release restore available', () {
+      test('a reported count on a reserved pending UTXO leaves it pending on release', () {
+        // Bead libspiffy-8oaq: a confirmation count nobody verified must not
+        // decide what a release restores, any more than it may promote the
+        // UTXO outright. markAvailable is what makes the release restore
+        // `available` (UtxoLedger.applyMarkedAvailable).
         final reserved = utxo.copyWith(status: UTXOStatus.pending).reserve('tx');
         final confirmed = reserved.updateConfirmations(blockHeight: 1, confirmations: 1);
         expect(confirmed.status, equals(UTXOStatus.reserved));
-        expect(confirmed.releaseReservation().status, equals(UTXOStatus.available));
+        expect(confirmed.statusBeforeReservation, equals(UTXOStatus.pending));
+        expect(confirmed.releaseReservation().status, equals(UTXOStatus.pending));
+      });
+
+      test('a reported count never moves the status of a pending or voided UTXO', () {
+        final pending = utxo.copyWith(status: UTXOStatus.pending);
+        expect(pending.updateConfirmations(blockHeight: 900000, confirmations: 6).status,
+            equals(UTXOStatus.pending));
+        final voided = utxo.markVoided();
+        expect(voided.updateConfirmations(blockHeight: 900000, confirmations: 6).status,
+            equals(UTXOStatus.voided),
+            reason: 'only a merkle proof outranks the resolution that voided it');
+      });
+
+      test('an absent block height leaves the recorded height alone', () {
+        final proven = utxo.copyWith(blockHeight: 910000, status: UTXOStatus.available);
+        expect(proven.updateConfirmations(confirmations: 2).blockHeight, equals(910000));
+        final unproven = utxo.copyWith(status: UTXOStatus.pending);
+        expect(unproven.updateConfirmations(confirmations: 2).blockHeight, isNull,
+            reason: 'no height given is not height 0, the genesis block');
       });
 
       test('statusBeforeReservation survives toMap/fromMap', () {

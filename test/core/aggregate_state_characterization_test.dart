@@ -162,7 +162,16 @@ Future<(_Wallet, InMemoryEventStore, InMemorySecureStorage)> _liveWallet() async
     ));
   }
   await run(MarkUTXOAvailableCommand(walletId: _walletId, txid: _key(1, 0).split(':').first, vout: 0));
+  // Kept in the scenario for its event and apply path, and now pinned to the
+  // rule it obeys since bead libspiffy-8oaq: a confirmation count and a height
+  // a caller reports are recorded and change no status. This UTXO was received
+  // pending and stays pending — it was promoted to available when this
+  // scenario was first written, and that is the behaviour being reversed.
   await run(UpdateUTXOConfirmationsCommand(walletId: _walletId, utxoKey: _key(3, 0), confirmations: 2, blockHeight: 90));
+  expect(wallet.currentState.utxos[_key(3, 0)]!.status, UTXOStatus.pending,
+      reason: 'a reported count conjures no spendable funds');
+  expect(wallet.currentState.utxos[_key(3, 0)]!.confirmations, 2, reason: 'the claim is still recorded');
+  expect(wallet.currentState.utxos[_key(3, 0)]!.blockHeight, 90);
   await run(ReserveUTXOCommand(walletId: _walletId, utxoKey: _key(2, 0), reservedByTxId: 'res-1', priority: 3));
   await run(RenewUTXOReservationCommand(
       walletId: _walletId, utxoKey: _key(2, 0), extensionDuration: const Duration(minutes: 5)));

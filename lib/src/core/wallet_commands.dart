@@ -683,7 +683,28 @@ class SpendUTXOCommand extends WalletCommand {
   String get commandType => 'SpendUTXOCommand';
 }
 
-/// Command to update UTXO confirmations
+/// Command to record a confirmation count a caller reports for a UTXO.
+///
+/// **Deprecated, and it changes no status.** Two decisions left it with
+/// nothing to do:
+///
+/// * A caller-supplied count or height is a claim, not evidence (bead
+///   libspiffy-5ry / V-60), so it must not make a UTXO spendable. Since bead
+///   libspiffy-8oaq, applying the event it journals writes the count and the
+///   height onto the row and leaves the status exactly as it was.
+/// * The wallet does not store a confirmation count as truth anyway (bead
+///   libspiffy-4dja / V-71): a stored count is stale at the very next block,
+///   so the count is derived at read time as `tip height - blockHeight + 1`.
+///
+/// Nothing in libspiffy sends it. Use [MarkUTXOAvailableCommand] to make an
+/// output spendable (ARC/SPV saw its transaction on the network), or
+/// [ConfirmTransactionCommand] when a merkle proof verified against our own
+/// header chain says which block it is in — that is what stamps a height.
+@Deprecated(
+    'Records an unverified claim and changes nothing about spendability. Use '
+    'MarkUTXOAvailableCommand to make an output spendable, or '
+    'ConfirmTransactionCommand with a height from a merkle proof verified '
+    'against our own header chain. Will be removed in a future release.')
 class UpdateUTXOConfirmationsCommand extends WalletCommand {
   final String utxoKey; // Format: "txid:vout"
   final int confirmations;

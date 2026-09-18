@@ -258,6 +258,27 @@ LibSpiffy uses **event sourcing** for the write model and **CQRS** for read/writ
 
 Each balance API has one rule, documented where it is defined. The write model answers "what can this aggregate fund", the read side "what does the wallet show"; both leave out the same UTXOs from what they call spendable.
 
+**What "confirmed" means, everywhere, without exception: the transaction is in a
+block whose header we hold on our active chain, and we have the merkle proof
+that puts it there.** Nothing else confirms anything. Not a confirmation count,
+not a depth threshold, not a height a caller handed us, not an ARC status
+string, not the passage of time. A UTXO's `blockHeight` is exactly this
+evidence — it is written only by a confirmation verified against our own
+header chain (Critical Implementation Note 1, beads libspiffy-5ry and
+libspiffy-8oaq), and a reorganization that takes the block off the active
+chain takes the height off the output again. So `blockHeight != null` **is**
+the confirmed test, at every layer, and every balance API answers it the same
+way.
+
+A confirmation *count* is not evidence and no rule may turn on one. A count
+is a description of how deep a block now sits — stale at the next block,
+derivable as `tip height - blockHeight + 1` from the height and our chain
+tip, and never a reason to call something confirmed that a proof has not
+placed in a block. There is deliberately no "six confirmations" threshold: a
+proof on our active chain confirms at depth one exactly as it does at depth
+six, and a wallet that waits for depth is making a policy choice that belongs
+to the application, not to this library.
+
 Three judgements are shared by every layer:
 
 - **Plugin-managed**: the UTXO's plugin metadata names a `pluginId` (`BitcoinUtxo.isPluginManaged`). Metadata without one (the read model's script analysis of a plain output, a label) does not count. A script a registered plugin claims gets its `pluginId` on both layers even when the plugin's metadata omits it.
@@ -267,9 +288,9 @@ Three judgements are shared by every layer:
 | API | Counts | Confirmed means |
 |-----|--------|-----------------|
 | `WalletState.availableBalance`, `availableUtxos`, `BitcoinWalletAggregate.hasSufficientBalance` | Exactly the UTXOs the aggregate's coin selection (`selectUTXOsForAmount`) may pick, one predicate (`WalletBalances.isSpendable`): status available, not plugin-managed, not watch-only, not a multisig the wallet cannot spend alone, not an input of a deferred payment recorded before holds were journaled (inferred from the state until `ReconcileDeferredSpendsCommand` journals the hold), any confirmations. Pending, reserved, deferred-held and spent UTXOs are out. A selection of up to `availableBalance` succeeds; one satoshi more fails. | n/a |
-| `WalletState.confirmedBalance` / `unconfirmedBalance` / `reservedBalance` (`WalletBalances.bucketOf`, journaled in snapshots) | Every unspent UTXO in exactly one bucket, pending, plugin-managed, watch-only and cannot-spend-alone included: everything the wallet holds. Not a spendable amount. | Unreserved with 6+ confirmations (`WalletBalances.confirmedAt`) |
-| Read model wallet row (`WalletProjection`: `confirmedBalance`, `unconfirmedBalance`, `reservedBalance`, `totalBalance`, `watchOnlyBalance`) | The same buckets over unspent UTXOs, leaving out plugin-managed, watch-only and cannot-spend-alone UTXOs (`splitBalanceUtxos`); `watchOnlyBalance` is the unspent watch-only UTXOs, any status. | 6+ confirmations |
-| `BalanceResponse` (`GetBalanceQuery`) | Payment UTXOs (`getPaymentUTXOs`: available, not plugin-managed) the wallet can spend alone; watch-only UTXOs reported apart in `watchOnlyBalance`. `totalBalance` equals `getBalance`. | Has a block height (mined) |
+| `WalletState.confirmedBalance` / `unconfirmedBalance` / `reservedBalance` (`WalletBalances.bucketOf`, journaled in snapshots) | Every unspent UTXO in exactly one bucket, pending, plugin-managed, watch-only and cannot-spend-alone included: everything the wallet holds. Not a spendable amount. | Unreserved and `blockHeight != null`: a proof puts it in a block on our active chain |
+| Read model wallet row (`WalletProjection`: `confirmedBalance`, `unconfirmedBalance`, `reservedBalance`, `totalBalance`, `watchOnlyBalance`) | The same buckets over unspent UTXOs, leaving out plugin-managed, watch-only and cannot-spend-alone UTXOs (`splitBalanceUtxos`); `watchOnlyBalance` is the unspent watch-only UTXOs, any status. | `blockHeight != null`: a proof puts it in a block on our active chain |
+| `BalanceResponse` (`GetBalanceQuery`) | Payment UTXOs (`getPaymentUTXOs`: available, not plugin-managed) the wallet can spend alone; watch-only UTXOs reported apart in `watchOnlyBalance`. `totalBalance` equals `getBalance`. | `blockHeight != null`: a proof puts it in a block on our active chain |
 | `ReadModelStorage.getBalance` / `getWatchOnlyBalance` | Sum of the payment UTXOs the wallet can spend alone / of the watch-only payment UTXOs. | n/a |
 
 The read side learns of a hold when it is journaled: the inputs of a deferred payment recorded before holds were journaled stay available rows until the wallet manager reconciles the wallet at spawn.

@@ -4,6 +4,29 @@
 
 This document outlines the correct understanding of **Simplified Payment Verification (SPV)** as described in Section 8 of the Bitcoin whitepaper and specifically how it applies to Bitcoin SV.
 
+### What this library is for
+
+**libspiffy honestly records the state of UTXOs and transactions. That is the
+whole job.** It keeps what it was told, it keeps the evidence, it reports what
+the evidence supports, and it says "I do not know" rather than guessing.
+
+Policy belongs to the application. How deep a block must be before the user
+treats money as theirs, whether to warn someone before an irreversible action,
+which counterparties to trust, what an identity means — all of that is the
+app's to decide, and the library neither imposes it nor pretends to know it.
+
+The corollary is the more useful half: **the library must not manufacture
+state it cannot evidence.** It does not derive confirmation from a count, a
+status string, a height a caller supplied, or the passage of time. It does not
+fetch a proof from a party with no standing to give one. It does not invent a
+fee, or a counterparty identity, or a confirmation depth. Where evidence is
+missing the honest record is an absence — a null height, an output still
+pending, a payment still outstanding — and an absence the app can see is worth
+more than a plausible value it cannot check.
+
+Most of the specific rules below are this principle applied to one place. If a
+rule here ever seems arbitrary, check whether it is really this.
+
 ## Fundamental SPV Concepts
 
 ### What SPV Actually Is

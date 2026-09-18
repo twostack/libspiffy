@@ -311,7 +311,14 @@ void main() {
     // The read model: confirmed at the proven height, change spendable.
     final row = await readModel.getTransaction(t.id, walletId: walletId);
     expect((row?.status, row?.blockHeight), (TransactionStatus.confirmed, 4));
-    expect((await utxo(t.id, changeVout))!.status, UTXOStatus.available);
+    final change = (await utxo(t.id, changeVout))!;
+    expect(change.status, UTXOStatus.available);
+    // Bead libspiffy-4dja: the same proof that puts the transaction row at
+    // height 4 puts its own change output there. The two rows of one wallet
+    // must not disagree about the block.
+    expect(change.blockHeight, 4,
+        reason: 'the change output of a payment confirmed from a BEEF proof kept no block height');
+    expect(change.blockHeight, row!.blockHeight, reason: 'the transaction row and its own output disagree');
 
     // The proof is kept, verified against the header we hold.
     final proof = await readModel.getMerkleProof(t.id);

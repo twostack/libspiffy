@@ -94,7 +94,9 @@ class PaymentCoordinatorActor extends Actor {
     } catch (e, stackTrace) {
       _log.warning('Failed to handle ${message.runtimeType}: $e', e, stackTrace);
       if (message is PayInvoiceMessage) {
-        _sendError(message.invoiceId, 'Internal error: $e');
+        // A third-party plugin's failure is reported by the plugin's id
+        // (bead libspiffy-uetb).
+        _sendError(message.invoiceId, e is _PluginCallFailure ? e.message : 'Internal error: $e');
       } else if (message is ProvisionFundingMessage) {
         context.sender?.tell(ProvisionFundingResponse.error(
           walletId: message.walletId,
@@ -179,7 +181,10 @@ class PaymentCoordinatorActor extends Actor {
       );
     } catch (e, stackTrace) {
       _log.warning('[pay ${msg.invoiceId}] failed after reserving UTXOs: $e\n$stackTrace');
-      _sendError(msg.invoiceId, 'Internal error: $e', sender: originalSender);
+      // A third-party plugin's failure is reported by the plugin's id, not
+      // as an internal error of ours (bead libspiffy-uetb).
+      _sendError(msg.invoiceId, e is _PluginCallFailure ? e.message : 'Internal error: $e',
+          sender: originalSender);
     } finally {
       _inFlightPayment = null;
       if (!paymentDelivered) {
@@ -503,8 +508,47 @@ class PaymentCoordinatorActor extends Actor {
         final plugin = PluginRegistry().getPlugin(p.pluginId);
         return plugin is TransactionBuilderPlugin &&
             p.params.containsKey('action') &&
-            plugin.supportedActions.contains(p.params['action']);
+            _guardPlugin(p.pluginId, 'reading its supported actions', () => plugin.supportedActions)
+                .contains(p.params['action']);
       });
+
+  /// Runs [call], a call into a third-party [TransactionBuilderPlugin]
+  /// (bead libspiffy-uetb).
+  ///
+  /// The same shape the registry's own plugin calls got in bead
+  /// libspiffy-u150 — catch, log against the `pluginId`, never let the
+  /// plugin's own throw out — with the one difference a payment forces: the
+  /// coordinator cannot carry on without the plugin it was asked to build
+  /// with, and must not quietly build something else instead. So the call
+  /// fails the payment, as [_PluginCallFailure], whose message names the
+  /// plugin; the exception and stack trace themselves stay in the log.
+  ///
+  /// [SPVActor._decodeOutputLock] is deliberately left unguarded (recorded
+  /// in u150): routing it through a guard would change the contract of bead
+  /// libspiffy-rp6x, which reports such an output in
+  /// `SPVValidationResult.unreadableOutputs`.
+  static T _guardPlugin<T>(String pluginId, String what, T Function() call) {
+    try {
+      return call();
+    } on _PluginCallFailure {
+      rethrow;
+    } catch (e, stackTrace) {
+      _log.warning('Plugin "$pluginId" threw while $what: $e', e, stackTrace);
+      throw _PluginCallFailure(pluginId, what, e);
+    }
+  }
+
+  /// [_guardPlugin] for a plugin call that answers a Future.
+  static Future<T> _guardPluginAsync<T>(String pluginId, String what, Future<T> Function() call) async {
+    try {
+      return await call();
+    } on _PluginCallFailure {
+      rethrow;
+    } catch (e, stackTrace) {
+      _log.warning('Plugin "$pluginId" threw while $what: $e', e, stackTrace);
+      throw _PluginCallFailure(pluginId, what, e);
+    }
+  }
 
   AggregateSigningClient _signingClient() => AggregateSigningClient(
         system: context.system,
@@ -599,7 +643,9 @@ class PaymentCoordinatorActor extends Actor {
           final pluginInstance = PluginRegistry().getPlugin(pluginOutput.pluginId);
           if (pluginInstance is TransactionBuilderPlugin &&
               pluginOutput.params.containsKey('action') &&
-              pluginInstance.supportedActions.contains(pluginOutput.params['action'])) {
+              _guardPlugin(pluginOutput.pluginId, 'reading its supported actions',
+                      () => pluginInstance.supportedActions)
+                  .contains(pluginOutput.params['action'])) {
             // Every signature the plugin asks for is produced by the wallet
             // aggregate (audit A-H8): the coordinator holds no key material.
             // Each funding UTXO's derivation path (index and chain) comes from
@@ -618,7 +664,8 @@ class PaymentCoordinatorActor extends Actor {
 
             // Check if plugin needs more funding UTXOs than selected
             final action = pluginOutput.params['action'] as String;
-            final requiredCount = pluginInstance.requiredFundingUtxoCount(action);
+            final requiredCount = _guardPlugin(pluginOutput.pluginId,
+                'deciding how many funding UTXOs it needs', () => pluginInstance.requiredFundingUtxoCount(action));
 
             List<BitcoinUtxo> pluginFundingUtxos = selectedUtxos;
             List<dartsv.SVPublicKey> pluginPublicKeys = publicKeys;
@@ -643,30 +690,35 @@ class PaymentCoordinatorActor extends Actor {
             final result = await signing.buildWithSigner(
               walletId: walletId,
               fallbackPath: fundingPaths.first,
-              build: (signer) => pluginInstance.buildTransaction(PluginTransactionRequest(
-                fundingUtxos: pluginFundingUtxos,
-                signer: signer,
-                publicKeys: pluginPublicKeys,
-                params: pluginOutput.params,
-                transactionLookup: (txid) async {
-                  // All auto-provisioned ancestors are persisted before
-                  // _autoProvisionForPlugin returns, so a single storage read
-                  // is authoritative. No in-memory shortcut.
-                  final tx = await _storage.getTransaction(txid);
-                  return tx?.rawHex;
-                },
-              )),
+              build: (signer) => _guardPluginAsync(
+                  pluginOutput.pluginId,
+                  'building the transaction',
+                  () => pluginInstance.buildTransaction(PluginTransactionRequest(
+                        fundingUtxos: pluginFundingUtxos,
+                        signer: signer,
+                        publicKeys: pluginPublicKeys,
+                        params: pluginOutput.params,
+                        transactionLookup: (txid) async {
+                          // All auto-provisioned ancestors are persisted before
+                          // _autoProvisionForPlugin returns, so a single storage read
+                          // is authoritative. No in-memory shortcut.
+                          final tx = await _storage.getTransaction(txid);
+                          return tx?.rawHex;
+                        },
+                      ))),
             );
 
             // Validate primary TX structure
-            if (!pluginInstance.validateTransactionStructure(result.primaryTx, action)) {
+            if (!_guardPlugin(pluginOutput.pluginId, 'validating the transaction it built',
+                () => pluginInstance.validateTransactionStructure(result.primaryTx, action))) {
               throw Exception('Plugin transaction structure validation failed');
             }
 
             // Validate witness TX structure if present
             if (result.hasPairedWitness) {
               final witnessAction = pluginOutput.params['witnessAction'] as String? ?? 'witness';
-              if (!pluginInstance.validateTransactionStructure(result.witnessTx!, witnessAction)) {
+              if (!_guardPlugin(pluginOutput.pluginId, 'validating the witness transaction it built',
+                  () => pluginInstance.validateTransactionStructure(result.witnessTx!, witnessAction))) {
                 throw Exception('Plugin witness transaction structure validation failed');
               }
             }
@@ -828,6 +880,11 @@ class PaymentCoordinatorActor extends Actor {
         lockTime: 0,
         version: 2,
       ), false, null, null); // preSigned: false — needs signing, no witness, no auto-provisioned ancestors
+    } on _PluginCallFailure {
+      // A third-party plugin failed (bead libspiffy-uetb). "Failed to build
+      // payment transaction" names nobody; the payment fails with the
+      // plugin named instead.
+      rethrow;
     } catch (e, stackTrace) {
       _log.warning('[buildPaymentTx] failed: $e\n$stackTrace');
       return (null, false, null, null);
@@ -1376,12 +1433,15 @@ class PaymentCoordinatorActor extends Actor {
       final provisions = await signing.buildWithSigner(
         walletId: walletId,
         fallbackPath: path,
-        build: (signer) => plugin.provisionFunding(PluginTransactionRequest(
-          fundingUtxos: [selectedUtxo],
-          signer: signer,
-          publicKeys: [publicKey],
-          params: msg.pluginParams,
-        )),
+        build: (signer) => _guardPluginAsync(
+            msg.pluginId,
+            'provisioning funding',
+            () => plugin.provisionFunding(PluginTransactionRequest(
+                  fundingUtxos: [selectedUtxo],
+                  signer: signer,
+                  publicKeys: [publicKey],
+                  params: msg.pluginParams,
+                ))),
       );
       _log.info('[provision $walletId] built ${provisions.length} TXs '
           '(${provisions.where((p) => p.role == "earmark").length} earmarks)');
@@ -1547,4 +1607,29 @@ class _InFlightPayment {
   final List<String> deferredTxids = [];
 
   _InFlightPayment(this.invoiceId, [this.counterpartyMarker]);
+}
+
+/// A call into a third-party [TransactionBuilderPlugin] that threw (bead
+/// libspiffy-uetb).
+///
+/// The plugin's own exception and stack trace are logged against its
+/// [pluginId] by [PaymentCoordinatorActor._guardPlugin] and never propagated
+/// raw: the payment (or the provisioning) fails with this instead, and
+/// [message] tells the caller which plugin failed and at what.
+class _PluginCallFailure implements Exception {
+  /// The plugin that threw.
+  final String pluginId;
+
+  /// What it was asked to do, e.g. 'building the transaction'.
+  final String what;
+
+  /// What the plugin threw.
+  final Object cause;
+
+  _PluginCallFailure(this.pluginId, this.what, this.cause);
+
+  String get message => 'Plugin "$pluginId" failed while $what: $cause';
+
+  @override
+  String toString() => message;
 }

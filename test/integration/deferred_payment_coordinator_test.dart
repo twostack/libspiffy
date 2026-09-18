@@ -531,6 +531,16 @@ void main() {
     });
     expect(listed.payments.firstWhere((p) => p.txid == reclaimTxid).payment.purpose, 'reclaim:${ready.txid}');
 
+    // The link between the two rows is on the detail object itself (bead
+    // libspiffy-fzjv): an app reads it without reaching through `.payment`.
+    final selfSpend = listed.payments.firstWhere((p) => p.txid == reclaimTxid);
+    expect((selfSpend.purpose, selfSpend.reclaimsTxid, selfSpend.isReclaim),
+        ('reclaim:${ready.txid}', ready.txid, true));
+    final reclaimedPayment = listed.payments.firstWhere((p) => p.txid == ready.txid);
+    expect((reclaimedPayment.reclaimsTxid, reclaimedPayment.isReclaim), (null, false));
+    expect(reclaimedPayment.resolutionReason, contains(reclaimTxid),
+        reason: 'and the payment names the self-spend that reclaimed it');
+
     // Balance restored less the fee.
     await until(
         () async => (await storage().getPaymentUTXOs(walletId))

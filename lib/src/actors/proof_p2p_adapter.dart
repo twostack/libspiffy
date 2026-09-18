@@ -91,12 +91,21 @@ class ProofP2PAdapter {
 
   /// Where SPVActor is told to send its verdict: the coordinator, which hands
   /// it back through [handleReceiveResult]. SPVActor's reply is not a dactor
-  /// `LocalMessage`, so it cannot be `ask`ed for.
+  /// `LocalMessage`, so it cannot be `ask`ed for; the verdict is paired with
+  /// the request that asked for it by correlation id, not by txid (bead
+  /// libspiffy-l8uf).
   ActorRef? _replyTo;
 
   /// Response BEEFs handed to the receive path whose verdict has not come
-  /// back yet, FIFO per txid.
-  final Map<String, List<Completer<wm.SPVValidationResult>>> _awaitingVerdict = {};
+  /// back yet, by the [wm.ReceiveTransactionMessage.requestId] each was sent
+  /// with (bead libspiffy-l8uf).
+  ///
+  /// Keyed by request, not by txid: an ordinary receive and a proof response
+  /// for the same transaction can be in flight at the same moment, and
+  /// matching verdicts by txid handed whichever came back first to whoever
+  /// asked first. The correlation id pairs each verdict with the request that
+  /// asked for it.
+  final Map<String, Completer<wm.SPVValidationResult>> _awaitingVerdict = {};
 
   ProofP2PAdapter({
     required ReadModelStorage storage,
@@ -119,21 +128,32 @@ class ProofP2PAdapter {
   /// [wm.SPVValidationResult] through here; results for receives this adapter
   /// did not start are left alone.
   bool handleReceiveResult(wm.SPVValidationResult result) {
-    final queue = _awaitingVerdict[result.txid];
-    if (queue == null || queue.isEmpty) return false;
-    final waiter = queue.removeAt(0);
-    if (queue.isEmpty) _awaitingVerdict.remove(result.txid);
+    // Only a verdict on a receive this adapter started, named by the
+    // correlation id it sent (bead libspiffy-l8uf). A result carrying no id,
+    // or one we are not waiting for, belongs to somebody else.
+    final id = result.requestId;
+    if (id == null) return false;
+    final waiter = _awaitingVerdict.remove(id);
+    if (waiter == null) return false;
     if (!waiter.isCompleted) waiter.complete(result);
     return true;
   }
 
-  /// Put [message] through the ordinary receive path and wait for its verdict.
+  /// Put [message] through the ordinary receive path and wait for the verdict
+  /// on that request.
+  ///
+  /// [message] must carry a [wm.ReceiveTransactionMessage.requestId]; SPVActor
+  /// echoes it on the result, which is how the verdict finds this waiter. A
+  /// receive parked for a missing block header is replayed from storage
+  /// without it and so times out here, exactly as it did before the id
+  /// existed: the BEEF is retained and recorded when the headers arrive.
   Future<wm.SPVValidationResult> _receive(wm.ReceiveTransactionMessage message) {
+    final id = message.requestId!;
     final waiter = Completer<wm.SPVValidationResult>();
-    (_awaitingVerdict[message.transactionId] ??= []).add(waiter);
+    _awaitingVerdict[id] = waiter;
     _spvActor.tell(message, sender: _replyTo);
     return waiter.future.timeout(_receiveTimeout, onTimeout: () {
-      _awaitingVerdict[message.transactionId]?.remove(waiter);
+      _awaitingVerdict.remove(id);
       throw TimeoutException(
           'the receive path did not answer for ${message.transactionId}', _receiveTimeout);
     });
@@ -411,6 +431,10 @@ class ProofP2PAdapter {
         beef: beef,
         fromCounterparty: fromPeerId,
         targetWalletId: walletId,
+        // Our own id for this receive, echoed on the verdict (bead
+        // libspiffy-l8uf). Not the peer's requestId: a peer does not get to
+        // name the thing we match our own verdicts on.
+        requestId: uniqueId('proof-recv'),
         receivedAt: DateTime.now(),
       ));
       _emitEvent(AncestorProofResponseEvent(
@@ -430,11 +454,9 @@ class ProofP2PAdapter {
   /// Forget in-flight requests (the coordinator is stopping).
   void dispose() {
     _pending.clear();
-    for (final queue in _awaitingVerdict.values) {
-      for (final waiter in queue) {
-        if (!waiter.isCompleted) {
-          waiter.completeError(StateError('the coordinator stopped before the receive path answered'));
-        }
+    for (final waiter in _awaitingVerdict.values) {
+      if (!waiter.isCompleted) {
+        waiter.completeError(StateError('the coordinator stopped before the receive path answered'));
       }
     }
     _awaitingVerdict.clear();

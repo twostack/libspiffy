@@ -625,7 +625,10 @@ class WalletProjection extends Projection<void> {
       return;
     }
 
-    if (utxo.status == UTXOStatus.pending) {
+    // A voided output is promoted too (bead libspiffy-3arz): its transaction
+    // turned out to be mined after all, and a proof outranks the resolution
+    // that voided it.
+    if (utxo.status == UTXOStatus.pending || utxo.status == UTXOStatus.voided) {
       final updatedUtxo = utxo.markAvailable(timestamp: event.timestamp);
       await _storage.upsertUTXO(event.walletId, updatedUtxo);
       rows.put(updatedUtxo);
@@ -652,6 +655,46 @@ class WalletProjection extends Projection<void> {
     await _syncAddress(event.walletId, utxo.address, rows.all);
     await _recalculateAndPersistForWallet(event.walletId, event.timestamp, rows.all);
     await _markDeferredSeen(event.walletId, event.spentInTxId, event.timestamp);
+    // The row says who held it: a reclaim's self-spend whose input something
+    // else spent lost the race and is failed now (bead libspiffy-wfvi).
+    if (utxo.reservationReason == _deferredHoldReason &&
+        utxo.reservedByTxId != null &&
+        utxo.reservedByTxId != event.spentInTxId) {
+      await _failLostReclaim(event.walletId, utxo.reservedByTxId!, utxo.key, event.spentInTxId, event.timestamp);
+    }
+  }
+
+  /// A reclaim's self-spend [reclaimTxid] held [utxoKey] and [spentInTxId] —
+  /// in practice the recipient's copy of the payment being reclaimed — spent
+  /// it. The self-spend can never be mined now, so the reclaim is failed with
+  /// the reason (bead libspiffy-wfvi), as the wallet aggregate does it
+  /// (`DeferredPayments._failLostReclaim`).
+  ///
+  /// This is Bitcoin SV: first seen wins and there is no replace-by-fee, so
+  /// nothing here looks at or raises a fee and nothing is retried — the race
+  /// is over and only the record is left to put right, without waiting for
+  /// ARC to report the same thing. Only a reclaim's self-spend resolves this
+  /// way; any other deferred payment stays outstanding (bead libspiffy-ey2).
+  Future<void> _failLostReclaim(
+      String walletId, String reclaimTxid, String utxoKey, String spentInTxId, DateTime at) async {
+    final selfSpend = await _storage.getDeferredPayment(walletId, reclaimTxid);
+    if (selfSpend == null) return;
+    final reclaims = DeferredPaymentPurpose.reclaimedTxid(selfSpend.purpose);
+    if (reclaims == null) return; // not a reclaim's self-spend
+    if (selfSpend.state != DeferredPaymentState.outstanding) return;
+    await _storage.storeDeferredPayment(selfSpend.copyWith(
+      state: DeferredPaymentState.failed,
+      updatedAt: at,
+      resolvedAt: at,
+      resolutionReason: DeferredPayment.reclaimLostRace(utxoKey, spentInTxId),
+    ));
+    final rows = await _loadUtxoRows(walletId);
+    if (await _voidOwnOutputs(walletId, reclaimTxid, at, rows)) {
+      await _recalculateAndPersistForWallet(walletId, at, rows.all);
+    }
+    _log.warning('The reclaim $reclaimTxid of deferred payment $reclaims failed in $walletId: its input '
+        '$utxoKey was spent by $spentInTxId. First seen wins on this network, so the self-spend can no '
+        'longer be mined; no fee would have changed that');
   }
 
   Future<void> _handleUTXOConfirmationUpdated(UTXOConfirmationUpdatedEvent event) async {
@@ -796,7 +839,9 @@ class WalletProjection extends Projection<void> {
     // resolved it follows in the journal and releases the inputs again.
 
     final rows = await _loadUtxoRows(event.walletId);
-    var changed = false;
+    // Outstanding again means it can settle again, so its own change is
+    // pending again rather than voided (beads libspiffy-4r0, libspiffy-3arz).
+    var changed = event.reactivated && await _unvoidOwnOutputs(event.walletId, event.txid, event.timestamp, rows);
     for (final key in event.heldUtxoKeys) {
       final sep = key.lastIndexOf(':');
       final vout = sep > 0 ? int.tryParse(key.substring(sep + 1)) : null;
@@ -871,6 +916,12 @@ class WalletProjection extends Projection<void> {
       resolvedAt: at,
       resolutionReason: DeferredPayment.reclaimedBy(selfSpend.txid),
     ));
+    // Its own change belongs to a transaction that can no longer be mined
+    // (bead libspiffy-3arz).
+    final rows = await _loadUtxoRows(walletId);
+    if (await _voidOwnOutputs(walletId, reclaimedTxid, at, rows)) {
+      await _recalculateAndPersistForWallet(walletId, at, rows.all);
+    }
   }
 
   /// A reclaim was journaled (bead libspiffy-87a). The link between the two
@@ -945,9 +996,48 @@ class WalletProjection extends Projection<void> {
       rows.put(restored);
       changed = true;
     }
+    changed = await _voidOwnOutputs(event.walletId, txid, event.timestamp, rows) || changed;
     if (changed) {
       await _recalculateAndPersistForWallet(event.walletId, event.timestamp, rows.all);
     }
+  }
+
+  /// The wallet's own pending outputs of [txid] — its change — become
+  /// [UTXOStatus.voided] once [txid] is resolved as a payment the network
+  /// will not settle (bead libspiffy-3arz), exactly as the wallet aggregate
+  /// does it (`DeferredPayments._voidOwnOutputs`).
+  ///
+  /// Nothing is deleted and no other column is touched: the row, its amount
+  /// and its script stay (spv-understanding.md, Data Retention). It only
+  /// stops being reported as funds on the way from a transaction that can
+  /// never be mined. A later confirmation of [txid] makes it available again
+  /// through [UTXOMarkedAvailableEvent].
+  ///
+  /// Returns whether any row changed.
+  Future<bool> _voidOwnOutputs(String walletId, String txid, DateTime at, _UtxoRows rows) async {
+    var changed = false;
+    for (final utxo in [...rows.all]) {
+      if (utxo.txid != txid || utxo.status != UTXOStatus.pending) continue;
+      final voided = utxo.markVoided(timestamp: at);
+      await _storage.upsertUTXO(walletId, voided);
+      rows.put(voided);
+      changed = true;
+    }
+    return changed;
+  }
+
+  /// The reverse: a payment that is outstanding again (bead libspiffy-4r0)
+  /// can settle again, so its own voided outputs are pending again.
+  Future<bool> _unvoidOwnOutputs(String walletId, String txid, DateTime at, _UtxoRows rows) async {
+    var changed = false;
+    for (final utxo in [...rows.all]) {
+      if (utxo.txid != txid || utxo.status != UTXOStatus.voided) continue;
+      final pending = utxo.copyWith(status: UTXOStatus.pending, updatedAt: at);
+      await _storage.upsertUTXO(walletId, pending);
+      rows.put(pending);
+      changed = true;
+    }
+    return changed;
   }
 
   /// Recalculate statistics and persist for a specific wallet
@@ -987,6 +1077,11 @@ class WalletProjection extends Projection<void> {
     for (final utxo in walletUtxos) {
       if (utxo.status == UTXOStatus.spent) {
         spentCount++;
+      } else if (utxo.status == UTXOStatus.voided) {
+        // The output of a transaction the network will not settle (bead
+        // libspiffy-3arz): the row is kept, but it counts towards no balance,
+        // exactly as `WalletBalances.bucketOf` has it in the write model.
+        continue;
       } else if (!utxo.isPluginManaged) {
         unspent.add(utxo);
       }
@@ -1221,6 +1316,7 @@ class WalletProjection extends Projection<void> {
     if (bumpHex != null && bumpHex.isNotEmpty) {
       await _storeMerkleProofFromBump(event.txid, bumpHex);
     }
+    await _stampProvenHeightOnOutputs(event);
 
     try {
       // Fetch the existing transaction from storage
@@ -1244,6 +1340,43 @@ class WalletProjection extends Projection<void> {
 
     } catch (e) {
       _log.warning('Failed to handle transaction confirmed event: $e');
+    }
+  }
+
+  /// The block the confirming proof puts [event]'s transaction in, written
+  /// onto every unspent UTXO row the transaction created (bead
+  /// libspiffy-4dja): the transaction row said height N while its own output
+  /// said null, so the same wallet contradicted itself about the same block.
+  ///
+  /// A height on a UTXO means a verified proof backs it (bead
+  /// libspiffy-5ry). [TransactionConfirmedEvent.blockHeight] is the only
+  /// height that reaches an output here, and it is journaled from
+  /// [ConfirmTransactionCommand], whose senders all derive it from a BUMP
+  /// checked against our own header chain; `UTXOMarkedAvailableEvent`
+  /// carries none, so an output ARC reports only as seen on the network
+  /// stays heightless while becoming spendable.
+  ///
+  /// No confirmation count is stored: it would be stale at the next block
+  /// and no event is journaled per block. The count is
+  /// `tip height - blockHeight + 1` wherever it is wanted, which is why this
+  /// writes nothing to any balance bucket and does not recompute them.
+  ///
+  /// The inverse of the UTXO half of
+  /// [_handleTransactionConfirmationReverted], and spent rows are skipped
+  /// for the same reason: a spent row is history. Idempotent — a replay
+  /// finds the height already written and writes nothing.
+  Future<void> _stampProvenHeightOnOutputs(TransactionConfirmedEvent event) async {
+    final provenHeight = event.blockHeight;
+    if (provenHeight == null) return;
+    try {
+      for (final utxo in await _storage.getUTXOs(event.walletId, includeSpent: false)) {
+        if (utxo.txid != event.txid || utxo.blockHeight == provenHeight) continue;
+        await _storage.upsertUTXO(
+            event.walletId, utxo.copyWith(blockHeight: provenHeight, updatedAt: event.timestamp));
+      }
+    } catch (e, stackTrace) {
+      _log.warning('Failed to write the proven height $provenHeight onto the outputs of ${event.txid}: $e',
+          e, stackTrace);
     }
   }
 

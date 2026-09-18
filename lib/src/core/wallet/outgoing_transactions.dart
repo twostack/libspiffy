@@ -425,7 +425,10 @@ class OutgoingTransactions {
   /// available (bead libspiffy-fggl): a proof on the active chain says they
   /// are in a block, so the change of a payment we deferred is spendable
   /// from the moment the proof reaches us. A UTXO that is already available
-  /// or spent is left alone.
+  /// or spent is left alone. A **voided** output becomes available too (bead
+  /// libspiffy-3arz): a cancelled or failed payment the recipient got mined
+  /// after all is confirmed like any other, and the proof outranks the
+  /// resolution that voided its change.
   ///
   /// A transaction the wallet RECEIVED is confirmed the same way (bead
   /// libspiffy-73bj), and only the second half applies: it creates wallet
@@ -509,7 +512,12 @@ class OutgoingTransactions {
       if (utxo.txid != command.txid) continue;
       final pendingUnderReservation =
           utxo.status == UTXOStatus.reserved && utxo.statusBeforeReservation == UTXOStatus.pending;
-      if (utxo.status != UTXOStatus.pending && !pendingUnderReservation) continue;
+      // A voided output of this transaction (its change, after the payment
+      // was cancelled, failed or reclaimed) is promoted too: the proof says
+      // the transaction is mined after all (bead libspiffy-3arz).
+      if (utxo.status != UTXOStatus.pending && utxo.status != UTXOStatus.voided && !pendingUnderReservation) {
+        continue;
+      }
       events.add(UTXOMarkedAvailableEvent(
         walletId: command.walletId,
         txid: utxo.txid,
@@ -718,8 +726,38 @@ class OutgoingTransactions {
     state.lastModified = event.timestamp;
   }
 
+  /// The transaction is mined: its record takes the confirmation, and every
+  /// output of it the wallet holds takes the block the proof puts it in
+  /// (bead libspiffy-4dja — the transaction row said height N while its own
+  /// output said null).
+  ///
+  /// A height on a UTXO means a verified proof backs it (bead
+  /// libspiffy-5ry), so this is the only way one reaches an output after it
+  /// was received: [TransactionConfirmedEvent.blockHeight] is journaled from
+  /// [ConfirmTransactionCommand], whose senders all derive it from a BUMP
+  /// checked against our own header chain. Being spendable is a separate
+  /// question with its own path — `UTXOMarkedAvailableEvent` carries no
+  /// height — so an output ARC reports only as seen on the network becomes
+  /// available with no block, which is exactly right.
+  ///
+  /// No count of confirmations is stored: it would be stale at the next
+  /// block and nothing journals an event per block. The count is
+  /// `tip height - blockHeight + 1` wherever it is wanted.
+  ///
+  /// The inverse of [applyConfirmationReverted], which takes the height off
+  /// again, and spent UTXOs are skipped here for the same reason they are
+  /// skipped there: a spent row is history.
   static void applyConfirmed(WalletStateBuilder state, TransactionConfirmedEvent event) {
     DeferredPayments.applyConfirmed(state, event.txid, event.timestamp);
+    final provenHeight = event.blockHeight;
+    if (provenHeight != null) {
+      for (final entry in state.utxos.entries.toList()) {
+        final utxo = entry.value;
+        if (utxo.txid != event.txid || utxo.status == UTXOStatus.spent) continue;
+        if (utxo.blockHeight == provenHeight) continue;
+        state.putUtxo(entry.key, utxo.copyWith(blockHeight: provenHeight, updatedAt: event.timestamp));
+      }
+    }
     // Update transaction status from PENDING to CONFIRMED, in whichever
     // record the wallet keeps of the transaction: the one it sent, the one
     // it received, or both (bead libspiffy-73bj). A record written before

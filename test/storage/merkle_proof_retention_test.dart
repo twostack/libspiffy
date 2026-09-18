@@ -15,6 +15,7 @@ import '../integration/isar_test_helper.dart';
 import 'ancestor_transaction_contract.dart';
 import 'pending_receive_contract.dart';
 import 'merkle_proof_retention_contract.dart';
+import 'outputs_awaiting_ancestor_proof_contract.dart';
 
 void main() {
   group('InMemoryWalletStorage', () {
@@ -24,6 +25,7 @@ void main() {
     defineMerkleProofRetentionContract(() => storage, unique: () => 'm${counter++}');
     defineAncestorTransactionContract(() => storage, unique: () => 'm${counter++}');
     definePendingReceiveContract(() => storage, unique: () => 'm${counter++}');
+    defineOutputsAwaitingAncestorProofContract(() => storage, unique: () => 'm${counter++}');
   });
 
   group('IsarWalletStorage', () {
@@ -54,6 +56,7 @@ void main() {
     defineMerkleProofRetentionContract(() => storage, unique: () => 'i${counter++}');
     defineAncestorTransactionContract(() => storage, unique: () => 'i${counter++}');
     definePendingReceiveContract(() => storage, unique: () => 'i${counter++}');
+    defineOutputsAwaitingAncestorProofContract(() => storage, unique: () => 'i${counter++}');
 
     test('mny: rows written before the status existed read as pendingHeader or verified', () async {
       final pendingTx = 'aa' * 32;

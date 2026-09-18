@@ -17,6 +17,7 @@ import 'package:libspiffy/src/storage/read_model_storage.dart';
 import '../ancestor_transaction_contract.dart';
 import '../pending_receive_contract.dart';
 import '../merkle_proof_retention_contract.dart';
+import '../outputs_awaiting_ancestor_proof_contract.dart';
 
 void main() {
   final config = PostgresConfig(
@@ -50,6 +51,7 @@ void main() {
     defineMerkleProofRetentionContract(() => storage, unique: () => 'p$run-${counter++}');
     defineAncestorTransactionContract(() => storage, unique: () => 'p$run-${counter++}');
     definePendingReceiveContract(() => storage, unique: () => 'p$run-${counter++}');
+    defineOutputsAwaitingAncestorProofContract(() => storage, unique: () => 'p$run-${counter++}');
   });
 
   test('v009 turns pending placeholders into pendingHeader, keeps orphaned rows, and rolls back', () async {

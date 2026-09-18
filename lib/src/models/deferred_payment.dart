@@ -351,6 +351,18 @@ class DeferredPayment {
   static String reclaimedBy(String reclaimTxid) =>
       "Reclaimed by the wallet's own transaction $reclaimTxid, which spends its inputs back to the wallet";
 
+  /// The resolution reason recorded when a reclaim's self-spend lost the
+  /// race: [spentInTxId] — in practice the recipient's copy of the payment
+  /// being reclaimed — spent the held input [utxoKey] first (bead
+  /// libspiffy-wfvi).
+  ///
+  /// First seen wins on this network and there is no replace-by-fee, so this
+  /// is an ordering fact and not a fee question: no fee would have changed
+  /// the outcome, and nothing is retried.
+  static String reclaimLostRace(String utxoKey, String spentInTxId) =>
+      'The input $utxoKey it spends was spent by $spentInTxId first, so this reclaim can no longer be '
+      'mined: first seen wins, and no fee changes that';
+
   static DeferredPaymentState stateFromName(String? name) => DeferredPaymentState.values
       .firstWhere((s) => s.name == name, orElse: () => DeferredPaymentState.outstanding);
 

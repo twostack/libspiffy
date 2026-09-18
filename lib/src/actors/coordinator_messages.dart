@@ -1635,6 +1635,31 @@ class DeferredPaymentDetail {
   /// libspiffy-pkum; see [DeferredPayment.competingTxids]).
   List<String> get competingTxids => payment.competingTxids;
   DeferredPaymentState get state => payment.state;
+
+  /// What this payment is for, as the wallet recorded it (bead
+  /// libspiffy-fzjv; see [DeferredPayment.purpose]).
+  ///
+  /// The values the wallet sets itself are in [DeferredPaymentPurpose]: a
+  /// reclaim's self-spend carries `reclaim:<txid of the payment it
+  /// reclaims>`, and [reclaimsTxid] reads that txid off it.
+  String? get purpose => payment.purpose;
+
+  /// Why this payment is in the state it is: ARC's reason for a failure, the
+  /// user's reason for a cancellation, or — for a payment a reclaim
+  /// resolved — the self-spend that reclaimed it (bead libspiffy-fzjv; see
+  /// [DeferredPayment.resolutionReason]). Null while it is outstanding.
+  String? get resolutionReason => payment.resolutionReason;
+
+  /// The deferred payment this one reclaims, when it is a reclaim's
+  /// self-spend; null for every other payment (bead libspiffy-fzjv).
+  ///
+  /// The link runs both ways: the self-spend names the payment here, and the
+  /// payment names the self-spend in its [resolutionReason] once the network
+  /// has it (`DeferredPayment.reclaimedBy`).
+  String? get reclaimsTxid => DeferredPaymentPurpose.reclaimedTxid(payment.purpose);
+
+  /// Whether this payment is a reclaim's self-spend ([reclaimsTxid] is set).
+  bool get isReclaim => reclaimsTxid != null;
 }
 
 /// Answer to [GetDeferredPaymentsQuery].

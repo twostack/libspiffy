@@ -484,6 +484,9 @@ class DeferredPayments {
             .without('resolvedAt')
             .without('resolutionReason'),
       );
+      // It can settle again, so its own change is pending again rather than
+      // voided (bead libspiffy-3arz).
+      _unvoidOwnOutputs(state, event.txid, event.timestamp);
     }
     if (!records.containsKey(event.txid)) {
       records = records.put(
@@ -562,6 +565,41 @@ class DeferredPayments {
           .put('resolvedAt', at.toIso8601String())
           .put('resolutionReason', DeferredPayment.reclaimedBy(reclaimTxid)),
     );
+    _voidOwnOutputs(state, txid, at);
+  }
+
+  /// The wallet's own pending outputs of [txid] — its change — say what is
+  /// true once [txid] is resolved as a payment the network will not settle:
+  /// they are [UTXOStatus.voided] rather than pending forever (bead
+  /// libspiffy-3arz).
+  ///
+  /// Nothing is deleted and nothing is rewritten beyond the status
+  /// (spv-understanding.md, Data Retention): the row, its amount, its script
+  /// and its reservation history stay. Only a `pending` output is touched —
+  /// one already `available` was confirmed by a proof, which outranks any
+  /// resolution we recorded, and a `reserved` or `spent` one is somebody
+  /// else's business.
+  ///
+  /// This does not close the door on a later confirmation. Confirming [txid]
+  /// makes its voided outputs available again (`OutgoingTransactions.confirm`),
+  /// exactly as it does its pending ones, and recording the payment again
+  /// takes them back to pending ([_unvoidOwnOutputs]).
+  static void _voidOwnOutputs(WalletStateBuilder state, String txid, DateTime at) {
+    for (final entry in state.utxos.entries) {
+      final utxo = entry.value;
+      if (utxo.txid != txid || utxo.status != UTXOStatus.pending) continue;
+      state.putUtxo(entry.key, utxo.markVoided(timestamp: at));
+    }
+  }
+
+  /// The reverse: a payment that is outstanding again (bead libspiffy-4r0)
+  /// can settle again, so its own voided outputs are pending again.
+  static void _unvoidOwnOutputs(WalletStateBuilder state, String txid, DateTime at) {
+    for (final entry in state.utxos.entries) {
+      final utxo = entry.value;
+      if (utxo.txid != txid || utxo.status != UTXOStatus.voided) continue;
+      state.putUtxo(entry.key, utxo.copyWith(status: UTXOStatus.pending, updatedAt: at));
+    }
   }
 
   /// A reclaim was journaled: the reclaimed payment names its self-spend and
@@ -590,12 +628,58 @@ class DeferredPayments {
   /// [utxoKey] was spent by [spentInTxId]: a spent input is held by nobody,
   /// and a deferred payment whose input the transaction itself spent is on
   /// the network.
+  ///
+  /// When the input was held by a reclaim's self-spend and something else
+  /// spent it, that reclaim lost (bead libspiffy-wfvi): it is failed here and
+  /// now, without waiting for ARC to report it REJECTED. See [_failLostReclaim].
   static void applyInputSpent(WalletStateBuilder state, String utxoKey, String spentInTxId, DateTime at) {
     final holds = state.metadata[_deferredHoldsKey];
+    String? holder;
     if (holds is Map && holds.containsKey(utxoKey)) {
+      holder = holds[utxoKey]?.toString();
       state.metadata = state.metadata.put(_deferredHoldsKey, frozenRecord(holds).without(utxoKey));
     }
     _markSeen(state, spentInTxId, at);
+    if (holder != null && holder != spentInTxId) {
+      _failLostReclaim(state, holder, utxoKey, spentInTxId, at);
+    }
+  }
+
+  /// A reclaim's self-spend [reclaimTxid] held [utxoKey] and [spentInTxId] —
+  /// another transaction, in practice the recipient's copy of the payment
+  /// being reclaimed — spent it. The self-spend can never be mined now, so
+  /// the reclaim is failed with the reason (bead libspiffy-wfvi).
+  ///
+  /// This is Bitcoin SV: of two spends of one input the one the network saw
+  /// first is mined and the other is rejected, whatever fee it carries
+  /// (spv-understanding.md, Critical Implementation Note 3). There is no
+  /// replace-by-fee, so nothing here looks at, raises or retries a fee: the
+  /// race is over and the only thing left to do is record the outcome
+  /// accurately instead of waiting for ARC to say the same thing.
+  ///
+  /// Only a reclaim is failed this way. An ordinary deferred payment whose
+  /// input another transaction spends stays outstanding and keeps being
+  /// polled (bead libspiffy-ey2): either transaction may still be mined, and
+  /// the wallet does not decide that from a spend it observed.
+  static void _failLostReclaim(
+      WalletStateBuilder state, String reclaimTxid, String utxoKey, String spentInTxId, DateTime at) {
+    final record = _recordForUpdate(state, reclaimTxid);
+    if (record == null) return;
+    final reclaims = record['reclaimOf']?.toString();
+    if (reclaims == null) return; // not a reclaim's self-spend
+    if (record['state'] != DeferredPaymentState.outstanding.name) return;
+    _putRecord(
+      state,
+      reclaimTxid,
+      record
+          .put('state', DeferredPaymentState.failed.name)
+          .put('resolvedAt', at.toIso8601String())
+          .put('resolutionReason', DeferredPayment.reclaimLostRace(utxoKey, spentInTxId)),
+    );
+    _voidOwnOutputs(state, reclaimTxid, at);
+    _log.warning('The reclaim $reclaimTxid of deferred payment $reclaims failed: its input $utxoKey was '
+        'spent by $spentInTxId. First seen wins on this network, so the self-spend can no longer be '
+        'mined; no fee would have changed that');
   }
 
   /// [txid] is confirmed: a deferred payment of it is mined.
@@ -647,7 +731,10 @@ class DeferredPayments {
           cancelled.reason, cancelled);
 
   /// A deferred payment failed or was cancelled: each released input still
-  /// reserved by it returns to its recorded status.
+  /// reserved by it returns to its recorded status, and the transaction's own
+  /// pending outputs — its change — become [UTXOStatus.voided], since that
+  /// transaction is not one the network is going to settle (bead
+  /// libspiffy-3arz). Nothing is deleted; see [_voidOwnOutputs].
   static void _applyResolution(WalletStateBuilder state, String txid, DeferredPaymentState resolution,
       List<ReleasedDeferredInput> released, String? reason, WalletEvent event) {
     final record = _recordForUpdate(state, txid);
@@ -661,6 +748,7 @@ class DeferredPayments {
             .put('resolutionReason', reason),
       );
     }
+    _voidOwnOutputs(state, txid, event.timestamp);
     for (final input in released) {
       final holds = state.metadata[_deferredHoldsKey];
       if (holds is Map && holds[input.utxoKey]?.toString() == txid) {

@@ -13,6 +13,30 @@ enum UTXOStatus {
   reserved,
   /// UTXO has been spent
   spent,
+
+  /// The output of a transaction the wallet resolved as one the network will
+  /// not settle: a deferred payment that failed, was cancelled, or was
+  /// reclaimed by the wallet's own self-spend of its inputs (bead
+  /// libspiffy-3arz).
+  ///
+  /// The row is kept exactly as it is — nothing is ever deleted
+  /// (spv-understanding.md, Data Retention) — but it is not funds on the way:
+  /// it counts towards no balance bucket (`WalletBalances.bucketOf`) and is
+  /// never selected for spending. It says what is true about the output
+  /// instead of leaving it [pending] forever behind a transaction that can
+  /// never be mined.
+  ///
+  /// It is **not** terminal against evidence. A merkle proof on the active
+  /// header chain outranks any resolution we recorded (a cancelled payment
+  /// the recipient broadcast after all, bead libspiffy-4r0), so confirming
+  /// the transaction makes its voided outputs [available], exactly as it
+  /// does its [pending] ones, and recording the same payment again takes
+  /// them back to [pending].
+  ///
+  /// Appended after [spent]: statuses are journaled and stored by name, so a
+  /// journal, snapshot or read-model row written before this status reads
+  /// back unchanged.
+  voided,
 }
 
 /// Represents a Bitcoin UTXO (Unspent Transaction Output) in the wallet.
@@ -158,7 +182,11 @@ class BitcoinUtxo {
   
   /// Check if this UTXO is spent
   bool get isSpent => status == UTXOStatus.spent;
-  
+
+  /// Whether this output belongs to a transaction the network will not
+  /// settle ([UTXOStatus.voided], bead libspiffy-3arz).
+  bool get isVoided => status == UTXOStatus.voided;
+
   /// Create a copy with updated fields
   BitcoinUtxo copyWith({
     String? txid,
@@ -239,6 +267,16 @@ class BitcoinUtxo {
     );
   }
   
+  /// Mark this output as one of a transaction the network will not settle
+  /// ([UTXOStatus.voided], bead libspiffy-3arz). Nothing else changes: the
+  /// row, its amount, its script and its history are kept.
+  BitcoinUtxo markVoided({DateTime? timestamp}) {
+    return copyWith(
+      status: UTXOStatus.voided,
+      updatedAt: timestamp ?? DateTime.now(),
+    );
+  }
+
   /// Mark this UTXO as available for spending
   BitcoinUtxo markAvailable({DateTime? timestamp}) {
     return copyWith(
@@ -333,10 +371,14 @@ class BitcoinUtxo {
     required int confirmations,
     DateTime? timestamp,
   }) {
-    // If UTXO is pending and now has confirmations, make it available
-    final newStatus = (status == UTXOStatus.pending && confirmations > 0)
-        ? UTXOStatus.available
-        : status;
+    // If UTXO is pending and now has confirmations, make it available. A
+    // voided output whose transaction turns out to be mined after all is
+    // available too (bead libspiffy-3arz): the proof outranks the resolution
+    // that voided it.
+    final newStatus =
+        ((status == UTXOStatus.pending || status == UTXOStatus.voided) && confirmations > 0)
+            ? UTXOStatus.available
+            : status;
     // A reserved UTXO stays reserved, but what its release restores follows
     // the confirmation: a pending coin confirmed while reserved is available
     // once released.

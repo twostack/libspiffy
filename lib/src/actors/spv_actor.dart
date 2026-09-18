@@ -204,7 +204,7 @@ class SPVActor extends Actor {
       // Who handed it to us, carried to the wallet so the payment is
       // journaled with its counterparty marker (bead libspiffy-cq16). One
       // place, so every branch above that builds a result carries it.
-      final validationResult = validated.withCounterpartyMarker(msg.fromCounterparty);
+      final validationResult = validated.withCounterpartyMarker(msg.fromCounterparty, requestId: msg.requestId);
 
       if (_awaitingHeaderHeight case final height?) {
         _awaitingHeaderHeight = null;
@@ -233,7 +233,7 @@ class SPVActor extends Actor {
         isValid: false,
         validationError: e.toString(),
         targetWalletId: msg.targetWalletId,
-      ).withCounterpartyMarker(msg.fromCounterparty);
+      ).withCounterpartyMarker(msg.fromCounterparty, requestId: msg.requestId);
 
       _walletManager.tell(errorResult);
       replyTo?.tell(errorResult);

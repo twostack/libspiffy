@@ -50,10 +50,16 @@ abstract final class WalletBalances {
   static const int confirmedAt = 6;
 
   /// The bucket [utxo] counts towards, or null when it counts towards none
-  /// (spent): reserved when reserved, confirmed with [confirmedAt] or more
-  /// confirmations, unconfirmed otherwise.
+  /// (spent, or voided): reserved when reserved, confirmed with
+  /// [confirmedAt] or more confirmations, unconfirmed otherwise.
+  ///
+  /// A voided output ([UTXOStatus.voided], bead libspiffy-3arz) is the output
+  /// of a transaction the network will not settle — a cancelled, failed or
+  /// reclaimed deferred payment. The row is kept, but it is not money on the
+  /// way, so it counts nowhere; it counted as unconfirmed balance for as long
+  /// as it sat at pending.
   static BalanceBucket? bucketOf(BitcoinUtxo utxo) {
-    if (utxo.status == UTXOStatus.spent) return null;
+    if (utxo.status == UTXOStatus.spent || utxo.status == UTXOStatus.voided) return null;
     if (utxo.status == UTXOStatus.reserved) return BalanceBucket.reserved;
     if ((utxo.confirmations ?? 0) >= confirmedAt) return BalanceBucket.confirmed;
     return BalanceBucket.unconfirmed;

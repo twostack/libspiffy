@@ -484,12 +484,28 @@ class ReceiveTransactionMessage implements Message {
   final String? invoiceId; // Invoice ID for payment matching (transmitted in BEEF metadata)
   final DateTime receivedAt;
 
+  /// A caller's own id for this receive, echoed on the
+  /// [SPVValidationResult] it produces (bead libspiffy-l8uf).
+  ///
+  /// SPVActor's reply is not a dactor `LocalMessage`, so `ActorRef.ask`
+  /// cannot be used for it and a caller that needs the verdict has it told
+  /// back through another actor. Matching those verdicts by txid pairs them
+  /// by arrival order: two receives of the same transaction in flight at once
+  /// — an ordinary `ReceiveTransactionCommand` and a `proof_response` for the
+  /// same txid, say — could take each other's. This id pairs a verdict with
+  /// the request that asked for it instead.
+  ///
+  /// Optional and opaque: the wallet never interprets it, and a receive
+  /// without one behaves exactly as it always did.
+  final String? requestId;
+
   ReceiveTransactionMessage({
     required this.transactionId,
     required this.beef,
     required this.fromCounterparty,
     this.targetWalletId,
     this.invoiceId,
+    this.requestId,
     DateTime? receivedAt,
   }) : receivedAt = receivedAt ?? DateTime.now();
 
@@ -575,6 +591,16 @@ class SPVValidationResult implements Message {
   /// interpreted, validated or parsed.
   final String? counterpartyMarker;
 
+  /// The [ReceiveTransactionMessage.requestId] of the receive this is the
+  /// verdict on, echoed back unchanged (bead libspiffy-l8uf).
+  ///
+  /// It pairs a verdict with the request that asked for it, so a caller
+  /// waiting for one does not have to match on the txid and take another
+  /// receive's answer for the same transaction. Null for a receive that
+  /// carried none, and for a verdict on a receive replayed from storage
+  /// (a parked receive is stored with its BEEF, not with a caller's id).
+  final String? requestId;
+
   SPVValidationResult({
     required this.txid,
     required this.isValid,
@@ -587,12 +613,14 @@ class SPVValidationResult implements Message {
     this.unreadableOutputs = const [],
     this.provenTransactions = const [],
     this.counterpartyMarker,
+    this.requestId,
   });
 
   /// This result with [marker] as its [counterpartyMarker] (a blank marker
-  /// is no marker). Applied in one place, where the receive answers, so
-  /// every branch that builds a result carries it (bead libspiffy-cq16).
-  SPVValidationResult withCounterpartyMarker(String? marker) => SPVValidationResult(
+  /// is no marker) and [requestId] as its [requestId]. Applied in one place,
+  /// where the receive answers, so every branch that builds a result carries
+  /// both (beads libspiffy-cq16, libspiffy-l8uf).
+  SPVValidationResult withCounterpartyMarker(String? marker, {String? requestId}) => SPVValidationResult(
         txid: txid,
         isValid: isValid,
         validationError: validationError,
@@ -604,6 +632,7 @@ class SPVValidationResult implements Message {
         unreadableOutputs: unreadableOutputs,
         provenTransactions: provenTransactions,
         counterpartyMarker: (marker == null || marker.isEmpty) ? null : marker,
+        requestId: requestId ?? this.requestId,
       );
 
   @override

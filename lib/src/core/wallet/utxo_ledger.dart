@@ -234,7 +234,9 @@ abstract final class UtxoLedger {
     // reservation stays, and its release then restores `available` (M4).
     final pendingUnderReservation =
         utxo.status == UTXOStatus.reserved && utxo.statusBeforeReservation == UTXOStatus.pending;
-    if (utxo.status != UTXOStatus.pending && !pendingUnderReservation) {
+    // A voided output is promoted too (bead libspiffy-3arz): the command says
+    // it is in a block, which outranks the resolution that voided it.
+    if (utxo.status != UTXOStatus.pending && utxo.status != UTXOStatus.voided && !pendingUnderReservation) {
       // Already available or spent, no-op
       return [];
     }

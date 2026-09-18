@@ -991,7 +991,10 @@ Future<List<OutputAwaitingProof>> outputsAwaitingAncestorProof(
 
   final blocked = <(String, int, List<AwaitedAncestorProof>)>[];
   for (final utxo in utxos) {
-    if (utxo.status == UTXOStatus.spent) continue;
+    // Spent, or voided (bead libspiffy-3arz: the output of a transaction the
+    // network will not settle). Neither can be put into a BEEF, so neither is
+    // waiting on a proof.
+    if (utxo.status == UTXOStatus.spent || utxo.status == UTXOStatus.voided) continue;
     final gaps = await gapsOf(utxo.txid, 0, <String>{});
     if (gaps.isEmpty) continue;
     blocked.add((utxo.txid, utxo.vout, gaps));

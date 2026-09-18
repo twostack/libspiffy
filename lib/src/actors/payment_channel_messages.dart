@@ -670,6 +670,10 @@ class FullChannelStateResponse extends ActorResponse {
   /// the server, which holds both halves at acknowledgement.
   final String? latestClientSignatureHex;
 
+  /// Whether this side's wallet already holds the transaction that ended the
+  /// channel and paid it back (bead libspiffy-lfrv).
+  final bool returnLegRecordedInWallet;
+
   @override
   final bool success;
   @override
@@ -704,6 +708,7 @@ class FullChannelStateResponse extends ActorResponse {
     this.fundingBeefHex,
     this.latestPaymentTxHex,
     this.latestClientSignatureHex,
+    this.returnLegRecordedInWallet = false,
     required this.success,
     this.error,
   });

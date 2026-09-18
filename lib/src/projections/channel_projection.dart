@@ -128,6 +128,13 @@ class ChannelProjection extends Projection<void> {
       case final PaymentAcknowledgedEvent evt:
         await _handlePaymentAcknowledged(evt);
         return true;
+      case ReturnLegRecordedInWalletEvent():
+        // Channel-side bookkeeping only, as FundingRecordedInWalletEvent is:
+        // it records that the WALLET write happened so an interrupted ending
+        // can be resumed. The wallet read model holds the transaction itself,
+        // and the channel row's own state is set by the closing or expiry
+        // event (bead libspiffy-lfrv).
+        return true;
       case final PaymentCountersignedEvent evt:
         await _handlePaymentCountersigned(evt);
         return true;

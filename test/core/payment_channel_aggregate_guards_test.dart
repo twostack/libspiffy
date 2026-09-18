@@ -329,6 +329,56 @@ void main() {
     });
   });
 
+  /// Bead libspiffy-lfrv. `RecordReturnLegInWalletCommand` is the channel's
+  /// own record that the WALLET write happened, so an ending interrupted
+  /// between journaling its outcome and writing the wallet can be resumed.
+  ///
+  /// The manager never sends it twice — it returns early on a channel whose
+  /// state already says the write is journaled — so these exercise the
+  /// aggregate directly. It is exported from `internals.dart`, and a rule
+  /// nothing happens to reach today is still a rule the journal depends on.
+  group('lfrv: RecordReturnLegInWalletCommand', () {
+    RecordReturnLegInWalletCommand cmd() =>
+        RecordReturnLegInWalletCommand(channelId: _channelId, txId: 'ab' * 32);
+
+    List<Event> expiredChannel() => [
+          ..._openServerChannel(),
+          ChannelExpiredEvent(
+              channelId: _channelId, observedBy: 'server', version: 4),
+        ];
+
+    test('is rejected on a channel that is not ending', () async {
+      final ref = await spawn(_openServerChannel());
+      expectRejected(await ref.ask<dynamic>(cmd(), _ask), 'is not ending');
+      expect(journalLength(), 3);
+    });
+
+    test('records the write once on an expired channel', () async {
+      final ref = await spawn(expiredChannel());
+      await ref.ask<dynamic>(cmd(), _ask);
+      expect(journalLength(), 5);
+      expect(store.journal[_persistenceId]!.last,
+          isA<ReturnLegRecordedInWalletEvent>());
+    });
+
+    test('journals nothing the second time, rather than refusing', () async {
+      final ref = await spawn(expiredChannel());
+      await ref.ask<dynamic>(cmd(), _ask);
+      final after = journalLength();
+
+      // Idempotent, not an error: the manager calls this straight after a
+      // wallet write that may itself have been a no-op on a resumed ending,
+      // and a refusal there would be noise about a state that is correct.
+      await ref.ask<dynamic>(cmd(), _ask);
+
+      expect(journalLength(), after);
+      expect(
+          store.journal[_persistenceId]!
+              .whereType<ReturnLegRecordedInWalletEvent>(),
+          hasLength(1));
+    });
+  });
+
   group('L3: ChannelStateQuery', () {
     test('on a channel with no events gets a failure reply', () async {
       final ref = await spawn(const []);

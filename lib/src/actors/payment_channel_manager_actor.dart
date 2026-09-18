@@ -2253,6 +2253,7 @@ class PaymentChannelManagerActor extends Actor {
     }
     final settlementTxId =
         await _recordReturnLegInWallet(channelId, state, leg);
+    await _journalReturnLegRecorded(channelId, aggregateRef, settlementTxId);
     final applied = _awaitApplied(
         _channelProjection,
         (e) => e is ChannelClosedEvent && e.channelId == channelId,
@@ -2281,6 +2282,30 @@ class PaymentChannelManagerActor extends Actor {
       }
     }
     return settlementTxId;
+  }
+
+  /// Journals that this side's wallet now holds [txId], the transaction that
+  /// ended the channel and paid it back (bead libspiffy-lfrv).
+  ///
+  /// Without this record the channel cannot tell a wallet write that happened
+  /// from one a crash lost, and since the aggregate refuses to re-terminate a
+  /// terminated channel, nothing would ever retry it. The aggregate answers a
+  /// second call with no event, so a resumed ending journals nothing new.
+  Future<void> _journalReturnLegRecorded(
+      String channelId, ActorRef aggregateRef, String txId) async {
+    try {
+      _broadcastEvents(await _askAggregate(
+        channelId,
+        aggregateRef,
+        RecordReturnLegInWalletCommand(channelId: channelId, txId: txId),
+      ));
+    } catch (e) {
+      // The wallet holds the transaction either way; what is lost is the
+      // channel's record that it does, so a later ending will write it again
+      // — which the wallet ignores, as it already holds it.
+      _log.warning('Channel $channelId: the wallet holds $txId but the '
+          'channel could not journal that it does: $e');
+    }
   }
 
   /// Record that a channel has expired (lockTime elapsed).
@@ -2312,35 +2337,51 @@ class PaymentChannelManagerActor extends Actor {
       // aggregate actor yet).
       final aggregateRef = await _getOrSpawnChannelAggregate(msg.channelId);
 
-      final expireCmd = ExpireChannelCommand(
-        channelId: msg.channelId,
-        observedBy: msg.observedBy,
-        settlementOrRefundTxId: msg.settlementOrRefundTxId,
-      );
-
-      // Register projection-applied awaiter BEFORE telling the aggregate
-      // (same pattern as _handleOpenChannel — closes the read-after-write race).
-      applied = _awaitApplied(_channelProjection,
-          (e) => e is ChannelExpiredEvent && e.channelId == msg.channelId,
-          const Duration(seconds: 10));
-
       // The transaction fields of the state do not change with the expiry;
       // read before it so the aggregate's guard is the only gate.
       final state = _stateOrThrow(
           await aggregateRef.ask(ChannelStateQuery(channelId: msg.channelId)));
 
-      final response = await _askAggregate(msg.channelId, aggregateRef, expireCmd);
+      // An expiry already journaled, whose wallet write did not happen: the
+      // crash window this bead is about (libspiffy-lfrv). The aggregate
+      // refuses to expire a terminated channel, so re-sending the command
+      // would only fail; what is left to do is the write itself.
+      final alreadyExpired = state.status == 'expired';
+      if (alreadyExpired && state.returnLegRecordedInWallet) {
+        originalSender?.tell(ChannelExpiredResponse(
+          channelId: msg.channelId,
+          success: true,
+        ));
+        return;
+      }
 
-      _broadcastEvents(response);
+      if (!alreadyExpired) {
+        // Register projection-applied awaiter BEFORE telling the aggregate
+        // (same pattern as _handleOpenChannel — closes the read-after-write race).
+        applied = _awaitApplied(_channelProjection,
+            (e) => e is ChannelExpiredEvent && e.channelId == msg.channelId,
+            const Duration(seconds: 10));
 
-      if (applied != null) {
-        final result = await applied.done;
-        if (result is AwaitFailed) {
-          _log.warning(
-              'ChannelProjection apply timeout for ${msg.channelId}: ${result.reason}');
+        final response = await _askAggregate(
+            msg.channelId,
+            aggregateRef,
+            ExpireChannelCommand(
+              channelId: msg.channelId,
+              observedBy: msg.observedBy,
+              settlementOrRefundTxId: msg.settlementOrRefundTxId,
+            ));
+
+        _broadcastEvents(response);
+
+        if (applied != null) {
+          final result = await applied.done;
+          if (result is AwaitFailed) {
+            _log.warning(
+                'ChannelProjection apply timeout for ${msg.channelId}: ${result.reason}');
+          }
+          // Awaited: the catch below must not also cancel it.
+          applied = null;
         }
-        // Awaited: the catch below must not also cancel it.
-        applied = null;
       }
 
       final leg = _returnLeg(state,
@@ -2351,7 +2392,8 @@ class PaymentChannelManagerActor extends Actor {
             '${msg.settlementOrRefundTxId == null ? '' : ' with txid ${msg.settlementOrRefundTxId}'}'
             ': nothing is recorded in wallet ${state.walletId}.');
       } else {
-        await _recordReturnLegInWallet(msg.channelId, state, leg);
+        final txId = await _recordReturnLegInWallet(msg.channelId, state, leg);
+        await _journalReturnLegRecorded(msg.channelId, aggregateRef, txId);
       }
 
       originalSender?.tell(ChannelExpiredResponse(

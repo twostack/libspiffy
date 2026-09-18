@@ -520,6 +520,38 @@ class RecordPaymentCountersignatureCommand extends ChannelCommand {
   String get commandType => 'RecordPaymentCountersignatureCommand';
 }
 
+/// This side's wallet holds the transaction that ended the channel and paid
+/// it back — a cooperative settlement, or a refund after expiry (bead
+/// libspiffy-lfrv).
+///
+/// The counterpart of [RecordFundingInWalletCommand], and for the same
+/// reason. The wallet write is not journaled by the wallet's own aggregate in
+/// a way the channel can see, so without this the channel has no record that
+/// it happened. An expiry journaled its `ChannelExpiredEvent` and then wrote
+/// the wallet; a crash in between lost the write for good, because the
+/// aggregate refuses to expire an already-terminated channel and so nothing
+/// retried it.
+class RecordReturnLegInWalletCommand extends ChannelCommand {
+  /// The transaction recorded: the settlement, or the refund.
+  final String txId;
+
+  RecordReturnLegInWalletCommand({
+    required String channelId,
+    required this.txId,
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          channelId: channelId,
+          commandId: commandId,
+          timestamp: timestamp,
+          metadata: metadata,
+        );
+
+  @override
+  String get commandType => 'RecordReturnLegInWalletCommand';
+}
+
 // =============================================================================
 // CHANNEL CLOSING COMMANDS
 // =============================================================================

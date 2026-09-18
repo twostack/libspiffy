@@ -302,6 +302,31 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### An interrupted expiry can be resumed
+
+Report section 11, V-91.
+
+- **An expiry that journaled and then crashed lost the refund record for good
+  (V-91).** `_handleExpireChannel` journaled `ChannelExpiredEvent` and *then*
+  wrote the wallet. The aggregate refuses to expire an already-terminated
+  channel, so a re-delivered expiry — what an app does after a restart, expiry
+  being app-driven — was answered `success: false` and nothing retried the
+  write. The money came back and the wallet never heard.
+- Expiry now has the shape the funding path has had since `fsy`: a
+  `RecordReturnLegInWalletCommand` → `ReturnLegRecordedInWalletEvent` sets
+  `ChannelState.returnLegRecordedInWallet`, and the manager reads it first. A
+  channel already `expired` with the write journaled does nothing; one already
+  `expired` without it skips the doomed expire command and does the write that
+  was lost.
+- **The cooperative close journals the same event**, though its `closing`
+  middle state already made it resumable: a flag only the expiry route set
+  would read `false` on every closed channel whose return leg *is* recorded.
+- A second record journals nothing rather than failing: the manager issues it
+  straight after a wallet write that may itself have been a no-op on a resumed
+  ending.
+- New journal event type `channel.return_leg.wallet_recorded`.
+  `FullChannelStateResponse.returnLegRecordedInWallet` is new (additive).
+
 ### A client's money comes back too
 
 Report section 11, V-90. The second half of V-86, which reported this and

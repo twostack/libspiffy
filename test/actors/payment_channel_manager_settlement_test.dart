@@ -746,6 +746,53 @@ void main() {
       expect(ours.single.status, UTXOStatus.pending);
     });
 
+    /// Bead libspiffy-lfrv. The expiry journals `ChannelExpiredEvent` and
+    /// THEN writes the wallet. A crash between the two used to lose the
+    /// wallet record for good: the aggregate refuses to expire an
+    /// already-terminated channel, so a re-delivered expiry was answered with
+    /// an error and nothing ever retried the write. The funding path closed
+    /// the same hole with `FundingRecordedInWalletEvent`; this journal has
+    /// the expiry and no record of the write, which is the crash.
+    test('an expiry interrupted before the wallet write is resumed', () async {
+      await spawn([
+        ...f.openClientJournal(walletId: _walletId),
+        ChannelExpiredEvent(
+            channelId: _channelId, observedBy: 'client', version: 7),
+      ], key: f.clientKey);
+      final refund = dartsv.Transaction.fromHex(f.signedRefundTxHex());
+
+      final expired = await expire();
+      expect(expired.success, isTrue, reason: expired.error);
+      await flushWallet();
+
+      expect(imported().map((c) => c.txid), [refund.id],
+          reason: 'the refund is the money coming back; an expiry that '
+              'journaled and crashed must not lose it');
+      expect(received(), hasLength(1));
+      expect(journal().whereType<ChannelExpiredEvent>(), hasLength(1),
+          reason: 'the expiry itself is not journaled twice');
+    });
+
+    test('a resumed expiry is not resumed again', () async {
+      await spawn([
+        ...f.openClientJournal(walletId: _walletId),
+        ChannelExpiredEvent(
+            channelId: _channelId, observedBy: 'client', version: 7),
+      ], key: f.clientKey);
+
+      expect((await expire()).success, isTrue);
+      await flushWallet();
+      final afterFirst = journal().length;
+
+      expect((await expire()).success, isTrue);
+      await flushWallet();
+
+      expect(imported(), hasLength(1));
+      expect(received(), hasLength(1));
+      expect(journal().length, afterFirst,
+          reason: 'the wallet write is journaled, so nothing repeats it');
+    });
+
     test('a re-delivered expiry records nothing new', () async {
       await spawn(f.openClientJournal(walletId: _walletId), key: f.clientKey);
       expect((await expire()).success, isTrue);

@@ -84,6 +84,7 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
         'fundingBroadcastInFlight': s.fundingBroadcastInFlight,
         'fundingBroadcastError': s.fundingBroadcastError,
         'fundingRecordedInWallet': s.fundingRecordedInWallet,
+        'returnLegRecordedInWallet': s.returnLegRecordedInWallet,
         'lockTimeUnix': s.lockTimeUnix,
         'refundTxHex': s.refundTxHex,
         'refundClientSigHex': s.refundClientSigHex,
@@ -137,6 +138,8 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       fundingBroadcastInFlight: map['fundingBroadcastInFlight'] as bool? ?? false,
       fundingBroadcastError: map['fundingBroadcastError'] as String?,
       fundingRecordedInWallet: map['fundingRecordedInWallet'] as bool? ?? false,
+      returnLegRecordedInWallet:
+          map['returnLegRecordedInWallet'] as bool? ?? false,
       lockTimeUnix: map['lockTimeUnix'] as int?,
       refundTxHex: map['refundTxHex'] as String?,
       refundClientSigHex: map['refundClientSigHex'] as String?,
@@ -234,6 +237,7 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       signedRefundTxHex: currentState.signedRefundTxHex,
       fundingInputSats: currentState.fundingInputSats,
       fundingRecordedInWallet: currentState.fundingRecordedInWallet,
+      returnLegRecordedInWallet: currentState.returnLegRecordedInWallet,
       fundingBroadcastInFlight: currentState.fundingBroadcastInFlight,
       clientPeerId: currentState.clientPeerId,
       serverPeerId: currentState.serverPeerId,
@@ -308,6 +312,8 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       return await _handleAcknowledgePayment(currentState, command);
     } else if (command is RecordPaymentCountersignatureCommand) {
       return _handleRecordPaymentCountersignature(currentState, command);
+    } else if (command is RecordReturnLegInWalletCommand) {
+      return _handleRecordReturnLegInWallet(currentState, command);
     } else if (command is CloseChannelCommand) {
       return _handleCloseChannel(currentState, command);
     } else if (command is FinalizeCloseCommand) {
@@ -344,6 +350,8 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       final PaymentRecordedEvent evt => _applyPaymentRecorded(state, evt),
       final PaymentAcknowledgedEvent evt => _applyPaymentAcknowledged(state, evt),
       final PaymentCountersignedEvent evt => _applyPaymentCountersigned(state, evt),
+      final ReturnLegRecordedInWalletEvent evt =>
+        _applyReturnLegRecordedInWallet(state, evt),
       final ChannelClosingEvent evt => _applyChannelClosing(state, evt),
       final ChannelClosedEvent evt => _applyChannelClosed(state, evt),
       final RefundClaimedEvent evt => _applyRefundClaimed(state, evt),
@@ -1094,6 +1102,40 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
     ];
   }
 
+  /// This side's wallet now holds the transaction that ended the channel and
+  /// paid it back (bead libspiffy-lfrv).
+  ///
+  /// Journaled so an interrupted ending can be resumed. The write itself is
+  /// idempotent, but without this record the channel cannot tell a write that
+  /// happened from one that was lost to a crash, and the aggregate's refusal
+  /// to re-terminate a terminated channel means nothing would retry it.
+  List<Event> _handleRecordReturnLegInWallet(
+    ChannelState currentState,
+    RecordReturnLegInWalletCommand cmd,
+  ) {
+    // The return leg is recorded as a channel ends: while a cooperative close
+    // is in flight, or once it has expired or closed.
+    if (currentState.status != ChannelStatus.closing &&
+        currentState.status != ChannelStatus.closed &&
+        currentState.status != ChannelStatus.expired) {
+      throw StateError('Channel ${cmd.channelId} is not ending '
+          '(status=${currentState.status.name})');
+    }
+    // Recorded once. A re-delivered ending re-reaches this with the write
+    // already journaled.
+    if (currentState.returnLegRecordedInWallet) {
+      return const [];
+    }
+
+    return [
+      ReturnLegRecordedInWalletEvent(
+        channelId: cmd.channelId,
+        txId: cmd.txId,
+        version: currentState.version + 1,
+      ),
+    ];
+  }
+
   List<Event> _handleCloseChannel(
     ChannelState currentState,
     CloseChannelCommand cmd,
@@ -1386,6 +1428,15 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
     return state.copyWith(
       latestPaymentTxHex: event.fullySignedPaymentTxHex,
       latestPaymentTxId: event.fullySignedPaymentTxId,
+      version: event.version,
+      lastModified: event.timestamp,
+    );
+  }
+
+  ChannelState _applyReturnLegRecordedInWallet(
+      ChannelState state, ReturnLegRecordedInWalletEvent event) {
+    return state.copyWith(
+      returnLegRecordedInWallet: true,
       version: event.version,
       lastModified: event.timestamp,
     );

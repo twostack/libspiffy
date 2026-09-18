@@ -80,6 +80,12 @@ class ChannelState extends State {
   /// Null on the server, which holds both halves at acknowledgement.
   final String? latestClientSignatureHex;
 
+  /// Whether this side's wallet already holds the transaction that ended the
+  /// channel and paid it back (bead libspiffy-lfrv). The counterpart of
+  /// [fundingRecordedInWallet]; what lets a close or an expiry interrupted
+  /// before its wallet write be resumed.
+  final bool returnLegRecordedInWallet;
+
   // Metadata
   final String? context;
   final DateTime? createdAt;
@@ -125,6 +131,7 @@ class ChannelState extends State {
     this.latestPaymentTxHex,
     this.latestPaymentTxId,
     this.latestClientSignatureHex,
+    this.returnLegRecordedInWallet = false,
     this.context,
     this.createdAt,
     this.closedAt,
@@ -185,6 +192,7 @@ class ChannelState extends State {
     Object? latestPaymentTxHex = _unset,
     Object? latestPaymentTxId = _unset,
     Object? latestClientSignatureHex = _unset,
+    bool? returnLegRecordedInWallet,
     Object? context = _unset,
     Object? createdAt = _unset,
     Object? closedAt = _unset,
@@ -225,6 +233,8 @@ class ChannelState extends State {
       latestPaymentTxId: pick<String>(latestPaymentTxId, this.latestPaymentTxId),
       latestClientSignatureHex:
           pick<String>(latestClientSignatureHex, this.latestClientSignatureHex),
+      returnLegRecordedInWallet:
+          returnLegRecordedInWallet ?? this.returnLegRecordedInWallet,
       context: pick<String>(context, this.context),
       createdAt: pick<DateTime>(createdAt, this.createdAt),
       closedAt: pick<DateTime>(closedAt, this.closedAt),

@@ -84,6 +84,28 @@ void main() {
     expect(row.serverBalanceSats, BigInt.from(30000));
   });
 
+  /// Bead libspiffy-lfrv. The channel's record that its wallet write happened
+  /// changes nothing in the channel read model — the wallet read model holds
+  /// the transaction — but the projection must still ACKNOWLEDGE it. An event
+  /// the projection returns false for is one the checkpoint never passes.
+  test('the wallet-write record is acknowledged and changes no channel row',
+      () async {
+    await upToOnePayment('deadbeef');
+    final before = (await storage.getPaymentChannel(_channelId))!;
+
+    final handled = await projection.handle(ReturnLegRecordedInWalletEvent(
+      channelId: _channelId,
+      txId: 'cc' * 32,
+      version: 3,
+    ));
+
+    expect(handled, isTrue);
+    final after = (await storage.getPaymentChannel(_channelId))!;
+    expect(after.state, before.state);
+    expect(after.latestPaymentTxHex, before.latestPaymentTxHex);
+    expect(after.settlementTxId, before.settlementTxId);
+  });
+
   test('a countersignature for a channel the read model does not have is '
       'acknowledged, not thrown', () async {
     expect(

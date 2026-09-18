@@ -769,6 +769,54 @@ class PaymentRecordedEvent extends ChannelEvent {
   }
 }
 
+/// This side's wallet holds the transaction that ended the channel and paid
+/// it back (bead libspiffy-lfrv).
+///
+/// The counterpart of [FundingRecordedInWalletEvent]: the channel's own
+/// record that the wallet write happened, so a close or an expiry interrupted
+/// between journaling its outcome and writing the wallet can be resumed
+/// instead of silently losing the money coming back.
+class ReturnLegRecordedInWalletEvent extends ChannelEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'channel.return_leg.wallet_recorded';
+
+  @override
+  String get typeName => stableTypeName;
+
+  /// The transaction recorded: a cooperative settlement, or a refund.
+  final String txId;
+
+  ReturnLegRecordedInWalletEvent({
+    required String channelId,
+    required this.txId,
+    String? eventId,
+    DateTime? timestamp,
+    int? version,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          channelId: channelId,
+          eventId: eventId,
+          timestamp: timestamp,
+          version: version,
+          metadata: metadata,
+        );
+
+  @override
+  Map<String, dynamic> getChannelEventData() => {'txId': txId};
+
+  factory ReturnLegRecordedInWalletEvent.fromMap(Map<String, dynamic> map) {
+    return ReturnLegRecordedInWalletEvent(
+      channelId: map['channelId'] as String,
+      txId: map['txId'] as String,
+      eventId: map['eventId'] as String?,
+      timestamp: ChannelEvent._parseTimestamp(map['timestamp']),
+      version: map['version'] as int?,
+      metadata: map['metadata'] as Map<String, dynamic>?,
+    );
+  }
+}
+
 /// The client holds the server's countersignature of the latest payment, and
 /// with it a settlement it could broadcast (bead libspiffy-z2px).
 ///

@@ -15442,63 +15442,73 @@ const BitcoinTransactionEntitySchema = CollectionSchema(
       name: r'isOutgoing',
       type: IsarType.bool,
     ),
-    r'netAmount': PropertySchema(
+    r'lockTime': PropertySchema(
       id: 11,
+      name: r'lockTime',
+      type: IsarType.long,
+    ),
+    r'netAmount': PropertySchema(
+      id: 12,
       name: r'netAmount',
       type: IsarType.string,
     ),
     r'notes': PropertySchema(
-      id: 12,
+      id: 13,
       name: r'notes',
       type: IsarType.string,
     ),
     r'primaryCounterparty': PropertySchema(
-      id: 13,
+      id: 14,
       name: r'primaryCounterparty',
       type: IsarType.string,
     ),
     r'rawHex': PropertySchema(
-      id: 14,
+      id: 15,
       name: r'rawHex',
       type: IsarType.string,
     ),
     r'receivingAddressesJson': PropertySchema(
-      id: 15,
+      id: 16,
       name: r'receivingAddressesJson',
       type: IsarType.string,
     ),
     r'sendingAddressesJson': PropertySchema(
-      id: 16,
+      id: 17,
       name: r'sendingAddressesJson',
       type: IsarType.string,
     ),
     r'status': PropertySchema(
-      id: 17,
+      id: 18,
       name: r'status',
       type: IsarType.string,
     ),
     r'totalInput': PropertySchema(
-      id: 18,
+      id: 19,
       name: r'totalInput',
       type: IsarType.string,
     ),
     r'totalOutput': PropertySchema(
-      id: 19,
+      id: 20,
       name: r'totalOutput',
       type: IsarType.string,
     ),
     r'txid': PropertySchema(
-      id: 20,
+      id: 21,
       name: r'txid',
       type: IsarType.string,
     ),
     r'updatedAt': PropertySchema(
-      id: 21,
+      id: 22,
       name: r'updatedAt',
       type: IsarType.dateTime,
     ),
+    r'version': PropertySchema(
+      id: 23,
+      name: r'version',
+      type: IsarType.long,
+    ),
     r'walletId': PropertySchema(
-      id: 22,
+      id: 24,
       name: r'walletId',
       type: IsarType.string,
     )
@@ -15726,18 +15736,20 @@ void _bitcoinTransactionEntitySerialize(
   writer.writeString(offsets[8], object.fee);
   writer.writeBool(offsets[9], object.isIncoming);
   writer.writeBool(offsets[10], object.isOutgoing);
-  writer.writeString(offsets[11], object.netAmount);
-  writer.writeString(offsets[12], object.notes);
-  writer.writeString(offsets[13], object.primaryCounterparty);
-  writer.writeString(offsets[14], object.rawHex);
-  writer.writeString(offsets[15], object.receivingAddressesJson);
-  writer.writeString(offsets[16], object.sendingAddressesJson);
-  writer.writeString(offsets[17], object.status);
-  writer.writeString(offsets[18], object.totalInput);
-  writer.writeString(offsets[19], object.totalOutput);
-  writer.writeString(offsets[20], object.txid);
-  writer.writeDateTime(offsets[21], object.updatedAt);
-  writer.writeString(offsets[22], object.walletId);
+  writer.writeLong(offsets[11], object.lockTime);
+  writer.writeString(offsets[12], object.netAmount);
+  writer.writeString(offsets[13], object.notes);
+  writer.writeString(offsets[14], object.primaryCounterparty);
+  writer.writeString(offsets[15], object.rawHex);
+  writer.writeString(offsets[16], object.receivingAddressesJson);
+  writer.writeString(offsets[17], object.sendingAddressesJson);
+  writer.writeString(offsets[18], object.status);
+  writer.writeString(offsets[19], object.totalInput);
+  writer.writeString(offsets[20], object.totalOutput);
+  writer.writeString(offsets[21], object.txid);
+  writer.writeDateTime(offsets[22], object.updatedAt);
+  writer.writeLong(offsets[23], object.version);
+  writer.writeString(offsets[24], object.walletId);
 }
 
 BitcoinTransactionEntity _bitcoinTransactionEntityDeserialize(
@@ -15759,18 +15771,20 @@ BitcoinTransactionEntity _bitcoinTransactionEntityDeserialize(
   object.id = id;
   object.isIncoming = reader.readBool(offsets[9]);
   object.isOutgoing = reader.readBool(offsets[10]);
-  object.netAmount = reader.readString(offsets[11]);
-  object.notes = reader.readStringOrNull(offsets[12]);
-  object.primaryCounterparty = reader.readStringOrNull(offsets[13]);
-  object.rawHex = reader.readString(offsets[14]);
-  object.receivingAddressesJson = reader.readString(offsets[15]);
-  object.sendingAddressesJson = reader.readString(offsets[16]);
-  object.status = reader.readString(offsets[17]);
-  object.totalInput = reader.readString(offsets[18]);
-  object.totalOutput = reader.readString(offsets[19]);
-  object.txid = reader.readString(offsets[20]);
-  object.updatedAt = reader.readDateTimeOrNull(offsets[21]);
-  object.walletId = reader.readString(offsets[22]);
+  object.lockTime = reader.readLongOrNull(offsets[11]);
+  object.netAmount = reader.readString(offsets[12]);
+  object.notes = reader.readStringOrNull(offsets[13]);
+  object.primaryCounterparty = reader.readStringOrNull(offsets[14]);
+  object.rawHex = reader.readString(offsets[15]);
+  object.receivingAddressesJson = reader.readString(offsets[16]);
+  object.sendingAddressesJson = reader.readString(offsets[17]);
+  object.status = reader.readString(offsets[18]);
+  object.totalInput = reader.readString(offsets[19]);
+  object.totalOutput = reader.readString(offsets[20]);
+  object.txid = reader.readString(offsets[21]);
+  object.updatedAt = reader.readDateTimeOrNull(offsets[22]);
+  object.version = reader.readLongOrNull(offsets[23]);
+  object.walletId = reader.readString(offsets[24]);
   return object;
 }
 
@@ -15804,13 +15818,13 @@ P _bitcoinTransactionEntityDeserializeProp<P>(
     case 10:
       return (reader.readBool(offset)) as P;
     case 11:
-      return (reader.readString(offset)) as P;
+      return (reader.readLongOrNull(offset)) as P;
     case 12:
-      return (reader.readStringOrNull(offset)) as P;
+      return (reader.readString(offset)) as P;
     case 13:
       return (reader.readStringOrNull(offset)) as P;
     case 14:
-      return (reader.readString(offset)) as P;
+      return (reader.readStringOrNull(offset)) as P;
     case 15:
       return (reader.readString(offset)) as P;
     case 16:
@@ -15824,8 +15838,12 @@ P _bitcoinTransactionEntityDeserializeProp<P>(
     case 20:
       return (reader.readString(offset)) as P;
     case 21:
-      return (reader.readDateTimeOrNull(offset)) as P;
+      return (reader.readString(offset)) as P;
     case 22:
+      return (reader.readDateTimeOrNull(offset)) as P;
+    case 23:
+      return (reader.readLongOrNull(offset)) as P;
+    case 24:
       return (reader.readString(offset)) as P;
     default:
       throw IsarError('Unknown property with id $propertyId');
@@ -17958,6 +17976,80 @@ extension BitcoinTransactionEntityQueryFilter on QueryBuilder<
   }
 
   QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> lockTimeIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'lockTime',
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> lockTimeIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'lockTime',
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> lockTimeEqualTo(int? value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'lockTime',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> lockTimeGreaterThan(
+    int? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'lockTime',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> lockTimeLessThan(
+    int? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'lockTime',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> lockTimeBetween(
+    int? lower,
+    int? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'lockTime',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
       QAfterFilterCondition> netAmountEqualTo(
     String value, {
     bool caseSensitive = true,
@@ -19450,6 +19542,80 @@ extension BitcoinTransactionEntityQueryFilter on QueryBuilder<
   }
 
   QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> versionIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'version',
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> versionIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'version',
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> versionEqualTo(int? value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'version',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> versionGreaterThan(
+    int? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'version',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> versionLessThan(
+    int? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'version',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
+      QAfterFilterCondition> versionBetween(
+    int? lower,
+    int? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'version',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity,
       QAfterFilterCondition> walletIdEqualTo(
     String value, {
     bool caseSensitive = true,
@@ -19751,6 +19917,20 @@ extension BitcoinTransactionEntityQuerySortBy on QueryBuilder<
   }
 
   QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterSortBy>
+      sortByLockTime() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'lockTime', Sort.asc);
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterSortBy>
+      sortByLockTimeDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'lockTime', Sort.desc);
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterSortBy>
       sortByNetAmount() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'netAmount', Sort.asc);
@@ -19901,6 +20081,20 @@ extension BitcoinTransactionEntityQuerySortBy on QueryBuilder<
       sortByUpdatedAtDesc() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'updatedAt', Sort.desc);
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterSortBy>
+      sortByVersion() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'version', Sort.asc);
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterSortBy>
+      sortByVersionDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'version', Sort.desc);
     });
   }
 
@@ -20090,6 +20284,20 @@ extension BitcoinTransactionEntityQuerySortThenBy on QueryBuilder<
   }
 
   QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterSortBy>
+      thenByLockTime() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'lockTime', Sort.asc);
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterSortBy>
+      thenByLockTimeDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'lockTime', Sort.desc);
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterSortBy>
       thenByNetAmount() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'netAmount', Sort.asc);
@@ -20244,6 +20452,20 @@ extension BitcoinTransactionEntityQuerySortThenBy on QueryBuilder<
   }
 
   QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterSortBy>
+      thenByVersion() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'version', Sort.asc);
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterSortBy>
+      thenByVersionDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'version', Sort.desc);
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterSortBy>
       thenByWalletId() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'walletId', Sort.asc);
@@ -20339,6 +20561,13 @@ extension BitcoinTransactionEntityQueryWhereDistinct on QueryBuilder<
   }
 
   QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QDistinct>
+      distinctByLockTime() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'lockTime');
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QDistinct>
       distinctByNetAmount({bool caseSensitive = true}) {
     return QueryBuilder.apply(this, (query) {
       return query.addDistinctBy(r'netAmount', caseSensitive: caseSensitive);
@@ -20415,6 +20644,13 @@ extension BitcoinTransactionEntityQueryWhereDistinct on QueryBuilder<
       distinctByUpdatedAt() {
     return QueryBuilder.apply(this, (query) {
       return query.addDistinctBy(r'updatedAt');
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QDistinct>
+      distinctByVersion() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'version');
     });
   }
 
@@ -20511,6 +20747,13 @@ extension BitcoinTransactionEntityQueryProperty on QueryBuilder<
     });
   }
 
+  QueryBuilder<BitcoinTransactionEntity, int?, QQueryOperations>
+      lockTimeProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'lockTime');
+    });
+  }
+
   QueryBuilder<BitcoinTransactionEntity, String, QQueryOperations>
       netAmountProperty() {
     return QueryBuilder.apply(this, (query) {
@@ -20585,6 +20828,13 @@ extension BitcoinTransactionEntityQueryProperty on QueryBuilder<
       updatedAtProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'updatedAt');
+    });
+  }
+
+  QueryBuilder<BitcoinTransactionEntity, int?, QQueryOperations>
+      versionProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'version');
     });
   }
 

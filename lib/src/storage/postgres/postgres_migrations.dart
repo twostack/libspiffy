@@ -30,6 +30,7 @@ import 'migrations/v019_transaction_status_updated_index.dart';
 import 'migrations/v020_pending_receives.dart';
 import 'migrations/v021_transaction_counterparty_marker.dart';
 import 'migrations/v022_channel_lock_time_bigint.dart';
+import 'migrations/v023_transaction_lock_time_and_version.dart';
 
 /// Base class for database migrations.
 ///
@@ -78,6 +79,7 @@ class PostgresMigrations {
     V020PendingReceives(),
     V021TransactionCounterpartyMarker(),
     V022ChannelLockTimeBigint(),
+    V023TransactionLockTimeAndVersion(),
   ];
 
   /// Test hook awaited by [migrate] right after it reads the current schema

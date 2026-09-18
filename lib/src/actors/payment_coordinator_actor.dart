@@ -17,6 +17,7 @@ import '../plugin/plugin_types.dart';
 import '../plugin/transaction_builder_plugin.dart';
 import '../plugin/provisioned_transaction.dart';
 import '../storage/read_model_storage.dart';
+import '../storage/transaction_row_rules.dart';
 import '../storage/secure_storage.dart';
 import '../services/ancestor_chain_service.dart';
 import '../services/watch_only_funds.dart';
@@ -1304,6 +1305,16 @@ class PaymentCoordinatorActor extends Actor {
     // Calculate change amount
     final changeAmount = transaction.outputValue - paymentAmount;
 
+    // The consensus fields the journal records (bead libspiffy-zpu7): every
+    // caller here builds [transaction] from a transaction it has just
+    // serialized, so both are known, and the raw hex carries them where the
+    // record does not. Refuse rather than journal an invented 0/1.
+    final intrinsics = TransactionRowRules.intrinsicsOf(transaction);
+    if (intrinsics.version == null || intrinsics.lockTime == null) {
+      throw StateError('Cannot record outgoing transaction ${transaction.txid}: '
+          'its version and nLockTime are unknown and its raw hex does not carry them');
+    }
+
     final command = RecordOutgoingTransactionCommand(
       walletId: walletId,
       txid: transaction.txid,
@@ -1313,8 +1324,8 @@ class PaymentCoordinatorActor extends Actor {
       fee: transaction.fee.toInt(),
       numInputs: spentUtxoKeys.length,
       numOutputs: recipientAddresses.length + (changeAddress != null ? 1 : 0),
-      txVersion: transaction.version,
-      txLockTime: transaction.lockTime,
+      txVersion: intrinsics.version!,
+      txLockTime: intrinsics.lockTime!,
       spentUtxoKeys: spentUtxoKeys,
       recipientAddresses: recipientAddresses,
       paymentAmount: paymentAmount,

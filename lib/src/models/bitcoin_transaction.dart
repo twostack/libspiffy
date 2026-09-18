@@ -108,11 +108,23 @@ class BitcoinTransaction {
   /// Optional memo or label for this transaction
   final String? memo;
   
-  /// Lock time for the transaction
-  final int lockTime;
-  
-  /// Transaction version
-  final int version;
+  /// The transaction's `nLockTime`, or null when the wallet holds no
+  /// evidence of it (bead libspiffy-zpu7).
+  ///
+  /// This is a consensus field of the transaction itself — the txid commits
+  /// to it — and it is what makes a channel refund unspendable until its
+  /// deadline. It used to be non-nullable, and the Isar and PostgreSQL
+  /// backends had no column for it, so both answered `0` for every row: the
+  /// reading was not merely absent, it was inverted ("spendable now" about a
+  /// transaction that is not). It is null rather than `0` on a row whose
+  /// record carried none and whose [rawHex] cannot be read as a
+  /// transaction; every other row carries the stored or recovered value.
+  final int? lockTime;
+
+  /// The transaction's version field, or null when the wallet holds no
+  /// evidence of it — as [lockTime], and for the same reason (it used to
+  /// read back as `1` on two of the three backends).
+  final int? version;
 
   /// The app's opaque marker for the counterparty this payment was with
   /// (bead libspiffy-cq16, spv-understanding.md "Core Data Management"
@@ -146,8 +158,8 @@ class BitcoinTransaction {
     required this.createdAt,
     required this.updatedAt,
     this.memo,
-    required this.lockTime,
-    required this.version,
+    this.lockTime,
+    this.version,
     this.counterpartyMarker,
   });
   
@@ -338,8 +350,9 @@ class BitcoinTransaction {
       createdAt: DateTime.parse(map['createdAt'] as String),
       updatedAt: DateTime.parse(map['updatedAt'] as String),
       memo: map['memo'] as String?,
-      lockTime: map['lockTime'] as int,
-      version: map['version'] as int,
+      // Null on a map whose writer held no evidence of them (zpu7).
+      lockTime: map['lockTime'] as int?,
+      version: map['version'] as int?,
       // Absent on maps written before cq16.
       counterpartyMarker: map['counterpartyMarker'] as String?,
     );

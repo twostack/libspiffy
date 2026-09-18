@@ -302,6 +302,48 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### A transaction's lock time survives being stored
+
+Report section 11, V-88 and V-89. Both found by the reachability sweep,
+`doc/reachability-sweep-2026-09-18.md`.
+
+- **`nLockTime` and `version` read back as `0` and `1` on Isar and
+  PostgreSQL (V-88).** The write path carried both correctly and storage had
+  no column for either, so both backends invented a value while the
+  in-memory backend answered truthfully — the same wallet gave different
+  answers depending on its backend. `0` is not a neutral default for an
+  `nLockTime`: it means "no lock at all", so a channel refund locked until
+  its deadline read back as spendable now.
+- Both fields are now stored (Isar fields; **Postgres migration v023**,
+  `BIGINT` for the unsigned 32-bit range, backfilled from `raw_hex` in paged
+  batches). One shared rule serves all three backends and the migration, and
+  it is **set once, never blanked and never revised** — the txid commits to
+  both fields.
+- **The raw hex outranks the record.** Hex that deserializes *and hashes to
+  the row's own txid* is the transaction; a record naming something else is
+  restating it wrongly, the defect V-83 fixed on the funding reply. The
+  record answers only when the hex is absent, unreadable, or belongs to
+  another transaction.
+- **Breaking:** `BitcoinTransaction.lockTime` and `.version` are now `int?`
+  and no longer required. A row whose record carried neither and whose raw
+  hex cannot be read answers `null` — following V-80, an absence rather than
+  a plausible value. Readers must handle `int?`.
+- **`getTransactionAddresses` was blind to everything the wallet sent
+  (V-89).** Address junctions were built only on the import route, so the
+  whole outgoing side was missing from the address-centric index. Both routes
+  that create a transaction row from its bytes now build them; the four that
+  only move a status, height or marker rewrite nothing.
+- **Input links no longer invent their address, index or amount.** They were
+  paired to inputs *by position* against a deduplicated address list that
+  skips unreadable scripts, with `amount: BigInt.zero`. Each link is now
+  keyed to the input's own outpoint and carries the parent output's real
+  address and amount, resolved from the event's BEEF ancestors, the ancestor
+  store, our own transaction rows, or — for our own payments — the wallet's
+  UTXO row. An input with no evidence is left **unlinked** and logged, not
+  given a guess.
+- Existing junction rows are rewritten the next time a transaction's event is
+  projected; a projection rebuild corrects historical rows.
+
 ### The journal stops claiming every broadcast succeeded
 
 Report section 11, V-87. Found by the reachability sweep,

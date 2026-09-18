@@ -655,6 +655,12 @@ _balanceCache.remove(walletId);
     // replaced (bead libspiffy-cq16).
     final counterpartyMarker = TransactionRowRules.counterpartyMarkerAfter(
         existing?.counterpartyMarker, transaction.counterpartyMarker);
+    // Consensus fields the txid commits to (bead libspiffy-zpu7): taken from
+    // the record, or from its raw hex when the record carries none, and then
+    // set once — no later record blanks or revises them.
+    final incoming = TransactionRowRules.intrinsicsOf(transaction);
+    final lockTime = TransactionRowRules.intrinsicAfter(existing?.lockTime, incoming.lockTime);
+    final version = TransactionRowRules.intrinsicAfter(existing?.version, incoming.version);
     final stored = walletTxs[transaction.txid] = keepsStatus
         ? BitcoinTransaction(
             walletId: walletId,
@@ -672,8 +678,8 @@ _balanceCache.remove(walletId);
             createdAt: transaction.createdAt,
             updatedAt: transaction.updatedAt,
             memo: transaction.memo,
-            lockTime: transaction.lockTime,
-            version: transaction.version,
+            lockTime: lockTime,
+            version: version,
             counterpartyMarker: counterpartyMarker,
           )
         : transaction.copyWith(
@@ -681,6 +687,8 @@ _balanceCache.remove(walletId);
             rawHex: transaction.rawHex.isEmpty ? existing?.rawHex : null,
             blockHeight: transaction.blockHeight ??
                 (transaction.status == TransactionStatus.confirmed ? existing?.blockHeight : null),
+            lockTime: lockTime,
+            version: version,
             counterpartyMarker: counterpartyMarker,
           );
     _indexConfirmed(walletId, stored);

@@ -15,6 +15,7 @@ import 'package:libspiffy/src/storage/postgres/postgres_migrations.dart';
 import 'package:libspiffy/src/storage/postgres/postgres_wallet_storage.dart';
 
 import '../read_model_keying_contract.dart' show contractHex64;
+import '../transaction_intrinsics_contract.dart';
 import '../transaction_lookup_contract.dart';
 import '../transaction_status_contract.dart';
 
@@ -48,6 +49,7 @@ void main() {
     });
 
     defineTransactionLookupContract(() => storage, unique: () => 'p$run-${counter++}');
+    defineTransactionIntrinsicsContract(() => storage, unique: () => 'pi$run-${counter++}');
     defineTransactionStatusContract(() => storage, unique: () => 'ps$run-${counter++}',
         storedCounterparty: (walletId, txid) async {
       final pool = await config.createPool();
@@ -222,6 +224,67 @@ void main() {
       final stored = (await storage.getTransaction(incoming, walletId: walletId))!;
       expect(stored.receivingAddresses, ['ours-1', 'ours-2'], reason: 'the addresses the columns derive from are unchanged');
       expect(stored.sendingAddresses, ['sender-1', 'sender-2']);
+    } finally {
+      await pool.close();
+      await storage.close();
+    }
+  });
+
+  /// Bead libspiffy-zpu7: rows written before v023 have no lock_time and no
+  /// tx_version, but the wallet keeps their raw hex, so the migration reads
+  /// both back from it. A row whose hex is not a transaction keeps NULL — no
+  /// reading is invented for a row with no evidence.
+  test('v023 backfills the lock time and version of existing rows from their raw hex', () async {
+    final migrations = PostgresMigrations(config);
+    await migrations.migrate();
+    final storage = PostgresWalletStorage(config);
+    await storage.initialize();
+    final pool = await config.createPool();
+    final walletId = 'w-v023-$run';
+    final readable = contractHex64('v023-readable-$run');
+    final unreadable = contractHex64('v023-unreadable-$run');
+    BitcoinTransaction row(String txid, String rawHex) => BitcoinTransaction(
+          txid: txid,
+          rawHex: rawHex,
+          status: TransactionStatus.pending,
+          inputValue: BigInt.from(12000),
+          outputValue: BigInt.from(10000),
+          fee: BigInt.from(2000),
+          receivingAddresses: const [],
+          sendingAddresses: const [],
+          netAmount: BigInt.from(10000),
+          createdAt: DateTime.utc(2026, 9, 18),
+          updatedAt: DateTime.utc(2026, 9, 18),
+        );
+
+    try {
+      await storage.storeTransaction(walletId, row(readable, contractRawHex));
+      await storage.storeTransaction(walletId, row(unreadable, 'not-a-transaction'));
+      // As a pre-v023 row looked: the columns exist but hold nothing.
+      await pool.execute(
+          Sql.named('UPDATE bitcoin_transactions SET lock_time = NULL, tx_version = NULL '
+              'WHERE wallet_id = @w'),
+          parameters: {'w': walletId});
+      expect((await storage.getTransaction(readable, walletId: walletId))!.lockTime, contractTxLockTime,
+          reason: 'the read path recovers it even before the backfill');
+
+      // v023 has no schema to undo, so rolling back to v022 and migrating
+      // again runs the backfill over the rows as they now stand.
+      while (await migrations.getCurrentVersion() >= 23) {
+        await migrations.rollback();
+      }
+      expect(await migrations.getCurrentVersion(), 22);
+      await migrations.migrate();
+
+      final stored = await pool.execute(
+          Sql.named('SELECT txid, lock_time, tx_version FROM bitcoin_transactions '
+              'WHERE wallet_id = @w ORDER BY txid'),
+          parameters: {'w': walletId});
+      expect({for (final r in stored) r[0] as String: (r[1] as int?, r[2] as int?)}, {
+        readable: (contractTxLockTime, contractTxVersion),
+        unreadable: (null, null),
+      });
+      expect((await storage.getTransaction(unreadable, walletId: walletId))!.lockTime, isNull);
     } finally {
       await pool.close();
       await storage.close();

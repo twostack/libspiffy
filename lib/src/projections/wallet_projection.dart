@@ -1223,8 +1223,10 @@ class WalletProjection extends Projection<void> {
           event.walletId,
           event.txid,
           event.walletReceivingAddresses,
-          event.sendingAddresses,
           transaction,
+          // The parent transactions its BEEF carried: the evidence for what
+          // each input spends, and from which address (bead libspiffy-o9h6).
+          ancestors: event.ancestors,
         );
       } catch (e) {
         _log.warning('Address links for ${event.txid} not stored: $e');
@@ -1308,6 +1310,28 @@ class WalletProjection extends Projection<void> {
       
       
       await _storage.storeTransaction(event.walletId, transaction);
+
+      // The same address-centric index the import route builds (bead
+      // libspiffy-o9h6): without it getTransactionAddresses answered for
+      // what we received and nothing we sent. As on the import route, a
+      // transaction whose links cannot be built keeps its stored row.
+      try {
+        await _createTransactionAddressJunctions(
+          event.walletId,
+          event.txid,
+          [
+            ...event.recipientAddresses,
+            if (event.changeAddress != null) event.changeAddress!,
+          ],
+          transaction,
+          // Our own payment: its inputs are this wallet's UTXOs, so a row we
+          // hold names the address and the amount of an outpoint whose
+          // transaction we do not.
+          spendsOurUtxos: true,
+        );
+      } catch (e) {
+        _log.warning('Address links for ${event.txid} not stored: $e');
+      }
     } catch (e) {
       _log.warning('Failed to handle transaction recorded event: $e');
     }
@@ -1552,13 +1576,50 @@ class WalletProjection extends Projection<void> {
     }
   }
 
+  /// The address links behind [ReadModelStorage.getTransactionAddresses] for
+  /// [txid] (bead libspiffy-o9h6).
+  ///
+  /// Called by every route that writes a transaction row for the first time:
+  /// an import ([_handleTransactionImported], the counterparty's payment to
+  /// us) and one of our own payments ([_handleTransactionRecorded]). It used
+  /// to be called only by the import, so an address-centric query was blind
+  /// to everything the wallet sent — the one-of-N-routes pattern V-81 hit on
+  /// the channel closing txid. The later routes
+  /// (TransactionConfirmedEvent, TransactionStatusUpdatedEvent,
+  /// TransactionConfirmationRevertedEvent and the counterparty-marker stamp)
+  /// only change a stored row's status, block or marker; the addresses a
+  /// transaction pays and spends are fixed by its bytes, so they rewrite no
+  /// links.
+  ///
+  /// [knownOutputAddresses] are the addresses this wallet has a name for on
+  /// the output side: the outputs we received on an import, the recipient
+  /// and the change on a payment of ours. Outputs paying anything else (a
+  /// counterparty's own change) are not linked.
+  ///
+  /// Input links are keyed to **the input they belong to**, by its outpoint,
+  /// never to a position in a derived address list: `sendingAddresses` is
+  /// deduplicated and skips inputs whose script its producer could not read
+  /// (`spv_actor.dart`, `import_actor.dart`), so `sendingAddresses[i]` says
+  /// nothing about input `i`. The address and the amount of an input are the
+  /// address and the amount of the parent output it spends, looked up in
+  /// [_resolveInputParents]. An input whose parent we do not hold is not
+  /// linked at all: the amount used to be journaled as `BigInt.zero` on a
+  /// vin taken from the loop counter, which is a fabricated reading in a
+  /// public read model. (Recording the address with no amount would be the
+  /// fuller answer; `TransactionAddressLink.amount` is non-nullable and the
+  /// Postgres column is `BIGINT NOT NULL`, so that needs a schema change —
+  /// see the report for bead libspiffy-o9h6.)
+  ///
+  /// Idempotent: every backend replaces a transaction's links, so a replay
+  /// writes the same set.
   Future<void> _createTransactionAddressJunctions(
     String walletId,
     String txid,
-    List<String> receivingAddresses,
-    List<String> sendingAddresses,
-    BitcoinTransaction transaction,
-  ) async {
+    List<String> knownOutputAddresses,
+    BitcoinTransaction transaction, {
+    List<BeefAncestor> ancestors = const [],
+    bool spendsOurUtxos = false,
+  }) async {
     final links = <TransactionAddressLink>[];
 
     // Create registry once for all outputs. ScriptTypeRegistry is a
@@ -1570,57 +1631,146 @@ class WalletProjection extends Projection<void> {
       networkType: NetworkName.toDartsv(
           (walletMeta?['network'] ?? walletMeta?['networkType']) as String?),
     );
-    
+
     // Parse transaction to get exact amounts per address
     final parsedTx = dartsv.Transaction.fromHex(transaction.rawHex);
-    
-    // Add output links (receiving addresses)
+
+    // Add output links (addresses this wallet has a name for)
     for (int i = 0; i < parsedTx.outputs.length; i++) {
       final output = parsedTx.outputs[i];
-      
-      try {
-        final script = dartsv.SVScript.fromHex(output.script.toHex());
-        
-        // Use the registry to extract metadata for ANY script type
-        final metadata = scriptTypeRegistry.extractScriptMetadata(script);
-        
-        if (metadata != null) {
-          // Extract identifier and script type
-          final destination = _extractPaymentDestination(metadata, script);
-          
-          if (destination != null) {
-            final (outputDestination, scriptType) = destination;
-            
-            // Check if this destination is in our receiving addresses
-            if (receivingAddresses.contains(outputDestination)) {
-              links.add(TransactionAddressLink(
-                address: outputDestination,
-                direction: 'output',
-                amount: output.satoshis,
-                vout: i,
-              ));
-            }
-          }
-        }
-      } catch (_) {
-        continue;
+      final destination = _destinationOf(output.script, scriptTypeRegistry);
+      if (destination != null && knownOutputAddresses.contains(destination)) {
+        links.add(TransactionAddressLink(
+          address: destination,
+          direction: 'output',
+          amount: output.satoshis,
+          vout: i,
+        ));
       }
     }
-    
-    // Add input links (sending addresses)
-    for (int i = 0; i < sendingAddresses.length && i < parsedTx.inputs.length; i++) {
-      final sendingAddress = sendingAddresses[i];
-      links.add(TransactionAddressLink(
-        address: sendingAddress,
-        direction: 'input',
-        amount: BigInt.zero, // Would need parent tx to get exact amount
-        vin: i,
-      ));
+
+    // Add input links, each from the parent output its own outpoint names.
+    final parents = await _resolveInputParents(walletId, parsedTx, ancestors);
+    _UtxoRows? ourRows;
+    final unevidenced = <String>[];
+    for (int vin = 0; vin < parsedTx.inputs.length; vin++) {
+      final input = parsedTx.inputs[vin];
+      final prevTxid = input.prevTxnId;
+      final prevVout = input.prevTxnOutputIndex;
+
+      final parent = parents[prevTxid];
+      if (parent != null && prevVout < parent.outputs.length) {
+        final spent = parent.outputs[prevVout];
+        final destination = _destinationOf(spent.script, scriptTypeRegistry);
+        if (destination != null) {
+          links.add(TransactionAddressLink(
+            address: destination,
+            direction: 'input',
+            amount: spent.satoshis,
+            vin: vin,
+          ));
+          continue;
+        }
+      }
+
+      // Our own spend of an outpoint whose transaction we do not hold: the
+      // wallet's UTXO row is the evidence for both the address and the
+      // amount. Spent rows are kept for good, so the row is there whichever
+      // order UTXOSpentEvent and this event are projected in. Loaded at most
+      // once per transaction, and only when an input needs it; an import is
+      // a transaction a counterparty built from their own outputs, so it is
+      // not asked at all ([spendsOurUtxos]) and a replay of imports does not
+      // read every UTXO row per transaction.
+      if (spendsOurUtxos) {
+        ourRows ??= await _loadUtxoRows(walletId);
+        final row = ourRows.find(prevTxid, prevVout);
+        if (row != null) {
+          links.add(TransactionAddressLink(
+            address: row.address,
+            direction: 'input',
+            amount: row.satoshis,
+            vin: vin,
+          ));
+          continue;
+        }
+      }
+
+      unevidenced.add('$prevTxid:$prevVout');
     }
-    
+    if (unevidenced.isNotEmpty) {
+      _log.info('Address links for $txid: ${unevidenced.length} of '
+          '${parsedTx.inputs.length} input(s) spend an output we do not hold '
+          '(${unevidenced.join(', ')}); they are left unlinked rather than '
+          'linked to a guessed address or a zero amount');
+    }
+
     await _storage.storeTransactionAddresses(walletId, txid, links);
   }
-  
+
+  /// The parent transactions the inputs of [parsedTx] spend, by txid.
+  ///
+  /// Three sources, cheapest first, and each only asked for what the ones
+  /// before it did not answer:
+  /// 1. [ancestors] — the BEEF the import event carried, which is where a
+  ///    counterparty's parent transactions arrive (`_storeAncestors` files
+  ///    the same list under the same event);
+  /// 2. the txid-keyed ancestor store, which holds the ancestors of earlier
+  ///    imports;
+  /// 3. this wallet's own transaction rows, which is where the parent of one
+  ///    of our payments lives (the receive, or our previous change).
+  ///
+  /// A raw transaction that does not parse, or does not hash to the txid it
+  /// is filed under, is ignored: it is not evidence of anything.
+  Future<Map<String, dartsv.Transaction>> _resolveInputParents(
+    String walletId,
+    dartsv.Transaction parsedTx,
+    List<BeefAncestor> ancestors,
+  ) async {
+    final wanted = <String>{for (final input in parsedTx.inputs) input.prevTxnId};
+    if (wanted.isEmpty) return const {};
+    final parents = <String, dartsv.Transaction>{};
+
+    void offer(String txid, String rawHex) {
+      if (rawHex.isEmpty || !wanted.contains(txid) || parents.containsKey(txid)) return;
+      try {
+        final parsed = dartsv.Transaction.fromHex(rawHex);
+        if (parsed.id == txid) parents[txid] = parsed;
+      } catch (_) {
+        // Not a transaction we can read; no parent output to link to.
+      }
+    }
+
+    for (final ancestor in ancestors) {
+      offer(ancestor.txid, ancestor.rawHex);
+    }
+
+    var missing = wanted.difference(parents.keys.toSet());
+    if (missing.isNotEmpty) {
+      (await _storage.getAncestorTransactionsBatch(missing.toList())).forEach(offer);
+    }
+
+    missing = wanted.difference(parents.keys.toSet());
+    for (final parentTxid in missing) {
+      final row = await _storage.getTransaction(parentTxid, walletId: walletId);
+      if (row != null) offer(parentTxid, row.rawHex);
+    }
+
+    return parents;
+  }
+
+  /// The canonical destination identifier [script] pays to, or null when the
+  /// registry cannot read it (a non-standard script, an OP_RETURN).
+  String? _destinationOf(dartsv.SVScript script, ScriptTypeRegistry registry) {
+    try {
+      final normalized = dartsv.SVScript.fromHex(script.toHex());
+      final metadata = registry.extractScriptMetadata(normalized);
+      if (metadata == null) return null;
+      return _extractPaymentDestination(metadata, normalized)?.$1;
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Extract a canonical payment destination identifier from script metadata
   /// Returns (identifier, scriptType) tuple or null if not extractable
   (String, String)? _extractPaymentDestination(

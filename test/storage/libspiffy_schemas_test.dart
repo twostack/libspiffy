@@ -218,6 +218,66 @@ void main() {
       expect(tx.fee, equals(BigInt.from(20000)));
       expect(tx.memo, equals('Incoming payment'));
     });
+
+    /// Bead libspiffy-zpu7: the entity carries the transaction's nLockTime
+    /// and version, and a backup round trip keeps them — along with the
+    /// opaque counterparty marker, which `fromJson` used to drop even though
+    /// `toJson` wrote it (cq16).
+    test('a backup round trip keeps the lock time, the version and the counterparty marker', () {
+      final entity = BitcoinTransactionEntity()
+        ..walletId = 'wallet_123'
+        ..txid = 'tx_round_trip'
+        ..rawHex = '0200000000007b65cd1d'
+        ..confirmations = 0
+        ..totalInput = '500000'
+        ..totalOutput = '480000'
+        ..fee = '20000'
+        ..netAmount = '480000'
+        ..isIncoming = true
+        ..isOutgoing = false
+        ..status = 'pending'
+        ..createdAt = DateTime.utc(2026, 9, 18)
+        ..receivingAddressesJson = '[]'
+        ..sendingAddressesJson = '[]'
+        ..counterpartyMarker = 'peer-42'
+        ..lockTime = 500000123
+        ..version = 2;
+
+      final restored = BitcoinTransactionEntity.fromJson(entity.toJson());
+
+      expect(restored.lockTime, equals(500000123));
+      expect(restored.version, equals(2));
+      expect(restored.counterpartyMarker, equals('peer-42'));
+      expect(restored.toDomain().lockTime, equals(500000123));
+      expect(restored.toDomain().version, equals(2));
+    });
+
+    /// A row written before the columns existed: the raw hex the wallet
+    /// never drops still carries both, and a row with no readable hex keeps
+    /// no reading at all rather than a fabricated 0 and 1 (zpu7).
+    test('a row with no stored lock time takes it from the raw hex, or leaves it absent', () {
+      BitcoinTransactionEntity legacy(String rawHex) => BitcoinTransactionEntity()
+        ..walletId = 'wallet_123'
+        ..txid = 'tx_legacy'
+        ..rawHex = rawHex
+        ..confirmations = 0
+        ..totalInput = '1'
+        ..totalOutput = '1'
+        ..fee = '0'
+        ..netAmount = '1'
+        ..isIncoming = true
+        ..isOutgoing = false
+        ..status = 'pending'
+        ..createdAt = DateTime.utc(2026, 9, 18);
+
+      final recovered = legacy('0200000000007b65cd1d').toDomain();
+      expect(recovered.lockTime, equals(500000123));
+      expect(recovered.version, equals(2));
+
+      final absent = legacy('').toDomain();
+      expect(absent.lockTime, isNull);
+      expect(absent.version, isNull);
+    });
   });
 }
 

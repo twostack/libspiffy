@@ -10,6 +10,7 @@ import 'channel_read_model_contract.dart';
 import 'invoice_read_model_contract.dart';
 import 'header_reorg_contract.dart';
 import 'read_model_keying_contract.dart';
+import 'transaction_intrinsics_contract.dart';
 import 'transaction_lookup_contract.dart';
 import 'transaction_status_contract.dart';
 import 'wallet_metadata_types_contract.dart';
@@ -457,6 +458,7 @@ void main() {
     defineReadModelKeyingContract(() => storage, unique: () => 'm${counter++}');
     defineWalletLifecycleContract(() => storage, unique: () => 'ml${counter++}');
     defineTransactionLookupContract(() => storage, unique: () => 'mt${counter++}');
+    defineTransactionIntrinsicsContract(() => storage, unique: () => 'mi${counter++}');
     defineTransactionStatusContract(() => storage, unique: () => 'ms${counter++}');
     defineWalletMetadataTypesContract(() => storage, unique: () => 'mw${counter++}');
 

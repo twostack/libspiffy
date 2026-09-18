@@ -1081,6 +1081,7 @@ class PostgresWalletStorage implements ReadModelStorage {
             for (final s in TransactionRowRules.statusesSetBy(transaction.status)) "'${s.name}'"
           ].join(', ')})';
     final counterparty = TransactionRowRules.primaryCounterpartyOf(transaction);
+    final intrinsics = TransactionRowRules.intrinsicsOf(transaction);
 
     await _pool!.execute(
       Sql.named('''
@@ -1089,13 +1090,13 @@ class PostgresWalletStorage implements ReadModelStorage {
           total_input, total_output, fee, net_amount, is_incoming, is_outgoing,
           status, created_at, confirmed_at, broadcast_at, counterparty, notes,
           receiving_addresses, sending_addresses, primary_counterparty, updated_at,
-          counterparty_marker
+          counterparty_marker, lock_time, tx_version
         ) VALUES (
           @walletId, @txid, @rawHex, @blockHeight, @blockHash, @confirmations,
           @totalInput, @totalOutput, @fee, @netAmount, @isIncoming, @isOutgoing,
           @status, @createdAt, @confirmedAt, @broadcastAt, @counterparty, @notes,
           @receivingAddresses, @sendingAddresses, @primaryCounterparty, @updatedAt,
-          @counterpartyMarker
+          @counterpartyMarker, @lockTime, @txVersion
         )
         ON CONFLICT (wallet_id, txid) DO UPDATE SET
           -- An update without the raw transaction keeps the stored bytes: an
@@ -1141,7 +1142,13 @@ class PostgresWalletStorage implements ReadModelStorage {
           -- record naming somebody else never replaces it. Nothing, a
           -- revert included, blanks it.
           counterparty_marker =
-              COALESCE(bitcoin_transactions.counterparty_marker, NULLIF(EXCLUDED.counterparty_marker, ''))
+              COALESCE(bitcoin_transactions.counterparty_marker, NULLIF(EXCLUDED.counterparty_marker, '')),
+          -- Consensus fields the txid commits to (zpu7): set once, by the
+          -- first record that carries them. A later record naming none says
+          -- nothing about them and never blanks them; one naming something
+          -- else is describing a different transaction.
+          lock_time = COALESCE(bitcoin_transactions.lock_time, EXCLUDED.lock_time),
+          tx_version = COALESCE(bitcoin_transactions.tx_version, EXCLUDED.tx_version)
       '''),
       parameters: {
         'walletId': walletId,
@@ -1176,6 +1183,11 @@ class PostgresWalletStorage implements ReadModelStorage {
         // Not an address (cq16): the app's opaque identity marker, stored
         // verbatim and never interpreted.
         'counterpartyMarker': transaction.counterpartyMarker,
+        // The record's own nLockTime and version, or the ones its raw hex
+        // carries when it has none (zpu7). Null only when neither exists:
+        // no reading is invented for a row with no evidence.
+        'lockTime': intrinsics.lockTime,
+        'txVersion': intrinsics.version,
       },
     );
   }
@@ -1186,11 +1198,14 @@ class PostgresWalletStorage implements ReadModelStorage {
         total_input, total_output, fee, net_amount, is_incoming,
         is_outgoing, status, created_at, confirmed_at, broadcast_at,
         counterparty, notes, receiving_addresses, sending_addresses,
-        wallet_id, updated_at, counterparty_marker''';
+        wallet_id, updated_at, counterparty_marker, lock_time, tx_version''';
 
   BitcoinTransaction _rowToTransaction(ResultRow row) {
     final now = DateTime.now();
     final createdAt = row[12] as DateTime? ?? now;
+    final recovered = (row[22] == null || row[23] == null)
+        ? TransactionRowRules.intrinsicsOfRawHex(row[1] as String)
+        : null;
     return BitcoinTransaction(
       walletId: row[19] as String,
       txid: row[0] as String,
@@ -1214,8 +1229,13 @@ class PostgresWalletStorage implements ReadModelStorage {
       // The app's opaque counterparty marker (v021, cq16); null on rows
       // stored before the column existed.
       counterpartyMarker: row[21] as String?,
-      lockTime: 0, // Not stored in DB, default to 0
-      version: 1, // Not stored in DB, default to 1
+      // The consensus fields the txid commits to (v023, zpu7). Rows written
+      // before the columns existed were backfilled from their raw hex by the
+      // migration; one whose hex cannot be read as a transaction keeps a
+      // null here rather than the 0/1 this used to answer, which said
+      // "spendable now" about a locked refund.
+      lockTime: (row[22] as int?) ?? recovered?.lockTime,
+      version: (row[23] as int?) ?? recovered?.version,
     );
   }
 

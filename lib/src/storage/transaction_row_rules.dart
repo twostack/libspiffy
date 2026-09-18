@@ -2,7 +2,13 @@
 /// transaction row (bead libspiffy-7dj), in one place.
 library;
 
+import 'package:dartsv/dartsv.dart' as dartsv;
+
 import '../models/bitcoin_transaction.dart';
+
+/// The consensus fields of a transaction that the txid commits to and that a
+/// row therefore never revises: its `version` and its `nLockTime`.
+typedef TransactionIntrinsics = ({int version, int lockTime});
 
 /// How a stored transaction row takes a new record of the same transaction.
 abstract final class TransactionRowRules {
@@ -99,6 +105,80 @@ abstract final class TransactionRowRules {
     if (stored != null && stored.isNotEmpty) return stored;
     if (incoming != null && incoming.isNotEmpty) return incoming;
     return null;
+  }
+
+  /// The `nLockTime` or `version` a row keeps after a record carrying
+  /// [incoming], given the [stored] one (bead libspiffy-zpu7).
+  ///
+  /// Set once, by the first record that carries one, and kept from then on.
+  /// Both fields are consensus fields of the transaction itself and the txid
+  /// commits to them, so a row keyed on a txid has exactly one right answer
+  /// for each: a later record naming a different value is describing a
+  /// different transaction, and a later record naming none (a status update,
+  /// a confirmation, a reorganization) says nothing about them and must not
+  /// blank what we hold.
+  static int? intrinsicAfter(int? stored, int? incoming) => stored ?? incoming;
+
+  /// The `version` and `nLockTime` that [rawHex] carries, or null when it
+  /// cannot be read as a transaction (bead libspiffy-zpu7).
+  ///
+  /// The wallet stores the raw hex of every transaction it holds and never
+  /// drops it (spv-understanding.md, Data Retention), so a row written
+  /// before the two fields had columns can still be answered from evidence
+  /// rather than from a default. Nothing is guessed: the hex is deserialized
+  /// as a whole transaction, and hex that is not one yields null — a row
+  /// with no raw hex has no reading, and none is invented for it.
+  static TransactionIntrinsics? intrinsicsOfRawHex(String rawHex) {
+    if (rawHex.isEmpty) return null;
+    try {
+      final parsed = dartsv.Transaction.fromHex(rawHex);
+      return (version: parsed.version, lockTime: parsed.nLockTime);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// The `version` and `nLockTime` a backend stores for [tx]: what its own
+  /// raw hex carries, falling back to the record's values.
+  ///
+  /// **The hex is the authority, not the record.** The txid commits to both
+  /// fields, so hex that hashes to [BitcoinTransaction.txid] *is* the
+  /// transaction, and a record naming something else is restating it wrongly
+  /// - the defect V-83 fixed on the funding reply, where a built
+  /// transaction's fee and change were restated beside it instead of read
+  /// off it. The record answers only when the hex is absent, unreadable, or
+  /// is not the transaction the row is keyed on.
+  ///
+  /// Applied on the way in by every backend, so a record that arrived
+  /// without the fields (an older journal, a status update rebuilt from a
+  /// row that predates the columns) is stored with the values its own hex
+  /// proves rather than with none.
+  static ({int? version, int? lockTime}) intrinsicsOf(BitcoinTransaction tx) {
+    final own = _intrinsicsOfOwnRawHex(tx);
+    if (own != null) return (version: own.version, lockTime: own.lockTime);
+    final parsed = intrinsicsOfRawHex(tx.rawHex);
+    return (
+      version: tx.version ?? parsed?.version,
+      lockTime: tx.lockTime ?? parsed?.lockTime,
+    );
+  }
+
+  /// [tx]'s intrinsics read off the raw hex **when that hex is provably the
+  /// transaction the row is keyed on** — it deserializes and hashes to
+  /// [BitcoinTransaction.txid].
+  ///
+  /// Null when the hex is absent, unreadable, or hashes to something else,
+  /// in which case it is not evidence about this transaction and the
+  /// record's own values are all there is.
+  static TransactionIntrinsics? _intrinsicsOfOwnRawHex(BitcoinTransaction tx) {
+    if (tx.rawHex.isEmpty || tx.txid.isEmpty) return null;
+    try {
+      final parsed = dartsv.Transaction.fromHex(tx.rawHex);
+      if (parsed.id != tx.txid) return null;
+      return (version: parsed.version, lockTime: parsed.nLockTime);
+    } catch (_) {
+      return null;
+    }
   }
 
   /// The other party of [tx] from the wallet's perspective: the first

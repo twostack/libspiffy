@@ -788,6 +788,18 @@ class BitcoinTransactionEntity {
   /// before the field existed.
   String? counterpartyMarker;
 
+  /// The transaction's `nLockTime` (bead libspiffy-zpu7). Null on rows
+  /// written before the field existed; [toDomain] recovers those from
+  /// [rawHex] where it is a transaction we can read, and leaves them null
+  /// where it is not — a `0` here would say "spendable now" about a refund
+  /// that is locked.
+  int? lockTime;
+
+  /// The transaction's version field (bead libspiffy-zpu7). Null on rows
+  /// written before the field existed, recovered from [rawHex] on read as
+  /// [lockTime] is.
+  int? version;
+
   BitcoinTransactionEntity();
 
   /// Create from domain model BitcoinTransaction
@@ -832,6 +844,11 @@ class BitcoinTransactionEntity {
     // Set once, never blanked, never replaced (cq16).
     counterpartyMarker = TransactionRowRules.counterpartyMarkerAfter(counterpartyMarker, tx.counterpartyMarker);
     notes = tx.memo;
+    // Consensus fields the txid commits to: set once, never blanked and
+    // never revised by a later record (zpu7).
+    final intrinsics = TransactionRowRules.intrinsicsOf(tx);
+    lockTime = TransactionRowRules.intrinsicAfter(lockTime, intrinsics.lockTime);
+    version = TransactionRowRules.intrinsicAfter(version, intrinsics.version);
     updatedAt = tx.updatedAt;
     if (tx.blockHeight != null && tx.blockHeight! > 0) {
       confirmedAt = tx.updatedAt;
@@ -852,7 +869,10 @@ class BitcoinTransactionEntity {
     final sending = sendingAddressesJson.isNotEmpty && sendingAddressesJson != '[]'
         ? (jsonDecode(sendingAddressesJson) as List).cast<String>()
         : <String>[];
-    
+    final recovered = (lockTime == null || version == null)
+        ? TransactionRowRules.intrinsicsOfRawHex(rawHex)
+        : null;
+
     return BitcoinTransaction(
       walletId: walletId.isNotEmpty ? walletId : null,
       txid: txid,
@@ -869,8 +889,11 @@ class BitcoinTransactionEntity {
       createdAt: createdAt,
       updatedAt: updatedAt ?? createdAt,
       memo: notes,
-      lockTime: 0, // Would need to parse from rawHex or store separately
-      version: 1, // Would need to parse from rawHex or store separately
+      // Rows written before the columns existed have neither; the raw hex
+      // the wallet never drops still carries both (zpu7). Where it does not,
+      // the reading stays absent rather than becoming a fabricated 0/1.
+      lockTime: lockTime ?? recovered?.lockTime,
+      version: version ?? recovered?.version,
       counterpartyMarker: counterpartyMarker,
     );
   }
@@ -901,6 +924,8 @@ class BitcoinTransactionEntity {
       'sendingAddressesJson': sendingAddressesJson,
       'primaryCounterparty': primaryCounterparty,
       'counterpartyMarker': counterpartyMarker,
+      'lockTime': lockTime,
+      'version': version,
     };
   }
 
@@ -928,7 +953,11 @@ class BitcoinTransactionEntity {
       ..notes = json['notes'] as String?
       ..receivingAddressesJson = json['receivingAddressesJson'] as String
       ..sendingAddressesJson = json['sendingAddressesJson'] as String
-      ..primaryCounterparty = json['primaryCounterparty'] as String?;
+      ..primaryCounterparty = json['primaryCounterparty'] as String?
+      // Absent on backups written before each field existed (cq16, zpu7).
+      ..counterpartyMarker = json['counterpartyMarker'] as String?
+      ..lockTime = json['lockTime'] as int?
+      ..version = json['version'] as int?;
   }
 }
 

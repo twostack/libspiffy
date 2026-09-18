@@ -1,4 +1,5 @@
 import 'package:eventador/eventador.dart';
+import 'package:logging/logging.dart';
 import '../core/channel_events.dart';
 import '../models/payment_channel.dart';
 import '../storage/read_model_storage.dart';
@@ -16,6 +17,7 @@ import '../storage/read_model_storage.dart';
 /// have been processed, but all state is read from/written to storage.
 /// This design survives app restarts correctly - no checkpoint/state mismatch.
 class ChannelProjection extends Projection<void> {
+  final _log = Logger('ChannelProjection');
   final ReadModelStorage _storage;
   final String _projectionId;
   int _checkpoint = 0;
@@ -354,11 +356,22 @@ class ChannelProjection extends Projection<void> {
       state: PaymentChannelState.closed,
       clientBalanceSats: event.finalClientBalanceSats,
       serverBalanceSats: event.finalServerBalanceSats,
-      settlementTxId: event.settlementTxId,
+      settlementTxId: _firstClosingTxId(existing, event.settlementTxId, event.channelId),
       closedAt: event.timestamp,
     ));
   }
 
+  /// Records the transaction that reclaimed the funding output.
+  ///
+  /// Audit bead libspiffy-cqc (a): the txid the event carries used to be
+  /// dropped here, so the read model could not say which transaction claimed
+  /// the refund even though the wallet had been handed that fact.
+  ///
+  /// It lands in `settlementTxId`, the column [_handleChannelExpired] already
+  /// uses for a refund txid: exactly one transaction can ever spend the 2-of-2
+  /// funding output (BSV, first seen wins — a mined spend cannot be replaced),
+  /// so a channel has exactly one closing txid, and `state` distinguishes a
+  /// cooperative settlement (`closed`) from a refund (`expired`).
   Future<void> _handleRefundClaimed(RefundClaimedEvent event) async {
     final existing = await _storage.getPaymentChannel(event.channelId);
     if (existing == null) {
@@ -367,6 +380,7 @@ class ChannelProjection extends Projection<void> {
 
     await _storage.storePaymentChannel(existing.copyWith(
       state: PaymentChannelState.expired,
+      settlementTxId: _firstClosingTxId(existing, event.refundTxId, event.channelId),
       closedAt: event.timestamp,
     ));
   }
@@ -379,8 +393,30 @@ class ChannelProjection extends Projection<void> {
 
     await _storage.storePaymentChannel(existing.copyWith(
       state: PaymentChannelState.expired,
-      settlementTxId: event.settlementOrRefundTxId ?? existing.settlementTxId,
+      settlementTxId: _firstClosingTxId(existing, event.settlementOrRefundTxId, event.channelId),
       closedAt: event.timestamp,
     ));
+  }
+
+  /// The closing txid to store: the one already recorded if there is one, else
+  /// [observed].
+  ///
+  /// Written once and never replaced (spv-understanding.md, Data Retention).
+  /// A second, different txid for the same funding output cannot both be true
+  /// — only one spend of an output is ever mined — and the first record is the
+  /// one we can evidence, so a later observation never erases it. All three
+  /// closing routes go through this, so the rule holds whichever order the
+  /// events arrive in; a conflict is reported rather than silently dropped,
+  /// because the wallet cannot adjudicate between two claimed spends without
+  /// a proof and should not pretend it did.
+  String? _firstClosingTxId(PaymentChannel existing, String? observed, String channelId) {
+    final recorded = existing.settlementTxId;
+    if (recorded == null) return observed;
+    if (observed != null && observed != recorded) {
+      _log.warning('Channel $channelId is already closed by $recorded; keeping it '
+          'and not recording the conflicting $observed. Only one spend of the '
+          'funding output can be mined.');
+    }
+    return recorded;
   }
 }

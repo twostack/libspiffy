@@ -145,7 +145,19 @@ class PaymentChannel {
   /// Latest payment transaction ID
   final String? latestPaymentTxId;
 
-  /// Settlement transaction ID (set when channel closes cooperatively)
+  /// TXID of the transaction that spent the funding output and ended the
+  /// channel.
+  ///
+  /// Exactly one transaction can ever spend the 2-of-2 funding output — this
+  /// is BSV, where first seen wins and a transaction cannot be replaced — so
+  /// a channel has exactly one closing txid, whichever route it took:
+  /// * [PaymentChannelState.closed]: a cooperative settlement.
+  /// * [PaymentChannelState.expired]: a claimed refund, or a settlement
+  ///   observed after the lock time (audit bead libspiffy-cqc).
+  ///
+  /// Null until something closes the channel. Once recorded it is never
+  /// replaced: a later, conflicting observation cannot erase the transaction
+  /// the wallet can evidence.
   final String? settlementTxId;
 
   /// TXIDs of ancestor transactions for BEEF construction

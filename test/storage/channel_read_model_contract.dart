@@ -8,6 +8,7 @@
 /// return a fully populated domain [PaymentChannel].
 library;
 
+import 'package:logging/logging.dart';
 import 'package:test/test.dart';
 
 import 'package:libspiffy/src/core/channel_events.dart';
@@ -30,10 +31,15 @@ final contractAncestorTxids = ['a1' * 32, 'b2' * 32];
 final contractPaymentTxHex = '0200000001${'ee' * 40}';
 final contractPaymentTxId = 'c3' * 32;
 final contractSettlementTxId = 'd4' * 32;
+final contractRefundTxId = 'e5' * 32;
 final contractFundingAmount = BigInt.from(100000);
 final contractClientBalanceAfterPayment = BigInt.from(97500);
 final contractServerBalanceAfterPayment = BigInt.from(2500);
 const contractLockTimeUnix = 1800000000;
+
+/// 2050-01-01T00:00:00Z — past the 2038-01-19 limit of a signed 32-bit
+/// unix timestamp (audit bead libspiffy-cqc (c)).
+const contractPost2038LockTimeUnix = 2524608000;
 const contractContext = 'contract:lifecycle';
 final contractCreatedAt = DateTime.utc(2026, 9, 14, 12, 0, 0);
 final contractClosedAt = DateTime.utc(2026, 9, 14, 13, 30, 0);
@@ -255,6 +261,43 @@ PaymentChannel fullFieldChannel({
       errorMessage: 'contract error message',
     );
 
+/// An open channel that nothing has closed: every field of [fullFieldChannel]
+/// except `settlementTxId` and `closedAt`, which only a closing transaction
+/// fills in. ([PaymentChannel.copyWith] cannot clear a field.)
+PaymentChannel unsettledOpenChannel({
+  required String channelId,
+  required String walletId,
+}) =>
+    PaymentChannel(
+      channelId: channelId,
+      walletId: walletId,
+      role: PaymentChannelRole.client,
+      clientPeerId: contractClientPeerId,
+      serverPeerId: contractServerPeerId,
+      clientPubKeyHex: contractClientPubKeyHex,
+      serverPubKeyHex: contractServerPubKeyHex,
+      clientAddressB58: contractClientAddress,
+      serverAddressB58: contractServerAddress,
+      fundingAmountSats: contractFundingAmount,
+      lockTimeUnix: contractLockTimeUnix,
+      state: PaymentChannelState.open,
+      clientBalanceSats: contractClientBalanceAfterPayment,
+      serverBalanceSats: contractServerBalanceAfterPayment,
+      fundingTxId: contractFundingTxId,
+      fundingTxHex: contractFundingTxHex,
+      fundingOutputIndex: contractFundingOutputIndex,
+      refundTxHex: '0100000001${'aa' * 60}',
+      refundClientSigHex: '3045${'12' * 69}',
+      refundServerSigHex: '3045${'34' * 69}',
+      latestSequenceNumber: 3,
+      latestPaymentTxHex: contractPaymentTxHex,
+      latestPaymentTxId: contractPaymentTxId,
+      fundingAncestorTxids: contractAncestorTxids,
+      hasFundingMerkleProof: true,
+      context: contractContext,
+      createdAt: contractCreatedAt,
+    );
+
 /// Asserts [actual] carries exactly the field values of [expected].
 void expectSameChannelFields(PaymentChannel actual, PaymentChannel expected,
     {String step = ''}) {
@@ -453,4 +496,155 @@ Future<void> runRequestedChannelServerKeyContract(
   final accepted = await storage.getPaymentChannel(channelId);
   expect(accepted!.serverPubKeyHex, equals(contractServerPubKeyHex));
   expect(accepted.serverAddressB58, equals(contractServerAddress));
+}
+
+/// Audit bead libspiffy-cqc (a): `RefundClaimedEvent` carries the txid of the
+/// transaction that reclaimed the funding output, and the read model must keep
+/// it. The projection used to write only `state`/`closedAt` and drop the txid,
+/// so the wallet could not say which transaction claimed the refund.
+///
+/// The txid lands in `settlementTxId`: exactly one transaction can ever spend
+/// the 2-of-2 funding output (this is BSV — first seen wins, there is no
+/// replacement), so a channel has exactly one closing txid, and
+/// [ChannelExpiredEvent] already records a refund txid in that same column.
+Future<void> runRefundClaimedContract(
+  ReadModelStorage storage, {
+  required String channelId,
+  required String walletId,
+}) async {
+  final projection = ChannelProjection(
+    projectionId: 'channel-refund-$channelId',
+    eventStore: InMemoryEventStore(),
+    storage: storage,
+  );
+
+  // An open channel that nothing has closed yet: no transaction has spent the
+  // funding output, so the row carries no closing txid.
+  final open = unsettledOpenChannel(channelId: channelId, walletId: walletId);
+  await storage.storePaymentChannel(open);
+  expect((await storage.getPaymentChannel(channelId))!.settlementTxId, isNull,
+      reason: 'an unsettled channel has no closing txid');
+
+  final claimedAt = DateTime.utc(2026, 9, 16, 9, 30, 0);
+  final handled = await projection.handle(RefundClaimedEvent(
+    channelId: channelId,
+    refundTxId: contractRefundTxId,
+    refundAmountSats: contractFundingAmount,
+    timestamp: claimedAt,
+  ));
+  expect(handled, isTrue, reason: 'RefundClaimedEvent must be handled');
+
+  final claimed = (await storage.getPaymentChannel(channelId))!;
+  expect(claimed.state, equals(PaymentChannelState.expired));
+  expect(claimed.closedAt, isNotNull);
+  expect(claimed.closedAt!.toUtc(), equals(claimedAt));
+  expect(claimed.settlementTxId, equals(contractRefundTxId),
+      reason: 'the read model must record which transaction claimed the '
+          'refund (libspiffy-cqc)');
+  // Nothing else about the channel changed.
+  expect(claimed.refundTxHex, equals(open.refundTxHex),
+      reason: 'the retained refund transaction must survive the claim');
+  expect(claimed.clientBalanceSats, equals(open.clientBalanceSats));
+  expect(claimed.serverBalanceSats, equals(open.serverBalanceSats));
+  expect(claimed.fundingTxId, equals(open.fundingTxId));
+
+  final listed = (await storage.getPaymentChannelsForWallet(walletId))
+      .singleWhere((c) => c.channelId == channelId);
+  expect(listed.settlementTxId, equals(contractRefundTxId),
+      reason: 'the wallet listing must carry the refund txid too');
+
+  // A closing txid is written once and never replaced: a later expiry
+  // observation carrying some other txid cannot erase the transaction we
+  // broadcast ourselves (spv-understanding.md, Data Retention).
+  await projection.handle(ChannelExpiredEvent(
+    channelId: channelId,
+    observedBy: 'server',
+    settlementOrRefundTxId: 'ba' * 32,
+    timestamp: DateTime.utc(2026, 9, 16, 10, 0, 0),
+  ));
+  expect((await storage.getPaymentChannel(channelId))!.settlementTxId,
+      equals(contractRefundTxId),
+      reason: 'a recorded closing txid is never overwritten');
+
+  // The same rule on the third closing route. ChannelClosedEvent wrote its
+  // txid straight into the row, so the write-once rule held on two routes out
+  // of three and the read model's own documentation was wrong about the third.
+  // Two spends of one funding output cannot both be true, and the wallet
+  // cannot adjudicate between them without a proof - so it keeps the record it
+  // has and says out loud that it saw a conflict, rather than dropping either
+  // silently.
+  final records = <LogRecord>[];
+  final sub = Logger.root.onRecord.listen(records.add);
+  await projection.handle(ChannelClosedEvent(
+    channelId: channelId,
+    settlementTxId: 'cb' * 32,
+    finalClientBalanceSats: open.clientBalanceSats,
+    finalServerBalanceSats: open.serverBalanceSats,
+    timestamp: DateTime.utc(2026, 9, 16, 10, 30, 0),
+  ));
+  await sub.cancel();
+
+  expect((await storage.getPaymentChannel(channelId))!.settlementTxId,
+      equals(contractRefundTxId),
+      reason: 'a cooperative close overwrote a closing txid already recorded');
+  expect(
+      records.where((r) =>
+          r.loggerName == 'ChannelProjection' &&
+          r.level >= Level.WARNING &&
+          r.message.contains('cb' * 32)),
+      isNotEmpty,
+      reason: 'a conflicting closing txid must be reported, not dropped in silence');
+}
+
+/// Audit bead libspiffy-cqc (c): a channel whose nLockTime falls after
+/// 2038-01-19 03:14:07 UTC must round-trip through every backend. Isar's Long
+/// and Dart's int are both 64-bit; Postgres stored `lock_time_unix` as a
+/// 32-bit INTEGER, which rejects such a value outright.
+Future<void> runPost2038LockTimeContract(
+  ReadModelStorage storage, {
+  required String channelId,
+  required String walletId,
+}) async {
+  final projection = ChannelProjection(
+    projectionId: 'channel-locktime-$channelId',
+    eventStore: InMemoryEventStore(),
+    storage: storage,
+  );
+
+  // 1. Through the projection, the way production writes channel rows.
+  await projection.handle(ChannelRequestedEvent(
+    channelId: channelId,
+    walletId: walletId,
+    clientPeerId: contractClientPeerId,
+    serverPeerId: contractServerPeerId,
+    clientPubKeyHex: contractClientPubKeyHex,
+    clientAddressB58: contractClientAddress,
+    derivationIndex: 0,
+    fundingAmountSats: contractFundingAmount,
+    lockTimeUnix: contractPost2038LockTimeUnix,
+    context: contractContext,
+    timestamp: contractCreatedAt,
+  ));
+
+  final requested = await storage.getPaymentChannel(channelId);
+  expect(requested, isNotNull);
+  expect(requested!.lockTimeUnix, equals(contractPost2038LockTimeUnix),
+      reason: 'a lock time past 2038 must survive the projection write');
+  expect(requested.lockTime.toUtc().year, greaterThan(2038));
+
+  // 2. Directly, with every other field populated.
+  final directId = '$channelId-direct';
+  await storage.storePaymentChannel(
+    fullFieldChannel(channelId: directId, walletId: walletId)
+        .copyWith(lockTimeUnix: contractPost2038LockTimeUnix),
+  );
+  expect((await storage.getPaymentChannel(directId))!.lockTimeUnix,
+      equals(contractPost2038LockTimeUnix));
+
+  final listed = await storage.getPaymentChannelsForWallet(walletId);
+  for (final id in [channelId, directId]) {
+    expect(listed.singleWhere((c) => c.channelId == id).lockTimeUnix,
+        equals(contractPost2038LockTimeUnix),
+        reason: 'the wallet listing must carry the full lock time for $id');
+  }
 }

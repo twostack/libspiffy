@@ -302,6 +302,28 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### A channel's closing transaction, and channels that outlive 2038
+
+Report section 11, V-81.
+
+- **The transaction that claimed a refund is now in the read model (V-81).**
+  `RefundClaimedEvent` carries the refund txid and the aggregate applied it,
+  but the projection dropped it, so nothing could say which transaction
+  reclaimed the funding output. It is recorded in the existing
+  `settlementTxId` field: only one transaction can ever spend the 2-of-2
+  funding output, so a channel has exactly one closing txid, and `state`
+  distinguishes a cooperative settlement (`closed`) from a refund (`expired`).
+- **A closing txid is written once and never replaced,** on all three closing
+  routes. Previously a later observation could overwrite a refund txid the
+  wallet had broadcast itself. A second, conflicting txid is logged rather
+  than dropped in silence: two spends of one output cannot both be true, and
+  the wallet cannot adjudicate between them without a proof.
+- **Postgres migration v022:** `payment_channels.lock_time_unix` widens from
+  `INTEGER` to `BIGINT`. A channel whose refund becomes spendable after
+  2038-01-19 could not be stored at all (`22003: value out of range`). Isar
+  and in-memory were already 64-bit and are unchanged. **An existing
+  deployment must run `migrate()`.**
+
 ### A transaction nothing proves is in no block
 
 Report section 11, V-80.

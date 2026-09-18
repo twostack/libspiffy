@@ -398,6 +398,22 @@ void main() {
       );
     });
 
+    test('a claimed refund records its txid in the read model (cqc)', () async {
+      await runRefundClaimedContract(
+        InMemoryWalletStorage(),
+        channelId: 'inmem-channel-refund',
+        walletId: 'inmem-channel-refund-wallet',
+      );
+    });
+
+    test('a lock time past 2038 round-trips (cqc)', () async {
+      await runPost2038LockTimeContract(
+        InMemoryWalletStorage(),
+        channelId: 'inmem-channel-locktime',
+        walletId: 'inmem-channel-locktime-wallet',
+      );
+    });
+
     test('a fetched channel is a snapshot: deriving a changed copy does not change storage',
         () async {
       final storage = InMemoryWalletStorage();

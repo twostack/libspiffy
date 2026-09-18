@@ -157,6 +157,23 @@ void main() {
       );
     });
 
+    test('payment channel: a claimed refund records its txid in the read model (cqc)',
+        () async {
+      await runRefundClaimedContract(
+        storage,
+        channelId: 'isar-channel-refund',
+        walletId: 'isar-channel-refund-wallet',
+      );
+    });
+
+    test('payment channel: a lock time past 2038 round-trips (cqc)', () async {
+      await runPost2038LockTimeContract(
+        storage,
+        channelId: 'isar-channel-locktime',
+        walletId: 'isar-channel-locktime-wallet',
+      );
+    });
+
     test('payment channel: a legacy empty server key reads back as null (y3b)',
         () async {
       await runChannelLifecycleContract(

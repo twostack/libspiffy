@@ -29,6 +29,7 @@ import 'migrations/v018_merkle_proof_status_changed_index.dart';
 import 'migrations/v019_transaction_status_updated_index.dart';
 import 'migrations/v020_pending_receives.dart';
 import 'migrations/v021_transaction_counterparty_marker.dart';
+import 'migrations/v022_channel_lock_time_bigint.dart';
 
 /// Base class for database migrations.
 ///
@@ -76,6 +77,7 @@ class PostgresMigrations {
     V019TransactionStatusUpdatedIndex(),
     V020PendingReceives(),
     V021TransactionCounterpartyMarker(),
+    V022ChannelLockTimeBigint(),
   ];
 
   /// Test hook awaited by [migrate] right after it reads the current schema

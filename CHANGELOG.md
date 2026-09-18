@@ -302,6 +302,29 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### A transaction nothing proves is in no block
+
+Report section 11, V-80.
+
+- **An import with no merkle proof no longer records the genesis block
+  (V-80).** `TransactionImportedEvent.blockHeight` was a non-nullable `int`,
+  so a transaction received without a BUMP was journaled at height 0 - block
+  0 - because an absence could not be represented. Under V-79 a transaction's
+  height *is* what says "confirmed", so this is the same defect V-78 and V-79
+  fixed for UTXO rows, one level up. The height is now nullable end to end:
+  on the event, on `RecordImportedTransactionCommand` (still `required`, so
+  every caller states it), out of `SPVActor` and through `WalletManagerActor`,
+  and the wallet's imported-transaction record carries no `blockHeight` key
+  when nothing proves one.
+- **A re-delivery carrying no proof no longer takes away a height an earlier
+  proof established.** Previously a proofless re-delivery lowered the record
+  to height 0 for any transaction that had not yet reached
+  `status: confirmed`. An absence of evidence is not evidence the earlier
+  proof was wrong.
+- **Breaking:** `TransactionImportedEvent.blockHeight` and
+  `RecordImportedTransactionCommand.blockHeight` are `int?`. Pass `null`, not
+  `0`, for a transaction received without a proof.
+
 ### One meaning for "confirmed"
 
 Report section 11, V-79.

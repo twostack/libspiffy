@@ -302,6 +302,27 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### A reported confirmation count is not evidence
+
+Report section 11, V-78.
+
+- **A caller-supplied confirmation count can no longer make funds spendable
+  (V-78).** `BitcoinUtxo.updateConfirmations` promoted a UTXO from `pending`
+  or `voided` to `available` whenever `confirmations > 0`, and
+  `UpdateUTXOConfirmationsCommand` accepted both the count and the block
+  height from the caller unvalidated - so one command, with no proof
+  anywhere, made funds spendable, and un-voided outputs that are meant to be
+  revivable only by a proof. The method now records the count and the height
+  and changes no status. **`UpdateUTXOConfirmationsCommand` is deprecated**:
+  nothing in the library sends it, and between the wallet deriving
+  confirmation counts rather than storing them and a caller's height not
+  being evidence, it has nothing correct left to do. Use
+  `MarkUTXOAvailableCommand`, or a confirmation verified against your own
+  header chain. **Breaking:** `UTXOConfirmationUpdatedEvent.blockHeight` and
+  `BitcoinUtxo.updateConfirmations(blockHeight:)` are now nullable, so an
+  absent height is recorded as absent instead of as height 0 - the genesis
+  block - and no longer erases a height a proof established.
+
 ### Proven heights, voided change, and plugin guards
 
 Report section 11, V-71 to V-77; each fix has a regression test shown to fail

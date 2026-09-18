@@ -302,6 +302,36 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### One meaning for "confirmed"
+
+Report section 11, V-79.
+
+- **"Confirmed" now means the same thing in every API (V-79).** There were
+  four definitions and three different answers: the aggregate's balance
+  buckets and the read model's wallet row required a stored count of six or
+  more, `BalanceResponse` asked "has a block height", and
+  `BitcoinUtxo.isConfirmed` wanted a height *and* a positive count - so the
+  same output could read confirmed in one API and unconfirmed in another, and
+  proof-confirmed funds read as unconfirmed until five more blocks arrived.
+  The single rule, now in `spv-understanding.md` under "Balances": confirmed
+  is evidenced by the transaction appearing in a block whose header we hold on
+  our active chain, which is exactly `blockHeight != null`. **There is
+  deliberately no depth threshold** - a proof confirms at depth one as at
+  depth six, and waiting for depth is your application's policy, not this
+  library's.
+- **Breaking:** `WalletBalances.confirmedAt` is removed (no depth threshold
+  exists to configure); `BitcoinUtxo.updateConfirmations` no longer takes a
+  `blockHeight`; the coordinator `TransactionConfirmedEvent` no longer carries
+  a `confirmations` field; `BitcoinUtxo.isConfirmed` and
+  `BitcoinTransaction.isConfirmed` no longer read a count. Journaled snapshot
+  totals (`confirmedBalance`/`unconfirmedBalance`) now split by proven height.
+- **Fabricated confirmation counts are gone.** The library wrote
+  `confirmations: 1` on a proven receive, `1`/`6` on confirmed transaction
+  rows, and ARC's status check reported `6` whenever a height was present.
+  Nothing measured or advanced any of them. `TransactionStatusMessage.confirmations`
+  is now always `null`: ARC answers with a status and a height and says
+  nothing about depth.
+
 ### A reported confirmation count is not evidence
 
 Report section 11, V-78.

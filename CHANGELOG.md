@@ -302,6 +302,38 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### A wallet's own outputs can fund a channel, and the fee is the real one
+
+Report section 11, V-83.
+
+- **Bare-multisig and P2PK wallet UTXOs can fund a payment channel (V-83).**
+  Channel funding signed every input as P2PKH and so excluded them outright -
+  the wallet's own money, unusable for this purpose. The unlocking decision
+  now lives in one place, `WalletTransactionSigner.unlockFor`, shared with
+  `SignTransactionCommand`. Selection excludes only what the wallet cannot
+  unlock alone: a bare multisig whose threshold its keys do not meet, or a
+  P2PK to someone else's key.
+- **Channel funding fees were underpaid, and are now correct.** Every input
+  was sized as a 148-byte P2PKH input (an m-of-n input is `42 + 73m`, a P2PK
+  input 114), the 2-of-2 funding output was counted as a 34-byte P2PKH
+  output, and dartsv's own estimate - which counts only the unsigned
+  unlocking script and omits the outpoint and sequence number - was used on
+  top. Funding transactions now pay a little more than they did. Standard
+  policy rate as before: there is no fee auction on this network.
+- **`FundingTransactionBuiltResponse` describes the transaction that was
+  built,** not the estimate: `fee`, `changeAmount` and `totalOutputSats` are
+  read off the signed transaction, which is not what the estimate predicted.
+- **`initializeLibSpiffy(channelPeerId:)` is forwarded** (new parameter,
+  defaulted), with a `LibSpiffyActorSystem.channelPeerId` getter. A host
+  booting through the free function previously got an empty channel peer id
+  and its channels could not address it.
+- Not done, deliberately: plugin-built funding transactions
+  (`ProvisionFundingMessage`, TransactionBuilderPlugin payments) still accept
+  P2PKH inputs only. The plugin chooses the unlocking script, so libspiffy
+  cannot make it emit one for a multisig or P2PK input; dropping the guard
+  would hand plugins outputs they would sign wrongly. It needs a plugin
+  contract change, which is filed rather than guessed at.
+
 ### Judging a transaction is not receiving it
 
 Report section 11, V-82.

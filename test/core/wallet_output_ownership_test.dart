@@ -23,6 +23,7 @@ import 'package:test/test.dart';
 import 'package:libspiffy/src/core/bitcoin_wallet_aggregate.dart';
 import 'package:libspiffy/src/core/wallet_commands.dart';
 import 'package:libspiffy/src/core/wallet_events.dart';
+import 'package:libspiffy/src/core/wallet_output_ownership.dart';
 import 'package:libspiffy/src/models/bitcoin_transaction.dart';
 import 'package:libspiffy/src/models/bitcoin_utxo.dart';
 import 'package:libspiffy/src/projections/wallet_projection.dart';
@@ -519,6 +520,29 @@ void main() {
 
       expect(rows[key]!.status, UTXOStatus.spent);
       expect(rows[key]!.spentInTxId, tx.id);
+    });
+  });
+
+  group('P2PK scripts (bead libspiffy-8egy)', () {
+    final key = dartsv.SVPrivateKey.fromHex('33' * 32, dartsv.NetworkType.TEST).publicKey;
+    final p2pk = dartsv.P2PKLockBuilder(key).getScriptPubkey().toHex();
+    final p2pkhScript = dartsv.P2PKHLockBuilder.fromAddress(key.toAddress(dartsv.NetworkType.TEST))
+        .getScriptPubkey()
+        .toHex();
+
+    test('the key and its address are read off a P2PK locking script', () {
+      expect(p2pkPublicKeyHex(p2pk), key.toHex());
+      expect(p2pkAddress(p2pk, dartsv.NetworkType.TEST), key.toAddress(dartsv.NetworkType.TEST).toBase58());
+      expect(needsNonP2pkhUnlock(p2pk), isTrue);
+    });
+
+    test('nothing else reads as P2PK', () {
+      for (final script in ['', 'not hex', p2pkhScript, '006a', '21${key.toHex()}ae']) {
+        expect(p2pkPublicKeyHex(script), isNull, reason: script);
+        expect(p2pkAddress(script, dartsv.NetworkType.TEST), isNull, reason: script);
+      }
+      expect(needsNonP2pkhUnlock(p2pkhScript), isFalse);
+      expect(needsNonP2pkhUnlock(''), isFalse);
     });
   });
 }

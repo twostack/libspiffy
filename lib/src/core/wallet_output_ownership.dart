@@ -89,22 +89,47 @@ class BareMultisigScript {
   }
 }
 
-/// Whether [scriptHex] locks an output that a P2PKH unlocking script cannot
-/// spend although it can be a wallet UTXO: a bare multisig script or a P2PK
-/// script (`<key> OP_CHECKSIG`). Paths that sign every input as P2PKH
-/// (plugin funding, channel funding) do not select such UTXOs (bead
-/// libspiffy-nlp).
-bool needsNonP2pkhUnlock(String scriptHex) {
-  if (BareMultisigScript.parseHex(scriptHex) != null) return true;
-  if (scriptHex.isEmpty) return false;
+/// The public key of the P2PK script (`<key> OP_CHECKSIG`) [scriptHex] locks
+/// with, as hex, or null when it is not one (malformed ones included).
+String? p2pkPublicKeyHex(String scriptHex) {
+  if (scriptHex.isEmpty) return null;
   try {
     final chunks = dartsv.SVScript.fromHex(scriptHex).chunks;
-    final key = chunks.length == 2 ? chunks.first.buf : null;
-    return key != null && (key.length == 33 || key.length == 65) && chunks.last.opcodenum == dartsv.OpCodes.OP_CHECKSIG;
+    if (chunks.length != 2) return null;
+    if (chunks.last.opcodenum != dartsv.OpCodes.OP_CHECKSIG) return null;
+    final key = chunks.first.buf;
+    if (key == null || (key.length != 33 && key.length != 65)) return null;
+    return HEX.encode(key);
   } catch (_) {
-    return false;
+    return null;
   }
 }
+
+/// The address (on [network]) of the key a P2PK script locks to, or null when
+/// [scriptHex] is not a P2PK script or its key does not parse.
+String? p2pkAddress(String scriptHex, dartsv.NetworkType network) {
+  final keyHex = p2pkPublicKeyHex(scriptHex);
+  if (keyHex == null) return null;
+  try {
+    return dartsv.Address.fromPublicKey(dartsv.SVPublicKey.fromHex(keyHex), network).toBase58();
+  } catch (_) {
+    return null;
+  }
+}
+
+/// Whether [scriptHex] locks an output that a P2PKH unlocking script cannot
+/// spend although it can be a wallet UTXO: a bare multisig script or a P2PK
+/// script (`<key> OP_CHECKSIG`).
+///
+/// The wallet signs such outputs with their own unlocking scripts wherever it
+/// builds the whole transaction itself ([WalletTransactionSigner.unlockFor]:
+/// `SignTransactionCommand` and channel funding, bead libspiffy-8egy). It
+/// still selects them out where a third-party `TransactionBuilderPlugin`
+/// builds the input — the plugin gets one public key per funding UTXO and
+/// unlocks it as P2PKH, and libspiffy cannot make it emit any other
+/// unlocking script (bead libspiffy-nlp).
+bool needsNonP2pkhUnlock(String scriptHex) =>
+    BareMultisigScript.parseHex(scriptHex) != null || p2pkPublicKeyHex(scriptHex) != null;
 
 /// Whether the wallet cannot sign for the output locked by [scriptHex] and
 /// attributed to [address] because the key it needs belongs to a watch

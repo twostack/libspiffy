@@ -6,7 +6,8 @@
 /// * Balances after each kind of UTXO transition, incremental and from a
 ///   full recomputation, and after a snapshot restore.
 /// * The aggregate's availability and selection helpers.
-/// * Channel funding selection (largest first, P2PKH only) and its reply.
+/// * Channel funding selection (largest first, every UTXO the wallet can
+///   unlock on its own: bead libspiffy-8egy) and its reply.
 /// * Signed transactions for each script type the wallet signs (ECDSA
 ///   signatures are deterministic, so the signed txids are pinned).
 /// * The outputs a recorded outgoing transaction credits to the wallet.
@@ -360,24 +361,28 @@ void main() {
           changeAddressBase58: wallet.change2,
         );
 
-    test('selects P2PKH UTXOs largest first until amount and fee are covered, and reserves them', () async {
+    test('selects spendable UTXOs largest first until amount and fee are covered, and reserves them', () async {
+      // UTXO 4 is a P2PK output to a wallet key: the wallet's own money and
+      // the largest UTXO, so it is picked first (bead libspiffy-8egy; it
+      // used to be excluded as un-signable and never funded a channel).
       final wallet = await funded();
       final one = await wallet.handle(command(wallet, 30000));
-      expect([for (final e in one.cast<UTXOReservedEvent>()) '${e.txid}:${e.vout}'], [_key(2)]);
+      expect([for (final e in one.cast<UTXOReservedEvent>()) '${e.txid}:${e.vout}'], [_key(4)]);
 
       final wallet2 = await funded();
-      final two = (await wallet2.handle(command(wallet2, 50000))).cast<UTXOReservedEvent>();
-      expect([for (final e in two) '${e.txid}:${e.vout}'], [_key(2), _key(3)]);
+      final two = (await wallet2.handle(command(wallet2, 100000))).cast<UTXOReservedEvent>();
+      expect([for (final e in two) '${e.txid}:${e.vout}'], [_key(4), _key(2)]);
       expect(two.map((e) => e.priority), [10, 10]);
       expect(two.map((e) => e.reservationReason), ['Payment channel funding: ch-1', 'Payment channel funding: ch-1']);
       expect(two.first.reservedByTxId, two.last.reservedByTxId);
       expect(two.first.expiresAt.difference(DateTime.now()).inMinutes, inInclusiveRange(58, 60));
 
+      // 90000 + 40000 + 20000 + 3000 available; UTXO 5 is reserved.
       final wallet3 = await funded();
       await expectLater(
-        wallet3.handle(command(wallet3, 63000)),
+        wallet3.handle(command(wallet3, 153000)),
         throwsA(isA<StateError>().having((e) => e.message, 'message',
-            'Failed to build funding transaction: Bad state: Insufficient funds: need 63052, have 63000')),
+            'Failed to build funding transaction: Bad state: Insufficient funds: need 153068, have 153000')),
       );
     });
 
@@ -395,9 +400,9 @@ void main() {
       expect(
         [response.fundingTxId, response.fundingOutputIndex, response.changeOutputIndex, response.changeAddress,
           response.changeAmount, response.fee, response.totalInputSats, response.totalOutputSats],
-        ['972dc08b88bcf4604b7ef455759c57e65e3e1a1279e1b51fd22a0c803a3ead7d', 1, 0, wallet.change2, 9978, 22, 40000, 39978],
+        ['659c3e6e6465956c4a7767f9f46fa83233d1b61f5a9200ec2cf614fcc2e773c1', 1, 0, wallet.change2, 59977, 23, 90000, 89977],
       );
-      expect(response.spentUtxoKeys, [_key(2)]);
+      expect(response.spentUtxoKeys, [_key(4)]);
       expect(dartsv.Transaction.fromHex(response.fundingTxHex).id, response.fundingTxId);
     });
   });

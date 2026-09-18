@@ -92,6 +92,10 @@ class LibSpiffyActorSystem {
   /// This node's own channel transport peer id ([initialize]'s
   /// `channelPeerId`, libspiffy-36f).
   String _channelPeerId = '';
+
+  /// This node's own peer id on the payment-channel transport, as given to
+  /// [initialize] (or [initializeLibSpiffy]). Empty when none was given.
+  String get channelPeerId => _channelPeerId;
   InvoiceProjection? _invoiceProjection;
   ChannelProjection? _channelProjection;
   ActorRef? _walletProjectionRef;
@@ -1642,6 +1646,11 @@ Future<void> initializeLibSpiffy({
   int? startHeight,
   List<String>? peerAddresses,
   String? userAgent,
+  // This node's own peer id on the channel transport (libspiffy-36f). It was
+  // not forwarded before (bead libspiffy-kp1): a host booting through this
+  // free function got an empty channel peer id and its channels could not
+  // address it.
+  String channelPeerId = '',
 }) async {
   final system = getLibSpiffySystem();
   await system.initialize(
@@ -1659,6 +1668,7 @@ Future<void> initializeLibSpiffy({
     startHeight: startHeight,
     peerAddresses: peerAddresses,
     userAgent: userAgent,
+    channelPeerId: channelPeerId,
   );
 }
 

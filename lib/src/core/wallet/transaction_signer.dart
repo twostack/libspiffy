@@ -26,6 +26,17 @@ typedef MultisigInputSignature = ({String txid, String txHex, String signatureHe
 /// verifies it.
 typedef InputSignature = ({String signatureHex, String publicKeyHex});
 
+/// How the wallet unlocks one of its own UTXOs: the unlocking-script builder
+/// the input carries and the private keys whose signatures it needs, in the
+/// order the locking script expects them.
+///
+/// One signature for P2PKH and P2PK; `threshold` of them, in script key
+/// order, for a bare multisig output the wallet can spend alone.
+typedef WalletInputUnlock = ({
+  dartsv.UnlockingScriptBuilder unlocker,
+  List<dartsv.SVPrivateKey> signingKeys,
+});
+
 /// Signs with one wallet's keys. Replies and journaling stay with the
 /// aggregate; every method here throws on refusal, with the aggregate's
 /// error texts.
@@ -74,83 +85,50 @@ class WalletTransactionSigner {
       }
 
       // Create TransactionOutput for the UTXO being spent
-      final lockingScript = dartsv.SVScript.fromHex(utxo.scriptPubKey);
+      final utxoScript = dartsv.SVScript.fromHex(utxo.scriptPubKey);
       final utxoOutput = dartsv.TransactionOutput(
         utxo.value.getValue(),
-        lockingScript,
+        utxoScript,
       );
-
-      // ScriptTypeRegistry is a singleton pinned to the first network it
-      // is built with; the default (testnet) threw for mainnet wallets
-      // once output scanning had initialised it for mainnet.
-      final registry = ScriptTypeRegistry(
-        networkType: NetworkName.toDartsv(currentState.networkType),
-      );
-
-      final utxoScript = dartsv.SVScript.fromHex(utxo.scriptPubKey);
-      final scriptType = registry.identifyScriptType(utxoScript);
-      final multisig = scriptType?.toLowerCase() == 'p2ms' ? BareMultisigScript.parse(utxoScript) : null;
 
       // Get private key for this UTXO's address
       // Use command-provided derivation index if available (from read model)
       final cmdDerivationIndex = (i < command.derivationIndices.length) ? command.derivationIndices[i] : null;
       // Chain flag is optional: absent means "resolve from aggregate state".
       final cmdIsChange = (i < command.isChangeFlags.length) ? command.isChangeFlags[i] : null;
-      // A multisig UTXO may be attributed to a watch address among its
-      // keys; its signing keys are then all resolved from the wallet's own
-      // address records (see _multisigSigningKeys).
-      final privateKey = multisig != null && !currentState.addresses.containsKey(utxo.address)
-          ? null
-          : await keys.privateKeyForAddress(
-              utxo.address,
-              command.walletId,
-              currentState,
-              derivationIndex: cmdDerivationIndex,
-              isChange: cmdIsChange,
-            );
-
-      if (scriptType?.toLowerCase() == 'p2pkh') {
-        // Derive public key from the private key (no need to pass it in command)
-        final publicKey = privateKey!.publicKey;
-        requireKeyForP2pkh(utxoKey, utxo.address, utxoScript, publicKey);
-        final unlocker = dartsv.P2PKHUnlockBuilder(publicKey);
-
-        final txInput = dartsv.TransactionInput(utxo.txid, utxo.vout, dartsv.TransactionInput.MAX_SEQ_NUMBER,
-            scriptBuilder: unlocker);
-
-        //overwrite the input with our defined locking script builder
-        unsignedTx.inputs[i] = txInput;
-      }
 
       final sighashType = _sighashAllForkId;
-      if (multisig != null) {
-        // A bare multisig UTXO the wallet can spend alone (bead
-        // libspiffy-nlp): `OP_0 <sig>...`, one signature per required key,
-        // in script key order, from the wallet's own keys.
+      final unlock = await unlockFor(
+        currentState,
+        command.walletId,
+        utxo,
+        utxoKey: utxoKey,
+        derivationIndex: cmdDerivationIndex,
+        isChange: cmdIsChange,
+      );
+      if (unlock == null) {
+        // A script type the wallet has no standard unlocking script for: sign
+        // with the key at the UTXO's address and let the interpreter judge.
+        final privateKey = await keys.privateKeyForAddress(
+          utxo.address,
+          command.walletId,
+          currentState,
+          derivationIndex: cmdDerivationIndex,
+          isChange: cmdIsChange,
+        );
+        signedTx = dartsv.DefaultTransactionSigner(sighashType, privateKey).sign(unsignedTx, utxoOutput, i);
+      } else {
+        //overwrite the input with our defined unlocking script builder
         unsignedTx.inputs[i] = dartsv.TransactionInput(
           utxo.txid,
           utxo.vout,
           dartsv.TransactionInput.MAX_SEQ_NUMBER,
-          scriptBuilder: dartsv.P2MSUnlockBuilder(),
+          scriptBuilder: unlock.unlocker,
         );
-        final signingKeys = await _multisigSigningKeys(multisig, utxo, command.walletId, currentState, privateKey);
-        for (final key in signingKeys) {
+        for (final key in unlock.signingKeys) {
           dartsv.DefaultTransactionSigner(sighashType, key).sign(unsignedTx, utxoOutput, i);
         }
         signedTx = unsignedTx;
-      } else if (scriptType?.toLowerCase() == 'p2pk') {
-        // `<key> OP_CHECKSIG` is unlocked by the signature alone (dartsv's
-        // P2PKUnlockBuilder adds the public key as well).
-        unsignedTx.inputs[i] = dartsv.TransactionInput(
-          utxo.txid,
-          utxo.vout,
-          dartsv.TransactionInput.MAX_SEQ_NUMBER,
-          scriptBuilder: SignatureOnlyUnlockBuilder(),
-        );
-        signedTx = dartsv.DefaultTransactionSigner(sighashType, privateKey!).sign(unsignedTx, utxoOutput, i);
-      } else {
-        // Sign the transaction at this input index
-        signedTx = dartsv.DefaultTransactionSigner(sighashType, privateKey!).sign(unsignedTx, utxoOutput, i);
       }
 
       //perform a sanity check to see if we're correctly spending the utxo
@@ -173,6 +151,73 @@ class WalletTransactionSigner {
       throw Exception("Failed to sign transaction");
     }
     return signedTx;
+  }
+
+  /// The unlocking script and the signing keys for [utxo], one of the
+  /// wallet's own UTXOs, or null when its locking script is not one the
+  /// wallet has a standard unlocking script for.
+  ///
+  /// The one place that decides how the wallet spends its own output (bead
+  /// libspiffy-8egy). Both paths that build a whole transaction with the
+  /// wallet's keys use it — [signTransaction] and `ChannelFunding.build` —
+  /// so a bare multisig or P2PK wallet UTXO is spendable by either:
+  ///
+  /// * P2PKH: `<sig> <key>`, the key at the UTXO's address, which must be the
+  ///   one the script locks to ([requireKeyForP2pkh]).
+  /// * bare multisig the wallet can spend alone (beads viy, n0p):
+  ///   `OP_0 <sig>...`, one signature per required key, in script key order
+  ///   ([_multisigSigningKeys]).
+  /// * P2PK: `<sig>` alone ([SignatureOnlyUnlockBuilder]; dartsv's
+  ///   `P2PKUnlockBuilder` adds the public key as well, which no node
+  ///   accepts).
+  ///
+  /// [utxoKey] names the UTXO in error texts (defaults to [BitcoinUtxo.key]).
+  Future<WalletInputUnlock?> unlockFor(
+    WalletState currentState,
+    String walletId,
+    BitcoinUtxo utxo, {
+    String? utxoKey,
+    int? derivationIndex,
+    bool? isChange,
+  }) async {
+    // ScriptTypeRegistry is a singleton pinned to the first network it
+    // is built with; the default (testnet) threw for mainnet wallets
+    // once output scanning had initialised it for mainnet.
+    final registry = ScriptTypeRegistry(
+      networkType: NetworkName.toDartsv(currentState.networkType),
+    );
+    final utxoScript = dartsv.SVScript.fromHex(utxo.scriptPubKey);
+    final scriptType = registry.identifyScriptType(utxoScript)?.toLowerCase();
+    final multisig = scriptType == 'p2ms' ? BareMultisigScript.parse(utxoScript) : null;
+
+    // A multisig UTXO may be attributed to a watch address among its
+    // keys; its signing keys are then all resolved from the wallet's own
+    // address records (see _multisigSigningKeys).
+    final privateKey = multisig != null && !currentState.addresses.containsKey(utxo.address)
+        ? null
+        : await keys.privateKeyForAddress(
+            utxo.address,
+            walletId,
+            currentState,
+            derivationIndex: derivationIndex,
+            isChange: isChange,
+          );
+
+    if (multisig != null) {
+      return (
+        unlocker: dartsv.P2MSUnlockBuilder(),
+        signingKeys: await _multisigSigningKeys(multisig, utxo, walletId, currentState, privateKey),
+      );
+    }
+    if (scriptType == 'p2pk') {
+      return (unlocker: SignatureOnlyUnlockBuilder(), signingKeys: [privateKey!]);
+    }
+    if (scriptType == 'p2pkh') {
+      final publicKey = privateKey!.publicKey;
+      requireKeyForP2pkh(utxoKey ?? utxo.key, utxo.address, utxoScript, publicKey);
+      return (unlocker: dartsv.P2PKHUnlockBuilder(publicKey), signingKeys: [privateKey]);
+    }
+    return null;
   }
 
   /// The wallet keys that sign [utxo], a bare [multisig] output: the first

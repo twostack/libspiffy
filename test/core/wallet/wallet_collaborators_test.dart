@@ -328,12 +328,21 @@ void main() {
       expect(SignatureOnlyUnlockBuilder().getScriptSig().chunks, isEmpty);
     });
 
-    test('funding candidates leave out held, watch-only and non-P2PKH UTXOs, largest first, and name why none is left',
+    test(
+        'funding candidates leave out held, watch-only and un-unlockable UTXOs, largest first, and name why none is left',
         () {
       final deferred = DeferredPayments();
       final funding = ChannelFunding(
           WalletKeys(cryptoService: DartSVCryptoService(), secureStorage: InMemorySecureStorage()), deferred);
+      // A P2PK output to a wallet key and a 1-of-2 multisig the wallet's key
+      // meets are the wallet's own money: they fund a channel (bead
+      // libspiffy-8egy). A 2-of-2 the counterparty must co-sign, and a P2PK
+      // to someone else's key, do not.
       final p2pk = dartsv.P2PKLockBuilder(_root).getScriptPubkey().toHex();
+      final other = dartsv.SVPrivateKey.fromHex('33' * 32, dartsv.NetworkType.TEST).publicKey;
+      final foreignP2pk = dartsv.P2PKLockBuilder(other).getScriptPubkey().toHex();
+      final oneOfTwo = dartsv.P2MSLockBuilder([_root, other], 1, sorting: false).getScriptPubkey().toHex();
+      final twoOfTwo = dartsv.P2MSLockBuilder([_root, other], 2, sorting: false).getScriptPubkey().toHex();
       final base = _with(_created(), (b) => b.watchAddresses = b.watchAddresses.put(_watchAddress, 'p2pkh'));
       final state = _withUtxos(base, [
         _utxo(1, 10),
@@ -341,13 +350,18 @@ void main() {
         _utxo(3, 80, address: _watchAddress),
         _utxo(4, 40),
         _utxo(5, 90, status: UTXOStatus.reserved),
+        _utxo(6, 60, script: oneOfTwo),
+        _utxo(7, 100, script: twoOfTwo),
+        _utxo(8, 110, script: foreignP2pk),
       ]);
-      expect(funding.fundingCandidates(state).map((u) => u.key), [_key(4), _key(1)]);
+      expect(funding.fundingCandidates(state).map((u) => u.key), [_key(2), _key(6), _key(4), _key(1)]);
 
       expect(() => funding.fundingCandidates(_withUtxos(base, [_utxo(3, 80, address: _watchAddress)])),
           throwsA(isA<StateError>().having((e) => e.message, 'message', contains('are at watch addresses'))));
-      expect(() => funding.fundingCandidates(_withUtxos(base, [_utxo(2, 70, script: p2pk)])),
-          throwsA(isA<StateError>().having((e) => e.message, 'message', contains('bare multisig or P2PK outputs'))));
+      expect(() => funding.fundingCandidates(_withUtxos(base, [_utxo(7, 100, script: twoOfTwo)])),
+          throwsA(isA<StateError>().having((e) => e.message, 'message', contains('cannot unlock on its own'))));
+      expect(() => funding.fundingCandidates(_withUtxos(base, [_utxo(8, 110, script: foreignP2pk)])),
+          throwsA(isA<StateError>().having((e) => e.message, 'message', contains('cannot unlock on its own'))));
       expect(() => funding.fundingCandidates(base),
           throwsA(isA<StateError>().having((e) => e.message, 'message', 'No available UTXOs for funding')));
     });

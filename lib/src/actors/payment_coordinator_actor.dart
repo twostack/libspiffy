@@ -125,9 +125,14 @@ class PaymentCoordinatorActor extends Actor {
     _log.info('[pay ${msg.invoiceId}] getUTXOs: ${utxoSw.elapsedMilliseconds}ms, count=${utxos.length}, '
         'watch-only=${paymentUtxos.watchOnly.length}');
     // A TransactionBuilderPlugin gets one public key per funding UTXO and
-    // unlocks each as P2PKH, so a bare multisig or P2PK wallet UTXO (bead
-    // libspiffy-nlp) cannot fund it; the standard path signs those with
-    // their own unlocking scripts.
+    // builds the input itself, unlocking it as P2PKH, so a bare multisig or
+    // P2PK wallet UTXO (bead libspiffy-nlp) cannot fund it. Nothing here can
+    // change that: the unlocking script is the plugin's to write, and
+    // handing it an output it will mis-sign is worse than saying so. The
+    // standard (non-plugin) path signs those UTXOs with their own unlocking
+    // scripts, and so does channel funding (bead libspiffy-8egy) — spending
+    // them through a plugin needs the plugin contract to carry the
+    // unlocking script, which is a change to third-party plugins.
     var excludedNote = paymentUtxos.excludedNote;
     if (_isPluginTransaction(msg)) {
       final excluded = utxos.where((u) => needsNonP2pkhUnlock(u.scriptPubKey)).toList();
@@ -1396,8 +1401,10 @@ class PaymentCoordinatorActor extends Actor {
       }
 
       // 2. Get available UTXOs and select the largest
-      // (bare multisig and P2PK UTXOs excluded: the plugin unlocks as
-      // P2PKH, bead libspiffy-nlp)
+      // (bare multisig and P2PK UTXOs excluded: the plugin builds the input
+      // and unlocks it as P2PKH, bead libspiffy-nlp; see _handlePayInvoice
+      // for why libspiffy cannot spend them through a plugin, bead
+      // libspiffy-8egy)
       // (UTXOs at watch addresses excluded: watch-only funds, bead
       // libspiffy-87a2)
       final paymentUtxos = await splitWatchOnlyUtxos(_storage, walletId, await _storage.getPaymentUTXOs(walletId));

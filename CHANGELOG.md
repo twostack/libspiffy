@@ -302,6 +302,32 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### The journal stops claiming every broadcast succeeded
+
+Report section 11, V-87. Found by the reachability sweep,
+`doc/reachability-sweep-2026-09-18.md`.
+
+- **`TransactionBroadcastEvent.broadcastResponse` was the literal
+  `'broadcast_success'` on every event the wallet ever journaled (V-87).**
+  The aggregate wrote it with the comment "Placeholder - will be set by ARC
+  service", and `BroadcastTransactionCommand` had no field for ARC's answer,
+  so nothing could ever set it.
+- Nothing downstream was wrong: all four ARC sites send the command only
+  after a submission returns, and ARC's real status already reached the read
+  model by another route. The defect was a fabricated field sitting
+  permanently in an immutable journal.
+- `BroadcastTransactionCommand` gains an optional `broadcastResponse`
+  (additive), `ARCActor` passes ARC's wire status at all four sites, and the
+  aggregate records what it was given.
+- **Breaking:** `TransactionBroadcastEvent.broadcastResponse` is now
+  `String?` and no longer a required constructor argument. Its serialized
+  form omits the key entirely when null, so an absence is an absence rather
+  than a stored placeholder. No consumer exists in the library; the field was
+  write-only.
+- **Old journals replay unchanged** and still read `'broadcast_success'`.
+  That value is evidence of nothing. The event class, its stable type name
+  and its replay registration are untouched, because a journal is permanent.
+
 ### A channel's money comes back into the wallet
 
 Report section 11, V-86.

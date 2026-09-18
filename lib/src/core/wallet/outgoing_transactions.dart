@@ -584,7 +584,10 @@ class OutgoingTransactions {
     final event = TransactionBroadcastEvent(
       walletId: command.walletId,
       txid: command.transactionId,
-      broadcastResponse: 'broadcast_success', // Placeholder - will be set by ARC service
+      // Whatever the broadcaster was told, and nothing when it was told
+      // nothing (bead libspiffy-f0sj). This used to be the constant
+      // 'broadcast_success' on every event the wallet ever journaled.
+      broadcastResponse: command.broadcastResponse,
       version: currentState.version + 1,
       timestamp: DateTime.now(),
     );

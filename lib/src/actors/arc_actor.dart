@@ -398,6 +398,7 @@ class ARCActor extends Actor {
         walletId: msg.walletId,
         transactionId: msg.txid,
         signedTransaction: msg.txHex,
+        broadcastResponse: arcWireStatus(response.status),
       );
       _walletManager.tell(WalletCommandMessage(msg.walletId, command));
 
@@ -466,6 +467,7 @@ class ARCActor extends Actor {
         walletId: msg.walletId,
         transactionId: msg.txid,
         signedTransaction: msg.beefHex,
+        broadcastResponse: arcWireStatus(response.status),
       );
       _walletManager.tell(WalletCommandMessage(msg.walletId, command));
 
@@ -530,6 +532,7 @@ class ARCActor extends Actor {
             walletId: walletId,
             transactionId: txid,
             signedTransaction: rawTxHex,
+            broadcastResponse: arcWireStatus(response.status),
           )));
 
           _log.info('Retry broadcast succeeded for $txid (status: ${_arcStatusToString(response.status)})');
@@ -1357,6 +1360,7 @@ class ARCActor extends Actor {
           walletId: msg.walletId,
           transactionId: msg.txid,
           signedTransaction: msg.rawTxHex,
+          broadcastResponse: arcWireStatus(response.status),
         )));
         _updateTransactionStatusFromArc(msg.walletId, msg.txid, response.status);
         final proofStatus = await _onSubmitResponse(msg.walletId, msg.txid, msg.rawTxHex, response, explicit: true);

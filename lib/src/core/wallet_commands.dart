@@ -892,10 +892,20 @@ class BroadcastTransactionCommand extends WalletCommand {
   final String transactionId;
   final String signedTransaction; // Signed transaction hex
 
+  /// What the broadcaster was actually told, as ARC's wire status name
+  /// (`SEEN_ON_NETWORK`, `REJECTED`, ...; see `ARCActor.arcWireStatus`).
+  ///
+  /// Null when the sender has no answer to record. The journal then holds an
+  /// absence rather than a plausible value: before bead libspiffy-f0sj every
+  /// [TransactionBroadcastEvent] carried the literal `'broadcast_success'`
+  /// whatever ARC had said, and nothing could set it.
+  final String? broadcastResponse;
+
   BroadcastTransactionCommand({
     required String walletId,
     required this.transactionId,
     required this.signedTransaction,
+    this.broadcastResponse,
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,

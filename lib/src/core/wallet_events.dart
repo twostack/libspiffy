@@ -1234,12 +1234,22 @@ class TransactionBroadcastEvent extends WalletEvent {
   String get typeName => stableTypeName;
 
   final String txid;
-  final String broadcastResponse;
+
+  /// What the broadcaster was told, as ARC's wire status name
+  /// (`SEEN_ON_NETWORK`, `REJECTED`, ...), or null when the broadcast was
+  /// recorded without an answer to go with it.
+  ///
+  /// Nullable since bead libspiffy-f0sj: this used to be a non-null String
+  /// that the aggregate filled with the constant `'broadcast_success'`,
+  /// because [BroadcastTransactionCommand] had no field to carry ARC's real
+  /// answer. Events written before that change replay unaltered and still
+  /// read `'broadcast_success'`; they are not evidence of anything ARC said.
+  final String? broadcastResponse;
 
   TransactionBroadcastEvent({
     required String walletId,
     required this.txid,
-    required this.broadcastResponse,
+    this.broadcastResponse,
     String? eventId,
     DateTime? timestamp,
     int? version,
@@ -1256,7 +1266,8 @@ class TransactionBroadcastEvent extends WalletEvent {
   Map<String, dynamic> getWalletEventData() {
     return {
       'txid': txid,
-      'broadcastResponse': broadcastResponse,
+      // Absent, not a placeholder, when no answer was recorded.
+      if (broadcastResponse != null) 'broadcastResponse': broadcastResponse,
     };
   }
 
@@ -1264,7 +1275,9 @@ class TransactionBroadcastEvent extends WalletEvent {
     return TransactionBroadcastEvent(
       walletId: map['walletId'] as String,
       txid: map['txid'] as String,
-      broadcastResponse: map['broadcastResponse'] as String,
+      // Old journals carry the constant 'broadcast_success' here; newer ones
+      // carry ARC's wire status, or nothing at all.
+      broadcastResponse: map['broadcastResponse'] as String?,
       eventId: map['eventId'] as String?,
       timestamp: map['timestamp'] != null
           ? (map['timestamp'] is String 

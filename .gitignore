@@ -15,5 +15,11 @@ build/
 test/cdn/
 test/data/cdn/
 
+# Isar database the eventador package creates when a test builds a
+# persistence backend without naming a directory. A 1 MB binary rewritten by
+# every test run, recreated on demand, referenced by nothing in this repo.
+data/eventador.isar
+data/eventador.isar.lock
+
 # Claude Code agent worktrees
 .claude/worktrees/

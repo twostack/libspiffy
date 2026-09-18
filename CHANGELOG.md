@@ -302,6 +302,46 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### Proven heights, voided change, and plugin guards
+
+Report section 11, V-71 to V-77; each fix has a regression test shown to fail
+on the previous code.
+
+- **A UTXO confirmed from a merkle proof now carries its proven height
+  (V-71).** The transaction row said height N while its own output said it was
+  in no block, so `BalanceResponse.confirmedBalance` reported proof-confirmed
+  funds as zero. The row stores the height and deliberately does **not** store
+  a confirmation count: a count is stale at the next block, so it is derived
+  (`tip height - blockHeight + 1`) wherever it is wanted. The height still
+  comes only from a confirmation verified against our own header chain - never
+  a caller's claim, never an ARC status string - and an output that is merely
+  spendable still carries no block. The fix is in the apply path, so replaying
+  an existing journal repairs affected wallets.
+- **A faulty plugin can no longer abort a payment with its own stack trace
+  (V-72).** Five `TransactionBuilderPlugin` calls in `PaymentCoordinatorActor`
+  were unguarded. A plugin failure now fails the payment with a message naming
+  the plugin, rather than propagating - the payment is not silently built
+  without the plugin it was asked to use.
+- **The change of a payment the network will not settle is now `voided`, not
+  pending forever (V-73).** New `UTXOStatus.voided` (appended last; statuses
+  are stored by name, so no migration and old rows read back unchanged).
+  Nothing is deleted - only the status changes. Voided is **not** terminal
+  against evidence: a cancelled payment can still be mined if the recipient's
+  copy reaches the network, and a proof takes the output back to available.
+  **Voided rows are still returned by unspent listings** - they are labelled,
+  not hidden - so an app that treated everything non-spent as incoming should
+  read the status.
+- **A reclaim fails as soon as its inputs are seen spent (V-74)**, instead of
+  waiting for an ARC poll. First seen wins, and no fee changes that; nothing
+  retries at a higher fee.
+- **Proof verdicts are correlated by request id (V-75)**, so a receive and a
+  proof response for the same txid in flight together can no longer take each
+  other's verdict.
+- **`DeferredPaymentDetail` exposes the reclaim link (V-76)**: `purpose`,
+  `resolutionReason`, `reclaimsTxid`, `isReclaim`. Additive.
+- **`getOutputsAwaitingAncestorProof` is now contract-tested on all three
+  backends (V-77)**, having had in-memory coverage only.
+
 ### Asking a counterparty for a fresh merkle proof
 
 Report section 11, V-70.

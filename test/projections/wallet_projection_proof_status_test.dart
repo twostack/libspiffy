@@ -320,7 +320,7 @@ void main() {
         walletId: walletId,
         txid: kFixture2Txid,
         rawHex: kFixture2TxHex,
-        blockHeight: 0,
+        blockHeight: null,
         bumpProof: '',
         totalOutputSats: 200000000,
         numInputs: 1,

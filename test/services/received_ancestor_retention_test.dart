@@ -108,7 +108,7 @@ void main() {
       walletId: 'w',
       txid: result.txid,
       rawHex: data['rawHex'] as String,
-      blockHeight: data['blockHeight'] as int,
+      blockHeight: data['blockHeight'] as int?,
       bumpProof: data['bumpProof'] as String,
       totalOutputSats: data['totalOutputSats'] as int,
       numInputs: data['numInputs'] as int,

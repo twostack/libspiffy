@@ -273,7 +273,7 @@ domain.TransactionImportedEvent _importedEvent(String txid, String rawHex) =>
       walletId: _walletId,
       txid: txid,
       rawHex: rawHex,
-      blockHeight: 0,
+      blockHeight: null,
       bumpProof: '',
       totalOutputSats: 1000,
       numInputs: 1,

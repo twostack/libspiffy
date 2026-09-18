@@ -319,7 +319,7 @@ void main() {
             walletId: bobWalletId,
             txid: beefResponse.txid,
             rawHex: hex.encode(beef.txs.last), // Payment transaction
-            blockHeight: 0, // Pending - not yet in a block
+            blockHeight: null, // Pending - not yet in a block
             bumpProofHex: '', // No merkle proof yet
             totalOutputSats: beefResponse.amountPaid.toInt() + beefResponse.changeAmount.toInt(),
             numInputs: 1,
@@ -630,7 +630,7 @@ void main() {
             walletId: xpubBobWalletId,
             txid: beefResponse.txid,
             rawHex: hex.encode(beef.txs.last),
-            blockHeight: 0,
+            blockHeight: null,
             bumpProofHex: '',
             totalOutputSats: beefResponse.amountPaid.toInt() + beefResponse.changeAmount.toInt(),
             numInputs: 1,

@@ -869,7 +869,7 @@ void main() {
             walletId: bobWalletId,
             txid: spendingTxid,
             rawHex: spendingTxHex, // Use same valid hex
-            blockHeight: 0, // Pending - not yet in a block
+            blockHeight: null, // Pending - not yet in a block
             bumpProofHex: '', // No merkle proof yet
             totalOutputSats: outputAmount,
             numInputs: 1,

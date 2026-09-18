@@ -76,7 +76,7 @@ void main() {
       walletId: walletId,
       txid: kFixtureTxid,
       rawHex: kFixtureTxHex,
-      blockHeight: 0,
+      blockHeight: null,
       bumpProofHex: '',
       totalOutputSats: 91296559239,
       numInputs: 1,

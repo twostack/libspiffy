@@ -172,7 +172,7 @@ void main() {
       walletId: walletId,
       txid: _receivedTxid,
       rawHex: unsignedTx(['$_fundingTxid:9'], {address: 70000}),
-      blockHeight: 0,
+      blockHeight: null,
       bumpProofHex: '',
       totalOutputSats: 70000,
       numInputs: 1,

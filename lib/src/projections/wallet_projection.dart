@@ -1183,6 +1183,9 @@ class WalletProjection extends Projection<void> {
         // The height a verified proof puts it at, and no count: the height
         // is what says "confirmed" (bead libspiffy-jc3h), and "6" here was
         // an invented depth that no proof and no header said anything about.
+        // The event carries no height when it came with no proof (bead
+        // libspiffy-nys0); the proof is still what the row is keyed on, so
+        // a height arriving without one is not recorded as a block.
         blockHeight: hasMerkleProof ? event.blockHeight : null,
         confirmations: 0,
         inputValue: totalInput,

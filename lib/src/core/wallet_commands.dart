@@ -438,7 +438,11 @@ class MarkUTXOAvailableCommand extends WalletCommand {
 class RecordImportedTransactionCommand extends WalletCommand {
   final String txid;
   final String rawHex;
-  final int blockHeight;
+
+  /// The block a verified merkle proof puts the transaction in; null when
+  /// it came with no proof (bead libspiffy-nys0). Set together with
+  /// [bumpProofHex].
+  final int? blockHeight;
   final String bumpProofHex;
   final int totalOutputSats;
   final int numInputs;

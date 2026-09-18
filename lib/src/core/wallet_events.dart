@@ -309,7 +309,15 @@ class TransactionImportedEvent extends WalletEvent {
 
   final String txid;
   final String rawHex;
-  final int blockHeight;
+
+  /// The block a verified merkle proof puts this transaction in, and null
+  /// when nothing proves it is in one (bead libspiffy-nys0). An unproven
+  /// import used to journal height 0 — the genesis block — because this
+  /// could not hold an absence. Set together with [bumpProof]: a height
+  /// here means the BUMP in [bumpProof] checked out against a header on
+  /// our active chain, which is what "confirmed" means anywhere in this
+  /// library (bead libspiffy-jc3h).
+  final int? blockHeight;
   final String bumpProof; // Serialized BUMP format
   
   // Parsed transaction data (from BEEF import)
@@ -400,7 +408,8 @@ class TransactionImportedEvent extends WalletEvent {
       walletId: map['walletId'] as String,
       txid: map['txid'] as String,
       rawHex: map['rawHex'] as String,
-      blockHeight: map['blockHeight'] as int,
+      // Null on a transaction nothing proves (bead libspiffy-nys0).
+      blockHeight: map['blockHeight'] as int?,
       bumpProof: map['bumpProof'] as String,
       totalOutputSats: map['totalOutputSats'] as int,
       numInputs: map['numInputs'] as int,

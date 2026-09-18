@@ -621,23 +621,31 @@ class OutgoingTransactions {
     // Store imported transaction in metadata (for audit/history). Records
     // keep first-import order. A repeated import of the same txid keeps the
     // first import time and takes the latest block height — unless a merkle
-    // proof already confirmed it (bead libspiffy-73bj): a re-delivery
-    // without a proof carries block height 0 and must not lower the height
-    // the proof established, the same rule bead libspiffy-7dj gives the read
-    // model's row. Records written before 73bj carry no 'status', so older
-    // journals keep taking the latest height as they always did.
+    // proof already confirmed it (bead libspiffy-73bj), or the re-delivery
+    // carries no proof at all (bead libspiffy-nys0): a delivery with no
+    // proof says nothing about which block the transaction is in, so it may
+    // not take away a height an earlier proof established, the same rule
+    // bead libspiffy-7dj gives the read model's row. Records written before
+    // 73bj carry no 'status', so older journals keep taking the latest
+    // height as they always did.
+    //
+    // No height is written at all when none is known: 'blockHeight' absent
+    // is how a transaction nothing proves is recorded, and it is the shape
+    // [applyConfirmationReverted] leaves behind (bead libspiffy-nys0 —
+    // height 0 is the genesis block, not an absence).
     final records = _transactionRecords(state, _importedTransactionsKey);
     final existing = records[event.txid];
     final PersistentMap<String, dynamic> record;
     if (existing is Map) {
       final confirmed = existing['status'] == 'confirmed';
-      record = frozenRecord(existing)
-          .put('blockHeight', confirmed ? existing['blockHeight'] : event.blockHeight)
-          .put('lastImportedAt', event.timestamp.toIso8601String());
+      final height =
+          confirmed || event.blockHeight == null ? existing['blockHeight'] : event.blockHeight;
+      final withTime = frozenRecord(existing).put('lastImportedAt', event.timestamp.toIso8601String());
+      record = height == null ? withTime.without('blockHeight') : withTime.put('blockHeight', height);
     } else {
       record = freezeMap(<String, dynamic>{
         'txid': event.txid,
-        'blockHeight': event.blockHeight,
+        if (event.blockHeight != null) 'blockHeight': event.blockHeight,
         'importedAt': event.timestamp.toIso8601String(),
       });
     }

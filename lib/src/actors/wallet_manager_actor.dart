@@ -589,7 +589,9 @@ class WalletManagerActor extends Actor {
       // bumpProof is populated when the BEEF contains the merkle proof for this transaction
       final bumpProof = result.transactionData?['bumpProof'] as String? ?? '';
       final hasMerkleProof = bumpProof.isNotEmpty;
-      final blockHeight = result.transactionData?['blockHeight'] as int? ?? 0;
+      // Null when no proof came with the transaction (bead libspiffy-nys0):
+      // an absence, not block 0.
+      final blockHeight = result.transactionData?['blockHeight'] as int?;
       
 
       // Process new spendable UTXOs
@@ -649,7 +651,7 @@ class WalletManagerActor extends Actor {
         walletId: walletId,
         txid: result.txid,
         rawHex: txData['rawHex'] ?? '',
-        blockHeight: txData['blockHeight'] ?? 0,
+        blockHeight: txData['blockHeight'] as int?,
         bumpProofHex: txData['bumpProof'] ?? '',
         totalOutputSats: txData['totalOutputSats'] ?? 0,
         numInputs: txData['numInputs'] ?? 0,

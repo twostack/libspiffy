@@ -2423,7 +2423,9 @@ class SPVActor extends Actor {
       
       return {
         'rawHex': rawHex,
-        'blockHeight': blockHeight ?? 0,
+        // Null when no BUMP came with it: nothing proves which block it is
+        // in, and 0 is a block (bead libspiffy-nys0).
+        'blockHeight': blockHeight,
         'bumpProof': bumpProof,
         'totalOutputSats': totalOutputSats.toInt(),
         'numInputs': numInputs,
@@ -2440,7 +2442,7 @@ class SPVActor extends Actor {
       // Return minimal data on error
       return {
         'rawHex': hex.encode(beef.txs[txIndex]),
-        'blockHeight': 0,
+        'blockHeight': null,
         'bumpProof': '',
         'totalOutputSats': 0,
         'numInputs': transaction.inputs.length,

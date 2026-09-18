@@ -80,7 +80,7 @@ void main() {
         ],
         transactionData: {
           'rawHex': '00',
-          'blockHeight': 0,
+          'blockHeight': null,
           'bumpProof': '',
           'totalOutputSats': 5000,
           'numInputs': 1,

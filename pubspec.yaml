@@ -54,3 +54,15 @@ dev_dependencies:
   # Token operations (dev-only: for integration tests, not a runtime dependency)
   tstokenlib: ^1.4.0
 
+
+# LOCAL BUILD ONLY — REMOVE BEFORE PUBLISHING (bead libspiffy-ppl5).
+#
+# libspiffy uses eventador's CancelEventAwait (bead libspiffy-kyw part c),
+# which is committed in the eventador repo but not yet released to pub.dev.
+# Until it is, this package builds only alongside a sibling checkout of
+# eventador at ../eventador. `dart pub publish` refuses a package with
+# dependency_overrides, so this cannot ship by accident, but it does mean a
+# clone of libspiffy on its own will not resolve.
+dependency_overrides:
+  eventador:
+    path: ../eventador

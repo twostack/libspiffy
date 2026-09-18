@@ -302,6 +302,25 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### A rejected channel command takes back its projection awaiter
+
+Report section 11, V-84.
+
+- **A rejected channel open or expiry no longer leaves an awaiter registered
+  for 10 s (V-84).** The manager registers a projection awaiter *before*
+  sending the command - the aggregate publishes its event before it answers,
+  so registering afterwards can miss it - and when the command was rejected
+  there was no way to take that registration back. It is a cost a peer could
+  impose at will with repeated bad messages.
+- **Requires an unreleased eventador.** The fix needed a cancel primitive
+  that eventador's `ProjectionActor` did not have: `AwaitEventApplied` now
+  takes an optional `awaitId` and `CancelEventAwait(awaitId)` drops the
+  registrations carrying it, answering each `AwaitFailed(reason:
+  'cancelled')`. Until that release is published, **libspiffy builds only
+  alongside a sibling checkout of eventador at `../eventador`**
+  (`dependency_overrides` in `pubspec.yaml`). `dart pub publish` refuses a
+  package with overrides, so this cannot ship by accident.
+
 ### A wallet's own outputs can fund a channel, and the fee is the real one
 
 Report section 11, V-83.

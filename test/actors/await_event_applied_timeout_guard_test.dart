@@ -10,7 +10,7 @@
 /// The invoice path is also covered behaviourally in
 /// invoice_coordinator_actor_test.dart; the payment and wallet-coordinator
 /// sites sit too deep in the payment flow to drive cheaply, so this scan
-/// keeps every site honest (seven at the audit; three more channel-manager sites were added by the funding-broadcast fix, libspiffy-9f7; libspiffy-fsy folded the four channel-manager sites into one `_awaitApplied` helper; libspiffy-u0x folded the two invoice-creation sites into `_createInAggregate`).
+/// keeps every site honest (seven at the audit; three more channel-manager sites were added by the funding-broadcast fix, libspiffy-9f7; libspiffy-fsy folded the four channel-manager sites into one `_awaitApplied` helper; libspiffy-u0x folded the two invoice-creation sites into `_createInAggregate`; libspiffy-kyw added `awaitId:` after `timeout:`, which the argument scan now handles wherever it sits).
 
 import 'dart:io';
 import 'package:test/test.dart';
@@ -85,9 +85,8 @@ List<_AskSite> _findSites(String path, String source) {
     final awaiterOpen = at + 'AwaitEventApplied'.length;
     final awaiterClose = _matchParen(source, awaiterOpen);
     final awaiterArgs = source.substring(awaiterOpen + 1, awaiterClose);
-    final timeoutMatch =
-        RegExp(r'timeout:\s*([^,]+?)\s*,?\s*$').firstMatch(awaiterArgs.trimRight());
-    final awaiterTimeout = timeoutMatch?.group(1)?.trim() ?? '<none: 30 s default>';
+    final awaiterTimeout =
+        _namedArgument(awaiterArgs, 'timeout') ?? '<none: 30 s default>';
 
     final askClose = _matchParen(source, askParen);
     final rest = source.substring(awaiterClose + 1, askClose).trim();
@@ -103,6 +102,30 @@ List<_AskSite> _findSites(String path, String source) {
     ));
   }
   return sites;
+}
+
+/// The value of the named argument [name] in [args], wherever it sits in the
+/// list, or null when it is absent.
+///
+/// Scanned rather than matched by a regex anchored to the end of the list:
+/// `timeout:` used to be the last argument, and when `awaitId:` was added
+/// after it (bead libspiffy-kyw) an end-anchored pattern stopped finding it
+/// and reported every site as carrying the 30 s default. The guard failed
+/// closed, which is how it was noticed, but it must not depend on the order
+/// its call sites happen to be written in.
+String? _namedArgument(String args, String name) {
+  final label = RegExp('(^|,)\\s*${RegExp.escape(name)}\\s*:');
+  final match = label.firstMatch(args);
+  if (match == null) return null;
+  var depth = 0;
+  for (var i = match.end; i < args.length; i++) {
+    final c = args[i];
+    if (c == '(' || c == '[' || c == '{') depth++;
+    if (c == ')' || c == ']' || c == '}') depth--;
+    // The value ends at the first comma that is not inside a nested call.
+    if (c == ',' && depth == 0) return args.substring(match.end, i).trim();
+  }
+  return args.substring(match.end).trim();
 }
 
 int _matchParen(String source, int openIndex) {

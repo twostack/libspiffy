@@ -1058,6 +1058,11 @@ class PaymentChannelManagerActor extends Actor {
     // Capture sender immediately (context.sender changes with each new message)
     final originalSender = context.sender;
 
+    // Declared out here so the catch below can abandon it (bead
+    // libspiffy-kyw): a registration nobody will await is a closure, a reply
+    // target and a timer the projection holds for the full window.
+    ({Future<dynamic> done, void Function() cancel})? applied;
+
     try {
       final aggregateRef = await _channelAggregate(msg.channelId);
 
@@ -1090,7 +1095,7 @@ class PaymentChannelManagerActor extends Actor {
       // Same pattern as PaymentCoordinatorActor._recordOutgoingTransaction:
       // if the projection processes the event very fast, registering after
       // would miss the resolution window.
-      final applied = _awaitApplied(_channelProjection,
+      applied = _awaitApplied(_channelProjection,
           (e) => e is ChannelOpenedEvent && e.channelId == msg.channelId,
           const Duration(seconds: 10));
 
@@ -1109,7 +1114,7 @@ class PaymentChannelManagerActor extends Actor {
       // row (closes overnode_v2-8gh). If no projection was wired (legacy
       // test setup), this is skipped.
       if (applied != null) {
-        final result = await applied;
+        final result = await applied.done;
         if (result is AwaitFailed) {
           _log.warning(
               'ChannelProjection apply timeout for ${msg.channelId}: ${result.reason}');
@@ -1122,6 +1127,8 @@ class PaymentChannelManagerActor extends Actor {
       ));
 
     } catch (e, stackTrace) {
+      // Nothing will await the registration now (bead libspiffy-kyw).
+      applied?.cancel();
       _log.warning('Opening channel ${msg.channelId} failed: $e', e, stackTrace);
       originalSender?.tell(ChannelOpenedResponse(
         channelId: msg.channelId,
@@ -1387,29 +1394,51 @@ class PaymentChannelManagerActor extends Actor {
   /// Registers an awaiter on the channel projection (if any) for the first
   /// applied event matching [predicate]; completes with null without one.
   Future<dynamic> _awaitChannelEvent(bool Function(Event) predicate) =>
-      _awaitApplied(_channelProjection, predicate,
-          const Duration(seconds: 10)) ??
+      _awaitApplied(_channelProjection, predicate, const Duration(seconds: 10))
+          ?.done ??
       Future<dynamic>.value();
 
+  /// Ids for the awaiter registrations this actor makes, so it can abandon
+  /// one (bead libspiffy-kyw). Unique within the actor, which is all
+  /// [CancelEventAwait] matches on.
+  int _awaitIdSeq = 0;
+
   /// Registers an awaiter on [projection] (null without one) for the first
-  /// applied event matching [predicate]. The future never fails: a
-  /// projection that cannot be asked (e.g. stopped) completes it with
-  /// [AwaitFailed], so an awaiter registered before a step that throws does
-  /// not surface as an unhandled error.
-  Future<dynamic>? _awaitApplied(
+  /// applied event matching [predicate], and the means to abandon it.
+  ///
+  /// [ProjectionAwait.done] never fails: a projection that cannot be asked
+  /// (e.g. stopped) completes it with [AwaitFailed], so an awaiter registered
+  /// before a step that throws does not surface as an unhandled error.
+  ///
+  /// [ProjectionAwait.cancel] drops the registration. It must be called on
+  /// every path that will not await [ProjectionAwait.done] — a rejected
+  /// command, in practice — because the registration is made BEFORE the
+  /// command is sent (the aggregate publishes its event to the projection's
+  /// mailbox before it answers, so registering afterwards can miss the
+  /// resolution window). Without the cancel the projection holds the
+  /// closure, the reply target and a timer for the whole 10 s window, on a
+  /// path a peer can drive with repeated bad messages.
+  ({Future<dynamic> done, void Function() cancel})? _awaitApplied(
     ActorRef? projection,
     bool Function(Event) predicate,
     Duration timeout,
-  ) =>
-      projection
-          ?.ask<dynamic>(
-            AwaitEventApplied(predicate, timeout: timeout),
-            // The ask must outlast the awaiter's own window, otherwise
-            // dactor's default (5 s) fires first and a slow projection looks
-            // like a failure.
-            timeout + const Duration(seconds: 2),
-          )
-          .catchError((Object e) => AwaitFailed(reason: '$e'));
+  ) {
+    if (projection == null) return null;
+    final awaitId = 'pcma-${++_awaitIdSeq}';
+    final done = projection
+        .ask<dynamic>(
+          AwaitEventApplied(predicate, timeout: timeout, awaitId: awaitId),
+          // The ask must outlast the awaiter's own window, otherwise
+          // dactor's default (5 s) fires first and a slow projection looks
+          // like a failure.
+          timeout + const Duration(seconds: 2),
+        )
+        .catchError((Object e) => AwaitFailed(reason: '$e'));
+    return (
+      done: done,
+      cancel: () => projection.tell(CancelEventAwait(awaitId)),
+    );
+  }
 
   /// Records the funding transaction as an outgoing transaction of the
   /// client wallet, with its inputs left reserved (they are marked spent
@@ -1463,7 +1492,7 @@ class PaymentChannelManagerActor extends Actor {
     );
     _walletManager.tell(WalletCommandMessage(walletId, command));
     if (applied != null) {
-      final result = await applied;
+      final result = await applied.done;
       // A wallet that already held the transaction (recorded before a
       // restart, applied to the read model only since) records nothing new.
       if (result is AwaitFailed &&
@@ -1517,7 +1546,7 @@ class PaymentChannelManagerActor extends Actor {
         _walletPersistTimeout,
       );
       if (applied != null) {
-        waitsByKey[key] = applied.then((result) {
+        waitsByKey[key] = applied.done.then((result) {
           if (result is! AwaitFailed) notApplied.remove(key);
           return result;
         });
@@ -1819,6 +1848,10 @@ class PaymentChannelManagerActor extends Actor {
   Future<void> _handleExpireChannel(ExpireChannelMessage msg) async {
     final originalSender = context.sender;
 
+    // Declared out here so the catch below can abandon it (bead
+    // libspiffy-kyw), as on the open path.
+    ({Future<dynamic> done, void Function() cancel})? applied;
+
     try {
       // Spawn aggregate if it hasn't been hydrated this session (the expiry
       // monitor runs against persisted channels that may not have an active
@@ -1833,7 +1866,7 @@ class PaymentChannelManagerActor extends Actor {
 
       // Register projection-applied awaiter BEFORE telling the aggregate
       // (same pattern as _handleOpenChannel — closes the read-after-write race).
-      final applied = _awaitApplied(_channelProjection,
+      applied = _awaitApplied(_channelProjection,
           (e) => e is ChannelExpiredEvent && e.channelId == msg.channelId,
           const Duration(seconds: 10));
 
@@ -1842,7 +1875,7 @@ class PaymentChannelManagerActor extends Actor {
       _broadcastEvents(response);
 
       if (applied != null) {
-        final result = await applied;
+        final result = await applied.done;
         if (result is AwaitFailed) {
           _log.warning(
               'ChannelProjection apply timeout for ${msg.channelId}: ${result.reason}');
@@ -1854,6 +1887,8 @@ class PaymentChannelManagerActor extends Actor {
         success: true,
       ));
     } catch (e, stackTrace) {
+      // Nothing will await the registration now (bead libspiffy-kyw).
+      applied?.cancel();
       _log.warning('Expiring channel ${msg.channelId} failed: $e', e, stackTrace);
       originalSender?.tell(ChannelExpiredResponse(
         channelId: msg.channelId,

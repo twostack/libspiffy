@@ -416,6 +416,29 @@ class AcknowledgePaymentMessage extends LocalMessage {
   dynamic get payload => this;
 }
 
+/// The client has received the server's countersignature of a payment
+/// (bead libspiffy-z2px).
+///
+/// Sent by `ChannelP2PAdapter` when a `payment_ack` arrives. The manager
+/// combines it with the client's own signature, verifies the result against
+/// the funding output, and records the settlement the client can now
+/// broadcast. Fire-and-forget: the client's channel state is the record, and
+/// nothing is waiting on a reply.
+class RecordPaymentCountersignatureMessage extends LocalMessage {
+  final String channelId;
+  final int sequenceNumber;
+  final String serverSignatureHex;
+
+  RecordPaymentCountersignatureMessage({
+    required this.channelId,
+    required this.sequenceNumber,
+    required this.serverSignatureHex,
+  }) : super(payload: null);
+
+  @override
+  dynamic get payload => this;
+}
+
 /// Response to payment acknowledgment
 class PaymentAcknowledgedResponse extends ActorResponse {
   final String channelId;
@@ -493,6 +516,21 @@ class ChannelExpiredResponse extends ActorResponse {
 /// Response to channel close
 class ChannelClosedResponse extends ActorResponse {
   final String channelId;
+
+  /// Whether the channel actually reached `closed`.
+  ///
+  /// False when the close was journaled but this side holds no settlement
+  /// transaction to record, so the channel stays in `closing`: the honest
+  /// middle state, since the settlement may still arrive from the
+  /// counterparty. [success] alone used to be answered `true` in that case
+  /// too, which told the caller a channel had closed when it had not
+  /// (bead libspiffy-z2px).
+  final bool finalized;
+
+  /// The transaction that ended the channel and paid this side, recorded in
+  /// the wallet. Null when [finalized] is false.
+  final String? settlementTxId;
+
   @override
   final bool success;
   @override
@@ -501,6 +539,8 @@ class ChannelClosedResponse extends ActorResponse {
   ChannelClosedResponse({
     required this.channelId,
     required this.success,
+    this.finalized = false,
+    this.settlementTxId,
     this.error,
   });
 }
@@ -624,6 +664,12 @@ class FullChannelStateResponse extends ActorResponse {
   /// ends the channel (bead libspiffy-f5p2).
   final String? latestPaymentTxHex;
 
+  /// The client's own signature over [latestPaymentTxHex] while that is still
+  /// the template (bead libspiffy-z2px). Combined with the server's
+  /// countersignature from `payment_ack` to assemble the settlement; null on
+  /// the server, which holds both halves at acknowledgement.
+  final String? latestClientSignatureHex;
+
   @override
   final bool success;
   @override
@@ -657,6 +703,7 @@ class FullChannelStateResponse extends ActorResponse {
     this.refundTxHex,
     this.fundingBeefHex,
     this.latestPaymentTxHex,
+    this.latestClientSignatureHex,
     required this.success,
     this.error,
   });

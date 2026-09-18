@@ -463,10 +463,33 @@ class ChannelP2PAdapter {
     ));
   }
 
+  /// The server's countersignature of a payment, and the only copy of it the
+  /// client will ever be sent (bead libspiffy-z2px).
+  ///
+  /// This used to log the acknowledgement and drop the signature, so the
+  /// client's channel went on holding the UNSIGNED payment template — whose
+  /// txid is not the txid the signed transaction will have — and a client
+  /// cooperative close had nothing it could record in the wallet. The manager
+  /// combines it with the client's own half, verifies the result against the
+  /// funding output, and journals the settlement.
   void _handlePaymentAck(String fromPeerId, Map<String, dynamic> payload) {
     final channelId = payload['channelId'] as String;
     final sequenceNumber = payload['sequenceNumber'] as int;
+    final serverSignatureHex = payload['serverSignatureHex'] as String?;
     _log.fine('Payment acknowledged for channel $channelId, sequence $sequenceNumber');
+
+    if (serverSignatureHex == null || serverSignatureHex.isEmpty) {
+      _log.warning('Payment ack for channel $channelId carries no server '
+          'signature: this side keeps the unsigned payment template and a '
+          'cooperative close will have no settlement to record');
+      return;
+    }
+
+    _channelManager.tell(RecordPaymentCountersignatureMessage(
+      channelId: channelId,
+      sequenceNumber: sequenceNumber,
+      serverSignatureHex: serverSignatureHex,
+    ));
   }
 
   void _handleChannelClose(String fromPeerId, Map<String, dynamic> payload) {

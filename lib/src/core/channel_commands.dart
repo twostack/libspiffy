@@ -476,6 +476,50 @@ class AcknowledgePaymentCommand extends ChannelCommand {
   String get commandType => 'AcknowledgePaymentCommand';
 }
 
+/// Client records the server's countersignature of the latest payment
+/// (bead libspiffy-z2px).
+///
+/// The 2-of-2 funding output needs both signatures. The client signs the
+/// payment when it records it and keeps only that half; the server's half
+/// comes back in the `payment_ack` P2P message and used to be logged and
+/// dropped, so the client went on holding the UNSIGNED template — whose txid
+/// is not the txid the signed transaction will have. A client cooperative
+/// close therefore had nothing it could record in its wallet.
+///
+/// [fullySignedPaymentTxHex] is assembled and verified by the channel manager
+/// before this command is issued, exactly as the server's acknowledgement
+/// path does it: an assembly that does not verify is not sent, so the channel
+/// holds an absence rather than an invented transaction.
+class RecordPaymentCountersignatureCommand extends ChannelCommand {
+  /// The sequence this countersignature is for. Must be the channel's latest:
+  /// a signature for an earlier payment would replace the settlement with a
+  /// superseded one, which is the whole attack a payment channel defends
+  /// against.
+  final int sequenceNumber;
+  final String serverSignatureHex;
+  final String fullySignedPaymentTxHex;
+  final String fullySignedPaymentTxId;
+
+  RecordPaymentCountersignatureCommand({
+    required String channelId,
+    required this.sequenceNumber,
+    required this.serverSignatureHex,
+    required this.fullySignedPaymentTxHex,
+    required this.fullySignedPaymentTxId,
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          channelId: channelId,
+          commandId: commandId,
+          timestamp: timestamp,
+          metadata: metadata,
+        );
+
+  @override
+  String get commandType => 'RecordPaymentCountersignatureCommand';
+}
+
 // =============================================================================
 // CHANNEL CLOSING COMMANDS
 // =============================================================================

@@ -358,6 +358,9 @@ class PaymentChannelManagerActor extends Actor {
         case final AcknowledgePaymentMessage msg:
           await _handleAcknowledgePayment(msg);
           break;
+        case final RecordPaymentCountersignatureMessage msg:
+          await _handleRecordPaymentCountersignature(msg);
+          break;
         case final CloseChannelMessage msg:
           await _handleCloseChannel(msg);
           break;
@@ -939,22 +942,49 @@ class PaymentChannelManagerActor extends Actor {
   /// has anything to record in the wallet. A settlement that does not verify
   /// is not held: an absence, not an invented transaction.
   String _fullySignedPayment(
-      _PaymentSignatureContext pending, String serverSignatureHex) {
-    final clientPubKeyHex = pending.clientPubKeyHex;
-    final serverPubKeyHex = pending.serverPubKeyHex;
-    final fundingAmountSats = pending.fundingAmountSats;
-    final clientSignatureHex = pending.clientSignatureHex;
+          _PaymentSignatureContext pending, String serverSignatureHex) =>
+      _combineSignatures(
+        channelId: pending.channelId,
+        sequenceNumber: pending.sequenceNumber,
+        paymentTxHex: pending.paymentTxHex,
+        clientSignatureHex: pending.clientSignatureHex,
+        serverSignatureHex: serverSignatureHex,
+        clientPubKeyHex: pending.clientPubKeyHex,
+        serverPubKeyHex: pending.serverPubKeyHex,
+        fundingAmountSats: pending.fundingAmountSats,
+      );
+
+  /// Combines the two halves of the 2-of-2 signature over [paymentTxHex] and
+  /// returns the settlement, or `''` when it cannot be assembled or does not
+  /// verify against the funding output.
+  ///
+  /// Used by both sides (bead libspiffy-z2px): the server reaches it holding
+  /// both halves at acknowledgement, the client when the server's half comes
+  /// back in `payment_ack`. One implementation so the two cannot drift.
+  String _combineSignatures({
+    required String channelId,
+    required int sequenceNumber,
+    required String paymentTxHex,
+    required String? clientSignatureHex,
+    required String serverSignatureHex,
+    required String? clientPubKeyHex,
+    required String? serverPubKeyHex,
+    required BigInt? fundingAmountSats,
+  }) {
     if (clientPubKeyHex == null ||
         serverPubKeyHex == null ||
         fundingAmountSats == null ||
-        clientSignatureHex == null) {
+        clientSignatureHex == null ||
+        clientSignatureHex.isEmpty ||
+        serverSignatureHex.isEmpty ||
+        paymentTxHex.isEmpty) {
       return '';
     }
     try {
       final clientPubKey = dartsv.SVPublicKey.fromHex(clientPubKeyHex);
       final serverPubKey = dartsv.SVPublicKey.fromHex(serverPubKeyHex);
       final signed = _channelBuilder.applyMultisigSignatures(
-        transaction: dartsv.Transaction.fromHex(pending.paymentTxHex),
+        transaction: dartsv.Transaction.fromHex(paymentTxHex),
         inputIndex: 0,
         clientSignature: dartsv.SVSignature.fromTxFormat(clientSignatureHex),
         serverSignature: dartsv.SVSignature.fromTxFormat(serverSignatureHex),
@@ -969,8 +999,8 @@ class PaymentChannelManagerActor extends Actor {
       );
       return signed.serialize();
     } catch (e) {
-      _log.warning('Channel ${pending.channelId}: the payment at sequence '
-          '${pending.sequenceNumber} was acknowledged, but no fully signed '
+      _log.warning('Channel $channelId: the payment at sequence '
+          '$sequenceNumber was acknowledged, but no fully signed '
           'settlement could be assembled from the two signatures, so the '
           'channel holds none: $e');
       return '';
@@ -2086,6 +2116,69 @@ class PaymentChannelManagerActor extends Actor {
   /// ends it. Today that is every client, because the server's
   /// countersignature is dropped where the acknowledgment reaches the
   /// client (see the report for bead libspiffy-f5p2).
+  /// The client records the server's countersignature of the latest payment
+  /// (bead libspiffy-z2px).
+  ///
+  /// The 2-of-2 funding output needs both signatures. The client signs when
+  /// it records the payment and keeps only that half; the server's half comes
+  /// back once, in `payment_ack`, and the adapter used to log it and drop it.
+  /// The client therefore went on holding the UNSIGNED template, whose txid
+  /// is not the txid the signed transaction will have, so a client
+  /// cooperative close had nothing it could record and the client's return
+  /// leg never reached its wallet.
+  ///
+  /// The settlement is assembled and verified against the funding output
+  /// here, before the command is issued, exactly as the server's
+  /// acknowledgement path does it. One that does not verify is not recorded:
+  /// the channel keeps the template and an absence, never an invented
+  /// transaction.
+  ///
+  /// Nothing replies: the channel's own state is the record, and the peer is
+  /// not waiting on us.
+  Future<void> _handleRecordPaymentCountersignature(
+      RecordPaymentCountersignatureMessage msg) async {
+    try {
+      final aggregateRef = await _channelAggregate(msg.channelId);
+      final state = _stateOrThrow(
+          await aggregateRef.ask(ChannelStateQuery(channelId: msg.channelId)));
+
+      final settlementHex = _combineSignatures(
+        channelId: msg.channelId,
+        sequenceNumber: msg.sequenceNumber,
+        paymentTxHex: state.latestPaymentTxHex ?? '',
+        clientSignatureHex: state.latestClientSignatureHex,
+        serverSignatureHex: msg.serverSignatureHex,
+        clientPubKeyHex: state.clientPubKeyHex,
+        serverPubKeyHex: state.serverPubKeyHex,
+        fundingAmountSats: state.fundingAmountSats,
+      );
+      if (settlementHex.isEmpty) {
+        // _combineSignatures has logged why. An absence, not a guess.
+        return;
+      }
+
+      _broadcastEvents(await _askAggregate(
+        msg.channelId,
+        aggregateRef,
+        RecordPaymentCountersignatureCommand(
+          channelId: msg.channelId,
+          sequenceNumber: msg.sequenceNumber,
+          serverSignatureHex: msg.serverSignatureHex,
+          fullySignedPaymentTxHex: settlementHex,
+          fullySignedPaymentTxId:
+              dartsv.Transaction.fromHex(settlementHex).id,
+        ),
+      ));
+    } catch (e, stackTrace) {
+      _log.warning(
+          'Channel ${msg.channelId}: the server countersignature for sequence '
+          '${msg.sequenceNumber} was not recorded, so this side still holds '
+          'only the unsigned payment template: $e',
+          e,
+          stackTrace);
+    }
+  }
+
   Future<void> _handleCloseChannel(CloseChannelMessage msg) async {
 
     // Capture sender immediately (context.sender changes with each new message)
@@ -2097,6 +2190,7 @@ class PaymentChannelManagerActor extends Actor {
       var state = _stateOrThrow(
           await aggregateRef.ask(ChannelStateQuery(channelId: msg.channelId)));
 
+      String? settlementTxId;
       if (state.status != 'closed') {
         if (state.status != 'closing') {
           final closeCmd = CloseChannelCommand(
@@ -2115,12 +2209,20 @@ class PaymentChannelManagerActor extends Actor {
               .ask(ChannelStateQuery(channelId: msg.channelId)));
         }
 
-        await _finalizeClose(msg.channelId, aggregateRef, state);
+        settlementTxId =
+            await _finalizeClose(msg.channelId, aggregateRef, state);
       }
 
+      // `success` says the close was accepted and journaled; `finalized` says
+      // the channel actually reached `closed`, which it does not when this
+      // side holds no settlement to record (bead libspiffy-z2px). Answering
+      // only `success: true` told the caller a channel had closed when it was
+      // still in `closing`.
       originalSender?.tell(ChannelClosedResponse(
         channelId: msg.channelId,
         success: true,
+        finalized: state.status == 'closed' || settlementTxId != null,
+        settlementTxId: settlementTxId,
       ));
 
     } catch (e, stackTrace) {
@@ -2136,7 +2238,9 @@ class PaymentChannelManagerActor extends Actor {
   /// Records the settlement of a channel in `closing` in the wallet and
   /// closes it with [FinalizeCloseCommand]; does neither when this side
   /// holds no settlement transaction.
-  Future<void> _finalizeClose(String channelId, ActorRef aggregateRef,
+  /// Returns the settlement txid it recorded, or null when this side holds
+  /// no settlement and the channel therefore stays in `closing`.
+  Future<String?> _finalizeClose(String channelId, ActorRef aggregateRef,
       FullChannelStateResponse state) async {
     final leg = _returnLeg(state);
     if (leg == null) {
@@ -2145,7 +2249,7 @@ class PaymentChannelManagerActor extends Actor {
           'wallet ${state.walletId} and the channel is not finalised. The '
           'settlement reaches the wallet when the counterparty hands it '
           'over, as any other payment does.');
-      return;
+      return null;
     }
     final settlementTxId =
         await _recordReturnLegInWallet(channelId, state, leg);
@@ -2176,6 +2280,7 @@ class PaymentChannelManagerActor extends Actor {
             '$channelId: ${result.reason}');
       }
     }
+    return settlementTxId;
   }
 
   /// Record that a channel has expired (lockTime elapsed).

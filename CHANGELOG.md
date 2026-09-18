@@ -302,6 +302,40 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### A client's money comes back too
+
+Report section 11, V-90. The second half of V-86, which reported this and
+could not close it.
+
+- **The client threw the server's countersignature away (V-90).** A channel's
+  2-of-2 funding output needs both signatures. The client signs when it
+  records a payment and keeps only its own half; the server's half comes back
+  **once**, in the `payment_ack` message — and the adapter logged the
+  acknowledgement and dropped the signature. The client went on holding the
+  unsigned template, whose txid is not the signed transaction's, so a client
+  cooperative close recorded nothing in the wallet and left the channel in
+  `closing` for good. The client's return leg arrived only by the
+  expiry/refund route.
+- The client now journals it: `RecordPaymentCountersignatureCommand` →
+  `PaymentCountersignedEvent`, which replaces the template in the write model
+  and the read model. `ChannelState` keeps `latestClientSignatureHex` so the
+  two halves can still be combined after a restart.
+- **A settlement that does not verify is not recorded.** It is assembled and
+  checked against the funding output before the command is issued, by the
+  same code the server's acknowledgement path uses — one implementation, so
+  the two sides cannot drift. A failure leaves the template and an absence,
+  never an invented transaction.
+- A countersignature for any sequence but the latest is refused: a signature
+  for an earlier payment would replace the settlement with one paying the
+  client more than it is now owed. A re-delivered `payment_ack` journals
+  nothing.
+- **`ChannelClosedResponse` gains `finalized` and `settlementTxId`
+  (additive).** It used to answer `success: true` even when nothing was
+  finalised and the channel stayed in `closing`, telling the caller a channel
+  had closed when it had not. `success` still means the close was accepted
+  and journaled; `finalized` says the channel actually reached `closed`.
+- New journal event type `channel.payment.countersigned`.
+
 ### A transaction's lock time survives being stored
 
 Report section 11, V-88 and V-89. Both found by the reachability sweep,

@@ -94,6 +94,7 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
         'latestSequenceNumber': s.latestSequenceNumber,
         'latestPaymentTxHex': s.latestPaymentTxHex,
         'latestPaymentTxId': s.latestPaymentTxId,
+        'latestClientSignatureHex': s.latestClientSignatureHex,
         'context': s.context,
         'createdAt': s.createdAt?.toIso8601String(),
         'closedAt': s.closedAt?.toIso8601String(),
@@ -146,6 +147,7 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       latestSequenceNumber: map['latestSequenceNumber'] as int,
       latestPaymentTxHex: map['latestPaymentTxHex'] as String?,
       latestPaymentTxId: map['latestPaymentTxId'] as String?,
+      latestClientSignatureHex: map['latestClientSignatureHex'] as String?,
       context: map['context'] as String?,
       createdAt: date(map['createdAt']),
       closedAt: date(map['closedAt']),
@@ -239,6 +241,7 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       refundTxHex: currentState.refundTxHex,
       fundingBeefHex: currentState.fundingBeefHex,
       latestPaymentTxHex: currentState.latestPaymentTxHex,
+      latestClientSignatureHex: currentState.latestClientSignatureHex,
       success: true,
     ));
   }
@@ -303,6 +306,8 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       return await _handleRecordPayment(currentState, command);
     } else if (command is AcknowledgePaymentCommand) {
       return await _handleAcknowledgePayment(currentState, command);
+    } else if (command is RecordPaymentCountersignatureCommand) {
+      return _handleRecordPaymentCountersignature(currentState, command);
     } else if (command is CloseChannelCommand) {
       return _handleCloseChannel(currentState, command);
     } else if (command is FinalizeCloseCommand) {
@@ -338,6 +343,7 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       final ChannelOpenedEvent evt => _applyChannelOpened(state, evt),
       final PaymentRecordedEvent evt => _applyPaymentRecorded(state, evt),
       final PaymentAcknowledgedEvent evt => _applyPaymentAcknowledged(state, evt),
+      final PaymentCountersignedEvent evt => _applyPaymentCountersigned(state, evt),
       final ChannelClosingEvent evt => _applyChannelClosing(state, evt),
       final ChannelClosedEvent evt => _applyChannelClosed(state, evt),
       final RefundClaimedEvent evt => _applyRefundClaimed(state, evt),
@@ -1041,6 +1047,53 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
     ];
   }
 
+  /// The client records the server's countersignature of the latest payment
+  /// (bead libspiffy-z2px).
+  ///
+  /// Nothing about the money moves here: the balances and the sequence were
+  /// settled by the payment this countersigns. What changes is that the
+  /// channel holds a settlement it could broadcast instead of an unsigned
+  /// template whose txid is not the signed transaction's — which is what a
+  /// cooperative close needs before it can record anything in the wallet.
+  ///
+  /// The manager assembles and verifies the transaction against the funding
+  /// output before issuing the command, as the server's acknowledgement path
+  /// does; an assembly that does not verify is never sent.
+  List<Event> _handleRecordPaymentCountersignature(
+    ChannelState currentState,
+    RecordPaymentCountersignatureCommand cmd,
+  ) {
+    if (currentState.status != ChannelStatus.open) {
+      throw StateError('Channel not open');
+    }
+    // A countersignature for an earlier payment would replace the settlement
+    // with a superseded one — paying the client more than it is now owed is
+    // exactly what a payment channel's sequence rule exists to refuse.
+    if (cmd.sequenceNumber != currentState.latestSequenceNumber) {
+      throw StateError(
+          'Countersignature is for sequence ${cmd.sequenceNumber}, but the '
+          'channel is at sequence ${currentState.latestSequenceNumber}');
+    }
+    if (cmd.fullySignedPaymentTxHex.isEmpty) {
+      throw StateError('No fully signed settlement to record');
+    }
+    // A re-delivered `payment_ack` records nothing new.
+    if (currentState.latestPaymentTxHex == cmd.fullySignedPaymentTxHex) {
+      return const [];
+    }
+
+    return [
+      PaymentCountersignedEvent(
+        channelId: cmd.channelId,
+        sequenceNumber: cmd.sequenceNumber,
+        serverSignatureHex: cmd.serverSignatureHex,
+        fullySignedPaymentTxHex: cmd.fullySignedPaymentTxHex,
+        fullySignedPaymentTxId: cmd.fullySignedPaymentTxId,
+        version: currentState.version + 1,
+      ),
+    ];
+  }
+
   List<Event> _handleCloseChannel(
     ChannelState currentState,
     CloseChannelCommand cmd,
@@ -1306,6 +1359,9 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       latestSequenceNumber: event.sequenceNumber,
       latestPaymentTxHex: event.paymentTxHex,
       latestPaymentTxId: event.paymentTxId,
+      // Half of the 2-of-2 signature; the server's half arrives later in
+      // `payment_ack` and cannot be combined without this one (libspiffy-z2px).
+      latestClientSignatureHex: event.clientSignatureHex,
       version: event.version,
       lastModified: event.timestamp,
     );
@@ -1317,6 +1373,19 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       serverBalanceSats: event.newServerBalanceSats,
       latestSequenceNumber: event.sequenceNumber,
       latestPaymentTxHex: event.fullySignedPaymentTxHex,
+      version: event.version,
+      lastModified: event.timestamp,
+    );
+  }
+
+  ChannelState _applyPaymentCountersigned(
+      ChannelState state, PaymentCountersignedEvent event) {
+    // Balances and sequence are untouched: they were settled by the payment
+    // this countersigns. What changes is that the channel now holds a
+    // settlement it could broadcast, in place of a template it could not.
+    return state.copyWith(
+      latestPaymentTxHex: event.fullySignedPaymentTxHex,
+      latestPaymentTxId: event.fullySignedPaymentTxId,
       version: event.version,
       lastModified: event.timestamp,
     );

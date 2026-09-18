@@ -769,6 +769,74 @@ class PaymentRecordedEvent extends ChannelEvent {
   }
 }
 
+/// The client holds the server's countersignature of the latest payment, and
+/// with it a settlement it could broadcast (bead libspiffy-z2px).
+///
+/// The server's half of the 2-of-2 signature comes back in `payment_ack`.
+/// Before this event existed the client logged it and dropped it, so its
+/// channel went on holding the unsigned template and a client cooperative
+/// close had nothing to record. The client's counterpart of
+/// [PaymentAcknowledgedEvent], which is the server's.
+class PaymentCountersignedEvent extends ChannelEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'channel.payment.countersigned';
+
+  @override
+  String get typeName => stableTypeName;
+
+  final int sequenceNumber;
+  final String serverSignatureHex;
+
+  /// The settlement as both parties signed it, verified against the funding
+  /// output before this event was emitted.
+  final String fullySignedPaymentTxHex;
+
+  /// Its txid — the one the signed transaction really has, which the
+  /// template's is not.
+  final String fullySignedPaymentTxId;
+
+  PaymentCountersignedEvent({
+    required String channelId,
+    required this.sequenceNumber,
+    required this.serverSignatureHex,
+    required this.fullySignedPaymentTxHex,
+    required this.fullySignedPaymentTxId,
+    String? eventId,
+    DateTime? timestamp,
+    int? version,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          channelId: channelId,
+          eventId: eventId,
+          timestamp: timestamp,
+          version: version,
+          metadata: metadata,
+        );
+
+  @override
+  Map<String, dynamic> getChannelEventData() => {
+        'sequenceNumber': sequenceNumber,
+        'serverSignatureHex': serverSignatureHex,
+        'fullySignedPaymentTxHex': fullySignedPaymentTxHex,
+        'fullySignedPaymentTxId': fullySignedPaymentTxId,
+      };
+
+  factory PaymentCountersignedEvent.fromMap(Map<String, dynamic> map) {
+    return PaymentCountersignedEvent(
+      channelId: map['channelId'] as String,
+      sequenceNumber: map['sequenceNumber'] as int,
+      serverSignatureHex: map['serverSignatureHex'] as String,
+      fullySignedPaymentTxHex: map['fullySignedPaymentTxHex'] as String,
+      fullySignedPaymentTxId: map['fullySignedPaymentTxId'] as String,
+      eventId: map['eventId'] as String?,
+      timestamp: ChannelEvent._parseTimestamp(map['timestamp']),
+      version: map['version'] as int?,
+      metadata: map['metadata'] as Map<String, dynamic>?,
+    );
+  }
+}
+
 /// Payment has been acknowledged (server side - verified and countersigned)
 class PaymentAcknowledgedEvent extends ChannelEvent {
   /// Journal identifier of this event type. Stored with every event and

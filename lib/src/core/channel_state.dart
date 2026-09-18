@@ -73,6 +73,13 @@ class ChannelState extends State {
   final String? latestPaymentTxHex;
   final String? latestPaymentTxId;
 
+  /// The client's own signature over the latest payment (bead
+  /// libspiffy-z2px). Kept because the 2-of-2 funding output needs both
+  /// halves and the server's arrives later, in `payment_ack`: without this
+  /// the client cannot assemble the settlement it is owed after a restart.
+  /// Null on the server, which holds both halves at acknowledgement.
+  final String? latestClientSignatureHex;
+
   // Metadata
   final String? context;
   final DateTime? createdAt;
@@ -117,6 +124,7 @@ class ChannelState extends State {
     this.latestSequenceNumber = 0,
     this.latestPaymentTxHex,
     this.latestPaymentTxId,
+    this.latestClientSignatureHex,
     this.context,
     this.createdAt,
     this.closedAt,
@@ -176,6 +184,7 @@ class ChannelState extends State {
     int? latestSequenceNumber,
     Object? latestPaymentTxHex = _unset,
     Object? latestPaymentTxId = _unset,
+    Object? latestClientSignatureHex = _unset,
     Object? context = _unset,
     Object? createdAt = _unset,
     Object? closedAt = _unset,
@@ -214,6 +223,8 @@ class ChannelState extends State {
       latestSequenceNumber: latestSequenceNumber ?? this.latestSequenceNumber,
       latestPaymentTxHex: pick<String>(latestPaymentTxHex, this.latestPaymentTxHex),
       latestPaymentTxId: pick<String>(latestPaymentTxId, this.latestPaymentTxId),
+      latestClientSignatureHex:
+          pick<String>(latestClientSignatureHex, this.latestClientSignatureHex),
       context: pick<String>(context, this.context),
       createdAt: pick<DateTime>(createdAt, this.createdAt),
       closedAt: pick<DateTime>(closedAt, this.closedAt),

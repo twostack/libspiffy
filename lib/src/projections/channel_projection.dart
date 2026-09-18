@@ -128,6 +128,9 @@ class ChannelProjection extends Projection<void> {
       case final PaymentAcknowledgedEvent evt:
         await _handlePaymentAcknowledged(evt);
         return true;
+      case final PaymentCountersignedEvent evt:
+        await _handlePaymentCountersigned(evt);
+        return true;
       case final ChannelClosingEvent evt:
         await _handleChannelClosing(evt);
         return true;
@@ -337,6 +340,21 @@ class ChannelProjection extends Projection<void> {
       clientBalanceSats: event.newClientBalanceSats,
       serverBalanceSats: event.newServerBalanceSats,
       latestSequenceNumber: event.sequenceNumber,
+      latestPaymentTxHex: event.fullySignedPaymentTxHex,
+    ));
+  }
+
+  /// The client now holds the settlement both parties signed (bead
+  /// libspiffy-z2px), in place of the unsigned template it recorded when it
+  /// made the payment. Balances and sequence are untouched: they were settled
+  /// by the payment this countersigns.
+  Future<void> _handlePaymentCountersigned(PaymentCountersignedEvent event) async {
+    final existing = await _storage.getPaymentChannel(event.channelId);
+    if (existing == null) {
+      return;
+    }
+
+    await _storage.storePaymentChannel(existing.copyWith(
       latestPaymentTxHex: event.fullySignedPaymentTxHex,
     ));
   }

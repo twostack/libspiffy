@@ -137,6 +137,80 @@ class _Wallet {
   }
 }
 
+/// The two halves of a payment's 2-of-2 signature, kept apart: the client
+/// records the template and its own half, and only learns the server's half
+/// when `payment_ack` arrives (bead libspiffy-z2px).
+class _PaymentPair {
+  final String templateHex;
+  final String templateTxId;
+  final String clientSignatureHex;
+  final String serverSignatureHex;
+  final String settlementHex;
+  final String settlementTxId;
+  final BigInt serverAmount;
+  final BigInt clientAmount;
+
+  _PaymentPair({
+    required this.templateHex,
+    required this.templateTxId,
+    required this.clientSignatureHex,
+    required this.serverSignatureHex,
+    required this.settlementHex,
+    required this.settlementTxId,
+    required this.serverAmount,
+    required this.clientAmount,
+  });
+
+  static Future<_PaymentPair> build(
+    ChannelRefundFixture f, {
+    required BigInt serverAmountSats,
+    int sequenceNumber = 1,
+  }) async {
+    final builder = PaymentChannelBuilder(cryptoService: DartSVCryptoService());
+    final built = await builder.buildPaymentTransaction(
+      fundingTxId: f.fundingTxId,
+      fundingOutputIndex: 0,
+      fundingAmountSats: f.amountSats,
+      clientPubKey: f.clientKey.publicKey,
+      serverPubKey: f.serverKey.publicKey,
+      clientAddress: dartsv.Address.fromBase58(f.clientAddressB58),
+      serverAddress: dartsv.Address.fromBase58(f.serverAddressB58),
+      serverAmountSats: serverAmountSats,
+      sequenceNumber: sequenceNumber,
+    );
+    Future<String> sign(dartsv.SVPrivateKey key) async =>
+        (await builder.signMultisigInput(
+          transaction: built.transaction,
+          inputIndex: 0,
+          privateKey: key,
+          clientPubKey: f.clientKey.publicKey,
+          serverPubKey: f.serverKey.publicKey,
+          inputAmountSats: f.amountSats,
+        ))
+            .signatureHex;
+    final clientSig = await sign(f.clientKey);
+    final serverSig = await sign(f.serverKey);
+    final signed = builder.applyMultisigSignatures(
+      transaction: dartsv.Transaction.fromHex(built.transactionHex),
+      inputIndex: 0,
+      clientSignature: dartsv.SVSignature.fromTxFormat(clientSig),
+      serverSignature: dartsv.SVSignature.fromTxFormat(serverSig),
+      clientPubKey: f.clientKey.publicKey,
+      serverPubKey: f.serverKey.publicKey,
+    );
+    return _PaymentPair(
+      templateHex: built.transactionHex,
+      templateTxId: built.txid,
+      clientSignatureHex: clientSig,
+      serverSignatureHex: serverSig,
+      settlementHex: signed.serialize(),
+      settlementTxId: signed.id,
+      serverAmount: serverAmountSats,
+      clientAmount: f.amountSats - serverAmountSats - built.fee,
+    );
+  }
+}
+
 void main() {
   late TestActorSystem system;
   late InMemoryEventStore store;
@@ -484,6 +558,142 @@ void main() {
       expect(imported(), isEmpty);
       expect(received(), isEmpty);
       expect(journal().whereType<ChannelClosedEvent>(), isEmpty);
+    });
+  });
+
+  group('libspiffy-z2px: the client records the server countersignature', () {
+    late _PaymentPair pair;
+
+    setUp(() async {
+      f = await ChannelRefundFixture.create(channelId: _channelId);
+      pair = await _PaymentPair.build(f, serverAmountSats: BigInt.from(30000));
+    });
+
+    /// The client's journal after it has made one payment: it holds the
+    /// unsigned template and its own half of the signature, and nothing else.
+    List<Event> clientJournalWithPayment() => [
+          ...f.openClientJournal(walletId: _walletId),
+          PaymentRecordedEvent(
+            channelId: _channelId,
+            amountSats: BigInt.from(30000),
+            sequenceNumber: 1,
+            paymentTxHex: pair.templateHex,
+            paymentTxId: pair.templateTxId,
+            clientSignatureHex: pair.clientSignatureHex,
+            newClientBalanceSats: f.amountSats - BigInt.from(30000),
+            newServerBalanceSats: BigInt.from(30000),
+            version: 7,
+          ),
+        ];
+
+    /// Delivers the server's countersignature, as `payment_ack` does, and
+    /// returns once the manager has finished with it.
+    ///
+    /// The message is fire-and-forget, so the wait is the manager's own FIFO
+    /// mailbox: a state query answered afterwards cannot have been handled
+    /// before it. No sleeps, and no penalty for the cases that journal
+    /// nothing.
+    Future<void> countersign({String? signatureHex, int sequenceNumber = 1}) async {
+      managerRef.tell(RecordPaymentCountersignatureMessage(
+        channelId: _channelId,
+        sequenceNumber: sequenceNumber,
+        serverSignatureHex: signatureHex ?? pair.serverSignatureHex,
+      ));
+      await managerRef.ask<ChannelStateResponse>(
+          QueryChannelStateMessage(channelId: _channelId), _timeout);
+    }
+
+    test('the countersigned payment becomes a settlement, and the close '
+        'records it and finalises the channel', () async {
+      await spawn(clientJournalWithPayment(), key: f.clientKey);
+
+      await countersign();
+      final countersigned =
+          journal().whereType<PaymentCountersignedEvent>().toList();
+      expect(countersigned, hasLength(1),
+          reason: 'the server signature is the second half of the 2-of-2; '
+              'without it the client holds only a template');
+      expect(countersigned.single.fullySignedPaymentTxId, pair.settlementTxId);
+
+      final closed = await managerRef.ask<ChannelClosedResponse>(
+        CloseChannelMessage(channelId: _channelId, reason: 'done'),
+        _timeout,
+      );
+      expect(closed.success, isTrue, reason: closed.error);
+      expect(closed.finalized, isTrue,
+          reason: 'the client now holds a settlement, so the close completes');
+      expect(closed.settlementTxId, pair.settlementTxId);
+      expect(journal().whereType<ChannelClosedEvent>(), hasLength(1));
+
+      await flushWallet();
+      final w = await readBack();
+
+      final tx = await w.storage
+          .getTransaction(pair.settlementTxId, walletId: _walletId);
+      expect(tx, isNotNull,
+          reason: "the client's return leg reaches its own history");
+      expect(tx!.status, TransactionStatus.pending);
+      expect(tx.blockHeight, isNull,
+          reason: 'nothing has proved the settlement mined');
+
+      final ours = (await w.storage.getUTXOs(_walletId))
+          .where((u) => u.txid == pair.settlementTxId)
+          .toList();
+      expect(ours, hasLength(1));
+      expect(ours.single.value.getValue(), pair.clientAmount);
+      expect(ours.single.status, UTXOStatus.pending);
+    });
+
+    test('a re-delivered payment_ack records nothing new', () async {
+      await spawn(clientJournalWithPayment(), key: f.clientKey);
+
+      await countersign();
+      final after = journal().length;
+      await countersign();
+
+      expect(journal().length, after,
+          reason: 'the same countersignature is the same settlement');
+      expect(journal().whereType<PaymentCountersignedEvent>(), hasLength(1));
+    });
+
+    test('a countersignature for a superseded sequence is refused', () async {
+      await spawn(clientJournalWithPayment(), key: f.clientKey);
+
+      await countersign(sequenceNumber: 0);
+
+      expect(journal().whereType<PaymentCountersignedEvent>(), isEmpty,
+          reason: 'a signature for an earlier payment would replace the '
+              'settlement with one that pays the client more than it is owed');
+    });
+
+    test('a signature that does not verify leaves the template in place', () async {
+      await spawn(clientJournalWithPayment(), key: f.clientKey);
+
+      // A well-formed signature of the wrong transaction: it parses, and it
+      // does not satisfy the funding output.
+      final wrong = (await PaymentChannelBuilder(
+                  cryptoService: DartSVCryptoService())
+              .signMultisigInput(
+        transaction: dartsv.Transaction.fromHex(f.refundTxHex),
+        inputIndex: 0,
+        privateKey: f.serverKey,
+        clientPubKey: f.clientKey.publicKey,
+        serverPubKey: f.serverKey.publicKey,
+        inputAmountSats: f.amountSats,
+      ))
+          .signatureHex;
+
+      await countersign(signatureHex: wrong);
+
+      expect(journal().whereType<PaymentCountersignedEvent>(), isEmpty,
+          reason: 'a settlement that does not verify is not held: an absence, '
+              'not an invented transaction');
+
+      final closed = await managerRef.ask<ChannelClosedResponse>(
+        CloseChannelMessage(channelId: _channelId), _timeout);
+      expect(closed.finalized, isFalse,
+          reason: 'nothing to record, so the channel stays closing');
+      expect(closed.settlementTxId, isNull);
     });
   });
 

@@ -621,6 +621,8 @@ class LibSpiffyActorSystem {
         aliases: const ['PaymentRecordedEvent']);
     EventRegistry.register<PaymentAcknowledgedEvent>(PaymentAcknowledgedEvent.stableTypeName, PaymentAcknowledgedEvent.fromMap,
         aliases: const ['PaymentAcknowledgedEvent']);
+    EventRegistry.register<PaymentCountersignedEvent>(PaymentCountersignedEvent.stableTypeName, PaymentCountersignedEvent.fromMap,
+        aliases: const ['PaymentCountersignedEvent']);
     EventRegistry.register<ChannelClosingEvent>(ChannelClosingEvent.stableTypeName, ChannelClosingEvent.fromMap,
         aliases: const ['ChannelClosingEvent']);
     EventRegistry.register<ChannelClosedEvent>(ChannelClosedEvent.stableTypeName, ChannelClosedEvent.fromMap,

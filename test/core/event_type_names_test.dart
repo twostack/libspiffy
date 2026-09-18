@@ -69,6 +69,7 @@ const goldenTypeNames = <String, String>{
   'ChannelOpenedEvent': 'channel.opened',
   'PaymentRecordedEvent': 'channel.payment.recorded',
   'PaymentAcknowledgedEvent': 'channel.payment.acknowledged',
+  'PaymentCountersignedEvent': 'channel.payment.countersigned',
   'ChannelClosingEvent': 'channel.closing',
   'ChannelClosedEvent': 'channel.closed',
   'RefundClaimedEvent': 'channel.refund.claimed',
@@ -268,6 +269,10 @@ Map<String, Event> sampleEvents() => <String, Event>{
           newClientBalanceSats: BigInt.from(890),
           newServerBalanceSats: BigInt.from(10),
           fullySignedPaymentTxHex: '01', serverSignatureHex: '30',
+          timestamp: _t, version: 9),
+      'PaymentCountersignedEvent': PaymentCountersignedEvent(
+          channelId: _c, sequenceNumber: 1, serverSignatureHex: '30',
+          fullySignedPaymentTxHex: '01', fullySignedPaymentTxId: 'ab' * 32,
           timestamp: _t, version: 9),
       'ChannelClosingEvent': ChannelClosingEvent(
           channelId: _c, initiator: 'client',

@@ -302,6 +302,38 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### A channel's money comes back into the wallet
+
+Report section 11, V-86.
+
+- **Closing or expiring a channel now records the return leg (V-86).** The
+  manager wrote to the wallet only when funding a channel, so the settlement
+  or refund never reached the transaction history, its outputs never became
+  UTXOs, and the balance never showed the funds coming back. It is recorded
+  as a **receive**: the 2-of-2 funding output is not a wallet UTXO, so a
+  settlement spends no wallet input and only creates wallet outputs.
+- **A cooperative close now completes.** `FinalizeCloseCommand` was
+  constructed nowhere in the library, so a closing channel hung in `closing`
+  forever and `ChannelClosedEvent` — and with it the peer's `channel_closed`
+  message — was unreachable. Close is now two journaled steps, with
+  `closing` as a resumable middle so a close re-delivered after a crash
+  picks up instead of being refused.
+- **The fully signed settlement is assembled.** The acknowledgement path
+  carried `fullySignedPaymentTxHex: ''` with a "simplified for now" comment,
+  so no side ever held a settlement transaction and its txid was unknowable.
+  The server holds both signatures and now combines and verifies them; an
+  assembly that fails records nothing rather than inventing a transaction.
+- **Evidence:** the settlement is recorded with no height and no proof, so
+  its row and its outputs are **pending** — not spendable — until a proof
+  arrives. Nothing is asked of ARC: we did not broadcast it.
+- **Known gap:** a client does not yet hold a cooperative settlement (the
+  server's countersignature returns in `PaymentAcknowledgedResponse` but
+  nothing journals it), so a client-side close records nothing and leaves the
+  channel `closing`. Recording the unsigned template would create a UTXO at
+  an outpoint that can never exist. The client's return leg is covered today
+  by the expiry/refund route.
+- `FullChannelStateResponse.latestPaymentTxHex` is new (additive).
+
 ### A plugin's outputs are not the wallet's spending money
 
 Report section 11, V-85.

@@ -238,6 +238,7 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       context: currentState.context,
       refundTxHex: currentState.refundTxHex,
       fundingBeefHex: currentState.fundingBeefHex,
+      latestPaymentTxHex: currentState.latestPaymentTxHex,
       success: true,
     ));
   }

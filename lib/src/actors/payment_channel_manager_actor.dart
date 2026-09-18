@@ -23,8 +23,14 @@ import '../core/payment_channel_aggregate.dart';
 import '../core/channel_commands.dart';
 import '../core/channel_events.dart';
 import '../core/wallet_commands.dart';
-import '../core/wallet_events.dart' show TransactionRecordedEvent, UTXOSpentEvent;
+import '../core/wallet_events.dart'
+    show
+        BeefAncestor,
+        TransactionImportedEvent,
+        TransactionRecordedEvent,
+        UTXOSpentEvent;
 import '../models/bitcoin_transaction.dart';
+import '../models/bitcoin_utxo.dart' show UTXOStatus;
 import '../services/ancestor_chain_service.dart';
 import '../services/crypto_service.dart';
 import '../services/payment_channel_builder.dart';
@@ -922,6 +928,55 @@ class PaymentChannelManagerActor extends Actor {
     }
   }
   
+  /// The payment transaction of [pending] with both signatures applied, or
+  /// `''` when it cannot be assembled or does not verify against the funding
+  /// output (bead libspiffy-f5p2).
+  ///
+  /// The acknowledgment itself is unchanged either way: the aggregate's
+  /// balance and sequence rules decide whether the payment stands. What this
+  /// decides is whether the channel ends up HOLDING a settlement transaction
+  /// it could broadcast — and therefore whether a later cooperative close
+  /// has anything to record in the wallet. A settlement that does not verify
+  /// is not held: an absence, not an invented transaction.
+  String _fullySignedPayment(
+      _PaymentSignatureContext pending, String serverSignatureHex) {
+    final clientPubKeyHex = pending.clientPubKeyHex;
+    final serverPubKeyHex = pending.serverPubKeyHex;
+    final fundingAmountSats = pending.fundingAmountSats;
+    final clientSignatureHex = pending.clientSignatureHex;
+    if (clientPubKeyHex == null ||
+        serverPubKeyHex == null ||
+        fundingAmountSats == null ||
+        clientSignatureHex == null) {
+      return '';
+    }
+    try {
+      final clientPubKey = dartsv.SVPublicKey.fromHex(clientPubKeyHex);
+      final serverPubKey = dartsv.SVPublicKey.fromHex(serverPubKeyHex);
+      final signed = _channelBuilder.applyMultisigSignatures(
+        transaction: dartsv.Transaction.fromHex(pending.paymentTxHex),
+        inputIndex: 0,
+        clientSignature: dartsv.SVSignature.fromTxFormat(clientSignatureHex),
+        serverSignature: dartsv.SVSignature.fromTxFormat(serverSignatureHex),
+        clientPubKey: clientPubKey,
+        serverPubKey: serverPubKey,
+      );
+      _channelBuilder.verifyMultisigSpend(
+        signedTx: signed,
+        redeemScript: _channelBuilder.buildMultisigRedeemScript(
+            clientPubKey: clientPubKey, serverPubKey: serverPubKey),
+        inputValueSats: fundingAmountSats,
+      );
+      return signed.serialize();
+    } catch (e) {
+      _log.warning('Channel ${pending.channelId}: the payment at sequence '
+          '${pending.sequenceNumber} was acknowledged, but no fully signed '
+          'settlement could be assembled from the two signatures, so the '
+          'channel holds none: $e');
+      return '';
+    }
+  }
+
   /// Handle payment signature response
   Future<void> _handlePaymentSignatureResponse(
     MultisigTransactionSignedResponse response,
@@ -936,31 +991,35 @@ class PaymentChannelManagerActor extends Actor {
       final aggregateRef = await _channelAggregate(pending.channelId);
       
       if (pending.isAcknowledgment) {
-        // Server acknowledging payment - combine signatures and send command
-        
+        // Server acknowledging payment: both signatures are in hand here, so
+        // this is where the fully signed settlement is assembled (bead
+        // libspiffy-f5p2). It is journaled on PaymentAcknowledgedEvent and
+        // becomes the transaction a cooperative close records in the wallet.
+        final fullySigned = _fullySignedPayment(pending, response.signatureHex);
+
         final ackCmd = AcknowledgePaymentCommand(
           channelId: pending.channelId,
           amountSats: pending.amountSats,
           paymentTxHex: pending.paymentTxHex,
           clientSignatureHex: pending.clientSignatureHex!,
           serverSignatureHex: response.signatureHex,
-          fullySignedPaymentTxHex: '', // Would need to combine sigs - simplified for now
+          fullySignedPaymentTxHex: fullySigned,
           proposedSequence: pending.sequenceNumber,
           proposedClientBalance: pending.newClientBalance,
           proposedServerBalance: pending.newServerBalance,
         );
-        
+
         final events = await _askAggregate(pending.channelId, aggregateRef, ackCmd);
         _broadcastEvents(events);
-        
+
         pending.originalSender?.tell(PaymentAcknowledgedResponse(
           channelId: pending.channelId,
           sequenceNumber: pending.sequenceNumber,
           serverSignatureHex: response.signatureHex,
-          fullySignedPaymentTxHex: '', // Would need to combine signatures
+          fullySignedPaymentTxHex: fullySigned,
           success: true,
         ));
-        
+
       } else {
         // Client recording payment - send command with signature
         
@@ -1587,6 +1646,209 @@ class PaymentChannelManagerActor extends Actor {
     }
   }
 
+  // ===========================================================================
+  // THE RETURN LEG (bead libspiffy-f5p2)
+  // ===========================================================================
+  //
+  // Funding records what left the wallet (_recordFundingInWallet). The other
+  // half is the transaction that ends the channel and pays us back: the
+  // settlement of a cooperative close, the refund of an expiry. It is a
+  // RECEIVE on both sides — the 2-of-2 funding output is not a wallet UTXO
+  // (bead libspiffy-viy), so nothing of ours is spent and our share arrives
+  // as a fresh output — and it is recorded unproven: no BUMP, no block
+  // height, a pending row and pending outputs. Nothing has shown it mined,
+  // and only a merkle proof against our own header chain ever will (V-79,
+  // V-80). ARC is not asked: we did not broadcast it.
+
+  /// The transaction that ends [state]'s channel and pays this wallet, or
+  /// null when this side holds none.
+  ///
+  /// Only transactions we HOLD count, and only fully signed ones that spend
+  /// the channel's funding output:
+  ///
+  /// * the countersigned settlement — the latest payment transaction, which
+  ///   the server assembles when it acknowledges a payment; and
+  /// * the fully signed refund — [allowRefund] — which only the client holds
+  ///   and which spends the same output after the lock time.
+  ///
+  /// The refund is a candidate on the expiry route only. A cooperative close
+  /// is settled by the transaction the parties agreed on; the refund takes
+  /// the whole funding amount back to the client and is not valid before the
+  /// lock time, so recording it as the settlement of a close would misstate
+  /// both who was paid and what ended the channel.
+  ///
+  /// [preferTxId] (the txid an expiry observer named) chooses between them.
+  /// A txid we do not hold chooses nothing: being told about a transaction
+  /// is not holding it, and the counterparty's own copy has to reach us as a
+  /// transaction before the wallet can record one.
+  ({dartsv.Transaction tx, String hex, String ourAddress})? _returnLeg(
+    FullChannelStateResponse state, {
+    String? preferTxId,
+    bool allowRefund = false,
+  }) {
+    final ourAddress = switch (state.role) {
+      'client' => state.clientAddressB58,
+      'server' => state.serverAddressB58,
+      _ => null,
+    };
+    final fundingTxId = state.fundingTxId;
+    if (ourAddress == null || fundingTxId == null) return null;
+
+    /// [hex] when it parses, spends the funding output and carries an
+    /// unlocking script for it (an unsigned template does not, and its txid
+    /// is not the one the signed transaction will have).
+    dartsv.Transaction? signedSpendOfFunding(String? hex) {
+      if (hex == null || hex.isEmpty) return null;
+      final dartsv.Transaction tx;
+      try {
+        tx = dartsv.Transaction.fromHex(hex);
+      } catch (e) {
+        _log.warning('Channel ${state.channelId}: a candidate settlement '
+            'transaction does not parse: $e');
+        return null;
+      }
+      for (final input in tx.inputs) {
+        if (input.prevTxnId == fundingTxId &&
+            input.prevTxnOutputIndex == (state.fundingOutputIndex ?? 0)) {
+          final script = input.script;
+          return script == null || script.buffer.isEmpty ? null : tx;
+        }
+      }
+      return null;
+    }
+
+    final candidates = <dartsv.Transaction>[
+      for (final hex in [
+        state.latestPaymentTxHex,
+        if (allowRefund) state.signedRefundTxHex,
+      ])
+        if (signedSpendOfFunding(hex) case final tx?) tx,
+    ];
+    final chosen = preferTxId == null || preferTxId.isEmpty
+        ? (candidates.isEmpty ? null : candidates.first)
+        : candidates.where((tx) => tx.id == preferTxId).firstOrNull;
+    return chosen == null
+        ? null
+        : (tx: chosen, hex: chosen.serialize(), ourAddress: ourAddress);
+  }
+
+  /// Records [leg] in the wallet as an unproven receive and returns its txid.
+  ///
+  /// The transaction row goes in with no BUMP and no block height, so the
+  /// read model holds it `pending`; every output of it that pays our own
+  /// channel address becomes a `pending` UTXO with no height. Nothing of
+  /// ours is marked spent: the funding output the settlement spends was
+  /// never a wallet UTXO, and the wallet's own funding inputs were spent on
+  /// the funding path.
+  ///
+  /// The funding transaction rides along as an unproven ancestor: without it
+  /// no BEEF can be built for spending these outputs later, and nobody can
+  /// hand it to us again (Data Retention).
+  ///
+  /// A transaction the wallet already holds is not recorded again, so a
+  /// re-delivered close or expiry records nothing new — the same three-layer
+  /// rule the funding path follows (the channel journal's terminal event,
+  /// this read-model check, and the wallet's own per-outpoint no-op).
+  Future<String> _recordReturnLegInWallet(
+    String channelId,
+    FullChannelStateResponse state,
+    ({dartsv.Transaction tx, String hex, String ourAddress}) leg,
+  ) async {
+    final walletId = state.walletId;
+    final txid = leg.tx.id;
+    if (await _walletHoldsTransaction(walletId, txid)) return txid;
+
+    final ourOutputs = <int>[];
+    var receivedSats = 0;
+    var totalOutputSats = 0;
+    for (var i = 0; i < leg.tx.outputs.length; i++) {
+      final output = leg.tx.outputs[i];
+      totalOutputSats += output.satoshis.toInt();
+      String? address;
+      try {
+        address = dartsv.P2PKHLockBuilder.fromScript(output.script,
+                networkType: _networkType)
+            .address
+            ?.toBase58();
+      } catch (_) {
+        // Not a P2PKH output; it is not one of ours.
+      }
+      if (address == leg.ourAddress) {
+        ourOutputs.add(i);
+        receivedSats += output.satoshis.toInt();
+      }
+    }
+
+    final fundingTxHex = state.fundingTxHex;
+    final applied = _awaitApplied(
+      _walletProjection,
+      (e) => e is TransactionImportedEvent && e.txid == txid,
+      _walletPersistTimeout,
+    );
+    _walletManager.tell(WalletCommandMessage(
+      walletId,
+      RecordImportedTransactionCommand(
+        walletId: walletId,
+        txid: txid,
+        rawHex: leg.hex,
+        // No proof: an absence, not a block (beads libspiffy-nys0, V-79).
+        blockHeight: null,
+        bumpProofHex: '',
+        totalOutputSats: totalOutputSats,
+        numInputs: leg.tx.inputs.length,
+        numOutputs: leg.tx.outputs.length,
+        txVersion: leg.tx.version,
+        txLockTime: leg.tx.nLockTime,
+        walletReceivingAddresses: ourOutputs.isEmpty ? const [] : [leg.ourAddress],
+        walletReceivedSats: receivedSats,
+        // The only input is the channel's funding output.
+        totalInputSats: state.fundingAmountSats.toInt(),
+        // The counterpart of the funding record's recipient (that one paid
+        // `channel:<id>`; this one comes back from it). A channel is not an
+        // address, and neither record pretends otherwise.
+        sendingAddresses: ['channel:$channelId'],
+        ancestors: [
+          if (state.fundingTxId != null &&
+              fundingTxHex != null &&
+              fundingTxHex.isNotEmpty)
+            BeefAncestor(txid: state.fundingTxId!, rawHex: fundingTxHex),
+        ],
+        // The counterparty marker is deliberately absent, not null: bead
+        // libspiffy-bps1 adds it here without reshaping this call.
+      ),
+    ));
+
+    for (final vout in ourOutputs) {
+      final output = leg.tx.outputs[vout];
+      _walletManager.tell(WalletCommandMessage(
+        walletId,
+        ReceiveUTXOCommand(
+          walletId: walletId,
+          txid: txid,
+          vout: vout,
+          satoshis: output.satoshis,
+          scriptPubKey: output.script.toHex(),
+          address: leg.ourAddress,
+          derivationIndex: state.derivationIndex,
+          // Unproven: pending, with no height and no count to go with it.
+          initialStatus: UTXOStatus.pending,
+        ),
+      ));
+    }
+
+    if (applied != null) {
+      final result = await applied.done;
+      if (result is AwaitFailed &&
+          !await _walletHoldsTransaction(walletId, txid)) {
+        throw StateError('Recording the settlement $txid of channel '
+            '$channelId in wallet $walletId failed: ${result.reason}');
+      }
+    }
+    _log.info('Channel $channelId: settlement $txid recorded in wallet '
+        '$walletId ($receivedSats sats to ${leg.ourAddress}, unproven)');
+    return txid;
+  }
+
   /// Client records a payment
   Future<void> _handleRecordPayment(RecordPaymentMessage msg) async {
     
@@ -1779,6 +2041,9 @@ class PaymentChannelManagerActor extends Actor {
         newServerBalance: msg.proposedServerBalance,
         amountSats: msg.proposedServerBalance - stateResponse.serverBalanceSats,
         clientSignatureHex: msg.clientSignatureHex,
+        clientPubKeyHex: stateResponse.clientPubKeyHex,
+        serverPubKeyHex: stateResponse.serverPubKeyHex,
+        fundingAmountSats: stateResponse.fundingAmountSats,
         isAcknowledgment: true,
       );
       _pendingPaymentSignatures[correlationId] = pending;
@@ -1805,31 +2070,59 @@ class PaymentChannelManagerActor extends Actor {
     }
   }
 
-  /// Close a channel
+  /// Close a channel cooperatively, in two journaled steps.
+  ///
+  /// [CloseChannelCommand] records the decision (`closing`); then the
+  /// settlement transaction this side holds is recorded in the wallet (bead
+  /// libspiffy-f5p2) and [FinalizeCloseCommand] closes the channel with that
+  /// txid and the final balances. `closing` is the resumable middle: a close
+  /// re-delivered after the first step (a restart, a failed wallet write)
+  /// picks up there instead of being refused, and a channel already `closed`
+  /// answers without recording anything again.
+  ///
+  /// A side that holds no fully signed settlement records nothing and does
+  /// not finalise: the channel stays `closing`, which is the honest state —
+  /// the parties agreed to close and we do not have the transaction that
+  /// ends it. Today that is every client, because the server's
+  /// countersignature is dropped where the acknowledgment reaches the
+  /// client (see the report for bead libspiffy-f5p2).
   Future<void> _handleCloseChannel(CloseChannelMessage msg) async {
-    
+
     // Capture sender immediately (context.sender changes with each new message)
     final originalSender = context.sender;
-    
+
     try {
       final aggregateRef = await _channelAggregate(msg.channelId);
-      
-      final closeCmd = CloseChannelCommand(
-        channelId: msg.channelId,
-        reason: msg.reason,
-      );
-      
-      // Send command and wait for its events (a rejection throws)
-      final response = await _askAggregate(msg.channelId, aggregateRef, closeCmd);
 
-      // Broadcast events to external subscribers (P2P adapter)
-      _broadcastEvents(response);
-      
+      var state = _stateOrThrow(
+          await aggregateRef.ask(ChannelStateQuery(channelId: msg.channelId)));
+
+      if (state.status != 'closed') {
+        if (state.status != 'closing') {
+          final closeCmd = CloseChannelCommand(
+            channelId: msg.channelId,
+            reason: msg.reason,
+          );
+
+          // Send command and wait for its events (a rejection throws)
+          final response =
+              await _askAggregate(msg.channelId, aggregateRef, closeCmd);
+
+          // Broadcast events to external subscribers (P2P adapter)
+          _broadcastEvents(response);
+
+          state = _stateOrThrow(await aggregateRef
+              .ask(ChannelStateQuery(channelId: msg.channelId)));
+        }
+
+        await _finalizeClose(msg.channelId, aggregateRef, state);
+      }
+
       originalSender?.tell(ChannelClosedResponse(
         channelId: msg.channelId,
         success: true,
       ));
-      
+
     } catch (e, stackTrace) {
       _log.warning('Closing channel ${msg.channelId} failed: $e', e, stackTrace);
       originalSender?.tell(ChannelClosedResponse(
@@ -1840,11 +2133,67 @@ class PaymentChannelManagerActor extends Actor {
     }
   }
 
+  /// Records the settlement of a channel in `closing` in the wallet and
+  /// closes it with [FinalizeCloseCommand]; does neither when this side
+  /// holds no settlement transaction.
+  Future<void> _finalizeClose(String channelId, ActorRef aggregateRef,
+      FullChannelStateResponse state) async {
+    final leg = _returnLeg(state);
+    if (leg == null) {
+      _log.warning('Channel $channelId is closing and this side holds no '
+          'fully signed settlement transaction: nothing is recorded in '
+          'wallet ${state.walletId} and the channel is not finalised. The '
+          'settlement reaches the wallet when the counterparty hands it '
+          'over, as any other payment does.');
+      return;
+    }
+    final settlementTxId =
+        await _recordReturnLegInWallet(channelId, state, leg);
+    final applied = _awaitApplied(
+        _channelProjection,
+        (e) => e is ChannelClosedEvent && e.channelId == channelId,
+        const Duration(seconds: 10));
+    try {
+      _broadcastEvents(await _askAggregate(
+        channelId,
+        aggregateRef,
+        FinalizeCloseCommand(
+          channelId: channelId,
+          settlementTxId: settlementTxId,
+          finalClientBalanceSats: state.clientBalanceSats,
+          finalServerBalanceSats: state.serverBalanceSats,
+        ),
+      ));
+    } catch (e) {
+      // Nothing will await the registration now (bead libspiffy-kyw).
+      applied?.cancel();
+      rethrow;
+    }
+    if (applied != null) {
+      final result = await applied.done;
+      if (result is AwaitFailed) {
+        _log.warning('ChannelProjection apply timeout for the close of '
+            '$channelId: ${result.reason}');
+      }
+    }
+  }
+
   /// Record that a channel has expired (lockTime elapsed).
   ///
   /// Issues [ExpireChannelCommand] to the channel aggregate so the read model
   /// transitions to `expired` via the projection rather than direct Isar
   /// mutation (closes overnode_v2-m4t).
+  ///
+  /// Then the transaction that ends the channel and pays this side — the
+  /// fully signed refund the client holds, or a countersigned settlement —
+  /// is recorded in the wallet as an unproven receive, exactly as a
+  /// cooperative close records its settlement (bead libspiffy-f5p2). The two
+  /// routes share [_returnLeg] and [_recordReturnLegInWallet]; they differ
+  /// only in which transaction they can choose, and in that an expiry
+  /// observer may name the txid it saw ([ExpireChannelMessage.settlementOrRefundTxId]),
+  /// which picks between the two. The aggregate's own guard — it refuses to
+  /// expire a channel that is already terminated — is what makes the
+  /// recording happen once.
   Future<void> _handleExpireChannel(ExpireChannelMessage msg) async {
     final originalSender = context.sender;
 
@@ -1870,6 +2219,11 @@ class PaymentChannelManagerActor extends Actor {
           (e) => e is ChannelExpiredEvent && e.channelId == msg.channelId,
           const Duration(seconds: 10));
 
+      // The transaction fields of the state do not change with the expiry;
+      // read before it so the aggregate's guard is the only gate.
+      final state = _stateOrThrow(
+          await aggregateRef.ask(ChannelStateQuery(channelId: msg.channelId)));
+
       final response = await _askAggregate(msg.channelId, aggregateRef, expireCmd);
 
       _broadcastEvents(response);
@@ -1880,6 +2234,19 @@ class PaymentChannelManagerActor extends Actor {
           _log.warning(
               'ChannelProjection apply timeout for ${msg.channelId}: ${result.reason}');
         }
+        // Awaited: the catch below must not also cancel it.
+        applied = null;
+      }
+
+      final leg = _returnLeg(state,
+          preferTxId: msg.settlementOrRefundTxId, allowRefund: true);
+      if (leg == null) {
+        _log.warning('Channel ${msg.channelId} expired and this side holds no '
+            'fully signed transaction spending its funding output'
+            '${msg.settlementOrRefundTxId == null ? '' : ' with txid ${msg.settlementOrRefundTxId}'}'
+            ': nothing is recorded in wallet ${state.walletId}.');
+      } else {
+        await _recordReturnLegInWallet(msg.channelId, state, leg);
       }
 
       originalSender?.tell(ChannelExpiredResponse(
@@ -2080,6 +2447,15 @@ class _PaymentSignatureContext {
   final String? purpose;
   final String? invoiceId;
   final String? clientSignatureHex; // For acknowledgments
+
+  /// The channel's two public keys and the value of the funding output it
+  /// spends: what the server needs to combine both signatures into the fully
+  /// signed settlement and check that it spends the funding output (bead
+  /// libspiffy-f5p2). Null on the client's own recording path.
+  final String? clientPubKeyHex;
+  final String? serverPubKeyHex;
+  final BigInt? fundingAmountSats;
+
   final bool isAcknowledgment;
 
   _PaymentSignatureContext({
@@ -2094,6 +2470,9 @@ class _PaymentSignatureContext {
     this.purpose,
     this.invoiceId,
     this.clientSignatureHex,
+    this.clientPubKeyHex,
+    this.serverPubKeyHex,
+    this.fundingAmountSats,
     this.isAcknowledgment = false,
   });
 }

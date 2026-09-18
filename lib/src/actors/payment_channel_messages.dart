@@ -616,6 +616,14 @@ class FullChannelStateResponse extends ActorResponse {
   /// BEEF of the funding transaction journaled with the opening.
   final String? fundingBeefHex;
 
+  /// The latest payment transaction of the channel. On the server (which
+  /// holds both signatures when it acknowledges) this is the fully signed
+  /// settlement; on the client it is the unsigned template it signed, whose
+  /// txid is not the one the signed transaction will have. Null before the
+  /// first payment. Read by the close path to find the transaction that
+  /// ends the channel (bead libspiffy-f5p2).
+  final String? latestPaymentTxHex;
+
   @override
   final bool success;
   @override
@@ -648,6 +656,7 @@ class FullChannelStateResponse extends ActorResponse {
     this.context,
     this.refundTxHex,
     this.fundingBeefHex,
+    this.latestPaymentTxHex,
     required this.success,
     this.error,
   });

@@ -565,14 +565,17 @@ class ARCActor extends Actor {
 
       final status = _arcStatusToString(response.status);
 
-      // Determine confirmations based on status and block height
-      final confirmations = response.blockHeight != null ? 6 : 0; // Simplified
+      // No confirmation count is reported (bead libspiffy-jc3h). ARC answers
+      // with a status and a block height; it says nothing about depth, and
+      // "6 because there is a height" was a fabricated number an app could
+      // have thresholded on. The height below is the evidence, and a depth,
+      // if one is wanted, is `tip height - blockHeight + 1`.
       final proofAvailable = response.status == ArcTransactionStatus.mined;
 
       context.sender?.tell(TransactionStatusMessage(
         txid: msg.txid,
         status: status,
-        confirmations: confirmations,
+        confirmations: null,
         blockHeight: response.blockHeight,
         proofAvailable: proofAvailable,
       ));

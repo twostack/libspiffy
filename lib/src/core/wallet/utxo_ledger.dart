@@ -304,7 +304,10 @@ abstract final class UtxoLedger {
   /// Nothing about the count or the height is verified — they come straight
   /// from the caller — so the event they are journaled in changes no status
   /// (see [applyConfirmationUpdated] and [UpdateUTXOConfirmationsCommand],
-  /// bead libspiffy-8oaq).
+  /// bead libspiffy-8oaq) and its height reaches no row (bead
+  /// libspiffy-pq8p). The height is still journaled, as the claim it was:
+  /// the journal records what we were told, and applying the event is where
+  /// the claim is given no authority.
   static List<Event> updateConfirmations(WalletState currentState, UpdateUTXOConfirmationsCommand command) {
     // Business rule: Wallet must exist
     if (!currentState.isCreated) {
@@ -453,10 +456,24 @@ abstract final class UtxoLedger {
     state.lastModified = event.timestamp;
   }
 
-  /// Writes the reported count, and the reported height when the event
-  /// carries one, onto the row. The status is deliberately untouched: a
-  /// count nobody checked cannot make an output spendable, and it cannot
-  /// un-void one (bead libspiffy-8oaq).
+  /// Writes the reported count onto the row, and nothing else.
+  ///
+  /// The status is deliberately untouched: a count nobody checked cannot
+  /// make an output spendable, and it cannot un-void one (bead
+  /// libspiffy-8oaq). **The height the event carries is deliberately not
+  /// written either** (bead libspiffy-pq8p): `blockHeight != null` is the
+  /// wallet's test for confirmed at every layer
+  /// ([WalletBalances.bucketOf], `BitcoinUtxo.isConfirmed`,
+  /// spv-understanding.md "Balances"), so recording an unverified height
+  /// here made an unproven claim *report* as confirmed even after
+  /// libspiffy-8oaq had stopped it making anything spendable. A height is
+  /// evidence and this command has none; the count it does carry is kept
+  /// (Data Retention: we keep what we were told), and the event keeps
+  /// journalling the height as the claim it was, so nothing about the
+  /// record is lost. `OutgoingTransactions.applyConfirmed` — driven by
+  /// `ConfirmTransactionCommand`, whose senders derive the height from a
+  /// BUMP checked against our own headers — is the only writer of a UTXO's
+  /// height, and `applyConfirmationReverted` the only one that takes it off.
   static void applyConfirmationUpdated(WalletStateBuilder state, UTXOConfirmationUpdatedEvent event) {
     final utxoKey = '${event.txid}:${event.vout}';
     final utxo = state.utxos[utxoKey];
@@ -464,7 +481,6 @@ abstract final class UtxoLedger {
       state.putUtxo(
         utxoKey,
         utxo.updateConfirmations(
-          blockHeight: event.blockHeight,
           confirmations: event.confirmations,
           timestamp: event.timestamp,
         ),

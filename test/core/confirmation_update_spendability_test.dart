@@ -245,9 +245,15 @@ void main() {
         blockHeight: 800500,
       ));
 
-      // RETENTION: what we were told is kept; it just carries no authority.
+      // RETENTION: the count we were told is kept; it just carries no
+      // authority. The height is not kept at all (bead libspiffy-pq8p):
+      // `blockHeight != null` is what "confirmed" means on every layer
+      // (libspiffy-jc3h), so recording a height this command has no evidence
+      // for made an unproven claim report as confirmed balance. The journal
+      // still holds the claim; the row does not.
       expect(wallet.utxo(_input).confirmations, 2);
-      expect(wallet.utxo(_input).blockHeight, 800500);
+      expect(wallet.utxo(_input).blockHeight, isNull);
+      expect(wallet.utxo(_input).isConfirmed, isFalse);
       expect(wallet.utxo(_input).status, UTXOStatus.pending);
     });
   });

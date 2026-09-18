@@ -119,9 +119,14 @@ void main() {
       });
 
       test('should recalculate balances from UTXOs', () {
-        // Create UTXOs with different confirmation levels
-        final utxo1 = _createTestUTXO('tx1', 0, BigInt.from(100000), UTXOStatus.available, confirmations: 10);
-        final utxo2 = _createTestUTXO('tx2', 0, BigInt.from(50000), UTXOStatus.available, confirmations: 1);
+        // Bead libspiffy-jc3h: the confirmed bucket is the proven block
+        // height, not a confirmation count. tx1 carries a height a verified
+        // proof put it at (confirmed, at depth one); tx2 carries a reported
+        // count and no height (unconfirmed, however deep it claims); tx3 is
+        // reserved, which still wins.
+        final utxo1 = _createTestUTXO('tx1', 0, BigInt.from(100000), UTXOStatus.available,
+            blockHeight: 900000);
+        final utxo2 = _createTestUTXO('tx2', 0, BigInt.from(50000), UTXOStatus.available, confirmations: 10);
         final utxo3 = _createTestUTXO('tx3', 0, BigInt.from(25000), UTXOStatus.reserved, confirmations: 10);
 
         final state = _createTestWalletState(
@@ -134,9 +139,6 @@ void main() {
 
         final recalculated = state.recalculateBalances();
         
-        // tx1 (100k) and tx3 (25k) should be confirmed (>= 6 confirmations)
-        // tx2 (50k) should be unconfirmed (< 6 confirmations)
-        // tx3 (25k) should be reserved
         expect(recalculated.confirmedBalance.getValue(), equals(BigInt.from(100000)));
         expect(recalculated.unconfirmedBalance.getValue(), equals(BigInt.from(50000)));
         expect(recalculated.reservedBalance.getValue(), equals(BigInt.from(25000)));
@@ -550,6 +552,7 @@ BitcoinUtxo _createTestUTXO(
   UTXOStatus status, {
   String? address,
   int? confirmations,
+  int? blockHeight,
 }) {
   final now = DateTime.now();
   return BitcoinUtxo(
@@ -560,6 +563,7 @@ BitcoinUtxo _createTestUTXO(
     scriptPubKey: '76a914abcd1234efgh5678ijkl9012mnop3456qrst88ac',
     status: status,
     confirmations: confirmations,
+    blockHeight: blockHeight,
     createdAt: now,
     updatedAt: now,
   );

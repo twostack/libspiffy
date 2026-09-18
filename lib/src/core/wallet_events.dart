@@ -859,10 +859,17 @@ class UTXOSpentEvent extends WalletEvent {
 /// Event fired when a confirmation count reported for a UTXO is recorded.
 ///
 /// It records a **claim**, never evidence (bead libspiffy-8oaq): applying it
-/// writes the count and the height onto the row and deliberately leaves the
-/// status alone, so it cannot make anything spendable. Availability comes
-/// from [UTXOMarkedAvailableEvent] or from [TransactionConfirmedEvent], whose
+/// writes the count onto the row and deliberately leaves the status alone,
+/// so it cannot make anything spendable. Availability comes from
+/// [UTXOMarkedAvailableEvent] or from [TransactionConfirmedEvent], whose
 /// height is derived from a merkle proof checked against our own headers.
+///
+/// The height it carries reaches no row either (bead libspiffy-pq8p).
+/// `blockHeight != null` is what "confirmed" means at every layer
+/// (`WalletBalances.bucketOf`, `BitcoinUtxo.isConfirmed`), so recording an
+/// unverified height let a claim report as confirmed balance. The event
+/// keeps carrying it because the journal records what we were told; the
+/// apply is where it is given no authority.
 class UTXOConfirmationUpdatedEvent extends WalletEvent {
   /// Journal identifier of this event type. Stored with every event and
   /// independent of the class name; never change it (audit 2026-09-14 M8).

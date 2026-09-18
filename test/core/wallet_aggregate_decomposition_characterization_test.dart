@@ -94,12 +94,16 @@ class _Wallet {
     }
   }
 
+  /// [provenHeight] is the block a verified merkle proof puts the receipt
+  /// in, which is what the confirmed bucket counts (bead libspiffy-jc3h);
+  /// null while it is unproven (and `ReceiveUTXOCommand` refuses a height on
+  /// a pending receipt).
   Future<void> receive(int tx, int sats,
           {int vout = 0,
           String? script,
           String? address,
           UTXOStatus status = UTXOStatus.available,
-          int confirmations = 6,
+          int? provenHeight = 900000,
           Map<String, dynamic>? pluginMetadata}) =>
       handle(ReceiveUTXOCommand(
         walletId: _w,
@@ -109,7 +113,7 @@ class _Wallet {
         scriptPubKey: script ?? _p2pkh(address ?? root),
         address: address ?? root,
         initialStatus: status,
-        confirmations: confirmations,
+        blockHeight: provenHeight,
         pluginMetadata: pluginMetadata,
       ));
 
@@ -185,69 +189,71 @@ void main() {
         expect(_balances(restored), expected, reason: '$step (snapshot restore)');
       }
 
-      await wallet.receive(9, 1000, confirmations: 5);
-      await expectBalances('five confirmations (unconfirmed)', _b(0, 1000, 0));
-      await wallet.receive(1, 10000, status: UTXOStatus.pending, confirmations: 0);
+      await wallet.receive(9, 1000, provenHeight: null);
+      await expectBalances('unproven receive (unconfirmed)', _b(0, 1000, 0));
+      await wallet.receive(1, 10000, status: UTXOStatus.pending, provenHeight: null);
       await expectBalances('pending receive', _b(0, 11000, 0));
       await wallet.receive(2, 20000);
-      await expectBalances('confirmed receive', _b(20000, 11000, 0));
-      await wallet.receive(3, 5000, confirmations: 2, pluginMetadata: {'pluginId': 'tok'});
+      await expectBalances('proven receive (confirmed at depth one)', _b(20000, 11000, 0));
+      await wallet.receive(3, 5000, provenHeight: null, pluginMetadata: {'pluginId': 'tok'});
       await expectBalances('plugin receive', _b(20000, 16000, 0));
-      // A reported count moves the UTXO between the confirmed and unconfirmed
-      // buckets (which count everything the wallet holds, pending included)
-      // and changes nothing about spendability: it was promoted to available
-      // when this characterization was written, and bead libspiffy-8oaq
-      // reverses that.
+      // A reported count moves nothing at all. It used to move the UTXO's
+      // amount into the confirmed bucket at seven confirmations; bead
+      // libspiffy-jc3h makes the proven block height the confirmed test, so
+      // a count nobody verified leaves the buckets exactly as they were (and
+      // bead libspiffy-8oaq had already stopped it promoting the status).
       await wallet.handle(UpdateUTXOConfirmationsCommand(walletId: _w, utxoKey: _key(1), confirmations: 7));
-      await expectBalances('confirmations updated', _b(30000, 6000, 0));
+      await expectBalances('confirmations updated', _b(20000, 16000, 0));
       expect(wallet.state.utxos[_key(1)]!.status, UTXOStatus.pending,
           reason: 'a caller-supplied count is a claim, not evidence');
       expect(wallet.state.availableBalance, BigInt.from(21000),
           reason: 'only the genuinely available UTXOs can fund a payment');
       await wallet.handle(MarkUTXOAvailableCommand(walletId: _w, txid: _txid(1), vout: 0));
-      await expectBalances('marked available', _b(30000, 6000, 0));
+      await expectBalances('marked available (spendable, still unproven)', _b(20000, 16000, 0));
       expect(wallet.state.utxos[_key(1)]!.status, UTXOStatus.available,
           reason: 'this is the path that does make it spendable');
       expect(wallet.state.availableBalance, BigInt.from(31000),
           reason: 'the promoted 10000 joins them');
       await wallet.handle(ReserveUTXOCommand(walletId: _w, utxoKey: _key(2), reservedByTxId: 'r'));
-      await expectBalances('reserved', _b(10000, 6000, 20000));
+      await expectBalances('reserved', _b(0, 16000, 20000));
       await wallet.handle(RenewUTXOReservationCommand(
           walletId: _w, utxoKey: _key(2), extensionDuration: const Duration(minutes: 5)));
-      await expectBalances('renewed', _b(10000, 6000, 20000));
+      await expectBalances('renewed', _b(0, 16000, 20000));
       await wallet.handle(ReleaseUTXOCommand(walletId: _w, utxoKey: _key(2)));
-      await expectBalances('released', _b(30000, 6000, 0));
+      await expectBalances('released', _b(20000, 16000, 0));
       await wallet.handle(SpendUTXOCommand(walletId: _w, utxoKey: _key(3), spendingTxId: 's', fee: BigInt.zero));
-      await expectBalances('spent', _b(30000, 1000, 0));
+      await expectBalances('spent', _b(20000, 11000, 0));
 
       final payment = _txHex([_key(1)], [(_p2pkh(_foreign), 9000)]);
       final record = _outgoing(payment, [_key(1)], deferSpend: true);
       await wallet.handle(record);
       await expectBalances('deferred hold', _b(20000, 1000, 10000));
       await wallet.handle(CancelDeferredSpendCommand(walletId: _w, txid: record.txid));
-      await expectBalances('deferred cancelled', _b(30000, 1000, 0));
+      await expectBalances('deferred cancelled', _b(20000, 11000, 0));
 
       await wallet.handle(ConfirmTransactionCommand(walletId: _w, txid: _txid(2), blockHeight: 100, blockHash: 'h'));
-      await expectBalances('confirmed transaction', _b(30000, 1000, 0));
+      await expectBalances('confirmed transaction (the proof restamps the height)', _b(20000, 11000, 0));
       await wallet.handle(RevertTransactionConfirmationCommand(walletId: _w, txid: _txid(2), reason: 'reorg'));
-      await expectBalances('confirmation reverted', _b(10000, 21000, 0));
+      // The revert takes the height off, so the amount leaves the confirmed
+      // bucket: nothing puts it in a block on our chain any more.
+      await expectBalances('confirmation reverted', _b(0, 31000, 0));
 
       await wallet.handle(AddWatchAddressCommand(walletId: _w, address: watchAddress, scriptType: 'p2pkh'));
       await wallet.receive(4, 7000, address: watchAddress);
-      await expectBalances('watch-only receive (counted in the state balances)', _b(17000, 21000, 0));
+      await expectBalances('watch-only receive (counted in the state balances)', _b(7000, 31000, 0));
 
       final spend = _txHex([_key(2)], [(_p2pkh(_foreign), 1000), (_p2pkh(wallet.change2), 18000)]);
       await wallet.handle(_outgoing(spend, [_key(2)]));
-      await expectBalances('recorded spend with change', _b(17000, 19000, 0));
+      await expectBalances('recorded spend with change', _b(7000, 29000, 0));
 
       await wallet.handle(ReserveUTXOsCommand(walletId: _w, utxoKeys: [_key(1), _key(4)], reservationId: 'multi'));
       await expectBalances('reserved many', _b(0, 19000, 17000));
       await wallet.handle(ReleaseUTXOsCommand(walletId: _w, reservationId: 'multi'));
-      await expectBalances('released many', _b(17000, 19000, 0));
+      await expectBalances('released many', _b(7000, 29000, 0));
       await wallet.handle(ReserveUTXOCommand(
           walletId: _w, utxoKey: _key(1), reservedByTxId: 'x', reservationDuration: const Duration(seconds: -1)));
       await wallet.handle(CleanupExpiredReservationsCommand(walletId: _w));
-      await expectBalances('expired reservation cleaned up', _b(17000, 19000, 0));
+      await expectBalances('expired reservation cleaned up', _b(7000, 29000, 0));
     });
   });
 
@@ -258,9 +264,9 @@ void main() {
           dartsv.SVPrivateKey.fromHex('22' * 32, dartsv.NetworkType.TEST).publicKey.toAddress(dartsv.NetworkType.TEST).toBase58();
       await wallet.handle(AddWatchAddressCommand(walletId: _w, address: watchAddress, scriptType: 'p2pkh'));
       await wallet.receive(1, 3000);
-      await wallet.receive(2, 9000, confirmations: 1);
+      await wallet.receive(2, 9000, provenHeight: null);
       await wallet.receive(3, 6000);
-      await wallet.receive(4, 50000, status: UTXOStatus.pending, confirmations: 0);
+      await wallet.receive(4, 50000, status: UTXOStatus.pending, provenHeight: null);
       await wallet.receive(5, 8000);
       await wallet.handle(ReserveUTXOCommand(walletId: _w, utxoKey: _key(5), reservedByTxId: 'res-5'));
       await wallet.receive(6, 100000, pluginMetadata: {'pluginId': 'tok'});

@@ -435,7 +435,8 @@ void _tolerantAndIdempotentGroups() {
       final u = await utxo(0);
       expect(u.status, equals(UTXOStatus.reserved));
       expect(u.confirmations, equals(1));
-      expect(u.blockHeight, equals(800000));
+      // Bead libspiffy-pq8p: the height the event reported reaches no row.
+      expect(u.blockHeight, isNull);
     });
 
     test('a spent UTXO stays spent and out of the balance', () async {
@@ -451,9 +452,14 @@ void _tolerantAndIdempotentGroups() {
 
     // Bead libspiffy-8oaq, read-model side: the count and the height in this
     // event come straight from a caller and were verified against nothing, so
-    // the row records them and keeps its status. The read model must agree
-    // with the aggregate, or the wallet would show as spendable an output the
-    // aggregate refuses to select.
+    // the row records the count and keeps its status. The read model must
+    // agree with the aggregate, or the wallet would show as spendable an
+    // output the aggregate refuses to select.
+    //
+    // Bead libspiffy-pq8p: the height is not recorded either. It used to be,
+    // and since `blockHeight != null` is what "confirmed" means at every
+    // layer (libspiffy-jc3h), that made an unproven claim report as
+    // confirmed balance.
     test('a pending UTXO stays pending: a reported count is not evidence', () async {
       await fx.projection.handle(_receivedAt(address, 0, 50000));
       expect((await utxo(0)).status, equals(UTXOStatus.pending));
@@ -461,7 +467,11 @@ void _tolerantAndIdempotentGroups() {
       final u = await utxo(0);
       expect(u.status, equals(UTXOStatus.pending));
       expect(u.confirmations, equals(1), reason: 'the claim is still recorded');
-      expect(u.blockHeight, equals(800000));
+      expect(u.blockHeight, isNull, reason: 'the claimed height is not');
+      expect(u.isConfirmed, isFalse);
+      final wallet = await fx.storage.getWallet(_walletId);
+      expect((wallet!['metadata'] as Map)['confirmedBalance'], equals('0'));
+      expect((wallet['metadata'] as Map)['unconfirmedBalance'], equals('50000'));
     });
 
     test('UTXOMarkedAvailableEvent is what makes a pending UTXO available', () async {

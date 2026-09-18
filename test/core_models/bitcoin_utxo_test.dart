@@ -213,7 +213,7 @@ void main() {
         // UTXO outright. markAvailable is what makes the release restore
         // `available` (UtxoLedger.applyMarkedAvailable).
         final reserved = utxo.copyWith(status: UTXOStatus.pending).reserve('tx');
-        final confirmed = reserved.updateConfirmations(blockHeight: 1, confirmations: 1);
+        final confirmed = reserved.updateConfirmations(confirmations: 1);
         expect(confirmed.status, equals(UTXOStatus.reserved));
         expect(confirmed.statusBeforeReservation, equals(UTXOStatus.pending));
         expect(confirmed.releaseReservation().status, equals(UTXOStatus.pending));
@@ -221,20 +221,24 @@ void main() {
 
       test('a reported count never moves the status of a pending or voided UTXO', () {
         final pending = utxo.copyWith(status: UTXOStatus.pending);
-        expect(pending.updateConfirmations(blockHeight: 900000, confirmations: 6).status,
-            equals(UTXOStatus.pending));
+        expect(pending.updateConfirmations(confirmations: 6).status, equals(UTXOStatus.pending));
         final voided = utxo.markVoided();
-        expect(voided.updateConfirmations(blockHeight: 900000, confirmations: 6).status,
-            equals(UTXOStatus.voided),
+        expect(voided.updateConfirmations(confirmations: 6).status, equals(UTXOStatus.voided),
             reason: 'only a merkle proof outranks the resolution that voided it');
       });
 
-      test('an absent block height leaves the recorded height alone', () {
+      test('a reported count leaves the recorded height alone, whatever it is', () {
+        // Bead libspiffy-pq8p: a count report carries no height at all now,
+        // so it can neither stamp one nor take one off. `blockHeight != null`
+        // is what "confirmed" means (libspiffy-jc3h), and this path has no
+        // evidence to offer about any block.
         final proven = utxo.copyWith(blockHeight: 910000, status: UTXOStatus.available);
         expect(proven.updateConfirmations(confirmations: 2).blockHeight, equals(910000));
+        expect(proven.updateConfirmations(confirmations: 0).blockHeight, equals(910000));
         final unproven = utxo.copyWith(status: UTXOStatus.pending);
         expect(unproven.updateConfirmations(confirmations: 2).blockHeight, isNull,
-            reason: 'no height given is not height 0, the genesis block');
+            reason: 'a reported count is not a block');
+        expect(unproven.updateConfirmations(confirmations: 2).isConfirmed, isFalse);
       });
 
       test('statusBeforeReservation survives toMap/fromMap', () {
@@ -244,15 +248,14 @@ void main() {
         expect(utxo.toMap().containsKey('statusBeforeReservation'), isFalse);
       });
 
-      test('should update confirmations correctly', () {
-        final updated = utxo.updateConfirmations(
-          blockHeight: 750123,
-          confirmations: 5,
-        );
-        
-        expect(updated.blockHeight, equals(750123));
+      test('should record the reported count and nothing else', () {
+        final updated = utxo.updateConfirmations(confirmations: 5);
+
         expect(updated.confirmations, equals(5));
-        expect(updated.isConfirmed, isTrue);
+        expect(updated.blockHeight, isNull,
+            reason: 'a reported count brings no block with it (libspiffy-pq8p)');
+        expect(updated.isConfirmed, isFalse,
+            reason: 'confirmed is a proven height, and there is none here');
         expect(updated.updatedAt.isAfter(utxo.updatedAt), isTrue);
       });
     });
@@ -349,7 +352,12 @@ void main() {
         expect(utxo.confirmations, equals(3));
       });
 
-      test('should handle edge case of zero confirmations with block height', () {
+      test('a proven height with no count reported is confirmed', () {
+        // Bead libspiffy-jc3h: the height is the evidence — a merkle proof
+        // put the transaction in that block on our active chain — and a
+        // confirmation count is not evidence of anything, so a UTXO stamped
+        // with a proven height and no count is confirmed. This test pinned
+        // the opposite while `isConfirmed` also demanded a count.
         final now = DateTime.now();
         final coin = dartsv.Coin.ofSat(BigInt.from(100000));
         final utxo = BitcoinUtxo(
@@ -360,12 +368,12 @@ void main() {
           scriptPubKey: '76a914edgecase123456789012345678901234567888ac',
           status: UTXOStatus.available,
           blockHeight: 750789,
-          confirmations: 0, // Zero confirmations but has block height
+          confirmations: 0,
           createdAt: now,
           updatedAt: now,
         );
 
-        expect(utxo.isConfirmed, isFalse); // Zero confirmations = not confirmed
+        expect(utxo.isConfirmed, isTrue);
         expect(utxo.blockHeight, equals(750789));
         expect(utxo.confirmations, equals(0));
       });

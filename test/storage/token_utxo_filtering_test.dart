@@ -108,10 +108,7 @@ void main() {
     test('preserved through updateConfirmations', () {
       final utxo = createTokenUtxo('tx6', 0, 1,
           status: UTXOStatus.pending);
-      final confirmed = utxo.updateConfirmations(
-        blockHeight: 800000,
-        confirmations: 3,
-      );
+      final confirmed = utxo.updateConfirmations(confirmations: 3);
       expect(confirmed.hasPluginMetadata, isTrue);
     });
   });
@@ -495,10 +492,7 @@ void main() {
       await storage.upsertUTXO(walletId, token);
 
       // Update confirmations
-      final updated = token.updateConfirmations(
-        blockHeight: 800000,
-        confirmations: 10,
-      );
+      final updated = token.updateConfirmations(confirmations: 10);
       await storage.upsertUTXO(walletId, updated);
 
       final utxos = await storage.getUTXOsByPlugin(walletId, 'tstoken');

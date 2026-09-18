@@ -526,7 +526,11 @@ class WalletCoordinatorActor extends Actor {
 
       for (final utxo in paymentUtxos.spendable) {
         final amount = utxo.satoshis;
-        if (utxo.blockHeight != null && utxo.blockHeight! > 0) {
+        // One rule, the same as every other layer (spv-understanding.md,
+        // "Balances"): a proof puts it in a block on our active chain. The
+        // old `> 0` clause dated from when an absent height was journaled as
+        // 0; it no longer can be (beads libspiffy-8oaq, libspiffy-jc3h).
+        if (utxo.blockHeight != null) {
           confirmed += amount;
         } else {
           unconfirmed += amount;

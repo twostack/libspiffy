@@ -81,9 +81,12 @@ void main() {
 
     group('Transaction Status Properties', () {
       test('should correctly identify confirmed transactions', () {
+        // Bead libspiffy-jc3h: confirmed is the block a verified merkle
+        // proof puts the transaction in, so the height is the evidence and
+        // no confirmation count has to agree with it.
         final transaction = _createTestTransaction(
           status: TransactionStatus.confirmed,
-          confirmations: 6,
+          blockHeight: 900000,
         );
 
         expect(transaction.isConfirmed, isTrue);
@@ -112,10 +115,12 @@ void main() {
         expect(transaction.isFailed, isTrue);
       });
 
-      test('should not consider confirmed transaction with 0 confirmations as confirmed', () {
+      test('a confirmed status with no block is not confirmed: the height is the evidence', () {
+        // Bead libspiffy-jc3h. This used to read a count; a count is a claim
+        // about depth, not evidence of inclusion in a block.
         final transaction = _createTestTransaction(
           status: TransactionStatus.confirmed,
-          confirmations: 0,
+          confirmations: 6,
         );
 
         expect(transaction.isConfirmed, isFalse);

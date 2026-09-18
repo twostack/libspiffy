@@ -705,15 +705,20 @@ class WalletProjection extends Projection<void> {
       return;
     }
 
-    // Confirmations and the reported height only; the status never moves
-    // (BitcoinUtxo.updateConfirmations, the aggregate's rule). Forcing
-    // `available` resurrected spent and reserved UTXOs (audit M1), and even
-    // the narrower pending-to-available promotion let a caller's unverified
-    // count conjure spendable funds (bead libspiffy-8oaq). Spendability on
-    // the read side comes from UTXOMarkedAvailableEvent or from a
-    // proof-backed TransactionConfirmedEvent, exactly as in the aggregate.
+    // The reported count only; neither the status nor the block height
+    // moves (BitcoinUtxo.updateConfirmations, the aggregate's rule).
+    // Forcing `available` resurrected spent and reserved UTXOs (audit M1),
+    // and even the narrower pending-to-available promotion let a caller's
+    // unverified count conjure spendable funds (bead libspiffy-8oaq). The
+    // height the event carries is not written either (bead libspiffy-pq8p):
+    // on this layer as on the aggregate, `blockHeight != null` is what
+    // "confirmed" means (_recalculateAndPersistForWallet,
+    // BitcoinUtxo.isConfirmed), so recording an unverified height showed
+    // funds as confirmed that no proof had placed in a block. A height
+    // reaches a row only from a proof-backed TransactionConfirmedEvent
+    // (_stampProvenHeightOnOutputs), and spendability only from that or
+    // UTXOMarkedAvailableEvent, exactly as in the aggregate.
     final updatedUtxo = utxo.updateConfirmations(
-      blockHeight: event.blockHeight,
       confirmations: event.confirmations,
       timestamp: event.timestamp,
     );
@@ -1048,8 +1053,10 @@ class WalletProjection extends Projection<void> {
   ///
   /// The read model's balance rule (spv-understanding.md, "Balances"): the
   /// write model's buckets (`WalletBalances.bucketOf`: reserved when
-  /// reserved, confirmed from 6 confirmations, unconfirmed otherwise,
-  /// pending UTXOs included) over the wallet's unspent UTXOs the wallet can
+  /// reserved, confirmed when a verified merkle proof put the UTXO in a
+  /// block on our header chain (`blockHeight != null`, bead libspiffy-jc3h),
+  /// unconfirmed otherwise, pending UTXOs included) over the unspent UTXOs
+  /// the wallet can
   /// spend alone: plugin-managed UTXOs (`BitcoinUtxo.isPluginManaged`),
   /// watch-only UTXOs and bare multisig UTXOs the wallet's keys cannot spend
   /// alone are left out ([splitBalanceUtxos], beads libspiffy-vsap,
@@ -1096,7 +1103,11 @@ class WalletProjection extends Projection<void> {
       if (utxo.status == UTXOStatus.reserved) {
         reserved += utxo.satoshis;
         reservedCount++;
-      } else if ((utxo.confirmations ?? 0) >= 6) {
+      } else if (utxo.blockHeight != null) {
+        // A proven height, and nothing else, is confirmed (bead
+        // libspiffy-jc3h): the same test the aggregate applies, so the
+        // wallet row cannot show funds as confirmed that the write model
+        // calls unconfirmed. A reported count is not read on either layer.
         confirmed += utxo.satoshis;
         available++;
       } else {
@@ -1169,8 +1180,11 @@ class WalletProjection extends Projection<void> {
         txid: event.txid,
         rawHex: event.rawHex,
         status: transactionStatus,
+        // The height a verified proof puts it at, and no count: the height
+        // is what says "confirmed" (bead libspiffy-jc3h), and "6" here was
+        // an invented depth that no proof and no header said anything about.
         blockHeight: hasMerkleProof ? event.blockHeight : null,
-        confirmations: hasMerkleProof ? 6 : 0, // Only confirmed if we have the proof
+        confirmations: 0,
         inputValue: totalInput,
         outputValue: totalOutput,
         fee: fee,
@@ -1331,10 +1345,14 @@ class WalletProjection extends Projection<void> {
       }
       
       // Update transaction status to confirmed
+      // The block the proof puts it in, and no count: the height is the
+      // confirmation (bead libspiffy-jc3h). The row used to be stamped
+      // "1 confirmation" as an assumption; nothing measured it, nothing
+      // advanced it, and nothing reads it. Whatever count a caller did
+      // report is left on the row untouched (Data Retention).
       final confirmedTx = existingTx.copyWith(
         status: TransactionStatus.confirmed,
         blockHeight: event.blockHeight,
-        confirmations: 1, // Assume 1 confirmations when confirmed
         updatedAt: event.timestamp,
       );
       
@@ -1362,8 +1380,15 @@ class WalletProjection extends Projection<void> {
   ///
   /// No confirmation count is stored: it would be stale at the next block
   /// and no event is journaled per block. The count is
-  /// `tip height - blockHeight + 1` wherever it is wanted, which is why this
-  /// writes nothing to any balance bucket and does not recompute them.
+  /// `tip height - blockHeight + 1` wherever it is wanted.
+  ///
+  /// The height it writes **is** the confirmed test (bead libspiffy-jc3h),
+  /// so this moves the stamped amounts from the wallet row's unconfirmed
+  /// bucket to its confirmed one and recomputes the row. It did not have to
+  /// while the read side split the buckets by a stored count: the row then
+  /// only changed when something else wrote a count, which is exactly how
+  /// the wallet row came to disagree with the aggregate about the same
+  /// block.
   ///
   /// The inverse of the UTXO half of
   /// [_handleTransactionConfirmationReverted], and spent rows are skipped
@@ -1373,11 +1398,14 @@ class WalletProjection extends Projection<void> {
     final provenHeight = event.blockHeight;
     if (provenHeight == null) return;
     try {
+      var stamped = false;
       for (final utxo in await _storage.getUTXOs(event.walletId, includeSpent: false)) {
         if (utxo.txid != event.txid || utxo.blockHeight == provenHeight) continue;
         await _storage.upsertUTXO(
             event.walletId, utxo.copyWith(blockHeight: provenHeight, updatedAt: event.timestamp));
+        stamped = true;
       }
+      if (stamped) await _recalculateAndPersistForWallet(event.walletId, event.timestamp);
     } catch (e, stackTrace) {
       _log.warning('Failed to write the proven height $provenHeight onto the outputs of ${event.txid}: $e',
           e, stackTrace);

@@ -202,8 +202,18 @@ class BitcoinTransaction {
   dartsv.Coin get feeCoin => dartsv.Coin.ofSat(fee);
   dartsv.Coin get netCoin => dartsv.Coin.ofSat(netAmount);
   
-  /// Check if this transaction is confirmed
-  bool get isConfirmed => status == TransactionStatus.confirmed && (confirmations ?? 0) > 0;
+  /// Whether a merkle proof put this transaction in a block whose header we
+  /// hold on our active chain — the one meaning of "confirmed" (bead
+  /// libspiffy-jc3h, spv-understanding.md "Balances").
+  ///
+  /// The row's [status] is set to [TransactionStatus.confirmed] only by a
+  /// confirmation verified against our own headers, and [blockHeight] is
+  /// that block: both are taken back together by
+  /// `ReadModelStorage.storeRevertedTransaction` on a reorganization or a
+  /// rejected proof. [confirmations] is deliberately not read — a count is a
+  /// claim about depth, not evidence of inclusion, and the wallet stores no
+  /// depth (it is `tip height - blockHeight + 1` wherever it is wanted).
+  bool get isConfirmed => status == TransactionStatus.confirmed && blockHeight != null;
   
   /// Check if this transaction is pending
   bool get isPending => status == TransactionStatus.pending;

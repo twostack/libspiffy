@@ -690,8 +690,15 @@ class SpendUTXOCommand extends WalletCommand {
 ///
 /// * A caller-supplied count or height is a claim, not evidence (bead
 ///   libspiffy-5ry / V-60), so it must not make a UTXO spendable. Since bead
-///   libspiffy-8oaq, applying the event it journals writes the count and the
-///   height onto the row and leaves the status exactly as it was.
+///   libspiffy-8oaq, applying the event it journals leaves the status
+///   exactly as it was.
+/// * Since bead libspiffy-pq8p it writes only the count. [blockHeight] is
+///   journaled as the claim it was and reaches no row: `blockHeight != null`
+///   is what "confirmed" means at every layer (`WalletBalances.bucketOf`,
+///   `BitcoinUtxo.isConfirmed`, spv-understanding.md "Balances"), so
+///   recording an unverified height made an output *report* as confirmed
+///   balance on the strength of a claim. Pass it or leave it out: either way
+///   this command confirms nothing.
 /// * The wallet does not store a confirmation count as truth anyway (bead
 ///   libspiffy-4dja / V-71): a stored count is stale at the very next block,
 ///   so the count is derived at read time as `tip height - blockHeight + 1`.
@@ -708,6 +715,9 @@ class SpendUTXOCommand extends WalletCommand {
 class UpdateUTXOConfirmationsCommand extends WalletCommand {
   final String utxoKey; // Format: "txid:vout"
   final int confirmations;
+
+  /// The height the caller claims, journaled as a record of what we were
+  /// told and written to no row (bead libspiffy-pq8p).
   final int? blockHeight;
 
   UpdateUTXOConfirmationsCommand({

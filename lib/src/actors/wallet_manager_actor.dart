@@ -604,7 +604,12 @@ class WalletManagerActor extends Actor {
           scriptPubKey: utxoData['script'] ?? '',
           address: utxoData['address'],
           blockHeight: hasMerkleProof ? blockHeight : null,
-          confirmations: hasMerkleProof ? 1 : 0,
+          // No count is reported (bead libspiffy-jc3h): the height is the
+          // evidence and the wallet stores no depth. "1 confirmation" here
+          // was a number nobody measured — the proof says which block the
+          // transaction is in, not how deep that block now sits, which is
+          // `tip height - blockHeight + 1` wherever it is wanted.
+          confirmations: null,
           // CRITICAL FIX: Set initial status based on WHETHER WE HAVE THE PROOF
           // - Have proof: immediately available (SPV validated with proof in hand)
           // - No proof: pending (will be upgraded by ARCActor when proof is fetched)

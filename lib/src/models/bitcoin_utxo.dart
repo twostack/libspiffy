@@ -171,8 +171,17 @@ class BitcoinUtxo {
   /// Amount in satoshis as BigInt
   BigInt get satoshis => value.getValue();
   
-  /// Check if this UTXO is confirmed
-  bool get isConfirmed => blockHeight != null && (confirmations ?? 0) > 0;
+  /// Whether a merkle proof put this UTXO's transaction in a block whose
+  /// header we hold on our active chain — the one meaning of "confirmed"
+  /// (bead libspiffy-jc3h, spv-understanding.md "Balances").
+  ///
+  /// [blockHeight] is that evidence and is the whole test: it is written
+  /// only by a confirmation verified against our own header chain, and a
+  /// reorganization takes it off again. [confirmations] is deliberately not
+  /// read — a count is a claim about depth, not evidence of inclusion, so an
+  /// output with a proven height and no count reported for it is confirmed,
+  /// and one with a reported count and no height is not.
+  bool get isConfirmed => blockHeight != null;
   
   /// Check if this UTXO is available for spending
   bool get isAvailable => status == UTXOStatus.available;
@@ -364,10 +373,22 @@ class BitcoinUtxo {
     return remaining.isNegative ? Duration.zero : remaining;
   }
   
-  /// Record a reported confirmation count, and the block height it was
-  /// reported at when one is given.
+  /// Record a reported confirmation count. **Nothing else**: not the status,
+  /// and not a block height.
   ///
-  /// **The status never moves** (bead libspiffy-8oaq). A confirmation count
+  /// **No block height reaches an output this way** (bead libspiffy-pq8p).
+  /// A height is the wallet's one piece of evidence that a transaction is in
+  /// a block on our active chain — `blockHeight != null` is the confirmed
+  /// test at every layer (`WalletBalances.bucketOf`, [isConfirmed],
+  /// spv-understanding.md "Balances") — and a reported count comes with no
+  /// evidence at all. Recording a caller's height here let an unproven claim
+  /// make an output *report* as confirmed even after bead libspiffy-8oaq
+  /// stopped it making one spendable. The only path that stamps a height is
+  /// `ConfirmTransactionCommand`, whose senders derive it from a BUMP
+  /// checked against our own headers (`TransactionConfirmedEvent`,
+  /// `OutgoingTransactions.applyConfirmed`).
+  ///
+  /// **The status never moves** either (bead libspiffy-8oaq). A confirmation count
   /// handed to the wallet is a claim, not evidence: nothing about it has been
   /// checked against our own header chain, so promoting a [UTXOStatus.pending]
   /// output to [UTXOStatus.available] on the strength of it would conjure
@@ -381,17 +402,13 @@ class BitcoinUtxo {
   /// driven by ARC/SPV) or from a confirmation verified against our own
   /// headers (`ConfirmTransactionCommand`). Never from a count.
   ///
-  /// A null [blockHeight] means "no height was given" and leaves the recorded
-  /// height as it is — it is emphatically not height 0, the genesis block.
   /// What the caller did say is kept on the row (Data Retention); it simply
   /// carries no authority.
   BitcoinUtxo updateConfirmations({
-    int? blockHeight,
     required int confirmations,
     DateTime? timestamp,
   }) {
     return copyWith(
-      blockHeight: blockHeight,
       confirmations: confirmations,
       updatedAt: timestamp ?? DateTime.now(),
     );

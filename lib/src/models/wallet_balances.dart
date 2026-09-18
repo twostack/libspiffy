@@ -19,7 +19,8 @@ enum BalanceBucket { confirmed, unconfirmed, reserved }
 ///
 /// * The buckets ([bucketOf], [totals]) say where each unspent UTXO's amount
 ///   is reported: reserved when reserved (a deferred payment's hold
-///   included), confirmed from [confirmedAt] confirmations, unconfirmed
+///   included), confirmed when a merkle proof put the UTXO's transaction in
+///   a block on our own header chain (`blockHeight != null`), unconfirmed
 ///   otherwise (pending UTXOs included). They count every unspent UTXO the
 ///   state holds, plugin-managed and watch-only UTXOs included, so
 ///   confirmed + unconfirmed + reserved is everything the wallet holds.
@@ -46,12 +47,28 @@ enum BalanceBucket { confirmed, unconfirmed, reserved }
 /// `BalanceResponse` and `ReadModelStorage.getBalance` count available
 /// ones, `BalanceResponse` confirmed when mined.
 abstract final class WalletBalances {
-  /// Confirmations from which an unreserved UTXO is confirmed balance.
-  static const int confirmedAt = 6;
-
   /// The bucket [utxo] counts towards, or null when it counts towards none
-  /// (spent, or voided): reserved when reserved, confirmed with
-  /// [confirmedAt] or more confirmations, unconfirmed otherwise.
+  /// (spent, or voided): reserved when reserved, confirmed when
+  /// [BitcoinUtxo.blockHeight] is set, unconfirmed otherwise.
+  ///
+  /// **Confirmed is a proven height and nothing else** (bead libspiffy-jc3h,
+  /// spv-understanding.md "Balances"): the transaction is in a block whose
+  /// header we hold on our active chain and we have the merkle proof that
+  /// puts it there. A UTXO's `blockHeight` is exactly that evidence — it is
+  /// written only by a confirmation verified against our own header chain
+  /// (beads libspiffy-5ry, libspiffy-8oaq, libspiffy-4dja, libspiffy-pq8p)
+  /// and `applyConfirmationReverted` takes it off again when the block
+  /// leaves the active chain — so `blockHeight != null` is the confirmed
+  /// test here and at every other layer.
+  ///
+  /// A confirmation *count* is deliberately not read. It is not evidence: it
+  /// is a description of how deep a block now sits, stale at the next block,
+  /// derivable as `tip height - blockHeight + 1`, and a caller can assert
+  /// one without holding any proof. There is deliberately no
+  /// six-confirmation threshold either (the rule this replaced): a proof on
+  /// our active chain confirms at depth one exactly as it does at depth six,
+  /// and a wallet that waits for depth is making a policy choice that
+  /// belongs to the application, not to this library.
   ///
   /// A voided output ([UTXOStatus.voided], bead libspiffy-3arz) is the output
   /// of a transaction the network will not settle — a cancelled, failed or
@@ -61,7 +78,7 @@ abstract final class WalletBalances {
   static BalanceBucket? bucketOf(BitcoinUtxo utxo) {
     if (utxo.status == UTXOStatus.spent || utxo.status == UTXOStatus.voided) return null;
     if (utxo.status == UTXOStatus.reserved) return BalanceBucket.reserved;
-    if ((utxo.confirmations ?? 0) >= confirmedAt) return BalanceBucket.confirmed;
+    if (utxo.blockHeight != null) return BalanceBucket.confirmed;
     return BalanceBucket.unconfirmed;
   }
 

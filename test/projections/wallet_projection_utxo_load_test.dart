@@ -149,7 +149,13 @@ void main() {
     final wallet = await storage.getWallet(_walletId);
     final metadata = wallet!['metadata'] as Map<String, dynamic>;
     expect(metadata['reservedBalance'], reserved.toString());
-    expect(metadata['confirmedBalance'], (unspent - reserved).toString());
+    // The UTXOConfirmationUpdatedEvents above report a count and a height
+    // nothing verified, so nothing here is confirmed (beads libspiffy-jc3h
+    // and libspiffy-pq8p): the rows keep no height and the unreserved
+    // amounts sit in the unconfirmed bucket. This asserted the confirmed
+    // bucket while a count of six decided the split.
+    expect(metadata['confirmedBalance'], '0');
+    expect(metadata['unconfirmedBalance'], (unspent - reserved).toString());
     expect(metadata['utxoCount'], n);
     expect(metadata['spentUtxoCount'], n ~/ 2);
     final address = await storage.getAddressMetadata(_walletId, _address);

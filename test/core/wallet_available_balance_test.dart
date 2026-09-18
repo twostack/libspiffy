@@ -65,11 +65,15 @@ class _Wallet {
     return events;
   }
 
+  /// [provenHeight] is the block a verified merkle proof puts the receipt
+  /// in; null while it is unproven (bead libspiffy-jc3h: that height is what
+  /// the confirmed bucket is, and `ReceiveUTXOCommand` refuses one on a
+  /// pending receipt).
   Future<void> receive(int tx, int sats,
           {String? script,
           String? address,
           UTXOStatus status = UTXOStatus.available,
-          int confirmations = 6,
+          int? provenHeight = 900000,
           Map<String, dynamic>? pluginMetadata}) =>
       handle(ReceiveUTXOCommand(
         walletId: _w,
@@ -79,7 +83,7 @@ class _Wallet {
         scriptPubKey: script ?? _p2pkh(address ?? root),
         address: address ?? root,
         initialStatus: status,
-        confirmations: confirmations,
+        blockHeight: provenHeight,
         pluginMetadata: pluginMetadata,
       ));
 }
@@ -106,10 +110,10 @@ Future<_Wallet> _mixedWallet() async {
       .toBase58();
   await wallet.handle(AddWatchAddressCommand(walletId: _w, address: watchAddress, scriptType: 'p2pkh'));
 
-  await wallet.receive(1, 80000); // confirmed (6 confirmations), available
-  await wallet.receive(2, 7000, confirmations: 1); // unconfirmed bucket, available
-  await wallet.receive(3, 500, confirmations: 0); // unconfirmed bucket, available
-  await wallet.receive(4, 40000, status: UTXOStatus.pending, confirmations: 0); // pending
+  await wallet.receive(1, 80000); // confirmed (a proven height), available
+  await wallet.receive(2, 7000, provenHeight: null); // unconfirmed bucket, available
+  await wallet.receive(3, 500, provenHeight: null); // unconfirmed bucket, available
+  await wallet.receive(4, 40000, status: UTXOStatus.pending, provenHeight: null); // pending
   await wallet.receive(5, 11000); // reserved below
   await wallet.handle(ReserveUTXOCommand(walletId: _w, utxoKey: _key(5), reservedByTxId: 'payment-5'));
   await wallet.receive(6, 13000); // held by a deferred payment below

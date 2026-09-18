@@ -60,14 +60,22 @@ WalletState _created() => _with(
       ),
     );
 
+/// [provenHeight] is the block a verified merkle proof puts the UTXO in —
+/// what the confirmed bucket counts (bead libspiffy-jc3h) — and
+/// [confirmations] a count someone reported, which counts towards nothing.
 BitcoinUtxo _utxo(int n, int sats,
-        {UTXOStatus status = UTXOStatus.available, int confirmations = 6, String? address, String? script}) =>
+        {UTXOStatus status = UTXOStatus.available,
+        int? provenHeight = 900000,
+        int? confirmations,
+        String? address,
+        String? script}) =>
     BitcoinUtxo.create(
       txid: _txid(n),
       vout: 0,
       satoshis: BigInt.from(sats),
       scriptPubKey: script ?? _p2pkh(address ?? _rootAddress),
       address: address ?? _rootAddress,
+      blockHeight: provenHeight,
       confirmations: confirmations,
       status: status,
       createdAt: _t0,
@@ -97,16 +105,22 @@ TransactionRecordedEvent _recorded(String txid, List<String> inputs, int version
 
 void main() {
   group('WalletBalances and WalletStateBuilder.putUtxo', () {
-    test('the bucket of each status, and the 6-confirmation boundary', () {
+    // Bead libspiffy-jc3h: this pinned a six-confirmation boundary, which no
+    // longer exists anywhere. Confirmed is the proven block height, at depth
+    // one as at depth six, and a reported count decides nothing.
+    test('the bucket of each status, and the proven-height boundary', () {
       expect(WalletBalances.bucketOf(_utxo(1, 1, status: UTXOStatus.spent)), isNull);
-      expect(WalletBalances.bucketOf(_utxo(1, 1, status: UTXOStatus.reserved, confirmations: 9)), BalanceBucket.reserved);
-      expect(WalletBalances.bucketOf(_utxo(1, 1, confirmations: 6)), BalanceBucket.confirmed);
-      expect(WalletBalances.bucketOf(_utxo(1, 1, confirmations: 5)), BalanceBucket.unconfirmed);
-      expect(WalletBalances.bucketOf(_utxo(1, 1, status: UTXOStatus.pending, confirmations: 6)), BalanceBucket.confirmed);
+      expect(WalletBalances.bucketOf(_utxo(1, 1, status: UTXOStatus.voided)), isNull);
+      expect(WalletBalances.bucketOf(_utxo(1, 1, status: UTXOStatus.reserved)), BalanceBucket.reserved);
+      expect(WalletBalances.bucketOf(_utxo(1, 1)), BalanceBucket.confirmed);
+      expect(WalletBalances.bucketOf(_utxo(1, 1, provenHeight: null, confirmations: 9)),
+          BalanceBucket.unconfirmed,
+          reason: 'a reported count is not evidence of any block');
+      expect(WalletBalances.bucketOf(_utxo(1, 1, status: UTXOStatus.pending)), BalanceBucket.confirmed);
     });
 
     test('putUtxo moves a replaced UTXO\'s amount between balances; recomputeBalances and totals agree', () {
-      var state = _withUtxos(_created(), [_utxo(1, 100), _utxo(2, 20, confirmations: 1), _utxo(3, 3)]);
+      var state = _withUtxos(_created(), [_utxo(1, 100), _utxo(2, 20, provenHeight: null), _utxo(3, 3)]);
       state = _with(state, (b) {
         b.putUtxo(_key(1), b.utxos[_key(1)]!.copyWith(status: UTXOStatus.reserved));
         b.putUtxo(_key(3), b.utxos[_key(3)]!.markSpent(timestamp: _t0, spentInTxId: 's'));

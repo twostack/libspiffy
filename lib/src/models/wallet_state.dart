@@ -66,12 +66,14 @@ class WalletState extends State {
 
   /// Cached balance buckets ([WalletBalances.bucketOf]): every unspent UTXO
   /// counts in exactly one of them, plugin-managed and watch-only UTXOs
-  /// included. Confirmed: unreserved with [WalletBalances.confirmedAt] (6)
-  /// or more confirmations.
+  /// included. Confirmed: unreserved and carrying a block height a verified
+  /// merkle proof put it at (`blockHeight != null`, bead libspiffy-jc3h) —
+  /// at depth one exactly as at depth six, because the proof on our active
+  /// chain is the whole of the evidence and a confirmation count is none of
+  /// it.
   final dartsv.Coin confirmedBalance;
 
-  /// Unreserved, fewer than [WalletBalances.confirmedAt] confirmations
-  /// (pending UTXOs included).
+  /// Unreserved and with no proven block height (pending UTXOs included).
   final dartsv.Coin unconfirmedBalance;
 
   /// Reserved, including inputs a deferred payment holds.

@@ -1171,9 +1171,11 @@ class ImportTransactionConfirmedEvent extends CoordinatorEvent {
 /// The UTXOs are those `WalletState.availableBalance` counts on the wallet
 /// aggregate (spv-understanding.md, "Balances"; the inputs of a deferred
 /// payment recorded before holds were journaled leave the read side when the
-/// wallet manager reconciles it at spawn); the confirmed/unconfirmed
-/// split here is by block height, not by the six confirmations of
-/// `WalletBalances.confirmedAt`.
+/// wallet manager reconciles it at spawn); the confirmed/unconfirmed split
+/// here is by block height, which since bead libspiffy-jc3h is the split
+/// every layer makes (`WalletBalances.bucketOf`): a merkle proof on our
+/// active chain confirms at depth one, and no threshold of confirmations
+/// exists anywhere.
 class BalanceResponse extends CoordinatorEvent {
   @override
   final String walletId;
@@ -1282,19 +1284,24 @@ class TransactionReceivedEvent extends CoordinatorEvent {
   DateTime get eventTimestamp => DateTime.now();
 }
 
-/// Transaction confirmed on-chain
+/// A merkle proof put the transaction in the block at [blockHeight], whose
+/// header we hold on our active chain: confirmed, and there is nothing more
+/// to it (bead libspiffy-jc3h).
+///
+/// It carries no confirmation count. It used to default one to 1 — a number
+/// nothing measured and nothing advanced — and a count is not evidence of
+/// anything in any case. An application that wants a depth computes
+/// `tip height - blockHeight + 1`.
 class TransactionConfirmedEvent extends CoordinatorEvent {
   @override
   final String walletId;
   final String txid;
   final int blockHeight;
-  final int confirmations;
 
   TransactionConfirmedEvent({
     required this.walletId,
     required this.txid,
     required this.blockHeight,
-    this.confirmations = 1,
   });
 
   @override

@@ -740,7 +740,11 @@ void main() {
         expect(wallet.currentState.version, equals(4));
         final utxo = wallet.currentState.utxos['0000000000000000000000000000000000000000000000000000000000000123:0'];
         expect(utxo!.confirmations, equals(6));
-        expect(utxo.blockHeight, equals(800005));
+        // The reported count is recorded; the reported height is not (bead
+        // libspiffy-pq8p), so the row keeps the height its verified proof
+        // put it at. The height is what "confirmed" means (libspiffy-jc3h)
+        // and this command carries no proof of any block.
+        expect(utxo.blockHeight, equals(800000));
         // The claim is recorded; it moves no status (bead libspiffy-8oaq).
         expect(utxo.status, equals(UTXOStatus.available), reason: 'the status it already had');
       });

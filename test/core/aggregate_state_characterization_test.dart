@@ -171,7 +171,11 @@ Future<(_Wallet, InMemoryEventStore, InMemorySecureStorage)> _liveWallet() async
   expect(wallet.currentState.utxos[_key(3, 0)]!.status, UTXOStatus.pending,
       reason: 'a reported count conjures no spendable funds');
   expect(wallet.currentState.utxos[_key(3, 0)]!.confirmations, 2, reason: 'the claim is still recorded');
-  expect(wallet.currentState.utxos[_key(3, 0)]!.blockHeight, 90);
+  // Bead libspiffy-pq8p: the height the caller reported reaches no row.
+  // `blockHeight != null` is what "confirmed" means (libspiffy-jc3h) and
+  // this command holds no proof, so recording its height let an unproven
+  // claim report as confirmed. The count above is still kept.
+  expect(wallet.currentState.utxos[_key(3, 0)]!.blockHeight, isNull);
   await run(ReserveUTXOCommand(walletId: _walletId, utxoKey: _key(2, 0), reservedByTxId: 'res-1', priority: 3));
   await run(RenewUTXOReservationCommand(
       walletId: _walletId, utxoKey: _key(2, 0), extensionDuration: const Duration(minutes: 5)));

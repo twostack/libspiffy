@@ -18,6 +18,7 @@ import 'package:libspiffy/src/core/bitcoin_wallet_aggregate.dart';
 import 'package:libspiffy/src/core/wallet_commands.dart';
 import 'package:libspiffy/src/core/wallet_events.dart';
 import 'package:libspiffy/src/models/bitcoin_utxo.dart';
+import 'package:libspiffy/src/models/wallet_balances.dart';
 import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 import 'package:libspiffy/src/storage/in_memory_secure_storage.dart';
 
@@ -64,22 +65,53 @@ void main() {
     return w;
   }
 
-  /// A P2PK output locked to [key], attributed to the wallet's own address —
-  /// the state V-93 established is reachable: `ReceiveUTXOCommand` has one
-  /// script guard and it is for bare multisig only, so nothing compares a
-  /// P2PK script's key with the address it is filed under.
-  Future<void> receiveP2pk(BitcoinWalletAggregate w, String txid, dartsv.SVPublicKey key) =>
-      w.commandHandler(ReceiveUTXOCommand(
+  /// A P2PK output locked to [key], attributed to the wallet's own address.
+  ///
+  /// Since bead libspiffy-abwk `ReceiveUTXOCommand` refuses a P2PK output
+  /// locked to a key the wallet neither holds nor watches, so a foreign-key
+  /// row can only reach a wallet by REPLAY — a journal written before that
+  /// guard existed, which `applyReceived` still applies because nothing
+  /// already journaled is dropped. Applying the event directly is exactly
+  /// that path, and it is the only way this input can still be named.
+  Future<void> receiveP2pk(BitcoinWalletAggregate w, String txid, dartsv.SVPublicKey key) async {
+    final script = p2pk(key);
+    if (WalletBalances.isSpendable(
+        w.currentState,
+        BitcoinUtxo.create(
+          txid: txid,
+          vout: 0,
+          satoshis: BigInt.from(90000),
+          scriptPubKey: script,
+          address: ownAddress,
+          status: UTXOStatus.available,
+        ))) {
+      // The wallet does hold this key: the ordinary command path takes it.
+      await w.commandHandler(ReceiveUTXOCommand(
         walletId: _walletId,
         txid: txid,
         vout: 0,
         satoshis: BigInt.from(90000),
-        scriptPubKey: p2pk(key),
+        scriptPubKey: script,
         address: ownAddress,
         initialStatus: UTXOStatus.available,
         blockHeight: 800000,
         confirmations: 6,
       ));
+      return;
+    }
+    w.eventHandler(UTXOReceivedEvent(
+      walletId: _walletId,
+      txid: txid,
+      vout: 0,
+      satoshis: 90000,
+      scriptPubKey: script,
+      address: ownAddress,
+      initialStatus: UTXOStatus.available,
+      blockHeight: 800000,
+      confirmations: 6,
+      version: w.currentState.version + 1,
+    ));
+  }
 
   String unsignedSpend(String txid) {
     final tx = dartsv.Transaction()

@@ -117,6 +117,35 @@ String? p2pkAddress(String scriptHex, dartsv.NetworkType network) {
   }
 }
 
+/// The addresses (on [network]) of the key a P2PK script locks to — **both
+/// encodings of it**, since the wallet may hold that key under either and
+/// `OP_CHECKSIG` decodes both to the same point. Empty when [scriptHex] is
+/// not a P2PK script or its key does not parse.
+///
+/// [p2pkAddress] answers for the exact bytes the script pushes, which is the
+/// right question when you are naming the output. It is the wrong one when
+/// you are asking whether the wallet holds the key (bead libspiffy-abwk): a
+/// wallet whose address record is the compressed form of a key a script
+/// pushes uncompressed holds it perfectly well, and treating that output as
+/// someone else's would leave the wallet's own money out of its spendable
+/// balance while the signer signed it happily — the two layers disagreeing
+/// about one output, which is what bead libspiffy-kfvv set out to end.
+List<String> p2pkAddresses(String scriptHex, dartsv.NetworkType network) {
+  final keyHex = p2pkPublicKeyHex(scriptHex);
+  if (keyHex == null) return const [];
+  try {
+    final key = dartsv.SVPublicKey.fromHex(keyHex);
+    return {
+      for (final compressed in const [true, false])
+        dartsv.Address.fromPublicKey(
+                dartsv.SVPublicKey.fromHex(key.getEncoded(compressed)), network)
+            .toBase58(),
+    }.toList();
+  } catch (_) {
+    return const [];
+  }
+}
+
 /// Whether the wallet can build the whole unlocking script for the output
 /// locked by [scriptHex] on its own, so it can spend it without anyone
 /// else's signature. [hasKeyFor] names the addresses the wallet holds a key
@@ -155,8 +184,8 @@ bool unlocksAlone({
     return multisig == null || multisig.spendableAloneBy(hasKeyFor, network) != null;
   }
   if (!script.endsWith('ac') || script.startsWith('76a914')) return true;
-  final p2pk = p2pkAddress(scriptHex, network);
-  return p2pk == null || hasKeyFor(p2pk);
+  final p2pk = p2pkAddresses(scriptHex, network);
+  return p2pk.isEmpty || p2pk.any(hasKeyFor);
 }
 
 /// Whether [scriptHex] locks an output that a P2PKH unlocking script cannot

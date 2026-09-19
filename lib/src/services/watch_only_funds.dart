@@ -133,8 +133,9 @@ Future<BalanceUtxos> splitBalanceUtxos(ReadModelStorage storage, String walletId
     }
     if (!script.endsWith('ac') || script.startsWith('76a914')) continue;
     walletNetwork ??= NetworkName.toDartsv(await _walletNetwork(storage, walletId));
-    final p2pk = p2pkAddress(utxo.scriptPubKey, walletNetwork);
-    if (p2pk != null && !watch.contains(p2pk)) keyAddresses.add(p2pk);
+    // Both encodings of the key: the wallet may hold it under either
+    // (bead libspiffy-abwk), and one batched lookup answers for both.
+    keyAddresses.addAll(p2pkAddresses(utxo.scriptPubKey, walletNetwork).where((a) => !watch.contains(a)));
   }
   if (watch.isEmpty && walletNetwork == null) return BalanceUtxos(List.of(utxos), const [], const []);
   final network = walletNetwork ?? dartsv.NetworkType.TEST; // only multisig and P2PK scripts need it

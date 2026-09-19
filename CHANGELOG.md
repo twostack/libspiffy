@@ -302,6 +302,27 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### An output the wallet can never spend is not a wallet UTXO
+
+Report section 11, V-97.
+
+- **A P2PK output locked to a key the wallet neither holds nor watches is
+  now refused at receive (V-97)**, as an unmeetable bare multisig already
+  was. The guard reads the script, not the address the output is filed under.
+- **A watch address is not refused.** The wallet holds no key for one and
+  never will; tracking exactly that is what a watch address is for. Such an
+  output is taken on, reported as watch-only funds, and never selected.
+- **Replay is unchanged.** `applyReceived` still validates no script, so a
+  journal written before this guard replays exactly as it did. Nothing
+  already recorded is dropped, and V-93's rule is what keeps those rows out
+  of the spendable balance.
+- **A P2PK output pushing the uncompressed encoding of a key the wallet holds
+  compressed was judged not the wallet's** — left out of the spendable
+  balance on both layers while the signer signed it happily. Both layers now
+  ask `p2pkAddresses`, which answers for both encodings. This matters for
+  watch addresses in particular: the wallet derives its own addresses
+  compressed, but a watch address is whatever the user handed us.
+
 ### The signer says which key it is missing
 
 Report section 11, V-96.

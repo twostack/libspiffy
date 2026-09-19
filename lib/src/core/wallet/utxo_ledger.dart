@@ -98,6 +98,43 @@ abstract final class UtxoLedger {
     }
   }
 
+  /// Throws when [scriptPubKey] is a P2PK script locked to a key the wallet
+  /// neither holds nor watches, however the output is attributed (bead
+  /// libspiffy-abwk).
+  ///
+  /// The counterpart of [rejectMultisigNotSpendableAlone], which this file
+  /// has had since beads viy and n0p. A P2PK script had no such rule:
+  /// nothing compared its key with the wallet's own, and nothing required
+  /// the attributed address to have anything to do with the script, so an
+  /// output nobody but its owner can spend could be taken on as a wallet
+  /// UTXO (bead libspiffy-kfvv, V-93, which established that this is
+  /// reachable and answered it by never selecting such a row).
+  ///
+  /// **A watch address is not refused.** The wallet holds no key for one and
+  /// never will, but tracking exactly that is what a watch address is for:
+  /// the output is taken on, reported as watch-only funds, and never
+  /// selected.
+  ///
+  /// Both encodings of the key count ([p2pkAddresses]): a wallet whose
+  /// address record is the compressed form of a key pushed uncompressed
+  /// holds it, and refusing that would refuse the wallet's own money.
+  ///
+  /// This is a COMMAND-path rule only. [applyReceived] validates no script,
+  /// deliberately: a journal written before this guard is still the record,
+  /// and nothing already journaled is dropped.
+  static void rejectP2pkNotOurs(WalletState currentState, String scriptPubKey, String utxoKey) {
+    final addresses = p2pkAddresses(scriptPubKey, NetworkName.toDartsv(currentState.networkType));
+    if (addresses.isEmpty) return; // Not a P2PK script we can read.
+    for (final address in addresses) {
+      if (currentState.addresses.containsKey(address) ||
+          currentState.watchAddresses.containsKey(address)) {
+        return;
+      }
+    }
+    throw StateError('UTXO $utxoKey is a P2PK output locked to a key the wallet '
+        'neither holds nor watches; it is not a wallet UTXO');
+  }
+
   /// The plugin metadata of a UTXO locked by [scriptPubKey] that was
   /// received with [metadata], naming the plugin that manages it (bead
   /// libspiffy-ecy8).
@@ -184,6 +221,11 @@ abstract final class UtxoLedger {
     // wallet can spend it alone, whatever address it is attributed to
     // (beads libspiffy-viy, libspiffy-n0p).
     rejectMultisigNotSpendableAlone(currentState, command.scriptPubKey, utxoKey);
+
+    // Business rule: the same for a P2PK output, which had no such rule
+    // (bead libspiffy-abwk). A watch address is not refused — tracking an
+    // address the wallet holds no key for is what one is for.
+    rejectP2pkNotOurs(currentState, command.scriptPubKey, utxoKey);
 
     // The status is the caller's (it defaults to pending) and is never
     // derived from the command's block height or confirmation count: only

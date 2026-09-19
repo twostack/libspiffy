@@ -111,6 +111,27 @@ void main() {
         pluginMetadata: pluginMetadata,
       ));
 
+  /// Journals a receive WITHOUT the command path's rules, the way a journal
+  /// written before those rules exists (bead libspiffy-abwk, V-97). The
+  /// event goes into the store as well as into the aggregate, so a replay
+  /// and the read model see exactly what a real journal would hand them.
+  Future<void> receiveByReplay(int n, int sats, {required String script}) async {
+    final event = UTXOReceivedEvent(
+      walletId: _walletId,
+      txid: _txid(n),
+      vout: 0,
+      satoshis: sats,
+      scriptPubKey: script,
+      address: root,
+      blockHeight: 900,
+      confirmations: 6,
+      initialStatus: UTXOStatus.available,
+      version: wallet.currentState.version + 1,
+    );
+    await store.persistEvents('BitcoinWallet_$_walletId', [event], 0);
+    wallet.eventHandler(event);
+  }
+
   /// The whole journal applied to a fresh read model.
   Future<InMemoryWalletStorage> project() async {
     final storage = InMemoryWalletStorage();
@@ -239,19 +260,24 @@ void main() {
     expect((await walletRow(storage))['totalBalance'], '40000');
   });
 
-  // Bead libspiffy-kfvv. `ReceiveUTXOCommand` checks a bare multisig
+  // Bead libspiffy-kfvv. `ReceiveUTXOCommand` checked a bare multisig
   // script's threshold against the wallet's keys but never a P2PK script's
   // key, and `applyReceived` checks neither, so an output locked to someone
-  // else's public key can be attributed to a wallet address — by a command
-  // today and by any journal on replay. Channel funding refused to spend it
-  // (bead libspiffy-8egy, V-83) while both balances counted it, the two
-  // layers disagreeing about the same output. `unlocksAlone` is now the one
-  // predicate: `WalletBalances.cannotSpendAlone` on the write side and
-  // `splitBalanceUtxos` on the read side both call it.
+  // else's public key could be attributed to a wallet address. Channel
+  // funding refused to spend it (bead libspiffy-8egy, V-83) while both
+  // balances counted it, the two layers disagreeing about the same output.
+  // `unlocksAlone` is now the one predicate: `WalletBalances.cannotSpendAlone`
+  // on the write side and `splitBalanceUtxos` on the read side both call it.
+  //
+  // Since bead libspiffy-abwk (V-97) the COMMAND path refuses such an output,
+  // so the only way one reaches a wallet is a journal written before that —
+  // which is why this receives it by replay. The rule here is what keeps
+  // those rows honest, and it does not become unnecessary because new ones
+  // are refused: the old ones are permanent.
   test('kfvv: a P2PK UTXO locked to a key the wallet does not hold is kept but spendable on neither layer', () async {
     await receive(1, 40000);
     final foreignP2pk = dartsv.P2PKLockBuilder(_serverKey).getScriptPubkey().toHex();
-    await receive(7, 100000, script: foreignP2pk);
+    await receiveByReplay(7, 100000, script: foreignP2pk);
     // A P2PK output to the wallet's own key stays spendable: the exclusion
     // is the foreign key, not the script type (bead libspiffy-8egy).
     await receive(8, 7000, script: dartsv.P2PKLockBuilder(walletKey).getScriptPubkey().toHex());

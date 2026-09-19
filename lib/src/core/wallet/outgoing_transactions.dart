@@ -3,6 +3,9 @@
 /// reversal (bead libspiffy-dp4; part of `BitcoinWalletAggregate`).
 library;
 
+import 'dart:convert';
+
+import 'package:crypto/crypto.dart' as crypto;
 import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:eventador/eventador.dart';
 import 'package:logging/logging.dart';
@@ -26,6 +29,12 @@ final _log = Logger('BitcoinWalletAggregate');
 class OutgoingTransactions {
   static const String _importedTransactionsKey = WalletMetadataKeys.importedTransactions;
   static const String _outgoingTransactionsKey = WalletMetadataKeys.outgoingTransactions;
+
+  /// Key in an imported-transaction record: the digest of the last delivery
+  /// of that transaction this wallet journaled ([_deliveryDigest]). Absent
+  /// from records written before bead libspiffy-ymi6, which therefore drop
+  /// no re-delivery, exactly as they did not before.
+  static const String _deliveryKey = 'delivery';
 
   final DeferredPayments deferred;
 
@@ -94,6 +103,30 @@ class OutgoingTransactions {
   // Commands
   // ---------------------------------------------------------------------------
 
+  /// Record a transaction handed to this wallet.
+  ///
+  /// A delivery is journaled once (bead libspiffy-ymi6), the rule
+  /// [recordOutgoing] applies to what the wallet sends. The command is
+  /// re-sent for a transaction the wallet already holds — a channel close
+  /// resumed after a restart re-records its return leg — and recording it
+  /// again journaled a second [TransactionImportedEvent] saying exactly what
+  /// the first one said.
+  ///
+  /// Only an exactly equivalent re-delivery is dropped: one whose event data
+  /// is identical to the delivery this wallet last journaled for the
+  /// transaction ([_deliveryDigest]). A re-delivery that differs anywhere is
+  /// journaled, because a delivery carries evidence the wallet's own record
+  /// does not keep — the raw transaction, the BUMP that proves it, the
+  /// ancestors its BEEF carried, which of our addresses it pays — and the
+  /// read model is built from these events. That is deliberately the safe
+  /// direction: a delivery journaled twice is a duplicate, a delivery
+  /// swallowed is evidence gone. In particular a proofless re-delivery of a
+  /// transaction a proof already placed in a block is still journaled, and
+  /// [applyImported] keeps the established height (bead libspiffy-nys0/V-80).
+  ///
+  /// The record remembers the last delivery, not every one: a delivery
+  /// re-sent after a different one is journaled again rather than compared
+  /// against a growing list of digests.
   static List<Event> recordImported(WalletState currentState, RecordImportedTransactionCommand command) {
     // Business rule: Wallet must exist
     if (!currentState.isCreated) {
@@ -123,8 +156,28 @@ class OutgoingTransactions {
       timestamp: DateTime.now(),
     );
 
+    // Business rule: the same delivery is journaled once (bead
+    // libspiffy-ymi6). The command is re-sent for a txid the wallet already
+    // holds, e.g. by a channel close resumed after a restart; nothing of it
+    // is new, so nothing is journaled.
+    final record = importedRecord(currentState, command.txid);
+    if (record != null && record[_deliveryKey] == _deliveryDigest(event)) {
+      _log.info('Transaction ${command.txid} was delivered to wallet ${command.walletId} before, with nothing '
+          'this wallet does not hold; nothing journaled');
+      return const [];
+    }
+
     return [event];
   }
+
+  /// A digest of everything [event] says about one delivery of a transaction:
+  /// the raw transaction, the height and BUMP that prove it, the ancestors
+  /// its BEEF carried, which of our addresses it pays, the counterparty
+  /// marker. [WalletEvent.getWalletEventData] is exactly the delivery and
+  /// none of the journal's own bookkeeping (version, timestamp, event id),
+  /// so two deliveries with the same digest journal the same event.
+  static String _deliveryDigest(TransactionImportedEvent event) =>
+      crypto.sha256.convert(utf8.encode(jsonEncode(event.getWalletEventData()))).toString();
 
   /// Handle recording an outgoing transaction (payment created by this wallet)
   ///
@@ -636,6 +689,11 @@ class OutgoingTransactions {
     // is how a transaction nothing proves is recorded, and it is the shape
     // [applyConfirmationReverted] leaves behind (bead libspiffy-nys0 —
     // height 0 is the genesis block, not an absence).
+    //
+    // The record keeps the digest of this delivery, so that the same one
+    // handed to the wallet again journals nothing at all ([recordImported],
+    // bead libspiffy-ymi6). The last delivery, not every one: what a
+    // delivery carries beyond the height lives in the events themselves.
     final records = _transactionRecords(state, _importedTransactionsKey);
     final existing = records[event.txid];
     final PersistentMap<String, dynamic> record;
@@ -643,13 +701,16 @@ class OutgoingTransactions {
       final confirmed = existing['status'] == 'confirmed';
       final height =
           confirmed || event.blockHeight == null ? existing['blockHeight'] : event.blockHeight;
-      final withTime = frozenRecord(existing).put('lastImportedAt', event.timestamp.toIso8601String());
+      final withTime = frozenRecord(existing)
+          .put('lastImportedAt', event.timestamp.toIso8601String())
+          .put(_deliveryKey, _deliveryDigest(event));
       record = height == null ? withTime.without('blockHeight') : withTime.put('blockHeight', height);
     } else {
       record = freezeMap(<String, dynamic>{
         'txid': event.txid,
         if (event.blockHeight != null) 'blockHeight': event.blockHeight,
         'importedAt': event.timestamp.toIso8601String(),
+        _deliveryKey: _deliveryDigest(event),
       });
     }
     state.metadata = state.metadata.put(_importedTransactionsKey, records.put(event.txid, record));

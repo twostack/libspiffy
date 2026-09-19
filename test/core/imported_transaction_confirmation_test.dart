@@ -148,6 +148,11 @@ void main() {
       walletReceivedSats: 200000,
       totalInputSats: 210000,
       sendingAddresses: const [],
+      // The app names the sender this time, so this is a delivery the wallet
+      // has not had: one identical to the first journals nothing at all
+      // (bead libspiffy-ymi6, test/core/imported_transaction_redelivery_test.dart).
+      // It still carries no proof, which is what this test is about.
+      counterpartyMarker: 'alice@example.com',
     ));
 
     expect((importedRecord()['status'], importedRecord()['blockHeight']), ('confirmed', 700),

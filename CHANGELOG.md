@@ -302,6 +302,31 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### A delivery is journaled once
+
+Report section 11, V-92.
+
+- **The same delivery handed to a wallet twice journaled it twice (V-92).**
+  `RecordImportedTransactionCommand` had no idempotency guard, so it depended
+  on every caller checking a read model first — and the channel manager's
+  check is a no-op when it is built without storage.
+- **Only an exactly equivalent re-delivery is dropped.** "Already recorded"
+  cannot mean "the wallet holds this txid": a delivery carries evidence the
+  wallet's own record does not keep — the raw transaction, the BUMP, the BEEF
+  ancestors, which of our addresses it pays, the counterparty marker — and the
+  read model is built from these events. The imported record keeps a digest of
+  the last delivery, and a command is dropped only when the event it would
+  journal is identical to it.
+- A proofless re-delivery of a transaction a proof already placed in a block
+  is still journaled, and the established height is kept (V-80 unchanged). A
+  delivery re-sent after a different one is journaled again rather than
+  compared against a growing list of digests: a duplicate is recoverable,
+  lost evidence is not.
+- Records written before this change carry no digest and drop nothing.
+- An identical re-delivery no longer refreshes `lastImportedAt`. The imported
+  record gains a `delivery` key (64 hex characters per imported transaction)
+  in the wallet's state metadata.
+
 ### An interrupted expiry can be resumed
 
 Report section 11, V-91.

@@ -174,9 +174,27 @@ void main() {
   /// Re-delivers P without its proof and waits until the wallet has handled
   /// the whole result: its record of P (queued after the receive of P's
   /// output) is journaled and applied to the read model.
-  Future<void> redeliverUnproven() async {
+  ///
+  /// With [journals] false the wallet has had this very delivery before —
+  /// the same transaction, no proof, the same counterparty — and journals
+  /// nothing for it at all (bead libspiffy-ymi6). Nothing of P's changes,
+  /// so the wait is on a command sent after the delivery: the SPV actor
+  /// tells the wallet manager its result before it answers us, the manager
+  /// tells the wallet its commands in the order it makes them, and the
+  /// wallet's mailbox is FIFO, so the address this asks for is journaled
+  /// only once the re-delivery has been handled.
+  Future<void> redeliverUnproven({bool journals = true}) async {
     final importsBefore = (await journal()).whereType<TransactionImportedEvent>().length;
     await deliver(unprovenBeef());
+    if (!journals) {
+      final addressesBefore = (await journal()).whereType<AddressGeneratedEvent>().length;
+      libspiffy.walletManager.tell(WalletCommandMessage(walletId, GenerateAddressCommand(walletId: walletId)));
+      await _until(() async => (await journal()).whereType<AddressGeneratedEvent>().length > addressesBefore,
+          'the wallet handled the re-delivery');
+      expect((await journal()).whereType<TransactionImportedEvent>().length, importsBefore,
+          reason: 'a delivery the wallet has had, carrying nothing it does not hold, journals nothing');
+      return;
+    }
     await _until(() async => (await journal()).whereType<TransactionImportedEvent>().length > importsBefore,
         'the unproven record journaled');
     final event = (await journal()).whereType<TransactionImportedEvent>().last;
@@ -244,7 +262,8 @@ void main() {
     )));
     await _until(() async => (await utxo())?.status == UTXOStatus.spent, 'spent');
 
-    await redeliverUnproven();
+    // The same unproven delivery as the one above: nothing of it is new.
+    await redeliverUnproven(journals: false);
     after = (await utxo())!;
     expect((after.status, after.spentInTxId), (UTXOStatus.spent, spendingTxid),
         reason: 'the spend is history and is kept');
@@ -263,7 +282,8 @@ void main() {
     )));
     await _until(() async => (await utxo())?.status == UTXOStatus.available, 'made available');
 
-    await redeliverUnproven();
+    // The same unproven delivery as the first one: nothing of it is new.
+    await redeliverUnproven(journals: false);
 
     expect((await utxo())!.status, UTXOStatus.available);
     final receipts = [

@@ -946,6 +946,104 @@ class ClaimChannelRefundCommand implements Message {
   DateTime get timestamp => DateTime.now();
 }
 
+// --- Repairing an open that did not finish (bead libspiffy-1n3) ---
+//
+// Two things can leave a client-side open unfinished, and they are different
+// enough to have one command each rather than one command with a mode:
+//
+//   * the funding broadcast failed (ARC unreachable, the process died
+//     mid-broadcast). The channel sits in `refundSigned` and the fix is to
+//     broadcast the same transaction again — [RetryChannelFundingCommand].
+//   * the funding reached the network and the channel is `open` here, but
+//     the `channel_open` message never reached the server. Nothing has to
+//     happen on chain and nothing has to be journaled; the fix is to send
+//     that one message again — [ResendChannelOpenCommand].
+//
+// Their preconditions are mutually exclusive (`refundSigned` vs `open`), so
+// a single command would have to guess which the host meant from the state
+// it finds — and would do something quite different depending on the answer.
+//
+// **Neither command ever sends the counterparty a `channel_error`.** Driving
+// the ordinary open flow again for an already-open channel is worse than
+// useless: the aggregate refuses it ('Refund not signed yet'), the refusal
+// comes back as a failed open, and the adapter tells the peer the channel
+// failed — a host trying to repair a lost message would abandon the channel
+// instead. Both commands are answered locally, on the coordinator event
+// stream, and change nothing the peer can see except the one message a
+// successful resend re-sends.
+
+/// Broadcast the funding transaction of a channel whose funding broadcast
+/// failed, so the open can finish (bead libspiffy-1n3).
+///
+/// For the client side of a channel still in `refundSigned`: its refund is
+/// countersigned and journaled, its funding transaction is built and signed,
+/// and the broadcast that should have put it on the network did not (ARC was
+/// unreachable, or the process died before the answer arrived). Restart
+/// recovery reacts to inbound messages; this is how a host asks for the
+/// retry itself.
+///
+/// The funding transaction is **not** supplied by the caller: it is read
+/// from the channel's own journaled state, which is the only place it can
+/// honestly come from. The aggregate refuses a start naming a different
+/// transaction, so a retry can only ever re-broadcast the one the refund
+/// spends.
+///
+/// Safe to issue more than once. The inputs of a failed funding broadcast
+/// stay **reserved**, never spent — they are marked spent only after ARC
+/// accepts — so a retry cannot double-spend them; there is no replace-by-fee
+/// on BSV and no fee is changed. The funding is recorded in the wallet once,
+/// guarded by the journal and the wallet read model alike.
+///
+/// Answered with [ChannelFundingRetriedEvent], on success and failure.
+class RetryChannelFundingCommand implements Message {
+  final String channelId;
+
+  RetryChannelFundingCommand({required this.channelId});
+
+  @override
+  String get correlationId => 'retry-channel-funding-$channelId';
+  @override
+  Map<String, dynamic> get metadata => {'channelId': channelId};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+/// Send `channel_open` again for a channel that is already open on this
+/// side, when the counterparty never received it (bead libspiffy-1n3).
+///
+/// `channel_open` is emitted once, when the channel's `ChannelOpenedEvent`
+/// reaches the adapter; nothing re-reads the state and re-emits it. A
+/// message the app's transport dropped therefore left the client open and
+/// the server still waiting, with no way to repair it.
+///
+/// This is a **state-driven re-send, not a second open**: the payload is
+/// rebuilt from the channel's journaled funding transaction, output index
+/// and BEEF, exactly as the first one was. Nothing is journaled — a re-send
+/// is not a new fact about the channel — no second `channel.opened` event is
+/// written, and the channel's balances and sequence are untouched. The
+/// server treats the repeat as it treats the original.
+///
+/// Refused, locally and without telling the peer anything, for a channel
+/// that is not open on this side or that this node is not the client of.
+///
+/// Answered with [ChannelOpenResentEvent], on success and failure.
+class ResendChannelOpenCommand implements Message {
+  final String channelId;
+
+  ResendChannelOpenCommand({required this.channelId});
+
+  @override
+  String get correlationId => 'resend-channel-open-$channelId';
+  @override
+  Map<String, dynamic> get metadata => {'channelId': channelId};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
 /// Accept an incoming channel request
 class AcceptChannelCommand implements Message {
   final String channelId;
@@ -1921,6 +2019,111 @@ class ChannelOpenedEvent extends CoordinatorEvent {
     required this.channelId,
     this.fundingTxId,
     required this.fundingAmountSats,
+  });
+
+  @override
+  DateTime get eventTimestamp => DateTime.now();
+}
+
+/// The outcome of a [RetryChannelFundingCommand] (bead libspiffy-1n3).
+///
+/// [success] means the funding transaction reached the network on this
+/// attempt and the channel is open on this side; the ordinary
+/// [ChannelOpenedEvent] follows, and `channel_open` goes to the server as it
+/// does on a first open.
+///
+/// A failure is reported here and nowhere else: the counterparty is told
+/// nothing, so a retry that fails again leaves the channel exactly as it
+/// was, its inputs still reserved for the same transaction, ready for
+/// The outcome of a [ClaimChannelRefundCommand] (bead libspiffy-cqc, the
+/// V-99 follow-up).
+///
+/// The claim broadcasts the refund, journals it and records the money back
+/// in the wallet. None of that reaches the host on its own: unlike a close,
+/// which surfaces through the channel's own `ChannelClosedEvent`, a claim
+/// has no event the adapter forwards. Without this the host could not tell
+/// a refund that landed from one the network refused as a double spend.
+class ChannelRefundClaimedEvent extends CoordinatorEvent {
+  @override
+  final String? walletId;
+  final String channelId;
+
+  /// The refund that was broadcast and journaled; null when the claim
+  /// failed before one was read from the channel's state.
+  final String? refundTxId;
+
+  final bool success;
+  final String? error;
+
+  ChannelRefundClaimedEvent({
+    this.walletId,
+    required this.channelId,
+    this.refundTxId,
+    required this.success,
+    this.error,
+  });
+
+  @override
+  DateTime get eventTimestamp => DateTime.now();
+}
+
+/// another retry.
+class ChannelFundingRetriedEvent extends CoordinatorEvent {
+  @override
+  final String? walletId;
+  final String channelId;
+
+  /// The funding transaction that was re-broadcast; null when the retry was
+  /// refused before one was read from the channel's state.
+  final String? fundingTxId;
+
+  final bool success;
+  final String? error;
+
+  ChannelFundingRetriedEvent({
+    this.walletId,
+    required this.channelId,
+    this.fundingTxId,
+    required this.success,
+    this.error,
+  });
+
+  @override
+  DateTime get eventTimestamp => DateTime.now();
+}
+
+/// The outcome of a [ResendChannelOpenCommand] (bead libspiffy-1n3).
+///
+/// [success] means `channel_open` was handed to the app's transport again,
+/// with the same payload as the first one ([toPeerId] names the peer it was
+/// addressed to). Nothing was journaled and nothing about the channel
+/// changed.
+///
+/// A failure — the channel is not open here, this node is not its client,
+/// no counterparty peer is known — is reported here only. No
+/// `channel_error` is sent: a re-send that cannot happen is not a channel
+/// that has been abandoned.
+class ChannelOpenResentEvent extends CoordinatorEvent {
+  @override
+  final String? walletId;
+  final String channelId;
+
+  /// The peer `channel_open` was re-sent to; null when it was not sent.
+  final String? toPeerId;
+
+  /// The funding transaction the re-sent message names; null on failure.
+  final String? fundingTxId;
+
+  final bool success;
+  final String? error;
+
+  ChannelOpenResentEvent({
+    this.walletId,
+    required this.channelId,
+    this.toPeerId,
+    this.fundingTxId,
+    required this.success,
+    this.error,
   });
 
   @override

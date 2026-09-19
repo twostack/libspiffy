@@ -12,9 +12,11 @@ import 'package:test/test.dart';
 import 'package:libspiffy/src/actors/channel_p2p_adapter.dart';
 import 'package:libspiffy/src/actors/coordinator_messages.dart' as coord;
 import 'package:libspiffy/src/actors/payment_channel_messages.dart';
+import 'package:libspiffy/src/actors/wallet_coordinator_actor.dart';
 import 'package:libspiffy/src/actors/wallet_messages.dart';
 import 'package:libspiffy/src/core/channel_events.dart' as ch;
 import 'package:libspiffy/src/core/wallet_commands.dart';
+import 'package:libspiffy/src/storage/in_memory_wallet_storage.dart';
 
 void main() {
   late ActorSystem actorSystem;
@@ -339,6 +341,191 @@ void main() {
     });
   });
 
+  /// Bead libspiffy-1n3. Repairing an unfinished open must never look to
+  /// the counterparty like the channel was abandoned. The open flow reports
+  /// a failure as `channel_error`; these two commands never touch it.
+  group('1n3: repairing an open tells the peer nothing it should not hear',
+      () {
+    const channelId = 'chan-1n3';
+    final fundingTxId = 'ab' * 32;
+    const fundingTxHex = '0100000000';
+
+    /// Client record of the channel, without a peer: the aggregate asked for
+    /// it, nothing has told this adapter where the server is.
+    Future<void> clientChannelWithoutPeer() async {
+      channelEvents.add(ch.ChannelRequestedEvent(
+        channelId: channelId,
+        walletId: 'client-wallet',
+        clientPeerId: 'client-peer',
+        serverPeerId: 'server-peer',
+        clientPubKeyHex: '02' * 33,
+        clientAddressB58: 'mqCnSf8i6kmaQaJ54HjQ8EUJnuK4AnCv12',
+        derivationIndex: 7,
+        fundingAmountSats: BigInt.from(50000),
+        lockTimeUnix: 1700000000,
+      ));
+      await Future.delayed(const Duration(milliseconds: 50));
+      channelManagerProbe.received.clear();
+      emitted.clear();
+    }
+
+    /// Client side with the server peer known (as after channel_accept).
+    Future<void> clientChannel() async {
+      await clientChannelWithoutPeer();
+      adapter.handleP2PMessage('server-peer', 'channel_accept', {
+        'channelId': channelId,
+        'serverPubKey': '03' * 33,
+        'serverAddress': 'mkHS9ne12qx9pS9VojpwU5xtRd4T7X7ZUt',
+        'derivationIndex': 3,
+      });
+      await Future.delayed(const Duration(milliseconds: 50));
+      channelManagerProbe.received.clear();
+      emitted.clear();
+    }
+
+    List<coord.ChannelP2PMessageToSendEvent> sent(String type) => emitted
+        .whereType<coord.ChannelP2PMessageToSendEvent>()
+        .where((e) => e.messageType == type)
+        .toList();
+
+    test('a retry asks the manager to re-broadcast, never to open', () async {
+      await clientChannel();
+
+      adapter.handleRetryChannelFunding(
+          coord.RetryChannelFundingCommand(channelId: channelId));
+      await Future.delayed(const Duration(milliseconds: 100));
+
+      final messages =
+          channelManagerProbe.received.map((r) => r.message).toList();
+      expect(messages.whereType<RetryChannelFundingMessage>(), hasLength(1));
+      expect(messages.whereType<RetryChannelFundingMessage>().single.channelId,
+          channelId);
+      expect(messages.whereType<OpenChannelMessage>(), isEmpty,
+          reason: 'the open command carries the funding transaction the host '
+              'does not have, and its refusal reaches the peer');
+      final sender = channelManagerProbe.received
+          .firstWhere((r) => r.message is RetryChannelFundingMessage)
+          .sender;
+      expect(sender?.id, replyTo.id,
+          reason: 'the outcome must come back to the coordinator');
+    });
+
+    test('a failed retry is reported locally and the peer is told nothing',
+        () async {
+      await clientChannel();
+
+      adapter.handleChannelFundingRetried(ChannelFundingRetriedResponse(
+        channelId: channelId,
+        fundingTxId: fundingTxId,
+        success: false,
+        error: 'Funding broadcast failed: ARC unavailable',
+      ));
+      await Future.delayed(const Duration(milliseconds: 100));
+
+      expect(sent('channel_error'), isEmpty,
+          reason: 'a repair that failed has abandoned nothing');
+      final retried = emitted.whereType<coord.ChannelFundingRetriedEvent>();
+      expect(retried, hasLength(1));
+      expect(retried.single.success, isFalse);
+      expect(retried.single.error, contains('ARC unavailable'));
+      expect(retried.single.fundingTxId, fundingTxId);
+    });
+
+    test('a resend asks the manager for the payload, never to open', () async {
+      await clientChannel();
+
+      adapter.handleResendChannelOpen(
+          coord.ResendChannelOpenCommand(channelId: channelId));
+      await Future.delayed(const Duration(milliseconds: 100));
+
+      final messages =
+          channelManagerProbe.received.map((r) => r.message).toList();
+      expect(messages.whereType<ResendChannelOpenMessage>(), hasLength(1));
+      expect(messages.whereType<OpenChannelMessage>(), isEmpty,
+          reason: 'the aggregate refuses an open for an open channel, and '
+              'that refusal is sent to the peer as channel_error');
+      final sender = channelManagerProbe.received
+          .firstWhere((r) => r.message is ResendChannelOpenMessage)
+          .sender;
+      expect(sender?.id, replyTo.id);
+    });
+
+    test('the rebuilt payload goes to the server, and nothing else does',
+        () async {
+      await clientChannel();
+
+      adapter.handleChannelOpenResent(ChannelOpenResentResponse(
+        channelId: channelId,
+        walletId: 'client-wallet',
+        fundingTxId: fundingTxId,
+        fundingOutputIndex: 0,
+        fundingTxHex: fundingTxHex,
+        fundingBeefHex: 'beef00',
+        success: true,
+      ));
+      await Future.delayed(const Duration(milliseconds: 100));
+
+      final opens = sent('channel_open');
+      expect(opens, hasLength(1));
+      expect(opens.single.toPeerId, 'server-peer');
+      expect(opens.single.payload, {
+        'channelId': channelId,
+        'fundingTxId': fundingTxId,
+        'fundingOutputIndex': 0,
+        'fundingTxHex': fundingTxHex,
+        'fundingBeef': 'beef00',
+      }, reason: 'the same payload _onChannelOpened built the first time');
+      expect(sent('channel_error'), isEmpty);
+      final resent = emitted.whereType<coord.ChannelOpenResentEvent>();
+      expect(resent, hasLength(1));
+      expect(resent.single.success, isTrue);
+      expect(resent.single.toPeerId, 'server-peer');
+      expect(resent.single.fundingTxId, fundingTxId);
+    });
+
+    test('a refused resend sends the peer nothing at all', () async {
+      await clientChannel();
+
+      adapter.handleChannelOpenResent(ChannelOpenResentResponse(
+        channelId: channelId,
+        success: false,
+        error: 'Bad state: Channel $channelId is not open here '
+            '(status=refundSigned)',
+      ));
+      await Future.delayed(const Duration(milliseconds: 100));
+
+      expect(emitted.whereType<coord.ChannelP2PMessageToSendEvent>(), isEmpty,
+          reason: 'neither channel_open nor channel_error');
+      final resent = emitted.whereType<coord.ChannelOpenResentEvent>();
+      expect(resent, hasLength(1));
+      expect(resent.single.success, isFalse);
+      expect(resent.single.error, contains('is not open here'));
+      expect(resent.single.toPeerId, isNull);
+    });
+
+    test('a successful resend with no counterparty peer known sends nothing',
+        () async {
+      // A channel this adapter knows as its own, whose peer id nothing has
+      // told it (a row journaled before peer ids were, libspiffy-36f).
+      await clientChannelWithoutPeer();
+
+      adapter.handleChannelOpenResent(ChannelOpenResentResponse(
+        channelId: channelId,
+        fundingTxId: fundingTxId,
+        fundingOutputIndex: 0,
+        fundingTxHex: fundingTxHex,
+        success: true,
+      ));
+      await Future.delayed(const Duration(milliseconds: 200));
+
+      expect(emitted.whereType<coord.ChannelP2PMessageToSendEvent>(), isEmpty);
+      final resent = emitted.whereType<coord.ChannelOpenResentEvent>();
+      expect(resent, hasLength(1));
+      expect(resent.single.success, isFalse);
+      expect(resent.single.error, contains('no counterparty peer'));
+    });
+  });
+
   test('channel_accept for an unknown channel sends nothing', () async {
     adapter.handleP2PMessage('server-peer', 'channel_accept', {
       'channelId': 'never-requested',
@@ -435,6 +622,125 @@ void main() {
         isEmpty);
   });
 
+  /// V-99 follow-up: the refund-claim flow built a
+  /// [ChannelRefundClaimedResponse] that nothing could receive. The adapter
+  /// forwarded the command with no reply target, so `context.sender` in the
+  /// manager was null and the response went nowhere; and there is no channel
+  /// event arm for it either, so a host that claimed a refund learned
+  /// nothing about whether its money came back. Close and expire have the
+  /// same forwarder shape, but a close surfaces through `ChannelClosedEvent`
+  /// on the event stream. A claim surfaces through neither.
+  group('a refund claim tells the host what happened', () {
+    const channelId = 'chan-claim-outcome';
+
+    test('the claim forwards with the coordinator as its reply target',
+        () async {
+      adapter.handleClaimRefund(
+          coord.ClaimChannelRefundCommand(channelId: channelId));
+      await Future.delayed(const Duration(milliseconds: 100));
+
+      final forwarded = channelManagerProbe.received
+          .where((r) => r.message is ClaimRefundMessage)
+          .toList();
+      expect(forwarded, hasLength(1));
+      expect(forwarded.single.sender?.id, replyTo.id,
+          reason: 'without a reply target the manager answers into the void');
+    });
+
+    test('a claim outcome reaches the host as an event', () async {
+      adapter.handleChannelRefundClaimed(ChannelRefundClaimedResponse(
+        channelId: channelId,
+        refundTxId: 'cd' * 32,
+        success: true,
+      ));
+      await Future.delayed(const Duration(milliseconds: 100));
+
+      final claimed = emitted.whereType<coord.ChannelRefundClaimedEvent>();
+      expect(claimed, hasLength(1));
+      expect(claimed.single.success, isTrue);
+      expect(claimed.single.refundTxId, 'cd' * 32);
+    });
+
+    test('a failed claim is reported, and the peer is told nothing', () async {
+      adapter.handleChannelRefundClaimed(ChannelRefundClaimedResponse(
+        channelId: channelId,
+        success: false,
+        error: 'Refund broadcast failed: double spend',
+      ));
+      await Future.delayed(const Duration(milliseconds: 100));
+
+      expect(
+          emitted
+              .whereType<coord.ChannelP2PMessageToSendEvent>()
+              .where((e) => e.messageType == 'channel_error'),
+          isEmpty,
+          reason: 'a refund the network refused abandons no channel');
+      final claimed = emitted.whereType<coord.ChannelRefundClaimedEvent>();
+      expect(claimed, hasLength(1));
+      expect(claimed.single.success, isFalse);
+      expect(claimed.single.error, contains('double spend'));
+    });
+
+    /// The two tests above call [ChannelP2PAdapter.handleChannelRefundClaimed]
+    /// directly, so they pin the leaf and nothing else. In production the
+    /// manager answers the *coordinator* — the adapter forwarded the claim
+    /// with `sender: _replyTo`, which is the coordinator — and only the
+    /// coordinator's `ChannelRefundClaimedResponse` arm hands the response
+    /// back to the adapter. Without that arm the response falls through the
+    /// coordinator's message chain and the host learns nothing, exactly the
+    /// hole the leaf tests cannot see. This drives a real coordinator.
+    test('the coordinator routes a claim outcome to the adapter, which '
+        'reports it on the coordinator event stream', () async {
+      final storage = InMemoryWalletStorage();
+      final coordinatorChannelEvents =
+          StreamController<ch.ChannelEvent>.broadcast();
+      addTearDown(coordinatorChannelEvents.close);
+      final noop = await actorSystem.spawn('noop', () => _ProbeActor());
+      final coordinator = WalletCoordinatorActor(
+        walletManager: noop,
+        invoiceCoordinator: noop,
+        paymentCoordinator: noop,
+        spvActor: noop,
+        arcActor: noop,
+        headerSyncActor: noop,
+        benfordCoordinator: noop,
+        channelManager: noop,
+        walletProjection: noop,
+        storage: storage,
+        // A channel event stream is what makes the coordinator build its
+        // own ChannelP2PAdapter; without one there is nothing to route to.
+        channelEvents: coordinatorChannelEvents.stream,
+      );
+      final hostEvents = <coord.CoordinatorEvent>[];
+      final sub = coordinator.events.listen(hostEvents.add);
+      addTearDown(sub.cancel);
+      final coordinatorRef = await actorSystem.spawn(
+          'coordinator-refund-claim', () => coordinator);
+
+      // What the payment channel manager sends back after ClaimRefundMessage.
+      coordinatorRef.tell(ChannelRefundClaimedResponse(
+        channelId: channelId,
+        refundTxId: 'ef' * 32,
+        success: true,
+      ));
+
+      final deadline = DateTime.now().add(const Duration(seconds: 5));
+      while (hostEvents.whereType<coord.ChannelRefundClaimedEvent>().isEmpty) {
+        if (DateTime.now().isAfter(deadline)) {
+          fail('the coordinator never reported the refund claim; events: '
+              '${hostEvents.map((e) => e.runtimeType).toList()}');
+        }
+        await Future.delayed(const Duration(milliseconds: 20));
+      }
+
+      final claimed =
+          hostEvents.whereType<coord.ChannelRefundClaimedEvent>().toList();
+      expect(claimed, hasLength(1));
+      expect(claimed.single.channelId, channelId);
+      expect(claimed.single.refundTxId, 'ef' * 32);
+      expect(claimed.single.success, isTrue);
+    });
+  });
 }
 
 class _Received {

@@ -289,6 +289,10 @@ class WalletCoordinatorActor extends Actor {
         _channelAdapter?.handleExpireChannel(message);
       } else if (message is ClaimChannelRefundCommand) {
         _channelAdapter?.handleClaimRefund(message);
+      } else if (message is RetryChannelFundingCommand) {
+        _channelAdapter?.handleRetryChannelFunding(message);
+      } else if (message is ResendChannelOpenCommand) {
+        _channelAdapter?.handleResendChannelOpen(message);
       } else if (message is AcceptChannelCommand) {
         _channelAdapter?.handleAcceptRequest(message);
       } else if (message is RejectChannelCommand) {
@@ -341,6 +345,12 @@ class WalletCoordinatorActor extends Actor {
         _channelAdapter?.handleRefundSignatureRecorded(message);
       } else if (message is ch.ChannelOpenedResponse) {
         _channelAdapter?.handleChannelOpenedResponse(message);
+      } else if (message is ch.ChannelRefundClaimedResponse) {
+        _channelAdapter?.handleChannelRefundClaimed(message);
+      } else if (message is ch.ChannelFundingRetriedResponse) {
+        _channelAdapter?.handleChannelFundingRetried(message);
+      } else if (message is ch.ChannelOpenResentResponse) {
+        _channelAdapter?.handleChannelOpenResent(message);
       } else if (message is wm.BroadcastSuccessMessage) {
         // Route to settlement tracking if this txid belongs to an in-flight
         // SettleBEEFCommand; otherwise ignore (e.g., retries from duraq).

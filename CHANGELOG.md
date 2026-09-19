@@ -302,6 +302,44 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### An open that did not finish can be repaired
+
+Restart recovery is reactive: it rebuilds what it needs when a peer's message
+names a channel, and never sweeps channels whose funding broadcast failed. A
+host had no lever over those at all — the only route was an internal message
+that needs the funding transaction spelled out, which a host does not have.
+
+Two new public commands, each with a public outcome event:
+
+- **`RetryChannelFundingCommand(channelId)`** → `ChannelFundingRetriedEvent`
+  re-broadcasts a client channel's funding transaction. The caller supplies
+  only the channel id; the transaction is read from the channel's own state.
+- **`ResendChannelOpenCommand(channelId)`** → `ChannelOpenResentEvent` sends
+  `channel_open` again, rebuilt from journaled state. It journals nothing.
+
+They are two commands rather than one because their preconditions are
+mutually exclusive, and each refusal names the other.
+
+**Neither can emit `channel_error`.** That matters: re-driving the open flow
+for an already-open channel used to fail the aggregate's status guard and
+route to the counterparty as `channel_error` — so a host repairing a lost
+message would have told the peer the channel was abandoned instead.
+
+Relatedly, a `channel_open` repeating a channel's **own** funding output is
+now a no-op answered `success` rather than a rejection, so the peer does not
+answer a repair with the message that says the channel failed. A repeat
+naming a different funding output is still refused.
+
+### A refund claim says whether the money came back
+
+Fixes a gap in the refund-claim flow above: the adapter forwarded the command
+with no reply target, so the manager's response went nowhere, and there was
+no event for it either. A host that claimed a refund could not tell one that
+landed from one the network refused as a double spend. There is now a
+`ChannelRefundClaimedEvent` carrying the outcome and the refund txid. The
+counterparty is told nothing either way — a refund the network refused has
+abandoned no channel.
+
 ### A channel refund can actually be claimed
 
 `ClaimRefundCommand` had an aggregate handler, tested guards, a journal

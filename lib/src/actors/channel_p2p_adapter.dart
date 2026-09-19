@@ -873,11 +873,75 @@ class ChannelP2PAdapter {
   /// it wait behind a rebuild would only delay a transaction that is already
   /// past its lockTime.
   void handleClaimRefund(coord.ClaimChannelRefundCommand command) {
-    _channelManager.tell(ClaimRefundMessage(
-      channelId: command.channelId,
-      refundTxHex: command.refundTxHex,
+    _channelManager.tell(
+        ClaimRefundMessage(
+          channelId: command.channelId,
+          refundTxHex: command.refundTxHex,
+        ),
+        // Without a reply target the manager's
+        // [ChannelRefundClaimedResponse] goes nowhere and the host never
+        // learns whether its money came back (the V-99 follow-up).
+        sender: _replyTo);
+  }
+
+  /// The manager's answer to a refund claim, reported to the host.
+  ///
+  /// The peer is told nothing either way. A refund the network refused —
+  /// most likely because the counterparty's settlement reached it first —
+  /// has abandoned no channel, and there is no counterparty to negotiate
+  /// with on a channel being claimed unilaterally.
+  void handleChannelRefundClaimed(ChannelRefundClaimedResponse response) {
+    if (!response.success) {
+      _log.warning('Channel ${response.channelId}: claiming the refund '
+          'failed: ${response.error ?? 'unknown error'}');
+    }
+    _emitEvent(coord.ChannelRefundClaimedEvent(
+      walletId: _walletFor(response.channelId),
+      channelId: response.channelId,
+      refundTxId: response.refundTxId,
+      success: response.success,
+      error: response.error,
     ));
   }
+
+  /// Handle a request to retry a failed funding broadcast (bead
+  /// libspiffy-1n3).
+  ///
+  /// [_sequenced] on the channel: a successful retry opens the channel, and
+  /// [_onChannelOpened] needs this adapter's record of it to know where to
+  /// send `channel_open`. Rebuilding that record first also keeps the
+  /// rebuild ([ChannelDetailsQueryMessage]) out of the window in which the
+  /// manager's mailbox is busy broadcasting.
+  ///
+  /// The reply target is the coordinator, so
+  /// [handleChannelFundingRetried] reports the outcome. The retry never
+  /// sends the peer a `channel_error`: the counterparty was told when the
+  /// original attempt failed, and a repair that fails again has abandoned
+  /// nothing.
+  void handleRetryChannelFunding(coord.RetryChannelFundingCommand command) =>
+      _sequenced(
+          command.channelId,
+          () => _channelManager.tell(
+              RetryChannelFundingMessage(channelId: command.channelId),
+              sender: _replyTo));
+
+  /// Handle a request to send `channel_open` again (bead libspiffy-1n3).
+  ///
+  /// [_sequenced] on the channel, because the send needs this adapter's
+  /// record of who the counterparty is; after a restart that record is
+  /// rebuilt from the journal first.
+  ///
+  /// Deliberately NOT an [OpenChannelMessage]: the channel is already open,
+  /// so the aggregate would refuse that ('Refund not signed yet'), and the
+  /// refusal would reach [handleChannelOpenedResponse], which tells the
+  /// counterparty the channel failed. The manager only reads state here and
+  /// journals nothing.
+  void handleResendChannelOpen(coord.ResendChannelOpenCommand command) =>
+      _sequenced(
+          command.channelId,
+          () => _channelManager.tell(
+              ResendChannelOpenMessage(channelId: command.channelId),
+              sender: _replyTo));
 
   /// Handle acceptance of an incoming channel request (we are server).
   ///
@@ -1051,6 +1115,84 @@ class ChannelP2PAdapter {
               // waiting for a channel that is not coming (libspiffy-kyw).
               tellPeer: true));
     }
+  }
+
+  /// The manager's answer to a funding retry (bead libspiffy-1n3), reported
+  /// on the coordinator stream and nowhere else.
+  ///
+  /// A failure is **not** [_reportFailure] with `tellPeer`: nothing here has
+  /// been abandoned that the counterparty was not already told about when
+  /// the original attempt failed, the channel's inputs are still reserved
+  /// for the same transaction, and the host can retry again. On success the
+  /// channel's own [ch.ChannelOpenedEvent] sends `channel_open` as it does
+  /// on a first open, so there is nothing to send from here.
+  void handleChannelFundingRetried(ChannelFundingRetriedResponse response) {
+    if (!response.success) {
+      _log.warning('Channel ${response.channelId}: retrying the funding '
+          'broadcast failed: ${response.error ?? 'unknown error'}');
+    }
+    _emitEvent(coord.ChannelFundingRetriedEvent(
+      walletId: _walletFor(response.channelId),
+      channelId: response.channelId,
+      fundingTxId: response.fundingTxId,
+      success: response.success,
+      error: response.error,
+    ));
+  }
+
+  /// The manager's answer to a `channel_open` re-send (bead libspiffy-1n3):
+  /// the payload of the message to repeat, rebuilt from the channel's
+  /// journaled state.
+  ///
+  /// Sends exactly what [_onChannelOpened] sent the first time, to the
+  /// counterparty [_counterpartyPeer] names — the one peer lookup in this
+  /// file that survives a record rebuilt from a journal without a peer id.
+  /// A failure, here or in the manager, is reported locally; the peer is
+  /// never sent a `channel_error`, because a re-send that cannot happen has
+  /// abandoned nothing.
+  void handleChannelOpenResent(ChannelOpenResentResponse response) =>
+      _sequenced(response.channelId, () => _resendChannelOpen(response));
+
+  void _resendChannelOpen(ChannelOpenResentResponse response) {
+    final channelId = response.channelId;
+
+    void refuse(String error) {
+      _log.warning('Channel $channelId: channel_open was not re-sent: $error');
+      _emitEvent(coord.ChannelOpenResentEvent(
+        walletId: response.walletId ?? _walletFor(channelId),
+        channelId: channelId,
+        success: false,
+        error: error,
+      ));
+    }
+
+    if (!response.success) {
+      refuse(response.error ?? 'unknown error');
+      return;
+    }
+    final peerId = _counterpartyPeer(channelId);
+    if (peerId == null) {
+      refuse('no counterparty peer is known for this channel, so there is '
+          'nowhere to send it');
+      return;
+    }
+
+    _emitP2PMessage(peerId, 'channel_open', {
+      'channelId': channelId,
+      'fundingTxId': response.fundingTxId,
+      'fundingOutputIndex': response.fundingOutputIndex,
+      'fundingTxHex': response.fundingTxHex,
+      // The funding transaction with its ancestors and their merkle
+      // proofs, for the server to SPV-validate (libspiffy-fsy).
+      'fundingBeef': response.fundingBeefHex,
+    });
+    _emitEvent(coord.ChannelOpenResentEvent(
+      walletId: response.walletId ?? _walletFor(channelId),
+      channelId: channelId,
+      toPeerId: peerId,
+      fundingTxId: response.fundingTxId,
+      success: true,
+    ));
   }
 
   // ===========================================================================

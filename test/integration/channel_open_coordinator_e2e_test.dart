@@ -1359,9 +1359,15 @@ void main() {
         lockTimeDurationSeconds: 86400,
       ));
       expect(await outcome, isA<ErrorEvent>());
+      await Future<void>.delayed(const Duration(milliseconds: 300));
       final channelId =
           _sentPayload(alice, 'channel_request')['channelId'] as String;
       final row = (await alice.system.walletStorage.getPaymentChannel(channelId))!;
+      // The failed open told Bob its step was abandoned (libspiffy-kyw).
+      final errorsBefore = alice.events
+          .whereType<ChannelP2PMessageToSendEvent>()
+          .where((m) => m.messageType == 'channel_error')
+          .length;
 
       await alice.restart();
       await bob.restart();
@@ -1372,12 +1378,22 @@ void main() {
       final bobOpened = bob.next<ChannelOpenedEvent>(
           (e) => e.channelId == channelId,
           timeout: const Duration(seconds: 30));
-      alice.system.channelManager.tell(OpenChannelMessage(
-        channelId: channelId,
-        fundingTxId: row.fundingTxId!,
-        fundingOutputIndex: row.fundingOutputIndex!,
-        fundingTxHex: row.fundingTxHex!,
-      ));
+      // The public seam (bead libspiffy-1n3): the channel id and nothing
+      // else. This used to reach past the coordinator
+      // (`channelManager.tell(OpenChannelMessage(...))`) with the funding
+      // transaction read out of the storage row, because no public command
+      // carried it — which is exactly what a host could not do.
+      final retried = alice.next<ChannelFundingRetriedEvent>(
+          (e) => e.channelId == channelId,
+          timeout: const Duration(seconds: 40));
+      alice.coordinator
+          .tell(RetryChannelFundingCommand(channelId: channelId));
+      final retriedEvent = await retried;
+      expect(retriedEvent.success, isTrue, reason: retriedEvent.error);
+      expect(retriedEvent.fundingTxId, row.fundingTxId,
+          reason: 'the funding transaction is the channel\'s own, read from '
+              'its state and never supplied by the caller');
+
       final ChannelOpenedEvent bobEvent;
       try {
         bobEvent = await bobOpened;
@@ -1392,6 +1408,24 @@ void main() {
               .whereType<ChannelP2PMessageToSendEvent>()
               .where((m) => m.messageType == 'channel_open'),
           hasLength(1));
+
+      // The retry re-broadcast the SAME transaction (there is no
+      // replace-by-fee here), recorded it in the wallet once, and is the
+      // second attempt of the one funding the refund spends.
+      expect(alice.arc.submitted, [row.fundingTxHex, row.fundingTxHex]);
+      expect(await _walletRecordings(alice, aliceWalletId, row.fundingTxId!), 1,
+          reason: 'the retry recorded the funding transaction again');
+      expect(
+          (await _journal(alice, channelId))
+              .where((e) => e.typeName == 'channel.funding.broadcast_started')
+              .map((e) => e.toMap()['attempt']),
+          [1, 2]);
+      expect(
+          alice.events
+              .whereType<ChannelP2PMessageToSendEvent>()
+              .where((m) => m.messageType == 'channel_error'),
+          hasLength(errorsBefore),
+          reason: 'a repair never tells the counterparty the channel failed');
     }, timeout: const Timeout(Duration(seconds: 120)));
 
     test('an interrupted funding broadcast resumes after a restart without '
@@ -1432,18 +1466,22 @@ void main() {
       final bobOpened = bob.next<ChannelOpenedEvent>(
           (e) => e.channelId == channelId,
           timeout: const Duration(seconds: 40));
-      final dynamic reply = await alice.system.channelManager.ask<dynamic>(
-          OpenChannelMessage(
-            channelId: channelId,
-            fundingTxId: funding.id,
-            fundingOutputIndex: row.fundingOutputIndex!,
-            fundingTxHex: funding.serialize(),
-          ),
-          const Duration(seconds: 60));
+      // Driven through the public command (bead libspiffy-1n3), which used
+      // to be an internal OpenChannelMessage carrying the funding
+      // transaction the test had to dig out of a storage row.
+      final retried = alice.next<ChannelFundingRetriedEvent>(
+          (e) => e.channelId == channelId,
+          timeout: const Duration(seconds: 60));
+      alice.coordinator
+          .tell(RetryChannelFundingCommand(channelId: channelId));
+      final reply = await retried;
       expect(await _walletRecordings(alice, aliceWalletId, funding.id), 1,
           reason: 'the resumed broadcast recorded the funding transaction in '
               'the wallet again');
-      expect(reply.success, isTrue, reason: reply.error as String?);
+      expect(reply.success, isTrue, reason: reply.error);
+      expect(reply.fundingTxId, funding.id);
+      expect(row.fundingTxId, funding.id,
+          reason: 'the channel row and the submitted transaction agree');
       expect((await bobOpened).walletId, bobWalletId);
     }, timeout: const Timeout(Duration(seconds: 120)));
 
@@ -1550,6 +1588,196 @@ void main() {
         fail('The accepted request never opened.\nAlice:\n  '
             '${alice.trace()}\nBob:\n  ${bob.trace()}');
       }
+    }, timeout: const Timeout(Duration(seconds: 120)));
+  });
+
+  /// Bead libspiffy-1n3: a host can ask for the two repairs an unfinished
+  /// open needs, and neither of them tells the counterparty the channel
+  /// failed.
+  group('libspiffy-1n3: repairing an open that did not finish', () {
+    List<ChannelP2PMessageToSendEvent> sent(_Node node, String type) => node
+        .events
+        .whereType<ChannelP2PMessageToSendEvent>()
+        .where((m) => m.messageType == type)
+        .toList();
+
+    /// A channel whose funding broadcast failed: refund countersigned and
+    /// journaled, funding built and signed, ARC unreachable. Returns the
+    /// channel id and the two wallet ids.
+    Future<(String, String, String)> fundingFailed() async {
+      final (aliceWalletId, bobWalletId) = await fundedPair();
+      alice.arc.failWith = 'ARC unavailable';
+      final outcome = firstOutcome();
+      alice.coordinator.tell(OpenChannelCommand(
+        walletId: aliceWalletId,
+        serverPeerId: _bobPeer,
+        fundingAmountSats: 100000,
+        lockTimeDurationSeconds: 86400,
+      ));
+      expect(await outcome, isA<ErrorEvent>());
+      // The failure's own channel_error to Bob (libspiffy-kyw) follows the
+      // ErrorEvent on the same stream: let it land before anything counts
+      // the messages sent so far.
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      final channelId =
+          _sentPayload(alice, 'channel_request')['channelId'] as String;
+      return (channelId, aliceWalletId, bobWalletId);
+    }
+
+    test('a failed funding broadcast is retried through the public command '
+        'and the channel opens on both sides', () async {
+      final (channelId, aliceWalletId, bobWalletId) = await fundingFailed();
+      final row =
+          (await alice.system.walletStorage.getPaymentChannel(channelId))!;
+      expect(row.state, isNot(PaymentChannelState.open));
+      // The failed open told Bob its step was abandoned (libspiffy-kyw).
+      final errorsBefore = sent(alice, 'channel_error').length;
+      alice.arc.failWith = null;
+
+      final aliceOpened =
+          alice.next<ChannelOpenedEvent>((e) => e.channelId == channelId);
+      final bobOpened = bob.next<ChannelOpenedEvent>(
+          (e) => e.channelId == channelId,
+          timeout: const Duration(seconds: 40));
+      final retried = alice.next<ChannelFundingRetriedEvent>(
+          (e) => e.channelId == channelId,
+          timeout: const Duration(seconds: 40));
+
+      // The whole command: a channel id. The funding transaction is the
+      // channel's own.
+      alice.coordinator
+          .tell(RetryChannelFundingCommand(channelId: channelId));
+
+      final outcome = await retried;
+      expect(outcome.success, isTrue, reason: outcome.error);
+      expect(outcome.fundingTxId, row.fundingTxId);
+      expect(outcome.walletId, aliceWalletId);
+      try {
+        expect((await aliceOpened).walletId, aliceWalletId);
+        expect((await bobOpened).walletId, bobWalletId);
+      } on TimeoutException {
+        fail('The retried funding never opened.\nAlice:\n  '
+            '${alice.trace()}\nBob:\n  ${bob.trace()}');
+      }
+
+      // The same transaction, twice; recorded in the wallet once; the
+      // second attempt of the one the refund spends.
+      expect(alice.arc.submitted, [row.fundingTxHex, row.fundingTxHex]);
+      expect(await _walletRecordings(alice, aliceWalletId, row.fundingTxId!), 1);
+      expect(
+          (await _journal(alice, channelId))
+              .where((e) => e.typeName == 'channel.funding.broadcast_started')
+              .map((e) => e.toMap()['attempt']),
+          [1, 2]);
+      expect(sent(alice, 'channel_open'), hasLength(1));
+      expect(sent(alice, 'channel_error'), hasLength(errorsBefore),
+          reason: 'the retry told Bob the channel had failed');
+    }, timeout: const Timeout(Duration(seconds: 120)));
+
+    test('re-sending channel_open repeats the same message, journals nothing '
+        'and sends no channel_error', () async {
+      final row = await openFunded();
+      final channelId = row.channelId;
+      final journalBefore =
+          (await _journal(alice, channelId)).map((e) => e.typeName).toList();
+      final firstOpen = _sentPayload(alice, 'channel_open');
+      expect(sent(alice, 'channel_open'), hasLength(1));
+
+      final resent = alice.next<ChannelOpenResentEvent>(
+          (e) => e.channelId == channelId,
+          timeout: const Duration(seconds: 30));
+      alice.coordinator.tell(ResendChannelOpenCommand(channelId: channelId));
+
+      // THE REGRESSION THIS BEAD IS REALLY ABOUT, asserted before anything
+      // else so a repair that goes wrong is caught here rather than by a
+      // timeout: repairing a lost message must never tell the counterparty
+      // the channel failed. Driving the resend through the open command
+      // instead makes the aggregate throw 'Refund not signed yet' for an
+      // already-open channel, and the adapter sends channel_error.
+      await Future<void>.delayed(const Duration(seconds: 2));
+      expect(sent(alice, 'channel_error'), isEmpty,
+          reason: 'Alice told Bob the channel failed.\nAlice:\n  '
+              '${alice.trace()}');
+      expect(sent(bob, 'channel_error'), isEmpty,
+          reason: 'Bob answered a repeated channel_open with channel_error.'
+              '\nBob:\n  ${bob.trace()}');
+
+      final outcome = await resent;
+      expect(outcome.success, isTrue, reason: outcome.error);
+      expect(outcome.toPeerId, _bobPeer);
+      expect(outcome.fundingTxId, row.fundingTxId);
+
+      final opens = sent(alice, 'channel_open');
+      expect(opens, hasLength(2),
+          reason: 'the message the server never received, again');
+      expect(opens[1].toPeerId, _bobPeer);
+      expect(opens[1].payload, firstOpen,
+          reason: 'byte for byte the payload the first channel_open carried');
+
+      // A re-send is not a new fact about the channel.
+      expect((await _journal(alice, channelId)).map((e) => e.typeName),
+          journalBefore);
+      expect(
+          (await _journal(bob, channelId))
+              .where((e) => e.typeName == 'channel.opened'),
+          hasLength(1),
+          reason: 'the server journaled a second opening');
+      final bobRow = await bob.system.walletStorage.getPaymentChannel(channelId);
+      expect(bobRow?.state, PaymentChannelState.open);
+    }, timeout: const Timeout(Duration(seconds: 120)));
+
+    test('re-sending channel_open for a channel that is not open is refused, '
+        'and nothing reaches the peer', () async {
+      final (channelId, aliceWalletId, _) = await fundingFailed();
+      final before = sent(alice, 'channel_open').length;
+      final errorsBefore = sent(alice, 'channel_error').length;
+
+      final resent = alice.next<ChannelOpenResentEvent>(
+          (e) => e.channelId == channelId,
+          timeout: const Duration(seconds: 30));
+      alice.coordinator.tell(ResendChannelOpenCommand(channelId: channelId));
+      final outcome = await resent;
+
+      expect(outcome.success, isFalse);
+      expect(outcome.error, contains('is not open here'));
+      expect(outcome.error, contains('status=refundSigned'));
+      expect(outcome.error, contains('RetryChannelFundingCommand'),
+          reason: 'the refusal names the command the host wanted');
+      expect(outcome.walletId, aliceWalletId);
+      expect(outcome.toPeerId, isNull);
+      expect(sent(alice, 'channel_open'), hasLength(before));
+      // The failed open itself told Bob (bead libspiffy-kyw, correctly: it
+      // abandoned a step Bob was waiting on). The refused repair adds
+      // nothing to that.
+      expect(sent(alice, 'channel_error'), hasLength(errorsBefore),
+          reason: alice.trace());
+    }, timeout: const Timeout(Duration(seconds: 120)));
+
+    test('retrying the funding of an open channel is refused, and nothing '
+        'reaches the peer', () async {
+      final row = await openFunded();
+      final channelId = row.channelId;
+      final broadcastsBefore = alice.arc.submitted.length;
+      final journalBefore =
+          (await _journal(alice, channelId)).map((e) => e.typeName).toList();
+
+      final retried = alice.next<ChannelFundingRetriedEvent>(
+          (e) => e.channelId == channelId,
+          timeout: const Duration(seconds: 30));
+      alice.coordinator
+          .tell(RetryChannelFundingCommand(channelId: channelId));
+      final outcome = await retried;
+
+      expect(outcome.success, isFalse);
+      expect(outcome.error, contains('is not waiting for its funding'));
+      expect(outcome.error, contains('ResendChannelOpenCommand'),
+          reason: 'the refusal names the command the host wanted');
+      expect(alice.arc.submitted, hasLength(broadcastsBefore),
+          reason: 'an open channel is not funded again');
+      expect((await _journal(alice, channelId)).map((e) => e.typeName),
+          journalBefore);
+      expect(sent(alice, 'channel_error'), isEmpty, reason: alice.trace());
+      expect(sent(alice, 'channel_open'), hasLength(1));
     }, timeout: const Timeout(Duration(seconds: 120)));
   });
 }

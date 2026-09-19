@@ -580,6 +580,91 @@ class ChannelRefundClaimedResponse extends ActorResponse {
   });
 }
 
+/// Re-broadcast the funding transaction of a channel whose funding
+/// broadcast failed (bead libspiffy-1n3).
+///
+/// Carries only the channel id: the funding transaction is read from the
+/// channel's own journaled state, never supplied by the caller.
+class RetryChannelFundingMessage extends LocalMessage {
+  final String channelId;
+
+  RetryChannelFundingMessage({required this.channelId}) : super(payload: null);
+
+  @override
+  dynamic get payload => this;
+}
+
+/// The outcome of a [RetryChannelFundingMessage].
+///
+/// A refusal (the channel is not this node's client, or is not waiting for
+/// its funding) and a failed broadcast are both `success: false`; neither
+/// tells the counterparty anything.
+class ChannelFundingRetriedResponse extends ActorResponse {
+  final String channelId;
+
+  /// The funding transaction that was re-broadcast; null when the retry was
+  /// refused before one was read from the channel's state.
+  final String? fundingTxId;
+
+  @override
+  final bool success;
+  @override
+  final String? error;
+
+  ChannelFundingRetriedResponse({
+    required this.channelId,
+    this.fundingTxId,
+    required this.success,
+    this.error,
+  });
+}
+
+/// Ask for the `channel_open` payload of a channel that is already open, so
+/// the adapter can send it to the server again (bead libspiffy-1n3).
+///
+/// A question, not a command: the manager journals nothing, and the channel
+/// is unchanged whatever the answer.
+class ResendChannelOpenMessage extends LocalMessage {
+  final String channelId;
+
+  ResendChannelOpenMessage({required this.channelId}) : super(payload: null);
+
+  @override
+  dynamic get payload => this;
+}
+
+/// The `channel_open` payload of an open channel, rebuilt from its journaled
+/// state (bead libspiffy-1n3), or why there is none to send.
+class ChannelOpenResentResponse extends ActorResponse {
+  final String channelId;
+  final String? walletId;
+  final String? fundingTxId;
+  final int? fundingOutputIndex;
+  final String? fundingTxHex;
+
+  /// BEEF of the funding transaction as journaled with the opening. Null
+  /// for a channel opened before it was journaled; the server refuses a
+  /// `channel_open` without one, which the response says rather than
+  /// inventing a BEEF this side cannot rebuild.
+  final String? fundingBeefHex;
+
+  @override
+  final bool success;
+  @override
+  final String? error;
+
+  ChannelOpenResentResponse({
+    required this.channelId,
+    this.walletId,
+    this.fundingTxId,
+    this.fundingOutputIndex,
+    this.fundingTxHex,
+    this.fundingBeefHex,
+    required this.success,
+    this.error,
+  });
+}
+
 /// Response to channel close
 class ChannelClosedResponse extends ActorResponse {
   final String channelId;

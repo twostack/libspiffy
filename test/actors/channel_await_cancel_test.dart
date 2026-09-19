@@ -159,13 +159,19 @@ void main() {
     await openServerChannel();
     projection.clear();
 
-    // The channel is open, so the aggregate refuses to open it again — after
-    // the manager has already registered its awaiter.
+    // The channel is open, so the aggregate refuses to open it on another
+    // funding output — after the manager has already registered its awaiter.
+    //
+    // Output 1 of the funding transaction, not 0: a repeat naming the SAME
+    // output is the channel_open a client re-sent because the first was
+    // lost, and the manager answers that without journaling or registering
+    // anything (bead libspiffy-1n3). A different output is a different
+    // claim about the channel, and still goes to the aggregate.
     final again = await managerRef.ask<ChannelOpenedResponse>(
       OpenChannelMessage(
         channelId: _channelId,
         fundingTxId: fundingTx.txid,
-        fundingOutputIndex: 0,
+        fundingOutputIndex: 1,
         fundingTxHex: fundingTx.hex,
         fundingBeefHex: fundingTx.beefHex,
       ),

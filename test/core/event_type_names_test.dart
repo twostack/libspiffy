@@ -227,13 +227,13 @@ Map<String, Event> sampleEvents() => <String, Event>{
           channelId: _c, walletId: _w, clientPeerId: 'cp', serverPeerId: 'sp',
           clientPubKeyHex: '02', clientAddressB58: 'ca', derivationIndex: 1,
           fundingAmountSats: BigInt.from(1000), lockTimeUnix: 99,
-          timestamp: _t, version: 1),
+          counterpartyMarker: 'app:peer', timestamp: _t, version: 1),
       'ChannelAcceptedEvent': ChannelAcceptedEvent(
           channelId: _c, walletId: _w, clientPeerId: 'cp',
           clientPubKeyHex: '02', clientAddressB58: 'ca',
           serverPubKeyHex: '03', serverAddressB58: 'sa', derivationIndex: 1,
           fundingAmountSats: BigInt.from(1000), lockTimeUnix: 99,
-          timestamp: _t, version: 2),
+          counterpartyMarker: 'app:peer', timestamp: _t, version: 2),
       'ChannelRejectedEvent': ChannelRejectedEvent(
           channelId: _c, reason: 'r', timestamp: _t, version: 3),
       'ServerAcceptanceRecordedEvent': ServerAcceptanceRecordedEvent(

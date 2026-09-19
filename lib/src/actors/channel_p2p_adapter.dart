@@ -832,6 +832,7 @@ class ChannelP2PAdapter {
       fundingAmountSats: BigInt.from(command.fundingAmountSats),
       lockTimeDurationSeconds: command.lockTimeDurationSeconds,
       context: command.context,
+      counterpartyMarker: command.counterpartyMarker,
     ));
   }
 
@@ -860,6 +861,21 @@ class ChannelP2PAdapter {
       channelId: command.channelId,
       observedBy: command.observedBy,
       settlementOrRefundTxId: command.settlementOrRefundTxId,
+    ));
+  }
+
+  /// Handle a request to claim the refund of an expired channel.
+  ///
+  /// Not [_sequenced], for the same reason close and expire are not: the
+  /// claim needs nothing from this adapter's per-channel cache (peers, keys,
+  /// funding transaction). The channel manager reads the channel's own state
+  /// from its journal, so there is nothing here to rebuild first, and making
+  /// it wait behind a rebuild would only delay a transaction that is already
+  /// past its lockTime.
+  void handleClaimRefund(coord.ClaimChannelRefundCommand command) {
+    _channelManager.tell(ClaimRefundMessage(
+      channelId: command.channelId,
+      refundTxHex: command.refundTxHex,
     ));
   }
 
@@ -896,6 +912,7 @@ class ChannelP2PAdapter {
       fundingAmountSats: BigInt.from(pending.fundingAmountSats),
       lockTimeUnix: pending.lockTimeUnix,
       context: pending.context,
+      counterpartyMarker: command.counterpartyMarker,
       serverPeerId: _myPeerId.isEmpty ? null : _myPeerId,
     ));
   }

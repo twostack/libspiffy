@@ -151,7 +151,9 @@ class ChannelRefundFixture {
           .signatureHex;
 
   ChannelRequestedEvent requested(
-          {required int version, String walletId = 'wallet'}) =>
+          {required int version,
+          String walletId = 'wallet',
+          String? counterpartyMarker}) =>
       ChannelRequestedEvent(
         channelId: channelId,
         walletId: walletId,
@@ -162,6 +164,7 @@ class ChannelRefundFixture {
         derivationIndex: 1,
         fundingAmountSats: amountSats,
         lockTimeUnix: lockTimeUnix,
+        counterpartyMarker: counterpartyMarker,
         version: version,
       );
 
@@ -210,8 +213,13 @@ class ChannelRefundFixture {
   /// Client journal of a channel that is open: requested, acceptance and
   /// refund recorded, refund countersigned (fully signed), funding broadcast
   /// started, opened.
-  List<Event> openClientJournal({String walletId = 'wallet'}) => [
-        requested(version: 1, walletId: walletId),
+  List<Event> openClientJournal(
+          {String walletId = 'wallet', String? counterpartyMarker}) =>
+      [
+        requested(
+            version: 1,
+            walletId: walletId,
+            counterpartyMarker: counterpartyMarker),
         serverAcceptance(version: 2),
         refundBuilt(version: 3),
         RefundCountersignedEvent(
@@ -236,7 +244,8 @@ class ChannelRefundFixture {
         ),
       ];
 
-  ChannelAcceptedEvent serverAccepted({required int version}) =>
+  ChannelAcceptedEvent serverAccepted(
+          {required int version, String? counterpartyMarker}) =>
       ChannelAcceptedEvent(
         channelId: channelId,
         walletId: 'wallet',
@@ -248,6 +257,7 @@ class ChannelRefundFixture {
         derivationIndex: 2,
         fundingAmountSats: amountSats,
         lockTimeUnix: lockTimeUnix,
+        counterpartyMarker: counterpartyMarker,
         version: version,
       );
 }

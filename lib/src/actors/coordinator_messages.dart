@@ -805,12 +805,26 @@ class OpenChannelCommand implements Message {
   final int lockTimeDurationSeconds;
   final String? context;
 
+  /// The app's opaque marker for the counterparty of this channel (bead
+  /// libspiffy-bps1, spv-understanding.md "Core Data Management"
+  /// requirement 5): it is stamped on the wallet transactions the channel
+  /// records — the funding it pays out and the settlement or refund that
+  /// comes back. Opaque and app-chosen, exactly as on every other payment;
+  /// libspiffy never interprets it.
+  ///
+  /// Null means "the app supplied none", and the channel then falls back to
+  /// the counterparty's peer id, which is a fact it knows rather than one it
+  /// invents. Deliberately NOT [context], which is address-derivation and
+  /// labelling metadata: one field cannot carry two meanings.
+  final String? counterpartyMarker;
+
   OpenChannelCommand({
     required this.walletId,
     required this.serverPeerId,
     required this.fundingAmountSats,
     required this.lockTimeDurationSeconds,
     this.context,
+    this.counterpartyMarker,
   });
 
   @override
@@ -893,6 +907,45 @@ class ExpireChannelCommand implements Message {
   DateTime get timestamp => DateTime.now();
 }
 
+/// Claim the refund of an expired channel (non-cooperative close).
+///
+/// The client side of a channel holds a fully signed refund from the moment
+/// the server countersigns it, valid from the channel's `lockTime` on. This
+/// is the command that actually uses it: the library broadcasts the refund
+/// through ARC — a transaction WE broadcast, so ARC has standing to answer
+/// for it (spv-understanding.md) — journals the claim, and records the
+/// refund and its output in the wallet as an unproven receive.
+///
+/// Distinct from [ExpireChannelCommand], which journals that a channel
+/// passed its lockTime and records the refund WITHOUT broadcasting it (an
+/// observer of the expiry may not be the one holding the transaction). The
+/// two converge: whichever runs first records the refund, and the other
+/// records nothing new.
+///
+/// There is no replace-by-fee on BSV. A broadcast rejected as a double spend
+/// is a terminal answer — the response says so and nothing is journaled as
+/// claimed; it is never retried at a higher fee.
+class ClaimChannelRefundCommand implements Message {
+  final String channelId;
+
+  /// The refund to claim. Null uses the fully signed refund the channel
+  /// holds, which is the normal case; supply one only to name a specific
+  /// transaction (it must still spend the channel's funding output, which
+  /// the aggregate checks).
+  final String? refundTxHex;
+
+  ClaimChannelRefundCommand({required this.channelId, this.refundTxHex});
+
+  @override
+  String get correlationId => 'claim-refund-$channelId';
+  @override
+  Map<String, dynamic> get metadata => {'channelId': channelId};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
 /// Accept an incoming channel request
 class AcceptChannelCommand implements Message {
   final String channelId;
@@ -903,6 +956,19 @@ class AcceptChannelCommand implements Message {
   final int fundingAmountSats;
   final int lockTimeUnix;
 
+  /// The app's opaque marker for the counterparty of this channel (bead
+  /// libspiffy-bps1, spv-understanding.md "Core Data Management"
+  /// requirement 5): it is stamped on the wallet transactions the channel
+  /// records — the funding it pays out and the settlement or refund that
+  /// comes back. Opaque and app-chosen, exactly as on every other payment;
+  /// libspiffy never interprets it.
+  ///
+  /// Null means "the app supplied none", and the channel then falls back to
+  /// the counterparty's peer id, which is a fact it knows rather than one it
+  /// invents. Deliberately NOT [context], which is address-derivation and
+  /// labelling metadata: one field cannot carry two meanings.
+  final String? counterpartyMarker;
+
   AcceptChannelCommand({
     required this.channelId,
     required this.walletId,
@@ -911,6 +977,7 @@ class AcceptChannelCommand implements Message {
     required this.clientAddress,
     required this.fundingAmountSats,
     required this.lockTimeUnix,
+    this.counterpartyMarker,
   });
 
   @override

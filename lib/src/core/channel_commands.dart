@@ -39,6 +39,19 @@ class RequestChannelCommand extends ChannelCommand {
   final int lockTimeDurationSeconds;
   final String? context;
 
+  /// The app's opaque marker for the counterparty of this channel (bead
+  /// libspiffy-bps1, spv-understanding.md "Core Data Management"
+  /// requirement 5): it is stamped on the wallet transactions the channel
+  /// records — the funding it pays out and the settlement or refund that
+  /// comes back. Opaque and app-chosen, exactly as on every other payment;
+  /// libspiffy never interprets it.
+  ///
+  /// Null means "the app supplied none", and the channel then falls back to
+  /// the counterparty's peer id, which is a fact it knows rather than one it
+  /// invents. Deliberately NOT [context], which is address-derivation and
+  /// labelling metadata: one field cannot carry two meanings.
+  final String? counterpartyMarker;
+
   RequestChannelCommand({
     required String channelId,
     required this.walletId,
@@ -50,6 +63,7 @@ class RequestChannelCommand extends ChannelCommand {
     required this.fundingAmountSats,
     required this.lockTimeDurationSeconds,
     this.context,
+    this.counterpartyMarker,
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,
@@ -85,6 +99,19 @@ class AcceptChannelCommand extends ChannelCommand {
   /// The accepting node's own peer id, journaled with the acceptance.
   final String? serverPeerId;
 
+  /// The app's opaque marker for the counterparty of this channel (bead
+  /// libspiffy-bps1, spv-understanding.md "Core Data Management"
+  /// requirement 5): it is stamped on the wallet transactions the channel
+  /// records — the funding it pays out and the settlement or refund that
+  /// comes back. Opaque and app-chosen, exactly as on every other payment;
+  /// libspiffy never interprets it.
+  ///
+  /// Null means "the app supplied none", and the channel then falls back to
+  /// the counterparty's peer id, which is a fact it knows rather than one it
+  /// invents. Deliberately NOT [context], which is address-derivation and
+  /// labelling metadata: one field cannot carry two meanings.
+  final String? counterpartyMarker;
+
   AcceptChannelCommand({
     required String channelId,
     required this.walletId,
@@ -98,6 +125,7 @@ class AcceptChannelCommand extends ChannelCommand {
     required this.lockTimeUnix,
     this.context,
     this.serverPeerId,
+    this.counterpartyMarker,
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,

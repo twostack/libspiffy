@@ -88,6 +88,17 @@ class ChannelState extends State {
 
   // Metadata
   final String? context;
+
+  /// The app's opaque marker for the counterparty of this channel (bead
+  /// libspiffy-bps1, spv-understanding.md "Core Data Management"
+  /// requirement 5), journaled with the request or the acceptance.
+  ///
+  /// It is what the channel stamps on the wallet transactions it records.
+  /// Null means the app supplied none, and the recording falls back to the
+  /// counterparty's peer id. Kept apart from [context], which is
+  /// address-derivation and labelling metadata.
+  final String? counterpartyMarker;
+
   final DateTime? createdAt;
   final DateTime? closedAt;
 
@@ -133,6 +144,7 @@ class ChannelState extends State {
     this.latestClientSignatureHex,
     this.returnLegRecordedInWallet = false,
     this.context,
+    this.counterpartyMarker,
     this.createdAt,
     this.closedAt,
     this.version = 0,
@@ -194,6 +206,7 @@ class ChannelState extends State {
     Object? latestClientSignatureHex = _unset,
     bool? returnLegRecordedInWallet,
     Object? context = _unset,
+    Object? counterpartyMarker = _unset,
     Object? createdAt = _unset,
     Object? closedAt = _unset,
   }) {
@@ -236,6 +249,8 @@ class ChannelState extends State {
       returnLegRecordedInWallet:
           returnLegRecordedInWallet ?? this.returnLegRecordedInWallet,
       context: pick<String>(context, this.context),
+      counterpartyMarker:
+          pick<String>(counterpartyMarker, this.counterpartyMarker),
       createdAt: pick<DateTime>(createdAt, this.createdAt),
       closedAt: pick<DateTime>(closedAt, this.closedAt),
       version: version ?? this.version,

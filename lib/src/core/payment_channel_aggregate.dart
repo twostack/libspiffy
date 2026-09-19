@@ -97,6 +97,7 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
         'latestPaymentTxId': s.latestPaymentTxId,
         'latestClientSignatureHex': s.latestClientSignatureHex,
         'context': s.context,
+        'counterpartyMarker': s.counterpartyMarker,
         'createdAt': s.createdAt?.toIso8601String(),
         'closedAt': s.closedAt?.toIso8601String(),
         'version': s.version,
@@ -152,6 +153,8 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       latestPaymentTxId: map['latestPaymentTxId'] as String?,
       latestClientSignatureHex: map['latestClientSignatureHex'] as String?,
       context: map['context'] as String?,
+      // Snapshots written before libspiffy-bps1 have no marker key.
+      counterpartyMarker: map['counterpartyMarker'] as String?,
       createdAt: date(map['createdAt']),
       closedAt: date(map['closedAt']),
       version: map['version'] as int,
@@ -242,6 +245,7 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       clientPeerId: currentState.clientPeerId,
       serverPeerId: currentState.serverPeerId,
       context: currentState.context,
+      counterpartyMarker: currentState.counterpartyMarker,
       refundTxHex: currentState.refundTxHex,
       fundingBeefHex: currentState.fundingBeefHex,
       latestPaymentTxHex: currentState.latestPaymentTxHex,
@@ -393,6 +397,7 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
         fundingAmountSats: cmd.fundingAmountSats,
         lockTimeUnix: lockTimeUnix,
         context: cmd.context,
+        counterpartyMarker: cmd.counterpartyMarker,
         version: currentState.version + 1,
       ),
     ];
@@ -423,6 +428,7 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
         lockTimeUnix: cmd.lockTimeUnix,
         context: cmd.context,
         serverPeerId: cmd.serverPeerId,
+        counterpartyMarker: cmd.counterpartyMarker,
         version: currentState.version + 1,
       ),
     ];
@@ -1217,6 +1223,21 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       throw StateError('Only client can claim refund');
     }
 
+    // Business rule: a channel that ended cooperatively, or was never
+    // accepted, has no refund to claim. Exactly one transaction can ever
+    // spend the 2-of-2 funding output (BSV, first seen wins), and for a
+    // closed channel that transaction is the settlement: journaling a refund
+    // claim over it would say the channel ended in a way it did not, and the
+    // broadcast behind it is a double spend the network refuses. `expired`
+    // is deliberately NOT refused: an expiry observed first and the claim
+    // that follows it are the same ending, and the claim is what carries the
+    // broadcast (bead libspiffy-cqc).
+    if (currentState.status == ChannelStatus.closed ||
+        currentState.status == ChannelStatus.rejected) {
+      throw StateError('Channel already terminated '
+          '(status=${currentState.status.name}): no refund to claim');
+    }
+
     // The journal records the txid of the actual refund transaction (audit
     // L4): the one the command carries (typically the fully signed refund)
     // or else the refund transaction this channel built.
@@ -1272,6 +1293,7 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       fundingAmountSats: event.fundingAmountSats,
       lockTimeUnix: event.lockTimeUnix,
       context: event.context,
+      counterpartyMarker: event.counterpartyMarker,
       createdAt: event.timestamp,
       clientBalanceSats: event.fundingAmountSats,
       serverBalanceSats: BigInt.zero,
@@ -1295,6 +1317,8 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       fundingAmountSats: state.fundingAmountSats == BigInt.zero ? event.fundingAmountSats : null,
       lockTimeUnix: state.lockTimeUnix ?? event.lockTimeUnix,
       context: state.context ?? event.context,
+      counterpartyMarker:
+          state.counterpartyMarker ?? event.counterpartyMarker,
       // Set initial balances (server's aggregate needs this from the event)
       clientBalanceSats: state.clientBalanceSats == BigInt.zero ? event.fundingAmountSats : null,
       version: event.version,

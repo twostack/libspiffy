@@ -67,6 +67,13 @@ class ChannelRequestedEvent extends ChannelEvent {
   final int lockTimeUnix;
   final String? context;
 
+  /// The app's opaque marker for the counterparty of this channel (bead
+  /// libspiffy-bps1). Journaled so a restart can still stamp it on the
+  /// wallet transactions the channel records. Null on rows written before
+  /// it was journaled, and when the app supplied none — the recording then
+  /// falls back to the counterparty's peer id.
+  final String? counterpartyMarker;
+
   ChannelRequestedEvent({
     required String channelId,
     required this.walletId,
@@ -78,6 +85,7 @@ class ChannelRequestedEvent extends ChannelEvent {
     required this.fundingAmountSats,
     required this.lockTimeUnix,
     this.context,
+    this.counterpartyMarker,
     String? eventId,
     DateTime? timestamp,
     int? version,
@@ -101,6 +109,7 @@ class ChannelRequestedEvent extends ChannelEvent {
         'fundingAmountSats': fundingAmountSats.toString(),
         'lockTimeUnix': lockTimeUnix,
         'context': context,
+        'counterpartyMarker': counterpartyMarker,
       };
 
   factory ChannelRequestedEvent.fromMap(Map<String, dynamic> map) {
@@ -115,6 +124,7 @@ class ChannelRequestedEvent extends ChannelEvent {
       fundingAmountSats: BigInt.parse(map['fundingAmountSats'] as String),
       lockTimeUnix: map['lockTimeUnix'] as int,
       context: map['context'] as String?,
+      counterpartyMarker: map['counterpartyMarker'] as String?,
       eventId: map['eventId'] as String?,
       timestamp: ChannelEvent._parseTimestamp(map['timestamp']),
       version: map['version'] as int?,
@@ -147,6 +157,13 @@ class ChannelAcceptedEvent extends ChannelEvent {
   /// before it was journaled, and when the node was not given one.
   final String? serverPeerId;
 
+  /// The app's opaque marker for the counterparty of this channel (bead
+  /// libspiffy-bps1). Journaled so a restart can still stamp it on the
+  /// wallet transactions the channel records. Null on rows written before
+  /// it was journaled, and when the app supplied none — the recording then
+  /// falls back to the counterparty's peer id.
+  final String? counterpartyMarker;
+
   ChannelAcceptedEvent({
     required String channelId,
     required this.walletId,
@@ -160,6 +177,7 @@ class ChannelAcceptedEvent extends ChannelEvent {
     required this.lockTimeUnix,
     this.context,
     this.serverPeerId,
+    this.counterpartyMarker,
     String? eventId,
     DateTime? timestamp,
     int? version,
@@ -185,6 +203,7 @@ class ChannelAcceptedEvent extends ChannelEvent {
         'fundingAmountSats': fundingAmountSats.toString(),
         'lockTimeUnix': lockTimeUnix,
         'context': context,
+        'counterpartyMarker': counterpartyMarker,
       };
 
   factory ChannelAcceptedEvent.fromMap(Map<String, dynamic> map) {
@@ -201,6 +220,7 @@ class ChannelAcceptedEvent extends ChannelEvent {
       lockTimeUnix: map['lockTimeUnix'] as int,
       context: map['context'] as String?,
       serverPeerId: map['serverPeerId'] as String?,
+      counterpartyMarker: map['counterpartyMarker'] as String?,
       eventId: map['eventId'] as String?,
       timestamp: ChannelEvent._parseTimestamp(map['timestamp']),
       version: map['version'] as int?,

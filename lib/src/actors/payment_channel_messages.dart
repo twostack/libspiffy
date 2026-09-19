@@ -21,6 +21,19 @@ class InitiateChannelMessage extends LocalMessage {
   final int lockTimeDurationSeconds;
   final String? context;
 
+  /// The app's opaque marker for the counterparty of this channel (bead
+  /// libspiffy-bps1, spv-understanding.md "Core Data Management"
+  /// requirement 5): it is stamped on the wallet transactions the channel
+  /// records — the funding it pays out and the settlement or refund that
+  /// comes back. Opaque and app-chosen, exactly as on every other payment;
+  /// libspiffy never interprets it.
+  ///
+  /// Null means "the app supplied none", and the channel then falls back to
+  /// the counterparty's peer id, which is a fact it knows rather than one it
+  /// invents. Deliberately NOT [context], which is address-derivation and
+  /// labelling metadata: one field cannot carry two meanings.
+  final String? counterpartyMarker;
+
   InitiateChannelMessage({
     required this.channelId,
     required this.walletId,
@@ -29,6 +42,7 @@ class InitiateChannelMessage extends LocalMessage {
     required this.fundingAmountSats,
     required this.lockTimeDurationSeconds,
     this.context,
+    this.counterpartyMarker,
   }) : super(payload: null);
 
   @override
@@ -72,6 +86,19 @@ class AcceptChannelMessage extends LocalMessage {
   /// This node's own peer id, journaled with the acceptance.
   final String? serverPeerId;
 
+  /// The app's opaque marker for the counterparty of this channel (bead
+  /// libspiffy-bps1, spv-understanding.md "Core Data Management"
+  /// requirement 5): it is stamped on the wallet transactions the channel
+  /// records — the funding it pays out and the settlement or refund that
+  /// comes back. Opaque and app-chosen, exactly as on every other payment;
+  /// libspiffy never interprets it.
+  ///
+  /// Null means "the app supplied none", and the channel then falls back to
+  /// the counterparty's peer id, which is a fact it knows rather than one it
+  /// invents. Deliberately NOT [context], which is address-derivation and
+  /// labelling metadata: one field cannot carry two meanings.
+  final String? counterpartyMarker;
+
   AcceptChannelMessage({
     required this.channelId,
     required this.walletId,
@@ -82,6 +109,7 @@ class AcceptChannelMessage extends LocalMessage {
     required this.lockTimeUnix,
     this.context,
     this.serverPeerId,
+    this.counterpartyMarker,
   }) : super(payload: null);
 
   @override
@@ -513,6 +541,45 @@ class ChannelExpiredResponse extends ActorResponse {
   });
 }
 
+/// Claim the refund of an expired channel: broadcast it, journal the claim
+/// and record it in the wallet (bead libspiffy-cqc (b)).
+class ClaimRefundMessage extends LocalMessage {
+  final String channelId;
+
+  /// The refund to claim; null uses the fully signed refund the channel
+  /// holds.
+  final String? refundTxHex;
+
+  ClaimRefundMessage({
+    required this.channelId,
+    this.refundTxHex,
+  }) : super(payload: null);
+
+  @override
+  dynamic get payload => this;
+}
+
+/// Response to a refund claim.
+class ChannelRefundClaimedResponse extends ActorResponse {
+  final String channelId;
+
+  /// The refund that was broadcast and journaled; null when the claim
+  /// failed.
+  final String? refundTxId;
+
+  @override
+  final bool success;
+  @override
+  final String? error;
+
+  ChannelRefundClaimedResponse({
+    required this.channelId,
+    this.refundTxId,
+    required this.success,
+    this.error,
+  });
+}
+
 /// Response to channel close
 class ChannelClosedResponse extends ActorResponse {
   final String channelId;
@@ -650,6 +717,19 @@ class FullChannelStateResponse extends ActorResponse {
   final String? serverPeerId;
   final String? context;
 
+  /// The app's opaque marker for the counterparty of this channel (bead
+  /// libspiffy-bps1, spv-understanding.md "Core Data Management"
+  /// requirement 5): it is stamped on the wallet transactions the channel
+  /// records — the funding it pays out and the settlement or refund that
+  /// comes back. Opaque and app-chosen, exactly as on every other payment;
+  /// libspiffy never interprets it.
+  ///
+  /// Null means "the app supplied none", and the channel then falls back to
+  /// the counterparty's peer id, which is a fact it knows rather than one it
+  /// invents. Deliberately NOT [context], which is address-derivation and
+  /// labelling metadata: one field cannot carry two meanings.
+  final String? counterpartyMarker;
+
   /// Client: the refund template as built. Server: the refund it signed.
   final String? refundTxHex;
 
@@ -704,6 +784,7 @@ class FullChannelStateResponse extends ActorResponse {
     this.clientPeerId,
     this.serverPeerId,
     this.context,
+    this.counterpartyMarker,
     this.refundTxHex,
     this.fundingBeefHex,
     this.latestPaymentTxHex,

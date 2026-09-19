@@ -302,6 +302,62 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### A channel refund can actually be claimed
+
+`ClaimRefundCommand` had an aggregate handler, tested guards, a journal
+event and a projection arm — and nothing in the library ever built it. A
+client whose counterparty had gone silent held a fully signed refund with no
+way to broadcast it. The new public `ClaimChannelRefundCommand` runs the
+expiry path plus the one thing expiry deliberately does not do: a broadcast.
+
+It broadcasts first, then journals the claim, then records the money in the
+wallet — a claim is a claim about the network, so nothing the network refused
+is journaled as claimed. A rejected broadcast (most likely the counterparty's
+settlement having reached the network first) is a terminal answer reported on
+the response: **there is no replace-by-fee on BSV and nothing is retried at a
+higher fee**. ARC is asked because the refund is our own transaction.
+
+Expiry already recorded the return leg without broadcasting it, so two routes
+can now record the same refund. Both orderings are pinned by tests and leave
+exactly one wallet transaction row and one `RefundClaimedEvent`.
+
+One guard was missing and is added: the aggregate accepted a refund claim on
+a cooperatively **closed** channel, journaling a second ending for a funding
+output the settlement had already spent. `ClaimRefundCommand` on a `closed`
+or `rejected` channel now throws. `expired` stays claimable — that is the
+convergence path.
+
+API additions: `ClaimChannelRefundCommand` (public), `ClaimRefundMessage`,
+`ChannelRefundClaimedResponse`, `ChannelP2PAdapter.handleClaimRefund`.
+
+### Channel transactions name their counterparty
+
+Every payment the wallet records should carry an opaque, app-chosen marker
+naming the counterparty it was with. Payment-channel funding, settlement and
+refund records passed none, so every row a channel wrote was blank.
+
+The app supplies the marker; where it supplies none, the channel's
+counterparty **peer id** is the fallback — a fact the channel holds, never an
+invention. One helper resolves the rule and both recording sites call it, so
+a channel's funding leg and its return leg can never be stamped differently.
+The marker is taken from the local `AcceptChannelCommand`, never from an
+inbound peer's payload: it is the app's own naming of its counterparty.
+
+`counterpartyMarker` is a new optional field, deliberately **not** a reuse of
+the existing `context`, which is already consumed as address-derivation
+metadata — one field cannot carry two meanings.
+
+Behaviour note: channel transactions recorded before this change keep their
+blank marker, because a marker is set once and never replaced. Old journals
+and snapshots replay unchanged (a missing key reads as null and falls back to
+the peer id).
+
+API additions (all optional, all defaulted null): `counterpartyMarker` on
+`OpenChannelCommand`, `AcceptChannelCommand` (both the coordinator and the
+core command), `InitiateChannelMessage`, `AcceptChannelMessage`,
+`RequestChannelCommand`, `ChannelRequestedEvent`, `ChannelAcceptedEvent`,
+`ChannelState` and `FullChannelStateResponse`.
+
 ### An output the wallet can never spend is not a wallet UTXO
 
 Report section 11, V-97.

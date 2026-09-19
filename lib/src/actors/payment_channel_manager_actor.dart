@@ -367,6 +367,9 @@ class PaymentChannelManagerActor extends Actor {
         case final ExpireChannelMessage msg:
           await _handleExpireChannel(msg);
           break;
+        case final ClaimRefundMessage msg:
+          await _handleClaimRefund(msg);
+          break;
         case final QueryChannelStateMessage msg:
           await _handleQueryChannelState(msg);
           break;
@@ -441,6 +444,7 @@ class PaymentChannelManagerActor extends Actor {
         fundingAmountSats: msg.fundingAmountSats,
         lockTimeDurationSeconds: msg.lockTimeDurationSeconds,
         context: msg.context,
+        counterpartyMarker: msg.counterpartyMarker,
       );
       
       // Send command and wait for its events (a rejection throws)
@@ -537,6 +541,7 @@ class PaymentChannelManagerActor extends Actor {
         lockTimeUnix: msg.lockTimeUnix,
         context: msg.context,
         serverPeerId: msg.serverPeerId,
+        counterpartyMarker: msg.counterpartyMarker,
       );
       
       // Send command and wait for its events (a rejection throws)
@@ -1529,6 +1534,31 @@ class PaymentChannelManagerActor extends Actor {
     );
   }
 
+  /// The counterparty marker to stamp on the wallet transactions of
+  /// [state]'s channel (bead libspiffy-bps1, spv-understanding.md "Core Data
+  /// Management" requirement 5).
+  ///
+  /// The app's own marker when it supplied one; otherwise the peer id of the
+  /// side we are dealing with — the server peer for a client, the client
+  /// peer for a server. The fallback is a fact the channel holds, not one it
+  /// invents: the marker means the same thing on a channel transaction as on
+  /// any other, so the library does not mint a channel-specific meaning for
+  /// it. Null when the app supplied none and no peer id was journaled
+  /// either, which is an honest absence.
+  ///
+  /// One rule, one place: both recording sites call this, so the funding leg
+  /// and the return leg of a channel can never be stamped differently.
+  String? _counterpartyMarkerFor(FullChannelStateResponse state) {
+    final supplied = state.counterpartyMarker;
+    if (supplied != null && supplied.isNotEmpty) return supplied;
+    final peerId = switch (state.role) {
+      'client' => state.serverPeerId,
+      'server' => state.clientPeerId,
+      _ => null,
+    };
+    return peerId == null || peerId.isEmpty ? null : peerId;
+  }
+
   /// Records the funding transaction as an outgoing transaction of the
   /// client wallet, with its inputs left reserved (they are marked spent
   /// once ARC accepts the transaction). The channel's 2-of-2 output is not a
@@ -1572,6 +1602,7 @@ class PaymentChannelManagerActor extends Actor {
       // The inputs stay reserved by this transaction until ARC accepts it.
       deferSpend: true,
       purpose: 'channel-funding',
+      counterpartyMarker: _counterpartyMarkerFor(state),
     );
 
     final applied = _awaitApplied(
@@ -1809,6 +1840,7 @@ class PaymentChannelManagerActor extends Actor {
       }
     }
 
+    final marker = _counterpartyMarkerFor(state);
     final fundingTxHex = state.fundingTxHex;
     final applied = _awaitApplied(
       _walletProjection,
@@ -1843,8 +1875,7 @@ class PaymentChannelManagerActor extends Actor {
               fundingTxHex.isNotEmpty)
             BeefAncestor(txid: state.fundingTxId!, rawHex: fundingTxHex),
         ],
-        // The counterparty marker is deliberately absent, not null: bead
-        // libspiffy-bps1 adds it here without reshaping this call.
+        counterpartyMarker: marker,
       ),
     ));
 
@@ -1862,6 +1893,7 @@ class PaymentChannelManagerActor extends Actor {
           derivationIndex: state.derivationIndex,
           // Unproven: pending, with no height and no count to go with it.
           initialStatus: UTXOStatus.pending,
+          counterpartyMarker: marker,
         ),
       ));
     }
@@ -2405,6 +2437,149 @@ class PaymentChannelManagerActor extends Actor {
       applied?.cancel();
       _log.warning('Expiring channel ${msg.channelId} failed: $e', e, stackTrace);
       originalSender?.tell(ChannelExpiredResponse(
+        channelId: msg.channelId,
+        success: false,
+        error: e.toString(),
+      ));
+    }
+  }
+
+  /// Claim the refund of an expired channel (bead libspiffy-cqc (b)).
+  ///
+  /// The client holds a fully signed refund from the server's
+  /// countersignature on, valid from the channel's lockTime. Nothing in the
+  /// library used to use it: [ClaimRefundCommand] and [RefundClaimedEvent]
+  /// existed, were guarded and were projected, but no code path ever built
+  /// the command, so a client whose counterparty had gone silent had no way
+  /// to take its money back.
+  ///
+  /// It is the expiry path plus the one thing expiry deliberately does not
+  /// do — a broadcast. The refund is OUR transaction, so ARC has standing to
+  /// answer for it (spv-understanding.md); an expiry observer may hold no
+  /// transaction at all, which is why [_handleExpireChannel] only records.
+  ///
+  /// Order: broadcast, then journal the claim, then record the wallet.
+  /// A claim is a claim about the network, so nothing is journaled as
+  /// claimed for a transaction the network refused. **There is no
+  /// replace-by-fee on BSV**: a rejection (a double spend, most likely the
+  /// counterparty's settlement having got there first) is a terminal answer,
+  /// recorded honestly on the response and never retried at a higher fee.
+  ///
+  /// Convergence with expiry: [_recordReturnLegInWallet] no-ops on a
+  /// transaction the wallet already holds and [ChannelState.returnLegRecordedInWallet]
+  /// says whether the write happened, so expire-then-claim and
+  /// claim-then-expire both leave exactly one wallet transaction row. The
+  /// aggregate refuses to expire a terminated channel, which is what stops
+  /// the second of the two journaling anything about the channel's ending.
+  Future<void> _handleClaimRefund(ClaimRefundMessage msg) async {
+    final originalSender = context.sender;
+
+    // Declared out here so the catch below can abandon it (bead
+    // libspiffy-kyw), as on the open and expiry paths.
+    ({Future<dynamic> done, void Function() cancel})? applied;
+
+    try {
+      final aggregateRef = await _getOrSpawnChannelAggregate(msg.channelId);
+
+      // Read before the command: the aggregate's own guards (past lockTime,
+      // client role, the refund spends the funding output) are the only gate.
+      final state = _stateOrThrow(
+          await aggregateRef.ask(ChannelStateQuery(channelId: msg.channelId)));
+
+      final refundTxHex = msg.refundTxHex ?? state.signedRefundTxHex;
+      if (refundTxHex == null || refundTxHex.isEmpty) {
+        throw StateError('Channel ${msg.channelId} holds no fully signed '
+            'refund to claim: an absence, not a transaction to invent');
+      }
+      final dartsv.Transaction refund;
+      try {
+        refund = dartsv.Transaction.fromHex(refundTxHex);
+      } catch (e) {
+        throw StateError('The refund of channel ${msg.channelId} does not '
+            'parse: $e');
+      }
+      final refundTxId = refund.id;
+
+      final arcActor = _arcActor;
+      if (arcActor == null) {
+        throw StateError('No transaction broadcaster (ARC actor) configured');
+      }
+
+      final reply = await _request(
+        arcActor,
+        BroadcastTransactionMessage(state.walletId, refundTxHex, refundTxId),
+        accept: (r) =>
+            r is BroadcastSuccessMessage || r is BroadcastFailedMessage,
+        what: 'Broadcasting refund $refundTxId of channel ${msg.channelId}',
+        timeout: _broadcastTimeout,
+      );
+      if (reply is BroadcastFailedMessage) {
+        throw StateError('Refund broadcast failed: ${reply.error}');
+      }
+      if (reply is! BroadcastSuccessMessage) {
+        throw StateError('Refund broadcast failed: unexpected reply '
+            '${reply.runtimeType}');
+      }
+
+      // Registered BEFORE the command: the aggregate publishes its event to
+      // the projection's mailbox before it answers, so registering after
+      // could miss the window (the read-after-write race).
+      applied = _awaitApplied(
+          _channelProjection,
+          (e) => e is RefundClaimedEvent && e.channelId == msg.channelId,
+          const Duration(seconds: 10));
+      try {
+        _broadcastEvents(await _askAggregate(
+          msg.channelId,
+          aggregateRef,
+          ClaimRefundCommand(
+              channelId: msg.channelId, refundTxHex: refundTxHex),
+        ));
+      } catch (e) {
+        // Nothing will await the registration now (bead libspiffy-kyw).
+        applied?.cancel();
+        applied = null;
+        rethrow;
+      }
+      if (applied != null) {
+        final result = await applied.done;
+        if (result is AwaitFailed) {
+          _log.warning('ChannelProjection apply timeout for the refund claim '
+              'of ${msg.channelId}: ${result.reason}');
+        }
+        // Awaited: the catch below must not also cancel it.
+        applied = null;
+      }
+
+      // The money coming back. An expiry may already have recorded it
+      // without broadcasting (V-86); the journaled record of that write is
+      // what keeps the two routes to one wallet row.
+      if (!state.returnLegRecordedInWallet) {
+        final leg =
+            _returnLeg(state, preferTxId: refundTxId, allowRefund: true);
+        if (leg == null) {
+          _log.warning('Channel ${msg.channelId}: refund $refundTxId is '
+              'broadcast and the claim is journaled, but this side holds no '
+              'copy of it that pays an address of ours, so nothing is '
+              'recorded in wallet ${state.walletId}.');
+        } else {
+          final txId =
+              await _recordReturnLegInWallet(msg.channelId, state, leg);
+          await _journalReturnLegRecorded(msg.channelId, aggregateRef, txId);
+        }
+      }
+
+      originalSender?.tell(ChannelRefundClaimedResponse(
+        channelId: msg.channelId,
+        refundTxId: refundTxId,
+        success: true,
+      ));
+    } catch (e, stackTrace) {
+      // Nothing will await the registration now (bead libspiffy-kyw).
+      applied?.cancel();
+      _log.warning('Claiming the refund of channel ${msg.channelId} failed: $e',
+          e, stackTrace);
+      originalSender?.tell(ChannelRefundClaimedResponse(
         channelId: msg.channelId,
         success: false,
         error: e.toString(),

@@ -233,7 +233,7 @@ class SPVActor extends Actor {
       await _resolveParked(msg, 'failed: $e');
 
       final errorResult = SPVValidationResult(
-        txid: msg.transactionId, // Placeholder
+        txid: msg.transactionId,
         isValid: false,
         validationError: e.toString(),
         targetWalletId: msg.targetWalletId,

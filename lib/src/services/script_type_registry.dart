@@ -198,9 +198,7 @@ class ScriptTypeRegistry {
 
           // Try to derive an address from the pubkey hash
           try {
-            // Use SVAddressHelper to create an address from the pubkey hash
-            // This is a simplified approach - in a real implementation we would use
-            // the appropriate network type and address format
+            // Base58 address for the registry's own network type.
             metadata['address'] = Address.fromPubkeyHash(hex.encode(pubKeyHash), _networkType).toBase58();
           } catch (e) {
             // Address derivation failed
@@ -223,9 +221,7 @@ class ScriptTypeRegistry {
 
           // Try to derive an address from the public key
           try {
-            // Use the public key to derive an address
-            // This is a simplified approach - in a real implementation we would use
-            // the appropriate network type and address format
+            // Base58 address for the registry's own network type.
             var svPubKey = SVPublicKey.fromHex(hex.encode(pubKey));
             metadata['address'] = Address.fromPublicKey(svPubKey, _networkType).toBase58();
           } catch (e) {

@@ -386,11 +386,30 @@ class PaymentChannelManagerActor extends Actor {
         default:
       }
     } catch (e, stackTrace) {
-      _log.warning('Failed to handle ${message.runtimeType}: $e', e, stackTrace);
-      // Send error response to sender if available
-      if (context.sender != null) {
-        _sendErrorResponse(message, e.toString());
-      }
+      // Every request-shaped handler owns its own failure reply: each wraps
+      // its whole body in try/catch and answers the sender it captured
+      // before its first await, in the response type that matches the
+      // request (ChannelInitiatedResponse for InitiateChannelMessage,
+      // ChannelClosedResponse for CloseChannelMessage, and so on), with
+      // `success: false` and the error text. So nothing generic is answered
+      // from here.
+      //
+      // This used to call a `_sendErrorResponse(dynamic, String)` that knew
+      // only two of the twenty message types and replied to `context.sender`
+      // — which, after the handler's awaits, is the sender of whatever
+      // message arrived next, not of `message`. For those two types it could
+      // only ever duplicate the reply the handler had already sent, and for
+      // the other eighteen it did nothing at all. Removed (bead
+      // libspiffy-q7a).
+      //
+      // Reaching this point therefore means a handler's own catch escaped,
+      // which is a defect in that handler: log it loudly rather than guess a
+      // response type and a recipient.
+      _log.severe(
+          'Unhandled error in ${message.runtimeType}; the handler failed to '
+          'answer its sender: $e',
+          e,
+          stackTrace);
     }
   }
 
@@ -2982,31 +3001,6 @@ class PaymentChannelManagerActor extends Actor {
     return aggregateRef;
   }
 
-
-  /// Send generic error response based on message type
-  void _sendErrorResponse(dynamic message, String error) {
-    if (message is InitiateChannelMessage) {
-      context.sender?.tell(ChannelInitiatedResponse(
-        channelId: message.channelId,
-        clientPubKeyHex: '',
-        clientAddressB58: '',
-        derivationIndex: 0,
-        lockTimeUnix: 0,
-        success: false,
-        error: error,
-      ));
-    } else if (message is AcceptChannelMessage) {
-      context.sender?.tell(ChannelAcceptedResponse(
-        channelId: message.channelId,
-        serverPubKeyHex: '',
-        serverAddressB58: '',
-        derivationIndex: 0,
-        success: false,
-        error: error,
-      ));
-    }
-    // Add other message types as needed
-  }
 }
 
 /// Receives the reply to one request (see

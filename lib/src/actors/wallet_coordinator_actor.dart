@@ -45,10 +45,6 @@ class WalletCoordinatorActor extends Actor {
   final ActorRef _paymentCoordinator;
   final ActorRef _spvActor;
   final ActorRef _arcActor;
-  final ActorRef _headerSyncActor;
-  final ActorRef _benfordCoordinator;
-  final ActorRef _channelManager;
-  final ActorRef? _importActor;
   final ActorRef _walletProjection;
 
   // Direct storage access for CQRS read queries
@@ -109,22 +105,26 @@ class WalletCoordinatorActor extends Actor {
   // Import notifications (ImportActor progress), forwarded as CoordinatorEvents
   final Stream<domain_events.WalletImportNotification>? _importNotifications;
 
-  /// Current wallet ID (set after first wallet created)
-  String? _currentWalletId;
-
-  /// Current peer ID for P2P channels
-  String _peerId;
-
   WalletCoordinatorActor({
     required ActorRef walletManager,
     required ActorRef invoiceCoordinator,
     required ActorRef paymentCoordinator,
     required ActorRef spvActor,
     required ActorRef arcActor,
+    @Deprecated('Unused: the coordinator never sends the header-sync actor a '
+        'message. Kept so existing callers still compile; will be removed in '
+        'a future release.')
     required ActorRef headerSyncActor,
+    @Deprecated('Unused: UTXO splitting is driven through WalletManager, not '
+        'from here. Kept so existing callers still compile; will be removed '
+        'in a future release.')
     required ActorRef benfordCoordinator,
     required ActorRef channelManager,
     required ActorRef walletProjection,
+    @Deprecated('Unused: import progress arrives on importNotifications, and '
+        'imports run through importWalletFromXpriv/importWalletFromWif. Kept '
+        'so existing callers still compile; will be removed in a future '
+        'release.')
     ActorRef? importActor,
     required ReadModelStorage storage,
     Stream<ChannelEvent>? channelEvents,
@@ -152,13 +152,8 @@ class WalletCoordinatorActor extends Actor {
         _paymentCoordinator = paymentCoordinator,
         _spvActor = spvActor,
         _arcActor = arcActor,
-        _headerSyncActor = headerSyncActor,
-        _benfordCoordinator = benfordCoordinator,
-        _channelManager = channelManager,
         _walletProjection = walletProjection,
-        _importActor = importActor,
         _storage = storage,
-        _peerId = peerId,
         _importWalletFromXpriv = importWalletFromXpriv,
         _importWalletFromWif = importWalletFromWif,
         _importNotifications = importNotifications {
@@ -1419,7 +1414,6 @@ class WalletCoordinatorActor extends Actor {
     _log.info('Wallet created: ${response.walletId} success=${response.success}');
 
     if (response.success) {
-      _currentWalletId = response.walletId;
       _channelAdapter?.updateWalletId(response.walletId);
     }
 

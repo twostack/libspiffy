@@ -249,6 +249,11 @@ class InvoiceAggregate extends AggregateRoot<InvoiceState>
 
     return switch (event) {
       final InvoiceCreatedEvent evt => _applyInvoiceCreated(state, evt),
+      // Replay-only: nothing emits InvoiceStatusChangedEvent any more
+      // (reachability sweep 2026-09-18, section 2). The arm stays because a
+      // journal written by an earlier release may contain the event and must
+      // still replay to the same state.
+      // ignore: deprecated_member_use_from_same_package
       final InvoiceStatusChangedEvent evt => _applyInvoiceStatusChanged(state, evt),
       final InvoicePaidEvent evt => _applyInvoicePaid(state, evt),
       final InvoiceExpiredEvent evt => _applyInvoiceExpired(state, evt),
@@ -496,6 +501,9 @@ class InvoiceAggregate extends AggregateRoot<InvoiceState>
     );
   }
 
+  /// Replay-only: nothing emits [InvoiceStatusChangedEvent] any more. Kept so
+  /// a journal written by an earlier release still replays to the same state.
+  // ignore: deprecated_member_use_from_same_package
   InvoiceState _applyInvoiceStatusChanged(InvoiceState state, InvoiceStatusChangedEvent event) {
     return state.copyWith(
       status: event.newStatus,

@@ -134,7 +134,34 @@ class InvoiceCreatedEvent extends InvoiceEvent {
   }
 }
 
-/// Event fired when invoice status changes
+/// Event fired when invoice status changes.
+///
+/// **Nothing in `lib/` emits this event** (reachability sweep 2026-09-18,
+/// section 2). Every status transition the aggregate performs today is
+/// journaled as the specific event for it — [InvoicePaidEvent],
+/// [InvoiceExpiredEvent], [InvoiceCancelledEvent] — each of which carries the
+/// fields that transition needs. This generic one carries only
+/// `oldStatus`/`newStatus`, so it cannot replace any of them.
+///
+/// Both `InvoiceAggregate.applyEvent` and `InvoiceProjection.handle` still
+/// carry an arm for it, deliberately: see the comment at each arm.
+///
+/// **DO NOT DELETE THIS CLASS.** It is deprecated, not dead. It is registered
+/// for replay in `LibSpiffyActorSystem` under the stable type name
+/// `invoice.status_changed`, and a journal written by an earlier release may
+/// already contain events with that name. A journal is permanent and its
+/// contents are never rewritten, so deleting the class (or its [fromMap], or
+/// its registration, or either handler arm) would make such a journal
+/// unreplayable — which the data-retention rule in `spv-understanding.md`
+/// forbids outright. The deprecation marks it as "do not emit anything new";
+/// it says nothing about removability.
+@Deprecated(
+    'Nothing emits this event; journal the specific transition instead '
+    '(InvoicePaidEvent, InvoiceExpiredEvent, InvoiceCancelledEvent). The '
+    'class MUST be kept: it is registered for replay as '
+    'invoice.status_changed and a journal written by an earlier release may '
+    'contain it, so deleting the class would make that journal unreplayable. '
+    'Not scheduled for removal.')
 class InvoiceStatusChangedEvent extends InvoiceEvent {
   /// Journal identifier of this event type. Stored with every event and
   /// independent of the class name; never change it (audit 2026-09-14 M8).

@@ -4,10 +4,38 @@
 /// recording fake connection.
 library;
 
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:postgres/postgres.dart';
 import 'package:test/test.dart';
 
 import 'package:libspiffy/src/storage/postgres/postgres_config.dart';
+
+/// A self-signed certificate authority, generated for these tests alone. It
+/// signs nothing and is never trusted by anything else; it exists so a test
+/// can prove the bytes reach a real [SecurityContext], which parses them.
+const _caPem = '''
+-----BEGIN CERTIFICATE-----
+MIIDGTCCAgGgAwIBAgIUTnImdJaoldw6zpusIATCJCWlHh4wDQYJKoZIhvcNAQEL
+BQAwHDEaMBgGA1UEAwwRbGlic3BpZmZ5IHRlc3QgQ0EwHhcNMjYwOTE5MDY1ODE3
+WhcNMzYwOTE2MDY1ODE3WjAcMRowGAYDVQQDDBFsaWJzcGlmZnkgdGVzdCBDQTCC
+ASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBAJsJfC7dy68ZXcJ9g2vz79n6
+vsh9qfziu/3JPD2OCrXJXCPvrUnrjuVLEGl2Qnl/ByNHg/f89WLS30uRTn9ad7Ia
+S13ukoOlSqjaNrFGF7fj54COqwUMsGkaMfpl1zZj/AMQqymQBwP08fZdZgiY0wf4
+nri2lAySbXm3QjoxFHyKwFdkmK8VMRqun0ekb0QDA26/52e+eK5NMjHFcRfxUIP5
+g1yWZE08uSXEJNJoZixCldgklLNP5Y8o/Hp/akeOkctBdJiaDJG7XMOaXY3tfFcH
+7ANDX5+gJCYq2iLc/mHFNmZIS6/qcUk8zy5c3wcv4CdrpbtE/884Mp2PS98gSHEC
+AwEAAaNTMFEwHQYDVR0OBBYEFBXKBCcH8oReH6YD4Ns75pscB/LdMB8GA1UdIwQY
+MBaAFBXKBCcH8oReH6YD4Ns75pscB/LdMA8GA1UdEwEB/wQFMAMBAf8wDQYJKoZI
+hvcNAQELBQADggEBABSyHfRnUOGam3Zc9VNwASlpaTNRAW+xFmLV4nnlNgJiRbz3
+z59sRYyDe6NL0Saa/3YCo4IA91zHPUAX4MnzINk58c7iC5gX20oUSmS1lKqpl7nx
+LIOQ9t1J5wqL0UsOoIMQatmGQI/a4yCdOCk3erUnBBcO6aO8jgbrQlzauqaJbOdJ
+f9MxXiELTfi9uVUEUdLgueY7UjjjFgHYSy4q//YrMsHjFXYvkgRPDabub8M9uSQQ
+mtel7NhPj7vb3tnn7O5fwz0PZv5i/3TA4vOLFIVAXn1ZidVXcSPbxsVuOply1G6C
+O1VdCBYiRv+E6FY2H62D8kcRZnJerKLMxAxviIo=
+-----END CERTIFICATE-----
+''';
 
 /// Records every statement onOpen issues; everything else is unsupported.
 class _RecordingConnection implements Connection {
@@ -177,6 +205,154 @@ void main() {
         expect(parsed.applicationName, 'svc');
         expect(parsed.password, 'pw');
       }
+    });
+  });
+
+  group('PostgresConfig private CA (libspiffy-tpv)', () {
+    late Directory dir;
+    late String caPath;
+
+    setUpAll(() {
+      dir = Directory.systemTemp.createTempSync('libspiffy_ca');
+      caPath = '${dir.path}/ca.pem';
+      File(caPath).writeAsStringSync(_caPem);
+    });
+
+    tearDownAll(() => dir.deleteSync(recursive: true));
+
+    test('a config with no certificate hands the driver no SecurityContext',
+        () {
+      const config = PostgresConfig(host: 'db.example.com', database: 'app');
+      expect(config.resolveSecurityContext(), isNull);
+      expect(config.toPoolSettings().securityContext, isNull);
+      expect(config.toConnectionSettings().securityContext, isNull);
+      expect(config.sslMode, SslMode.require,
+          reason: 'the default is unchanged');
+    });
+
+    test('a CA file reaches the SecurityContext the driver is handed', () {
+      final config = PostgresConfig(
+        host: 'db.example.com',
+        database: 'app',
+        sslRootCertPath: caPath,
+      );
+      final context = config.resolveSecurityContext();
+      expect(context, isNotNull);
+      expect(config.toPoolSettings().securityContext, same(context));
+      expect(config.toConnectionSettings().securityContext, same(context));
+      expect(config.sslMode, SslMode.verifyFull,
+          reason: 'a CA nothing verifies against would be decorative');
+    });
+
+    test('a CA supplied as bytes reaches it too', () {
+      final config = PostgresConfig(
+        host: 'db.example.com',
+        database: 'app',
+        sslRootCertBytes: utf8.encode(_caPem),
+      );
+      expect(config.resolveSecurityContext(), isNotNull);
+      expect(config.toPoolSettings().securityContext,
+          same(config.resolveSecurityContext()));
+      expect(config.sslMode, SslMode.verifyFull);
+    });
+
+    test('a certificate that cannot be read or parsed is an ArgumentError, '
+        'not an empty trust store', () {
+      final missing = PostgresConfig(
+        host: 'db.example.com',
+        database: 'app',
+        sslRootCertPath: '${dir.path}/absent.pem',
+      );
+      expect(missing.resolveSecurityContext, throwsArgumentError);
+      expect(() => missing.toPoolSettings(), throwsArgumentError);
+
+      final garbage = PostgresConfig(
+        host: 'db.example.com',
+        database: 'app',
+        sslRootCertBytes: utf8.encode('not a certificate'),
+      );
+      expect(garbage.resolveSecurityContext, throwsArgumentError);
+    });
+
+    test('an explicit SecurityContext is handed over as it stands', () {
+      final context = SecurityContext(withTrustedRoots: true);
+      final config = PostgresConfig(
+        host: 'db.example.com',
+        database: 'app',
+        securityContext: context,
+      );
+      expect(config.resolveSecurityContext(), same(context));
+      expect(config.toConnectionSettings().securityContext, same(context));
+      expect(config.sslMode, SslMode.verifyFull);
+    });
+
+    test('an explicit SSL mode still wins over the certificate', () {
+      final required = PostgresConfig(
+        host: 'db.example.com',
+        database: 'app',
+        sslMode: SslMode.require,
+        sslRootCertPath: caPath,
+      );
+      expect(required.sslMode, SslMode.require);
+      expect(required.toPoolSettings().securityContext, isNotNull);
+
+      final off = PostgresConfig(
+        host: 'db.example.com',
+        database: 'app',
+        enableSsl: false,
+        sslRootCertPath: caPath,
+      );
+      expect(off.sslMode, SslMode.disable,
+          reason: 'enableSsl: false keeps working unchanged');
+    });
+
+    test('sslrootcert in a connection string selects verify-full and '
+        'round-trips', () {
+      final config = PostgresConfig.fromConnectionString(
+          'postgresql://u:p@db.example.com/app?sslrootcert=$caPath');
+      expect(config.sslRootCertPath, caPath);
+      expect(config.sslMode, SslMode.verifyFull);
+      expect(config.resolveSecurityContext(), isNotNull);
+
+      final reparsed =
+          PostgresConfig.fromConnectionString(config.toConnectionString());
+      expect(reparsed.sslRootCertPath, caPath);
+      expect(reparsed.sslMode, SslMode.verifyFull);
+    });
+
+    test('a connection string without sslrootcert still configures no context',
+        () {
+      final config = PostgresConfig.fromConnectionString(
+          'postgresql://u:p@db.example.com/app');
+      expect(config.sslRootCertPath, isNull);
+      expect(config.resolveSecurityContext(), isNull);
+      expect(config.sslMode, SslMode.require);
+    });
+
+    test('copyWith carries the certificate and raises require to verify-full',
+        () {
+      const plain = PostgresConfig(host: 'db.example.com', database: 'app');
+      final withCa = plain.copyWith(sslRootCertPath: caPath);
+      expect(withCa.sslRootCertPath, caPath);
+      expect(withCa.sslMode, SslMode.verifyFull);
+      expect(withCa.toPoolSettings().securityContext, isNotNull);
+
+      expect(withCa.copyWith(maxConnections: 3).sslRootCertPath, caPath);
+      expect(withCa.copyWith(maxConnections: 3).sslMode, SslMode.verifyFull);
+      expect(withCa.copyWith(enableSsl: false).sslMode, SslMode.disable);
+      expect(plain.copyWith(maxConnections: 3).sslMode, SslMode.require,
+          reason: 'a config with no CA is unaffected');
+    });
+
+    test('toString names the certificate without leaking the password', () {
+      final config = PostgresConfig(
+        host: 'db.example.com',
+        database: 'app',
+        password: 's3cr3t',
+        sslRootCertPath: caPath,
+      );
+      expect(config.toString(), contains(caPath));
+      expect(config.toString(), isNot(contains('s3cr3t')));
     });
   });
 }

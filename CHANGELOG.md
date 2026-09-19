@@ -302,6 +302,42 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### Postgres: typed journal errors, a cheaper id scan, and private-CA TLS
+
+- A failed append now throws **`EventStoreException`** naming the journal, the
+  batch size and the SQLSTATE, instead of leaking the driver's own exception.
+  The original is kept as `cause` and its stack trace is preserved. Concurrency
+  conflicts still throw `ConcurrencyException`, unchanged. **If you catch
+  `ServerException` around a persist call, catch `EventStoreException` now.**
+- `currentPersistenceIds()` no longer runs an unbounded `SELECT DISTINCT` over
+  the whole journal. It walks the existing index in pages, so the work follows
+  the number of distinct ids rather than the journal's length. Nothing is
+  stored differently and no row is trimmed. Note the read is now paged rather
+  than a single snapshot.
+- `PostgresConfig` gains `sslRootCertPath`, `sslRootCertBytes` and
+  `securityContext`, so a server using a private certificate authority can be
+  verified. Defaults are unchanged. Supplying a CA without an explicit
+  `sslMode` selects `verify-full` rather than `require` — under `require` the
+  driver ignores certificate problems, which would make the CA decorative.
+
+### Dead code removed, and what must never be removed marked as such
+
+- **Removed:** `TransactionLifecycleCoordinator` (its `onMessage` was empty and
+  it subscribed to nothing), its getter on `LibSpiffyActorSystem`, and its
+  spawn — so no actor named `transaction-lifecycle-coordinator` exists any
+  more. Six unused fields on `WalletCoordinatorActor`. A generic error
+  responder in the channel manager that could only ever duplicate a reply or
+  send one to the wrong actor.
+- **Deprecated, not removed:** two commands no aggregate handles, three
+  constructor parameters that are now ignored, and the `isolateConfig`
+  parameters.
+- **Deprecated and kept permanently:** six event classes nothing emits. They
+  are registered for replay, and a journal written by an earlier release may
+  contain them — deleting a class would make that journal unreplayable. Each
+  one now says so where a future reader will look.
+- Three comments claiming unfinished work over finished code, deleted; and the
+  unused `unorm_dart` dependency dropped.
+
 ### A funding whose money came back cannot be broadcast again
 
 A channel funding that never reached the network holds its inputs through a

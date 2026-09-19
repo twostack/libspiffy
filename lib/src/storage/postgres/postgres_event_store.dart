@@ -124,6 +124,24 @@ class PostgresEventStore implements EventStore, EventStream {
   @visibleForTesting
   int journalReadCount = 0;
 
+  /// Distinct persistence ids fetched per page by [currentPersistenceIds].
+  /// One page is one round trip.
+  @visibleForTesting
+  int persistenceIdPageSize = 500;
+
+  /// Number of page queries [currentPersistenceIds] has issued, so a test
+  /// can check that it pages instead of reading the journal in one query.
+  @visibleForTesting
+  int persistenceIdQueryCount = 0;
+
+  /// Test hook called with the SQL and parameters of each
+  /// [currentPersistenceIds] page, just before the query is issued, so a
+  /// test can EXPLAIN the statement the store really runs rather than a copy
+  /// of it. Never set in production.
+  @visibleForTesting
+  void Function(String sql, Map<String, Object?> parameters)?
+      onPersistenceIdsQuery;
+
   /// Advisory lock class for per-persistence-id append locks (two-key form,
   /// so it never collides with the single-key migration lock).
   static const int _appendLockClass = 0x53504659; // 'SPFY'
@@ -198,6 +216,17 @@ class PostgresEventStore implements EventStore, EventStream {
   /// [ConcurrencyException]. A unique violation on that constraint (a writer
   /// that bypassed the lock) is reported as [ConcurrencyException] too.
   ///
+  /// Every *other* failure — any other server error (a duplicate
+  /// `event_id`, a value too long for its column, a permission or
+  /// connection error), a serialization failure, anything — is reported as
+  /// [EventStoreException] naming the persistence id, rather than escaping
+  /// as the driver's raw [ServerException]. Nothing is swallowed: the
+  /// original is the exception's `cause`, and it is thrown with the original
+  /// stack trace, so the driver's message, SQLSTATE and call site all stay
+  /// reachable. Only [ConcurrencyException] — which callers retry — is
+  /// distinguished, and it is never manufactured from an error that is not
+  /// an optimistic-locking conflict.
+  ///
   /// Returns the id of the transaction the events were written under.
   Future<int> _append(
     String persistenceId,
@@ -238,14 +267,35 @@ class PostgresEventStore implements EventStore, EventStream {
         await beforeCommit?.call(persistenceId);
         return txId;
       });
-    } on ServerException catch (e) {
+    } on ConcurrencyException {
+      rethrow;
+    } on EventStoreException {
+      rethrow;
+    } on ServerException catch (e, stackTrace) {
       if (e.code == '23505' && e.constraintName == 'uk_persistence_sequence') {
         throw ConcurrencyException(
           'Concurrent write to $persistenceId: the sequence number after '
           '$expectedVersion was already taken',
         );
       }
-      rethrow;
+      Error.throwWithStackTrace(
+        EventStoreException(
+          'Failed to append ${events.length} event(s) to $persistenceId '
+          '(SQLSTATE ${e.code}'
+          '${e.constraintName == null ? '' : ', constraint ${e.constraintName}'}'
+          ')',
+          e,
+        ),
+        stackTrace,
+      );
+    } catch (e, stackTrace) {
+      Error.throwWithStackTrace(
+        EventStoreException(
+          'Failed to append ${events.length} event(s) to $persistenceId',
+          e,
+        ),
+        stackTrace,
+      );
     }
   }
 
@@ -790,21 +840,93 @@ class PostgresEventStore implements EventStore, EventStream {
     return controller.stream;
   }
 
+  /// Every persistence id in the journal, in ascending order.
+  ///
+  /// ## Cost
+  ///
+  /// `SELECT DISTINCT persistence_id` reads *every* journal row (the planner
+  /// picks a sequential scan and a hash aggregate over the lot) to return
+  /// one row per actor. The journal only ever grows and is never trimmed, so
+  /// that cost grows with the wallet's whole history while the answer stays
+  /// the size of the actor list.
+  ///
+  /// This reads it as a keyset ("skip", or "loose index") scan instead: find
+  /// the first id, then repeatedly find the smallest id greater than the
+  /// last one. Each step is one descent of `idx_event_envelopes_persistence_id`
+  /// (an index-only scan with `LIMIT 1`), so the work is proportional to the
+  /// number of *distinct* ids, not to the number of events. Nothing is
+  /// stored differently and no row is skipped: this is the same set of ids,
+  /// read a cheaper way.
+  ///
+  /// ## Contract
+  ///
+  /// The ids arrive in the same ascending order as before, and the stream is
+  /// still drained to completion by a plain `toList()`. What changed is that
+  /// the read is no longer one statement: it is issued in pages of
+  /// [persistenceIdPageSize] ids, so the result is not a single snapshot of
+  /// the journal. An actor whose first event is appended after this stream
+  /// has passed its id may be missed, and one appended ahead of the cursor
+  /// will be included — as for any paged read. Ids already delivered are
+  /// never repeated and never go away (nothing deletes journal rows).
   @override
   Stream<String> currentPersistenceIds() async* {
     _ensureInitialized();
 
-    final result = await _pool!.execute(
-      'SELECT DISTINCT persistence_id FROM event_envelopes ORDER BY persistence_id',
-    );
+    String? after;
+    while (true) {
+      final limit = persistenceIdPageSize < 1 ? 1 : persistenceIdPageSize;
+      final sql = _persistenceIdPageSql(after: after);
+      final parameters = <String, Object?>{
+        'limit': limit,
+        if (after != null) 'after': after,
+      };
+      onPersistenceIdsQuery?.call(sql, parameters);
+      persistenceIdQueryCount++;
+      final result = await _pool!.execute(
+        Sql.named(sql),
+        parameters: parameters,
+      );
 
-    for (final row in result) {
-      final id = row[0] as String?;
-      if (id != null) {
+      var count = 0;
+      for (final row in result) {
+        final id = row[0] as String?;
+        if (id == null) continue;
+        count++;
+        after = id;
         yield id;
       }
+      if (count < limit) return;
     }
   }
+
+  /// One page of the skip scan over `persistence_id`.
+  ///
+  /// The anchor takes the smallest id (greater than [after], when resuming);
+  /// each recursive step takes the smallest id greater than the previous
+  /// one, as a scalar subquery so the recursion ends on a `NULL` row rather
+  /// than needing a second pass. The outer `LIMIT` stops the recursion after
+  /// a page's worth of ids: a recursive CTE is evaluated on demand, so a
+  /// page never walks past the ids it returns.
+  static String _persistenceIdPageSql({String? after}) => '''
+        WITH RECURSIVE ids AS (
+          (SELECT persistence_id
+             FROM event_envelopes
+            ${after == null ? '' : 'WHERE persistence_id > @after'}
+            ORDER BY persistence_id
+            LIMIT 1)
+          UNION ALL
+          SELECT (SELECT e.persistence_id
+                    FROM event_envelopes e
+                   WHERE e.persistence_id > ids.persistence_id
+                   ORDER BY e.persistence_id
+                   LIMIT 1)
+            FROM ids
+           WHERE ids.persistence_id IS NOT NULL
+        )
+        SELECT persistence_id FROM ids
+         WHERE persistence_id IS NOT NULL
+         LIMIT @limit
+      ''';
 }
 
 /// A stream cursor: `(tx_id, id)` for the global journal order, `(0,

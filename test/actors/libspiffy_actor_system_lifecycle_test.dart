@@ -24,7 +24,6 @@ const _libspiffyActorIds = [
   'spv-actor',
   'header-sync',
   'arc-actor',
-  'transaction-lifecycle-coordinator',
   'benford-coordinator',
   'payment-channel-manager',
   'wallet-coordinator',

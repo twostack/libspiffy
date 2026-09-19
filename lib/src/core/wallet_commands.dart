@@ -122,7 +122,24 @@ class UpdateWalletConfigurationCommand extends WalletCommand {
   String get commandType => 'UpdateWalletConfigurationCommand';
 }
 
-/// Command to import a wallet from xpriv with transaction history
+/// Command to import a wallet from xpriv with transaction history.
+///
+/// **Unreachable: no aggregate handles it.** `BitcoinWalletAggregate.handleCommand`
+/// has no arm for this class, so sending it only ever reaches the default branch
+/// and throws `ArgumentError('Unknown command type: ImportWalletFromXprivCommand')`
+/// (reachability sweep 2026-09-18, D-4). It was superseded by
+/// [CreateWalletCommand] with an `xpriv`, which is the live import path
+/// (`lib/src/core/wallet/wallet_keys.dart`).
+///
+/// Commands are transient — unlike events, none is ever stored in the journal —
+/// so this class carries no replay constraint and will be removed in a future
+/// release. It is deprecated rather than deleted outright only because it is
+/// exported from `package:libspiffy/internals.dart`, a supported surface.
+@Deprecated(
+    'Unreachable: no aggregate handles it, so sending it throws '
+    'ArgumentError("Unknown command type: ImportWalletFromXprivCommand"). '
+    'Use CreateWalletCommand with an xpriv, which is the live import path. '
+    'Will be removed in a future release.')
 class ImportWalletFromXprivCommand extends WalletCommand {
   final String xpriv;
   final String walletName;

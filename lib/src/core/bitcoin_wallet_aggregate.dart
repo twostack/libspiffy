@@ -672,6 +672,11 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
       case TransactionSignedEvent() || TransactionBroadcastEvent():
         // Transaction state is managed separately - just update version
         state.version = event.version;
+      // Replay-only: nothing emits these three any more (reachability sweep
+      // 2026-09-18, section 2; audit 2026-09-14 M3 replaced them). The arm
+      // stays because a journal written by an earlier release contains them
+      // and must still replay without throwing.
+      // ignore: deprecated_member_use_from_same_package
       case UTXOReservationPlacedEvent() || UTXOReservationReleasedEvent() || UTXOReservationExpiredEvent():
         // Not applied to UTXOs (UTXOReservedEvent and UTXOReleasedEvent are)
         _touch(state, event);
@@ -694,6 +699,10 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         break;
       case final TransactionConfirmationRevertedEvent evt:
         OutgoingTransactions.applyConfirmationReverted(state, evt);
+      // UTXOSplitInitiatedEvent is still emitted; the other two are
+      // replay-only (reachability sweep 2026-09-18, section 2) and their arm
+      // stays so an older journal still replays without throwing.
+      // ignore: deprecated_member_use_from_same_package
       case UTXOSplitInitiatedEvent() || UTXOSplitCompletedEvent() || AllUTXOsSplitCompletedEvent():
         // Informational: BenfordCoordinatorActor orchestrates the split, and
         // its spends, receipts and records arrive as their own commands.

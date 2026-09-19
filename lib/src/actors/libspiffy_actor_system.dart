@@ -120,7 +120,6 @@ class LibSpiffyActorSystem {
   ActorRef? _arcActor;
   ActorRef? _headerSyncActor;
   ActorRef? _importActor;
-  ActorRef? _transactionLifecycleCoordinator;
   ActorRef? _coordinatorActor;
   WalletCoordinatorActor? _coordinatorInstance;
 
@@ -171,7 +170,6 @@ class LibSpiffyActorSystem {
   /// await libspiffy.initialize(
   ///   actorSystem: hostActorSystem,
   ///   isar: isar,
-  ///   isolateConfig: IsolateConfig.defaultConfig(),
   ///   networkType: 'test',
   ///   enableP2P: true,
   /// );
@@ -219,6 +217,10 @@ class LibSpiffyActorSystem {
     ArcServiceConfig? arcConfig,
     dynamic arcService,  // ← Allow injecting mock service for testing (dynamic for test mocks)
     Isar? isar,
+    @Deprecated('Ignored: libspiffy never runs storage operations in an '
+        'isolate, and nothing has read this since audit 2026-09-14 S-21. '
+        'Kept so existing callers still compile; will be removed together '
+        'with IsolateConfig.')
     IsolateConfig? isolateConfig,
     String networkType = 'test',
     bool enableP2P = true,
@@ -262,7 +264,6 @@ class LibSpiffyActorSystem {
         arcConfig: arcConfig,
         arcService: arcService,
         isar: isar,
-        isolateConfig: isolateConfig,
         networkType: networkType,
         enableP2P: enableP2P,
         startHeight: startHeight,
@@ -295,7 +296,6 @@ class LibSpiffyActorSystem {
     required ArcServiceConfig? arcConfig,
     required dynamic arcService,
     required Isar? isar,
-    required IsolateConfig? isolateConfig,
     required String networkType,
     required bool enableP2P,
     required int? startHeight,
@@ -375,7 +375,7 @@ class LibSpiffyActorSystem {
             _actorStorage = InMemoryWalletStorage();
           }
         } else if (isar != null) {
-          final isarStorage = IsarWalletStorage(isar, config: isolateConfig);
+          final isarStorage = IsarWalletStorage(isar);
           _walletStorage = isarStorage;
           _actorStorage = isarStorage;
         } else {
@@ -546,10 +546,19 @@ class LibSpiffyActorSystem {
         aliases: const ['UTXOReleasedEvent']);
     EventRegistry.register<UTXOReservationRenewedEvent>(UTXOReservationRenewedEvent.stableTypeName, UTXOReservationRenewedEvent.fromMap,
         aliases: const ['UTXOReservationRenewedEvent']);
+    // Replay-only registrations. Nothing emits these three any more (audit
+    // 2026-09-14 M3 replaced them with UTXOReservedEvent/UTXOReleasedEvent;
+    // reachability sweep 2026-09-18, section 2), but journals written before
+    // that change contain them. A journal is permanent, so these
+    // registrations must NOT be removed: without them such a journal fails
+    // to replay.
+    // ignore: deprecated_member_use_from_same_package
     EventRegistry.register<UTXOReservationPlacedEvent>(UTXOReservationPlacedEvent.stableTypeName, UTXOReservationPlacedEvent.fromMap,
         aliases: const ['UTXOReservationPlacedEvent']);
+    // ignore: deprecated_member_use_from_same_package
     EventRegistry.register<UTXOReservationReleasedEvent>(UTXOReservationReleasedEvent.stableTypeName, UTXOReservationReleasedEvent.fromMap,
         aliases: const ['UTXOReservationReleasedEvent']);
+    // ignore: deprecated_member_use_from_same_package
     EventRegistry.register<UTXOReservationExpiredEvent>(UTXOReservationExpiredEvent.stableTypeName, UTXOReservationExpiredEvent.fromMap,
         aliases: const ['UTXOReservationExpiredEvent']);
     EventRegistry.register<TransactionSignedEvent>(TransactionSignedEvent.stableTypeName, TransactionSignedEvent.fromMap,
@@ -568,8 +577,13 @@ class LibSpiffyActorSystem {
         aliases: const ['TransactionConfirmationRevertedEvent']);
     EventRegistry.register<UTXOSplitInitiatedEvent>(UTXOSplitInitiatedEvent.stableTypeName, UTXOSplitInitiatedEvent.fromMap,
         aliases: const ['UTXOSplitInitiatedEvent']);
+    // Replay-only registrations: nothing emits these two any more
+    // (reachability sweep 2026-09-18, section 2). Keep them — an older
+    // journal contains them and a journal is never rewritten.
+    // ignore: deprecated_member_use_from_same_package
     EventRegistry.register<UTXOSplitCompletedEvent>(UTXOSplitCompletedEvent.stableTypeName, UTXOSplitCompletedEvent.fromMap,
         aliases: const ['UTXOSplitCompletedEvent']);
+    // ignore: deprecated_member_use_from_same_package
     EventRegistry.register<AllUTXOsSplitCompletedEvent>(AllUTXOsSplitCompletedEvent.stableTypeName, AllUTXOsSplitCompletedEvent.fromMap,
         aliases: const ['AllUTXOsSplitCompletedEvent']);
     // Deferred payments (bead libspiffy-7p2)
@@ -587,6 +601,10 @@ class LibSpiffyActorSystem {
     // INVOICE EVENTS (5)
     EventRegistry.register<InvoiceCreatedEvent>(InvoiceCreatedEvent.stableTypeName, InvoiceCreatedEvent.fromMap,
         aliases: const ['InvoiceCreatedEvent']);
+    // Replay-only registration: nothing emits InvoiceStatusChangedEvent any
+    // more (reachability sweep 2026-09-18, section 2). Keep it — an older
+    // journal contains it and a journal is never rewritten.
+    // ignore: deprecated_member_use_from_same_package
     EventRegistry.register<InvoiceStatusChangedEvent>(InvoiceStatusChangedEvent.stableTypeName, InvoiceStatusChangedEvent.fromMap,
         aliases: const ['InvoiceStatusChangedEvent']);
     EventRegistry.register<InvoicePaidEvent>(InvoicePaidEvent.stableTypeName, InvoicePaidEvent.fromMap,
@@ -787,16 +805,6 @@ class LibSpiffyActorSystem {
     // Wire up HeaderSync actor reference in SPVActor for opportunistic header fetching
     // This enables SPVActor to fetch missing block headers from P2P network during BEEF validation
     _spvActor!.tell(SetHeaderSyncActorMessage(_headerSyncActor!));
-    
-    // Spawn TransactionLifecycleCoordinator for transaction monitoring recovery
-    _transactionLifecycleCoordinator = await _actorSystem.spawn(
-      'transaction-lifecycle-coordinator',
-      () => TransactionLifecycleCoordinator(
-        arcActor: _arcActor!,
-        storage: _walletStorage,
-        eventStream: _walletEventBroadcaster.stream,
-      ),
-    );
     
     // Spawn Benford coordinator for privacy-focused UTXO splitting
     _benfordCoordinator = await _actorSystem.spawn('benford-coordinator', () => BenfordCoordinatorActor(
@@ -1136,14 +1144,6 @@ class LibSpiffyActorSystem {
       throw StateError('LibSpiffy actor system not initialized');
     }
     return _invoiceCoordinator!;
-  }
-
-  /// Get reference to the TransactionLifecycle Coordinator actor
-  ActorRef get transactionLifecycleCoordinator {
-    if (_transactionLifecycleCoordinator == null) {
-      throw StateError('LibSpiffy actor system not initialized');
-    }
-    return _transactionLifecycleCoordinator!;
   }
 
   /// Get reference to the wallet storage
@@ -1531,7 +1531,6 @@ class LibSpiffyActorSystem {
           _importActor,
           _channelManager,
           _benfordCoordinator,
-          _transactionLifecycleCoordinator,
           _arcActor,
           _headerSyncActor,
           _spvActor,
@@ -1597,7 +1596,6 @@ class LibSpiffyActorSystem {
     _arcActor = null;
     _headerSyncActor = null;
     _importActor = null;
-    _transactionLifecycleCoordinator = null;
     _coordinatorActor = null;
     _coordinatorInstance = null;
     _headerSyncActorInstance = null;
@@ -1644,6 +1642,10 @@ Future<void> initializeLibSpiffy({
   CryptoService? cryptoService,
   ArcServiceConfig? arcConfig,
   Isar? isar,
+  @Deprecated('Ignored: libspiffy never runs storage operations in an '
+      'isolate, and nothing has read this since audit 2026-09-14 S-21. Kept '
+      'so existing callers still compile; will be removed together with '
+      'IsolateConfig.')
   IsolateConfig? isolateConfig,
   String networkType = 'test',
   bool enableP2P = true,
@@ -1666,7 +1668,6 @@ Future<void> initializeLibSpiffy({
     cryptoService: cryptoService,
     arcConfig: arcConfig,
     isar: isar,
-    isolateConfig: isolateConfig,
     networkType: networkType,
     enableP2P: enableP2P,
     startHeight: startHeight,

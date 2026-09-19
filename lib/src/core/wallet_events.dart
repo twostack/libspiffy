@@ -1533,7 +1533,31 @@ class TransactionStatusUpdatedEvent extends WalletEvent {
 // UTXO RESERVATION EVENTS
 // =============================================================================
 
-/// Event fired when UTXOs are reserved for transaction creation
+/// Event fired when UTXOs are reserved for transaction creation.
+///
+/// **Nothing in `lib/` emits this event** (reachability sweep 2026-09-18,
+/// section 2). Reservations are journaled as [UTXOReservedEvent] instead:
+/// `UtxoReservations.reserveMany` used to emit this event, which nothing
+/// applied, and was changed to emit [UTXOReservedEvent] per UTXO by audit
+/// 2026-09-14 M3.
+///
+/// That history is exactly why the class stays — journals written before M3
+/// really do contain these events.
+///
+/// **DO NOT DELETE THIS CLASS.** It is deprecated, not dead. It is registered
+/// for replay in `LibSpiffyActorSystem` under the stable type name
+/// `wallet.utxo_reservation.placed`, and a journal written by an earlier
+/// release may already contain events with that name. A journal is permanent
+/// and its contents are never rewritten, so deleting the class (or its
+/// [fromMap], or its registration) would make such a journal unreplayable —
+/// which the data-retention rule in `spv-understanding.md` forbids outright.
+/// The deprecation marks it as "do not emit anything new"; it says nothing
+/// about removability.
+@Deprecated(
+    'Nothing emits this event; do not journal new ones. The class MUST be '
+    'kept: it is registered for replay as wallet.utxo_reservation.placed and '
+    'a journal written by an earlier release may contain it, so deleting the '
+    'class would make that journal unreplayable. Not scheduled for removal.')
 class UTXOReservationPlacedEvent extends WalletEvent {
   /// Journal identifier of this event type. Stored with every event and
   /// independent of the class name; never change it (audit 2026-09-14 M8).
@@ -1592,7 +1616,28 @@ class UTXOReservationPlacedEvent extends WalletEvent {
   }
 }
 
-/// Event fired when UTXO reservation is released
+/// Event fired when UTXO reservation is released.
+///
+/// **Nothing in `lib/` emits this event** (reachability sweep 2026-09-18,
+/// section 2). Releases are journaled as [UTXOReleasedEvent], one per UTXO:
+/// `UtxoReservations.releaseMany` used to emit this event, which released
+/// nothing, and was changed by audit 2026-09-14 M3.
+///
+/// **DO NOT DELETE THIS CLASS.** It is deprecated, not dead. It is registered
+/// for replay in `LibSpiffyActorSystem` under the stable type name
+/// `wallet.utxo_reservation.released`, and journals written before M3 do
+/// contain events with that name. A journal is permanent and its contents are
+/// never rewritten, so deleting the class (or its [fromMap], or its
+/// registration) would make such a journal unreplayable — which the
+/// data-retention rule in `spv-understanding.md` forbids outright. The
+/// deprecation marks it as "do not emit anything new"; it says nothing about
+/// removability.
+@Deprecated(
+    'Nothing emits this event; do not journal new ones. The class MUST be '
+    'kept: it is registered for replay as wallet.utxo_reservation.released '
+    'and a journal written by an earlier release may contain it, so deleting '
+    'the class would make that journal unreplayable. Not scheduled for '
+    'removal.')
 class UTXOReservationReleasedEvent extends WalletEvent {
   /// Journal identifier of this event type. Stored with every event and
   /// independent of the class name; never change it (audit 2026-09-14 M8).
@@ -1645,7 +1690,26 @@ class UTXOReservationReleasedEvent extends WalletEvent {
   }
 }
 
-/// Event fired when UTXO reservation expires
+/// Event fired when UTXO reservation expires.
+///
+/// **Nothing in `lib/` emits this event** (reachability sweep 2026-09-18,
+/// section 2). Expiry is journaled as [UTXOReleasedEvent] with
+/// `wasExpired: true`.
+///
+/// **DO NOT DELETE THIS CLASS.** It is deprecated, not dead. It is registered
+/// for replay in `LibSpiffyActorSystem` under the stable type name
+/// `wallet.utxo_reservation.expired`, and a journal written by an earlier
+/// release may already contain events with that name. A journal is permanent
+/// and its contents are never rewritten, so deleting the class (or its
+/// [fromMap], or its registration) would make such a journal unreplayable —
+/// which the data-retention rule in `spv-understanding.md` forbids outright.
+/// The deprecation marks it as "do not emit anything new"; it says nothing
+/// about removability.
+@Deprecated(
+    'Nothing emits this event; do not journal new ones. The class MUST be '
+    'kept: it is registered for replay as wallet.utxo_reservation.expired and '
+    'a journal written by an earlier release may contain it, so deleting the '
+    'class would make that journal unreplayable. Not scheduled for removal.')
 class UTXOReservationExpiredEvent extends WalletEvent {
   /// Journal identifier of this event type. Stored with every event and
   /// independent of the class name; never change it (audit 2026-09-14 M8).
@@ -1763,11 +1827,30 @@ class UTXOSplitInitiatedEvent extends WalletEvent {
   }
 }
 
-/// Event fired when a single UTXO has been successfully split
-/// 
-/// Emitted by BenfordCoordinatorActor after building, signing, and broadcasting
-/// the split transaction. This is informational only - actual state changes
-/// happen via CQRS commands (SpendUTXO, ReceiveUTXO, RecordTransaction).
+/// Event fired when a single UTXO has been successfully split.
+///
+/// Informational only: the actual state changes happen via CQRS commands
+/// (SpendUTXO, ReceiveUTXO, RecordTransaction).
+///
+/// **Nothing in `lib/` emits this event any more** (reachability sweep
+/// 2026-09-18, section 2). `BenfordCoordinatorActor` journals the split's
+/// effects through those commands; only [UTXOSplitInitiatedEvent] is still
+/// emitted, by `UtxoLedger.splitToBenford`.
+///
+/// **DO NOT DELETE THIS CLASS.** It is deprecated, not dead. It is registered
+/// for replay in `LibSpiffyActorSystem` under the stable type name
+/// `wallet.utxo_split.completed`, and a journal written by an earlier release
+/// may already contain events with that name. A journal is permanent and its
+/// contents are never rewritten, so deleting the class (or its [fromMap], or
+/// its registration) would make such a journal unreplayable — which the
+/// data-retention rule in `spv-understanding.md` forbids outright. The
+/// deprecation marks it as "do not emit anything new"; it says nothing about
+/// removability.
+@Deprecated(
+    'Nothing emits this event; do not journal new ones. The class MUST be '
+    'kept: it is registered for replay as wallet.utxo_split.completed and a '
+    'journal written by an earlier release may contain it, so deleting the '
+    'class would make that journal unreplayable. Not scheduled for removal.')
 class UTXOSplitCompletedEvent extends WalletEvent {
   /// Journal identifier of this event type. Stored with every event and
   /// independent of the class name; never change it (audit 2026-09-14 M8).
@@ -1832,7 +1915,26 @@ class UTXOSplitCompletedEvent extends WalletEvent {
   }
 }
 
-/// Event fired when all UTXOs have been processed
+/// Event fired when all UTXOs have been processed.
+///
+/// **Nothing in `lib/` emits this event** (reachability sweep 2026-09-18,
+/// section 2). `BenfordCoordinatorActor` journals a split run's effects
+/// through CQRS commands instead.
+///
+/// **DO NOT DELETE THIS CLASS.** It is deprecated, not dead. It is registered
+/// for replay in `LibSpiffyActorSystem` under the stable type name
+/// `wallet.utxo_split.all_completed`, and a journal written by an earlier
+/// release may already contain events with that name. A journal is permanent
+/// and its contents are never rewritten, so deleting the class (or its
+/// [fromMap], or its registration) would make such a journal unreplayable —
+/// which the data-retention rule in `spv-understanding.md` forbids outright.
+/// The deprecation marks it as "do not emit anything new"; it says nothing
+/// about removability.
+@Deprecated(
+    'Nothing emits this event; do not journal new ones. The class MUST be '
+    'kept: it is registered for replay as wallet.utxo_split.all_completed and '
+    'a journal written by an earlier release may contain it, so deleting the '
+    'class would make that journal unreplayable. Not scheduled for removal.')
 class AllUTXOsSplitCompletedEvent extends WalletEvent {
   /// Journal identifier of this event type. Stored with every event and
   /// independent of the class name; never change it (audit 2026-09-14 M8).

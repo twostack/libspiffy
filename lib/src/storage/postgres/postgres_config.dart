@@ -3,6 +3,8 @@
 /// Provides connection configuration and pool management for PostgreSQL.
 library;
 
+import 'dart:io' show SecurityContext;
+
 import 'package:postgres/postgres.dart';
 
 /// Configuration for PostgreSQL database connections.
@@ -31,6 +33,34 @@ class PostgresConfig {
   /// [SslMode.verifyFull] also verifies the certificate chain and host name;
   /// [SslMode.disable] sends everything, including the password, in clear.
   final SslMode sslMode;
+
+  /// Path to a PEM file holding the certificate authority that signed the
+  /// server's certificate.
+  ///
+  /// A server whose certificate is signed by a private CA cannot be verified
+  /// against the operating system's root store, so [SslMode.verifyFull] is
+  /// unusable without the CA. Give it here and it reaches the driver as the
+  /// [SecurityContext] the TLS handshake verifies against
+  /// ([resolveSecurityContext]).
+  ///
+  /// Supplying a CA and no [sslMode] selects [SslMode.verifyFull]: a CA that
+  /// nothing verifies against is decorative, and [SslMode.require] accepts
+  /// any certificate at all.
+  final String? sslRootCertPath;
+
+  /// The PEM bytes of that certificate authority, for deployments that get
+  /// the certificate from a secret store rather than a file.
+  ///
+  /// Behaves exactly like [sslRootCertPath]; if both are given, both
+  /// authorities are trusted.
+  final List<int>? sslRootCertBytes;
+
+  /// A [SecurityContext] to hand the driver as it stands.
+  ///
+  /// Wins over [sslRootCertPath] and [sslRootCertBytes]. Use it for a
+  /// handshake those cannot describe — a client certificate and key for
+  /// mutual TLS, for instance.
+  final SecurityContext? securityContext;
 
   /// Maximum number of connections in the pool.
   final int maxConnections;
@@ -80,6 +110,12 @@ class PostgresConfig {
   /// - [maxConnectionAge]: Max connection lifetime (default: 1h)
   /// - [schema]: Database schema (default: 'public')
   /// - [applicationName]: App name for monitoring (default: 'libspiffy')
+  /// - [sslRootCertPath] / [sslRootCertBytes] / [securityContext]: the
+  ///   certificate authority (or context) TLS verifies the server against.
+  ///   Default: none, i.e. exactly today's behaviour. Supplying one without
+  ///   an [sslMode] or `enableSsl: false` selects [SslMode.verifyFull]
+  ///   rather than [SslMode.require], since a CA nothing verifies against
+  ///   would be decorative; an explicit [sslMode] is always obeyed.
   const PostgresConfig({
     required this.host,
     required this.database,
@@ -94,11 +130,81 @@ class PostgresConfig {
     this.maxConnectionAge = const Duration(hours: 1),
     this.schema = 'public',
     this.applicationName = 'libspiffy',
+    this.sslRootCertPath,
+    this.sslRootCertBytes,
+    this.securityContext,
   }) : sslMode = sslMode ??
-            (enableSsl == false ? SslMode.disable : SslMode.require);
+            (enableSsl == false
+                ? SslMode.disable
+                : (sslRootCertPath != null ||
+                        sslRootCertBytes != null ||
+                        securityContext != null)
+                    ? SslMode.verifyFull
+                    : SslMode.require);
 
   /// Whether connections use TLS at all.
   bool get enableSsl => sslMode != SslMode.disable;
+
+  /// Built contexts, keyed by the config that describes them, so a config
+  /// used for several pools reads its CA file once and hands the driver the
+  /// same context every time (package:postgres compares contexts by
+  /// identity when deciding whether a pooled connection may be reused).
+  static final Expando<SecurityContext> _resolvedContexts =
+      Expando<SecurityContext>('PostgresConfig.securityContext');
+
+  /// The [SecurityContext] this config hands the driver, or `null` when it
+  /// configures none (the default, which leaves the driver's own behaviour
+  /// exactly as it was).
+  ///
+  /// [securityContext] is returned as given. Otherwise, when a CA is
+  /// configured, a context trusting **only** that CA is built — not the
+  /// operating system's root store, which is the point of a private CA: a
+  /// certificate from any other issuer, public or not, fails the handshake.
+  /// Pass [securityContext] directly to trust more than that.
+  ///
+  /// A CA is only actually *checked* under [SslMode.verifyFull];
+  /// [SslMode.require] accepts every certificate and [SslMode.disable] uses
+  /// no TLS at all. The context is still handed over under those modes, and
+  /// the constructor picks [SslMode.verifyFull] when a CA is given and no
+  /// mode is, so this only bites a caller who asked for both a CA and a
+  /// weaker mode explicitly.
+  ///
+  /// Throws [ArgumentError] if the certificate cannot be read or parsed —
+  /// rather than connecting with a trust store that silently holds nothing.
+  SecurityContext? resolveSecurityContext() {
+    if (securityContext != null) return securityContext;
+    if (sslRootCertPath == null && sslRootCertBytes == null) return null;
+    final cached = _resolvedContexts[this];
+    if (cached != null) return cached;
+
+    final context = SecurityContext();
+    final path = sslRootCertPath;
+    if (path != null) {
+      try {
+        context.setTrustedCertificates(path);
+      } catch (e) {
+        throw ArgumentError.value(
+          path,
+          'sslRootCertPath',
+          'Failed to load the PostgreSQL root certificate: $e',
+        );
+      }
+    }
+    final bytes = sslRootCertBytes;
+    if (bytes != null) {
+      try {
+        context.setTrustedCertificatesBytes(bytes);
+      } catch (e) {
+        throw ArgumentError.value(
+          '${bytes.length} bytes',
+          'sslRootCertBytes',
+          'Failed to load the PostgreSQL root certificate: $e',
+        );
+      }
+    }
+    _resolvedContexts[this] = context;
+    return context;
+  }
 
   /// Creates a configuration from a PostgreSQL connection string.
   ///
@@ -110,8 +216,11 @@ class PostgresConfig {
   /// Query parameters:
   /// - `sslmode`: `disable`; `allow`, `prefer` or `require` (all mapped to
   ///   [SslMode.require], never silently to plain text); `verify-ca` or
-  ///   `verify-full` ([SslMode.verifyFull]). Default: `require`. Any other
-  ///   value throws [ArgumentError].
+  ///   `verify-full` ([SslMode.verifyFull]). Default: `require`, or
+  ///   `verify-full` when `sslrootcert` is given. Any other value throws
+  ///   [ArgumentError].
+  /// - `sslrootcert`: path to the PEM certificate authority that signed the
+  ///   server's certificate ([sslRootCertPath])
   /// - `application_name`: Application name for monitoring
   /// - `schema`: Schema name (default: public)
   factory PostgresConfig.fromConnectionString(
@@ -166,12 +275,17 @@ class PostgresConfig {
       maxConnectionAge: maxConnectionAge,
       schema: queryParams['schema'] ?? 'public',
       applicationName: queryParams['application_name'] ?? 'libspiffy',
+      sslRootCertPath: queryParams['sslrootcert'],
     );
   }
 
-  static SslMode _parseSslMode(String? value) {
+  /// The mode for an `sslmode` parameter, or `null` when there is none, so
+  /// the constructor derives it (`require`, or `verify-full` when a root
+  /// certificate is given).
+  static SslMode? _parseSslMode(String? value) {
     switch (value) {
       case null:
+        return null;
       case 'allow':
       case 'prefer':
       case 'require':
@@ -225,6 +339,7 @@ class PostgresConfig {
         maxConnectionCount: maxConnections,
         maxConnectionAge: maxConnectionAge,
         sslMode: sslMode,
+        securityContext: resolveSecurityContext(),
         applicationName: applicationName,
         connectTimeout: connectionTimeout,
         onOpen: _onOpen,
@@ -233,6 +348,7 @@ class PostgresConfig {
   /// The connection settings [createConnection] uses.
   ConnectionSettings toConnectionSettings() => ConnectionSettings(
         sslMode: sslMode,
+        securityContext: resolveSecurityContext(),
         applicationName: applicationName,
         connectTimeout: connectionTimeout,
         onOpen: _onOpen,
@@ -272,6 +388,12 @@ class PostgresConfig {
   /// The password is left out unless [includePassword] is true, so the
   /// default result is safe to log. A string without the password parses
   /// back into a config with no password.
+  ///
+  /// [sslRootCertPath] round-trips as `sslrootcert`. [sslRootCertBytes] and
+  /// [securityContext] have no connection-string spelling, so a config
+  /// carrying either does not round-trip through this string: the resulting
+  /// config trusts nothing beyond the system roots. It stays a summary for
+  /// logs, as it already is for [maxConnections] and the timeouts.
   String toConnectionString({bool includePassword = false}) {
     final buffer = StringBuffer('postgresql://');
 
@@ -288,6 +410,9 @@ class PostgresConfig {
     final params = <String>[];
     if (sslMode != SslMode.require) {
       params.add('sslmode=${_sslModeParameter(sslMode)}');
+    }
+    if (sslRootCertPath != null) {
+      params.add('sslrootcert=${Uri.encodeComponent(sslRootCertPath!)}');
     }
     if (schema != 'public') {
       params.add('schema=${Uri.encodeComponent(schema)}');
@@ -312,8 +437,18 @@ class PostgresConfig {
         'database: $database, '
         'username: $username, '
         'sslMode: ${sslMode.name}, '
+        '${_sslRootCertDescription()}'
         'maxConnections: $maxConnections'
         ')';
+  }
+
+  String _sslRootCertDescription() {
+    if (securityContext != null) return 'securityContext: supplied, ';
+    if (sslRootCertPath != null) return 'sslRootCert: $sslRootCertPath, ';
+    if (sslRootCertBytes != null) {
+      return 'sslRootCert: ${sslRootCertBytes!.length} bytes, ';
+    }
+    return '';
   }
 
   /// Creates a copy of this configuration with the specified changes.
@@ -321,6 +456,11 @@ class PostgresConfig {
   /// [sslMode] wins over [enableSsl]; `enableSsl: true` on a config that
   /// already uses TLS keeps its mode (so [SslMode.verifyFull] is not
   /// downgraded).
+  ///
+  /// Adding a root certificate to a config left at the default
+  /// [SslMode.require], and naming neither [sslMode] nor [enableSsl], gets
+  /// [SslMode.verifyFull], exactly as the constructor does: the copy would
+  /// otherwise carry a CA it never checks.
   PostgresConfig copyWith({
     String? host,
     int? port,
@@ -335,12 +475,17 @@ class PostgresConfig {
     Duration? maxConnectionAge,
     String? schema,
     String? applicationName,
+    String? sslRootCertPath,
+    List<int>? sslRootCertBytes,
+    SecurityContext? securityContext,
   }) {
-    final SslMode mode;
+    // `null` leaves the mode to the constructor, which derives it from
+    // whether the copy carries a root certificate.
+    final SslMode? mode;
     if (sslMode != null) {
       mode = sslMode;
     } else if (enableSsl == null) {
-      mode = this.sslMode;
+      mode = this.sslMode == SslMode.require ? null : this.sslMode;
     } else if (!enableSsl) {
       mode = SslMode.disable;
     } else {
@@ -359,6 +504,9 @@ class PostgresConfig {
       maxConnectionAge: maxConnectionAge ?? this.maxConnectionAge,
       schema: schema ?? this.schema,
       applicationName: applicationName ?? this.applicationName,
+      sslRootCertPath: sslRootCertPath ?? this.sslRootCertPath,
+      sslRootCertBytes: sslRootCertBytes ?? this.sslRootCertBytes,
+      securityContext: securityContext ?? this.securityContext,
     );
   }
 }

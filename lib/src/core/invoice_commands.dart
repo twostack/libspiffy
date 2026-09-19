@@ -94,7 +94,27 @@ class ExpireInvoiceCommand extends InvoiceCommand {
   }) : super(invoiceId: invoiceId);
 }
 
-/// Command to check invoice status
+/// Command to check invoice status.
+///
+/// **Unreachable: no aggregate handles it.** `InvoiceAggregate.handleCommand`
+/// has no arm for this class, so sending it only ever reaches the default
+/// branch and throws
+/// `ArgumentError('Unknown command type: CheckInvoiceStatusCommand')`
+/// (reachability sweep 2026-09-18, D-4). Nothing in `lib/` constructs it.
+///
+/// There is nothing to check: an invoice's status is aggregate state, already
+/// available synchronously from `InvoiceState.status` and from the invoice
+/// read model — no command round trip discovers anything a query does not.
+///
+/// Commands are transient — unlike events, none is ever stored in the journal —
+/// so this class carries no replay constraint and will be removed in a future
+/// release. It is deprecated rather than deleted outright only because it is
+/// exported from `package:libspiffy/internals.dart`, a supported surface.
+@Deprecated(
+    'Unreachable: no aggregate handles it, so sending it throws '
+    'ArgumentError("Unknown command type: CheckInvoiceStatusCommand"). '
+    'Read the status from the invoice read model or InvoiceState.status '
+    'instead. Will be removed in a future release.')
 class CheckInvoiceStatusCommand extends InvoiceCommand {
   CheckInvoiceStatusCommand({
     required String invoiceId,

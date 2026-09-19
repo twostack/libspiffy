@@ -177,13 +177,11 @@ void isarIntegrationExample() async {
   await initializeLibSpiffy(
     actorSystem: hostActorSystem,
     isar: isar, // Pass host's Isar instance
-    isolateConfig: IsolateConfig.defaultConfig(), // Enable isolate optimization
     networkType: 'test',
     enableP2P: true, // Automatic P2P connectivity
   );
   
   print('   ✓ LibSpiffy using shared Isar instance');
-  print('   ✓ Isolate-aware storage enabled');
   print('   ✓ P2P connectivity established\n');
 
   // Step 4: Demonstrate storage capabilities
@@ -216,66 +214,7 @@ void isarIntegrationExample() async {
   print('• Host owns and manages the Isar instance');
   print('• LibSpiffy adds its schemas to host\'s schema list');
   print('• Single Isar instance for all application data');
-  print('• Isolate support for heavy encoding/decoding operations');
   print('• Host can query LibSpiffy data directly via Isar API');
-}
-
-/// Example showing isolate-aware configuration
-void isolateConfigExample() async {
-  print('\n=== Isolate Configuration Example ===\n');
-
-  final isar = await Isar.open(
-    [...LibSpiffySchemas.walletSchemas],
-    directory: './example-data',
-  );
-
-  // Example 1: Default configuration with P2P (recommended)
-  print('1. Default configuration with P2P:');
-  await initializeLibSpiffy(
-    isar: isar,
-    isolateConfig: IsolateConfig.defaultConfig(),
-    enableP2P: true,
-    networkType: 'test',
-  );
-  print('   • Threshold: 100 items');
-  print('   • Enabled: true');
-  print('   • P2P: enabled');
-  print('   • Heavy operations use isolates automatically\n');
-
-  await shutdownLibSpiffy();
-
-  // Example 2: Custom threshold with custom peers
-  print('2. Custom threshold with custom peers:');
-  await initializeLibSpiffy(
-    isar: isar,
-    isolateConfig: IsolateConfig(
-      operationThreshold: 50, // Lower threshold = more isolate usage
-      enabled: true,
-    ),
-    enableP2P: true,
-    peerAddresses: ['testnet-seed.bitcoinsv.io:18333'],
-  );
-  print('   • Threshold: 50 items');
-  print('   • Good for UI-heavy applications');
-  print('   • Custom peer configuration\n');
-
-  await shutdownLibSpiffy();
-
-  // Example 3: Disabled isolates, no P2P (for testing)
-  print('3. Isolates and P2P disabled (testing mode):');
-  await initializeLibSpiffy(
-    isar: isar,
-    isolateConfig: IsolateConfig.disabled(),
-    enableP2P: false,
-  );
-  print('   • All operations in main isolate');
-  print('   • No P2P connectivity');
-  print('   • Good for unit testing\n');
-
-  await shutdownLibSpiffy();
-  await isar.close();
-
-  print('=== Isolate Configuration Example Complete ===');
 }
 
 /// Example custom actor that processes payments using LibSpiffy

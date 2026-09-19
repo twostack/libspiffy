@@ -31,6 +31,8 @@ class InvoiceProjection extends Projection<InvoiceReadModel> {
   @override
   List<Type> get interestedEventTypes => [
         InvoiceCreatedEvent,
+        // Replay-only; see the handler arm below.
+        // ignore: deprecated_member_use_from_same_package
         InvoiceStatusChangedEvent,
         InvoicePaidEvent,
         InvoiceExpiredEvent,
@@ -62,6 +64,12 @@ class InvoiceProjection extends Projection<InvoiceReadModel> {
         case final InvoiceCreatedEvent evt:
           await _handleInvoiceCreated(evt);
           return true;
+        // Nothing emits InvoiceStatusChangedEvent any more (reachability
+        // sweep 2026-09-18, section 2), but this arm stays: a journal
+        // written by an earlier release may contain the event, and a
+        // rebuild replays that journal. Removing the arm would silently
+        // drop those transitions from the rebuilt read model.
+        // ignore: deprecated_member_use_from_same_package
         case final InvoiceStatusChangedEvent evt:
           await _handleInvoiceStatusChanged(evt);
           return true;
@@ -111,6 +119,9 @@ class InvoiceProjection extends Projection<InvoiceReadModel> {
     // The invoice will be updated by subsequent events (paid, expired, etc.)
   }
 
+  /// Replay-only: nothing emits [InvoiceStatusChangedEvent] any more. Kept so
+  /// a journal written by an earlier release still rebuilds correctly.
+  // ignore: deprecated_member_use_from_same_package
   Future<void> _handleInvoiceStatusChanged(InvoiceStatusChangedEvent event) async {
     await _storage.updateInvoiceStatus(
       event.invoiceId,

@@ -312,7 +312,12 @@ class _RecordingArc extends ArcService {
   @override
   Future<ArcTransactionResponse> getTransaction(String txid) async {
     final status = statuses[txid];
-    if (status == null) throw ArcException('unknown transaction $txid');
+    // 404 is what ARC answers for a transaction it has never seen, and the
+    // status code is what tells libspiffy "not found" from "could not ask"
+    // (ArcException.isNotFound).
+    if (status == null) {
+      throw ArcException('unknown transaction $txid', statusCode: 404);
+    }
     return ArcTransactionResponse(txid: txid, status: status);
   }
 }
@@ -846,6 +851,29 @@ void main() {
       .where((e) => e is ErrorEvent || e is ChannelOpenedEvent)
       .first
       .timeout(const Duration(seconds: 20));
+
+  /// A channel whose funding broadcast failed: refund countersigned and
+  /// journaled, funding built and signed, ARC unreachable. Returns the
+  /// channel id and the two wallet ids.
+  Future<(String, String, String)> fundingFailed() async {
+    final (aliceWalletId, bobWalletId) = await fundedPair();
+    alice.arc.failWith = 'ARC unavailable';
+    final outcome = firstOutcome();
+    alice.coordinator.tell(OpenChannelCommand(
+      walletId: aliceWalletId,
+      serverPeerId: _bobPeer,
+      fundingAmountSats: 100000,
+      lockTimeDurationSeconds: 86400,
+    ));
+    expect(await outcome, isA<ErrorEvent>());
+    // The failure's own channel_error to Bob (libspiffy-kyw) follows the
+    // ErrorEvent on the same stream: let it land before anything counts
+    // the messages sent so far.
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    final channelId =
+        _sentPayload(alice, 'channel_request')['channelId'] as String;
+    return (channelId, aliceWalletId, bobWalletId);
+  }
 
   group('libspiffy-b83: the client retains the countersigned refund', () {
     test('a fully signed, valid refund is journaled before open and stored in '
@@ -1601,29 +1629,6 @@ void main() {
         .where((m) => m.messageType == type)
         .toList();
 
-    /// A channel whose funding broadcast failed: refund countersigned and
-    /// journaled, funding built and signed, ARC unreachable. Returns the
-    /// channel id and the two wallet ids.
-    Future<(String, String, String)> fundingFailed() async {
-      final (aliceWalletId, bobWalletId) = await fundedPair();
-      alice.arc.failWith = 'ARC unavailable';
-      final outcome = firstOutcome();
-      alice.coordinator.tell(OpenChannelCommand(
-        walletId: aliceWalletId,
-        serverPeerId: _bobPeer,
-        fundingAmountSats: 100000,
-        lockTimeDurationSeconds: 86400,
-      ));
-      expect(await outcome, isA<ErrorEvent>());
-      // The failure's own channel_error to Bob (libspiffy-kyw) follows the
-      // ErrorEvent on the same stream: let it land before anything counts
-      // the messages sent so far.
-      await Future<void>.delayed(const Duration(milliseconds: 300));
-      final channelId =
-          _sentPayload(alice, 'channel_request')['channelId'] as String;
-      return (channelId, aliceWalletId, bobWalletId);
-    }
-
     test('a failed funding broadcast is retried through the public command '
         'and the channel opens on both sides', () async {
       final (channelId, aliceWalletId, bobWalletId) = await fundingFailed();
@@ -1778,6 +1783,128 @@ void main() {
           journalBefore);
       expect(sent(alice, 'channel_error'), isEmpty, reason: alice.trace());
       expect(sent(alice, 'channel_open'), hasLength(1));
+    }, timeout: const Timeout(Duration(seconds: 120)));
+  });
+
+  group('libspiffy-z5uo: a channel funding that never reached the network', () {
+    /// Cancels the deferred payment holding the funding inputs of [txid],
+    /// through the public command, and returns the coordinator's answer.
+    Future<DeferredPaymentCancelledEvent> cancelFunding(
+        String walletId, String txid) {
+      final cancelled = alice.next<DeferredPaymentCancelledEvent>(
+          (e) => e.txid == txid,
+          timeout: const Duration(seconds: 40));
+      alice.coordinator.tell(CancelDeferredPaymentCommand(
+        walletId: walletId,
+        txid: txid,
+        reason: 'the channel will never be funded',
+      ));
+      return cancelled;
+    }
+
+    /// STEP ONE: does the EXISTING public cancel release the inputs a failed
+    /// channel funding holds? The funding is recorded as a deferred payment
+    /// with purpose 'channel-funding' before the broadcast, so the claim in
+    /// the bead ("nothing ever releases them") is tested here, not assumed.
+    test('the existing CancelDeferredPaymentCommand releases the funding '
+        'inputs and the balance comes back', () async {
+      final (channelId, aliceWalletId, _) = await fundingFailed();
+      final storage = alice.system.walletStorage;
+      final row = (await storage.getPaymentChannel(channelId))!;
+      final fundingTxId = row.fundingTxId!;
+      final inputKeys = dartsv.Transaction.fromHex(row.fundingTxHex!)
+          .inputs
+          .map((i) => '${i.prevTxnId}:${i.prevTxnOutputIndex}')
+          .toSet();
+
+      // Before: the inputs are held and the wallet has nothing to spend.
+      final before = (await storage.getUTXOs(aliceWalletId, includeSpent: true))
+          .where((u) => inputKeys.contains(u.key))
+          .toList();
+      expect(before, hasLength(inputKeys.length));
+      expect(before.map((u) => u.status),
+          everyElement(UTXOStatus.reserved));
+      expect(await storage.getBalance(aliceWalletId), BigInt.zero,
+          reason: 'the whole wallet is frozen behind the stuck funding');
+
+      // The money is discoverable: the funding is a listed deferred payment.
+      final listed = alice.next<DeferredPaymentsResponse>((_) => true);
+      alice.coordinator
+          .tell(GetDeferredPaymentsQuery(walletId: aliceWalletId));
+      final payment = (await listed)
+          .payments
+          .singleWhere((p) => p.txid == fundingTxId);
+      expect(payment.purpose, 'channel-funding');
+      expect(payment.heldInputs.map((i) => i.utxoKey).toSet(), inputKeys);
+      expect(payment.recipientAddresses, ['channel:$channelId'],
+          reason: 'the held money is traceable back to the channel that '
+              'froze it, without a new API');
+
+      // The app cancels it. ARC answers 404 for a transaction it never
+      // accepted, so this is a plain cancel: no force.
+      final outcome = await cancelFunding(aliceWalletId, fundingTxId);
+
+      expect(outcome.success, isTrue, reason: outcome.error);
+      expect(outcome.networkStatus, 'NOT_FOUND');
+      expect(outcome.releasedUtxoKeys.toSet(), inputKeys);
+
+      final after = (await storage.getUTXOs(aliceWalletId, includeSpent: true))
+          .where((u) => inputKeys.contains(u.key))
+          .toList();
+      expect(after.map((u) => u.status), everyElement(UTXOStatus.available));
+      expect(await storage.getBalance(aliceWalletId), BigInt.from(200000000),
+          reason: 'the money is back');
+      expect((await storage.getPaymentUTXOs(aliceWalletId)).map((u) => u.key),
+          containsAll(inputKeys),
+          reason: 'the inputs are selectable again');
+    }, timeout: const Timeout(Duration(seconds: 120)));
+
+    /// The footgun: a failed funding leaves the channel in `refundSigned`
+    /// for good, and RetryChannelFundingCommand's only precondition is that
+    /// status. Once the app has taken its money back, re-broadcasting that
+    /// transaction spends inputs the wallet has released and may have spent
+    /// elsewhere since.
+    test('retrying a funding whose hold the app cancelled is refused, and '
+        'nothing is broadcast or journaled', () async {
+      final (channelId, aliceWalletId, _) = await fundingFailed();
+      final storage = alice.system.walletStorage;
+      final row = (await storage.getPaymentChannel(channelId))!;
+      final fundingTxId = row.fundingTxId!;
+
+      final cancelled = await cancelFunding(aliceWalletId, fundingTxId);
+      expect(cancelled.success, isTrue, reason: cancelled.error);
+
+      // ARC is back up: the released hold is the only thing that may stop
+      // this retry.
+      alice.arc.failWith = null;
+      final submittedBefore = alice.arc.submitted.length;
+      final journalBefore =
+          (await _journal(alice, channelId)).map((e) => e.typeName).toList();
+
+      final retried = alice.next<ChannelFundingRetriedEvent>(
+          (e) => e.channelId == channelId,
+          timeout: const Duration(seconds: 40));
+      alice.coordinator
+          .tell(RetryChannelFundingCommand(channelId: channelId));
+      final outcome = await retried;
+
+      expect(outcome.success, isFalse,
+          reason: 'a funding transaction whose inputs the wallet has '
+              'released must not be broadcast again');
+      expect(outcome.error, contains(fundingTxId));
+      expect(outcome.error, contains('cancelled'),
+          reason: 'the refusal says why, in the words of the record that '
+              'released the inputs: $outcome.error');
+      expect(alice.arc.submitted, hasLength(submittedBefore),
+          reason: 'the funding transaction reached the network again');
+      expect((await _journal(alice, channelId)).map((e) => e.typeName),
+          journalBefore,
+          reason: 'a refused retry journals nothing');
+      expect(alice.events.whereType<ChannelOpenedEvent>()
+          .where((e) => e.channelId == channelId), isEmpty);
+
+      // The money the app took back is still its own.
+      expect(await storage.getBalance(aliceWalletId), BigInt.from(200000000));
     }, timeout: const Timeout(Duration(seconds: 120)));
   });
 }

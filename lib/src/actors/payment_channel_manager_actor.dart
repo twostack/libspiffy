@@ -1578,6 +1578,61 @@ class PaymentChannelManagerActor extends Actor {
     return result.beefHex;
   }
 
+  /// Why wallet [walletId] no longer holds the inputs of funding
+  /// transaction [txid], or null while it still does (bead libspiffy-z5uo).
+  ///
+  /// The funding is recorded as a deferred payment (`deferSpend: true`,
+  /// purpose `channel-funding`) before it is ever broadcast, so the wallet's
+  /// own record of that payment is the authoritative answer to "are the
+  /// inputs still ours to spend". `cancelled` and `failed` released them;
+  /// `reclaimed` spent them back to the wallet with a transaction the
+  /// network has. In all three the funding transaction can no longer be
+  /// broadcast honestly: its inputs are free, and re-broadcasting it would
+  /// try to spend money the wallet has already given back to itself or to
+  /// another payment.
+  ///
+  /// `outstanding` (the hold is intact), `seen` and `mined` (this very
+  /// transaction spent them) are all fine. **An absent record is fine too**:
+  /// a funding recorded before holds were journaled, or one never recorded
+  /// at all, is an absence, not evidence that anything was released — the
+  /// refusal rests on a positive record, never on a missing one.
+  ///
+  /// Reading the deferred-payment record rather than the UTXO rows is
+  /// deliberate: a UTXO that is `available` again says only that nothing
+  /// holds it *now*, which is also true of an input some other payment has
+  /// since taken and spent. The payment record says who released it and
+  /// why, which is what a refusal has to be able to state.
+  Future<String?> _fundingHoldReleased(String walletId, String txid) async {
+    final storage = _storage;
+    if (storage == null) return null;
+    final DeferredPaymentState state;
+    final String? reason;
+    try {
+      final payment = await storage.getDeferredPayment(walletId, txid);
+      if (payment == null) return null;
+      state = payment.state;
+      reason = payment.resolutionReason;
+    } catch (e) {
+      // An unreadable read model is not evidence either.
+      _log.warning('Reading the deferred payment $txid of wallet $walletId '
+          'failed: $e');
+      return null;
+    }
+    final detail = reason == null || reason.isEmpty ? '' : ' ($reason)';
+    // Exhaustive on purpose: a state added later must be classified here,
+    // not fall into a silent "still held".
+    return switch (state) {
+      DeferredPaymentState.cancelled => 'it was cancelled$detail',
+      DeferredPaymentState.failed => 'the network rejected it$detail',
+      DeferredPaymentState.reclaimed =>
+        'the wallet reclaimed its inputs$detail',
+      DeferredPaymentState.outstanding ||
+      DeferredPaymentState.seen ||
+      DeferredPaymentState.mined =>
+        null,
+    };
+  }
+
   /// Whether [walletId]'s read model already holds transaction [txid].
   Future<bool> _walletHoldsTransaction(String walletId, String txid) async {
     final storage = _storage;
@@ -1612,6 +1667,26 @@ class PaymentChannelManagerActor extends Actor {
     ActorRef aggregateRef,
     FullChannelStateResponse state,
   ) async {
+    // The wallet may have given the funding inputs back since the last
+    // attempt (bead libspiffy-z5uo). A failed broadcast leaves the channel
+    // in `refundSigned` for good, so nothing in the channel's own status
+    // says the money is gone; the wallet's deferred-payment record does.
+    // Checked here, before anything is journaled, so a channel whose
+    // funding was abandoned is refused in plain words rather than failing
+    // obscurely at signing or at ARC — and so the refusal covers every
+    // route to a re-broadcast, the public retry and the internal
+    // OpenChannelMessage alike.
+    final released =
+        await _fundingHoldReleased(state.walletId, msg.fundingTxId);
+    if (released != null) {
+      throw StateError(
+          'The funding transaction ${msg.fundingTxId} of channel '
+          '${msg.channelId} can no longer be broadcast: wallet '
+          '${state.walletId} no longer holds its inputs, because $released. '
+          'Broadcasting it now would spend inputs the wallet has released '
+          'and may have spent elsewhere. Open a new channel instead');
+    }
+
     final started = await _askAggregate(
       msg.channelId,
       aggregateRef,

@@ -284,6 +284,105 @@ void main() {
       });
     });
 
+    group('libspiffy-z5uo: the wallet no longer holds the funding inputs', () {
+      /// A wallet read model whose deferred payment for the funding
+      /// transaction is in [state].
+      Future<ReadModelStorage> resolvedFunding(DeferredPaymentState state,
+          {String? reason}) async {
+        final storage = InMemoryWalletStorage();
+        final epoch = DateTime.fromMillisecondsSinceEpoch(0, isUtc: true);
+        await storage.storeDeferredPayment(DeferredPayment(
+          walletId: _walletId,
+          txid: f.fundingTxId,
+          purpose: 'channel-funding',
+          amount: f.amountSats,
+          fee: BigInt.from(200),
+          heldInputs: [
+            DeferredPaymentInput(
+                utxoKey: '${'c0' * 32}:0', satoshis: BigInt.from(150200)),
+          ],
+          state: state,
+          createdAt: epoch,
+          updatedAt: epoch,
+          resolvedAt: state == DeferredPaymentState.outstanding ? null : epoch,
+          resolutionReason: reason,
+        ));
+        return storage;
+      }
+
+      test('a cancelled funding is refused in plain words, and nothing is '
+          'journaled or broadcast', () async {
+        await spawn(countersigned(),
+            storage: await resolvedFunding(DeferredPaymentState.cancelled,
+                reason: 'the channel will never be funded'));
+        final before = journalTypes();
+
+        final opened = await open();
+
+        expect(opened.success, isFalse);
+        expect(opened.error, contains(f.fundingTxId));
+        expect(opened.error, contains('no longer holds its inputs'));
+        expect(opened.error, contains('it was cancelled'));
+        expect(opened.error, contains('the channel will never be funded'),
+            reason: 'the refusal repeats the reason the app gave');
+        expect(arc.broadcasts, isEmpty);
+        expect(wallet.commands, isEmpty);
+        expect(journalTypes(), before,
+            reason: 'a refused funding journals nothing, not even a failure: '
+                'nothing was attempted');
+      });
+
+      test('a funding the network rejected is refused too', () async {
+        await spawn(countersigned(),
+            storage: await resolvedFunding(DeferredPaymentState.failed,
+                reason: 'arc reported REJECTED'));
+
+        final opened = await open();
+
+        expect(opened.success, isFalse);
+        expect(opened.error, contains('the network rejected it'));
+        expect(arc.broadcasts, isEmpty);
+      });
+
+      test('a reclaimed funding is refused too', () async {
+        await spawn(countersigned(),
+            storage: await resolvedFunding(DeferredPaymentState.reclaimed));
+
+        final opened = await open();
+
+        expect(opened.success, isFalse);
+        expect(opened.error, contains('reclaimed its inputs'));
+        expect(arc.broadcasts, isEmpty);
+      });
+
+      test('an outstanding funding is still funded: the hold is intact',
+          () async {
+        await spawn(countersigned(),
+            storage: await resolvedFunding(DeferredPaymentState.outstanding));
+
+        final opened = await open();
+
+        // The fixture's input has no ancestors in this read model, so the
+        // BEEF cannot be built and the broadcast never happens — but the
+        // attempt got that far, which is the point: the hold did not stop
+        // it.
+        expect(opened.error, contains('Cannot build the BEEF'));
+        expect(journalTypes(),
+            contains(FundingBroadcastStartedEvent.stableTypeName));
+      });
+
+      test('a funding with no deferred payment record at all is still '
+          'funded: an absence is not evidence', () async {
+        await spawn(countersigned(), storage: InMemoryWalletStorage());
+
+        final opened = await open();
+
+        expect(opened.error, contains('Cannot build the BEEF'));
+        expect(journalTypes(),
+            contains(FundingBroadcastStartedEvent.stableTypeName));
+      });
+    });
+
     test('without an ARC actor the channel does not open', () async {
       await spawn(countersigned(), withArc: false);
 

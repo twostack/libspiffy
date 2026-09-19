@@ -302,6 +302,26 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### A funding whose money came back cannot be broadcast again
+
+A channel funding that never reached the network holds its inputs through a
+deferred payment. The app can already take that money back with
+`CancelDeferredPaymentCommand` — the funding is recorded with
+`purpose: 'channel-funding'`, and cancelling asks the network first, so a
+transaction that did reach the mempool is never released out from under.
+
+What was missing is that the channel did not know. A failed funding leaves
+the channel waiting for its broadcast indefinitely, so after an app took its
+money back the channel still looked retryable — and retrying re-broadcast a
+transaction whose inputs the wallet had released and may since have spent.
+
+A funding re-broadcast is now refused, in plain words, once the wallet's own
+record of that payment says its inputs were cancelled, rejected by the
+network, or reclaimed. The refusal covers every route to a re-broadcast, not
+just the public retry command. A funding whose hold is intact is unaffected,
+and a funding with no such record at all still proceeds: an absence is not
+evidence that anything was released.
+
 ### An open that did not finish can be repaired
 
 Restart recovery is reactive: it rebuilds what it needs when a peer's message

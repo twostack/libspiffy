@@ -302,6 +302,26 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### The signer says which key it is missing
+
+Report section 11, V-96.
+
+- **A P2PK input the wallet holds no key for failed with a script-engine
+  error instead of a reason (V-96).** `unlockFor`'s P2PK branch signed with
+  whatever key the UTXO's attributed address named, while the P2PKH branch
+  beside it checks that the key controls the script. It now has the same
+  check, `requireKeyForP2pk`, and either encoding of the same key satisfies it.
+- **Nothing invalid was escaping.** The bead was filed on the premise that
+  this produced a silently invalid unlocking script; it did not.
+  `signTransaction` runs every input it signs through the script interpreter,
+  so the transaction was refused — just with
+  `SCRIPT_ERR_EVAL_FALSE: Script resulted in a non-true stack`, which names
+  neither the output nor the reason.
+- **That interpreter check was pinned by no test at all** — deleting it left
+  422 tests green. It is load-bearing by design: a script type the signer has
+  no standard unlocking script for is signed with the address's key and left
+  for the interpreter to judge. It is pinned now.
+
 ### One rule for what the wallet can spend alone
 
 Report section 11, V-93 to V-95 — the rest of the V-85 sweep.

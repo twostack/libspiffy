@@ -210,7 +210,8 @@ class WalletTransactionSigner {
       );
     }
     if (scriptType == 'p2pk') {
-      return (unlocker: SignatureOnlyUnlockBuilder(), signingKeys: [privateKey!]);
+      requireKeyForP2pk(utxoKey ?? utxo.key, utxo.address, utxo.scriptPubKey, privateKey!.publicKey);
+      return (unlocker: SignatureOnlyUnlockBuilder(), signingKeys: [privateKey]);
     }
     if (scriptType == 'p2pkh') {
       final publicKey = privateKey!.publicKey;
@@ -264,6 +265,37 @@ class WalletTransactionSigner {
     if (!hashesTo(true) && !hashesTo(false)) {
       throw StateError('Cannot sign UTXO $utxoKey at $address: the wallet holds no key for it '
           '(the key derived for $address does not control its script)');
+    }
+  }
+
+  /// Throws unless [publicKey] is the key the P2PK script [scriptHex] locks
+  /// to: the key resolved for [address] is not the one that controls the
+  /// UTXO, so the wallet holds no key for it (bead libspiffy-p6ot).
+  ///
+  /// The counterpart of [requireKeyForP2pkh], which the P2PK branch did not
+  /// have. `ReceiveUTXOCommand` checks a bare multisig script's keys but not
+  /// a P2PK script's, and replay checks neither, so a P2PK output locked to
+  /// a foreign key can be attributed to a wallet address (bead
+  /// libspiffy-kfvv, V-93). Nothing selects it any more, but a caller naming
+  /// the outpoint still reaches here.
+  ///
+  /// Nothing invalid escaped without this: [signTransaction] runs every
+  /// input it signs through the script interpreter. What it gave back was
+  /// `ScriptException(SCRIPT_ERR_EVAL_FALSE): Script resulted in a non-true
+  /// stack`, which names neither the output nor the reason, for a condition
+  /// the wallet can state before it signs anything.
+  ///
+  /// Either encoding of the same key satisfies the script: the signature is
+  /// made by the private key and `OP_CHECKSIG` decodes the pushed key to the
+  /// same point.
+  static void requireKeyForP2pk(
+      String utxoKey, String address, String scriptHex, dartsv.SVPublicKey publicKey) {
+    final locked = p2pkPublicKeyHex(scriptHex)?.toLowerCase();
+    if (locked == null) return; // Not a P2PK script we can read; the interpreter checks the spend.
+    bool encodes(bool compressed) => publicKey.getEncoded(compressed).toLowerCase() == locked;
+    if (!encodes(true) && !encodes(false)) {
+      throw StateError('Cannot sign UTXO $utxoKey at $address: the wallet holds no key for it '
+          '(its P2PK script locks to a key the wallet did not derive for $address)');
     }
   }
 

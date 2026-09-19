@@ -512,8 +512,20 @@ class BitcoinUtxoEntity {
   /// Script type ('p2pkh', 'p2sh', 'multisig', etc.)
   late String scriptType;
 
-  /// Whether this UTXO is spendable by the wallet
-  late bool isSpendable;
+  /// Whether the row's [status] is `available` — exactly
+  /// [BitcoinUtxo.isAvailable], and nothing more.
+  ///
+  /// **Not `WalletBalances.isSpendable`**, which this was called until bead
+  /// libspiffy-p8qc. That rule takes the whole wallet state — the watch
+  /// addresses, the wallet's own addresses (for an output it cannot unlock
+  /// alone), the deferred holds — so a per-row boolean cannot hold it and
+  /// cannot stay correct: registering one watch address or deriving one key
+  /// changes the answer for rows already written, and nothing rewrites
+  /// them. The read side answers that question live, over the state it
+  /// depends on (`splitBalanceUtxos`). The name promised the rule and
+  /// stored the status, so the first query to filter on it would have
+  /// selected plugin-managed, watch-only and cannot-unlock-alone outputs.
+  late bool isAvailable;
 
   /// UTXO category ('funding', 'special', 'protocol')
   late String category;
@@ -569,7 +581,7 @@ class BitcoinUtxoEntity {
     status = utxo.status.name;
     updatedAt = utxo.updatedAt;
     if (utxo.status == UTXOStatus.spent) spentAt ??= utxo.updatedAt;
-    isSpendable = utxo.status == UTXOStatus.available;
+    isAvailable = utxo.status == UTXOStatus.available;
     if (utxo.pluginMetadata != null) {
       pluginMetadataJson = jsonEncode(utxo.pluginMetadata);
     }
@@ -635,7 +647,7 @@ class BitcoinUtxoEntity {
       'spentAt': spentAt?.toIso8601String(),
       'spentInTxId': spentInTxId,
       'scriptType': scriptType,
-      'isSpendable': isSpendable,
+      'isAvailable': isAvailable,
       'category': category,
       'pluginMetadataJson': pluginMetadataJson,
       'derivationIndex': derivationIndex,
@@ -665,7 +677,8 @@ class BitcoinUtxoEntity {
       ..spentAt = json['spentAt'] != null ? DateTime.parse(json['spentAt'] as String) : null
       ..spentInTxId = json['spentInTxId'] as String?
       ..scriptType = json['scriptType'] as String
-      ..isSpendable = json['isSpendable'] as bool
+      // Backups written before bead libspiffy-p8qc carry the old key.
+      ..isAvailable = (json['isAvailable'] ?? json['isSpendable']) as bool
       ..category = json['category'] as String
       ..pluginMetadataJson = json['pluginMetadataJson'] as String?
       ..derivationIndex = json['derivationIndex'] as int?

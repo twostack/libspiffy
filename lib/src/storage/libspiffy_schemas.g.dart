@@ -10779,9 +10779,9 @@ const BitcoinUtxoEntitySchema = CollectionSchema(
       name: r'derivationIndex',
       type: IsarType.long,
     ),
-    r'isSpendable': PropertySchema(
+    r'isAvailable': PropertySchema(
       id: 6,
-      name: r'isSpendable',
+      name: r'isAvailable',
       type: IsarType.bool,
     ),
     r'pluginMetadataJson': PropertySchema(
@@ -11025,7 +11025,7 @@ void _bitcoinUtxoEntitySerialize(
   writer.writeLong(offsets[3], object.confirmations);
   writer.writeDateTime(offsets[4], object.createdAt);
   writer.writeLong(offsets[5], object.derivationIndex);
-  writer.writeBool(offsets[6], object.isSpendable);
+  writer.writeBool(offsets[6], object.isAvailable);
   writer.writeString(offsets[7], object.pluginMetadataJson);
   writer.writeDateTime(offsets[8], object.reservationExpiresAt);
   writer.writeLong(offsets[9], object.reservationPriority);
@@ -11059,7 +11059,7 @@ BitcoinUtxoEntity _bitcoinUtxoEntityDeserialize(
   object.createdAt = reader.readDateTime(offsets[4]);
   object.derivationIndex = reader.readLongOrNull(offsets[5]);
   object.id = id;
-  object.isSpendable = reader.readBool(offsets[6]);
+  object.isAvailable = reader.readBool(offsets[6]);
   object.pluginMetadataJson = reader.readStringOrNull(offsets[7]);
   object.reservationExpiresAt = reader.readDateTimeOrNull(offsets[8]);
   object.reservationPriority = reader.readLongOrNull(offsets[9]);
@@ -12248,10 +12248,10 @@ extension BitcoinUtxoEntityQueryFilter
   }
 
   QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterFilterCondition>
-      isSpendableEqualTo(bool value) {
+      isAvailableEqualTo(bool value) {
     return QueryBuilder.apply(this, (query) {
       return query.addFilterCondition(FilterCondition.equalTo(
-        property: r'isSpendable',
+        property: r'isAvailable',
         value: value,
       ));
     });
@@ -14427,16 +14427,16 @@ extension BitcoinUtxoEntityQuerySortBy
   }
 
   QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterSortBy>
-      sortByIsSpendable() {
+      sortByIsAvailable() {
     return QueryBuilder.apply(this, (query) {
-      return query.addSortBy(r'isSpendable', Sort.asc);
+      return query.addSortBy(r'isAvailable', Sort.asc);
     });
   }
 
   QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterSortBy>
-      sortByIsSpendableDesc() {
+      sortByIsAvailableDesc() {
     return QueryBuilder.apply(this, (query) {
-      return query.addSortBy(r'isSpendable', Sort.desc);
+      return query.addSortBy(r'isAvailable', Sort.desc);
     });
   }
 
@@ -14779,16 +14779,16 @@ extension BitcoinUtxoEntityQuerySortThenBy
   }
 
   QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterSortBy>
-      thenByIsSpendable() {
+      thenByIsAvailable() {
     return QueryBuilder.apply(this, (query) {
-      return query.addSortBy(r'isSpendable', Sort.asc);
+      return query.addSortBy(r'isAvailable', Sort.asc);
     });
   }
 
   QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterSortBy>
-      thenByIsSpendableDesc() {
+      thenByIsAvailableDesc() {
     return QueryBuilder.apply(this, (query) {
-      return query.addSortBy(r'isSpendable', Sort.desc);
+      return query.addSortBy(r'isAvailable', Sort.desc);
     });
   }
 
@@ -15076,9 +15076,9 @@ extension BitcoinUtxoEntityQueryWhereDistinct
   }
 
   QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QDistinct>
-      distinctByIsSpendable() {
+      distinctByIsAvailable() {
     return QueryBuilder.apply(this, (query) {
-      return query.addDistinctBy(r'isSpendable');
+      return query.addDistinctBy(r'isAvailable');
     });
   }
 
@@ -15255,9 +15255,9 @@ extension BitcoinUtxoEntityQueryProperty
   }
 
   QueryBuilder<BitcoinUtxoEntity, bool, QQueryOperations>
-      isSpendableProperty() {
+      isAvailableProperty() {
     return QueryBuilder.apply(this, (query) {
-      return query.addPropertyName(r'isSpendable');
+      return query.addPropertyName(r'isAvailable');
     });
   }
 

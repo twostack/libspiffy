@@ -66,7 +66,8 @@ void main() {
     return (store, secureStorage, wallet);
   }
 
-  Future<void> receive(BitcoinWalletAggregate wallet, String txid, String scriptHex, String address, int sats) =>
+  Future<void> receive(BitcoinWalletAggregate wallet, String txid, String scriptHex, String address, int sats,
+          {Map<String, dynamic>? pluginMetadata}) =>
       wallet.commandHandler(ReceiveUTXOCommand(
         walletId: _walletId,
         txid: txid,
@@ -77,6 +78,7 @@ void main() {
         initialStatus: UTXOStatus.available,
         blockHeight: 800000,
         confirmations: 6,
+        pluginMetadata: pluginMetadata,
       ));
 
   String unsignedSpend(String txid, int sats) {
@@ -114,6 +116,25 @@ void main() {
       sender: probe.ref,
     );
     return probe.expectMsgType<FundingTransactionBuiltResponse>(timeout: const Duration(seconds: 10));
+  }
+
+  /// The aggregate's answer to [WalletSpendableUtxosQuery] (bead
+  /// libspiffy-ypp), from a replayed instance.
+  Future<WalletSpendableUtxosResponse> spendableUtxos(
+      InMemoryEventStore store, InMemorySecureStorage secureStorage) async {
+    final ActorRef walletRef = await system.spawn(
+      'wallet-${spawned++}',
+      () => BitcoinWalletAggregate(
+        aggregateId: _walletId,
+        aggregateType: 'BitcoinWallet',
+        eventStore: store,
+        cryptoService: DartSVCryptoService(),
+        secureStorage: secureStorage,
+      ),
+    );
+    final probe = await system.createProbe();
+    walletRef.tell(WalletSpendableUtxosQuery(walletId: _walletId), sender: probe.ref);
+    return probe.expectMsgType<WalletSpendableUtxosResponse>(timeout: const Duration(seconds: 10));
   }
 
   test('87a2: channel funding spends the derived UTXO, not a larger watch-address one, and the input verifies',
@@ -230,5 +251,42 @@ void main() {
     expect(wallet.getAvailableUTXOs(wallet.currentState).map((u) => u.key), ['${'c' * 64}:0']);
     await wallet.commandHandler(SplitUTXOsToBenfordCommand(walletId: _walletId, targetUtxoCount: 3));
     expect(store.allEvents.whereType<UTXOSplitInitiatedEvent>().single.utxoKeysToSplit, ['${'c' * 64}:0']);
+  });
+
+  // Bead libspiffy-v29l. `WalletSpendableUtxosQuery`'s watch-only listing
+  // filtered on `hasPluginMetadata` — any metadata at all — rather than on
+  // `isPluginManaged`, the one rule bead libspiffy-ecy8 established for both
+  // layers. Script-analysis metadata or a label alone therefore dropped a
+  // watch-only UTXO out of the listing that exists to report it.
+  test('v29l: the watch-only listing drops a plugin-managed UTXO, not one that merely carries metadata', () async {
+    final (store, secureStorage, wallet) = await watchingWallet();
+    await receive(wallet, 'b' * 64, p2pkh(watchAddress), watchAddress, 90000,
+        pluginMetadata: {'scriptType': 'p2pkh', 'address': watchAddress, 'label': 'donations'});
+    await receive(wallet, 'd' * 64, p2pkh(watchAddress), watchAddress, 70000,
+        pluginMetadata: {'pluginId': 'token-protocol', 'tokenId': 't1'});
+
+    final response = await spendableUtxos(store, secureStorage);
+
+    expect(response.walletFound, isTrue);
+    expect(response.spendable, isEmpty, reason: 'both are at the watch address');
+    expect(response.watchOnly.map((u) => u.key), ['${'b' * 64}:0'],
+        reason: 'script analysis or a label does not make a UTXO its plugin\'s; a pluginId does');
+  });
+
+  // Bead libspiffy-f4qy. The Benford split threw a bare 'No available UTXOs
+  // to split' at a wallet whose only funds are a plugin's to spend, while
+  // channel funding (V-85) named the exclusion. Both now walk the one reason
+  // helper, WalletBalances.noneSelectableReason.
+  test('f4qy: a split refused because every UTXO is plugin-managed says so', () async {
+    final (_, _, wallet) = await watchingWallet();
+    final root = wallet.currentState.rootAddress!;
+    await receive(wallet, 'f' * 64, p2pkh(root), root, 90000,
+        pluginMetadata: {'pluginId': 'token-protocol', 'tokenId': 't1'});
+
+    expect(wallet.getAvailableUTXOs(wallet.currentState), isEmpty);
+    await expectLater(
+      wallet.commandHandler(SplitUTXOsToBenfordCommand(walletId: _walletId, targetUtxoCount: 3)),
+      throwsA(isA<StateError>().having((e) => e.message, 'message', contains('plugin-managed'))),
+    );
   });
 }

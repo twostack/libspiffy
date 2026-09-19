@@ -518,5 +518,39 @@ void defineReadModelKeyingContract(
       expect(await s.getWatchOnlyBalance(wallet), BigInt.from(70000));
       expect((await s.getPaymentUTXOs(wallet)).length, 5, reason: 'the rows are kept and listed');
     });
+
+    // Bead libspiffy-kfvv. A P2PK output locked to a key the wallet does not
+    // hold can be attributed to a wallet (no command or replay path checks a
+    // P2PK script's key), and channel funding refused to spend it while both
+    // balances went on counting it — the two layers disagreeing about the
+    // same output. `unlocksAlone` is now the one predicate both ask.
+    test('kfvv: getBalance leaves out a P2PK UTXO locked to a key the wallet does not hold', () async {
+      final s = storage();
+      final u = unique();
+      final wallet = 'kc-p2pk-$u';
+      await s.storeWallet(wallet, 'p2pk', networkType: 'testnet');
+
+      dartsv.SVPublicKey key(String byte) => dartsv.SVPrivateKey.fromHex(byte * 32, dartsv.NetworkType.TEST).publicKey;
+      final walletKey = key('31');
+      final foreignKey = key('11');
+      final own = walletKey.toAddress(dartsv.NetworkType.TEST).toBase58();
+      await s.upsertAddress(wallet, _address(own));
+
+      final txid = contractHex64('p2pk-$u');
+      Future<void> put(int vout, int sats, String script) => s.upsertUTXO(
+          wallet,
+          _utxo(txid, vout, sats)
+              .copyWith(scriptPubKey: script, address: own));
+      await put(0, 1000, dartsv.P2PKHLockBuilder.fromAddress(dartsv.Address.fromBase58(own)).getScriptPubkey().toHex());
+      // The wallet's own key: a P2PK output is its money and stays spendable.
+      await put(1, 800, dartsv.P2PKLockBuilder(walletKey).getScriptPubkey().toHex());
+      // Someone else's key: the wallet can never sign it.
+      await put(2, 90000, dartsv.P2PKLockBuilder(foreignKey).getScriptPubkey().toHex());
+
+      expect(await s.getBalance(wallet), BigInt.from(1800));
+      expect(await s.getWatchOnlyBalance(wallet), BigInt.zero,
+          reason: 'no watch address is involved: it is not watch-only funds');
+      expect((await s.getPaymentUTXOs(wallet)).length, 3, reason: 'the row is kept and listed');
+    });
   });
 }

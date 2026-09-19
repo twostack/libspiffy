@@ -302,6 +302,43 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### One rule for what the wallet can spend alone
+
+Report section 11, V-93 to V-95 — the rest of the V-85 sweep.
+
+- **A P2PK output locked to someone else's key counted in the spendable
+  balance (V-93).** The write side excluded it from spending and the read side
+  counted it, the two layers disagreeing about the same output. Reported as
+  low confidence because no path seemed to attribute such an output to a
+  wallet; **it is reachable on both paths** — `ReceiveUTXOCommand`'s only
+  script guard is for bare multisig, and replay validates no script at all, so
+  any journal can carry such a row.
+- Both layers now call one predicate, `unlocksAlone`: a bare multisig must
+  meet its threshold, a P2PK must be to a key the wallet holds, everything
+  else is true. `ChannelFunding`'s private copy is **deleted**, so there is no
+  second rule to drift.
+- **Breaking in effect, not in signature:** a wallet holding such an output
+  will see its spendable balance drop to the honest figure. The output is
+  reported under `notSpendableAlone` instead. Nothing is deleted or
+  reclassified away — the row, its transaction and its proof are kept, and it
+  is still listed by `getPaymentUTXOs`; it is only never selected.
+- **A stored column named `isSpendable` held `status == available` alone
+  (V-94).** Nothing read it, which is the only reason it was not a live bug.
+  It is renamed to `isAvailable` / `is_available` (**Postgres migration
+  v024**) rather than corrected: `isSpendable` depends on wallet-level state
+  the row does not carry, so a stored copy would go stale as a **true** — the
+  dangerous direction — the moment a watch address is added or a key derived.
+  `fromJson` still accepts the old key, so existing backups restore unchanged.
+- **Two hand-rolled copies of the plugin rule, one in a test (V-95).** The
+  watch-only listing filtered on `hasPluginMetadata` rather than
+  `isPluginManaged`; so did a helper in `token_utxo_filtering_test.dart`
+  commented "Replicate the aggregate's logic for testing" — a duplicate of the
+  very predicate that file exists to pin. It calls the real rule now.
+- The Benford split's refusal names which exclusion emptied the wallet
+  (plugin-managed, watch-only, deferred hold, cannot-unlock-alone) instead of
+  saying only that it found nothing. One shared helper with channel funding,
+  not a second copy.
+
 ### A delivery is journaled once
 
 Report section 11, V-92.

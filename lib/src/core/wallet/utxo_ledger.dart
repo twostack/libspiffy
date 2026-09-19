@@ -360,16 +360,18 @@ abstract final class UtxoLedger {
       throw StateError('Signing (split) not supported for watch-only wallets');
     }
 
-    // Get all available UTXOs
+    // Get all available UTXOs. Selection is the shared rule, so a
+    // plugin-managed output is never split; the diagnosis of an empty result
+    // is the shared reason helper, so the split says which exclusion emptied
+    // the wallet just as channel funding does (bead libspiffy-f4qy: it used
+    // to name watch-only funds and nothing else, so a wallet holding only
+    // token outputs was told only that it had none).
     final availableUtxos = available(currentState);
     if (availableUtxos.isEmpty) {
-      final watchOnly = currentState.utxos.values
-          .where((u) => u.status == UTXOStatus.available && !u.isPluginManaged && isWatchOnly(currentState, u))
-          .length;
-      throw StateError(watchOnly == 0
-          ? 'No available UTXOs to split'
-          : 'No available UTXOs to split: the $watchOnly available UTXO(s) are at watch addresses, '
-              'watch-only funds the wallet holds no key for');
+      throw StateError(WalletBalances.noneSelectableReason(
+        currentState,
+        noneMessage: 'No available UTXOs to split',
+      ));
     }
 
     // Emit single event - BenfordCoordinatorActor will handle orchestration

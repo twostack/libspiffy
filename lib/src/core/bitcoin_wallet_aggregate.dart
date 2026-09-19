@@ -203,9 +203,13 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
       walletFound: true,
       walletType: state.walletType,
       spendable: UtxoLedger.available(state),
+      // `isPluginManaged`, not `hasPluginMetadata` (bead libspiffy-v29l):
+      // plugin metadata naming a `pluginId` is the one rule for both layers
+      // (bead libspiffy-ecy8), so script-analysis metadata or a label does
+      // not drop a watch-only UTXO out of the listing that reports it.
       watchOnly: [
         for (final utxo in state.utxos.values)
-          if (utxo.status == UTXOStatus.available && !utxo.hasPluginMetadata && UtxoLedger.isWatchOnly(state, utxo))
+          if (utxo.status == UTXOStatus.available && !utxo.isPluginManaged && UtxoLedger.isWatchOnly(state, utxo))
             utxo,
       ],
     );

@@ -1,5 +1,6 @@
 import 'package:test/test.dart';
 import 'package:libspiffy/libspiffy.dart';
+import 'package:libspiffy/src/models/wallet_balances.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
 
 /// Phase 2 tests: Token-aware UTXO management.
@@ -298,12 +299,13 @@ void main() {
       );
     }
 
-    /// Replicate the aggregate's getAvailableUTXOs logic for testing.
+    /// The aggregate's `getAvailableUTXOs` rule itself, not a copy of it
+    /// (bead libspiffy-v29l): this used to re-implement it with
+    /// `hasPluginMetadata`, which bead libspiffy-ecy8 replaced with
+    /// `isPluginManaged` — script-analysis metadata or a label does not make
+    /// a UTXO its plugin's.
     List<BitcoinUtxo> getPaymentUtxosFromState(WalletState state) {
-      return state.utxos.values
-          .where((utxo) =>
-              utxo.status == UTXOStatus.available && !utxo.hasPluginMetadata)
-          .toList();
+      return state.utxos.values.where((utxo) => WalletBalances.isSpendable(state, utxo)).toList();
     }
 
     test('filters out token UTXOs from available set', () {
@@ -368,7 +370,7 @@ void main() {
 
       final payable = getPaymentUtxosFromState(state);
       expect(payable.length, equals(2));
-      expect(payable.every((u) => !u.hasPluginMetadata), isTrue);
+      expect(payable.every((u) => !u.isPluginManaged), isTrue);
 
       final totalPayable =
           payable.fold<BigInt>(BigInt.zero, (sum, u) => sum + u.satoshis);

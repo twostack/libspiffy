@@ -1,4 +1,4 @@
-import '../core/wallet_output_ownership.dart' show BareMultisigScript, isWatchOnlyOutput;
+import '../core/wallet_output_ownership.dart' show isWatchOnlyOutput, unlocksAlone;
 import '../utils/network_name.dart';
 import 'bitcoin_utxo.dart';
 import 'wallet_state.dart';
@@ -125,26 +125,29 @@ abstract final class WalletBalances {
       !cannotSpendAlone(state, utxo) &&
       !state.legacyDeferredHeldKeys.contains(utxo.key);
 
-  /// Whether [utxo] is a bare multisig UTXO whose threshold the wallet's own
-  /// keys ([WalletState.addresses]) do not meet (bead libspiffy-0k8).
+  /// Whether the wallet's own keys ([WalletState.addresses]) cannot build
+  /// the whole unlocking script for [utxo] — [unlocksAlone], the one rule
+  /// the read side asks too (`splitBalanceUtxos`, bead libspiffy-kfvv): a
+  /// bare multisig UTXO whose threshold the wallet's keys do not meet (bead
+  /// libspiffy-0k8) or a P2PK UTXO locked to a key that is not the wallet's
+  /// (bead libspiffy-8egy).
   ///
-  /// The wallet no longer takes such an output as a UTXO (beads viy, n0p),
-  /// but a journal written before can hold one (a channel's 2-of-2 funding
-  /// output recorded from the funding transaction, an escrow under a
-  /// `p2ms:` pseudo-address). Replay keeps it, with its transaction and
-  /// proof, and it never funds a transaction. Derived from the state, so
+  /// The wallet no longer takes a bare multisig output it cannot spend alone
+  /// as a UTXO (beads viy, n0p), but a journal written before can hold one
+  /// (a channel's 2-of-2 funding output recorded from the funding
+  /// transaction, an escrow under a `p2ms:` pseudo-address); no command or
+  /// replay path checks a P2PK output's key at all, so such a row can be
+  /// attributed to a wallet today. Both are kept, with their transaction and
+  /// proof, and neither ever funds a transaction. Derived from the state, so
   /// replay, a snapshot restore and a later key the wallet derives all give
   /// the same answer with no corrective event. A bare multisig over a watch
   /// address is judged by [isWatchOnly] first on the read side; here both
   /// exclude it.
-  static bool cannotSpendAlone(WalletState state, BitcoinUtxo utxo) {
-    // Every bare multisig script ends with OP_CHECKMULTISIG: no parse for
-    // any other UTXO.
-    if (!utxo.scriptPubKey.toLowerCase().endsWith('ae')) return false;
-    final multisig = BareMultisigScript.parseHex(utxo.scriptPubKey);
-    return multisig != null &&
-        multisig.spendableAloneBy(state.addresses.containsKey, NetworkName.toDartsv(state.networkType)) == null;
-  }
+  static bool cannotSpendAlone(WalletState state, BitcoinUtxo utxo) => !unlocksAlone(
+        scriptHex: utxo.scriptPubKey,
+        hasKeyFor: state.addresses.containsKey,
+        network: NetworkName.toDartsv(state.networkType),
+      );
 
   /// Whether [utxo] is watch-only funds: attributed to the wallet through a
   /// watch address the wallet holds no key for (bead libspiffy-87a2). Such a
@@ -160,6 +163,61 @@ abstract final class WalletBalances {
         hasKeyFor: state.addresses.containsKey,
         network: NetworkName.toDartsv(state.networkType),
       );
+
+  /// Why no UTXO of [state] could be selected: the first exclusion of
+  /// [isSpendable] that emptied the wallet's unspent funds, so a caller
+  /// holding only tokens, only watch-only funds or only outputs it cannot
+  /// unlock is told which it is rather than only that it has none (bead
+  /// libspiffy-f4qy).
+  ///
+  /// One helper for every selection path, so the diagnoses cannot drift
+  /// apart the way the predicates did (bead libspiffy-qfmb, V-85): channel
+  /// funding (`ChannelFunding.fundingCandidates`) and the Benford split
+  /// (`UtxoLedger.splitToBenford`) both call it. Walked once, on the error
+  /// path only — [isSpendable] collapses the exclusions into one boolean, so
+  /// the successful path never asks which of them applied.
+  ///
+  /// [noneMessage] is the caller's headline, returned on its own when the
+  /// wallet holds no unspent output at all. [held] excludes an input a
+  /// deferred payment holds before anything is counted (a held input is not
+  /// a kind of output the caller should be told about, it is money already
+  /// committed) — channel funding's one narrowing on top of the shared rule.
+  static String noneSelectableReason(
+    WalletState state, {
+    required String noneMessage,
+    bool Function(BitcoinUtxo utxo)? held,
+  }) {
+    final unspent = [
+      for (final utxo in state.utxos.values)
+        if (utxo.status == UTXOStatus.available && !(held?.call(utxo) ?? false)) utxo,
+    ];
+    if (unspent.isEmpty) return noneMessage;
+
+    final ownFunds = unspent.where((u) => !u.isPluginManaged).toList();
+    if (ownFunds.isEmpty) {
+      return '$noneMessage: the ${unspent.length} available UTXO(s) are plugin-managed outputs (a '
+          'token, a funding earmark) their plugin spends, not ordinary funds';
+    }
+
+    final ownKeyed = ownFunds.where((u) => !isWatchOnly(state, u)).toList();
+    if (ownKeyed.isEmpty) {
+      return '$noneMessage: the ${ownFunds.length} available UTXO(s) are at watch addresses, '
+          'watch-only funds the wallet holds no key for';
+    }
+
+    final notHeld = ownKeyed.where((u) => !state.legacyDeferredHeldKeys.contains(u.key)).toList();
+    if (notHeld.isEmpty) {
+      return '$noneMessage: the ${ownKeyed.length} available UTXO(s) are inputs of a deferred '
+          'payment, held until it settles or is reclaimed';
+    }
+
+    final unlockable = notHeld.where((u) => !cannotSpendAlone(state, u)).toList();
+    return unlockable.isEmpty
+        ? '$noneMessage: the ${notHeld.length} spendable UTXO(s) are outputs the wallet cannot '
+            'unlock on its own, such as a multisig output another party must also sign or a P2PK '
+            'output locked to a key the wallet does not hold'
+        : noneMessage;
+  }
 
   /// The total of [state]'s UTXOs that [isSpendable] accepts.
   static BigInt spendableTotal(WalletState state) {

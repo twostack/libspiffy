@@ -14,7 +14,7 @@ import '../storage/read_model_storage.dart';
 import '../utils/network_name.dart';
 
 /// A wallet's UTXOs split into those it can sign for, watch-only ones, and
-/// bare multisig ones it cannot spend alone.
+/// ones it cannot unlock alone.
 class SignableUtxos {
   /// UTXOs the wallet can spend with its own keys, in their original order.
   final List<BitcoinUtxo> signable;
@@ -23,7 +23,7 @@ class SignableUtxos {
   /// order.
   final List<BitcoinUtxo> watchOnly;
 
-  /// Bare multisig UTXOs whose threshold the wallet's keys do not meet
+  /// UTXOs the wallet cannot unlock on its own
   /// ([BalanceUtxos.notSpendableAlone], bead libspiffy-wdch), in their
   /// original order.
   final List<BitcoinUtxo> notSpendableAlone;
@@ -41,20 +41,20 @@ class SignableUtxos {
       : ' ($watchOnlySatoshis satoshis in ${watchOnly.length} UTXO(s) at watch addresses '
           'are watch-only funds: the wallet holds no key for them)';
 
-  /// [watchOnlyNote], followed by ' (N satoshis in M bare multisig UTXO(s)
-  /// need signatures the wallet does not hold)' when [notSpendableAlone] is
-  /// not empty. Appended to a funding failure.
+  /// [watchOnlyNote], followed by ' (N satoshis in M UTXO(s) need a
+  /// signature the wallet does not hold)' when [notSpendableAlone] is not
+  /// empty. Appended to a funding failure.
   String get excludedNote {
     if (notSpendableAlone.isEmpty) return watchOnlyNote;
     final sats = notSpendableAlone.fold(BigInt.zero, (sum, u) => sum + u.satoshis);
-    return '$watchOnlyNote ($sats satoshis in ${notSpendableAlone.length} bare multisig UTXO(s) '
+    return '$watchOnlyNote ($sats satoshis in ${notSpendableAlone.length} UTXO(s) '
         'need signatures the wallet does not hold: it cannot spend them alone)';
   }
 }
 
 /// Splits [utxos], UTXOs of wallet [walletId] from [storage], into the ones
-/// the wallet can sign for, the watch-only ones and the bare multisig ones
-/// it cannot spend alone: the read side's rule, [splitBalanceUtxos] (bead
+/// the wallet can sign for, the watch-only ones and the ones it cannot
+/// unlock alone: the read side's rule, [splitBalanceUtxos] (bead
 /// libspiffy-wdch; before, a multisig UTXO the wallet cannot spend alone was
 /// listed as signable, and a funding selection that picked it failed later).
 Future<SignableUtxos> splitWatchOnlyUtxos(ReadModelStorage storage, String walletId, List<BitcoinUtxo> utxos) async {
@@ -68,8 +68,8 @@ Future<String?> _walletNetwork(ReadModelStorage storage, String walletId) async 
 }
 
 /// A wallet's UTXOs as the read side's balances count them (beads
-/// libspiffy-vsap, libspiffy-0k8): spendable, watch-only, and bare multisig
-/// UTXOs the wallet cannot spend alone.
+/// libspiffy-vsap, libspiffy-0k8, libspiffy-kfvv): spendable, watch-only,
+/// and UTXOs the wallet cannot unlock alone.
 class BalanceUtxos {
   /// UTXOs the wallet can spend with its own keys, in their original order.
   final List<BitcoinUtxo> spendable;
@@ -78,10 +78,12 @@ class BalanceUtxos {
   /// address ([isWatchOnlyOutput]), in their original order.
   final List<BitcoinUtxo> watchOnly;
 
-  /// Bare multisig UTXOs whose threshold the wallet's keys do not meet and
-  /// that need no watch address: recorded as wallet UTXOs by a journal
-  /// written before bead viy (a channel's 2-of-2 funding output, an
-  /// escrow). Kept, and counted in no balance.
+  /// UTXOs the wallet cannot build the whole unlocking script for
+  /// ([unlocksAlone]) and that need no watch address: a bare multisig whose
+  /// threshold its keys do not meet, recorded by a journal written before
+  /// bead viy (a channel's 2-of-2 funding output, an escrow), or a P2PK
+  /// output locked to a key that is not the wallet's (bead libspiffy-kfvv).
+  /// Kept, and counted in no balance.
   final List<BitcoinUtxo> notSpendableAlone;
 
   const BalanceUtxos(this.spendable, this.watchOnly, this.notSpendableAlone);
@@ -103,29 +105,39 @@ class BalanceUtxos {
 /// is written from the wallet's WatchAddressAddedEvent, which precedes every
 /// UTXO the wallet attributes to that address in the same journal, so a UTXO
 /// row at a watch address never exists without its address row. The keys
-/// the wallet holds come from its other address rows. Costs one address query, plus one wallet read and one batch address
-/// check when a bare multisig UTXO is among [utxos]. Leaving out
-/// plugin-managed UTXOs is the caller's part.
+/// the wallet holds come from its other address rows. Costs one address
+/// query, plus one wallet read and one batch address check when a bare
+/// multisig or P2PK UTXO is among [utxos]. Leaving out plugin-managed UTXOs
+/// is the caller's part.
 Future<BalanceUtxos> splitBalanceUtxos(ReadModelStorage storage, String walletId, List<BitcoinUtxo> utxos) async {
   if (utxos.isEmpty) return const BalanceUtxos([], [], []);
   final watch = {for (final row in await storage.getAddressesByPurpose(walletId, 'watch')) row.address};
 
-  // Every key address of a multisig UTXO: whether the wallet can spend it
-  // alone depends on which of them are the wallet's. Every bare multisig
-  // script ends with OP_CHECKMULTISIG, so no other script is parsed.
+  // Every key address of a multisig UTXO and of a P2PK one: whether the
+  // wallet can unlock the output alone depends on which of them are the
+  // wallet's ([unlocksAlone], bead libspiffy-kfvv — the P2PK half used to be
+  // asked on the write side only, by channel funding, so an output funding
+  // refused to spend was counted here as spendable). A bare multisig script
+  // ends with OP_CHECKMULTISIG and a P2PK one with OP_CHECKSIG, which P2PKH
+  // is told apart from by its OP_DUP OP_HASH160 prefix; no other script is
+  // parsed.
   dartsv.NetworkType? walletNetwork;
-  final multisigs = <BareMultisigScript?>[];
   final keyAddresses = <String>{};
   for (final utxo in utxos) {
-    final multisig =
-        utxo.scriptPubKey.toLowerCase().endsWith('ae') ? BareMultisigScript.parseHex(utxo.scriptPubKey) : null;
-    multisigs.add(multisig);
-    if (multisig == null) continue;
+    final script = utxo.scriptPubKey.toLowerCase();
+    final multisig = script.endsWith('ae') ? BareMultisigScript.parseHex(utxo.scriptPubKey) : null;
+    if (multisig != null) {
+      walletNetwork ??= NetworkName.toDartsv(await _walletNetwork(storage, walletId));
+      keyAddresses.addAll(multisig.keyAddresses(walletNetwork).whereType<String>().where((a) => !watch.contains(a)));
+      continue;
+    }
+    if (!script.endsWith('ac') || script.startsWith('76a914')) continue;
     walletNetwork ??= NetworkName.toDartsv(await _walletNetwork(storage, walletId));
-    keyAddresses.addAll(multisig.keyAddresses(walletNetwork).whereType<String>().where((a) => !watch.contains(a)));
+    final p2pk = p2pkAddress(utxo.scriptPubKey, walletNetwork);
+    if (p2pk != null && !watch.contains(p2pk)) keyAddresses.add(p2pk);
   }
   if (watch.isEmpty && walletNetwork == null) return BalanceUtxos(List.of(utxos), const [], const []);
-  final network = walletNetwork ?? dartsv.NetworkType.TEST; // only multisig scripts need it
+  final network = walletNetwork ?? dartsv.NetworkType.TEST; // only multisig and P2PK scripts need it
   final keyed = keyAddresses.isEmpty
       ? const <String>{}
       : {
@@ -137,9 +149,7 @@ Future<BalanceUtxos> splitBalanceUtxos(ReadModelStorage storage, String walletId
   final spendable = <BitcoinUtxo>[];
   final watchOnly = <BitcoinUtxo>[];
   final notSpendableAlone = <BitcoinUtxo>[];
-  for (var i = 0; i < utxos.length; i++) {
-    final utxo = utxos[i];
-    final multisig = multisigs[i];
+  for (final utxo in utxos) {
     if (isWatchOnlyOutput(
       scriptHex: utxo.scriptPubKey,
       address: utxo.address,
@@ -148,7 +158,7 @@ Future<BalanceUtxos> splitBalanceUtxos(ReadModelStorage storage, String walletId
       network: network,
     )) {
       watchOnly.add(utxo);
-    } else if (multisig != null && multisig.spendableAloneBy(hasKeyFor, network) == null) {
+    } else if (!unlocksAlone(scriptHex: utxo.scriptPubKey, hasKeyFor: hasKeyFor, network: network)) {
       notSpendableAlone.add(utxo);
     } else {
       spendable.add(utxo);

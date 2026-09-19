@@ -117,6 +117,48 @@ String? p2pkAddress(String scriptHex, dartsv.NetworkType network) {
   }
 }
 
+/// Whether the wallet can build the whole unlocking script for the output
+/// locked by [scriptHex] on its own, so it can spend it without anyone
+/// else's signature. [hasKeyFor] names the addresses the wallet holds a key
+/// for.
+///
+/// **The one rule for both layers** (bead libspiffy-kfvv). The write model
+/// asks it through [WalletBalances.cannotSpendAlone] (so
+/// `WalletBalances.isSpendable`, `UtxoLedger.available` and
+/// `ChannelFunding.fundingCandidates` all leave the same outputs out) and
+/// the read model through `splitBalanceUtxos`. Two outputs are excluded:
+///
+/// * a bare multisig output whose threshold the wallet's keys do not meet —
+///   a channel's 2-of-2 funding output, an escrow (bead libspiffy-0k8);
+/// * a P2PK output locked to a key that is not the wallet's (bead
+///   libspiffy-8egy). `ReceiveUTXOCommand` checks a multisig script's keys
+///   but not a P2PK script's, and replay checks neither, so such a row can
+///   be attributed to a wallet and must be excluded where it is counted,
+///   not only where it is spent. It is kept, with its transaction and proof.
+///
+/// Every other output — P2PKH, a P2PK to a wallet key, a bare multisig the
+/// wallet's keys meet, a script the wallet does not recognise — answers
+/// true: this rule says nothing about whether the output is the wallet's,
+/// only whether the wallet alone can unlock it.
+bool unlocksAlone({
+  required String scriptHex,
+  required bool Function(String address) hasKeyFor,
+  required dartsv.NetworkType network,
+}) {
+  // Cheap shape test before any parse: a bare multisig script ends with
+  // OP_CHECKMULTISIG (`ae`) and a P2PK script with OP_CHECKSIG (`ac`).
+  // P2PKH ends with `ac` too, so it is told apart by its OP_DUP OP_HASH160
+  // prefix (`76a914`), which no public key push can begin with.
+  final script = scriptHex.toLowerCase();
+  if (script.endsWith('ae')) {
+    final multisig = BareMultisigScript.parseHex(scriptHex);
+    return multisig == null || multisig.spendableAloneBy(hasKeyFor, network) != null;
+  }
+  if (!script.endsWith('ac') || script.startsWith('76a914')) return true;
+  final p2pk = p2pkAddress(scriptHex, network);
+  return p2pk == null || hasKeyFor(p2pk);
+}
+
 /// Whether [scriptHex] locks an output that a P2PKH unlocking script cannot
 /// spend although it can be a wallet UTXO: a bare multisig script or a P2PK
 /// script (`<key> OP_CHECKSIG`).

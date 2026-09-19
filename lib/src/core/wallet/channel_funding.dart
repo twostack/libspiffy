@@ -17,7 +17,6 @@ import '../wallet_events.dart';
 import '../wallet_output_ownership.dart';
 import 'deferred_payments.dart';
 import 'transaction_signer.dart';
-import 'utxo_ledger.dart';
 import 'wallet_keys.dart';
 
 /// A funding transaction built for a [BuildFundingTransactionCommand]: the
@@ -47,28 +46,10 @@ class ChannelFunding {
   /// 34-byte push of a compressed public key.)
   static const _signaturePush = 73;
 
-  /// Whether the wallet can build the whole unlocking script for [utxo] on
-  /// its own, so a funding transaction can spend it.
-  ///
-  /// Bare multisig and P2PK outputs are the wallet's own money and are spent
-  /// with their own unlocking scripts (bead libspiffy-8egy,
-  /// [WalletTransactionSigner.unlockFor]). What is excluded is an output
-  /// whose unlocking script needs someone else's signature or a key the
-  /// wallet does not hold: a bare multisig whose threshold the wallet's keys
-  /// do not meet ([WalletBalances.cannotSpendAlone]: a channel's own 2-of-2
-  /// funding output, an escrow), or a P2PK to a key that is not the
-  /// wallet's.
-  static bool _unlocksAlone(WalletState currentState, BitcoinUtxo utxo) {
-    if (WalletBalances.cannotSpendAlone(currentState, utxo)) return false;
-    final p2pk = p2pkAddress(utxo.scriptPubKey, NetworkName.toDartsv(currentState.networkType));
-    if (p2pk != null) return currentState.addresses.containsKey(p2pk);
-    return true;
-  }
-
   /// The UTXOs a funding transaction may spend, largest first: the wallet's
   /// own spendable funds, by the one rule the rest of the wallet selects by
   /// ([WalletBalances.isSpendable], `UtxoLedger.available`), narrowed to the
-  /// ones the wallet can also unlock alone ([_unlocksAlone]).
+  /// ones no deferred payment holds.
   ///
   /// Funding used to hand-roll its own predicate and so left out only what
   /// it had thought of. The shared rule leaves out a plugin-managed output —
@@ -76,17 +57,24 @@ class ChannelFunding {
   /// libspiffy-ecy8) — which funding did not: such an output could be
   /// selected as plain satoshis and consumed, destroying the token behind
   /// the plugin's state (bead libspiffy-qfmb). It equally leaves out
-  /// watch-only funds (bead libspiffy-87a2), a bare multisig the wallet's
-  /// keys do not meet (bead libspiffy-0k8) and a deferred payment's held
-  /// input (bead libspiffy-7p2, journaled hold or inferred).
+  /// watch-only funds (bead libspiffy-87a2), a deferred payment's held input
+  /// (bead libspiffy-7p2, journaled hold or inferred) and an output the
+  /// wallet cannot unlock on its own — a bare multisig whose threshold its
+  /// keys do not meet (bead libspiffy-0k8), or a P2PK to a key that is not
+  /// the wallet's ([unlocksAlone]).
+  ///
+  /// That last check used to live here alone, so funding refused an output
+  /// both balances went on counting (bead libspiffy-kfvv); it is now part of
+  /// [WalletBalances.cannotSpendAlone] and funding adds nothing to the
+  /// shared rule but the deferred hold. Bare multisig and P2PK outputs the
+  /// wallet *can* unlock are still spent, with their own unlocking scripts
+  /// (bead libspiffy-8egy, [WalletTransactionSigner.unlockFor]).
   ///
   /// Throws, naming the reason, when there is none.
   List<BitcoinUtxo> fundingCandidates(WalletState currentState) {
     final availableUtxos = currentState.utxos.values
         .where((u) =>
-            WalletBalances.isSpendable(currentState, u) &&
-            deferred.holderOf(currentState, u.key) == null &&
-            _unlocksAlone(currentState, u))
+            WalletBalances.isSpendable(currentState, u) && deferred.holderOf(currentState, u.key) == null)
         .toList()
       ..sort((a, b) => b.value.getValue().compareTo(a.value.getValue()));
 
@@ -96,27 +84,17 @@ class ChannelFunding {
 
   /// Why [fundingCandidates] found nothing: the first exclusion that emptied
   /// the wallet's unspent funds, so the caller is told what kind of output it
-  /// is holding rather than only that it has none. Walked once, on the error
-  /// path only.
-  String _noCandidatesReason(WalletState currentState) {
-    const noneMessage = 'No available UTXOs for funding';
-    final unspent = currentState.utxos.values
-        .where((u) => u.isAvailable && deferred.holderOf(currentState, u.key) == null)
-        .toList();
-    if (unspent.isEmpty) return noneMessage;
-    final ownFunds = unspent.where((u) => !u.isPluginManaged).toList();
-    if (ownFunds.isEmpty) {
-      return '$noneMessage: the ${unspent.length} available UTXO(s) are plugin-managed outputs (a '
-          'token, a funding earmark) their plugin spends, not ordinary funds';
-    }
-    final spendable = ownFunds.where((u) => !UtxoLedger.isWatchOnly(currentState, u)).toList();
-    if (spendable.isEmpty) {
-      return '$noneMessage: the ${ownFunds.length} available UTXO(s) are at watch addresses, '
-          'watch-only funds the wallet holds no key for';
-    }
-    return '$noneMessage: the ${spendable.length} spendable UTXO(s) are outputs the wallet cannot '
-        'unlock on its own, such as a multisig output another party must also sign';
-  }
+  /// is holding rather than only that it has none.
+  ///
+  /// The walk itself is [WalletBalances.noneSelectableReason], shared with
+  /// the Benford split (bead libspiffy-f4qy) so the two paths cannot come to
+  /// diagnose the same wallet differently. Funding adds the one narrowing
+  /// its selection adds: a deferred payment's held input.
+  String _noCandidatesReason(WalletState currentState) => WalletBalances.noneSelectableReason(
+        currentState,
+        noneMessage: 'No available UTXOs for funding',
+        held: (u) => deferred.holderOf(currentState, u.key) != null,
+      );
 
   /// The bytes a signed input spending [utxo] adds to a transaction.
   ///

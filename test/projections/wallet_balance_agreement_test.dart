@@ -238,4 +238,41 @@ void main() {
     expect(await storage.getBalance(_walletId), BigInt.from(40000));
     expect((await walletRow(storage))['totalBalance'], '40000');
   });
+
+  // Bead libspiffy-kfvv. `ReceiveUTXOCommand` checks a bare multisig
+  // script's threshold against the wallet's keys but never a P2PK script's
+  // key, and `applyReceived` checks neither, so an output locked to someone
+  // else's public key can be attributed to a wallet address — by a command
+  // today and by any journal on replay. Channel funding refused to spend it
+  // (bead libspiffy-8egy, V-83) while both balances counted it, the two
+  // layers disagreeing about the same output. `unlocksAlone` is now the one
+  // predicate: `WalletBalances.cannotSpendAlone` on the write side and
+  // `splitBalanceUtxos` on the read side both call it.
+  test('kfvv: a P2PK UTXO locked to a key the wallet does not hold is kept but spendable on neither layer', () async {
+    await receive(1, 40000);
+    final foreignP2pk = dartsv.P2PKLockBuilder(_serverKey).getScriptPubkey().toHex();
+    await receive(7, 100000, script: foreignP2pk);
+    // A P2PK output to the wallet's own key stays spendable: the exclusion
+    // is the foreign key, not the script type (bead libspiffy-8egy).
+    await receive(8, 7000, script: dartsv.P2PKLockBuilder(walletKey).getScriptPubkey().toHex());
+
+    expect(wallet.currentState.utxos[_key(7)]?.status, UTXOStatus.available, reason: 'the UTXO is kept as received');
+    expect(wallet.getAvailableUTXOs(wallet.currentState).map((u) => u.key), [_key(1), _key(8)]);
+    expect(wallet.currentState.availableBalance, BigInt.from(47000));
+    expect(wallet.currentState.balance, BigInt.from(147000), reason: 'the buckets count everything the wallet holds');
+
+    final replayed = newAggregate();
+    await replayed.preStart();
+    expect(replayed.currentState.availableBalance, BigInt.from(47000), reason: 'replay');
+    expect(WalletState.fromMap(replayed.currentState.toMap()).availableBalance, BigInt.from(47000),
+        reason: 'a snapshot');
+
+    final storage = await project();
+    expect((await storage.getUTXOs(_walletId)).map((u) => u.key).toSet(), {_key(1), _key(7), _key(8)},
+        reason: 'the row is kept');
+    expect(await storage.getBalance(_walletId), BigInt.from(47000));
+    expect(await storage.getWatchOnlyBalance(_walletId), BigInt.zero,
+        reason: 'no watch address is involved: it is not watch-only funds');
+    expect((await walletRow(storage))['totalBalance'], '47000');
+  });
 }

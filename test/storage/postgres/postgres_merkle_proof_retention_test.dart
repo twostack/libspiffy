@@ -87,6 +87,7 @@ void main() {
 
     try {
       // --- the pre-v009 shape, with a 'pending' placeholder row ----------
+      expect(await migrations.rollback(), isTrue); // v024 (utxo is_available column)
       expect(await migrations.rollback(), isTrue); // v023 (transaction lock time and version)
       expect(await migrations.rollback(), isTrue); // v022 (channel lock time BIGINT)
       expect(await migrations.rollback(), isTrue); // v021 (transaction counterparty marker)
@@ -113,7 +114,7 @@ void main() {
 
       // --- up -------------------------------------------------------------
       await migrations.migrate();
-      expect(await migrations.getCurrentVersion(), equals(23));
+      expect(await migrations.getCurrentVersion(), equals(24));
       expect(await rawRows(pendingTx, 'block_hash, status'), [
         [null, 'pendingHeader']
       ]);
@@ -156,6 +157,7 @@ void main() {
       await expectRejected(orphanOnlyTx, null, 'bogus', 'fe07'); // unknown status
 
       // --- down -----------------------------------------------------------
+      expect(await migrations.rollback(), isTrue); // v024 (utxo is_available column)
       expect(await migrations.rollback(), isTrue); // v023 (transaction lock time and version)
       expect(await migrations.rollback(), isTrue); // v022 (channel lock time BIGINT)
       expect(await migrations.rollback(), isTrue); // v021 (transaction counterparty marker)
@@ -185,7 +187,7 @@ void main() {
 
       // --- up again, leaving the database at the latest version ----------
       await migrations.migrate();
-      expect(await migrations.getCurrentVersion(), equals(23));
+      expect(await migrations.getCurrentVersion(), equals(24));
       expect((await storage.getMerkleProof(pendingTx))!.status, MerkleProofStatus.pendingHeader);
     } finally {
       await migrations.migrate();
@@ -227,7 +229,7 @@ void main() {
         );
 
     try {
-      expect(await migrations.getCurrentVersion(), equals(23));
+      expect(await migrations.getCurrentVersion(), equals(24));
       await storage.storeMerkleProof(txid, MerkleProof(
           txid: txid, blockHash: block, blockHeight: 9, position: 0, merkleProof: ['fe12']));
       await storage.storeMerkleProof(txid, MerkleProof(
@@ -251,6 +253,7 @@ void main() {
       await expectLater(insert(null, 'bogus', 'fe16'), throwsA(isA<ServerException>()));
 
       // --- down: rejected rows become orphaned, none is deleted ----------
+      expect(await migrations.rollback(), isTrue); // v024 (utxo is_available column)
       expect(await migrations.rollback(), isTrue); // v023 (transaction lock time and version)
       expect(await migrations.rollback(), isTrue); // v022 (channel lock time BIGINT)
       expect(await migrations.rollback(), isTrue); // v021 (transaction counterparty marker)
@@ -274,7 +277,7 @@ void main() {
 
       // --- up again ------------------------------------------------------
       await migrations.migrate();
-      expect(await migrations.getCurrentVersion(), equals(23));
+      expect(await migrations.getCurrentVersion(), equals(24));
       await insert(null, 'rejected', 'fe18');
       expect((await storage.getMerkleProof(txid))!.merkleProof, ['fe12']);
     } finally {
@@ -297,8 +300,9 @@ void main() {
             row[0] as String,
         ];
     try {
-      expect(await migrations.getCurrentVersion(), equals(23));
+      expect(await migrations.getCurrentVersion(), equals(24));
       expect(await indexes(), ['idx_merkle_proofs_status_height']);
+      expect(await migrations.rollback(), isTrue); // v024 (utxo is_available column)
       expect(await migrations.rollback(), isTrue); // v023 (transaction lock time and version)
       expect(await migrations.rollback(), isTrue); // v022 (channel lock time BIGINT)
       expect(await migrations.rollback(), isTrue); // v021 (transaction counterparty marker)
@@ -327,8 +331,9 @@ void main() {
             row[0] as String,
         ];
     try {
-      expect(await migrations.getCurrentVersion(), equals(23));
+      expect(await migrations.getCurrentVersion(), equals(24));
       expect(await indexColumns(), [contains('(status, status_changed_at)')]);
+      expect(await migrations.rollback(), isTrue); // v024 (utxo is_available column)
       expect(await migrations.rollback(), isTrue); // v023 (transaction lock time and version)
       expect(await migrations.rollback(), isTrue); // v022 (channel lock time BIGINT)
       expect(await migrations.rollback(), isTrue); // v021 (transaction counterparty marker)

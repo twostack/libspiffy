@@ -121,7 +121,38 @@ void main() {
       expect(entity.blockHeight, equals(100));
       expect(entity.confirmations, equals(6));
       expect(entity.status, equals('available'));
-      expect(entity.isSpendable, isTrue);
+      expect(entity.isAvailable, isTrue);
+    });
+
+    // Bead libspiffy-p8qc. The row's boolean was called `isSpendable`, the
+    // name of `WalletBalances.isSpendable` — a rule over the whole wallet
+    // state (the watch addresses, the wallet's own keys, deferred holds)
+    // that no per-row column can hold, and one whose inputs change without
+    // the row being rewritten. What it actually records is the status, so
+    // it is named after `BitcoinUtxo.isAvailable`, and the first query that
+    // filters on it selects what the name says.
+    test('p8qc: the stored flag records the status and does not claim spendability', () {
+      final token = BitcoinUtxo.create(
+        txid: 'token_txid',
+        vout: 0,
+        satoshis: BigInt.from(1),
+        scriptPubKey: '76a914...',
+        address: '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa',
+        status: UTXOStatus.available,
+        pluginMetadata: {'pluginId': 'token-protocol', 'tokenId': 't1'},
+      );
+
+      final json = BitcoinUtxoEntity.fromDomain(token).toJson();
+
+      expect(json.containsKey('isSpendable'), isFalse,
+          reason: 'a plugin-managed output is stored here as true: no column may promise the wallet rule');
+      expect(json['isAvailable'], isTrue, reason: 'what the row actually holds');
+
+      // A backup written under the old key still restores.
+      final legacy = Map<String, dynamic>.from(json)
+        ..remove('isAvailable')
+        ..['isSpendable'] = true;
+      expect(BitcoinUtxoEntity.fromJson(legacy).isAvailable, isTrue);
     });
 
     test('should convert entity back to domain model', () {
@@ -138,7 +169,7 @@ void main() {
         ..status = 'available'
         ..createdAt = DateTime.now()
         ..scriptType = 'p2pkh'
-        ..isSpendable = true
+        ..isAvailable = true
         ..category = 'funding';
 
       final utxo = entity.toDomain();

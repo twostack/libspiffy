@@ -658,8 +658,11 @@ class PostgresWalletStorage implements ReadModelStorage {
 
   /// Inserts or updates the ([walletId], txid, vout) row.
   ///
-  /// `updated_at` is the UTXO's [BitcoinUtxo.updatedAt]; `is_spendable`
-  /// follows the status (available only). The spend history is only ever
+  /// `updated_at` is the UTXO's [BitcoinUtxo.updatedAt]; `is_available`
+  /// follows the status (available only) and says nothing more than that —
+  /// it was called `is_spendable` until migration v024 (bead
+  /// libspiffy-p8qc), a name that promised `WalletBalances.isSpendable`, a
+  /// rule over the whole wallet state that no per-row column can hold. The spend history is only ever
   /// added to (audit S-20, data retention): `spent_at` records the first
   /// store as spent and is never cleared, and `spent_in_tx_id` is never
   /// overwritten once set. A block height, plugin metadata or derivation
@@ -675,13 +678,13 @@ class PostgresWalletStorage implements ReadModelStorage {
         INSERT INTO bitcoin_utxos (
           wallet_id, txid, vout, utxo_key, satoshis, script_pub_key, address,
           block_height, confirmations, status, created_at, updated_at, spent_at,
-          spent_in_tx_id, script_type, is_spendable, category, plugin_metadata,
+          spent_in_tx_id, script_type, is_available, category, plugin_metadata,
           derivation_index, reserved_by_tx_id, reservation_reason,
           reservation_expires_at, reservation_priority, status_before_reservation
         ) VALUES (
           @walletId, @txid, @vout, @utxoKey, @satoshis, @scriptPubKey, @address,
           @blockHeight, @confirmations, @status, @createdAt, @updatedAt, @spentAt,
-          @spentInTxId, @scriptType, @isSpendable, @category,
+          @spentInTxId, @scriptType, @isAvailable, @category,
           CAST(@pluginMetadata AS JSONB),
           @derivationIndex, @reservedByTxId, @reservationReason,
           @reservationExpiresAt, @reservationPriority, @statusBeforeReservation
@@ -698,7 +701,7 @@ class PostgresWalletStorage implements ReadModelStorage {
           status = EXCLUDED.status,
           updated_at = EXCLUDED.updated_at,
           spent_at = COALESCE(bitcoin_utxos.spent_at, EXCLUDED.spent_at),
-          is_spendable = EXCLUDED.is_spendable,
+          is_available = EXCLUDED.is_available,
           plugin_metadata = COALESCE(EXCLUDED.plugin_metadata, bitcoin_utxos.plugin_metadata),
           spent_in_tx_id = COALESCE(bitcoin_utxos.spent_in_tx_id, EXCLUDED.spent_in_tx_id),
           derivation_index = COALESCE(EXCLUDED.derivation_index, bitcoin_utxos.derivation_index),
@@ -723,7 +726,7 @@ class PostgresWalletStorage implements ReadModelStorage {
         'updatedAt': utxo.updatedAt,
         'spentAt': spent ? utxo.updatedAt : null,
         'scriptType': 'p2pkh',
-        'isSpendable': utxo.status == UTXOStatus.available,
+        'isAvailable': utxo.status == UTXOStatus.available,
         'category': 'funding',
         'pluginMetadata': utxo.pluginMetadata == null
             ? null
@@ -820,7 +823,7 @@ class PostgresWalletStorage implements ReadModelStorage {
   static const _utxoColumns = '''
         txid, vout, satoshis, script_pub_key, address, block_height,
         confirmations, status, created_at, spent_at, spent_in_tx_id,
-        script_type, is_spendable, category, plugin_metadata, updated_at,
+        script_type, is_available, category, plugin_metadata, updated_at,
         derivation_index, reserved_by_tx_id, reservation_reason,
         reservation_expires_at, reservation_priority, status_before_reservation''';
 

@@ -108,20 +108,47 @@ class SPVActor extends Actor {
     _headerSyncActor = msg.headerSyncActor;
   }
 
-  /// Loads the chain height, then checks the pendingHeader proofs up to it
-  /// (bead libspiffy-yix) and replays the receives parked for headers we now
-  /// hold (bead libspiffy-vfai): headers that arrived while the node was
-  /// down, or a check a shutdown interrupted, are not left until the next
-  /// header notification. Runs before the first message is handled.
+  /// The actor that speaks for the app (bead libspiffy-4gy8).
+  ///
+  /// A receive parked for a block header outlives the process that took it:
+  /// the caller's `ActorRef` dies with that process, so a replay has nobody
+  /// to answer and the app sees its wallet credited with nothing on the
+  /// public stream. Answered instead of the caller whenever no caller is
+  /// waiting. Null when SPVActor runs without a coordinator, which changes
+  /// nothing else.
+  ActorRef? _coordinator;
+
+  /// Handle SetCoordinatorForSPVMessage.
+  ///
+  /// Registering is also the startup replay: receives whose headers arrived
+  /// while the node was down are replayed now rather than in [preStart],
+  /// because in `preStart` there is no coordinator yet and the credit would
+  /// be silent -- which is the whole defect (bead libspiffy-4gy8).
+  Future<void> _handleSetCoordinator(SetCoordinatorForSPVMessage msg) async {
+    _coordinator = msg.coordinator;
+    if (_currentHeight > 0) {
+      await _replayParkedReceives(_currentHeight);
+    }
+  }
+
+  /// Loads the chain height and checks the pendingHeader proofs up to it
+  /// (bead libspiffy-yix), so a check a shutdown interrupted is not left
+  /// until the next header notification. Runs before the first message is
+  /// handled.
+  ///
+  /// The receives parked for headers that have since arrived (bead
+  /// libspiffy-vfai) are NOT replayed here. They were, and the credit
+  /// reached the wallet — but `preStart` runs before the coordinator exists,
+  /// so the app was never told; it could only find the funds by polling the
+  /// read model. The replay moved to [_handleSetCoordinator], which the
+  /// coordinator sends at its own start, so the credit and the announcement
+  /// happen together (bead libspiffy-4gy8). A header notification replays
+  /// them too, as it always did.
   @override
   Future<void> preStart() async {
     await _loadCurrentChainState();
     if (_currentHeight > 0) {
       await _recheckUnverifiedProofs(_currentHeight);
-      // Receives parked before the last shutdown whose headers have arrived
-      // since (bead libspiffy-vfai): the wallet is credited without the
-      // counterparty sending the BEEF again.
-      await _replayParkedReceives(_currentHeight);
     }
   }
 
@@ -151,6 +178,10 @@ class SPVActor extends Actor {
           
         case final SetHeaderSyncActorMessage msg:
           _handleSetHeaderSyncActor(msg);
+          break;
+          
+        case final SetCoordinatorForSPVMessage msg:
+          await _handleSetCoordinator(msg);
           break;
           
         case final ValidateBEEFMessage msg:
@@ -210,8 +241,10 @@ class SPVActor extends Actor {
       // place, so every branch above that builds a result carries it.
       final validationResult = validated.withCounterpartyMarker(msg.fromCounterparty, requestId: msg.requestId);
 
+      var stillWaiting = false;
       if (_awaitingHeaderHeight case final height?) {
         _awaitingHeaderHeight = null;
+        stillWaiting = true;
         await _parkReceive(msg, replyTo, height);
       } else {
         // A verdict more headers cannot change: the receive stops waiting
@@ -227,6 +260,17 @@ class SPVActor extends Actor {
       // Also respond to sender if this was a request
       replyTo?.tell(validationResult);
 
+      // Nobody is waiting for a receive this process did not take: a replay
+      // after a restart, or one whose caller was forgotten to the
+      // _maxParkedSenders bound. The wallet is credited either way, and
+      // without this the app could only find the funds by polling the read
+      // model (bead libspiffy-4gy8). Only a VERDICT is announced -- a
+      // receive that went back to waiting for a header is not an outcome,
+      // and a caller that asked for one is told directly above.
+      if (replyTo == null && !stillWaiting) {
+        _coordinator?.tell(validationResult);
+      }
+
 
     } catch (e) {
       _awaitingHeaderHeight = null;
@@ -241,6 +285,8 @@ class SPVActor extends Actor {
 
       _walletManager.tell(errorResult);
       replyTo?.tell(errorResult);
+      // A failure is a verdict (the receive was resolved just above).
+      if (replyTo == null) _coordinator?.tell(errorResult);
     }
   }
 

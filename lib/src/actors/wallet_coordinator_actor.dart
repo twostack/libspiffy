@@ -60,8 +60,43 @@ class WalletCoordinatorActor extends Actor {
   late final ProofP2PAdapter _proofAdapter;
 
   // Event broadcasting
-  final StreamController<CoordinatorEvent> _eventStream =
-      StreamController<CoordinatorEvent>.broadcast();
+  late final StreamController<CoordinatorEvent> _eventStream =
+      StreamController<CoordinatorEvent>.broadcast(onListen: _flushStartupEvents);
+
+  /// Events emitted before anything was listening, kept for the first
+  /// listener (bead libspiffy-4gy8).
+  ///
+  /// [events] is a broadcast stream, so an event emitted with no listener is
+  /// dropped. Two of the things this coordinator reports happen at STARTUP,
+  /// from [preStart] -- the channels that never finished opening
+  /// (libspiffy-29jd) and the receives replayed because their block headers
+  /// arrived while the node was down (libspiffy-4gy8) -- and an app using
+  /// `LibSpiffyActorSystem` can only reach this stream after `initialize()`
+  /// returns. So whether a startup report arrived depended on how quickly
+  /// the app got to `.listen`, which is not a guarantee to build a wallet
+  /// on: a credited receive nobody was told about is found only by polling
+  /// the read model, which is the defect this whole bead is about.
+  ///
+  /// Null once anything has listened: this is a startup window, not a replay
+  /// log, and events after it behave exactly as before.
+  List<CoordinatorEvent>? _beforeFirstListener = [];
+
+  /// The most startup events kept. Beyond this the oldest are dropped with a
+  /// warning rather than growing without bound while nobody listens.
+  static const int _maxBufferedStartupEvents = 256;
+
+  void _flushStartupEvents() {
+    final buffered = _beforeFirstListener;
+    _beforeFirstListener = null;
+    if (buffered == null || buffered.isEmpty) return;
+    // Not inside onListen: the subscription is not set up yet.
+    scheduleMicrotask(() {
+      for (final event in buffered) {
+        if (_eventStream.isClosed) return;
+        _eventStream.add(event);
+      }
+    });
+  }
 
   // Correlation maps (absorbed from Overnode's WalletCoordinatorActor)
 
@@ -180,9 +215,20 @@ class WalletCoordinatorActor extends Actor {
   Stream<CoordinatorEvent> get events => _eventStream.stream;
 
   void _emitEvent(CoordinatorEvent event) {
-    if (!_eventStream.isClosed) {
-      _eventStream.add(event);
+    if (_eventStream.isClosed) return;
+    final buffered = _beforeFirstListener;
+    if (buffered != null) {
+      if (buffered.length >= _maxBufferedStartupEvents) {
+        _log.warning('More than $_maxBufferedStartupEvents coordinator events '
+            'were emitted before anything listened to the event stream; the '
+            'oldest is dropped. Listen to `coordinatorEvents` as soon as the '
+            'actor system is initialized');
+        buffered.removeAt(0);
+      }
+      buffered.add(event);
+      return;
     }
+    _eventStream.add(event);
   }
 
   @override
@@ -191,6 +237,14 @@ class WalletCoordinatorActor extends Actor {
     // context; wallet command replies it triggers must come back here.
     _channelAdapter?.updateReplyTo(context.self);
     _proofAdapter.updateReplyTo(context.self);
+    // A receive parked for a block header outlives the process that took it,
+    // so a replay has no caller to answer: SPVActor answers this coordinator
+    // instead, and the app hears about funds it would otherwise find only by
+    // polling the read model. Registering is also what replays the receives
+    // whose headers arrived while the node was down -- SPVActor's own
+    // preStart ran before this actor existed, so doing it there credited the
+    // wallet silently (bead libspiffy-4gy8).
+    _spvActor.tell(wm.SetCoordinatorForSPVMessage(context.self));
     // Off the mailbox: it only reads the read model and emits, so it must
     // not delay the actor becoming able to serve commands.
     unawaited(_reportUnfinishedChannels());

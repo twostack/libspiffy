@@ -302,6 +302,33 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### A receive replayed after a restart reaches the app, not only the wallet
+
+- A receive parked waiting for a block header outlives the process that took
+  it, and the caller's `ActorRef` dies with that process. So when the header
+  finally arrived the wallet was credited and **nothing appeared on
+  `coordinatorEvents`**: an app restarted between the park and the header
+  could learn of the funds only by polling the read model.
+- `SPVActor` now answers the coordinator whenever no caller is waiting, so a
+  replayed receive produces the same `SPVValidationResultEvent` and
+  `TransactionImportedEvent` a fresh delivery does. Only a **verdict** is
+  announced — a receive that goes back to waiting for a header is not an
+  outcome, and announcing one would tell an app "import failed" about a
+  receive that is fine.
+- **The startup replay moved.** Receives whose headers arrived while the node
+  was down were replayed in `SPVActor.preStart`, which runs before the
+  coordinator exists — so that credit was silent by construction. The replay
+  now runs when the coordinator registers itself
+  (`SetCoordinatorForSPVMessage`), so the credit and the announcement happen
+  together. A header notification still replays them too, as before.
+- **A startup report is no longer lost to a late subscriber.**
+  `coordinatorEvents` is a broadcast stream, so an event emitted with no
+  listener was dropped — and an app using `LibSpiffyActorSystem` can only
+  subscribe after `initialize()` returns. Events emitted before anything
+  listens are now kept (bounded at 256) and delivered to the first listener,
+  then the window closes. This also makes the startup report of unfinished
+  channels reliable, which had the same race.
+
 ### A UTXO event no longer reads the wallet's spend history
 
 - **New on `ReadModelStorage`:** `getUTXO(walletId, txid, vout)` for one

@@ -128,6 +128,35 @@ class SetArcActorForSPVMessage implements Message {
   DateTime get timestamp => DateTime.now();
 }
 
+/// Tells SPVActor which actor speaks for the app (bead libspiffy-4gy8).
+///
+/// A receive parked for a block header is replayed by whichever process
+/// holds the header when it arrives, and that is usually not the process
+/// that took the delivery: the caller's `ActorRef` died with it. So a
+/// replayed receive had nobody to answer, and an app restarted between the
+/// park and the header saw its wallet credited with no event on the public
+/// stream -- it could learn of the funds only by polling the read model.
+///
+/// The coordinator registers itself here, and SPVActor answers it whenever
+/// no live caller is waiting. Registering is also what triggers the replay
+/// of receives whose headers arrived while the node was down, so the credit
+/// and the announcement happen together rather than the credit happening
+/// first, in `preStart`, with nobody yet able to hear it.
+class SetCoordinatorForSPVMessage implements Message {
+  final ActorRef coordinator;
+
+  SetCoordinatorForSPVMessage(this.coordinator);
+
+  @override
+  String get correlationId => 'set-coordinator-spv-${DateTime.now().millisecondsSinceEpoch}';
+  @override
+  Map<String, dynamic> get metadata => {'coordinatorRef': coordinator.toString()};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
 /// Message to set HeaderSyncActor reference in SPVActor
 class SetHeaderSyncActorMessage implements Message {
   final ActorRef headerSyncActor;

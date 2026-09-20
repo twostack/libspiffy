@@ -171,6 +171,57 @@ void main() {
     expect(events.whereType<coord.ChannelOpenResentEvent>(), isEmpty);
   });
 
+  /// Bead libspiffy-4gy8. The event stream is a broadcast stream, so an
+  /// event emitted with no listener is dropped -- and everything this sweep
+  /// reports is emitted at STARTUP, from `preStart`. An app using
+  /// `LibSpiffyActorSystem` can only reach the stream after `initialize()`
+  /// returns, so whether it heard a startup report depended on how quickly
+  /// it got to `.listen`. Startup events are now kept for the first
+  /// listener.
+  test('a report made before anything listened still reaches the first '
+      'listener', () async {
+    await storage.storeWallet(_wallet, 'Sweep');
+    await storage.storePaymentChannel(channel('late', PaymentChannelState.funding));
+
+    final coordinator = WalletCoordinatorActor(
+      walletManager: noop,
+      invoiceCoordinator: noop,
+      paymentCoordinator: noop,
+      spvActor: noop,
+      arcActor: noop,
+      headerSyncActor: noop,
+      benfordCoordinator: noop,
+      channelManager: noop,
+      walletProjection: noop,
+      storage: storage,
+    );
+    await system.spawn('coordinator-late-listener', () => coordinator);
+    // The sweep has run and emitted by now, with nothing listening.
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+
+    final events = <coord.CoordinatorEvent>[];
+    final sub = coordinator.events.listen(events.add);
+    addTearDown(sub.cancel);
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+
+    final found = events.whereType<coord.UnfinishedChannelsFoundEvent>();
+    expect(found, hasLength(1),
+        reason: 'a startup report missed by microseconds would otherwise be '
+            'lost for good, and the app would find the channel only by '
+            'polling the read model');
+    expect(found.single.channels.single.channelId, 'late');
+
+    // The window closes with the first listener: this is a startup buffer,
+    // not a replay log.
+    final second = <coord.CoordinatorEvent>[];
+    final sub2 = coordinator.events.listen(second.add);
+    addTearDown(sub2.cancel);
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+    expect(second, isEmpty,
+        reason: 'a later subscriber gets what happens from then on, not a '
+            'replay of what it missed');
+  });
+
   test('a storage that throws does not stop the coordinator starting',
       () async {
     final coordinator = WalletCoordinatorActor(

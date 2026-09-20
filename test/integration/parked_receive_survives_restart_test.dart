@@ -30,6 +30,8 @@ import 'package:isar/isar.dart';
 import 'package:libspiffy/coordinator.dart' as coord;
 import 'package:libspiffy/libspiffy.dart';
 import 'package:libspiffy/src/actors/spv_messages.dart' show BlockHeadersReceivedMessage;
+import 'package:libspiffy/src/actors/wallet_messages.dart' as wm show ReceiveTransactionMessage;
+import 'package:libspiffy/src/spv/block_header_chain.dart';
 import 'package:libspiffy/src/spv/network_params.dart';
 import 'package:spiffynode/spiffy_node.dart';
 import 'package:test/test.dart';
@@ -268,6 +270,118 @@ void main() {
     final credited = await utxosOf(p.id);
     expect(credited.where((u) => u.satoshis == BigInt.from(120000)).length, 1,
         reason: 'the receive was replayed again after it had already been recorded');
+  }, timeout: const Timeout(Duration(minutes: 2)));
+
+  // ----------------------------------------------------------------------
+  // Bead libspiffy-4gy8: the replay reaches the app, not only the wallet.
+  // ----------------------------------------------------------------------
+
+  /// Collects the TransactionImportedEvents the running system announces.
+  /// Subscribed before anything that could produce one.
+  List<coord.TransactionImportedEvent> collectImports() {
+    final seen = <coord.TransactionImportedEvent>[];
+    final sub = system.coordinatorEvents!
+        .where((e) => e is coord.TransactionImportedEvent)
+        .cast<coord.TransactionImportedEvent>()
+        .listen(seen.add);
+    addTearDown(sub.cancel);
+    return seen;
+  }
+
+  test('4gy8: a receive replayed after a restart is announced on the public '
+      'stream, not only credited', () async {
+    await sendHeaders([a1, a2], 1, 2);
+    await createTheWallet();
+    expect((await receive(beefHex([(g, gBump), (p, null)]), p.id)).success, isFalse);
+    await barrier();
+
+    // The process that took the delivery dies. Its reply target dies with
+    // it: whatever replays the receive has nobody to answer.
+    await system.shutdown();
+    system = await boot();
+
+    final imports = collectImports();
+    await sendHeaders([a3], 3, 3);
+
+    await _until(() async => imports.any((e) => e.transactionId == p.id),
+        'the replayed receive is announced on the public stream');
+    final event = imports.firstWhere((e) => e.transactionId == p.id);
+    expect(event.success, isTrue,
+        reason: 'the replay validated and the wallet was credited');
+    expect(event.walletId, walletId);
+    expect(event.utxosCreated, greaterThan(0));
+    expect(BigInt.parse(event.totalValueReceived!), BigInt.from(120000),
+        reason: 'the app is told how much arrived, not merely that something '
+            'did');
+
+    // And it is the same credit, not an event without one behind it.
+    final ours = (await utxosOf(p.id)).where((u) => u.satoshis == BigInt.from(120000));
+    expect(ours, hasLength(1));
+  }, timeout: const Timeout(Duration(minutes: 2)));
+
+  test('4gy8: a receive that goes back to waiting for a header is not '
+      'announced as an outcome', () async {
+    await sendHeaders([a1, a2], 1, 2);
+    await createTheWallet();
+
+    final imports = collectImports();
+    // Delivered with no reply target at all -- the shape a replay has, and
+    // the one the coordinator answers for. Our chain stops at 2 and G claims
+    // block 3, so this parks rather than reaching a verdict.
+    system.spvActor.tell(wm.ReceiveTransactionMessage(
+      transactionId: p.id,
+      beef: BEEF.parse(Uint8List.fromList(hex.decode(beefHex([(g, gBump), (p, null)])))),
+      fromCounterparty: 'bob',
+      targetWalletId: walletId,
+      receivedAt: DateTime.now(),
+    ));
+    await _until(() async => await readModel.getPendingReceive(walletId, p.id) != null,
+        'the receive is parked');
+    await barrier();
+
+    expect(imports.where((e) => e.transactionId == p.id), isEmpty,
+        reason: 'still waiting for a block header is not an outcome: an app '
+            'told "import failed" would be told wrong, and told it again on '
+            'every header that does not settle it');
+    expect(await utxosOf(p.id), isEmpty, reason: 'and nothing is credited');
+
+    // The header settles it, and THAT is an outcome.
+    await sendHeaders([a3], 3, 3);
+    await _until(() async => imports.any((e) => e.transactionId == p.id),
+        'the verdict is announced once it is a verdict');
+    expect(imports.where((e) => e.transactionId == p.id).single.success, isTrue);
+  }, timeout: const Timeout(Duration(minutes: 2)));
+
+  test('4gy8: a receive whose header arrived while the node was down is '
+      'announced at startup', () async {
+    await sendHeaders([a1, a2], 1, 2);
+    await createTheWallet();
+    expect((await receive(beefHex([(g, gBump), (p, null)]), p.id)).success, isFalse);
+    await barrier();
+    await system.shutdown();
+
+    // Block 3 lands while nothing of ours is running -- another node, a CDN
+    // sync, a header store written by a previous run. Nothing will notify
+    // the next process about it, so the startup replay is the only thing
+    // that can credit this receive.
+    final chain = BlockHeaderChain(readModel, params: NetworkParams.regtest);
+    await chain.initialize();
+    final accepted = await chain.acceptHeader(a3, expectedHeight: 3);
+    expect((accepted.accepted, accepted.height), (true, 3),
+        reason: 'the header is in the store before the next process starts');
+
+    system = await boot();
+    final imports = collectImports();
+
+    await _until(() async => imports.any((e) => e.transactionId == p.id),
+        'the receive replayed at startup is announced on the public stream');
+    final event = imports.firstWhere((e) => e.transactionId == p.id);
+    expect(event.success, isTrue);
+    expect(BigInt.parse(event.totalValueReceived!), BigInt.from(120000));
+    await _until(() async => (await utxosOf(p.id)).isNotEmpty,
+        'the receive is credited at startup, with no header notification');
+    final settled = await readModel.getPendingReceive(walletId, p.id);
+    expect((settled?.isWaiting, settled?.resolution), (false, 'recorded'));
   }, timeout: const Timeout(Duration(minutes: 2)));
 }
 

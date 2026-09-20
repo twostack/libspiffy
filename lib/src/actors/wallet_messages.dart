@@ -5,7 +5,11 @@ import '../models/deferred_payment.dart';
 
 // The actor wiring messages moved to internal_messages.dart.
 export 'internal_messages.dart'
-    show SetBenfordCoordinatorMessage, SetArcActorForSPVMessage, SetHeaderSyncActorMessage;
+    show
+        SetBenfordCoordinatorMessage,
+        SetArcActorForSPVMessage,
+        SetHeaderSyncActorMessage,
+        SetCoordinatorForSPVMessage;
 // A Benford split's per-transaction outcome (bead libspiffy-wdch), shared
 // with the public UTXOSplitCompleteEvent.
 export 'coordinator_messages.dart' show SplitTransactionOutcome, SplitTransactionStatus;

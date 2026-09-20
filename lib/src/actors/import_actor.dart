@@ -1162,17 +1162,21 @@ class CancelImportMessage implements Message {
 }
 
 /// Reply to [CancelImportMessage].
-class ImportCancelResponse extends LocalMessage {
+class ImportCancelResponse extends ActorResponse {
   final String? walletId;
 
   /// True when an import was running/queued and has been told to stop.
+  /// Also reported as [success] (bead libspiffy-97zj).
   final bool accepted;
 
-  ImportCancelResponse({required this.walletId, required this.accepted})
-      : super(payload: null);
+  @override
+  final String? error;
 
   @override
-  dynamic get payload => this;
+  bool get success => accepted;
+
+  ImportCancelResponse(
+      {required this.walletId, required this.accepted, this.error});
 }
 
 /// Query for import progress. Reply: [ImportProgressMessage].
@@ -1190,7 +1194,7 @@ class ImportProgressQuery implements Message {
 }
 
 /// Progress update message (reply to [ImportProgressQuery]).
-class ImportProgressMessage extends LocalMessage {
+class ImportProgressMessage extends ActorResponse {
   final String walletId;
   final String message;
   final double progress; // 0.0 to 1.0
@@ -1201,6 +1205,15 @@ class ImportProgressMessage extends LocalMessage {
   final int totalAddresses;
   final bool isRunning;
   final List<String> queuedWalletIds;
+
+  /// Whether progress could be reported. [isRunning] says whether an import
+  /// is under way; [success] says whether we could look (bead
+  /// libspiffy-97zj).
+  @override
+  final bool success;
+
+  @override
+  final String? error;
 
   ImportProgressMessage({
     required this.walletId,
@@ -1213,10 +1226,9 @@ class ImportProgressMessage extends LocalMessage {
     this.totalAddresses = 0,
     this.isRunning = false,
     this.queuedWalletIds = const [],
-  }) : super(payload: null);
-
-  @override
-  dynamic get payload => this;
+    this.success = true,
+    this.error,
+  });
 }
 
 /// Import completed response

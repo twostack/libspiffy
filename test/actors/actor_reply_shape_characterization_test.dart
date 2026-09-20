@@ -12,6 +12,12 @@
 ///   success reply of its own for the request (bead libspiffy-kl4i). They
 ///   are [FailureResponse]s, so [success] is always false and [error] is
 ///   never null.
+/// * [fixedOutcomeReplies] are replies whose name IS the outcome — a
+///   broadcast succeeded, an SPV operation failed — so [success] is fixed
+///   by the type rather than passed to the constructor (bead
+///   libspiffy-97zj). They are ordinary [ActorResponse]s: unlike a
+///   [FailureResponse] they answer a specific request with a specific
+///   meaning, and a caller handles them by type.
 library;
 
 import 'dart:async';
@@ -20,6 +26,10 @@ import 'dart:typed_data';
 import 'package:dactor/dactor.dart';
 import 'package:test/test.dart';
 
+import 'package:libspiffy/src/actors/header_sync_actor.dart'
+    show BlockHeadersProcessedMessage, HeaderSyncStatusMessage;
+import 'package:libspiffy/src/actors/import_actor.dart'
+    show ImportCancelResponse, ImportProgressMessage;
 import 'package:libspiffy/src/actors/invoice_messages.dart';
 import 'package:libspiffy/src/actors/payment_channel_messages.dart';
 import 'package:libspiffy/src/actors/payment_messages.dart';
@@ -75,9 +85,52 @@ final Map<String, ReplyFactory> replies = {
       DeferredSpendCancelledResponse(walletId: 'w', txid: 't', success: ok, error: _err(ok)),
   'DeferredPaymentNetworkResult': (ok) =>
       DeferredPaymentNetworkResult(walletId: 'w', txid: 't', success: ok, error: _err(ok)),
+  'TransactionStatusMessage': (ok) => ok
+      ? TransactionStatusMessage(txid: 't', status: 'confirmed', blockHeight: 9)
+      : TransactionStatusMessage.failed(txid: 't', error: 'boom'),
+  'FeeQuoteMessage': (ok) => ok
+      ? FeeQuoteMessage(const {'mining': {'satoshis': 1, 'bytes': 1000}})
+      : FeeQuoteMessage.failed('boom'),
+  'FeeEstimateMessage': (ok) =>
+      ok ? FeeEstimateMessage(BigInt.from(120)) : FeeEstimateMessage.failed('boom'),
+  'WalletListMessage': (ok) =>
+      WalletListMessage(const ['w'], success: ok, error: _err(ok)),
+  'SPVValidationResult': (ok) =>
+      SPVValidationResult(txid: 't', isValid: ok, validationError: _err(ok)),
+  'SPVStatusMessage': (ok) => SPVStatusMessage(
+      currentHeight: 1, networkHeight: 1, isSynced: true, headersCached: 0,
+      merkleProofsStored: 0, lastHeaderUpdate: DateTime.utc(2020),
+      connectedPeers: const [], isHealthy: true, success: ok, error: _err(ok)),
+  'BlockHeadersProcessedMessage': (ok) => BlockHeadersProcessedMessage(
+      processed: 2, failed: 0, currentHeight: 9, success: ok, error: _err(ok)),
+  'HeaderSyncStatusMessage': (ok) => HeaderSyncStatusMessage(
+      requestedHeight: 9, currentHeight: 9, isUpToDate: true, message: 'ok',
+      success: ok, error: _err(ok)),
+  'InvoiceDetailsResponse': (ok) => InvoiceDetailsResponse(
+      invoiceId: 'i', amount: BigInt.one, status: InvoiceStatus.pending,
+      createdAt: DateTime.utc(2020), found: ok, error: _err(ok)),
+  'InvoiceStatusMessage': (ok) => InvoiceStatusMessage(
+      invoiceId: 'i', status: InvoiceStatus.pending, success: ok, error: _err(ok)),
+  'InvoicesListMessage': (ok) =>
+      InvoicesListMessage(const [], success: ok, error: _err(ok)),
+  'ImportCancelResponse': (ok) =>
+      ImportCancelResponse(walletId: 'w', accepted: ok, error: _err(ok)),
+  'ImportProgressMessage': (ok) => ImportProgressMessage(
+      walletId: 'w', message: 'm', progress: 0.5, processedTransactions: 1,
+      totalTransactions: 2, success: ok, error: _err(ok)),
   'ChannelCommandResult': (ok) => ok
       ? ChannelCommandResult(commandId: 'cmd', events: const [], success: true)
       : ChannelCommandResult.failed(commandId: 'cmd', error: 'boom'),
+};
+
+/// The replies whose name is the outcome: [success] is fixed by the type.
+final Map<String, (ActorResponse Function(), bool)> fixedOutcomeReplies = {
+  'BroadcastSuccessMessage': (() => BroadcastSuccessMessage('t', 'n'), true),
+  'BroadcastFailedMessage': (() => BroadcastFailedMessage('t', 'boom'), false),
+  'SPVErrorMessage': (
+    () => SPVErrorMessage(operation: 'validate', error: 'boom'),
+    false,
+  ),
 };
 
 /// The replies that report only failure, with the correlation id and
@@ -265,6 +318,17 @@ void main() {
           expect(answer.runtimeType.toString(), name);
         });
       }
+    });
+  }
+
+  for (final entry in fixedOutcomeReplies.entries) {
+    final name = entry.key;
+    final (build, expected) = entry.value;
+    test('$name reports success=$expected, fixed by its type', () {
+      final reply = build();
+      expect(reply.success, expected);
+      expect(reply.error, expected ? isNull : isNotNull);
+      expect(identical(reply.payload, reply), isTrue);
     });
   }
 

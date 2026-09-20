@@ -555,9 +555,9 @@ class ARCActor extends Actor {
   Future<void> _handleCheckTransactionStatus(CheckTransactionStatusMessage msg) async {
 
     if (_arcService == null) {
-      context.sender?.tell(TransactionStatusMessage(
+      context.sender?.tell(TransactionStatusMessage.failed(
         txid: msg.txid,
-        status: 'error',
+        error: 'ARC service not available',
       ));
       return;
     }
@@ -584,9 +584,9 @@ class ARCActor extends Actor {
       ));
 
     } catch (e) {
-      context.sender?.tell(TransactionStatusMessage(
+      context.sender?.tell(TransactionStatusMessage.failed(
         txid: msg.txid,
-        status: 'error',
+        error: e.toString(),
       ));
     }
   }
@@ -665,7 +665,7 @@ class ARCActor extends Actor {
   Future<void> _handleGetFeeQuote(GetFeeQuoteMessage msg) async {
 
     if (_arcService == null) {
-      context.sender?.tell(FeeQuoteMessage({'error': 'ARC service not available'}));
+      context.sender?.tell(FeeQuoteMessage.failed('ARC service not available'));
       return;
     }
 
@@ -690,7 +690,7 @@ class ARCActor extends Actor {
       context.sender?.tell(FeeQuoteMessage(feeData));
 
     } catch (e) {
-      context.sender?.tell(FeeQuoteMessage({'error': e.toString()}));
+      context.sender?.tell(FeeQuoteMessage.failed(e.toString()));
     }
   }
 
@@ -719,7 +719,7 @@ class ARCActor extends Actor {
       context.sender?.tell(FeeEstimateMessage(estimatedFee));
 
     } catch (e) {
-      context.sender?.tell(FeeEstimateMessage(BigInt.zero));
+      context.sender?.tell(FeeEstimateMessage.failed(e.toString()));
     }
   }
 
@@ -1775,16 +1775,16 @@ class ARCActor extends Actor {
         context.sender?.tell(BroadcastFailedMessage(msg.txid, error));
         break;
       case final CheckTransactionStatusMessage msg:
-        context.sender?.tell(TransactionStatusMessage(
+        context.sender?.tell(TransactionStatusMessage.failed(
           txid: msg.txid,
-          status: 'error',
+          error: error,
         ));
         break;
       case GetFeeQuoteMessage():
-        context.sender?.tell(FeeQuoteMessage({'error': error}));
+        context.sender?.tell(FeeQuoteMessage.failed(error));
         break;
       case EstimateFeeMessage():
-        context.sender?.tell(FeeEstimateMessage(BigInt.zero));
+        context.sender?.tell(FeeEstimateMessage.failed(error));
       case final EstimatePolicyFeeMessage msg:
         context.sender?.tell(PolicyFeeQuote(
             fee: BigInt.zero,

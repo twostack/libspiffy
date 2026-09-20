@@ -679,36 +679,34 @@ class HeaderSyncActor extends Actor {
 }
 
 /// Message for headers processed response
-class BlockHeadersProcessedMessage implements SPVMessage, Message {
+class BlockHeadersProcessedMessage extends ActorResponse implements SPVMessage {
   final int processed;
   final int failed;
   final int currentHeight;
-  final String _correlationId;
-  final ActorRef? _replyTo;
-  final Map<String, dynamic> _metadata;
+
+  /// Whether the batch was processed at all. [failed] counts the headers
+  /// within a batch that were rejected; [success] says whether processing
+  /// ran (bead libspiffy-97zj).
+  @override
+  final bool success;
+
+  @override
+  final String? error;
 
   BlockHeadersProcessedMessage({
     required this.processed,
     required this.failed,
     required this.currentHeight,
+    this.success = true,
+    this.error,
     String? correlationId,
     ActorRef? replyTo,
     Map<String, dynamic>? metadata,
-  }) : _correlationId = correlationId ?? 'headers_processed_${DateTime.now().millisecondsSinceEpoch}',
-       _replyTo = replyTo,
-       _metadata = metadata ?? {};
-
-  @override
-  String get correlationId => _correlationId;
-
-  @override
-  ActorRef? get replyTo => _replyTo;
-
-  @override
-  DateTime get timestamp => DateTime.now();
-
-  @override
-  Map<String, dynamic> get metadata => _metadata;
+  }) : super(
+          correlationId: correlationId ?? 'headers_processed_${DateTime.now().millisecondsSinceEpoch}',
+          replyTo: replyTo,
+          metadata: metadata ?? {},
+        );
 
   @override
   String toString() => 'BlockHeadersProcessedMessage(processed: $processed, '
@@ -716,38 +714,36 @@ class BlockHeadersProcessedMessage implements SPVMessage, Message {
 }
 
 /// Message for header sync status
-class HeaderSyncStatusMessage implements SPVMessage, Message {
+class HeaderSyncStatusMessage extends ActorResponse implements SPVMessage {
   final int requestedHeight;
   final int currentHeight;
   final bool isUpToDate;
   final String message;
-  final String _correlationId;
-  final ActorRef? _replyTo;
-  final Map<String, dynamic> _metadata;
+
+  /// Whether the sync status could be reported. [isUpToDate] says what the
+  /// chain looks like; [success] says whether we could look (bead
+  /// libspiffy-97zj).
+  @override
+  final bool success;
+
+  @override
+  final String? error;
 
   HeaderSyncStatusMessage({
     required this.requestedHeight,
     required this.currentHeight,
     required this.isUpToDate,
     required this.message,
+    this.success = true,
+    this.error,
     String? correlationId,
     ActorRef? replyTo,
     Map<String, dynamic>? metadata,
-  }) : _correlationId = correlationId ?? 'sync_status_${DateTime.now().millisecondsSinceEpoch}',
-       _replyTo = replyTo,
-       _metadata = metadata ?? {};
-
-  @override
-  String get correlationId => _correlationId;
-
-  @override
-  ActorRef? get replyTo => _replyTo;
-
-  @override
-  DateTime get timestamp => DateTime.now();
-
-  @override
-  Map<String, dynamic> get metadata => _metadata;
+  }) : super(
+          correlationId: correlationId ?? 'sync_status_${DateTime.now().millisecondsSinceEpoch}',
+          replyTo: replyTo,
+          metadata: metadata ?? {},
+        );
 
   @override
   String toString() => 'HeaderSyncStatusMessage(requested: $requestedHeight, '

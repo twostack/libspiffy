@@ -208,47 +208,6 @@ class ValidateTransactionMessage implements SPVMessage {
       'tx: ${transaction.txid}, proofs: ${merkleProofs.length})';
 }
 
-/// Result of transaction validation
-class TransactionValidationResult implements SPVMessage {
-  final String walletId;
-  final String transactionId;
-  final bool isValid;
-  final BitcoinTransaction? transaction;
-  final int? blockHeight;
-  final List<String> validatedInputs; // List of input UTXOs that were validated
-  final List<String> invalidInputs; // List of input UTXOs that failed validation
-  final String? error;
-  final DateTime validatedAt;
-  
-  TransactionValidationResult({
-    required this.walletId,
-    required this.transactionId,
-    required this.isValid,
-    this.transaction,
-    this.blockHeight,
-    this.validatedInputs = const [],
-    this.invalidInputs = const [],
-    this.error,
-    DateTime? validatedAt,
-  }) : validatedAt = validatedAt ?? DateTime.now();
-
-  /// Whether validation was successful
-  bool get hasValidation => isValid && error == null;
-
-  /// Summary of validation results
-  String get validationSummary {
-    if (isValid) {
-      return 'Valid (${validatedInputs.length} inputs validated)';
-    } else {
-      return 'Invalid: $error (${invalidInputs.length} inputs failed)';
-    }
-  }
-
-  @override
-  String toString() => 'TransactionValidationResult(wallet: $walletId, '
-      'tx: $transactionId, valid: $isValid)';
-}
-
 /// Message to validate a BEEF (Bitcoin Extended Format) transaction package
 class ValidateBEEFMessage implements SPVMessage {
   final String walletId;
@@ -269,33 +228,6 @@ class ValidateBEEFMessage implements SPVMessage {
   String toString() => 'ValidateBEEFMessage(wallet: $walletId, '
       'beef: ${beefHex.length} bytes)';
 }
-
-/// Result of BEEF validation
-class BEEFValidationResult implements SPVMessage {
-  final String walletId;
-  final bool isValid;
-  final List<BitcoinTransaction> transactions;
-  final List<MerkleProof> merkleProofs;
-  final String? merkleRoot;
-  final String? error;
-  final DateTime validatedAt;
-
-  BEEFValidationResult({
-    required this.walletId,
-    required this.isValid,
-    this.transactions = const [],
-    this.merkleProofs = const [],
-    this.merkleRoot,
-    this.error,
-    DateTime? validatedAt,
-  }) : validatedAt = validatedAt ?? DateTime.now();
-
-  @override
-  String toString() => 'BEEFValidationResult(wallet: $walletId, '
-      'valid: $isValid, txs: ${transactions.length})';
-}
-
-/// Messages for merkle proof management
 
 /// Request to retrieve merkle proof from ARC or other source
 class RetrieveMerkleProofMessage implements SPVMessage {
@@ -374,7 +306,7 @@ class GetSPVStatusMessage implements SPVMessage, Message {
 }
 
 /// SPV status response
-class SPVStatusMessage implements SPVMessage, Message {
+class SPVStatusMessage extends ActorResponse implements SPVMessage {
   final String? walletId;
   final int currentHeight;
   final int networkHeight;
@@ -385,9 +317,15 @@ class SPVStatusMessage implements SPVMessage, Message {
   final List<String> connectedPeers;
   final bool isHealthy;
   final String? statusMessage;
-  final String _correlationId;
-  final ActorRef? _replyTo;
-  final Map<String, dynamic> _metadata;
+
+  /// Whether the status could be read at all. A status report is not a
+  /// verdict on the chain: [isSynced] and [isHealthy] say what SPV found,
+  /// and [success] says whether it found anything (bead libspiffy-97zj).
+  @override
+  final bool success;
+
+  @override
+  final String? error;
 
   SPVStatusMessage({
     this.walletId,
@@ -400,24 +338,19 @@ class SPVStatusMessage implements SPVMessage, Message {
     required this.connectedPeers,
     required this.isHealthy,
     this.statusMessage,
+    this.success = true,
+    this.error,
     String? correlationId,
     ActorRef? replyTo,
     Map<String, dynamic>? metadata,
-  }) : _correlationId = correlationId ?? 'spv_status_${DateTime.now().millisecondsSinceEpoch}',
-       _replyTo = replyTo,
-       _metadata = metadata ?? {};
-
-  @override
-  String get correlationId => _correlationId;
-
-  @override
-  ActorRef? get replyTo => _replyTo;
+  }) : super(
+          correlationId: correlationId ?? 'spv_status_${DateTime.now().millisecondsSinceEpoch}',
+          replyTo: replyTo,
+          metadata: metadata ?? {},
+        );
 
   @override
   DateTime get timestamp => lastHeaderUpdate;
-
-  @override
-  Map<String, dynamic> get metadata => _metadata;
 
   /// Sync progress as percentage (0.0 to 1.0)
   double get syncProgress {
@@ -459,15 +392,19 @@ enum SPVControlAction {
 }
 
 /// Error message for SPV operations
-class SPVErrorMessage implements SPVMessage, Message {
+class SPVErrorMessage extends ActorResponse implements SPVMessage {
   final String operation;
+
+  @override
   final String error;
+
   final String? walletId;
   final DateTime errorTime;
   final bool isFatal;
-  final String _correlationId;
-  final ActorRef? _replyTo;
-  final Map<String, dynamic> _metadata;
+
+  /// Always false: this message exists to report a failure.
+  @override
+  bool get success => false;
 
   SPVErrorMessage({
     required this.operation,
@@ -478,22 +415,15 @@ class SPVErrorMessage implements SPVMessage, Message {
     String? correlationId,
     ActorRef? replyTo,
     Map<String, dynamic>? metadata,
-  }) : errorTime = errorTime ?? DateTime.now(),
-       _correlationId = correlationId ?? 'spv_error_${DateTime.now().millisecondsSinceEpoch}',
-       _replyTo = replyTo,
-       _metadata = metadata ?? {};
-
-  @override
-  String get correlationId => _correlationId;
-
-  @override
-  ActorRef? get replyTo => _replyTo;
+  })  : errorTime = errorTime ?? DateTime.now(),
+        super(
+          correlationId: correlationId ?? 'spv_error_${DateTime.now().millisecondsSinceEpoch}',
+          replyTo: replyTo,
+          metadata: metadata ?? {},
+        );
 
   @override
   DateTime get timestamp => errorTime;
-
-  @override
-  Map<String, dynamic> get metadata => _metadata;
 
   @override
   String toString() => 'SPVErrorMessage(op: $operation, '

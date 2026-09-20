@@ -38,6 +38,18 @@ void main() {
     }
   });
 
+  group('every fixed-outcome reply extends ActorResponse', () {
+    for (final entry in shapes.fixedOutcomeReplies.entries) {
+      test(entry.key, () {
+        final (build, expected) = entry.value;
+        final reply = build();
+        expect(reply, isA<ActorResponse>());
+        expect(reply.success, expected);
+        expect(identical(reply.payload, reply), isTrue);
+      });
+    }
+  });
+
   group('every failure-only reply extends FailureResponse', () {
     for (final entry in shapes.failureReplies.entries) {
       test(entry.key, () {

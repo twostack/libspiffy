@@ -302,6 +302,36 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### Every actor reply can be asked whether it worked
+
+- Sixteen replies implemented `Message` only, so a caller holding one could
+  not ask the question the other forty-three answer. They now extend
+  `ActorResponse` and carry `success` and `error`:
+  `TransactionStatusMessage`, `FeeQuoteMessage`, `FeeEstimateMessage`,
+  `WalletListMessage`, `SPVValidationResult`, `SPVStatusMessage`,
+  `SPVErrorMessage`, `HeaderSyncStatusMessage`,
+  `BlockHeadersProcessedMessage`, `InvoiceDetailsResponse`,
+  `InvoiceStatusMessage`, `InvoicesListMessage`, `BroadcastSuccessMessage`,
+  `BroadcastFailedMessage`, `ImportCancelResponse`, `ImportProgressMessage`.
+  Where a pair already existed under other names it was reused, not
+  duplicated: `SPVValidationResult.isValid` is `success`,
+  `InvoiceDetailsResponse.found` is `success`, and so on.
+- **Three of them reported failure as a value you could act on, and no
+  longer do:**
+  - `FeeEstimateMessage.estimatedFee` is **nullable** and null when no
+    estimate could be made. It used to be `BigInt.zero` — a fee an app
+    would happily build a transaction with.
+  - `FeeQuoteMessage.feeData` holds fee rates and nothing else. Three of
+    the four sites that send it used to put `{'error': ...}` in the map.
+  - `TransactionStatusMessage.status` is **nullable** and null when the
+    status could not be read. It used to be the string `'error'`, which no
+    caller could tell from a status ARC had really reported.
+- **Removed:** `TransactionValidationResult` and the duplicate
+  `BEEFValidationResult` in `spv_messages.dart`. Neither was sent or
+  received anywhere; the live `BEEFValidationResult` is the one in
+  `wallet_messages.dart`, which `spv_actor.dart` had to `hide` the other to
+  reach.
+
 ### The wallet says when it could not do what you asked
 
 - `WalletManagerActor` and `BitcoinWalletAggregate` answered failures they

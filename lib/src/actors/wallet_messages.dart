@@ -553,10 +553,16 @@ class ListWalletsMessage implements Message {
 }
 
 /// Response with list of wallet IDs
-class WalletListMessage implements Message {
+class WalletListMessage extends ActorResponse {
   final List<String> walletIds;
 
-  WalletListMessage(this.walletIds);
+  @override
+  final bool success;
+
+  @override
+  final String? error;
+
+  WalletListMessage(this.walletIds, {this.success = true, this.error});
 
   @override
   String get correlationId => 'wallet-list-${DateTime.now().millisecondsSinceEpoch}';
@@ -656,10 +662,21 @@ class ProvenTransaction {
 }
 
 /// SPV validation result after processing received transaction
-class SPVValidationResult implements Message {
+class SPVValidationResult extends ActorResponse {
   final String txid;
+
+  /// Whether the transaction validated. Also reported as [success], so a
+  /// caller can ask any reply the same question (bead libspiffy-97zj).
   final bool isValid;
+
+  /// Why it did not. Also reported as [error].
   final String? validationError;
+
+  @override
+  bool get success => isValid;
+
+  @override
+  String? get error => validationError;
   final List<Map<String, dynamic>> spendableUTXOs; // UTXOs we can now spend
   final List<Map<String, dynamic>> spentUTXOs; // UTXOs that were spent
   final String? targetWalletId;
@@ -1134,25 +1151,49 @@ class CheckTransactionStatusMessage implements Message {
 }
 
 /// Transaction status response (ENHANCED)
-class TransactionStatusMessage implements Message {
+class TransactionStatusMessage extends ActorResponse {
   final String txid;
-  final String status; // 'pending', 'confirmed', 'failed'
+
+  /// What the network says about the transaction: 'pending', 'confirmed',
+  /// 'failed' and so on. **Null when [success] is false**: the status could
+  /// not be read, which is not the same as a transaction whose status is
+  /// bad. It used to be the string 'error' — a value no caller could tell
+  /// from a real status (bead libspiffy-97zj).
+  final String? status;
+
   final int? confirmations;
   final int? blockHeight;
   final bool proofAvailable; // NEW: Can we get merkle proof now?
 
+  @override
+  final bool success;
+
+  @override
+  final String? error;
+
   TransactionStatusMessage({
     required this.txid,
-    required this.status,
+    this.status,
     this.confirmations,
     this.blockHeight,
     this.proofAvailable = false,
+    this.success = true,
+    this.error,
   });
+
+  /// The status could not be read.
+  TransactionStatusMessage.failed({required this.txid, required String this.error})
+      : status = null,
+        confirmations = null,
+        blockHeight = null,
+        proofAvailable = false,
+        success = false;
 
   @override
   String get correlationId => 'tx-status-$txid';
   @override
-  Map<String, dynamic> get metadata => {'txid': txid, 'status': status};
+  Map<String, dynamic> get metadata =>
+      {'txid': txid, if (status != null) 'status': status};
   @override
   ActorRef? get replyTo => null;
   @override
@@ -1171,11 +1212,27 @@ class GetFeeQuoteMessage implements Message {
   DateTime get timestamp => DateTime.now();
 }
 
-/// Fee quote response
-class FeeQuoteMessage implements Message {
+/// Fee quote response.
+///
+/// [feeData] carries fee data and nothing else. Three of the four sites
+/// that send it used to put `{'error': ...}` inside the map, so a caller
+/// read a failure as if it were a quote (bead libspiffy-97zj); a failure is
+/// now [success] false and [error], and [feeData] is empty.
+class FeeQuoteMessage extends ActorResponse {
   final Map<String, dynamic> feeData;
 
-  FeeQuoteMessage(this.feeData);
+  @override
+  final bool success;
+
+  @override
+  final String? error;
+
+  FeeQuoteMessage(this.feeData, {this.success = true, this.error});
+
+  /// No quote could be obtained.
+  FeeQuoteMessage.failed(String this.error)
+      : feeData = const {},
+        success = false;
 
   @override
   String get correlationId => 'fee-quote-response-${DateTime.now().millisecondsSinceEpoch}';
@@ -1204,11 +1261,27 @@ class EstimateFeeMessage implements Message {
   DateTime get timestamp => DateTime.now();
 }
 
-/// Fee estimate response
-class FeeEstimateMessage implements Message {
-  final BigInt estimatedFee;
+/// Fee estimate response.
+///
+/// [estimatedFee] is **null when no estimate could be made** ([success]
+/// false). It used to be `BigInt.zero`, a plausible-looking number standing
+/// in for an absence: a caller that did not know to distrust zero built a
+/// transaction with no fee (bead libspiffy-97zj).
+class FeeEstimateMessage extends ActorResponse {
+  final BigInt? estimatedFee;
 
-  FeeEstimateMessage(this.estimatedFee);
+  @override
+  final bool success;
+
+  @override
+  final String? error;
+
+  FeeEstimateMessage(BigInt this.estimatedFee) : success = true, error = null;
+
+  /// No estimate could be made.
+  FeeEstimateMessage.failed(String this.error)
+      : estimatedFee = null,
+        success = false;
 
   @override
   String get correlationId => 'fee-estimate-response-${DateTime.now().millisecondsSinceEpoch}';
@@ -1221,9 +1294,15 @@ class FeeEstimateMessage implements Message {
 }
 
 /// Broadcast success notification
-class BroadcastSuccessMessage implements Message {
+class BroadcastSuccessMessage extends ActorResponse {
   final String txid;
   final String? networkTxid;
+
+  @override
+  bool get success => true;
+
+  @override
+  String? get error => null;
 
   BroadcastSuccessMessage(this.txid, this.networkTxid);
 
@@ -1238,9 +1317,14 @@ class BroadcastSuccessMessage implements Message {
 }
 
 /// Broadcast failure notification
-class BroadcastFailedMessage implements Message {
+class BroadcastFailedMessage extends ActorResponse {
   final String txid;
+
+  @override
   final String error;
+
+  @override
+  bool get success => false;
 
   BroadcastFailedMessage(this.txid, this.error);
 

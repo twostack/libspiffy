@@ -203,7 +203,7 @@ class CheckInvoiceMessage implements Message {
 }
 
 /// Response with invoice details
-class InvoiceDetailsResponse implements Message {
+class InvoiceDetailsResponse extends ActorResponse {
   final String invoiceId;
   final String? walletId;
   final List<String> addresses;
@@ -218,8 +218,15 @@ class InvoiceDetailsResponse implements Message {
   final DateTime? expiresAt;
   final DateTime? paidAt;
   final String? paymentTxid;
+  /// Whether the invoice was found. Also reported as [success], so a caller
+  /// can ask any reply the same question (bead libspiffy-97zj).
   final bool found;
+
+  @override
   final String? error;
+
+  @override
+  bool get success => found;
 
   InvoiceDetailsResponse({
     required this.invoiceId,
@@ -288,12 +295,20 @@ class MarkInvoicePaidMessage implements Message {
 }
 
 /// Invoice status update notification
-class InvoiceStatusMessage implements Message {
+class InvoiceStatusMessage extends ActorResponse {
   final String invoiceId;
   final InvoiceStatus status;
   final DateTime? paidAt;
   final String? txid;
   final String? statusMessage;
+
+  /// Whether the status could be read. [status] is the invoice's state;
+  /// [success] says whether we could read it (bead libspiffy-97zj).
+  @override
+  final bool success;
+
+  @override
+  final String? error;
 
   InvoiceStatusMessage({
     required this.invoiceId,
@@ -301,6 +316,8 @@ class InvoiceStatusMessage implements Message {
     this.paidAt,
     this.txid,
     this.statusMessage,
+    this.success = true,
+    this.error,
   });
 
   @override
@@ -363,10 +380,16 @@ class ListInvoicesMessage implements Message {
 }
 
 /// Response with list of invoices
-class InvoicesListMessage implements Message {
+class InvoicesListMessage extends ActorResponse {
   final List<InvoiceDetailsResponse> invoices;
 
-  InvoicesListMessage(this.invoices);
+  @override
+  final bool success;
+
+  @override
+  final String? error;
+
+  InvoicesListMessage(this.invoices, {this.success = true, this.error});
 
   @override
   String get correlationId => 'invoices-list-${DateTime.now().millisecondsSinceEpoch}';

@@ -490,3 +490,36 @@ Object? unmodifiableDeepCopy(Object? value) => switch (value) {
       List() => List<dynamic>.unmodifiable(value.map(unmodifiableDeepCopy)),
       _ => value,
     };
+
+/// [value] copied into an unmodifiable list.
+///
+/// For the collections an event or command is handed (bead libspiffy-6r5w):
+/// the caller keeps its own list and may go on changing it, and what the
+/// event holds - what the projection, the subscribers and the broadcaster
+/// read - is a copy nobody else has a handle on. Elements must be immutable
+/// values; use [frozenMapList] for a list of maps.
+List<T> frozenList<T>(Iterable<T> value) => List<T>.unmodifiable(value);
+
+/// [frozenList] for a field that may be null.
+List<T>? frozenListOrNull<T>(Iterable<T>? value) => value == null ? null : List<T>.unmodifiable(value);
+
+/// A list of maps copied and frozen to every depth, so neither the list nor
+/// any map in it can be changed through the caller's handle.
+List<Map<String, dynamic>> frozenMapList(Iterable<Map<String, dynamic>> value) =>
+    List<Map<String, dynamic>>.unmodifiable(
+        value.map((entry) => unmodifiableDeepCopy(entry) as Map<String, dynamic>));
+
+/// A map copied and frozen to every depth, as an ordinary [Map] rather than
+/// the [PersistentMap] of [freezeMap]: events and commands carry plain maps.
+Map<String, dynamic> frozenPlainMap(Map<String, dynamic> value) =>
+    unmodifiableDeepCopy(value) as Map<String, dynamic>;
+
+/// [frozenPlainMap] for a field that may be null.
+Map<String, dynamic>? frozenPlainMapOrNull(Map<String, dynamic>? value) =>
+    value == null ? null : unmodifiableDeepCopy(value) as Map<String, dynamic>;
+
+/// [value] copied into an unmodifiable set, the [frozenList] of sets.
+Set<T> frozenSet<T>(Iterable<T> value) => Set<T>.unmodifiable(value);
+
+/// [frozenSet] for a field that may be null.
+Set<T>? frozenSetOrNull<T>(Iterable<T>? value) => value == null ? null : Set<T>.unmodifiable(value);

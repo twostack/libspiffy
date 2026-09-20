@@ -58,7 +58,7 @@ class InvoiceState extends State {
     this.version = 0,
     DateTime? lastModified,
   })  : addresses = List<String>.unmodifiable(addresses),
-        outputs = outputs == null ? null : List<InvoiceOutputSpec>.unmodifiable(outputs.map(_frozenOutput)),
+        outputs = outputs == null ? null : frozenOutputSpecs(outputs),
         metadata = freezeMap(metadata),
         lastModified = lastModified ?? DateTime.now(),
         super(version: version, lastModified: lastModified ?? DateTime.now());
@@ -82,29 +82,6 @@ class InvoiceState extends State {
     required this.version,
     required this.lastModified,
   }) : super(version: version, lastModified: lastModified);
-
-  /// [output] with unmodifiable collections that no caller shares.
-  static InvoiceOutputSpec _frozenOutput(InvoiceOutputSpec output) => switch (output) {
-        final P2MSOutputSpec o when o.runtimeType == P2MSOutputSpec => P2MSOutputSpec(
-            publicKeys: List<String>.unmodifiable(o.publicKeys),
-            threshold: o.threshold,
-            amount: o.amount,
-            label: o.label,
-          ),
-        final OPReturnOutputSpec o when o.runtimeType == OPReturnOutputSpec => OPReturnOutputSpec(
-            dataChunks: List<List<int>>.unmodifiable([for (final chunk in o.dataChunks) List<int>.unmodifiable(chunk)]),
-            separateOutputs: o.separateOutputs,
-            label: o.label,
-          ),
-        final PluginOutputSpec o when o.runtimeType == PluginOutputSpec => PluginOutputSpec(
-            pluginId: o.pluginId,
-            pluginScriptType: o.pluginScriptType,
-            params: unmodifiableDeepCopy(o.params) as Map<String, dynamic>,
-            amount: o.amount,
-            label: o.label,
-          ),
-        _ => output,
-      };
 
   /// Create an empty invoice state (before creation)
   factory InvoiceState.empty(String invoiceId) {
@@ -189,7 +166,7 @@ class InvoiceState extends State {
           ? this.outputs
           : outputs == null
               ? null
-              : List<InvoiceOutputSpec>.unmodifiable((outputs as List<InvoiceOutputSpec>).map(_frozenOutput)),
+              : frozenOutputSpecs(outputs as List<InvoiceOutputSpec>),
       description: identical(description, _unset) ? this.description : description as String?,
       status: status ?? this.status,
       createdAt: createdAt ?? this.createdAt,

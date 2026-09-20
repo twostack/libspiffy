@@ -2,6 +2,7 @@ import 'package:eventador/eventador.dart';
 import 'package:uuid/uuid.dart';
 import '../actors/invoice_messages.dart';
 import '../models/invoice_output_spec.dart';
+import '../models/persistent_map.dart';
 
 const _uuid = Uuid();
 
@@ -73,17 +74,20 @@ class InvoiceCreatedEvent extends InvoiceEvent {
   InvoiceCreatedEvent({
     required String invoiceId,
     required String walletId,
-    required this.addresses,
+    required List<String> addresses,
     required this.amount,
-    this.outputs,
+    List<InvoiceOutputSpec>? outputs,
     this.description,
     this.expiresAt,
-    this.invoiceMetadata,
+    Map<String, dynamic>? invoiceMetadata,
     String? eventId,
     DateTime? timestamp,
     int? version,
     Map<String, dynamic>? metadata,
-  }) : super(
+  })  : addresses = frozenList(addresses),
+        outputs = frozenOutputSpecsOrNull(outputs),
+        invoiceMetadata = frozenPlainMapOrNull(invoiceMetadata),
+        super(
           invoiceId: invoiceId,
           walletId: walletId,
           eventId: eventId,
@@ -256,13 +260,14 @@ class InvoicePaidEvent extends InvoiceEvent {
     required String walletId,
     required this.txid,
     required this.amountReceived,
-    required this.addressesPaidTo,
+    required List<String> addressesPaidTo,
     DateTime? paidAt,
     String? eventId,
     DateTime? timestamp,
     int? version,
     Map<String, dynamic>? metadata,
-  })  : paidAt = paidAt ?? DateTime.now(),
+  })  : addressesPaidTo = frozenList(addressesPaidTo),
+        paidAt = paidAt ?? DateTime.now(),
         super(
           invoiceId: invoiceId,
           walletId: walletId,

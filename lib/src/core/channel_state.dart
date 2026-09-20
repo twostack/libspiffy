@@ -1,4 +1,5 @@
 import 'package:eventador/eventador.dart';
+import '../models/persistent_map.dart';
 
 /// State for a payment channel aggregate
 ///
@@ -165,7 +166,7 @@ class ChannelState extends State {
   })  : fundingAmountSats = fundingAmountSats ?? BigInt.zero,
         clientBalanceSats = clientBalanceSats ?? BigInt.zero,
         serverBalanceSats = serverBalanceSats ?? BigInt.zero,
-        fundingAncestorTxids = List<String>.unmodifiable(fundingAncestorTxids ?? const <String>[]),
+        fundingAncestorTxids = frozenList(fundingAncestorTxids ?? const <String>[]),
         lastModified = lastModified ?? DateTime.now(),
         super(version: version, lastModified: lastModified ?? DateTime.now());
 

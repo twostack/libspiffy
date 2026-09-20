@@ -1,5 +1,7 @@
 import 'package:eventador/eventador.dart';
 
+import '../models/persistent_map.dart';
+
 /// Base class for all channel commands
 abstract class ChannelCommand extends Command {
   final String channelId;
@@ -320,12 +322,13 @@ class OpenChannelCommand extends ChannelCommand {
     required this.fundingTxId,
     required this.fundingOutputIndex,
     required this.fundingTxHex,
-    this.fundingAncestorTxids = const [],
+    List<String> fundingAncestorTxids = const [],
     this.fundingBeefHex,
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,
-  }) : super(
+  })  : fundingAncestorTxids = frozenList(fundingAncestorTxids),
+        super(
           channelId: channelId,
           commandId: commandId,
           timestamp: timestamp,

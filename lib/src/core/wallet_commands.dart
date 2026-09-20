@@ -1,6 +1,7 @@
 import 'package:eventador/eventador.dart';
 import '../models/bitcoin_transaction.dart'; // For TransactionStatus
 import '../models/bitcoin_utxo.dart'; // For UTXOStatus
+import '../models/persistent_map.dart';
 import 'wallet_events.dart' show BeefAncestor;
 
 /// Base class for all wallet commands
@@ -49,11 +50,12 @@ class CreateWalletCommand extends WalletCommand {
     this.xpriv,
     this.xpub,
     this.passphrase,
-    this.walletMetadata,
+    Map<String, dynamic>? walletMetadata,
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,
-  }) : super(
+  })  : walletMetadata = frozenPlainMapOrNull(walletMetadata),
+        super(
           walletId: walletId,
           commandId: commandId,
           timestamp: timestamp,
@@ -107,11 +109,12 @@ class UpdateWalletConfigurationCommand extends WalletCommand {
   UpdateWalletConfigurationCommand({
     required String walletId,
     this.newName,
-    this.newMetadata,
+    Map<String, dynamic>? newMetadata,
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,
-  }) : super(
+  })  : newMetadata = frozenPlainMapOrNull(newMetadata),
+        super(
           walletId: walletId,
           commandId: commandId,
           timestamp: timestamp,
@@ -155,11 +158,12 @@ class ImportWalletFromXprivCommand extends WalletCommand {
     this.importTransactionHistory = true,
     this.addressGapLimit = 20,
     this.transactionLimit,
-    this.walletMetadata,
+    Map<String, dynamic>? walletMetadata,
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,
-  }) : super(
+  })  : walletMetadata = frozenPlainMapOrNull(walletMetadata),
+        super(
           walletId: walletId,
           commandId: commandId,
           timestamp: timestamp,
@@ -326,11 +330,12 @@ class ReconcileWatchAddressesCommand extends WalletCommand {
 
   ReconcileWatchAddressesCommand({
     required String walletId,
-    required this.addresses,
+    required List<LegacyWatchAddress> addresses,
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,
-  }) : super(walletId: walletId, commandId: commandId, timestamp: timestamp, metadata: metadata);
+  })  : addresses = frozenList(addresses),
+        super(walletId: walletId, commandId: commandId, timestamp: timestamp, metadata: metadata);
 
   @override
   String get commandType => 'ReconcileWatchAddressesCommand';
@@ -395,12 +400,13 @@ class ReceiveUTXOCommand extends WalletCommand {
     this.confirmations,
     this.initialStatus = UTXOStatus.pending, // Default to pending for new receives
     this.derivationIndex,
-    this.pluginMetadata,
+    Map<String, dynamic>? pluginMetadata,
     this.counterpartyMarker,
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,
-  }) : super(
+  })  : pluginMetadata = frozenPlainMapOrNull(pluginMetadata),
+        super(
           walletId: walletId,
           commandId: commandId,
           timestamp: timestamp,
@@ -497,16 +503,19 @@ class RecordImportedTransactionCommand extends WalletCommand {
     required this.numOutputs,
     required this.txVersion,
     required this.txLockTime,
-    required this.walletReceivingAddresses,
+    required List<String> walletReceivingAddresses,
     required this.walletReceivedSats,
     required this.totalInputSats,
-    required this.sendingAddresses,
-    this.ancestors = const [],
+    required List<String> sendingAddresses,
+    List<BeefAncestor> ancestors = const [],
     this.counterpartyMarker,
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,
-  }) : super(
+  })  : walletReceivingAddresses = frozenList(walletReceivingAddresses),
+        sendingAddresses = frozenList(sendingAddresses),
+        ancestors = frozenList(ancestors),
+        super(
           walletId: walletId,
           commandId: commandId,
           timestamp: timestamp,
@@ -586,21 +595,24 @@ class RecordOutgoingTransactionCommand extends WalletCommand {
     required this.numOutputs,
     required this.txVersion,
     required this.txLockTime,
-    required this.spentUtxoKeys,
-    required this.recipientAddresses,
+    required List<String> spentUtxoKeys,
+    required List<String> recipientAddresses,
     required this.paymentAmount,
     this.changeAddress,
     this.changeAmount,
     this.deferSpend = false,
     this.preSigned = false,
-    this.signerMetadata,
+    Map<String, dynamic>? signerMetadata,
     this.invoiceId,
     this.purpose,
     this.counterpartyMarker,
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,
-  }) : super(
+  })  : spentUtxoKeys = frozenList(spentUtxoKeys),
+        recipientAddresses = frozenList(recipientAddresses),
+        signerMetadata = frozenPlainMapOrNull(signerMetadata),
+        super(
           walletId: walletId,
           commandId: commandId,
           timestamp: timestamp,
@@ -885,15 +897,20 @@ class SignTransactionCommand extends WalletCommand {
     required String walletId,
     required this.transactionId,
     required this.rawTransaction,
-    required this.utxoKeys,
-    required this.publicKeys,
-    this.addresses = const [],
-    this.derivationIndices = const [],
-    this.isChangeFlags = const [],
+    required List<String> utxoKeys,
+    required List<String> publicKeys,
+    List<String> addresses = const [],
+    List<int> derivationIndices = const [],
+    List<bool> isChangeFlags = const [],
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,
-  }) : super(
+  })  : utxoKeys = frozenList(utxoKeys),
+        publicKeys = frozenList(publicKeys),
+        addresses = frozenList(addresses),
+        derivationIndices = frozenList(derivationIndices),
+        isChangeFlags = frozenList(isChangeFlags),
+        super(
           walletId: walletId,
           commandId: commandId,
           timestamp: timestamp,
@@ -1074,13 +1091,14 @@ class ReserveUTXOsCommand extends WalletCommand {
 
   ReserveUTXOsCommand({
     required String walletId,
-    required this.utxoKeys,
+    required List<String> utxoKeys,
     required this.reservationId,
     this.reservationDuration,
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,
-  }) : super(
+  })  : utxoKeys = frozenList(utxoKeys),
+        super(
           walletId: walletId,
           commandId: commandId,
           timestamp: timestamp,
@@ -1238,11 +1256,12 @@ class RevertTransactionConfirmationCommand extends WalletCommand {
     required this.reason,
     this.blockHeight,
     this.blockHash,
-    this.merkleProof,
+    List<String>? merkleProof,
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,
-  }) : super(
+  })  : merkleProof = frozenListOrNull(merkleProof),
+        super(
           walletId: walletId,
           commandId: commandId,
           timestamp: timestamp,
@@ -1318,11 +1337,12 @@ class RecordTransactionNetworkStatusCommand extends WalletCommand {
     this.blockHeight,
     this.explicit = false,
     this.detail,
-    this.competingTxids = const [],
+    List<String> competingTxids = const [],
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,
-  })  : checkedAt = checkedAt ?? DateTime.now(),
+  })  : competingTxids = frozenList(competingTxids),
+        checkedAt = checkedAt ?? DateTime.now(),
         super(walletId: walletId, commandId: commandId, timestamp: timestamp, metadata: metadata);
 
   @override
@@ -1397,12 +1417,13 @@ class ReclaimDeferredSpendCommand extends WalletCommand {
     required this.txid,
     required this.reclaimTxid,
     required this.rawHex,
-    this.recipientAddresses = const [],
+    List<String> recipientAddresses = const [],
     this.reason,
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,
-  }) : super(walletId: walletId, commandId: commandId, timestamp: timestamp, metadata: metadata);
+  })  : recipientAddresses = frozenList(recipientAddresses),
+        super(walletId: walletId, commandId: commandId, timestamp: timestamp, metadata: metadata);
 
   @override
   String get commandType => 'ReclaimDeferredSpendCommand';

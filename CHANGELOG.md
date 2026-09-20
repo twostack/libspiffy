@@ -302,6 +302,34 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### Events and commands no longer hold the caller's lists and maps
+
+- An event or command built from a caller's `List` or `Map` kept **that
+  object**, not a copy. The journal was safe (serialization copies), but an
+  event is handed live to the projection, to every `coordinatorEvents`
+  subscriber and to the P2P broadcaster, so an app that went on modifying
+  the list it had passed changed what all three read.
+- Every collection a caller hands in is now **copied and frozen** in the
+  constructor: the 52 collection fields of the aggregate events and commands
+  (`wallet_`, `invoice_`, `channel_events`/`commands`) and the 16 of the
+  app → coordinator commands in `coordinator_messages.dart`. Nested maps and
+  lists are copied too, as are the key list of a `P2MSOutputSpec`, the data
+  chunks of an `OPReturnOutputSpec` and the params of a `PluginOutputSpec`.
+- **Behaviour change for callers who mutate what they read back.** These
+  collections now throw `UnsupportedError` on modification, as aggregate
+  state already did. Nothing in libspiffy mutates one; an app that changed
+  an event's or a command's list in place must copy it first.
+- Replay is unaffected: `fromMap` already built fresh collections.
+- The coordinator's **outbound** results (`WalletUTXOsResult.spendableUTXOs`
+  and the other query results) are unchanged — they are still ordinary
+  mutable lists, and freezing them is tracked separately.
+- New in `persistent_map.dart`: `frozenList`, `frozenListOrNull`,
+  `frozenMapList`, `frozenPlainMap`, `frozenPlainMapOrNull`, `frozenSet`,
+  `frozenSetOrNull`. New in `invoice_output_spec.dart`: `frozenOutputSpec`,
+  `frozenOutputSpecs`, `frozenOutputSpecsOrNull` (moved out of
+  `InvoiceState`, which was the only place that knew an output spec hides
+  mutable collections).
+
 ### A receive replayed after a restart reaches the app, not only the wallet
 
 - A receive parked waiting for a block header outlives the process that took

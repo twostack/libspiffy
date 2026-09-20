@@ -6,6 +6,7 @@ import '../models/bitcoin_transaction.dart';
 import '../models/bitcoin_utxo.dart';
 import '../models/deferred_payment.dart';
 import '../models/invoice_output_spec.dart';
+import '../models/persistent_map.dart';
 import 'invoice_messages.dart' show InvoiceStatus;
 
 export '../models/deferred_payment.dart';
@@ -43,8 +44,8 @@ class CreateWalletCommand implements Message {
     this.wif,
     this.xpriv,
     this.xpub,
-    this.walletMetadata,
-  });
+    Map<String, dynamic>? walletMetadata,
+  }) : walletMetadata = frozenPlainMapOrNull(walletMetadata);
 
   @override
   String get correlationId => 'create-wallet-$walletId';
@@ -180,13 +181,14 @@ class CreateInvoiceCommand implements Message {
   CreateInvoiceCommand({
     required this.walletId,
     this.amount,
-    this.outputs,
+    List<InvoiceOutputSpec>? outputs,
     this.description,
     this.expiresIn,
     this.expiresInSeconds,
-    this.invoiceMetadata,
+    Map<String, dynamic>? invoiceMetadata,
     this.numberOfAddresses = 1,
-  });
+  })  : outputs = frozenOutputSpecsOrNull(outputs),
+        invoiceMetadata = frozenPlainMapOrNull(invoiceMetadata);
 
   /// Effective expiry duration
   Duration? get effectiveExpiresIn =>
@@ -225,14 +227,16 @@ class PayInvoiceCommand implements Message {
   PayInvoiceCommand({
     required this.walletId,
     required this.invoiceId,
-    required this.addresses,
+    required List<String> addresses,
     required this.amount,
-    this.outputs,
+    List<InvoiceOutputSpec>? outputs,
     this.changeAddress,
-    this.paymentMetadata,
+    Map<String, dynamic>? paymentMetadata,
     this.feeEstimateSats,
     this.counterpartyMarker,
-  });
+  })  : addresses = frozenList(addresses),
+        outputs = frozenOutputSpecsOrNull(outputs),
+        paymentMetadata = frozenPlainMapOrNull(paymentMetadata);
 
   @override
   String get correlationId => 'pay-invoice-$invoiceId';
@@ -258,8 +262,8 @@ class ProvisionFundingCommand implements Message {
   ProvisionFundingCommand({
     required this.walletId,
     required this.pluginId,
-    required this.pluginParams,
-  });
+    required Map<String, dynamic> pluginParams,
+  }) : pluginParams = frozenPlainMap(pluginParams);
 
   @override
   String get correlationId => 'provision-funding-${walletId}-${DateTime.now().millisecondsSinceEpoch}';
@@ -361,13 +365,14 @@ class RecordOutgoingCommand implements Message {
     required this.numOutputs,
     required this.txVersion,
     required this.txLockTime,
-    required this.spentUtxoKeys,
-    required this.recipientAddresses,
+    required List<String> spentUtxoKeys,
+    required List<String> recipientAddresses,
     required this.paymentAmount,
     this.changeAddress,
     this.changeAmount,
     this.counterpartyMarker,
-  });
+  })  : spentUtxoKeys = frozenList(spentUtxoKeys),
+        recipientAddresses = frozenList(recipientAddresses);
 
   @override
   String get correlationId => 'record-outgoing-$txid';
@@ -389,9 +394,9 @@ class ImportTransactionCommand implements Message {
   ImportTransactionCommand({
     required this.walletId,
     required this.transactionId,
-    required this.beef,
+    required List<int> beef,
     this.fromCounterparty,
-  });
+  }) : beef = frozenList(beef);
 
   @override
   String get correlationId => 'import-tx-$transactionId';
@@ -409,9 +414,9 @@ class StoreHeadersCommand implements Message {
   final String source;
 
   StoreHeadersCommand({
-    required this.headers,
+    required List<Map<String, dynamic>> headers,
     this.source = 'external',
-  });
+  }) : headers = frozenMapList(headers);
 
   @override
   String get correlationId => 'store-headers-${DateTime.now().millisecondsSinceEpoch}';
@@ -501,9 +506,9 @@ class TimestampCommand implements Message {
   TimestampCommand({
     required this.archiveId,
     required this.walletId,
-    required this.fileHashes,
+    required List<String> fileHashes,
     this.archiveTitle,
-  });
+  }) : fileHashes = frozenList(fileHashes);
 
   @override
   String get correlationId => 'timestamp-$archiveId';
@@ -634,12 +639,12 @@ class GetDeferredPaymentsQuery implements Message {
 
   GetDeferredPaymentsQuery({
     required this.walletId,
-    this.states,
+    Set<DeferredPaymentState>? states,
     this.includeResolved = false,
     this.createdBefore,
     this.createdAfter,
     this.olderThan,
-    this.lastNetworkStatuses,
+    Set<String>? lastNetworkStatuses,
     this.invoiceId,
     this.recipientAddress,
     this.limit = 50,
@@ -647,7 +652,8 @@ class GetDeferredPaymentsQuery implements Message {
     this.oldestFirst = false,
     this.includeBeef = true,
     this.queryId,
-  });
+  })  : states = frozenSetOrNull(states),
+        lastNetworkStatuses = frozenSetOrNull(lastNetworkStatuses);
 
   /// The storage query this message asks for, evaluated at [now].
   DeferredPaymentQuery toStorageQuery({DateTime? now}) {
@@ -1129,8 +1135,8 @@ class P2PMessageReceived implements Message {
   P2PMessageReceived({
     required this.fromPeerId,
     required this.messageType,
-    required this.payload,
-  });
+    required Map<String, dynamic> payload,
+  }) : payload = frozenPlainMap(payload);
 
   @override
   String get correlationId => 'p2p-${DateTime.now().millisecondsSinceEpoch}';
@@ -1195,9 +1201,9 @@ class RequestAncestorProofCommand implements Message {
   RequestAncestorProofCommand({
     required this.walletId,
     required this.txid,
-    this.ancestorTxids = const [],
+    List<String> ancestorTxids = const [],
     this.requestId,
-  });
+  }) : ancestorTxids = frozenList(ancestorTxids);
 
   @override
   String get correlationId => requestId ?? 'proof-request-$txid';

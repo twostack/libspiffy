@@ -2,6 +2,7 @@ import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart';
 
 import 'bitcoin_transaction.dart';
+import 'persistent_map.dart';
 
 /// Specification for a single invoice output (distinct UTXO)
 /// Supports both P2PKH (address-based) and P2MS (multisig) outputs
@@ -301,3 +302,39 @@ bool _listEquals<T>(List<T> a, List<T> b) {
   }
   return true;
 }
+
+/// [output] with unmodifiable collections that no caller shares.
+///
+/// An [InvoiceOutputSpec] is otherwise immutable, but [P2MSOutputSpec.publicKeys],
+/// [OPReturnOutputSpec.dataChunks] and [PluginOutputSpec.params] are the
+/// caller's own collections. Used wherever a spec is kept: the invoice state,
+/// and the events and commands that carry one (bead libspiffy-6r5w).
+InvoiceOutputSpec frozenOutputSpec(InvoiceOutputSpec output) => switch (output) {
+      final P2MSOutputSpec o when o.runtimeType == P2MSOutputSpec => P2MSOutputSpec(
+          publicKeys: List<String>.unmodifiable(o.publicKeys),
+          threshold: o.threshold,
+          amount: o.amount,
+          label: o.label,
+        ),
+      final OPReturnOutputSpec o when o.runtimeType == OPReturnOutputSpec => OPReturnOutputSpec(
+          dataChunks: List<List<int>>.unmodifiable([for (final chunk in o.dataChunks) List<int>.unmodifiable(chunk)]),
+          separateOutputs: o.separateOutputs,
+          label: o.label,
+        ),
+      final PluginOutputSpec o when o.runtimeType == PluginOutputSpec => PluginOutputSpec(
+          pluginId: o.pluginId,
+          pluginScriptType: o.pluginScriptType,
+          params: unmodifiableDeepCopy(o.params) as Map<String, dynamic>,
+          amount: o.amount,
+          label: o.label,
+        ),
+      _ => output,
+    };
+
+/// [specs] copied into an unmodifiable list of [frozenOutputSpec]s.
+List<InvoiceOutputSpec> frozenOutputSpecs(Iterable<InvoiceOutputSpec> specs) =>
+    List<InvoiceOutputSpec>.unmodifiable(specs.map(frozenOutputSpec));
+
+/// [frozenOutputSpecs] for a field that may be null.
+List<InvoiceOutputSpec>? frozenOutputSpecsOrNull(Iterable<InvoiceOutputSpec>? specs) =>
+    specs == null ? null : frozenOutputSpecs(specs);

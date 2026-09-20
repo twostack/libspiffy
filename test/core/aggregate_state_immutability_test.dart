@@ -1,4 +1,6 @@
-/// libspiffy-mmb: aggregate state objects are immutable (copy-on-write).
+/// libspiffy-mmb: aggregate state objects are immutable (copy-on-write),
+/// and libspiffy-6r5w: so are the events and commands that carry collections
+/// into them.
 ///
 /// WalletState, InvoiceState and ChannelState were updated in place by the
 /// aggregates' event handlers, and their collections were plain mutable maps
@@ -18,6 +20,13 @@
 /// * `ChannelState.copyWith` (and so eventador's `nextVersion`) threw
 ///   UnimplementedError.
 ///
+/// mmb left events and commands sharing the caller's collections: an event
+/// is handed live to the projection, to every coordinator subscriber and to
+/// the P2P broadcaster, so a caller that went on modifying the list it had
+/// passed changed what all three read. The journal was safe only because
+/// serialization happens to copy. 6r5w copies and freezes those collections
+/// in the constructors, including the ones the app hands the coordinator.
+///
 /// Every test below fails on the in-place implementation.
 library;
 
@@ -25,6 +34,7 @@ import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:eventador/eventador.dart' show Event;
 import 'package:test/test.dart';
 
+import 'package:libspiffy/src/actors/coordinator_messages.dart' as coord;
 import 'package:libspiffy/src/actors/invoice_messages.dart' show InvoiceStatus;
 import 'package:libspiffy/src/core/bitcoin_wallet_aggregate.dart';
 import 'package:libspiffy/src/core/channel_commands.dart';
@@ -485,6 +495,283 @@ void main() {
           PaymentChannelAggregate.channelStateToMap(state)..remove('version')..remove('lastModified'));
     });
   });
+
+  group('6r5w: events and commands', () {
+    test('an event does not share the collections the caller built it from', () {
+      final spent = ['${'ab' * 32}:0'];
+      final recipients = ['muq9kAb9ri62VChAMRkuwK5bTve4iDLWBg'];
+      final event = TransactionRecordedEvent(
+        walletId: _walletId,
+        txid: 'cd' * 32,
+        rawHex: '00',
+        totalInputSats: 1000,
+        totalOutputSats: 900,
+        fee: 100,
+        numInputs: 1,
+        numOutputs: 1,
+        txVersion: 1,
+        txLockTime: 0,
+        spentUtxoKeys: spent,
+        recipientAddresses: recipients,
+        paymentAmount: '900',
+      );
+      final spentBefore = [...event.spentUtxoKeys];
+      final recipientsBefore = [...event.recipientAddresses];
+
+      spent.add('late:0');
+      recipients.add('mlate');
+      recipients.removeAt(0);
+
+      expect(event.spentUtxoKeys, spentBefore);
+      expect(event.recipientAddresses, recipientsBefore);
+      expect(event.getEventData()['recipientAddresses'], recipientsBefore,
+          reason: 'what is journaled and broadcast is the copy too');
+    });
+
+    test("an event's nested maps and lists are copied, not just the top level", () {
+      final metadata = <String, dynamic>{
+        'profile': {'tags': ['a']},
+        'lines': [1, 2],
+      };
+      final event = WalletCreatedEvent(
+        walletId: _walletId,
+        walletName: 'w',
+        rootAddress: 'muq9kAb9ri62VChAMRkuwK5bTve4iDLWBg',
+        walletType: WalletType.hd,
+        walletMetadata: metadata,
+      );
+      final before = event.getEventData().toString();
+
+      ((metadata['profile'] as Map)['tags'] as List).add('late');
+      (metadata['lines'] as List).add(3);
+      metadata['injected'] = true;
+
+      expect(event.getEventData().toString(), before);
+      expect((event.walletMetadata!['profile'] as Map)['tags'], ['a']);
+    });
+
+    test('the collections an event exposes cannot be modified', () {
+      final recorded = TransactionRecordedEvent(
+        walletId: _walletId,
+        txid: 'cd' * 32,
+        rawHex: '00',
+        totalInputSats: 1000,
+        totalOutputSats: 900,
+        fee: 100,
+        numInputs: 1,
+        numOutputs: 1,
+        txVersion: 1,
+        txLockTime: 0,
+        spentUtxoKeys: ['${'ab' * 32}:0'],
+        recipientAddresses: ['muq9kAb9ri62VChAMRkuwK5bTve4iDLWBg'],
+        paymentAmount: '900',
+      );
+      final created = WalletCreatedEvent(
+        walletId: _walletId,
+        walletName: 'w',
+        rootAddress: 'muq9kAb9ri62VChAMRkuwK5bTve4iDLWBg',
+        walletType: WalletType.hd,
+        walletMetadata: {'profile': {'tags': ['a']}},
+      );
+      final deferred = TransactionSpendDeferredEvent(
+        walletId: _walletId,
+        txid: 'cd' * 32,
+        heldInputs: [
+          {'utxoKey': '${'ab' * 32}:0', 'satoshis': '1000'},
+        ],
+      );
+      final opened = ChannelOpenedEvent(
+        channelId: 'c1',
+        fundingTxId: 'ab' * 32,
+        fundingOutputIndex: 0,
+        fundingTxHex: '00',
+        fundingAncestorTxids: ['cd' * 32],
+        initialClientBalanceSats: BigInt.from(10),
+        initialServerBalanceSats: BigInt.zero,
+      );
+
+      _expectAllRejected({
+        'spentUtxoKeys.add': () => recorded.spentUtxoKeys.add('late:0'),
+        'recipientAddresses.clear': () => recorded.recipientAddresses.clear(),
+        'walletMetadata[]=': () => created.walletMetadata!['injected'] = true,
+        'walletMetadata nested list.add': () =>
+            ((created.walletMetadata!['profile'] as Map)['tags'] as List).add('late'),
+        'heldInputs.add': () => deferred.heldInputs.add({'utxoKey': 'x:1'}),
+        'heldInput[]=': () => deferred.heldInputs.first['satoshis'] = '9',
+        'fundingAncestorTxids.add': () => opened.fundingAncestorTxids.add('late'),
+      });
+    });
+
+    test('a command does not share the collections the caller built it from', () {
+      final utxoKeys = ['${'ab' * 32}:0'];
+      final publicKeys = ['02' * 33];
+      final indices = [4];
+      final flags = [false];
+      final sign = SignTransactionCommand(
+        walletId: _walletId,
+        transactionId: 'tx-1',
+        rawTransaction: '00',
+        utxoKeys: utxoKeys,
+        publicKeys: publicKeys,
+        derivationIndices: indices,
+        isChangeFlags: flags,
+      );
+      final signerMetadata = <String, dynamic>{'signer': {'ids': [1]}};
+      final recipients = ['muq9kAb9ri62VChAMRkuwK5bTve4iDLWBg'];
+      final record = RecordOutgoingTransactionCommand(
+        walletId: _walletId,
+        txid: 'cd' * 32,
+        rawHex: '00',
+        totalInputSats: 1000,
+        totalOutputSats: 900,
+        fee: 100,
+        numInputs: 1,
+        numOutputs: 1,
+        txVersion: 1,
+        txLockTime: 0,
+        spentUtxoKeys: utxoKeys,
+        recipientAddresses: recipients,
+        paymentAmount: BigInt.from(900),
+        signerMetadata: signerMetadata,
+      );
+
+      utxoKeys.add('late:0');
+      publicKeys.clear();
+      indices.add(9);
+      flags.add(true);
+      recipients.add('mlate');
+      ((signerMetadata['signer'] as Map)['ids'] as List).add(2);
+
+      expect(sign.utxoKeys, ['${'ab' * 32}:0']);
+      expect(sign.publicKeys, ['02' * 33]);
+      expect(sign.derivationIndices, [4]);
+      expect(sign.isChangeFlags, [false]);
+      expect(record.spentUtxoKeys, ['${'ab' * 32}:0']);
+      expect(record.recipientAddresses, ['muq9kAb9ri62VChAMRkuwK5bTve4iDLWBg']);
+      expect((record.signerMetadata!['signer'] as Map)['ids'], [1]);
+    });
+
+    test("an output spec a command carries does not share the caller's key list", () {
+      final publicKeys = ['02' * 33, '03' * 33];
+      final params = <String, dynamic>{'tokenId': 't', 'nested': {'ids': [1]}};
+      final outputs = <InvoiceOutputSpec>[
+        P2MSOutputSpec(publicKeys: publicKeys, threshold: 2, amount: BigInt.from(1000)),
+        PluginOutputSpec(
+            pluginId: 'p', pluginScriptType: 's', params: params, amount: BigInt.from(500)),
+      ];
+      final command = CreateInvoiceCommand(
+        invoiceId: 'inv-1',
+        walletId: _walletId,
+        addresses: const [],
+        amount: BigInt.from(1500),
+        outputs: outputs,
+      );
+
+      publicKeys.add('04' * 33);
+      outputs.removeLast();
+      ((params['nested'] as Map)['ids'] as List).add(2);
+
+      expect(command.outputs, hasLength(2), reason: 'the list itself was copied');
+      expect((command.outputs![0] as P2MSOutputSpec).publicKeys, ['02' * 33, '03' * 33]);
+      expect(((command.outputs![1] as PluginOutputSpec).params['nested'] as Map)['ids'], [1]);
+      _expectAllRejected({
+        'outputs.add': () =>
+            command.outputs!.add(P2PKHOutputSpec(address: 'm', amount: BigInt.one)),
+        'publicKeys.add': () => (command.outputs![0] as P2MSOutputSpec).publicKeys.add('05'),
+        'params nested.add': () =>
+            ((command.outputs![1] as PluginOutputSpec).params['nested'] as Map)['ids'] = [9],
+      });
+    });
+
+    test('a coordinator command does not share the collections the app built it from', () {
+      final walletMetadata = <String, dynamic>{'profile': {'tags': ['a']}};
+      final create = coord.CreateWalletCommand(
+          walletId: _walletId, name: 'w', walletMetadata: walletMetadata);
+      final headers = <Map<String, dynamic>>[
+        {'height': 1, 'hash': 'ab' * 32},
+      ];
+      final store = coord.StoreHeadersCommand(headers: headers);
+      final payload = <String, dynamic>{'txids': ['ab' * 32]};
+      final received =
+          coord.P2PMessageReceived(fromPeerId: 'peer', messageType: 'm', payload: payload);
+      final beef = <int>[1, 2, 3];
+      final import = coord.ImportTransactionCommand(
+          walletId: _walletId, transactionId: 'ab' * 32, beef: beef);
+
+      ((walletMetadata['profile'] as Map)['tags'] as List).add('late');
+      headers.add({'height': 2});
+      headers.first['height'] = 99;
+      (payload['txids'] as List).add('late');
+      beef.add(4);
+
+      expect((create.walletMetadata!['profile'] as Map)['tags'], ['a']);
+      expect(store.headers, hasLength(1));
+      expect(store.headers.first['height'], 1);
+      expect(received.payload['txids'], ['ab' * 32]);
+      expect(import.beef, [1, 2, 3]);
+    });
+
+    test("the event the aggregate journals does not share the caller's list", () async {
+      final store = InMemoryEventStore();
+      final wallet = _wallet(store);
+      await wallet.preStart();
+      await wallet.commandHandler(CreateWalletCommand(
+          walletId: _walletId, walletName: 'w', mnemonic: _mnemonic));
+      final root = wallet.currentState.rootAddress!;
+      await wallet.commandHandler(ReceiveUTXOCommand(
+        walletId: _walletId,
+        txid: 'ab' * 32,
+        vout: 0,
+        satoshis: BigInt.from(1000),
+        scriptPubKey: dartsv.P2PKHLockBuilder.fromAddress(dartsv.Address.fromBase58(root))
+            .getScriptPubkey()
+            .toHex(),
+        address: root,
+      ));
+      final recipients = ['muq9kAb9ri62VChAMRkuwK5bTve4iDLWBg'];
+      final spent = ['${'ab' * 32}:0'];
+      final tx = dartsv.Transaction()
+        ..addInput(dartsv.TransactionInput('ab' * 32, 0, dartsv.TransactionInput.MAX_SEQ_NUMBER));
+      await wallet.commandHandler(RecordOutgoingTransactionCommand(
+        walletId: _walletId,
+        txid: 'cd' * 32,
+        rawHex: tx.serialize(),
+        totalInputSats: 1000,
+        totalOutputSats: 900,
+        fee: 100,
+        numInputs: 1,
+        numOutputs: 1,
+        txVersion: 1,
+        txLockTime: 0,
+        spentUtxoKeys: spent,
+        recipientAddresses: recipients,
+        paymentAmount: BigInt.from(900),
+      ));
+      final journaled =
+          store.allEvents.whereType<TransactionRecordedEvent>().single;
+
+      recipients.add('mlate');
+      spent.add('late:0');
+
+      expect(journaled.recipientAddresses, ['muq9kAb9ri62VChAMRkuwK5bTve4iDLWBg'],
+          reason: 'the projection and every subscriber read this object live');
+      expect(journaled.spentUtxoKeys, ['${'ab' * 32}:0']);
+    });
+  });
+}
+
+/// Each mutation in [mutations] must be refused; names the ones that were not.
+void _expectAllRejected(Map<String, void Function()> mutations) {
+  final accepted = <String>[];
+  mutations.forEach((name, mutate) {
+    try {
+      mutate();
+      accepted.add(name);
+    } on UnsupportedError {
+      // expected
+    }
+  });
+  expect(accepted, isEmpty, reason: 'these collections accepted a modification');
 }
 
 /// An [AddressGeneratedEvent] whose chain cannot be read: application fails

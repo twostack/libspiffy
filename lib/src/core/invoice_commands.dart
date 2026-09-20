@@ -1,5 +1,6 @@
 import 'package:eventador/eventador.dart';
 import '../models/invoice_output_spec.dart';
+import '../models/persistent_map.dart';
 
 /// Base class for all invoice commands
 abstract class InvoiceCommand extends Command {
@@ -31,13 +32,16 @@ class CreateInvoiceCommand extends InvoiceCommand {
   CreateInvoiceCommand({
     required String invoiceId,
     required this.walletId,
-    required this.addresses,
+    required List<String> addresses,
     required this.amount,
-    this.outputs,
+    List<InvoiceOutputSpec>? outputs,
     this.description,
     this.expiresIn,
-    this.invoiceMetadata,
-  }) : super(invoiceId: invoiceId);
+    Map<String, dynamic>? invoiceMetadata,
+  })  : addresses = frozenList(addresses),
+        outputs = frozenOutputSpecsOrNull(outputs),
+        invoiceMetadata = frozenPlainMapOrNull(invoiceMetadata),
+        super(invoiceId: invoiceId);
 
   /// Get effective outputs - either explicit outputs or computed from addresses/amount
   List<InvoiceOutputSpec> get effectiveOutputs {
@@ -72,9 +76,10 @@ class MarkInvoicePaidCommand extends InvoiceCommand {
     required String invoiceId,
     required this.txid,
     required this.amountReceived,
-    required this.addressesPaidTo,
+    required List<String> addressesPaidTo,
     this.paidAt,
-  }) : super(invoiceId: invoiceId);
+  })  : addressesPaidTo = frozenList(addressesPaidTo),
+        super(invoiceId: invoiceId);
 }
 
 /// Command to cancel an invoice

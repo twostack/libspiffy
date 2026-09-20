@@ -1,6 +1,7 @@
 import 'package:libspiffy/src/models/bitcoin_transaction.dart';
 import 'package:libspiffy/src/models/bitcoin_utxo.dart';
 
+import '../models/persistent_map.dart';
 import '../models/wallet_event.dart';
 import '../models/wallet_type.dart';
 
@@ -39,14 +40,15 @@ class WalletCreatedEvent extends WalletEvent {
     required this.walletName,
     required this.rootAddress,
     required this.walletType,
-    this.walletMetadata,
+    Map<String, dynamic>? walletMetadata,
     @Deprecated('Not persisted; see the hdPublicKeyXpub field.')
     this.hdPublicKeyXpub,
     String? eventId,
     DateTime? timestamp,
     int? version,
     Map<String, dynamic>? metadata,
-  }) : super(
+  })  : walletMetadata = frozenPlainMapOrNull(walletMetadata),
+        super(
           walletId: walletId,
           eventId: eventId,
           timestamp: timestamp,
@@ -154,12 +156,13 @@ class WalletConfigurationUpdatedEvent extends WalletEvent {
   WalletConfigurationUpdatedEvent({
     required String walletId,
     this.newName,
-    this.newMetadata,
+    Map<String, dynamic>? newMetadata,
     String? eventId,
     DateTime? timestamp,
     int? version,
     Map<String, dynamic>? metadata,
-  }) : super(
+  })  : newMetadata = frozenPlainMapOrNull(newMetadata),
+        super(
           walletId: walletId,
           eventId: eventId,
           timestamp: timestamp,
@@ -364,17 +367,20 @@ class TransactionImportedEvent extends WalletEvent {
     required this.numOutputs,
     required this.txVersion,
     required this.txLockTime,
-    required this.walletReceivingAddresses,
+    required List<String> walletReceivingAddresses,
     required this.walletReceivedSats,
     required this.totalInputSats,
-    required this.sendingAddresses,
-    this.ancestors = const [],
+    required List<String> sendingAddresses,
+    List<BeefAncestor> ancestors = const [],
     this.counterpartyMarker,
     String? eventId,
     DateTime? timestamp,
     int? version,
     Map<String, dynamic>? metadata,
-  }) : super(
+  })  : walletReceivingAddresses = frozenList(walletReceivingAddresses),
+        sendingAddresses = frozenList(sendingAddresses),
+        ancestors = frozenList(ancestors),
+        super(
           walletId: walletId,
           eventId: eventId,
           timestamp: timestamp,
@@ -687,13 +693,14 @@ class UTXOReceivedEvent extends WalletEvent {
     this.confirmations,
     this.initialStatus = UTXOStatus.pending, // Default to pending
     this.derivationIndex,
-    this.pluginMetadata,
+    Map<String, dynamic>? pluginMetadata,
     this.counterpartyMarker,
     String? eventId,
     DateTime? timestamp,
     int? version,
     Map<String, dynamic>? metadata,
-  }) : super(
+  })  : pluginMetadata = frozenPlainMapOrNull(pluginMetadata),
+        super(
           walletId: walletId,
           eventId: eventId,
           timestamp: timestamp,
@@ -1336,8 +1343,8 @@ class TransactionRecordedEvent extends WalletEvent {
     required this.numOutputs,
     required this.txVersion,
     required this.txLockTime,
-    required this.spentUtxoKeys,
-    required this.recipientAddresses,
+    required List<String> spentUtxoKeys,
+    required List<String> recipientAddresses,
     required this.paymentAmount,
     this.changeAddress,
     this.changeAmount,
@@ -1346,7 +1353,9 @@ class TransactionRecordedEvent extends WalletEvent {
     DateTime? timestamp,
     int? version,
     Map<String, dynamic>? metadata,
-  }) : super(
+  })  : spentUtxoKeys = frozenList(spentUtxoKeys),
+        recipientAddresses = frozenList(recipientAddresses),
+        super(
           walletId: walletId,
           eventId: eventId,
           timestamp: timestamp,
@@ -1572,14 +1581,15 @@ class UTXOReservationPlacedEvent extends WalletEvent {
 
   UTXOReservationPlacedEvent({
     required String walletId,
-    required this.utxoIdentifiers,
+    required List<Map<String, dynamic>> utxoIdentifiers,
     required this.reservationId,
     required this.expiresAt,
     String? eventId,
     DateTime? timestamp,
     int? version,
     Map<String, dynamic>? metadata,
-  }) : super(
+  })  : utxoIdentifiers = frozenMapList(utxoIdentifiers),
+        super(
           walletId: walletId,
           eventId: eventId,
           timestamp: timestamp,
@@ -1652,12 +1662,13 @@ class UTXOReservationReleasedEvent extends WalletEvent {
   UTXOReservationReleasedEvent({
     required String walletId,
     required this.reservationId,
-    required this.utxoIdentifiers,
+    required List<Map<String, dynamic>> utxoIdentifiers,
     String? eventId,
     DateTime? timestamp,
     int? version,
     Map<String, dynamic>? metadata,
-  }) : super(
+  })  : utxoIdentifiers = frozenMapList(utxoIdentifiers),
+        super(
           walletId: walletId,
           eventId: eventId,
           timestamp: timestamp,
@@ -1724,12 +1735,13 @@ class UTXOReservationExpiredEvent extends WalletEvent {
   UTXOReservationExpiredEvent({
     required String walletId,
     required this.reservationId,
-    required this.utxoIdentifiers,
+    required List<Map<String, dynamic>> utxoIdentifiers,
     String? eventId,
     DateTime? timestamp,
     int? version,
     Map<String, dynamic>? metadata,
-  }) : super(
+  })  : utxoIdentifiers = frozenMapList(utxoIdentifiers),
+        super(
           walletId: walletId,
           eventId: eventId,
           timestamp: timestamp,
@@ -1787,14 +1799,15 @@ class UTXOSplitInitiatedEvent extends WalletEvent {
 
   UTXOSplitInitiatedEvent({
     required String walletId,
-    required this.utxoKeysToSplit,
+    required List<String> utxoKeysToSplit,
     required this.targetUtxoCount,
     required this.feeRate,
     String? eventId,
     DateTime? timestamp,
     int? version,
     Map<String, dynamic>? metadata,
-  }) : super(
+  })  : utxoKeysToSplit = frozenList(utxoKeysToSplit),
+        super(
           walletId: walletId,
           eventId: eventId,
           timestamp: timestamp,
@@ -1955,12 +1968,13 @@ class AllUTXOsSplitCompletedEvent extends WalletEvent {
     required this.totalUtxosSplit,
     required this.totalOutputsCreated,
     required this.totalFeesPaid,
-    required this.transactionIds,
+    required List<String> transactionIds,
     String? eventId,
     DateTime? timestamp,
     int? version,
     Map<String, dynamic>? metadata,
-  }) : super(
+  })  : transactionIds = frozenList(transactionIds),
+        super(
           walletId: walletId,
           eventId: eventId,
           timestamp: timestamp,
@@ -2026,7 +2040,7 @@ sealed class WalletImportNotification {
     DateTime? timestamp,
     Map<String, dynamic>? metadata,
   })  : timestamp = timestamp ?? DateTime.now(),
-        metadata = Map<String, dynamic>.unmodifiable(metadata ?? const {});
+        metadata = frozenPlainMap(metadata ?? const {});
 
   @override
   String toString() => '$runtimeType(walletId: $walletId, timestamp: $timestamp)';
@@ -2080,10 +2094,10 @@ class WalletImportCompletedEvent extends WalletImportNotification {
     required super.walletId,
     required this.totalAddresses,
     required this.totalTransactions,
-    required this.importedUtxos,
+    required List<Map<String, dynamic>> importedUtxos,
     super.timestamp,
     super.metadata,
-  });
+  }) : importedUtxos = frozenMapList(importedUtxos);
 }
 
 /// The import failed or was cancelled (`metadata['cancelled'] == true`).
@@ -2159,12 +2173,13 @@ class TransactionConfirmationRevertedEvent extends WalletEvent {
     required this.reason,
     this.blockHeight,
     this.blockHash,
-    this.merkleProof,
+    List<String>? merkleProof,
     String? eventId,
     DateTime? timestamp,
     int? version,
     Map<String, dynamic>? metadata,
-  }) : super(
+  })  : merkleProof = frozenListOrNull(merkleProof),
+        super(
           walletId: walletId,
           eventId: eventId,
           timestamp: timestamp,
@@ -2292,8 +2307,8 @@ class TransactionSpendDeferredEvent extends WalletEvent {
   TransactionSpendDeferredEvent({
     required String walletId,
     required this.txid,
-    required this.heldInputs,
-    this.recipientAddresses = const [],
+    required List<Map<String, dynamic>> heldInputs,
+    List<String> recipientAddresses = const [],
     this.paymentAmount = '0',
     this.fee = 0,
     this.invoiceId,
@@ -2306,7 +2321,9 @@ class TransactionSpendDeferredEvent extends WalletEvent {
     DateTime? timestamp,
     int? version,
     Map<String, dynamic>? metadata,
-  })  : recordedAt = recordedAt ?? timestamp ?? DateTime.now(),
+  })  : heldInputs = frozenMapList(heldInputs),
+        recipientAddresses = frozenList(recipientAddresses),
+        recordedAt = recordedAt ?? timestamp ?? DateTime.now(),
         super(
           walletId: walletId,
           eventId: eventId,
@@ -2393,12 +2410,13 @@ class TransactionNetworkStatusCheckedEvent extends WalletEvent {
     required this.checkedAt,
     this.blockHeight,
     this.explicit = false,
-    this.competingTxids = const [],
+    List<String> competingTxids = const [],
     String? eventId,
     DateTime? timestamp,
     int? version,
     Map<String, dynamic>? metadata,
-  }) : super(
+  })  : competingTxids = frozenList(competingTxids),
+        super(
           walletId: walletId,
           eventId: eventId,
           timestamp: timestamp,
@@ -2457,12 +2475,13 @@ class DeferredTransactionFailedEvent extends WalletEvent {
     required this.txid,
     required this.networkStatus,
     this.reason,
-    this.releasedInputs = const [],
+    List<ReleasedDeferredInput> releasedInputs = const [],
     String? eventId,
     DateTime? timestamp,
     int? version,
     Map<String, dynamic>? metadata,
-  }) : super(
+  })  : releasedInputs = frozenList(releasedInputs),
+        super(
           walletId: walletId,
           eventId: eventId,
           timestamp: timestamp,
@@ -2514,12 +2533,13 @@ class DeferredTransactionCancelledEvent extends WalletEvent {
     required this.txid,
     this.reason,
     this.networkStatus,
-    this.releasedInputs = const [],
+    List<ReleasedDeferredInput> releasedInputs = const [],
     String? eventId,
     DateTime? timestamp,
     int? version,
     Map<String, dynamic>? metadata,
-  }) : super(
+  })  : releasedInputs = frozenList(releasedInputs),
+        super(
           walletId: walletId,
           eventId: eventId,
           timestamp: timestamp,
@@ -2585,13 +2605,14 @@ class DeferredSpendReclaimedEvent extends WalletEvent {
     required String walletId,
     required this.txid,
     required this.reclaimTxid,
-    this.reclaimedUtxoKeys = const [],
+    List<String> reclaimedUtxoKeys = const [],
     this.reason,
     String? eventId,
     DateTime? timestamp,
     int? version,
     Map<String, dynamic>? metadata,
-  }) : super(
+  })  : reclaimedUtxoKeys = frozenList(reclaimedUtxoKeys),
+        super(
           walletId: walletId,
           eventId: eventId,
           timestamp: timestamp,

@@ -177,7 +177,11 @@ class InMemoryWalletStorage implements WalletStorage {
       ...?(existing?['metadata'] as Map<String, dynamic>?),
       ...?metadata,
     };
-    final network = networkType ?? existing?['network'] as String? ?? 'mainnet';
+    // Canonical spelling, and testnet for a row created without a network:
+    // the same rule on every backend (bead libspiffy-sxk5).
+    final network = WalletRowRules.canonicalNetwork(networkType) ??
+        existing?['network'] as String? ??
+        WalletRowRules.defaultNetwork;
     _walletMetadata[walletId] = {
       'walletId': walletId,
       'name': name,

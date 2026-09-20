@@ -302,6 +302,39 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### One network default, everywhere
+
+- A wallet row created without a `networkType` is **testnet** on all three
+  storage backends. It was `'mainnet'`, while `NetworkName`, the wallet
+  aggregate, the SPV parameters and the actor system all resolve an
+  unspecified network to testnet. A caller of the exported
+  `ReadModelStorage.storeWallet(id, name)` therefore created a row that read
+  back as mainnet — `isMainnet`, MAIN address encoding — for a wallet the
+  aggregate considered testnet: the mainnet/testnet disagreement between
+  layers of V-1 and V-2, waiting in the public API.
+- `storeWallet` now **canonicalises** the network it is given, so the
+  `'main'` / `'test'` / `'regtest'` spelling the actor system, importer and
+  P2P layer use is stored as the read model's own
+  `'mainnet'` / `'testnet'` / `'regtest'` and never sits in a row beside it.
+- A null `networkType` still means *keep the stored network*, as it does for
+  `rootAddress` and `metadata`. The default applies only when the row is
+  created.
+- `WalletState.empty` and `WalletReadModel.empty` default to testnet for the
+  same reason, and testnet is the safe direction to be wrong in: a wallet
+  wrongly taken for testnet cannot encode an address that receives real
+  coins.
+- **Nothing to migrate, and no row is rewritten.** libspiffy's only insert
+  path, `WalletProjection._handleWalletCreated`, has always canonicalised
+  before storing, and its other three `storeWallet` calls are updates that
+  resupply the row's own network — so no row libspiffy wrote ever took the
+  old default. A row an external caller created with it keeps what it has;
+  which network was meant is not something this library can know.
+- The rule lives in one place, `WalletRowRules.defaultNetwork` and
+  `WalletRowRules.canonicalNetwork`, called by all three backends. Neither
+  it nor `NetworkName` is exported yet, so an app reading the `network` entry
+  from the exported `ReadModelStorage` still has to compare strings by hand —
+  the thing `NetworkName` exists to stop (libspiffy-47np).
+
 ### Payment channels: stuck channels are reported at startup
 
 - **New:** `UnfinishedChannelsFoundEvent` on the coordinator event stream,

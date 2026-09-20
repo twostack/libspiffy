@@ -102,7 +102,8 @@ class IsarWalletStorage implements ReadModelStorage {
           ..walletId = walletId
           ..name = name
           ..walletType = metadata?['walletType'] as String? ?? 'hd'
-          ..network = networkType ?? 'mainnet'
+          ..network = WalletRowRules.canonicalNetwork(networkType) ??
+              WalletRowRules.defaultNetwork
           ..rootAddress = rootAddress
           ..derivationIndex = metadata?['derivationIndex'] as int? ?? 0
           ..isCreated = true
@@ -117,7 +118,8 @@ class IsarWalletStorage implements ReadModelStorage {
         if (reusedId != null) entity.id = reusedId;
       } else {
         entity.name = name;
-        entity.network = networkType ?? entity.network;
+        entity.network =
+            WalletRowRules.canonicalNetwork(networkType) ?? entity.network;
         if (rootAddress != null) entity.rootAddress = rootAddress;
         entity.lastAccessedAt = DateTime.now();
         

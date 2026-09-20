@@ -49,6 +49,18 @@ abstract class ReadModelStorage {
   ///
   /// A store never removes a metadata key. Writing a key null blanks it and
   /// keeps it; the whole document goes only with [deleteWallet].
+  ///
+  /// [networkType] is canonicalised on the way in
+  /// (`WalletRowRules.canonicalNetwork`), so the `'main'` / `'test'` /
+  /// `'regtest'` spelling the actor system, importer and P2P layer use is
+  /// stored as the read model's own `'mainnet'` / `'testnet'` / `'regtest'`
+  /// and never sits in a row beside it. A wallet CREATED without a network
+  /// gets `WalletRowRules.defaultNetwork` -- testnet, which is what
+  /// `NetworkName` and the wallet aggregate resolve an unspecified network
+  /// to (bead libspiffy-sxk5). It used to be `'mainnet'` on all three
+  /// backends, so a caller who omitted [networkType] created a row that read
+  /// back as mainnet -- MAIN address encoding -- for a wallet the aggregate
+  /// considered testnet.
   Future<void> storeWallet(
     String walletId,
     String name, {

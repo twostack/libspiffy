@@ -32,6 +32,8 @@ import 'package:libspiffy/src/models/invoice_read_model.dart';
 import 'package:libspiffy/src/models/payment_channel.dart';
 import 'package:libspiffy/src/models/transaction_address_link.dart';
 import 'package:libspiffy/src/storage/read_model_storage.dart';
+import 'package:libspiffy/src/storage/wallet_row_rules.dart';
+import 'package:libspiffy/src/utils/network_name.dart';
 
 import 'read_model_keying_contract.dart' show contractHex64;
 
@@ -147,7 +149,9 @@ void defineWalletLifecycleContract(
       final u = unique();
       final wallet = 'lc-recreate-$u';
 
-      await s.storeWallet(wallet, 'First', networkType: 'testnet');
+      // Stored mainnet so the re-create below can tell "starts afresh" from
+      // "kept what the deleted row had": the create default is testnet.
+      await s.storeWallet(wallet, 'First', networkType: 'mainnet');
       await s.deleteWallet(wallet);
       expect(await s.walletExists(wallet), isFalse);
       expect(await s.getWallet(wallet), isNull,
@@ -162,8 +166,9 @@ void defineWalletLifecycleContract(
       expect(await s.getWalletIds(), contains(wallet));
       final meta = await s.getWallet(wallet);
       expect(meta?['name'], 'Second');
-      expect(meta?['network'], 'mainnet',
-          reason: 'the re-created wallet starts afresh (hard delete)');
+      expect(meta?['network'], WalletRowRules.defaultNetwork,
+          reason: 'the re-created wallet starts afresh (hard delete): it '
+              'takes the create default, not the deleted row\'s network');
     });
 
     test('S-15: a store merges metadata and keeps the scalars it omits',
@@ -216,6 +221,58 @@ void defineWalletLifecycleContract(
       meta = await s.getWallet(wallet);
       expect(meta!['metadata'], {'version': 2},
           reason: 'a re-created wallet merges into nothing (hard delete)');
+    });
+
+    test('sxk5: a wallet created with no network is testnet, and a supplied '
+        'spelling is stored canonically', () async {
+      final s = storage();
+      final u = unique();
+
+      // The shape an external caller of the exported ReadModelStorage takes:
+      // a wallet and a name. Every backend used to write 'mainnet' here,
+      // while NetworkName, the wallet aggregate and the actor system all
+      // resolve an unspecified network to testnet -- so the row read back as
+      // mainnet, with MAIN address encoding, for a wallet the aggregate
+      // considered testnet. That is the mainnet/testnet disagreement between
+      // layers that audit V-1/V-2 was about, waiting in the public API.
+      final unspecified = 'lc-net-default-$u';
+      await s.storeWallet(unspecified, 'No Network');
+
+      final row = await s.getWallet(unspecified);
+      expect(row, isNotNull);
+      expect(row!['network'], NetworkName.canonical(null),
+          reason: 'a row created without a network takes the same default '
+              'every other layer takes');
+      expect(NetworkName.isMainnet(row['network'] as String?), isFalse,
+          reason: 'an unspecified network must not make the wallet mainnet');
+      expect(NetworkName.toDartsv(row['network'] as String?),
+          dartsv.NetworkType.TEST,
+          reason: 'and must not encode mainnet addresses');
+
+      // The actor system, importer and P2P layer spell these networks
+      // 'main' / 'test' / 'regtest'; the read model spells them
+      // 'mainnet' / 'testnet' / 'regtest'. A store canonicalises, so one
+      // spelling never sits in a row beside the other.
+      const spellings = <String, String>{
+        'test': 'testnet',
+        'testnet': 'testnet',
+        'main': 'mainnet',
+        'mainnet': 'mainnet',
+        'livenet': 'mainnet',
+        'regtest': 'regtest',
+      };
+      for (final entry in spellings.entries) {
+        final wallet = 'lc-net-${entry.key}-$u';
+        await s.storeWallet(wallet, 'Spelled', networkType: entry.key);
+        expect((await s.getWallet(wallet))!['network'], entry.value,
+            reason: '${entry.key} is the same network as ${entry.value}');
+      }
+
+      // And the default only applies to a CREATE: an omitted networkType
+      // still keeps the stored one (the merge rule above).
+      await s.storeWallet('lc-net-main-$u', 'Spelled');
+      expect((await s.getWallet('lc-net-main-$u'))!['network'], 'mainnet',
+          reason: 'the default must not overwrite a stored network');
     });
 
     test('S-15: a wallet stored with no metadata reads back an empty map',

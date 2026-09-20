@@ -6,6 +6,7 @@ import 'bitcoin_utxo.dart';
 import 'persistent_map.dart';
 import 'wallet_balances.dart';
 import 'wallet_type.dart';
+import '../utils/network_name.dart';
 
 /// Represents the current state of a wallet at a specific point in time.
 ///
@@ -137,7 +138,11 @@ class WalletState extends State {
       rootAddress: null,
       isCreated: false,
       isDeleted: false,
-      networkType: 'mainnet',
+      // An uncreated wallet has no network, and an unspecified network is
+      // testnet everywhere -- here, in the aggregate and in the read model
+      // rows (bead libspiffy-sxk5). It used to be 'mainnet' here alone.
+      // WalletCreated replaces it with the wallet's real network.
+      networkType: NetworkName.canonical(null),
       walletType: WalletType.hd, // Default to HD
       timestamp: now,
       utxos: PersistentMap.empty(),

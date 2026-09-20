@@ -16,7 +16,10 @@ void main() {
         expect(state.name, isEmpty);
         expect(state.rootAddress, isNull);
         expect(state.isCreated, isFalse);
-        expect(state.networkType, equals('mainnet'));
+        expect(state.networkType, equals('testnet'),
+            reason: 'an unspecified network is testnet everywhere: here, in '
+                'NetworkName, in the aggregate and in the read model rows '
+                '(bead libspiffy-sxk5). It was mainnet here alone');
         expect(state.utxos, isEmpty);
         expect(state.addresses, isEmpty);
         expect(state.nextDerivationIndex, equals(0));

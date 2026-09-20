@@ -1,3 +1,5 @@
+import '../utils/network_name.dart';
+
 /// Read model for wallet queries - optimized for UI/query needs
 /// 
 /// This is separate from WalletState (the write model) and is built by
@@ -55,7 +57,8 @@ class WalletReadModel {
       walletId: walletId,
       name: '',
       rootAddress: null,
-      networkType: 'mainnet',
+      // An unspecified network is testnet everywhere (bead libspiffy-sxk5).
+      networkType: NetworkName.canonical(null),
       createdAt: now,
       lastUpdated: now,
       confirmedBalance: BigInt.zero,

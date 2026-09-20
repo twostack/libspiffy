@@ -197,7 +197,11 @@ void main() {
       // Sums to funding, but the server claims 2000 for a 1000 payment.
       final reply = await ref.ask<dynamic>(
           _ack(amount: 1000, client: 98000, server: 2000), _ask);
-      expectRejected(reply, 'Server balance');
+      // The refusal names what a 1000 payment implies for BOTH sides rather
+      // than only the first mismatch it met (bead libspiffy-ubl0): this
+      // scenario has the client wrong too, and the old message said so for
+      // whichever side the handler happened to check first.
+      expectRejected(reply, 'expected client 99000 / server 1000');
       expect(journalLength(), 3);
     });
 

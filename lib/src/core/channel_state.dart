@@ -99,6 +99,18 @@ class ChannelState extends State {
   /// address-derivation and labelling metadata.
   final String? counterpartyMarker;
 
+  /// The refund transaction this channel's refund was claimed with, once a
+  /// claim has been journaled (bead libspiffy-07mx).
+  ///
+  /// [status] cannot stand in for this. A claim sets the status to
+  /// [ChannelStatus.expired], and `expired` must stay claimable: an expiry
+  /// observed first records the refund without broadcasting it (V-86), and
+  /// the claim is what carries the broadcast. So the status alone cannot
+  /// tell "expired, never claimed" from "expired by a claim", and without
+  /// this field the aggregate had nothing to test — a second claim journaled
+  /// a second ending.
+  final String? refundClaimedTxId;
+
   final DateTime? createdAt;
   final DateTime? closedAt;
 
@@ -146,6 +158,7 @@ class ChannelState extends State {
     this.context,
     this.counterpartyMarker,
     this.createdAt,
+    this.refundClaimedTxId,
     this.closedAt,
     this.version = 0,
     DateTime? lastModified,
@@ -208,6 +221,7 @@ class ChannelState extends State {
     Object? context = _unset,
     Object? counterpartyMarker = _unset,
     Object? createdAt = _unset,
+    Object? refundClaimedTxId = _unset,
     Object? closedAt = _unset,
   }) {
     T? pick<T>(Object? given, T? current) => identical(given, _unset) ? current : given as T?;
@@ -252,6 +266,8 @@ class ChannelState extends State {
       counterpartyMarker:
           pick<String>(counterpartyMarker, this.counterpartyMarker),
       createdAt: pick<DateTime>(createdAt, this.createdAt),
+      refundClaimedTxId:
+          pick<String>(refundClaimedTxId, this.refundClaimedTxId),
       closedAt: pick<DateTime>(closedAt, this.closedAt),
       version: version ?? this.version,
       lastModified: lastModified ?? this.lastModified,

@@ -302,6 +302,24 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### Payment channels: one rule for a payment, and one refund claim
+
+- **Fixed:** the client half of the payment protocol did not check that the
+  proposed balances were non-negative or that they still summed to the
+  funding amount; the server half did. Both now check one shared statement
+  of the rule. The two balance-mismatch errors became one message naming
+  both sides and both expected balances.
+- **Fixed:** a repeated `ClaimChannelRefundCommand` journaled a second
+  `RefundClaimedEvent`. A repeat naming the same refund transaction is now
+  answered without journaling a second ending; one naming a **different**
+  transaction is refused, because only one transaction can ever spend the
+  funding output.
+- `FullChannelStateResponse.refundClaimedTxId` tells a host whether a
+  channel's refund has actually been claimed. The status does not: a claim
+  and an expiry both leave the channel `expired`, and `expired` has to stay
+  claimable because an expiry seen first records the refund without
+  broadcasting it.
+
 ### The UTXO split reports what actually happened
 
 - **Fixed (false success):** a Benford split that failed before it built a

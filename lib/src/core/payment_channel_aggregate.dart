@@ -99,6 +99,7 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
         'context': s.context,
         'counterpartyMarker': s.counterpartyMarker,
         'createdAt': s.createdAt?.toIso8601String(),
+        'refundClaimedTxId': s.refundClaimedTxId,
         'closedAt': s.closedAt?.toIso8601String(),
         'version': s.version,
         'lastModified': s.lastModified.toIso8601String(),
@@ -156,6 +157,10 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       // Snapshots written before libspiffy-bps1 have no marker key.
       counterpartyMarker: map['counterpartyMarker'] as String?,
       createdAt: date(map['createdAt']),
+      // Snapshots written before libspiffy-07mx have no claim key; a
+      // channel whose claim predates this reads back as unclaimed, which is
+      // what the journal said at the time.
+      refundClaimedTxId: map['refundClaimedTxId'] as String?,
       closedAt: date(map['closedAt']),
       version: map['version'] as int,
       lastModified: date(map['lastModified']),
@@ -250,6 +255,7 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       fundingBeefHex: currentState.fundingBeefHex,
       latestPaymentTxHex: currentState.latestPaymentTxHex,
       latestClientSignatureHex: currentState.latestClientSignatureHex,
+      refundClaimedTxId: currentState.refundClaimedTxId,
       success: true,
     ));
   }
@@ -929,6 +935,58 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
     ];
   }
 
+  /// What must be true of ANY payment on an open channel, whichever side
+  /// journals it (bead libspiffy-ubl0).
+  ///
+  /// The two halves of one protocol used to disagree about this: the server
+  /// checked non-negativity and the sum against the funding amount, the
+  /// client checked neither. The client's own arithmetic made both true
+  /// inductively — its expected balances are derived from the current ones —
+  /// but that induction rests on the opening state being right, and a rule
+  /// two handlers enforce differently is a rule that will diverge. Stated
+  /// once, checked in both.
+  ///
+  /// Throws a [StateError] naming the invariant that does not hold.
+  static void _checkPaymentInvariants(
+    ChannelState currentState, {
+    required BigInt amountSats,
+    required BigInt newClientBalanceSats,
+    required BigInt newServerBalanceSats,
+  }) {
+    // A payment moves a POSITIVE amount from the client to the server. A
+    // zero payment burns a sequence number for nothing, and a negative one
+    // is a payment backwards that no balance check would catch.
+    if (amountSats <= BigInt.zero) {
+      throw StateError('Payment amount must be positive');
+    }
+    if (newClientBalanceSats < BigInt.zero ||
+        newServerBalanceSats < BigInt.zero) {
+      throw StateError('Proposed balances must not be negative: client '
+          '$newClientBalanceSats, server $newServerBalanceSats');
+    }
+    // The channel never holds more or less than it was funded with: the
+    // 2-of-2 output is the only money there is.
+    if (newClientBalanceSats + newServerBalanceSats !=
+        currentState.fundingAmountSats) {
+      throw StateError('Proposed balances '
+          '$newClientBalanceSats + $newServerBalanceSats '
+          'do not sum to the funding amount '
+          '${currentState.fundingAmountSats}');
+    }
+    // Both sides at once: a payment that moves the wrong amount usually has
+    // both balances wrong, and naming only the first one checked told half
+    // the story (and made the answer depend on which handler asked).
+    final expectedClient = currentState.clientBalanceSats - amountSats;
+    final expectedServer = currentState.serverBalanceSats + amountSats;
+    if (newClientBalanceSats != expectedClient ||
+        newServerBalanceSats != expectedServer) {
+      throw StateError('Proposed balances do not follow from a payment of '
+          '$amountSats: proposed client $newClientBalanceSats / server '
+          '$newServerBalanceSats, expected client $expectedClient / server '
+          '$expectedServer');
+    }
+  }
+
   List<Event> _handleRecordPayment(
     ChannelState currentState,
     RecordPaymentCommand cmd,
@@ -943,19 +1001,9 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       throw StateError('Only client can initiate payments');
     }
 
-    // Business rule: a payment moves a positive amount from the client to
-    // the server, as the server's own handler requires (bead libspiffy-kyw;
-    // the mirror is _handleAcknowledgePayment). Without this, a zero payment
-    // burned a sequence number for nothing, and a negative one passed every
-    // other guard — 'Insufficient balance' is never true for a negative
-    // amount — and journaled a "payment" that moved the amount back from the
-    // server to the client, taking the server's balance below zero if it
-    // held less than was clawed back.
-    if (cmd.amountSats <= BigInt.zero) {
-      throw StateError('Payment amount must be positive');
-    }
-
-    // Business rule: Sufficient balance
+    // Business rule: Sufficient balance. Checked before the shared
+    // invariants so the client keeps the answer that names its own problem
+    // rather than the derived balance mismatch that follows from it.
     if (currentState.clientBalanceSats < cmd.amountSats) {
       throw StateError('Insufficient balance');
     }
@@ -970,16 +1018,12 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       throw StateError('Sequence number must be incrementing');
     }
 
-    // Business rule: Balances must match
-    final expectedClientBalance = currentState.clientBalanceSats - cmd.amountSats;
-    final expectedServerBalance = currentState.serverBalanceSats + cmd.amountSats;
-    
-    if (cmd.newClientBalanceSats != expectedClientBalance) {
-      throw StateError('Client balance mismatch');
-    }
-    if (cmd.newServerBalanceSats != expectedServerBalance) {
-      throw StateError('Server balance mismatch');
-    }
+    _checkPaymentInvariants(
+      currentState,
+      amountSats: cmd.amountSats,
+      newClientBalanceSats: cmd.newClientBalanceSats,
+      newServerBalanceSats: cmd.newServerBalanceSats,
+    );
 
     // Use pre-computed payment TX and signature from command (generated by WalletManager)
     return [
@@ -1023,28 +1067,14 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       throw StateError('Channel has expired');
     }
 
-    // Business rules mirroring the client side (audit M10): a payment moves a
-    // positive amount from the client to the server, and the channel never
-    // holds more or less than it was funded with.
-    if (cmd.amountSats <= BigInt.zero) {
-      throw StateError('Payment amount must be positive');
-    }
-    if (cmd.proposedClientBalance < BigInt.zero ||
-        cmd.proposedServerBalance < BigInt.zero) {
-      throw StateError('Proposed balances must not be negative');
-    }
-    if (cmd.proposedClientBalance + cmd.proposedServerBalance !=
-        currentState.fundingAmountSats) {
-      throw StateError('Proposed balances '
-          '${cmd.proposedClientBalance} + ${cmd.proposedServerBalance} '
-          'do not sum to the funding amount ${currentState.fundingAmountSats}');
-    }
-    final expectedServerBalance =
-        currentState.serverBalanceSats + cmd.amountSats;
-    if (cmd.proposedServerBalance != expectedServerBalance) {
-      throw StateError('Server balance mismatch: proposed '
-          '${cmd.proposedServerBalance}, expected $expectedServerBalance');
-    }
+    // The same invariants the client journals under (audit M10, bead
+    // libspiffy-ubl0): one statement of the rule, checked on both sides.
+    _checkPaymentInvariants(
+      currentState,
+      amountSats: cmd.amountSats,
+      newClientBalanceSats: cmd.proposedClientBalance,
+      newServerBalanceSats: cmd.proposedServerBalance,
+    );
 
     // Use pre-computed fully signed TX and signatures from command (generated by WalletManager)
     return [
@@ -1265,6 +1295,23 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       }
     }
     final refundTxId = refundTx.id;
+
+    // Business rule: a channel's refund is claimed ONCE (bead
+    // libspiffy-07mx). A repeat naming the same transaction is the same
+    // ending told twice — the app did not hear the answer, and BSV is
+    // first-seen-wins so re-broadcasting it is harmless — so it is answered
+    // without journaling a second ending. A repeat naming a DIFFERENT
+    // transaction is not a repeat: exactly one transaction can ever spend
+    // the funding output, so the journal would be asserting two endings only
+    // one of which can be true. `refundTxHex` is caller-supplied, which is
+    // what makes that reachable.
+    final claimed = currentState.refundClaimedTxId;
+    if (claimed != null) {
+      if (claimed == refundTxId) return const [];
+      throw StateError('Channel ${cmd.channelId} already claimed its refund '
+          'with $claimed; $refundTxId is a different transaction and only one '
+          'of the two can spend the funding output');
+    }
 
     return [
       RefundClaimedEvent(
@@ -1488,6 +1535,13 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
   ChannelState _applyRefundClaimed(ChannelState state, RefundClaimedEvent event) {
     return state.copyWith(
       status: ChannelStatus.expired,
+      // What the status cannot say: `expired` is also what an expiry
+      // observed before any claim leaves behind, and that state must stay
+      // claimable (V-86). Recording the transaction is what lets a second
+      // claim be told apart from the first (bead libspiffy-07mx). A replay
+      // of two claims journaled by the old code keeps the FIRST, which is
+      // the one that was broadcast and the one the projection kept.
+      refundClaimedTxId: state.refundClaimedTxId ?? event.refundTxId,
       closedAt: event.timestamp,
       version: event.version,
       lastModified: event.timestamp,

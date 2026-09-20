@@ -839,6 +839,14 @@ class FullChannelStateResponse extends ActorResponse {
   /// channel and paid it back (bead libspiffy-lfrv).
   final bool returnLegRecordedInWallet;
 
+  /// The refund transaction this channel's refund was claimed with, or null
+  /// if no claim has been journaled (bead libspiffy-07mx).
+  ///
+  /// [status] does not answer this: a claim leaves the channel `expired`,
+  /// and so does an expiry observed before any claim. A host deciding
+  /// whether to claim reads this, not the status.
+  final String? refundClaimedTxId;
+
   @override
   final bool success;
   @override
@@ -875,6 +883,7 @@ class FullChannelStateResponse extends ActorResponse {
     this.latestPaymentTxHex,
     this.latestClientSignatureHex,
     this.returnLegRecordedInWallet = false,
+    this.refundClaimedTxId,
     required this.success,
     this.error,
   });

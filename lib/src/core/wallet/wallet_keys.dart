@@ -274,17 +274,12 @@ class WalletKeys {
     // Use next available derivation index
     final derivationIndex = currentState.nextDerivationIndex;
 
-    // Retrieve HD public key from secure storage
-    final xpubkey = await secureStorage.getString(hdPubKeyKey(command.walletId));
-    if (xpubkey == null) {
-      throw StateError('HD public key not found for wallet ${command.walletId}');
-    }
-
     // Determine network type
     final networkType = NetworkName.toDartsv(currentState.networkType);
 
-    // Reconstruct HD public key from xpubkey
-    final hdPublicKey = dartsv.HDPublicKey.fromXpub(xpubkey);
+    // Retrieve HD public key from secure storage, recovering it from the
+    // wallet's own key material if it is not there (libspiffy-atl2).
+    final hdPublicKey = await accountXpub(command.walletId, currentState);
 
     // Generate address based on purpose
     final String address;
@@ -391,6 +386,122 @@ class WalletKeys {
     } else {
       throw StateError('Unsupported wallet type: ${currentState.walletType}');
     }
+  }
+
+  /// The account extended public key of an HD, XPRIV or XPUB wallet, as a
+  /// parsed [dartsv.HDPublicKey].
+  ///
+  /// `wallet_hdpubkey_<walletId>` is written at creation by
+  /// [storeKeyMaterial] and is the answer whenever it is there. A wallet can
+  /// still be left without it: a creation interrupted before audit H4 wrote
+  /// the secrets *after* the event, and a host that moves, restores or
+  /// re-encrypts its secure storage may carry the seed across without the
+  /// key derived from it. Such a wallet could never derive another address
+  /// for the rest of its life, although the material the xpub comes from was
+  /// sitting beside it — while [privateKeyAtIndex] kept signing, because the
+  /// private side already walked a fallback chain. This walks the same one:
+  /// the watch-only xpub, then the xpriv, then the mnemonic.
+  ///
+  /// **A recovered xpub is trusted only if it re-derives the wallet's
+  /// journaled root address** (m/0/0, the path every release has used). It
+  /// can be the wrong key: a mnemonic wallet's xpub depends on its BIP39
+  /// passphrase, and a secure storage that lost the hdpubkey may have lost
+  /// the passphrase too, in which case the mnemonic alone derives a
+  /// *different* wallet. Returning that xpub would hand out addresses this
+  /// wallet can never sign for, and coin sent to them would be unspendable —
+  /// far worse than the failure it replaces. An unverifiable recovery is
+  /// refused, naming what was found and what could not be confirmed.
+  ///
+  /// A verified recovery is written back to `wallet_hdpubkey_<walletId>` so
+  /// it happens once. A failed write-back is logged, not thrown: the address
+  /// derives regardless, and the recovery simply runs again next time.
+  Future<dartsv.HDPublicKey> accountXpub(
+      String walletId, WalletState currentState) async {
+    final stored = await secureStorage.getString(hdPubKeyKey(walletId));
+    if (stored != null) return dartsv.HDPublicKey.fromXpub(stored);
+
+    final networkType = NetworkName.toDartsv(currentState.networkType);
+
+    // In precedence order, and each entry names the key it reads so a
+    // failure can say what was looked for.
+    final sources = <(String, Future<String?> Function())>[
+      ('wallet_xpub_$walletId', () async => secureStorage.getXPub(walletId)),
+      ('wallet_xpriv_$walletId', () async {
+        final xpriv = await secureStorage.getXPriv(walletId);
+        if (xpriv == null) return null;
+        return cryptoService
+            .deriveHDPublicKey(dartsv.HDPrivateKey.fromXpriv(xpriv))
+            .xpubkey;
+      }),
+      ('wallet_mnemonic_$walletId', () async {
+        final mnemonic = await secureStorage.getMnemonic(walletId);
+        if (mnemonic == null) return null;
+        final hdPrivateKey = await cryptoService.mnemonicToHDPrivateKey(
+          mnemonic,
+          passphrase: await mnemonicPassphrase(walletId),
+          network: networkType,
+        );
+        return cryptoService.deriveHDPublicKey(hdPrivateKey).xpubkey;
+      }),
+    ];
+
+    final rootAddress = currentState.rootAddress;
+    for (final (key, read) in sources) {
+      final String? xpub;
+      try {
+        xpub = await read();
+      } catch (e) {
+        _log.warning('Wallet $walletId: $key did not yield an account xpub: $e');
+        continue;
+      }
+      if (xpub == null) continue;
+
+      final dartsv.HDPublicKey hdPublicKey;
+      final String derivedRoot;
+      try {
+        hdPublicKey = dartsv.HDPublicKey.fromXpub(xpub);
+        derivedRoot = cryptoService.generateReceivingAddress(hdPublicKey, 0,
+            network: networkType);
+      } catch (e) {
+        _log.warning('Wallet $walletId: the account xpub recovered from $key '
+            'does not derive an address: $e');
+        continue;
+      }
+
+      if (rootAddress != null && derivedRoot != rootAddress) {
+        // Deliberately terminal rather than a fall-through to the next
+        // source: the key material is present and it is the WRONG key. An
+        // absence is recoverable; a mismatch is a different wallet, and
+        // guessing on is how unspendable addresses get handed out.
+        throw StateError(
+            'Wallet $walletId: the account xpub recovered from $key derives '
+            'root address $derivedRoot, but the wallet was created with '
+            '$rootAddress. The key material belongs to a different wallet, or '
+            'the BIP39 passphrase it was created with '
+            '(wallet_passphrase_$walletId) is missing. Restore '
+            '${hdPubKeyKey(walletId)}, or the passphrase, before generating '
+            'another address: an address derived from this key could not be '
+            'signed for.');
+      }
+
+      _log.warning('Wallet $walletId: ${hdPubKeyKey(walletId)} was missing; '
+          'recovered the account xpub from $key and verified it against the '
+          'wallet root address. Restoring the key.');
+      try {
+        await secureStorage.setString(hdPubKeyKey(walletId), xpub);
+      } catch (e) {
+        _log.severe('Wallet $walletId: could not restore '
+            '${hdPubKeyKey(walletId)}; the recovery will run again next time: $e');
+      }
+      return hdPublicKey;
+    }
+
+    throw StateError(
+        'Wallet $walletId: no account xpub. ${hdPubKeyKey(walletId)} is not in '
+        'secure storage and none of wallet_xpub_$walletId, '
+        'wallet_xpriv_$walletId or wallet_mnemonic_$walletId could supply it. '
+        'The wallet cannot derive another address until its key material is '
+        'restored; its existing addresses and their coin are untouched.');
   }
 
   /// Get private key at a specific derivation index on the receive

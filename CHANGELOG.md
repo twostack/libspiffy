@@ -302,6 +302,28 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### A wallet that lost its account xpub can derive addresses again
+
+- **Fixed:** a wallet whose `wallet_hdpubkey_<walletId>` was missing from
+  secure storage could never generate another address — it threw
+  `StateError: HD public key not found` for the life of the wallet, although
+  the mnemonic or xpriv the xpub derives from was usually sitting beside it
+  in the same secure storage. It could still *sign*, because the private-key
+  lookup already fell back to the xpriv and the mnemonic. Address derivation
+  now walks the same chain: the watch-only xpub, then the xpriv, then the
+  mnemonic with its passphrase.
+- **A recovered xpub is used only if it re-derives the wallet's root address.**
+  A mnemonic wallet's xpub depends on its BIP39 passphrase, so a secure
+  storage that lost the derived key may have lost the passphrase too — and
+  the mnemonic alone then derives a *different* wallet. Addresses from that
+  key could not be signed for, so a recovery that cannot be verified is
+  refused, naming the passphrase as the likely cause.
+- A verified recovery is written back to `wallet_hdpubkey_<walletId>`, so it
+  happens once rather than on every address.
+- When nothing can be recovered the error names every key that was looked
+  for, so a host can tell a lost secret from a lost derived key, and says
+  that the wallet's existing addresses and their coin are untouched.
+
 ### Wallet metadata is merged on every backend, not replaced on one
 
 - **Fixed (data loss, Postgres only):** `storeWallet` REPLACED the whole

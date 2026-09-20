@@ -139,6 +139,10 @@ void main() {
     // What an earlier release left behind: secrets in secure storage and a
     // class-name row with the xpub in the payload.
     await secrets.setXPub(walletId, xpub);
+    // This wallet still HAS its derived key, which is the KM-8 case. A
+    // journaled wallet whose wallet_hdpubkey_ is missing is a different
+    // matter and is covered by wallet_account_xpub_recovery_test.dart
+    // (bead libspiffy-atl2).
     await secrets.setString('wallet_hdpubkey_$walletId', xpub);
     final oldPayload = WalletCreatedEvent(
       walletId: walletId,

@@ -316,6 +316,33 @@ _balanceCache.remove(walletId);
     });
   }
 
+  @override
+  Future<BitcoinUtxo?> getUTXO(String walletId, String txid, int vout) async {
+    // An unknown wallet holds no outpoint (audit S-15: no exception).
+    return await _withLock(walletId, () async => _utxos[walletId]?['$txid:$vout']);
+  }
+
+  @override
+  Future<List<BitcoinUtxo>> getUTXOsByTxid(String walletId, String txid,
+      {bool includeSpent = false}) async {
+    return await _withLock(walletId, () async {
+      final walletUtxos = _utxos[walletId] ?? <String, BitcoinUtxo>{};
+      return _newestFirst(walletUtxos.values
+          .where((utxo) =>
+              utxo.txid == txid && (includeSpent || !utxo.isSpent))
+          .toList());
+    });
+  }
+
+  @override
+  Future<int> countSpentUTXOs(String walletId) async {
+    return await _withLock(walletId, () async =>
+        (_utxos[walletId] ?? const <String, BitcoinUtxo>{})
+            .values
+            .where((utxo) => utxo.isSpent)
+            .length);
+  }
+
   /// Newest first by createdAt; ties keep the store order (audit S-19).
   static List<BitcoinUtxo> _newestFirst(List<BitcoinUtxo> utxos) {
     mergeSort<BitcoinUtxo>(utxos, compare: (a, b) => b.createdAt.compareTo(a.createdAt));

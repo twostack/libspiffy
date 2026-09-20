@@ -456,9 +456,13 @@ class BitcoinUtxoEntity {
   ///
   /// The composite (walletId, status) index lets the UTXO queries select a
   /// wallet's unspent or available rows without reading its spent ones
-  /// (audit S-16).
+  /// (audit S-16). The composite (walletId, txid) index does the same for
+  /// one transaction's outputs: the plain `txid` index below covers every
+  /// wallet that holds an output of that transaction, so a lookup through it
+  /// reads another wallet's rows (bead libspiffy-36jt).
   @Index()
   @Index(composite: [CompositeIndex('status')])
+  @Index(composite: [CompositeIndex('txid')])
   late String walletId;
 
   /// Transaction ID

@@ -275,6 +275,122 @@ void defineWalletLifecycleContract(
           reason: 'the default must not overwrite a stored network');
     });
 
+    // ------------------------------------------------------------------
+    // 36jt: the outpoint, by-txid and spent-count lookups
+    // ------------------------------------------------------------------
+
+    test('36jt: getUTXO answers one outpoint, spent rows included, scoped to '
+        'the wallet', () async {
+      final s = storage();
+      final u = unique();
+      final wallet = 'lc-getutxo-$u';
+      final other = 'lc-getutxo-other-$u';
+      final mine = contractHex64('36jt-mine-$u');
+      final theirs = contractHex64('36jt-theirs-$u');
+
+      await s.storeWallet(wallet, 'Point');
+      await s.storeWallet(other, 'Other');
+      await s.upsertUTXO(wallet, _utxo(mine, 0, sats: 1111));
+      await s.upsertUTXO(wallet, _utxo(mine, 1, sats: 2222));
+      // Spent, and it must still be findable: a replayed spend or a
+      // reservation the projection has to refuse asks about exactly this row.
+      await s.upsertUTXO(
+          wallet, _utxo(theirs, 7, sats: 3333, status: UTXOStatus.spent));
+      // S-05: another wallet at an outpoint of its own.
+      await s.upsertUTXO(other, _utxo(mine, 0, sats: 9999));
+
+      expect((await s.getUTXO(wallet, mine, 0))?.satoshis, BigInt.from(1111));
+      expect((await s.getUTXO(wallet, mine, 1))?.satoshis, BigInt.from(2222));
+      final spent = await s.getUTXO(wallet, theirs, 7);
+      expect(spent?.status, UTXOStatus.spent,
+          reason: 'a spent row is history the lookup must still return');
+      expect(spent?.satoshis, BigInt.from(3333));
+
+      expect(await s.getUTXO(wallet, mine, 2), isNull,
+          reason: 'a vout the wallet does not hold');
+      expect(await s.getUTXO(wallet, contractHex64('36jt-absent-$u'), 0), isNull);
+      expect((await s.getUTXO(other, mine, 0))?.satoshis, BigInt.from(9999),
+          reason: 'the same outpoint in another wallet is that wallet\'s row');
+      expect(await s.getUTXO(other, theirs, 7), isNull,
+          reason: 'and it does not see this wallet\'s rows');
+      expect(await s.getUTXO('lc-getutxo-unknown-$u', mine, 0), isNull,
+          reason: 'an unknown wallet holds no outpoint and does not throw');
+    });
+
+    test('36jt: getUTXOsByTxid answers one transaction\'s outputs, newest '
+        'first, unspent unless asked', () async {
+      final s = storage();
+      final u = unique();
+      final wallet = 'lc-bytxid-$u';
+      final other = 'lc-bytxid-other-$u';
+      final tx = contractHex64('36jt-tx-$u');
+      final elsewhere = contractHex64('36jt-elsewhere-$u');
+
+      await s.storeWallet(wallet, 'By txid');
+      await s.storeWallet(other, 'Other');
+      await s.upsertUTXO(wallet, _utxo(tx, 0, sats: 10, createdAt: _at(1)));
+      await s.upsertUTXO(wallet, _utxo(tx, 1, sats: 20, createdAt: _at(3)));
+      await s.upsertUTXO(wallet, _utxo(tx, 2,
+          sats: 30, createdAt: _at(2), status: UTXOStatus.spent));
+      // Another transaction of the same wallet, and the same transaction in
+      // another wallet: neither may appear.
+      await s.upsertUTXO(wallet, _utxo(elsewhere, 0, sats: 40));
+      await s.upsertUTXO(other, _utxo(tx, 0, sats: 50));
+
+      final unspent = await s.getUTXOsByTxid(wallet, tx);
+      expect(unspent.map((x) => x.vout), [1, 0],
+          reason: 'this transaction\'s unspent outputs, newest first (S-19)');
+      expect(unspent.map((x) => x.satoshis), [BigInt.from(20), BigInt.from(10)]);
+
+      final withSpent = await s.getUTXOsByTxid(wallet, tx, includeSpent: true);
+      expect(withSpent.map((x) => x.vout), [1, 2, 0],
+          reason: 'spent included on request, still newest first');
+
+      expect(await s.getUTXOsByTxid(wallet, contractHex64('36jt-none-$u')),
+          isEmpty);
+      expect((await s.getUTXOsByTxid(other, tx)).map((x) => x.satoshis),
+          [BigInt.from(50)],
+          reason: 'wallet-scoped: the other wallet sees only its own row');
+      expect(await s.getUTXOsByTxid('lc-bytxid-unknown-$u', tx), isEmpty,
+          reason: 'an unknown wallet has none and does not throw');
+    });
+
+    test('36jt: countSpentUTXOs counts this wallet\'s spent rows and nothing '
+        'else', () async {
+      final s = storage();
+      final u = unique();
+      final wallet = 'lc-countspent-$u';
+      final other = 'lc-countspent-other-$u';
+      final tx = contractHex64('36jt-count-$u');
+
+      await s.storeWallet(wallet, 'Count');
+      await s.storeWallet(other, 'Other');
+      expect(await s.countSpentUTXOs(wallet), 0);
+      expect(await s.countSpentUTXOs('lc-countspent-unknown-$u'), 0,
+          reason: 'an unknown wallet counts zero and does not throw');
+
+      await s.upsertUTXO(wallet, _utxo(tx, 0, status: UTXOStatus.available));
+      await s.upsertUTXO(wallet, _utxo(tx, 1, status: UTXOStatus.reserved));
+      await s.upsertUTXO(wallet, _utxo(tx, 2, status: UTXOStatus.pending));
+      await s.upsertUTXO(wallet, _utxo(tx, 3, status: UTXOStatus.voided));
+      expect(await s.countSpentUTXOs(wallet), 0,
+          reason: 'no unspent status counts, voided included');
+
+      await s.upsertUTXO(wallet, _utxo(tx, 4, status: UTXOStatus.spent));
+      await s.upsertUTXO(wallet, _utxo(tx, 5, status: UTXOStatus.spent));
+      await s.upsertUTXO(other, _utxo(tx, 6, status: UTXOStatus.spent));
+      expect(await s.countSpentUTXOs(wallet), 2);
+      expect(await s.countSpentUTXOs(other), 1,
+          reason: 'another wallet\'s spend history is not this one\'s');
+
+      // A row that becomes spent is counted from then on; the row stays.
+      await s.upsertUTXO(wallet,
+          _utxo(tx, 0, status: UTXOStatus.spent, updatedAt: _at(9)));
+      expect(await s.countSpentUTXOs(wallet), 3);
+      expect(await s.getUTXOs(wallet, includeSpent: true), hasLength(6),
+          reason: 'retention: counting does not remove anything');
+    });
+
     test('S-15: a wallet stored with no metadata reads back an empty map',
         () async {
       final s = storage();

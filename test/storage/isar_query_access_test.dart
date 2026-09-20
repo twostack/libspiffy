@@ -219,6 +219,11 @@ void main() {
       'getAddressTransactionCount': () => storage.getAddressTransactionCount(target, sharedAddresses[0]),
       'getUTXOs': () => storage.getUTXOs(target),
       'getUTXOs(includeSpent)': () => storage.getUTXOs(target, includeSpent: true),
+      'getUTXO': () => storage.getUTXO(target, sharedTxids[0], 0),
+      'getUTXOsByTxid': () => storage.getUTXOsByTxid(target, sharedTxids[0]),
+      'getUTXOsByTxid(includeSpent)': () =>
+          storage.getUTXOsByTxid(target, sharedTxids[0], includeSpent: true),
+      'countSpentUTXOs': () => storage.countSpentUTXOs(target),
       'getAvailableUTXOs': () => storage.getAvailableUTXOs(target),
       'getPaymentUTXOs': () => storage.getPaymentUTXOs(target),
       'getUTXOsByPlugin': () => storage.getUTXOsByPlugin(target, 'tstoken'),
@@ -275,6 +280,62 @@ void main() {
         expect((await storage.getAvailableUTXOs(walletId)).map((u) => u.txid), [_txid('open-0')]);
       });
       expect([for (final q in available) await q.rowsInRange()], [1]);
+    });
+
+    test('36jt: the outpoint, by-txid and spent-count lookups do not read the '
+        'spend history', () async {
+      // The shape the projection meets: a wallet that has been used, so its
+      // spend history dwarfs what it still holds. It is never purged
+      // (spv-understanding.md, Data Retention), so anything that reads it
+      // per event costs more for the life of the wallet.
+      const spent = 80;
+      for (var i = 0; i < spent; i++) {
+        await storage.upsertUTXO(walletId,
+            _utxo(_txid('hist-$i'), 0, status: UTXOStatus.spent, minute: i));
+      }
+      final live = _txid('live');
+      await storage.upsertUTXO(walletId, _utxo(live, 0, minute: 100));
+      await storage.upsertUTXO(walletId, _utxo(live, 1, minute: 101));
+      await storage.upsertUTXO(walletId,
+          _utxo(live, 2, status: UTXOStatus.spent, minute: 102));
+      await storage.upsertUTXO(walletId, _utxo(_txid('other'), 0, minute: 103));
+
+      final point = await queriesOf(() async {
+        expect((await storage.getUTXO(walletId, live, 1))?.vout, 1);
+        expect((await storage.getUTXO(walletId, _txid('hist-3'), 0))?.status,
+            UTXOStatus.spent);
+        expect(await storage.getUTXO(walletId, live, 9), isNull);
+      });
+      expect([for (final q in point) await q.rowsInRange()],
+          everyElement(lessThanOrEqualTo(1)),
+          reason: 'getUTXO is the unique (utxoKey, walletId) index: one row, '
+              'whatever the wallet has spent -- including when the answer is '
+              'a spent row or no row at all');
+
+      final byTxid = await queriesOf(() async {
+        expect((await storage.getUTXOsByTxid(walletId, live)).map((u) => u.vout),
+            [1, 0]);
+      });
+      expect([for (final q in byTxid) await q.rowsInRange()], [3],
+          reason: 'the composite (walletId, txid) index: this transaction\'s '
+              'three outputs, not the wallet\'s other rows');
+
+      final counted = await queriesOf(() async {
+        expect(await storage.countSpentUTXOs(walletId), spent + 1);
+      });
+      // What is pinned here is the index RANGE. The count runs `.count()`,
+      // which walks index entries and deserializes nothing, but this harness
+      // replays a query with findAll and so cannot tell a count from a read
+      // -- the range is what it can prove. A range of exactly the spent rows
+      // is the (walletId, status) index doing the selecting; the whole
+      // wallet in range would be a filter over a scan.
+      expect([for (final q in counted) await q.rowsInRange()], [spent + 1],
+          reason: 'countSpentUTXOs selects through the (walletId, status) '
+              'index');
+      expect(
+          await storage.getUTXOs(walletId, includeSpent: true), hasLength(spent + 4),
+          reason: 'and the wallet has more rows than that, so the range is '
+              'not simply everything it holds');
     });
 
     test('address lookups by (address, wallet) read one row', () async {

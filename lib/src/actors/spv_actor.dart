@@ -1800,21 +1800,25 @@ class SPVActor extends Actor {
           bumpHex: proof.merkleProof.single,
         )));
       }
-      for (final utxo in await _storage.getUTXOs(walletId)) {
-        if (!txids.contains(utxo.txid)) continue;
-        // A revert just sent (not applied yet) makes an available output
-        // pending before this command reaches the wallet.
-        final demoted = justReverted.contains((walletId, utxo.txid))
-            ? const {UTXOStatus.pending, UTXOStatus.available}
-            : const {UTXOStatus.pending};
-        final pendingOutput = demoted.contains(utxo.status) ||
-            (utxo.status == UTXOStatus.reserved && demoted.contains(utxo.statusBeforeReservation));
-        if (!pendingOutput) continue;
-        _walletManager.tell(WalletCommandMessage(walletId, MarkUTXOAvailableCommand(
-          walletId: walletId,
-          txid: utxo.txid,
-          vout: utxo.vout,
-        )));
+      // The outputs of the transactions just restored, read by transaction
+      // rather than filtered out of the wallet's rows (bead libspiffy-36jt).
+      for (final txid in txids) {
+        for (final utxo in await _storage.getUTXOsByTxid(walletId, txid)) {
+          // A revert just sent (not applied yet) makes an available output
+          // pending before this command reaches the wallet.
+          final demoted = justReverted.contains((walletId, utxo.txid))
+              ? const {UTXOStatus.pending, UTXOStatus.available}
+              : const {UTXOStatus.pending};
+          final pendingOutput = demoted.contains(utxo.status) ||
+              (utxo.status == UTXOStatus.reserved &&
+                  demoted.contains(utxo.statusBeforeReservation));
+          if (!pendingOutput) continue;
+          _walletManager.tell(WalletCommandMessage(walletId, MarkUTXOAvailableCommand(
+            walletId: walletId,
+            txid: utxo.txid,
+            vout: utxo.vout,
+          )));
+        }
       }
     }
     return restore.length;

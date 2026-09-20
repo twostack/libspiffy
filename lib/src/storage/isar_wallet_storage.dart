@@ -544,6 +544,45 @@ class IsarWalletStorage implements ReadModelStorage {
   }
 
   @override
+  Future<BitcoinUtxo?> getUTXO(String walletId, String txid, int vout) async {
+    // The unique (utxoKey, walletId) index: one row in range, whatever the
+    // wallet's spend history (bead libspiffy-36jt).
+    final entity = await _traced('getUTXO', _isar.bitcoinUtxoEntitys
+        .where()
+        .utxoKeyWalletIdEqualTo('$txid:$vout', walletId))
+        .findFirst();
+    return entity?.toDomain();
+  }
+
+  @override
+  Future<List<BitcoinUtxo>> getUTXOsByTxid(String walletId, String txid,
+      {bool includeSpent = false}) async {
+    // The composite (walletId, txid) index: the range holds this wallet's
+    // outputs of this transaction and nothing else. The plain `txid` index
+    // would also cover every other wallet that holds an output of it, which
+    // audit S-16 forbids (bead libspiffy-36jt).
+    var query = _traced('getUTXOsByTxid',
+            _isar.bitcoinUtxoEntitys.where().walletIdTxidEqualTo(walletId, txid))
+        .filter()
+        .walletIdEqualTo(walletId);
+    if (!includeSpent) {
+      query = query.not().statusEqualTo(UTXOStatus.spent.name);
+    }
+    final entities = await query.sortByCreatedAtDesc().findAll();
+    return entities.map((e) => e.toDomain()).toList();
+  }
+
+  @override
+  Future<int> countSpentUTXOs(String walletId) async {
+    // The (walletId, status) index, counted in range: no row is read
+    // (bead libspiffy-36jt).
+    return await _traced('countSpentUTXOs', _isar.bitcoinUtxoEntitys
+        .where()
+        .walletIdStatusEqualTo(walletId, UTXOStatus.spent.name))
+        .count();
+  }
+
+  @override
   Future<List<BitcoinUtxo>> getAvailableUTXOs(String walletId) async {
     final entities = await _traced('getAvailableUTXOs', _isar.bitcoinUtxoEntitys
         .where()

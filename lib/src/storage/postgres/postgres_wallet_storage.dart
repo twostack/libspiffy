@@ -652,6 +652,65 @@ class PostgresWalletStorage implements ReadModelStorage {
   }
 
   @override
+  Future<BitcoinUtxo?> getUTXO(String walletId, String txid, int vout) async {
+    _ensureInitialized();
+
+    // The uk_utxo (wallet_id, txid, vout) unique constraint v001 created:
+    // an exact match on the whole key, whatever the wallet's spend history
+    // (bead libspiffy-36jt).
+    final result = await _pool!.execute(
+      Sql.named('''
+        SELECT $_utxoColumns
+        FROM bitcoin_utxos
+        WHERE wallet_id = @walletId AND txid = @txid AND vout = @vout
+      '''),
+      parameters: {'walletId': walletId, 'txid': txid, 'vout': vout},
+    );
+
+    return result.isEmpty ? null : _rowToUtxo(result.first);
+  }
+
+  @override
+  Future<List<BitcoinUtxo>> getUTXOsByTxid(String walletId, String txid,
+      {bool includeSpent = false}) async {
+    _ensureInitialized();
+
+    // The (wallet_id, txid) prefix of the same constraint.
+    var sql = '''
+      SELECT $_utxoColumns
+      FROM bitcoin_utxos
+      WHERE wallet_id = @walletId AND txid = @txid
+    ''';
+    if (!includeSpent) {
+      sql += " AND status != 'spent'";
+    }
+    sql += ' ORDER BY created_at DESC, id';
+
+    final result = await _pool!.execute(
+      Sql.named(sql),
+      parameters: {'walletId': walletId, 'txid': txid},
+    );
+
+    return result.map(_rowToUtxo).toList();
+  }
+
+  @override
+  Future<int> countSpentUTXOs(String walletId) async {
+    _ensureInitialized();
+
+    // idx_utxos_wallet_status: counted, never read (bead libspiffy-36jt).
+    final result = await _pool!.execute(
+      Sql.named('''
+        SELECT COUNT(*) FROM bitcoin_utxos
+        WHERE wallet_id = @walletId AND status = 'spent'
+      '''),
+      parameters: {'walletId': walletId},
+    );
+
+    return result.first[0] as int;
+  }
+
+  @override
   Future<List<BitcoinUtxo>> getAvailableUTXOs(String walletId) async {
     _ensureInitialized();
 

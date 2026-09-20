@@ -10907,6 +10907,24 @@ const BitcoinUtxoEntitySchema = CollectionSchema(
         )
       ],
     ),
+    r'walletId_txid': IndexSchema(
+      id: -4567513073908314813,
+      name: r'walletId_txid',
+      unique: false,
+      replace: false,
+      properties: [
+        IndexPropertySchema(
+          name: r'walletId',
+          type: IndexType.hash,
+          caseSensitive: true,
+        ),
+        IndexPropertySchema(
+          name: r'txid',
+          type: IndexType.hash,
+          caseSensitive: true,
+        )
+      ],
+    ),
     r'txid': IndexSchema(
       id: 7339874292043634331,
       name: r'txid',
@@ -11452,6 +11470,96 @@ extension BitcoinUtxoEntityQueryWhere
               indexName: r'walletId_status',
               lower: [walletId],
               upper: [walletId, status],
+              includeUpper: false,
+            ));
+      }
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterWhereClause>
+      walletIdEqualToAnyTxid(String walletId) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'walletId_txid',
+        value: [walletId],
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterWhereClause>
+      walletIdNotEqualToAnyTxid(String walletId) {
+    return QueryBuilder.apply(this, (query) {
+      if (query.whereSort == Sort.asc) {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_txid',
+              lower: [],
+              upper: [walletId],
+              includeUpper: false,
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_txid',
+              lower: [walletId],
+              includeLower: false,
+              upper: [],
+            ));
+      } else {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_txid',
+              lower: [walletId],
+              includeLower: false,
+              upper: [],
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_txid',
+              lower: [],
+              upper: [walletId],
+              includeUpper: false,
+            ));
+      }
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterWhereClause>
+      walletIdTxidEqualTo(String walletId, String txid) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addWhereClause(IndexWhereClause.equalTo(
+        indexName: r'walletId_txid',
+        value: [walletId, txid],
+      ));
+    });
+  }
+
+  QueryBuilder<BitcoinUtxoEntity, BitcoinUtxoEntity, QAfterWhereClause>
+      walletIdEqualToTxidNotEqualTo(String walletId, String txid) {
+    return QueryBuilder.apply(this, (query) {
+      if (query.whereSort == Sort.asc) {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_txid',
+              lower: [walletId],
+              upper: [walletId, txid],
+              includeUpper: false,
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_txid',
+              lower: [walletId, txid],
+              includeLower: false,
+              upper: [walletId],
+            ));
+      } else {
+        return query
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_txid',
+              lower: [walletId, txid],
+              includeLower: false,
+              upper: [walletId],
+            ))
+            .addWhereClause(IndexWhereClause.between(
+              indexName: r'walletId_txid',
+              lower: [walletId],
+              upper: [walletId, txid],
               includeUpper: false,
             ));
       }

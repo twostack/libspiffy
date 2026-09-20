@@ -302,6 +302,38 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### A UTXO event no longer reads the wallet's spend history
+
+- **New on `ReadModelStorage`:** `getUTXO(walletId, txid, vout)` for one
+  outpoint, `getUTXOsByTxid(walletId, txid, {includeSpent})` for one
+  transaction's outputs, and `countSpentUTXOs(walletId)`.
+- Every UTXO event made the wallet projection load every row the wallet had
+  ever held, spent ones included, because there was no way to ask the read
+  model about a single outpoint. A spend history is never purged by design
+  (`spv-understanding.md`, Data Retention), so the cost of every future event
+  grew with every spend the wallet had ever made. **Measured**: four spends
+  deep, an event read 7 UTXO rows; two hundred deep, 203. It now reads
+  between 1 and 5 at either depth, and an event that decides it has nothing
+  to do reads the one row it decided on.
+- The balance recalculation wanted the spend history only for two counts it
+  publishes, `spentUtxoCount` and `utxoCount`. Both now come from
+  `countSpentUTXOs`, which counts through an index without deserialising a
+  row; their meaning is unchanged.
+- A confirmation, a reorganisation that takes one back, the voiding of a
+  transaction's own change, and `SPVActor`'s restore of confirmations after a
+  reorganisation all ask for that transaction's outputs now, instead of
+  loading the wallet's rows and filtering them on `txid` in Dart.
+- **No data migration.** Postgres answers all three through the
+  `uk_utxo (wallet_id, txid, vout)` constraint and `idx_utxos_wallet_status`,
+  both there since v001. Isar gains a composite `(walletId, txid)` index,
+  which it builds on open — a schema addition, not a data change — because
+  its plain `txid` index also covers other wallets' rows for the same
+  transaction, and audit S-16 forbids a wallet-scoped query reading another
+  wallet's rows.
+- `getUTXOs(includeSpent: true)` stays: an app may legitimately want every
+  row a wallet has ever held. Nothing inside libspiffy asks for them any
+  more, and a test over `lib/` keeps it that way.
+
 ### One network default, everywhere
 
 - A wallet row created without a `networkType` is **testnet** on all three

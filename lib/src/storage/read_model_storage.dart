@@ -181,6 +181,48 @@ abstract class ReadModelStorage {
   /// unknown wallet). `createdAt` and `updatedAt` are returned as stored.
   Future<List<BitcoinUtxo>> getUTXOs(String walletId, {bool includeSpent = false});
 
+  /// The wallet's UTXO row for one outpoint, or null when it holds none.
+  ///
+  /// The lookup that keeps a per-event cost bounded (bead libspiffy-36jt).
+  /// Without it the only way to reach one row was [getUTXOs] with
+  /// `includeSpent: true`, which materialises every UTXO the wallet has ever
+  /// held -- and a wallet's spend history is never purged by design
+  /// (`spv-understanding.md`, Data Retention), so that cost grows without
+  /// bound while the row wanted is one.
+  ///
+  /// Spent rows are included: a status event about an outpoint the wallet
+  /// already spent must still find it (a replayed `UTXOSpentEvent`, a
+  /// reservation the projection has to refuse).
+  ///
+  /// Every backend answers it from an index it already has -- the Postgres
+  /// `uk_utxo (wallet_id, txid, vout)` unique constraint, Isar's unique
+  /// `(utxoKey, walletId)` index, the in-memory map -- so no migration.
+  Future<BitcoinUtxo?> getUTXO(String walletId, String txid, int vout);
+
+  /// The wallet's UTXO rows created by [txid], newest first.
+  ///
+  /// The outputs of one transaction, without reading the wallet's other
+  /// rows (bead libspiffy-36jt): every caller had loaded the wallet's whole
+  /// unspent set and filtered it on `utxo.txid` in Dart. Postgres reads the
+  /// `(wallet_id, txid)` prefix of `uk_utxo` and Isar the `txid` index, so
+  /// no migration here either.
+  ///
+  /// [includeSpent] as in [getUTXOs], and false for the same reason its
+  /// callers want: a spent output of [txid] is history, not an output the
+  /// transaction's fate can still move.
+  Future<List<BitcoinUtxo>> getUTXOsByTxid(String walletId, String txid,
+      {bool includeSpent = false});
+
+  /// How many of the wallet's UTXO rows are spent.
+  ///
+  /// The other half of keeping a per-event cost bounded (bead
+  /// libspiffy-36jt): the projection's balance recalculation needs the spend
+  /// history only for two counts it publishes (`spentUtxoCount`, and
+  /// `utxoCount` over it), never for the rows themselves. Every backend
+  /// counts through the `(walletId, status)` index without deserialising a
+  /// row.
+  Future<int> countSpentUTXOs(String walletId);
+
   /// Get only available (unspent and unreserved) UTXOs for a wallet.
   ///
   /// This is the primary method for transaction building, as it returns

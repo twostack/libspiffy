@@ -519,8 +519,8 @@ class _ReplyReceiver<R> extends Actor {
     final payload = message is LocalMessage ? message.payload : message;
     if (payload is R) {
       completer.complete(payload);
-    } else if (payload is Map && payload['error'] != null) {
-      completer.completeError(AggregateSigningException(payload['error'].toString()));
+    } else if (payload is FailureResponse) {
+      completer.completeError(AggregateSigningException(payload.error));
     }
   }
 }

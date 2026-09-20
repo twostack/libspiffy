@@ -282,8 +282,9 @@ class WalletManagerActor extends Actor {
     } catch (e, stackTrace) {
       _log.warning('Failed to handle ${message.runtimeType}: $e', e, stackTrace);
       if (context.sender != null) {
-        context.sender!.tell(LocalMessage(
-          payload: {'error': e.toString(), 'type': 'wallet_manager_error'},
+        context.sender!.tell(WalletManagerFailure(
+          error: e.toString(),
+          request: message.runtimeType.toString(),
         ));
       }
     }
@@ -422,8 +423,10 @@ class WalletManagerActor extends Actor {
     try {
       final walletActor = await _getOrLoadWallet(msg.walletId);
       if (walletActor == null) {
-        sender?.tell(LocalMessage(
-          payload: {'error': 'Wallet not found', 'walletId': msg.walletId},
+        sender?.tell(WalletManagerFailure(
+          error: 'Wallet not found',
+          request: 'WalletCommandMessage',
+          walletId: msg.walletId,
         ));
         return;
       }
@@ -431,8 +434,10 @@ class WalletManagerActor extends Actor {
     } catch (e, stackTrace) {
       _log.warning('Failed to route command for wallet ${msg.walletId}: $e',
           e, stackTrace);
-      sender?.tell(LocalMessage(
-        payload: {'error': e.toString(), 'walletId': msg.walletId},
+      sender?.tell(WalletManagerFailure(
+        error: e.toString(),
+        request: 'WalletCommandMessage',
+        walletId: msg.walletId,
       ));
     }
   }

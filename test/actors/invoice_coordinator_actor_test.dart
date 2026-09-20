@@ -3,7 +3,7 @@
 /// Covers audit findings (doc/audit-2026-09-14.md):
 /// - A-H6: a failed address generation must fail the invoice instead of
 ///   creating one with an empty address and reporting success.
-/// - A-M6 (invoice part): a `{'error': ...}` map reply from WalletManager
+/// - A-M6 (invoice part): a failure reply from WalletManager
 ///   must fail the pending invoice instead of leaking it (caller hangs).
 /// - A-H2: the AwaitEventApplied ask must outlast the awaiter window, so a
 ///   projection that is slow but succeeds does not surface as a failure.
@@ -212,12 +212,16 @@ void main() {
 
       for (final unrelated in [
         (
-          name: "catch-all {'error', 'type'}",
-          payload: {'error': 'unrelated failure', 'type': 'wallet_manager_error'},
+          name: 'catch-all failure naming no wallet',
+          reply: WalletManagerFailure(
+              error: 'unrelated failure', request: 'CreateWalletMessage'),
         ),
         (
-          name: "{'error', 'walletId'}",
-          payload: {'error': 'unrelated failure', 'walletId': secondWallet},
+          name: 'failure naming a wallet',
+          reply: WalletManagerFailure(
+              error: 'unrelated failure',
+              request: 'WalletCommandMessage',
+              walletId: secondWallet),
         ),
       ]) {
         test('an unrelated ${unrelated.name} error fails neither invoice for '
@@ -225,7 +229,7 @@ void main() {
           final coordinator = await twoPendingInvoices(secondWallet);
 
           // An error reply to some other request of the coordinator's.
-          coordinator.tell(LocalMessage(payload: unrelated.payload));
+          coordinator.tell(unrelated.reply);
           for (final request in holding.requests) {
             request.sender!.tell(addressFor(request.command));
           }
@@ -243,12 +247,16 @@ void main() {
 
       for (final correlated in [
         (
-          name: "catch-all {'error', 'type'}",
-          payload: {'error': 'request failed', 'type': 'wallet_manager_error'},
+          name: 'catch-all failure naming no wallet',
+          reply: WalletManagerFailure(
+              error: 'request failed', request: 'CreateWalletMessage'),
         ),
         (
-          name: "{'error', 'walletId'}",
-          payload: {'error': 'request failed', 'walletId': _walletId},
+          name: 'failure naming a wallet',
+          reply: WalletManagerFailure(
+              error: 'request failed',
+              request: 'WalletCommandMessage',
+              walletId: _walletId),
         ),
       ]) {
         test('a ${correlated.name} error answering one request fails only '
@@ -256,7 +264,7 @@ void main() {
           await twoPendingInvoices(secondWallet);
 
           final [first, second] = holding.requests;
-          first.sender!.tell(LocalMessage(payload: correlated.payload));
+          first.sender!.tell(correlated.reply);
           second.sender!.tell(addressFor(second.command));
 
           // Well inside the address-request timeout: the failure is the
@@ -299,10 +307,11 @@ void main() {
       final [_, _, third, fourth] = holding.requests;
       expect(third.command.metadata['invoiceId'],
           first.command.metadata['invoiceId']);
-      third.sender!.tell(LocalMessage(payload: {
-        'error': 'Wallet not found',
-        'walletId': _walletId,
-      }));
+      third.sender!.tell(WalletManagerFailure(
+        error: 'Wallet not found',
+        request: 'WalletCommandMessage',
+        walletId: _walletId,
+      ));
       fourth.sender!.tell(addressFor(fourth.command));
 
       final replies = await inbox.waitFor(2);
@@ -483,8 +492,8 @@ void main() {
 
 /// Stands in for WalletManagerActor. Replies to GenerateAddressCommand with
 /// whatever [onGenerateAddress] builds, or with the same
-/// `{'error': ..., 'walletId': ...}` map the real manager sends for a wallet
-/// it cannot load.
+/// [WalletManagerFailure] the real manager sends for a wallet it cannot
+/// load.
 class _StubWalletManager extends Actor {
   AddressGeneratedResponse Function(GenerateAddressCommand cmd)?
       onGenerateAddress;
@@ -496,8 +505,10 @@ class _StubWalletManager extends Actor {
     if (cmd is! GenerateAddressCommand) return;
     final builder = onGenerateAddress;
     if (builder == null) {
-      context.sender?.tell(LocalMessage(
-        payload: {'error': 'Wallet not found', 'walletId': message.walletId},
+      context.sender?.tell(WalletManagerFailure(
+        error: 'Wallet not found',
+        request: 'WalletCommandMessage',
+        walletId: message.walletId,
       ));
       return;
     }

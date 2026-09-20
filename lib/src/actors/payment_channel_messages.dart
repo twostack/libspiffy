@@ -5,7 +5,70 @@
 /// and PaymentChannelAggregate.
 
 import 'package:dactor/dactor.dart';
+import 'package:eventador/eventador.dart' show Event;
+
+import '../models/persistent_map.dart';
 import 'internal_messages.dart';
+
+// =============================================================================
+// AGGREGATE REPLY
+// =============================================================================
+
+/// What PaymentChannelAggregate answers a command with (bead libspiffy-kl4i).
+///
+/// It used to answer success with a raw `List<Event>` and failure with a
+/// bare `{'success': false, 'error': ..., 'commandId': ...}` map, so a
+/// caller told success from failure by testing the runtime shape of the
+/// reply.
+///
+/// **[events] is load-bearing, not diagnostic.** The manager forwards the
+/// `ChannelEvent`s to the external P2P broadcaster, and reads fields off
+/// specific events — the lock time of a `ChannelRequestedEvent` is taken
+/// from the journaled event because recomputing it locally would be wrong.
+/// So the reply carries them rather than collapsing to success/error.
+///
+/// **An empty [events] on a success is a success** (bead libspiffy-y8x3):
+/// the aggregate answers an idempotent repeat with no events because there
+/// is nothing new to journal.
+class ChannelCommandResult extends ActorResponse {
+  /// The command answered, by its `commandId`.
+  final String commandId;
+
+  /// The events the command journaled; empty on failure, and empty on an
+  /// idempotent repeat.
+  final List<Event> events;
+
+  @override
+  final bool success;
+
+  @override
+  final String? error;
+
+  ChannelCommandResult({
+    required this.commandId,
+    required List<Event> events,
+    required this.success,
+    this.error,
+  }) : events = frozenList(events);
+
+  /// The aggregate refused or failed [commandId].
+  ChannelCommandResult.failed({required this.commandId, required String this.error})
+      : events = const [],
+        success = false;
+
+  @override
+  String get correlationId => 'channel-command-result-$commandId';
+  @override
+  Map<String, dynamic> get metadata => {'commandId': commandId};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+  @override
+  String toString() => success
+      ? 'ChannelCommandResult($commandId, ${events.length} events)'
+      : 'ChannelCommandResult.failed($commandId: $error)';
+}
 
 // =============================================================================
 // CHANNEL LIFECYCLE MESSAGES

@@ -116,8 +116,7 @@ class InvoiceCoordinatorActor extends Actor {
           // Replies to address requests come back through their own ask
           // (see [_requestAddress]); an error map or address told to this
           // actor answers no request of an invoice, so it fails none.
-          if ((message is Map && message['error'] != null) ||
-              message is AddressGeneratedResponse) {
+          if (message is FailureResponse || message is AddressGeneratedResponse) {
             _log.warning('Ignoring a wallet-manager reply that answers no '
                 'pending invoice request: $message');
           }
@@ -439,10 +438,11 @@ class InvoiceCoordinatorActor extends Actor {
       _failPendingInvoice(pending, outcome.failure!);
     } else if (reply is AddressGeneratedResponse) {
       await _handleAddressGenerated(pending, reply);
-    } else if (reply is Map && reply['error'] != null) {
-      // WalletManager could not serve this request (unknown wallet, load
-      // failure, or its catch-all): this invoice will get no address.
-      _failPendingInvoice(pending, reply['error'].toString());
+    } else if (reply is FailureResponse) {
+      // The wallet could not serve this request (unknown wallet, load
+      // failure, the manager's catch-all, or the aggregate refusing the
+      // command): this invoice will get no address.
+      _failPendingInvoice(pending, reply.error);
     } else {
       _failPendingInvoice(pending,
           'Address generation failed: unexpected reply ${reply.runtimeType}');

@@ -2,9 +2,10 @@
 ///
 /// Covers the remainder of audit finding A-M6 (libspiffy-y23,
 /// doc/audit-2026-09-14.md):
-/// - A signing request whose WalletManager reply is an error map, or which
-///   is never answered, used to leave its entry in the pending signature map
-///   forever and the caller without a reply.
+/// - A signing request the WalletManager refuses, or which is never
+///   answered, used to leave its entry in the pending signature map forever
+///   and the caller without a reply. (The refusal was a bare error map until
+///   libspiffy-kl4i typed it as WalletManagerFailure.)
 /// - QueryChannelState was an unconditional UnimplementedError (the caller
 ///   got no reply at all).
 ///
@@ -31,7 +32,7 @@ const _channelId = 'chan-sign';
 const _mnemonic = 'abandon abandon abandon abandon abandon abandon '
     'abandon abandon abandon abandon abandon about';
 
-enum _SignBehaviour { errorMap, silent }
+enum _SignBehaviour { refuses, silent }
 
 void main() {
   late TestActorSystem actorSystem;
@@ -134,9 +135,9 @@ void main() {
   }
 
   group('A-M6: pending signature maps are cleared on failure', () {
-    test('an error-map reply to the signing command fails the caller and '
+    test('a refused signing command fails the caller and '
         'leaves no pending entry', () async {
-      await spawn(_SignBehaviour.errorMap);
+      await spawn(_SignBehaviour.refuses);
       final accepted = await acceptChannel();
       expect(accepted.success, isTrue, reason: accepted.error);
 
@@ -164,7 +165,7 @@ void main() {
 
     test('a failed payment signature fails RecordPayment and leaves no '
         'pending entry', () async {
-      await spawn(_SignBehaviour.errorMap, asClient: true);
+      await spawn(_SignBehaviour.refuses, asClient: true);
       const timeout = Duration(seconds: 10);
 
       // Client side of an open channel, as the client flow journals it
@@ -194,7 +195,7 @@ void main() {
 
   group('A-M6: QueryChannelState', () {
     test('returns the channel state from the aggregate', () async {
-      await spawn(_SignBehaviour.errorMap);
+      await spawn(_SignBehaviour.refuses);
       final accepted = await acceptChannel();
       expect(accepted.success, isTrue, reason: accepted.error);
 
@@ -212,7 +213,7 @@ void main() {
     });
 
     test('answers an unknown channel with success:false', () async {
-      await spawn(_SignBehaviour.errorMap);
+      await spawn(_SignBehaviour.refuses);
 
       final state = await managerRef.ask<ChannelStateResponse>(
         QueryChannelStateMessage(channelId: 'no-such-channel'),
@@ -253,9 +254,11 @@ class _StubWalletManager extends Actor {
       ));
     } else if (command is SignMultisigTransactionCommand) {
       signRequests++;
-      if (behaviour == _SignBehaviour.errorMap) {
-        context.sender?.tell(LocalMessage(
-          payload: {'error': 'Wallet not found', 'walletId': command.walletId},
+      if (behaviour == _SignBehaviour.refuses) {
+        context.sender?.tell(WalletManagerFailure(
+          error: 'Wallet not found',
+          request: 'WalletCommandMessage',
+          walletId: command.walletId,
         ));
       }
     }

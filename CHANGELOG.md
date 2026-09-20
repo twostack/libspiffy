@@ -302,6 +302,41 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### The wallet says when it could not do what you asked
+
+- `WalletManagerActor` and `BitcoinWalletAggregate` answered failures they
+  had no typed reply for with a bare `{'error': ...}` map, and
+  `PaymentChannelAggregate` answered success with a raw `List<Event>`.
+  Callers told success from failure by testing the runtime shape of the
+  reply, and could not tell which actor had answered.
+- **The bug this was hiding:** `WalletCoordinatorActor` did not recognise
+  those maps at all. A **delete, recording, release or split the wallet
+  refused produced no `CoordinatorEvent`** — an app that learns everything
+  through `coordinatorEvents` waited for an answer that never came. It now
+  emits an `ErrorEvent` naming the request, or fails a still-pending
+  creation by name.
+- Two of those commands were told to the wallet manager with **no sender**,
+  so nothing was ever going to answer them. `RecordOutgoingCommand` and
+  `ReleaseUTXOsCommand` now carry one.
+- **New public types.** `FailureResponse` is the base of a reply that can
+  only report failure: `success` is always false and `error` is never null.
+  `WalletManagerFailure` (the manager could not route or handle a request)
+  and `WalletCommandFailed` (the wallet aggregate refused a command it has
+  no specific reply for) extend it. Match `FailureResponse` for "this
+  failed, and why"; match the concrete type to tell which actor gave up.
+- `PaymentChannelAggregate` answers `ChannelCommandResult`, which carries
+  the events the command journaled — the manager forwards them to the P2P
+  broadcaster and reads fields off them, so they are part of the reply, not
+  diagnostics. An empty `events` on a success is still a success: an
+  idempotent repeat journals nothing.
+- **Breaking for code that matched the old shapes.** `payload is Map` no
+  longer identifies a failure, and a channel command's reply is no longer a
+  `List`. There is no silent fallback: the old shapes are gone.
+- A successful `RecordOutgoingCommand` is still not announced. The handler
+  that would have announced it was unreachable and reported
+  `amountSatoshis: BigInt.zero` for an amount it did not hold, so it was
+  removed rather than made live with that number in it.
+
 ### Events and commands no longer hold the caller's lists and maps
 
 - An event or command built from a caller's `List` or `Map` kept **that

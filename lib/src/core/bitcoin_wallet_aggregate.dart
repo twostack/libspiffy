@@ -526,12 +526,13 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         error: errorMessage,
       ));
     } else {
-      // Fallback for any unhandled command - send a generic error response
-      sender.tell(LocalMessage(
-        payload: {
-          'error': errorMessage,
-          'command': command.runtimeType.toString(),
-        },
+      // Every other command: the aggregate has no reply of its own for it,
+      // so the failure is reported in the shape every caller understands
+      // (bead libspiffy-kl4i).
+      sender.tell(WalletCommandFailed(
+        walletId: command is WalletCommand ? command.walletId : aggregateId,
+        request: command.runtimeType.toString(),
+        error: errorMessage,
       ));
     }
   }

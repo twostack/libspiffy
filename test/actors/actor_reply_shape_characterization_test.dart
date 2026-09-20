@@ -8,6 +8,10 @@
 /// * [bareReplies] implemented Message only. Told to another actor (with or
 ///   without a sender), the receiver gets the very same object, with the
 ///   correlation id and metadata it always reported.
+/// * [failureReplies] can only report failure: the actor answering has no
+///   success reply of its own for the request (bead libspiffy-kl4i). They
+///   are [FailureResponse]s, so [success] is always false and [error] is
+///   never null.
 library;
 
 import 'dart:async';
@@ -71,6 +75,32 @@ final Map<String, ReplyFactory> replies = {
       DeferredSpendCancelledResponse(walletId: 'w', txid: 't', success: ok, error: _err(ok)),
   'DeferredPaymentNetworkResult': (ok) =>
       DeferredPaymentNetworkResult(walletId: 'w', txid: 't', success: ok, error: _err(ok)),
+  'ChannelCommandResult': (ok) => ok
+      ? ChannelCommandResult(commandId: 'cmd', events: const [], success: true)
+      : ChannelCommandResult.failed(commandId: 'cmd', error: 'boom'),
+};
+
+/// The replies that report only failure, with the correlation id and
+/// metadata each reports.
+final Map<String, (FailureResponse Function(), String, Map<String, dynamic>)>
+    failureReplies = {
+  'WalletManagerFailure': (
+    () => WalletManagerFailure(
+        error: 'boom', request: 'WalletCommandMessage', walletId: 'w'),
+    'wallet-manager-failure-w',
+    {'walletId': 'w', 'request': 'WalletCommandMessage'},
+  ),
+  'WalletManagerFailure (no wallet)': (
+    () => WalletManagerFailure(error: 'boom', request: 'CreateWalletMessage'),
+    'wallet-manager-failure--',
+    {'request': 'CreateWalletMessage'},
+  ),
+  'WalletCommandFailed': (
+    () => WalletCommandFailed(
+        walletId: 'w', request: 'ReleaseUTXOCommand', error: 'boom'),
+    'wallet-command-failed-w',
+    {'walletId': 'w', 'request': 'ReleaseUTXOCommand'},
+  ),
 };
 
 /// The replies that implemented Message only, with the correlation id and
@@ -235,6 +265,30 @@ void main() {
           expect(answer.runtimeType.toString(), name);
         });
       }
+    });
+  }
+
+  for (final entry in failureReplies.entries) {
+    final name = entry.key;
+    final (build, correlationId, metadata) = entry.value;
+    group(name, () {
+      test('reports failure, its correlation id and metadata', () {
+        final reply = build();
+        expect(reply.success, isFalse);
+        expect(reply.error, 'boom');
+        expect(reply.request, isNotEmpty);
+        expect(reply.correlationId, correlationId);
+        expect(reply.metadata, metadata);
+        expect(reply.replyTo, isNull);
+        expect(identical(reply.payload, reply), isTrue);
+      });
+
+      test('completes an ask with the same object', () async {
+        final built = build();
+        final ref = await system.spawn('replier-${actorCount++}', () => _Replier(() => built));
+        final answer = await ref.ask<Object>(_Ping(), const Duration(seconds: 5));
+        expect(identical(answer, built), isTrue);
+      });
     });
   }
 

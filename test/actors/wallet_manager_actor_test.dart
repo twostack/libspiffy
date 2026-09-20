@@ -93,9 +93,11 @@ void main() {
       );
       stopwatch.stop();
 
-      expect(reply, isA<Map>());
-      expect((reply as Map)['error'], 'Wallet not found');
-      expect(reply['walletId'], 'ghost');
+      expect(reply, isA<WalletManagerFailure>());
+      expect((reply as WalletManagerFailure).error, 'Wallet not found');
+      expect(reply.walletId, 'ghost');
+      expect(reply.request, 'WalletCommandMessage');
+      expect(reply.success, isFalse);
 
       // The old code spawned an empty aggregate for the unknown id and
       // forwarded the command to it; the aggregate rejected it without

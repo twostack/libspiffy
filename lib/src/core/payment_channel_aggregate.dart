@@ -267,9 +267,11 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
     // Send events back to sender if running in actor system
     final sender = _capturedSenders[command.commandId];
     if (sender != null) {
-      // Send the list of events as response wrapped in LocalMessage
-      sender.tell(LocalMessage(payload: events));
-      // Clean up captured sender
+      sender.tell(ChannelCommandResult(
+        commandId: command.commandId,
+        events: events,
+        success: true,
+      ));
       _capturedSenders.remove(command.commandId);
     }
   }
@@ -281,13 +283,10 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
     // Send error response to sender if running in actor system
     final sender = _capturedSenders[command.commandId];
     if (sender != null) {
-      // Send error wrapped in LocalMessage
-      sender.tell(LocalMessage(payload: {
-        'success': false,
-        'error': error.toString(),
-        'commandId': command.commandId,
-      }));
-      // Clean up captured sender
+      sender.tell(ChannelCommandResult.failed(
+        commandId: command.commandId,
+        error: error.toString(),
+      ));
       _capturedSenders.remove(command.commandId);
     }
   }

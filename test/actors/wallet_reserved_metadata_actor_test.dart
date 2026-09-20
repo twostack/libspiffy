@@ -69,9 +69,10 @@ void main() {
       sender: recorderRef,
     );
     // Old code: the update was journaled and no reply came.
-    final reply = await recorder.waitFor<Map>((_) => true);
-    expect(reply['error'], allOf(contains('address_indices'), contains('reserved')));
-    expect(reply['command'], 'UpdateWalletConfigurationCommand');
+    final reply = await recorder.waitFor<WalletCommandFailed>((_) => true);
+    expect(reply.error, allOf(contains('address_indices'), contains('reserved')));
+    expect(reply.request, 'UpdateWalletConfigurationCommand');
+    expect(reply.success, isFalse);
     expect(store.journal[_walletPid], hasLength(journalLength));
 
     manager.tell(

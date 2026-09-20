@@ -439,8 +439,6 @@ class WalletCoordinatorActor extends Actor {
         _handleSplitUTXOsResponse(message);
       } else if (message is wm.UTXOReceivedResponse) {
         _handleUTXOReceivedResponse(message);
-      } else if (message is wm.TransactionRecordedResponse) {
-        _handleTransactionRecordedResponse(message);
       } else if (message is pay.ProvisionFundingResponse) {
         _handleProvisionFundingResponse(message);
       } else if (message is wm.FundingTransactionBuiltResponse) {
@@ -491,6 +489,16 @@ class WalletCoordinatorActor extends Actor {
           error: message.error,
           willRetry: true,
         ));
+      }
+      // === THE WALLET COULD NOT ANSWER ===
+      // WalletManagerActor and the wallet aggregate report a failure they
+      // have no reply of their own for as a FailureResponse. Before this
+      // arm existed those replies were bare maps that fell through to
+      // "Unhandled message type" below, so a delete, a recording, a
+      // release or a split that the wallet refused left the app waiting
+      // for an answer that never came (bead libspiffy-kl4i).
+      else if (message is wm.FailureResponse) {
+        _handleWalletFailure(message);
       } else {
         _log.fine('Unhandled message type: ${message.runtimeType}');
       }
@@ -812,6 +820,15 @@ class WalletCoordinatorActor extends Actor {
     }
   }
 
+  /// Records an outgoing transaction in the wallet.
+  ///
+  /// Sent with this actor as the sender so a refusal comes back here
+  /// (libspiffy-kl4i): without one the wallet had nobody to answer, and a
+  /// recording the aggregate refused was invisible to the app. A successful
+  /// recording is still not announced: the handler that would have done so
+  /// was dead (nothing ever reached it) and published a manufactured
+  /// `amountSatoshis: BigInt.zero`, so it was removed rather than made live
+  /// with that number in it (bead libspiffy-5ml6).
   Future<void> _handleRecordOutgoing(RecordOutgoingCommand cmd) async {
     _walletManager.tell(
       wm.WalletCommandMessage(
@@ -836,6 +853,7 @@ class WalletCoordinatorActor extends Actor {
           counterpartyMarker: cmd.counterpartyMarker,
         ),
       ),
+      sender: context.self,
     );
   }
 
@@ -960,6 +978,11 @@ class WalletCoordinatorActor extends Actor {
     }
   }
 
+  /// Releases a reservation's UTXOs.
+  ///
+  /// Sent with this actor as the sender so a refusal comes back here
+  /// (libspiffy-kl4i): without one the wallet had nobody to answer, and a
+  /// release the aggregate refused was invisible to the app.
   Future<void> _handleReleaseUTXOs(ReleaseUTXOsCommand cmd) async {
     _walletManager.tell(
       wm.WalletCommandMessage(
@@ -969,6 +992,7 @@ class WalletCoordinatorActor extends Actor {
           reservationId: cmd.reservationId,
         ),
       ),
+      sender: context.self,
     );
   }
 
@@ -1522,6 +1546,46 @@ class WalletCoordinatorActor extends Actor {
   // ==========================================================================
   // INTERNAL ACTOR RESPONSE HANDLERS
   // ==========================================================================
+
+  /// The wallet manager, or a wallet aggregate, gave up on a request this
+  /// coordinator made.
+  ///
+  /// These replies answer a request whose success would have been reported
+  /// by someone else — a routed command is answered by the aggregate — so
+  /// there is no success path here to fail. A creation or import still
+  /// pending for the wallet is failed by name, because its
+  /// `WalletCreatedMessage` is never coming; everything else becomes an
+  /// [ErrorEvent], which is what the app can act on.
+  void _handleWalletFailure(wm.FailureResponse failure) {
+    final walletId = switch (failure) {
+      wm.WalletManagerFailure(walletId: final id) => id,
+      wm.WalletCommandFailed(walletId: final id) => id,
+      _ => null,
+    };
+    final source = switch (failure) {
+      wm.WalletManagerFailure() => 'WalletManagerActor',
+      wm.WalletCommandFailed() => 'BitcoinWalletAggregate',
+      _ => failure.runtimeType.toString(),
+    };
+    _log.warning('$source gave up on ${failure.request}'
+        '${walletId != null ? ' for wallet $walletId' : ''}: ${failure.error}');
+
+    if (walletId != null && _pendingCreateWallet.remove(walletId) != null) {
+      _emitEvent(WalletCreatedEvent(
+        walletId: walletId,
+        rootAddress: '',
+        success: false,
+        error: failure.error,
+      ));
+      return;
+    }
+
+    _emitEvent(ErrorEvent(
+      walletId: walletId,
+      source: source,
+      message: '${failure.request}: ${failure.error}',
+    ));
+  }
 
   void _handleWalletCreatedResponse(wm.WalletCreatedMessage response) {
     _log.info('Wallet created: ${response.walletId} success=${response.success}');
@@ -2131,17 +2195,6 @@ class WalletCoordinatorActor extends Actor {
         txid: response.txid,
         amountSatoshis: BigInt.zero, // Amount not available in response
         isIncoming: true,
-      ));
-    }
-  }
-
-  void _handleTransactionRecordedResponse(wm.TransactionRecordedResponse response) {
-    if (response.success) {
-      _emitEvent(TransactionReceivedEvent(
-        walletId: response.walletId,
-        txid: response.txid,
-        amountSatoshis: BigInt.zero,
-        isIncoming: false,
       ));
     }
   }

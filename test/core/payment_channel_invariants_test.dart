@@ -29,10 +29,17 @@ import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 
 import '../actors/channel_test_fixtures.dart';
 import '../actors/in_memory_event_store.dart';
+import 'package:libspiffy/src/actors/payment_channel_messages.dart';
 
 const _channelId = 'channel-invariants';
 const _persistenceId = 'PaymentChannel_$_channelId';
 const _ask = Duration(seconds: 5);
+
+/// The aggregate applied the command: its own reply, successful. The events
+/// it carries may be empty -- an idempotent repeat journals nothing
+/// (libspiffy-y8x3).
+final _applied =
+    isA<ChannelCommandResult>().having((r) => r.success, 'success', isTrue);
 
 void main() {
   late InMemoryEventStore store;
@@ -78,9 +85,9 @@ void main() {
   List<Event> journal() => store.journal[_persistenceId] ?? const [];
 
   void expectRejected(dynamic reply, Matcher errorMatcher) {
-    expect(reply, isA<Map>(), reason: 'expected a rejection, got $reply');
-    expect((reply as Map)['success'], isFalse);
-    expect(reply['error'], errorMatcher);
+    expect(reply, isA<ChannelCommandResult>(), reason: 'expected a rejection, got $reply');
+    expect((reply as ChannelCommandResult).success, isFalse);
+    expect(reply.error, errorMatcher);
   }
 
   group('a payment keeps the channel whole, on both sides (libspiffy-ubl0)',
@@ -153,7 +160,7 @@ void main() {
           allOf(contains('sum'), contains(f.amountSats.toString())));
       expectRejected(serverReply,
           allOf(contains('sum'), contains(f.amountSats.toString())));
-      expect((clientReply as Map)['error'], (serverReply as Map)['error'],
+      expect((clientReply as ChannelCommandResult).error, (serverReply as ChannelCommandResult).error,
           reason: 'one statement of the rule, so one answer: the two halves '
               'of a protocol must not disagree about what is valid');
     });
@@ -175,7 +182,7 @@ void main() {
         _ask,
       );
 
-      expect(reply, isA<List>(), reason: '$reply');
+      expect(reply, _applied, reason: '$reply');
       final recorded = journal().whereType<PaymentRecordedEvent>().single;
       expect(recorded.newClientBalanceSats, f.amountSats - BigInt.from(1000));
       expect(recorded.newServerBalanceSats, BigInt.from(1000));
@@ -195,7 +202,7 @@ void main() {
             serverAddressB58: f.serverAddressB58,
           ),
           _ask);
-      expect(first, isA<List>(), reason: '$first');
+      expect(first, _applied, reason: '$first');
       expect(journal().whereType<ServerAcceptanceRecordedEvent>(),
           hasLength(1));
 
@@ -209,7 +216,7 @@ void main() {
           ),
           _ask);
 
-      expect(second, isNot(isA<Map>()),
+      expect(second, _applied,
           reason: 'a repeat naming the same acceptance is answered, not '
               'refused: $second');
       expect(journal().whereType<ServerAcceptanceRecordedEvent>(),
@@ -255,7 +262,7 @@ void main() {
             serverSignatureHex: f.serverSignatureHex,
           ),
           _ask);
-      expect(first, isA<List>(), reason: '$first');
+      expect(first, _applied, reason: '$first');
       expect(journal().whereType<RefundCountersignedEvent>(), hasLength(1));
 
       final second = await ref.ask<dynamic>(
@@ -265,7 +272,7 @@ void main() {
           ),
           _ask);
 
-      expect(second, isNot(isA<Map>()),
+      expect(second, _applied,
           reason: 'the old status guard refused this, and the adapter told '
               'the peer channel_error: $second');
       expect(journal().whereType<RefundCountersignedEvent>(), hasLength(1));
@@ -313,7 +320,7 @@ void main() {
           ClaimRefundCommand(
               channelId: _channelId, refundTxHex: signedRefund()),
           _ask);
-      expect(first, isA<List>(), reason: '$first');
+      expect(first, _applied, reason: '$first');
       final claimed = journal().whereType<RefundClaimedEvent>().single;
 
       // A retry: the app did not hear the first answer. The same transaction
@@ -325,7 +332,7 @@ void main() {
 
       expect(journal().whereType<RefundClaimedEvent>(), hasLength(1),
           reason: 'the journal is the permanent record; a channel ends once');
-      expect(second, isNot(isA<Map>()),
+      expect(second, _applied,
           reason: 'a repeat of the same claim is answered, not refused: '
               'the money did come back');
       expect(claimed.refundTxId, isNotEmpty);
@@ -374,7 +381,7 @@ void main() {
               channelId: _channelId, refundTxHex: signedRefund()),
           _ask);
 
-      expect(reply, isA<List>(), reason: '$reply');
+      expect(reply, _applied, reason: '$reply');
       expect(journal().whereType<RefundClaimedEvent>(), hasLength(1));
     });
 

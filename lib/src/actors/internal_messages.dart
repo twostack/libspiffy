@@ -51,6 +51,39 @@ abstract class ActorResponse extends LocalMessage {
   dynamic get payload => this;
 }
 
+/// A reply that can only report failure (bead libspiffy-kl4i).
+///
+/// Some requests have no success reply to carry a failure: a command routed
+/// to an aggregate is answered by the aggregate, and an actor's catch-all
+/// answers a request whose type it may not even recognise. Those used to be
+/// bare `{'error': ...}` maps, which a caller could recognise only by
+/// testing `payload is Map` — a test that could not tell one producer from
+/// another, and that every receiver had to remember to write.
+///
+/// Subclasses name their producer, so a caller that cares which actor gave
+/// up can still test the concrete type; a caller that only needs "this
+/// failed, and why" matches this base and keeps working when a new
+/// failure-only reply is added.
+abstract class FailureResponse extends ActorResponse {
+  FailureResponse({
+    super.sender,
+    super.correlationId,
+    super.replyTo,
+    super.timestamp,
+    super.metadata,
+  });
+
+  @override
+  bool get success => false;
+
+  /// Why the request failed. Never null on a failure-only reply.
+  @override
+  String get error;
+
+  /// What failed, by type name. Diagnostic only.
+  String get request;
+}
+
 // ==========================================================================
 // WIRING MESSAGES (actor references handed over after spawn)
 // ==========================================================================

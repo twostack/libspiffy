@@ -3,9 +3,13 @@ import 'package:libspiffy/libspiffy.dart';
 import '../core/wallet_commands.dart';
 import '../models/deferred_payment.dart';
 
-// The actor wiring messages moved to internal_messages.dart.
+// The reply bases and the actor wiring messages live in
+// internal_messages.dart; re-exported so importing this file is enough to
+// build or recognise a reply.
 export 'internal_messages.dart'
     show
+        ActorResponse,
+        FailureResponse,
         SetBenfordCoordinatorMessage,
         SetArcActorForSPVMessage,
         SetHeaderSyncActorMessage,
@@ -419,6 +423,95 @@ class WalletCommandMessage implements Message {
   ActorRef? get replyTo => null;
   @override
   DateTime get timestamp => DateTime.now();
+}
+
+/// WalletManagerActor could not carry out a request (bead libspiffy-kl4i).
+///
+/// The manager has no reply of its own for most requests: a
+/// [WalletCommandMessage] is routed to the wallet aggregate, which answers
+/// the caller directly, so there is no success reply here to carry a
+/// failure. This is that missing half — sent when the wallet has no journal,
+/// when loading it throws, and from the manager's catch-all when handling a
+/// request throws without answering.
+///
+/// It replaced a bare `{'error': ..., 'walletId': ...}` map, which callers
+/// could only recognise by testing `payload is Map`, and which
+/// `WalletCoordinatorActor` did not recognise at all — a failed delete,
+/// recording, release or split left the app waiting for an answer that
+/// never came.
+///
+/// Failure only: [success] is always false and [error] is never null.
+class WalletManagerFailure extends FailureResponse {
+  /// The wallet the request named, or null when it named none (the
+  /// catch-all does not know which wallet, if any, a request was about).
+  final String? walletId;
+
+  /// The request that failed, by type name — `WalletCommandMessage`,
+  /// `CreateWalletMessage`, and so on. Diagnostic only.
+  @override
+  final String request;
+
+  @override
+  final String error;
+
+  WalletManagerFailure({
+    required this.error,
+    required this.request,
+    this.walletId,
+  });
+
+  @override
+  String get correlationId => 'wallet-manager-failure-${walletId ?? '-'}';
+  @override
+  Map<String, dynamic> get metadata =>
+      {if (walletId != null) 'walletId': walletId, 'request': request};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+  @override
+  String toString() => 'WalletManagerFailure($request'
+      '${walletId != null ? ', $walletId' : ''}: $error)';
+}
+
+/// BitcoinWalletAggregate refused or failed a command it has no specific
+/// reply for (bead libspiffy-kl4i).
+///
+/// The aggregate answers thirteen command types with a typed response; the
+/// rest — roughly twenty of the thirty-five in `wallet_commands.dart` —
+/// used to land in a bare `{'error': ..., 'command': ...}` map. Callers had
+/// to test `payload is Map`, which also caught [WalletManagerFailure] and so
+/// could not tell which of the two had answered.
+///
+/// Failure only: [success] is always false and [error] is never null. A
+/// command that succeeds is answered by its own response type, or by
+/// nothing at all.
+class WalletCommandFailed extends FailureResponse {
+  final String walletId;
+
+  /// The command that failed, by type name.
+  @override
+  final String request;
+
+  @override
+  final String error;
+
+  WalletCommandFailed({
+    required this.walletId,
+    required this.request,
+    required this.error,
+  });
+
+  @override
+  String get correlationId => 'wallet-command-failed-$walletId';
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId, 'request': request};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+  @override
+  String toString() => 'WalletCommandFailed($request, $walletId: $error)';
 }
 
 /// WalletManagerActor's reply to a [PreloadWalletCommand] that was sent with

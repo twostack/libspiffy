@@ -327,24 +327,22 @@ class PaymentChannelManagerActor extends Actor {
   /// new to journal. Treating that as `Command failed: no events emitted`
   /// turned every such repeat into a failure the caller saw, and on the
   /// peer-facing paths into a `channel_error` telling a counterparty its
-  /// channel had failed. Only a shape that is neither a rejection nor a list
-  /// is a failure here.
+  /// channel had failed. Only an unsuccessful reply is a failure here.
   Future<List<dynamic>> _askAggregate(
     String channelId,
     ActorRef aggregateRef,
     Command command,
   ) async {
     final response = await aggregateRef.ask(command);
-    if (response is Map && response['success'] == false) {
-      await _forgetAggregateWithoutJournal(channelId, aggregateRef);
-      throw StateError(response['error']?.toString() ?? 'Command failed');
-    }
-    if (response is! List) {
+    if (response is! ChannelCommandResult) {
       throw StateError('Command failed: the aggregate answered '
-          '${response.runtimeType}, which is neither its events nor a '
-          'rejection');
+          '${response.runtimeType}, which is not its reply');
     }
-    return response;
+    if (!response.success) {
+      await _forgetAggregateWithoutJournal(channelId, aggregateRef);
+      throw StateError(response.error ?? 'Command failed');
+    }
+    return response.events;
   }
 
   /// Forgets and stops [aggregateRef] when [channelId] has no journal (the
@@ -486,10 +484,10 @@ class PaymentChannelManagerActor extends Actor {
         WalletCommandMessage(msg.walletId, addressCmd),
       );
 
-      // WalletManager answers an unknown wallet (or a load failure) with a
-      // {'error': ..., 'walletId': ...} map rather than a typed response.
-      if (addressResponse is Map && addressResponse['error'] != null) {
-        throw StateError(addressResponse['error'].toString());
+      // The wallet could not answer: an unknown wallet or a load failure
+      // from the manager, or the aggregate refusing the command.
+      if (addressResponse is FailureResponse) {
+        throw StateError(addressResponse.error);
       }
 
       // Handle AddressGeneratedResponse from WalletManager
@@ -581,10 +579,10 @@ class PaymentChannelManagerActor extends Actor {
         WalletCommandMessage(msg.walletId, addressCmd),
       );
 
-      // WalletManager answers an unknown wallet (or a load failure) with a
-      // {'error': ..., 'walletId': ...} map rather than a typed response.
-      if (addressResponse is Map && addressResponse['error'] != null) {
-        throw StateError(addressResponse['error'].toString());
+      // The wallet could not answer: an unknown wallet or a load failure
+      // from the manager, or the aggregate refusing the command.
+      if (addressResponse is FailureResponse) {
+        throw StateError(addressResponse.error);
       }
 
       // Handle AddressGeneratedResponse from WalletManager
@@ -3083,10 +3081,11 @@ class _ReplyReceiver extends Actor {
       completer.complete(message);
       return;
     }
-    // WalletManager's failure shape: {'error': ..., 'walletId': ...}.
+    // The wallet gave up: the manager could not route the request, or the
+    // aggregate refused the command.
     final payload = message is LocalMessage ? message.payload : message;
-    if (payload is Map && payload['error'] != null) {
-      completer.completeError(StateError(payload['error'].toString()));
+    if (payload is FailureResponse) {
+      completer.completeError(StateError(payload.error));
     }
   }
 }

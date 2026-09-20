@@ -754,10 +754,11 @@ class _RecordingReceiverActor extends Actor {
       completer.complete(message.success ? null : (message.error ?? 'recording refused'));
       return;
     }
-    // The aggregate's generic failure reply.
+    // The wallet's failure reply: the aggregate refused the command, or
+    // the manager could not route it.
     final payload = message is LocalMessage ? message.payload : message;
-    if (payload is Map && payload.containsKey('error')) {
-      completer.complete(payload['error'].toString());
+    if (payload is FailureResponse) {
+      completer.complete(payload.error);
     }
   }
 }
@@ -781,10 +782,11 @@ class _ReservationReceiverActor extends Actor {
       }
       return;
     }
-    // Legacy shape: the aggregate's generic failure reply.
+    // The wallet's failure reply: the aggregate refused the command, or
+    // the manager could not route it.
     final payload = message is LocalMessage ? message.payload : message;
-    if (payload is Map && payload.containsKey('error')) {
-      completer.completeError(StateError(payload['error'].toString()));
+    if (payload is FailureResponse) {
+      completer.completeError(StateError(payload.error));
     }
   }
 }

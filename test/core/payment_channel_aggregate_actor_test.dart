@@ -25,6 +25,7 @@ import 'package:libspiffy/src/core/channel_commands.dart';
 import 'package:libspiffy/src/core/channel_events.dart';
 import 'package:libspiffy/src/core/payment_channel_aggregate.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
+import 'package:libspiffy/src/actors/payment_channel_messages.dart';
 
 /// Test mnemonic for generating predictable keys
 const testMnemonic = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
@@ -153,9 +154,10 @@ void main() {
 
       // Wait for response using probe - no arbitrary delays!
       // Note: Dactor automatically extracts payload from LocalMessage before passing to onMessage
-      final response = await probe.expectMsgType<List<Event>>(
+      final response = (await probe.expectMsgType<ChannelCommandResult>(
         timeout: Duration(seconds: 3),
-      );
+      ))
+          .events;
       
       // Verify response contains expected event
       expect(response.length, 1);
@@ -197,7 +199,8 @@ void main() {
       );
 
       aggregateRef.tell(requestCmd, sender: probe.ref);
-      var response = await probe.expectMsgType<List<Event>>(timeout: Duration(seconds: 3));
+      var response =
+          (await probe.expectMsgType<ChannelCommandResult>(timeout: Duration(seconds: 3))).events;
       
       expect(response.length, 1);
       expect(response[0], isA<ChannelRequestedEvent>());
@@ -219,7 +222,8 @@ void main() {
       );
 
       aggregateRef.tell(acceptCmd, sender: probe.ref);
-      response = await probe.expectMsgType<List<Event>>(timeout: Duration(seconds: 3));
+      response =
+          (await probe.expectMsgType<ChannelCommandResult>(timeout: Duration(seconds: 3))).events;
       
       expect(response.length, 1);
       expect(response[0], isA<ChannelAcceptedEvent>());
@@ -305,13 +309,13 @@ void main() {
 
       // Wait for both responses concurrently - no arbitrary delays!
       final results = await Future.wait([
-        probe1.expectMsgType<List<Event>>(timeout: Duration(seconds: 3)),
-        probe2.expectMsgType<List<Event>>(timeout: Duration(seconds: 3)),
+        probe1.expectMsgType<ChannelCommandResult>(timeout: Duration(seconds: 3)),
+        probe2.expectMsgType<ChannelCommandResult>(timeout: Duration(seconds: 3)),
       ]);
 
       // Verify both channels processed commands correctly
-      expect((results[0][0] as ChannelRequestedEvent).fundingAmountSats, BigInt.from(1000));
-      expect((results[1][0] as ChannelRequestedEvent).fundingAmountSats, BigInt.from(2000));
+      expect((results[0].events[0] as ChannelRequestedEvent).fundingAmountSats, BigInt.from(1000));
+      expect((results[1].events[0] as ChannelRequestedEvent).fundingAmountSats, BigInt.from(2000));
 
       // Verify events were persisted separately
       final channel1Events = await eventStore.getEvents('PaymentChannel_channel-1');
@@ -350,7 +354,8 @@ void main() {
       );
 
       aggregateRef1.tell(requestCmd, sender: probe1.ref);
-      var response = await probe1.expectMsgType<List<Event>>(timeout: Duration(seconds: 3));
+      var response =
+          (await probe1.expectMsgType<ChannelCommandResult>(timeout: Duration(seconds: 3))).events;
       final requestEvent = response[0] as ChannelRequestedEvent;
 
       final serverKeys = await PrecomputedKeys.generate(cryptoService);
@@ -368,7 +373,7 @@ void main() {
       );
 
       aggregateRef1.tell(acceptCmd, sender: probe1.ref);
-      await probe1.expectMsgType<List<Event>>(timeout: Duration(seconds: 3));
+      await probe1.expectMsgType<ChannelCommandResult>(timeout: Duration(seconds: 3));
 
       // Stop the first actor
       actorSystem.stop(aggregateRef1);
@@ -462,7 +467,7 @@ void main() {
         lockTimeDurationSeconds: 1,
       );
       aggregateRef.tell(requestCmd, sender: probe.ref);
-      await probe.expectMsgType<List<Event>>(timeout: Duration(seconds: 3));
+      await probe.expectMsgType<ChannelCommandResult>(timeout: Duration(seconds: 3));
 
       // Wait past lockTime.
       await Future.delayed(Duration(milliseconds: 1100));
@@ -475,7 +480,8 @@ void main() {
       aggregateRef.tell(expireCmd, sender: probe.ref);
 
       final response =
-          await probe.expectMsgType<List<Event>>(timeout: Duration(seconds: 3));
+          (await probe.expectMsgType<ChannelCommandResult>(timeout: Duration(seconds: 3)))
+              .events;
       expect(response.length, 1);
       expect(response[0], isA<ChannelExpiredEvent>());
 

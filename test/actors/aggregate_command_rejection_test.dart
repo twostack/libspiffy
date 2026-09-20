@@ -194,7 +194,7 @@ void main() {
 
       ref.tell(ReleaseUTXOCommand(walletId: _walletId, utxoKey: '${'d' * 64}:1'),
           sender: recorderRef);
-      await recorder.waitFor<dynamic>((m) => m is Map);
+      await recorder.waitFor<dynamic>((m) => m is WalletCommandFailed);
       await Future<void>.delayed(_quiet);
 
       expect(ref.isAlive, isTrue,
@@ -237,11 +237,13 @@ void main() {
       final ref = await spawnAggregate();
 
       ref.tell(_StaleVersionCommand(), sender: recorderRef);
-      final reply = await recorder.waitFor<dynamic>((m) => m is Map);
+      final reply = await recorder.waitFor<dynamic>((m) => m is WalletCommandFailed);
       await Future<void>.delayed(_quiet);
 
-      expect((reply as Map)['error'], contains('OptimisticConcurrencyException'));
-      expect(recorder.received.whereType<Map>(), hasLength(1));
+      expect((reply as WalletCommandFailed).error,
+          contains('OptimisticConcurrencyException'));
+      expect(recorder.received.whereType<WalletCommandFailed>(), hasLength(1),
+          reason: 'answered exactly once');
       expect(CommandFailureContainment.isRetiring(ref), isTrue,
           reason: 'a version conflict means the in-memory state may be stale');
       await CommandFailureContainment.retire(ref).timeout(_wait);

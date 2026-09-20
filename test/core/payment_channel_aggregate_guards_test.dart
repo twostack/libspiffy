@@ -143,6 +143,12 @@ RecordPaymentCommand _record({
       newServerBalanceSats: BigInt.from(server),
     );
 
+/// The aggregate applied the command: its own reply, successful. The events
+/// it carries may be empty -- an idempotent repeat journals nothing
+/// (libspiffy-y8x3).
+final _applied =
+    isA<ChannelCommandResult>().having((r) => r.success, 'success', isTrue);
+
 void main() {
   late InMemoryEventStore store;
   late TestActorSystem system;
@@ -174,11 +180,11 @@ void main() {
   int journalLength() => store.journal[_persistenceId]?.length ?? 0;
 
   void expectRejected(dynamic reply, String errorFragment) {
-    expect(reply, isA<Map>(),
+    expect(reply, isA<ChannelCommandResult>(),
         reason: 'the command must be rejected with the failure reply, '
             'got $reply');
-    expect((reply as Map)['success'], isFalse);
-    expect(reply['error'], contains(errorFragment));
+    expect((reply as ChannelCommandResult).success, isFalse);
+    expect(reply.error, contains(errorFragment));
   }
 
   group('M10: AcknowledgePaymentCommand balance invariants', () {
@@ -231,8 +237,8 @@ void main() {
       final ref = await spawn(_openServerChannel());
       final reply = await ref.ask<dynamic>(
           _ack(amount: 1000, client: 99000, server: 1000), _ask);
-      expect(reply, isA<List>(), reason: '$reply');
-      final event = (reply as List).single as PaymentAcknowledgedEvent;
+      expect(reply, _applied, reason: '$reply');
+      final event = (reply as ChannelCommandResult).events.single as PaymentAcknowledgedEvent;
       expect(event.newServerBalanceSats, BigInt.from(1000));
       expect(journalLength(), 4);
     });
@@ -279,8 +285,8 @@ void main() {
       final ref = await spawn(_openClientChannel());
       final reply = await ref.ask<dynamic>(
           _record(amount: 1000, client: 99000, server: 1000), _ask);
-      expect(reply, isA<List>(), reason: '$reply');
-      final event = (reply as List).single as PaymentRecordedEvent;
+      expect(reply, _applied, reason: '$reply');
+      final event = (reply as ChannelCommandResult).events.single as PaymentRecordedEvent;
       expect(event.amountSats, BigInt.from(1000));
       expect(event.newServerBalanceSats, BigInt.from(1000));
       expect(journalLength(), 5);
@@ -328,8 +334,8 @@ void main() {
               channelId: _channelId,
               serverSignatureHex: fixture.serverSignatureHex),
           _ask);
-      expect(reply, isA<List>(), reason: '$reply');
-      expect((reply as List).single, isA<RefundCountersignedEvent>());
+      expect(reply, _applied, reason: '$reply');
+      expect((reply as ChannelCommandResult).events.single, isA<RefundCountersignedEvent>());
     });
   });
 
@@ -441,7 +447,7 @@ void main() {
       final reply = await ref.ask<dynamic>(
           ClaimRefundCommand(channelId: _channelId), _ask);
 
-      expect(reply, isA<List>(), reason: '$reply');
+      expect(reply, _applied, reason: '$reply');
       final persisted = store.journal[_persistenceId]!
           .whereType<RefundClaimedEvent>()
           .single;
@@ -458,7 +464,7 @@ void main() {
           ClaimRefundCommand(channelId: _channelId, refundTxHex: signedHex),
           _ask);
 
-      expect(reply, isA<List>(), reason: '$reply');
+      expect(reply, _applied, reason: '$reply');
       final persisted = store.journal[_persistenceId]!
           .whereType<RefundClaimedEvent>()
           .single;

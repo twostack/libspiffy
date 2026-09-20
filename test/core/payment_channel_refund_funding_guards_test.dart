@@ -34,6 +34,12 @@ const _channelId = 'channel-refund-guards';
 const _persistenceId = 'PaymentChannel_$_channelId';
 const _ask = Duration(seconds: 5);
 
+/// The aggregate applied the command: its own reply, successful. The events
+/// it carries may be empty -- an idempotent repeat journals nothing
+/// (libspiffy-y8x3).
+final _applied =
+    isA<ChannelCommandResult>().having((r) => r.success, 'success', isTrue);
+
 void main() {
   late InMemoryEventStore store;
   late TestActorSystem system;
@@ -69,9 +75,9 @@ void main() {
   List<Event> journal() => store.journal[_persistenceId] ?? const [];
 
   void expectRejected(dynamic reply, String errorFragment) {
-    expect(reply, isA<Map>(), reason: 'expected a rejection, got $reply');
-    expect((reply as Map)['success'], isFalse);
-    expect(reply['error'], contains(errorFragment));
+    expect(reply, isA<ChannelCommandResult>(), reason: 'expected a rejection, got $reply');
+    expect((reply as ChannelCommandResult).success, isFalse);
+    expect(reply.error, contains(errorFragment));
   }
 
   RecordRefundBuiltCommand recordRefund({
@@ -106,7 +112,7 @@ void main() {
 
       final reply = await ref.ask<dynamic>(recordRefund(), _ask);
 
-      expect(reply, isA<List>(), reason: '$reply');
+      expect(reply, _applied, reason: '$reply');
       final built = journal().whereType<RefundBuiltEvent>().single;
       expect(built.refundTxHex, f.refundTxHex);
       expect(built.clientSignatureHex, f.clientSignatureHex);
@@ -222,7 +228,7 @@ void main() {
               channelId: _channelId, serverSignatureHex: f.serverSignatureHex),
           _ask);
 
-      expect(reply, isA<List>(), reason: '$reply');
+      expect(reply, _applied, reason: '$reply');
       final countersigned =
           journal().whereType<RefundCountersignedEvent>().single;
       final signed =
@@ -292,7 +298,7 @@ void main() {
       final reply = await ref.ask<dynamic>(
           ClaimRefundCommand(channelId: _channelId), _ask);
 
-      expect(reply, isA<List>(), reason: '$reply');
+      expect(reply, _applied, reason: '$reply');
       expect(journal().whereType<RefundClaimedEvent>().single.refundTxId,
           dartsv.Transaction.fromHex(expired.signedRefundTxHex()).id);
     });
@@ -349,7 +355,7 @@ void main() {
       StartFundingBroadcastCommand start() => StartFundingBroadcastCommand(
           channelId: _channelId, fundingTxId: f.fundingTxId);
 
-      expect(await ref.ask<dynamic>(start(), _ask), isA<List>());
+      expect(await ref.ask<dynamic>(start(), _ask), _applied);
       expect(
           await ref.ask<dynamic>(
               RecordFundingBroadcastFailedCommand(
@@ -358,9 +364,9 @@ void main() {
                   error: 'ARC down',
                   walletRecorded: true),
               _ask),
-          isA<List>());
-      expect(await ref.ask<dynamic>(start(), _ask), isA<List>());
-      expect(await ref.ask<dynamic>(start(), _ask), isA<List>());
+          _applied);
+      expect(await ref.ask<dynamic>(start(), _ask), _applied);
+      expect(await ref.ask<dynamic>(start(), _ask), _applied);
 
       expect(
           journal()
@@ -419,7 +425,7 @@ void main() {
     test('client: opens once the funding broadcast started', () async {
       final ref = await spawn(f.openClientJournal().take(5).toList());
 
-      expect(await ref.ask<dynamic>(open(), _ask), isA<List>());
+      expect(await ref.ask<dynamic>(open(), _ask), _applied);
     });
 
     test(
@@ -450,8 +456,8 @@ void main() {
       expect(journal(), hasLength(2));
 
       final opened = await ref.ask<dynamic>(open(beef: beef), _ask);
-      expect(opened, isA<List>());
-      expect((opened as List).single.fundingBeefHex, beef,
+      expect(opened, _applied);
+      expect(((opened as ChannelCommandResult).events.single as ChannelOpenedEvent).fundingBeefHex, beef,
           reason: 'the BEEF the server validated is journaled');
     });
 
@@ -510,7 +516,7 @@ void main() {
             'not the one the signed refund spends');
         expect(journal(), hasLength(2));
         expect(await ref.ask<dynamic>(open(beef: beefOf(f.fundingTxHex)), _ask),
-            isA<List>());
+            _applied);
       });
     });
   });
@@ -555,8 +561,8 @@ void main() {
       final reply = await ref.ask<dynamic>(
           sign(fundingTxHex: f.fundingTxHex), _ask);
 
-      expect(reply, isA<List>(), reason: '$reply');
-      final event = (reply as List).single as RefundCountersignedEvent;
+      expect(reply, _applied, reason: '$reply');
+      final event = (reply as ChannelCommandResult).events.single as RefundCountersignedEvent;
       expect(event.refundTxHex, f.refundTxHex);
       expect(event.fundingTxId, f.fundingTxId);
       expect(event.fundingOutputIndex, 0);

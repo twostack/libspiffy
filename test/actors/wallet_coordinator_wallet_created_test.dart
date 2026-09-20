@@ -1,5 +1,9 @@
-/// WalletCoordinatorActor: WalletCreatedEvent waits for the read model
-/// (libspiffy-p56).
+/// WalletCoordinatorActor: what the app is told about a wallet.
+///
+/// Two properties, both about an app that would otherwise wait forever:
+/// WalletCreatedEvent waits for the read model (libspiffy-p56), and a
+/// failure the wallet reports with no reply of its own reaches the app at
+/// all (libspiffy-kl4i).
 ///
 /// The coordinator emitted WalletCreatedEvent as soon as WalletManagerActor
 /// replied, before the wallet projection had written the wallet row and its
@@ -178,6 +182,82 @@ void main() {
     expect(created.success, isTrue, reason: created.error);
   });
 
+  /// libspiffy-kl4i: WalletManagerActor and the wallet aggregate answer a
+  /// request they have no reply of their own for with a [wm.FailureResponse]
+  /// — a bare `{'error': ..., 'walletId': ...}` map before this bead. The
+  /// coordinator's dispatch had no arm for that shape, so the reply fell
+  /// through to `_log.fine('Unhandled message type')` and the app, which
+  /// learns of everything through `coordinatorEvents`, was told nothing at
+  /// all. Every test below fails on the old code by timing out.
+  group('kl4i: a failure the wallet reports reaches the app', () {
+    Future<ActorRef> coordinatorOver(ActorRef walletManager) async {
+      storage.open();
+      final silentProjection =
+          await actorSystem.spawn('projection-silent', () => _ProbeActor());
+      return spawnCoordinator(
+        walletManager: walletManager,
+        walletProjection: silentProjection,
+      );
+    }
+
+    test('a command the manager cannot route becomes an ErrorEvent', () async {
+      final coordinator = await coordinatorOver(await actorSystem.spawn(
+          'wallet-manager', () => _RefusingWalletManager()));
+
+      coordinator.tell(DeleteWalletCommand(walletId: _walletId));
+
+      final error = await nextEvent<ErrorEvent>(const Duration(seconds: 3));
+      expect(error.walletId, _walletId);
+      expect(error.message, contains('Wallet not found'));
+      expect(error.message, contains('WalletCommandMessage'),
+          reason: 'the app is told which request was refused');
+      expect(error.source, 'WalletManagerActor');
+    });
+
+    test('a command the aggregate refuses becomes an ErrorEvent', () async {
+      final coordinator = await coordinatorOver(await actorSystem.spawn(
+          'wallet-manager', () => _RefusingWalletManager(fromAggregate: true)));
+
+      coordinator.tell(ReleaseUTXOsCommand(
+          walletId: _walletId, reservationId: 'r1'));
+
+      final error = await nextEvent<ErrorEvent>(const Duration(seconds: 3));
+      expect(error.walletId, _walletId);
+      expect(error.message, contains('nothing reserved'));
+      expect(error.source, 'BitcoinWalletAggregate');
+    });
+
+    test('a creation the manager gives up on is reported as a failed '
+        'WalletCreatedEvent, not an ErrorEvent', () async {
+      final coordinator = await coordinatorOver(await actorSystem.spawn(
+          'wallet-manager', () => _RefusingWalletManager()));
+
+      coordinator.tell(CreateWalletCommand(walletId: _walletId, name: 'kl4i'));
+
+      final created =
+          await nextEvent<WalletCreatedEvent>(const Duration(seconds: 3));
+      expect(created.success, isFalse);
+      expect(created.error, contains('Wallet not found'));
+      expect(events.whereType<ErrorEvent>(), isEmpty,
+          reason: 'the pending creation is failed by name, not generically');
+    });
+
+    test('a failure naming no wallet still reaches the app', () async {
+      final manager =
+          await actorSystem.spawn('wallet-manager', () => _ProbeActor());
+      final coordinator = await coordinatorOver(manager);
+
+      // The manager's catch-all: it does not know which wallet, if any, the
+      // request that threw was about.
+      coordinator.tell(wm.WalletManagerFailure(
+          error: 'the manager threw', request: 'StoreHeadersCommand'));
+
+      final error = await nextEvent<ErrorEvent>(const Duration(seconds: 3));
+      expect(error.walletId, isNull);
+      expect(error.message, contains('the manager threw'));
+    });
+  });
+
   test('a failed creation is reported without waiting on the projection',
       () async {
     // A projection that never answers: any wait on it would time out.
@@ -226,6 +306,35 @@ class _CreatingWalletManager extends Actor {
     sender?.tell(LocalMessage(
       payload: wm.WalletCreatedMessage(message.walletId, _rootAddress, true),
     ));
+  }
+}
+
+/// Stands in for a WalletManagerActor that cannot serve the request: it
+/// answers with the manager's own failure, or with the one the wallet
+/// aggregate would have sent through it.
+class _RefusingWalletManager extends Actor {
+  final bool fromAggregate;
+  _RefusingWalletManager({this.fromAggregate = false});
+
+  @override
+  Future<void> onMessage(dynamic message) async {
+    final walletId = switch (message) {
+      wm.CreateWalletMessage(walletId: final id) => id,
+      wm.WalletCommandMessage(walletId: final id) => id,
+      _ => null,
+    };
+    if (walletId == null) return;
+    context.sender?.tell(fromAggregate
+        ? wm.WalletCommandFailed(
+            walletId: walletId,
+            request: 'ReleaseUTXOsCommand',
+            error: 'nothing reserved under r1')
+        : wm.WalletManagerFailure(
+            error: 'Wallet not found',
+            request: message.runtimeType.toString().startsWith('CreateWallet')
+                ? 'CreateWalletMessage'
+                : 'WalletCommandMessage',
+            walletId: walletId));
   }
 }
 

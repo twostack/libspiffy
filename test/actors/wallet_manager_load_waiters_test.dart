@@ -53,6 +53,14 @@ class _CountingEventStore extends InMemoryEventStore {
   }
 }
 
+/// The manager's reply for a wallet it has no journal for.
+void _expectNotFound(dynamic reply, String walletId) {
+  expect(reply, isA<WalletManagerFailure>(), reason: 'got $reply');
+  expect((reply as WalletManagerFailure).error, 'Wallet not found');
+  expect(reply.walletId, walletId);
+  expect(reply.success, isFalse);
+}
+
 void main() {
   late _CountingEventStore eventStore;
   late InMemorySecureStorage secureStorage;
@@ -166,11 +174,11 @@ void main() {
       ),
     ]);
 
-    expect(results[0], {'error': 'Wallet not found', 'walletId': 'ghost'});
+    _expectNotFound(results[0], 'ghost');
     final query = results[1] as WalletOwnershipResponse;
     expect(query.walletFound, isFalse);
     expect(query.error, 'Wallet ghost not found');
-    expect(results[2], {'error': 'Wallet not found', 'walletId': 'ghost'});
+    _expectNotFound(results[2], 'ghost');
     expect(actorSystem.getActor('wallet-ghost'), isNull);
   });
 
@@ -190,9 +198,9 @@ void main() {
     ]);
 
     // A load that throws is reported like a wallet with no journal.
-    expect(results[0], {'error': 'Wallet not found', 'walletId': 'w1'});
+    _expectNotFound(results[0], 'w1');
     expect((results[1] as WalletOwnershipResponse).walletFound, isFalse);
-    expect(results[2], {'error': 'Wallet not found', 'walletId': 'w1'});
+    _expectNotFound(results[2], 'w1');
 
     // Nothing is left marked as loading: the next request loads the wallet.
     eventStore.failReads = false;

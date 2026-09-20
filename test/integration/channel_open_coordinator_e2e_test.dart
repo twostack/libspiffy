@@ -48,6 +48,7 @@ import 'package:libspiffy/src/actors/payment_channel_messages.dart'
 import 'package:libspiffy/src/core/channel_commands.dart'
     show ClaimRefundCommand;
 import 'package:libspiffy/src/core/payment_channel_aggregate.dart';
+import 'package:libspiffy/src/actors/payment_channel_messages.dart';
 import 'package:libspiffy/src/models/payment_channel.dart';
 import 'package:eventador/eventador.dart' show Event;
 
@@ -1000,8 +1001,9 @@ void main() {
           const Duration(seconds: 5));
       final nowUnix = DateTime.now().millisecondsSinceEpoch ~/ 1000;
       if (nowUnix < row.lockTimeUnix) {
-        expect(early, isA<Map>(), reason: 'claimed before the lockTime');
-        expect((early as Map)['error'], contains('not yet expired'));
+        expect(early, isA<ChannelCommandResult>(), reason: 'claimed before the lockTime');
+        expect((early as ChannelCommandResult).success, isFalse);
+        expect(early.error, contains('not yet expired'));
         await Future<void>.delayed(
             Duration(seconds: row.lockTimeUnix - nowUnix + 1));
       }
@@ -1009,8 +1011,9 @@ void main() {
       final claimed = await aggregate.ask<dynamic>(
           ClaimRefundCommand(channelId: row.channelId),
           const Duration(seconds: 5));
-      expect(claimed, isA<List>(), reason: '$claimed');
-      final event = (claimed as List).single as Event;
+      expect(claimed, isA<ChannelCommandResult>(), reason: '$claimed');
+      expect((claimed as ChannelCommandResult).success, isTrue, reason: claimed.error);
+      final event = claimed.events.single;
       expect(event.toMap()['refundTxId'],
           dartsv.Transaction.fromHex(row.refundTxHex!).id,
           reason: 'the claim records the fully signed refund');

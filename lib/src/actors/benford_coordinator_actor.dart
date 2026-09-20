@@ -161,10 +161,9 @@ class BenfordCoordinatorActor extends Actor {
           targetCount: command.targetUtxoCount,
           feeRate: command.feeRate ?? BigInt.one,
         );
-        if (attempt == null) continue;
         final index = pending.outcomes.length;
-        pending.outcomes.add(attempt.notRecorded);
-        if (attempt.notRecorded == null) {
+        pending.outcomes.add(attempt.settled);
+        if (attempt.settled == null) {
           pending.awaiting++;
           unawaited(_awaitBroadcast(context.self, requestId, index, command.walletId, attempt));
         }
@@ -186,8 +185,10 @@ class BenfordCoordinatorActor extends Actor {
       result = await _arcActor.ask<DeferredPaymentNetworkResult>(
         BroadcastDeferredPaymentMessage(
           walletId: walletId,
-          txid: split.txid,
-          rawTxHex: split.txHex,
+          // Only a recorded split is broadcast, and a recorded split has
+          // both (`settled == null` is exactly that case).
+          txid: split.txid!,
+          rawTxHex: split.txHex!,
           via: DeferredPaymentNetworkSource.arc,
         ),
         _broadcastReplyTimeout,
@@ -228,6 +229,7 @@ class BenfordCoordinatorActor extends Actor {
           status: status,
           networkStatus: networkStatus,
           error: error,
+          feePaid: split.feePaid,
         );
     final name = 'Benford split ${split.txid} of ${split.sourceUtxoKey}';
     if (result == null) {
@@ -268,8 +270,12 @@ class BenfordCoordinatorActor extends Actor {
     if (pending == null || !pending.allStarted || pending.awaiting > 0) return;
     _pendingReplies.remove(requestId);
     final outcomes = [for (final o in pending.outcomes) o!];
-    final made = [for (final o in outcomes) if (o.isSuccess) o.txid];
-    final failed = [for (final o in outcomes) if (!o.isSuccess) o.error ?? '${o.txid}: ${o.status.name}'];
+    final made = [for (final o in outcomes) if (o.isSuccess) o.txid!];
+    final failed = [
+      for (final o in outcomes)
+        if (!o.isSuccess)
+          o.error ?? '${o.txid ?? o.sourceUtxoKey}: ${o.status.name}'
+    ];
     pending.sender?.tell(SplitUTXOsResponse(
       walletId: pending.command.walletId,
       success: failed.isEmpty,
@@ -280,10 +286,16 @@ class BenfordCoordinatorActor extends Actor {
     ));
   }
 
-  /// Split a single UTXO into multiple outputs following Benford distribution.
-  /// Returns the signed split and whether it was recorded, or null when no
-  /// transaction was built (too small, not reserved, not signed).
-  Future<_SplitAttempt?> _splitSingleUtxo({
+  /// Split a single UTXO into multiple outputs following Benford
+  /// distribution.
+  ///
+  /// Always returns an attempt, so every source the caller asked about is
+  /// accounted for in the reply. A source that built no transaction comes
+  /// back as [_SplitAttempt.notBuilt] carrying the reason; before bead
+  /// libspiffy-q28i these four paths returned null and the source vanished
+  /// from the answer, which made a run where every source failed look like a
+  /// success.
+  Future<_SplitAttempt> _splitSingleUtxo({
     required String walletId,
     required WalletType walletType,
     required BitcoinUtxo sourceUtxo,
@@ -297,7 +309,13 @@ class BenfordCoordinatorActor extends Actor {
     // Check if UTXO is large enough
     final minTotalNeeded = BigInt.from(targetCount) + estimatedFee;
     if (sourceUtxo.satoshis < minTotalNeeded) {
-      return null;
+      return _SplitAttempt.notBuilt(
+          sourceUtxo.key,
+          '${sourceUtxo.key} is too small to split into $targetCount outputs: '
+          'it holds ${sourceUtxo.satoshis} satoshis and $minTotalNeeded are '
+          'needed ($estimatedFee of fee at $feeRate sat/byte, and one '
+          'satoshi per output). Nothing was reserved and the source is '
+          'untouched.');
     }
 
     // 2. Reserve the source UTXO to prevent double-spending
@@ -305,7 +323,11 @@ class BenfordCoordinatorActor extends Actor {
     final reserved = await _reserveUTXO(walletId, sourceUtxo, reservationId);
     if (!reserved) {
       _log.info('UTXO ${sourceUtxo.key} could not be reserved, skipping');
-      return null;
+      return _SplitAttempt.notBuilt(
+          sourceUtxo.key,
+          'the wallet would not reserve ${sourceUtxo.key} for the split: it '
+          'is already spoken for, or it did not answer. Nothing was built '
+          'and the source is untouched.');
     }
 
     try {
@@ -335,7 +357,11 @@ class BenfordCoordinatorActor extends Actor {
 
       if (txResult == null) {
         _releaseReservation(walletId: walletId, reservationId: reservationId);
-        return null;
+        return _SplitAttempt.notBuilt(
+            sourceUtxo.key,
+            'the split of ${sourceUtxo.key} could not be built or signed; '
+            'nothing was recorded or broadcast and its reservation is '
+            'released (the log names the failure)');
       }
 
       final txid = txResult['txid'] as String;
@@ -390,23 +416,28 @@ class BenfordCoordinatorActor extends Actor {
         }
         _releaseReservation(walletId: walletId, reservationId: reservationId);
         return _SplitAttempt(txid, txHex, sourceUtxo.key,
-            notRecorded: SplitTransactionOutcome(
+            feePaid: actualFee,
+            settled: SplitTransactionOutcome(
               txid: txid,
               sourceUtxoKey: sourceUtxo.key,
               status: SplitTransactionStatus.notRecorded,
               error: error,
+              feePaid: actualFee,
             ));
       }
 
       // 7. Broadcast via ARCActor: the caller does, and waits for ARC's
       // answer outside the mailbox. ARC's answer settles the hold; a failed
       // submission is retried from ARCActor's queue.
-      return _SplitAttempt(txid, txHex, sourceUtxo.key);
+      return _SplitAttempt(txid, txHex, sourceUtxo.key, feePaid: actualFee);
 
     } catch (e) {
       _log.warning('Failed to build or record Benford split transaction: $e');
       _releaseReservation(walletId: walletId, reservationId: reservationId);
-      return null;
+      return _SplitAttempt.notBuilt(
+          sourceUtxo.key,
+          'the split of ${sourceUtxo.key} failed before anything was '
+          'recorded or broadcast ($e); its reservation is released');
     }
   }
 
@@ -466,8 +497,12 @@ class BenfordCoordinatorActor extends Actor {
       );
       receivers.add(receiver);
 
-      // Create command with UNIQUE commandId to prevent sender overwriting
-      // Each command needs its own ID so BitcoinWalletAggregate can track senders separately
+      // Each command needs its own id so BitcoinWalletAggregate can track the
+      // senders separately. The loop index alone makes it unique, so the
+      // commands are not spaced out in time: the 10 us delay this used to
+      // sleep per address rounds up to about a millisecond on most
+      // platforms, for up to 100 outputs per source UTXO, and guarded an
+      // invariant the index already holds (bead libspiffy-y0ce).
       final command = GenerateAddressCommand(
         walletId: walletId,
         commandId: 'benford-addr-gen-$i-${DateTime.now().microsecondsSinceEpoch}',
@@ -480,9 +515,6 @@ class BenfordCoordinatorActor extends Actor {
       );
 
       futures.add(completer.future);
-
-      // Small delay to ensure unique timestamps for commandId
-      await Future.delayed(const Duration(microseconds: 10));
     }
 
     // Wait for ALL addresses to be generated and persisted
@@ -540,9 +572,14 @@ class BenfordCoordinatorActor extends Actor {
         txBuilder.spendToPKH(address, outputAmounts[i]);
       }
 
-      // Set fee rate and build
+      // [feeRate] is satoshis per BYTE (SplitUTXOsToBenfordCommand) and this
+      // builder takes satoshis per KILOBYTE: passing it through unscaled
+      // understated the rate a thousandfold. It changes nothing today,
+      // because every output amount is given explicitly and there is no
+      // change output for the builder to size, but a wrong unit sitting in
+      // the code is a trap for whoever adds one (bead libspiffy-q28i).
       txBuilder
-          .withFeePerKb(feeRate.toInt())
+          .withFeePerKb((feeRate * BigInt.from(1000)).toInt())
           .withOption(dartsv.TransactionOption.DISABLE_DUST_OUTPUTS);
 
       final unsignedTx = txBuilder.build(false); // Skip sanity checks
@@ -649,11 +686,31 @@ class BenfordCoordinatorActor extends Actor {
 /// A split transaction that was built and signed: recorded, or not
 /// ([notRecorded]).
 class _SplitAttempt {
-  final String txid;
-  final String txHex;
+  /// Null when no transaction was built ([settled] is then the outcome).
+  final String? txid;
+  final String? txHex;
   final String sourceUtxoKey;
-  final SplitTransactionOutcome? notRecorded;
-  _SplitAttempt(this.txid, this.txHex, this.sourceUtxoKey, {this.notRecorded});
+
+  /// The fee the built transaction pays; null when none was built.
+  final BigInt? feePaid;
+
+  /// The outcome when this attempt is already over — nothing was built, or
+  /// it was built but not recorded. Null only when the split is recorded and
+  /// is waiting for ARC's answer to its broadcast.
+  final SplitTransactionOutcome? settled;
+
+  _SplitAttempt(this.txid, this.txHex, this.sourceUtxoKey,
+      {this.feePaid, this.settled});
+
+  /// No transaction was built for [sourceUtxoKey]: [reason] says why.
+  _SplitAttempt.notBuilt(String sourceUtxoKey, String reason)
+      : this(null, null, sourceUtxoKey,
+            settled: SplitTransactionOutcome(
+              txid: null,
+              sourceUtxoKey: sourceUtxoKey,
+              status: SplitTransactionStatus.notBuilt,
+              error: reason,
+            ));
 }
 
 /// A split request waiting for ARC's answers to its broadcasts.

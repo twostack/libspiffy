@@ -388,9 +388,10 @@ abstract final class UtxoLedger {
   /// Validates a request to split UTXOs according to Benford's Law
   /// distribution and emits [UTXOSplitInitiatedEvent].
   ///
-  /// The actual orchestration (transaction building, signing, broadcasting)
-  /// is performed by BenfordCoordinatorActor, which listens to the
-  /// UTXOSplitInitiatedEvent and handles all external service calls.
+  /// The event is informational: nothing subscribes to it. The actual
+  /// orchestration (building, signing, broadcasting) is command-driven and
+  /// runs in `BenfordCoordinatorActor`, which the split command reaches
+  /// through `WalletManagerActor` (bead libspiffy-7e77).
   static List<Event> splitToBenford(WalletState currentState, SplitUTXOsToBenfordCommand command) {
     // Business rule: Wallet must exist
     if (!currentState.isCreated) {

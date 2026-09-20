@@ -302,6 +302,33 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### The UTXO split reports what actually happened
+
+- **Fixed (false success):** a Benford split that failed before it built a
+  transaction — the source too small for the fee, the wallet refusing to
+  reserve it, or the transaction failing to **build or sign** — was dropped
+  from the answer entirely. When every source failed that way the caller was
+  told `success: true` with an empty result. Every source the split attempts
+  is now reported, with the reason it produced no transaction, under the new
+  `SplitTransactionStatus.notBuilt`.
+- **Breaking:** `SplitTransactionOutcome.txid` is now nullable. It is null
+  exactly for `notBuilt`, where there is no transaction to name;
+  `sourceUtxoKey` is always set, so a host can still say which UTXO it was.
+- **Fixed (wrong number):** `UTXOSplitCompleteEvent.transactionCount` was fed
+  from a UTXO count, so with the default `targetUtxoCount: 5` **one split
+  transaction was reported as five**. It is the number of transactions now.
+  `newUtxoCount` is unchanged and still counts outputs.
+- **Fixed (invented number):** `totalFeePaid` was hard-coded to zero. The fee
+  is carried through on the new `SplitTransactionOutcome.feePaid` — the
+  source minus the signed transaction's outputs, null when nothing was built
+  — and summed over the splits that succeeded. Zero now means no split
+  succeeded rather than "not measured".
+- The transaction builder was given the fee rate in satoshis per byte where
+  it expects satoshis per kilobyte. It changed nothing, because split outputs
+  are explicit and there is no change output, but the unit is correct now.
+- The split no longer sleeps 10 microseconds per generated address; the
+  command ids it was protecting are unique without it.
+
 ### A wallet that lost its account xpub can derive addresses again
 
 - **Fixed:** a wallet whose `wallet_hdpubkey_<walletId>` was missing from

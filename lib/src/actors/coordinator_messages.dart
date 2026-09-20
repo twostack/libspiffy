@@ -2342,8 +2342,18 @@ class UTXOSplitStartedEvent extends CoordinatorEvent {
 class UTXOSplitCompleteEvent extends CoordinatorEvent {
   @override
   final String walletId;
+
+  /// Split transactions ARC accepted or queued: the length of [txids]. Not
+  /// the number of outputs, which is [newUtxoCount] (bead libspiffy-q28i).
   final int transactionCount;
+
+  /// New UTXOs those transactions create.
   final int newUtxoCount;
+
+  /// The fees of the splits that succeeded, summed. Zero here is a
+  /// measurement — no split succeeded — and not a placeholder for an unknown
+  /// fee: an outcome whose fee is unknown carries a null
+  /// [SplitTransactionOutcome.feePaid] and is not counted (libspiffy-q28i).
   final BigInt totalFeePaid;
   final bool success;
   final String? error;
@@ -2404,13 +2414,23 @@ enum SplitTransactionStatus {
   /// The wallet refused the recording, or did not acknowledge it in time;
   /// not broadcast. A recording the wallet journals late is cancelled.
   notRecorded,
+
+  /// No transaction was built for the source at all: it was too small to
+  /// cover the fee and an output each, the wallet would not reserve it, or
+  /// it could not be built or signed. Nothing was recorded, nothing is held,
+  /// and the source is still the wallet's to spend. [SplitTransactionOutcome.txid]
+  /// is null, because there is no transaction to name (bead libspiffy-q28i).
+  notBuilt,
 }
 
 /// One Benford split transaction and how it ended ([SplitTransactionStatus]).
 class SplitTransactionOutcome {
-  final String txid;
+  /// The split transaction, or **null for [SplitTransactionStatus.notBuilt]**,
+  /// where no transaction exists to name (bead libspiffy-q28i).
+  final String? txid;
 
-  /// The UTXO the transaction splits (`txid:vout`).
+  /// The UTXO the transaction splits (`txid:vout`). Always known: it is the
+  /// source the split was attempted for, whatever became of it.
   final String sourceUtxoKey;
   final SplitTransactionStatus status;
 
@@ -2420,19 +2440,29 @@ class SplitTransactionOutcome {
   /// Why the split did not succeed, or what ARC said about it.
   final String? error;
 
+  /// The fee this split pays, in satoshis: the source minus the outputs of
+  /// the signed transaction. Null when no transaction was built, and null is
+  /// the honest answer there — a fee of zero would be an invention, not a
+  /// measurement (bead libspiffy-q28i).
+  ///
+  /// A fee here is what the transaction *carries*, not proof that it reached
+  /// a miner: only [isSuccess] outcomes have been accepted or queued.
+  final BigInt? feePaid;
+
   const SplitTransactionOutcome({
     required this.txid,
     required this.sourceUtxoKey,
     required this.status,
     this.networkStatus,
     this.error,
+    this.feePaid,
   });
 
   /// ARC accepted the split or queued it for a retry.
   bool get isSuccess => status == SplitTransactionStatus.accepted || status == SplitTransactionStatus.queued;
 
   @override
-  String toString() => 'SplitTransactionOutcome($txid of $sourceUtxoKey: ${status.name}'
+  String toString() => 'SplitTransactionOutcome(${txid ?? 'no transaction'} of $sourceUtxoKey: ${status.name}'
       '${networkStatus != null ? ' $networkStatus' : ''}${error != null ? ', $error' : ''})';
 }
 

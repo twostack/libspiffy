@@ -1769,8 +1769,10 @@ class UTXOReservationExpiredEvent extends WalletEvent {
 /// Event fired when UTXO split operation is initiated by the aggregate
 /// 
 /// The aggregate validates the request and emits this event with the list of
-/// UTXO keys to split. The BenfordCoordinatorActor listens to this event and
-/// performs the actual orchestration (building, signing, broadcasting).
+/// UTXO keys to split. Nothing subscribes to it: it is a record that the
+/// split was asked for. The orchestration (building, signing, broadcasting)
+/// is command-driven and runs in `BenfordCoordinatorActor`, which the split
+/// command reaches through `WalletManagerActor` (bead libspiffy-7e77).
 class UTXOSplitInitiatedEvent extends WalletEvent {
   /// Journal identifier of this event type. Stored with every event and
   /// independent of the class name; never change it (audit 2026-09-14 M8).

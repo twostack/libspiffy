@@ -350,7 +350,7 @@ void main() {
         walletId: _walletId,
         success: true,
         splitCount: 3,
-        txids: [outcome.txid],
+        txids: [outcome.txid!],
         splits: [outcome],
       )),
     );

@@ -1960,14 +1960,26 @@ class WalletCoordinatorActor extends Actor {
   }
 
   void _handleSplitUTXOsResponse(wm.SplitUTXOsResponse response) {
+    // Each number is read from what the split actually reports, not inferred
+    // (bead libspiffy-q28i). `splitCount` is a UTXO count, so it answers
+    // newUtxoCount and NOT transactionCount, which used to be inflated by
+    // targetUtxoCount; and the fee is summed from the splits that succeeded
+    // rather than stated as a zero nobody measured.
+    final txids = response.txids ?? const <String>[];
+    var totalFeePaid = BigInt.zero;
+    for (final split in response.splits) {
+      if (split.isSuccess && split.feePaid != null) {
+        totalFeePaid += split.feePaid!;
+      }
+    }
     _emitEvent(UTXOSplitCompleteEvent(
       walletId: response.walletId,
-      transactionCount: response.splitCount ?? 0,
+      transactionCount: txids.length,
       newUtxoCount: response.splitCount ?? 0,
-      totalFeePaid: BigInt.zero,
+      totalFeePaid: totalFeePaid,
       success: response.success,
       error: response.error,
-      txids: response.txids ?? const [],
+      txids: txids,
       splits: response.splits,
     ));
   }

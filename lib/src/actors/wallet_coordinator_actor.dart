@@ -15,6 +15,7 @@ import '../models/wallet_event.dart' as wallet_event_model;
 import '../models/bitcoin_transaction.dart';
 import '../models/bitcoin_utxo.dart';
 import '../models/invoice_output_spec.dart';
+import '../models/payment_channel.dart' show PaymentChannelRole, PaymentChannelState;
 import '../services/ancestor_chain_service.dart';
 import '../services/watch_only_funds.dart';
 import '../storage/read_model_storage.dart';
@@ -190,7 +191,63 @@ class WalletCoordinatorActor extends Actor {
     // context; wallet command replies it triggers must come back here.
     _channelAdapter?.updateReplyTo(context.self);
     _proofAdapter.updateReplyTo(context.self);
+    // Off the mailbox: it only reads the read model and emits, so it must
+    // not delay the actor becoming able to serve commands.
+    unawaited(_reportUnfinishedChannels());
   }
+
+  /// Tells the app, once at startup, about channels that started opening and
+  /// never reached `open` (bead libspiffy-29jd).
+  ///
+  /// Restart recovery is otherwise reactive — the channel adapter rebuilds a
+  /// record when an inbound stimulus names a channel — and a channel whose
+  /// funding failed or whose `channel_open` was lost is exactly the case
+  /// where the counterparty has gone silent, so nothing ever arrives to
+  /// trigger it.
+  ///
+  /// **Reports only.** Nothing is retried, nothing is journaled: a funding
+  /// broadcast whose outcome was lost may already be in a mempool, and BSV
+  /// is first-seen-wins, so re-driving channels on startup would be the
+  /// library deciding policy. Failures here are logged and swallowed — a
+  /// report that cannot be made must not stop the coordinator starting.
+  Future<void> _reportUnfinishedChannels() async {
+    try {
+      for (final walletId in await _storage.listWallets()) {
+        final unfinished = [
+          for (final channel in await _storage.getPaymentChannelsForWallet(walletId))
+            if (_isUnfinished(channel.state))
+              UnfinishedChannel(
+                channelId: channel.channelId,
+                state: channel.state.name,
+                fundingAmountSats: channel.fundingAmountSats,
+                lockTimeUnix: channel.lockTimeUnix,
+                counterpartyPeerId: channel.role == PaymentChannelRole.client
+                    ? channel.serverPeerId
+                    : channel.clientPeerId,
+              ),
+        ];
+        if (unfinished.isEmpty) continue;
+        _log.info('Wallet $walletId has ${unfinished.length} channel(s) that '
+            'never finished opening: ${unfinished.map((c) => c.channelId).join(', ')}. '
+            'Reported, not retried.');
+        _emitEvent(UnfinishedChannelsFoundEvent(
+          walletId: walletId,
+          channels: unfinished,
+        ));
+      }
+    } catch (e, stackTrace) {
+      _log.warning('Could not look for unfinished channels at startup: $e',
+          e, stackTrace);
+    }
+  }
+
+  /// Whether [state] is a channel that started opening and has not reached
+  /// `open`. `open` is not unfinished, and the terminal states
+  /// (`closed`, `closing`, `expired`, `failed`) have nothing to resume.
+  static bool _isUnfinished(PaymentChannelState state) =>
+      state == PaymentChannelState.negotiating ||
+      state == PaymentChannelState.opening ||
+      state == PaymentChannelState.funding;
 
   /// Release subscriptions, timers and the event stream when the actor is
   /// stopped without a [ShutdownCommand] (e.g. LibSpiffyActorSystem.shutdown

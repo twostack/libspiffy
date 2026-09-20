@@ -2172,6 +2172,72 @@ class ChannelClosedEvent extends CoordinatorEvent {
   DateTime get eventTimestamp => DateTime.now();
 }
 
+/// One channel that started opening and never finished (bead
+/// libspiffy-29jd).
+class UnfinishedChannel {
+  final String channelId;
+
+  /// The read model's state: `opening` (requested, accepted, or its refund
+  /// signed) or `funding` (a funding broadcast was started).
+  final String state;
+
+  /// The counterparty this side was talking to, so the app can decide
+  /// whether the channel is still worth anything.
+  final String? counterpartyPeerId;
+  final BigInt fundingAmountSats;
+
+  /// When the client can take its funding back with a refund claim.
+  final int lockTimeUnix;
+
+  const UnfinishedChannel({
+    required this.channelId,
+    required this.state,
+    required this.fundingAmountSats,
+    required this.lockTimeUnix,
+    this.counterpartyPeerId,
+  });
+
+  @override
+  String toString() =>
+      'UnfinishedChannel($channelId, $state, $fundingAmountSats sats, '
+      'lockTime $lockTimeUnix)';
+}
+
+/// Channels of [walletId] that started opening and never reached `open`,
+/// reported once at startup (bead libspiffy-29jd).
+///
+/// Restart recovery is otherwise **reactive**: the channel adapter rebuilds
+/// a record when an inbound stimulus names a channel. A channel whose
+/// funding broadcast failed, or whose `channel_open` the peer never
+/// received, is exactly the case where the counterparty has gone silent —
+/// so nothing ever arrives to trigger it, and an app that does not poll its
+/// own channel list never learns the channel is stuck.
+///
+/// **This event only reports.** Nothing is retried and nothing is journaled
+/// by the sweep: a funding broadcast whose outcome was lost may already be
+/// in a mempool, and BSV is first-seen-wins, so re-driving channels on
+/// startup would be the library deciding policy. The levers are the app's:
+/// `RetryChannelFundingCommand` and `ResendChannelOpenCommand` to carry on,
+/// or `CancelDeferredPaymentCommand` to take the funding inputs back.
+///
+/// Not emitted when there is nothing to report, so no event means no
+/// channel of that wallet is stuck.
+class UnfinishedChannelsFoundEvent extends CoordinatorEvent {
+  @override
+  final String? walletId;
+
+  /// Never empty.
+  final List<UnfinishedChannel> channels;
+
+  UnfinishedChannelsFoundEvent({
+    required this.walletId,
+    required this.channels,
+  });
+
+  @override
+  DateTime get eventTimestamp => DateTime.now();
+}
+
 /// An outgoing peer-to-peer message the app must transmit to [toPeerId] on
 /// its own transport (bead libspiffy-a2v3).
 ///

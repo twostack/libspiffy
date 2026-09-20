@@ -302,6 +302,31 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### Payment channels: stuck channels are reported at startup
+
+- **New:** `UnfinishedChannelsFoundEvent` on the coordinator event stream,
+  emitted once at startup for each wallet that has channels which started
+  opening and never reached `open`. It carries the channel id, its state,
+  the funding amount, the lock time at which the client can reclaim it, and
+  the counterparty's peer id.
+- Recovery was reactive: a channel's record is rebuilt only when something
+  arrives naming it, and a channel whose funding failed or whose
+  `channel_open` was lost is exactly the case where the counterparty has
+  gone quiet. An app that did not poll its own channel list never found out.
+- **The sweep reports and nothing else** — it never retries, journals, or
+  contacts a peer. A funding broadcast whose outcome was lost may already be
+  in a mempool, and BSV is first-seen-wins, so re-driving a channel is the
+  app's decision: `RetryChannelFundingCommand` and `ResendChannelOpenCommand`
+  to carry on, or `CancelDeferredPaymentCommand` to take the inputs back.
+- No event means no channel of that wallet needs attention.
+
+### Payment channels: the manager says when it has no read model
+
+- `PaymentChannelManagerActor` warns at startup when it is built without a
+  read model, naming what stops working — most importantly that a client
+  channel cannot open, because its funding is then sent with no BEEF and
+  servers refuse it. The constructor documents each dropped guarantee.
+
 ### Payment channels: a refused payment is answered, and a re-send is a repeat
 
 - **Fixed:** a `payment_update` the server refused produced no answer at all

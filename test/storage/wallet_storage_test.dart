@@ -112,32 +112,22 @@ void main() {
         expect(await storage.walletExists(walletId), isFalse);
       });
 
-      test('should keep network and rootAddress on a metadata-only update', () async {
-        // S-06: the in-memory backend used to overwrite the whole record, so
-        // a balance update that omitted networkType/rootAddress dropped them
-        // (the Isar and Postgres backends merge).
+      // S-06, the metadata-only update that keeps the scalars and merges the
+      // metadata, is the shared wallet lifecycle contract's: it diverged
+      // exactly because it was duplicated per backend (bead libspiffy-1kaz).
+      // The in-memory backend's copy of it runs below with the others.
+
+      test('the legacy networkType alias reads back with the network', () async {
         const walletId = 'net_wallet';
 
-        await storage.storeWallet(
-          walletId,
-          'Net Wallet',
-          rootAddress: 'root-addr',
-          networkType: 'testnet',
-          metadata: {'version': 1},
-        );
-        await storage.storeWallet(
-          walletId,
-          'Net Wallet',
-          metadata: {'confirmedBalance': '100'},
-        );
+        await storage.storeWallet(walletId, 'Net Wallet', networkType: 'testnet');
+        await storage.storeWallet(walletId, 'Net Wallet');
 
         final wallet = await storage.getWallet(walletId);
         expect(wallet, isNotNull);
         expect(wallet!['network'], equals('testnet'));
-        expect(wallet['networkType'], equals('testnet'));
-        expect(wallet['rootAddress'], equals('root-addr'));
-        expect(wallet['metadata'],
-            equals({'version': 1, 'confirmedBalance': '100'}));
+        expect(wallet['networkType'], equals('testnet'),
+            reason: 'the in-memory backend alone carries the legacy key');
       });
     });
 

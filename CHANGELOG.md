@@ -302,6 +302,26 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### Wallet metadata is merged on every backend, not replaced on one
+
+- **Fixed (data loss, Postgres only):** `storeWallet` REPLACED the whole
+  `metadata_json` document on the Postgres backend, where Isar and in-memory
+  merged it. Any caller that stored a partial map — which the documented
+  contract says is safe — lost every key it did not resupply. The wallet
+  projection's own `WalletCreated` handler writes a fresh map, so **replaying
+  a Postgres journal wiped host metadata**. The column is already `JSONB`;
+  there is no migration and nothing is stored differently.
+- **Fixed:** `getWallet` returned `'metadata': null` on Postgres where the
+  other backends return an empty map. It is now always a map. Rows already
+  stored are covered, because the value is normalised on read.
+- **Written down, because it was never true on any backend:** a store cannot
+  remove a metadata key. Writing a key null blanks it and keeps it; the whole
+  document goes only with `deleteWallet`. Postgres could remove keys before
+  this release, but only as a side effect of the bug above.
+- The merge rule now lives in the shared wallet lifecycle contract test that
+  runs against all three backends, instead of a copy per backend — it diverged
+  precisely because it was duplicated.
+
 ### Postgres: typed journal errors, a cheaper id scan, and private-CA TLS
 
 - A failed append now throws **`EventStoreException`** naming the journal, the

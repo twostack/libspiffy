@@ -104,7 +104,15 @@ class PostgresWalletStorage implements ReadModelStorage {
           name = @name,
           root_address = COALESCE(@rootAddress, wallet_metadata.root_address),
           network = COALESCE(@network, wallet_metadata.network),
-          metadata_json = COALESCE(@metadataJson, wallet_metadata.metadata_json),
+          -- A JSON document is merged, not replaced: a caller that resupplies
+          -- only the keys it changed keeps the rest, as every backend does
+          -- (read_model_storage.dart, bead libspiffy-1kaz). The scalars above
+          -- are COALESCEd because they are scalars; this one is not.
+          metadata_json = CASE
+            WHEN @metadataJson::jsonb IS NULL THEN wallet_metadata.metadata_json
+            ELSE COALESCE(wallet_metadata.metadata_json, '{}'::jsonb)
+                 || @metadataJson::jsonb
+          END,
           last_accessed_at = @now
       '''),
       parameters: {
@@ -148,7 +156,7 @@ class PostgresWalletStorage implements ReadModelStorage {
       'isCreated': row[6],
       'createdAt': (row[7] as DateTime).toIso8601String(),
       'lastAccessedAt': (row[8] as DateTime).toIso8601String(),
-      'metadata': _parseJsonMap(row[9]),
+      'metadata': _parseJsonMap(row[9]) ?? <String, dynamic>{},
       'aggregateVersion': row[10],
       'confirmedBalance': (row[11] as num).toString(),
       'unconfirmedBalance': (row[12] as num).toString(),

@@ -166,6 +166,73 @@ void defineWalletLifecycleContract(
           reason: 'the re-created wallet starts afresh (hard delete)');
     });
 
+    test('S-15: a store merges metadata and keeps the scalars it omits',
+        () async {
+      final s = storage();
+      final u = unique();
+      final wallet = 'lc-merge-$u';
+
+      await s.storeWallet(
+        wallet,
+        'Merge Wallet',
+        rootAddress: 'root-addr',
+        networkType: 'testnet',
+        metadata: {'version': 1, 'host': 'a'},
+      );
+
+      // The shape every caller uses: a balance update names neither the
+      // network nor the root address, and carries only the keys it changed.
+      await s.storeWallet(wallet, 'Merge Wallet',
+          metadata: {'confirmedBalance': '100'});
+
+      var meta = await s.getWallet(wallet);
+      expect(meta, isNotNull);
+      expect(meta!['network'], 'testnet',
+          reason: 'an omitted networkType keeps the stored network');
+      expect(meta['rootAddress'], 'root-addr',
+          reason: 'an omitted rootAddress keeps the stored one');
+      expect(meta['metadata'], {'version': 1, 'host': 'a', 'confirmedBalance': '100'},
+          reason: 'a store merges into the stored metadata; keys the caller '
+              'did not resupply are kept');
+
+      // A null map changes no metadata at all.
+      await s.storeWallet(wallet, 'Merge Wallet', rootAddress: 'root-addr');
+      meta = await s.getWallet(wallet);
+      expect(meta!['metadata'], {'version': 1, 'host': 'a', 'confirmedBalance': '100'},
+          reason: 'a store with no metadata leaves the stored metadata alone');
+
+      // A store never removes a key. Blanking one is writing it null, which
+      // every backend keeps as a null-valued key.
+      await s.storeWallet(wallet, 'Merge Wallet', metadata: {'host': null});
+      meta = await s.getWallet(wallet);
+      expect(meta!['metadata'],
+          {'version': 1, 'host': null, 'confirmedBalance': '100'},
+          reason: 'a null value blanks the key and keeps it; a store has no '
+              'way to remove a key');
+
+      // The merge does not survive the hard delete.
+      await s.deleteWallet(wallet);
+      await s.storeWallet(wallet, 'Merge Wallet', metadata: {'version': 2});
+      meta = await s.getWallet(wallet);
+      expect(meta!['metadata'], {'version': 2},
+          reason: 'a re-created wallet merges into nothing (hard delete)');
+    });
+
+    test('S-15: a wallet stored with no metadata reads back an empty map',
+        () async {
+      final s = storage();
+      final u = unique();
+      final wallet = 'lc-nometa-$u';
+
+      await s.storeWallet(wallet, 'No Metadata');
+
+      final meta = await s.getWallet(wallet);
+      expect(meta, isNotNull);
+      expect(meta!['metadata'], isA<Map<String, dynamic>>(),
+          reason: 'metadata is a map on every backend, never null');
+      expect(meta['metadata'], isEmpty);
+    });
+
     test('S-15: deleteWallet removes every row of the wallet and no other',
         () async {
       final s = storage();

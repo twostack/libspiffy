@@ -682,26 +682,10 @@ void main() {
         expect(wallets, contains('wallet-2'));
       });
 
-      test('keeps the network on a metadata-only update', () async {
-        // S-06: a balance/metadata update passes no networkType; the old
-        // code bound `networkType ?? 'mainnet'`, so every such update reset
-        // a testnet wallet to mainnet.
-        await storage.storeWallet(
-          'net-wallet',
-          'Net Wallet',
-          networkType: 'testnet',
-          metadata: {'version': 1},
-        );
-        await storage.storeWallet(
-          'net-wallet',
-          'Net Wallet',
-          metadata: {'confirmedBalance': '100'},
-        );
-
-        final wallet = await storage.getWallet('net-wallet');
-        expect(wallet, isNotNull);
-        expect(wallet!['network'], equals('testnet'));
-      });
+      // S-06, the metadata-only update, is the shared wallet lifecycle
+      // contract's (run below). This copy asserted only the network, so the
+      // metadata half of the rule went untested here for years and the
+      // backend diverged (bead libspiffy-1kaz).
     });
 
     group('UTXO Operations', () {

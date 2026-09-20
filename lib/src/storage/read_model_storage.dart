@@ -42,7 +42,13 @@ abstract class ReadModelStorage {
   /// Store or update wallet metadata.
   ///
   /// Creates the wallet when no metadata row exists (including after
-  /// [deleteWallet]); otherwise merges into the existing row.
+  /// [deleteWallet]); otherwise merges into the existing row: a null
+  /// [rootAddress], [networkType] or [metadata] keeps what is stored, and a
+  /// [metadata] map is merged key by key, so a caller may resupply only the
+  /// keys it changed.
+  ///
+  /// A store never removes a metadata key. Writing a key null blanks it and
+  /// keeps it; the whole document goes only with [deleteWallet].
   Future<void> storeWallet(
     String walletId,
     String name, {
@@ -51,7 +57,8 @@ abstract class ReadModelStorage {
     Map<String, dynamic>? metadata,
   });
   
-  /// Get wallet metadata; null for an unknown or deleted wallet.
+  /// Get wallet metadata; null for an unknown or deleted wallet. The
+  /// `metadata` entry is a map, empty when the wallet has none, never null.
   Future<Map<String, dynamic>?> getWallet(String walletId);
 
   /// List the IDs of all existing wallets, newest first.

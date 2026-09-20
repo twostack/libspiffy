@@ -170,8 +170,8 @@ class InMemoryWalletStorage implements WalletStorage {
     // Typed values converted or rejected before anything is written, as on
     // every backend (bead libspiffy-k7na).
     metadata = WalletRowRules.normalizeMetadata(metadata);
-    // Merge with the existing record (as the Isar and Postgres backends do)
-    // so a balance update that omits rootAddress/network keeps them.
+    // Merge with the existing record, as every backend does, so a balance
+    // update that omits rootAddress/network keeps them.
     final existing = _walletMetadata[walletId];
     final mergedMetadata = <String, dynamic>{
       ...?(existing?['metadata'] as Map<String, dynamic>?),

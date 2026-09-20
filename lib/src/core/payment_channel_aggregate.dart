@@ -463,12 +463,30 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
     ChannelState currentState,
     RecordServerAcceptanceCommand cmd,
   ) {
-    // Business rule: Channel must be in pending state and we must be client
-    if (currentState.status != ChannelStatus.pending) {
-      throw StateError('Channel not in pending state');
-    }
     if (currentState.role != ChannelRole.client) {
       throw StateError('Only client can record server acceptance');
+    }
+
+    // A repeated `channel_accept` naming the SAME acceptance is a repeat,
+    // not a second acceptance: the server is unsure the first one arrived,
+    // which is the very reason the re-send exists (bead libspiffy-y8x3, the
+    // peer-facing half of what V-100 did for `channel_open`). Journal
+    // nothing and answer. One naming DIFFERENT keys is not a repeat — it is
+    // a different server, or a different offer — and is still refused.
+    if (currentState.serverPubKeyHex != null) {
+      if (currentState.serverPubKeyHex == cmd.serverPubKeyHex &&
+          currentState.serverAddressB58 == cmd.serverAddressB58) {
+        return const [];
+      }
+      throw StateError('Channel ${cmd.channelId} was already accepted by '
+          '${currentState.serverPubKeyHex} paying to '
+          '${currentState.serverAddressB58}; this acceptance names '
+          '${cmd.serverPubKeyHex} paying to ${cmd.serverAddressB58}');
+    }
+
+    // Business rule: Channel must be in pending state
+    if (currentState.status != ChannelStatus.pending) {
+      throw StateError('Channel not in pending state');
     }
 
     return [
@@ -595,6 +613,22 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
     if (currentState.role != ChannelRole.client) {
       throw StateError('Only client can record the server refund signature');
     }
+    // A repeated `refund_signed` records nothing: the client already holds a
+    // refund it verified against the funding output, and that is all this
+    // message is for (bead libspiffy-y8x3). Answered rather than refused —
+    // the old refusal came from the status guard below, and the adapter
+    // reported it to the peer as `channel_error`, so a server re-sending
+    // because it was unsure was told the channel had failed.
+    //
+    // Deliberately not compared byte for byte: ECDSA signing is not
+    // deterministic, so a server that re-signed produces different bytes for
+    // the same fact, and a second signature has nothing to add to a refund
+    // that already verifies. A signature that does NOT verify equally cannot
+    // destroy the good one, because nothing is journaled here at all.
+    if (currentState.signedRefundTxHex != null) {
+      return const [];
+    }
+
     if (currentState.status != ChannelStatus.accepted) {
       throw StateError('Channel not in accepted state '
           '(status=${currentState.status.name})');

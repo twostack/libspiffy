@@ -451,6 +451,10 @@ class ChannelP2PAdapter {
     final proposedClientBalance = payload['proposedClientBalance'] as int;
     final proposedServerBalance = payload['proposedServerBalance'] as int;
 
+    // With a reply target, so a payment the aggregate refuses is answered
+    // (bead libspiffy-fg06). Told with none, the refusal went nowhere: no
+    // `payment_ack`, no `channel_error`, and a client that could not tell a
+    // refusal from a lost message. See [handlePaymentAcknowledged].
     _channelManager.tell(AcknowledgePaymentMessage(
       channelId: channelId,
       walletId: _walletFor(channelId),
@@ -460,7 +464,7 @@ class ChannelP2PAdapter {
       proposedSequence: proposedSequence,
       proposedClientBalance: BigInt.from(proposedClientBalance),
       proposedServerBalance: BigInt.from(proposedServerBalance),
-    ));
+    ), sender: _replyTo);
   }
 
   /// The server's countersignature of a payment, and the only copy of it the
@@ -1099,6 +1103,28 @@ class ChannelP2PAdapter {
               // will not send one.
               tellPeer: true));
     }
+  }
+
+  /// The manager's answer to acknowledging a client's payment (bead
+  /// libspiffy-fg06).
+  ///
+  /// A success needs nothing here: the channel's own
+  /// [ch.PaymentAcknowledgedEvent] is what sends `payment_ack`, with the
+  /// server signature the client cannot get anywhere else. A refusal has no
+  /// such event, and used to produce nothing at all — so this sends
+  /// `channel_error`, which is the client's only way to tell a payment the
+  /// server rejected from one that never arrived.
+  ///
+  /// `tellPeer` is right here and is not everywhere: the client is blocked
+  /// waiting on this exact payment, and its channel is still open — the
+  /// error names the payment, not the channel's end.
+  void handlePaymentAcknowledged(PaymentAcknowledgedResponse response) {
+    if (response.success) return;
+    _sequenced(
+        response.channelId,
+        () => _reportFailure(response.channelId,
+            'acknowledging the payment', response.error,
+            tellPeer: true));
   }
 
   /// The manager's answer to opening a channel: on the client a failed

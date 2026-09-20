@@ -340,6 +340,8 @@ class WalletCoordinatorActor extends Actor {
         _channelAdapter?.handleRefundSignatureRecorded(message);
       } else if (message is ch.ChannelOpenedResponse) {
         _channelAdapter?.handleChannelOpenedResponse(message);
+      } else if (message is ch.PaymentAcknowledgedResponse) {
+        _channelAdapter?.handlePaymentAcknowledged(message);
       } else if (message is ch.ChannelRefundClaimedResponse) {
         _channelAdapter?.handleChannelRefundClaimed(message);
       } else if (message is ch.ChannelFundingRetriedResponse) {

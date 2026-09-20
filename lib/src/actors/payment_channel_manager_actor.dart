@@ -280,6 +280,16 @@ class PaymentChannelManagerActor extends Actor {
   /// command costs no journal recovery. An aggregate that rejected the
   /// command creating its channel holds no channel and is forgotten, so the
   /// channel keeps reading as not found.
+  ///
+  /// **An EMPTY list is a success, not a failure** (bead libspiffy-y8x3).
+  /// The aggregate answers an idempotent repeat — a re-delivered
+  /// `payment_ack`, a second `channel_accept` naming the same server, a
+  /// return leg already recorded — with no events, because there is nothing
+  /// new to journal. Treating that as `Command failed: no events emitted`
+  /// turned every such repeat into a failure the caller saw, and on the
+  /// peer-facing paths into a `channel_error` telling a counterparty its
+  /// channel had failed. Only a shape that is neither a rejection nor a list
+  /// is a failure here.
   Future<List<dynamic>> _askAggregate(
     String channelId,
     ActorRef aggregateRef,
@@ -290,8 +300,10 @@ class PaymentChannelManagerActor extends Actor {
       await _forgetAggregateWithoutJournal(channelId, aggregateRef);
       throw StateError(response['error']?.toString() ?? 'Command failed');
     }
-    if (response is! List || response.isEmpty) {
-      throw StateError('Command failed: no events emitted');
+    if (response is! List) {
+      throw StateError('Command failed: the aggregate answered '
+          '${response.runtimeType}, which is neither its events nor a '
+          'rejection');
     }
     return response;
   }

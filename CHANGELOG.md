@@ -302,6 +302,22 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### Payment channels: a refused payment is answered, and a re-send is a repeat
+
+- **Fixed:** a `payment_update` the server refused produced no answer at all
+  — no `payment_ack` and no `channel_error` — so the client waited forever
+  with no way to tell a refusal from a lost message. A refusal now reaches
+  the client as `channel_error`.
+- **Fixed:** a repeated `channel_accept` or `refund_signed` was refused by a
+  state guard, and the refusal reached the counterparty as `channel_error`
+  — so a peer re-sending *because it was unsure the first arrived* was told
+  its channel had failed. A repeat naming the same fact is now answered
+  without journaling; one naming a different fact is still refused.
+- **Fixed:** the channel manager treated "the aggregate accepted this and had
+  nothing new to journal" as `Command failed: no events emitted`. That
+  affected paths that already returned no events, including a re-delivered
+  `payment_ack` and a resumed channel ending.
+
 ### Payment channels: one rule for a payment, and one refund claim
 
 - **Fixed:** the client half of the payment protocol did not check that the

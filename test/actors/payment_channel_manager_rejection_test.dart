@@ -417,8 +417,14 @@ void main() {
       await expectState('open', sequence: 0, client: 100000, server: 0);
     });
 
-    test('client: recording server acceptance twice answers the second with '
+    test('client: a server acceptance naming DIFFERENT keys is answered with '
         'the rejection', () async {
+      // This used to use an IDENTICAL second acceptance as its rejection.
+      // Since bead libspiffy-y8x3 that is a repeat and is answered without
+      // journaling -- a server re-sending because it is unsure the first
+      // arrived must not be told the channel failed. What lhd pins is that
+      // an aggregate rejection reaches the caller, so the vehicle is now a
+      // second acceptance that really is a different fact.
       await initiateClientChannel();
 
       final first = await managerRef.ask<ServerAcceptanceRecordedResponse>(
@@ -432,7 +438,7 @@ void main() {
       expect(first.success, isTrue, reason: first.error);
       broadcast.clear();
 
-      final second = await managerRef.ask<ServerAcceptanceRecordedResponse>(
+      final repeat = await managerRef.ask<ServerAcceptanceRecordedResponse>(
         RecordServerAcceptanceMessage(
           channelId: _channelId,
           serverPubKeyHex: serverPubKeyHex,
@@ -440,9 +446,20 @@ void main() {
         ),
         const Duration(seconds: 3),
       );
+      expect(repeat.success, isTrue,
+          reason: 'an identical re-send is a repeat: ${repeat.error}');
 
-      expect(second.success, isFalse);
-      expect(second.error, contains('Channel not in pending state'));
+      final different = await managerRef.ask<ServerAcceptanceRecordedResponse>(
+        RecordServerAcceptanceMessage(
+          channelId: _channelId,
+          serverPubKeyHex: '02${'99' * 32}',
+          serverAddressB58: serverAddressB58,
+        ),
+        const Duration(seconds: 3),
+      );
+
+      expect(different.success, isFalse);
+      expect(different.error, contains('already accepted'));
       expect(broadcast, isEmpty);
       await expectState('accepted', sequence: 0, client: 100000, server: 0);
     });

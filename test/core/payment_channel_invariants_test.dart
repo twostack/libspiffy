@@ -182,6 +182,125 @@ void main() {
     });
   });
 
+  group('a repeated inbound protocol message is a repeat (libspiffy-y8x3)',
+      () {
+    test('a second channel_accept naming the same server journals nothing',
+        () async {
+      final ref = await spawn([f.requested(version: 1)]);
+
+      final first = await ref.ask<dynamic>(
+          RecordServerAcceptanceCommand(
+            channelId: _channelId,
+            serverPubKeyHex: f.serverPubKeyHex,
+            serverAddressB58: f.serverAddressB58,
+          ),
+          _ask);
+      expect(first, isA<List>(), reason: '$first');
+      expect(journal().whereType<ServerAcceptanceRecordedEvent>(),
+          hasLength(1));
+
+      // The server was not sure the first one arrived -- the very reason a
+      // re-send exists. It must not be told the channel failed.
+      final second = await ref.ask<dynamic>(
+          RecordServerAcceptanceCommand(
+            channelId: _channelId,
+            serverPubKeyHex: f.serverPubKeyHex,
+            serverAddressB58: f.serverAddressB58,
+          ),
+          _ask);
+
+      expect(second, isNot(isA<Map>()),
+          reason: 'a repeat naming the same acceptance is answered, not '
+              'refused: $second');
+      expect(journal().whereType<ServerAcceptanceRecordedEvent>(),
+          hasLength(1));
+    });
+
+    test('a second channel_accept naming DIFFERENT keys is still refused',
+        () async {
+      final ref = await spawn([f.requested(version: 1)]);
+      await ref.ask<dynamic>(
+          RecordServerAcceptanceCommand(
+            channelId: _channelId,
+            serverPubKeyHex: f.serverPubKeyHex,
+            serverAddressB58: f.serverAddressB58,
+          ),
+          _ask);
+
+      final reply = await ref.ask<dynamic>(
+          RecordServerAcceptanceCommand(
+            channelId: _channelId,
+            serverPubKeyHex: '02${'99' * 32}',
+            serverAddressB58: f.serverAddressB58,
+          ),
+          _ask);
+
+      expectRejected(reply, contains('already accepted'));
+      expect(journal().whereType<ServerAcceptanceRecordedEvent>(),
+          hasLength(1),
+          reason: 'the guard stays narrow: a DIFFERENT fact is not a repeat');
+    });
+
+    test('a second refund_signed records nothing and does not refuse',
+        () async {
+      final ref = await spawn([
+        f.requested(version: 1),
+        f.serverAcceptance(version: 2),
+        f.refundBuilt(version: 3),
+      ]);
+
+      final first = await ref.ask<dynamic>(
+          ProvideRefundSignatureCommand(
+            channelId: _channelId,
+            serverSignatureHex: f.serverSignatureHex,
+          ),
+          _ask);
+      expect(first, isA<List>(), reason: '$first');
+      expect(journal().whereType<RefundCountersignedEvent>(), hasLength(1));
+
+      final second = await ref.ask<dynamic>(
+          ProvideRefundSignatureCommand(
+            channelId: _channelId,
+            serverSignatureHex: f.serverSignatureHex,
+          ),
+          _ask);
+
+      expect(second, isNot(isA<Map>()),
+          reason: 'the old status guard refused this, and the adapter told '
+              'the peer channel_error: $second');
+      expect(journal().whereType<RefundCountersignedEvent>(), hasLength(1));
+    });
+
+    test('a bad second refund signature cannot destroy the good one',
+        () async {
+      final ref = await spawn([
+        f.requested(version: 1),
+        f.serverAcceptance(version: 2),
+        f.refundBuilt(version: 3),
+      ]);
+      await ref.ask<dynamic>(
+          ProvideRefundSignatureCommand(
+            channelId: _channelId,
+            serverSignatureHex: f.serverSignatureHex,
+          ),
+          _ask);
+      final good = journal().whereType<RefundCountersignedEvent>().single;
+
+      await ref.ask<dynamic>(
+          ProvideRefundSignatureCommand(
+            channelId: _channelId,
+            serverSignatureHex: await f.forgedServerSignature(),
+          ),
+          _ask);
+
+      expect(journal().whereType<RefundCountersignedEvent>().single
+          .signedRefundTxHex, good.signedRefundTxHex,
+          reason: 'nothing is journaled on the repeat path at all, so a '
+              'signature that would not verify cannot replace the refund '
+              'the client already holds');
+    });
+  });
+
   group('a refund is claimed once (libspiffy-07mx)', () {
     /// The refund that the open client journal already holds, fully signed.
     String signedRefund() => expired.signedRefundTxHex();

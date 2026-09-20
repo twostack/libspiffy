@@ -19,6 +19,7 @@ import 'package:test/test.dart';
 import 'package:libspiffy/libspiffy.dart';
 import 'package:libspiffy/src/actors/payment_channel_manager_actor.dart';
 import 'package:libspiffy/src/actors/payment_channel_messages.dart';
+import 'package:libspiffy/src/storage/in_memory_wallet_storage.dart';
 
 import '../integration/isar_test_helper.dart';
 import 'in_memory_event_store.dart';
@@ -105,6 +106,47 @@ void main() {
       expect(reply.error, contains('Wallet not found'));
       expect(warningsFrom('PaymentCoordinatorActor'), isNotEmpty,
           reason: 'the failure was not logged with error and stack trace');
+    });
+
+    test('PaymentChannelManagerActor: starting with no read model says so, '
+        'and starting with one does not', () async {
+      // Bead libspiffy-m0xj: the read-model guards used to no-op silently in
+      // this configuration. The configuration is allowed; being quiet about
+      // it is not, because the first thing it breaks is a client channel
+      // open, which fails much later and for a reason that does not name
+      // this.
+      final probe = await actorSystem.spawn('probe-m0xj', () => _Collector());
+      await actorSystem.spawn(
+        'channel-manager-no-storage',
+        () => PaymentChannelManagerActor(
+          walletManager: probe,
+          eventStore: InMemoryEventStore(),
+          cryptoService: DartSVCryptoService(),
+        ),
+      );
+
+      final said = records.where((r) =>
+          r.loggerName == 'PaymentChannelManagerActor' &&
+          r.level == logging.Level.WARNING &&
+          r.message.contains('no read model'));
+      expect(said, hasLength(1),
+          reason: 'an absent read model must not be silent');
+      expect(said.single.message, contains('BEEF'),
+          reason: 'and must name what stops working');
+
+      records.clear();
+      await actorSystem.spawn(
+        'channel-manager-with-storage',
+        () => PaymentChannelManagerActor(
+          walletManager: probe,
+          eventStore: InMemoryEventStore(),
+          cryptoService: DartSVCryptoService(),
+          storage: InMemoryWalletStorage(),
+        ),
+      );
+      expect(
+          records.where((r) => r.message.contains('no read model')), isEmpty,
+          reason: 'a properly configured manager says nothing');
     });
 
     test('PaymentChannelManagerActor: a failed request is replied to and '

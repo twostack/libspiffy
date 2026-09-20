@@ -134,6 +134,32 @@ class PaymentChannelManagerActor extends Actor {
     Duration signingTimeout = const Duration(seconds: 30),
     Duration broadcastTimeout = const Duration(seconds: 45),
     ActorRef? spvActor,
+    /// The wallet read model. **Production always supplies it**
+    /// (`LibSpiffyActorSystem`), and the manager cannot do its whole job
+    /// without it. Optional only because thirteen test configurations do
+    /// not supply one; making it required is libspiffy-m0xj, blocked on the
+    /// fixture work in libspiffy-tg4d.
+    ///
+    /// Exactly what is dropped when it is absent — [preStart] logs this too,
+    /// so an accidental omission is never silent:
+    ///
+    /// * **A client channel cannot open.** `_buildFundingBeef` has no
+    ///   ancestry to read, so the funding is sent with no BEEF, which
+    ///   servers refuse (libspiffy-fsy).
+    /// * **A funding retry cannot be refused when its money came back.**
+    ///   `_fundingHoldReleased` reads the deferred-payment record; with no
+    ///   read model it answers "no evidence", which by design never refuses
+    ///   (V-102), so a retry that should be blocked proceeds.
+    /// * **A funding already recorded in the wallet is recorded again.**
+    ///   `_walletHoldsTransaction` answers false, so an interrupted attempt
+    ///   redoes the write. Safe — the wallet aggregate has its own guard
+    ///   since V-92 — but wasted work.
+    /// * **Funding inputs are spent optimistically.** `_spendFundingInputs`
+    ///   cannot see which inputs ARC already spent and issues every command.
+    ///   Safe: the wallet refuses a double spend.
+    ///
+    /// Nothing here is a correctness hole; the first item is a capability
+    /// that simply does not work.
     ReadModelStorage? storage,
   })  : _walletManager = walletManager,
         _spvActor = spvActor,
@@ -152,6 +178,19 @@ class PaymentChannelManagerActor extends Actor {
 
   @override
   void preStart() {
+    // A guard that silently does nothing is what this backlog keeps finding
+    // (bead libspiffy-m0xj). Absent storage is a configuration, not a
+    // failure, so this is a warning and not a throw — but it is never
+    // silent, and it names what stops working rather than leaving the
+    // reader to find out from a channel that will not open.
+    if (_storage == null) {
+      _log.warning(
+          'PaymentChannelManagerActor has no read model: client channels '
+          'cannot open (their funding is sent with no BEEF, which servers '
+          'refuse), a funding retry cannot be refused when its money has '
+          'been reclaimed, and funding recordings and input spends are '
+          'redone rather than skipped. See the storage parameter.');
+    }
   }
 
   /// Number of signing requests (refund, payment, acknowledgment) still
@@ -1665,6 +1704,11 @@ class PaymentChannelManagerActor extends Actor {
   }
 
   /// Whether [walletId]'s read model already holds transaction [txid].
+  /// Whether the wallet's read model shows it already holds [txid].
+  ///
+  /// False means "not known to hold it", never "known not to". With no read
+  /// model, or an unreadable one, the answer is false and the caller redoes
+  /// the write, which is idempotent at the wallet aggregate (V-92).
   Future<bool> _walletHoldsTransaction(String walletId, String txid) async {
     final storage = _storage;
     if (storage == null) return false;
@@ -1946,6 +1990,15 @@ class PaymentChannelManagerActor extends Actor {
     final txid = funding.id;
 
     /// Keys of [walletId]'s unspent UTXOs, or null without a read model.
+    ///
+    /// NOTE (bead libspiffy-tg4d): an EMPTY answer here means "everything is
+    /// already spent", so a read model that knows nothing — a projection
+    /// that has not caught up, a wallet whose rows are not there yet —
+    /// makes this skip every spend. An absence of knowledge is not evidence
+    /// of a spend. The fix is to ask the positive question (which inputs
+    /// does the read model show SPENT?) so an input it does not vouch for
+    /// still gets its command; it is not made here because no test can
+    /// reach this code path with a read model present, see the bead.
     Future<Set<String>?> unspentKeys() async {
       final storage = _storage;
       if (storage == null) return null;

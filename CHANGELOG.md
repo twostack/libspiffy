@@ -302,6 +302,22 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### Results are frozen too — behaviour change
+
+- **Collections on the coordinator's outbound events are now unmodifiable.**
+  `TransactionsResponse.transactions`, `SPVValidationResultEvent.spendableUTXOs`,
+  `DeferredPaymentsResponse.payments`, `UTXOSplitCompleteEvent.txids` and the
+  rest — 20 fields. **An app that sorts or filters a result list in place
+  will now get `UnsupportedError`**; copy it first (`[...event.txids]..sort()`).
+- Why this is not the app's own copy: `coordinatorEvents` is a broadcast
+  stream, so every listener is handed the **same instance**. One listener
+  sorting its result reordered it for every other listener.
+- The internal actor messages (`wallet_messages.dart`, `spv_messages.dart`,
+  `invoice_messages.dart`, `payment_messages.dart`, 51 fields) now copy and
+  freeze what they are built from too, completing what the "Events and
+  commands no longer hold the caller's lists and maps" note began: every
+  collection on every message libspiffy defines is copied and frozen.
+
 ### ARC no longer invents a fee rate, or a mainnet endpoint
 
 - **A fee estimate ARC cannot make is reported as a failure.**

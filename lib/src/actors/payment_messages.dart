@@ -2,6 +2,7 @@ import 'dart:typed_data';
 import 'package:dactor/dactor.dart';
 import 'internal_messages.dart';
 import '../models/invoice_output_spec.dart';
+import '../models/persistent_map.dart';
 
 /// Request to pay an invoice with BEEF-formatted transaction
 ///
@@ -40,14 +41,16 @@ class PayInvoiceMessage implements Message {
   PayInvoiceMessage({
     required this.walletId,
     required this.invoiceId,
-    required this.addresses,
+    required List<String> addresses,
     required this.amount,
-    this.outputs,
+    List<InvoiceOutputSpec>? outputs,
     this.changeAddress,
-    this.paymentMetadata,
+    Map<String, dynamic>? paymentMetadata,
     this.feeEstimateSats,
     this.counterpartyMarker,
-  });
+  })  : addresses = frozenList(addresses),
+        outputs = frozenOutputSpecsOrNull(outputs),
+        paymentMetadata = frozenPlainMapOrNull(paymentMetadata);
 
   /// Get effective total amount to pay
   BigInt get effectiveAmount {
@@ -127,8 +130,8 @@ class BEEFPaymentResponse extends ActorResponse {
     this.error,
     this.witnessTxid,
     this.witnessBeefBytes,
-    this.spentUtxoKeys = const [],
-  });
+    List<String> spentUtxoKeys = const [],
+  })  : spentUtxoKeys = frozenList(spentUtxoKeys);
 
   /// Constructor for error responses
   BEEFPaymentResponse.error({
@@ -171,8 +174,8 @@ class ProvisionFundingMessage implements Message {
   ProvisionFundingMessage({
     required this.walletId,
     required this.pluginId,
-    required this.pluginParams,
-  });
+    required Map<String, dynamic> pluginParams,
+  })  : pluginParams = frozenPlainMap(pluginParams);
 
   @override
   String get correlationId => 'provision-funding-$walletId';

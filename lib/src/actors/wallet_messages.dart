@@ -2,6 +2,7 @@ import 'package:dactor/dactor.dart';
 import 'package:libspiffy/libspiffy.dart';
 import '../core/wallet_commands.dart';
 import '../models/deferred_payment.dart';
+import '../models/persistent_map.dart';
 
 // The reply bases and the actor wiring messages live in
 // internal_messages.dart; re-exported so importing this file is enough to
@@ -42,8 +43,8 @@ class CreateWalletMessage implements Message {
     this.wif,
     this.xpriv,
     this.xpub,
-    this.walletMetadata,
-  });
+    Map<String, dynamic>? walletMetadata,
+  }) : walletMetadata = frozenPlainMapOrNull(walletMetadata);
 
   @override
   String get correlationId => 'create-wallet-$walletId';
@@ -266,14 +267,15 @@ class FundingTransactionBuiltResponse extends ActorResponse {
     required this.fundingOutputIndex,
     required this.success,
     this.error,
-    this.spentUtxoKeys = const [],
+    List<String> spentUtxoKeys = const [],
     this.changeAddress,
     this.changeAmount,
     this.changeOutputIndex,
     this.fee = 0,
     this.totalInputSats = 0,
     this.totalOutputSats = 0,
-  }) : correlationId_ = correlationId;
+  })  : spentUtxoKeys = frozenList(spentUtxoKeys),
+        correlationId_ = correlationId;
 
   @override
   String get correlationId => 'funding-tx-response-$correlationId_';
@@ -306,9 +308,10 @@ class SplitUTXOsResponse extends ActorResponse {
     required this.success,
     this.error,
     this.splitCount,
-    this.txids,
-    this.splits = const [],
-  });
+    List<String>? txids,
+    List<SplitTransactionOutcome> splits = const [],
+  })  : txids = frozenListOrNull(txids),
+        splits = frozenList(splits);
 
   @override
   String get correlationId => 'split-utxos-response-$walletId';
@@ -576,7 +579,8 @@ class WalletListMessage extends ActorResponse {
   @override
   final String? error;
 
-  WalletListMessage(this.walletIds, {this.success = true, this.error});
+  WalletListMessage(List<String> walletIds, {this.success = true, this.error})
+      : walletIds = frozenList(walletIds);
 
   @override
   String get correlationId => 'wallet-list-${DateTime.now().millisecondsSinceEpoch}';
@@ -733,16 +737,20 @@ class SPVValidationResult extends ActorResponse {
     required this.txid,
     required this.isValid,
     this.validationError,
-    this.spendableUTXOs = const [],
-    this.spentUTXOs = const [],
+    List<Map<String, dynamic>> spendableUTXOs = const [],
+    List<Map<String, dynamic>> spentUTXOs = const [],
     this.targetWalletId,
     this.transactionFee,
-    this.transactionData,
-    this.unreadableOutputs = const [],
-    this.provenTransactions = const [],
+    Map<String, dynamic>? transactionData,
+    List<Map<String, dynamic>> unreadableOutputs = const [],
+    List<ProvenTransaction> provenTransactions = const [],
     this.counterpartyMarker,
     this.requestId,
-  });
+  })  : spendableUTXOs = frozenMapList(spendableUTXOs),
+        spentUTXOs = frozenMapList(spentUTXOs),
+        transactionData = frozenPlainMapOrNull(transactionData),
+        unreadableOutputs = frozenMapList(unreadableOutputs),
+        provenTransactions = frozenList(provenTransactions);
 
   /// This result with [marker] as its [counterpartyMarker] (a blank marker
   /// is no marker) and [requestId] as its [requestId]. Applied in one place,
@@ -798,9 +806,10 @@ class WalletOwnershipQuery implements Message {
 
   WalletOwnershipQuery({
     required this.walletId,
-    required this.addresses,
-    required this.outpoints,
-  });
+    required Set<String> addresses,
+    required Set<String> outpoints,
+  })  : addresses = frozenSet(addresses),
+        outpoints = frozenSet(outpoints);
 
   @override
   String get correlationId => 'wallet-ownership-$walletId';
@@ -834,10 +843,12 @@ class WalletOwnershipResponse extends LocalMessage {
   WalletOwnershipResponse({
     required this.walletId,
     required this.walletFound,
-    this.ownedAddresses = const {},
-    this.unspentOutpoints = const {},
+    Set<String> ownedAddresses = const {},
+    Set<String> unspentOutpoints = const {},
     this.error,
-  }) : super(payload: null, metadata: {'walletId': walletId, 'walletFound': walletFound});
+  })  : ownedAddresses = frozenSet(ownedAddresses),
+        unspentOutpoints = frozenSet(unspentOutpoints),
+        super(payload: null, metadata: {'walletId': walletId, 'walletFound': walletFound});
 
   /// This object, for dactor's ask().
   @override
@@ -890,10 +901,12 @@ class WalletSpendableUtxosResponse extends LocalMessage {
     required this.walletId,
     required this.walletFound,
     this.walletType,
-    this.spendable = const [],
-    this.watchOnly = const [],
+    List<BitcoinUtxo> spendable = const [],
+    List<BitcoinUtxo> watchOnly = const [],
     this.error,
-  }) : super(payload: null, metadata: {'walletId': walletId, 'walletFound': walletFound});
+  })  : spendable = frozenList(spendable),
+        watchOnly = frozenList(watchOnly),
+        super(payload: null, metadata: {'walletId': walletId, 'walletFound': walletFound});
 
   /// This object, for dactor's ask().
   @override
@@ -934,8 +947,8 @@ class BlockHeaderUpdateMessage implements Message {
     required this.blockHeader,
     required this.height,
     this.isReorganization = false,
-    this.orphanedHeaders,
-  });
+    List<dynamic>? orphanedHeaders,
+  })  : orphanedHeaders = frozenListOrNull(orphanedHeaders);
 
   @override
   String get correlationId => 'block-header-update-$height';
@@ -1042,9 +1055,9 @@ class BEEFValidationResult implements Message {
     this.merkleRoot,
     this.error,
     this.targetWalletId,
-    this.extractedTransactions,
+    List<Map<String, dynamic>>? extractedTransactions,
     this.requestId,
-  });
+  })  : extractedTransactions = frozenListOrNull(extractedTransactions);
 
   @override
   String get correlationId => 'beef-result-${DateTime.now().millisecondsSinceEpoch}';
@@ -1241,7 +1254,8 @@ class FeeQuoteMessage extends ActorResponse {
   @override
   final String? error;
 
-  FeeQuoteMessage(this.feeData, {this.success = true, this.error});
+  FeeQuoteMessage(Map<String, dynamic> feeData, {this.success = true, this.error})
+      : feeData = frozenPlainMap(feeData);
 
   /// No quote could be obtained.
   FeeQuoteMessage.failed(String this.error)
@@ -1422,9 +1436,9 @@ class HeaderChainReorganizedMessage implements Message {
 
   HeaderChainReorganizedMessage({
     required this.forkHeight,
-    required this.orphanedBlockHashes,
+    required List<String> orphanedBlockHashes,
     required this.newTipHeight,
-  });
+  })  : orphanedBlockHashes = frozenList(orphanedBlockHashes);
 
   @override
   String get correlationId => 'header-chain-reorg-$forkHeight-$newTipHeight';
@@ -1452,7 +1466,7 @@ class TransactionConfirmationsRevertedMessage implements Message {
 
   final DateTime _timestamp = DateTime.now();
 
-  TransactionConfirmationsRevertedMessage(this.txids);
+  TransactionConfirmationsRevertedMessage(List<String> txids) : txids = frozenList(txids);
 
   @override
   String get correlationId => 'confirmations-reverted-${_timestamp.microsecondsSinceEpoch}';
@@ -1485,8 +1499,9 @@ class DeferredSpendCancelledResponse extends ActorResponse {
     required this.txid,
     required this.success,
     this.error,
-    this.releasedUtxoKeys = const [],
-  }) : super(metadata: {'walletId': walletId, 'txid': txid, 'success': success});
+    List<String> releasedUtxoKeys = const [],
+  })  : releasedUtxoKeys = frozenList(releasedUtxoKeys),
+        super(metadata: {'walletId': walletId, 'txid': txid, 'success': success});
 
   @override
   String toString() => 'DeferredSpendCancelledResponse($walletId, $txid, success: $success'
@@ -1594,8 +1609,9 @@ class DeferredPaymentNetworkResult extends ActorResponse {
     this.confirmed = false,
     this.willRetry = false,
     this.error,
-    this.competingTxids = const [],
-  }) : super(metadata: {'walletId': walletId, 'txid': txid, 'success': success});
+    List<String> competingTxids = const [],
+  })  : competingTxids = frozenList(competingTxids),
+        super(metadata: {'walletId': walletId, 'txid': txid, 'success': success});
 
   @override
   String toString() => 'DeferredPaymentNetworkResult($txid, success: $success, status: $networkStatus, '
@@ -1630,8 +1646,9 @@ class DeferredSpendReclaimedResponse extends ActorResponse {
     required this.reclaimTxid,
     required this.success,
     this.error,
-    this.reclaimedUtxoKeys = const [],
-  }) : super(metadata: {'walletId': walletId, 'txid': txid, 'reclaimTxid': reclaimTxid, 'success': success});
+    List<String> reclaimedUtxoKeys = const [],
+  })  : reclaimedUtxoKeys = frozenList(reclaimedUtxoKeys),
+        super(metadata: {'walletId': walletId, 'txid': txid, 'reclaimTxid': reclaimTxid, 'success': success});
 
   @override
   String toString() => 'DeferredSpendReclaimedResponse($walletId, $txid -> $reclaimTxid, success: $success'

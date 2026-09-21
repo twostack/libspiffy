@@ -1414,8 +1414,8 @@ class TransactionsResponse extends CoordinatorEvent {
   TransactionsResponse({
     required this.walletId,
     required this.queryId,
-    required this.transactions,
-  });
+    required List<BitcoinTransaction> transactions,
+  })  : transactions = frozenList(transactions);
 
   @override
   DateTime get eventTimestamp => DateTime.now();
@@ -1550,14 +1550,15 @@ class InvoiceCreatedEvent extends CoordinatorEvent {
   InvoiceCreatedEvent({
     required this.walletId,
     required this.invoiceId,
-    required this.addresses,
+    required List<String> addresses,
     required this.amount,
-    this.outputs,
+    List<InvoiceOutputSpec>? outputs,
     this.description,
     this.expiresAt,
     required this.success,
     this.error,
-  });
+  })  : addresses = frozenList(addresses),
+        outputs = frozenOutputSpecsOrNull(outputs);
 
   @override
   DateTime get eventTimestamp => DateTime.now();
@@ -1680,8 +1681,8 @@ class BEEFValidationResultEvent extends CoordinatorEvent {
     required this.valid,
     this.error,
     this.broadcasted = false,
-    this.spendableUTXOs,
-  });
+    List<Map<String, dynamic>>? spendableUTXOs,
+  })  : spendableUTXOs = frozenListOrNull(spendableUTXOs);
 
   @override
   DateTime get eventTimestamp => DateTime.now();
@@ -1706,10 +1707,12 @@ class SPVValidationResultEvent extends CoordinatorEvent {
     required this.txid,
     required this.isValid,
     this.validationError,
-    this.spendableUTXOs = const [],
-    this.spentUTXOs = const [],
-    this.unreadableOutputs = const [],
-  });
+    List<Map<String, dynamic>> spendableUTXOs = const [],
+    List<Map<String, dynamic>> spentUTXOs = const [],
+    List<Map<String, dynamic>> unreadableOutputs = const [],
+  })  : spendableUTXOs = frozenMapList(spendableUTXOs),
+        spentUTXOs = frozenMapList(spentUTXOs),
+        unreadableOutputs = frozenMapList(unreadableOutputs);
 
   @override
   DateTime get eventTimestamp => DateTime.now();
@@ -1762,9 +1765,10 @@ class BEEFSettledEvent extends CoordinatorEvent {
     this.submittedCount = 0,
     this.skippedCount = 0,
     this.failedCount = 0,
-    this.failedTxids = const [],
-    this.failureErrors = const [],
-  });
+    List<String> failedTxids = const [],
+    List<String> failureErrors = const [],
+  })  : failedTxids = frozenList(failedTxids),
+        failureErrors = frozenList(failureErrors);
 
   @override
   DateTime get eventTimestamp => DateTime.now();
@@ -1909,9 +1913,9 @@ class DeferredPaymentsResponse extends CoordinatorEvent {
   DeferredPaymentsResponse({
     required this.walletId,
     required this.queryId,
-    required this.payments,
+    required List<DeferredPaymentDetail> payments,
     this.nextCursor,
-  });
+  })  : payments = frozenList(payments);
 
   @override
   DateTime get eventTimestamp => DateTime.now();
@@ -1955,8 +1959,8 @@ class DeferredPaymentBroadcastEvent extends CoordinatorEvent {
     this.confirmed = false,
     this.willRetry = false,
     this.error,
-    this.competingTxids = const [],
-  });
+    List<String> competingTxids = const [],
+  })  : competingTxids = frozenList(competingTxids);
 
   @override
   DateTime get eventTimestamp => DateTime.now();
@@ -2003,8 +2007,8 @@ class DeferredPaymentStatusEvent extends CoordinatorEvent {
     this.proofStatus,
     this.confirmed = false,
     this.error,
-    this.competingTxids = const [],
-  });
+    List<String> competingTxids = const [],
+  })  : competingTxids = frozenList(competingTxids);
 
   @override
   DateTime get eventTimestamp => DateTime.now();
@@ -2031,9 +2035,9 @@ class DeferredPaymentCancelledEvent extends CoordinatorEvent {
     required this.requestId,
     required this.success,
     this.networkStatus,
-    this.releasedUtxoKeys = const [],
+    List<String> releasedUtxoKeys = const [],
     this.error,
-  });
+  })  : releasedUtxoKeys = frozenList(releasedUtxoKeys);
 
   @override
   DateTime get eventTimestamp => DateTime.now();
@@ -2292,8 +2296,8 @@ class UnfinishedChannelsFoundEvent extends CoordinatorEvent {
 
   UnfinishedChannelsFoundEvent({
     required this.walletId,
-    required this.channels,
-  });
+    required List<UnfinishedChannel> channels,
+  })  : channels = frozenList(channels);
 
   @override
   DateTime get eventTimestamp => DateTime.now();
@@ -2318,8 +2322,8 @@ class P2PMessageToSendEvent extends CoordinatorEvent {
   P2PMessageToSendEvent({
     required this.toPeerId,
     required this.messageType,
-    required this.payload,
-  });
+    required Map<String, dynamic> payload,
+  })  : payload = frozenPlainMap(payload);
 
   @override
   DateTime get eventTimestamp => DateTime.now();
@@ -2366,9 +2370,9 @@ class AncestorProofRequestedEvent extends CoordinatorEvent {
     required this.requestId,
     required this.success,
     this.toPeerId,
-    this.ancestorTxids = const [],
+    List<String> ancestorTxids = const [],
     this.error,
-  });
+  })  : ancestorTxids = frozenList(ancestorTxids);
 
   @override
   DateTime get eventTimestamp => DateTime.now();
@@ -2499,9 +2503,10 @@ class UTXOSplitCompleteEvent extends CoordinatorEvent {
     required this.totalFeePaid,
     required this.success,
     this.error,
-    this.txids = const [],
-    this.splits = const [],
-  });
+    List<String> txids = const [],
+    List<SplitTransactionOutcome> splits = const [],
+  })  : txids = frozenList(txids),
+        splits = frozenList(splits);
 
   @override
   DateTime get eventTimestamp => DateTime.now();
@@ -2789,15 +2794,16 @@ class DeferredPaymentReclaimedEvent extends CoordinatorEvent {
     required this.requestId,
     required this.success,
     this.reclaimTxid,
-    this.reclaimedUtxoKeys = const [],
+    List<String> reclaimedUtxoKeys = const [],
     this.reclaimedSatoshis,
     this.fee,
     this.toAddress,
     this.networkStatus,
     this.source,
-    this.competingTxids = const [],
+    List<String> competingTxids = const [],
     this.error,
-  });
+  })  : reclaimedUtxoKeys = frozenList(reclaimedUtxoKeys),
+        competingTxids = frozenList(competingTxids);
 
   @override
   DateTime get eventTimestamp => DateTime.now();

@@ -3,6 +3,7 @@ import 'package:dactor/dactor.dart';
 import 'internal_messages.dart';
 import '../storage/wallet_storage.dart';
 import '../models/bitcoin_transaction.dart';
+import '../models/persistent_map.dart';
 
 /// Base class for all SPV-related messages
 abstract class SPVMessage {}
@@ -22,17 +23,18 @@ class BlockHeadersReceivedMessage implements SPVMessage, Message {
 
   BlockHeadersReceivedMessage({
     required this.peerId,
-    required this.headers,
+    required List<BlockHeader> headers,
     required this.startHeight,
     this.isReorganization = false,
     DateTime? receivedAt,
     String? correlationId,
     ActorRef? replyTo,
     Map<String, dynamic>? metadata,
-  }) : receivedAt = receivedAt ?? DateTime.now(),
+  })  : headers = frozenList(headers),
+        receivedAt = receivedAt ?? DateTime.now(),
        _correlationId = correlationId ?? 'headers_${DateTime.now().millisecondsSinceEpoch}',
        _replyTo = replyTo,
-       _metadata = metadata ?? {};
+       _metadata = frozenPlainMap(metadata ?? const {});
 
   @override
   String get correlationId => _correlationId;
@@ -72,7 +74,7 @@ class BlockHeaderStoredMessage implements SPVMessage, Message {
   }) : storedAt = storedAt ?? DateTime.now(),
        _correlationId = correlationId ?? 'header_stored_${DateTime.now().millisecondsSinceEpoch}',
        _replyTo = replyTo,
-       _metadata = metadata ?? {};
+       _metadata = frozenPlainMap(metadata ?? const {});
 
   @override
   String get correlationId => _correlationId;
@@ -111,7 +113,7 @@ class RequestHeaderSyncMessage implements SPVMessage, Message {
     Map<String, dynamic>? metadata,
   }) : _correlationId = correlationId ?? 'request_sync_${DateTime.now().millisecondsSinceEpoch}',
        _replyTo = replyTo,
-       _metadata = metadata ?? {};
+       _metadata = frozenPlainMap(metadata ?? const {});
 
   @override
   String get correlationId => _correlationId;
@@ -155,7 +157,7 @@ class ChainTipEventMessage implements SPVMessage, Message {
   }) : eventTime = eventTime ?? DateTime.now(),
        _correlationId = correlationId ?? 'chain_tip_${DateTime.now().millisecondsSinceEpoch}',
        _replyTo = replyTo,
-       _metadata = metadata ?? {};
+       _metadata = frozenPlainMap(metadata ?? const {});
 
   @override
   String get correlationId => _correlationId;
@@ -197,11 +199,12 @@ class ValidateTransactionMessage implements SPVMessage {
   ValidateTransactionMessage({
     required this.walletId,
     required this.transaction,
-    required this.merkleProofs,
+    required List<MerkleProof> merkleProofs,
     required this.fromCounterparty,
     this.requireAllProofs = true,
     DateTime? receivedAt,
-  }) : receivedAt = receivedAt ?? DateTime.now();
+  })  : merkleProofs = frozenList(merkleProofs),
+        receivedAt = receivedAt ?? DateTime.now();
 
   @override
   String toString() => 'ValidateTransactionMessage(wallet: $walletId, '
@@ -287,7 +290,7 @@ class GetSPVStatusMessage implements SPVMessage, Message {
     Map<String, dynamic>? metadata,
   }) : _correlationId = correlationId ?? 'get_status_${DateTime.now().millisecondsSinceEpoch}',
        _replyTo = replyTo,
-       _metadata = metadata ?? {};
+       _metadata = frozenPlainMap(metadata ?? const {});
 
   @override
   String get correlationId => _correlationId;
@@ -335,7 +338,7 @@ class SPVStatusMessage extends ActorResponse implements SPVMessage {
     required this.headersCached,
     required this.merkleProofsStored,
     required this.lastHeaderUpdate,
-    required this.connectedPeers,
+    required List<String> connectedPeers,
     required this.isHealthy,
     this.statusMessage,
     this.success = true,
@@ -343,7 +346,8 @@ class SPVStatusMessage extends ActorResponse implements SPVMessage {
     String? correlationId,
     ActorRef? replyTo,
     Map<String, dynamic>? metadata,
-  }) : super(
+  })  : connectedPeers = frozenList(connectedPeers),
+        super(
           correlationId: correlationId ?? 'spv_status_${DateTime.now().millisecondsSinceEpoch}',
           replyTo: replyTo,
           metadata: metadata ?? {},
@@ -375,8 +379,8 @@ class SPVControlMessage implements SPVMessage {
   SPVControlMessage({
     required this.action,
     this.walletId,
-    this.parameters,
-  });
+    Map<String, dynamic>? parameters,
+  })  : parameters = frozenPlainMapOrNull(parameters);
 
   @override
   String toString() => 'SPVControlMessage(action: $action, wallet: $walletId)';
@@ -469,7 +473,7 @@ class RequestSpecificHeaderMessage implements SPVMessage, Message {
     Map<String, dynamic>? metadata,
   }) : _correlationId = correlationId ?? 'req_header_${DateTime.now().millisecondsSinceEpoch}',
        _replyTo = replyTo,
-       _metadata = metadata ?? {};
+       _metadata = frozenPlainMap(metadata ?? const {});
 
   @override
   String get correlationId => _correlationId;

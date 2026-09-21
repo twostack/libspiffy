@@ -1,6 +1,7 @@
 import 'package:dactor/dactor.dart';
 import 'internal_messages.dart';
 import '../models/invoice_output_spec.dart';
+import '../models/persistent_map.dart';
 
 /// Messages for invoice/payment request management
 
@@ -34,9 +35,9 @@ class Invoice {
   Invoice({
     required this.invoiceId,
     required this.walletId,
-    required this.addresses,
+    required List<String> addresses,
     required this.amount,
-    this.outputs,
+    List<InvoiceOutputSpec>? outputs,
     this.description,
     required this.status,
     required this.createdAt,
@@ -44,8 +45,10 @@ class Invoice {
     this.paidAt,
     this.paymentTxid,
     this.amountReceived,
-    this.metadata,
-  });
+    Map<String, dynamic>? metadata,
+  })  : addresses = frozenList(addresses),
+        outputs = frozenOutputSpecsOrNull(outputs),
+        metadata = frozenPlainMapOrNull(metadata);
 
   /// Get total amount from outputs or fallback to amount field
   BigInt get totalAmount =>
@@ -91,12 +94,14 @@ class CreateInvoiceMessage implements Message {
   CreateInvoiceMessage({
     required this.walletId,
     this.amount,
-    this.outputs,
+    List<InvoiceOutputSpec>? outputs,
     this.description,
     this.expiresIn = const Duration(hours: 24),
-    this.invoiceMetadata,
+    Map<String, dynamic>? invoiceMetadata,
     this.numberOfAddresses = 1,
-  }) : assert(
+  })  : outputs = frozenOutputSpecsOrNull(outputs),
+        invoiceMetadata = frozenPlainMapOrNull(invoiceMetadata),
+        assert(
             outputs != null || amount != null,
             'Either outputs or amount must be provided');
 
@@ -147,16 +152,18 @@ class InvoiceCreatedMessage extends ActorResponse {
   InvoiceCreatedMessage({
     required this.invoiceId,
     required this.walletId,
-    required this.addresses,
+    required List<String> addresses,
     required this.amount,
-    this.outputs,
+    List<InvoiceOutputSpec>? outputs,
     this.description,
     required this.createdAt,
     this.expiresAt,
     required this.success,
     this.error,
-    this.customMetadata,
-  });
+    Map<String, dynamic>? customMetadata,
+  })  : addresses = frozenList(addresses),
+        outputs = frozenOutputSpecsOrNull(outputs),
+        customMetadata = frozenPlainMapOrNull(customMetadata);
 
   /// Get effective total amount
   BigInt get effectiveAmount {
@@ -231,9 +238,9 @@ class InvoiceDetailsResponse extends ActorResponse {
   InvoiceDetailsResponse({
     required this.invoiceId,
     this.walletId,
-    this.addresses = const [],
+    List<String> addresses = const [],
     required this.amount,
-    this.outputs,
+    List<InvoiceOutputSpec>? outputs,
     this.description,
     required this.status,
     required this.createdAt,
@@ -242,7 +249,8 @@ class InvoiceDetailsResponse extends ActorResponse {
     this.paymentTxid,
     required this.found,
     this.error,
-  });
+  })  : addresses = frozenList(addresses),
+        outputs = frozenOutputSpecsOrNull(outputs);
 
   /// Get effective total amount
   BigInt get effectiveAmount {
@@ -277,9 +285,10 @@ class MarkInvoicePaidMessage implements Message {
     required this.invoiceId,
     required this.txid,
     required this.amountReceived,
-    required this.addressesPaidTo,
+    required List<String> addressesPaidTo,
     DateTime? paidAt,
-  }) : paidAt = paidAt ?? DateTime.now();
+  })  : addressesPaidTo = frozenList(addressesPaidTo),
+        paidAt = paidAt ?? DateTime.now();
 
   @override
   String get correlationId => 'mark-invoice-paid-$invoiceId';
@@ -389,7 +398,8 @@ class InvoicesListMessage extends ActorResponse {
   @override
   final String? error;
 
-  InvoicesListMessage(this.invoices, {this.success = true, this.error});
+  InvoicesListMessage(List<InvoiceDetailsResponse> invoices, {this.success = true, this.error})
+      : invoices = frozenList(invoices);
 
   @override
   String get correlationId => 'invoices-list-${DateTime.now().millisecondsSinceEpoch}';

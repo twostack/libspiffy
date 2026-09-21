@@ -16,12 +16,23 @@
 /// pin a handful of fields; this pins all of them, so a 69th arrives red
 /// rather than unnoticed.
 ///
-/// Scope is what a caller outside libspiffy hands IN: the aggregate events
-/// and commands, and the app -> coordinator commands. The coordinator's
-/// outbound events (below the EVENTS banner in coordinator_messages.dart)
-/// carry lists libspiffy built for that one message and are a separate
-/// question - freezing them would change what an app may do with a result
-/// it was given (bead libspiffy-a0fk).
+/// Scope was first what a caller outside libspiffy hands IN: the aggregate
+/// events and commands, and the app -> coordinator commands (68 fields).
+///
+/// Bead libspiffy-a0fk extended it to both remaining directions (71 more):
+///
+/// * The coordinator's **outbound** events, below the EVENTS banner in
+///   coordinator_messages.dart. Freezing a result is a behaviour change - an
+///   app that sorts one in place now gets UnsupportedError - and it was
+///   settled on the same evidence as 6r5w, not by preference: `events` is a
+///   `StreamController.broadcast`, so one instance reaches EVERY subscriber,
+///   and an app listener sorting its "own" result reorders it for the
+///   others. It is not the app's copy.
+/// * The **internal** actor messages (wallet, spv, invoice, payment). These
+///   are libspiffy -> libspiffy, the same property and the same one line.
+///
+/// Before freezing, lib/ was searched for in-place mutation of every one of
+/// the 71: none. The whole of coordinator_messages.dart is scanned now.
 library;
 
 import 'dart:io';
@@ -36,13 +47,17 @@ const _sources = <String, String?>{
   'lib/src/core/invoice_commands.dart': null,
   'lib/src/core/channel_events.dart': null,
   'lib/src/core/channel_commands.dart': null,
-  'lib/src/actors/coordinator_messages.dart':
-      '// EVENTS (coordinator → app via broadcast stream)',
+  'lib/src/actors/coordinator_messages.dart': null,
+  'lib/src/actors/wallet_messages.dart': null,
+  'lib/src/actors/spv_messages.dart': null,
+  'lib/src/actors/invoice_messages.dart': null,
+  'lib/src/actors/payment_messages.dart': null,
 };
 
-/// Collection fields the scan found when 6r5w closed. A new one must be
+/// Collection fields the scan finds: 68 when 6r5w closed, 139 once a0fk
+/// added the outbound events and the internal messages. A new one must be
 /// frozen, and adding it must bump this number deliberately.
-const _expectedFields = 68;
+const _expectedFields = 139;
 
 final _classStart = RegExp(r'^(?:abstract |sealed )?class (\w+)', multiLine: true);
 final _field = RegExp(r'^  final ((?:List|Map|Set)<.*?>\??) (\w+);(?: *//.*)?$', multiLine: true);

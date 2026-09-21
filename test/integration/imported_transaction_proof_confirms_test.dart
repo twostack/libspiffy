@@ -260,8 +260,15 @@ void main() {
   /// P received unproven: pending row, pending output, nothing confirmed.
   Future<void> receivedUnproven() async {
     await deliver(unprovenP(), p.id);
-    await _until(() async => (await utxo(storage(), p.id, 0))?.status == UTXOStatus.pending,
-        'P:0 received, pending without a proof');
+    // Both rows, not one: the output row and the transaction row are written
+    // from two different journal events (UTXOReceived, TransactionImported),
+    // and nothing orders them for an observer. Waiting on the output alone
+    // and then asserting the transaction exists raced under full-suite load.
+    await _until(
+        () async =>
+            (await utxo(storage(), p.id, 0))?.status == UTXOStatus.pending &&
+            await storage().getTransaction(p.id, walletId: walletId) != null,
+        'P:0 received, pending without a proof, and P recorded');
     expect((await storage().getTransaction(p.id, walletId: walletId))!.status, TransactionStatus.pending);
     await barrier();
     expect(await confirmations(p.id), isEmpty);

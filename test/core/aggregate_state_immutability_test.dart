@@ -34,7 +34,11 @@ import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:eventador/eventador.dart' show Event;
 import 'package:test/test.dart';
 
+import 'package:dactor/dactor.dart';
 import 'package:libspiffy/src/actors/coordinator_messages.dart' as coord;
+import 'package:libspiffy/src/actors/wallet_coordinator_actor.dart';
+import 'package:libspiffy/src/actors/wallet_messages.dart' as wm;
+import 'package:libspiffy/src/storage/in_memory_wallet_storage.dart';
 import 'package:libspiffy/src/actors/invoice_messages.dart' show InvoiceStatus;
 import 'package:libspiffy/src/core/bitcoin_wallet_aggregate.dart';
 import 'package:libspiffy/src/core/channel_commands.dart';
@@ -758,6 +762,143 @@ void main() {
       expect(journaled.spentUtxoKeys, ['${'ab' * 32}:0']);
     });
   });
+
+  /// Bead libspiffy-a0fk: the two directions 6r5w left open.
+  group('a0fk: results and internal messages', () {
+    // The fact that decided the outbound question. Freezing a result is a
+    // behaviour change — an app that sorts one in place gets
+    // UnsupportedError — and the objection is "it is the app's own copy".
+    // It is not: the coordinator's `events` is a broadcast stream, so every
+    // subscriber is handed the SAME instance, and one listener sorting its
+    // result reorders it for the others. This drives a real coordinator.
+    test('a coordinator result reaches every subscriber as one instance, '
+        'which none of them can reorder under the others', () async {
+      final system = LocalActorSystem();
+      addTearDown(system.shutdown);
+      final noop = await system.spawn('noop', () => _Noop());
+      final coordinator = WalletCoordinatorActor(
+        walletManager: noop,
+        invoiceCoordinator: noop,
+        paymentCoordinator: noop,
+        spvActor: noop,
+        arcActor: noop,
+        headerSyncActor: noop,
+        benfordCoordinator: noop,
+        channelManager: noop,
+        walletProjection: noop,
+        storage: InMemoryWalletStorage(),
+      );
+      final seenByA = <coord.UTXOSplitCompleteEvent>[];
+      final seenByB = <coord.UTXOSplitCompleteEvent>[];
+      final subA = coordinator.events.listen((e) {
+        if (e is coord.UTXOSplitCompleteEvent) seenByA.add(e);
+      });
+      final subB = coordinator.events.listen((e) {
+        if (e is coord.UTXOSplitCompleteEvent) seenByB.add(e);
+      });
+      addTearDown(subA.cancel);
+      addTearDown(subB.cancel);
+      final ref = await system.spawn('coordinator', () => coordinator);
+
+      ref.tell(wm.SplitUTXOsResponse(
+        walletId: _walletId,
+        success: true,
+        splitCount: 2,
+        txids: ['bb' * 32, 'aa' * 32],
+      ));
+      final deadline = DateTime.now().add(const Duration(seconds: 5));
+      while (seenByA.isEmpty || seenByB.isEmpty) {
+        if (DateTime.now().isAfter(deadline)) fail('no UTXOSplitCompleteEvent within 5s');
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+
+      expect(identical(seenByA.single, seenByB.single), isTrue,
+          reason: 'the premise: a broadcast stream hands every listener the same object');
+      // Old code: subscriber A sorted the list, and B then read it sorted.
+      expect(() => seenByA.single.txids.sort(), throwsUnsupportedError);
+      expect(seenByB.single.txids, ['bb' * 32, 'aa' * 32]);
+    });
+
+    test('the outbound events copy and freeze what they are built from', () {
+      final txids = ['aa' * 32];
+      final utxos = <Map<String, dynamic>>[
+        {'txid': 'aa' * 32, 'vout': 0, 'tags': ['x']},
+      ];
+      final payload = <String, dynamic>{'peers': ['p1']};
+      final split = coord.UTXOSplitCompleteEvent(
+        walletId: _walletId,
+        transactionCount: 1,
+        newUtxoCount: 1,
+        totalFeePaid: BigInt.one,
+        success: true,
+        txids: txids,
+        splits: const [],
+      );
+      final spv = coord.SPVValidationResultEvent(
+        walletId: _walletId,
+        txid: 'aa' * 32,
+        isValid: true,
+        spendableUTXOs: utxos,
+      );
+      final p2p = coord.P2PMessageToSendEvent(toPeerId: 'p', messageType: 'm', payload: payload);
+
+      txids.add('late');
+      utxos.first['vout'] = 9;
+      (utxos.first['tags'] as List).add('late');
+      (payload['peers'] as List).add('late');
+
+      expect(split.txids, ['aa' * 32]);
+      expect(spv.spendableUTXOs.single['vout'], 0, reason: 'nested maps are copied too');
+      expect(spv.spendableUTXOs.single['tags'], ['x']);
+      expect(p2p.payload['peers'], ['p1']);
+      _expectAllRejected({
+        'UTXOSplitCompleteEvent.txids': () => split.txids.add('x'),
+        'SPVValidationResultEvent.spendableUTXOs': () => spv.spendableUTXOs.add({}),
+        'SPVValidationResultEvent.spendableUTXOs[0]': () => spv.spendableUTXOs.first['vout'] = 1,
+        'P2PMessageToSendEvent.payload': () => p2p.payload['x'] = 1,
+      });
+    });
+
+    // libspiffy -> libspiffy. The same property: the actor that built the
+    // list keeps a reference to it, and the actor that receives it reads it
+    // later on another turn of its mailbox.
+    test('the internal actor messages copy and freeze what they are built from', () {
+      final spendable = <Map<String, dynamic>>[
+        {'txid': 'aa' * 32, 'vout': 0},
+      ];
+      final feeData = <String, dynamic>{'mining': {'satoshis': 1, 'bytes': 1000}};
+      final walletIds = ['w1'];
+      final result = wm.SPVValidationResult(
+        txid: 'aa' * 32,
+        isValid: true,
+        spendableUTXOs: spendable,
+        spentUTXOs: const [],
+      );
+      final quote = wm.FeeQuoteMessage(feeData);
+      final list = wm.WalletListMessage(walletIds);
+
+      spendable.first['vout'] = 7;
+      spendable.add({'late': true});
+      (feeData['mining'] as Map)['satoshis'] = 0;
+      walletIds.add('late');
+
+      expect(result.spendableUTXOs, hasLength(1));
+      expect(result.spendableUTXOs.single['vout'], 0);
+      expect((quote.feeData['mining'] as Map)['satoshis'], 1,
+          reason: 'a fee rate a sender changed after the reply was sent');
+      expect(list.walletIds, ['w1']);
+      _expectAllRejected({
+        'SPVValidationResult.spendableUTXOs': () => result.spendableUTXOs.clear(),
+        'FeeQuoteMessage.feeData': () => quote.feeData['mining'] = null,
+        'WalletListMessage.walletIds': () => list.walletIds.add('x'),
+      });
+    });
+  });
+}
+
+class _Noop extends Actor {
+  @override
+  Future<void> onMessage(dynamic message) async {}
 }
 
 /// Each mutation in [mutations] must be refused; names the ones that were not.

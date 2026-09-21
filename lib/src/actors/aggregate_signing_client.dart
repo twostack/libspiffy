@@ -10,6 +10,7 @@ import '../core/wallet_commands.dart';
 import '../models/bitcoin_utxo.dart';
 import '../storage/read_model_storage.dart';
 import '../utils/network_name.dart';
+import '../core/wallet_output_ownership.dart' show BareMultisigScript;
 import 'wallet_messages.dart';
 
 /// Where a wallet key sits in the HD tree: `m/{isChange ? 1 : 0}/{derivationIndex}`.
@@ -324,7 +325,12 @@ class AggregateSigningClient {
   ) async {
     for (final entry in pending.entries) {
       final input = entry.value;
-      final owner = await _ownerOf(walletId, network, input.subscript);
+      // A single signature (P2PKH, P2PK, 1-of-n) comes from the one wallet
+      // key the script names; signature i of an m-of-n input from its i-th.
+      final multisig = BareMultisigScript.parse(input.subscript);
+      final owner = multisig != null && multisig.threshold > 1
+          ? await _multisigSigner(walletId, network, multisig, input.signatureIndex, input.inputIndex)
+          : await _ownerOf(walletId, network, input.subscript);
       final signed = await _signInputWithKey(
         walletId: walletId,
         txHex: input.txHex,
@@ -340,6 +346,28 @@ class AggregateSigningClient {
       }
       signatures[entry.key] = signed.signature;
     }
+  }
+
+  /// The wallet key that makes signature [index] of an input spending the
+  /// bare multisig [multisig]: the [index]-th of the script's keys the
+  /// wallet holds, in script order, which is the order `OP_CHECKMULTISIG`
+  /// reads signatures in (bead libspiffy-0nfk; the aggregate's own
+  /// `_multisigSigningKeys` picks the same keys). Throws when the wallet
+  /// holds fewer of the keys than the script requires.
+  Future<({SigningPath path, String pubkeyHash})> _multisigSigner(String walletId, dartsv.NetworkType network,
+      BareMultisigScript multisig, int index, int inputIndex) async {
+    final owners = <({SigningPath path, String pubkeyHash})>[];
+    for (final keyHex in multisig.publicKeysHex) {
+      if (owners.length == multisig.threshold) break;
+      final hashHex = hex.encode(dartsv.hash160(hex.decode(keyHex)));
+      final path = await _keyPathOrNull(walletId, dartsv.Address.fromPubkeyHash(hashHex, network).toBase58());
+      if (path != null) owners.add((path: path, pubkeyHash: hashHex));
+    }
+    if (owners.length < multisig.threshold) {
+      throw AggregateSigningException('Input $inputIndex spends a ${multisig.threshold}-of-'
+          '${multisig.publicKeysHex.length} multisig output; the wallet holds ${owners.length} of the keys it needs');
+    }
+    return owners[index];
   }
 
   /// The wallet address named by [script], if any.
@@ -436,8 +464,12 @@ class _PendingInput {
   final int sighashType;
   final List<int> digest;
 
+  /// Which of the input's signatures this is: 0, or up to m - 1 for an
+  /// m-of-n bare multisig input.
+  final int signatureIndex;
+
   _PendingInput(this.txHex, this.inputIndex, this.subscript, this.satoshis, this.sighashType,
-      this.digest);
+      this.digest, this.signatureIndex);
 }
 
 /// Signs with signatures the aggregate has already produced and records the
@@ -462,24 +494,31 @@ class _AggregateBackedSigner extends dartsv.TransactionSigner {
       dartsv.Transaction unsignedTxn, dartsv.TransactionOutput utxo, int inputIndex) {
     final digest = AggregateSigningClient.sighashDigest(
         unsignedTxn, sigHashType, inputIndex, utxo.script, utxo.satoshis);
-    final key = '$sigHashType:${hex.encode(digest)}';
-
-    var signature = _signatures[key];
-    if (signature == null) {
-      pending.putIfAbsent(
-        key,
-        () => _PendingInput(_withoutUnlockingScripts(unsignedTxn), inputIndex, utxo.script,
-            utxo.satoshis, sigHashType, digest),
-      );
-      signature = _placeholder(sigHashType);
-    }
-
     final builder = unsignedTxn.inputs[inputIndex].scriptBuilder;
     if (builder == null) {
       throw dartsv.TransactionException(
           'Trying to sign a Transaction Input that is missing a SignedUnlockBuilder');
     }
-    builder.signatures.add(signature);
+
+    // dartsv calls a signer once per input, so an m-of-n bare multisig input
+    // gets all m of its signatures here, one per wallet key (bead
+    // libspiffy-0nfk). Each is cached under its own index: keyed by the
+    // digest alone, every one of them was the first key's signature, and no
+    // input needing two signatures could be signed.
+    final count = BareMultisigScript.parse(utxo.script)?.threshold ?? 1;
+    for (var index = 0; index < count; index++) {
+      final key = '$sigHashType:${hex.encode(digest)}${count == 1 ? '' : ':$index'}';
+      var signature = _signatures[key];
+      if (signature == null) {
+        pending.putIfAbsent(
+          key,
+          () => _PendingInput(_withoutUnlockingScripts(unsignedTxn), inputIndex, utxo.script,
+              utxo.satoshis, sigHashType, digest, index),
+        );
+        signature = _placeholder(sigHashType);
+      }
+      builder.signatures.add(signature);
+    }
     return unsignedTxn;
   }
 

@@ -37,6 +37,7 @@ import 'package:libspiffy/src/utils/crypto_utils.dart';
 
 import 'isar_test_helper.dart';
 import '../mocks/network_arc.dart';
+import 'package:libspiffy/src/core/wallet/transaction_size.dart';
 import 'p2p_test_helpers.dart' show kTestXpriv, setupTestHeaders;
 
 const _mnemonic =
@@ -168,9 +169,11 @@ void main() {
     return response.address;
   }
 
-  /// Gives [address] a spendable P2PKH UTXO at a synthetic outpoint.
+  /// Gives [address] a spendable UTXO at a synthetic outpoint, locked by
+  /// [scriptHex] (P2PKH to [address] by default).
   Future<String> fund(String walletId, String address,
-      {required String txid, int vout = 0, required int satoshis}) async {
+      {required String txid, int vout = 0, required int satoshis, String? scriptHex}) async {
+    final script = scriptHex ?? _p2pkhScriptHex(address);
     final received = await _tellAndAwait<UTXOReceivedResponse>(
       actorSystem,
       libspiffy.walletManager,
@@ -181,7 +184,7 @@ void main() {
           txid: txid,
           vout: vout,
           satoshis: BigInt.from(satoshis),
-          scriptPubKey: _p2pkhScriptHex(address),
+          scriptPubKey: script,
           address: address,
           blockHeight: 1239645,
           confirmations: 10,
@@ -191,7 +194,7 @@ void main() {
     );
     expect(received.success, isTrue, reason: received.error);
     final key = '$txid:$vout';
-    funded[key] = (scriptHex: _p2pkhScriptHex(address), satoshis: satoshis);
+    funded[key] = (scriptHex: script, satoshis: satoshis);
     await eventually(
         () async => (await libspiffy.walletStorage.getPaymentUTXOs(walletId))
             .any((u) => u.key == key),
@@ -202,14 +205,14 @@ void main() {
   /// Imports a confirmed parent (with a merkle proof) paying [satoshis] to
   /// [address] and makes its output spendable. Returns the parent txid.
   Future<String> fundWithImportedParent(String walletId, String address,
-      {required int satoshis, int seed = 99}) async {
+      {required int satoshis, int seed = 99, String? scriptHex}) async {
     final parent = dartsv.Transaction()
       ..version = 2
       ..nLockTime = 0;
     parent.inputs.add(
         dartsv.TransactionInput(_fakeTxid(seed), 0, dartsv.TransactionInput.MAX_SEQ_NUMBER));
     parent.outputs.add(dartsv.TransactionOutput(
-        BigInt.from(satoshis), dartsv.SVScript.fromHex(_p2pkhScriptHex(address))));
+        BigInt.from(satoshis), dartsv.SVScript.fromHex(scriptHex ?? _p2pkhScriptHex(address))));
     final parentTxid = parent.id;
     // The parent is made up, so its block is too: a header of its own at a
     // height no test header uses, committing to the parent's BUMP. (At
@@ -257,7 +260,7 @@ void main() {
                 null &&
             await libspiffy.walletStorage.getTransaction(parentTxid) != null,
         'the imported parent in the read model');
-    await fund(walletId, address, txid: parentTxid, satoshis: satoshis);
+    await fund(walletId, address, txid: parentTxid, satoshis: satoshis, scriptHex: scriptHex);
     return parentTxid;
   }
 
@@ -629,6 +632,94 @@ void main() {
 
       final tx = primaryTx(response);
       expect(tx.inputs.map((i) => '${i.prevTxnId}:${i.prevTxnOutputIndex}'), [p2pkh]);
+      expect(verifyInputs(tx), isEmpty);
+    });
+
+    // Bead libspiffy-0nfk: a plugin that spends its funding through
+    // `PluginTransactionRequest.fundingInputs` — each output over its real
+    // locking script, with the unlocking script the wallet writes — is
+    // funded from bare multisig and P2PK outputs too, and an m-of-n input
+    // gets all m of its signatures from the wallet aggregate.
+    test('0nfk: a plugin spending through fundingInputs is funded by a 2-of-2 multisig and a P2PK UTXO, every input valid',
+        () async {
+      final plugin = _AnyOutputPlugin();
+      PluginRegistry().unregister(_pluginId);
+      PluginRegistry().register(plugin);
+      const walletId = 'onfk-plugin';
+      final root = await createXprivWallet(walletId);
+      final secondAddress = await generateAddress(walletId);
+      final secondKey = hd.deriveChildNumber(0).deriveChildNumber(1).privateKey.publicKey;
+      expect(secondKey.toAddress(dartsv.NetworkType.TEST).toBase58(), secondAddress);
+      final multisig = await fundMultisig(walletId, [rootKey, secondKey], 2, txid: _fakeTxid(40), satoshis: 40000);
+      final p2pk = await fundScript(walletId, '21${rootKey.toHex()}ac', root, txid: _fakeTxid(41), satoshis: 40000);
+
+      final response = await pay(pluginPayment(walletId, 60000));
+
+      // Old code: `Insufficient funds ... bare multisig or P2PK UTXO(s)
+      // cannot fund a plugin transaction`.
+      expect(response.success, isTrue, reason: response.error);
+      final tx = primaryTx(response);
+      expect(tx.inputs.map((i) => '${i.prevTxnId}:${i.prevTxnOutputIndex}').toSet(), {multisig, p2pk});
+      expect(verifyInputs(tx), isEmpty, reason: 'each input unlocks its own locking script');
+      final twoOfTwo = tx.inputs.singleWhere((i) => '${i.prevTxnId}:${i.prevTxnOutputIndex}' == multisig);
+      expect(twoOfTwo.script!.chunks, hasLength(3), reason: 'OP_0 and both signatures');
+      expect(plugin.lastRequest!.fundingInputs.map((i) => i.signatures).toSet(), {2, 1});
+      expect(plugin.lastRequest!.feeRate, arc.miningFee, reason: 'the plugin is handed ARC\'s policy rate');
+    });
+
+    test('0nfk: a plugin needing two funding UTXOs is auto-provisioned from a 2-of-2 multisig UTXO, every input valid',
+        () async {
+      final plugin = _AnyOutputPlugin(requiredFunding: 2);
+      PluginRegistry().unregister(_pluginId);
+      PluginRegistry().register(plugin);
+      const walletId = 'onfk-auto-provision';
+      await createXprivWallet(walletId);
+      await generateAddress(walletId);
+      final secondKey = hd.deriveChildNumber(0).deriveChildNumber(1).privateKey.publicKey;
+      // A parent of its own: the split spends the source transaction.
+      final multisigScript = dartsv.P2MSLockBuilder([rootKey, secondKey], 2, sorting: false).getScriptPubkey().toHex();
+      final multisig = '${await fundWithImportedParent(walletId, rootKey.toAddress(dartsv.NetworkType.TEST).toBase58(), satoshis: 90000, seed: 43, scriptHex: multisigScript)}:0';
+
+      final response = await pay(pluginPayment(walletId, 10000));
+
+      expect(response.success, isTrue, reason: response.error);
+      final txs = BEEF
+          .parse(response.beefBytes)
+          .txs
+          .map((bytes) => dartsv.Transaction.fromHex(hex.encode(bytes)))
+          .toList();
+      expect(txs, hasLength(4), reason: 'split, two earmarks, payment');
+      expect('${txs.first.inputs.single.prevTxnId}:${txs.first.inputs.single.prevTxnOutputIndex}', multisig);
+      final problems = <String>[];
+      for (final tx in txs) {
+        problems.addAll(verifyInputs(tx).map((p) => '${tx.id}: $p'));
+        registerOutputs(tx);
+      }
+      // The earmarks pay P2PKH: their funding inputs are spent as P2PKH, not
+      // over the multisig script of the source they came from.
+      expect(problems, isEmpty);
+    });
+
+    test('0nfk: a provision spends a 2-of-2 multisig UTXO through fundingInputs', () async {
+      final plugin = _AnyOutputPlugin();
+      PluginRegistry().unregister(_pluginId);
+      PluginRegistry().register(plugin);
+      const walletId = 'onfk-provision';
+      await createXprivWallet(walletId);
+      await generateAddress(walletId);
+      final secondKey = hd.deriveChildNumber(0).deriveChildNumber(1).privateKey.publicKey;
+      final multisig = await fundMultisig(walletId, [rootKey, secondKey], 2, txid: _fakeTxid(42), satoshis: 90000);
+
+      final response = await _tellAndAwait<ProvisionFundingResponse>(
+        actorSystem,
+        libspiffy.paymentCoordinator,
+        ProvisionFundingMessage(walletId: walletId, pluginId: _pluginId, pluginParams: const {}),
+        timeout: const Duration(seconds: 30),
+      );
+
+      expect(response.success, isTrue, reason: response.error);
+      final tx = plugin.lastProvision!;
+      expect('${tx.inputs.single.prevTxnId}:${tx.inputs.single.prevTxnOutputIndex}', multisig);
       expect(verifyInputs(tx), isEmpty);
     });
 
@@ -1030,6 +1121,69 @@ class _SpendAllPlugin extends TransactionBuilderPlugin {
       primaryTx: builder.build(false),
       primaryFeeSats: BigInt.from(fee),
     );
+  }
+}
+
+/// A [_SpendAllPlugin] that spends its funding through
+/// [PluginTransactionRequest.fundingInputs] and says so (bead
+/// libspiffy-0nfk), paying the request's policy rate on its signed size.
+class _AnyOutputPlugin extends _SpendAllPlugin {
+  _AnyOutputPlugin({super.requiredFunding});
+
+  /// The request of the last [buildTransaction] call.
+  PluginTransactionRequest? lastRequest;
+
+  @override
+  bool get spendsAnyWalletOutput => true;
+
+  @override
+  Future<TransactionBuilderResult> buildTransaction(PluginTransactionRequest request) async {
+    lastRequest = request;
+    final builder = dartsv.TransactionBuilder();
+    var total = BigInt.zero;
+    for (final input in request.fundingInputs) {
+      total += input.utxo.satoshis;
+      builder.spendFromOutpointWithSigner(
+          request.signer, input.outpoint, dartsv.TransactionInput.MAX_SEQ_NUMBER, input.newUnlocker());
+    }
+    final fee = request.feeRate.feeFor(TransactionSize.of(
+      inputLockingScripts: [for (final input in request.fundingInputs) input.lockingScript.toHex()],
+      outputScriptBytes: const [TransactionSize.p2pkhScriptBytes],
+    ));
+    builder.spendToLockBuilder(
+      dartsv.P2PKHLockBuilder.fromAddress(dartsv.Address.fromBase58(request.params['to'] as String)),
+      total - fee,
+    );
+    return TransactionBuilderResult(primaryTx: builder.build(false), primaryFeeSats: fee);
+  }
+
+  /// Splits the single funding UTXO into two outputs back to its address.
+  @override
+  Future<List<ProvisionedTransaction>> provisionFunding(PluginTransactionRequest request) async {
+    final input = request.fundingInputs.single;
+    final address = dartsv.Address.fromBase58(input.utxo.address);
+    final fee = request.feeRate.feeFor(TransactionSize.of(
+      inputLockingScripts: [input.lockingScript.toHex()],
+      outputScriptBytes: const [TransactionSize.p2pkhScriptBytes, TransactionSize.p2pkhScriptBytes],
+    ));
+    final half = (input.utxo.satoshis - fee) ~/ BigInt.two;
+    final tx = (dartsv.TransactionBuilder()
+          ..spendFromOutpointWithSigner(
+              request.signer, input.outpoint, dartsv.TransactionInput.MAX_SEQ_NUMBER, input.newUnlocker())
+          ..spendToLockBuilder(dartsv.P2PKHLockBuilder.fromAddress(address), half)
+          ..spendToLockBuilder(dartsv.P2PKHLockBuilder.fromAddress(address), input.utxo.satoshis - fee - half))
+        .build(false);
+    lastProvision = tx;
+    return [
+      ProvisionedTransaction(
+        txid: tx.id,
+        rawHex: tx.serialize(),
+        feeSats: fee.toInt(),
+        role: 'split',
+        fundingVout: -1,
+        fundingSats: -1,
+      ),
+    ];
   }
 }
 

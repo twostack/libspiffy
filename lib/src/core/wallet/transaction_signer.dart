@@ -153,6 +153,31 @@ class WalletTransactionSigner {
     return signedTx;
   }
 
+  /// The unlocking script the wallet writes to spend an output locked by
+  /// [lockingScript] — as a factory of fresh builders — and the signatures it
+  /// carries; null for a locking script the wallet has no standard unlocking
+  /// script for. [publicKey] is the key a P2PKH unlocking script pushes.
+  ///
+  /// The script half of [unlockFor], which adds the keys. Shared with the
+  /// payment coordinator, which hands it to a `TransactionBuilderPlugin`
+  /// without holding any key (bead libspiffy-0nfk), so a plugin spends a
+  /// wallet output with the unlocking script the wallet itself would write.
+  static ({dartsv.UnlockingScriptBuilder Function() newUnlocker, int signatures})? unlockingScriptFor(
+      dartsv.SVScript lockingScript,
+      {dartsv.SVPublicKey? publicKey}) {
+    final multisig = BareMultisigScript.parse(lockingScript);
+    if (multisig != null) return (newUnlocker: () => dartsv.P2MSUnlockBuilder(), signatures: multisig.threshold);
+    final scriptHex = lockingScript.toHex();
+    if (p2pkPublicKeyHex(scriptHex) != null) {
+      return (newUnlocker: () => SignatureOnlyUnlockBuilder(), signatures: 1);
+    }
+    if (isP2pkhScript(scriptHex)) {
+      if (publicKey == null) throw ArgumentError('A P2PKH unlocking script pushes the public key: none given');
+      return (newUnlocker: () => dartsv.P2PKHUnlockBuilder(publicKey), signatures: 1);
+    }
+    return null;
+  }
+
   /// The unlocking script and the signing keys for [utxo], one of the
   /// wallet's own UTXOs, or null when its locking script is not one the
   /// wallet has a standard unlocking script for.
@@ -205,18 +230,18 @@ class WalletTransactionSigner {
 
     if (multisig != null) {
       return (
-        unlocker: dartsv.P2MSUnlockBuilder(),
+        unlocker: unlockingScriptFor(utxoScript)!.newUnlocker(),
         signingKeys: await _multisigSigningKeys(multisig, utxo, walletId, currentState, privateKey),
       );
     }
     if (scriptType == 'p2pk') {
       requireKeyForP2pk(utxoKey ?? utxo.key, utxo.address, utxo.scriptPubKey, privateKey!.publicKey);
-      return (unlocker: SignatureOnlyUnlockBuilder(), signingKeys: [privateKey]);
+      return (unlocker: unlockingScriptFor(utxoScript)!.newUnlocker(), signingKeys: [privateKey]);
     }
     if (scriptType == 'p2pkh') {
       final publicKey = privateKey!.publicKey;
       requireKeyForP2pkh(utxoKey ?? utxo.key, utxo.address, utxoScript, publicKey);
-      return (unlocker: dartsv.P2PKHUnlockBuilder(publicKey), signingKeys: [privateKey]);
+      return (unlocker: unlockingScriptFor(utxoScript, publicKey: publicKey)!.newUnlocker(), signingKeys: [privateKey]);
     }
     return null;
   }

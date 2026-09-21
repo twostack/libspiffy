@@ -33,7 +33,7 @@ LibSpiffy implements a sophisticated Bitcoin wallet system using modern architec
 - Transaction lifecycle management with pending transaction recovery
 - Snapshot support for performance optimization
 - Real-time balance calculations
-- **ARC (Authoritative Response Component)** service integration for broadcasting and fee estimation
+- **ARC (Authoritative Response Component)** service integration for broadcasting and the policy fee rate every transaction pays
 - Transaction fee calculation from BEEF data
 
 ### Storage & Deployment

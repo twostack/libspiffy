@@ -46,6 +46,18 @@ abstract class TransactionBuilderPlugin extends ScriptPlugin {
   /// auto-provision by splitting available funds into earmark TXs.
   int requiredFundingUtxoCount(String action) => 1;
 
+  /// Whether this plugin spends each funding UTXO through
+  /// [PluginTransactionRequest.fundingInputs] — its real locking script and
+  /// the unlocking script libspiffy supplies — in [buildTransaction] and
+  /// [provisionFunding] alike (bead libspiffy-0nfk).
+  ///
+  /// Only then is it funded from the wallet's bare multisig and P2PK
+  /// outputs as well as P2PKH ones. A plugin that builds every input as
+  /// P2PKH, from [PluginTransactionRequest.publicKeys], would sign those
+  /// over the wrong script, so it keeps the default and gets P2PKH funding
+  /// only.
+  bool get spendsAnyWalletOutput => false;
+
   /// Validate that a transaction conforms to this plugin's protocol structure.
   ///
   /// Returns true if the transaction has the expected output count,

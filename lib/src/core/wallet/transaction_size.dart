@@ -50,7 +50,7 @@ abstract final class TransactionSize {
     final multisig = BareMultisigScript.parseHex(lockingScriptHex);
     if (multisig != null) return 1 + multisig.threshold * _signaturePush;
     if (p2pkPublicKeyHex(lockingScriptHex) != null) return _signaturePush;
-    if (_isP2pkh(lockingScriptHex)) return _signaturePush + _compressedKeyPush;
+    if (isP2pkhScript(lockingScriptHex)) return _signaturePush + _compressedKeyPush;
     throw ArgumentError.value(lockingScriptHex, 'lockingScriptHex',
         'not a P2PKH, P2PK or bare multisig script: the wallet writes no unlocking script for it');
   }
@@ -84,9 +84,4 @@ abstract final class TransactionSize {
           : n <= 0xffffffff
               ? 5
               : 9;
-
-  static bool _isP2pkh(String scriptHex) {
-    final script = scriptHex.toLowerCase();
-    return script.length == p2pkhScriptBytes * 2 && script.startsWith('76a914') && script.endsWith('88ac');
-  }
 }

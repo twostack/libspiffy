@@ -302,6 +302,29 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### Plugins can spend any output the wallet can — breaking for plugin authors
+
+- **`PluginTransactionRequest.fundingInputs`**: each funding UTXO as a
+  `PluginFundingInput` — its outpoint over the **real** locking script, and
+  a factory for the unlocking script the wallet writes (`<sig> <key>`,
+  `<sig>`, or `OP_0` and m signatures for an m-of-n bare multisig). A
+  factory, not an instance: libspiffy runs a plugin's build more than once
+  while the wallet signs.
+- **`TransactionBuilderPlugin.spendsAnyWalletOutput`** (default `false`): a
+  plugin that spends its funding through `fundingInputs` overrides it to
+  `true`, and is then funded — for payments and for `provisionFunding` —
+  from the wallet's bare multisig and P2PK outputs too. A plugin that
+  leaves it `false` still gets P2PKH funding only, as before.
+- The signer handed to plugins now gives an m-of-n input all m signatures,
+  one per wallet key in script order. It used to return the first key's
+  signature for each of them.
+- **`PluginTransactionRequest.feeRate`** (required): ARC's policy rate,
+  which a plugin's transactions pay on their signed size like every other
+  transaction the wallet builds. `fundingInputs` is required too; a plugin
+  test that constructs a request must pass both.
+- An earmark provisioned for a plugin is recorded with the P2PKH script it
+  actually pays, not its source's script.
+
 ### The Benford split and plugin provisioning pay ARC's policy rate — breaking
 
 - **The split took its own rate**, in satoshis per byte and defaulting to

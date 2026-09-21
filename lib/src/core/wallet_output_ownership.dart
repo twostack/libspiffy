@@ -89,6 +89,13 @@ class BareMultisigScript {
   }
 }
 
+/// Whether [scriptHex] is a P2PKH locking script: `OP_DUP OP_HASH160
+/// <20 bytes> OP_EQUALVERIFY OP_CHECKSIG`.
+bool isP2pkhScript(String scriptHex) {
+  final script = scriptHex.toLowerCase();
+  return script.length == 50 && script.startsWith('76a914') && script.endsWith('88ac');
+}
+
 /// The public key of the P2PK script (`<key> OP_CHECKSIG`) [scriptHex] locks
 /// with, as hex, or null when it is not one (malformed ones included).
 String? p2pkPublicKeyHex(String scriptHex) {

@@ -24,6 +24,7 @@ import '../services/watch_only_funds.dart';
 import '../utils/beef.dart';
 import '../core/wallet_commands.dart';
 import '../core/wallet_output_ownership.dart';
+import '../core/wallet/transaction_signer.dart' show WalletTransactionSigner;
 import '../core/wallet/transaction_size.dart';
 import '../services/transaction/builder/op_return_lockbuilder.dart';
 import 'aggregate_signing_client.dart';
@@ -137,17 +138,16 @@ class PaymentCoordinatorActor extends Actor {
     var utxos = paymentUtxos.signable;
     _log.info('[pay ${msg.invoiceId}] getUTXOs: ${utxoSw.elapsedMilliseconds}ms, count=${utxos.length}, '
         'watch-only=${paymentUtxos.watchOnly.length}');
-    // A TransactionBuilderPlugin gets one public key per funding UTXO and
-    // builds the input itself, unlocking it as P2PKH, so a bare multisig or
-    // P2PK wallet UTXO (bead libspiffy-nlp) cannot fund it. Nothing here can
-    // change that: the unlocking script is the plugin's to write, and
-    // handing it an output it will mis-sign is worse than saying so. The
-    // standard (non-plugin) path signs those UTXOs with their own unlocking
-    // scripts, and so does channel funding (bead libspiffy-8egy) — spending
-    // them through a plugin needs the plugin contract to carry the
-    // unlocking script, which is a change to third-party plugins.
+    // A TransactionBuilderPlugin builds its inputs itself. One that spends
+    // its funding through `PluginTransactionRequest.fundingInputs` — each
+    // output over its real locking script, with the unlocking script the
+    // wallet writes — can be funded from bare multisig and P2PK outputs too
+    // (bead libspiffy-0nfk). One that does not builds every input as P2PKH
+    // (bead libspiffy-nlp) and would sign those over the wrong script, so
+    // they are left out for it: an invalid transaction is worse than a
+    // refusal that says why.
     var excludedNote = paymentUtxos.excludedNote;
-    if (_isPluginTransaction(msg)) {
+    if (_isPluginTransaction(msg) && !_pluginSpendsAnyOutput(msg)) {
       final excluded = utxos.where((u) => needsNonP2pkhUnlock(u.scriptPubKey)).toList();
       if (excluded.isNotEmpty) {
         utxos = utxos.where((u) => !needsNonP2pkhUnlock(u.scriptPubKey)).toList();
@@ -636,6 +636,17 @@ class PaymentCoordinatorActor extends Actor {
   /// ARC's published policy rate, or null after telling [sender] why there
   /// is none (bead libspiffy-bg7n).
   Future<FeeRate?> _policyRate(String invoiceId, ActorRef? sender) async {
+    try {
+      return await _askPolicyRate();
+    } on StateError catch (e) {
+      _sendError(invoiceId, '${e.message}; nothing was built', sender: sender);
+      return null;
+    }
+  }
+
+  /// ARC's published policy rate. Throws a [StateError] saying why when ARC
+  /// cannot give one: a rate nobody published is not one to build at.
+  Future<FeeRate> _askPolicyRate() async {
     String why;
     try {
       final quote = await _arcActor.ask<FeeRateQuote>(GetFeeRateMessage(), _feeRateReplyTimeout);
@@ -645,8 +656,7 @@ class PaymentCoordinatorActor extends Actor {
     } catch (e) {
       why = 'ARC did not answer: $e';
     }
-    _sendError(invoiceId, "ARC's policy fee rate could not be read ($why); nothing was built", sender: sender);
-    return null;
+    throw StateError("ARC's policy fee rate could not be read ($why)");
   }
 
   /// The fee of a transaction spending [inputs] and creating outputs whose
@@ -735,6 +745,41 @@ class PaymentCoordinatorActor extends Actor {
     } catch (_) {
       throw ArgumentError.value(address, 'address', 'not a valid address to pay');
     }
+  }
+
+  /// [utxos] as a TransactionBuilderPlugin spends them (bead
+  /// libspiffy-0nfk): each over its real locking script, with the unlocking
+  /// script the wallet writes for it; [publicKeys] are the keys a P2PKH
+  /// input pushes.
+  static List<PluginFundingInput> _fundingInputs(List<BitcoinUtxo> utxos, List<dartsv.SVPublicKey> publicKeys) =>
+      [for (var i = 0; i < utxos.length; i++) _fundingInput(utxos[i], publicKeys[i])];
+
+  static PluginFundingInput _fundingInput(BitcoinUtxo utxo, dartsv.SVPublicKey publicKey) {
+    final lockingScript = utxo.scriptPubKey.isNotEmpty
+        ? dartsv.SVScript.fromHex(utxo.scriptPubKey)
+        : dartsv.P2PKHLockBuilder.fromAddress(dartsv.Address.fromBase58(utxo.address)).getScriptPubkey();
+    final unlock = WalletTransactionSigner.unlockingScriptFor(lockingScript, publicKey: publicKey);
+    if (unlock == null) {
+      throw StateError('UTXO ${utxo.key} is locked by a script the wallet writes no unlocking script for');
+    }
+    return PluginFundingInput(
+      utxo: utxo,
+      lockingScript: lockingScript,
+      signatures: unlock.signatures,
+      newUnlocker: unlock.newUnlocker,
+    );
+  }
+
+  /// Whether the TransactionBuilderPlugin that builds [msg]'s transaction
+  /// spends its funding through `PluginTransactionRequest.fundingInputs`
+  /// and so can be funded from any output the wallet can spend alone (bead
+  /// libspiffy-0nfk).
+  static bool _pluginSpendsAnyOutput(PayInvoiceMessage msg) {
+    final spec = msg.outputs?.whereType<PluginOutputSpec>().firstOrNull;
+    if (spec == null) return false;
+    final plugin = PluginRegistry().getPlugin(spec.pluginId);
+    return plugin is TransactionBuilderPlugin &&
+        _guardPlugin(spec.pluginId, 'saying which outputs it spends', () => plugin.spendsAnyWalletOutput);
   }
 
   /// The locking script [plugin]'s plugin builds for it. Guarded: what the
@@ -855,6 +900,8 @@ class PaymentCoordinatorActor extends Actor {
                         signer: signer,
                         publicKeys: pluginPublicKeys,
                         params: pluginOutput.params,
+                        fundingInputs: _fundingInputs(pluginFundingUtxos, pluginPublicKeys),
+                        feeRate: rate,
                         transactionLookup: (txid) async {
                           // All auto-provisioned ancestors are persisted before
                           // _autoProvisionForPlugin returns, so a single storage read
@@ -1255,7 +1302,7 @@ class PaymentCoordinatorActor extends Actor {
         // Level 1: Split TX
         final splitBuilder = dartsv.TransactionBuilder()
             .spendFromTxnWithSigner(signer, sourceTx, sourceUtxo.vout,
-                dartsv.TransactionInput.MAX_SEQ_NUMBER, dartsv.P2PKHUnlockBuilder(publicKey));
+                dartsv.TransactionInput.MAX_SEQ_NUMBER, _fundingInput(sourceUtxo, publicKey).newUnlocker());
 
         for (int i = 0; i < count; i++) {
           splitBuilder.spendToLockBuilder(dartsv.P2PKHLockBuilder.fromAddress(address), perEarmark);
@@ -1297,7 +1344,10 @@ class PaymentCoordinatorActor extends Actor {
         txid: earmarkTx.id,
         vout: 1,
         satoshis: fundingSats,
-        scriptPubKey: sourceUtxo.scriptPubKey,
+        // What the earmark pays: P2PKH to the source's address, which is the
+        // source's own script only when the source is P2PKH (bead
+        // libspiffy-0nfk: a multisig or P2PK source can fund a plugin now).
+        scriptPubKey: addressScript,
         address: sourceUtxo.address,
         derivationIndex: sourcePath.derivationIndex,
       ));
@@ -1515,15 +1565,18 @@ class PaymentCoordinatorActor extends Actor {
       }
 
       // 2. Get available UTXOs and select the largest
-      // (bare multisig and P2PK UTXOs excluded: the plugin builds the input
-      // and unlocks it as P2PKH, bead libspiffy-nlp; see _handlePayInvoice
-      // for why libspiffy cannot spend them through a plugin, bead
-      // libspiffy-8egy)
+      // (bare multisig and P2PK UTXOs excluded unless the plugin spends its
+      // funding through `fundingInputs`: one that builds every input as
+      // P2PKH would sign them over the wrong script, beads libspiffy-nlp,
+      // libspiffy-0nfk; see _handlePayInvoice)
       // (UTXOs at watch addresses excluded: watch-only funds, bead
       // libspiffy-87a2)
       final paymentUtxos = await splitWatchOnlyUtxos(_storage, walletId, await _storage.getPaymentUTXOs(walletId));
       final spendable = paymentUtxos.signable;
-      final availableUtxos = spendable.where((u) => !needsNonP2pkhUnlock(u.scriptPubKey)).toList();
+      final spendsAny =
+          _guardPlugin(msg.pluginId, 'saying which outputs it spends', () => plugin.spendsAnyWalletOutput);
+      final availableUtxos =
+          spendsAny ? spendable : spendable.where((u) => !needsNonP2pkhUnlock(u.scriptPubKey)).toList();
       if (availableUtxos.isEmpty) {
         throw Exception(spendable.isEmpty
             ? 'No available UTXOs for provisioning${paymentUtxos.excludedNote}'
@@ -1533,6 +1586,10 @@ class PaymentCoordinatorActor extends Actor {
       final sortedUtxos = List<BitcoinUtxo>.from(availableUtxos)
         ..sort((a, b) => b.satoshis.compareTo(a.satoshis));
       final selectedUtxo = sortedUtxos.first;
+
+      // ARC's policy rate, which the provisioned transactions pay (bead
+      // libspiffy-lph4), before anything is reserved.
+      final feeRate = await _askPolicyRate();
 
       // 2a. Reserve the selected UTXO to prevent double-spending
       reservationId = 'provision-$walletId-${DateTime.now().millisecondsSinceEpoch}';
@@ -1562,6 +1619,8 @@ class PaymentCoordinatorActor extends Actor {
                   signer: signer,
                   publicKeys: [publicKey],
                   params: msg.pluginParams,
+                  fundingInputs: [_fundingInput(selectedUtxo, publicKey)],
+                  feeRate: feeRate,
                 ))),
       );
       _log.info('[provision $walletId] built ${provisions.length} TXs '

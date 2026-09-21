@@ -1,6 +1,7 @@
 import 'package:dartsv/dartsv.dart';
 
 import '../models/bitcoin_utxo.dart';
+import '../models/fee_rate.dart';
 
 /// Callback for resolving raw transaction hex by txid from the wallet's
 /// append-only transaction log.
@@ -37,6 +38,49 @@ class PluginUnlockSpec {
   });
 }
 
+/// One funding UTXO as a plugin spends it (bead libspiffy-0nfk): the output
+/// over its real locking script, and the unlocking script the wallet writes
+/// for it.
+///
+/// A plugin spends it with
+/// `spendFromOutpointWithSigner(request.signer, input.outpoint, sequence, input.newUnlocker())`,
+/// whatever kind of output it is: P2PKH (`<sig> <key>`), P2PK (`<sig>`) or a
+/// bare m-of-n multisig the wallet can sign alone (`OP_0` and m signatures,
+/// which [PluginTransactionRequest.signer] supplies in one call). Rebuilding
+/// the locking script from the UTXO's address, as P2PKH, signs a non-P2PKH
+/// input over the wrong script: a transaction no node accepts.
+class PluginFundingInput {
+  /// The wallet UTXO.
+  final BitcoinUtxo utxo;
+
+  /// The script the output is locked by — the one its signatures cover.
+  final SVScript lockingScript;
+
+  /// The signatures its unlocking script carries: 1, or m for an m-of-n bare
+  /// multisig.
+  final int signatures;
+
+  final UnlockingScriptBuilder Function() _newUnlocker;
+
+  PluginFundingInput({
+    required this.utxo,
+    required this.lockingScript,
+    required this.signatures,
+    required UnlockingScriptBuilder Function() newUnlocker,
+  }) : _newUnlocker = newUnlocker;
+
+  /// The output, over its real locking script.
+  TransactionOutpoint get outpoint => TransactionOutpoint(utxo.txid, utxo.vout, utxo.satoshis, lockingScript);
+
+  /// A fresh unlocking-script builder for this input.
+  ///
+  /// A factory, not a shared instance: libspiffy runs the plugin's build
+  /// more than once while the wallet aggregate signs
+  /// (`AggregateSigningClient.buildWithSigner`), and a builder keeps the
+  /// signatures each pass adds to it.
+  UnlockingScriptBuilder newUnlocker() => _newUnlocker();
+}
+
 /// Request for a [TransactionBuilderPlugin] to build a complete transaction.
 ///
 /// libspiffy provides the funding UTXOs, a [TransactionSigner] for signing
@@ -70,12 +114,28 @@ class PluginTransactionRequest {
   /// from the wallet's append-only log instead of receiving external hex.
   final TransactionLookup? transactionLookup;
 
+  /// [fundingUtxos] as the plugin spends them: each over its real locking
+  /// script, with the unlocking script the wallet writes for it (bead
+  /// libspiffy-0nfk). A plugin that declares
+  /// [TransactionBuilderPlugin.spendsAnyWalletOutput] must spend its funding
+  /// through these; one that does not is funded from P2PKH outputs only.
+  final List<PluginFundingInput> fundingInputs;
+
+  /// ARC's published policy rate. Every transaction the wallet builds pays
+  /// it on its signed size, and a plugin's transactions are the wallet's
+  /// (bead libspiffy-lph4): there is no fee auction on this network, so
+  /// paying above it buys nothing, and below it is a transaction the network
+  /// may refuse.
+  final FeeRate feeRate;
+
   const PluginTransactionRequest({
     required this.fundingUtxos,
     required this.signer,
     required this.publicKeys,
     required this.params,
     this.transactionLookup,
+    required this.fundingInputs,
+    required this.feeRate,
   });
 }
 

@@ -176,6 +176,48 @@ void main() {
     expect((reply as BroadcastFailedMessage).willRetry, isFalse);
     expect(await _queued(isar), 0, reason: 'queued for a retry its caller owns');
   });
+
+  // Bead libspiffy-vr89: the retry pass runs off the mailbox, on the status
+  // timer, and writes the Isar store; stopping must wait for it.
+  test('vr89: stopping ARC work waits for a retry pass in flight', () async {
+    await Isar.initializeIsarCore(download: true);
+    final dir = await Directory.systemTemp.createTemp('arc_vr89_');
+    final isar = await Isar.open(duraq_isar.IsarStorage.requiredSchemas,
+        directory: dir.path, name: 'arc_vr89_${DateTime.now().microsecondsSinceEpoch}');
+    addTearDown(() async {
+      arc.release();
+      await isar.close(deleteFromDisk: true);
+      await dir.delete(recursive: true);
+    });
+    arc.unreachable = true;
+    final walletManager = await system.spawn('wallet-manager', () => _Silent());
+    arcActor = await system.spawn(
+      'arc',
+      () => ARCActor(
+        walletManager: walletManager,
+        storage: InMemoryWalletStorage(),
+        arcService: arc,
+        isar: isar,
+        statusCheckInterval: const Duration(milliseconds: 100),
+        failedCheckInterval: const Duration(minutes: 30),
+      ),
+    );
+    // Queued; the next retry pass resubmits it and is held there.
+    await submit(BroadcastTransactionMessage(_wallet, kFixtureTxHex, kFixtureTxid));
+    arc.hold();
+    await arc.held.future.timeout(const Duration(seconds: 5));
+
+    var stopped = false;
+    final stop = arcActor
+        .ask<ArcWorkStoppedMessage>(StopArcWorkMessage(), const Duration(seconds: 10))
+        .then((_) => stopped = true);
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    expect(stopped, isFalse, reason: 'answered while the retry pass was writing the store');
+
+    arc.release();
+    await stop;
+    expect(stopped, isTrue);
+  });
 }
 
 /// The durable retry queue ARCActor keeps in [isar], as it opens it.
@@ -190,8 +232,24 @@ class _SubmitArc extends ArcService {
   ArcSubmitResponse? answer;
   bool unreachable = false;
 
+  /// Submissions after [hold] wait for [release] (signalled in [held]).
+  Completer<void>? _gate;
+  final Completer<void> held = Completer<void>();
+
+  void hold() => _gate = Completer<void>();
+
+  void release() {
+    final gate = _gate;
+    if (gate != null && !gate.isCompleted) gate.complete();
+  }
+
   @override
   Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl}) async {
+    final gate = _gate;
+    if (gate != null) {
+      if (!held.isCompleted) held.complete();
+      await gate.future;
+    }
     if (unreachable) throw ArcException('ARC unavailable');
     return answer!;
   }

@@ -1476,6 +1476,10 @@ class LibSpiffyActorSystem {
   ///
   /// If the host application provided its own actor system, it remains
   /// the host's responsibility to shut it down.
+  /// How long shutdown waits for ARCActor's work in flight: an ARC request
+  /// times out well within it.
+  static const Duration _arcStopTimeout = Duration(seconds: 60);
+
   Future<void> shutdown() async {
     if (_lifecycle == _Lifecycle.shutDown) return;
     final wasStarted = _lifecycle != _Lifecycle.uninitialized;
@@ -1520,7 +1524,20 @@ class LibSpiffyActorSystem {
         }
       }
       
-      // 3. Shutdown actor system only if we own it. In a host-owned system,
+      // 3. Let ARCActor finish what it has in flight (bead libspiffy-vr89):
+      //    a submission that fails queues its retry in Isar, and the host
+      //    closes Isar after this returns. Before this step a write could
+      //    land in a closed store and crash the process.
+      final arc = _arcActor;
+      if (arc != null) {
+        try {
+          await arc.ask<ArcWorkStoppedMessage>(StopArcWorkMessage(), _arcStopTimeout);
+        } catch (e) {
+          Logger('LibSpiffyActorSystem').warning('ARCActor did not stop its work in time: $e');
+        }
+      }
+
+      // 4. Shutdown actor system only if we own it. In a host-owned system,
       //    stop every actor libspiffy spawned instead (A-M5), public facade
       //    first; the managers' postStop stops the aggregates they spawned.
       if (_ownsActorSystem) {
@@ -1552,7 +1569,7 @@ class LibSpiffyActorSystem {
         }
       }
       
-      // 4. Close storage based on backend type
+      // 5. Close storage based on backend type
       switch (_storageBackend) {
         case StorageBackend.postgres:
           // Close event store (includes connection pool)
@@ -1572,7 +1589,7 @@ class LibSpiffyActorSystem {
           break;
       }
       
-      // 5. Close event broadcasters and projection re-broadcast subscription
+      // 6. Close event broadcasters and projection re-broadcast subscription
       await _channelProjectionAppliedSub?.cancel();
       _channelProjectionAppliedSub = null;
       await _walletEventBroadcaster.close();

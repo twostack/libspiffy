@@ -302,6 +302,14 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### Shutdown waits for ARC work in flight
+
+- `LibSpiffyActorSystem.shutdown()` now returns only after `ARCActor` has
+  finished the submissions and retry pass it had in flight. Before, a host
+  that closed Isar right after shutdown could crash the process: a failed
+  submission queued its retry into the closed store.
+  `StopArcWorkMessage` / `ArcWorkStoppedMessage`.
+
 ### A channel's funding is retried by the channel, not also by ARC
 
 - `BroadcastTransactionMessage.retryOnFailure` (default `true`): whether

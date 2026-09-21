@@ -1128,6 +1128,29 @@ class BroadcastTransactionMessage implements Message {
   DateTime get timestamp => DateTime.now();
 }
 
+/// Asks ARCActor to finish the work it has in flight and start no more,
+/// before the system shuts down (bead libspiffy-vr89). Answered with
+/// [ArcWorkStoppedMessage] once nothing of ARCActor's can still write the
+/// retry queue's Isar store, so the host may close it.
+class StopArcWorkMessage implements Message {
+  @override
+  String get correlationId => 'stop-arc-work';
+  @override
+  Map<String, dynamic> get metadata => const {};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+/// ARCActor has no work in flight and will start none ([StopArcWorkMessage]).
+class ArcWorkStoppedMessage extends ActorResponse {
+  @override
+  bool get success => true;
+  @override
+  String? get error => null;
+}
+
 /// Request to broadcast BEEF data
 class BroadcastBEEFMessage implements Message {
   final String walletId;

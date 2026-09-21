@@ -142,6 +142,9 @@ class ARCActor extends Actor {
   static const Duration _minReconfirmWindow = Duration(minutes: 2);
 
   bool _scanInFlight = false;
+
+  /// Completes when the running status scan ends; null when none runs.
+  Completer<void>? _scanDone;
   bool _rescanRequested = false;
   bool _stopped = false;
   Timer? _headerDebounceTimer;
@@ -276,6 +279,11 @@ class ARCActor extends Actor {
           context.sender?.tell(await _broadcastDeferredPayment(msg));
           break;
 
+        case StopArcWorkMessage():
+          await _stopWork();
+          context.sender?.tell(ArcWorkStoppedMessage());
+          break;
+
         default:
       }
     } catch (e) {
@@ -356,6 +364,7 @@ class ARCActor extends Actor {
       return;
     }
     _scanInFlight = true;
+    final done = _scanDone = Completer<void>();
     try {
       do {
         _rescanRequested = false;
@@ -365,6 +374,8 @@ class ARCActor extends Actor {
       } while (_rescanRequested && !_stopped);
     } finally {
       _scanInFlight = false;
+      _scanDone = null;
+      done.complete();
     }
   }
 
@@ -524,8 +535,33 @@ class ARCActor extends Actor {
     return BroadcastSuccessMessage(txid, response.txid, networkStatus: status);
   }
 
+  /// Stops starting work and waits for the work in flight (bead
+  /// libspiffy-vr89): the host closes the retry queue's Isar store after
+  /// shutdown, and a write into a closed store crashes the process (SEGV in
+  /// libisar), not merely fails. Handlers run one at a time, so every
+  /// submission received before this is finished, its enqueue included; the
+  /// status scan runs off the mailbox on a timer, so it is awaited.
+  Future<void> _stopWork() async {
+    _stopped = true;
+    _statusCheckTimer?.cancel();
+    _headerDebounceTimer?.cancel();
+    for (final timer in _spendRechecks.values) {
+      timer.cancel();
+    }
+    _spendRechecks.clear();
+    await _scanDone?.future;
+    _log.info('ARC work stopped: nothing in flight, nothing more will be started');
+  }
+
   /// Enqueue a failed broadcast for durable retry; whether it was queued.
+  /// Nothing is queued once the actor is stopping: the store may be closed
+  /// next, and the caller is told `willRetry: false` rather than promised a
+  /// retry that could crash the process.
   Future<bool> _enqueueForRetry(String txid, String walletId, String rawTxHex) async {
+    if (_stopped) {
+      _log.warning('Not queueing transaction $txid for retry: ARCActor is stopping');
+      return false;
+    }
     if (_broadcastQueue == null) {
       _log.warning('Broadcast retry queue not available — transaction $txid will not be retried');
       return false;
@@ -557,8 +593,9 @@ class ARCActor extends Actor {
       final queueLength = await _broadcastQueue!.length;
       if (queueLength == 0) return;
 
-      // Process up to 5 entries per cycle to avoid blocking
-      for (int i = 0; i < 5; i++) {
+      // Process up to 5 entries per cycle to avoid blocking; none once
+      // stopping (the store may be closed next).
+      for (int i = 0; i < 5 && !_stopped; i++) {
         final processed = await _broadcastQueue!.processNext((data) async {
           final txid = data['txid'] as String;
           final rawTxHex = data['rawTxHex'] as String;

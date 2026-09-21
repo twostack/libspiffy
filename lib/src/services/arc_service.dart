@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+import '../models/fee_rate.dart';
 import '../utils/bump.dart';
 import '../utils/hex_utils.dart' as hex_utils;
 
@@ -167,21 +168,6 @@ class ArcTransactionResponse {
   }
 }
 
-/// `miningFee` of an ARC policy: [satoshis] per [bytes].
-class ArcFeeAmount {
-  final int satoshis;
-  final int bytes;
-
-  const ArcFeeAmount({required this.satoshis, required this.bytes});
-
-  /// Satoshis per 1000 bytes.
-  double get satoshisPerKb => bytes <= 0 ? 0 : satoshis * 1000 / bytes;
-
-  /// Fee for a transaction of [sizeBytes], rounded up.
-  BigInt feeFor(int sizeBytes) =>
-      bytes <= 0 ? BigInt.zero : BigInt.from((sizeBytes * satoshis + bytes - 1) ~/ bytes);
-}
-
 /// Policy returned by `GET /v1/policy`.
 ///
 /// Shape (ARC OpenAPI spec, bitcoin-sv/arc `pkg/api/arc.yaml`, schemas
@@ -210,7 +196,7 @@ class ArcPolicyResponse {
   final int maxScriptSize;
   final int maxTxSigopsCount;
   final int maxTxSize;
-  final ArcFeeAmount miningFee;
+  final FeeRate miningFee;
   final bool standardFormatSupported;
 
   const ArcPolicyResponse({
@@ -249,7 +235,7 @@ class ArcPolicyResponse {
       maxScriptSize: asInt(policy['maxscriptsizepolicy']) ?? 0,
       maxTxSigopsCount: asInt(policy['maxtxsigopscountspolicy']) ?? 0,
       maxTxSize: asInt(policy['maxtxsizepolicy']) ?? 0,
-      miningFee: ArcFeeAmount(satoshis: satoshis, bytes: bytes),
+      miningFee: FeeRate(satoshis: satoshis, bytes: bytes),
       standardFormatSupported: policy['standardFormatSupported'] == true,
     );
   }
@@ -546,26 +532,6 @@ class ArcService {
   /// [txids] - List of transaction IDs
   Future<List<ArcTransactionResponse>> getBatchTransactions(List<String> txids) =>
       Future.wait(txids.map(getTransaction));
-
-  /// Estimate fee for a transaction based on ARC policy
-  /// 
-  /// [inputCount] - Number of inputs in the transaction
-  /// [outputCount] - Number of outputs in the transaction
-  /// [dataSize] - Additional data size in bytes (for OP_RETURN outputs)
-  Future<BigInt> estimateFee({
-    required int inputCount, 
-    required int outputCount,
-    int dataSize = 0,
-  }) async {
-    final policy = await getPolicy();
-    
-    // Estimate transaction size (rough calculation)
-    // Input: ~148 bytes (P2PKH), Output: ~34 bytes (P2PKH), ~25 bytes base
-    final estimatedSize = 25 + (inputCount * 148) + (outputCount * 34) + dataSize;
-    
-    // ARC's miningFee: satoshis per bytes, rounded up
-    return policy.miningFee.feeFor(estimatedSize);
-  }
 
   /// Close the HTTP client
   void dispose() {

@@ -23,6 +23,7 @@ import 'package:libspiffy/src/storage/in_memory_wallet_storage.dart';
 
 import '../integration/isar_test_helper.dart';
 import 'in_memory_event_store.dart';
+import '../mocks/policy_rate_arc.dart';
 
 const _mnemonic = 'abandon abandon abandon abandon abandon abandon '
     'abandon abandon abandon abandon abandon about';
@@ -79,11 +80,13 @@ void main() {
       final probe = await actorSystem.spawn('probe', () => _Collector());
       final replies = _Collector();
       final replyTo = await actorSystem.spawn('reply-to', () => replies);
+      final arc = await actorSystem.spawn('arc', () => PolicyRateArc());
       final coordinator = await actorSystem.spawn(
         'payment-coordinator',
         () => PaymentCoordinatorActor(
           walletManager: probe,
           walletProjection: probe,
+          arcActor: arc,
           // Throws StorageException('Wallet not found') for any wallet. (The
           // in-memory backend itself returns empty for unknown wallets since
           // audit S-15, so the failure is injected.)

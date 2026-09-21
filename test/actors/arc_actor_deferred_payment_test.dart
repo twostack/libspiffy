@@ -24,6 +24,7 @@ import 'package:libspiffy/src/models/bitcoin_transaction.dart';
 import 'package:libspiffy/src/models/bitcoin_utxo.dart';
 import 'package:libspiffy/src/models/blockchain_data_models.dart';
 import 'package:libspiffy/src/models/deferred_payment.dart';
+import 'package:libspiffy/src/models/fee_rate.dart';
 import 'package:libspiffy/src/services/arc_service.dart';
 import 'package:libspiffy/src/services/blockchain_data_source.dart';
 import 'package:libspiffy/src/storage/in_memory_wallet_storage.dart';
@@ -153,27 +154,22 @@ void main() {
   tearDown(() => system.shutdown());
 
   // Bead libspiffy-87a: what a transaction the wallet builds pays. There is
-  // no replace-by-fee on this network, so the published policy fee is the
+  // no replace-by-fee on this network, so the published policy rate is the
   // whole fee; and a policy ARC could not be asked for is an error, not a
-  // licence to guess a rate.
-  group('policy fee quote (87a)', () {
-    Future<PolicyFeeQuote> quote({int inputs = 1, int outputs = 1}) => arcActor.ask<PolicyFeeQuote>(
-        EstimatePolicyFeeMessage(inputCount: inputs, outputCount: outputs), const Duration(seconds: 10));
+  // licence to guess a rate. Since bead libspiffy-bg7n ARC answers the rate
+  // and the wallet sizes the transaction (`TransactionSize`).
+  group('policy fee rate (87a)', () {
+    Future<FeeRateQuote> quote() => arcActor.ask<FeeRateQuote>(GetFeeRateMessage(), const Duration(seconds: 10));
 
-    test("ARC's published miningFee, rounded up, for the transaction's size", () async {
-      arc.miningFee = const ArcFeeAmount(satoshis: 50, bytes: 1000);
+    test("ARC's published miningFee", () async {
+      arc.miningFee = const FeeRate(satoshis: 50, bytes: 1000);
       await spawnActor();
 
-      final one = await quote();
+      final answer = await quote();
 
-      expect(one.success, isTrue, reason: one.error);
-      expect(one.sizeBytes, 148 + 34 + 10);
-      expect(one.fee, BigInt.from(10), reason: '192 bytes at 50 sat/1000 bytes, rounded up');
-      expect((one.feeSatoshis, one.feeBytes), (50, 1000));
-
-      final two = await quote(inputs: 2);
-      expect(two.sizeBytes, 2 * 148 + 34 + 10);
-      expect(two.fee, BigInt.from(17));
+      expect(answer.success, isTrue, reason: answer.error);
+      expect(answer.rate, const FeeRate(satoshis: 50, bytes: 1000));
+      expect(answer.rate!.feeFor(192), BigInt.from(10), reason: '192 bytes at 50 sat/1000 bytes, rounded up');
     });
 
     test('a policy ARC cannot be asked for is a failure, not a guessed rate', () async {
@@ -183,9 +179,8 @@ void main() {
       final answer = await quote();
 
       expect(answer.success, isFalse);
-      // Null, not zero, since bead libspiffy-8743: a quote nobody published
-      // has no fee, and zero is a fee a caller can build a transaction with.
-      expect(answer.fee, isNull);
+      // Null since bead libspiffy-8743: a rate nobody published is no rate.
+      expect(answer.rate, isNull);
       expect(answer.error, contains('policy'));
     });
   });
@@ -569,7 +564,7 @@ class _FakeArc extends ArcService {
 
   final Map<String, ArcTransactionResponse> statuses = {};
   final List<String> submitted = [];
-  ArcFeeAmount miningFee = const ArcFeeAmount(satoshis: 1, bytes: 1000);
+  FeeRate miningFee = const FeeRate(satoshis: 1, bytes: 1000);
   String submitStatus = 'SEEN_ON_NETWORK';
   List<String>? submitCompetingTxs;
   bool unreachable = false;

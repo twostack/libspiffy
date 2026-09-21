@@ -11,6 +11,7 @@ import 'package:spiffynode/spiffy_node.dart' show BlockHeader, Hash;
 import '../core/channel_events.dart';
 import '../core/wallet_commands.dart' as domain;
 import '../core/wallet_events.dart' as domain_events;
+import '../core/wallet/transaction_size.dart';
 import '../models/wallet_event.dart' as wallet_event_model;
 import '../models/bitcoin_transaction.dart';
 import '../models/bitcoin_utxo.dart';
@@ -781,7 +782,6 @@ class WalletCoordinatorActor extends Actor {
         outputs: cmd.outputs,
         changeAddress: cmd.changeAddress,
         paymentMetadata: cmd.paymentMetadata,
-        feeEstimateSats: cmd.feeEstimateSats,
         // Who we are paying, as the app names them (bead libspiffy-cq16).
         counterpartyMarker: cmd.counterpartyMarker,
       ),
@@ -1338,8 +1338,8 @@ class WalletCoordinatorActor extends Actor {
   /// this wallet, has the wallet journal it (the hold moves to it), and
   /// broadcasts it. One shot: there is no build-then-confirm step.
   ///
-  /// The fee is the standard ARC policy fee for the transaction's size
-  /// (ARCActor's fee estimate, from ARC's published `miningFee`). It is not
+  /// The fee is ARC's published policy rate on the transaction's signed
+  /// size ([TransactionSize]). It is not
   /// raised, and there is no caller override: this is Bitcoin SV, where a
   /// conflicting transaction cannot be displaced by paying more and the
   /// transaction that reached the network first is the one that is mined.
@@ -1388,24 +1388,29 @@ class WalletCoordinatorActor extends Actor {
       }
       final total = inputs.fold(BigInt.zero, (sum, u) => sum + u.satoshis);
 
-      // The standard policy fee for a transaction of this shape, from ARC's
-      // published policy. No bump, no override: there is no fee auction on
-      // this network, and no fee makes a conflicting transaction go away.
-      final wm.PolicyFeeQuote quote;
+      // ARC's published policy rate on the reclaim's signed size: the held
+      // inputs, each by the unlocking script the wallet writes for it, and
+      // one P2PKH output back to the wallet (bead libspiffy-bg7n). No bump,
+      // no override: there is no fee auction on this network, and no fee
+      // makes a conflicting transaction go away.
+      final wm.FeeRateQuote quote;
       try {
-        quote = await _arcActor.ask<wm.PolicyFeeQuote>(
-            wm.EstimatePolicyFeeMessage(inputCount: inputs.length, outputCount: 1), _deferredNetworkTimeout);
+        quote = await _arcActor.ask<wm.FeeRateQuote>(wm.GetFeeRateMessage(), _deferredNetworkTimeout);
       } catch (e) {
         _emitEvent(failure('The policy fee for the reclaim of ${cmd.txid} could not be quoted ($e); '
             'nothing was built or broadcast'));
         return;
       }
-      final fee = quote.fee;
-      if (!quote.success || fee == null || fee <= BigInt.zero) {
+      final rate = quote.rate;
+      if (!quote.success || rate == null) {
         _emitEvent(failure('The policy fee for the reclaim of ${cmd.txid} could not be quoted '
-            '(${quote.error ?? 'quoted as $fee'}); nothing was built or broadcast'));
+            '(${quote.error}); nothing was built or broadcast'));
         return;
       }
+      final fee = rate.feeFor(TransactionSize.of(
+        inputLockingScripts: [for (final utxo in inputs) utxo.scriptPubKey],
+        outputScriptBytes: const [TransactionSize.p2pkhScriptBytes],
+      ));
       final amount = total - fee;
       if (amount <= BigInt.zero) {
         _emitEvent(failure('The $total satoshi(s) deferred payment ${cmd.txid} holds do not cover the '

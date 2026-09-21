@@ -56,9 +56,11 @@ const _sources = <String, String?>{
 
 /// Collection fields the scan finds: 68 when 6r5w closed, 139 once a0fk
 /// added the outbound events and the internal messages, 140 with
-/// `BEEFValidationResultEvent.unreadableOutputs` (xggs). A new one must be
-/// frozen, and adding it must bump this number deliberately.
-const _expectedFields = 140;
+/// `BEEFValidationResultEvent.unreadableOutputs` (xggs), 139 again once
+/// `FeeQuoteMessage` went (bg7n: ARC answers a `FeeRate`, which holds no
+/// collection). A new one must be frozen, and adding it must bump this
+/// number deliberately.
+const _expectedFields = 139;
 
 final _classStart = RegExp(r'^(?:abstract |sealed )?class (\w+)', multiLine: true);
 final _field = RegExp(r'^  final ((?:List|Map|Set)<.*?>\??) (\w+);(?: *//.*)?$', multiLine: true);

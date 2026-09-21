@@ -1287,100 +1287,6 @@ class TransactionStatusMessage extends ActorResponse {
   DateTime get timestamp => DateTime.now();
 }
 
-/// Request fee quote
-class GetFeeQuoteMessage implements Message {
-  @override
-  String get correlationId => 'fee-quote-${DateTime.now().millisecondsSinceEpoch}';
-  @override
-  Map<String, dynamic> get metadata => {};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
-}
-
-/// Fee quote response.
-///
-/// [feeData] carries fee data and nothing else. Three of the four sites
-/// that send it used to put `{'error': ...}` inside the map, so a caller
-/// read a failure as if it were a quote (bead libspiffy-97zj); a failure is
-/// now [success] false and [error], and [feeData] is empty.
-class FeeQuoteMessage extends ActorResponse {
-  final Map<String, dynamic> feeData;
-
-  @override
-  final bool success;
-
-  @override
-  final String? error;
-
-  FeeQuoteMessage(Map<String, dynamic> feeData, {this.success = true, this.error})
-      : feeData = frozenPlainMap(feeData);
-
-  /// No quote could be obtained.
-  FeeQuoteMessage.failed(String this.error)
-      : feeData = const {},
-        success = false;
-
-  @override
-  String get correlationId => 'fee-quote-response-${DateTime.now().millisecondsSinceEpoch}';
-  @override
-  Map<String, dynamic> get metadata => {};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
-}
-
-/// Estimate fee for transaction
-class EstimateFeeMessage implements Message {
-  final int inputCount;
-  final int outputCount;
-
-  EstimateFeeMessage(this.inputCount, this.outputCount);
-
-  @override
-  String get correlationId => 'estimate-fee-${DateTime.now().millisecondsSinceEpoch}';
-  @override
-  Map<String, dynamic> get metadata => {};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
-}
-
-/// Fee estimate response.
-///
-/// [estimatedFee] is **null when no estimate could be made** ([success]
-/// false). It used to be `BigInt.zero`, a plausible-looking number standing
-/// in for an absence: a caller that did not know to distrust zero built a
-/// transaction with no fee (bead libspiffy-97zj).
-class FeeEstimateMessage extends ActorResponse {
-  final BigInt? estimatedFee;
-
-  @override
-  final bool success;
-
-  @override
-  final String? error;
-
-  FeeEstimateMessage(BigInt this.estimatedFee) : success = true, error = null;
-
-  /// No estimate could be made.
-  FeeEstimateMessage.failed(String this.error)
-      : estimatedFee = null,
-        success = false;
-
-  @override
-  String get correlationId => 'fee-estimate-response-${DateTime.now().millisecondsSinceEpoch}';
-  @override
-  Map<String, dynamic> get metadata => {};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
-}
-
 /// ARC accepted a submission: it holds the transaction.
 ///
 /// Not "the network has it": ARC answers a submission with the status the
@@ -1738,69 +1644,47 @@ class DeferredSpendReclaimedResponse extends ActorResponse {
       '${error != null ? ', error: $error' : ''})';
 }
 
-/// Asks ARCActor for the standard policy fee of a transaction with
-/// [inputCount] P2PKH inputs and [outputCount] P2PKH outputs, from ARC's
-/// published policy (`GET /v1/policy`, its `miningFee`). Replied with
-/// [PolicyFeeQuote].
+/// Asks ARCActor for ARC's published policy rate (`GET /v1/policy`, its
+/// `miningFee`). Replied with [FeeRateQuote].
 ///
-/// The one fee a transaction the wallet builds pays. This is Bitcoin SV:
-/// there is no replace-by-fee, so paying above the policy buys nothing —
-/// of two spends of one input the one that reached the network first is the
-/// one that is mined. Unlike [EstimateFeeMessage] it does not fall back to a
-/// guessed rate: a policy ARC could not be asked for is an error, and the
-/// caller decides what to do rather than building a transaction at a fee
-/// nobody quoted.
-class EstimatePolicyFeeMessage implements Message {
-  final int inputCount;
-  final int outputCount;
-
-  /// Extra bytes beyond the P2PKH inputs and outputs (OP_RETURN data, ...).
-  final int dataSize;
-
-  EstimatePolicyFeeMessage({required this.inputCount, required this.outputCount, this.dataSize = 0});
-
+/// The rate every transaction the wallet builds pays, on its signed size
+/// (`TransactionSize`, bead libspiffy-bg7n). This is Bitcoin SV: there is no
+/// replace-by-fee, so paying above the policy buys nothing — of two spends
+/// of one input the one that reached the network first is the one that is
+/// mined.
+class GetFeeRateMessage implements Message {
   @override
-  String get correlationId => 'policy-fee-$inputCount-$outputCount-${DateTime.now().microsecondsSinceEpoch}';
+  String get correlationId => 'fee-rate-${DateTime.now().microsecondsSinceEpoch}';
   @override
-  Map<String, dynamic> get metadata => {'inputCount': inputCount, 'outputCount': outputCount};
+  Map<String, dynamic> get metadata => const {};
   @override
   ActorRef? get replyTo => null;
   @override
   DateTime get timestamp => DateTime.now();
 }
 
-/// Reply to [EstimatePolicyFeeMessage]: ARC's policy fee for the transaction
-/// size asked about.
-class PolicyFeeQuote extends ActorResponse {
-  /// The fee in satoshis, rounded up.
-  ///
-  /// **Null when [success] is false** (bead libspiffy-8743): a quote ARC
-  /// could not be asked for has no fee, and a zero here is a number a
-  /// caller can build a transaction with — the same defect bead
-  /// libspiffy-97zj took out of `FeeEstimateMessage`.
-  final BigInt? fee;
-
-  /// The size the fee was quoted for.
-  final int sizeBytes;
-
-  /// ARC's published `miningFee`: [feeSatoshis] per [feeBytes].
-  final int feeSatoshis;
-  final int feeBytes;
+/// Reply to [GetFeeRateMessage].
+class FeeRateQuote extends ActorResponse {
+  /// ARC's published rate. **Null when [success] is false**: a rate ARC
+  /// could not be asked for is not replaced by one nobody published
+  /// (beads libspiffy-8743, libspiffy-97zj).
+  final FeeRate? rate;
   @override
   final bool success;
   @override
   final String? error;
 
-  PolicyFeeQuote({
-    this.fee,
-    required this.sizeBytes,
-    required this.success,
-    this.feeSatoshis = 0,
-    this.feeBytes = 0,
-    this.error,
-  }) : super(metadata: {'fee': fee?.toString(), 'sizeBytes': sizeBytes, 'success': success});
+  FeeRateQuote(FeeRate this.rate)
+      : success = true,
+        error = null,
+        super(metadata: {'rate': rate.toString()});
+
+  /// The rate could not be read.
+  FeeRateQuote.failed(String this.error)
+      : rate = null,
+        success = false,
+        super(metadata: {'error': error});
 
   @override
-  String toString() => 'PolicyFeeQuote($fee sat for $sizeBytes bytes at $feeSatoshis/$feeBytes, '
-      'success: $success${error != null ? ', error: $error' : ''})';
+  String toString() => success ? 'FeeRateQuote($rate)' : 'FeeRateQuote(failed: $error)';
 }

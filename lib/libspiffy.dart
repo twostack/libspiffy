@@ -11,6 +11,7 @@ export 'src/models/wallet_state.dart';          // Write model for wallet aggreg
 export 'src/models/wallet_type.dart';           // Wallet type enum (HD, WIF, XPRIV)
 export 'src/models/wallet_read_model.dart';     // Read model for wallet queries (CQRS)
 export 'src/models/bitcoin_transaction.dart';   // Transaction tracking
+export 'src/models/fee_rate.dart';              // ARC's policy fee rate every transaction pays
 export 'src/models/invoice_state.dart';         // Write model for invoice aggregate
 export 'src/models/invoice_read_model.dart';    // Read model for invoice queries (CQRS)
 export 'src/models/address_metadata.dart';      // Address metadata with script type support

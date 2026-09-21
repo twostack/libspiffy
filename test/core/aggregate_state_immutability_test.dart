@@ -865,7 +865,6 @@ void main() {
       final spendable = <Map<String, dynamic>>[
         {'txid': 'aa' * 32, 'vout': 0},
       ];
-      final feeData = <String, dynamic>{'mining': {'satoshis': 1, 'bytes': 1000}};
       final walletIds = ['w1'];
       final result = wm.SPVValidationResult(
         txid: 'aa' * 32,
@@ -873,22 +872,17 @@ void main() {
         spendableUTXOs: spendable,
         spentUTXOs: const [],
       );
-      final quote = wm.FeeQuoteMessage(feeData);
       final list = wm.WalletListMessage(walletIds);
 
       spendable.first['vout'] = 7;
       spendable.add({'late': true});
-      (feeData['mining'] as Map)['satoshis'] = 0;
       walletIds.add('late');
 
       expect(result.spendableUTXOs, hasLength(1));
       expect(result.spendableUTXOs.single['vout'], 0);
-      expect((quote.feeData['mining'] as Map)['satoshis'], 1,
-          reason: 'a fee rate a sender changed after the reply was sent');
       expect(list.walletIds, ['w1']);
       _expectAllRejected({
         'SPVValidationResult.spendableUTXOs': () => result.spendableUTXOs.clear(),
-        'FeeQuoteMessage.feeData': () => quote.feeData['mining'] = null,
         'WalletListMessage.walletIds': () => list.walletIds.add('x'),
       });
     });

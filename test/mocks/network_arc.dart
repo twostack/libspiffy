@@ -1,6 +1,8 @@
 import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:libspiffy/src/services/arc_service.dart';
 
+import 'offline_arc.dart';
+
 /// One ARC service shared by every party in a test (no network).
 ///
 /// A submitted transaction is SEEN_ON_NETWORK from then on; a transaction
@@ -14,9 +16,7 @@ import 'package:libspiffy/src/services/arc_service.dart';
 /// the one the network keeps; the later one is rejected as a double spend,
 /// whatever either pays. There is no replace-by-fee, so no fee this mock is
 /// told about can change that.
-class NetworkArc extends ArcService {
-  NetworkArc() : super(baseUrl: 'fake://arc');
-
+class NetworkArc extends OfflineArc {
   /// Txids of the transactions submitted so far.
   final Set<String> seen = {};
 
@@ -27,9 +27,6 @@ class NetworkArc extends ArcService {
   /// ARC's `competingTxs` for a txid, answered with its status override.
   final Map<String, List<String>> competingTxs = {};
 
-  /// The published mining fee, as ARC's `GET /v1/policy` returns it.
-  ArcFeeAmount miningFee = const ArcFeeAmount(satoshis: 50, bytes: 1000);
-
   /// Reject a submission spending an outpoint a transaction already
   /// submitted spends. Set false for a test that submits conflicting
   /// transactions deliberately.
@@ -37,16 +34,6 @@ class NetworkArc extends ArcService {
 
   /// The transaction each spent outpoint (`txid:vout`) went to.
   final Map<String, String> spentOutpoints = {};
-
-  @override
-  Future<ArcPolicyResponse> getPolicy() async => ArcPolicyResponse(
-        timestamp: DateTime.now().toIso8601String(),
-        maxScriptSize: 500000,
-        maxTxSigopsCount: 4294967295,
-        maxTxSize: 10000000,
-        miningFee: miningFee,
-        standardFormatSupported: true,
-      );
 
   @override
   Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl}) async {

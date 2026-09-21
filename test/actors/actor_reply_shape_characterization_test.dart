@@ -35,6 +35,7 @@ import 'package:libspiffy/src/actors/payment_channel_messages.dart';
 import 'package:libspiffy/src/actors/payment_messages.dart';
 import 'package:libspiffy/src/actors/spv_messages.dart';
 import 'package:libspiffy/src/actors/wallet_messages.dart';
+import 'package:libspiffy/src/models/fee_rate.dart';
 
 /// One reply, built for the failure path ([ok] false, error 'boom') or the
 /// success path.
@@ -88,11 +89,8 @@ final Map<String, ReplyFactory> replies = {
   'TransactionStatusMessage': (ok) => ok
       ? TransactionStatusMessage(txid: 't', status: 'confirmed', blockHeight: 9)
       : TransactionStatusMessage.failed(txid: 't', error: 'boom'),
-  'FeeQuoteMessage': (ok) => ok
-      ? FeeQuoteMessage(const {'mining': {'satoshis': 1, 'bytes': 1000}})
-      : FeeQuoteMessage.failed('boom'),
-  'FeeEstimateMessage': (ok) =>
-      ok ? FeeEstimateMessage(BigInt.from(120)) : FeeEstimateMessage.failed('boom'),
+  'FeeRateQuote': (ok) =>
+      ok ? FeeRateQuote(const FeeRate(satoshis: 1, bytes: 1000)) : FeeRateQuote.failed('boom'),
   'WalletListMessage': (ok) =>
       WalletListMessage(const ['w'], success: ok, error: _err(ok)),
   'SPVValidationResult': (ok) =>

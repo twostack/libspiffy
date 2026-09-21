@@ -26,6 +26,7 @@ import 'package:libspiffy/internals.dart' as internal;
 
 import 'isar_test_helper.dart';
 import 'p2p_test_helpers.dart';
+import '../mocks/network_arc.dart';
 
 /// Filter a coordinator event stream by type
 Stream<T> ofType<T extends CoordinatorEvent>(Stream<CoordinatorEvent> stream) {
@@ -60,6 +61,9 @@ void main() {
   });
 
   setUp(() async {
+    // One ARC for both parties, with no network behind it.
+    final network = NetworkArc();
+
     // --- Alice ---
     aliceDir = await Directory.systemTemp.createTemp('alice_coord_');
     aliceActorSystem = LocalActorSystem(ActorSystemConfig());
@@ -74,6 +78,7 @@ void main() {
       isar: aliceIsar,
       dataDirectory: aliceDir.path,
       enableP2P: false,
+      arcService: network,
       secureStorage: InMemorySecureStorage(),
     );
     await setupTestHeaders(aliceSystem.walletStorage as IsarWalletStorage);
@@ -94,6 +99,7 @@ void main() {
       isar: bobIsar,
       dataDirectory: bobDir.path,
       enableP2P: false,
+      arcService: network,
       secureStorage: InMemorySecureStorage(),
     );
     await setupTestHeaders(bobSystem.walletStorage as IsarWalletStorage);

@@ -302,6 +302,32 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### A payment pays ARC's policy rate on its signed size — breaking
+
+- **Every payment underpaid.** Its fee was dartsv's estimate, which sizes a
+  transaction as it is before signing and leaves out each input's outpoint
+  and sequence number, so a payment paid 6 satoshis whatever its size — a
+  226-byte one-input payment and a 521-byte three-input payment alike. The
+  fee is now ARC's published policy rate on the signed size, with each
+  input sized by the unlocking script the wallet writes for it (P2PKH, P2PK,
+  or m signatures for an m-of-n bare multisig).
+- **A payment asks ARC for the rate first.** If the policy cannot be read,
+  the payment is refused and nothing is reserved; no rate is invented. A
+  wallet with no ARC configured cannot build a payment.
+- UTXO selection counts the real fee. It used to add a flat 1,000
+  satoshis, which refused payments a UTXO covered and under-selected when
+  the fee was larger. `PaymentReadyEvent.changeAmount` is the change output
+  the transaction has; it was `inputs - amount - 1000`.
+- The deferred-payment reclaim sizes its held inputs the same way; a
+  bare-multisig input was sized as P2PKH.
+- **`PayInvoiceCommand.feeEstimateSats` is removed.** It only changed the
+  reported change amount.
+- `FeeRate` (exported) replaces `ArcFeeAmount`; `ArcPolicyResponse.miningFee`
+  is a `FeeRate`. `ArcService.estimateFee` is removed: it sized every input
+  as P2PKH. ARCActor answers one fee question, `GetFeeRateMessage` →
+  `FeeRateQuote`, in place of `GetFeeQuoteMessage`, `EstimateFeeMessage` and
+  `EstimatePolicyFeeMessage`. `PaymentCoordinatorActor` takes `arcActor:`.
+
 ### Shutdown waits for ARC work in flight
 
 - `LibSpiffyActorSystem.shutdown()` now returns only after `ARCActor` has

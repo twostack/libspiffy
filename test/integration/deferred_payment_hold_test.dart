@@ -29,6 +29,7 @@ import 'package:test/test.dart';
 
 import 'isar_test_helper.dart';
 import 'p2p_test_helpers.dart';
+import '../mocks/offline_arc.dart';
 
 const _fundingTxid = 'a05924fcc63712d3e4b94b0c88baad234c2c8ad3d369704f53765e21a53a2101';
 const _fundingKey = '$_fundingTxid:1';
@@ -361,7 +362,7 @@ void main() {
 
 /// ARC without a network: a txid in [status] reports that `txStatus`; any
 /// other is unknown (404); [unreachable] fails every request.
-class _ScriptedArc extends ArcService {
+class _ScriptedArc extends OfflineArc {
   _ScriptedArc() : super(baseUrl: 'fake://arc');
 
   final Map<String, String> status = {};

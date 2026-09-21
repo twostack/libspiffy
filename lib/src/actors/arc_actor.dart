@@ -247,16 +247,8 @@ class ARCActor extends Actor {
           await _handleRetrieveMerkleProof(msg);
           break;
 
-        case final GetFeeQuoteMessage msg:
-          await _handleGetFeeQuote(msg);
-          break;
-
-        case final EstimateFeeMessage msg:
-          await _handleEstimateFee(msg);
-          break;
-
-        case final EstimatePolicyFeeMessage msg:
-          context.sender?.tell(await _quotePolicyFee(msg));
+        case GetFeeRateMessage():
+          context.sender?.tell(await _quoteFeeRate());
           break;
 
         case final CheckStoragePendingUTXOsMessage msg:
@@ -738,90 +730,28 @@ class ARCActor extends Actor {
     }
   }
 
-  /// Handle fee quote requests
-  Future<void> _handleGetFeeQuote(GetFeeQuoteMessage msg) async {
-
-    if (_arcService == null) {
-      context.sender?.tell(FeeQuoteMessage.failed('ARC service not available'));
-      return;
-    }
-
-    try {
-      // Get policy from ARC service (includes fee rates)
-      final policy = await _arcService!.getPolicy();
-
-      // ARC publishes a single miningFee {satoshis, bytes}; it serves as
-      // both the mining and the relay rate.
-      final feeData = {
-        'mining': {
-          'satoshis': policy.miningFee.satoshis,
-          'bytes': policy.miningFee.bytes,
-        },
-        'relay': {
-          'satoshis': policy.miningFee.satoshis,
-          'bytes': policy.miningFee.bytes,
-        },
-        'timestamp': DateTime.now().toIso8601String(),
-      };
-
-      context.sender?.tell(FeeQuoteMessage(feeData));
-
-    } catch (e) {
-      context.sender?.tell(FeeQuoteMessage.failed(e.toString()));
-    }
-  }
-
-  /// Handle fee estimation requests.
+  /// ARC's published policy rate ([GetFeeRateMessage], bead
+  /// libspiffy-bg7n): the rate every transaction the wallet builds pays on
+  /// its signed size.
   ///
-  /// A policy ARC could not be asked for is answered as a failure, exactly
-  /// as [_quotePolicyFee] answers one (bead libspiffy-8743). This used to
-  /// catch the policy failure itself and fall back to an invented
-  /// 1 sat/1000 bytes, so a caller was told **success** with a rate nothing
-  /// published and could build a transaction at a fee no miner had quoted —
-  /// and the honest failure reply bead libspiffy-97zj added was unreachable.
-  /// A rate nobody published is not an estimate (spv-understanding.md: the
-  /// library must not manufacture state it cannot evidence).
-  Future<void> _handleEstimateFee(EstimateFeeMessage msg) async {
-    if (_arcService == null) {
-      context.sender?.tell(FeeEstimateMessage.failed('ARC service not available'));
-      return;
-    }
-    try {
-      // Estimate transaction size (P2PKH inputs: ~148 bytes, outputs: ~34 bytes, overhead: ~10 bytes)
-      final estimatedSize = (msg.inputCount * 148) + (msg.outputCount * 34) + 10;
-      final fee = (await _arcService!.getPolicy()).miningFee;
-
-      // Rounded up: a truncated fee undercuts the policy.
-      context.sender?.tell(FeeEstimateMessage(fee.feeFor(estimatedSize)));
-    } catch (e) {
-      context.sender?.tell(FeeEstimateMessage.failed("ARC's policy could not be read: $e"));
-    }
-  }
-
-  /// ARC's policy fee for a transaction of [msg]'s shape (bead
-  /// libspiffy-87a). Unlike [_handleEstimateFee] it does not fall back to a
-  /// guessed rate: a policy ARC could not be asked for is answered as a
-  /// failure, so a caller never builds a transaction at a fee nobody quoted.
+  /// There is no fallback. A policy ARC could not be asked for is answered
+  /// as a failure (beads libspiffy-87a, libspiffy-8743), so a caller never
+  /// builds a transaction at a rate nobody published — the fee estimate
+  /// this replaces once fell back to an invented 1 sat/1000 bytes and
+  /// reported success. And there is no replace-by-fee on this network, so
+  /// nothing is ever added to the rate to outbid a conflicting transaction.
   ///
-  /// The policy fee is the whole fee. There is no replace-by-fee on this
-  /// network, so nothing is ever added to outbid a conflicting transaction.
-  Future<PolicyFeeQuote> _quotePolicyFee(EstimatePolicyFeeMessage msg) async {
-    final sizeBytes = (msg.inputCount * 148) + (msg.outputCount * 34) + 10 + msg.dataSize;
-    if (_arcService == null) {
-      return PolicyFeeQuote(sizeBytes: sizeBytes, success: false, error: 'ARC service not available');
-    }
+  /// This is the one fee answer ARCActor gives. It used to give three — a
+  /// map of "mining" and "relay" rates, a fee for so many P2PKH inputs and
+  /// outputs, and a policy fee for the same — two of them sizing every input
+  /// as P2PKH whatever it spent. Sizing is the wallet's, from the scripts
+  /// the transaction really has (`TransactionSize`); ARC's is the rate.
+  Future<FeeRateQuote> _quoteFeeRate() async {
+    if (_arcService == null) return FeeRateQuote.failed('ARC service not available');
     try {
-      final fee = (await _arcService!.getPolicy()).miningFee;
-      return PolicyFeeQuote(
-        fee: fee.feeFor(sizeBytes),
-        sizeBytes: sizeBytes,
-        success: true,
-        feeSatoshis: fee.satoshis,
-        feeBytes: fee.bytes,
-      );
+      return FeeRateQuote((await _arcService!.getPolicy()).miningFee);
     } catch (e) {
-      return PolicyFeeQuote(
-          sizeBytes: sizeBytes, success: false, error: "ARC's policy could not be read: $e");
+      return FeeRateQuote.failed("ARC's policy could not be read: $e");
     }
   }
 
@@ -1845,16 +1775,8 @@ class ARCActor extends Actor {
           error: error,
         ));
         break;
-      case GetFeeQuoteMessage():
-        context.sender?.tell(FeeQuoteMessage.failed(error));
-        break;
-      case EstimateFeeMessage():
-        context.sender?.tell(FeeEstimateMessage.failed(error));
-      case final EstimatePolicyFeeMessage msg:
-        context.sender?.tell(PolicyFeeQuote(
-            sizeBytes: (msg.inputCount * 148) + (msg.outputCount * 34) + 10 + msg.dataSize,
-            success: false,
-            error: error));
+      case GetFeeRateMessage():
+        context.sender?.tell(FeeRateQuote.failed(error));
         break;
     }
   }

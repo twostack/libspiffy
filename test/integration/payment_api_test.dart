@@ -15,6 +15,7 @@ import 'package:dartsv/dartsv.dart';
 import 'p2p_test_helpers.dart';
 import 'isar_test_helper.dart';
 import '../spv/testnet_proof_fixture.dart';
+import '../mocks/network_arc.dart';
 
 /// Integration tests for PaymentCoordinatorActor and PayInvoiceMessage API
 /// 
@@ -278,6 +279,7 @@ void main() {
       isar: isar,
       dataDirectory: testDir.path,
       enableP2P: false,
+      arcService: NetworkArc(),
       blockchainDataSource: mockDataSource,
     );
 

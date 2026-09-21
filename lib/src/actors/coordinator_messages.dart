@@ -213,7 +213,6 @@ class PayInvoiceCommand implements Message {
   final List<InvoiceOutputSpec>? outputs;
   final String? changeAddress;
   final Map<String, dynamic>? paymentMetadata;
-  final BigInt? feeEstimateSats;
 
   /// The app's opaque marker for the counterparty of this payment (bead
   /// libspiffy-cq16, spv-understanding.md "Core Data Management"
@@ -232,7 +231,6 @@ class PayInvoiceCommand implements Message {
     List<InvoiceOutputSpec>? outputs,
     this.changeAddress,
     Map<String, dynamic>? paymentMetadata,
-    this.feeEstimateSats,
     this.counterpartyMarker,
   })  : addresses = frozenList(addresses),
         outputs = frozenOutputSpecsOrNull(outputs),

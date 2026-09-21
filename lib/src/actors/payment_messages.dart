@@ -31,8 +31,6 @@ class PayInvoiceMessage implements Message {
   /// Optional payment metadata for correlation
   final Map<String, dynamic>? paymentMetadata;
 
-  /// Fee estimate in satoshis (defaults to 1000 sats if not specified)
-  final BigInt? feeEstimateSats;
 
   /// The app's opaque marker for the payee (bead libspiffy-cq16), journaled
   /// with the transaction this payment records. Never interpreted.
@@ -46,7 +44,6 @@ class PayInvoiceMessage implements Message {
     List<InvoiceOutputSpec>? outputs,
     this.changeAddress,
     Map<String, dynamic>? paymentMetadata,
-    this.feeEstimateSats,
     this.counterpartyMarker,
   })  : addresses = frozenList(addresses),
         outputs = frozenOutputSpecsOrNull(outputs),

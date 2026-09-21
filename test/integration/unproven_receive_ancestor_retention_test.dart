@@ -40,6 +40,7 @@ import '../spv/regtest_chain_builder.dart';
 import 'isar_test_helper.dart';
 import 'p2p_test_helpers.dart';
 import 'receive_helpers.dart';
+import '../mocks/offline_arc.dart';
 
 void main() {
   final genesis = NetworkParams.regtest.genesisHeader;
@@ -388,7 +389,7 @@ class _Sink extends Actor {
 }
 
 /// ARC that answers from [responses] and knows no other transaction.
-class _FakeArc extends ArcService {
+class _FakeArc extends OfflineArc {
   _FakeArc() : super(baseUrl: 'fake://arc');
 
   /// A payment we receive is ours to submit (bead libspiffy-xggs). ARC holds

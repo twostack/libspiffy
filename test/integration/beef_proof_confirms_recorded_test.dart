@@ -41,6 +41,7 @@ import '../spv/regtest_chain_builder.dart';
 import 'isar_test_helper.dart';
 import 'receive_helpers.dart';
 import 'p2p_test_helpers.dart';
+import '../mocks/offline_arc.dart';
 
 void main() {
   final genesis = NetworkParams.regtest.genesisHeader;
@@ -549,7 +550,7 @@ Future<void> _until(Future<bool> Function() condition, String what,
 
 /// ARC that knows no transaction at all: every confirmation in these tests
 /// comes from a BEEF.
-class _FakeArc extends ArcService {
+class _FakeArc extends OfflineArc {
   _FakeArc() : super(baseUrl: 'fake://arc');
 
   /// A payment we receive is ours to submit (bead libspiffy-xggs). ARC holds

@@ -22,6 +22,7 @@ import 'package:libspiffy/src/storage/isar_wallet_storage.dart';
 import 'package:libspiffy/src/utils/beef.dart';
 import 'isar_test_helper.dart';
 import 'p2p_test_helpers.dart';
+import '../mocks/network_arc.dart';
 
 void main() {
   group('OP_RETURN Payment via External API', () {
@@ -54,6 +55,7 @@ void main() {
         isar: isar,
         dataDirectory: testDir.path,
         enableP2P: false,
+        arcService: NetworkArc(),
       );
 
       await setupTestHeaders(libSpiffy.walletStorage as IsarWalletStorage);

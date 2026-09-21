@@ -11,11 +11,11 @@ import '../core/wallet_events.dart' as wevent;
 
 import '../models/bitcoin_utxo.dart';
 import '../models/bitcoin_transaction.dart';
+import '../models/fee_rate.dart';
 import '../models/invoice_output_spec.dart';
 import '../plugin/plugin_registry.dart';
 import '../plugin/plugin_types.dart';
 import '../plugin/transaction_builder_plugin.dart';
-import '../plugin/provisioned_transaction.dart';
 import '../storage/read_model_storage.dart';
 import '../storage/transaction_row_rules.dart';
 import '../storage/secure_storage.dart';
@@ -24,6 +24,7 @@ import '../services/watch_only_funds.dart';
 import '../utils/beef.dart';
 import '../core/wallet_commands.dart';
 import '../core/wallet_output_ownership.dart';
+import '../core/wallet/transaction_size.dart';
 import '../services/transaction/builder/op_return_lockbuilder.dart';
 import 'aggregate_signing_client.dart';
 import 'payment_messages.dart';
@@ -43,6 +44,10 @@ class PaymentCoordinatorActor extends Actor {
   final ReadModelStorage _storage;
   final ActorRef _walletManager;
   final ActorRef _walletProjection;
+
+  /// ARCActor, asked for the policy rate every payment's fee is paid at
+  /// (bead libspiffy-bg7n).
+  final ActorRef _arcActor;
   late final AncestorChainService _ancestorService;
 
   /// Default time we wait for the wallet projection to apply a recorded
@@ -61,21 +66,28 @@ class PaymentCoordinatorActor extends Actor {
   /// request (whole transaction, one input, or a public-key probe).
   final Duration _signingReplyTimeout;
 
+  /// How long to wait for ARCActor's policy rate.
+  final Duration _feeRateReplyTimeout;
+
   /// [secureStorage] is no longer used: every signature is produced by the
   /// wallet aggregate, which alone reads key material (audit A-H8).
   PaymentCoordinatorActor({
     required ActorRef walletManager,
     required ActorRef walletProjection,
+    required ActorRef arcActor,
     required ReadModelStorage storage,
     @Deprecated('Unused: signing is delegated to the wallet aggregate')
     SecureStorage? secureStorage,
     Duration reservationReplyTimeout = const Duration(seconds: 10),
     Duration signingReplyTimeout = const Duration(seconds: 20),
+    Duration feeRateReplyTimeout = const Duration(seconds: 30),
   })  : _storage = storage,
         _walletManager = walletManager,
         _walletProjection = walletProjection,
+        _arcActor = arcActor,
         _reservationReplyTimeout = reservationReplyTimeout,
-        _signingReplyTimeout = signingReplyTimeout {
+        _signingReplyTimeout = signingReplyTimeout,
+        _feeRateReplyTimeout = feeRateReplyTimeout {
     _ancestorService = AncestorChainService(storage: storage);
   }
 
@@ -149,20 +161,53 @@ class PaymentCoordinatorActor extends Actor {
       return;
     }
 
-    // 2. Select UTXOs for payment
-    final selectedUtxos = _selectUTXOs(utxos, effectiveAmount);
-    if (selectedUtxos == null) {
+    // 2. ARC's published policy rate. The fee is that rate on the signed
+    // size (bead libspiffy-bg7n); a payment the rate cannot be read for is
+    // refused before anything is reserved, not built at a rate nobody
+    // published.
+    final rate = await _policyRate(msg.invoiceId, originalSender);
+    if (rate == null) return;
+
+    // 3. The outputs the payment creates, whose sizes are part of its fee. A
+    // TransactionBuilderPlugin builds its own outputs; its funding is sized
+    // by the inputs alone.
+    final List<_PaymentOutput> paymentOutputs;
+    final BigInt amount;
+    if (_isPluginTransaction(msg)) {
+      paymentOutputs = const [];
+      amount = effectiveAmount;
+    } else {
+      try {
+        paymentOutputs = _paymentOutputs(msg);
+      } on _PluginCallFailure {
+        rethrow;
+      } catch (e) {
+        _log.warning('[pay ${msg.invoiceId}] cannot build its outputs: $e');
+        _sendError(msg.invoiceId, 'Failed to build payment transaction: $e', sender: originalSender);
+        return;
+      }
+      amount = paymentOutputs.fold(BigInt.zero, (sum, output) => sum + output.amount);
+    }
+    final outputScriptBytes = [for (final output in paymentOutputs) output.scriptBytes];
+
+    // 4. Select UTXOs covering the amount and the fee of the transaction
+    // they make.
+    final selection = _selectUTXOs(utxos, amount, outputScriptBytes, rate);
+    if (selection == null) {
       final totalBalance = utxos.fold<BigInt>(
         BigInt.zero,
         (sum, utxo) => sum + utxo.satoshis,
       );
       _sendError(
         msg.invoiceId,
-        'Insufficient funds: need $effectiveAmount satoshis, have $totalBalance$excludedNote',
+        'Insufficient funds: need $amount satoshis and the fee of the transaction '
+        '(${_feeFor(rate, utxos, outputScriptBytes)} satoshis at ARC\'s policy rate of $rate spending all '
+        '${utxos.length} UTXO(s)), have $totalBalance$excludedNote',
         sender: originalSender,
       );
       return;
     }
+    final (:selectedUtxos, :fee) = selection;
 
     // 2a. Reserve selected UTXOs to prevent double-spending
     final reservationId = 'payment-${msg.invoiceId}-${DateTime.now().millisecondsSinceEpoch}';
@@ -182,6 +227,8 @@ class PaymentCoordinatorActor extends Actor {
       paymentDelivered = await _payWithReservedUtxos(
         msg: msg,
         selectedUtxos: selectedUtxos,
+        paymentOutputs: paymentOutputs,
+        fee: fee,
         originalSender: originalSender,
         totalSw: totalSw,
       );
@@ -214,7 +261,8 @@ class PaymentCoordinatorActor extends Actor {
   }
 
   /// Builds, signs, records and packages a payment funded by
-  /// [selectedUtxos], which the caller has reserved.
+  /// [selectedUtxos], which the caller has reserved, creating
+  /// [paymentOutputs] and paying [fee].
   ///
   /// Returns true once a successful [BEEFPaymentResponse] has been sent.
   /// Returns false after reporting a failure to [originalSender]; throws on
@@ -222,12 +270,12 @@ class PaymentCoordinatorActor extends Actor {
   Future<bool> _payWithReservedUtxos({
     required PayInvoiceMessage msg,
     required List<BitcoinUtxo> selectedUtxos,
+    required List<_PaymentOutput> paymentOutputs,
+    required BigInt fee,
     required ActorRef? originalSender,
     required Stopwatch totalSw,
   }) async {
     final effectiveAmount = msg.effectiveAmount;
-    // Fee estimate from message or default
-    final feeEstimate = msg.feeEstimateSats ?? BigInt.from(1000);
     final signing = _signingClient();
 
     // Check if this payment will be handled by a TransactionBuilderPlugin.
@@ -272,8 +320,8 @@ class PaymentCoordinatorActor extends Actor {
         await _buildPaymentTransactionWithOutputs(
       selectedUtxos: selectedUtxos,
       outputs: msg.outputs,
-      legacyAddresses: msg.addresses,
-      legacyAmount: msg.amount,
+      paymentOutputs: paymentOutputs,
+      fee: fee,
       changeAddress: msg.changeAddress,
       walletId: msg.walletId,
       signing: signing,
@@ -479,11 +527,10 @@ class PaymentCoordinatorActor extends Actor {
 
         _log.info('[pay ${msg.invoiceId}] createBEEF: ${beefSw.elapsedMilliseconds}ms');
 
-        final totalInput = selectedUtxos.fold<BigInt>(
-          BigInt.zero,
-          (sum, utxo) => sum + utxo.satoshis,
-        );
-        final changeAmount = totalInput - effectiveAmount - feeEstimate;
+        // What the transaction pays back to the wallet: everything it
+        // creates beyond the payment's own outputs.
+        final changeAmount = signedPaymentTx.outputValue -
+            paymentOutputs.fold<BigInt>(BigInt.zero, (sum, output) => sum + output.amount);
 
         _log.info('[pay ${msg.invoiceId}] TOTAL: ${totalSw.elapsedMilliseconds}ms');
 
@@ -493,7 +540,7 @@ class PaymentCoordinatorActor extends Actor {
             beefBytes: beef,
             txid: signedPaymentTx.txid,
             amountPaid: effectiveAmount,
-            changeAmount: changeAmount > BigInt.zero ? changeAmount : BigInt.zero,
+            changeAmount: changeAmount,
             ancestorCount: ancestorResult.ancestorTransactions.length,
             success: true,
             spentUtxoKeys: spentUtxoKeys,
@@ -583,26 +630,125 @@ class PaymentCoordinatorActor extends Actor {
 
   // Ancestor collection methods removed - now using AncestorChainService
 
-  /// Select UTXOs to fund payment (greedy largest-first strategy)
-  List<BitcoinUtxo>? _selectUTXOs(List<BitcoinUtxo> utxos, BigInt targetAmount) {
-    // Sort by size (largest first) for minimal inputs
-    final sortedUtxos = List<BitcoinUtxo>.from(utxos)
-      ..sort((a, b) => b.satoshis.compareTo(a.satoshis));
+  /// ARC's published policy rate, or null after telling [sender] why there
+  /// is none (bead libspiffy-bg7n).
+  Future<FeeRate?> _policyRate(String invoiceId, ActorRef? sender) async {
+    String why;
+    try {
+      final quote = await _arcActor.ask<FeeRateQuote>(GetFeeRateMessage(), _feeRateReplyTimeout);
+      final rate = quote.rate;
+      if (quote.success && rate != null) return rate;
+      why = quote.error ?? 'ARC gave no rate';
+    } catch (e) {
+      why = 'ARC did not answer: $e';
+    }
+    _sendError(invoiceId, "ARC's policy fee rate could not be read ($why); nothing was built", sender: sender);
+    return null;
+  }
+
+  /// The fee of a transaction spending [inputs] and creating outputs whose
+  /// locking scripts are [outputScriptBytes] long, plus a P2PKH change
+  /// output: [rate] on its signed size.
+  static BigInt _feeFor(FeeRate rate, Iterable<BitcoinUtxo> inputs, List<int> outputScriptBytes) =>
+      rate.feeFor(TransactionSize.of(
+        inputLockingScripts: [for (final utxo in inputs) utxo.scriptPubKey],
+        outputScriptBytes: [...outputScriptBytes, TransactionSize.p2pkhScriptBytes],
+      ));
+
+  /// The UTXOs, largest first, that cover [amount] and the fee of the
+  /// transaction they make ([_feeFor]), and that fee; null when all of
+  /// [utxos] do not.
+  ///
+  /// Each input added makes the transaction bigger, so the fee is worked out
+  /// again for every UTXO taken. This used to stop once the UTXOs covered
+  /// [amount] plus a flat 1,000 satoshis, whatever the fee really was: a
+  /// payment a UTXO did cover was refused, and one whose fee was larger was
+  /// selected short.
+  static ({List<BitcoinUtxo> selectedUtxos, BigInt fee})? _selectUTXOs(
+      List<BitcoinUtxo> utxos, BigInt amount, List<int> outputScriptBytes, FeeRate rate) {
+    final sortedUtxos = List<BitcoinUtxo>.from(utxos)..sort((a, b) => b.satoshis.compareTo(a.satoshis));
 
     final selected = <BitcoinUtxo>[];
     var total = BigInt.zero;
-
     for (final utxo in sortedUtxos) {
       selected.add(utxo);
       total += utxo.satoshis;
-
-      // Add buffer for fees
-      if (total >= targetAmount + BigInt.from(1000)) { // Note: fee buffer in UTXO selection
-        return selected;
-      }
+      final fee = _feeFor(rate, selected, outputScriptBytes);
+      if (total >= amount + fee) return (selectedUtxos: selected, fee: fee);
     }
+    return null;
+  }
 
-    return null; // Insufficient funds
+  /// The outputs a standard payment of [msg] creates, each with its locking
+  /// script: its structured outputs, or the legacy amount split evenly
+  /// across its addresses. Built before any UTXO is selected, because their
+  /// sizes are part of the fee.
+  static List<_PaymentOutput> _paymentOutputs(PayInvoiceMessage msg) {
+    final outputs = msg.outputs;
+    if (outputs == null || outputs.isEmpty) {
+      final amountPerAddress = msg.amount ~/ BigInt.from(msg.addresses.length);
+      return [
+        for (final address in msg.addresses)
+          _PaymentOutput(
+              _p2pkhTo(address), amountPerAddress, address),
+      ];
+    }
+    return [
+      for (final output in outputs)
+        ...switch (output) {
+          P2PKHOutputSpec p2pkh => [
+              _PaymentOutput(_p2pkhTo(p2pkh.address), p2pkh.amount, p2pkh.address),
+            ],
+          P2MSOutputSpec p2ms => [
+              _PaymentOutput(
+                dartsv.P2MSLockBuilder(
+                  p2ms.publicKeys.map((hex) => dartsv.SVPublicKey.fromHex(hex)).toList(),
+                  p2ms.threshold,
+                  sorting: true, // BIP67 lexicographical sorting for determinism
+                ),
+                p2ms.amount,
+                'multisig:${p2ms.threshold}-of-${p2ms.totalKeys}',
+              ),
+            ],
+          // One transaction output per data chunk, or all chunks in one
+          // (the default).
+          OPReturnOutputSpec opReturn => opReturn.separateOutputs
+              ? [
+                  for (final chunk in opReturn.dataChunks)
+                    _PaymentOutput(OpReturnLockBuilder([chunk]), BigInt.zero, 'op_return'),
+                ]
+              : [_PaymentOutput(OpReturnLockBuilder(opReturn.dataChunks), BigInt.zero, 'op_return')],
+          PluginOutputSpec plugin => [_PaymentOutput(_pluginLock(plugin), plugin.amount,
+              '${plugin.pluginId}:${plugin.pluginScriptType}')],
+        },
+    ];
+  }
+
+  /// The P2PKH locking script paying [address]; throws, naming it, when it
+  /// is not an address.
+  static dartsv.P2PKHLockBuilder _p2pkhTo(String address) {
+    try {
+      return dartsv.P2PKHLockBuilder.fromAddress(dartsv.Address.fromBase58(address));
+    } catch (_) {
+      throw ArgumentError.value(address, 'address', 'not a valid address to pay');
+    }
+  }
+
+  /// The locking script [plugin]'s plugin builds for it. Guarded: what the
+  /// plugin throws is logged against it and reported as "cannot build lock"
+  /// (bead libspiffy-u150).
+  static dartsv.LockingScriptBuilder _pluginLock(PluginOutputSpec plugin) {
+    if (PluginRegistry().getPlugin(plugin.pluginId) == null) {
+      throw Exception('No plugin registered for "${plugin.pluginId}"');
+    }
+    final lockBuilder = PluginRegistry().createLockBuilder(plugin);
+    if (lockBuilder == null) {
+      throw Exception(
+        'Plugin "${plugin.pluginId}" cannot build lock for '
+        'script type "${plugin.pluginScriptType}"',
+      );
+    }
+    return lockBuilder;
   }
 
   /// Build payment transaction with support for multiple output types (P2PKH, P2MS)
@@ -620,8 +766,8 @@ class PaymentCoordinatorActor extends Actor {
       _buildPaymentTransactionWithOutputs({
     required List<BitcoinUtxo> selectedUtxos,
     List<InvoiceOutputSpec>? outputs,
-    required List<String> legacyAddresses,
-    required BigInt legacyAmount,
+    required List<_PaymentOutput> paymentOutputs,
+    required BigInt fee,
     String? changeAddress,
     required String walletId,
     required AggregateSigningClient signing,
@@ -759,80 +905,24 @@ class PaymentCoordinatorActor extends Actor {
           }
         }
 
-        // Standard multi-output mode (individual lock builders per output)
-        for (final output in outputs) {
-          totalOutputAmount += output.amount;
-
-          switch (output) {
-            case P2PKHOutputSpec p2pkh:
-              final toAddress = dartsv.Address.fromBase58(p2pkh.address);
-              final recipientBuilder = dartsv.P2PKHLockBuilder.fromAddress(toAddress);
-              txBuilder.spendToLockBuilder(recipientBuilder, p2pkh.amount);
-              receivingAddresses.add(p2pkh.address);
-
-            case P2MSOutputSpec p2ms:
-              // Build multisig output
-              final pubKeys = p2ms.publicKeys
-                  .map((hex) => dartsv.SVPublicKey.fromHex(hex))
-                  .toList();
-              final msLockBuilder = dartsv.P2MSLockBuilder(
-                pubKeys,
-                p2ms.threshold,
-                sorting: true, // BIP67 lexicographical sorting for determinism
-              );
-              txBuilder.spendToLockBuilder(msLockBuilder, p2ms.amount);
-              receivingAddresses.add('multisig:${p2ms.threshold}-of-${p2ms.totalKeys}');
-
-            case OPReturnOutputSpec opReturn:
-              if (opReturn.separateOutputs) {
-                // One transaction output per data chunk
-                for (final chunk in opReturn.dataChunks) {
-                  final lockBuilder = OpReturnLockBuilder([chunk]);
-                  txBuilder.spendToLockBuilder(lockBuilder, BigInt.zero);
-                  receivingAddresses.add('op_return');
-                }
-              } else {
-                // All chunks in a single transaction output (default)
-                final lockBuilder = OpReturnLockBuilder(opReturn.dataChunks);
-                txBuilder.spendToLockBuilder(lockBuilder, BigInt.zero);
-                receivingAddresses.add('op_return');
-              }
-
-            case PluginOutputSpec plugin:
-              final pluginInstance = PluginRegistry().getPlugin(plugin.pluginId);
-              if (pluginInstance == null) {
-                throw Exception('No plugin registered for "${plugin.pluginId}"');
-              }
-              // Guarded: what the plugin throws is logged against it and
-              // reported as "cannot build lock" (bead libspiffy-u150).
-              final lockBuilder = PluginRegistry().createLockBuilder(plugin);
-              if (lockBuilder == null) {
-                throw Exception(
-                  'Plugin "${plugin.pluginId}" cannot build lock for '
-                  'script type "${plugin.pluginScriptType}"',
-                );
-              }
-              txBuilder.spendToLockBuilder(lockBuilder, plugin.amount);
-              receivingAddresses.add('${plugin.pluginId}:${plugin.pluginScriptType}');
-          }
-        }
-      } else {
-        // Legacy mode - split amount across addresses
-        totalOutputAmount = legacyAmount;
-        for (final address in legacyAddresses) {
-          final toAddress = dartsv.Address.fromBase58(address);
-          final amountPerAddress = legacyAmount ~/ BigInt.from(legacyAddresses.length);
-
-          final recipientBuilder = dartsv.P2PKHLockBuilder.fromAddress(toAddress);
-          txBuilder.spendToLockBuilder(recipientBuilder, amountPerAddress);
-          receivingAddresses.add(address);
-        }
       }
 
-      // Add change address (proven pattern)
-      final changeAddr = changeAddress ?? selectedUtxos.first.address;
-      final changeAddress_ = dartsv.Address.fromBase58(changeAddr);
-      txBuilder.sendChangeToPKH(changeAddress_);
+      // The payment's outputs, then what is left over after the fee back to
+      // the wallet. With nothing left over there is no change output: the
+      // selection's fee counted one, so the fee is a change output's worth
+      // above the policy, never below it.
+      for (final output in paymentOutputs) {
+        txBuilder.spendToLockBuilder(output.lock, output.amount);
+        receivingAddresses.add(output.recipient);
+        totalOutputAmount += output.amount;
+      }
+      final change = totalInput - totalOutputAmount - fee;
+      if (change < BigInt.zero) {
+        throw StateError('$totalInput satoshis of inputs do not cover $totalOutputAmount of outputs and a $fee fee');
+      }
+      if (change > BigInt.zero) {
+        txBuilder.sendChangeToPKH(dartsv.Address.fromBase58(changeAddress ?? selectedUtxos.first.address));
+      }
 
       // Add inputs from selected UTXOs. They stay unsigned: the wallet
       // aggregate fills in each input's signature and public key.
@@ -853,22 +943,23 @@ class PaymentCoordinatorActor extends Actor {
         txBuilder.spendFromOutpoint(outpoint, dartsv.TransactionInput.MAX_SEQ_NUMBER, unlockBuilder);
       }
 
-      // Apply transaction settings (proven pattern)
-      txBuilder
-          .withFeePerKb(100) // Low fee rate valid for BSV network
-          .withOption(dartsv.TransactionOption.DISABLE_DUST_OUTPUTS);
+      // The fee is ARC's policy rate on the signed size, worked out by the
+      // selection (bead libspiffy-bg7n). dartsv's own estimate
+      // (`withFeePerKb`) sizes the transaction as it is unsigned and paid 6
+      // satoshis whatever its size.
+      txBuilder.withFee(fee).withOption(dartsv.TransactionOption.DISABLE_DUST_OUTPUTS);
 
       // Build unsigned transaction (skip sanity checks for flexibility)
       final unsignedTx = txBuilder.build(false);
       final rawHex = unsignedTx.serialize();
       final txid = unsignedTx.id;
 
-      // Calculate actual fee and change from built transaction
+      // What the built transaction pays, read off it.
       final totalOutput = unsignedTx.outputs.fold<BigInt>(
         BigInt.zero,
         (sum, output) => sum + output.satoshis,
       );
-      final fee = totalInput - totalOutput;
+      final paid = totalInput - totalOutput;
 
       // Create transaction record
       return (BitcoinTransaction(
@@ -877,10 +968,10 @@ class PaymentCoordinatorActor extends Actor {
         status: TransactionStatus.created,
         inputValue: totalInput,
         outputValue: totalOutput,
-        fee: fee,
+        fee: paid,
         receivingAddresses: receivingAddresses,
         sendingAddresses: selectedUtxos.map((u) => u.address).toList(),
-        netAmount: -(totalOutputAmount + fee),
+        netAmount: -(totalOutputAmount + paid),
         createdAt: DateTime.now(),
         updatedAt: DateTime.now(),
         lockTime: 0,
@@ -1616,6 +1707,19 @@ class _RecordingRefused implements Exception {
 
 /// A payment in progress and the deferred-spend transactions it recorded
 /// (cancelled if the payment is not handed over).
+/// One output a standard payment creates: its locking script, its amount and
+/// the recipient the transaction record names for it.
+class _PaymentOutput {
+  final dartsv.LockingScriptBuilder lock;
+  final BigInt amount;
+  final String recipient;
+
+  _PaymentOutput(this.lock, this.amount, this.recipient);
+
+  /// The length of its locking script, which is part of the fee.
+  int get scriptBytes => lock.getScriptPubkey().buffer.length;
+}
+
 class _InFlightPayment {
   final String invoiceId;
 

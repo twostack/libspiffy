@@ -20,6 +20,7 @@ import 'package:libspiffy/src/models/bitcoin_utxo.dart';
 import 'package:libspiffy/src/storage/read_model_storage.dart';
 
 import '../spv/testnet_proof_fixture.dart';
+import '../mocks/policy_rate_arc.dart';
 
 const _walletId = 'wallet-1';
 const _fundingTxid = 'a05924fcc63712d3e4b94b0c88baad234c2c8ad3d369704f53765e21a53a2101';
@@ -33,11 +34,13 @@ void main() {
     final walletManager = _ScriptedWalletManager(signedHex: kFixture2TxHex);
     final walletManagerRef = await system.spawn('wallet-manager', () => walletManager);
     final projection = await system.spawn('projection', () => _FailingProjection());
+    final arc = await system.spawn('arc', () => PolicyRateArc());
     final coordinator = await system.spawn(
       'payment-coordinator',
       () => PaymentCoordinatorActor(
         walletManager: walletManagerRef,
         walletProjection: projection,
+        arcActor: arc,
         storage: _ScriptedStorage(),
         reservationReplyTimeout: const Duration(seconds: 2),
       ),

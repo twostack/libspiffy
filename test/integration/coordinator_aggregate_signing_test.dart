@@ -36,6 +36,7 @@ import 'package:libspiffy/src/utils/beef.dart';
 import 'package:libspiffy/src/utils/crypto_utils.dart';
 
 import 'isar_test_helper.dart';
+import '../mocks/network_arc.dart';
 import 'p2p_test_helpers.dart' show kTestXpriv, setupTestHeaders;
 
 const _mnemonic =
@@ -78,6 +79,7 @@ void main() {
       isar: isar,
       dataDirectory: testDir.path,
       enableP2P: false,
+      arcService: NetworkArc(),
       secureStorage: InMemorySecureStorage(),
     );
     await setupTestHeaders(libspiffy.walletStorage as IsarWalletStorage);

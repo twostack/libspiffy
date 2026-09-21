@@ -40,6 +40,7 @@ import 'package:test/test.dart';
 import '../spv/regtest_chain_builder.dart';
 import 'isar_test_helper.dart';
 import 'p2p_test_helpers.dart';
+import '../mocks/network_arc.dart';
 
 const _walletId = 'nlp-wallet';
 
@@ -82,6 +83,7 @@ void main() {
       dataDirectory: dir.path,
       networkType: 'regtest',
       enableP2P: false,
+      arcService: NetworkArc(),
     );
     await createWallet(
       walletManager: system.walletManager,

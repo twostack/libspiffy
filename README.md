@@ -1023,27 +1023,23 @@ spvActor.tell(ReceiveTransactionMessage(
 
 ### 8. ARC Actor
 
-Interfaces with ARC service for transaction broadcasting and fee estimation:
+Interfaces with ARC for the transactions the wallet broadcasts (its own, and
+the payments it receives) and for the fee rate every transaction pays:
 
 ```dart
-// Broadcast a transaction
-arcActor.tell(BroadcastTransactionMessage(
-  txid: 'transaction-id',
-  rawTx: transactionHex,
-));
+// Broadcast a transaction; the reply says how far ARC got with it
+// (BroadcastSuccessMessage.networkStatus) or why it failed.
+arcActor.tell(BroadcastTransactionMessage(walletId, rawTxHex, txid));
 
-// Estimate transaction fee
-arcActor.tell(EstimateFeeMessage(
-  estimatedSize: 250, // bytes
-));
+// ARC's published policy rate. Every fee the wallet pays is this rate on the
+// transaction's signed size; a rate ARC could not be asked for is a failure,
+// never a guessed one. There is no replace-by-fee on BSV, so nothing is ever
+// paid above it.
+final quote = await arcActor.ask<FeeRateQuote>(GetFeeRateMessage(), const Duration(seconds: 30));
+final fee = quote.rate?.feeFor(signedSizeBytes);
 
-// Query transaction status
-arcActor.tell(GetTransactionStatusMessage(
-  txid: 'transaction-id',
-));
-
-// Get ARC policy (fee rates, limits)
-arcActor.tell(GetPolicyMessage());
+// How far a transaction the wallet broadcast has got
+arcActor.tell(CheckTransactionStatusMessage(txid));
 ```
 
 ### 9. Block Header Sync Actor

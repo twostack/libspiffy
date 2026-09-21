@@ -481,15 +481,18 @@ void main() {
   // back to us, so their copy can no longer be mined.
   //
   // This is Bitcoin SV: first seen wins, so the reclaim pays the standard
-  // ARC policy fee and nothing more (NetworkArc publishes 50 sat/1000 bytes
+  // ARC policy rate on its signed size and nothing more (NetworkArc
+  // publishes 100 sat/1000 bytes
   // and rejects the later of two spends of one input, whatever it pays).
   test('87a: reclaim an outstanding payment: the self-spend pays the ARC policy fee, the payment is '
       'reclaimed once the network has it, the recipient\'s copy is then rejected as a double spend, '
       'and the balance is restored less the fee', () async {
     final ready = await pay('inv-reclaim');
     expect((await funding()).status, UTXOStatus.reserved);
-    final policyFee = (await arc.getPolicy()).miningFee.feeFor(148 + 34 + 10);
-    expect(policyFee, BigInt.from(10), reason: '50 sat/1000 bytes over one input and one output');
+    // One P2PKH input (148 bytes signed), one P2PKH output (34), and the
+    // version, lock time and counts (10): 192 bytes (bead libspiffy-bg7n).
+    final policyFee = (await arc.getPolicy()).miningFee.feeFor(192);
+    expect(policyFee, BigInt.from(20), reason: '100 sat/1000 bytes on 192 bytes, rounded up');
 
     final reclaimed = await send<DeferredPaymentReclaimedEvent>(
         ReclaimDeferredPaymentCommand(
@@ -505,6 +508,8 @@ void main() {
     expect(reclaimed.networkStatus, DeferredNetworkStatus.seenOnNetwork);
     expect(arc.seen, contains(reclaimed.reclaimTxid));
     final reclaimTxid = reclaimed.reclaimTxid!;
+    final reclaimHex = (await storage().getTransaction(reclaimTxid))!.rawHex;
+    expect(reclaimHex.length ~/ 2, lessThanOrEqualTo(192), reason: 'the fee was paid on the signed size');
 
     // The network has the self-spend: the input is spent by it and the
     // payment is reclaimed. Not before: that is the one resolution point.

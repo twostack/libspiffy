@@ -551,66 +551,6 @@ void main() {
           expect(result.message, isNull);
         });
       });
-
-      group('estimateFee', () {
-        test('should estimate fee from miningFee', () async {
-          const policyJson = {
-            'timestamp': '2026-09-14T08:00:00Z',
-            'policy': {
-              'maxscriptsizepolicy': 500000,
-              'maxtxsigopscountspolicy': 4294967295,
-              'maxtxsizepolicy': 10000000,
-              'miningFee': {'satoshis': 1, 'bytes': 1000},
-            },
-          };
-
-          when(mockClient.get(
-            any,
-            headers: anyNamed('headers'),
-          )).thenAnswer((_) async => http.Response(
-            jsonEncode(policyJson),
-            200,
-          ));
-
-          final fee = await arcService.estimateFee(
-            inputCount: 2,
-            outputCount: 3,
-            dataSize: 100,
-          );
-
-          // Size = 25 + (2 * 148) + (3 * 34) + 100 = 523 bytes
-          // Fee = 523 * 1 / 1000 = 0.523 satoshis, rounded up to 1
-          expect(fee, equals(BigInt.from(1)));
-        });
-
-        test('should estimate fee with larger transaction', () async {
-          const policyJson = {
-            'policy': {
-              'maxscriptsizepolicy': 500000,
-              'maxtxsigopscountspolicy': 4294967295,
-              'maxtxsizepolicy': 10000000,
-              'miningFee': {'satoshis': 5, 'bytes': 100},
-            },
-          };
-
-          when(mockClient.get(
-            any,
-            headers: anyNamed('headers'),
-          )).thenAnswer((_) async => http.Response(
-            jsonEncode(policyJson),
-            200,
-          ));
-
-          final fee = await arcService.estimateFee(
-            inputCount: 10,
-            outputCount: 5,
-          );
-
-          // Size = 25 + (10 * 148) + (5 * 34) = 1675 bytes
-          // Fee = 1675 * 5 / 100 = 83.75 satoshis, rounded up to 84
-          expect(fee, equals(BigInt.from(84)));
-        });
-      });
     });
 
     group('Response Models', () {
@@ -1035,13 +975,6 @@ void main() {
       expect(policy.maxTxSigopsCount, equals(4294967295));
       expect(policy.standardFormatSupported, isTrue);
       expect(policy.timestamp, equals('2026-09-14T08:00:00Z'));
-    });
-
-    test('estimateFee uses the miningFee rate', () async {
-      serveGet({'$baseUrl/policy': policyBody});
-      // 25 + 2*148 + 3*34 = 423 bytes at 50 sat / 1000 bytes = 21.15 -> 22
-      final fee = await arc.estimateFee(inputCount: 2, outputCount: 3);
-      expect(fee, equals(BigInt.from(22)));
     });
 
     test('a policy without miningFee is an error, not a silent default', () async {

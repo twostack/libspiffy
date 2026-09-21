@@ -39,6 +39,7 @@ import 'package:libspiffy/src/plugin/provisioned_transaction.dart';
 import 'package:libspiffy/src/plugin/transaction_builder_plugin.dart';
 import 'package:libspiffy/src/storage/in_memory_secure_storage.dart';
 import 'package:libspiffy/src/storage/read_model_storage.dart';
+import '../mocks/policy_rate_arc.dart';
 
 const _pluginId = 'uetb_faulty';
 const _walletId = 'uetb-wallet';
@@ -70,11 +71,13 @@ void main() {
     system = LocalActorSystem();
     final walletManager = await system.spawn('wallet-manager', () => _SigningWalletManager());
     final projection = await system.spawn('projection', () => _Silent());
+    final arc = await system.spawn('arc', () => PolicyRateArc());
     coordinator = await system.spawn(
       'payment-coordinator',
       () => PaymentCoordinatorActor(
         walletManager: walletManager,
         walletProjection: projection,
+        arcActor: arc,
         storage: _PluginStorage(),
         secureStorage: InMemorySecureStorage(),
         reservationReplyTimeout: const Duration(seconds: 2),

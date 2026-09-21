@@ -20,6 +20,7 @@ import 'package:libspiffy/src/models/bitcoin_transaction.dart';
 import 'package:libspiffy/src/models/bitcoin_utxo.dart';
 import 'package:libspiffy/src/storage/in_memory_secure_storage.dart';
 import 'package:libspiffy/src/storage/read_model_storage.dart';
+import '../mocks/policy_rate_arc.dart';
 
 void main() {
   late ActorSystem actorSystem;
@@ -50,11 +51,13 @@ void main() {
       ],
     });
 
+    final arc = await actorSystem.spawn('arc', () => PolicyRateArc());
     paymentCoordinator = await actorSystem.spawn(
       'payment-coordinator',
       () => PaymentCoordinatorActor(
         walletManager: walletManager,
         walletProjection: projection,
+        arcActor: arc,
         storage: storage,
         secureStorage: InMemorySecureStorage(),
         reservationReplyTimeout: const Duration(milliseconds: 300),
@@ -135,11 +138,13 @@ void main() {
         // Key material the pre-fix coordinator read for itself; the fixed
         // coordinator never touches it.
         await secureStorage.setWIF(walletId, 'cStLVGeWx7fVYKKDXYWVeEbEcPZEC4TD73DjQpHCks2Y8EAjVDSS');
+        final arc = await system.spawn('arc', () => PolicyRateArc());
         final coordinator = await system.spawn(
           'payment-coordinator',
           () => PaymentCoordinatorActor(
             walletManager: walletManagerRef,
             walletProjection: projection,
+            arcActor: arc,
             storage: storage,
             secureStorage: secureStorage,
             reservationReplyTimeout: const Duration(seconds: 2),

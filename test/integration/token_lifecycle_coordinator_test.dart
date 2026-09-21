@@ -27,6 +27,7 @@ import 'package:libspiffy/internals.dart' as internal;
 
 import 'isar_test_helper.dart';
 import 'p2p_test_helpers.dart';
+import '../mocks/network_arc.dart';
 
 /// Fund a wallet with a synthetic UTXO at a unique txid.
 Future<void> addSyntheticUtxo({
@@ -43,7 +44,7 @@ Future<void> addSyntheticUtxo({
       txid: fakeTxid,
       vout: 0,
       satoshis: BigInt.from(1000000000),
-      scriptPubKey: '76a914${address}88ac',
+      scriptPubKey: dartsv.P2PKHLockBuilder.fromAddress(dartsv.Address.fromBase58(address)).getScriptPubkey().toHex(),
       address: address,
       blockHeight: 100000,
       confirmations: 10,
@@ -333,11 +334,13 @@ void main() {
     bobActorSystem = LocalActorSystem(ActorSystemConfig());
     bobIsar = await Isar.open(LibSpiffySchemas.allSchemas,
         directory: bobDir.path, name: 'bob_${DateTime.now().microsecondsSinceEpoch}');
+    // One ARC for both parties, with no network behind it.
+    final network = NetworkArc();
     bobSystem = LibSpiffyActorSystem();
     await bobSystem.initialize(
         actorSystem: bobActorSystem, isar: bobIsar,
         dataDirectory: bobDir.path, enableP2P: false,
-        secureStorage: InMemorySecureStorage());
+        secureStorage: InMemorySecureStorage(), arcService: network);
     await setupTestHeaders(bobSystem.walletStorage as IsarWalletStorage);
     bobCoordinator = bobSystem.coordinator;
     bobEvents = bobSystem.coordinatorEvents!;
@@ -351,7 +354,7 @@ void main() {
     await aliceSystem.initialize(
         actorSystem: aliceActorSystem, isar: aliceIsar,
         dataDirectory: aliceDir.path, enableP2P: false,
-        secureStorage: InMemorySecureStorage());
+        secureStorage: InMemorySecureStorage(), arcService: network);
     await setupTestHeaders(aliceSystem.walletStorage as IsarWalletStorage);
     aliceCoordinator = aliceSystem.coordinator;
     aliceEvents = aliceSystem.coordinatorEvents!;

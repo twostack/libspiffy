@@ -752,13 +752,6 @@ class LibSpiffyActorSystem {
     // We'll send a message to set the reference
     _walletManager!.tell(SetInvoiceManagerMessage(_invoiceCoordinator!));
     
-    // Spawn PaymentCoordinatorActor for BEEF-based payments
-    _paymentCoordinator = await _actorSystem.spawn('payment-coordinator', () => PaymentCoordinatorActor(
-      walletManager: _walletManager!,
-      walletProjection: _walletProjectionRef!,
-      storage: _walletStorage,
-    ));
-
 
     // Spawn SPVActor with reference to WalletManager, InvoiceCoordinator and storage
     _spvActor = await _actorSystem.spawn('spv-actor', () => SPVActor(
@@ -797,6 +790,15 @@ class LibSpiffyActorSystem {
     
     // Wire up ARC actor reference in WalletManager
     _walletManager!.tell(SetArcActorMessage(_arcActor!));
+
+    // Spawn PaymentCoordinatorActor for BEEF-based payments. It asks ARC for
+    // the policy rate every payment's fee is paid at (bead libspiffy-bg7n).
+    _paymentCoordinator = await _actorSystem.spawn('payment-coordinator', () => PaymentCoordinatorActor(
+      walletManager: _walletManager!,
+      walletProjection: _walletProjectionRef!,
+      arcActor: _arcActor!,
+      storage: _walletStorage,
+    ));
     
     // Wire up ARC actor reference in SPVActor for pending UTXO checking
     // This enables SPVActor to trigger Arc status checks when new block headers arrive

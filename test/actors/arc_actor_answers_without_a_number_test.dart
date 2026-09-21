@@ -16,6 +16,12 @@
 /// `error`, and the value it could not measure is absent rather than zero,
 /// empty or 'error'.
 ///
+/// Bead libspiffy-bg7n replaced ARCActor's three fee answers (the rate map,
+/// the fee estimate and the policy fee quote, two of them sizing every
+/// input as P2PKH) with one: ARC's published rate, [FeeRateQuote]. The
+/// wallet sizes the transaction; ARC's answer is the rate, and the same
+/// rule holds for it — a rate ARC could not be asked for is absent.
+///
 /// Bead libspiffy-8743 closed the two limits this file first pinned as
 /// characterizations:
 ///
@@ -38,6 +44,7 @@ import 'package:test/test.dart';
 
 import 'package:libspiffy/src/actors/arc_actor.dart';
 import 'package:libspiffy/src/actors/wallet_messages.dart';
+import 'package:libspiffy/src/models/fee_rate.dart';
 import 'package:libspiffy/src/services/arc_service.dart';
 import 'package:libspiffy/src/storage/in_memory_wallet_storage.dart';
 
@@ -69,17 +76,6 @@ void main() {
   group('when ARC throws', () {
     setUp(() => spawn(_ThrowingArc()));
 
-    test('a fee quote reports the failure outside the fee data', () async {
-      final reply =
-          await arcActor.ask<FeeQuoteMessage>(GetFeeQuoteMessage(), _ask);
-
-      expect(reply.success, isFalse);
-      expect(reply.error, isNotNull);
-      expect(reply.feeData, isEmpty,
-          reason: 'an error does not belong in the map that holds fee rates');
-      expect(reply.feeData.containsKey('error'), isFalse);
-    });
-
     test('a status check reports no status rather than the status "error"',
         () async {
       final reply = await arcActor.ask<TransactionStatusMessage>(
@@ -92,27 +88,15 @@ void main() {
       expect(reply.txid, _txid);
     });
 
-    test('a fee estimate reports the failure and no fee, rather than a rate '
+    test('a fee rate reports the failure and no rate, rather than a rate '
         'libspiffy invented', () async {
-      final reply =
-          await arcActor.ask<FeeEstimateMessage>(EstimateFeeMessage(1, 2), _ask);
+      final reply = await arcActor.ask<FeeRateQuote>(GetFeeRateMessage(), _ask);
 
-      // Old code: success, with a fee computed from a hard-coded
+      // Before bead libspiffy-8743: success, with a hard-coded
       // 1 sat/1000 bytes that no miner published.
       expect(reply.success, isFalse);
       expect(reply.error, contains("policy could not be read"));
-      expect(reply.estimatedFee, isNull,
-          reason: 'a rate nobody published is not an estimate');
-    });
-
-    test('a policy fee quote carries no fee when it failed', () async {
-      final reply = await arcActor.ask<PolicyFeeQuote>(
-          EstimatePolicyFeeMessage(inputCount: 1, outputCount: 1), _ask);
-
-      expect(reply.success, isFalse);
-      expect(reply.fee, isNull,
-          reason: 'zero is a fee a caller can build a transaction with');
-      expect(reply.sizeBytes, greaterThan(0), reason: 'the size was measured, the fee was not');
+      expect(reply.rate, isNull, reason: 'a rate nobody published is not a rate');
     });
   });
 
@@ -132,16 +116,10 @@ void main() {
       expect(reply.txid, _txid);
     });
 
-    test('a fee estimate has no fee, and a fee quote no rates', () async {
-      final estimate =
-          await arcActor.ask<FeeEstimateMessage>(EstimateFeeMessage(1, 2), _ask);
-      expect(estimate.success, isFalse);
-      expect(estimate.estimatedFee, isNull);
-      expect(estimate.error, contains('ARC service not available'));
-
-      final quote = await arcActor.ask<FeeQuoteMessage>(GetFeeQuoteMessage(), _ask);
+    test('a fee rate has no rate', () async {
+      final quote = await arcActor.ask<FeeRateQuote>(GetFeeRateMessage(), _ask);
       expect(quote.success, isFalse);
-      expect(quote.feeData, isEmpty);
+      expect(quote.rate, isNull);
       expect(quote.error, contains('ARC service not available'));
     });
 
@@ -169,22 +147,19 @@ void main() {
     // these constructors, the absent value must stay absent. Zero, an empty
     // rate map read as rates, and the status 'error' are all values a
     // caller can act on without noticing that nothing measured them.
-    expect(FeeEstimateMessage.failed('boom').estimatedFee, isNull);
-    expect(FeeQuoteMessage.failed('boom').feeData, isEmpty);
+    expect(FeeRateQuote.failed('boom').rate, isNull);
     expect(TransactionStatusMessage.failed(txid: _txid, error: 'boom').status,
         isNull);
   });
 
-  test('a fee estimate ARC can make is reported as a success with the fee',
+  test('a fee rate ARC publishes is reported as a success with that rate',
       () async {
     await spawn(_PolicyArc());
 
-    final reply =
-        await arcActor.ask<FeeEstimateMessage>(EstimateFeeMessage(1, 2), _ask);
+    final reply = await arcActor.ask<FeeRateQuote>(GetFeeRateMessage(), _ask);
 
     expect(reply.success, isTrue, reason: reply.error);
-    expect(reply.estimatedFee, isNotNull);
-    expect(reply.estimatedFee! > BigInt.zero, isTrue);
+    expect(reply.rate, const FeeRate(satoshis: 1, bytes: 1000));
   });
 }
 

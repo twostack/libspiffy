@@ -37,6 +37,7 @@ import 'package:libspiffy/src/utils/crypto_utils.dart';
 import 'package:spiffynode/spiffy_node.dart' show BlockHeader, Hash;
 
 import '../actors/in_memory_event_store.dart';
+import '../mocks/policy_rate_arc.dart';
 
 const _walletId = 'watch-only-funds';
 const _mnemonic = 'abandon abandon abandon abandon abandon abandon '
@@ -212,9 +213,11 @@ void main() {
     final observed = _ObservingWalletManager(walletManager);
     final observedRef = await system.spawn('observed-wallet-manager', () => observed);
     final projection = await system.spawn('projection', () => _AppliedProjection());
+    final arc = await system.spawn('arc', () => PolicyRateArc());
     final coordinator = await system.spawn(
       'payment-coordinator',
-      () => PaymentCoordinatorActor(walletManager: observedRef, walletProjection: projection, storage: storage),
+      () => PaymentCoordinatorActor(
+          walletManager: observedRef, walletProjection: projection, arcActor: arc, storage: storage),
     );
 
     final response = await coordinator.ask<BEEFPaymentResponse>(

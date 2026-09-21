@@ -453,7 +453,7 @@ void main() {
         PayInvoiceMessage(
           walletId: aliceWalletId,
           invoiceId: 'insufficient-funds-invoice',
-          addresses: ['mock-address'],
+          addresses: ['mqCnSf8i6kmaQaJ54HjQ8EUJnuK4AnCv12'],
           amount: largeAmount,
         ),
         sender: receiver,

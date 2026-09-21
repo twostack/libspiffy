@@ -206,6 +206,8 @@ void main() {
       expect(arc.broadcasts.single.txid, refundTxId);
       expect(arc.broadcasts.single.txHex, f.signedRefundTxHex());
       expect(arc.broadcasts.single.walletId, _walletId);
+      expect(arc.broadcasts.single.retryOnFailure, isFalse,
+          reason: 'a failed claim is claimed again by the app; ARC must not queue a second retry (r56l)');
 
       // The claim is journaled.
       final events = journal().whereType<RefundClaimedEvent>().toList();

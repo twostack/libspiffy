@@ -20,6 +20,7 @@ import 'dart:typed_data';
 
 import 'package:convert/convert.dart';
 import 'package:dactor/dactor.dart';
+import 'package:duraq/duraq.dart' as duraq;
 import 'package:duraq_isar/duraq_isar.dart' as duraq_isar;
 import 'package:isar/isar.dart';
 import 'package:test/test.dart';
@@ -150,8 +151,36 @@ void main() {
     reply as BroadcastFailedMessage;
     expect(reply.willRetry, isTrue);
     expect(reply.networkStatus, isNull);
+    expect(await _queued(isar), 1);
+  });
+
+  // Bead libspiffy-r56l: a caller that owns the retry (a payment channel's
+  // funding and refund) opts out, so one transaction is not retried by two
+  // mechanisms that do not know about each other.
+  test('r56l: a submission whose caller owns the retry is not queued, and says so', () async {
+    await Isar.initializeIsarCore(download: true);
+    final dir = await Directory.systemTemp.createTemp('arc_r56l_');
+    final isar = await Isar.open(duraq_isar.IsarStorage.requiredSchemas,
+        directory: dir.path, name: 'arc_r56l_${DateTime.now().microsecondsSinceEpoch}');
+    addTearDown(() async {
+      await isar.close(deleteFromDisk: true);
+      await dir.delete(recursive: true);
+    });
+    arc.unreachable = true;
+    await spawn(isar: isar);
+
+    final reply = await submit(
+        BroadcastTransactionMessage(_wallet, kFixtureTxHex, kFixtureTxid, retryOnFailure: false));
+
+    expect(reply, isA<BroadcastFailedMessage>());
+    expect((reply as BroadcastFailedMessage).willRetry, isFalse);
+    expect(await _queued(isar), 0, reason: 'queued for a retry its caller owns');
   });
 }
+
+/// The durable retry queue ARCActor keeps in [isar], as it opens it.
+Future<int> _queued(Isar isar) =>
+    duraq.Queue<Map<String, dynamic>>('arc_broadcast_retry', duraq_isar.IsarStorage(isar)).length;
 
 /// ARC without a network: every submission gets [answer], or throws when
 /// [unreachable].

@@ -1108,7 +1108,15 @@ class BroadcastTransactionMessage implements Message {
   final String txHex;
   final String txid;
 
-  BroadcastTransactionMessage(this.walletId, this.txHex, this.txid);
+  /// Whether ARCActor queues the transaction for another submission when
+  /// this one does not reach ARC (answered `willRetry`). False for a caller
+  /// that owns the retry itself: a payment channel retries its funding and
+  /// its refund claim through its own commands, and a second, independent
+  /// retry could put a funding on the network after the channel recorded it
+  /// failed (bead libspiffy-r56l).
+  final bool retryOnFailure;
+
+  BroadcastTransactionMessage(this.walletId, this.txHex, this.txid, {this.retryOnFailure = true});
 
   @override
   String get correlationId => 'broadcast-$txid';

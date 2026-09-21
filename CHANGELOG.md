@@ -302,6 +302,14 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### A channel's funding is retried by the channel, not also by ARC
+
+- `BroadcastTransactionMessage.retryOnFailure` (default `true`): whether
+  `ARCActor` queues a submission that did not reach ARC for another
+  attempt. Payment channels send their funding and refund with `false` —
+  they retry through their own commands — so ARC's queue can no longer put
+  a funding on the network after the channel recorded it failed.
+
 ### A channel funding's inputs are held until the network has it
 
 - The channel manager marked a funding's inputs spent on any successful

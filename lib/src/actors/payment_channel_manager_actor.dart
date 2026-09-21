@@ -1792,7 +1792,9 @@ class PaymentChannelManagerActor extends Actor {
 
       final reply = await _request(
         arcActor,
-        BroadcastTransactionMessage(state.walletId, fundingTxHex, fundingTxId),
+        // The channel owns the retry of its funding (RetryChannelFunding):
+        // not queued at ARC as well (bead libspiffy-r56l).
+        BroadcastTransactionMessage(state.walletId, fundingTxHex, fundingTxId, retryOnFailure: false),
         accept: (r) => r is BroadcastSuccessMessage || r is BroadcastFailedMessage,
         what: 'Broadcasting funding transaction $fundingTxId',
         timeout: _broadcastTimeout,
@@ -2773,7 +2775,9 @@ class PaymentChannelManagerActor extends Actor {
 
       final reply = await _request(
         arcActor,
-        BroadcastTransactionMessage(state.walletId, refundTxHex, refundTxId),
+        // A failed claim is claimed again by the app (ClaimRefund): not
+        // queued at ARC as well (bead libspiffy-r56l).
+        BroadcastTransactionMessage(state.walletId, refundTxHex, refundTxId, retryOnFailure: false),
         accept: (r) =>
             r is BroadcastSuccessMessage || r is BroadcastFailedMessage,
         what: 'Broadcasting refund $refundTxId of channel ${msg.channelId}',

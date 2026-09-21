@@ -429,8 +429,8 @@ class ARCActor extends Actor {
       context.sender?.tell(_submitReply(msg.txid, response));
 
     } catch (e) {
-      _log.warning('Broadcast failed for ${msg.txid}, queueing for retry: $e');
-      final queued = await _enqueueForRetry(msg.txid, msg.walletId, msg.txHex);
+      _log.warning('Broadcast failed for ${msg.txid}${msg.retryOnFailure ? ', queueing for retry' : ''}: $e');
+      final queued = msg.retryOnFailure && await _enqueueForRetry(msg.txid, msg.walletId, msg.txHex);
       context.sender?.tell(BroadcastFailedMessage(msg.txid, e.toString(), willRetry: queued));
     }
   }

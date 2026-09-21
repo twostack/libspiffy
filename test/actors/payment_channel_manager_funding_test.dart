@@ -106,6 +106,8 @@ void main() {
       expect(arc.broadcasts.single.txHex, f.fundingTxHex);
       expect(arc.broadcasts.single.txid, f.fundingTxId);
       expect(arc.broadcasts.single.walletId, _walletId);
+      expect(arc.broadcasts.single.retryOnFailure, isFalse,
+          reason: 'the channel retries its funding itself; ARC must not queue a second retry (r56l)');
       expect(log, [
         'RecordOutgoingTransactionCommand',
         'broadcast',

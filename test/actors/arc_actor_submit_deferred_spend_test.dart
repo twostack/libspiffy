@@ -42,7 +42,7 @@ const _changeKey = '$kFixtureTxid:1';
 
 void main() {
   late LocalActorSystem system;
-  late InMemoryWalletStorage storage;
+  late _CountingStorage storage;
   late _ProjectingWalletManager walletManager;
   late _SubmitArc arc;
   late ActorRef arcActor;
@@ -159,7 +159,7 @@ void main() {
 
   setUp(() {
     system = LocalActorSystem(ActorSystemConfig());
-    storage = InMemoryWalletStorage();
+    storage = _CountingStorage();
     walletManager = _ProjectingWalletManager(storage);
     arc = _SubmitArc();
   });
@@ -287,6 +287,59 @@ void main() {
       expect(promoted(), [_changeKey]);
       expect((await storage.getTransaction(kFixtureTxid, walletId: _wallet))!.status,
           TransactionStatus.seenOnNetwork);
+    });
+  });
+
+  // Bead libspiffy-onh: ARC answered before the read model held the
+  // recording. The deferred spend is driven by what the read model shows
+  // outstanding, and at that moment it showed no change output at all, so
+  // the change waited for the next status scan (statusCheckInterval, 30 s
+  // by default) -- which asks ARC again for an answer it already gave.
+  group('onh: ARC answers before the read model holds the recording', () {
+    for (final status in ['SEEN_ON_NETWORK', 'MINED']) {
+      test('$status: the change becomes available once the recording is projected, '
+          'without waiting for a scan or asking ARC again', () async {
+        // Only the reservation of the input is projected; the recording
+        // (transaction row, change output) is not, yet.
+        await storeUtxo(_fundingTxid, 0, UTXOStatus.reserved);
+        arc.submitResponses.add(submitResponse(status));
+        await spawnActor(); // status scan every 10 minutes
+
+        await broadcast();
+        expect(spends(), ['$_inputKey>$kFixtureTxid'], reason: 'the input was projected: spent at once');
+        expect(promoted(), isEmpty, reason: 'precondition: no change output to promote yet');
+
+        // The projection catches up.
+        await storeTx(TransactionStatus.seenOnNetwork);
+        await storeUtxo(kFixtureTxid, 1, UTXOStatus.pending);
+
+        final deadline = DateTime.now().add(const Duration(seconds: 5));
+        while (promoted().isEmpty && DateTime.now().isBefore(deadline)) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+        }
+        // Old code: nothing until the next scan, ten minutes away.
+        expect(promoted(), [_changeKey]);
+        expect(arc.getTransactionCalls, 0, reason: 'ARC already answered; it is not asked again');
+        expect(spends(), ['$_inputKey>$kFixtureTxid'], reason: 'the input is not spent twice');
+      });
+    }
+
+    test('a recording the read model never shows is rechecked only until a scan would have covered it', () async {
+      await storeUtxo(_fundingTxid, 0, UTXOStatus.reserved);
+      arc.submitResponses.add(submitResponse('SEEN_ON_NETWORK'));
+      await spawnActor(statusCheckInterval: const Duration(seconds: 2));
+
+      await broadcast();
+      await Future<void>.delayed(const Duration(seconds: 4));
+      final looks = storage.transactionLookups[kFixtureTxid] ?? 0;
+      await Future<void>.delayed(const Duration(seconds: 3));
+
+      // One look per second while a scan was still to come, then none: the
+      // scan's own storage query reads no row for it (there is none).
+      expect(looks, inInclusiveRange(2, 4));
+      expect(storage.transactionLookups[kFixtureTxid], looks, reason: 'the recheck never stops');
+      expect(promoted(), isEmpty);
+      expect(arc.getTransactionCalls, 0, reason: 'a transaction the read model does not hold is not polled');
     });
   });
 
@@ -454,5 +507,16 @@ class _SubmitArc extends ArcService {
     final response = statusResponses[txid];
     if (response == null) throw ArcException('Failed to get transaction: {"status":404}');
     return response;
+  }
+}
+
+/// The read model, counting lookups of one transaction by txid.
+class _CountingStorage extends InMemoryWalletStorage {
+  final Map<String, int> transactionLookups = {};
+
+  @override
+  Future<BitcoinTransaction?> getTransaction(String txid, {String? walletId}) {
+    transactionLookups[txid] = (transactionLookups[txid] ?? 0) + 1;
+    return super.getTransaction(txid, walletId: walletId);
   }
 }

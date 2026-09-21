@@ -302,6 +302,14 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### Change from a broadcast is spendable as soon as the wallet has recorded it
+
+- When ARC reported a transaction on the network before the wallet's read
+  model held its recording, its change output became spendable only at the
+  next status scan (30 s by default). `ARCActor` now applies the spend
+  again from storage a second later, until the recording is there — without
+  asking ARC again. `ARCActor(deferredSpendRecheckDelay:)`, default 1 s.
+
 ### A payment you receive is submitted, and you are told what ARC said — breaking
 
 In the peer-to-peer model the receiver broadcasts the payment it cares

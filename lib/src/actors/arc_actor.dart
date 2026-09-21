@@ -112,6 +112,10 @@ class ARCActor extends Actor {
   /// Header notifications within this window coalesce into one scan.
   final Duration headerTriggerDebounce;
 
+  /// How soon a deferred spend is applied again when the network reported
+  /// the transaction before the read model held it (bead libspiffy-onh).
+  final Duration deferredSpendRecheckDelay;
+
   /// How often the recently failed transactions are polled
   /// ([_checkRecentFailedTransactions], bead libspiffy-5bju). Deliberately
   /// much longer than [statusCheckInterval]: this is speculative work on a
@@ -184,6 +188,10 @@ class ARCActor extends Actor {
     return true;
   }
 
+  /// Deferred spends waiting for the read model to hold their transaction
+  /// (bead libspiffy-onh): the recheck timer, by wallet and txid.
+  final Map<(String, String), Timer> _spendRechecks = {};
+
   // Durable broadcast retry queue (persisted via Isar)
   duraq.Queue<Map<String, dynamic>>? _broadcastQueue;
 
@@ -195,6 +203,7 @@ class ARCActor extends Actor {
     Isar? isar,
     this.statusCheckInterval = const Duration(seconds: 30),
     this.headerTriggerDebounce = const Duration(milliseconds: 500),
+    this.deferredSpendRecheckDelay = const Duration(seconds: 1),
     this.failedCheckInterval = const Duration(minutes: 30),
     this.failedCheckWindow = const Duration(days: 7),
     this.failedCheckLimit = 25,
@@ -1130,12 +1139,23 @@ class ARCActor extends Actor {
   /// [_reconfirmWindow] is not repeated while the read model catches up.
   /// [rawHex] is the submitted transaction; otherwise the stored one is used.
   /// Nothing is deleted: spending is a status change of the UTXO row.
-  Future<void> _applyDeferredSpend(String txid, String walletId, {String? rawHex}) async {
+  ///
+  /// The network can report a transaction before the read model holds its
+  /// recording: ARC answers a submission in one round trip, the projection
+  /// applies the recording when it gets to it. Its outputs are then not
+  /// rows yet, and nothing here promotes them; the change used to wait for
+  /// the next status scan, which asks ARC again for the answer it already
+  /// gave (bead libspiffy-onh). So when the transaction's own row is
+  /// missing, the spend is applied again from storage after
+  /// [deferredSpendRecheckDelay], until the row appears -- the recording's
+  /// outputs are journaled before its transaction row, so the row says they
+  /// are there -- or until a periodic scan would have covered it anyway.
+  Future<void> _applyDeferredSpend(String txid, String walletId, {String? rawHex, DateTime? reportedAt}) async {
     try {
+      final stored = await _storage.getTransaction(txid, walletId: walletId);
+      if (stored == null) _recheckSpendLater(txid, walletId, rawHex, reportedAt ?? DateTime.now());
       var txHex = rawHex;
-      if (txHex == null || txHex.isEmpty) {
-        txHex = (await _storage.getTransaction(txid, walletId: walletId))?.rawHex;
-      }
+      if (txHex == null || txHex.isEmpty) txHex = stored?.rawHex;
       if (txHex == null || txHex.isEmpty) return;
       final parsed = dartsv.Transaction.fromHex(txHex);
       // Unspent UTXOs only: a spent row needs nothing, and the unspent set
@@ -1181,6 +1201,21 @@ class ARCActor extends Actor {
     }
   }
 
+
+  /// Applies the deferred spend of [txid] again after
+  /// [deferredSpendRecheckDelay] ([_applyDeferredSpend]), unless one is
+  /// already scheduled, the actor stopped, or a status scan has run since
+  /// [reportedAt] would have: from then on the scan covers it.
+  void _recheckSpendLater(String txid, String walletId, String? rawHex, DateTime reportedAt) {
+    final key = (walletId, txid);
+    if (_stopped || _spendRechecks.containsKey(key)) return;
+    if (DateTime.now().difference(reportedAt) >= statusCheckInterval) return;
+    _spendRechecks[key] = Timer(deferredSpendRecheckDelay, () {
+      _spendRechecks.remove(key);
+      if (_stopped) return;
+      unawaited(_applyDeferredSpend(txid, walletId, rawHex: rawHex, reportedAt: reportedAt));
+    });
+  }
 
   // ==========================================================================
   // DEFERRED PAYMENTS (bead libspiffy-7p2)
@@ -1792,6 +1827,10 @@ class ARCActor extends Actor {
     _stopped = true;
     _statusCheckTimer?.cancel();
     _headerDebounceTimer?.cancel();
+    for (final timer in _spendRechecks.values) {
+      timer.cancel();
+    }
+    _spendRechecks.clear();
   }
 
 }

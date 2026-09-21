@@ -11,7 +11,6 @@ import '../../models/bitcoin_utxo.dart';
 import '../../models/wallet_balances.dart';
 import '../../models/wallet_state.dart';
 import '../../models/wallet_type.dart';
-import '../../utils/network_name.dart';
 import '../wallet_commands.dart';
 import '../wallet_events.dart';
 import '../wallet_output_ownership.dart';
@@ -88,12 +87,14 @@ class ChannelFunding {
   ///
   /// The walk itself is [WalletBalances.noneSelectableReason], shared with
   /// the Benford split (bead libspiffy-f4qy) so the two paths cannot come to
-  /// diagnose the same wallet differently. Funding adds the one narrowing
-  /// its selection adds: a deferred payment's held input.
+  /// diagnose the same wallet differently. Funding adds nothing to it: the
+  /// `held` predicate it used to pass named a deferred payment's held input,
+  /// which the shared walk excluded by status before the predicate was ever
+  /// asked, so for a journaled hold it was dead code (bead libspiffy-a5h8).
+  /// The walk asks [WalletBalances.isDeferredHeld] itself now.
   String _noCandidatesReason(WalletState currentState) => WalletBalances.noneSelectableReason(
         currentState,
         noneMessage: 'No available UTXOs for funding',
-        held: (u) => deferred.holderOf(currentState, u.key) != null,
       );
 
   /// The bytes a signed input spending [utxo] adds to a transaction.

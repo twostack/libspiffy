@@ -42,11 +42,27 @@ enum BalanceBucket { confirmed, unconfirmed, reserved }
 /// ([BitcoinUtxo.isPluginManaged], the one rule for both layers, bead
 /// libspiffy-ecy8), watch-only and multisig-not-spendable-alone UTXOs
 /// (`splitBalanceUtxos`, bead libspiffy-vsap), and reports watch-only funds
-/// apart. The read model's wallet row keeps the buckets' confirmed /
-/// unconfirmed / reserved split over those UTXOs; the coordinator's
-/// `BalanceResponse` and `ReadModelStorage.getBalance` count available
-/// ones, `BalanceResponse` confirmed when mined.
+/// apart. The read model's wallet row and the coordinator's
+/// `BalanceResponse` both keep the buckets' confirmed / unconfirmed /
+/// reserved split over those UTXOs, computed from them through [bucketOf]
+/// rather than restated (bead libspiffy-a5h8, which added the reserved one:
+/// money a reservation or a deferred payment's hold has committed is the
+/// wallet's, and was reported nowhere). `BalanceResponse.totalBalance` and
+/// `ReadModelStorage.getBalance` count the available ones alone.
 abstract final class WalletBalances {
+  /// [BitcoinUtxo.reservationReason] a deferred payment's hold carries
+  /// (`DeferredPayments.holdReason`, which is this constant): the one mark
+  /// that tells a hold apart from an ordinary reservation, on both layers
+  /// (`WalletProjection` reads it too).
+  ///
+  /// A hold and a reservation are both [UTXOStatus.reserved], and the
+  /// difference matters to whoever is told why their funds cannot be spent:
+  /// a reservation expires and cleanup releases it, while a hold is by the
+  /// deferred payment's txid, has no expiry, and ends only when the network
+  /// settles the payment, ARC reports it failed, or the user cancels or
+  /// reclaims it ([isDeferredHeld]).
+  static const String deferredHoldReason = 'deferred-spend';
+
   /// The bucket [utxo] counts towards, or null when it counts towards none
   /// (spent, or voided): reserved when reserved, confirmed when
   /// [BitcoinUtxo.blockHeight] is set, unconfirmed otherwise.
@@ -123,7 +139,22 @@ abstract final class WalletBalances {
       !utxo.isPluginManaged &&
       !isWatchOnly(state, utxo) &&
       !cannotSpendAlone(state, utxo) &&
-      !state.legacyDeferredHeldKeys.contains(utxo.key);
+      !isDeferredHeld(state, utxo);
+
+  /// Whether a deferred payment holds [utxo]: its inputs are handed to the
+  /// recipient and spent by them, so they are committed money the wallet
+  /// cannot spend again (bead libspiffy-7p2).
+  ///
+  /// Two shapes, one answer. A journaled hold reserves the UTXO with
+  /// [deferredHoldReason]; a payment recorded before holds were journaled
+  /// leaves the UTXO available and is inferred into
+  /// [WalletState.legacyDeferredHeldKeys] (bead libspiffy-8j9w) until
+  /// `ReconcileDeferredSpendsCommand` journals it. Asking both here is what
+  /// lets [noneSelectableReason] name a hold whichever shape it has (bead
+  /// libspiffy-a5h8).
+  static bool isDeferredHeld(WalletState state, BitcoinUtxo utxo) =>
+      state.legacyDeferredHeldKeys.contains(utxo.key) ||
+      (utxo.status == UTXOStatus.reserved && utxo.reservationReason == deferredHoldReason);
 
   /// Whether the wallet's own keys ([WalletState.addresses]) cannot build
   /// the whole unlocking script for [utxo] — [unlocksAlone], the one rule
@@ -178,42 +209,58 @@ abstract final class WalletBalances {
   /// the successful path never asks which of them applied.
   ///
   /// [noneMessage] is the caller's headline, returned on its own when the
-  /// wallet holds no unspent output at all. [held] excludes an input a
-  /// deferred payment holds before anything is counted (a held input is not
-  /// a kind of output the caller should be told about, it is money already
-  /// committed) — channel funding's one narrowing on top of the shared rule.
+  /// wallet holds no unspent output at all.
+  ///
+  /// **Reserved UTXOs are walked too** (bead libspiffy-a5h8). The walk used
+  /// to start from the available UTXOs alone, so money a reservation or a
+  /// journaled deferred hold had committed was dropped before any reason was
+  /// computed and the caller was told only that it had no funds — the one
+  /// case the deferred branch was written for. That branch read
+  /// [WalletState.legacyDeferredHeldKeys] alone, which a journaled hold does
+  /// not enter, and channel funding passed a `held` predicate to narrow a
+  /// diagnosis the status filter had already thrown away. Both are now
+  /// [isDeferredHeld], asked here, for every caller.
+  ///
+  /// The two committed reasons are kept apart because they are different
+  /// answers: a deferred payment's hold has no expiry and ends only with the
+  /// payment, while an ordinary reservation expires and cleanup releases it.
   static String noneSelectableReason(
     WalletState state, {
     required String noneMessage,
-    bool Function(BitcoinUtxo utxo)? held,
   }) {
     final unspent = [
       for (final utxo in state.utxos.values)
-        if (utxo.status == UTXOStatus.available && !(held?.call(utxo) ?? false)) utxo,
+        if (utxo.status == UTXOStatus.available || utxo.status == UTXOStatus.reserved) utxo,
     ];
     if (unspent.isEmpty) return noneMessage;
 
     final ownFunds = unspent.where((u) => !u.isPluginManaged).toList();
     if (ownFunds.isEmpty) {
-      return '$noneMessage: the ${unspent.length} available UTXO(s) are plugin-managed outputs (a '
+      return '$noneMessage: the ${unspent.length} unspent UTXO(s) are plugin-managed outputs (a '
           'token, a funding earmark) their plugin spends, not ordinary funds';
     }
 
     final ownKeyed = ownFunds.where((u) => !isWatchOnly(state, u)).toList();
     if (ownKeyed.isEmpty) {
-      return '$noneMessage: the ${ownFunds.length} available UTXO(s) are at watch addresses, '
+      return '$noneMessage: the ${ownFunds.length} unspent UTXO(s) are at watch addresses, '
           'watch-only funds the wallet holds no key for';
     }
 
-    final notHeld = ownKeyed.where((u) => !state.legacyDeferredHeldKeys.contains(u.key)).toList();
+    final notHeld = ownKeyed.where((u) => !isDeferredHeld(state, u)).toList();
     if (notHeld.isEmpty) {
-      return '$noneMessage: the ${ownKeyed.length} available UTXO(s) are inputs of a deferred '
+      return '$noneMessage: the ${ownKeyed.length} unspent UTXO(s) are inputs of a deferred '
           'payment, held until it settles or is reclaimed';
     }
 
-    final unlockable = notHeld.where((u) => !cannotSpendAlone(state, u)).toList();
+    final notReserved = notHeld.where((u) => u.status != UTXOStatus.reserved).toList();
+    if (notReserved.isEmpty) {
+      return '$noneMessage: the ${notHeld.length} unspent UTXO(s) are reserved for a payment in '
+          'flight, until it is recorded or the reservation expires';
+    }
+
+    final unlockable = notReserved.where((u) => !cannotSpendAlone(state, u)).toList();
     return unlockable.isEmpty
-        ? '$noneMessage: the ${notHeld.length} spendable UTXO(s) are outputs the wallet cannot '
+        ? '$noneMessage: the ${notReserved.length} spendable UTXO(s) are outputs the wallet cannot '
             'unlock on its own, such as a multisig output another party must also sign or a P2PK '
             'output locked to a key the wallet does not hold'
         : noneMessage;

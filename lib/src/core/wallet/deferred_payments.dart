@@ -10,6 +10,7 @@ import '../../models/bitcoin_utxo.dart';
 import '../../models/deferred_payment.dart'
     show DeferredNetworkStatus, DeferredPayment, DeferredPaymentPurpose, DeferredPaymentState;
 import '../../models/persistent_map.dart';
+import '../../models/wallet_balances.dart';
 import '../../models/wallet_event.dart';
 import '../../models/wallet_state.dart';
 import '../wallet_commands.dart';
@@ -51,8 +52,10 @@ class DeferredPayments {
   static const String _deferredSpendsKey = WalletMetadataKeys.deferredSpends;
   static const String _deferredHoldsKey = WalletMetadataKeys.deferredHolds;
 
-  /// `reservationReason` of a held input.
-  static const String holdReason = 'deferred-spend';
+  /// `reservationReason` of a held input: [WalletBalances.deferredHoldReason],
+  /// where it is defined, because both layers read it to tell a hold apart
+  /// from an ordinary reservation.
+  static const String holdReason = WalletBalances.deferredHoldReason;
 
   /// `reservationPriority` of a held input. Informational: a hold is refused
   /// to every reservation by rule, not by priority.

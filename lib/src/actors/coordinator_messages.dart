@@ -1329,11 +1329,11 @@ class ImportTransactionConfirmedEvent extends CoordinatorEvent {
 /// Balance query response, computed from the read model.
 ///
 /// [confirmedBalance], [unconfirmedBalance] and [totalBalance] are the
-/// spendable balance: the wallet's payment UTXOs
-/// (`ReadModelStorage.getPaymentUTXOs`: status available, not
+/// spendable balance: the wallet's payment UTXOs (status available, not
 /// plugin-managed, i.e. no plugin metadata naming a `pluginId`), any number
-/// of confirmations. Pending, reserved (a deferred payment's held inputs
-/// included) and spent UTXOs are left out; UTXOs at watch addresses, which
+/// of confirmations. Pending and spent UTXOs are left out; reserved UTXOs,
+/// a deferred payment's held inputs included, are left out and reported in
+/// [reservedBalance] (bead libspiffy-a5h8); UTXOs at watch addresses, which
 /// the wallet holds no key for, are left out and reported in
 /// [watchOnlyBalance] (bead libspiffy-87a2); bare multisig UTXOs the wallet
 /// cannot spend alone are left out (bead libspiffy-0k8). [totalBalance] is
@@ -1366,6 +1366,29 @@ class BalanceResponse extends CoordinatorEvent {
   /// wallet but not spendable by it, and not part of [totalBalance].
   final BigInt watchOnlyBalance;
 
+  /// Value of the wallet's reserved UTXOs: its own funds, committed and so
+  /// not spendable right now, and not part of [totalBalance] — the same
+  /// treatment as [watchOnlyBalance], which is the wallet's and unspendable
+  /// for a different reason (bead libspiffy-a5h8).
+  ///
+  /// A reservation an application placed, an in-flight payment's inputs, or
+  /// a deferred payment's held inputs — handed to the recipient, held by the
+  /// payment's txid with no expiry until the network settles it, ARC reports
+  /// it failed, or the user cancels or reclaims it. Without this field money
+  /// the wallet still owns vanished from every number the coordinator
+  /// reported. Which payment holds what is `GetDeferredPaymentsQuery`; why
+  /// nothing can be selected is the reason `WalletBalances.noneSelectableReason`
+  /// names.
+  ///
+  /// Counted over the same UTXOs as the spendable balance — not
+  /// plugin-managed, not watch-only, not one the wallet cannot unlock alone
+  /// — so the four numbers here partition the wallet's own unspent funds,
+  /// pending UTXOs apart. It is the read model's `reservedBalance`
+  /// (`WalletReadModel.reservedBalance`), computed from the same rows rather
+  /// than read from the wallet row's snapshot of it, so it cannot be a
+  /// moment older than the numbers beside it.
+  final BigInt reservedBalance;
+
   BalanceResponse({
     required this.walletId,
     required this.queryId,
@@ -1373,7 +1396,9 @@ class BalanceResponse extends CoordinatorEvent {
     required this.unconfirmedBalance,
     required this.totalBalance,
     BigInt? watchOnlyBalance,
-  }) : watchOnlyBalance = watchOnlyBalance ?? BigInt.zero;
+    BigInt? reservedBalance,
+  })  : watchOnlyBalance = watchOnlyBalance ?? BigInt.zero,
+        reservedBalance = reservedBalance ?? BigInt.zero;
 
   @override
   DateTime get eventTimestamp => DateTime.now();

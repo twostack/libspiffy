@@ -302,6 +302,38 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### Reserved money is reported, and the wallet says what is holding it
+
+- **`BalanceResponse.reservedBalance`** is new: the value of the wallet's
+  reserved UTXOs — an application's own reservation, an in-flight payment's
+  inputs, or a deferred payment's held ones. It used to be reported nowhere.
+  `_handleGetBalance` read `getPaymentUTXOs`, whose contract is
+  `isAvailable && !isPluginManaged`, so a reserved row was filtered out
+  before the handler saw it and the money vanished from every number the
+  coordinator gave out. A wallet whose only funds were a stuck channel
+  funding reported zero everywhere.
+- It is **reported apart from `totalBalance`**, the same treatment
+  `watchOnlyBalance` already has: the wallet's money, and not spendable
+  right now. All four numbers are computed from the same UTXO rows in one
+  read, so no bucket can be a moment older than the one beside it.
+- **A refusal now names the reservation that emptied the wallet.**
+  `WalletBalances.noneSelectableReason` walked the available UTXOs alone,
+  so a reserved one was dropped before any reason was computed and the
+  caller got the bare headline — including the wallet frozen by a journaled
+  deferred hold, which is the one case its "inputs of a deferred payment"
+  branch existed for. Channel funding (`No available UTXOs for funding`)
+  and the Benford split (`No available UTXOs to split`) both say it, and
+  say the same thing about the same wallet.
+- **A hold and a reservation are told apart**, because they are different
+  answers: *"inputs of a deferred payment, held until it settles or is
+  reclaimed"* has no expiry and ends only with the payment, while *"reserved
+  for a payment in flight"* expires and cleanup releases it.
+- **API:** `WalletBalances.isDeferredHeld` and
+  `WalletBalances.deferredHoldReason` are new.
+  `WalletBalances.noneSelectableReason` no longer takes `held:` — the walk
+  asks `isDeferredHeld` itself, so the predicate channel funding used to
+  pass, which was dead for every journaled hold, is gone.
+
 ### Every actor reply can be asked whether it worked
 
 - Sixteen replies implemented `Message` only, so a caller holding one could

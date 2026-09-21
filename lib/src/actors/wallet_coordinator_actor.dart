@@ -16,6 +16,7 @@ import '../models/bitcoin_transaction.dart';
 import '../models/bitcoin_utxo.dart';
 import '../models/invoice_output_spec.dart';
 import '../models/payment_channel.dart' show PaymentChannelRole, PaymentChannelState;
+import '../models/wallet_balances.dart' show BalanceBucket, WalletBalances;
 import '../services/ancestor_chain_service.dart';
 import '../services/watch_only_funds.dart';
 import '../storage/read_model_storage.dart';
@@ -643,25 +644,45 @@ class WalletCoordinatorActor extends Actor {
 
   Future<void> _handleGetBalance(GetBalanceQuery query) async {
     try {
-      // Spendable balance: UTXOs at watch addresses are reported apart, as
-      // watch-only (bead libspiffy-87a2); a bare multisig UTXO the wallet
-      // cannot spend alone counts nowhere (bead libspiffy-0k8). The same
-      // split as ReadModelStorage.getBalance.
-      final paymentUtxos =
-          await splitBalanceUtxos(_storage, query.walletId, await _storage.getPaymentUTXOs(query.walletId));
+      // The wallet's own unspent funds: UTXOs at watch addresses are
+      // reported apart, as watch-only (bead libspiffy-87a2); a bare multisig
+      // UTXO the wallet cannot spend alone counts nowhere (bead
+      // libspiffy-0k8). The same split as ReadModelStorage.getBalance.
+      //
+      // Reserved UTXOs are read here too (bead libspiffy-a5h8). They are the
+      // wallet's money, committed rather than gone — an in-flight payment's
+      // inputs, or a deferred payment's held ones — and getPaymentUTXOs,
+      // whose contract is `isAvailable && !isPluginManaged`, filters them
+      // out before this handler can see them, so through this API they used
+      // to vanish from every number. Taken from the same rows as the rest,
+      // in one read, so no bucket here can be a moment older than another;
+      // the read model's wallet row computes its own `reservedBalance` from
+      // these rows by the same rule (WalletProjection).
+      final counted = [
+        for (final utxo in await _storage.getUTXOs(query.walletId))
+          if (!utxo.isPluginManaged && (utxo.isAvailable || utxo.isReserved)) utxo,
+      ];
+      final paymentUtxos = await splitBalanceUtxos(_storage, query.walletId, counted);
       BigInt confirmed = BigInt.zero;
       BigInt unconfirmed = BigInt.zero;
+      BigInt reserved = BigInt.zero;
 
       for (final utxo in paymentUtxos.spendable) {
-        final amount = utxo.satoshis;
-        // One rule, the same as every other layer (spv-understanding.md,
-        // "Balances"): a proof puts it in a block on our active chain. The
-        // old `> 0` clause dated from when an absent height was journaled as
-        // 0; it no longer can be (beads libspiffy-8oaq, libspiffy-jc3h).
-        if (utxo.blockHeight != null) {
-          confirmed += amount;
-        } else {
-          unconfirmed += amount;
+        // WalletBalances.bucketOf, asked rather than restated: reserved
+        // first, then a verified proof putting the UTXO in a block on our
+        // active chain, and nothing else, as confirmed (beads libspiffy-8oaq,
+        // libspiffy-jc3h; spv-understanding.md, "Balances"). The wallet
+        // aggregate's balances and the read model's wallet row are the same
+        // three buckets over the same rule, so the layers cannot drift.
+        switch (WalletBalances.bucketOf(utxo)) {
+          case BalanceBucket.reserved:
+            reserved += utxo.satoshis;
+          case BalanceBucket.confirmed:
+            confirmed += utxo.satoshis;
+          case BalanceBucket.unconfirmed:
+            unconfirmed += utxo.satoshis;
+          case null:
+            break;
         }
       }
 
@@ -672,6 +693,7 @@ class WalletCoordinatorActor extends Actor {
         unconfirmedBalance: unconfirmed,
         totalBalance: confirmed + unconfirmed,
         watchOnlyBalance: paymentUtxos.watchOnlySatoshis,
+        reservedBalance: reserved,
       ));
     } catch (e) {
       _emitEvent(ErrorEvent(

@@ -13,6 +13,7 @@ import '../models/bitcoin_transaction.dart';
 import '../models/address_metadata.dart';
 import '../models/transaction_address_link.dart';
 import '../models/deferred_payment.dart';
+import '../models/wallet_balances.dart' show BalanceBucket, WalletBalances;
 import '../services/watch_only_funds.dart' show splitBalanceUtxos;
 import '../storage/read_model_storage.dart';
 import '../spv/merkle_proof_header_check.dart';
@@ -888,7 +889,7 @@ class WalletProjection extends Projection<void> {
 
   /// Same values as BitcoinWalletAggregate.deferredHoldPriority / Reason.
   static const int _deferredHoldPriority = 1 << 30;
-  static const String _deferredHoldReason = 'deferred-spend';
+  static const String _deferredHoldReason = WalletBalances.deferredHoldReason;
 
   Future<void> _markDeferredSeen(String walletId, String txid, DateTime at) async {
     final deferred = await _storage.getDeferredPayment(walletId, txid);
@@ -1117,19 +1118,23 @@ class WalletProjection extends Projection<void> {
     final split = await splitBalanceUtxos(_storage, walletId, unspent);
 
     for (final utxo in split.spendable) {
-      if (utxo.status == UTXOStatus.reserved) {
-        reserved += utxo.satoshis;
-        reservedCount++;
-      } else if (utxo.blockHeight != null) {
-        // A proven height, and nothing else, is confirmed (bead
-        // libspiffy-jc3h): the same test the aggregate applies, so the
-        // wallet row cannot show funds as confirmed that the write model
-        // calls unconfirmed. A reported count is not read on either layer.
-        confirmed += utxo.satoshis;
-        available++;
-      } else {
-        unconfirmed += utxo.satoshis;
-        available++;
+      // WalletBalances.bucketOf, asked rather than restated: a proven
+      // height, and nothing else, is confirmed (bead libspiffy-jc3h), so the
+      // wallet row cannot show funds as confirmed that the write model calls
+      // unconfirmed, nor count as spendable money a reservation has
+      // committed. A reported confirmation count is not read on any layer.
+      switch (WalletBalances.bucketOf(utxo)) {
+        case BalanceBucket.reserved:
+          reserved += utxo.satoshis;
+          reservedCount++;
+        case BalanceBucket.confirmed:
+          confirmed += utxo.satoshis;
+          available++;
+        case BalanceBucket.unconfirmed:
+          unconfirmed += utxo.satoshis;
+          available++;
+        case null:
+          break;
       }
     }
     

@@ -292,13 +292,19 @@ void main() {
     expect((await journal()).whereType<UTXOSpentEvent>(), isEmpty,
         reason: 'confirming a transaction we received spent one of our inputs');
 
-    // The proven output is spendable now; B, which nothing proves, is not.
-    await _until(() async => (await utxo(storage(), p.id, 0))?.status == UTXOStatus.available,
-        'the proven output of the received payment becomes spendable');
+    // The proven output is spendable now, and the read model's transaction
+    // row agrees. Waited for together: the projection writes the output and
+    // the row separately, so seeing one says nothing about the other (this
+    // asserted the row the moment the output turned, and raced under load).
+    await _until(
+        () async =>
+            (await utxo(storage(), p.id, 0))?.status == UTXOStatus.available &&
+            (await storage().getTransaction(p.id, walletId: walletId))?.status == TransactionStatus.confirmed,
+        'the proven output of the received payment becomes spendable, and P is confirmed');
+    // B, which nothing proves, is not.
     expect((await utxo(storage(), b.id, 0))!.status, UTXOStatus.pending,
         reason: 'a proven ancestor does not mine the transaction that spends it');
 
-    // The read model agrees.
     final row = await storage().getTransaction(p.id, walletId: walletId);
     expect((row?.status, row?.blockHeight), (TransactionStatus.confirmed, 4));
 

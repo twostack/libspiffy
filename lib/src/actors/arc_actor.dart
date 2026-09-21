@@ -409,7 +409,7 @@ class ARCActor extends Actor {
         walletId: msg.walletId,
         transactionId: msg.txid,
         signedTransaction: msg.txHex,
-        broadcastResponse: arcWireStatus(response.status),
+        broadcastResponse: response.status.wireName,
       );
       _walletManager.tell(WalletCommandMessage(msg.walletId, command));
 
@@ -417,13 +417,12 @@ class ARCActor extends Actor {
       _updateTransactionStatusFromArc(msg.walletId, msg.txid, response.status);
       await _onSubmitResponse(msg.walletId, msg.txid, msg.txHex, response);
 
-      // Send success response
-      context.sender?.tell(BroadcastSuccessMessage(msg.txid, response.txid));
+      context.sender?.tell(_submitReply(msg.txid, response));
 
     } catch (e) {
       _log.warning('Broadcast failed for ${msg.txid}, queueing for retry: $e');
-      await _enqueueForRetry(msg.txid, msg.walletId, msg.txHex);
-      context.sender?.tell(BroadcastFailedMessage(msg.txid, e.toString()));
+      final queued = await _enqueueForRetry(msg.txid, msg.walletId, msg.txHex);
+      context.sender?.tell(BroadcastFailedMessage(msg.txid, e.toString(), willRetry: queued));
     }
   }
 
@@ -478,7 +477,7 @@ class ARCActor extends Actor {
         walletId: msg.walletId,
         transactionId: msg.txid,
         signedTransaction: msg.beefHex,
-        broadcastResponse: arcWireStatus(response.status),
+        broadcastResponse: response.status.wireName,
       );
       _walletManager.tell(WalletCommandMessage(msg.walletId, command));
 
@@ -486,22 +485,41 @@ class ARCActor extends Actor {
       _updateTransactionStatusFromArc(msg.walletId, msg.txid, response.status);
       await _onSubmitResponse(msg.walletId, msg.txid, paymentTxHex, response);
 
-      context.sender?.tell(BroadcastSuccessMessage(msg.txid, response.txid));
+      context.sender?.tell(_submitReply(msg.txid, response));
 
     } catch (e) {
       _log.warning('BEEF broadcast failed for ${msg.txid}, queueing for retry: $e');
-      if (paymentTxHex != null) {
-        await _enqueueForRetry(msg.txid, msg.walletId, paymentTxHex);
-      }
-      context.sender?.tell(BroadcastFailedMessage(msg.txid, e.toString()));
+      final queued = paymentTxHex != null && await _enqueueForRetry(msg.txid, msg.walletId, paymentTxHex);
+      context.sender?.tell(BroadcastFailedMessage(msg.txid, e.toString(), willRetry: queued));
     }
   }
 
-  /// Enqueue a failed broadcast for durable retry
-  Future<void> _enqueueForRetry(String txid, String walletId, String rawTxHex) async {
+  /// The reply to a submission of [txid] that ARC answered with [response].
+  ///
+  /// ARC answers REJECTED with an HTTP 200, like any other status, so an
+  /// answer is not a success by arriving (bead libspiffy-pq5e): this used to
+  /// reply [BroadcastSuccessMessage] to every one, and a channel whose
+  /// funding the network refused went on to mark the funding inputs spent.
+  /// A definitive failure is a [BroadcastFailedMessage]; every other status
+  /// is a success that says which status it is.
+  ActorResponse _submitReply(String txid, ArcSubmitResponse response) {
+    final status = response.status.wireName;
+    if (DeferredNetworkStatus.isDefinitiveFailure(status)) {
+      final detail = response.message;
+      return BroadcastFailedMessage(
+        txid,
+        'ARC rejected $txid${detail == null || detail.isEmpty ? '' : ': $detail'}',
+        networkStatus: status,
+      );
+    }
+    return BroadcastSuccessMessage(txid, response.txid, networkStatus: status);
+  }
+
+  /// Enqueue a failed broadcast for durable retry; whether it was queued.
+  Future<bool> _enqueueForRetry(String txid, String walletId, String rawTxHex) async {
     if (_broadcastQueue == null) {
       _log.warning('Broadcast retry queue not available — transaction $txid will not be retried');
-      return;
+      return false;
     }
 
     try {
@@ -511,8 +529,10 @@ class ARCActor extends Actor {
         'rawTxHex': rawTxHex,
       });
       _log.info('Queued transaction $txid for broadcast retry');
+      return true;
     } catch (e) {
       _log.warning('Failed to enqueue transaction $txid for retry: $e');
+      return false;
     }
   }
 
@@ -543,7 +563,7 @@ class ARCActor extends Actor {
             walletId: walletId,
             transactionId: txid,
             signedTransaction: rawTxHex,
-            broadcastResponse: arcWireStatus(response.status),
+            broadcastResponse: response.status.wireName,
           )));
 
           _log.info('Retry broadcast succeeded for $txid (status: ${_arcStatusToString(response.status)})');
@@ -890,7 +910,7 @@ class ARCActor extends Actor {
     try {
       final ArcTransactionResponse response = await _arcService!.getTransaction(txid);
       final arcTxStatus = _arcStatusToTransactionStatus(response.status);
-      final wireStatus = arcWireStatus(response.status);
+      final wireStatus = response.status.wireName;
       final competing = response.doubleSpendTxids ?? const <String>[];
       _log.info('  ARC reports: ${response.status} (mapped: ${arcTxStatus?.name}) for ${txid.substring(0, 8)}... (stored: ${currentStatus.name})');
       await _recordNetworkStatus(walletId, txid, wireStatus,
@@ -1003,7 +1023,7 @@ class ARCActor extends Actor {
   /// proof check of a MINED answer.
   Future<ProofHeaderStatus?> _onSubmitResponse(String walletId, String txid, String txHex, ArcSubmitResponse response,
       {bool explicit = false}) async {
-    await _recordNetworkStatus(walletId, txid, arcWireStatus(response.status),
+    await _recordNetworkStatus(walletId, txid, response.status.wireName,
         explicit: explicit,
         blockHeight: response.blockHeight,
         detail: response.message,
@@ -1368,7 +1388,7 @@ class ARCActor extends Actor {
           walletId: msg.walletId,
           transactionId: msg.txid,
           signedTransaction: msg.rawTxHex,
-          broadcastResponse: arcWireStatus(response.status),
+          broadcastResponse: response.status.wireName,
         )));
         _updateTransactionStatusFromArc(msg.walletId, msg.txid, response.status);
         final proofStatus = await _onSubmitResponse(msg.walletId, msg.txid, msg.rawTxHex, response, explicit: true);
@@ -1376,13 +1396,13 @@ class ARCActor extends Actor {
           walletId: msg.walletId,
           txid: msg.txid,
           success: true,
-          networkStatus: arcWireStatus(response.status),
+          networkStatus: response.status.wireName,
           source: 'arc',
           blockHeight: response.blockHeight,
           proofStatus: proofStatus?.name,
           confirmed: proofStatus == ProofHeaderStatus.verified,
-          error: DeferredNetworkStatus.isDefinitiveFailure(arcWireStatus(response.status)) ||
-                  DeferredNetworkStatus.isContested(arcWireStatus(response.status))
+          error: DeferredNetworkStatus.isDefinitiveFailure(response.status.wireName) ||
+                  DeferredNetworkStatus.isContested(response.status.wireName)
               ? response.message
               : null,
           competingTxids: response.doubleSpendTxids ?? const [],
@@ -1444,41 +1464,6 @@ class ARCActor extends Actor {
         'data source: ${dataSourceError ?? check.error ?? 'transaction not known after submission'}',
       ].join('; '),
     );
-  }
-
-  /// ARC's wire name of [status] (`SEEN_ON_NETWORK`, ...), as recorded for
-  /// deferred payments.
-  static String arcWireStatus(ArcTransactionStatus status) {
-    switch (status) {
-      case ArcTransactionStatus.queued:
-        return 'QUEUED';
-      case ArcTransactionStatus.received:
-        return 'RECEIVED';
-      case ArcTransactionStatus.stored:
-        return 'STORED';
-      case ArcTransactionStatus.announcedToNetwork:
-        return 'ANNOUNCED_TO_NETWORK';
-      case ArcTransactionStatus.requestedByNetwork:
-        return 'REQUESTED_BY_NETWORK';
-      case ArcTransactionStatus.sentToNetwork:
-        return 'SENT_TO_NETWORK';
-      case ArcTransactionStatus.acceptedByNetwork:
-        return 'ACCEPTED_BY_NETWORK';
-      case ArcTransactionStatus.seenInOrphanMempool:
-        return DeferredNetworkStatus.seenInOrphanMempool;
-      case ArcTransactionStatus.seenOnNetwork:
-        return DeferredNetworkStatus.seenOnNetwork;
-      case ArcTransactionStatus.doubleSpendAttempted:
-        return DeferredNetworkStatus.doubleSpendAttempted;
-      case ArcTransactionStatus.minedInStaleBlock:
-        return 'MINED_IN_STALE_BLOCK';
-      case ArcTransactionStatus.rejected:
-        return DeferredNetworkStatus.rejected;
-      case ArcTransactionStatus.mined:
-        return DeferredNetworkStatus.mined;
-      case ArcTransactionStatus.unknown:
-        return 'UNKNOWN';
-    }
   }
 
   /// Re-check held MINED proofs against the headers stored since.

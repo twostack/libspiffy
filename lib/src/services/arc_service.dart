@@ -8,23 +8,40 @@ import '../utils/hex_utils.dart' as hex_utils;
 
 import 'arc_service_config.dart';
 
-/// Status of a transaction in the ARC system
+/// Status of a transaction in the ARC system, with the name ARC's API gives
+/// it ([wireName]). The one mapping between the two: both response parsers
+/// read it with [fromWire], and what the wallet journals is [wireName].
 enum ArcTransactionStatus {
-  unknown,
-  queued,
-  received,
-  stored,
-  announcedToNetwork,
-  requestedByNetwork,
-  sentToNetwork,
-  acceptedByNetwork,
-  seenInOrphanMempool,
-  seenOnNetwork,
-  doubleSpendAttempted,
-  minedInStaleBlock,
-  rejected,
-  mined
+  unknown('UNKNOWN'),
+  queued('QUEUED'),
+  received('RECEIVED'),
+  stored('STORED'),
+  announcedToNetwork('ANNOUNCED_TO_NETWORK'),
+  requestedByNetwork('REQUESTED_BY_NETWORK'),
+  sentToNetwork('SENT_TO_NETWORK'),
+  acceptedByNetwork('ACCEPTED_BY_NETWORK'),
+  seenInOrphanMempool('SEEN_IN_ORPHAN_MEMPOOL'),
+  seenOnNetwork('SEEN_ON_NETWORK'),
+  doubleSpendAttempted('DOUBLE_SPEND_ATTEMPTED'),
+  minedInStaleBlock('MINED_IN_STALE_BLOCK'),
+  rejected('REJECTED'),
+  mined('MINED');
+
+  const ArcTransactionStatus(this.wireName);
+
+  /// ARC's name for this status (`SEEN_ON_NETWORK`, `REJECTED`, ...).
+  final String wireName;
+
+  /// The status ARC names [wire]; [unknown] for none, or for a name this
+  /// library does not know.
+  static ArcTransactionStatus fromWire(Object? wire) =>
+      values.firstWhere((s) => s.wireName == wire, orElse: () => unknown);
 }
+
+/// ARC's reason for a status: `extraInfo` in its API (`message` accepted
+/// too). Both response parsers read it here, so a submission ARC rejected
+/// keeps its reason as a status query does.
+String? _arcReason(Map<String, dynamic> json) => json['message'] ?? json['extraInfo'];
 
 /// Response from submitting a transaction to ARC
 class ArcSubmitResponse {
@@ -58,57 +75,12 @@ class ArcSubmitResponse {
   });
 
   factory ArcSubmitResponse.fromJson(Map<String, dynamic> json) {
-    ArcTransactionStatus status = ArcTransactionStatus.unknown;
-    if (json['txStatus'] != null) {
-      switch (json['txStatus']) {
-        case 'QUEUED':
-          status = ArcTransactionStatus.queued;
-          break;
-        case 'RECEIVED':
-          status = ArcTransactionStatus.received;
-          break;
-        case 'STORED':
-          status = ArcTransactionStatus.stored;
-          break;
-        case 'ANNOUNCED_TO_NETWORK':
-          status = ArcTransactionStatus.announcedToNetwork;
-          break;
-        case 'REQUESTED_BY_NETWORK':
-          status = ArcTransactionStatus.requestedByNetwork;
-          break;
-        case 'SENT_TO_NETWORK':
-          status = ArcTransactionStatus.sentToNetwork;
-          break;
-        case 'ACCEPTED_BY_NETWORK':
-          status = ArcTransactionStatus.acceptedByNetwork;
-          break;
-        case 'SEEN_IN_ORPHAN_MEMPOOL':
-          status = ArcTransactionStatus.seenInOrphanMempool;
-          break;
-        case 'SEEN_ON_NETWORK':
-          status = ArcTransactionStatus.seenOnNetwork;
-          break;
-        case 'DOUBLE_SPEND_ATTEMPTED':
-          status = ArcTransactionStatus.doubleSpendAttempted;
-          break;
-        case 'MINED_IN_STALE_BLOCK':
-          status = ArcTransactionStatus.minedInStaleBlock;
-          break;
-        case 'REJECTED':
-          status = ArcTransactionStatus.rejected;
-          break;
-        case 'MINED':
-          status = ArcTransactionStatus.mined;
-          break;
-        default:
-          status = ArcTransactionStatus.unknown;
-      }
-    }
+    final status = ArcTransactionStatus.fromWire(json['txStatus']);
 
     return ArcSubmitResponse(
       txid: json['txid'] ?? '',
       status: status,
-      message: json['message'],
+      message: _arcReason(json),
       blockHeight: json['blockHeight'] is String 
           ? int.tryParse(json['blockHeight']) 
           : json['blockHeight'] as int?,
@@ -163,52 +135,7 @@ class ArcTransactionResponse {
   });
 
   factory ArcTransactionResponse.fromJson(Map<String, dynamic> json) {
-    ArcTransactionStatus status = ArcTransactionStatus.unknown;
-    if (json['txStatus'] != null) {
-      switch (json['txStatus']) {
-        case 'QUEUED':
-          status = ArcTransactionStatus.queued;
-          break;
-        case 'RECEIVED':
-          status = ArcTransactionStatus.received;
-          break;
-        case 'STORED':
-          status = ArcTransactionStatus.stored;
-          break;
-        case 'ANNOUNCED_TO_NETWORK':
-          status = ArcTransactionStatus.announcedToNetwork;
-          break;
-        case 'REQUESTED_BY_NETWORK':
-          status = ArcTransactionStatus.requestedByNetwork;
-          break;
-        case 'SENT_TO_NETWORK':
-          status = ArcTransactionStatus.sentToNetwork;
-          break;
-        case 'ACCEPTED_BY_NETWORK':
-          status = ArcTransactionStatus.acceptedByNetwork;
-          break;
-        case 'SEEN_IN_ORPHAN_MEMPOOL':
-          status = ArcTransactionStatus.seenInOrphanMempool;
-          break;
-        case 'SEEN_ON_NETWORK':
-          status = ArcTransactionStatus.seenOnNetwork;
-          break;
-        case 'DOUBLE_SPEND_ATTEMPTED':
-          status = ArcTransactionStatus.doubleSpendAttempted;
-          break;
-        case 'MINED_IN_STALE_BLOCK':
-          status = ArcTransactionStatus.minedInStaleBlock;
-          break;
-        case 'REJECTED':
-          status = ArcTransactionStatus.rejected;
-          break;
-        case 'MINED':
-          status = ArcTransactionStatus.mined;
-          break;
-        default:
-          status = ArcTransactionStatus.unknown;
-      }
-    }
+    final status = ArcTransactionStatus.fromWire(json['txStatus']);
 
     // Safely parse lists that might be strings or other types
     List<String>? parseStringList(dynamic value) {
@@ -225,7 +152,7 @@ class ArcTransactionResponse {
     return ArcTransactionResponse(
       txid: json['txid'] ?? '',
       status: status,
-      message: json['message'] ?? json['extraInfo'], // API uses 'extraInfo' sometimes
+      message: _arcReason(json),
       blockHeight: json['blockHeight'] is String 
           ? int.tryParse(json['blockHeight']) 
           : json['blockHeight'] as int?,

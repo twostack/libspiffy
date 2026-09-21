@@ -362,7 +362,7 @@ class RecordingArcActor extends Actor {
     onBroadcast?.call(message);
     final error = failWith;
     context.sender?.tell(error == null
-        ? BroadcastSuccessMessage(message.txid, message.txid)
+        ? BroadcastSuccessMessage(message.txid, message.txid, networkStatus: 'SEEN_ON_NETWORK')
         : BroadcastFailedMessage(message.txid, error));
   }
 }

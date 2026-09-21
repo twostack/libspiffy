@@ -302,6 +302,27 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### A transaction ARC rejected is no longer reported as broadcast
+
+- **A submission ARC answered `REJECTED` is now a `BroadcastFailedMessage`.**
+  ARC answers every submission with HTTP 200, `REJECTED` included, and
+  every 200 was replied to as `BroadcastSuccessMessage`. A payment channel
+  whose funding the network refused therefore **marked its funding inputs
+  spent**, a refused refund counted as claimed, and `SettleBEEFCommand`
+  counted a rejected transaction as submitted. All three now see the
+  failure, with ARC's reason.
+- `BroadcastSuccessMessage.networkStatus` says how far ARC got
+  (`SEEN_ON_NETWORK`, `STORED`, `MINED`, or `DOUBLE_SPEND_ATTEMPTED`, which
+  is not final: either spend may still be mined).
+  **`BroadcastSuccessMessage` now requires `networkStatus:`** — a breaking
+  change for code that constructs one (test fakes).
+- `BroadcastFailedMessage.networkStatus` (ARC's answer, when it gave one)
+  and `.willRetry` (the transaction was queued for another submission).
+- A rejection's reason is kept: submit responses now read ARC's
+  `extraInfo`, as status responses already did.
+- `ArcTransactionStatus` carries its wire name (`.wireName`,
+  `ArcTransactionStatus.fromWire`). `ARCActor.arcWireStatus` is removed.
+
 ### Results are frozen too — behaviour change
 
 - **Collections on the coordinator's outbound events are now unmodifiable.**

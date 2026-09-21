@@ -927,7 +927,7 @@ class BroadcastTransactionCommand extends WalletCommand {
   final String signedTransaction; // Signed transaction hex
 
   /// What the broadcaster was actually told, as ARC's wire status name
-  /// (`SEEN_ON_NETWORK`, `REJECTED`, ...; see `ARCActor.arcWireStatus`).
+  /// (`SEEN_ON_NETWORK`, `REJECTED`, ...; see `ArcTransactionStatus.wireName`).
   ///
   /// Null when the sender has no answer to record. The journal then holds an
   /// absence rather than a plausible value: before bead libspiffy-f0sj every

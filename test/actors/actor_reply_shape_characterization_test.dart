@@ -125,7 +125,7 @@ final Map<String, ReplyFactory> replies = {
 
 /// The replies whose name is the outcome: [success] is fixed by the type.
 final Map<String, (ActorResponse Function(), bool)> fixedOutcomeReplies = {
-  'BroadcastSuccessMessage': (() => BroadcastSuccessMessage('t', 'n'), true),
+  'BroadcastSuccessMessage': (() => BroadcastSuccessMessage('t', 'n', networkStatus: 'SEEN_ON_NETWORK'), true),
   'BroadcastFailedMessage': (() => BroadcastFailedMessage('t', 'boom'), false),
   'SPVErrorMessage': (
     () => SPVErrorMessage(operation: 'validate', error: 'boom'),

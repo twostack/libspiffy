@@ -1321,10 +1321,21 @@ class FeeEstimateMessage extends ActorResponse {
   DateTime get timestamp => DateTime.now();
 }
 
-/// Broadcast success notification
+/// ARC accepted a submission: it holds the transaction.
+///
+/// Not "the network has it": ARC answers a submission with the status the
+/// transaction reached, and [networkStatus] carries it (bead
+/// libspiffy-pq5e). `SEEN_ON_NETWORK` and `MINED` mean the network has it;
+/// `DOUBLE_SPEND_ATTEMPTED` means a competing transaction spends one of its
+/// inputs and either may still be mined; the in-flight statuses (`STORED`,
+/// `ANNOUNCED_TO_NETWORK`, ...) mean ARC is still on it. A submission ARC
+/// answered `REJECTED` is a [BroadcastFailedMessage], never this.
 class BroadcastSuccessMessage extends ActorResponse {
   final String txid;
   final String? networkTxid;
+
+  /// ARC's status for the submission, by its wire name.
+  final String networkStatus;
 
   @override
   bool get success => true;
@@ -1332,7 +1343,7 @@ class BroadcastSuccessMessage extends ActorResponse {
   @override
   String? get error => null;
 
-  BroadcastSuccessMessage(this.txid, this.networkTxid);
+  BroadcastSuccessMessage(this.txid, this.networkTxid, {required this.networkStatus});
 
   @override
   String get correlationId => 'broadcast-success-$txid';
@@ -1344,17 +1355,29 @@ class BroadcastSuccessMessage extends ActorResponse {
   DateTime get timestamp => DateTime.now();
 }
 
-/// Broadcast failure notification
+/// A submission that did not reach ARC, or that ARC refused.
+///
+/// [networkStatus] is ARC's answer when it gave one (`REJECTED`), and null
+/// when there was none to give (no ARC, ARC unreachable, a malformed
+/// transaction refused with an HTTP error). [willRetry] says the
+/// transaction was queued for another submission: the failure is this
+/// attempt's, and a later one may still succeed.
 class BroadcastFailedMessage extends ActorResponse {
   final String txid;
 
   @override
   final String error;
 
+  /// ARC's status, when ARC answered with one.
+  final String? networkStatus;
+
+  /// Whether the transaction was queued for another submission.
+  final bool willRetry;
+
   @override
   bool get success => false;
 
-  BroadcastFailedMessage(this.txid, this.error);
+  BroadcastFailedMessage(this.txid, this.error, {this.networkStatus, this.willRetry = false});
 
   @override
   String get correlationId => 'broadcast-failed-$txid';

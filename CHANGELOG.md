@@ -309,6 +309,9 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
   next status scan (30 s by default). `ARCActor` now applies the spend
   again from storage a second later, until the recording is there — without
   asking ARC again. `ARCActor(deferredSpendRecheckDelay:)`, default 1 s.
+- `wallet-architecture.md`: the ARCActor and SPVActor sections describe the
+  actors as they are. The old sketches drove spendability from a
+  confirmation count and monitored addresses.
 
 ### A payment you receive is submitted, and you are told what ARC said — breaking
 

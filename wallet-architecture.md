@@ -433,120 +433,33 @@ class WalletManagerActor extends Actor {
 
 ### SPVActor
 
-Handles true SPV validation using stored block headers and merkle proofs:
+Checks what a counterparty hands us against our own block headers. It does
+**not** scan blocks, monitor addresses or discover transactions: every
+transaction reaches it inside a BEEF from the party that sent it
+(`spv-understanding.md`). Source: `lib/src/actors/spv_actor.dart`.
 
-```dart
-class SPVActor extends Actor {
-  final WalletStorage _storage;
-  final ActorRef _walletManager;
-  final BlockHeaderChain _headerChain;
-  final Map<String, String> _addressToWallet = {}; // address -> walletId mapping
-  
-  @override
-  Future<void> onReceive(Message message) async {
-    switch (message.payload) {
-      case ValidateBEEFMessage msg:
-        var result = await _validateBEEFProof(msg.beefData);
-        sender.tell(BEEFValidationResult(result.isValid, result.merkleRoot));
-        
-      case ValidateTransactionMessage msg:
-        var result = await _validateTransactionSPV(msg.transaction, msg.merkleProof);
-        sender.tell(TransactionValidationResult(result.isValid, result.blockHeight));
-        
-      case RetrieveMerkleProofMessage msg:
-        var proof = await _storage.getMerkleProof(msg.txid);
-        sender.tell(MerkleProofMessage(msg.txid, proof));
-        
-      case GetSPVStatusMessage():
-        var status = await _getSPVStatus();
-        sender.tell(SPVStatusMessage(status));
-        
-      case AddMonitoringAddressMessage msg:
-        _addressToWallet[msg.address] = msg.walletId;
-    }
-  }
-  
-  Future<BEEFValidationResult> _validateBEEFProof(String beefData) async {
-    try {
-      var beef = BEEF.fromHex(beefData);
-      
-      // Extract transactions and proofs from BEEF
-      var transactions = _extractTransactions(beef);
-      var merkleProofs = _extractMerkleProofs(beef);
-      
-      // Validate each transaction against stored headers
-      for (var i = 0; i < transactions.length; i++) {
-        var tx = transactions[i];
-        var proof = merkleProofs[i];
-        
-        var blockHeader = await _getBlockHeader(proof.blockHash);
-        if (blockHeader == null) {
-          return BEEFValidationResult(false, null, 'Block header not found');
-        }
-        
-        var isValid = _verifyMerkleProof(tx.id, proof, blockHeader.merkleRoot);
-        if (!isValid) {
-          return BEEFValidationResult(false, null, 'Invalid merkle proof for tx ${tx.id}');
-        }
-      }
-      
-      return BEEFValidationResult(true, beef.merkleRoot, null);
-    } catch (e) {
-      return BEEFValidationResult(false, null, e.toString());
-    }
-  }
-  
-  Future<BlockHeader?> _getBlockHeader(String blockHash) async {
-    return await _storage.getBlockHeader(blockHash);
-  }
-  
-  List<BitcoinTransaction> _extractSpendableUTXOs(List<BitcoinTransaction> transactions) {
-    var spendableUTXOs = <BitcoinUtxo>[];
-    
-    for (var tx in transactions) {
-      for (var i = 0; i < tx.outputs.length; i++) {
-        var output = tx.outputs[i];
-        
-        // Check if output belongs to any monitored wallet
-        var walletId = _findWalletForOutput(output);
-        if (walletId != null) {
-          // TODO: Implement wallet key management integration
-          // This would check if the output can be spent by wallet keys
-          var utxo = BitcoinUtxo.fromTransactionOutput(
-            output,
-            tx.id,
-            i,
-            tx.blockHeight ?? 0,
-            tx.confirmations ?? 0,
-          );
-          spendableUTXOs.add(utxo);
-        }
-      }
-    }
-    
-    return spendableUTXOs;
-  }
-  
-  List<BitcoinUtxo> _extractSpentUTXOs(List<BitcoinTransaction> transactions) {
-    var spentUTXOs = <BitcoinUtxo>[];
-    
-    for (var tx in transactions) {
-      for (var input in tx.inputs) {
-        // TODO: Check if spent UTXO belongs to monitored wallets
-        // This would require tracking wallet UTXOs
-      }
-    }
-    
-    return spentUTXOs;
-  }
-  
-  String? _findWalletForOutput(TransactionOutput output) {
-    // TODO: Implement address/script -> wallet mapping
-    // This would check script against wallet addresses/pubkeys
-    return null;
-  }
-}
-```
+- **Structural check** (`ValidateBEEFMessage`): the BEEF parses and is
+  well formed, before anything is credited.
+- **Receive** (`ReceiveTransactionMessage`): every BUMP in the BEEF, subject
+  and ancestors alike, is verified against the **active** header chain.
+  A proof whose header we hold and that contradicts it rejects the receive;
+  a proof naming a height we have not synced parks the receive -- stored,
+  so it survives a restart -- and it is validated again when the header
+  arrives (the verdict carries `awaitingHeader` until then).
+- **Attribution**: which outputs are the wallet's is asked of the wallet
+  aggregate (`WalletOwnershipQuery`), never inferred from a lagging read
+  model; outputs whose script cannot be read are reported, not credited.
+- **Retention**: every transaction and proof in a BEEF is kept (ancestor
+  store, proof rows), verified or not, because nothing can hand them to us
+  again.
+- **Result**: an `SPVValidationResult` to the wallet manager (which records
+  the transaction and its UTXOs through the aggregate) and to whoever asked.
+  A proof never makes a height or a confirmation count up: a confirmation
+  is a proof that verifies against a header we hold, and it is reverted
+  when that proof leaves the active chain.
+
+Tests: `test/actors/spv_*_test.dart`, `test/integration/beef_*_test.dart`,
+`test/integration/parked_receive_survives_restart_test.dart`.
 
 ### HeaderSyncActor
 
@@ -760,129 +673,35 @@ class _SimpleChainTip implements ChainTip {
 
 ### ARCActor
 
-Handles ARC service integration for transaction broadcasting and monitoring:
+Talks to ARC about the transactions **we** broadcast: our own payments, and
+the counterparty payments we submit because we are the ones being paid.
+Source: `lib/src/actors/arc_actor.dart`. With no ARC configured there is no
+ARC: every request answers "ARC service not available".
 
-```dart
-class ARCActor extends Actor {
-  final ARCService _arcService;
-  final ActorRef _walletManager;
-  final Map<String, TransactionStatus> _transactionStatus = {};
-  final Timer? _statusCheckTimer;
-  
-  @override
-  Future<void> onReceive(Message message) async {
-    switch (message.payload) {
-      case BroadcastTransactionMessage msg:
-        await _broadcastTransaction(msg.walletId, msg.txHex, msg.txid);
-        
-      case BroadcastBEEFMessage msg:
-        await _broadcastBEEF(msg.walletId, msg.beefHex, msg.txid);
-        
-      case CheckTransactionStatusMessage msg:
-        await _checkTransactionStatus(msg.txid);
-        
-      case GetFeeQuoteMessage():
-        var quote = await _arcService.getFeeQuote();
-        sender.tell(FeeQuoteMessage(quote));
-        
-      case EstimateFeeMessage msg:
-        var fee = await _arcService.estimateFee(msg.inputCount, msg.outputCount);
-        sender.tell(FeeEstimateMessage(fee));
-        
-      case GetMerkleProofMessage msg:
-        var proof = await _arcService.getMerkleProof(msg.txid);
-        sender.tell(MerkleProofMessage(proof));
-        
-      case StartStatusMonitoringMessage msg:
-        _startStatusMonitoring(msg.txids);
-    }
-  }
-  
-  Future<void> _broadcastTransaction(String walletId, String txHex, String txid) async {
-    try {
-      var response = await _arcService.broadcastTransaction(txHex);
-      
-      if (response.isSuccess) {
-        // Notify wallet of successful broadcast
-        var command = BroadcastTransactionCommand(
-          walletId: walletId,
-          transactionId: txid,
-        );
-        _walletManager.tell(WalletCommandMessage(walletId, command));
-        
-        // Start monitoring transaction status
-        _transactionStatus[txid] = TransactionStatus.broadcasted;
-        _startStatusMonitoring([txid]);
-        
-        sender.tell(BroadcastSuccessMessage(txid, response.txid));
-      } else {
-        sender.tell(BroadcastFailedMessage(txid, response.error));
-      }
-    } catch (e) {
-      sender.tell(BroadcastFailedMessage(txid, e.toString()));
-    }
-  }
-  
-  Future<void> _broadcastBEEF(String walletId, String beefHex, String txid) async {
-    try {
-      var response = await _arcService.broadcastBEEF(beefHex);
-      
-      if (response.isSuccess) {
-        var command = BroadcastTransactionCommand(
-          walletId: walletId,
-          transactionId: txid,
-        );
-        _walletManager.tell(WalletCommandMessage(walletId, command));
-        
-        sender.tell(BroadcastSuccessMessage(txid, response.txid));
-      } else {
-        sender.tell(BroadcastFailedMessage(txid, response.error));
-      }
-    } catch (e) {
-      sender.tell(BroadcastFailedMessage(txid, e.toString()));
-    }
-  }
-  
-  Future<void> _checkTransactionStatus(String txid) async {
-    try {
-      var status = await _arcService.getTransactionStatus(txid);
-      var previousStatus = _transactionStatus[txid];
-      
-      if (status != previousStatus) {
-        _transactionStatus[txid] = status;
-        
-        // Notify relevant wallets of status changes
-        if (status.isConfirmed && previousStatus != TransactionStatus.confirmed) {
-          // Find wallet for this transaction and update confirmations
-          // This would require mapping txid -> walletId
-          var command = UpdateUTXOConfirmationsCommand(
-            walletId: 'wallet_id', // Would need to track this
-            utxoKey: txid,
-            confirmations: status.confirmations,
-            blockHeight: status.blockHeight,
-          );
-          _walletManager.tell(WalletCommandMessage('wallet_id', command));
-        }
-      }
-      
-      sender.tell(TransactionStatusMessage(txid, status));
-    } catch (e) {
-      sender.tell(TransactionStatusErrorMessage(txid, e.toString()));
-    }
-  }
-  
-  void _startStatusMonitoring(List<String> txids) {
-    // Periodically check transaction status
-    Timer.periodic(Duration(seconds: 30), (timer) {
-      for (var txid in txids) {
-        if (_transactionStatus[txid] != TransactionStatus.confirmed) {
-          self.tell(CheckTransactionStatusMessage(txid));
-        }
-      }
-    });
-  }
-}
-```
+- **Submit** (`BroadcastTransactionMessage`, `BroadcastBEEFMessage`): the
+  reply carries ARC's status (`BroadcastSuccessMessage.networkStatus`); a
+  submission ARC answered `REJECTED` is a `BroadcastFailedMessage`, and a
+  submission that did not reach ARC says whether it was queued for retry.
+- **Status scan** (periodic, and after header batches): pending, broadcast,
+  seen-on-network and orphaned rows are asked about, pending ones with
+  back-off; recently failed rows are re-polled within a bounded window.
+- **On the network** (`SEEN_ON_NETWORK` or `MINED`, on submit or in a
+  scan): the deferred spend applies -- the wallet's inputs are marked spent
+  (`SpendUTXOCommand`) and its outputs of the transaction available
+  (`MarkUTXOAvailableCommand`), from what the read model still shows
+  outstanding, re-applied shortly if the recording is not projected yet.
+- **Confirmation**: a `MINED` report confirms nothing by itself.
+  `ConfirmTransactionCommand` is sent only when ARC's merkle path verifies
+  against the header we hold at that height; one whose header has not
+  arrived is held until it does. A confirmation count or a height from ARC
+  is never used to make an output spendable.
+- **Deferred payments**: their network status is recorded in the wallet
+  (`RecordTransactionNetworkStatusCommand`); `REJECTED` fails them and
+  releases their inputs; `DOUBLE_SPEND_ATTEMPTED` keeps them held.
+- **Fees**: fee quotes and estimates come from ARC's published policy, or
+  are reported as failures -- no rate is invented.
+
+Tests: `test/actors/arc_*_test.dart`.
 
 ### PaymentCoordinatorActor
 
@@ -980,25 +799,9 @@ class BitcoinUtxo {
   final UTXOCategory category;       // funding, special, protocol
   final bool spendable;
   
-  // Factory with script analysis
-  static BitcoinUtxo fromTransactionOutput(
-    TransactionOutput output,
-    ScriptTypeRegistry registry,
-    List<String> walletAddresses,
-    List<String> walletPubKeys
-  ) {
-    var scriptType = registry.identifyScriptType(output.script);
-    var metadata = registry.extractScriptMetadata(output.script);
-    var spendable = registry.canOutputBeSpentBy(output, walletAddresses, walletPubKeys: walletPubKeys);
-    
-    return BitcoinUtxo(
-      scriptType: scriptType ?? 'unknown',
-      scriptMetadata: metadata ?? {},
-      category: _categorizeUTXO(scriptType, spendable),
-      spendable: spendable,
-      // ... other fields
-    );
-  }
+  // Built by the wallet aggregate from a ReceiveUTXOCommand, whose script
+  // the registry has already classified (BitcoinUtxo.create); there is no
+  // factory that reads a transaction output directly.
 }
 
 enum UTXOCategory {
@@ -1648,40 +1451,12 @@ registry.registerScriptType(ReceiptTemplate());   // Payment receipts
 
 ### Protocol Output Processing
 
-When transactions are received via SPV:
-
-```dart
-List<Event> _handleUTXOReceived(WalletState currentState, UTXOReceivedCommand command) {
-  var utxo = BitcoinUtxo.fromTransactionOutput(
-    command.output,
-    currentState.scriptRegistry,
-    currentState.addresses,
-    currentState.publicKeys
-  );
-  
-  var events = <Event>[];
-  
-  // Spendable UTXOs
-  if (utxo.spendable) {
-    events.add(UTXOReceivedEvent(
-      utxo: utxo,
-      category: utxo.category,
-    ));
-  }
-  
-  // Protocol data outputs (unspendable but valuable)
-  if (utxo.scriptType == 'opreturn' || !utxo.spendable) {
-    events.add(ProtocolOutputReceivedEvent(
-      scriptType: utxo.scriptType,
-      protocolType: _identifyProtocol(utxo.scriptMetadata),
-      protocolData: utxo.scriptMetadata,
-      outputReference: '${utxo.txid}:${utxo.vout}',
-    ));
-  }
-  
-  return events;
-}
-```
+When a transaction is received, SPVActor asks the wallet aggregate which of
+its outputs are the wallet's own (`WalletOwnershipQuery`), the wallet
+manager sends one `ReceiveUTXOCommand` per output that is, and
+`UtxoLedger.receive` journals a `UTXOReceivedEvent` for it. Outputs whose
+script cannot be read are reported (`unreadableOutputs`), not credited.
+There is no `ProtocolOutputReceivedEvent`.
 
 ### Domain Projections
 

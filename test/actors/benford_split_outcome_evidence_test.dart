@@ -38,6 +38,8 @@ import 'package:libspiffy/src/storage/in_memory_wallet_storage.dart';
 import 'package:test/test.dart';
 
 import 'in_memory_event_store.dart';
+import '../mocks/offline_arc.dart';
+import 'package:libspiffy/src/models/fee_rate.dart';
 
 const _xpriv =
     'tprv8ZgxMBicQKsPeMiDjtXBGAyFY1wEMGgomjwf54ZmiZfKTNYvVdBa6GqWUwnvtHm6NKVkQkhCKxaobd9JPxNEXgDfVgJ5RNHJ3ivogSG3V1R';
@@ -45,9 +47,15 @@ const _walletId = 'benford-q28i';
 final _sourceTxid = 'b3' * 32;
 const _wait = Duration(seconds: 10);
 
-/// targetUtxoCount 3 at 1 sat/byte: 180 + 3*34 + 10 = 292 bytes of fee, and
-/// one satoshi per output on top. Anything under this cannot be split.
-final _minSplittable = BigInt.from(292 + 3);
+/// targetUtxoCount 3 at ARC's policy rate (the fake's 100 sat/1000 bytes)
+/// on the split's signed size — one P2PKH input and three P2PKH outputs,
+/// 260 bytes, so 26 satoshis (bead libspiffy-lph4) — and one satoshi per
+/// output on top. Anything under this cannot be split. (It was 292 + 3 at
+/// the app-supplied 1 sat/byte the split used to default to.)
+final _minSplittable = BigInt.from(26 + 3);
+
+/// A source too small to split.
+final _tooSmall = (_minSplittable - BigInt.one).toInt();
 
 void main() {
   late LocalActorSystem system;
@@ -152,7 +160,7 @@ void main() {
   Future<SplitUTXOsResponse> split(ActorRef benford) =>
       benford.ask<SplitUTXOsResponse>(
         SplitUTXOsToBenfordCommand(
-            walletId: _walletId, targetUtxoCount: 3, feeRate: BigInt.one),
+            walletId: _walletId, targetUtxoCount: 3),
         const Duration(seconds: 40),
       );
 
@@ -162,7 +170,7 @@ void main() {
     test('every source too small: a total failure is NOT a success', () async {
       // The killer case. Old code: outcomes empty -> failed empty ->
       // success: true, splitCount: 0, splits: [].
-      await walletWithUtxos([200, 150]);
+      await walletWithUtxos([_tooSmall, _tooSmall - 5]);
       final response = await split(await benfordWith(await realArcActor()));
 
       expect(response.success, isFalse,
@@ -186,7 +194,7 @@ void main() {
     });
 
     test('a partial failure names the source that was skipped', () async {
-      await walletWithUtxos([100000, 200]);
+      await walletWithUtxos([100000, _tooSmall]);
       final response = await split(await benfordWith(await realArcActor()));
 
       expect(response.success, isFalse,
@@ -258,7 +266,7 @@ void main() {
     test('a source too small still leaves the wallet able to spend it',
         () async {
       // The reservation must not be left behind by the refusal path.
-      await walletWithUtxos([200]);
+      await walletWithUtxos([_tooSmall]);
       await split(await benfordWith(await realArcActor()));
 
       final reserved = await walletManager.ask<UTXOReservedResponse>(
@@ -360,7 +368,7 @@ void main() {
 
     test('a split that built nothing reports no fee, not a fee of zero',
         () async {
-      await walletWithUtxos([200]);
+      await walletWithUtxos([_tooSmall]);
       final response = await split(await benfordWith(await realArcActor()));
 
       expect(response.splits.single.status, SplitTransactionStatus.notBuilt);
@@ -393,7 +401,7 @@ void main() {
 
     final response = await benford.ask<SplitUTXOsResponse>(
       SplitUTXOsToBenfordCommand(
-          walletId: _walletId, targetUtxoCount: 8, feeRate: BigInt.one),
+          walletId: _walletId, targetUtxoCount: 8),
       const Duration(seconds: 40),
     );
     expect(response.success, isTrue, reason: response.error);
@@ -412,6 +420,66 @@ void main() {
     expect(lockingScripts, hasLength(8),
         reason: 'every output pays a distinct address (a P2PKH locking '
             'script is the address)');
+  });
+
+  // Bead libspiffy-lph4: the split pays ARC's policy rate on its signed
+  // size. It took an app-supplied rate in satoshis per byte, defaulting to
+  // 1 (ten times the rate everything else paid), on a `180 + 34n + 10`
+  // guess.
+  // The watch-only refusal was also pinned on the wallet aggregate's split
+  // handler, which the command never reached and bead libspiffy-lph4
+  // deleted; this is the coordinator the command does reach.
+  test('a watch-only wallet is refused a split: it holds no key to sign one', () async {
+    final xpub = dartsv.HDPrivateKey.fromXpriv(_xpriv).hdPublicKey.xpubkey;
+    final created = await walletManager.ask<WalletCreatedMessage>(
+      CreateWalletMessage(_walletId, 'Benford', xpub: xpub),
+      _wait,
+    );
+    expect(created.success, isTrue, reason: created.error);
+
+    final response = await split(await benfordWith(await realArcActor()));
+
+    expect(response.success, isFalse);
+    expect(response.error, contains('watch-only'));
+    expect(arc.submittedHex, isEmpty);
+  });
+
+  test('lph4: a split pays ARC\'s policy rate on its signed size', () async {
+    const rate = FeeRate(satoshis: 500, bytes: 1000);
+    arc.miningFee = rate;
+    await walletWithUtxos([100000]);
+
+    final response = await split(await benfordWith(await realArcActor()));
+
+    expect(response.splits.single.status, SplitTransactionStatus.accepted, reason: response.error);
+    final tx = dartsv.Transaction.fromHex(arc.submittedHex.single);
+    final paid = BigInt.from(100000) - tx.outputs.fold<BigInt>(BigInt.zero, (sum, o) => sum + o.satoshis);
+    final signedBytes = tx.serialize().length ~/ 2;
+    expect(response.splits.single.feePaid, paid);
+    expect(paid, greaterThanOrEqualTo(rate.feeFor(signedBytes)),
+        reason: 'a $signedBytes-byte signed split pays $paid');
+    // Old code: 292 satoshis, at 1 sat/byte on 292 guessed bytes.
+    expect(paid, lessThanOrEqualTo(rate.feeFor(signedBytes + 2)),
+        reason: 'paid for bytes the transaction does not have');
+  });
+
+  test('lph4: a split ARC cannot give the rate for is refused, and nothing is reserved', () async {
+    arc.policyUnavailable = true;
+    await walletWithUtxos([100000]);
+
+    final response = await split(await benfordWith(await realArcActor()));
+
+    expect(response.success, isFalse);
+    expect(response.error, contains('policy'));
+    expect(arc.submittedHex, isEmpty);
+    final reserved = await walletManager.ask<UTXOReservedResponse>(
+      WalletCommandMessage(
+        _walletId,
+        ReserveUTXOCommand(walletId: _walletId, utxoKey: key(0), reservedByTxId: 'later-payment'),
+      ),
+      _wait,
+    );
+    expect(reserved.success, isTrue, reason: 'the split reserved its source: ${reserved.error}');
   });
 
   test('a source smaller than the fee is still worth reporting to the host',
@@ -487,7 +555,7 @@ class _SigningRefusedWallet extends Actor {
 }
 
 /// ARC without a network: accepts every broadcast as SEEN_ON_NETWORK.
-class _SilentArc extends ArcService {
+class _SilentArc extends OfflineArc {
   _SilentArc() : super(baseUrl: 'fake://arc');
 
   final List<String> submitted = [];

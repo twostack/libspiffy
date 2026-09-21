@@ -546,47 +546,6 @@ void main() {
         );
       });
 
-      test('should reject SplitUTXOsToBenfordCommand for xpub wallet', () async {
-        // Generate a valid xpub
-        final mnemonic = await cryptoService.generateMnemonic();
-        final hdPriv = await cryptoService.mnemonicToHDPrivateKey(
-          mnemonic,
-          network: dartsv.NetworkType.TEST,
-        );
-        final hdPub = cryptoService.deriveHDPublicKey(hdPriv);
-        final xpub = hdPub.xpubkey;
-
-        final wallet = BitcoinWalletAggregate(
-          aggregateId: 'xpub-wallet-split',
-          aggregateType: 'Wallet',
-          eventStore: eventStore,
-          cryptoService: cryptoService,
-          secureStorage: secureStorage,
-        );
-
-        await wallet.preStart();
-
-        await wallet.commandHandler(CreateWalletCommand(
-          walletId: 'xpub-wallet-split',
-          walletName: 'Split Test Wallet',
-          xpub: xpub,
-        ));
-
-        // Try to split UTXOs - should fail
-        final splitCommand = SplitUTXOsToBenfordCommand(
-          walletId: 'xpub-wallet-split',
-          targetUtxoCount: 5,
-        );
-
-        expect(
-          () => wallet.commandHandler(splitCommand),
-          throwsA(isA<StateError>().having(
-            (e) => e.message,
-            'message',
-            contains('watch-only'),
-          )),
-        );
-      });
     });
 
     group('Address Management', () {

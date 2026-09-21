@@ -302,6 +302,24 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### The Benford split and plugin provisioning pay ARC's policy rate — breaking
+
+- **The split took its own rate**, in satoshis per byte and defaulting to
+  1 — ten times what everything else paid — on a `180 + 34n + 10` byte
+  guess. It now asks ARC for the policy rate and pays it on the split's
+  signed size; if ARC cannot give it, nothing is reserved or built.
+  **`SplitUTXOsCommand.feeRateSatsPerByte` and
+  `SplitUTXOsToBenfordCommand.feeRate` are removed**: there is no
+  app-chosen rate.
+- The split and earmark transactions the payment coordinator provisions
+  for a plugin pay the rate the payment asked ARC for, on their signed size.
+  They used 148-byte guesses at a hardcoded 100 sat/kB, and the split's fee
+  counted a change output it never had.
+- The wallet aggregate no longer handles `SplitUTXOsToBenfordCommand`: the
+  wallet manager always sent it to the Benford coordinator, so that handler
+  was reachable only by calling the aggregate directly.
+  `UTXOSplitInitiatedEvent` is kept, for replaying older journals only.
+
 ### Channel transactions pay ARC's policy rate — breaking
 
 - A channel's refund and payment transactions paid **1 satoshi**:

@@ -25,6 +25,7 @@ import 'package:libspiffy/src/core/invoice_aggregate.dart';
 import 'package:libspiffy/src/core/invoice_commands.dart';
 import 'package:libspiffy/src/core/payment_channel_aggregate.dart';
 import 'package:libspiffy/src/core/wallet_commands.dart';
+import 'package:libspiffy/src/core/wallet_events.dart' show UTXOSplitInitiatedEvent;
 import 'package:libspiffy/src/models/bitcoin_transaction.dart' show TransactionStatus;
 import 'package:libspiffy/src/models/bitcoin_utxo.dart';
 import 'package:libspiffy/src/models/deferred_payment.dart';
@@ -230,7 +231,19 @@ Future<(_Wallet, InMemoryEventStore, InMemorySecureStorage)> _liveWallet() async
       walletId: _walletId, cutoffTime: DateTime.now().add(const Duration(hours: 1))));
   await run(UpdateTransactionStatusCommand(walletId: _walletId, txid: plain.txid, newStatus: TransactionStatus.broadcast));
   await run(BroadcastTransactionCommand(walletId: _walletId, transactionId: plain.txid, signedTransaction: '00'));
-  await run(SplitUTXOsToBenfordCommand(walletId: _walletId, targetUtxoCount: 4));
+  // A split journaled by an earlier release. Nothing emits the event now
+  // (bead libspiffy-lph4), but a journal may hold one, and it must replay.
+  // ignore: deprecated_member_use_from_same_package
+  final split = UTXOSplitInitiatedEvent(
+    walletId: _walletId,
+    utxoKeysToSplit: [_key(1, 0)],
+    targetUtxoCount: 4,
+    feeRate: BigInt.one,
+    version: wallet.currentState.version + 1,
+    timestamp: DateTime.utc(2026, 9, 1),
+  );
+  await store.persistEvents(wallet.persistenceId, [split], wallet.currentState.version);
+  wallet.eventHandler(split);
   return (wallet, store, secureStorage);
 }
 

@@ -519,12 +519,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         success: false,
         error: errorMessage,
       ));
-    } else if (command is SplitUTXOsToBenfordCommand) {
-      sender.tell(SplitUTXOsResponse(
-        walletId: command.walletId,
-        success: false,
-        error: errorMessage,
-      ));
     } else if (command is AddWatchAddressCommand) {
       sender.tell(WatchAddressAddedResponse(
         walletId: command.walletId,
@@ -631,8 +625,6 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         return _deferred.cancel(currentState, cmd);
       case final ReclaimDeferredSpendCommand cmd:
         return _deferred.reclaim(currentState, cmd, _transactions);
-      case final SplitUTXOsToBenfordCommand cmd:
-        return UtxoLedger.splitToBenford(currentState, cmd);
       default:
         throw ArgumentError('Unknown command type: ${command.runtimeType}');
     }
@@ -707,8 +699,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         break;
       case final TransactionConfirmationRevertedEvent evt:
         OutgoingTransactions.applyConfirmationReverted(state, evt);
-      // UTXOSplitInitiatedEvent is still emitted; the other two are
-      // replay-only (reachability sweep 2026-09-18, section 2) and their arm
+      // All three are replay-only (reachability sweep 2026-09-18, section 2;
+      // UTXOSplitInitiatedEvent since bead libspiffy-lph4) and their arm
       // stays so an older journal still replays without throwing.
       // ignore: deprecated_member_use_from_same_package
       case UTXOSplitInitiatedEvent() || UTXOSplitCompletedEvent() || AllUTXOsSplitCompletedEvent():

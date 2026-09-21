@@ -575,6 +575,7 @@ class LibSpiffyActorSystem {
         aliases: const ['TransactionStatusUpdatedEvent']);
     EventRegistry.register<TransactionConfirmationRevertedEvent>(TransactionConfirmationRevertedEvent.stableTypeName, TransactionConfirmationRevertedEvent.fromMap,
         aliases: const ['TransactionConfirmationRevertedEvent']);
+    // ignore: deprecated_member_use_from_same_package
     EventRegistry.register<UTXOSplitInitiatedEvent>(UTXOSplitInitiatedEvent.stableTypeName, UTXOSplitInitiatedEvent.fromMap,
         aliases: const ['UTXOSplitInitiatedEvent']);
     // Replay-only registrations: nothing emits these two any more

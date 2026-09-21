@@ -237,21 +237,18 @@ void main() {
     await expectLater(receive(wallet, 'e' * 64, script.toHex(), watchAddress, 90000), throwsA(anything));
   });
 
-  test('87a2: the aggregate\'s available UTXOs and Benford split initiation leave watch-address UTXOs out', () async {
-    final (store, _, wallet) = await watchingWallet();
+  // The Benford split's own selection is the wallet manager's
+  // `WalletSpendableUtxosQuery` (below); the aggregate's split handler that
+  // this test also drove was unreachable and is gone (bead libspiffy-lph4).
+  test('87a2: the aggregate\'s available UTXOs leave watch-address UTXOs out', () async {
+    final (_, _, wallet) = await watchingWallet();
     final root = wallet.currentState.rootAddress!;
     await receive(wallet, 'b' * 64, p2pkh(watchAddress), watchAddress, 90000);
 
     expect(wallet.getAvailableUTXOs(wallet.currentState), isEmpty);
-    await expectLater(
-      wallet.commandHandler(SplitUTXOsToBenfordCommand(walletId: _walletId, targetUtxoCount: 3)),
-      throwsA(predicate((e) => '$e'.contains('watch-only'), 'an error naming watch-only funds')),
-    );
 
     await receive(wallet, 'c' * 64, p2pkh(root), root, 50000);
     expect(wallet.getAvailableUTXOs(wallet.currentState).map((u) => u.key), ['${'c' * 64}:0']);
-    await wallet.commandHandler(SplitUTXOsToBenfordCommand(walletId: _walletId, targetUtxoCount: 3));
-    expect(store.allEvents.whereType<UTXOSplitInitiatedEvent>().single.utxoKeysToSplit, ['${'c' * 64}:0']);
   });
 
   // Bead libspiffy-v29l. `WalletSpendableUtxosQuery`'s watch-only listing
@@ -272,22 +269,5 @@ void main() {
     expect(response.spendable, isEmpty, reason: 'both are at the watch address');
     expect(response.watchOnly.map((u) => u.key), ['${'b' * 64}:0'],
         reason: 'script analysis or a label does not make a UTXO its plugin\'s; a pluginId does');
-  });
-
-  // Bead libspiffy-f4qy. The Benford split threw a bare 'No available UTXOs
-  // to split' at a wallet whose only funds are a plugin's to spend, while
-  // channel funding (V-85) named the exclusion. Both now walk the one reason
-  // helper, WalletBalances.noneSelectableReason.
-  test('f4qy: a split refused because every UTXO is plugin-managed says so', () async {
-    final (_, _, wallet) = await watchingWallet();
-    final root = wallet.currentState.rootAddress!;
-    await receive(wallet, 'f' * 64, p2pkh(root), root, 90000,
-        pluginMetadata: {'pluginId': 'token-protocol', 'tokenId': 't1'});
-
-    expect(wallet.getAvailableUTXOs(wallet.currentState), isEmpty);
-    await expectLater(
-      wallet.commandHandler(SplitUTXOsToBenfordCommand(walletId: _walletId, targetUtxoCount: 3)),
-      throwsA(isA<StateError>().having((e) => e.message, 'message', contains('plugin-managed'))),
-    );
   });
 }

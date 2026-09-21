@@ -1018,7 +1018,6 @@ class WalletCoordinatorActor extends Actor {
         domain.SplitUTXOsToBenfordCommand(
           walletId: cmd.walletId,
           targetUtxoCount: cmd.targetUtxoCount ?? 5,
-          feeRate: cmd.feeRateSatsPerByte != null ? BigInt.from(cmd.feeRateSatsPerByte!) : null,
           maxUtxosToSplit: cmd.maxUtxosToSplit,
         ),
       ),

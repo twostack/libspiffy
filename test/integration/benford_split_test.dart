@@ -348,7 +348,6 @@ void main() {
         final splitCommand = SplitUTXOsToBenfordCommand(
           walletId: walletId,
           targetUtxoCount: 10,
-          feeRate: BigInt.one,
         );
 
         print('  Processing command...');
@@ -423,7 +422,6 @@ void main() {
         final splitCommand = SplitUTXOsToBenfordCommand(
           walletId: walletId,
           targetUtxoCount: 8,
-          feeRate: BigInt.one,
         );
 
         // Send through WalletManager (proper flow)
@@ -560,18 +558,6 @@ void main() {
       );
       print('✓ Rejects targetUtxoCount > 100');
 
-      print('\nStep 4: Test invalid fee rate');
-      expect(
-        () => SplitUTXOsToBenfordCommand(
-          walletId: walletId,
-          targetUtxoCount: 10,
-          feeRate: BigInt.zero,
-        ),
-        throwsArgumentError,
-        reason: 'Should require positive fee rate',
-      );
-      print('✓ Rejects non-positive fee rate');
-
       print('\n✅ Command validation test PASSED\n');
     });
 
@@ -694,7 +680,6 @@ void main() {
         final splitCommand = SplitUTXOsToBenfordCommand(
           walletId: walletId,
           targetUtxoCount: 5,  // Split each UTXO into 5 outputs
-          feeRate: BigInt.one,
         );
 
         // Send command through WalletManager (simulating public API)

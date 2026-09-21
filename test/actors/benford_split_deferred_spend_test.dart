@@ -39,6 +39,7 @@ import 'package:libspiffy/src/storage/in_memory_wallet_storage.dart';
 import 'package:test/test.dart';
 
 import 'in_memory_event_store.dart';
+import '../mocks/offline_arc.dart';
 
 const _xpriv =
     'tprv8ZgxMBicQKsPeMiDjtXBGAyFY1wEMGgomjwf54ZmiZfKTNYvVdBa6GqWUwnvtHm6NKVkQkhCKxaobd9JPxNEXgDfVgJ5RNHJ3ivogSG3V1R';
@@ -141,7 +142,7 @@ void main() {
   }
 
   Future<SplitUTXOsResponse> split() => benford.ask<SplitUTXOsResponse>(
-        SplitUTXOsToBenfordCommand(walletId: _walletId, targetUtxoCount: 3, feeRate: BigInt.one),
+        SplitUTXOsToBenfordCommand(walletId: _walletId, targetUtxoCount: 3),
         const Duration(seconds: 40),
       );
 
@@ -219,7 +220,7 @@ class _Submission {
 
 /// ARC without a network that looks at the wallet journal when a
 /// transaction is submitted.
-class _ObservingArc extends ArcService {
+class _ObservingArc extends OfflineArc {
   final InMemoryEventStore store;
   _ObservingArc(this.store) : super(baseUrl: 'fake://arc');
 

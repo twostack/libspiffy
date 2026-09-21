@@ -1778,13 +1778,21 @@ class UTXOReservationExpiredEvent extends WalletEvent {
 // PRIVACY EVENTS - Benford UTXO Splitting
 // =============================================================================
 
-/// Event fired when UTXO split operation is initiated by the aggregate
-/// 
-/// The aggregate validates the request and emits this event with the list of
-/// UTXO keys to split. Nothing subscribes to it: it is a record that the
-/// split was asked for. The orchestration (building, signing, broadcasting)
-/// is command-driven and runs in `BenfordCoordinatorActor`, which the split
-/// command reaches through `WalletManagerActor` (bead libspiffy-7e77).
+/// A split the wallet aggregate was asked for, in a journal written by an
+/// earlier release.
+///
+/// Nothing emits it any more (bead libspiffy-lph4). The split command never
+/// reached the aggregate — `WalletManagerActor` hands it to
+/// `BenfordCoordinatorActor`, which builds, records and broadcasts the split
+/// through commands of its own — so the aggregate's handler, which emitted
+/// this event, was reachable only by calling the aggregate directly. Its
+/// [feeRate] is the satoshis-per-byte rate that command carried; every fee
+/// is now ARC's published policy rate.
+@Deprecated(
+    'Nothing emits this event; do not journal new ones. The class MUST be '
+    'kept: it is registered for replay as wallet.utxo_split.initiated and '
+    'a journal written by an earlier release may contain it, so deleting the '
+    'class would make that journal unreplayable. Not scheduled for removal.')
 class UTXOSplitInitiatedEvent extends WalletEvent {
   /// Journal identifier of this event type. Stored with every event and
   /// independent of the class name; never change it (audit 2026-09-14 M8).
@@ -1849,8 +1857,8 @@ class UTXOSplitInitiatedEvent extends WalletEvent {
 ///
 /// **Nothing in `lib/` emits this event any more** (reachability sweep
 /// 2026-09-18, section 2). `BenfordCoordinatorActor` journals the split's
-/// effects through those commands; only [UTXOSplitInitiatedEvent] is still
-/// emitted, by `UtxoLedger.splitToBenford`.
+/// effects through those commands; [UTXOSplitInitiatedEvent] is replay-only
+/// too since bead libspiffy-lph4.
 ///
 /// **DO NOT DELETE THIS CLASS.** It is deprecated, not dead. It is registered
 /// for replay in `LibSpiffyActorSystem` under the stable type name

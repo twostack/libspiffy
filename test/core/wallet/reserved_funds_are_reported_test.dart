@@ -29,7 +29,6 @@ import 'package:libspiffy/src/actors/coordinator_messages.dart' as coord;
 import 'package:libspiffy/src/actors/wallet_coordinator_actor.dart';
 import 'package:libspiffy/src/core/wallet/channel_funding.dart';
 import 'package:libspiffy/src/core/wallet/deferred_payments.dart';
-import 'package:libspiffy/src/core/wallet/utxo_ledger.dart';
 import 'package:libspiffy/src/core/wallet/utxo_reservations.dart';
 import 'package:libspiffy/src/core/wallet/wallet_keys.dart';
 import 'package:libspiffy/src/core/wallet/wallet_lifecycle.dart';
@@ -154,15 +153,6 @@ String _fundingRefusal(WalletState state) {
   fail('funding was not refused');
 }
 
-String _splitRefusal(WalletState state) {
-  try {
-    UtxoLedger.splitToBenford(state, SplitUTXOsToBenfordCommand(walletId: _w, targetUtxoCount: 3));
-  } on StateError catch (e) {
-    return e.message;
-  }
-  fail('the split was not refused');
-}
-
 void main() {
   group('a5h8: the balance API reports reserved money', () {
     late TestActorSystem system;
@@ -266,15 +256,6 @@ void main() {
       expect(_fundingRefusal(held), contains('inputs of a deferred payment, held until it settles or is reclaimed'));
     });
 
-    // Bead f4qy's rule: one walk, so the two selection paths cannot come to
-    // diagnose the same wallet differently.
-    test('the Benford split says the same thing about the same wallet', () {
-      final held = _heldByDeferredPayment(funded, 'funding-tx', [_key(1)]);
-
-      expect(_splitRefusal(held), contains('inputs of a deferred payment, held until it settles or is reclaimed'));
-      expect(_splitRefusal(held), startsWith('No available UTXOs to split'));
-    });
-
     // A hold and a reservation are both `reserved`, and they are different
     // answers: a reservation expires and cleanup releases it, while a hold
     // ends only with the payment.
@@ -308,7 +289,6 @@ void main() {
 
     test('a wallet holding nothing at all still gets the bare headline', () {
       expect(_fundingRefusal(_created()), 'No available UTXOs for funding');
-      expect(_splitRefusal(_created()), 'No available UTXOs to split');
     });
 
     group('the order the reasons are walked in', () {

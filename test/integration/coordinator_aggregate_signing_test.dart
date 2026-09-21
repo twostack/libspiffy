@@ -55,6 +55,7 @@ void main() {
   late Isar isar;
   late LocalActorSystem actorSystem;
   late LibSpiffyActorSystem libspiffy;
+  late NetworkArc arc;
 
   /// Funded outpoints by key, so every signed input can be verified.
   late Map<String, ({String scriptHex, int satoshis})> funded;
@@ -79,7 +80,7 @@ void main() {
       isar: isar,
       dataDirectory: testDir.path,
       enableP2P: false,
-      arcService: NetworkArc(),
+      arcService: arc = NetworkArc(),
       secureStorage: InMemorySecureStorage(),
     );
     await setupTestHeaders(libspiffy.walletStorage as IsarWalletStorage);
@@ -427,6 +428,44 @@ void main() {
       }
       expect(problems, isEmpty);
       expect(txs.last.inputs, hasLength(2));
+    });
+
+    // Bead libspiffy-lph4: the transactions the coordinator provisions for
+    // a plugin pay ARC's policy rate on their signed size, the rate the
+    // payment asked ARC for. They used 148-byte guesses at a hardcoded
+    // 100 sat/kB, under a comment naming a different rate.
+    test('lph4: the auto-provisioned split and earmarks pay ARC\'s policy rate on their signed size', () async {
+      const rate = FeeRate(satoshis: 500, bytes: 1000);
+      arc.miningFee = rate;
+      PluginRegistry().unregister(_pluginId);
+      PluginRegistry().register(_SpendAllPlugin(requiredFunding: 2));
+
+      const walletId = 'lph4-auto-provision';
+      final root = await createMnemonicWallet(walletId);
+      await fundWithImportedParent(walletId, root, satoshis: 80000);
+
+      final response = await pay(pluginPayment(walletId, 10000));
+      expect(response.success, isTrue, reason: response.error);
+
+      final txs = BEEF
+          .parse(response.beefBytes)
+          .txs
+          .map((bytes) => dartsv.Transaction.fromHex(hex.encode(bytes)))
+          .toList();
+      expect(txs, hasLength(4), reason: 'split, two earmarks, payment');
+      txs.forEach(registerOutputs);
+      // The split and the two earmarks; the payment's fee is the plugin's.
+      for (final tx in txs.take(3)) {
+        final spent = tx.inputs.fold<BigInt>(BigInt.zero,
+            (sum, i) => sum + BigInt.from(funded['${i.prevTxnId}:${i.prevTxnOutputIndex}']!.satoshis));
+        final paid = spent - tx.outputs.fold<BigInt>(BigInt.zero, (sum, o) => sum + o.satoshis);
+        final signedBytes = tx.serialize().length ~/ 2;
+        // Old code: 100 sat/kB whatever ARC published.
+        expect(paid, greaterThanOrEqualTo(rate.feeFor(signedBytes)),
+            reason: '${tx.id}: a $signedBytes-byte signed transaction pays $paid');
+        expect(paid, lessThanOrEqualTo(rate.feeFor(signedBytes + 2 * tx.inputs.length)),
+            reason: '${tx.id}: paid for bytes the transaction does not have');
+      }
     });
 
     test('ProvisionFundingMessage: a plugin provision from a mnemonic wallet is signed', () async {
@@ -999,6 +1038,12 @@ class _Recorder extends Actor {
   @override
   Future<void> onMessage(dynamic message) async {
     received.add(message);
+    // ARC's published policy rate, which every split pays (bead
+    // libspiffy-lph4).
+    if (message is GetFeeRateMessage) {
+      // ignore: invalid_use_of_internal_member
+      context.sender?.tell(FeeRateQuote(const FeeRate(satoshis: 100, bytes: 1000)));
+    }
     // The Benford coordinator waits for ARC's answer (bead libspiffy-wdch).
     if (message is BroadcastDeferredPaymentMessage) {
       // ignore: invalid_use_of_internal_member

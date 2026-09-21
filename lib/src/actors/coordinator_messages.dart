@@ -457,13 +457,11 @@ class ReleaseUTXOsCommand implements Message {
 class SplitUTXOsCommand implements Message {
   final String walletId;
   final int? targetUtxoCount;
-  final int? feeRateSatsPerByte;
   final int? maxUtxosToSplit;
 
   SplitUTXOsCommand({
     required this.walletId,
     this.targetUtxoCount,
-    this.feeRateSatsPerByte,
     this.maxUtxosToSplit,
   });
 

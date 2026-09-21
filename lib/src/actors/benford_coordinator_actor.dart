@@ -8,7 +8,9 @@ import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:logging/logging.dart';
 
 import '../core/wallet_commands.dart';
+import '../core/wallet/transaction_size.dart';
 import '../models/bitcoin_utxo.dart';
+import '../models/fee_rate.dart';
 import '../models/wallet_type.dart';
 import '../storage/secure_storage.dart';
 import '../services/watch_only_funds.dart';
@@ -147,6 +149,21 @@ class BenfordCoordinatorActor extends Actor {
         ? availableUtxos.take(command.maxUtxosToSplit!).toList()
         : availableUtxos;
 
+    // ARC's published policy rate: every split pays it on its signed size
+    // (bead libspiffy-lph4). The split used to take an app-supplied rate in
+    // satoshis per byte, defaulting to 1 — ten times the rate everything
+    // else paid. With no rate from ARC nothing is reserved or built.
+    final FeeRate feeRate;
+    try {
+      final quote = await _arcActor.ask<FeeRateQuote>(GetFeeRateMessage(), _walletReplyTimeout);
+      final rate = quote.rate;
+      if (!quote.success || rate == null) throw StateError(quote.error ?? 'ARC gave no rate');
+      feeRate = rate;
+    } catch (e) {
+      _reply(sender, command, error: "ARC's policy fee rate could not be read ($e); nothing was split");
+      return;
+    }
+
     // Split each UTXO. A split that is recorded is broadcast; ARC's answer
     // comes back through the mailbox, and the reply waits for every one.
     final requestId = _nextRequestId++;
@@ -159,7 +176,7 @@ class BenfordCoordinatorActor extends Actor {
           walletType: wallet.walletType!,
           sourceUtxo: sourceUtxo,
           targetCount: command.targetUtxoCount,
-          feeRate: command.feeRate ?? BigInt.one,
+          feeRate: feeRate,
         );
         final index = pending.outcomes.length;
         pending.outcomes.add(attempt.settled);
@@ -300,11 +317,19 @@ class BenfordCoordinatorActor extends Actor {
     required WalletType walletType,
     required BitcoinUtxo sourceUtxo,
     required int targetCount,
-    required BigInt feeRate,
+    required FeeRate feeRate,
   }) async {
-    // 1. Estimate fee (before reservation to avoid reserving UTXOs we can't use)
-    final estimatedTxSize = 180 + (targetCount * 34) + 10;
-    final estimatedFee = feeRate * BigInt.from(estimatedTxSize);
+    // 1. The fee, before anything is reserved: [feeRate] on the split's
+    // signed size — the source input by the unlocking script the wallet
+    // writes for it, and [targetCount] P2PKH outputs, no change (bead
+    // libspiffy-lph4). This used to be `180 + 34n + 10` bytes at the
+    // app's rate, while dartsv's `withFeePerKb` estimate — which counts no
+    // outpoint and no signature — was handed the same rate for the
+    // transaction itself.
+    final estimatedFee = feeRate.feeFor(TransactionSize.of(
+      inputLockingScripts: [_lockingScript(sourceUtxo)],
+      outputScriptBytes: List.filled(targetCount, TransactionSize.p2pkhScriptBytes),
+    ));
 
     // Check if UTXO is large enough
     final minTotalNeeded = BigInt.from(targetCount) + estimatedFee;
@@ -313,7 +338,7 @@ class BenfordCoordinatorActor extends Actor {
           sourceUtxo.key,
           '${sourceUtxo.key} is too small to split into $targetCount outputs: '
           'it holds ${sourceUtxo.satoshis} satoshis and $minTotalNeeded are '
-          'needed ($estimatedFee of fee at $feeRate sat/byte, and one '
+          'needed ($estimatedFee of fee at ARC\'s policy rate of $feeRate, and one '
           'satoshi per output). Nothing was reserved and the source is '
           'untouched.');
     }
@@ -352,7 +377,6 @@ class BenfordCoordinatorActor extends Actor {
         sourceUtxo: sourceUtxo,
         outputAddresses: outputAddresses,
         outputAmounts: outputAmounts,
-        feeRate: feeRate,
       );
 
       if (txResult == null) {
@@ -542,7 +566,6 @@ class BenfordCoordinatorActor extends Actor {
     required BitcoinUtxo sourceUtxo,
     required List<String> outputAddresses,
     required List<BigInt> outputAmounts,
-    required BigInt feeRate,
   }) async {
     try {
       // Build the unsigned transaction. The wallet aggregate, which alone
@@ -572,15 +595,9 @@ class BenfordCoordinatorActor extends Actor {
         txBuilder.spendToPKH(address, outputAmounts[i]);
       }
 
-      // [feeRate] is satoshis per BYTE (SplitUTXOsToBenfordCommand) and this
-      // builder takes satoshis per KILOBYTE: passing it through unscaled
-      // understated the rate a thousandfold. It changes nothing today,
-      // because every output amount is given explicitly and there is no
-      // change output for the builder to size, but a wrong unit sitting in
-      // the code is a trap for whoever adds one (bead libspiffy-q28i).
-      txBuilder
-          .withFeePerKb((feeRate * BigInt.from(1000)).toInt())
-          .withOption(dartsv.TransactionOption.DISABLE_DUST_OUTPUTS);
+      // Every output amount is given and there is no change output: the fee
+      // is what the outputs leave of the source, sized by the caller.
+      txBuilder.withOption(dartsv.TransactionOption.DISABLE_DUST_OUTPUTS);
 
       final unsignedTx = txBuilder.build(false); // Skip sanity checks
 
@@ -613,6 +630,12 @@ class BenfordCoordinatorActor extends Actor {
       return null;
     }
   }
+
+  /// The locking script [utxo] is spent over, as hex: its own, or for a row
+  /// that carries none, the P2PKH script of its address.
+  static String _lockingScript(BitcoinUtxo utxo) => utxo.scriptPubKey.isNotEmpty
+      ? utxo.scriptPubKey
+      : dartsv.P2PKHLockBuilder.fromAddress(dartsv.Address.fromBase58(utxo.address)).getScriptPubkey().toHex();
 
   /// Reserve a single UTXO via the wallet aggregate.
   ///

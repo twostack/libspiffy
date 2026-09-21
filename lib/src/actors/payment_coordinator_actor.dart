@@ -229,6 +229,7 @@ class PaymentCoordinatorActor extends Actor {
         selectedUtxos: selectedUtxos,
         paymentOutputs: paymentOutputs,
         fee: fee,
+        rate: rate,
         originalSender: originalSender,
         totalSw: totalSw,
       );
@@ -272,6 +273,7 @@ class PaymentCoordinatorActor extends Actor {
     required List<BitcoinUtxo> selectedUtxos,
     required List<_PaymentOutput> paymentOutputs,
     required BigInt fee,
+    required FeeRate rate,
     required ActorRef? originalSender,
     required Stopwatch totalSw,
   }) async {
@@ -322,6 +324,7 @@ class PaymentCoordinatorActor extends Actor {
       outputs: msg.outputs,
       paymentOutputs: paymentOutputs,
       fee: fee,
+      rate: rate,
       changeAddress: msg.changeAddress,
       walletId: msg.walletId,
       signing: signing,
@@ -768,6 +771,7 @@ class PaymentCoordinatorActor extends Actor {
     List<InvoiceOutputSpec>? outputs,
     required List<_PaymentOutput> paymentOutputs,
     required BigInt fee,
+    required FeeRate rate,
     String? changeAddress,
     required String walletId,
     required AggregateSigningClient signing,
@@ -833,6 +837,7 @@ class PaymentCoordinatorActor extends Actor {
                 sourcePath: fundingPaths.first,
                 publicKey: publicKeys.first,
                 walletId: walletId,
+                rate: rate,
               );
               pluginFundingUtxos = provision.earmarkUtxos;
               pluginPublicKeys = List.filled(requiredCount, publicKeys.first);
@@ -1204,6 +1209,7 @@ class PaymentCoordinatorActor extends Actor {
     required SigningPath sourcePath,
     required dartsv.SVPublicKey publicKey,
     required String walletId,
+    required FeeRate rate,
   }) async {
     final address = dartsv.Address.fromBase58(sourceUtxo.address);
 
@@ -1214,18 +1220,28 @@ class PaymentCoordinatorActor extends Actor {
     }
     final sourceTx = dartsv.Transaction.fromHex(sourceBtx.rawHex);
 
-    // Fee constants — BSV standard relay rate is 0.25 sats/byte (250 sats/kB).
-    // ARC enforces this as a minimum; anything lower triggers error 465.
-    const feePerKb = 100;
-    const earmarkTxSize = 226; // 10 + 148 + 2*34
-    final earmarkFee = BigInt.from((earmarkTxSize * feePerKb + 999) ~/ 1000);
+    // ARC's policy rate, which the payment asked for, on each transaction's
+    // signed size (bead libspiffy-lph4). The split spends the source and
+    // pays [count] earmarks; each earmark spends one
+    // split output (P2PKH to the source address) and pays a dust marker and
+    // the funding. These used to be 148-byte guesses at a hardcoded
+    // 100 sat/kB, under a comment naming a different rate.
+    const p2pkh = TransactionSize.p2pkhScriptBytes;
+    final addressScript = dartsv.P2PKHLockBuilder.fromAddress(address).getScriptPubkey().toHex();
+    final earmarkFee = rate.feeFor(TransactionSize.of(
+      inputLockingScripts: [addressScript],
+      outputScriptBytes: const [p2pkh, p2pkh],
+    ));
     final dust = BigInt.from(546);
+    final splitFee = rate.feeFor(TransactionSize.of(
+      inputLockingScripts: [sourceUtxo.scriptPubKey.isNotEmpty ? sourceUtxo.scriptPubKey : addressScript],
+      outputScriptBytes: List.filled(count, p2pkh),
+    ));
 
-    // Estimate split TX fee: 10 + 148 (1 input) + 34 * (count + 1 change) bytes
-    final splitTxSize = 10 + 148 + 34 * (count + 1);
-    final splitFee = BigInt.from((splitTxSize * feePerKb + 999) ~/ 1000);
-
-    // Size each split output to cover: dust + funding + earmark fee
+    // The earmarks share everything the split's fee leaves: there is no
+    // change output. What the division leaves over — fewer satoshis than
+    // there are earmarks — joins the fee. (A change output was counted in
+    // the fee and built only above dust, which that remainder never is.)
     final inputSats = sourceUtxo.satoshis;
     final perEarmark = (inputSats - splitFee) ~/ BigInt.from(count);
 
@@ -1243,10 +1259,6 @@ class PaymentCoordinatorActor extends Actor {
 
         for (int i = 0; i < count; i++) {
           splitBuilder.spendToLockBuilder(dartsv.P2PKHLockBuilder.fromAddress(address), perEarmark);
-        }
-        final changeSats = inputSats - splitFee - perEarmark * BigInt.from(count);
-        if (changeSats > dust) {
-          splitBuilder.spendToLockBuilder(dartsv.P2PKHLockBuilder.fromAddress(address), changeSats);
         }
 
         final split = splitBuilder.build(false);

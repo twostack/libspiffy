@@ -203,8 +203,11 @@ abstract final class WalletBalances {
   ///
   /// One helper for every selection path, so the diagnoses cannot drift
   /// apart the way the predicates did (bead libspiffy-qfmb, V-85): channel
-  /// funding (`ChannelFunding.fundingCandidates`) and the Benford split
-  /// (`UtxoLedger.splitToBenford`) both call it. Walked once, on the error
+  /// funding (`ChannelFunding.fundingCandidates`) calls it. The Benford
+  /// split called it only from the aggregate's split handler, which the
+  /// command never reached (deleted, bead libspiffy-lph4); the split the
+  /// wallet does run reads the read model and does not yet give this
+  /// diagnosis (bead libspiffy-yocb). Walked once, on the error
   /// path only — [isSpendable] collapses the exclusions into one boolean, so
   /// the successful path never asks which of them applied.
   ///

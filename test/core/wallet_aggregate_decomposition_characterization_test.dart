@@ -320,20 +320,6 @@ void main() {
       expect(wallet.aggregate.hasSufficientBalance(wallet.state, BigInt.from(10000)), isTrue);
     });
 
-    test('Benford split initiation lists the available UTXOs in state order with the default fee rate', () async {
-      final wallet = await stocked();
-      final event = (await wallet.handle(SplitUTXOsToBenfordCommand(walletId: _w, targetUtxoCount: 4))).single
-          as UTXOSplitInitiatedEvent;
-      expect(event.utxoKeysToSplit, [_key(1), _key(2), _key(3)]);
-      expect(event.targetUtxoCount, 4);
-      expect(event.feeRate, BigInt.one);
-
-      final empty = await _Wallet.create();
-      await expectLater(
-        empty.handle(SplitUTXOsToBenfordCommand(walletId: _w, targetUtxoCount: 4)),
-        throwsA(isA<StateError>().having((e) => e.message, 'message', 'No available UTXOs to split')),
-      );
-    });
   });
 
   group('channel funding', () {

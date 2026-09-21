@@ -38,6 +38,8 @@ import 'package:libspiffy/src/storage/in_memory_wallet_storage.dart';
 import 'package:test/test.dart';
 
 import 'in_memory_event_store.dart';
+import 'package:libspiffy/src/models/fee_rate.dart';
+import '../mocks/offline_arc.dart';
 
 const _xpriv =
     'tprv8ZgxMBicQKsPeMiDjtXBGAyFY1wEMGgomjwf54ZmiZfKTNYvVdBa6GqWUwnvtHm6NKVkQkhCKxaobd9JPxNEXgDfVgJ5RNHJ3ivogSG3V1R';
@@ -152,7 +154,7 @@ void main() {
   }
 
   Future<SplitUTXOsResponse> split(ActorRef benford) => benford.ask<SplitUTXOsResponse>(
-        SplitUTXOsToBenfordCommand(walletId: _walletId, targetUtxoCount: 3, feeRate: BigInt.one),
+        SplitUTXOsToBenfordCommand(walletId: _walletId, targetUtxoCount: 3),
         const Duration(seconds: 40),
       );
 
@@ -420,6 +422,12 @@ class _ScriptedArcActor extends Actor {
 
   @override
   Future<void> onMessage(dynamic message) async {
+    // ARC's published policy rate, which every split pays (bead
+    // libspiffy-lph4).
+    if (message is GetFeeRateMessage) {
+      context.sender?.tell(FeeRateQuote(const FeeRate(satoshis: 100, bytes: 1000)));
+      return;
+    }
     if (message is! BroadcastDeferredPaymentMessage) return;
     received.add(message);
     final sender = context.sender;
@@ -463,7 +471,7 @@ class _LateRecordingWallet extends Actor {
 
 /// ARC without a network: answers a submission with [status] (and
 /// [message]) once [gate], when set, is released.
-class _GatedArc extends ArcService {
+class _GatedArc extends OfflineArc {
   _GatedArc() : super(baseUrl: 'fake://arc');
 
   final List<String> submitted = [];

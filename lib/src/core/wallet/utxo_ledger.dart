@@ -11,7 +11,6 @@ import 'package:logging/logging.dart';
 import '../../models/bitcoin_utxo.dart';
 import '../../models/wallet_balances.dart';
 import '../../models/wallet_state.dart';
-import '../../models/wallet_type.dart';
 import '../../models/persistent_map.dart';
 import '../../plugin/plugin_registry.dart';
 import '../../utils/network_name.dart';
@@ -383,51 +382,6 @@ abstract final class UtxoLedger {
     );
 
     return [event];
-  }
-
-  /// Validates a request to split UTXOs according to Benford's Law
-  /// distribution and emits [UTXOSplitInitiatedEvent].
-  ///
-  /// The event is informational: nothing subscribes to it. The actual
-  /// orchestration (building, signing, broadcasting) is command-driven and
-  /// runs in `BenfordCoordinatorActor`, which the split command reaches
-  /// through `WalletManagerActor` (bead libspiffy-7e77).
-  static List<Event> splitToBenford(WalletState currentState, SplitUTXOsToBenfordCommand command) {
-    // Business rule: Wallet must exist
-    if (!currentState.isCreated) {
-      throw StateError('Cannot split UTXOs for non-existent wallet');
-    }
-
-    // Business rule: Watch-only wallets cannot sign
-    if (currentState.walletType == WalletType.xpub) {
-      throw StateError('Signing (split) not supported for watch-only wallets');
-    }
-
-    // Get all available UTXOs. Selection is the shared rule, so a
-    // plugin-managed output is never split; the diagnosis of an empty result
-    // is the shared reason helper, so the split says which exclusion emptied
-    // the wallet just as channel funding does (bead libspiffy-f4qy: it used
-    // to name watch-only funds and nothing else, so a wallet holding only
-    // token outputs was told only that it had none).
-    final availableUtxos = available(currentState);
-    if (availableUtxos.isEmpty) {
-      throw StateError(WalletBalances.noneSelectableReason(
-        currentState,
-        noneMessage: 'No available UTXOs to split',
-      ));
-    }
-
-    // Emit single event - BenfordCoordinatorActor will handle orchestration
-    return [
-      UTXOSplitInitiatedEvent(
-        walletId: command.walletId,
-        utxoKeysToSplit: availableUtxos.map((u) => u.key).toList(),
-        targetUtxoCount: command.targetUtxoCount,
-        feeRate: command.feeRate ?? BigInt.one,
-        version: currentState.version + 1,
-        timestamp: DateTime.now(),
-      ),
-    ];
   }
 
   // ---------------------------------------------------------------------------

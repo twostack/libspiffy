@@ -302,6 +302,13 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### The in-memory backend answers a status query from its index
+
+- `InMemoryWalletStorage.getTransactionsByStatus` reads only the rows with
+  that status. It filtered every row of every wallet, so `ARCActor`'s status
+  scan, which asks for four statuses, read the whole history four times on
+  every pass.
+
 ### Change from a broadcast is spendable as soon as the wallet has recorded it
 
 - When ARC reported a transaction on the network before the wallet's read

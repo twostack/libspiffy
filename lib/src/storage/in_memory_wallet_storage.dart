@@ -556,30 +556,21 @@ _balanceCache.remove(walletId);
     return result;
   }
 
+  /// Reads only the rows with [status], through the status index
+  /// [_byStatusUpdatedAt] (bead libspiffy-wyxn). This used to filter every
+  /// row of every wallet, so ARCActor's status scan, which asks for four
+  /// statuses, read the whole transaction history four times per pass.
   @override
   Future<List<BitcoinTransaction>> getTransactionsByStatus(
     TransactionStatus status, {
     String? walletId,
   }) async {
-    // Get all transactions or filter by wallet
-    Iterable<BitcoinTransaction> transactions;
-    
-    if (walletId != null) {
-      // Filter by wallet
-      transactions = _transactions[walletId]?.values ?? const <BitcoinTransaction>[];
-    } else {
-      // Get all transactions (one row per wallet holding the txid)
-      transactions = _transactions.values.expand((txs) => txs.values);
-    }
-    
-    // Filter by status and sort by creation date (descending, stable)
-    final filtered = transactions.where((tx) {
-      transactionRowsRead++;
-      return tx.status == status;
-    }).toList();
-    mergeSort<BitcoinTransaction>(filtered,
-        compare: (a, b) => b.createdAt.compareTo(a.createdAt));
-    return filtered;
+    final rows = <BitcoinTransaction>[
+      for (final (rowWallet, txid) in _byStatusUpdatedAt[status]?.values ?? const <(String, String)>[])
+        if (walletId == null || rowWallet == walletId)
+          if (_transactions[rowWallet]?[txid] case final tx?) tx,
+    ];
+    return _transactionsNewestFirst(rows);
   }
 
   @override

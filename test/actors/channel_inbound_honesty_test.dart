@@ -25,6 +25,7 @@ import 'package:libspiffy/src/actors/payment_channel_messages.dart';
 import 'package:libspiffy/src/actors/wallet_coordinator_actor.dart';
 import 'package:libspiffy/src/core/channel_events.dart' as ch;
 import 'package:libspiffy/src/storage/in_memory_wallet_storage.dart';
+import '../mocks/policy_rate_arc.dart';
 
 void main() {
   late ActorSystem actorSystem;
@@ -49,6 +50,7 @@ void main() {
     adapter = ChannelP2PAdapter(
       channelManager: channelManager,
       walletManager: walletManager,
+      arcActor: await actorSystem.spawn('arc', () => PolicyRateArc()),
       emitEvent: emitted.add,
       channelEvents: channelEvents.stream,
       walletId: 'server-wallet',

@@ -24,13 +24,16 @@ import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 
 import '../actors/channel_test_fixtures.dart';
 import '../actors/in_memory_event_store.dart';
+import 'package:libspiffy/src/models/fee_rate.dart';
 
 const _channelId = 'channel-guards';
 const _persistenceId = 'PaymentChannel_$_channelId';
 const _ask = Duration(seconds: 3);
 final _funding = BigInt.from(100000);
-final _clientPub = '02${'ab' * 32}';
-final _serverPub = '03${'cd' * 32}';
+// Real keys: a payment's fee is checked against the signed size of a spend
+// of their 2-of-2 (bead libspiffy-zs4l), which needs points on the curve.
+final _clientPub = dartsv.SVPrivateKey.fromHex('11' * 32, dartsv.NetworkType.TEST).publicKey.toHex();
+final _serverPub = dartsv.SVPrivateKey.fromHex('22' * 32, dartsv.NetworkType.TEST).publicKey.toHex();
 const _clientAddress = 'mkHS9ne12qx9pS9VojpwU5xtRd4T7X7ZUt';
 const _serverAddress = 'n2eMqTT929pb1RDNuqEnxdaLau1rxy3efi';
 final _fundingTxId = 'f1' * 32;
@@ -96,7 +99,7 @@ AcknowledgePaymentCommand _ack({
   required int server,
   int sequence = 1,
 }) =>
-    AcknowledgePaymentCommand(
+    AcknowledgePaymentCommand(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
       channelId: _channelId,
       amountSats: BigInt.from(amount),
       paymentTxHex: channelPaymentTxHex(
@@ -138,7 +141,7 @@ RecordPaymentCommand _record({
   required int server,
   int sequence = 1,
 }) =>
-    RecordPaymentCommand(
+    RecordPaymentCommand(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
       channelId: _channelId,
       amountSats: BigInt.from(amount),
       sequenceNumber: sequence,

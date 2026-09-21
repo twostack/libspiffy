@@ -167,10 +167,12 @@ void main() {
       );
 
       // Spawn Bob's ChannelManager
+      final bobArcRef = await bobActorSystem.spawn('bob-arc', () => RecordingArcActor());
       bobChannelManager = await bobActorSystem.spawn(
         'bob-channel-manager',
         () => PaymentChannelManagerActor(
           walletManager: bobWalletManager,
+          arcActor: bobArcRef,
           eventStore: bobEventStore,
           cryptoService: cryptoService,
           networkType: NetworkType.TEST,

@@ -33,6 +33,7 @@ import 'package:libspiffy/src/storage/in_memory_secure_storage.dart';
 import 'package:libspiffy/src/utils/bip32.dart';
 
 import '../actors/in_memory_event_store.dart';
+import 'package:libspiffy/src/models/fee_rate.dart';
 
 const _w = 'dp4-wallet';
 const _mnemonic = 'abandon abandon abandon abandon abandon abandon '
@@ -351,7 +352,7 @@ void main() {
       return wallet;
     }
 
-    BuildFundingTransactionCommand command(_Wallet wallet, int sats) => BuildFundingTransactionCommand(
+    BuildFundingTransactionCommand command(_Wallet wallet, int sats) => BuildFundingTransactionCommand(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
           walletId: _w,
           correlationId: 'corr',
           channelId: 'ch-1',
@@ -382,7 +383,7 @@ void main() {
       await expectLater(
         wallet3.handle(command(wallet3, 153000)),
         throwsA(isA<StateError>().having((e) => e.message, 'message',
-            'Failed to build funding transaction: Bad state: Insufficient funds: need 153068, have 153000')),
+            'Failed to build funding transaction: Bad state: Insufficient funds: need 153069, have 153000')),
       );
     });
 
@@ -400,7 +401,9 @@ void main() {
       expect(
         [response.fundingTxId, response.fundingOutputIndex, response.changeOutputIndex, response.changeAddress,
           response.changeAmount, response.fee, response.totalInputSats, response.totalOutputSats],
-        ['659c3e6e6465956c4a7767f9f46fa83233d1b61f5a9200ec2cf614fcc2e773c1', 1, 0, wallet.change2, 59977, 23, 90000, 89977],
+        // The fee is 24, not 23, since bead libspiffy-zs4l: ARC's policy rate
+        // rounded up, as every fee is — the funding used to round down.
+        ['50c13621fff0aa65a0e81dce0f54658df4f97c626c940f5b6c2e101938458b03', 1, 0, wallet.change2, 59976, 24, 90000, 89976],
       );
       expect(response.spentUtxoKeys, [_key(4)]);
       expect(dartsv.Transaction.fromHex(response.fundingTxHex).id, response.fundingTxId);

@@ -17,6 +17,8 @@ import 'package:libspiffy/src/actors/wallet_messages.dart';
 import 'package:libspiffy/src/core/channel_events.dart' as ch;
 import 'package:libspiffy/src/core/wallet_commands.dart';
 import 'package:libspiffy/src/storage/in_memory_wallet_storage.dart';
+import '../mocks/policy_rate_arc.dart';
+import 'package:libspiffy/src/models/fee_rate.dart';
 
 void main() {
   late ActorSystem actorSystem;
@@ -28,6 +30,7 @@ void main() {
   late StreamController<ch.ChannelEvent> channelEvents;
   late List<coord.CoordinatorEvent> emitted;
   late ChannelP2PAdapter adapter;
+  late PolicyRateArc arc;
 
   setUp(() async {
     actorSystem = LocalActorSystem();
@@ -42,6 +45,7 @@ void main() {
     adapter = ChannelP2PAdapter(
       channelManager: channelManager,
       walletManager: walletManager,
+      arcActor: await actorSystem.spawn('arc', () => arc = PolicyRateArc(const FeeRate(satoshis: 250, bytes: 1000))),
       emitEvent: emitted.add,
       channelEvents: channelEvents.stream,
       walletId: 'client-wallet',
@@ -54,6 +58,45 @@ void main() {
     adapter.dispose();
     await channelEvents.close();
     await actorSystem.shutdown();
+  });
+
+  // Bead libspiffy-zs4l: the funding pays ARC's policy rate, and the
+  // wallet aggregate cannot ask ARC, so the adapter asks before it requests
+  // the build. A rate ARC cannot give is a failed build, told to the host and
+  // to the server waiting for the refund, never a guessed rate.
+  test('zs4l: a channel ARC cannot give the policy rate for builds no funding, and both sides are told', () async {
+    arc.rate = null;
+    channelEvents.add(ch.ChannelRequestedEvent(
+      channelId: 'chan-no-rate',
+      walletId: 'client-wallet',
+      clientPeerId: 'client-peer',
+      serverPeerId: 'server-peer',
+      clientPubKeyHex: '02' * 33,
+      clientAddressB58: 'mqCnSf8i6kmaQaJ54HjQ8EUJnuK4AnCv12',
+      derivationIndex: 7,
+      fundingAmountSats: BigInt.from(50000),
+      lockTimeUnix: 1700000000,
+    ));
+    await Future.delayed(const Duration(milliseconds: 50));
+
+    adapter.handleP2PMessage('server-peer', 'channel_accept', {
+      'channelId': 'chan-no-rate',
+      'serverPubKey': '03' * 33,
+      'serverAddress': 'mkHS9ne12qx9pS9VojpwU5xtRd4T7X7ZUt',
+      'derivationIndex': 3,
+    });
+    await Future.delayed(const Duration(milliseconds: 150));
+
+    expect(walletManagerProbe.received.map((r) => r.message).whereType<WalletCommandMessage>(), isEmpty,
+        reason: 'a funding was requested at no rate');
+    expect(emitted.whereType<coord.ErrorEvent>().single.message,
+        allOf(contains('building the funding transaction'), contains('policy')));
+    expect(
+        emitted
+            .whereType<coord.ChannelP2PMessageToSendEvent>()
+            .where((e) => e.messageType == 'channel_error' && e.toPeerId == 'server-peer'),
+        hasLength(1),
+        reason: 'the server is waiting for a refund that will not come');
   });
 
   test('channel_accept routes BuildFundingTransactionCommand to the wallet manager', () async {
@@ -103,6 +146,8 @@ void main() {
     expect(build.fundingAmountSats, equals(50000));
     expect(build.changeAddressBase58, equals('mqCnSf8i6kmaQaJ54HjQ8EUJnuK4AnCv12'));
     expect(build.derivationIndex, equals(7));
+    expect(build.feeRate, const FeeRate(satoshis: 250, bytes: 1000),
+        reason: "the funding pays ARC's published rate (bead libspiffy-zs4l)");
 
     final sender = walletManagerProbe.received
         .firstWhere((r) => r.message is WalletCommandMessage)

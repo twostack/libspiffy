@@ -29,6 +29,7 @@ import 'package:libspiffy/src/utils/beef.dart';
 
 import '../actors/channel_test_fixtures.dart';
 import '../actors/in_memory_event_store.dart';
+import 'package:libspiffy/src/models/fee_rate.dart';
 
 const _channelId = 'channel-refund-guards';
 const _persistenceId = 'PaymentChannel_$_channelId';
@@ -234,7 +235,7 @@ void main() {
       final signed =
           dartsv.Transaction.fromHex(countersigned.signedRefundTxHex!);
       expect(signed.nLockTime, f.lockTimeUnix);
-      PaymentChannelBuilder(cryptoService: DartSVCryptoService())
+      const PaymentChannelBuilder()
           .verifyMultisigSpend(
         signedTx: signed,
         redeemScript: dartsv.P2MSLockBuilder(
@@ -538,9 +539,8 @@ void main() {
         );
 
     Future<String> refundWith({int? lockTimeUnix, int? sequence}) async {
-      final refund = await PaymentChannelBuilder(
-              cryptoService: DartSVCryptoService())
-          .buildRefundTransaction(
+      final refund = await const PaymentChannelBuilder()
+          .buildRefundTransaction(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
         fundingTxId: f.fundingTxId,
         fundingOutputIndex: 0,
         fundingAmountSats: f.amountSats,

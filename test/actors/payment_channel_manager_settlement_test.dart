@@ -37,6 +37,8 @@ import 'package:libspiffy/src/storage/in_memory_wallet_storage.dart';
 
 import 'channel_test_fixtures.dart';
 import 'in_memory_event_store.dart';
+import 'package:libspiffy/src/models/fee_rate.dart';
+import '../mocks/policy_rate_arc.dart';
 
 const _channelId = 'chan-settle';
 const _walletId = 'wallet';
@@ -57,8 +59,8 @@ class _Settlement {
     required BigInt serverAmountSats,
     int sequenceNumber = 1,
   }) async {
-    final builder = PaymentChannelBuilder(cryptoService: DartSVCryptoService());
-    final built = await builder.buildPaymentTransaction(
+    final builder = const PaymentChannelBuilder();
+    final built = await builder.buildPaymentTransaction(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
       fundingTxId: f.fundingTxId,
       fundingOutputIndex: 0,
       fundingAmountSats: f.amountSats,
@@ -166,8 +168,8 @@ class _PaymentPair {
     required BigInt serverAmountSats,
     int sequenceNumber = 1,
   }) async {
-    final builder = PaymentChannelBuilder(cryptoService: DartSVCryptoService());
-    final built = await builder.buildPaymentTransaction(
+    final builder = const PaymentChannelBuilder();
+    final built = await builder.buildPaymentTransaction(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
       fundingTxId: f.fundingTxId,
       fundingOutputIndex: 0,
       fundingAmountSats: f.amountSats,
@@ -236,9 +238,11 @@ void main() {
     }
     wallet = FixtureWalletManager(key);
     walletRef = await system.spawn('wallet', () => wallet);
+    final policyArc1 = await system.spawn('policy-arc-${DateTime.now().microsecondsSinceEpoch}', () => PolicyRateArc());
     managerRef = await system.spawn(
       'manager',
       () => PaymentChannelManagerActor(
+            arcActor: policyArc1,
         walletManager: walletRef,
         eventStore: store,
         cryptoService: DartSVCryptoService(),
@@ -395,9 +399,8 @@ void main() {
       // Server side, open, no payment yet: the acknowledgment is driven
       // through the manager so the settlement is assembled from the two
       // real signatures rather than handed to the journal ready-made.
-      final unsigned = await PaymentChannelBuilder(
-              cryptoService: DartSVCryptoService())
-          .buildPaymentTransaction(
+      final unsigned = await const PaymentChannelBuilder()
+          .buildPaymentTransaction(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
         fundingTxId: f.fundingTxId,
         fundingOutputIndex: 0,
         fundingAmountSats: f.amountSats,
@@ -408,8 +411,7 @@ void main() {
         serverAmountSats: BigInt.from(30000),
         sequenceNumber: 1,
       );
-      final clientSignature = (await PaymentChannelBuilder(
-                  cryptoService: DartSVCryptoService())
+      final clientSignature = (await const PaymentChannelBuilder()
               .signMultisigInput(
         transaction: unsigned.transaction,
         inputIndex: 0,
@@ -501,9 +503,8 @@ void main() {
 
     test('a client closing cooperatively holds only the unsigned payment '
         'template, so it records nothing and stays closing', () async {
-      final unsigned = await PaymentChannelBuilder(
-              cryptoService: DartSVCryptoService())
-          .buildPaymentTransaction(
+      final unsigned = await const PaymentChannelBuilder()
+          .buildPaymentTransaction(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
         fundingTxId: f.fundingTxId,
         fundingOutputIndex: 0,
         fundingAmountSats: f.amountSats,
@@ -671,8 +672,7 @@ void main() {
 
       // A well-formed signature of the wrong transaction: it parses, and it
       // does not satisfy the funding output.
-      final wrong = (await PaymentChannelBuilder(
-                  cryptoService: DartSVCryptoService())
+      final wrong = (await const PaymentChannelBuilder()
               .signMultisigInput(
         transaction: dartsv.Transaction.fromHex(f.refundTxHex),
         inputIndex: 0,

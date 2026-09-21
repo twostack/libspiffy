@@ -31,6 +31,7 @@ import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 
 import 'channel_test_fixtures.dart';
 import 'in_memory_event_store.dart';
+import '../mocks/policy_rate_arc.dart';
 
 const _walletId = 'kyw-wallet';
 const _channelId = 'chan-kyw';
@@ -78,9 +79,11 @@ void main() {
     final spvRef = await actorSystem.spawn('spv', () => ScriptedSpvActor());
     projection = _SpyProjection();
     final projectionRef = await actorSystem.spawn('channel-projection', () => projection);
+    final policyArc1 = await actorSystem.spawn('policy-arc-${DateTime.now().microsecondsSinceEpoch}', () => PolicyRateArc());
     managerRef = await actorSystem.spawn(
       'channel-manager',
       () => PaymentChannelManagerActor(
+            arcActor: policyArc1,
         walletManager: walletRef,
         eventStore: InMemoryEventStore(),
         cryptoService: cryptoService,

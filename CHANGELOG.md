@@ -302,6 +302,28 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### Channel transactions pay ARC's policy rate — breaking
+
+- A channel's refund and payment transactions paid **1 satoshi**:
+  `PaymentChannelBuilder` defaulted to 1 sat/kB and sized the 2-of-2 input
+  as a 300-byte guess. The funding paid a hardcoded 100 sat/kB, rounded
+  down. All three now pay ARC's published policy rate on their signed
+  size, like every other transaction the wallet builds.
+- **The server requires it too.** A payment whose transaction pays less
+  than the policy rate is refused: the server could never get it mined.
+  When ARC cannot give the rate, the channel builds nothing and
+  countersigns nothing — an open is reported as a failed funding build,
+  to the host and to the server.
+- `PaymentChannelBuilder` is `const PaymentChannelBuilder()`; its refund and
+  payment builders take `feeRate:`; `PaymentChannelBuilder.paymentFee`.
+  **Removed**: `buildFundingTransaction` (a second funding builder, never
+  used, that took a raw private key — the wallet aggregate builds fundings),
+  `verifyP2PKHSpend`, `estimateFee`, `calculateFee`, `defaultFeePerKb`,
+  `minimumFeeSats`, `multisigInputSize`, `p2pkhOutputSize`, `txOverhead`.
+- `BuildFundingTransactionCommand.feeRate`, `RecordPaymentCommand.feeRate`,
+  `AcknowledgePaymentCommand.feeRate` (required). `ChannelP2PAdapter`
+  takes `arcActor:`.
+
 ### A channel server countersigns only a payment that pays it — security
 
 - **The server signed whatever transaction came with a channel payment.**

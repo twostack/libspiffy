@@ -28,6 +28,8 @@ import 'package:libspiffy/src/services/payment_channel_builder.dart';
 
 import 'channel_test_fixtures.dart';
 import 'in_memory_event_store.dart';
+import 'package:libspiffy/src/models/fee_rate.dart';
+import '../mocks/policy_rate_arc.dart';
 
 const _channelId = 'chan-zj20';
 const _walletId = 'wallet';
@@ -39,6 +41,9 @@ void main() {
   late ChannelRefundFixture f;
   late FixtureWalletManager wallet;
   late ActorRef managerRef;
+
+  /// The server's ARC: the policy rate it holds a payment's fee to.
+  late PolicyRateArc serverArc;
 
   /// What the client says the payment leaves each side with: 30,000 to the
   /// server.
@@ -70,9 +75,12 @@ void main() {
     ], 0);
     wallet = FixtureWalletManager(f.serverKey);
     final walletRef = await system.spawn('wallet', () => wallet);
+    serverArc = PolicyRateArc();
+    final policyArc1 = await system.spawn('policy-arc', () => serverArc);
     managerRef = await system.spawn(
       'manager',
       () => PaymentChannelManagerActor(
+            arcActor: policyArc1,
         walletManager: walletRef,
         eventStore: store,
         cryptoService: DartSVCryptoService(),
@@ -87,8 +95,8 @@ void main() {
 
   /// The transaction an honest client sends for a payment of [paid]: the
   /// builder's, spending the funding output and paying both sides.
-  Future<dartsv.Transaction> honest() async => (await PaymentChannelBuilder(cryptoService: DartSVCryptoService())
-          .buildPaymentTransaction(
+  Future<dartsv.Transaction> honest() async => (await const PaymentChannelBuilder()
+          .buildPaymentTransaction(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
         fundingTxId: f.fundingTxId,
         fundingOutputIndex: 0,
         fundingAmountSats: f.amountSats,
@@ -107,7 +115,7 @@ void main() {
   /// Sends [tx] as the transaction of a payment of [paid], signed by the
   /// client, and returns the server's answer.
   Future<PaymentAcknowledgedResponse> send(dartsv.Transaction tx) async {
-    final clientSignature = (await PaymentChannelBuilder(cryptoService: DartSVCryptoService()).signMultisigInput(
+    final clientSignature = (await const PaymentChannelBuilder().signMultisigInput(
       transaction: tx,
       inputIndex: 0,
       privateKey: f.clientKey,
@@ -178,6 +186,30 @@ void main() {
     unminable.outputs[client] = dartsv.TransactionOutput(f.amountSats - paid + BigInt.one, p2pkh(f.clientAddressB58));
 
     expectRefused(await send(unminable), contains('client'));
+  });
+
+  // Bead libspiffy-zs4l: the server holds the payment's fee to ARC's policy
+  // rate on its signed size. One below it is a payment the server could not
+  // get mined; the client's balance would be the only money that moves.
+  test('zs4l: a transaction paying no fee is refused: the server could not get it mined', () async {
+    final free = await honest();
+    final client = free.outputs.indexWhere((o) => o.script.toHex() == p2pkh(f.clientAddressB58).toHex());
+    free.outputs[client] = dartsv.TransactionOutput(f.amountSats - paid, p2pkh(f.clientAddressB58));
+
+    expectRefused(await send(free), contains('fee'));
+  });
+
+  test('zs4l: a transaction below the rate ARC publishes to the server is refused', () async {
+    // Built at 100 sat/1000 bytes; the server's ARC now asks five times that.
+    serverArc.rate = const FeeRate(satoshis: 500, bytes: 1000);
+
+    expectRefused(await send(await honest()), allOf(contains('fee'), contains('500 sat/1000 bytes')));
+  });
+
+  test('zs4l: a payment is not countersigned when ARC cannot give the rate to check it against', () async {
+    serverArc.rate = null;
+
+    expectRefused(await send(await honest()), contains('policy'));
   });
 
   test('zj20: a transaction with an output to anyone else is refused', () async {

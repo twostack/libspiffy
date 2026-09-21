@@ -4,6 +4,7 @@ import 'package:isar/isar.dart';
 import 'package:eventador/eventador.dart';
 import 'package:libspiffy/libspiffy.dart';
 import 'package:libspiffy/internals.dart';
+import 'package:libspiffy/src/models/fee_rate.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
 
 void main() {
@@ -525,7 +526,7 @@ void main() {
         ));
 
         // Try to build funding transaction - should fail
-        final fundingCommand = BuildFundingTransactionCommand(
+        final fundingCommand = BuildFundingTransactionCommand(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
           walletId: 'xpub-wallet-funding',
           correlationId: 'test-corr',
           channelId: 'test-channel',

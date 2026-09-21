@@ -30,6 +30,7 @@ import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 import '../actors/channel_test_fixtures.dart';
 import '../actors/in_memory_event_store.dart';
 import 'package:libspiffy/src/actors/payment_channel_messages.dart';
+import 'package:libspiffy/src/models/fee_rate.dart';
 
 const _channelId = 'channel-invariants';
 const _persistenceId = 'PaymentChannel_$_channelId';
@@ -100,7 +101,7 @@ void main() {
       // impossible: 100 000 went in, 99 000 is accounted for. The server's
       // own handler has refused this shape since audit M10.
       final reply = await ref.ask<dynamic>(
-        RecordPaymentCommand(
+        RecordPaymentCommand(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
           channelId: _channelId,
           amountSats: BigInt.from(1000),
           newClientBalanceSats: BigInt.from(98000),
@@ -126,7 +127,7 @@ void main() {
 
       final client = await spawn(f.openClientJournal());
       final clientReply = await client.ask<dynamic>(
-        RecordPaymentCommand(
+        RecordPaymentCommand(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
           channelId: _channelId,
           amountSats: BigInt.from(bad.amount),
           newClientBalanceSats: BigInt.from(bad.client),
@@ -142,7 +143,7 @@ void main() {
       store.journal.clear();
       final server = await spawn(_openServerChannel(f));
       final serverReply = await server.ask<dynamic>(
-        AcknowledgePaymentCommand(
+        AcknowledgePaymentCommand(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
           channelId: _channelId,
           amountSats: BigInt.from(bad.amount),
           paymentTxHex: '00',
@@ -169,7 +170,7 @@ void main() {
       final ref = await spawn(f.openClientJournal());
 
       final reply = await ref.ask<dynamic>(
-        RecordPaymentCommand(
+        RecordPaymentCommand(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
           channelId: _channelId,
           amountSats: BigInt.from(1000),
           newClientBalanceSats: f.amountSats - BigInt.from(1000),
@@ -200,7 +201,7 @@ void main() {
       final ref = await spawn(f.openClientJournal());
 
       final reply = await ref.ask<dynamic>(
-        RecordPaymentCommand(
+        RecordPaymentCommand(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
           channelId: _channelId,
           amountSats: BigInt.from(1000),
           newClientBalanceSats: f.amountSats - BigInt.from(1000),

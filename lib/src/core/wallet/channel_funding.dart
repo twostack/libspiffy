@@ -8,6 +8,7 @@ import 'package:dartsv/dartsv.dart' as dartsv;
 
 import '../../actors/wallet_messages.dart' show FundingTransactionBuiltResponse;
 import '../../models/bitcoin_utxo.dart';
+import '../../models/fee_rate.dart';
 import '../../models/wallet_balances.dart';
 import '../../models/wallet_state.dart';
 import '../../models/wallet_type.dart';
@@ -16,6 +17,7 @@ import '../wallet_events.dart';
 import '../wallet_output_ownership.dart';
 import 'deferred_payments.dart';
 import 'transaction_signer.dart';
+import 'transaction_size.dart';
 import 'wallet_keys.dart';
 
 /// A funding transaction built for a [BuildFundingTransactionCommand]: the
@@ -29,21 +31,6 @@ class ChannelFunding {
   final DeferredPayments deferred;
 
   ChannelFunding(this.keys, this.deferred);
-
-  /// Fee estimation constants.
-  static const _txOverhead = 10;
-  static const _p2pkhInputSize = 148;
-  static const _p2pkhOutputSize = 34;
-  static const _feePerKb = 100;
-
-  /// The 36-byte outpoint and 4-byte sequence number every input carries,
-  /// plus the one-byte length prefix of its unlocking script.
-  static const _inputOverhead = 36 + 4 + 1;
-
-  /// One signature in an unlocking script: the push opcode plus a 72-byte DER
-  /// signature with its sighash byte. (148 = [_inputOverhead] + this + the
-  /// 34-byte push of a compressed public key.)
-  static const _signaturePush = 73;
 
   /// The UTXOs a funding transaction may spend, largest first: the wallet's
   /// own spendable funds, by the one rule the rest of the wallet selects by
@@ -97,42 +84,30 @@ class ChannelFunding {
         noneMessage: 'No available UTXOs for funding',
       );
 
-  /// The bytes a signed input spending [utxo] adds to a transaction.
-  ///
-  /// Not every funding input is 148 bytes any more (bead libspiffy-8egy): a
-  /// P2PK input carries one signature and no public key, and an m-of-n bare
-  /// multisig input carries `OP_0` and m signatures. Estimating them all as
-  /// P2PKH underpays an m-of-n input from m = 2 up.
-  static int _inputSize(BitcoinUtxo utxo) {
-    final multisig = BareMultisigScript.parseHex(utxo.scriptPubKey);
-    if (multisig != null) {
-      // `OP_0 <sig>...`, one signature per required key.
-      return _inputOverhead + 1 + (multisig.threshold * _signaturePush);
-    }
-    // `<sig>` alone.
-    if (p2pkPublicKeyHex(utxo.scriptPubKey) != null) return _inputOverhead + _signaturePush;
-    return _p2pkhInputSize;
-  }
+  /// The locking script [utxo] is spent over: its own, or — for a row that
+  /// carries none — the P2PKH script of its address, which is all there is
+  /// to go on.
+  static dartsv.SVScript _lockingScript(BitcoinUtxo utxo) => utxo.scriptPubKey.isNotEmpty
+      ? dartsv.SVScript.fromHex(utxo.scriptPubKey)
+      : dartsv.P2PKHLockBuilder.fromAddress(dartsv.Address.fromBase58(utxo.address)).getScriptPubkey();
 
-  /// The bytes an output whose locking script is [scriptBytes] long adds: the
-  /// 8-byte amount, the script's length prefix and the script itself.
-  static int _outputSize(int scriptBytes) => 8 + (scriptBytes < 253 ? 1 : 3) + scriptBytes;
-
-  /// The estimated fee of a funding transaction spending [inputs], with a
-  /// channel funding output whose locking script is [fundingScriptBytes] long
-  /// and a P2PKH change output, at the standard policy rate. There is no fee
-  /// auction on this network: the policy rate is the whole requirement, for a
+  /// The fee of a funding transaction spending [inputs], with a channel
+  /// funding output whose locking script is [fundingScriptBytes] long and a
+  /// P2PKH change output: [rate], ARC's published policy rate, on its signed
+  /// size ([TransactionSize], bead libspiffy-zs4l). There is no fee auction
+  /// on this network: the policy rate is the whole requirement, for a
   /// channel funding as for anything else.
   ///
-  /// The funding output is a 2-of-2 bare multisig (two public keys, ~71
-  /// bytes), not the 34 bytes of a P2PKH output it used to be counted as.
-  static BigInt _fee(Iterable<BitcoinUtxo> inputs, int fundingScriptBytes) {
-    final estimatedSize = _txOverhead +
-        inputs.fold<int>(0, (sum, utxo) => sum + _inputSize(utxo)) +
-        _outputSize(fundingScriptBytes) +
-        _p2pkhOutputSize;
-    return BigInt.from((estimatedSize * _feePerKb) ~/ 1000);
-  }
+  /// Each input is sized by the unlocking script the wallet writes for it
+  /// (bead libspiffy-8egy: a P2PK input carries one signature and no public
+  /// key, an m-of-n bare multisig `OP_0` and m signatures), and the funding
+  /// output is the 2-of-2 bare multisig it is. This used to be a private
+  /// copy of that model at a hardcoded 100 sat/kB, rounded down.
+  static BigInt _fee(Iterable<BitcoinUtxo> inputs, int fundingScriptBytes, FeeRate rate) =>
+      rate.feeFor(TransactionSize.of(
+        inputLockingScripts: [for (final utxo in inputs) _lockingScript(utxo).toHex()],
+        outputScriptBytes: [fundingScriptBytes, TransactionSize.p2pkhScriptBytes],
+      ));
 
   /// Builds and signs the 2-of-2 multisig funding transaction [command]
   /// asks for, funded by the client's P2PKH UTXOs selected largest first.
@@ -173,13 +148,13 @@ class ChannelFunding {
       selectedTotal += utxo.value.getValue();
 
       // Check if we have enough (with some buffer for fee variance)
-      if (selectedTotal >= fundingAmount + _fee(selectedUtxos, fundingScriptBytes)) {
+      if (selectedTotal >= fundingAmount + _fee(selectedUtxos, fundingScriptBytes, command.feeRate)) {
         break;
       }
     }
 
     // Final fee calculation with selected UTXOs
-    final fee = _fee(selectedUtxos, fundingScriptBytes);
+    final fee = _fee(selectedUtxos, fundingScriptBytes, command.feeRate);
 
     if (selectedTotal < fundingAmount + fee) {
       throw StateError('Insufficient funds: need ${fundingAmount + fee}, have $selectedTotal');
@@ -213,9 +188,7 @@ class ChannelFunding {
       // UTXO's address: a bare multisig or P2PK input signed over a P2PKH
       // subscript is an input no node accepts. (A row with no script falls
       // back to the address, which is all there is to go on.)
-      final lockingScript = utxo.scriptPubKey.isNotEmpty
-          ? dartsv.SVScript.fromHex(utxo.scriptPubKey)
-          : dartsv.P2PKHLockBuilder.fromAddress(dartsv.Address.fromBase58(utxo.address)).getScriptPubkey();
+      final lockingScript = _lockingScript(utxo);
 
       final outpoint = dartsv.TransactionOutpoint(
         utxo.txid,

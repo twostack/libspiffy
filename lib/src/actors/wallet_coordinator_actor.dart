@@ -210,6 +210,7 @@ class WalletCoordinatorActor extends Actor {
       _channelAdapter = ChannelP2PAdapter(
         channelManager: channelManager,
         walletManager: walletManager,
+        arcActor: arcActor,
         emitEvent: _emitEvent,
         channelEvents: channelEvents,
         walletId: '',

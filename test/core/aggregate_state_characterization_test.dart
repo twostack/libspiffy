@@ -35,6 +35,7 @@ import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 import 'package:libspiffy/src/storage/in_memory_secure_storage.dart';
 
 import '../actors/in_memory_event_store.dart';
+import 'package:libspiffy/src/models/fee_rate.dart';
 
 const _walletId = 'mmb-wallet';
 const _mnemonic = 'abandon abandon abandon abandon abandon abandon '
@@ -347,7 +348,7 @@ void main() {
           publicKeys: const [],
           derivationIndices: const [3],
         ),
-        BuildFundingTransactionCommand(
+        BuildFundingTransactionCommand(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
           walletId: _walletId,
           correlationId: 'c',
           channelId: 'ch',
@@ -550,7 +551,7 @@ void main() {
     test('rejected commands leave the state and the journal unchanged', () async {
       final (channel, store) = await openChannel();
       Map<String, dynamic> snapshot() => PaymentChannelAggregate.channelStateToMap(channel.currentState);
-      RecordPaymentCommand pay({required int amount, required int sequence, int? client}) => RecordPaymentCommand(
+      RecordPaymentCommand pay({required int amount, required int sequence, int? client}) => RecordPaymentCommand(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
             channelId: channelId,
             amountSats: BigInt.from(amount),
             sequenceNumber: sequence,

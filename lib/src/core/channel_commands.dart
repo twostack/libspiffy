@@ -1,5 +1,6 @@
 import 'package:eventador/eventador.dart';
 
+import '../models/fee_rate.dart';
 import '../models/persistent_map.dart';
 
 /// Base class for all channel commands
@@ -440,6 +441,10 @@ class RecordPaymentCommand extends ChannelCommand {
   final String? purpose;
   final String? invoiceId;
 
+  /// ARC's policy rate the client built the payment transaction at: its fee
+  /// must be at least this rate on its signed size (bead libspiffy-zs4l).
+  final FeeRate feeRate;
+
   RecordPaymentCommand({
     required String channelId,
     required this.amountSats,
@@ -451,6 +456,7 @@ class RecordPaymentCommand extends ChannelCommand {
     required this.newServerBalanceSats,
     this.purpose,
     this.invoiceId,
+    required this.feeRate,
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,
@@ -483,6 +489,11 @@ class AcknowledgePaymentCommand extends ChannelCommand {
   final BigInt proposedClientBalance;
   final BigInt proposedServerBalance;
 
+  /// ARC's policy rate the server requires: a payment transaction whose fee
+  /// is below this rate on its signed size is one the server could not get
+  /// mined, so it is not countersigned (bead libspiffy-zs4l).
+  final FeeRate feeRate;
+
   AcknowledgePaymentCommand({
     required String channelId,
     required this.amountSats,
@@ -493,6 +504,7 @@ class AcknowledgePaymentCommand extends ChannelCommand {
     required this.proposedSequence,
     required this.proposedClientBalance,
     required this.proposedServerBalance,
+    required this.feeRate,
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,

@@ -30,6 +30,7 @@ import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 
 import 'channel_test_fixtures.dart';
 import 'in_memory_event_store.dart';
+import '../mocks/policy_rate_arc.dart';
 
 const _walletId = 'channel-wallet';
 const _channelId = 'chan-reject';
@@ -98,8 +99,10 @@ void main() {
     final walletRef =
         await actorSystem.spawn('wallet-manager', () => walletStub);
     spv = ScriptedSpvActor();
+    final policyArc1 = await actorSystem.spawn('policy-arc-${DateTime.now().microsecondsSinceEpoch}', () => PolicyRateArc());
     final spvRef = await actorSystem.spawn('spv', () => spv);
     manager = PaymentChannelManagerActor(
+            arcActor: policyArc1,
       walletManager: walletRef,
       eventStore: eventStore = _ReadCountingEventStore(),
       cryptoService: cryptoService,
@@ -524,6 +527,7 @@ void main() {
       final emitted = <coord.CoordinatorEvent>[];
       final adapter = ChannelP2PAdapter(
         channelManager: managerRef,
+        arcActor: await actorSystem.spawn('adapter-arc', () => PolicyRateArc()),
         walletManager: await actorSystem.spawn(
             'unused-wallet', () => _SigningWalletManager(pubKeyHex: '', addressB58: '')),
         emitEvent: emitted.add,

@@ -31,6 +31,7 @@ import '../core/wallet_events.dart'
         TransactionRecordedEvent;
 import '../models/bitcoin_transaction.dart';
 import '../models/bitcoin_utxo.dart' show UTXOStatus;
+import '../models/fee_rate.dart';
 import '../services/ancestor_chain_service.dart';
 import '../services/crypto_service.dart';
 import '../services/payment_channel_builder.dart';
@@ -67,9 +68,14 @@ class PaymentChannelManagerActor extends Actor {
   final ActorRef? _channelProjection;
 
   /// ARCActor that broadcasts the client's funding transaction
-  /// (libspiffy-9f7). Without one a client channel cannot be funded, so it
-  /// cannot open.
+  /// (libspiffy-9f7), and gives the policy rate every channel transaction's
+  /// fee is paid at (bead libspiffy-zs4l). Without one a client channel
+  /// cannot be funded, so it cannot open, and no refund or payment can be
+  /// built or acknowledged.
   final ActorRef? _arcActor;
+
+  /// How long ARCActor may take to give its policy rate.
+  static const _feeRateTimeout = Duration(seconds: 30);
 
   /// Wallet ProjectionActor: when supplied, the funding transaction's wallet
   /// bookkeeping is awaited in the read model before the channel opens.
@@ -166,7 +172,7 @@ class PaymentChannelManagerActor extends Actor {
         _walletProjection = walletProjection,
         _broadcastTimeout = broadcastTimeout,
         _signingTimeout = signingTimeout {
-    _channelBuilder = PaymentChannelBuilder(cryptoService: cryptoService);
+    _channelBuilder = const PaymentChannelBuilder();
   }
 
   @override
@@ -678,6 +684,23 @@ class PaymentChannelManagerActor extends Actor {
     }
   }
 
+  /// ARC's published policy rate: every channel transaction's fee is that
+  /// rate on its signed size (bead libspiffy-zs4l). Throws, saying why,
+  /// when there is none: a rate nobody published is not one to build or
+  /// accept a transaction at.
+  Future<FeeRate> _policyRate() async {
+    final arcActor = _arcActor;
+    if (arcActor == null) {
+      throw StateError("No ARC to ask for the policy fee rate a channel transaction pays");
+    }
+    final quote = await arcActor.ask<FeeRateQuote>(GetFeeRateMessage(), _feeRateTimeout);
+    final rate = quote.rate;
+    if (!quote.success || rate == null) {
+      throw StateError("ARC's policy fee rate could not be read (${quote.error})");
+    }
+    return rate;
+  }
+
   /// Build refund transaction (client side, step 3)
   Future<void> _handleBuildRefundTransaction(BuildRefundTransactionMessage msg) async {
     
@@ -689,16 +712,14 @@ class PaymentChannelManagerActor extends Actor {
       final aggregateRef = await _channelAggregate(msg.channelId);
 
       // Step 2: Build the refund transaction using PaymentChannelBuilder
-      final builder = PaymentChannelBuilder(
-        cryptoService: _cryptoService,
-        networkType: _networkType,
-      );
+      final builder = const PaymentChannelBuilder();
       
       // Convert hex strings to dartsv objects
       final clientPubKey = dartsv.SVPublicKey.fromHex(msg.clientPubKeyHex);
       final serverPubKey = dartsv.SVPublicKey.fromHex(msg.serverPubKeyHex);
       final clientAddress = dartsv.Address.fromBase58(msg.clientAddressB58);
       
+      final feeRate = await _policyRate();
       final refundTxResult = await builder.buildRefundTransaction(
         fundingTxId: msg.fundingTxId,
         fundingOutputIndex: msg.fundingOutputIndex,
@@ -707,6 +728,7 @@ class PaymentChannelManagerActor extends Actor {
         serverPubKey: serverPubKey,
         clientAddress: clientAddress,
         lockTimeUnix: msg.lockTimeUnix,
+        feeRate: feeRate,
       );
       
       
@@ -1110,6 +1132,7 @@ class PaymentChannelManagerActor extends Actor {
           proposedSequence: pending.sequenceNumber,
           proposedClientBalance: pending.newClientBalance,
           proposedServerBalance: pending.newServerBalance,
+          feeRate: pending.feeRate,
         );
 
         final events = await _askAggregate(pending.channelId, aggregateRef, ackCmd);
@@ -1137,6 +1160,7 @@ class PaymentChannelManagerActor extends Actor {
           newServerBalanceSats: pending.newServerBalance,
           purpose: pending.purpose,
           invoiceId: pending.invoiceId,
+          feeRate: pending.feeRate,
         );
         
         final events = await _askAggregate(pending.channelId, aggregateRef, recordCmd);
@@ -2237,6 +2261,7 @@ class PaymentChannelManagerActor extends Actor {
       final newClientBalance = stateResponse.clientBalanceSats - msg.amountSats;
       final newServerBalance = stateResponse.serverBalanceSats + msg.amountSats;
       
+      final feeRate = await _policyRate();
       final paymentTxResult = await _channelBuilder.buildPaymentTransaction(
         fundingTxId: stateResponse.fundingTxId!,
         fundingOutputIndex: stateResponse.fundingOutputIndex!,
@@ -2247,6 +2272,7 @@ class PaymentChannelManagerActor extends Actor {
         serverAddress: serverAddress,
         serverAmountSats: newServerBalance,
         sequenceNumber: newSequence,
+        feeRate: feeRate,
       );
       
       
@@ -2278,6 +2304,7 @@ class PaymentChannelManagerActor extends Actor {
         amountSats: msg.amountSats,
         purpose: msg.purpose,
         invoiceId: msg.invoiceId,
+        feeRate: feeRate,
       );
       _pendingPaymentSignatures[correlationId] = pending;
 
@@ -2338,6 +2365,11 @@ class PaymentChannelManagerActor extends Actor {
         throw StateError('Invalid sequence: expected ${stateResponse.latestSequenceNumber + 1}, got ${msg.proposedSequence}');
       }
       
+      // The rate the transaction's fee is held to before the server signs
+      // it: a payment the server cannot get mined is not a payment (bead
+      // libspiffy-zs4l).
+      final feeRate = await _policyRate();
+
       // Step 3: Sign the payment TX as server
       
       // Build redeem script for signing
@@ -2375,6 +2407,7 @@ class PaymentChannelManagerActor extends Actor {
         serverPubKeyHex: stateResponse.serverPubKeyHex,
         fundingAmountSats: stateResponse.fundingAmountSats,
         isAcknowledgment: true,
+        feeRate: feeRate,
       );
       _pendingPaymentSignatures[correlationId] = pending;
 
@@ -3026,6 +3059,11 @@ class _PaymentSignatureContext {
 
   final bool isAcknowledgment;
 
+  /// ARC's policy rate the payment transaction's fee is held to: the one
+  /// the client built it at, or the one the server requires (bead
+  /// libspiffy-zs4l).
+  final FeeRate feeRate;
+
   _PaymentSignatureContext({
     required this.channelId,
     this.originalSender,
@@ -3042,6 +3080,7 @@ class _PaymentSignatureContext {
     this.serverPubKeyHex,
     this.fundingAmountSats,
     this.isAcknowledgment = false,
+    required this.feeRate,
   });
 }
 

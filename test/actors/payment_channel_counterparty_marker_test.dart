@@ -44,6 +44,8 @@ import 'package:libspiffy/src/storage/in_memory_wallet_storage.dart';
 
 import 'channel_test_fixtures.dart';
 import 'in_memory_event_store.dart';
+import 'package:libspiffy/src/models/fee_rate.dart';
+import '../mocks/policy_rate_arc.dart';
 
 const _channelId = 'chan-marker';
 const _walletId = 'wallet';
@@ -99,8 +101,8 @@ Future<({String hex, String txid})> _settlement(
   ChannelRefundFixture f, {
   required BigInt serverAmountSats,
 }) async {
-  final builder = PaymentChannelBuilder(cryptoService: DartSVCryptoService());
-  final built = await builder.buildPaymentTransaction(
+  final builder = const PaymentChannelBuilder();
+  final built = await builder.buildPaymentTransaction(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
     fundingTxId: f.fundingTxId,
     fundingOutputIndex: 0,
     fundingAmountSats: f.amountSats,
@@ -521,6 +523,7 @@ void main() {
       adapter = ChannelP2PAdapter(
         channelManager: channelManager,
         walletManager: walletManager,
+        arcActor: await adapterSystem.spawn('arc', () => PolicyRateArc()),
         emitEvent: (_) {},
         channelEvents: channelEvents.stream,
         walletId: _walletId,

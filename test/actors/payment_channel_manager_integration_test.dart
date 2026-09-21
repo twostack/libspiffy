@@ -23,6 +23,7 @@ import 'package:libspiffy/src/storage/secure_storage.dart';
 import 'package:libspiffy/src/storage/in_memory_secure_storage.dart';
 
 import 'channel_test_fixtures.dart';
+import '../mocks/policy_rate_arc.dart';
 
 void main() {
   late Isar isar;
@@ -71,9 +72,11 @@ void main() {
     );
     
     // Spawn PaymentChannelManager
+    final policyArc1 = await actorSystem.spawn('policy-arc-${DateTime.now().microsecondsSinceEpoch}', () => PolicyRateArc());
     channelManagerRef = await actorSystem.spawn(
       'channel-manager',
       () => PaymentChannelManagerActor(
+            arcActor: policyArc1,
         walletManager: walletManagerRef,
         eventStore: eventStore,
         cryptoService: cryptoService,
@@ -596,9 +599,11 @@ void main() {
         ),
       );
       
+      final policyArc2 = await clientActorSystem.spawn('policy-arc-${DateTime.now().microsecondsSinceEpoch}', () => PolicyRateArc());
       final clientChannelManager = await clientActorSystem.spawn(
         'channel-manager',
         () => PaymentChannelManagerActor(
+              arcActor: policyArc2,
           walletManager: clientWalletManager,
           eventStore: clientEventStore,
           cryptoService: clientCrypto,
@@ -645,9 +650,11 @@ void main() {
         ),
       );
       
+      final policyArc3 = await serverActorSystem.spawn('policy-arc-${DateTime.now().microsecondsSinceEpoch}', () => PolicyRateArc());
       final serverChannelManager = await serverActorSystem.spawn(
         'channel-manager',
         () => PaymentChannelManagerActor(
+              arcActor: policyArc3,
           walletManager: serverWalletManager,
           eventStore: serverEventStore,
           cryptoService: serverCrypto,

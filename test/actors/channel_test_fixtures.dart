@@ -16,15 +16,18 @@ import 'package:libspiffy/src/core/wallet_commands.dart';
 import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 import 'package:libspiffy/src/services/payment_channel_builder.dart';
 import 'package:libspiffy/src/utils/beef.dart';
+import 'package:libspiffy/src/models/fee_rate.dart';
 
 const channelFixtureMnemonic = 'abandon abandon abandon abandon abandon '
     'abandon abandon abandon abandon abandon abandon about';
 
 /// A payment's transaction as a client builds it: spends
 /// [fundingTxId]:[fundingOutputIndex] and pays the server [server] and the
-/// client [client] satoshis at their P2PKH addresses (an amount of zero or
-/// less gets no output). The server countersigns a payment only when its
-/// transaction pays the balances it proposes (bead libspiffy-zj20).
+/// client [client] less [fee] satoshis at their P2PKH addresses (an amount
+/// of zero or less gets no output). The server countersigns a payment only
+/// when its transaction pays the balances it proposes (bead libspiffy-zj20)
+/// and pays ARC's policy rate on its signed size (bead libspiffy-zs4l); the
+/// default fee covers the tests' 100 sat/1000 bytes several times over.
 String channelPaymentTxHex({
   required String fundingTxId,
   int fundingOutputIndex = 0,
@@ -32,7 +35,9 @@ String channelPaymentTxHex({
   required String clientAddress,
   required BigInt server,
   required BigInt client,
+  BigInt? fee,
 }) {
+  client -= fee ?? BigInt.from(100);
   dartsv.SVScript p2pkh(String address) =>
       dartsv.P2PKHLockBuilder.fromAddress(dartsv.Address.fromBase58(address)).getScriptPubkey();
   final tx = dartsv.Transaction()
@@ -127,8 +132,8 @@ class ChannelRefundFixture {
       serverPubKeyHex: serverKey.publicKey.toString(),
       amountSats: amount,
     );
-    final builder = PaymentChannelBuilder(cryptoService: crypto);
-    final refund = await builder.buildRefundTransaction(
+    final builder = const PaymentChannelBuilder();
+    final refund = await builder.buildRefundTransaction(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
       fundingTxId: funding.txid,
       fundingOutputIndex: 0,
       fundingAmountSats: amount,
@@ -163,7 +168,7 @@ class ChannelRefundFixture {
 
   /// A valid signature by a key that is not the server's.
   Future<String> forgedServerSignature() async =>
-      (await PaymentChannelBuilder(cryptoService: DartSVCryptoService())
+      (await const PaymentChannelBuilder()
               .signMultisigInput(
         transaction: dartsv.Transaction.fromHex(refundTxHex),
         inputIndex: 0,
@@ -221,7 +226,7 @@ class ChannelRefundFixture {
   /// The refund with both signatures (what the client journals once the
   /// server signature verified).
   String signedRefundTxHex() =>
-      PaymentChannelBuilder(cryptoService: DartSVCryptoService())
+      const PaymentChannelBuilder()
           .applyMultisigSignatures(
             transaction: dartsv.Transaction.fromHex(refundTxHex),
             inputIndex: 0,
@@ -370,8 +375,12 @@ class ScriptedSpvActor extends Actor {
 }
 
 /// An ARCActor stand-in: records every [BroadcastTransactionMessage] and
-/// answers it with success, or with [failWith] while that is set.
+/// answers it with success, or with [failWith] while that is set; and
+/// answers [GetFeeRateMessage] with [feeRate], ARC's published policy rate
+/// (bead libspiffy-zs4l).
 class RecordingArcActor extends Actor {
+  FeeRate feeRate = const FeeRate(satoshis: 100, bytes: 1000);
+
   final List<BroadcastTransactionMessage> broadcasts = [];
 
   /// Called when a broadcast arrives, before it is answered.
@@ -381,6 +390,10 @@ class RecordingArcActor extends Actor {
 
   @override
   Future<void> onMessage(dynamic message) async {
+    if (message is GetFeeRateMessage) {
+      context.sender?.tell(FeeRateQuote(feeRate));
+      return;
+    }
     if (message is! BroadcastTransactionMessage) return;
     broadcasts.add(message);
     onBroadcast?.call(message);
@@ -423,7 +436,7 @@ class FixtureWalletManager extends Actor {
     } else if (command is SignMultisigTransactionCommand) {
       final chunks = dartsv.SVScript.fromHex(command.redeemScriptHex).chunks;
       final signature =
-          await PaymentChannelBuilder(cryptoService: DartSVCryptoService())
+          await const PaymentChannelBuilder()
               .signMultisigInput(
         transaction: dartsv.Transaction.fromHex(command.rawTransaction),
         inputIndex: command.inputIndex,

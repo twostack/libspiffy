@@ -385,10 +385,7 @@ void main() {
     test('PaymentChannelBuilder merges the funding ancestry too', () async {
       final funding = spend([(g1, 0), (g2, 0)], [290000]);
       final channelPayment = spend([(funding, 0)], [280000]);
-      final builder = PaymentChannelBuilder(
-        cryptoService: DartSVCryptoService(),
-        networkType: dartsv.NetworkType.TEST,
-      );
+      final builder = const PaymentChannelBuilder();
 
       final result = await builder.buildPaymentWithAncestry(
         paymentTx: ChannelTransactionResult(

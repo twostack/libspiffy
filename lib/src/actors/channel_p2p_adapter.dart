@@ -5,6 +5,7 @@ import 'package:logging/logging.dart';
 
 import '../core/channel_events.dart' as ch;
 import '../core/wallet_commands.dart';
+import '../models/fee_rate.dart';
 import 'coordinator_messages.dart' as coord;
 import 'payment_channel_messages.dart';
 import 'wallet_messages.dart';
@@ -56,12 +57,14 @@ class ChannelP2PAdapter {
   ChannelP2PAdapter({
     required ActorRef channelManager,
     required ActorRef walletManager,
+    required ActorRef arcActor,
     required void Function(coord.CoordinatorEvent) emitEvent,
     required Stream<ch.ChannelEvent> channelEvents,
     required String walletId,
     required String myPeerId,
   })  : _channelManager = channelManager,
         _walletManager = walletManager,
+        _arcActor = arcActor,
         _emitEvent = emitEvent,
         _walletId = walletId,
         _myPeerId = myPeerId {
@@ -70,6 +73,13 @@ class ChannelP2PAdapter {
 
   /// Wallet manager that routes wallet commands to the owning aggregate.
   final ActorRef _walletManager;
+
+  /// ARCActor, asked for the policy rate a channel's funding pays (bead
+  /// libspiffy-zs4l).
+  final ActorRef _arcActor;
+
+  /// How long ARCActor may take to give its policy rate.
+  static const Duration _feeRateTimeout = Duration(seconds: 30);
 
   /// Actor that receives wallet command responses on the adapter's behalf
   /// (the coordinator that owns this adapter); set once its context exists.
@@ -317,21 +327,53 @@ class ChannelP2PAdapter {
       fundingOutputIndex: clientInfo.fundingOutputIndex,
     );
 
-    // BuildFundingTransactionCommand is a wallet command: only the wallet
-    // aggregate handles it, reached through the wallet manager. It used to
-    // be told to the channel manager, which has no case for it and dropped
-    // it, so the client side never progressed past channel_accept. The
-    // FundingTransactionBuiltResponse comes back to the coordinator, which
-    // forwards it to handleFundingTransactionBuilt.
-    //
-    // The channel's own wallet funds it, not the adapter's last-created
-    // wallet: that is '' after a restart and another wallet once a second
-    // one is created (libspiffy-9fo).
+    unawaited(_buildFunding(clientInfo.walletId, channelId, clientInfo, serverPubKey));
+  }
+
+  /// Asks the channel's wallet to build and sign its funding transaction,
+  /// at ARC's published policy rate (bead libspiffy-zs4l).
+  ///
+  /// BuildFundingTransactionCommand is a wallet command: only the wallet
+  /// aggregate handles it, reached through the wallet manager. It used to
+  /// be told to the channel manager, which has no case for it and dropped
+  /// it, so the client side never progressed past channel_accept. The
+  /// FundingTransactionBuiltResponse comes back to the coordinator, which
+  /// forwards it to handleFundingTransactionBuilt.
+  ///
+  /// The channel's own wallet funds it, not the adapter's last-created
+  /// wallet: that is '' after a restart and another wallet once a second
+  /// one is created (libspiffy-9fo).
+  ///
+  /// The aggregate cannot ask ARC, so the rate is asked for here. A rate
+  /// ARC cannot give is a failed build, reported as one — to the host and
+  /// to the server waiting for the refund — never a guessed rate.
+  Future<void> _buildFunding(
+      String walletId, String channelId, ClientChannelInfo clientInfo, String serverPubKey) async {
+    final FeeRate feeRate;
+    try {
+      final quote = await _arcActor.ask<FeeRateQuote>(GetFeeRateMessage(), _feeRateTimeout);
+      final rate = quote.rate;
+      if (!quote.success || rate == null) throw StateError(quote.error ?? 'ARC gave no rate');
+      feeRate = rate;
+    } catch (e) {
+      handleFundingTransactionBuilt(FundingTransactionBuiltResponse(
+        walletId: walletId,
+        correlationId: channelId,
+        channelId: channelId,
+        fundingTxHex: '',
+        fundingTxId: '',
+        fundingOutputIndex: -1,
+        success: false,
+        error: "ARC's policy fee rate could not be read ($e); no funding was built",
+      ));
+      return;
+    }
+    if (_disposed) return;
     _walletManager.tell(
       WalletCommandMessage(
-        clientInfo.walletId,
+        walletId,
         BuildFundingTransactionCommand(
-          walletId: clientInfo.walletId,
+          walletId: walletId,
           correlationId: channelId,
           channelId: channelId,
           clientPubKeyHex: clientInfo.clientPubKeyHex,
@@ -339,6 +381,7 @@ class ChannelP2PAdapter {
           fundingAmountSats: clientInfo.fundingAmountSats,
           changeAddressBase58: clientInfo.clientAddressB58,
           derivationIndex: clientInfo.clientDerivationIndex,
+          feeRate: feeRate,
         ),
       ),
       sender: _replyTo,

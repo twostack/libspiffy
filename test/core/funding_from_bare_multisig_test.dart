@@ -28,13 +28,16 @@ import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 import 'package:libspiffy/src/storage/in_memory_secure_storage.dart';
 
 import '../actors/in_memory_event_store.dart';
+import 'package:libspiffy/src/models/fee_rate.dart';
 
 const _mnemonic = 'abandon abandon abandon abandon abandon abandon '
     'abandon abandon abandon abandon abandon about';
 const _walletId = 'wallet-funding-multisig';
 
-/// The fee policy channel funding estimates with (satoshis per 1000 bytes).
-const _feePerKb = 100;
+/// ARC's published policy rate the funding is built at. Not the 100 sat/kB
+/// funding used to hardcode (bead libspiffy-zs4l): the rate is ARC's, and
+/// the command carries it.
+const _policyRate = FeeRate(satoshis: 500, bytes: 1000);
 
 void main() {
   late TestActorSystem system;
@@ -140,7 +143,7 @@ void main() {
     );
     final probe = await system.createProbe();
     walletRef.tell(
-      BuildFundingTransactionCommand(
+      BuildFundingTransactionCommand(feeRate: _policyRate,
         walletId: _walletId,
         correlationId: 'corr-$spawned',
         channelId: 'channel-multisig',
@@ -211,7 +214,10 @@ void main() {
       // transaction. (BSV has no fee auction; the policy rate is the whole
       // requirement.)
       final sizeBytes = response.fundingTxHex.length ~/ 2;
-      expect(response.fee, greaterThanOrEqualTo(sizeBytes * _feePerKb ~/ 1000));
+      // Old code (zs4l): its own 100 sat/kB, whatever ARC published.
+      expect(BigInt.from(response.fee), greaterThanOrEqualTo(_policyRate.feeFor(sizeBytes)));
+      expect(BigInt.from(response.fee), lessThanOrEqualTo(_policyRate.feeFor(sizeBytes + 2 * tx.inputs.length)),
+          reason: 'paid for bytes the transaction does not have');
     });
   }
 

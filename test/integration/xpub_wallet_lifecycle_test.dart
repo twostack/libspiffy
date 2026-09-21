@@ -13,6 +13,7 @@ import 'package:libspiffy/src/actors/libspiffy_actor_system.dart';
 import 'package:libspiffy/src/actors/wallet_messages.dart';
 import 'package:libspiffy/src/storage/isar_wallet_storage.dart';
 import 'isar_test_helper.dart';
+import 'package:libspiffy/src/models/fee_rate.dart';
 
 void main() {
   group('XPub Wallet Integration Tests', () {
@@ -432,7 +433,7 @@ void main() {
         libspiffy.walletManager.tell(
           WalletCommandMessage(
             walletId,
-            BuildFundingTransactionCommand(
+            BuildFundingTransactionCommand(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
               walletId: walletId,
               correlationId: 'test-corr',
               channelId: 'test-channel',

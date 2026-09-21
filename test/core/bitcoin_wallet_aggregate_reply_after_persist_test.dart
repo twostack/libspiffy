@@ -24,6 +24,7 @@ import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 import 'package:libspiffy/src/storage/in_memory_secure_storage.dart';
 
 import '../actors/in_memory_event_store.dart';
+import 'package:libspiffy/src/models/fee_rate.dart';
 
 const _mnemonic = 'abandon abandon abandon abandon abandon abandon '
     'abandon abandon abandon abandon abandon about';
@@ -125,7 +126,7 @@ void main() {
   BuildFundingTransactionCommand fundingCommand() {
     final serverKey = dartsv.SVPrivateKey(networkType: dartsv.NetworkType.TEST);
     final clientKey = dartsv.SVPrivateKey(networkType: dartsv.NetworkType.TEST);
-    return BuildFundingTransactionCommand(
+    return BuildFundingTransactionCommand(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
       walletId: _walletId,
       correlationId: 'corr-m5',
       channelId: 'channel-m5',

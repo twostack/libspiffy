@@ -55,6 +55,8 @@ import 'package:eventador/eventador.dart' show Event;
 import 'isar_test_helper.dart';
 import 'p2p_test_helpers.dart';
 import '../spv/testnet_proof_fixture.dart';
+import 'package:libspiffy/src/models/fee_rate.dart';
+import '../mocks/offline_arc.dart';
 
 const _alicePeer = 'alice-peer';
 
@@ -282,7 +284,7 @@ bool _serverRefundSignatureValid(_Node client, _Node server, int amountSats) {
 
 /// An ARC service without a network: records every submitted transaction
 /// and answers status queries from [statuses].
-class _RecordingArc extends ArcService {
+class _RecordingArc extends OfflineArc {
   _RecordingArc() : super(baseUrl: 'mock://arc');
 
   /// Raw hex of every submission, in order (failed ones included).
@@ -364,7 +366,7 @@ String? _refundProblem({
     if (input.sequenceNumber == dartsv.TransactionInput.MAX_SEQ_NUMBER) {
       return 'final input sequence: nLockTime is not enforced';
     }
-    PaymentChannelBuilder(cryptoService: DartSVCryptoService())
+    const PaymentChannelBuilder()
         .verifyMultisigSpend(
       signedTx: refund,
       redeemScript: redeemScript,
@@ -564,8 +566,8 @@ class _RawClient {
     funding = dartsv.Transaction.fromHex(tx.serialize());
 
     refundTxHex =
-        (await PaymentChannelBuilder(cryptoService: DartSVCryptoService())
-                .buildRefundTransaction(
+        (await const PaymentChannelBuilder()
+                .buildRefundTransaction(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
       fundingTxId: funding.id,
       fundingOutputIndex: 0,
       fundingAmountSats: BigInt.from(amount),
@@ -934,8 +936,7 @@ void main() {
             _sentPayload(alice, 'channel_request')['clientPubKey'] as String);
         final serverPub = dartsv.SVPublicKey.fromHex(
             _sentPayload(bob, 'channel_accept')['serverPubKey'] as String);
-        final forged = await PaymentChannelBuilder(
-                cryptoService: DartSVCryptoService())
+        final forged = await const PaymentChannelBuilder()
             .signMultisigInput(
           transaction:
               dartsv.Transaction.fromHex(request['refundTxHex'] as String),

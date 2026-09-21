@@ -17,6 +17,7 @@ import 'package:libspiffy/src/actors/coordinator_messages.dart' as coord;
 import 'package:libspiffy/src/actors/payment_channel_messages.dart';
 import 'package:libspiffy/src/core/channel_events.dart' as ch;
 import 'package:libspiffy/src/utils/unique_id.dart';
+import '../mocks/policy_rate_arc.dart';
 
 void main() {
   test('uniqueId: ids made synchronously back to back are distinct', () {
@@ -36,6 +37,7 @@ void main() {
     final adapter = ChannelP2PAdapter(
       channelManager: channelManager,
       walletManager: walletManager,
+      arcActor: await actorSystem.spawn('arc', () => PolicyRateArc()),
       emitEvent: (_) {},
       channelEvents: channelEvents.stream,
       walletId: 'client-wallet',

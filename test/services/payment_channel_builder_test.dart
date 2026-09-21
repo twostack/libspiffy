@@ -4,7 +4,9 @@ import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:libspiffy/src/services/payment_channel_builder.dart';
 import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 import 'package:libspiffy/src/services/crypto_service.dart';
-import 'package:libspiffy/src/models/bitcoin_utxo.dart';
+import 'package:libspiffy/src/models/fee_rate.dart';
+
+import '../actors/channel_test_fixtures.dart';
 
 void main() {
   group('PaymentChannelBuilder', () {
@@ -25,10 +27,7 @@ void main() {
 
     setUp(() async {
       cryptoService = DartSVCryptoService();
-      channelBuilder = PaymentChannelBuilder(
-        cryptoService: cryptoService,
-        networkType: testNetworkType,
-      );
+      channelBuilder = const PaymentChannelBuilder();
 
       // Derive test key pairs from mnemonic for reproducibility
       final hdPrivateKey = await cryptoService.mnemonicToHDPrivateKey(
@@ -51,211 +50,18 @@ void main() {
           dartsv.Address.fromPublicKey(serverPubKey, testNetworkType);
     });
 
-    /// Helper to create test UTXOs for the client
-    List<BitcoinUtxo> createClientUtxos({
-      int count = 1,
-      BigInt? satoshisPerUtxo,
-    }) {
-      final sats = satoshisPerUtxo ?? BigInt.from(100000);
-      final utxos = <BitcoinUtxo>[];
-
-      for (int i = 0; i < count; i++) {
-        // Generate unique but deterministic txids
-        final txidBase = 'a' * (64 - i.toString().length) + i.toString();
-        utxos.add(BitcoinUtxo.create(
-          txid: txidBase.substring(0, 64),
-          vout: 0,
-          satoshis: sats,
-          scriptPubKey: dartsv.P2PKHLockBuilder.fromAddress(clientAddress)
-              .getScriptPubkey()
-              .toHex(),
-          address: clientAddress.toString(),
-          blockHeight: 100 + i,
-          confirmations: 6,
-          derivationIndex: i,
-        ));
-      }
-
-      return utxos;
+    /// A funding transaction locking [amountSats] in the channel's 2-of-2 at
+    /// output [outputIndex]. The wallet aggregate builds real fundings
+    /// (`ChannelFunding`); this builder no longer has a second copy of it.
+    ({dartsv.Transaction transaction, String txid}) fundingTransaction(BigInt amountSats, {int outputIndex = 0}) {
+      final funding = channelFundingTx(
+        clientPubKeyHex: clientPubKey.toHex(),
+        serverPubKeyHex: serverPubKey.toHex(),
+        amountSats: amountSats,
+        outputIndex: outputIndex,
+      );
+      return (transaction: dartsv.Transaction.fromHex(funding.hex), txid: funding.txid);
     }
-
-    // =========================================================================
-    // FUNDING TRANSACTION (T1) TESTS
-    // =========================================================================
-    group('Funding Transaction (T1)', () {
-      test('should build funding transaction with valid parameters', () async {
-        final utxos = createClientUtxos(count: 1, satoshisPerUtxo: BigInt.from(100000));
-        final fundingAmount = BigInt.from(50000);
-
-        final result = await channelBuilder.buildFundingTransaction(
-          clientPubKey: clientPubKey,
-          serverPubKey: serverPubKey,
-          fundingAmountSats: fundingAmount,
-          clientUtxos: utxos,
-          changeAddress: clientAddress,
-          clientPrivateKey: clientPrivateKey,
-        );
-
-        expect(result.transaction, isNotNull);
-        expect(result.transactionHex, isNotEmpty);
-        expect(result.txid, isNotEmpty);
-        expect(result.multisigScript, isNotNull);
-        expect(result.fee, greaterThanOrEqualTo(BigInt.zero));
-
-        // Verify transaction structure
-        final tx = result.transaction;
-        expect(tx.inputs.length, equals(1));
-        expect(tx.outputs.length, greaterThanOrEqualTo(1)); // At least multisig output
-
-        // Find the multisig output (it should be close to funding amount)
-        // The TransactionBuilder may adjust amounts slightly for fee calculations
-        final totalOutput = tx.outputs.fold<BigInt>(
-          BigInt.zero, (sum, o) => sum + o.satoshis);
-        final totalInput = utxos.fold<BigInt>(
-          BigInt.zero, (sum, u) => sum + u.value.getValue());
-        
-        // Total output + fee should equal total input (within 1 sat rounding)
-        final diff = (totalOutput + result.fee - totalInput).abs();
-        expect(diff, lessThanOrEqualTo(BigInt.one));
-      });
-
-      test('should create 2-of-2 multisig output with sorted pubkeys', () async {
-        final utxos = createClientUtxos(count: 1, satoshisPerUtxo: BigInt.from(100000));
-        final fundingAmount = BigInt.from(50000);
-
-        final result = await channelBuilder.buildFundingTransaction(
-          clientPubKey: clientPubKey,
-          serverPubKey: serverPubKey,
-          fundingAmountSats: fundingAmount,
-          clientUtxos: utxos,
-          changeAddress: clientAddress,
-          clientPrivateKey: clientPrivateKey,
-        );
-
-        // Verify the multisig script structure
-        final multisigScript = result.multisigScript!;
-        final scriptHex = multisigScript.toHex();
-
-        // P2MS script should contain OP_2 ... OP_2 OP_CHECKMULTISIG
-        // OP_2 = 0x52, OP_CHECKMULTISIG = 0xae
-        expect(scriptHex, contains('52')); // OP_2 for required signatures
-        expect(scriptHex, endsWith('52ae')); // OP_2 OP_CHECKMULTISIG
-      });
-
-      test('should include change output when excess funds available', () async {
-        final utxos = createClientUtxos(count: 1, satoshisPerUtxo: BigInt.from(100000));
-        final fundingAmount = BigInt.from(30000); // Much less than input
-
-        final result = await channelBuilder.buildFundingTransaction(
-          clientPubKey: clientPubKey,
-          serverPubKey: serverPubKey,
-          fundingAmountSats: fundingAmount,
-          clientUtxos: utxos,
-          changeAddress: clientAddress,
-          clientPrivateKey: clientPrivateKey,
-        );
-
-        // Should have 2 outputs: multisig + change
-        expect(result.transaction.outputs.length, equals(2));
-
-        // Verify total outputs + fee equals input (within 1 sat rounding)
-        final totalOutput = result.transaction.outputs.fold<BigInt>(
-          BigInt.zero, (sum, o) => sum + o.satoshis);
-        final diff = (totalOutput + result.fee - BigInt.from(100000)).abs();
-        expect(diff, lessThanOrEqualTo(BigInt.one));
-        
-        // Verify we have both a multisig-sized output and a change output
-        // The multisig output should be close to the funding amount
-        final hasMultisigOutput = result.transaction.outputs.any(
-          (o) => o.satoshis >= fundingAmount - BigInt.from(100) && 
-                 o.satoshis <= fundingAmount + BigInt.from(100));
-        expect(hasMultisigOutput, isTrue);
-      });
-
-      test('should throw when insufficient funds', () async {
-        final utxos = createClientUtxos(count: 1, satoshisPerUtxo: BigInt.from(10000));
-        final fundingAmount = BigInt.from(50000); // More than available
-
-        expect(
-          () => channelBuilder.buildFundingTransaction(
-            clientPubKey: clientPubKey,
-            serverPubKey: serverPubKey,
-            fundingAmountSats: fundingAmount,
-            clientUtxos: utxos,
-            changeAddress: clientAddress,
-            clientPrivateKey: clientPrivateKey,
-          ),
-          throwsA(isA<TransactionBuildException>().having(
-            (e) => e.code,
-            'code',
-            equals('INSUFFICIENT_FUNDS'),
-          )),
-        );
-      });
-
-      test('should handle multiple input UTXOs', () async {
-        final utxos = createClientUtxos(count: 3, satoshisPerUtxo: BigInt.from(50000));
-        final fundingAmount = BigInt.from(120000); // Needs multiple UTXOs
-
-        final result = await channelBuilder.buildFundingTransaction(
-          clientPubKey: clientPubKey,
-          serverPubKey: serverPubKey,
-          fundingAmountSats: fundingAmount,
-          clientUtxos: utxos,
-          changeAddress: clientAddress,
-          clientPrivateKey: clientPrivateKey,
-        );
-
-        expect(result.transaction, isNotNull);
-        expect(result.transaction.inputs.length, equals(3));
-        
-        // Verify total output + fee equals total input (within 1 sat rounding)
-        final totalInput = BigInt.from(150000); // 3 * 50000
-        final totalOutput = result.transaction.outputs.fold<BigInt>(
-          BigInt.zero, (sum, o) => sum + o.satoshis);
-        final diff = (totalOutput + result.fee - totalInput).abs();
-        expect(diff, lessThanOrEqualTo(BigInt.one));
-      });
-
-      test('should not create dust change output', () async {
-        // Create UTXO that would result in dust change
-        final utxos = createClientUtxos(count: 1, satoshisPerUtxo: BigInt.from(50600));
-        final fundingAmount = BigInt.from(50000); // Leaves ~600 sats (dust territory)
-
-        final result = await channelBuilder.buildFundingTransaction(
-          clientPubKey: clientPubKey,
-          serverPubKey: serverPubKey,
-          fundingAmountSats: fundingAmount,
-          clientUtxos: utxos,
-          changeAddress: clientAddress,
-          clientPrivateKey: clientPrivateKey,
-        );
-
-        // Depending on fee, change might be dust and excluded
-        // The transaction should still be valid
-        expect(result.transaction, isNotNull);
-        expect(result.transaction.outputs.length, greaterThanOrEqualTo(1));
-      });
-
-      test('should use nSequence MAX for final transaction', () async {
-        final utxos = createClientUtxos(count: 1, satoshisPerUtxo: BigInt.from(100000));
-        final fundingAmount = BigInt.from(50000);
-
-        final result = await channelBuilder.buildFundingTransaction(
-          clientPubKey: clientPubKey,
-          serverPubKey: serverPubKey,
-          fundingAmountSats: fundingAmount,
-          clientUtxos: utxos,
-          changeAddress: clientAddress,
-          clientPrivateKey: clientPrivateKey,
-        );
-
-        // Funding TX inputs should have MAX sequence (final)
-        for (final input in result.transaction.inputs) {
-          expect(input.sequenceNumber, equals(dartsv.TransactionInput.MAX_SEQ_NUMBER));
-        }
-      });
-    });
 
     // =========================================================================
     // REFUND TRANSACTION (T2) TESTS
@@ -270,7 +76,7 @@ void main() {
             DateTime.now().add(const Duration(hours: 24)).millisecondsSinceEpoch ~/
                 1000;
 
-        final result = await channelBuilder.buildRefundTransaction(
+        final result = await channelBuilder.buildRefundTransaction(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
           fundingTxId: fundingTxId,
           fundingOutputIndex: fundingOutputIndex,
           fundingAmountSats: fundingAmount,
@@ -294,7 +100,7 @@ void main() {
             DateTime.now().add(const Duration(hours: 24)).millisecondsSinceEpoch ~/
                 1000;
 
-        final result = await channelBuilder.buildRefundTransaction(
+        final result = await channelBuilder.buildRefundTransaction(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
           fundingTxId: fundingTxId,
           fundingOutputIndex: 0,
           fundingAmountSats: fundingAmount,
@@ -316,7 +122,7 @@ void main() {
             DateTime.now().add(const Duration(hours: 24)).millisecondsSinceEpoch ~/
                 1000;
 
-        final result = await channelBuilder.buildRefundTransaction(
+        final result = await channelBuilder.buildRefundTransaction(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
           fundingTxId: fundingTxId,
           fundingOutputIndex: 0,
           fundingAmountSats: fundingAmount,
@@ -343,7 +149,7 @@ void main() {
             DateTime.now().add(const Duration(hours: 24)).millisecondsSinceEpoch ~/
                 1000;
 
-        final result = await channelBuilder.buildRefundTransaction(
+        final result = await channelBuilder.buildRefundTransaction(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
           fundingTxId: fundingTxId,
           fundingOutputIndex: fundingOutputIndex,
           fundingAmountSats: fundingAmount,
@@ -367,7 +173,7 @@ void main() {
                 1000;
 
         expect(
-          () => channelBuilder.buildRefundTransaction(
+          () => channelBuilder.buildRefundTransaction(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
             fundingTxId: fundingTxId,
             fundingOutputIndex: 0,
             fundingAmountSats: fundingAmount,
@@ -392,7 +198,7 @@ void main() {
             DateTime.now().add(const Duration(hours: 24)).millisecondsSinceEpoch ~/
                 1000;
 
-        final result = await channelBuilder.buildRefundTransaction(
+        final result = await channelBuilder.buildRefundTransaction(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
           fundingTxId: fundingTxId,
           fundingOutputIndex: 0,
           fundingAmountSats: fundingAmount,
@@ -417,7 +223,7 @@ void main() {
         final fundingAmount = BigInt.from(100000);
         final serverAmount = BigInt.from(10000);
 
-        final result = await channelBuilder.buildPaymentTransaction(
+        final result = await channelBuilder.buildPaymentTransaction(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
           fundingTxId: fundingTxId,
           fundingOutputIndex: 0,
           fundingAmountSats: fundingAmount,
@@ -445,7 +251,7 @@ void main() {
         final serverAmount = BigInt.from(10000);
         const sequenceNumber = 42;
 
-        final result = await channelBuilder.buildPaymentTransaction(
+        final result = await channelBuilder.buildPaymentTransaction(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
           fundingTxId: fundingTxId,
           fundingOutputIndex: 0,
           fundingAmountSats: fundingAmount,
@@ -466,7 +272,7 @@ void main() {
         final fundingAmount = BigInt.from(100000);
         final serverAmount = BigInt.from(10000);
 
-        final result = await channelBuilder.buildPaymentTransaction(
+        final result = await channelBuilder.buildPaymentTransaction(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
           fundingTxId: fundingTxId,
           fundingOutputIndex: 0,
           fundingAmountSats: fundingAmount,
@@ -490,7 +296,7 @@ void main() {
         final results = <ChannelTransactionResult>[];
         for (int seq = 1; seq <= 5; seq++) {
           final serverAmount = BigInt.from(10000 * seq);
-          final result = await channelBuilder.buildPaymentTransaction(
+          final result = await channelBuilder.buildPaymentTransaction(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
             fundingTxId: fundingTxId,
             fundingOutputIndex: 0,
             fundingAmountSats: fundingAmount,
@@ -516,7 +322,7 @@ void main() {
         final fundingAmount = BigInt.from(100000);
         final serverAmount = BigInt.from(100); // Below dust threshold
 
-        final result = await channelBuilder.buildPaymentTransaction(
+        final result = await channelBuilder.buildPaymentTransaction(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
           fundingTxId: fundingTxId,
           fundingOutputIndex: 0,
           fundingAmountSats: fundingAmount,
@@ -539,7 +345,7 @@ void main() {
         // Server takes almost everything, leaving dust for client
         final serverAmount = BigInt.from(9500);
 
-        final result = await channelBuilder.buildPaymentTransaction(
+        final result = await channelBuilder.buildPaymentTransaction(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
           fundingTxId: fundingTxId,
           fundingOutputIndex: 0,
           fundingAmountSats: fundingAmount,
@@ -562,7 +368,7 @@ void main() {
         final serverAmount = BigInt.from(20000); // Exceeds funding
 
         expect(
-          () => channelBuilder.buildPaymentTransaction(
+          () => channelBuilder.buildPaymentTransaction(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
             fundingTxId: fundingTxId,
             fundingOutputIndex: 0,
             fundingAmountSats: fundingAmount,
@@ -590,7 +396,7 @@ void main() {
         final serverAmount = BigInt.from(300);
 
         expect(
-          () => channelBuilder.buildPaymentTransaction(
+          () => channelBuilder.buildPaymentTransaction(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
             fundingTxId: fundingTxId,
             fundingOutputIndex: 0,
             fundingAmountSats: fundingAmount,
@@ -622,18 +428,9 @@ void main() {
         final fundingAmount = BigInt.from(100000);
         final serverAmount = BigInt.from(10000);
         
-        // Create test UTXOs for funding
-        final clientUtxos = createClientUtxos(count: 1, satoshisPerUtxo: BigInt.from(200000));
         
         // Build the funding transaction (creates P2MS output)
-        final fundingResult = await channelBuilder.buildFundingTransaction(
-          clientPubKey: clientPubKey,
-          serverPubKey: serverPubKey,
-          fundingAmountSats: fundingAmount,
-          clientUtxos: clientUtxos,
-          clientPrivateKey: clientPrivateKey,
-          changeAddress: clientAddress,
-        );
+        final fundingResult = fundingTransaction(fundingAmount, outputIndex: 1);
         
         expect(fundingResult.transaction, isNotNull);
         expect(fundingResult.transaction.outputs.isNotEmpty, isTrue);
@@ -672,7 +469,7 @@ void main() {
         print('Funding TX ID: ${fundingResult.txid}');
         
         // Build payment transaction using the CORRECT output index
-        final paymentResult = await channelBuilder.buildPaymentTransaction(
+        final paymentResult = await channelBuilder.buildPaymentTransaction(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
           fundingTxId: fundingResult.txid,
           fundingOutputIndex: multisigOutputIndex, // Use actual index!
           fundingAmountSats: fundingAmount,
@@ -778,18 +575,9 @@ void main() {
         final fundingAmount = BigInt.from(100000);
         final serverAmount = BigInt.from(10000);
         
-        // Create test UTXOs for funding
-        final clientUtxos = createClientUtxos(count: 1, satoshisPerUtxo: BigInt.from(200000));
         
         // Build the funding transaction (creates P2MS output)
-        final fundingResult = await channelBuilder.buildFundingTransaction(
-          clientPubKey: clientPubKey,
-          serverPubKey: serverPubKey,
-          fundingAmountSats: fundingAmount,
-          clientUtxos: clientUtxos,
-          clientPrivateKey: clientPrivateKey,
-          changeAddress: clientAddress,
-        );
+        final fundingResult = fundingTransaction(fundingAmount, outputIndex: 1);
         
         // Find the actual multisig output index
         final multisigScript = dartsv.P2MSLockBuilder(
@@ -808,7 +596,7 @@ void main() {
         expect(multisigOutputIndex, greaterThanOrEqualTo(0));
         
         // Build payment transaction
-        final paymentResult = await channelBuilder.buildPaymentTransaction(
+        final paymentResult = await channelBuilder.buildPaymentTransaction(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
           fundingTxId: fundingResult.txid,
           fundingOutputIndex: multisigOutputIndex,
           fundingAmountSats: fundingAmount,
@@ -896,7 +684,7 @@ void main() {
             DateTime.now().add(const Duration(hours: 24)).millisecondsSinceEpoch ~/
                 1000;
 
-        final refundResult = await channelBuilder.buildRefundTransaction(
+        final refundResult = await channelBuilder.buildRefundTransaction(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
           fundingTxId: fundingTxId,
           fundingOutputIndex: 0,
           fundingAmountSats: fundingAmount,
@@ -928,7 +716,7 @@ void main() {
             DateTime.now().add(const Duration(hours: 24)).millisecondsSinceEpoch ~/
                 1000;
 
-        final refundResult = await channelBuilder.buildRefundTransaction(
+        final refundResult = await channelBuilder.buildRefundTransaction(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
           fundingTxId: fundingTxId,
           fundingOutputIndex: 0,
           fundingAmountSats: fundingAmount,
@@ -960,7 +748,7 @@ void main() {
             DateTime.now().add(const Duration(hours: 24)).millisecondsSinceEpoch ~/
                 1000;
 
-        final refundResult = await channelBuilder.buildRefundTransaction(
+        final refundResult = await channelBuilder.buildRefundTransaction(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
           fundingTxId: fundingTxId,
           fundingOutputIndex: 0,
           fundingAmountSats: fundingAmount,
@@ -999,7 +787,7 @@ void main() {
             DateTime.now().add(const Duration(hours: 24)).millisecondsSinceEpoch ~/
                 1000;
 
-        final refundResult = await channelBuilder.buildRefundTransaction(
+        final refundResult = await channelBuilder.buildRefundTransaction(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
           fundingTxId: fundingTxId,
           fundingOutputIndex: 0,
           fundingAmountSats: fundingAmount,
@@ -1049,7 +837,7 @@ void main() {
         final fundingAmount = BigInt.from(100000);
         final serverAmount = BigInt.from(10000);
 
-        final paymentResult = await channelBuilder.buildPaymentTransaction(
+        final paymentResult = await channelBuilder.buildPaymentTransaction(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
           fundingTxId: fundingTxId,
           fundingOutputIndex: 0,
           fundingAmountSats: fundingAmount,
@@ -1101,6 +889,67 @@ void main() {
     // UTILITY METHOD TESTS
     // =========================================================================
     group('Utility Methods', () {
+      // Bead libspiffy-zs4l: channel transactions pay ARC's policy rate on
+      // their signed size. The refund and payment were sized with a
+      // 300-byte guess per multisig input at a default of 1 sat/kB, and the
+      // funding here was a second copy of `ChannelFunding`.
+      test('zs4l: the refund and the payment pay the policy rate on their signed size', () async {
+        const rate = FeeRate(satoshis: 100, bytes: 1000);
+        final amount = BigInt.from(100000);
+        final funding = fundingTransaction(amount);
+        final refund = await channelBuilder.buildRefundTransaction(
+          fundingTxId: funding.txid,
+          fundingOutputIndex: 0,
+          fundingAmountSats: amount,
+          clientPubKey: clientPubKey,
+          serverPubKey: serverPubKey,
+          clientAddress: clientAddress,
+          lockTimeUnix: PaymentChannelBuilder.lockTimeThreshold + 1000,
+          feeRate: rate,
+        );
+        final payment = await channelBuilder.buildPaymentTransaction(
+          fundingTxId: funding.txid,
+          fundingOutputIndex: 0,
+          fundingAmountSats: amount,
+          clientPubKey: clientPubKey,
+          serverPubKey: serverPubKey,
+          clientAddress: clientAddress,
+          serverAddress: serverAddress,
+          serverAmountSats: BigInt.from(30000),
+          sequenceNumber: 1,
+          feeRate: rate,
+        );
+
+        for (final built in [refund, payment]) {
+          Future<dartsv.SVSignature> sign(dartsv.SVPrivateKey key) async => dartsv.SVSignature.fromTxFormat(
+              (await channelBuilder.signMultisigInput(
+                transaction: built.transaction,
+                inputIndex: 0,
+                privateKey: key,
+                clientPubKey: clientPubKey,
+                serverPubKey: serverPubKey,
+                inputAmountSats: amount,
+              ))
+                  .signatureHex);
+          final signed = channelBuilder.applyMultisigSignatures(
+            transaction: dartsv.Transaction.fromHex(built.transactionHex),
+            inputIndex: 0,
+            clientSignature: await sign(clientPrivateKey),
+            serverSignature: await sign(serverPrivateKey),
+            clientPubKey: clientPubKey,
+            serverPubKey: serverPubKey,
+          );
+          final paid = amount - signed.outputs.fold<BigInt>(BigInt.zero, (sum, o) => sum + o.satoshis);
+          final signedBytes = signed.serialize().length ~/ 2;
+          expect(paid, built.fee);
+          // Old code: 1 satoshi for each, at the 1 sat/kB default.
+          expect(paid, greaterThanOrEqualTo(rate.feeFor(signedBytes)),
+              reason: 'a $signedBytes-byte signed transaction pays $paid');
+          expect(paid, lessThanOrEqualTo(rate.feeFor(signedBytes + 4)),
+              reason: 'paid for bytes the transaction does not have');
+        }
+      });
+
       test('createMultisigScript should create valid 2-of-2 P2MS script', () {
         final multisigScript = channelBuilder.createMultisigScript(
           clientPubKey,
@@ -1122,84 +971,6 @@ void main() {
         expect(scriptHex, endsWith('52ae'));
       });
 
-      test('estimateFee should calculate correctly for multisig input', () {
-        final fee = channelBuilder.estimateFee(
-          inputCount: 1,
-          outputCount: 2,
-          isMultisigInput: true,
-        );
-
-        // Expected: overhead (10) + 1 * multisig input (300) + 2 * output (34)
-        // = 10 + 300 + 68 = 378 bytes
-        // At 1 sat/kb: 378 / 1000 = 0 (rounded down)
-        expect(fee, greaterThanOrEqualTo(BigInt.zero));
-      });
-
-      test('estimateFee should differ for P2PKH vs multisig inputs', () {
-        // Use a higher fee rate to see the difference
-        final multisigFee = channelBuilder.estimateFee(
-          inputCount: 1,
-          outputCount: 1,
-          isMultisigInput: true,
-          feePerKb: 1000,
-        );
-
-        final p2pkhFee = channelBuilder.estimateFee(
-          inputCount: 1,
-          outputCount: 1,
-          isMultisigInput: false,
-          feePerKb: 1000,
-        );
-
-        // Multisig inputs are larger than P2PKH inputs
-        expect(
-          PaymentChannelBuilder.multisigInputSize,
-          greaterThan(148), // P2PKH input size
-        );
-        
-        // At higher fee rate, the difference in input sizes should be visible
-        expect(multisigFee, greaterThan(p2pkhFee));
-      });
-
-      test('estimateFee should scale with higher fee rate', () {
-        final lowFee = channelBuilder.estimateFee(
-          inputCount: 1,
-          outputCount: 2,
-          isMultisigInput: true,
-          feePerKb: 1,
-        );
-
-        final highFee = channelBuilder.estimateFee(
-          inputCount: 1,
-          outputCount: 2,
-          isMultisigInput: true,
-          feePerKb: 100,
-        );
-
-        expect(highFee, greaterThan(lowFee));
-      });
-
-      test('parseTransaction should round-trip correctly', () async {
-        final utxos = createClientUtxos(count: 1, satoshisPerUtxo: BigInt.from(100000));
-        final fundingAmount = BigInt.from(50000);
-
-        final result = await channelBuilder.buildFundingTransaction(
-          clientPubKey: clientPubKey,
-          serverPubKey: serverPubKey,
-          fundingAmountSats: fundingAmount,
-          clientUtxos: utxos,
-          changeAddress: clientAddress,
-          clientPrivateKey: clientPrivateKey,
-        );
-
-        // Parse the serialized transaction
-        final parsed = channelBuilder.parseTransaction(result.transactionHex);
-
-        expect(parsed.id, equals(result.txid));
-        expect(parsed.inputs.length, equals(result.transaction.inputs.length));
-        expect(parsed.outputs.length, equals(result.transaction.outputs.length));
-      });
-
       test('getPublicKey should derive correct public key', () {
         final derivedPubKey = channelBuilder.getPublicKey(clientPrivateKey);
 
@@ -1213,17 +984,9 @@ void main() {
     group('Channel Lifecycle Integration', () {
       test('should build complete channel lifecycle: funding → refund → payment', () async {
         // Step 1: Build funding TX
-        final utxos = createClientUtxos(count: 1, satoshisPerUtxo: BigInt.from(200000));
         final fundingAmount = BigInt.from(100000);
 
-        final fundingResult = await channelBuilder.buildFundingTransaction(
-          clientPubKey: clientPubKey,
-          serverPubKey: serverPubKey,
-          fundingAmountSats: fundingAmount,
-          clientUtxos: utxos,
-          changeAddress: clientAddress,
-          clientPrivateKey: clientPrivateKey,
-        );
+        final fundingResult = fundingTransaction(fundingAmount);
 
         expect(fundingResult.txid, isNotEmpty);
 
@@ -1232,7 +995,7 @@ void main() {
             DateTime.now().add(const Duration(hours: 24)).millisecondsSinceEpoch ~/
                 1000;
 
-        final refundResult = await channelBuilder.buildRefundTransaction(
+        final refundResult = await channelBuilder.buildRefundTransaction(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
           fundingTxId: fundingResult.txid,
           fundingOutputIndex: 0,
           fundingAmountSats: fundingAmount,
@@ -1250,7 +1013,7 @@ void main() {
         for (int i = 1; i <= 3; i++) {
           final serverAmount = BigInt.from(10000 * i);
 
-          final paymentResult = await channelBuilder.buildPaymentTransaction(
+          final paymentResult = await channelBuilder.buildPaymentTransaction(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
             fundingTxId: fundingResult.txid,
             fundingOutputIndex: 0,
             fundingAmountSats: fundingAmount,
@@ -1274,24 +1037,16 @@ void main() {
 
       test('should sign and complete refund transaction', () async {
         // Build funding TX
-        final utxos = createClientUtxos(count: 1, satoshisPerUtxo: BigInt.from(200000));
         final fundingAmount = BigInt.from(100000);
 
-        final fundingResult = await channelBuilder.buildFundingTransaction(
-          clientPubKey: clientPubKey,
-          serverPubKey: serverPubKey,
-          fundingAmountSats: fundingAmount,
-          clientUtxos: utxos,
-          changeAddress: clientAddress,
-          clientPrivateKey: clientPrivateKey,
-        );
+        final fundingResult = fundingTransaction(fundingAmount);
 
         // Build refund TX
         final lockTimeUnix =
             DateTime.now().add(const Duration(hours: 24)).millisecondsSinceEpoch ~/
                 1000;
 
-        final refundResult = await channelBuilder.buildRefundTransaction(
+        final refundResult = await channelBuilder.buildRefundTransaction(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
           fundingTxId: fundingResult.txid,
           fundingOutputIndex: 0,
           fundingAmountSats: fundingAmount,
@@ -1337,22 +1092,14 @@ void main() {
 
       test('should sign and complete payment transaction', () async {
         // Build funding TX
-        final utxos = createClientUtxos(count: 1, satoshisPerUtxo: BigInt.from(200000));
         final fundingAmount = BigInt.from(100000);
 
-        final fundingResult = await channelBuilder.buildFundingTransaction(
-          clientPubKey: clientPubKey,
-          serverPubKey: serverPubKey,
-          fundingAmountSats: fundingAmount,
-          clientUtxos: utxos,
-          changeAddress: clientAddress,
-          clientPrivateKey: clientPrivateKey,
-        );
+        final fundingResult = fundingTransaction(fundingAmount);
 
         // Build payment TX
         final serverAmount = BigInt.from(25000);
 
-        final paymentResult = await channelBuilder.buildPaymentTransaction(
+        final paymentResult = await channelBuilder.buildPaymentTransaction(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
           fundingTxId: fundingResult.txid,
           fundingOutputIndex: 0,
           fundingAmountSats: fundingAmount,
@@ -1408,32 +1155,6 @@ void main() {
     // EDGE CASES AND ERROR HANDLING
     // =========================================================================
     group('Edge Cases and Error Handling', () {
-      test('should handle exact funding amount (no change)', () async {
-        // Create UTXO that exactly covers funding + fee
-        final estimatedFee = channelBuilder.estimateFee(
-          inputCount: 1,
-          outputCount: 1,
-          isMultisigInput: false,
-        );
-        final fundingAmount = BigInt.from(50000);
-        final exactUtxoAmount = fundingAmount + estimatedFee + BigInt.from(1);
-
-        final utxos = createClientUtxos(count: 1, satoshisPerUtxo: exactUtxoAmount);
-
-        final result = await channelBuilder.buildFundingTransaction(
-          clientPubKey: clientPubKey,
-          serverPubKey: serverPubKey,
-          fundingAmountSats: fundingAmount,
-          clientUtxos: utxos,
-          changeAddress: clientAddress,
-          clientPrivateKey: clientPrivateKey,
-        );
-
-        expect(result.transaction, isNotNull);
-        // May or may not have change depending on exact fee calculation
-        expect(result.transaction.outputs.length, greaterThanOrEqualTo(1));
-      });
-
       test('should handle maximum sequence number', () async {
         const fundingTxId =
             'abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890';
@@ -1443,7 +1164,7 @@ void main() {
         // Use a very high sequence number (but not MAX which would make it final)
         const highSequence = 0xFFFFFFFE;
 
-        final result = await channelBuilder.buildPaymentTransaction(
+        final result = await channelBuilder.buildPaymentTransaction(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
           fundingTxId: fundingTxId,
           fundingOutputIndex: 0,
           fundingAmountSats: fundingAmount,
@@ -1458,86 +1179,6 @@ void main() {
         expect(result.transaction.inputs[0].sequenceNumber, equals(highSequence));
       });
 
-      test('should handle empty UTXO list for funding', () async {
-        final fundingAmount = BigInt.from(50000);
-
-        expect(
-          () => channelBuilder.buildFundingTransaction(
-            clientPubKey: clientPubKey,
-            serverPubKey: serverPubKey,
-            fundingAmountSats: fundingAmount,
-            clientUtxos: [],
-            changeAddress: clientAddress,
-            clientPrivateKey: clientPrivateKey,
-          ),
-          throwsA(isA<TransactionBuildException>()),
-        );
-      });
-
-      test('should handle zero funding amount', () async {
-        final utxos = createClientUtxos(count: 1, satoshisPerUtxo: BigInt.from(100000));
-
-        // Zero funding should still work (creates dust or empty output)
-        // Behavior depends on implementation
-        expect(
-          () => channelBuilder.buildFundingTransaction(
-            clientPubKey: clientPubKey,
-            serverPubKey: serverPubKey,
-            fundingAmountSats: BigInt.zero,
-            clientUtxos: utxos,
-            changeAddress: clientAddress,
-            clientPrivateKey: clientPrivateKey,
-          ),
-          // Might succeed or throw depending on dust handling
-          anyOf(returnsNormally, throwsA(isA<TransactionBuildException>())),
-        );
-      });
-
-      test('should handle same client and server pubkey', () async {
-        // Edge case: same pubkey for both (not recommended but should handle)
-        final utxos = createClientUtxos(count: 1, satoshisPerUtxo: BigInt.from(100000));
-        final fundingAmount = BigInt.from(50000);
-
-        // Using same pubkey - the multisig script will be degenerate
-        final result = await channelBuilder.buildFundingTransaction(
-          clientPubKey: clientPubKey,
-          serverPubKey: clientPubKey, // Same as client
-          fundingAmountSats: fundingAmount,
-          clientUtxos: utxos,
-          changeAddress: clientAddress,
-          clientPrivateKey: clientPrivateKey,
-        );
-
-        // Should still build, though the multisig would be equivalent to 2-of-2 with same key twice
-        expect(result.transaction, isNotNull);
-      });
-
-      test('should handle custom fee rate', () async {
-        final utxos = createClientUtxos(count: 1, satoshisPerUtxo: BigInt.from(100000));
-        final fundingAmount = BigInt.from(50000);
-
-        final lowFeeResult = await channelBuilder.buildFundingTransaction(
-          clientPubKey: clientPubKey,
-          serverPubKey: serverPubKey,
-          fundingAmountSats: fundingAmount,
-          clientUtxos: utxos,
-          changeAddress: clientAddress,
-          clientPrivateKey: clientPrivateKey,
-          feePerKb: 1,
-        );
-
-        final highFeeResult = await channelBuilder.buildFundingTransaction(
-          clientPubKey: clientPubKey,
-          serverPubKey: serverPubKey,
-          fundingAmountSats: fundingAmount,
-          clientUtxos: utxos,
-          changeAddress: clientAddress,
-          clientPrivateKey: clientPrivateKey,
-          feePerKb: 100,
-        );
-
-        expect(highFeeResult.fee, greaterThan(lowFeeResult.fee));
-      });
     });
   });
 }

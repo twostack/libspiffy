@@ -1,6 +1,7 @@
 import 'package:eventador/eventador.dart';
 import '../models/bitcoin_transaction.dart'; // For TransactionStatus
 import '../models/bitcoin_utxo.dart'; // For UTXOStatus
+import '../models/fee_rate.dart';
 import '../models/persistent_map.dart';
 import 'wallet_events.dart' show BeefAncestor;
 
@@ -1055,6 +1056,10 @@ class BuildFundingTransactionCommand extends WalletCommand {
   /// than the receive chain (m/0/{index}).
   final bool isChange;
 
+  /// ARC's published policy rate, which the funding pays on its signed size
+  /// (bead libspiffy-zs4l). The aggregate cannot ask ARC; the sender does.
+  final FeeRate feeRate;
+
   BuildFundingTransactionCommand({
     required String walletId,
     required this.correlationId,
@@ -1065,6 +1070,7 @@ class BuildFundingTransactionCommand extends WalletCommand {
     required this.changeAddressBase58,
     this.derivationIndex,
     this.isChange = false,
+    required this.feeRate,
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,

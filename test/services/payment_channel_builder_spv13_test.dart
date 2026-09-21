@@ -14,6 +14,7 @@ import 'package:test/test.dart';
 
 import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 import 'package:libspiffy/src/services/payment_channel_builder.dart';
+import 'package:libspiffy/src/models/fee_rate.dart';
 
 void main() {
   late PaymentChannelBuilder builder;
@@ -24,14 +25,14 @@ void main() {
   final fundingAmount = BigInt.from(100000);
 
   setUp(() {
-    builder = PaymentChannelBuilder(cryptoService: DartSVCryptoService());
+    builder = const PaymentChannelBuilder();
     clientKey = dartsv.SVPrivateKey(networkType: dartsv.NetworkType.TEST);
     serverKey = dartsv.SVPrivateKey(networkType: dartsv.NetworkType.TEST);
     clientAddress = clientKey.publicKey.toAddress(dartsv.NetworkType.TEST);
   });
 
   Future<ChannelTransactionResult> refund(int lockTimeUnix) =>
-      builder.buildRefundTransaction(
+      builder.buildRefundTransaction(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
         fundingTxId: fundingTxId,
         fundingOutputIndex: 0,
         fundingAmountSats: fundingAmount,

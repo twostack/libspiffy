@@ -12,7 +12,7 @@
 ///
 /// End to end through LibSpiffyActorSystem on regtest with real-PoW headers
 /// and a fake ARC: receive through WalletCoordinatorActor
-/// (ReceiveTransactionCommand), P's output made spendable by ARC reporting P
+/// (ValidateBEEFCommand), P's output made spendable by ARC reporting P
 /// SEEN_ON_NETWORK, payment through PayInvoiceCommand, and the outgoing BEEF
 /// validated by a separate SPVActor that only shares the headers. Then the
 /// same after a restart onto a read model rebuilt from the journal, and the
@@ -39,6 +39,7 @@ import 'package:test/test.dart';
 import '../spv/regtest_chain_builder.dart';
 import 'isar_test_helper.dart';
 import 'p2p_test_helpers.dart';
+import 'receive_helpers.dart';
 
 void main() {
   final genesis = NetworkParams.regtest.genesisHeader;
@@ -188,17 +189,7 @@ void main() {
     await _until(() async => await system.walletStorage.isWalletAddress(walletId, kTestRootAddress),
         'root address projected');
 
-    final imported = system.coordinatorEvents!
-        .where((e) => e is coord.TransactionImportedEvent && e.transactionId == p.id)
-        .cast<coord.TransactionImportedEvent>()
-        .first
-        .timeout(const Duration(seconds: 15));
-    system.coordinator.tell(coord.ReceiveTransactionCommand(
-      walletId: walletId,
-      beefHex: receivedBeefHex(),
-      fromCounterparty: 'counterparty',
-    ));
-    final result = await imported;
+    final result = await receiveBeef(system, walletId, receivedBeefHex(), p.id, fromCounterparty: 'counterparty');
     expect(result.success, isTrue, reason: result.error);
     expect((await receivedUtxo(system.walletStorage))?.status, UTXOStatus.pending);
 
@@ -399,6 +390,12 @@ class _Sink extends Actor {
 /// ARC that answers from [responses] and knows no other transaction.
 class _FakeArc extends ArcService {
   _FakeArc() : super(baseUrl: 'fake://arc');
+
+  /// A payment we receive is ours to submit (bead libspiffy-xggs). ARC holds
+  /// it and nothing more: whatever this test settles, it settles another way.
+  @override
+  Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl}) async =>
+      ArcSubmitResponse.fromJson({'txStatus': 'STORED'});
 
   final Map<String, ArcTransactionResponse> responses = {};
 

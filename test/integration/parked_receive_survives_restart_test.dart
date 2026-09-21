@@ -38,6 +38,7 @@ import 'package:test/test.dart';
 
 import '../spv/regtest_chain_builder.dart';
 import 'isar_test_helper.dart';
+import 'receive_helpers.dart';
 import 'p2p_test_helpers.dart';
 
 void main() {
@@ -168,19 +169,8 @@ void main() {
     await _until(() async => system.headerChain.bestHeight == tip, 'header chain at $tip');
   }
 
-  Future<coord.TransactionImportedEvent> receive(String beef, String subjectTxid) async {
-    final imported = system.coordinatorEvents!
-        .where((e) => e is coord.TransactionImportedEvent && e.transactionId == subjectTxid)
-        .cast<coord.TransactionImportedEvent>()
-        .first
-        .timeout(const Duration(seconds: 20));
-    system.coordinator.tell(coord.ReceiveTransactionCommand(
-      walletId: walletId,
-      beefHex: beef,
-      fromCounterparty: 'bob',
-    ));
-    return imported;
-  }
+  Future<Received> receive(String beef, String subjectTxid) =>
+      receiveBeef(system, walletId, beef, subjectTxid, fromCounterparty: 'bob');
 
   Future<List<BitcoinUtxo>> utxosOf(String txid) async => [
         for (final u in await readModel.getUTXOs(walletId, includeSpent: true))
@@ -278,15 +268,24 @@ void main() {
 
   /// Collects the TransactionImportedEvents the running system announces.
   /// Subscribed before anything that could produce one.
-  List<coord.TransactionImportedEvent> collectImports() {
-    final seen = <coord.TransactionImportedEvent>[];
+  /// Every answer the coordinator gives about a payment from here on. P is
+  /// a payment -- unproven, handed over by Bob -- so it is answered with
+  /// BEEFValidationResultEvent, whether or not anybody is still waiting for
+  /// it (bead libspiffy-xggs).
+  List<coord.BEEFValidationResultEvent> collectAnswers() {
+    final seen = <coord.BEEFValidationResultEvent>[];
     final sub = system.coordinatorEvents!
-        .where((e) => e is coord.TransactionImportedEvent)
-        .cast<coord.TransactionImportedEvent>()
+        .where((e) => e is coord.BEEFValidationResultEvent)
+        .cast<coord.BEEFValidationResultEvent>()
         .listen(seen.add);
     addTearDown(sub.cancel);
     return seen;
   }
+
+  BigInt received(coord.BEEFValidationResultEvent e) => [
+        for (final u in e.spendableUTXOs ?? const <Map<String, dynamic>>[])
+          BigInt.parse(u['satoshis'].toString()),
+      ].fold(BigInt.zero, (a, b) => a + b);
 
   test('4gy8: a receive replayed after a restart is announced on the public '
       'stream, not only credited', () async {
@@ -300,17 +299,17 @@ void main() {
     await system.shutdown();
     system = await boot();
 
-    final imports = collectImports();
+    final answers = collectAnswers();
     await sendHeaders([a3], 3, 3);
 
-    await _until(() async => imports.any((e) => e.transactionId == p.id),
+    await _until(() async => answers.any((e) => e.txid == p.id),
         'the replayed receive is announced on the public stream');
-    final event = imports.firstWhere((e) => e.transactionId == p.id);
-    expect(event.success, isTrue,
+    final event = answers.firstWhere((e) => e.txid == p.id);
+    expect(event.valid, isTrue,
         reason: 'the replay validated and the wallet was credited');
     expect(event.walletId, walletId);
-    expect(event.utxosCreated, greaterThan(0));
-    expect(BigInt.parse(event.totalValueReceived!), BigInt.from(120000),
+    expect(event.spendableUTXOs, isNotEmpty);
+    expect(received(event), BigInt.from(120000),
         reason: 'the app is told how much arrived, not merely that something '
             'did');
 
@@ -324,7 +323,7 @@ void main() {
     await sendHeaders([a1, a2], 1, 2);
     await createTheWallet();
 
-    final imports = collectImports();
+    final answers = collectAnswers();
     // Delivered with no reply target at all -- the shape a replay has, and
     // the one the coordinator answers for. Our chain stops at 2 and G claims
     // block 3, so this parks rather than reaching a verdict.
@@ -339,7 +338,7 @@ void main() {
         'the receive is parked');
     await barrier();
 
-    expect(imports.where((e) => e.transactionId == p.id), isEmpty,
+    expect(answers.where((e) => e.txid == p.id), isEmpty,
         reason: 'still waiting for a block header is not an outcome: an app '
             'told "import failed" would be told wrong, and told it again on '
             'every header that does not settle it');
@@ -347,9 +346,9 @@ void main() {
 
     // The header settles it, and THAT is an outcome.
     await sendHeaders([a3], 3, 3);
-    await _until(() async => imports.any((e) => e.transactionId == p.id),
+    await _until(() async => answers.any((e) => e.txid == p.id),
         'the verdict is announced once it is a verdict');
-    expect(imports.where((e) => e.transactionId == p.id).single.success, isTrue);
+    expect(answers.where((e) => e.txid == p.id).single.valid, isTrue);
   }, timeout: const Timeout(Duration(minutes: 2)));
 
   test('4gy8: a receive whose header arrived while the node was down is '
@@ -371,13 +370,13 @@ void main() {
         reason: 'the header is in the store before the next process starts');
 
     system = await boot();
-    final imports = collectImports();
+    final answers = collectAnswers();
 
-    await _until(() async => imports.any((e) => e.transactionId == p.id),
+    await _until(() async => answers.any((e) => e.txid == p.id),
         'the receive replayed at startup is announced on the public stream');
-    final event = imports.firstWhere((e) => e.transactionId == p.id);
-    expect(event.success, isTrue);
-    expect(BigInt.parse(event.totalValueReceived!), BigInt.from(120000));
+    final event = answers.firstWhere((e) => e.txid == p.id);
+    expect(event.valid, isTrue);
+    expect(received(event), BigInt.from(120000));
     await _until(() async => (await utxosOf(p.id)).isNotEmpty,
         'the receive is credited at startup, with no header notification');
     final settled = await readModel.getPendingReceive(walletId, p.id);
@@ -422,6 +421,12 @@ Future<void> _until(Future<bool> Function() condition, String what,
 /// string.
 class _FakeArc extends ArcService {
   _FakeArc() : super(baseUrl: 'fake://arc');
+
+  /// A payment we receive is ours to submit (bead libspiffy-xggs). ARC holds
+  /// it and nothing more: whatever this test settles, it settles another way.
+  @override
+  Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl}) async =>
+      ArcSubmitResponse.fromJson({'txStatus': 'STORED'});
 
   @override
   Future<ArcTransactionResponse> getTransaction(String txid) async {

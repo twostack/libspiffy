@@ -157,7 +157,7 @@ void main() {
         .cast<coord.TransactionImportedEvent>()
         .first
         .timeout(const Duration(seconds: 15));
-    system.coordinator.tell(coord.ReceiveTransactionCommand(walletId: _walletId, beefHex: beefHex));
+    system.coordinator.tell(coord.ImportTransactionCommand(walletId: _walletId, beef: hex.decode(beefHex)));
     final event = await imported;
     expect(event.success, isTrue, reason: 'import failed: ${event.error}');
     if (address != null && event.utxosCreated == 0) {

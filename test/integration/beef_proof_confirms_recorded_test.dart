@@ -39,6 +39,7 @@ import 'package:test/test.dart';
 
 import '../spv/regtest_chain_builder.dart';
 import 'isar_test_helper.dart';
+import 'receive_helpers.dart';
 import 'p2p_test_helpers.dart';
 
 void main() {
@@ -159,19 +160,8 @@ void main() {
   }
 
   /// Hands [beef] to the wallet and returns the coordinator's verdict.
-  Future<coord.TransactionImportedEvent> receive(String beef, String subjectTxid) async {
-    final imported = system.coordinatorEvents!
-        .where((e) => e is coord.TransactionImportedEvent && e.transactionId == subjectTxid)
-        .cast<coord.TransactionImportedEvent>()
-        .first
-        .timeout(const Duration(seconds: 20));
-    system.coordinator.tell(coord.ReceiveTransactionCommand(
-      walletId: walletId,
-      beefHex: beef,
-      fromCounterparty: 'bob',
-    ));
-    return imported;
-  }
+  Future<Received> receive(String beef, String subjectTxid) =>
+      receiveBeef(system, walletId, beef, subjectTxid, fromCounterparty: 'bob');
 
   Future<BitcoinUtxo?> utxo(String txid, int vout) async {
     for (final u in await readModel.getUTXOs(walletId, includeSpent: true)) {
@@ -561,6 +551,12 @@ Future<void> _until(Future<bool> Function() condition, String what,
 /// comes from a BEEF.
 class _FakeArc extends ArcService {
   _FakeArc() : super(baseUrl: 'fake://arc');
+
+  /// A payment we receive is ours to submit (bead libspiffy-xggs). ARC holds
+  /// it and nothing more: whatever this test settles, it settles another way.
+  @override
+  Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl}) async =>
+      ArcSubmitResponse.fromJson({'txStatus': 'STORED'});
 
   @override
   Future<ArcTransactionResponse> getTransaction(String txid) async {

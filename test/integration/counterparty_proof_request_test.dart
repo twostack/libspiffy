@@ -50,6 +50,7 @@ import 'package:test/test.dart';
 import '../spv/regtest_chain_builder.dart';
 import 'isar_test_helper.dart';
 import 'p2p_test_helpers.dart';
+import 'receive_helpers.dart';
 
 /// What wallet A calls wallet B, and what B's row for P records as its
 /// counterparty. An opaque, app-chosen string: libspiffy compares it and
@@ -191,17 +192,7 @@ void main() {
 
   /// A BEEF arrives from [from] through the public receive path.
   Future<void> receive(_Wallet w, String beefHex, {required String? from}) async {
-    final imported = w.system.coordinatorEvents!
-        .where((e) => e is coord.TransactionImportedEvent && e.transactionId == p.id)
-        .cast<coord.TransactionImportedEvent>()
-        .first
-        .timeout(const Duration(seconds: 20));
-    w.system.coordinator.tell(coord.ReceiveTransactionCommand(
-      walletId: w.walletId,
-      beefHex: beefHex,
-      fromCounterparty: from,
-    ));
-    final result = await imported;
+    final result = await receiveBeef(w.system, w.walletId, beefHex, p.id, fromCounterparty: from);
     expect(result.success, isTrue, reason: result.error);
   }
 
@@ -602,6 +593,12 @@ Future<void> _until(Future<bool> Function() condition, String what,
 /// ARC that answers from [responses] and knows no other transaction.
 class _FakeArc extends ArcService {
   _FakeArc() : super(baseUrl: 'fake://arc');
+
+  /// A payment we receive is ours to submit (bead libspiffy-xggs). ARC holds
+  /// it and nothing more: whatever this test settles, it settles another way.
+  @override
+  Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl}) async =>
+      ArcSubmitResponse.fromJson({'txStatus': 'STORED'});
 
   final Map<String, ArcTransactionResponse> responses = {};
 

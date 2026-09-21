@@ -20,7 +20,7 @@
 /// least m of its keys.
 ///
 /// End to end through LibSpiffyActorSystem on regtest with real-PoW headers:
-/// CreateInvoiceCommand with a P2MSOutputSpec, then ReceiveTransactionCommand
+/// CreateInvoiceCommand with a P2MSOutputSpec, then ValidateBEEFCommand
 /// with the invoice id and a BEEF holding the mined payment and its BUMP.
 library;
 
@@ -174,20 +174,21 @@ void main() {
     return (p, beefHex);
   }
 
-  Future<coord.TransactionImportedEvent> receive(dartsv.Transaction p, String beefHex, String invoiceId) async {
-    final imported = system.coordinatorEvents!
-        .where((e) => e is coord.TransactionImportedEvent && e.transactionId == p.id)
-        .cast<coord.TransactionImportedEvent>()
+  /// The payment of [invoiceId]: received the way an app receives one.
+  Future<coord.BEEFValidationResultEvent> receive(dartsv.Transaction p, String beefHex, String invoiceId) async {
+    final answered = system.coordinatorEvents!
+        .where((e) => e is coord.BEEFValidationResultEvent && e.txid == p.id)
+        .cast<coord.BEEFValidationResultEvent>()
         .first
         .timeout(const Duration(seconds: 15));
-    system.coordinator.tell(coord.ReceiveTransactionCommand(
+    system.coordinator.tell(coord.ValidateBEEFCommand(
       walletId: _walletId,
       beefHex: beefHex,
       invoiceId: invoiceId,
       fromCounterparty: 'payer',
     ));
-    final event = await imported;
-    expect(event.success, isTrue, reason: "import failed: ${event.error}");
+    final event = await answered;
+    expect(event.valid, isTrue, reason: "payment failed: ${event.error}");
     return event;
   }
 
@@ -241,7 +242,7 @@ void main() {
           reason: 'the wallet cannot spend the output without another signature');
       expect(await storage.getPaymentUTXOs(_walletId), isEmpty);
       expect((await journal()).whereType<we.UTXOReceivedEvent>().where((e) => e.txid == p.id), isEmpty);
-      expect(imported.utxosCreated, 0);
+      expect(imported.spendableUTXOs, isEmpty);
     });
   }
 
@@ -256,7 +257,7 @@ void main() {
     final imported = await receive(p, beefHex, invoiceId);
 
     await expectPaidAndRecorded(invoiceId, p, 100000);
-    expect(imported.utxosCreated, 1);
+    expect(imported.spendableUTXOs, hasLength(1));
     final storage = system.walletStorage;
     await _until(() async => (await storage.getUTXOs(_walletId)).any((u) => u.txid == p.id), 'UTXO projected');
     final utxo = (await storage.getUTXOs(_walletId)).singleWhere((u) => u.txid == p.id);
@@ -284,7 +285,7 @@ void main() {
         .cast<coord.TransactionImportedEvent>()
         .first
         .timeout(const Duration(seconds: 15));
-    system.coordinator.tell(coord.ReceiveTransactionCommand(walletId: _walletId, beefHex: beefHex));
+    system.coordinator.tell(coord.ImportTransactionCommand(walletId: _walletId, beef: hex.decode(beefHex)));
     final event = await imported;
     expect(event.success, isTrue, reason: 'import failed: ${event.error}');
     expect(event.utxosCreated, 2);
@@ -320,7 +321,7 @@ void main() {
     final imported = await receive(p, beefHex, invoiceId);
 
     await expectPaidAndRecorded(invoiceId, p, 100000);
-    expect(imported.utxosCreated, 1);
+    expect(imported.spendableUTXOs, hasLength(1));
     final storage = system.walletStorage;
     await _until(() async => (await storage.getUTXOs(_walletId)).any((u) => u.txid == p.id), 'UTXO projected');
     expect((await storage.getUTXOs(_walletId, includeSpent: true)).where((u) => u.txid == p.id).map((u) => u.vout),

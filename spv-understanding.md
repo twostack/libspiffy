@@ -128,8 +128,7 @@ All third-party interaction flows through a single unified facade — **WalletCo
 - `CreateWalletCommand`, `ImportWalletCommand`
 - `GetBalanceQuery`, `GetTransactionsQuery`, `GetTransactionDetailQuery`
 - `CreateInvoiceCommand`, `PayInvoiceCommand`
-- `ReceiveTransactionCommand` (BEEF from counterparty)
-- `ValidateBEEFCommand`, `RecordOutgoingCommand`
+- `ValidateBEEFCommand` (a counterparty's payment: checked, recorded, submitted to ARC), `ImportTransactionCommand` (a transaction that carries its own proof: recovery, our own history), `RecordOutgoingCommand`
 - `StoreHeadersCommand`, `SplitUTXOsCommand`, `TimestampCommand`
 - `OpenChannelCommand`, `ChannelPayCommand`, `CloseChannelCommand`
 - `GetDeferredPaymentsQuery`, `BroadcastDeferredPaymentCommand`, `CheckDeferredPaymentStatusCommand`, `CancelDeferredPaymentCommand`, `ReclaimDeferredPaymentCommand` (payments handed to a recipient that the network has not settled yet)
@@ -167,21 +166,27 @@ All third-party interaction flows through a single unified facade — **WalletCo
 
 ### Transaction Receipt Flow
 
+A counterparty's payment arrives as a BEEF: the payment itself, usually unproven, with the proofs of its ancestors. We check those against our headers (first-level SPV: the funding history is anchored in real blocks — this is not double-spend protection), and then **we submit the payment to ARC ourselves**, because we are the party that cares about being paid. From that submission it is our broadcast: ARC tracks it to network acceptance and to its block, and the merkle proof of our new outputs comes from ARC.
+
 ```
-1. App sends ReceiveTransactionCommand (BEEF) → WalletCoordinatorActor
-2. Coordinator parses BEEF, extracts txid
-3. Coordinator sends ReceiveTransactionMessage → SPVActor
-4. SPVActor validates BEEF structure + merkle proofs against block headers
-5. If valid → SPVActor sends ReceiveUTXOCommand → WalletManagerActor
-6. WalletManagerActor routes to BitcoinWalletAggregate
-7. Aggregate emits UTXOReceivedEvent (event sourced)
-8. WalletProjection updates read model
-9. Coordinator emits SPVValidationResultEvent, then TransactionImportedEvent
-   (with the UTXO count and the total received) once the projection at 8 has
-   applied it -- so an app told of the receive can query it. There is no
-   TransactionReceivedEvent: the coordinator carried one, nothing on this
-   path ever reached it, and it was deleted (bead libspiffy-5ml6).
+1. App sends ValidateBEEFCommand (BEEF, optional invoiceId) → WalletCoordinatorActor
+2. SPVActor checks the BEEF's structure, then its proofs against our headers
+   (ReceiveTransactionMessage). A proof naming a header we have not synced
+   parks the receive -- stored, so it survives a restart -- and the app is
+   told BEEFValidationResultEvent(awaitingHeader: true); the check runs again
+   when the header arrives, and the verdict follows.
+3. Valid → the wallet aggregate records it (UTXOReceivedEvent,
+   TransactionImportedEvent) and WalletProjection writes the read model
+4. Once the read model holds it, the coordinator submits the payment to ARC,
+   unless it carried a proof of its own that verified (it is already mined)
+5. Coordinator emits BEEFValidationResultEvent: valid, broadcasted, and
+   ARC's networkStatus or the broadcastError -- what ARC actually said
+6. ARCActor's status scan follows it to its block (SEEN_ON_NETWORK makes its
+   outputs spendable; MINED confirms it only with a merkle path that matches
+   our headers)
 ```
+
+`ImportTransactionCommand` is not a way to receive a payment. It brings in a transaction the wallet knows to be mined — recovering a wallet, importing its own history — and so accepts only a BEEF carrying the proof of the transaction it imports; one without is refused and names `ValidateBEEFCommand`. It is submitted nowhere, and answered with `SPVValidationResultEvent`, then `TransactionImportedEvent` once the projection has applied it. There is no `TransactionReceivedEvent` (bead libspiffy-5ml6), and no `ReceiveTransactionCommand`: it was the same pipeline as the import, and submitted nothing (bead libspiffy-ckr4).
 
 ### Payment Flow (Outgoing)
 

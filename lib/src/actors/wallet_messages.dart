@@ -612,7 +612,7 @@ class ReceiveTransactionMessage implements Message {
   /// cannot be used for it and a caller that needs the verdict has it told
   /// back through another actor. Matching those verdicts by txid pairs them
   /// by arrival order: two receives of the same transaction in flight at once
-  /// — an ordinary `ReceiveTransactionCommand` and a `proof_response` for the
+  /// — an ordinary receive and a `proof_response` for the
   /// same txid, say — could take each other's. This id pairs a verdict with
   /// the request that asked for it instead.
   ///
@@ -733,6 +733,24 @@ class SPVValidationResult extends ActorResponse {
   /// (a parked receive is stored with its BEEF, not with a caller's id).
   final String? requestId;
 
+  /// The [ReceiveTransactionMessage.invoiceId] the receive carried, echoed
+  /// back (bead libspiffy-xggs), so a verdict that reaches the coordinator
+  /// with nobody waiting for it — a payment replayed after a restart — is
+  /// still answered as the payment of that invoice.
+  final String? invoiceId;
+
+  /// Not a verdict: the BEEF's proofs name a block header we have not
+  /// synced, the receive is parked, and it is validated again — and
+  /// answered again — once the header arrives (bead libspiffy-xggs).
+  /// [isValid] is false only because nothing is proven yet.
+  final bool awaitingHeader;
+
+  /// Whether the BEEF carried a merkle proof for [txid] itself, verified or
+  /// not. A transaction received without one is a payment the network may
+  /// not have yet, which the receiver submits (bead libspiffy-xggs); one
+  /// carrying its proof is already mined.
+  final bool subjectCarriesProof;
+
   SPVValidationResult({
     required this.txid,
     required this.isValid,
@@ -746,17 +764,25 @@ class SPVValidationResult extends ActorResponse {
     List<ProvenTransaction> provenTransactions = const [],
     this.counterpartyMarker,
     this.requestId,
+    this.invoiceId,
+    this.awaitingHeader = false,
+    this.subjectCarriesProof = false,
   })  : spendableUTXOs = frozenMapList(spendableUTXOs),
         spentUTXOs = frozenMapList(spentUTXOs),
         transactionData = frozenPlainMapOrNull(transactionData),
         unreadableOutputs = frozenMapList(unreadableOutputs),
         provenTransactions = frozenList(provenTransactions);
 
-  /// This result with [marker] as its [counterpartyMarker] (a blank marker
-  /// is no marker) and [requestId] as its [requestId]. Applied in one place,
-  /// where the receive answers, so every branch that builds a result carries
-  /// both (beads libspiffy-cq16, libspiffy-l8uf).
-  SPVValidationResult withCounterpartyMarker(String? marker, {String? requestId}) => SPVValidationResult(
+  /// This result as the answer to the request that asked for it: [marker]
+  /// as its [counterpartyMarker] (a blank marker is no marker), and the
+  /// request's [requestId] and [invoiceId]; [awaitingHeader] when the
+  /// receive was parked rather than decided; [subjectCarriesProof] from the
+  /// BEEF it received. Applied in one place, where the
+  /// receive answers, so every branch that builds a result carries them
+  /// (beads libspiffy-cq16, libspiffy-l8uf, libspiffy-xggs).
+  SPVValidationResult answering(String? marker,
+          {String? requestId, String? invoiceId, bool awaitingHeader = false, bool? subjectCarriesProof}) =>
+      SPVValidationResult(
         txid: txid,
         isValid: isValid,
         validationError: validationError,
@@ -769,6 +795,9 @@ class SPVValidationResult extends ActorResponse {
         provenTransactions: provenTransactions,
         counterpartyMarker: (marker == null || marker.isEmpty) ? null : marker,
         requestId: requestId ?? this.requestId,
+        invoiceId: invoiceId ?? this.invoiceId,
+        awaitingHeader: awaitingHeader,
+        subjectCarriesProof: subjectCarriesProof ?? this.subjectCarriesProof,
       );
 
   @override

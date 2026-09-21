@@ -381,6 +381,20 @@ class BEEF {
     };
   }
 
+  /// Whether this BEEF carries a merkle proof (a BUMP) for the transaction
+  /// [txid] itself (hex, display order) — not merely for its ancestors.
+  /// False when it does not hold [txid] at all. Carrying a proof is not
+  /// verifying one: that takes our header chain (SPVActor).
+  bool carriesProofOf(String txid) {
+    final Uint8List bytes;
+    try {
+      bytes = Uint8List.fromList(hex.decode(txid));
+    } on FormatException {
+      return false;
+    }
+    return findTransactionByTxid(bytes)?['hasMerkleProof'] == true;
+  }
+
   /// Positions by identity and BUMP-index ordinals (no hashing); resets the
   /// txid caches when transactions or flags were added or removed.
   void _ensureLayout() {

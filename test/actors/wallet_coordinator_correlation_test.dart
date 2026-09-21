@@ -224,10 +224,13 @@ void main() {
         await Future.delayed(const Duration(milliseconds: 10));
       }
 
+      // An import: its BEEF carried the subject's proof (a payment is
+      // answered with BEEFValidationResultEvent instead).
       coordinator.tell(wm.SPVValidationResult(
         txid: _tx1Id,
         isValid: true,
         targetWalletId: _walletId,
+        subjectCarriesProof: true,
       ));
 
       final imported = await nextEvent<TransactionImportedEvent>(
@@ -248,10 +251,13 @@ void main() {
         walletProjection: silentProjection,
       );
 
+      // An import: its BEEF carried the subject's proof (a payment is
+      // answered with BEEFValidationResultEvent instead).
       coordinator.tell(wm.SPVValidationResult(
         txid: _tx1Id,
         isValid: true,
         targetWalletId: _walletId,
+        subjectCarriesProof: true,
       ));
       coordinator.tell(GetTransactionDetailQuery(
         walletId: _walletId,

@@ -303,30 +303,6 @@ class ValidateBEEFCommand implements Message {
   DateTime get timestamp => DateTime.now();
 }
 
-/// Receive a transaction via BEEF (combined structural + SPV validation + wallet update)
-class ReceiveTransactionCommand implements Message {
-  final String walletId;
-  final String beefHex;
-  final String? invoiceId;
-  final String? fromCounterparty;
-
-  ReceiveTransactionCommand({
-    required this.walletId,
-    required this.beefHex,
-    this.invoiceId,
-    this.fromCounterparty,
-  });
-
-  @override
-  String get correlationId => 'receive-tx-$walletId-${DateTime.now().millisecondsSinceEpoch}';
-  @override
-  Map<String, dynamic> get metadata => {'walletId': walletId};
-  @override
-  ActorRef? get replyTo => null;
-  @override
-  DateTime get timestamp => DateTime.now();
-}
-
 /// Record an outgoing transaction in the wallet
 class RecordOutgoingCommand implements Message {
   final String walletId;
@@ -384,22 +360,29 @@ class RecordOutgoingCommand implements Message {
   DateTime get timestamp => DateTime.now();
 }
 
-/// Import a transaction into the wallet
+/// Import a transaction the wallet already knows to be mined: recovering a
+/// wallet, or bringing in its own history.
+///
+/// The BEEF must carry the merkle proof of the transaction it imports (its
+/// last transaction), so the wallet holds the proof its outputs are spent
+/// with and nothing needs tracking on the network (bead libspiffy-ckr4).
+/// One without is refused with a [TransactionImportedEvent] saying so: a
+/// counterparty's payment is received with [ValidateBEEFCommand], which
+/// submits it and follows it to its block. The txid is the BEEF's; it is
+/// not the caller's to name.
 class ImportTransactionCommand implements Message {
   final String walletId;
-  final String transactionId;
   final List<int> beef;
   final String? fromCounterparty;
 
   ImportTransactionCommand({
     required this.walletId,
-    required this.transactionId,
     required List<int> beef,
     this.fromCounterparty,
   }) : beef = frozenList(beef);
 
   @override
-  String get correlationId => 'import-tx-$transactionId';
+  String get correlationId => 'import-tx-$walletId-${DateTime.now().microsecondsSinceEpoch}';
   @override
   Map<String, dynamic> get metadata => {'walletId': walletId};
   @override
@@ -1663,16 +1646,54 @@ class ProvisioningCompleteEvent extends CoordinatorEvent {
   DateTime get eventTimestamp => DateTime.now();
 }
 
-/// BEEF validation result
+/// The answer to a [ValidateBEEFCommand]: a counterparty's payment, checked,
+/// recorded and submitted.
+///
+/// In the peer-to-peer model the receiver broadcasts the payment it cares
+/// about (spv-understanding.md), so a payment whose transaction carries no
+/// merkle proof of its own is submitted to ARC once it validates and the
+/// wallet's read model holds it, and ARC then tracks it to its block. The
+/// event is emitted after both (bead libspiffy-xggs): [valid] means the
+/// payment is recorded and queryable, [broadcasted] that ARC accepted it.
+/// It used to claim `broadcasted: true` the moment the submission was
+/// handed to ARC's mailbox — before ARC answered, and with no ARC at all.
+///
+/// A payment whose proofs name a block header we have not synced is not
+/// decided yet: [awaitingHeader], and a second event follows once the
+/// header arrives — after a restart too, since the receive is stored.
 class BEEFValidationResultEvent extends CoordinatorEvent {
   @override
   final String? walletId;
   final String? invoiceId;
   final String? txid;
   final bool valid;
+
+  /// Why it is not [valid], or why the read model could not be shown to
+  /// hold it.
   final String? error;
+
+  /// ARC accepted the submission ([networkStatus] says how far it got).
+  /// False when it was not submitted: invalid, waiting for a header,
+  /// already mined (it carried its own proof, which verified), or ARC
+  /// refused or could not be reached ([broadcastError]).
   final bool broadcasted;
+
+  /// ARC's status for the submission, by its wire name, when ARC answered.
+  final String? networkStatus;
+
+  /// Why the submission failed, when one was made and did not succeed.
+  final String? broadcastError;
+
+  /// Not a verdict: the payment waits for a block header (see above).
+  final bool awaitingHeader;
+
   final List<Map<String, dynamic>>? spendableUTXOs;
+
+  /// Outputs of the payment whose locking script could not be read, so they
+  /// were not credited (bead libspiffy-rp6x; see
+  /// [SPVValidationResultEvent.unreadableOutputs]). The payment path now
+  /// carries them as the import path always did.
+  final List<Map<String, dynamic>> unreadableOutputs;
 
   BEEFValidationResultEvent({
     this.walletId,
@@ -1681,8 +1702,13 @@ class BEEFValidationResultEvent extends CoordinatorEvent {
     required this.valid,
     this.error,
     this.broadcasted = false,
+    this.networkStatus,
+    this.broadcastError,
+    this.awaitingHeader = false,
     List<Map<String, dynamic>>? spendableUTXOs,
-  })  : spendableUTXOs = frozenListOrNull(spendableUTXOs);
+    List<Map<String, dynamic>> unreadableOutputs = const [],
+  })  : spendableUTXOs = frozenListOrNull(spendableUTXOs),
+        unreadableOutputs = frozenMapList(unreadableOutputs);
 
   @override
   DateTime get eventTimestamp => DateTime.now();

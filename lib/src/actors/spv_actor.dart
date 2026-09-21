@@ -236,11 +236,6 @@ class SPVActor extends Actor {
         msg.targetWalletId,
         msg.invoiceId,
       );
-      // Who handed it to us, carried to the wallet so the payment is
-      // journaled with its counterparty marker (bead libspiffy-cq16). One
-      // place, so every branch above that builds a result carries it.
-      final validationResult = validated.withCounterpartyMarker(msg.fromCounterparty, requestId: msg.requestId);
-
       var stillWaiting = false;
       if (_awaitingHeaderHeight case final height?) {
         _awaitingHeaderHeight = null;
@@ -249,10 +244,20 @@ class SPVActor extends Actor {
       } else {
         // A verdict more headers cannot change: the receive stops waiting
         // (bead libspiffy-vfai). The row is kept with what became of it.
-        await _resolveParked(msg, validationResult.isValid
+        await _resolveParked(msg, validated.isValid
             ? 'recorded'
-            : 'failed: ${validationResult.validationError}');
+            : 'failed: ${validated.validationError}');
       }
+
+      // Who handed it to us, carried to the wallet so the payment is
+      // journaled with its counterparty marker (bead libspiffy-cq16), and
+      // whether this is a verdict at all (bead libspiffy-xggs). One place,
+      // so every branch above that builds a result carries them.
+      final validationResult = validated.answering(msg.fromCounterparty,
+          requestId: msg.requestId,
+          invoiceId: msg.invoiceId,
+          awaitingHeader: stillWaiting,
+          subjectCarriesProof: msg.beef.carriesProofOf(msg.transactionId));
 
       // Send validation result to WalletManager
       _walletManager.tell(validationResult);
@@ -281,7 +286,10 @@ class SPVActor extends Actor {
         isValid: false,
         validationError: e.toString(),
         targetWalletId: msg.targetWalletId,
-      ).withCounterpartyMarker(msg.fromCounterparty, requestId: msg.requestId);
+      ).answering(msg.fromCounterparty,
+          requestId: msg.requestId,
+          invoiceId: msg.invoiceId,
+          subjectCarriesProof: msg.beef.carriesProofOf(msg.transactionId));
 
       _walletManager.tell(errorResult);
       replyTo?.tell(errorResult);
@@ -325,7 +333,7 @@ class SPVActor extends Actor {
     }
     _awaitingHeaderHeight = null;
     replyTo?.tell(
-        result.withCounterpartyMarker(msg.fromCounterparty, requestId: msg.requestId));
+        result.answering(msg.fromCounterparty, requestId: msg.requestId));
   }
 
   /// Retrieve Block header from storage with opportunistic P2P fetch fallback

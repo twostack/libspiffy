@@ -302,6 +302,38 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### A payment you receive is submitted, and you are told what ARC said — breaking
+
+In the peer-to-peer model the receiver broadcasts the payment it cares
+about. libspiffy now does that on every path a payment arrives by, and
+reports ARC's real answer.
+
+- **`ValidateBEEFCommand` is the way to receive a payment.** Once the
+  payment validates and the wallet's read model holds it, it is submitted
+  to ARC, and `BEEFValidationResultEvent` is emitted **after** ARC answers:
+  `broadcasted` (ARC accepted it), `networkStatus` (e.g. `SEEN_ON_NETWORK`,
+  `REJECTED`) and `broadcastError`. It used to say `broadcasted: true` the
+  moment the payment was handed to ARC's mailbox — before ARC answered, and
+  with no ARC configured. A payment carrying its own verified proof is
+  already mined and is not submitted.
+- **A payment waiting for a block header is no longer lost.** The first
+  answer is `BEEFValidationResultEvent(awaitingHeader: true)`; when the
+  header arrives the payment is checked again, submitted, and answered
+  again — after a restart too. It used to be recorded as an import and
+  never submitted.
+- **`ReceiveTransactionCommand` is removed.** It was the same pipeline as
+  the import and submitted nothing. Use `ValidateBEEFCommand`.
+- **`ImportTransactionCommand` accepts only a BEEF carrying the proof of the
+  transaction it imports** (recovery, your own history), and is refused
+  otherwise. **Its `transactionId` parameter is removed**: the txid is the
+  BEEF's.
+- `BEEFValidationResultEvent.unreadableOutputs`: outputs of the payment
+  the wallet could not read (and so did not credit), as the import's
+  `SPVValidationResultEvent` already reported.
+- `SPVValidationResult` carries `invoiceId`, `awaitingHeader` and
+  `subjectCarriesProof`; `withCounterpartyMarker` is renamed `answering`.
+  `BEEF.carriesProofOf(txid)`.
+
 ### A transaction ARC rejected is no longer reported as broadcast
 
 - **A submission ARC answered `REJECTED` is now a `BroadcastFailedMessage`.**

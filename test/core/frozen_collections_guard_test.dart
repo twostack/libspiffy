@@ -55,9 +55,10 @@ const _sources = <String, String?>{
 };
 
 /// Collection fields the scan finds: 68 when 6r5w closed, 139 once a0fk
-/// added the outbound events and the internal messages. A new one must be
+/// added the outbound events and the internal messages, 140 with
+/// `BEEFValidationResultEvent.unreadableOutputs` (xggs). A new one must be
 /// frozen, and adding it must bump this number deliberately.
-const _expectedFields = 139;
+const _expectedFields = 140;
 
 final _classStart = RegExp(r'^(?:abstract |sealed )?class (\w+)', multiLine: true);
 final _field = RegExp(r'^  final ((?:List|Map|Set)<.*?>\??) (\w+);(?: *//.*)?$', multiLine: true);

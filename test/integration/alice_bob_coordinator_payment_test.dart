@@ -154,7 +154,7 @@ void main() {
       // ================================================================
       // This is the one place we touch internals — funding a test wallet
       // with real testnet transaction data and merkle proofs. In production
-      // this would happen via SPV (ReceiveTransactionCommand with BEEF).
+      // this would happen via SPV (ValidateBEEFCommand with BEEF).
       await fundWallet(
         walletManager: aliceSystem.walletManager,
         actorSystem: aliceActorSystem,

@@ -182,7 +182,6 @@ void main() {
       final beef = _createBeef();
       libspiffy.coordinator.tell(coord.ImportTransactionCommand(
         walletId: walletId,
-        transactionId: kTx1Id,
         beef: beef.serialize().toList(),
         fromCounterparty: 'test',
       ));

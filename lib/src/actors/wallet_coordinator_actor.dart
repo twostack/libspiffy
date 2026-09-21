@@ -108,11 +108,16 @@ class WalletCoordinatorActor extends Actor {
   final Map<String, _PendingBeefValidation> _beefValidations = {};
   int _beefRequestSeq = 0;
 
-  /// Full-SPV stage of a BEEF validation, keyed by txid. SPVActor's
-  /// ReceiveTransaction reply carries only the txid, and it answers in
-  /// mailbox order, so several validations of one txid queue up FIFO.
-  final Map<String, List<(String, String?, String)>> _spvProcessingCorrelation =
-      {}; // txid → [(beefHex, invoiceId, walletId)]
+  /// The receives this coordinator asked SPVActor for, by the requestId it
+  /// sent and SPVActor echoes (bead libspiffy-xggs): a payment
+  /// ([ValidateBEEFCommand]) or an import. This used to be keyed by txid, as
+  /// a FIFO of payments only, and a payment parked for a header lost its
+  /// entry to the first reply, which is not a verdict.
+  final Map<String, _Receive> _receives = {};
+  int _receiveSeq = 0;
+
+  /// How long a received payment's submission waits for ARC's answer.
+  static const _paymentSubmitTimeout = Duration(minutes: 2);
   final Map<String, String> _paymentInvoiceCorrelation = {}; // invoiceId → walletId
   final Map<String, String> _timestampCorrelation = {}; // invoiceId → archiveId
   final Map<String, CreateWalletCommand> _pendingCreateWallet = {}; // walletId → original cmd
@@ -347,8 +352,6 @@ class WalletCoordinatorActor extends Actor {
         await _handlePayInvoice(message);
       } else if (message is ValidateBEEFCommand) {
         await _handleValidateBEEF(message);
-      } else if (message is ReceiveTransactionCommand) {
-        await _handleReceiveTransaction(message);
       } else if (message is RecordOutgoingCommand) {
         await _handleRecordOutgoing(message);
       } else if (message is ImportTransactionCommand) {
@@ -808,41 +811,6 @@ class WalletCoordinatorActor extends Actor {
     );
   }
 
-  Future<void> _handleReceiveTransaction(ReceiveTransactionCommand cmd) async {
-    _log.info('Receiving transaction for wallet ${cmd.walletId}');
-
-    try {
-      final beefBytes = Uint8List.fromList(hex.decode(cmd.beefHex));
-      final beef = BEEF.parse(beefBytes);
-
-      // The last transaction in BEEF is typically the payment tx
-      final paymentTxid = beef.txs.isNotEmpty
-          ? hex.encode(beef.calculateTxid(beef.txs.last))
-          : 'unknown';
-
-      _spvActor.tell(
-        wm.ReceiveTransactionMessage(
-          transactionId: paymentTxid,
-          beef: beef,
-          // No placeholder (bead libspiffy-cq16): the marker is persisted
-          // now, and a stored 'unknown' on every payment is worse than no
-          // marker at all. Blank means the app supplied none.
-          fromCounterparty: cmd.fromCounterparty ?? '',
-          targetWalletId: cmd.walletId,
-          invoiceId: cmd.invoiceId,
-          receivedAt: DateTime.now(),
-        ),
-        sender: context.self,
-      );
-    } catch (e) {
-      _emitEvent(ErrorEvent(
-        walletId: cmd.walletId,
-        source: 'receiveTransaction',
-        message: 'Failed to parse BEEF: $e',
-      ));
-    }
-  }
-
   /// Records an outgoing transaction in the wallet.
   ///
   /// Sent with this actor as the sender so a refusal comes back here
@@ -880,33 +848,54 @@ class WalletCoordinatorActor extends Actor {
     );
   }
 
+  /// Imports a transaction the wallet knows to be mined (bead
+  /// libspiffy-ckr4): the BEEF must carry the proof of the transaction it
+  /// imports, its last. Without one it is refused here, before SPV: a
+  /// counterparty's unproven payment is received with [ValidateBEEFCommand],
+  /// which submits it and follows it to its block, and an import is
+  /// submitted nowhere. The txid is read off the BEEF.
   Future<void> _handleImportTransaction(ImportTransactionCommand cmd) async {
-    _log.info('Importing transaction ${cmd.transactionId} for wallet ${cmd.walletId}');
-
+    final BEEF beef;
+    final String txid;
     try {
-      final beefBytes = Uint8List.fromList(cmd.beef);
-      final beef = BEEF.parse(beefBytes);
-
-      _spvActor.tell(
-        wm.ReceiveTransactionMessage(
-          transactionId: cmd.transactionId,
-          beef: beef,
-          // No placeholder: a stored 'import' would name a counterparty
-          // nobody can be asked anything (bead libspiffy-cq16).
-          fromCounterparty: cmd.fromCounterparty ?? '',
-          targetWalletId: cmd.walletId,
-          receivedAt: DateTime.now(),
-        ),
-        sender: context.self,
-      );
+      beef = BEEF.parse(Uint8List.fromList(cmd.beef));
+      if (beef.txs.isEmpty) throw const FormatException('it holds no transaction');
+      txid = hex.encode(beef.calculateTxid(beef.txs.last));
     } catch (e) {
       _emitEvent(TransactionImportedEvent(
         walletId: cmd.walletId,
-        transactionId: cmd.transactionId,
+        transactionId: '',
         success: false,
         error: 'Failed to parse BEEF: $e',
       ));
+      return;
     }
+    if (!beef.carriesProofOf(txid)) {
+      _emitEvent(TransactionImportedEvent(
+        walletId: cmd.walletId,
+        transactionId: txid,
+        success: false,
+        error: 'An import must carry the merkle proof of the transaction it imports, and $txid has none. '
+            'A payment from a counterparty is received with ValidateBEEFCommand.',
+      ));
+      return;
+    }
+    _log.info('Importing transaction $txid for wallet ${cmd.walletId}');
+    final requestId = 'receive-${++_receiveSeq}';
+    _receives[requestId] = _Receive(walletId: cmd.walletId, payment: false);
+    _spvActor.tell(
+      wm.ReceiveTransactionMessage(
+        transactionId: txid,
+        beef: beef,
+        // No placeholder: a stored 'import' would name a counterparty
+        // nobody can be asked anything (bead libspiffy-cq16).
+        fromCounterparty: cmd.fromCounterparty ?? '',
+        targetWalletId: cmd.walletId,
+        receivedAt: DateTime.now(),
+        requestId: requestId,
+      ),
+      sender: context.self,
+    );
   }
 
   Future<void> _handleStoreHeaders(StoreHeadersCommand cmd) async {
@@ -1088,7 +1077,7 @@ class WalletCoordinatorActor extends Actor {
 
     // Clear correlation maps
     _beefValidations.clear();
-    _spvProcessingCorrelation.clear();
+    _receives.clear();
     _paymentInvoiceCorrelation.clear();
     _timestampCorrelation.clear();
     _pendingCreateWallet.clear();
@@ -1951,14 +1940,10 @@ class WalletCoordinatorActor extends Actor {
       try {
         final beefBytes = Uint8List.fromList(hex.decode(beefHex));
         final beef = BEEF.parse(beefBytes);
-        final txid = beef.txs.isNotEmpty
-            ? beef.calculateTxid(beef.txs.last).map((b) => b.toRadixString(16).padLeft(2, '0')).join()
-            : 'unknown';
+        final txid = beef.txs.isNotEmpty ? hex.encode(beef.calculateTxid(beef.txs.last)) : 'unknown';
 
-        // Track SPV processing correlation
-        _spvProcessingCorrelation
-            .putIfAbsent(txid, () => [])
-            .add((beefHex, invoiceId, walletId));
+        final receiveId = 'receive-${++_receiveSeq}';
+        _receives[receiveId] = _Receive(walletId: walletId, payment: true, invoiceId: invoiceId);
 
         _spvActor.tell(
           wm.ReceiveTransactionMessage(
@@ -1971,6 +1956,7 @@ class WalletCoordinatorActor extends Actor {
             targetWalletId: walletId,
             invoiceId: invoiceId,
             receivedAt: DateTime.now(),
+            requestId: receiveId,
           ),
           sender: context.self,
         );
@@ -1993,72 +1979,142 @@ class WalletCoordinatorActor extends Actor {
     // below are emitted for it too, as for any other standalone receive.
     _proofAdapter.handleReceiveResult(result);
 
-    final queued = _spvProcessingCorrelation[result.txid];
-    final correlation =
-        queued == null || queued.isEmpty ? null : queued.removeAt(0);
-    if (queued != null && queued.isEmpty) {
-      _spvProcessingCorrelation.remove(result.txid);
+    // Which kind of receive this answers (bead libspiffy-xggs). A request of
+    // ours names itself by its id. Anything else — a receive parked for a
+    // header and replayed, in this process or after a restart, which carries
+    // no caller's id — is classified by what it received: an import always
+    // carries its subject's proof (ckr4), so one without it, or one naming an
+    // invoice, is a payment.
+    final requestId = result.requestId;
+    final request = requestId == null ? null : _receives.remove(requestId);
+    final walletId = request?.walletId ?? result.targetWalletId;
+    final payment = request?.payment ?? (result.invoiceId != null || !result.subjectCarriesProof);
+
+    if (payment) {
+      if (walletId == null) return;
+      // Off the mailbox: it waits for the read model and for ARC.
+      unawaited(_answerPayment(result, walletId, request?.invoiceId ?? result.invoiceId));
+      return;
     }
 
-    if (correlation != null) {
-      final (beefHex, invoiceId, walletId) = correlation;
+    // An import. Nobody is told of a receive parked for a header; its
+    // verdict arrives when the header does.
+    if (result.awaitingHeader) return;
+    _emitEvent(SPVValidationResultEvent(
+      walletId: result.targetWalletId,
+      txid: result.txid,
+      isValid: result.isValid,
+      validationError: result.validationError,
+      spendableUTXOs: result.spendableUTXOs,
+      spentUTXOs: result.spentUTXOs,
+      unreadableOutputs: result.unreadableOutputs,
+    ));
 
-      if (result.isValid) {
-        // Broadcast the BEEF
-        _arcActor.tell(wm.BroadcastBEEFMessage(
-          walletId,
-          beefHex,
-          result.txid,
-        ));
+    // Emit TransactionImportedEvent so callers waiting on it get notified.
+    //
+    // WalletManagerActor processes the same SPVValidationResult in parallel
+    // and dispatches RecordImportedTransactionCommand to the wallet aggregate,
+    // which ultimately produces the aggregate-level TransactionImportedEvent
+    // that the projection persists into bitcoinTransactionEntitys. If we
+    // emitted this coord-level event immediately, callers (e.g., overnode's
+    // `_handleWalletImportTokenBeef` waiting on `_waitForWalletEvent
+    // <TransactionImportedEvent>`) could be told "success" before the read
+    // model contained the txid — exactly the gap Phase 1 closed for outbound
+    // recording. We close it here for inbound by waiting on the wallet
+    // projection actor before emitting.
+    //
+    // The wait runs off the mailbox (A-M2): awaiting it inside onMessage
+    // blocked every other public command for up to 32 s.
+    if (result.targetWalletId != null) {
+      unawaited(_emitTransactionImported(result));
+    }
+  }
 
-        _emitEvent(BEEFValidationResultEvent(
+  /// Answers a counterparty's payment (bead libspiffy-xggs).
+  ///
+  /// The receiver broadcasts the payment it cares about. So once a payment
+  /// validates and the read model holds it — the status ARC reports lands
+  /// on its row, and an app told of the payment can query it — a payment
+  /// that carried no proof of its own is submitted to ARC, which then
+  /// tracks it to its block (the status scan asks ARC about it: it is our
+  /// broadcast). One that carried its proof, verified, is already mined and
+  /// is submitted nowhere. The event says what ARC answered.
+  ///
+  /// This used to happen only on the invoice path's first reply, as a
+  /// fire-and-forget tell answered `broadcasted: true` at once — before ARC
+  /// answered and with no ARC at all — and a payment parked for a header,
+  /// whose first reply is not a verdict, was never submitted: its verdict
+  /// arrived with nobody correlated to it.
+  Future<void> _answerPayment(wm.SPVValidationResult result, String walletId, String? invoiceId) async {
+    BEEFValidationResultEvent answer({
+      required bool valid,
+      String? error,
+      bool broadcasted = false,
+      String? networkStatus,
+      String? broadcastError,
+    }) =>
+        BEEFValidationResultEvent(
           walletId: walletId,
           invoiceId: invoiceId,
           txid: result.txid,
-          valid: true,
-          broadcasted: true,
-          spendableUTXOs: result.spendableUTXOs,
-        ));
-      } else {
-        _emitEvent(BEEFValidationResultEvent(
-          walletId: walletId,
-          invoiceId: invoiceId,
-          txid: result.txid,
-          valid: false,
-          error: result.validationError ?? 'SPV validation failed',
-        ));
-      }
-    } else {
-      // No correlation - this is a standalone import (not a payment validation)
-      _emitEvent(SPVValidationResultEvent(
-        walletId: result.targetWalletId,
-        txid: result.txid,
-        isValid: result.isValid,
-        validationError: result.validationError,
-        spendableUTXOs: result.spendableUTXOs,
-        spentUTXOs: result.spentUTXOs,
-        unreadableOutputs: result.unreadableOutputs,
+          valid: valid,
+          error: error,
+          broadcasted: broadcasted,
+          networkStatus: networkStatus,
+          broadcastError: broadcastError,
+          awaitingHeader: result.awaitingHeader,
+          spendableUTXOs: valid ? result.spendableUTXOs : null,
+          unreadableOutputs: result.unreadableOutputs,
+        );
+
+    if (!result.isValid) {
+      _emitEvent(answer(valid: false, error: result.validationError ?? 'SPV validation failed'));
+      return;
+    }
+
+    String? notApplied;
+    try {
+      notApplied = await _awaitImportApplied(result.txid);
+    } catch (e) {
+      notApplied = '$e';
+    }
+    final applyError = notApplied == null
+        ? null
+        : 'Payment ${result.txid} was validated but the wallet read model failed to apply it: $notApplied';
+
+    final mined = result.provenTransactions.any((p) => p.txid == result.txid);
+    if (mined) {
+      _emitEvent(answer(valid: applyError == null, error: applyError));
+      return;
+    }
+
+    final row = await _storage.getTransaction(result.txid, walletId: walletId);
+    if (row == null || row.rawHex.isEmpty) {
+      _emitEvent(answer(
+        valid: false,
+        error: applyError ?? 'Payment ${result.txid} is not stored',
+        broadcastError: 'not submitted: the wallet does not hold the transaction',
       ));
-
-      // Emit TransactionImportedEvent so callers waiting on it get notified.
-      //
-      // WalletManagerActor processes the same SPVValidationResult in parallel
-      // and dispatches RecordImportedTransactionCommand to the wallet aggregate,
-      // which ultimately produces the aggregate-level TransactionImportedEvent
-      // that the projection persists into bitcoinTransactionEntitys. If we
-      // emitted this coord-level event immediately, callers (e.g., overnode's
-      // `_handleWalletImportTokenBeef` waiting on `_waitForWalletEvent
-      // <TransactionImportedEvent>`) could be told "success" before the read
-      // model contained the txid — exactly the gap Phase 1 closed for outbound
-      // recording. We close it here for inbound by waiting on the wallet
-      // projection actor before emitting.
-      //
-      // The wait runs off the mailbox (A-M2): awaiting it inside onMessage
-      // blocked every other public command for up to 32 s.
-      if (result.targetWalletId != null) {
-        unawaited(_emitTransactionImported(result));
-      }
+      return;
     }
+
+    dynamic reply;
+    try {
+      reply = await _arcActor.ask<dynamic>(
+          wm.BroadcastTransactionMessage(walletId, row.rawHex, result.txid), _paymentSubmitTimeout);
+    } catch (e) {
+      reply = wm.BroadcastFailedMessage(result.txid, 'ARC did not answer the submission: $e');
+    }
+    _emitEvent(switch (reply) {
+      wm.BroadcastSuccessMessage(:final networkStatus) =>
+        answer(valid: applyError == null, error: applyError, broadcasted: true, networkStatus: networkStatus),
+      wm.BroadcastFailedMessage(:final error, :final networkStatus) => answer(
+          valid: applyError == null, error: applyError, networkStatus: networkStatus, broadcastError: error),
+      _ => answer(
+          valid: applyError == null,
+          error: applyError,
+          broadcastError: 'ARC answered the submission with ${reply.runtimeType}'),
+    });
   }
 
   /// Waits (off the mailbox) until the wallet read model holds [result]'s
@@ -2262,6 +2318,16 @@ class WalletCoordinatorActor extends Actor {
 }
 
 /// A structural BEEF validation awaiting SPVActor's reply (A-M1).
+/// A receive this coordinator asked SPVActor for: a counterparty's payment
+/// (answered with a [BEEFValidationResultEvent], and submitted) or an import.
+class _Receive {
+  final String walletId;
+  final bool payment;
+  final String? invoiceId;
+
+  _Receive({required this.walletId, required this.payment, this.invoiceId});
+}
+
 class _PendingBeefValidation {
   final String walletId;
   final String beefHex;

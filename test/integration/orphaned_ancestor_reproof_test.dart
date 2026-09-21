@@ -16,7 +16,7 @@
 /// Exactly two things can restore the output: the block returns to the active
 /// chain (SPVActor revives the kept row), or the counterparty re-sends —
 /// which is what this test drives, through the real receive path
-/// (`ReceiveTransactionCommand` -> SPVActor -> the wallet aggregate ->
+/// (`ValidateBEEFCommand` or `ImportTransactionCommand` -> SPVActor -> the wallet aggregate ->
 /// `WalletProjection._storeAncestors`). The projection's write is the point:
 /// the fresh VERIFIED proof has to supersede the ORPHANED current row under
 /// `ReadModelStorage.storeMerkleProof`'s retention rules (beads
@@ -49,6 +49,7 @@ import 'package:test/test.dart';
 import '../spv/regtest_chain_builder.dart';
 import 'isar_test_helper.dart';
 import 'p2p_test_helpers.dart';
+import 'receive_helpers.dart';
 
 void main() {
   final genesis = NetworkParams.regtest.genesisHeader;
@@ -184,17 +185,7 @@ void main() {
 
   /// The counterparty delivers a BEEF for P through the public receive path.
   Future<void> receive(LibSpiffyActorSystem system, String beefHex) async {
-    final imported = system.coordinatorEvents!
-        .where((e) => e is coord.TransactionImportedEvent && e.transactionId == p.id)
-        .cast<coord.TransactionImportedEvent>()
-        .first
-        .timeout(const Duration(seconds: 20));
-    system.coordinator.tell(coord.ReceiveTransactionCommand(
-      walletId: walletId,
-      beefHex: beefHex,
-      fromCounterparty: 'counterparty',
-    ));
-    final result = await imported;
+    final result = await receiveBeef(system, walletId, beefHex, p.id, fromCounterparty: 'counterparty');
     expect(result.success, isTrue, reason: result.error);
   }
 
@@ -394,6 +385,12 @@ class _Sink extends Actor {
 /// ARC that answers from [responses] and knows no other transaction.
 class _FakeArc extends ArcService {
   _FakeArc() : super(baseUrl: 'fake://arc');
+
+  /// A payment we receive is ours to submit (bead libspiffy-xggs). ARC holds
+  /// it and nothing more: whatever this test settles, it settles another way.
+  @override
+  Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl}) async =>
+      ArcSubmitResponse.fromJson({'txStatus': 'STORED'});
 
   final Map<String, ArcTransactionResponse> responses = {};
 

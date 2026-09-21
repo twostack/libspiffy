@@ -25,7 +25,7 @@ import 'package:convert/convert.dart';
 import 'package:dactor/dactor.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:eventador/eventador.dart';
-import 'package:libspiffy/src/actors/coordinator_messages.dart' show CoordinatorEvent, SPVValidationResultEvent;
+import 'package:libspiffy/src/actors/coordinator_messages.dart' show BEEFValidationResultEvent, CoordinatorEvent, SPVValidationResultEvent;
 import 'package:libspiffy/src/actors/invoice_messages.dart';
 import 'package:libspiffy/src/actors/spv_actor.dart';
 import 'package:libspiffy/src/actors/wallet_coordinator_actor.dart';
@@ -319,6 +319,45 @@ void main() {
       await settled('template', payment.id);
     });
 
+    Future<(ActorRef, List<CoordinatorEvent>)> coordinatorOver(ActorRef projection) async {
+      final probe = await system.spawn('probe', () => _Silent());
+      final coordinator = WalletCoordinatorActor(
+        walletManager: probe,
+        invoiceCoordinator: probe,
+        paymentCoordinator: probe,
+        spvActor: probe,
+        arcActor: probe,
+        headerSyncActor: probe,
+        benfordCoordinator: probe,
+        channelManager: probe,
+        walletProjection: projection,
+        storage: readModel,
+      );
+      final events = <CoordinatorEvent>[];
+      final sub = coordinator.events.listen(events.add);
+      addTearDown(sub.cancel);
+      return (await system.spawn('coordinator', () => coordinator), events);
+    }
+
+    test('the coordinator passes the unreadable outputs of a payment on in BEEFValidationResultEvent', () async {
+      // Answers the coordinator's two projection questions at once, so the
+      // payment is answered without waiting out a projection that is not
+      // here (its row is not stored either: the answer says so).
+      final projection = await system.spawn('projection', () => _AppliedProjection());
+      final (ref, events) = await coordinatorOver(projection);
+      final unreadable = {'vout': 3, 'satoshis': 1, 'script': '51', 'reason': 'boom'};
+      // A payment: its subject carried no proof of its own.
+      ref.tell(SPVValidationResult(
+          txid: 'cd' * 32, isValid: true, targetWalletId: 'w', unreadableOutputs: [unreadable]));
+
+      final deadline = DateTime.now().add(const Duration(seconds: 3));
+      while (events.whereType<BEEFValidationResultEvent>().isEmpty) {
+        if (DateTime.now().isAfter(deadline)) fail('no BEEFValidationResultEvent: $events');
+        await Future.delayed(const Duration(milliseconds: 10));
+      }
+      expect(events.whereType<BEEFValidationResultEvent>().single.unreadableOutputs, [unreadable]);
+    });
+
     test('the coordinator passes the unreadable outputs on in SPVValidationResultEvent', () async {
       final probe = await system.spawn('probe', () => _Silent());
       final coordinator = WalletCoordinatorActor(
@@ -337,7 +376,9 @@ void main() {
       final sub = coordinator.events.listen(events.add);
       final ref = await system.spawn('coordinator', () => coordinator);
       final unreadable = {'vout': 3, 'satoshis': 1, 'script': '51', 'reason': 'boom'};
-      ref.tell(SPVValidationResult(txid: 'ab' * 32, isValid: true, unreadableOutputs: [unreadable]));
+      // An import: its BEEF carried the subject's proof.
+      ref.tell(SPVValidationResult(
+          txid: 'ab' * 32, isValid: true, unreadableOutputs: [unreadable], subjectCarriesProof: true));
 
       final deadline = DateTime.now().add(const Duration(seconds: 3));
       while (events.whereType<SPVValidationResultEvent>().isEmpty) {
@@ -444,4 +485,15 @@ class _ThrowingPlugin extends ScriptPlugin {
   dartsv.LockingScriptBuilder? createLockBuilder(PluginOutputSpec spec) => null;
   @override
   dartsv.UnlockingScriptBuilder? createUnlockBuilder(PluginUnlockSpec spec) => null;
+}
+
+/// A wallet projection that has applied everything: answers the FIFO
+/// barrier and every awaiter at once.
+class _AppliedProjection extends Actor {
+  @override
+  Future<void> onMessage(dynamic message) async {
+    if (message is GetProjectionInfo || message is AwaitEventApplied) {
+      context.sender?.tell(EventAppliedResponse());
+    }
+  }
 }

@@ -160,26 +160,27 @@ void main() {
     await _until(() async => system.headerChain.bestHeight == tip, 'header chain at $tip');
   }
 
-  /// Hands [beef] to the wallet and returns the coordinator's verdict.
-  Future<coord.TransactionImportedEvent> receive(String beef, String subjectTxid) async {
-    final imported = system.coordinatorEvents!
-        .where((e) => e is coord.TransactionImportedEvent && e.transactionId == subjectTxid)
-        .cast<coord.TransactionImportedEvent>()
+  /// Hands the payment [beef] to the wallet and returns the coordinator's
+  /// first answer: a verdict, or word that it waits for a header.
+  Future<coord.BEEFValidationResultEvent> receive(String beef, String subjectTxid) async {
+    final answered = system.coordinatorEvents!
+        .where((e) => e is coord.BEEFValidationResultEvent && e.txid == subjectTxid)
+        .cast<coord.BEEFValidationResultEvent>()
         .first
         .timeout(const Duration(seconds: 20));
-    system.coordinator.tell(coord.ReceiveTransactionCommand(
+    system.coordinator.tell(coord.ValidateBEEFCommand(
       walletId: walletId,
       beefHex: beef,
       fromCounterparty: 'bob',
     ));
-    return imported;
+    return answered;
   }
 
   /// The coordinator's next verdict on [subjectTxid] without sending
   /// anything: what the retained receive produces on its own.
-  Future<coord.TransactionImportedEvent> nextVerdict(String subjectTxid) => system.coordinatorEvents!
-      .where((e) => e is coord.TransactionImportedEvent && e.transactionId == subjectTxid)
-      .cast<coord.TransactionImportedEvent>()
+  Future<coord.BEEFValidationResultEvent> nextVerdict(String subjectTxid) => system.coordinatorEvents!
+      .where((e) => e is coord.BEEFValidationResultEvent && e.txid == subjectTxid && !e.awaitingHeader)
+      .cast<coord.BEEFValidationResultEvent>()
       .first
       .timeout(const Duration(seconds: 25));
 
@@ -223,7 +224,8 @@ void main() {
 
     // Our chain stops at 2, G claims block 3: nothing can be checked.
     final tooEarly = await receive(beef, p.id);
-    expect(tooEarly.success, isFalse, reason: 'an unverifiable proof must not credit the wallet');
+    expect(tooEarly.valid, isFalse, reason: 'an unverifiable proof must not credit the wallet');
+    expect(tooEarly.awaitingHeader, isTrue, reason: 'not a verdict: the receive waits for the header');
     expect(tooEarly.error, contains('3'), reason: 'the caller is told which header is missing: ${tooEarly.error}');
     await barrier();
     expect(await utxosOf(p.id), isEmpty, reason: 'nothing is credited before a proof checks out');
@@ -243,7 +245,7 @@ void main() {
     await sendHeaders([a3], 3, 3);
 
     final settled = await verdict;
-    expect(settled.success, isTrue, reason: settled.error);
+    expect(settled.valid, isTrue, reason: settled.error);
     await _until(() async => (await utxosOf(p.id)).isNotEmpty, 'the retained receive credits the wallet');
     final ours = (await utxosOf(p.id)).where((u) => u.satoshis == BigInt.from(90000)).toList();
     expect(ours.map((u) => u.status), [UTXOStatus.pending],
@@ -263,7 +265,8 @@ void main() {
     await createTheWallet();
 
     final rejected = await receive(beefHex([(g, forged), (p, null)]), p.id);
-    expect(rejected.success, isFalse, reason: 'a proof our own header contradicts was accepted');
+    expect(rejected.valid, isFalse, reason: 'a proof our own header contradicts was accepted');
+    expect(rejected.awaitingHeader, isFalse, reason: 'a contradicted proof is a verdict');
     expect(rejected.error, contains('failed merkle proof validation'));
     await barrier();
     expect(await utxosOf(p.id), isEmpty);
@@ -280,7 +283,7 @@ void main() {
     await createTheWallet();
 
     final tooEarly = await receive(beefHex([(g, gBump), (p, null)]), p.id);
-    expect(tooEarly.success, isFalse);
+    expect(tooEarly.valid, isFalse);
     await barrier();
 
     final confirmations = [
@@ -324,10 +327,14 @@ Future<void> _until(Future<bool> Function() condition, String what,
   }
 }
 
-/// ARC that knows no transaction at all: nothing here is settled by a status
-/// string.
+/// ARC that knows no transaction at all and takes no submission: nothing
+/// here is settled by a status string.
 class _FakeArc extends ArcService {
   _FakeArc() : super(baseUrl: 'fake://arc');
+
+  @override
+  Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl}) async =>
+      throw ArcException('ARC is not reachable in this test');
 
   @override
   Future<ArcTransactionResponse> getTransaction(String txid) async {

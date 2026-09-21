@@ -5,7 +5,7 @@
 /// be used for it: [ProofP2PAdapter] tells the receive with the coordinator as
 /// sender and the coordinator hands every [SPVValidationResult] back through
 /// `handleReceiveResult`. That used to be matched FIFO per txid, so an
-/// ordinary `ReceiveTransactionCommand` and a `proof_response` for the SAME
+/// ordinary receive and a `proof_response` for the SAME
 /// transaction in flight at the same moment could take each other's verdict.
 /// A correlation id on the receive, echoed on the result, makes the pairing
 /// structural.
@@ -81,7 +81,7 @@ String _beefHex() {
 wm.SPVValidationResult _verdictFor(wm.ReceiveTransactionMessage msg,
         {required bool valid, String? error}) =>
     wm.SPVValidationResult(txid: msg.transactionId, isValid: valid, validationError: error)
-        .withCounterpartyMarker(msg.fromCounterparty, requestId: msg.requestId);
+        .answering(msg.fromCounterparty, requestId: msg.requestId);
 
 void main() {
   test('l8uf: a receive and a proof response for the same txid in flight together each get their own '
@@ -111,7 +111,7 @@ void main() {
     final ours = spv.received.single;
     expect(ours.requestId, isNotNull, reason: 'the receive carries our own correlation id');
 
-    // An ordinary ReceiveTransactionCommand for the SAME transaction answers
+    // An ordinary receive of the SAME transaction answers
     // first, with a different verdict. It is not ours, and taking it would
     // report somebody else's outcome as the counterparty's answer.
     final somebodyElses = wm.SPVValidationResult(

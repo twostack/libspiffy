@@ -699,8 +699,7 @@ void main() {
       final received =
           coord.P2PMessageReceived(fromPeerId: 'peer', messageType: 'm', payload: payload);
       final beef = <int>[1, 2, 3];
-      final import = coord.ImportTransactionCommand(
-          walletId: _walletId, transactionId: 'ab' * 32, beef: beef);
+      final import = coord.ImportTransactionCommand(walletId: _walletId, beef: beef);
 
       ((walletMetadata['profile'] as Map)['tags'] as List).add('late');
       headers.add({'height': 2});

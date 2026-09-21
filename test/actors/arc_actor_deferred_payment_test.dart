@@ -183,7 +183,9 @@ void main() {
       final answer = await quote();
 
       expect(answer.success, isFalse);
-      expect(answer.fee, BigInt.zero);
+      // Null, not zero, since bead libspiffy-8743: a quote nobody published
+      // has no fee, and zero is a fee a caller can build a transaction with.
+      expect(answer.fee, isNull);
       expect(answer.error, contains('policy'));
     });
   });

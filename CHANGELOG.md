@@ -302,6 +302,29 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### ARC no longer invents a fee rate, or a mainnet endpoint
+
+- **A fee estimate ARC cannot make is reported as a failure.**
+  `_handleEstimateFee` caught the policy failure itself and fell back to a
+  hard-coded 1 sat/1000 bytes, so a caller was told **success** with a rate
+  no miner published and could build a transaction at a fee nobody quoted.
+  It now answers exactly as its sibling `_quotePolicyFee` already did, and
+  `FeeEstimateMessage.estimatedFee` is null rather than a guess.
+- **No ARC configuration now means no ARC** — it used to mean TAAL
+  **mainnet**. `ARCActor` built `ArcServiceConfig.taalMainnet()` whenever it
+  was handed no config, so an actor constructed without one silently
+  acquired a mainnet endpoint whatever network the wallet was on. (The
+  supported entry point, `LibSpiffyActorSystem`, resolves the endpoint from
+  the wallet's network and is unaffected.)
+- A wallet with no ARC is a supported configuration: it records and proves
+  transactions and asks nobody to broadcast them. Broadcasts, BEEF
+  broadcasts, status checks, fee quotes, fee estimates, merkle proof
+  retrieval and policy fee quotes all report `ARC service not available`
+  — seven branches that already existed and could not be reached.
+- **`PolicyFeeQuote.fee` is nullable** and null when `success` is false. It
+  was documented as "zero when success is false", the same shape removed
+  from `FeeEstimateMessage` in the previous release note.
+
 ### Recording your own payment is announced, and is no longer reported as a receive
 
 - **Removed: `TransactionReceivedEvent`.** An app that recorded an outgoing

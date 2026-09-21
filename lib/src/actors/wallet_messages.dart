@@ -1672,8 +1672,13 @@ class EstimatePolicyFeeMessage implements Message {
 /// Reply to [EstimatePolicyFeeMessage]: ARC's policy fee for the transaction
 /// size asked about.
 class PolicyFeeQuote extends ActorResponse {
-  /// The fee in satoshis, rounded up; zero when [success] is false.
-  final BigInt fee;
+  /// The fee in satoshis, rounded up.
+  ///
+  /// **Null when [success] is false** (bead libspiffy-8743): a quote ARC
+  /// could not be asked for has no fee, and a zero here is a number a
+  /// caller can build a transaction with — the same defect bead
+  /// libspiffy-97zj took out of `FeeEstimateMessage`.
+  final BigInt? fee;
 
   /// The size the fee was quoted for.
   final int sizeBytes;
@@ -1687,13 +1692,13 @@ class PolicyFeeQuote extends ActorResponse {
   final String? error;
 
   PolicyFeeQuote({
-    required this.fee,
+    this.fee,
     required this.sizeBytes,
     required this.success,
     this.feeSatoshis = 0,
     this.feeBytes = 0,
     this.error,
-  }) : super(metadata: {'fee': fee.toString(), 'sizeBytes': sizeBytes, 'success': success});
+  }) : super(metadata: {'fee': fee?.toString(), 'sizeBytes': sizeBytes, 'success': success});
 
   @override
   String toString() => 'PolicyFeeQuote($fee sat for $sizeBytes bytes at $feeSatoshis/$feeBytes, '

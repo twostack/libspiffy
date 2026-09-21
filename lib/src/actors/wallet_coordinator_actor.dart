@@ -1412,7 +1412,7 @@ class WalletCoordinatorActor extends Actor {
         return;
       }
       final fee = quote.fee;
-      if (!quote.success || fee <= BigInt.zero) {
+      if (!quote.success || fee == null || fee <= BigInt.zero) {
         _emitEvent(failure('The policy fee for the reclaim of ${cmd.txid} could not be quoted '
             '(${quote.error ?? 'quoted as $fee'}); nothing was built or broadcast'));
         return;

@@ -16,13 +16,21 @@
 /// `error`, and the value it could not measure is absent rather than zero,
 /// empty or 'error'.
 ///
-/// Two limits found while writing this, both filed as libspiffy-8743 and
-/// pinned below as they are: `ARCActor.preStart` builds a TAAL mainnet
-/// service when it is handed none, so `_arcService == null` is false for
-/// every message and those branches are dead; and `_handleEstimateFee`
-/// catches a policy failure itself and falls back to an invented
-/// 1 sat/1000 bytes, so a fee estimate reports success with a rate nothing
-/// published.
+/// Bead libspiffy-8743 closed the two limits this file first pinned as
+/// characterizations:
+///
+/// * `_handleEstimateFee` caught the policy failure itself and fell back to
+///   an invented 1 sat/1000 bytes, so a caller was told **success** with a
+///   rate nothing published — and 97zj's honest failure reply was
+///   unreachable. It now answers a policy it could not read as a failure,
+///   exactly as its sibling `_quotePolicyFee` already did.
+/// * `preStart` built a TAAL **mainnet** service when handed no
+///   configuration, so `_arcService == null` was false for every message and
+///   seven honest "ARC service not available" branches were dead — and an
+///   actor given no ARC endpoint silently acquired a mainnet one, the last
+///   copy of the defect audit V-2 fixed. No configuration now means no ARC,
+///   which is a supported way to run a wallet: it records and proves
+///   transactions and asks nobody to broadcast them.
 library;
 
 import 'package:dactor/dactor.dart';
@@ -84,17 +92,74 @@ void main() {
       expect(reply.txid, _txid);
     });
 
-    test('a fee estimate still reports success, with a rate libspiffy '
-        'invented (libspiffy-8743)', () async {
+    test('a fee estimate reports the failure and no fee, rather than a rate '
+        'libspiffy invented', () async {
       final reply =
           await arcActor.ask<FeeEstimateMessage>(EstimateFeeMessage(1, 2), _ask);
 
-      // Characterization, not an endorsement: _handleEstimateFee catches the
-      // policy failure itself and falls back to 1 sat/1000 bytes, so the
-      // honest failure reply this bead added is unreachable here. The fee
-      // below is the fallback, not a measurement.
-      expect(reply.success, isTrue);
-      expect(reply.estimatedFee, isNotNull);
+      // Old code: success, with a fee computed from a hard-coded
+      // 1 sat/1000 bytes that no miner published.
+      expect(reply.success, isFalse);
+      expect(reply.error, contains("policy could not be read"));
+      expect(reply.estimatedFee, isNull,
+          reason: 'a rate nobody published is not an estimate');
+    });
+
+    test('a policy fee quote carries no fee when it failed', () async {
+      final reply = await arcActor.ask<PolicyFeeQuote>(
+          EstimatePolicyFeeMessage(inputCount: 1, outputCount: 1), _ask);
+
+      expect(reply.success, isFalse);
+      expect(reply.fee, isNull,
+          reason: 'zero is a fee a caller can build a transaction with');
+      expect(reply.sizeBytes, greaterThan(0), reason: 'the size was measured, the fee was not');
+    });
+  });
+
+  /// An ARCActor with neither a configuration nor a service. It used to
+  /// build `ArcServiceConfig.taalMainnet()` here — so this actor would have
+  /// been talking to mainnet — and every branch below was unreachable.
+  group('when the wallet has no ARC at all', () {
+    setUp(() => spawn(null));
+
+    test('a broadcast is refused rather than sent to a mainnet endpoint '
+        'nobody asked for', () async {
+      final reply = await arcActor.ask<BroadcastFailedMessage>(
+          BroadcastTransactionMessage('w', '00', _txid), _ask);
+
+      expect(reply.success, isFalse);
+      expect(reply.error, contains('ARC service not available'));
+      expect(reply.txid, _txid);
+    });
+
+    test('a fee estimate has no fee, and a fee quote no rates', () async {
+      final estimate =
+          await arcActor.ask<FeeEstimateMessage>(EstimateFeeMessage(1, 2), _ask);
+      expect(estimate.success, isFalse);
+      expect(estimate.estimatedFee, isNull);
+      expect(estimate.error, contains('ARC service not available'));
+
+      final quote = await arcActor.ask<FeeQuoteMessage>(GetFeeQuoteMessage(), _ask);
+      expect(quote.success, isFalse);
+      expect(quote.feeData, isEmpty);
+      expect(quote.error, contains('ARC service not available'));
+    });
+
+    test('a status check reports no status', () async {
+      final reply = await arcActor.ask<TransactionStatusMessage>(
+          CheckTransactionStatusMessage(_txid), _ask);
+
+      expect(reply.success, isFalse);
+      expect(reply.status, isNull);
+      expect(reply.error, contains('ARC service not available'));
+    });
+
+    test('a merkle proof request is refused', () async {
+      final reply = await arcActor.ask<MerkleProofMessage>(
+          RetrieveMerkleProofMessage(txid: _txid, walletId: 'w'), _ask);
+
+      expect(reply.success, isFalse);
+      expect(reply.error, contains('ARC service not available'));
     });
   });
 

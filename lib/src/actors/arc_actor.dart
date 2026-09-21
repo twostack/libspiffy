@@ -278,18 +278,29 @@ class ARCActor extends Actor {
     }
   }
 
-  /// Initialize ARC service integration
+  /// Initialize ARC service integration.
+  ///
+  /// **No configuration means no ARC** (bead libspiffy-8743). This used to
+  /// fall back to `ArcServiceConfig.taalMainnet()`, so an actor built with
+  /// no ARC endpoint silently acquired a **mainnet** one — the last copy of
+  /// the defect audit V-2 fixed in `LibSpiffyActorSystem`, which resolves
+  /// the endpoint from the wallet's network and so never passes null here.
+  /// A wallet with no ARC is a reasonable configuration: it holds, records
+  /// and proves transactions, and asks nobody to broadcast them. Every
+  /// handler already answers "ARC service not available" for it; those
+  /// branches were unreachable while this manufactured a service, and are
+  /// the supported behaviour now.
   void _initializeARCService() {
     // Skip if ARC service was already provided (e.g., mock for testing)
     if (_arcService != null) {
       return;
     }
-
-    if (_arcConfig != null) {
-      _arcService = ArcService.fromConfig(_arcConfig);
-    } else {
-      _arcService = ArcService.fromConfig(ArcServiceConfig.taalMainnet());
+    if (_arcConfig == null) {
+      _log.info('No ARC configuration: broadcasts, status checks, fee quotes and '
+          'merkle proof retrieval will report that ARC is not available');
+      return;
     }
+    _arcService = ArcService.fromConfig(_arcConfig);
   }
 
   /// Initialize durable broadcast retry queue via duraq
@@ -694,32 +705,30 @@ class ARCActor extends Actor {
     }
   }
 
-  /// Handle fee estimation requests
+  /// Handle fee estimation requests.
+  ///
+  /// A policy ARC could not be asked for is answered as a failure, exactly
+  /// as [_quotePolicyFee] answers one (bead libspiffy-8743). This used to
+  /// catch the policy failure itself and fall back to an invented
+  /// 1 sat/1000 bytes, so a caller was told **success** with a rate nothing
+  /// published and could build a transaction at a fee no miner had quoted —
+  /// and the honest failure reply bead libspiffy-97zj added was unreachable.
+  /// A rate nobody published is not an estimate (spv-understanding.md: the
+  /// library must not manufacture state it cannot evidence).
   Future<void> _handleEstimateFee(EstimateFeeMessage msg) async {
-
+    if (_arcService == null) {
+      context.sender?.tell(FeeEstimateMessage.failed('ARC service not available'));
+      return;
+    }
     try {
       // Estimate transaction size (P2PKH inputs: ~148 bytes, outputs: ~34 bytes, overhead: ~10 bytes)
       final estimatedSize = (msg.inputCount * 148) + (msg.outputCount * 34) + 10;
-
-      // ARC policy miningFee; fall back to 1 sat per 1000 bytes
-      ArcFeeAmount fee = const ArcFeeAmount(satoshis: 1, bytes: 1000);
-
-      try {
-        if (_arcService != null) {
-          final policy = await _arcService!.getPolicy();
-          fee = policy.miningFee;
-        }
-      } catch (e) {
-        _log.warning('Failed to get fee rate from Arc policy, using 1 sat/1000 bytes: $e');
-      }
+      final fee = (await _arcService!.getPolicy()).miningFee;
 
       // Rounded up: a truncated fee undercuts the policy.
-      final estimatedFee = fee.feeFor(estimatedSize);
-
-      context.sender?.tell(FeeEstimateMessage(estimatedFee));
-
+      context.sender?.tell(FeeEstimateMessage(fee.feeFor(estimatedSize)));
     } catch (e) {
-      context.sender?.tell(FeeEstimateMessage.failed(e.toString()));
+      context.sender?.tell(FeeEstimateMessage.failed("ARC's policy could not be read: $e"));
     }
   }
 
@@ -733,8 +742,7 @@ class ARCActor extends Actor {
   Future<PolicyFeeQuote> _quotePolicyFee(EstimatePolicyFeeMessage msg) async {
     final sizeBytes = (msg.inputCount * 148) + (msg.outputCount * 34) + 10 + msg.dataSize;
     if (_arcService == null) {
-      return PolicyFeeQuote(
-          fee: BigInt.zero, sizeBytes: sizeBytes, success: false, error: 'ARC service not available');
+      return PolicyFeeQuote(sizeBytes: sizeBytes, success: false, error: 'ARC service not available');
     }
     try {
       final fee = (await _arcService!.getPolicy()).miningFee;
@@ -747,7 +755,7 @@ class ARCActor extends Actor {
       );
     } catch (e) {
       return PolicyFeeQuote(
-          fee: BigInt.zero, sizeBytes: sizeBytes, success: false, error: "ARC's policy could not be read: $e");
+          sizeBytes: sizeBytes, success: false, error: "ARC's policy could not be read: $e");
     }
   }
 
@@ -1787,7 +1795,6 @@ class ARCActor extends Actor {
         context.sender?.tell(FeeEstimateMessage.failed(error));
       case final EstimatePolicyFeeMessage msg:
         context.sender?.tell(PolicyFeeQuote(
-            fee: BigInt.zero,
             sizeBytes: (msg.inputCount * 148) + (msg.outputCount * 34) + 10 + msg.dataSize,
             success: false,
             error: error));

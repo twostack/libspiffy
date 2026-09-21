@@ -302,6 +302,37 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### Recording your own payment is announced, and is no longer reported as a receive
+
+- **Removed: `TransactionReceivedEvent`.** An app that recorded an outgoing
+  payment was told, once per output of that payment paying its own wallet
+  (change, settlement, self-transfer), that it had **received** the payment —
+  `isIncoming: true`, `amountSatoshis: BigInt.zero`. Nothing else was
+  announced, so that lie was the app's entire report of its own send. An
+  incoming receive is reported by `SPVValidationResultEvent` and
+  `TransactionImportedEvent`, which carry the UTXOs and the amount the
+  wallet measured, and change from your own payment is not a receive.
+- **New: `TransactionRecordedEvent`.** A successful `RecordOutgoingCommand`
+  is announced, with the amount **read off the event the wallet journaled**
+  rather than restated from the command. It is emitted only once the wallet
+  projection has applied the recording — the promise `WalletCreatedEvent`
+  and `TransactionImportedEvent` already make, so an app told its payment is
+  recorded can query for it.
+- `amountSatoshis` is **nullable and null, never zero**, when the command
+  journaled nothing because the wallet had already recorded the transaction
+  (recording is idempotent): there is no journaled event to read an amount
+  off, and an absence is the honest report of one. The recording still
+  stands, and `success` says so.
+- A recording the wallet refuses is unchanged: it has no reply of its own,
+  so it arrives as an `ErrorEvent` naming the request.
+- **API:** `TransactionRecordedResponse` gains `paymentAmount` (`BigInt?`),
+  the amount the outgoing recording journaled; null for an imported
+  transaction and for a recording that journaled nothing.
+- **Docs:** `spv-understanding.md`'s transaction receipt flow listed a step 9
+  that never existed ("Coordinator emits TransactionReceivedEvent"). The
+  wallet manager issues `ReceiveUTXOCommand` with no sender, so nothing on
+  that path could answer the coordinator. Corrected to the events it emits.
+
 ### Reserved money is reported, and the wallet says what is holding it
 
 - **`BalanceResponse.reservedBalance`** is new: the value of the wallet's

@@ -438,8 +438,9 @@ class WalletCoordinatorActor extends Actor {
         _handleSPVValidationResult(message);
       } else if (message is wm.SplitUTXOsResponse) {
         _handleSplitUTXOsResponse(message);
-      } else if (message is wm.UTXOReceivedResponse) {
-        _handleUTXOReceivedResponse(message);
+      } else if (message is wm.TransactionRecordedResponse) {
+        // Off the mailbox: the announcement waits for the projection.
+        unawaited(_handleTransactionRecorded(message));
       } else if (message is pay.ProvisionFundingResponse) {
         _handleProvisionFundingResponse(message);
       } else if (message is wm.FundingTransactionBuiltResponse) {
@@ -2210,15 +2211,53 @@ class WalletCoordinatorActor extends Actor {
     ));
   }
 
-  void _handleUTXOReceivedResponse(wm.UTXOReceivedResponse response) {
-    if (response.success) {
-      _emitEvent(TransactionReceivedEvent(
+  /// Reports an outgoing recording to the app once the read model holds it
+  /// (bead libspiffy-5ml6).
+  ///
+  /// A successful recording used to be announced nowhere. The arm that would
+  /// have announced it was dead — [_handleRecordOutgoing] told the wallet
+  /// manager with no sender — and bead libspiffy-kl4i deleted it rather than
+  /// let it go live, because it published a manufactured `BigInt.zero` for
+  /// an amount it did not hold. Supplying that sender, which is what made a
+  /// refused recording reach the app at all, turned on a different arm: the
+  /// aggregate answers a recording with one `UTXOReceivedResponse` per
+  /// change output of the transaction (`_addWalletOutputs` credits the
+  /// wallet's own outputs), and the coordinator announced each of those as a
+  /// `TransactionReceivedEvent` of zero satoshis, **incoming** — an app's own
+  /// payment reported back to it as money arriving. That event is gone: an
+  /// incoming receive is reported by `SPVValidationResultEvent` and
+  /// `TransactionImportedEvent`, which carry the amount the wallet measured,
+  /// and change is part of the payment this event announces.
+  ///
+  /// A refusal does not come this way: the aggregate has no reply of its own
+  /// for a failed recording and answers `WalletCommandFailed`, which
+  /// [_handleWalletFailure] turns into an `ErrorEvent` (bead libspiffy-kl4i).
+  Future<void> _handleTransactionRecorded(wm.TransactionRecordedResponse response) async {
+    if (!response.success) {
+      _emitEvent(TransactionRecordedEvent(
         walletId: response.walletId,
         txid: response.txid,
-        amountSatoshis: BigInt.zero, // Amount not available in response
-        isIncoming: true,
+        success: false,
+        error: response.error ?? 'The wallet refused the recording',
       ));
+      return;
     }
+    // "Recorded" means queryable, the promise WalletCreatedEvent (bead
+    // libspiffy-p56) and TransactionImportedEvent already make: an app told
+    // its payment is recorded asks for it next.
+    final notApplied = await _awaitProjectionApplied(
+      matches: (e) => e is domain_events.TransactionRecordedEvent && e.txid == response.txid,
+      alreadyApplied: () async => await _storage.getTransaction(response.txid) != null,
+    );
+    _emitEvent(TransactionRecordedEvent(
+      walletId: response.walletId,
+      txid: response.txid,
+      amountSatoshis: response.paymentAmount,
+      success: notApplied == null,
+      error: notApplied == null
+          ? null
+          : 'Recorded and journaled, but the read model has not applied it yet: $notApplied',
+    ));
   }
 }
 

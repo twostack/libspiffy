@@ -1461,19 +1461,49 @@ class BalanceUpdatedEvent extends CoordinatorEvent {
   DateTime get eventTimestamp => DateTime.now();
 }
 
-/// Transaction received (incoming or outgoing detected)
-class TransactionReceivedEvent extends CoordinatorEvent {
+/// An outgoing transaction a [RecordOutgoingCommand] asked the wallet to
+/// record is recorded: journaled by the wallet aggregate **and** applied to
+/// the read model, so the transaction queries can already see it (bead
+/// libspiffy-5ml6). The same promise `WalletCreatedEvent` and
+/// [TransactionImportedEvent] make, for the same reason — an app told
+/// "recorded" queries next.
+///
+/// Before this event existed a successful recording was announced nowhere.
+/// The arm that would have announced it was dead, because the command was
+/// sent with no sender, and bead libspiffy-kl4i deleted it rather than let
+/// it go live: it published a manufactured `BigInt.zero` for an amount it
+/// did not hold. Supplying that sender turned on a different arm, and what
+/// an app actually received for its own payment was one
+/// `TransactionReceivedEvent` per change output saying it had received zero
+/// satoshis, incoming. That event is gone; an incoming receive is reported
+/// by [SPVValidationResultEvent] and [TransactionImportedEvent], which
+/// carry the amount the wallet measured.
+class TransactionRecordedEvent extends CoordinatorEvent {
   @override
   final String walletId;
   final String txid;
-  final BigInt amountSatoshis;
-  final bool isIncoming;
 
-  TransactionReceivedEvent({
+  /// What the recording says the transaction paid, read off the journaled
+  /// event.
+  ///
+  /// **Null is an absence, not a zero** (spv-understanding.md: the library
+  /// must not manufacture state it cannot evidence). It is null when this
+  /// command journaled nothing because the wallet had recorded the
+  /// transaction already (bead libspiffy-viy), so there is no event this
+  /// announcement can read the amount off. The recording still stands —
+  /// [success] says so — and the amount is on the transaction the queries
+  /// return.
+  final BigInt? amountSatoshis;
+
+  final bool success;
+  final String? error;
+
+  TransactionRecordedEvent({
     required this.walletId,
     required this.txid,
-    required this.amountSatoshis,
-    required this.isIncoming,
+    this.amountSatoshis,
+    required this.success,
+    this.error,
   });
 
   @override

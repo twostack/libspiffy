@@ -137,7 +137,7 @@ All third-party interaction flows through a single unified facade — **WalletCo
 **Key Events (emitted on stream):**
 - `WalletCreatedEvent`, `BalanceResponse`, `TransactionsResponse`
 - `InvoiceCreatedEvent`, `PaymentReadyEvent` (BEEF ready for transmission)
-- `SPVValidationResultEvent`, `TransactionReceivedEvent`, `TransactionConfirmedEvent`
+- `SPVValidationResultEvent`, `TransactionImportedEvent`, `TransactionRecordedEvent`, `TransactionConfirmedEvent`
 - `UTXOSplitCompleteEvent`, `TimestampCompleteEvent`
 - `ChannelOpenedEvent`, `ChannelPaymentEvent`, `ChannelClosedEvent`
 - `DeferredPaymentsResponse`, `DeferredPaymentBroadcastEvent`, `DeferredPaymentStatusEvent`, `DeferredPaymentCancelledEvent`
@@ -176,7 +176,11 @@ All third-party interaction flows through a single unified facade — **WalletCo
 6. WalletManagerActor routes to BitcoinWalletAggregate
 7. Aggregate emits UTXOReceivedEvent (event sourced)
 8. WalletProjection updates read model
-9. Coordinator emits TransactionReceivedEvent on public stream
+9. Coordinator emits SPVValidationResultEvent, then TransactionImportedEvent
+   (with the UTXO count and the total received) once the projection at 8 has
+   applied it -- so an app told of the receive can query it. There is no
+   TransactionReceivedEvent: the coordinator carried one, nothing on this
+   path ever reached it, and it was deleted (bead libspiffy-5ml6).
 ```
 
 ### Payment Flow (Outgoing)

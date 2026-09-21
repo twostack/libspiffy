@@ -382,10 +382,23 @@ class UTXOReceivedResponse extends ActorResponse {
   DateTime get timestamp => DateTime.now();
 }
 
-/// Response from BitcoinWalletAggregate after processing RecordImportedTransactionCommand
+/// Response from BitcoinWalletAggregate after processing
+/// RecordImportedTransactionCommand or RecordOutgoingTransactionCommand.
 class TransactionRecordedResponse extends ActorResponse {
   final String walletId;
   final String txid;
+
+  /// What the recording journaled this transaction as paying, for an
+  /// outgoing recording that journaled one (bead libspiffy-5ml6).
+  ///
+  /// Read off the `TransactionRecordedEvent` this command produced, so it is
+  /// the amount the wallet recorded and not the one the caller asked for.
+  /// Null for an imported transaction, which pays nobody on our behalf, and
+  /// for an outgoing recording that journaled nothing because the wallet
+  /// held the transaction already (bead libspiffy-viy). An absence, never a
+  /// zero.
+  final BigInt? paymentAmount;
+
   @override
   final bool success;
   @override
@@ -394,6 +407,7 @@ class TransactionRecordedResponse extends ActorResponse {
   TransactionRecordedResponse({
     required this.walletId,
     required this.txid,
+    this.paymentAmount,
     required this.success,
     this.error,
   });

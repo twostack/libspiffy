@@ -353,9 +353,16 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         // a caller that must not act before it (BenfordCoordinatorActor
         // broadcasts only after this, bead libspiffy-ypp) waits for this.
         if (command is RecordOutgoingTransactionCommand) {
+          // The amount comes off the event this command journaled, not off
+          // the command: it is what the wallet recorded, and it is absent
+          // when nothing was journaled because the transaction was recorded
+          // already (bead libspiffy-viy). An absence, never a zero (bead
+          // libspiffy-5ml6).
+          final recorded = events.whereType<TransactionRecordedEvent>().firstOrNull;
           sender.tell(TransactionRecordedResponse(
             walletId: command.walletId,
             txid: command.txid,
+            paymentAmount: recorded == null ? null : BigInt.tryParse(recorded.paymentAmount),
             success: true,
           ));
         }

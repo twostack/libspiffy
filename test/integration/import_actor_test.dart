@@ -560,14 +560,29 @@ void main() {
       }
     });
 
+    // Bead libspiffy-zvj part 5: this failed once in a full batch (14 Sep
+    // 2026) and passed alone. The duplicate is refused by ImportActor only
+    // while the first import is current, and the test sent it 100 ms after
+    // the first: an import that finished or failed inside that gap under
+    // load made the second one no duplicate at all. Both requests now reach
+    // the mailbox back to back -- the first becomes current synchronously
+    // when it is handled -- and the test waits for the import's own
+    // completion instead of sleeping 25 s.
     test('duplicate import prevention', () async {
-      print('\n=== Test: Duplicate Import Prevention ===\n');
-      
       final context = await setupTestContext();
       final walletId = 'duplicate-test-${DateTime.now().millisecondsSinceEpoch}';
-      
+
       try {
-        print('Step 1: Start first import');
+        final started = <WalletImportStartedEvent>[];
+        final finished = Completer<Object>();
+        final sub = context.libspiffy.subscribeToImportNotifications(walletId).listen((event) {
+          if (event is WalletImportStartedEvent) started.add(event);
+          if ((event is WalletImportCompletedEvent || event is WalletImportFailedEvent) && !finished.isCompleted) {
+            finished.complete(event);
+          }
+        });
+        addTearDown(sub.cancel);
+
         context.libspiffy.importWalletFromXpriv(
           walletId: walletId,
           xpriv: kTestXpriv,
@@ -575,10 +590,6 @@ void main() {
           networkType: 'test',
           addressGapLimit: 20,
         );
-        
-        print('Step 2: Immediately send duplicate import request');
-        await Future.delayed(Duration(milliseconds: 100));
-        
         context.libspiffy.importWalletFromXpriv(
           walletId: walletId, // Same wallet ID
           xpriv: kTestXpriv,
@@ -587,18 +598,15 @@ void main() {
           addressGapLimit: 20,
         );
 
-        print('Step 3: Wait for first import to complete');
-        await Future.delayed(Duration(seconds: 25));
+        final outcome = await finished.future.timeout(const Duration(seconds: 60));
+        expect(outcome, isA<WalletImportCompletedEvent>(), reason: '$outcome');
+        // Anything the duplicate would have started is in by now.
+        await Future<void>.delayed(const Duration(milliseconds: 500));
 
-        print('Step 4: Verify only one import completed');
+        expect(started, hasLength(1), reason: 'the duplicate request started a second import');
         final walletEntity = await context.storage.getWallet(walletId);
         expect(walletEntity, isNotNull);
-        
-        // Should have the first wallet name, not the second
         expect(walletEntity!['name'], equals('Duplicate Test Wallet'));
-        print('✓ Only first import completed (name: ${walletEntity['name']})');
-
-        print('\n✅ Duplicate import prevention test PASSED\n');
       } finally {
         await context.dispose();
       }

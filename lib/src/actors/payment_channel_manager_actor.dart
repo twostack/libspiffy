@@ -28,8 +28,7 @@ import '../core/wallet_events.dart'
     show
         BeefAncestor,
         TransactionImportedEvent,
-        TransactionRecordedEvent,
-        UTXOSpentEvent;
+        TransactionRecordedEvent;
 import '../models/bitcoin_transaction.dart';
 import '../models/bitcoin_utxo.dart' show UTXOStatus;
 import '../services/ancestor_chain_service.dart';
@@ -95,9 +94,6 @@ class PaymentChannelManagerActor extends Actor {
 
   static const Duration _walletPersistTimeout = Duration(seconds: 10);
 
-  /// How long the funding input spend waits for ARC's own deferred spend.
-  static const Duration _arcSpendGrace = Duration(seconds: 1);
-
   /// Map of active channel aggregates: channelId -> ActorRef
   final Map<String, ActorRef> _channelAggregates = {};
 
@@ -137,8 +133,9 @@ class PaymentChannelManagerActor extends Actor {
     /// The wallet read model. **Production always supplies it**
     /// (`LibSpiffyActorSystem`), and the manager cannot do its whole job
     /// without it. Optional only because thirteen test configurations do
-    /// not supply one; making it required is libspiffy-m0xj, blocked on the
-    /// fixture work in libspiffy-tg4d.
+    /// not supply one (libspiffy-m0xj): with an empty read model a client
+    /// open fails at the funding BEEF, so making it required first needs
+    /// those configurations to fund from a parent they can prove.
     ///
     /// Exactly what is dropped when it is absent — [preStart] logs this too,
     /// so an accidental omission is never silent:
@@ -154,10 +151,6 @@ class PaymentChannelManagerActor extends Actor {
     ///   `_walletHoldsTransaction` answers false, so an interrupted attempt
     ///   redoes the write. Safe — the wallet aggregate has its own guard
     ///   since V-92 — but wasted work.
-    /// * **Funding inputs are spent optimistically.** `_spendFundingInputs`
-    ///   cannot see which inputs ARC already spent and issues every command.
-    ///   Safe: the wallet refuses a double spend.
-    ///
     /// Nothing here is a correctness hole; the first item is a capability
     /// that simply does not work.
     ReadModelStorage? storage,
@@ -188,8 +181,8 @@ class PaymentChannelManagerActor extends Actor {
           'PaymentChannelManagerActor has no read model: client channels '
           'cannot open (their funding is sent with no BEEF, which servers '
           'refuse), a funding retry cannot be refused when its money has '
-          'been reclaimed, and funding recordings and input spends are '
-          'redone rather than skipped. See the storage parameter.');
+          'been reclaimed, and a funding recording is redone rather than '
+          'skipped. See the storage parameter.');
     }
   }
 
@@ -1727,7 +1720,8 @@ class PaymentChannelManagerActor extends Actor {
   /// wallet (inputs kept reserved, change credited pending, the 2-of-2
   /// output reserved for the channel) and that is journaled
   /// ([RecordFundingInWalletCommand]); then its BEEF is built; then ARC
-  /// broadcasts it; then its inputs are marked spent. Any failure journals
+  /// broadcasts it, and its inputs are spent once the network has it (the
+  /// deferred spend ARCActor applies). Any failure journals
   /// [RecordFundingBroadcastFailedCommand] and is rethrown, leaving the
   /// channel unopened and its inputs reserved for a retry of the same
   /// transaction.
@@ -1810,8 +1804,12 @@ class PaymentChannelManagerActor extends Actor {
         throw StateError('Funding broadcast failed: unexpected reply '
             '${reply.runtimeType}');
       }
-
-      await _spendFundingInputs(state.walletId, funding);
+      // The inputs are not spent here (bead libspiffy-tg4d). The funding is
+      // a deferred payment: its inputs are held until the network has it,
+      // and ARCActor applies the spend when ARC reports it SEEN_ON_NETWORK
+      // or MINED -- on this submission's answer or in a later scan. A
+      // success can be STORED (still in flight) or DOUBLE_SPEND_ATTEMPTED
+      // (contested); spending on it spent inputs the network might refuse.
       return fundingBeefHex;
     } catch (e, stackTrace) {
       _log.warning('Funding channel ${msg.channelId} failed: $e', e, stackTrace);
@@ -1973,96 +1971,6 @@ class PaymentChannelManagerActor extends Actor {
 
     // The channel's 2-of-2 output is not the wallet's: the wallet does not
     // count an output it cannot spend alone (libspiffy-viy).
-  }
-
-  /// Marks the funding inputs spent by the broadcast funding transaction,
-  /// consuming their reservation, and waits for the wallet read model.
-  ///
-  /// ARC applies the deferred spend itself when it answers the submission
-  /// SEEN_ON_NETWORK or MINED (before answering), so inputs the read model
-  /// already shows spent are skipped, and the others get a moment for that
-  /// spend to arrive before this one is issued: an input is not spent twice
-  /// (the second spend would be rejected by the wallet).
-  Future<void> _spendFundingInputs(
-      String walletId, dartsv.Transaction funding) async {
-    final txid = funding.id;
-
-    /// Keys of [walletId]'s unspent UTXOs, or null without a read model.
-    ///
-    /// NOTE (bead libspiffy-tg4d): an EMPTY answer here means "everything is
-    /// already spent", so a read model that knows nothing — a projection
-    /// that has not caught up, a wallet whose rows are not there yet —
-    /// makes this skip every spend. An absence of knowledge is not evidence
-    /// of a spend. The fix is to ask the positive question (which inputs
-    /// does the read model show SPENT?) so an input it does not vouch for
-    /// still gets its command; it is not made here because no test can
-    /// reach this code path with a read model present, see the bead.
-    Future<Set<String>?> unspentKeys() async {
-      final storage = _storage;
-      if (storage == null) return null;
-      try {
-        return {for (final u in await storage.getUTXOs(walletId)) u.key};
-      } catch (e) {
-        _log.warning('Reading the UTXOs of wallet $walletId failed: $e');
-        return null;
-      }
-    }
-
-    final unspent = await unspentKeys();
-    final waitsByKey = <String, Future<dynamic>>{};
-    final notApplied = <String>{};
-    for (final input in funding.inputs) {
-      final key = '${input.prevTxnId}:${input.prevTxnOutputIndex}';
-      if (unspent != null && !unspent.contains(key)) continue;
-      notApplied.add(key);
-      final applied = _awaitApplied(
-        _walletProjection,
-        (e) =>
-            e is UTXOSpentEvent &&
-            e.txid == input.prevTxnId &&
-            e.vout == input.prevTxnOutputIndex,
-        _walletPersistTimeout,
-      );
-      if (applied != null) {
-        waitsByKey[key] = applied.done.then((result) {
-          if (result is! AwaitFailed) notApplied.remove(key);
-          return result;
-        });
-      }
-    }
-    if (waitsByKey.isNotEmpty) {
-      await Future.any<void>([
-        Future.wait(waitsByKey.values),
-        Future<void>.delayed(_arcSpendGrace),
-      ]);
-      // A spend applied before the awaiters were registered shows in the
-      // read model instead.
-      final unspentNow = await unspentKeys();
-      if (unspentNow != null) notApplied.retainWhere(unspentNow.contains);
-    }
-    final waits = [
-      for (final key in notApplied)
-        if (waitsByKey[key] != null) waitsByKey[key]!,
-    ];
-    for (final key in List<String>.of(notApplied)) {
-      _walletManager.tell(WalletCommandMessage(
-        walletId,
-        SpendUTXOCommand(
-          walletId: walletId,
-          utxoKey: key,
-          spendingTxId: txid,
-          fee: BigInt.zero,
-        ),
-      ));
-    }
-    for (final result in await Future.wait(waits)) {
-      if (result is AwaitFailed) {
-        // The broadcast went through; the spend is also applied when ARC
-        // reports the transaction seen or mined.
-        _log.warning('Funding $txid: an input spend was not applied in the '
-            'wallet read model: ${result.reason}');
-      }
-    }
   }
 
   // ===========================================================================

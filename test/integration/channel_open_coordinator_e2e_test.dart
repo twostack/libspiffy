@@ -1070,11 +1070,16 @@ void main() {
       expect(fee, inInclusiveRange(1, 1000), reason: 'fee $fee');
       final change = original - 100000 - fee;
 
+      // Spent by the deferred spend ARCActor applies on the submission's
+      // SEEN_ON_NETWORK answer, which lands in the read model on its own
+      // time (bead libspiffy-tg4d: the channel manager no longer spends).
+      Future<BitcoinUtxo> inputRow() async => (await storage.getUTXOs(walletId, includeSpent: true))
+          .singleWhere((u) =>
+              u.txid == funding.inputs.single.prevTxnId &&
+              u.vout == funding.inputs.single.prevTxnOutputIndex);
+      expect(await _eventually(() async => (await inputRow()).status == UTXOStatus.spent), isTrue,
+          reason: 'the input is ${(await inputRow()).status}');
       final utxos = await storage.getUTXOs(walletId, includeSpent: true);
-      final input = utxos.singleWhere((u) =>
-          u.txid == funding.inputs.single.prevTxnId &&
-          u.vout == funding.inputs.single.prevTxnOutputIndex);
-      expect(input.status, UTXOStatus.spent);
       final changeVout = funding.outputs.indexWhere(
           (o) => o.satoshis == BigInt.from(change));
       expect(changeVout, isNot(-1), reason: 'no change output of $change');
@@ -1106,6 +1111,35 @@ void main() {
       expect(
           (await storage.getPaymentUTXOs(walletId)).map((u) => u.key),
           isNot(contains('${row.fundingTxId}:${row.fundingOutputIndex}')));
+    }, timeout: const Timeout(Duration(seconds: 90)));
+
+    // Bead libspiffy-tg4d. The funding is a deferred payment: its inputs are
+    // held until the network has the transaction, and ARCActor spends them
+    // when ARC reports it SEEN_ON_NETWORK or MINED. The channel manager
+    // spent them itself on ANY successful submission as well -- including
+    // STORED, where ARC has the transaction but the network does not -- a
+    // second copy of the deferred spend with a weaker rule (and it read an
+    // empty read model as "already spent").
+    test('tg4d: a funding ARC holds but the network has not seen keeps its inputs held until ARC '
+        'reports it seen', () async {
+      alice.arc.submitStatus = ArcTransactionStatus.stored;
+      final row = await openFunded();
+      final walletId = row.walletId;
+      final storage = alice.system.walletStorage;
+      final input = dartsv.Transaction.fromHex(row.fundingTxHex!).inputs.single;
+      Future<UTXOStatus> inputStatus() async => (await storage.getUTXOs(walletId, includeSpent: true))
+          .singleWhere((u) => u.txid == input.prevTxnId && u.vout == input.prevTxnOutputIndex)
+          .status;
+
+      // Old code: spent by the channel manager the moment ARC answered.
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      expect(await inputStatus(), UTXOStatus.reserved,
+          reason: 'ARC only stored the funding; the network may still refuse it');
+
+      alice.arc.statuses[row.fundingTxId!] = ArcTransactionStatus.seenOnNetwork;
+      alice.system.arcActor.tell(CheckStoragePendingUTXOsMessage(triggerBlockHeight: 0));
+      expect(await _eventually(() async => await inputStatus() == UTXOStatus.spent), isTrue,
+          reason: 'the deferred spend applies once ARC reports the funding on the network');
     }, timeout: const Timeout(Duration(seconds: 90)));
 
     test('a failed broadcast does not open the channel; a retry does', () async {
@@ -1173,10 +1207,14 @@ void main() {
       expect(reopened?.state, PaymentChannelState.open);
       expect(reopened?.errorMessage, isNull,
           reason: 'the broadcast error is cleared once the channel opens');
-      final spent = (await storage.getUTXOs(aliceWalletId, includeSpent: true))
+      // Spent by ARCActor's deferred spend on the retry's SEEN_ON_NETWORK
+      // answer, in the read model on its own time (bead libspiffy-tg4d).
+      Future<UTXOStatus> inputStatus() async => (await storage.getUTXOs(aliceWalletId, includeSpent: true))
           .singleWhere((u) =>
-              u.txid == input.prevTxnId && u.vout == input.prevTxnOutputIndex);
-      expect(spent.status, UTXOStatus.spent);
+              u.txid == input.prevTxnId && u.vout == input.prevTxnOutputIndex)
+          .status;
+      expect(await _eventually(() async => await inputStatus() == UTXOStatus.spent), isTrue,
+          reason: 'the input is ${await inputStatus()}');
     }, timeout: const Timeout(Duration(seconds: 90)));
   });
 

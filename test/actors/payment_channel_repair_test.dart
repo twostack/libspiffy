@@ -151,7 +151,9 @@ void main() {
           reason: 'the same transaction, twice: there is no replace-by-fee');
       expect(wallet.commands.whereType<RecordOutgoingTransactionCommand>(),
           hasLength(1));
-      expect(wallet.commands.whereType<SpendUTXOCommand>(), hasLength(1));
+      // Spending the inputs is ARCActor's deferred spend, not the channel's
+      // (bead libspiffy-tg4d).
+      expect(wallet.commands.whereType<SpendUTXOCommand>(), isEmpty);
       expect(
           journal()
               .whereType<FundingBroadcastStartedEvent>()

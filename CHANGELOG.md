@@ -302,6 +302,14 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### A channel funding's inputs are held until the network has it
+
+- The channel manager marked a funding's inputs spent on any successful
+  submission, including one ARC had only stored (`STORED`) or reported
+  contested (`DOUBLE_SPEND_ATTEMPTED`). It no longer spends anything: the
+  funding is a deferred payment, and its inputs are spent when ARC reports
+  it `SEEN_ON_NETWORK` or `MINED`, like every other deferred payment.
+
 ### The in-memory backend answers a status query from its index
 
 - `InMemoryWalletStorage.getTransactionsByStatus` reads only the rows with

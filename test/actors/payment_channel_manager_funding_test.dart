@@ -95,8 +95,8 @@ void main() {
 
   group('libspiffy-9f7: funding broadcast', () {
     test(
-        'records the funding in the wallet, broadcasts it once, spends its '
-        'inputs, then opens', () async {
+        'records the funding in the wallet, broadcasts it once, then opens; '
+        'the spend of its inputs is left to the deferred spend', () async {
       await spawn(countersigned());
 
       final opened = await open();
@@ -109,7 +109,6 @@ void main() {
       expect(log, [
         'RecordOutgoingTransactionCommand',
         'broadcast',
-        'SpendUTXOCommand',
       ]);
       expect(journalTypes().sublist(3), [
         RefundCountersignedEvent.stableTypeName,
@@ -136,9 +135,10 @@ void main() {
       // output it cannot spend alone (libspiffy-viy).
       expect(wallet.commands.whereType<ReserveUTXOCommand>(), isEmpty);
 
-      final spend = wallet.commands.whereType<SpendUTXOCommand>().single;
-      expect(spend.utxoKey, '${'c0' * 32}:0');
-      expect(spend.spendingTxId, f.fundingTxId);
+      // The inputs are held, as a deferred payment's are, until the network
+      // has the funding; ARCActor spends them then (bead libspiffy-tg4d).
+      // The channel manager spends nothing itself.
+      expect(wallet.commands.whereType<SpendUTXOCommand>(), isEmpty);
     });
 
     test('broadcasts nothing before the refund is countersigned', () async {
@@ -201,7 +201,9 @@ void main() {
           arc.broadcasts.map((b) => b.txHex), [f.fundingTxHex, f.fundingTxHex]);
       expect(wallet.commands.whereType<RecordOutgoingTransactionCommand>(),
           hasLength(1));
-      expect(wallet.commands.whereType<SpendUTXOCommand>(), hasLength(1));
+      // Spending the inputs is ARCActor's deferred spend, not the channel's
+      // (bead libspiffy-tg4d).
+      expect(wallet.commands.whereType<SpendUTXOCommand>(), isEmpty);
       expect(
           journal()
               .whereType<FundingBroadcastStartedEvent>()

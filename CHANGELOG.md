@@ -302,6 +302,21 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### A channel server countersigns only a payment that pays it — security
+
+- **The server signed whatever transaction came with a channel payment.**
+  It checked the proposed balances as numbers, then had the wallet sign the
+  client's transaction over the 2-of-2 funding output without looking at
+  it, and sent the signature back in `payment_ack`. A client could send a
+  transaction returning the whole channel to itself, get it countersigned,
+  and broadcast it — taking back every payment it had made.
+- Now the transaction must spend exactly the funding output, have lock time
+  0, pay the server its proposed balance at its address (the output may be
+  absent only while that balance is dust), pay the client no more than its
+  balance, and pay no one else. Anything else is refused, and no signature
+  leaves the server. The client journals a payment only under the same
+  rule.
+
 ### A payment pays ARC's policy rate on its signed size — breaking
 
 - **Every payment underpaid.** Its fee was dartsv's estimate, which sizes a

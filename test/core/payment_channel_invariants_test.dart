@@ -175,7 +175,13 @@ void main() {
           newClientBalanceSats: f.amountSats - BigInt.from(1000),
           newServerBalanceSats: BigInt.from(1000),
           sequenceNumber: 1,
-          paymentTxHex: '0100000000',
+          paymentTxHex: channelPaymentTxHex(
+            fundingTxId: f.fundingTxId,
+            serverAddress: f.serverAddressB58,
+            clientAddress: f.clientAddressB58,
+            server: BigInt.from(1000),
+            client: f.amountSats - BigInt.from(1000),
+          ),
           paymentTxId: 'aa' * 32,
           clientSignatureHex: 'ab',
         ),
@@ -186,6 +192,35 @@ void main() {
       final recorded = journal().whereType<PaymentRecordedEvent>().single;
       expect(recorded.newClientBalanceSats, f.amountSats - BigInt.from(1000));
       expect(recorded.newServerBalanceSats, BigInt.from(1000));
+    });
+
+    // Bead libspiffy-zj20: the server countersigns only a transaction that
+    // pays the balances; the client, by the same rule, journals only one.
+    test('zj20: a payment whose transaction does not pay its balances is not recorded', () async {
+      final ref = await spawn(f.openClientJournal());
+
+      final reply = await ref.ask<dynamic>(
+        RecordPaymentCommand(
+          channelId: _channelId,
+          amountSats: BigInt.from(1000),
+          newClientBalanceSats: f.amountSats - BigInt.from(1000),
+          newServerBalanceSats: BigInt.from(1000),
+          sequenceNumber: 1,
+          paymentTxHex: channelPaymentTxHex(
+            fundingTxId: f.fundingTxId,
+            serverAddress: f.serverAddressB58,
+            clientAddress: f.clientAddressB58,
+            server: BigInt.from(999),
+            client: f.amountSats - BigInt.from(1000),
+          ),
+          paymentTxId: 'aa' * 32,
+          clientSignatureHex: 'ab',
+        ),
+        _ask,
+      );
+
+      expectRejected(reply, allOf(contains('pays the server 999'), contains('1000')));
+      expect(journal().whereType<PaymentRecordedEvent>(), isEmpty);
     });
   });
 

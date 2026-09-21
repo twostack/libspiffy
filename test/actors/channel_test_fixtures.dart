@@ -20,6 +20,30 @@ import 'package:libspiffy/src/utils/beef.dart';
 const channelFixtureMnemonic = 'abandon abandon abandon abandon abandon '
     'abandon abandon abandon abandon abandon abandon about';
 
+/// A payment's transaction as a client builds it: spends
+/// [fundingTxId]:[fundingOutputIndex] and pays the server [server] and the
+/// client [client] satoshis at their P2PKH addresses (an amount of zero or
+/// less gets no output). The server countersigns a payment only when its
+/// transaction pays the balances it proposes (bead libspiffy-zj20).
+String channelPaymentTxHex({
+  required String fundingTxId,
+  int fundingOutputIndex = 0,
+  required String serverAddress,
+  required String clientAddress,
+  required BigInt server,
+  required BigInt client,
+}) {
+  dartsv.SVScript p2pkh(String address) =>
+      dartsv.P2PKHLockBuilder.fromAddress(dartsv.Address.fromBase58(address)).getScriptPubkey();
+  final tx = dartsv.Transaction()
+    ..version = 1
+    ..nLockTime = 0;
+  tx.inputs.add(dartsv.TransactionInput(fundingTxId, fundingOutputIndex, 1));
+  if (server > BigInt.zero) tx.outputs.add(dartsv.TransactionOutput(server, p2pkh(serverAddress)));
+  if (client > BigInt.zero) tx.outputs.add(dartsv.TransactionOutput(client, p2pkh(clientAddress)));
+  return tx.serialize();
+}
+
 /// A funding transaction whose output [outputIndex] locks [amountSats] in
 /// the 2-of-2 of the two keys, with a change output. Its input is unsigned:
 /// the channel code checks the funding output, not how it was paid for.

@@ -208,15 +208,6 @@ class ArcPolicyResponse {
     this.standardFormatSupported = false,
   });
 
-  /// Mining fee rate in satoshis per 1000 bytes.
-  double get standardFeePerKb => miningFee.satoshisPerKb;
-
-  /// ARC publishes a single mining fee; there is no separate relay fee.
-  double get minFeePerKb => miningFee.satoshisPerKb;
-
-  /// ARC publishes a single mining fee; data outputs are priced the same.
-  double get dataFeePerKb => miningFee.satoshisPerKb;
-
   factory ArcPolicyResponse.fromJson(Map<String, dynamic> json) {
     final policy = json['policy'] is Map ? Map<String, dynamic>.from(json['policy'] as Map) : json;
 

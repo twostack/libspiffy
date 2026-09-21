@@ -444,9 +444,7 @@ void main() {
           final result = await arcService.getPolicy();
 
           expect(result.maxTxSize, equals(100000000));
-          expect(result.standardFeePerKb, equals(0.5));
-          expect(result.minFeePerKb, equals(0.5));
-          expect(result.dataFeePerKb, equals(0.5));
+          expect(result.miningFee.satoshisPerKb, equals(0.5));
 
           verify(mockClient.get(
             Uri.parse('$baseUrl/policy'),
@@ -967,7 +965,7 @@ void main() {
 
       final policy = await arc.getPolicy();
 
-      expect(policy.standardFeePerKb, equals(50.0));
+      expect(policy.miningFee.satoshisPerKb, equals(50.0));
       expect(policy.maxTxSize, equals(10000000));
       expect(policy.miningFee.satoshis, equals(50));
       expect(policy.miningFee.bytes, equals(1000));

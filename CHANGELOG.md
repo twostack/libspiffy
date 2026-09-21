@@ -302,6 +302,13 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### One way to read ARC's rate — breaking
+
+- `ArcPolicyResponse.standardFeePerKb`, `minFeePerKb` and `dataFeePerKb`
+  are removed: they were one number under three names (ARC publishes a
+  single `miningFee`). Read `miningFee` — a `FeeRate` — or
+  `miningFee.satoshisPerKb`.
+
 ### Plugins can spend any output the wallet can — breaking for plugin authors
 
 - **`PluginTransactionRequest.fundingInputs`**: each funding UTXO as a

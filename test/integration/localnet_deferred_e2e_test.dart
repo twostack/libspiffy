@@ -252,12 +252,15 @@ void main() {
 
     // Bob submits his copy now: the network already saw its input spent.
     // ARC keeps it, contested, in case it is mined after all; Bob holds it
-    // as pending, not as money.
+    // as pending, not as money, and his invoice is not paid (bead
+    // libspiffy-yyby).
     final received = await bobReceives(invoiceId, payment);
     expect(received.valid, isTrue, reason: received.error);
     expect(received.networkStatus, DeferredNetworkStatus.doubleSpendAttempted);
     final bobBalance = await bob.balance(bobWallet);
     expect(bobBalance.totalBalance, BigInt.zero, reason: 'Bob counted a payment the network refused');
+    expect(bob.events.whereType<InvoicePaidEvent>(), isEmpty,
+        reason: 'Bob\'s invoice was paid by a double spend (bead libspiffy-yyby)');
 
     await mineAndConfirm({alice: [reclaimTxid]});
     expect(await onNode(payment.txid), isNull);
@@ -314,6 +317,8 @@ void main() {
     final received = await bobReceives(invoiceId, payment);
     expect(received.networkStatus, DeferredNetworkStatus.seenInOrphanMempool);
     expect((await bob.balance(bobWallet)).totalBalance, BigInt.zero);
+    expect(bob.events.whereType<InvoicePaidEvent>(), isEmpty,
+        reason: 'Bob\'s invoice was paid by a payment spending an output already spent in a block');
 
     final checked = await check(payment.txid);
     expect(checked.success, isTrue, reason: checked.error);

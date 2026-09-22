@@ -302,6 +302,16 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### A node restarted at the chain tip follows the chain again — critical
+
+- A node restarted with its headers already at the tip asked for headers,
+  was answered with none, and dropped that empty answer. Its header sync
+  then waited for an answer forever and skipped every later request, so
+  it never learned another block, and nothing it received or sent was
+  confirmed again. An empty answer now ends the request, and a request
+  that is never answered expires after `syncRequestTimeout` (new
+  `HeaderSyncActor` parameter, default 30 s).
+
 ### A payment handed over again is the same payment
 
 - A payer that hears no answer hands its payment over again. The second

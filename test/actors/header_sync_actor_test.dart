@@ -252,6 +252,42 @@ void main() {
         expect(withPeer.getHeadersRequests, equals(1),
             reason: 'getHeaders must be sent once a peer is available');
       });
+
+      // Bead libspiffy-3pyc: one request at a time, until it is answered.
+      test('a request in flight holds off another until its answer, even an empty one, arrives', () async {
+        final peer = _FakePeerManager(onGetHeaders: (_) {});
+        headerSyncActor.tell(SetPeerManagerMessage(peer));
+        headerSyncActor.tell(InitiateHeaderSyncMessage());
+        headerSyncActor.tell(InitiateHeaderSyncMessage());
+        await Future.delayed(Duration(milliseconds: 200));
+        expect(peer.getHeadersRequests, 1);
+
+        headerSyncActor.tell(BlockHeadersReceivedMessage(peerId: 'peer', headers: const [], startHeight: 0));
+        headerSyncActor.tell(InitiateHeaderSyncMessage());
+        await Future.delayed(Duration(milliseconds: 200));
+        expect(peer.getHeadersRequests, 2, reason: 'the empty answer ended the first request');
+      });
+
+      test('a request never answered expires, and the next sync asks again', () async {
+        await actorSystem.stop(headerSyncActor);
+        headerSyncActor = await actorSystem.spawn('header-sync-expiring', () => HeaderSyncActor(
+          headerChain: headerChain,
+          spvActor: mockSPVActor,
+          syncRequestTimeout: const Duration(milliseconds: 300),
+        ));
+        final peer = _FakePeerManager(onGetHeaders: (_) {});
+        headerSyncActor.tell(SetPeerManagerMessage(peer));
+        headerSyncActor.tell(InitiateHeaderSyncMessage());
+        await Future.delayed(Duration(milliseconds: 100));
+        headerSyncActor.tell(InitiateHeaderSyncMessage());
+        await Future.delayed(Duration(milliseconds: 100));
+        expect(peer.getHeadersRequests, 1, reason: 'still waiting for the first answer');
+
+        await Future.delayed(Duration(milliseconds: 300));
+        headerSyncActor.tell(InitiateHeaderSyncMessage());
+        await Future.delayed(Duration(milliseconds: 100));
+        expect(peer.getHeadersRequests, 2, reason: 'the unanswered request held off every later sync');
+      });
     });
 
     group('Error Handling', () {

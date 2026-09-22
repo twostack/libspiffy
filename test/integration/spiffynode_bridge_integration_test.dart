@@ -5,6 +5,7 @@ import 'package:logging/logging.dart';
 import 'package:dactor/dactor.dart';
 import 'package:spiffynode/spiffy_node.dart';
 
+import 'package:libspiffy/src/actors/spv_messages.dart' show BlockHeadersReceivedMessage;
 import 'package:libspiffy/src/integration/spiffynode_bridge.dart';
 
 /// Integration tests for SpiffyNodeBridge
@@ -27,6 +28,7 @@ void main() {
   group('SpiffyNodeBridge Integration Tests', () {
     late ActorSystem actorSystem;
     late ActorRef mockHeaderSyncActor;
+    late _MockHeaderSyncActor headerSync;
     late _MockPeerManager mockPeerManager;
     late SpiffyNodeBridge bridge;
 
@@ -37,7 +39,8 @@ void main() {
 
     setUp(() async {
       // Create mock HeaderSyncActor to receive messages
-      mockHeaderSyncActor = await actorSystem.spawn('mock-header-sync', () => _MockHeaderSyncActor());
+      headerSync = _MockHeaderSyncActor();
+      mockHeaderSyncActor = await actorSystem.spawn('mock-header-sync', () => headerSync);
 
       // Create mock PeerManager
       mockPeerManager = _MockPeerManager();
@@ -163,8 +166,9 @@ void main() {
         // Wait for message delivery
         await Future.delayed(Duration(milliseconds: 100));
 
-        // Verify HeaderSyncActor would have received BlockHeadersReceivedMessage
-        // In a real implementation, we'd check the mock actor's received messages
+        final received = headerSync.receivedMessages.whereType<BlockHeadersReceivedMessage>().single;
+        expect(received.headers, headers);
+        expect(received.startHeight, 1);
       });
 
       test('should handle empty header list gracefully', () async {
@@ -212,8 +216,21 @@ void main() {
         // Wait for processing
         await Future.delayed(Duration(milliseconds: 100));
 
-        // Verify headers were forwarded to bridge
-        // The bridge should have processed the headers
+        expect(headerSync.receivedMessages.whereType<BlockHeadersReceivedMessage>().single.headers, headers);
+      });
+
+      // Bead libspiffy-3pyc: a node already at the tip asks for headers and
+      // is answered with none. That answer ends the request HeaderSyncActor
+      // waits on; dropped here, a node restarted at the tip never asked
+      // again and never synced another header.
+      test('forwards an empty headers answer, which ends the sync request', () async {
+        await bridge.initialize();
+        final peerHandler = LibSpiffyPeerHandler(bridge: bridge, userHandler: null);
+
+        await peerHandler.handleHeaders(MsgHeaders(headers: []), _MockPeer('test-peer-1'));
+        await Future.delayed(Duration(milliseconds: 100));
+
+        expect(headerSync.receivedMessages.whereType<BlockHeadersReceivedMessage>().single.headers, isEmpty);
       });
 
       test('should delegate to user handler when provided', () async {

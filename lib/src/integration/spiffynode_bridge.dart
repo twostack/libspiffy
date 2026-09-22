@@ -247,6 +247,14 @@ class LibSpiffyPeerHandler implements PeerHandlerI {
     if (message is MsgHeaders) {
       _logger.info('📥 Received headers message: ${message.headers.length} headers from ${peer.toString()}');
     }
+    if (message is MsgHeaders && message.headers.isEmpty) {
+      // The peer has nothing after our locator: the answer to a getHeaders
+      // from a node already at the tip. It is still the answer, and
+      // HeaderSyncActor waits for one before it asks again (bead
+      // libspiffy-3pyc: dropped here, a node restarted at the tip never
+      // synced another header).
+      await _bridge.storeHeaders(const [], _headerChain?.bestHeight ?? 0);
+    }
     if (message is MsgHeaders && message.headers.isNotEmpty) {
       _logger.info('📥 Capturing ${message.headers.length} headers from ${peer.toString()}');
       

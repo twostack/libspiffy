@@ -40,8 +40,13 @@ class HeaderSyncActor extends Actor {
   int _reorgsHandled = 0;
   DateTime? _lastHeaderAt;
   
-  // Sync state guard to prevent concurrent header requests
-  bool _syncInProgress = false;
+  /// When the getHeaders request in flight was sent; null when none is.
+  /// One request at a time: its answer (a batch, possibly empty) clears
+  /// it. One never answered — the peer dropped, or ignored it — expires
+  /// after [_syncRequestTimeout], so it cannot hold off every later sync
+  /// (bead libspiffy-3pyc).
+  DateTime? _syncRequestedAt;
+  final Duration _syncRequestTimeout;
 
   // Consecutive batches whose first header had no known parent; each one
   // triggers a re-request with a full locator, up to this many times.
@@ -59,7 +64,9 @@ class HeaderSyncActor extends Actor {
     dynamic peerManager,
     int? startHeight,
     Logger? logger,
+    Duration syncRequestTimeout = const Duration(seconds: 30),
   }) : _headerChain = headerChain,
+       _syncRequestTimeout = syncRequestTimeout,
        _spvActor = spvActor,
        _spiffyNodeBridge = spiffyNodeBridge,
        _peerManager = peerManager,
@@ -155,9 +162,13 @@ class HeaderSyncActor extends Actor {
   /// Request headers from connected peers
   Future<void> _triggerHeaderSync() async {
     try {
-      if (_syncInProgress) {
-        _logger.fine('Header sync already in progress, skipping duplicate request');
-        return;
+      final requestedAt = _syncRequestedAt;
+      if (requestedAt != null) {
+        if (DateTime.now().difference(requestedAt) < _syncRequestTimeout) {
+          _logger.fine('Header sync already in progress, skipping duplicate request');
+          return;
+        }
+        _logger.warning('The getHeaders request sent at $requestedAt was never answered; asking again');
       }
       
       if (_peerManager == null) {
@@ -177,7 +188,7 @@ class HeaderSyncActor extends Actor {
       }
 
       // Mark sync as in progress
-      _syncInProgress = true;
+      _syncRequestedAt = DateTime.now();
 
       // Dense-then-sparse locator down to the anchor: a peer on another
       // branch answers from the first hash it recognises, so after a reorg
@@ -209,12 +220,12 @@ class HeaderSyncActor extends Actor {
         _logger.info('✓ Requested next batch of headers from height $currentHeight');
       } else {
         _logger.warning('❌ Failed to send getHeaders to any peer');
-        _syncInProgress = false; // Clear flag if no request was sent
+        _syncRequestedAt = null; // Clear flag if no request was sent
       }
       
     } catch (e, stackTrace) {
       _logger.severe('Error triggering header sync: $e\n$stackTrace');
-      _syncInProgress = false; // Clear flag on error
+      _syncRequestedAt = null; // Clear flag on error
     }
   }
 
@@ -272,7 +283,7 @@ class HeaderSyncActor extends Actor {
       _logger.info('Current height: $_lastProcessedHeight');
 
       // Clear sync-in-progress flag BEFORE potentially triggering next batch
-      _syncInProgress = false;
+      _syncRequestedAt = null;
 
       if (firstParentUnknown && successCount == 0) {
         // The peer answered from a point we do not know (its branch forks
@@ -331,7 +342,7 @@ class HeaderSyncActor extends Actor {
       
     } catch (e) {
       _logger.severe('Error processing headers from ${msg.peerId}: $e');
-      _syncInProgress = false; // Clear flag on error
+      _syncRequestedAt = null; // Clear flag on error
       
       if (context.sender != null) {
         context.sender!.tell(SPVErrorMessage(
@@ -392,7 +403,7 @@ class HeaderSyncActor extends Actor {
         _logger.info('Reorganized tip $newTipHash is already our active tip');
         return;
       }
-      _syncInProgress = false; // a tip change supersedes any in-flight request
+      _syncRequestedAt = null; // a tip change supersedes any in-flight request
       await _triggerHeaderSync();
 
     } catch (e) {

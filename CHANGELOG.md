@@ -302,6 +302,18 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### A channel server acknowledges only a payment the client signed — security
+
+- **The server acknowledged payments it could never claim.** It signed the
+  client's transaction, combined the two halves of the 2-of-2 signature,
+  and when the result did not verify it logged that and journaled the
+  acknowledgement anyway. A client could send a payment signed over some
+  other transaction, have it acknowledged (the app delivering what was paid
+  for), and leave the server holding nothing it could broadcast.
+- Now the acknowledgement is refused unless the client's signature verifies
+  over the payment transaction against the funding output — the same check
+  the client's refund already had, now one function for both.
+
 ### A channel acts only on messages from its counterparty — security
 
 - **Any peer could steer someone else's channel.** `ChannelP2PAdapter`

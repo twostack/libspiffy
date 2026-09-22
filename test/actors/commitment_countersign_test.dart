@@ -113,10 +113,12 @@ void main() {
       dartsv.P2PKHLockBuilder.fromAddress(dartsv.Address.fromBase58(address)).getScriptPubkey();
 
   /// Sends [tx] as the transaction of a payment of [paid], signed by the
-  /// client, and returns the server's answer.
-  Future<PaymentAcknowledgedResponse> send(dartsv.Transaction tx) async {
-    final clientSignature = (await const PaymentChannelBuilder().signMultisigInput(
-      transaction: tx,
+  /// client (over [signed], when given, instead of [tx]; or as
+  /// [signatureHex]), and returns the server's answer.
+  Future<PaymentAcknowledgedResponse> send(dartsv.Transaction tx,
+      {dartsv.Transaction? signed, String? signatureHex}) async {
+    final clientSignature = signatureHex ?? (await const PaymentChannelBuilder().signMultisigInput(
+      transaction: signed ?? tx,
       inputIndex: 0,
       privateKey: f.clientKey,
       clientPubKey: f.clientKey.publicKey,
@@ -238,5 +240,37 @@ void main() {
     elsewhere.inputs.add(dartsv.TransactionInput('cd' * 32, 0, dartsv.TransactionInput.MAX_SEQ_NUMBER));
 
     expectRefused(await send(elsewhere), contains('funding output'));
+  });
+
+  // Bead libspiffy-c5zw: the acknowledgement is the server saying it was
+  // paid, and it was paid only if the client's half of the 2-of-2 signs this
+  // transaction. The server assembled the two halves, found they did not
+  // verify, logged it, and acknowledged anyway, holding nothing it could
+  // broadcast.
+  test('c5zw: a payment signed over another transaction is refused', () async {
+    final other = await honest();
+    other.outputs.add(dartsv.TransactionOutput(BigInt.from(600), p2pkh(f.serverAddressB58)));
+
+    // Old code: success, with an empty fully signed payment journaled.
+    expectRefused(await send(await honest(), signed: other), contains('signature does not verify'));
+  });
+
+  test('c5zw: a payment signed by the server\'s key instead of the client\'s is refused', () async {
+    final tx = await honest();
+    final serverSignature = (await const PaymentChannelBuilder().signMultisigInput(
+      transaction: tx,
+      inputIndex: 0,
+      privateKey: f.serverKey,
+      clientPubKey: f.clientKey.publicKey,
+      serverPubKey: f.serverKey.publicKey,
+      inputAmountSats: f.amountSats,
+    ))
+        .signatureHex;
+
+    expectRefused(await send(tx, signatureHex: serverSignature), contains('signature does not verify'));
+  });
+
+  test('c5zw: a payment whose signature is not a signature is refused', () async {
+    expectRefused(await send(await honest(), signatureHex: '30' * 36), contains('signature'));
   });
 }

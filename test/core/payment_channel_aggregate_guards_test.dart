@@ -32,7 +32,8 @@ const _ask = Duration(seconds: 3);
 final _funding = BigInt.from(100000);
 // Real keys: a payment's fee is checked against the signed size of a spend
 // of their 2-of-2 (bead libspiffy-zs4l), which needs points on the curve.
-final _clientPub = dartsv.SVPrivateKey.fromHex('11' * 32, dartsv.NetworkType.TEST).publicKey.toHex();
+final _clientKey = dartsv.SVPrivateKey.fromHex('11' * 32, dartsv.NetworkType.TEST);
+final _clientPub = _clientKey.publicKey.toHex();
 final _serverPub = dartsv.SVPrivateKey.fromHex('22' * 32, dartsv.NetworkType.TEST).publicKey.toHex();
 const _clientAddress = 'mkHS9ne12qx9pS9VojpwU5xtRd4T7X7ZUt';
 const _serverAddress = 'n2eMqTT929pb1RDNuqEnxdaLau1rxy3efi';
@@ -98,24 +99,28 @@ AcknowledgePaymentCommand _ack({
   required int client,
   required int server,
   int sequence = 1,
-}) =>
-    AcknowledgePaymentCommand(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
+}) {
+  final paymentTxHex = channelPaymentTxHex(
+    fundingTxId: _fundingTxId,
+    serverAddress: _serverAddress,
+    clientAddress: _clientAddress,
+    server: BigInt.from(server),
+    client: BigInt.from(client),
+  );
+  return AcknowledgePaymentCommand(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
       channelId: _channelId,
       amountSats: BigInt.from(amount),
-      paymentTxHex: channelPaymentTxHex(
-        fundingTxId: _fundingTxId,
-        serverAddress: _serverAddress,
-        clientAddress: _clientAddress,
-        server: BigInt.from(server),
-        client: BigInt.from(client),
-      ),
-      clientSignatureHex: '30' * 36,
+      paymentTxHex: paymentTxHex,
+      // The client's real signature (bead libspiffy-c5zw).
+      clientSignatureHex: channelClientSignature(paymentTxHex,
+          clientKey: _clientKey, serverPubKey: dartsv.SVPublicKey.fromHex(_serverPub), fundingSats: _funding),
       serverSignatureHex: '30' * 36,
       fullySignedPaymentTxHex: '',
       proposedSequence: sequence,
       proposedClientBalance: BigInt.from(client),
       proposedServerBalance: BigInt.from(server),
     );
+}
 
 /// Journal of a client-side channel that is open with balances
 /// client = funding, server = 0 (the client journals its own request).

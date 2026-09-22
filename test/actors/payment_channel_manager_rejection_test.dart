@@ -15,7 +15,7 @@ import 'dart:async';
 
 import 'package:dactor/dactor.dart';
 import 'package:dactor_test/dactor_test.dart';
-import 'package:dartsv/dartsv.dart' show NetworkType;
+import 'package:dartsv/dartsv.dart' show NetworkType, SVPrivateKey, SVPublicKey;
 import 'package:eventador/eventador.dart' show Event;
 import 'package:test/test.dart';
 
@@ -60,6 +60,14 @@ void main() {
   late String serverPubKeyHex;
   late String serverAddressB58;
 
+  /// The client's channel key: a payment the server acknowledges carries its
+  /// real signature (bead libspiffy-c5zw).
+  late SVPrivateKey clientKey;
+
+  /// [clientKey]'s signature of payment transaction [txHex].
+  String sign(String txHex) => channelClientSignature(txHex,
+      clientKey: clientKey, serverPubKey: SVPublicKey.fromHex(serverPubKeyHex), fundingSats: _funding);
+
   /// Funding transaction locking [_funding] in the channel 2-of-2, with its
   /// BEEF: the server checks both on open (libspiffy-9f7, libspiffy-fsy).
   late ({String hex, String txid, String beefHex}) fundingTx;
@@ -72,7 +80,8 @@ void main() {
     actorSystem = TestActorSystem();
     cryptoService = DartSVCryptoService();
     final hd = await cryptoService.mnemonicToHDPrivateKey(_mnemonic);
-    final client = hd.deriveChildKey('m/0/1').privateKey.publicKey;
+    clientKey = hd.deriveChildKey('m/0/1').privateKey;
+    final client = clientKey.publicKey;
     final server = hd.deriveChildKey('m/0/2').privateKey.publicKey;
     clientPubKeyHex = client.toString();
     clientAddressB58 = client.toAddress(NetworkType.TEST).toString();
@@ -203,26 +212,28 @@ void main() {
     required int sequence,
     required int client,
     required int server,
-  }) =>
-      managerRef.ask<PaymentAcknowledgedResponse>(
+  }) {
+    final paymentTxHex = channelPaymentTxHex(
+      fundingTxId: fundingTx.txid,
+      serverAddress: serverAddressB58,
+      clientAddress: clientAddressB58,
+      server: BigInt.from(server),
+      client: BigInt.from(client),
+    );
+    return managerRef.ask<PaymentAcknowledgedResponse>(
         AcknowledgePaymentMessage(
           channelId: _channelId,
           walletId: _walletId,
           amountSats: BigInt.from(1000),
-          paymentTxHex: channelPaymentTxHex(
-            fundingTxId: fundingTx.txid,
-            serverAddress: serverAddressB58,
-            clientAddress: clientAddressB58,
-            server: BigInt.from(server),
-            client: BigInt.from(client),
-          ),
-          clientSignatureHex: '30' * 36,
+          paymentTxHex: paymentTxHex,
+          clientSignatureHex: sign(paymentTxHex),
           proposedSequence: sequence,
           proposedClientBalance: BigInt.from(client),
           proposedServerBalance: BigInt.from(server),
         ),
         _timeout,
       );
+  }
 
   /// Server side: accepted, refund countersigned, opened.
   Future<void> openServerChannel() async {
@@ -591,21 +602,24 @@ void main() {
       });
       await waitFor(() => emitted.whereType<coord.ChannelOpenedEvent>().isNotEmpty);
 
-      Map<String, dynamic> paymentUpdate(int client, int server) => {
+      Map<String, dynamic> paymentUpdate(int client, int server) {
+        final paymentTxHex = channelPaymentTxHex(
+          fundingTxId: fundingTx.txid,
+          serverAddress: serverAddressB58,
+          clientAddress: clientAddressB58,
+          server: BigInt.from(server),
+          client: BigInt.from(client),
+        );
+        return {
             'channelId': _channelId,
             'amountSats': 1000,
-            'paymentTxHex': channelPaymentTxHex(
-              fundingTxId: fundingTx.txid,
-              serverAddress: serverAddressB58,
-              clientAddress: clientAddressB58,
-              server: BigInt.from(server),
-              client: BigInt.from(client),
-            ),
-            'clientSignatureHex': '30' * 36,
+            'paymentTxHex': paymentTxHex,
+            'clientSignatureHex': sign(paymentTxHex),
             'proposedSequence': 1,
             'proposedClientBalance': client,
             'proposedServerBalance': server,
           };
+      }
 
       // Rejected by the aggregate (balances sum to 101000), then a valid one
       // with the same sequence number. The manager handles them in order.

@@ -49,6 +49,23 @@ String channelPaymentTxHex({
   return tx.serialize();
 }
 
+/// [clientKey]'s signature of the funding input of [txHex], a spend of the
+/// 2-of-2 of [clientKey] and [serverPubKey] holding [fundingSats]: what a
+/// client sends with a payment (bead libspiffy-c5zw: the server checks it).
+String channelClientSignature(
+  String txHex, {
+  required dartsv.SVPrivateKey clientKey,
+  required dartsv.SVPublicKey serverPubKey,
+  required BigInt fundingSats,
+}) {
+  const sighashType = 0x41; // SIGHASH_ALL | SIGHASH_FORKID
+  final multisig = dartsv.P2MSLockBuilder([clientKey.publicKey, serverPubKey], 2, sorting: true).getScriptPubkey();
+  final hash = dartsv.Sighash().hash(dartsv.Transaction.fromHex(txHex), sighashType, 0, multisig, fundingSats);
+  final signature = dartsv.SVSignature.fromPrivateKey(clientKey)..nhashtype = sighashType;
+  signature.sign(hex.encode(hex.decode(hash).reversed.toList()));
+  return signature.toTxFormat();
+}
+
 /// A funding transaction whose output [outputIndex] locks [amountSats] in
 /// the 2-of-2 of the two keys, with a change output. Its input is unsigned:
 /// the channel code checks the funding output, not how it was paid for.

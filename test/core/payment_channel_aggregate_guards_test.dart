@@ -207,6 +207,35 @@ void main() {
     expect(reply.error, contains(errorFragment));
   }
 
+  // The adversarial channel review (22 Sep): the client journals its request
+  // only for a positive amount, and the server accepted any amount a
+  // channel_request named.
+  group('AcceptChannelCommand amount', () {
+    for (final amount in [0, -1000]) {
+      test('refuses a funding amount of $amount, and journals nothing', () async {
+        final ref = await spawn(const []);
+
+        final reply = await ref.ask<dynamic>(
+            AcceptChannelCommand(
+              channelId: _channelId,
+              walletId: 'wallet',
+              clientPeerId: 'client-peer',
+              clientPubKeyHex: _clientPub,
+              clientAddressB58: _clientAddress,
+              serverPubKeyHex: _serverPub,
+              serverAddressB58: _serverAddress,
+              derivationIndex: 1,
+              fundingAmountSats: BigInt.from(amount),
+              lockTimeUnix: _nowUnix() + 86400,
+            ),
+            _ask);
+
+        expectRejected(reply, 'positive');
+        expect(journalLength(), 0);
+      });
+    }
+  });
+
   group('M10: AcknowledgePaymentCommand balance invariants', () {
     test('rejects proposed balances that do not sum to the funding amount',
         () async {

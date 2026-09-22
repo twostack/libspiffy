@@ -302,6 +302,12 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### A channel's server refuses a funding amount that is not positive
+
+- The client journals a channel request only for a positive amount; the
+  server accepted whatever amount a `channel_request` named. Now the
+  server's acceptance applies the same rule.
+
 ### A channel's server opens only on a funding the network has — security
 
 - **The server opened a channel on SPV validation alone.** The funding

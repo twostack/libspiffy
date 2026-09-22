@@ -2175,6 +2175,26 @@ class WalletCoordinatorActor extends Actor {
     } catch (e) {
       reply = wm.BroadcastFailedMessage(result.txid, 'ARC did not answer the submission: $e');
     }
+    // The network holding the payment makes its outputs spendable, and
+    // ARCActor tells the wallet so as it answers. The answer waits for the
+    // read model to show them, as it waits for the payment itself: an app
+    // that reads its balance on hearing it saw nothing received (bead
+    // libspiffy-vj4j, seen on the localnet regtest ARC).
+    if (reply is wm.BroadcastSuccessMessage && DeferredNetworkStatus.isOnNetwork(reply.networkStatus)) {
+      for (final utxo in result.spendableUTXOs) {
+        final vout = utxo['vout'];
+        if (vout is! int) continue;
+        final notAvailable = await _awaitProjectionApplied(
+          matches: (e) => e is domain_events.UTXOMarkedAvailableEvent && e.txid == result.txid && e.vout == vout,
+          alreadyApplied: () async =>
+              (await _storage.getUTXO(walletId, result.txid, vout))?.status == UTXOStatus.available,
+        );
+        if (notAvailable != null) {
+          _log.warning('Payment ${result.txid} is on the network, and its output $vout is not '
+              'available in wallet $walletId yet: $notAvailable');
+        }
+      }
+    }
     _emitEvent(switch (reply) {
       wm.BroadcastSuccessMessage(:final networkStatus) =>
         answer(valid: applyError == null, error: applyError, broadcasted: true, networkStatus: networkStatus),

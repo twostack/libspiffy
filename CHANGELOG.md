@@ -302,6 +302,13 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### A received payment is spendable when the answer says it is on the network
+
+- The answer to `ValidateBEEFCommand` said the payment was on the
+  network a moment before the read model made its outputs spendable, so a
+  balance read on hearing it showed nothing received. The answer now waits
+  for the outputs.
+
 ### An app hears its payments confirm and its invoices paid
 
 - The coordinator's `TransactionConfirmedEvent` and `InvoicePaidEvent` were

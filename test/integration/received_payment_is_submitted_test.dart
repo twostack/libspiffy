@@ -253,6 +253,24 @@ void main() {
       expect(answer.broadcastError, isNull);
     });
 
+    // Seen on the localnet regtest ARC: the answer said SEEN_ON_NETWORK and
+    // a balance read on it showed nothing received, because the output was
+    // made spendable a moment after the answer went out.
+    test('a payment answered as on the network is spendable in the read model when the answer arrives', () async {
+      arc.answer = 'SEEN_ON_NETWORK';
+      UTXOStatus? statusOnAnswer;
+      final answered = system.coordinatorEvents!
+          .where((e) => e is coord.BEEFValidationResultEvent && e.txid == p.id && !e.awaitingHeader)
+          .asyncMap((_) async => statusOnAnswer = (await readModel.getUTXO(walletId, p.id, 0))?.status)
+          .first
+          .timeout(const Duration(seconds: 20));
+
+      pay(invoiceId: await invoice());
+      await answered;
+
+      expect(statusOnAnswer, UTXOStatus.available);
+      expect(await readModel.getBalance(walletId), BigInt.from(90000));
+    });
 
     // Bead libspiffy-6142, seen on the localnet regtest ARC: a payer that
     // heard no answer hands the same payment over again. It is the payment

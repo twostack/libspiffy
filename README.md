@@ -1387,15 +1387,18 @@ dart test test/core_models/             # Domain model tests
 # test/storage/postgres/postgres_integration_test.dart)
 POSTGRES_DATABASE=libspiffy_test dart test --tags=postgres test/storage/postgres/
 
-# Payment channels on a real regtest network and ARC (needs the localnet
-# stack: node RPC :18332, node P2P :18333, ARC :9090). Skipped unless asked
-# for; it mines blocks on the stack's shared chain.
-dart test -P localnet test/integration/localnet_channel_e2e_test.dart
+# Against a real regtest network and ARC (needs the localnet stack: node
+# RPC :18332, node P2P :18333, ARC :9090). Skipped unless asked for; they
+# mine blocks on the stack's shared chain. LOCALNET_LOG=1 prints the
+# library's logs, tagged by node.
+dart test -P localnet test/integration/localnet_node_e2e_test.dart      # header sync, restarts
+dart test -P localnet test/integration/localnet_payment_e2e_test.dart   # invoices and payments
+dart test -P localnet test/integration/localnet_channel_e2e_test.dart   # payment channels
 ```
 
 ### What the suite covers
 
-- **Integration tests**: end-to-end flows including the coordinator API, P2P payments, SPV validation, payment channels (also against a real regtest node and ARC), token lifecycle, invoice persistence, wallet import, header sync
+- **Integration tests**: end-to-end flows including the coordinator API, P2P payments and payment channels (also against a real regtest node and ARC), SPV validation, token lifecycle, invoice persistence, wallet import, header sync
 - **Unit tests**: plugin registry, output specs, encryption, CDN sync, script builders
 - **Service tests**: ARC service, payment channels, address discovery, node RPC merkle proofs, WhatsOnChain TSC proofs
 - **Core model tests**: UTXO, transaction, wallet state, commands, events

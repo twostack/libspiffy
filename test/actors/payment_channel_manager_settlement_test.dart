@@ -425,6 +425,36 @@ void main() {
       expect(imported(), isEmpty);
     });
 
+    // Bead libspiffy-jh6a, seen on the localnet regtest ARC: a server
+    // restarted after the client's refund closed twice at once. The second
+    // submission of its settlement reached ARC while the first was in flight
+    // and was answered with where ARC had got to, not with a verdict; the
+    // server closed on it, and ARC then found the settlement a double spend.
+    for (final status in ['RECEIVED', 'STORED', 'SENT_TO_NETWORK', 'ACCEPTED_BY_NETWORK', 'SEEN_IN_ORPHAN_MEMPOOL']) {
+      test('jh6a: a settlement ARC answers $status does not close the channel', () async {
+        await spawn(await serverJournalWithPayment(), key: f.serverKey);
+        arc.networkStatus = status;
+
+        final closed = await close();
+        await flushWallet();
+
+        expect(closed.success, isFalse);
+        expect(closed.error, contains(status == 'SEEN_IN_ORPHAN_MEMPOOL' ? 'orphan' : status));
+        expect(journal().whereType<ChannelClosedEvent>(), isEmpty);
+        expect(imported(), isEmpty);
+      });
+    }
+
+    test('jh6a: a mined settlement closes the channel', () async {
+      await spawn(await serverJournalWithPayment(), key: f.serverKey);
+      arc.networkStatus = 'MINED';
+
+      final closed = await close();
+
+      expect(closed.success, isTrue, reason: closed.error);
+      expect(journal().whereType<ChannelClosedEvent>(), hasLength(1));
+    });
+
     test('the wallet shows the settlement in its history, its share as a '
         'UTXO and the funds in its balance', () async {
       await spawn(await serverJournalWithPayment(), key: f.serverKey);

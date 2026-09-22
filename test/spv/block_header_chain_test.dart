@@ -372,4 +372,40 @@ void main() {
       expect(locator.length, greaterThan(10));
     });
   });
+
+  // Bead libspiffy-lpjh: a refund claim waits for the chain's median time
+  // past, the time the network holds a time lock to.
+  group('median time past', () {
+    test('is unknown while the chain holds no header', () async {
+      expect(await newChain(InMemoryWalletStorage()).medianTimePast(), isNull);
+    });
+
+    test('is the median timestamp of the last eleven headers, not the tip\'s',
+        () async {
+      final chain = newChain(InMemoryWalletStorage());
+      await chain.initialize();
+      final headers = RegtestMiner.mineChain(genesis, 12); // heights 1..12
+      for (var i = 0; i < headers.length; i++) {
+        expect(await chain.validateAndStoreHeader(headers[i], i + 1), isTrue);
+      }
+
+      // Heights 2..12; the median is height 7, fifty minutes before the tip.
+      expect(await chain.medianTimePast(), headers[6].timestamp);
+      expect(headers.last.timestamp.difference(headers[6].timestamp),
+          const Duration(minutes: 50));
+    });
+
+    test('counts every header there is on a chain shorter than eleven',
+        () async {
+      final chain = newChain(InMemoryWalletStorage());
+      await chain.initialize();
+      final headers = RegtestMiner.mineChain(genesis, 4); // heights 1..4
+      for (var i = 0; i < headers.length; i++) {
+        expect(await chain.validateAndStoreHeader(headers[i], i + 1), isTrue);
+      }
+
+      // Heights 0..4: the median is height 2.
+      expect(await chain.medianTimePast(), headers[1].timestamp);
+    });
+  });
 }

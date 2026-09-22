@@ -1127,8 +1127,8 @@ Peer messages travel over the app's own transport: deliver what arrives as
 - **Funding:** before the client broadcasts its funding, it holds a refund
   that the server has signed. The refund returns everything to the client
   once the lock time passes. The server opens the channel only after it
-  has SPV-validated the funding and submitted it to ARC, and ARC holds it
-  with no double spend reported.
+  has SPV-validated the funding and submitted it to ARC, and ARC reports
+  the network holds it (see "What counts as on the network" below).
 - **Payments:** each payment is a transaction spending the funding output,
   signed by the client. The server checks what it pays, its fee, and the
   client's signature. The server keeps its own signature: only the server
@@ -1138,6 +1138,18 @@ Peer messages travel over the app's own transport: deliver what arrives as
   does this when either side closes the channel, and on its own once the
   settlement margin begins. It then hands the settlement to the client,
   which records its share.
+- **Refund:** the client claims its refund (`ClaimChannelRefundCommand`)
+  only once the chain's median time past, read from its block headers, is
+  after the lock time. The network judges the lock time against that, not
+  the clock, and on mainnet it trails the clock by about an hour. Until
+  then a node holds the refund only as non-final, and drops it for any
+  final spend of the funding output, such as the server's settlement.
+- **What counts as on the network:** a channel transaction the library
+  submits (the server's funding submission, the settlement, the refund)
+  counts as held only when ARC reports `SEEN_ON_NETWORK` or `MINED`. A
+  double spend, an orphan (an input the node cannot connect, or one
+  already spent in a block), or a status ARC gives while still processing
+  fails the step, and nothing is recorded; repeating the step retries it.
 - **Peers:** messages about a channel are accepted only from the channel's
   counterparty, and only in that counterparty's role.
 
@@ -1367,18 +1379,27 @@ dart test test/unit/                    # Unit tests
 dart test test/integration/             # Integration tests
 dart test test/services/                # Service tests
 dart test test/core_models/             # Domain model tests
+
+# PostgreSQL storage (needs a running PostgreSQL; see
+# test/storage/postgres/postgres_integration_test.dart)
+POSTGRES_DATABASE=libspiffy_test dart test --tags=postgres test/storage/postgres/
+
+# Payment channels on a real regtest network and ARC (needs the localnet
+# stack: node RPC :18332, node P2P :18333, ARC :9090). Skipped unless asked
+# for; it mines blocks on the stack's shared chain.
+dart test -P localnet test/integration/localnet_channel_e2e_test.dart
 ```
 
-### Test Coverage (~67 test files)
+### What the suite covers
 
-- **Integration tests** (~31): End-to-end flows including coordinator API, P2P payments, SPV validation, payment channels, token lifecycle, invoice persistence, wallet import, header sync
-- **Unit tests** (~8): Plugin registry, output specs, encryption, CDN sync, script builders
+- **Integration tests**: end-to-end flows including the coordinator API, P2P payments, SPV validation, payment channels (also against a real regtest node and ARC), token lifecycle, invoice persistence, wallet import, header sync
+- **Unit tests**: plugin registry, output specs, encryption, CDN sync, script builders
 - **Service tests**: ARC service, payment channels, address discovery, node RPC merkle proofs, WhatsOnChain TSC proofs
-- **Core model tests** (~5): UTXO, transaction, wallet state, commands, events
-- **Storage tests** (~3): Isar schemas, wallet storage, PostgreSQL integration
-- **Actor/aggregate tests** (~3): Header sync actor, channel aggregate, wallet aggregate
-- **Format tests** (~5): BEEF/BUMP parsing, format equivalence, SPV validation
-- **Crypto tests** (~2): DartSV crypto service, key derivation
+- **Core model tests**: UTXO, transaction, wallet state, commands, events
+- **Storage tests**: Isar schemas, wallet storage, PostgreSQL integration
+- **Actor and aggregate tests**: the actors, the channel, wallet and invoice aggregates, and their replies
+- **Format tests**: BEEF/BUMP parsing, format equivalence, SPV validation
+- **Crypto tests**: DartSV crypto service, key derivation
 
 ## Development
 

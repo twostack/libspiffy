@@ -1014,7 +1014,7 @@ void main() {
       );
 
       final early = await aggregate.ask<dynamic>(
-          ClaimRefundCommand(channelId: row.channelId),
+          ClaimRefundCommand(channelId: row.channelId, medianTimePastUnix: DateTime.now().millisecondsSinceEpoch ~/ 1000),
           const Duration(seconds: 5));
       final nowUnix = DateTime.now().millisecondsSinceEpoch ~/ 1000;
       if (nowUnix < row.lockTimeUnix) {
@@ -1026,7 +1026,7 @@ void main() {
       }
 
       final claimed = await aggregate.ask<dynamic>(
-          ClaimRefundCommand(channelId: row.channelId),
+          ClaimRefundCommand(channelId: row.channelId, medianTimePastUnix: DateTime.now().millisecondsSinceEpoch ~/ 1000),
           const Duration(seconds: 5));
       expect(claimed, isA<ChannelCommandResult>(), reason: '$claimed');
       expect((claimed as ChannelCommandResult).success, isTrue, reason: claimed.error);

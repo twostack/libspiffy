@@ -38,6 +38,7 @@ import 'package:libspiffy/src/storage/in_memory_wallet_storage.dart';
 
 import 'channel_test_fixtures.dart';
 import 'in_memory_event_store.dart';
+import '../mocks/fixed_time_header_chain.dart';
 import '../mocks/test_channel_timing.dart';
 
 const _channelId = 'chan-claim';
@@ -97,6 +98,10 @@ void main() {
   late ActorRef managerRef;
   late String refundTxId;
 
+  /// The node's header chain: its median time past is what a refund's lock
+  /// time is held to (bead libspiffy-lpjh). Now, unless a test moves it.
+  late FixedTimeHeaderChain headers;
+
   setUpAll(LibSpiffyActorSystem.registerEventTypes);
 
   setUp(() async {
@@ -109,6 +114,7 @@ void main() {
       lockTimeUnix: DateTime.now().millisecondsSinceEpoch ~/ 1000 - 60,
     );
     refundTxId = dartsv.Transaction.fromHex(f.signedRefundTxHex()).id;
+    headers = FixedTimeHeaderChain.now();
   });
 
   tearDown(() async {
@@ -131,6 +137,7 @@ void main() {
         eventStore: store,
         cryptoService: DartSVCryptoService(),
         arcActor: withArc ? arcRef : null,
+        headerChain: headers,
         signingTimeout: const Duration(seconds: 2),
       ),
     );
@@ -275,6 +282,48 @@ void main() {
       expect(received(), isEmpty);
     });
 
+    // Bead libspiffy-67eo, seen on the localnet regtest ARC: a refund that
+    // loses to the server's settlement is answered with HTTP 200 and
+    // DOUBLE_SPEND_ATTEMPTED, not with a failure. The client whose
+    // channel_closed was lost claimed after the lock time, and the claim was
+    // journaled and the whole funding recorded as received.
+    test('67eo: a refund ARC answers as a double spend journals nothing and '
+        'records nothing', () async {
+      await spawn(f.openClientJournal(walletId: _walletId));
+      arc.networkStatus = 'DOUBLE_SPEND_ATTEMPTED';
+
+      final claimed = await claim();
+
+      expect(claimed.success, isFalse);
+      expect(claimed.error, contains('contested'));
+      expect(arc.broadcasts, hasLength(1));
+      expect(journal().whereType<RefundClaimedEvent>(), isEmpty);
+      await flushWallet();
+      expect(imported(), isEmpty,
+          reason: 'the settlement spent the funding output; no refund came back');
+      expect(received(), isEmpty);
+    });
+
+    // The same client, when the settlement was already mined: the node
+    // finds the funding output spent in a block, which it cannot tell from
+    // an unknown parent, and ARC answers SEEN_IN_ORPHAN_MEMPOOL (bead
+    // libspiffy-jh6a, seen on the localnet regtest ARC). That refund is
+    // never mined.
+    test('jh6a: a refund ARC answers as an orphan journals nothing and '
+        'records nothing', () async {
+      await spawn(f.openClientJournal(walletId: _walletId));
+      arc.networkStatus = 'SEEN_IN_ORPHAN_MEMPOOL';
+
+      final claimed = await claim();
+
+      expect(claimed.success, isFalse);
+      expect(claimed.error, contains('orphan'));
+      expect(journal().whereType<RefundClaimedEvent>(), isEmpty);
+      await flushWallet();
+      expect(imported(), isEmpty);
+      expect(received(), isEmpty);
+    });
+
     test('a channel holding no fully signed refund claims nothing', () async {
       // Requested, acceptance recorded, refund built — but never
       // countersigned, so the client holds only its own half.
@@ -316,6 +365,8 @@ void main() {
 
       expect(claimed.success, isFalse);
       expect(claimed.error, contains('Only client can claim refund'));
+      expect(arc.broadcasts, isEmpty,
+          reason: 'a claim the channel refuses never reaches the network (1a5k)');
       expect(journal().whereType<RefundClaimedEvent>(), isEmpty);
     });
 
@@ -333,6 +384,57 @@ void main() {
 
       expect(claimed.success, isFalse);
       expect(claimed.error, contains('Channel not yet expired'));
+      // Seen on the localnet regtest node (bead libspiffy-1a5k): the
+      // refund went out before the aggregate refused the claim, and ARC and
+      // the node's non-final mempool held it while the host heard "failed".
+      expect(arc.broadcasts, isEmpty,
+          reason: 'a claim the channel refuses never reaches the network');
+      expect(journal().whereType<RefundClaimedEvent>(), isEmpty);
+    });
+
+    // Bead libspiffy-lpjh: the network holds a refund's lock time to the
+    // chain's median time past, which trails the clock (about an hour on
+    // mainnet). Claimed on the clock, the refund was accepted by ARC and
+    // held by the node as non-final; the server's settlement then evicted it
+    // (seen on the localnet regtest node) while ARC went on reporting it
+    // seen, and the claim stood journaled and recorded.
+    test('lpjh: past the lock time on the clock but not on the chain, nothing '
+        'is claimed or broadcast', () async {
+      await spawn(f.openClientJournal(walletId: _walletId));
+      headers.time =
+          DateTime.fromMillisecondsSinceEpoch(f.lockTimeUnix * 1000);
+
+      final claimed = await claim();
+
+      expect(claimed.success, isFalse);
+      expect(claimed.error, contains('median time past'));
+      expect(arc.broadcasts, isEmpty,
+          reason: 'the refund is not final until the median time passes its '
+              'lock time; a node holds it only until a final spend arrives');
+      expect(journal().whereType<RefundClaimedEvent>(), isEmpty);
+    });
+
+    test('lpjh: once the chain\'s median time passes the lock time the refund '
+        'is claimed', () async {
+      await spawn(f.openClientJournal(walletId: _walletId));
+      headers.time =
+          DateTime.fromMillisecondsSinceEpoch((f.lockTimeUnix + 1) * 1000);
+
+      final claimed = await claim();
+
+      expect(claimed.success, isTrue, reason: claimed.error);
+      expect(arc.broadcasts.single.txid, refundTxId);
+    });
+
+    test('lpjh: a node holding no block headers claims nothing', () async {
+      await spawn(f.openClientJournal(walletId: _walletId));
+      headers.time = null;
+
+      final claimed = await claim();
+
+      expect(claimed.success, isFalse);
+      expect(claimed.error, contains('No block headers'));
+      expect(arc.broadcasts, isEmpty);
       expect(journal().whereType<RefundClaimedEvent>(), isEmpty);
     });
 
@@ -438,6 +540,8 @@ void main() {
 
       expect(claimed.success, isFalse);
       expect(claimed.error, contains('already terminated'));
+      expect(arc.broadcasts, isEmpty,
+          reason: 'a claim the channel refuses never reaches the network (1a5k)');
       expect(journal().whereType<RefundClaimedEvent>(), isEmpty);
       final row = (await channelRow())!;
       expect(row.state, PaymentChannelState.closed,

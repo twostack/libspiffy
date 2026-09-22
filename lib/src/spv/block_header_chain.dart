@@ -432,6 +432,16 @@ class BlockHeaderChain {
     return null;
   }
 
+  /// The median time past of the active chain: the median timestamp of its
+  /// last eleven headers. The network holds a time lock to it, not to any
+  /// clock: a transaction whose nLockTime is a time is final — accepted
+  /// into a block rather than held as non-final — only once that time is
+  /// below this (BIP 113). Null while the chain holds no header.
+  Future<DateTime?> medianTimePast() async {
+    if (_chainTip == null) return null;
+    return _medianTimePast(_bestHeight, _ActiveAncestry(this));
+  }
+
   /// Median timestamp of the up-to-eleven headers ending at [height].
   Future<DateTime> _medianTimePast(int height, HeaderAncestry ancestry) async {
     final times = <DateTime>[];

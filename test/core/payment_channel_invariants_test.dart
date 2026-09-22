@@ -355,7 +355,8 @@ void main() {
 
       final first = await ref.ask<dynamic>(
           ClaimRefundCommand(
-              channelId: _channelId, refundTxHex: signedRefund()),
+              channelId: _channelId, refundTxHex: signedRefund(),
+              medianTimePastUnix: DateTime.now().millisecondsSinceEpoch ~/ 1000),
           _ask);
       expect(first, _applied, reason: '$first');
       final claimed = journal().whereType<RefundClaimedEvent>().single;
@@ -364,7 +365,8 @@ void main() {
       // is the same ending, so it must be idempotent, not a second ending.
       final second = await ref.ask<dynamic>(
           ClaimRefundCommand(
-              channelId: _channelId, refundTxHex: signedRefund()),
+              channelId: _channelId, refundTxHex: signedRefund(),
+              medianTimePastUnix: DateTime.now().millisecondsSinceEpoch ~/ 1000),
           _ask);
 
       expect(journal().whereType<RefundClaimedEvent>(), hasLength(1),
@@ -380,7 +382,8 @@ void main() {
 
       await ref.ask<dynamic>(
           ClaimRefundCommand(
-              channelId: _channelId, refundTxHex: signedRefund()),
+              channelId: _channelId, refundTxHex: signedRefund(),
+              medianTimePastUnix: DateTime.now().millisecondsSinceEpoch ~/ 1000),
           _ask);
       final claimed = journal().whereType<RefundClaimedEvent>().single;
 
@@ -395,7 +398,8 @@ void main() {
           reason: 'sanity: the second really is a different transaction');
 
       final reply = await ref.ask<dynamic>(
-          ClaimRefundCommand(channelId: _channelId, refundTxHex: otherHex),
+          ClaimRefundCommand(channelId: _channelId, refundTxHex: otherHex,
+              medianTimePastUnix: DateTime.now().millisecondsSinceEpoch ~/ 1000),
           _ask);
 
       expectRejected(reply,
@@ -415,7 +419,8 @@ void main() {
 
       final reply = await ref.ask<dynamic>(
           ClaimRefundCommand(
-              channelId: _channelId, refundTxHex: signedRefund()),
+              channelId: _channelId, refundTxHex: signedRefund(),
+              medianTimePastUnix: DateTime.now().millisecondsSinceEpoch ~/ 1000),
           _ask);
 
       expect(reply, _applied, reason: '$reply');
@@ -428,7 +433,8 @@ void main() {
       final ref = await spawn(expired.openClientJournal());
       await ref.ask<dynamic>(
           ClaimRefundCommand(
-              channelId: _channelId, refundTxHex: signedRefund()),
+              channelId: _channelId, refundTxHex: signedRefund(),
+              medianTimePastUnix: DateTime.now().millisecondsSinceEpoch ~/ 1000),
           _ask);
       final claimed = journal().whereType<RefundClaimedEvent>().single;
 

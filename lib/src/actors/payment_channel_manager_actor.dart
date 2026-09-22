@@ -32,10 +32,12 @@ import '../core/wallet_events.dart'
 import '../models/bitcoin_transaction.dart';
 import '../models/bitcoin_utxo.dart' show UTXOStatus;
 import '../models/channel_timing.dart';
+import '../models/deferred_payment.dart' show DeferredNetworkStatus;
 import '../models/fee_rate.dart';
 import '../services/ancestor_chain_service.dart';
 import '../services/crypto_service.dart';
 import '../services/payment_channel_builder.dart';
+import '../spv/block_header_chain.dart';
 import '../storage/read_model_storage.dart';
 import '../utils/beef.dart';
 import 'payment_channel_messages.dart';
@@ -95,6 +97,11 @@ class PaymentChannelManagerActor extends Actor {
   /// already holds the funding transaction (libspiffy-fsy). Without one the
   /// client sends no BEEF, which servers refuse.
   final ReadModelStorage? _storage;
+
+  /// The node's block headers: the chain's median time past, which a
+  /// refund's lock time is held to, is read from them (bead
+  /// libspiffy-lpjh). Without them no refund can be claimed.
+  final BlockHeaderChain? _headerChain;
 
   /// How long SPV validation of a funding BEEF may take.
   static const Duration _spvTimeout = Duration(seconds: 30);
@@ -170,6 +177,10 @@ class PaymentChannelManagerActor extends Actor {
     /// Nothing here is a correctness hole; the first item is a capability
     /// that simply does not work.
     ReadModelStorage? storage,
+    /// The node's block headers, for the chain's median time past a refund
+    /// claim waits for (bead libspiffy-lpjh). Production always supplies
+    /// them; without them a refund claim is refused.
+    BlockHeaderChain? headerChain,
     /// When channels stop taking payments and how long they must run (bead
     /// libspiffy-ywbk). Required, with no default: the operator chooses it.
     /// Null is a node that does no channels — requests, acceptances and
@@ -180,6 +191,7 @@ class PaymentChannelManagerActor extends Actor {
         _timing = timing,
         _spvActor = spvActor,
         _storage = storage,
+        _headerChain = headerChain,
         _eventStore = eventStore,
         _cryptoService = cryptoService,
         _networkType = networkType,
@@ -206,6 +218,12 @@ class PaymentChannelManagerActor extends Actor {
           'refuse), a funding retry cannot be refused when its money has '
           'been reclaimed, and a funding recording is redone rather than '
           'skipped. See the storage parameter.');
+    }
+    if (_headerChain == null) {
+      _log.warning(
+          'PaymentChannelManagerActor has no block headers: no refund can be '
+          'claimed, since the chain\'s median time past its lock time is held '
+          'to is unknown. See the headerChain parameter.');
     }
   }
 
@@ -2605,14 +2623,27 @@ class PaymentChannelManagerActor extends Actor {
           ({dartsv.Transaction tx, String hex, String ourAddress}) leg) =>
       _submitUncontested(state.walletId, leg.hex, leg.tx.id, 'settlement ${leg.tx.id} of channel $channelId');
 
-  /// Submits [txHex] to ARC and returns once ARC holds it uncontested;
-  /// throws otherwise, saying why.
+  /// Submits [txHex] to ARC and returns once ARC reports the network holds
+  /// it; throws otherwise, saying why.
   ///
   /// The channel owns the retry — the step that called this is repeated —
-  /// so it is not queued at ARC as well (bead libspiffy-r56l). BSV has no
-  /// replacement: DOUBLE_SPEND_ATTEMPTED means another spend of the same
-  /// output may have got there first, and nothing is recorded on the
-  /// strength of this one.
+  /// so it is not queued at ARC as well (bead libspiffy-r56l). Held is what
+  /// ARC waits for by default before answering: SEEN_ON_NETWORK, or MINED
+  /// ([DeferredNetworkStatus.isOnNetwork]). Every other status ARC answers
+  /// with HTTP 200 is not held, and nothing is recorded on the strength of
+  /// it (bead libspiffy-jh6a, each seen on the localnet regtest ARC):
+  ///
+  /// * DOUBLE_SPEND_ATTEMPTED: another spend of the same output is in the
+  ///   mempool. BSV has no replacement, so it may have got there first.
+  /// * SEEN_IN_ORPHAN_MEMPOOL: the node cannot connect an input — its
+  ///   parent is unknown, or the output is already spent in a block, which
+  ///   the node cannot tell apart. A refund over a mined settlement gets
+  ///   this answer, not DOUBLE_SPEND_ATTEMPTED.
+  /// * An in-flight status (RECEIVED, STORED, SENT_TO_NETWORK, ...): ARC
+  ///   stopped waiting, or the same transaction was submitted while ARC
+  ///   was still processing it, and it answers with where it got to. A
+  ///   settlement submitted twice at once was answered so while ARC was
+  ///   finding it a double spend, and the server closed on it.
   Future<void> _submitUncontested(String walletId, String txHex, String txid, String what) async {
     final arcActor = _arcActor;
     if (arcActor == null) {
@@ -2631,9 +2662,16 @@ class PaymentChannelManagerActor extends Actor {
     if (reply is! BroadcastSuccessMessage) {
       throw StateError('Broadcasting $what failed: unexpected reply ${reply.runtimeType}');
     }
-    if (reply.networkStatus == 'DOUBLE_SPEND_ATTEMPTED') {
+    final status = reply.networkStatus;
+    if (DeferredNetworkStatus.isOnNetwork(status)) return;
+    if (DeferredNetworkStatus.isContested(status)) {
       throw StateError('The $what is contested: ARC reports another spend of its inputs');
     }
+    if (status == DeferredNetworkStatus.seenInOrphanMempool) {
+      throw StateError('The network cannot connect the $what: ARC reports it in the orphan '
+          'mempool, so one of its inputs is unknown or already spent');
+    }
+    throw StateError('ARC does not report the network holding the $what yet (status $status)');
   }
 
   /// The settlement [settlementTxHex] the server handed this client, as the
@@ -2892,8 +2930,6 @@ class PaymentChannelManagerActor extends Actor {
     try {
       final aggregateRef = await _getOrSpawnChannelAggregate(msg.channelId);
 
-      // Read before the command: the aggregate's own guards (past lockTime,
-      // client role, the refund spends the funding output) are the only gate.
       final state = _stateOrThrow(
           await aggregateRef.ask(ChannelStateQuery(channelId: msg.channelId)));
 
@@ -2911,28 +2947,34 @@ class PaymentChannelManagerActor extends Actor {
       }
       final refundTxId = refund.id;
 
-      final arcActor = _arcActor;
-      if (arcActor == null) {
-        throw StateError('No transaction broadcaster (ARC actor) configured');
+      // The aggregate's own rules (past the lock time, the client, not
+      // ended, spends the funding output, claimed once) decide before the
+      // refund reaches the network, not after: a refused claim broadcast
+      // anyway is a refund on the network that the host was told failed
+      // (bead libspiffy-1a5k).
+      final medianTimePast = await _headerChain?.medianTimePast();
+      if (medianTimePast == null) {
+        throw StateError('No block headers: the chain\'s median time past, '
+            'which the refund\'s lock time is held to, is unknown');
       }
-
-      final reply = await _request(
-        arcActor,
-        // A failed claim is claimed again by the app (ClaimRefund): not
-        // queued at ARC as well (bead libspiffy-r56l).
-        BroadcastTransactionMessage(state.walletId, refundTxHex, refundTxId, retryOnFailure: false),
-        accept: (r) =>
-            r is BroadcastSuccessMessage || r is BroadcastFailedMessage,
-        what: 'Broadcasting refund $refundTxId of channel ${msg.channelId}',
-        timeout: _broadcastTimeout,
+      final command = ClaimRefundCommand(
+        channelId: msg.channelId,
+        refundTxHex: refundTxHex,
+        medianTimePastUnix: medianTimePast.millisecondsSinceEpoch ~/ 1000,
       );
-      if (reply is BroadcastFailedMessage) {
-        throw StateError('Refund broadcast failed: ${reply.error}');
+      final check = await aggregateRef.ask(ChannelCommandCheck(command));
+      if (check is! ChannelCommandCheckResponse) {
+        throw StateError('Unexpected response type: ${check.runtimeType}');
       }
-      if (reply is! BroadcastSuccessMessage) {
-        throw StateError('Refund broadcast failed: unexpected reply '
-            '${reply.runtimeType}');
-      }
+      if (check.error != null) throw StateError(check.error!);
+
+      // A refund that loses to another spend of the funding output — the
+      // server's settlement — is answered with HTTP 200 and a status that
+      // is not held: that is no claim, and nothing is journaled or recorded
+      // for it (bead libspiffy-67eo). A failed claim is claimed again by
+      // the app.
+      await _submitUncontested(state.walletId, refundTxHex, refundTxId,
+          'refund $refundTxId of channel ${msg.channelId}');
 
       // Registered BEFORE the command: the aggregate publishes its event to
       // the projection's mailbox before it answers, so registering after
@@ -2942,12 +2984,8 @@ class PaymentChannelManagerActor extends Actor {
           (e) => e is RefundClaimedEvent && e.channelId == msg.channelId,
           const Duration(seconds: 10));
       try {
-        _broadcastEvents(await _askAggregate(
-          msg.channelId,
-          aggregateRef,
-          ClaimRefundCommand(
-              channelId: msg.channelId, refundTxHex: refundTxHex),
-        ));
+        _broadcastEvents(
+            await _askAggregate(msg.channelId, aggregateRef, command));
       } catch (e) {
         // Nothing will await the registration now (bead libspiffy-kyw).
         applied?.cancel();

@@ -849,6 +849,8 @@ class LibSpiffyActorSystem {
       // (server) (libspiffy-fsy).
       spvActor: _spvActor!,
       storage: _walletStorage,
+      // The chain's median time past, for refund claims (libspiffy-lpjh).
+      headerChain: _headerChain,
       timing: _channelTiming,
     ));
     

@@ -584,7 +584,7 @@ void main() {
       final ref = await spawn(expiredClientChannel(hex));
 
       final reply = await ref.ask<dynamic>(
-          ClaimRefundCommand(channelId: _channelId), _ask);
+          ClaimRefundCommand(channelId: _channelId, medianTimePastUnix: _nowUnix()), _ask);
 
       expect(reply, _applied, reason: '$reply');
       final persisted = store.journal[_persistenceId]!
@@ -600,7 +600,7 @@ void main() {
       final signedHex = refundTxHex(outputSats: 98999);
 
       final reply = await ref.ask<dynamic>(
-          ClaimRefundCommand(channelId: _channelId, refundTxHex: signedHex),
+          ClaimRefundCommand(channelId: _channelId, refundTxHex: signedHex, medianTimePastUnix: _nowUnix()),
           _ask);
 
       expect(reply, _applied, reason: '$reply');
@@ -617,7 +617,7 @@ void main() {
       final reply = await ref.ask<dynamic>(
           ClaimRefundCommand(
               channelId: _channelId,
-              refundTxHex: refundTxHex(spending: 'e2' * 32)),
+              refundTxHex: refundTxHex(spending: 'e2' * 32), medianTimePastUnix: _nowUnix()),
           _ask);
 
       expectRejected(reply, 'funding output');
@@ -628,7 +628,7 @@ void main() {
       final ref = await spawn([_requested(lockTimeUnix: _nowUnix() - 60)]);
 
       final reply = await ref.ask<dynamic>(
-          ClaimRefundCommand(channelId: _channelId), _ask);
+          ClaimRefundCommand(channelId: _channelId, medianTimePastUnix: _nowUnix()), _ask);
 
       expectRejected(reply, 'refund transaction');
       expect(journalLength(), 1);

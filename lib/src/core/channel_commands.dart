@@ -665,9 +665,17 @@ class ClaimRefundCommand extends ChannelCommand {
   /// used. Its txid is what the journaled [RefundClaimedEvent] records.
   final String? refundTxHex;
 
+  /// The chain's median time past when the claim is made, in unix seconds:
+  /// the time the network holds the refund's lock time to (bead
+  /// libspiffy-lpjh). Until it passes the lock time the refund is not
+  /// final, and a node keeps it only as non-final, to be dropped for any
+  /// final spend of the funding output.
+  final int medianTimePastUnix;
+
   ClaimRefundCommand({
     required String channelId,
     this.refundTxHex,
+    required this.medianTimePastUnix,
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,

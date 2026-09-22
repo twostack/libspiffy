@@ -597,7 +597,8 @@ void main() {
             finalClientBalanceSats: BigInt.one,
             finalServerBalanceSats: BigInt.one,
             settlementTxHex: '00'),
-        ClaimRefundCommand(channelId: channelId),
+        ClaimRefundCommand(channelId: channelId,
+              medianTimePastUnix: DateTime.now().millisecondsSinceEpoch ~/ 1000),
         ExpireChannelCommand(channelId: channelId, observedBy: 'test'),
         StartFundingBroadcastCommand(channelId: channelId, fundingTxId: 'cd' * 32),
       ]) {

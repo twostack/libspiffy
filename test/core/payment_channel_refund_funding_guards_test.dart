@@ -297,7 +297,8 @@ void main() {
       final ref = await spawn(expired.openClientJournal());
 
       final reply = await ref.ask<dynamic>(
-          ClaimRefundCommand(channelId: _channelId), _ask);
+          ClaimRefundCommand(channelId: _channelId,
+              medianTimePastUnix: DateTime.now().millisecondsSinceEpoch ~/ 1000), _ask);
 
       expect(reply, _applied, reason: '$reply');
       expect(journal().whereType<RefundClaimedEvent>().single.refundTxId,

@@ -190,6 +190,10 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       _handleStateQuery(message);
       return;
     }
+    if (message is ChannelCommandCheck) {
+      await _handleCommandCheck(message);
+      return;
+    }
     
     // Capture sender at start of message processing
     if (message is Command) {
@@ -201,6 +205,25 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
     await super.onMessage(message);
   }
   
+  /// Answers whether this channel would take [check]'s command, by running
+  /// it through [handleCommand] and journaling nothing (bead
+  /// libspiffy-1a5k).
+  Future<void> _handleCommandCheck(ChannelCommandCheck check) async {
+    final sender = context.sender;
+    if (sender == null) return;
+    if (!isInitialized || currentState.version == 0) {
+      sender.tell(ChannelCommandCheckResponse(
+          error: 'Channel not found: $aggregateId has no events'));
+      return;
+    }
+    try {
+      await handleCommand(currentState, check.command);
+      sender.tell(ChannelCommandCheckResponse());
+    } catch (e) {
+      sender.tell(ChannelCommandCheckResponse(error: e.toString()));
+    }
+  }
+
   /// Handle state query (non-command message)
   void _handleStateQuery(ChannelStateQuery query) {
     final sender = context.sender;
@@ -298,7 +321,7 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
     if (command is RequestChannelCommand) {
       return await _handleRequestChannel(currentState, command);
     } else if (command is AcceptChannelCommand) {
-      return await _handleAcceptChannel(currentState, command);
+      return _handleAcceptChannel(currentState, command);
     } else if (command is RejectChannelCommand) {
       return _handleRejectChannel(currentState, command);
     } else if (command is RecordServerAcceptanceCommand) {
@@ -312,15 +335,15 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
     } else if (command is RecordFundingInWalletCommand) {
       return _handleRecordFundingInWallet(currentState, command);
     } else if (command is RequestRefundSignatureCommand) {
-      return await _handleRequestRefundSignature(currentState, command);
+      return _handleRequestRefundSignature(currentState, command);
     } else if (command is ProvideRefundSignatureCommand) {
       return _handleProvideRefundSignature(currentState, command);
     } else if (command is OpenChannelCommand) {
       return _handleOpenChannel(currentState, command);
     } else if (command is RecordPaymentCommand) {
-      return await _handleRecordPayment(currentState, command);
+      return _handleRecordPayment(currentState, command);
     } else if (command is AcknowledgePaymentCommand) {
-      return await _handleAcknowledgePayment(currentState, command);
+      return _handleAcknowledgePayment(currentState, command);
     } else if (command is RecordReturnLegInWalletCommand) {
       return _handleRecordReturnLegInWallet(currentState, command);
     } else if (command is CloseChannelCommand) {
@@ -1412,9 +1435,19 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
     ChannelState currentState,
     ClaimRefundCommand cmd,
   ) {
-    // Business rule: Channel must be expired
-    if (!currentState.isExpired) {
-      throw StateError('Channel not yet expired');
+    // Business rule: the refund is final on the network. A node holds a
+    // time lock to the chain's median time past, which trails the clock (by
+    // about an hour on mainnet), not to the clock. Between the two ARC
+    // accepts the refund and the node keeps it as non-final, dropping it for
+    // any final spend of the funding output — the server's settlement —
+    // while ARC still reports it seen: a claim journaled then may be a
+    // refund that never happens (bead libspiffy-lpjh, seen on the localnet
+    // regtest node).
+    final lockTime = currentState.lockTimeUnix;
+    if (lockTime == null || cmd.medianTimePastUnix <= lockTime) {
+      throw StateError('Channel not yet expired on the network: the chain\'s '
+          'median time past ${cmd.medianTimePastUnix} has not passed the lock '
+          'time $lockTime');
     }
 
     // Business rule: Only client can claim refund

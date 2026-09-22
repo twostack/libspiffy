@@ -363,6 +363,28 @@ void main() {
       expect(opened.error, contains('contested'));
       expect(broadcast.whereType<ChannelOpenedEvent>(), isEmpty);
     });
+
+    // Bead libspiffy-jh6a: only SEEN_ON_NETWORK or MINED is a funding the
+    // network holds. ARC answers a transaction whose input the node cannot
+    // connect — an unknown parent, or an output already spent in a block —
+    // with HTTP 200 and SEEN_IN_ORPHAN_MEMPOOL, and one it is still
+    // processing with an in-flight status (both seen on the localnet
+    // regtest ARC).
+    test('jh6a: a funding the network holds only as an orphan does not open the channel', () async {
+      final opened = await openAfter(() => arc.networkStatus = 'SEEN_IN_ORPHAN_MEMPOOL');
+
+      expect(opened.success, isFalse);
+      expect(opened.error, contains('orphan'));
+      expect(broadcast.whereType<ChannelOpenedEvent>(), isEmpty);
+    });
+
+    test('jh6a: a funding ARC is still processing does not open the channel', () async {
+      final opened = await openAfter(() => arc.networkStatus = 'STORED');
+
+      expect(opened.success, isFalse);
+      expect(opened.error, contains('STORED'));
+      expect(broadcast.whereType<ChannelOpenedEvent>(), isEmpty);
+    });
   });
 
   // Bead libspiffy-ywbk: the timing is the operator's, with no default. A

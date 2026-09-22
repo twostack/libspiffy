@@ -302,6 +302,57 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### A channel transaction counts as on the network only when ARC says so — security
+
+- Found by running channels against a real regtest node and ARC
+  (`test/integration/localnet_channel_e2e_test.dart`, tag `localnet`).
+- The settlement, the server's funding submission and the refund claim
+  counted as on the network on any ARC answer but a failure or
+  `DOUBLE_SPEND_ATTEMPTED`. ARC answers two more cases with HTTP 200:
+  - `SEEN_IN_ORPHAN_MEMPOOL`, when the node cannot connect an input. That
+    includes an output already spent in a block, so a refund claimed after
+    the settlement was mined got this answer.
+  - an in-flight status (`RECEIVED`, `STORED`, `SENT_TO_NETWORK`, ...),
+    when ARC stops waiting or the same transaction arrives while it is
+    still processing it. A server restarted after its client took the
+    refund closed twice at once, and closed the channel on the second
+    answer, for a settlement ARC then found to be a double spend.
+- Now only `SEEN_ON_NETWORK` or `MINED` counts, which is also what ARC waits
+  for by default. Anything else fails the step, records nothing and says
+  why; repeating the step retries it.
+
+### A refund is claimed when the network would take it — breaking
+
+- **A refund was claimed on the clock.** The network holds a time lock to
+  the median time past of the last eleven blocks, which trails the clock
+  by about an hour on mainnet. In between, ARC accepts the refund and the
+  node keeps it as non-final, then drops it for any final spend of the
+  funding output, while ARC goes on reporting it seen. The claim was
+  journaled and recorded all the same.
+- Now a claim waits until the chain's median time past, read from the
+  node's block headers, is after the lock time.
+- New: `BlockHeaderChain.medianTimePast()`.
+- Breaking:
+  - `ClaimRefundCommand` takes a required `medianTimePastUnix`.
+  - `PaymentChannelManagerActor` takes the node's `headerChain`. Without
+    it, no refund can be claimed. `LibSpiffyActorSystem` passes it.
+
+### A refund claim the network refused is not a claim — security
+
+- A refund claim took ARC's `DOUBLE_SPEND_ATTEMPTED`, which comes with
+  HTTP 200, as success. A client whose `channel_closed` was lost, claiming
+  after its server settled, journaled the claim and recorded the whole
+  funding amount as received. The claim now submits as the settlement
+  does, and records nothing for a refund the network did not take.
+
+### A refund claim is checked before it is broadcast
+
+- A claim the channel refused, for example one before the lock time, was
+  still broadcast first: the host was told it failed while the refund was
+  on the network. The manager now asks the channel first
+  (`ChannelCommandCheck`: the same command, run by the aggregate and
+  journaled nowhere) and broadcasts only a claim the channel would take.
+
 ### A channel settles before its lock time, and runs long enough to — breaking
 
 - **Nothing settled a channel before its refund became valid.** The server

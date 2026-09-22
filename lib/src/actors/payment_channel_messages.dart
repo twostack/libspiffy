@@ -7,6 +7,7 @@
 import 'package:dactor/dactor.dart';
 import 'package:eventador/eventador.dart' show Event;
 
+import '../core/channel_commands.dart' show ChannelCommand;
 import '../models/persistent_map.dart';
 import 'internal_messages.dart';
 
@@ -820,6 +821,36 @@ class ChannelStateQuery extends LocalMessage {
 
   @override
   dynamic get payload => this;
+}
+
+/// Asks a channel aggregate whether it would take [command], without taking
+/// it: the command runs through the aggregate's own handler and nothing is
+/// journaled (bead libspiffy-1a5k).
+///
+/// For a step whose effect outside the journal comes first. A refund claim
+/// is broadcast before it is journaled, since only a refund the network holds
+/// is a claim; checking it here first means a claim the channel refuses
+/// never reaches the network. The same command is then sent for real, and
+/// checked again, because the state may have moved in between.
+class ChannelCommandCheck extends LocalMessage {
+  final ChannelCommand command;
+
+  ChannelCommandCheck(this.command) : super(payload: null);
+
+  @override
+  dynamic get payload => this;
+}
+
+/// The aggregate's answer to [ChannelCommandCheck]: [error] is why it
+/// refuses the command, and null when it would take it.
+class ChannelCommandCheckResponse extends ActorResponse {
+  @override
+  final String? error;
+
+  ChannelCommandCheckResponse({this.error});
+
+  @override
+  bool get success => error == null;
 }
 
 /// Full channel state response from aggregate (for building transactions)

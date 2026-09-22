@@ -652,5 +652,30 @@ void main() {
       expect(restored.fundingBroadcastInFlight, isFalse);
       expect(restored.fundingRecordedInWallet, isFalse);
     });
+
+    // V-149: the state no longer keeps the client's signature over its
+    // latest payment, which nothing read after V-141. Snapshots written
+    // before still hold the key.
+    test('a channel snapshot holding latestClientSignatureHex restores', () async {
+      final aggregate = PaymentChannelAggregate(
+        aggregateId: _channelId,
+        eventStore: store,
+        cryptoService: DartSVCryptoService(),
+      );
+      final restored = await aggregate.restoreStateFromMap({
+        'channelId': _channelId,
+        'status': 'open',
+        'role': 'client',
+        'fundingAmountSats': '100000',
+        'clientBalanceSats': '90000',
+        'serverBalanceSats': '10000',
+        'latestSequenceNumber': 1,
+        'latestPaymentTxHex': 'ab' * 40,
+        'latestClientSignatureHex': '30' * 36,
+        'version': 6,
+      }, 6);
+      expect(restored.latestSequenceNumber, 1);
+      expect(restored.latestPaymentTxHex, 'ab' * 40);
+    });
   });
 }

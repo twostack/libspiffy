@@ -302,6 +302,14 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### The channel state drops the client's payment signature
+
+- `ChannelState.latestClientSignatureHex` and the state query's field of
+  the same name are removed. They were kept for the client to assemble its
+  settlement from the server's `payment_ack` signature, which the protocol
+  no longer sends. The journal still holds the signature, and older
+  snapshots restore.
+
 ### A channel transaction counts as on the network only when ARC says so — security
 
 - Found by running channels against a real regtest node and ARC

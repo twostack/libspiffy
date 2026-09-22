@@ -97,7 +97,6 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
         'latestSequenceNumber': s.latestSequenceNumber,
         'latestPaymentTxHex': s.latestPaymentTxHex,
         'latestPaymentTxId': s.latestPaymentTxId,
-        'latestClientSignatureHex': s.latestClientSignatureHex,
         'context': s.context,
         'counterpartyMarker': s.counterpartyMarker,
         'createdAt': s.createdAt?.toIso8601String(),
@@ -154,7 +153,10 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       latestSequenceNumber: map['latestSequenceNumber'] as int,
       latestPaymentTxHex: map['latestPaymentTxHex'] as String?,
       latestPaymentTxId: map['latestPaymentTxId'] as String?,
-      latestClientSignatureHex: map['latestClientSignatureHex'] as String?,
+      // Snapshots written before V-149 also hold latestClientSignatureHex,
+      // which nothing has read since the client stopped assembling
+      // settlements (V-141); it is ignored. PaymentRecordedEvent still
+      // carries the signature in the journal.
       context: map['context'] as String?,
       // Snapshots written before libspiffy-bps1 have no marker key.
       counterpartyMarker: map['counterpartyMarker'] as String?,
@@ -279,7 +281,6 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       refundTxHex: currentState.refundTxHex,
       fundingBeefHex: currentState.fundingBeefHex,
       latestPaymentTxHex: currentState.latestPaymentTxHex,
-      latestClientSignatureHex: currentState.latestClientSignatureHex,
       refundClaimedTxId: currentState.refundClaimedTxId,
       success: true,
     ));
@@ -1674,9 +1675,6 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       latestSequenceNumber: event.sequenceNumber,
       latestPaymentTxHex: event.paymentTxHex,
       latestPaymentTxId: event.paymentTxId,
-      // Half of the 2-of-2 signature; the server's half arrives later in
-      // `payment_ack` and cannot be combined without this one (libspiffy-z2px).
-      latestClientSignatureHex: event.clientSignatureHex,
       version: event.version,
       lastModified: event.timestamp,
     );

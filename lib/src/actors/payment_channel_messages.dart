@@ -918,11 +918,6 @@ class FullChannelStateResponse extends ActorResponse {
   /// ends the channel (bead libspiffy-f5p2).
   final String? latestPaymentTxHex;
 
-  /// The client's own signature over [latestPaymentTxHex] while that is still
-  /// the template (bead libspiffy-z2px). Combined with the server's
-  /// countersignature from `payment_ack` to assemble the settlement; null on
-  /// the server, which holds both halves at acknowledgement.
-  final String? latestClientSignatureHex;
 
   /// Whether this side's wallet already holds the transaction that ended the
   /// channel and paid it back (bead libspiffy-lfrv).
@@ -970,7 +965,6 @@ class FullChannelStateResponse extends ActorResponse {
     this.refundTxHex,
     this.fundingBeefHex,
     this.latestPaymentTxHex,
-    this.latestClientSignatureHex,
     this.returnLegRecordedInWallet = false,
     this.refundClaimedTxId,
     required this.success,

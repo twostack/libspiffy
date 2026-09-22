@@ -74,12 +74,6 @@ class ChannelState extends State {
   final String? latestPaymentTxHex;
   final String? latestPaymentTxId;
 
-  /// The client's own signature over the latest payment (bead
-  /// libspiffy-z2px). Kept because the 2-of-2 funding output needs both
-  /// halves and the server's arrives later, in `payment_ack`: without this
-  /// the client cannot assemble the settlement it is owed after a restart.
-  /// Null on the server, which holds both halves at acknowledgement.
-  final String? latestClientSignatureHex;
 
   /// Whether this side's wallet already holds the transaction that ended the
   /// channel and paid it back (bead libspiffy-lfrv). The counterpart of
@@ -154,7 +148,6 @@ class ChannelState extends State {
     this.latestSequenceNumber = 0,
     this.latestPaymentTxHex,
     this.latestPaymentTxId,
-    this.latestClientSignatureHex,
     this.returnLegRecordedInWallet = false,
     this.context,
     this.counterpartyMarker,
@@ -217,7 +210,6 @@ class ChannelState extends State {
     int? latestSequenceNumber,
     Object? latestPaymentTxHex = _unset,
     Object? latestPaymentTxId = _unset,
-    Object? latestClientSignatureHex = _unset,
     bool? returnLegRecordedInWallet,
     Object? context = _unset,
     Object? counterpartyMarker = _unset,
@@ -259,8 +251,6 @@ class ChannelState extends State {
       latestSequenceNumber: latestSequenceNumber ?? this.latestSequenceNumber,
       latestPaymentTxHex: pick<String>(latestPaymentTxHex, this.latestPaymentTxHex),
       latestPaymentTxId: pick<String>(latestPaymentTxId, this.latestPaymentTxId),
-      latestClientSignatureHex:
-          pick<String>(latestClientSignatureHex, this.latestClientSignatureHex),
       returnLegRecordedInWallet:
           returnLegRecordedInWallet ?? this.returnLegRecordedInWallet,
       context: pick<String>(context, this.context),

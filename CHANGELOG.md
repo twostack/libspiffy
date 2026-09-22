@@ -302,6 +302,26 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### A channel acts only on messages from its counterparty — security
+
+- **Any peer could steer someone else's channel.** `ChannelP2PAdapter`
+  took a message's channel id as its authority, and channel ids travel
+  between the parties and through whatever relays them. A third peer that
+  knew one could end the client's channel (`channel_closed`,
+  `channel_reject`), close ours (`channel_close`), accept a request in the
+  server's place — the client would then fund a 2-of-2 with the intruder's
+  key and send it the refund to sign — or replace a pending request with its
+  own keys before the app accepted it.
+- Now every message about a known channel must come from the counterparty
+  the channel journal names, in the role that sends it: `channel_accept`,
+  `channel_reject`, `refund_signed` and `payment_ack` from the server;
+  `refund_sign_request`, `channel_open` and `payment_update` from the
+  client; `channel_close`, `channel_closed` and `channel_error` from either.
+  A `channel_request` naming a channel this side already has with another
+  peer is refused. Refusals are logged and nothing is sent back.
+- The client's record of a channel takes both peers from its journaled
+  `ChannelRequestedEvent`, as a restored record already did.
+
 ### One way to read ARC's rate — breaking
 
 - `ArcPolicyResponse.standardFeePerKb`, `minFeePerKb` and `dataFeePerKb`

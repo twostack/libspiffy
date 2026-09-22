@@ -4,6 +4,8 @@
 /// build the funding transaction. BuildFundingTransactionCommand is a wallet
 /// command; it used to be told to the channel manager, whose default branch
 /// dropped it, so a client-side channel open never progressed past accept.
+library;
+
 import 'dart:async';
 
 import 'package:dactor/dactor.dart';
@@ -397,12 +399,14 @@ void main() {
 
     /// Client record of the channel, without a peer: the aggregate asked for
     /// it, nothing has told this adapter where the server is.
-    Future<void> clientChannelWithoutPeer() async {
+    /// Client side whose journal names [serverPeerId] as the server; none
+    /// by default (a row journaled before peer ids were, libspiffy-36f).
+    Future<void> clientChannelWithoutPeer({String serverPeerId = ''}) async {
       channelEvents.add(ch.ChannelRequestedEvent(
         channelId: channelId,
         walletId: 'client-wallet',
         clientPeerId: 'client-peer',
-        serverPeerId: 'server-peer',
+        serverPeerId: serverPeerId,
         clientPubKeyHex: '02' * 33,
         clientAddressB58: 'mqCnSf8i6kmaQaJ54HjQ8EUJnuK4AnCv12',
         derivationIndex: 7,
@@ -416,7 +420,7 @@ void main() {
 
     /// Client side with the server peer known (as after channel_accept).
     Future<void> clientChannel() async {
-      await clientChannelWithoutPeer();
+      await clientChannelWithoutPeer(serverPeerId: 'server-peer');
       adapter.handleP2PMessage('server-peer', 'channel_accept', {
         'channelId': channelId,
         'serverPubKey': '03' * 33,

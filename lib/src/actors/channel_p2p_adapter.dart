@@ -201,19 +201,64 @@ class ChannelP2PAdapter {
   void handleP2PMessage(String fromPeerId, String messageType, Map<String, dynamic> payload) {
     _log.fine('Received P2P message: $messageType from $fromPeerId');
 
-    // Messages that read this adapter's record of an existing channel.
-    const readsRecord = {
-      'channel_accept',
-      'refund_sign_request',
-      'payment_update',
-      'channel_close',
-      'channel_closed',
-    };
+    // Every message but a request is about an existing channel, and is
+    // checked against this adapter's record of it (bead libspiffy-i0e6).
     final channelId = payload['channelId'];
     _sequenced(
-      readsRecord.contains(messageType) && channelId is String ? channelId : null,
-      () => _dispatchP2PMessage(fromPeerId, messageType, payload),
+      messageType != 'channel_request' && channelId is String ? channelId : null,
+      () {
+        if (_fromCounterparty(fromPeerId, messageType, channelId)) {
+          _dispatchP2PMessage(fromPeerId, messageType, payload);
+        }
+      },
     );
+  }
+
+  /// Messages only the server of a channel sends, to its client.
+  static const _fromServer = {
+    'channel_accept',
+    'channel_reject',
+    'refund_signed',
+    'payment_ack',
+  };
+
+  /// Messages only the client of a channel sends, to its server.
+  static const _fromClient = {
+    'refund_sign_request',
+    'channel_open',
+    'payment_update',
+  };
+
+  /// Whether [fromPeerId] may send [messageType] about [channelId]: the
+  /// channel's counterparty on record, in the role that sends it (bead
+  /// libspiffy-i0e6).
+  ///
+  /// Channel ids travel between the two parties and through whatever relays
+  /// them, so knowing one proves nothing. The adapter used to act on a
+  /// message from any peer: a third party could end the client's channel
+  /// (`channel_closed`, `channel_reject`), close ours (`channel_close`), or
+  /// accept a request in the server's place, overwriting the peer the
+  /// client funds and sends its refund to. A request naming a channel this
+  /// side already has with someone else is refused the same way.
+  bool _fromCounterparty(String fromPeerId, String messageType, Object? channelId) {
+    if (channelId is! String) {
+      // channel_error may name no channel: it is reported, and changes nothing.
+      return messageType == 'channel_error';
+    }
+    final isNew = messageType == 'channel_request' &&
+        !_knows(channelId) &&
+        !_channelPeers.containsKey(channelId) &&
+        !_pendingRequests.containsKey(channelId);
+    if (isNew) return true;
+    final wrongDirection = (_clientChannelInfo.containsKey(channelId) && _fromClient.contains(messageType)) ||
+        (_serverChannelInfo.containsKey(channelId) && _fromServer.contains(messageType));
+    final counterparty = wrongDirection ? null : _counterpartyPeer(channelId);
+    if (counterparty != fromPeerId) {
+      _log.warning('Refused $messageType for channel $channelId from $fromPeerId: '
+          '${counterparty == null ? 'this side has no counterparty on record who sends it' : 'its counterparty is $counterparty'}');
+      return false;
+    }
+    return true;
   }
 
   void _dispatchP2PMessage(
@@ -640,12 +685,10 @@ class ChannelP2PAdapter {
       fundingAmountSats: event.fundingAmountSats.toInt(),
       lockTimeUnix: event.lockTimeUnix,
     );
-
-    final peers = _channelPeers[event.channelId];
-    if (peers == null) {
-      _log.warning('No peer info for channel ${event.channelId}');
-      return;
-    }
+    // The journal names both parties: the peer every later message about
+    // this channel must come from is the one it records (libspiffy-i0e6).
+    final peers = _channelPeers[event.channelId] =
+        PeerInfo(clientPeerId: event.clientPeerId, serverPeerId: event.serverPeerId);
 
     _emitP2PMessage(peers.serverPeerId, 'channel_request', {
       'channelId': event.channelId,

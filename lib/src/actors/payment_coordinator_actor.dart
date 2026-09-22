@@ -1439,7 +1439,9 @@ class PaymentCoordinatorActor extends Actor {
   /// to return the row — meaning the rawHex is queryable through
   /// [ReadModelStorage.getTransaction]. This is what makes the helper safe
   /// to call from flows that immediately need to look the row up (e.g., the
-  /// plugin's `transactionLookup` after auto-provisioning).
+  /// plugin's `transactionLookup` after auto-provisioning). With
+  /// [deferSpend] it also returns only after the read model holds the
+  /// deferred payment and its held inputs.
   ///
   /// Throws [StateError] if the projection fails to apply the event within
   /// [_recordPersistTimeout] or the projection actor stops while waiting.
@@ -1504,11 +1506,14 @@ class PaymentCoordinatorActor extends Actor {
     final txid = transaction.txid;
     final applied = _walletProjection.ask<dynamic>(
       AwaitEventApplied(
-        // A cancelled deferred payment recorded again is re-activated
-        // instead of recorded twice (bead libspiffy-4r0).
-        (e) =>
-            e is wevent.TransactionRecordedEvent && e.txid == txid ||
-            e is wevent.TransactionSpendDeferredEvent && e.reactivated && e.txid == txid,
+        // A deferred recording is done when its hold is applied: the hold
+        // follows the recorded transaction, and the payment's answer lets
+        // the app list, cancel or reclaim it at once. A cancelled deferred
+        // payment recorded again journals the hold alone (re-activated,
+        // bead libspiffy-4r0).
+        (e) => deferSpend
+            ? e is wevent.TransactionSpendDeferredEvent && e.txid == txid
+            : e is wevent.TransactionRecordedEvent && e.txid == txid,
         timeout: _recordPersistTimeout,
       ),
       // Ask timeout must outlast the awaiter's own window, otherwise dactor's

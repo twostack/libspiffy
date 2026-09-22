@@ -115,9 +115,6 @@ void main() {
       (e) => e.invoiceId == invoiceId,
     );
     expect(ready.success, isTrue, reason: ready.error);
-    // The hold is projected right after the recording the payment waited for.
-    await until(() async => (await storage().getDeferredPayment(walletId, ready.txid)) != null,
-        'the deferred payment row');
     return ready;
   }
 
@@ -223,6 +220,20 @@ void main() {
     expect(rebuiltPayment.lastNetworkStatus, DeferredNetworkStatus.seenOnNetwork);
   });
 
+  test('the payment\'s answer comes once the read model holds the hold: listed, its input held, '
+      'and cancelled at once', () async {
+    final ready = await pay('inv-at-once');
+
+    final row = await storage().getDeferredPayment(walletId, ready.txid);
+    expect(row?.state, DeferredPaymentState.outstanding,
+        reason: 'the answer came before the read model had the deferred payment');
+    expect((await funding()).reservedByTxId, ready.txid);
+    final cancelled = await send<DeferredPaymentCancelledEvent>(
+        CancelDeferredPaymentCommand(walletId: walletId, txid: ready.txid, requestId: 'at-once'),
+        (e) => e.requestId == 'at-once');
+    expect(cancelled.success, isTrue, reason: cancelled.error);
+  });
+
   test('cancel: checks the network, then journals the cancellation and releases the input', () async {
     final ready = await pay('inv-cancel');
 
@@ -292,10 +303,6 @@ void main() {
     expect(second.success, isTrue, reason: second.error);
     expect(second.txid, first.txid, reason: 'deterministic signing over the same input');
     expect(second.beefBytes, first.beefBytes);
-    await until(
-        () async =>
-            (await storage().getDeferredPayment(walletId, first.txid))!.state == DeferredPaymentState.outstanding,
-        'the payment outstanding again');
     final row = (await storage().getDeferredPayment(walletId, first.txid))!;
     expect(row.heldInputs.single.utxoKey, _fundingKey);
     expect(row.resolvedAt, isNull);

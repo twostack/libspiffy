@@ -302,6 +302,13 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### A deferred payment can be cancelled the moment it is answered
+
+- A payment's answer (`PaymentReadyEvent`) came a moment before the wallet
+  held the payment as deferred, so cancelling, reclaiming or listing it at
+  once was told it was no deferred payment. The answer now waits for the
+  hold.
+
 ### A received payment is spendable when the answer says it is on the network
 
 - The answer to `ValidateBEEFCommand` said the payment was on the

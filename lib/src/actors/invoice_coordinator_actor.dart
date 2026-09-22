@@ -655,7 +655,7 @@ class InvoiceCoordinatorActor extends Actor {
     // projection to apply: it is passed on at once (bead libspiffy-u0x; the
     // caller used to get 'Mark-paid projection timeout' after 10 s).
     final reply = await _commandAggregate(aggregateActor, command);
-    if (reply == null || reply.status != InvoiceStatus.paid) {
+    if (reply == null || !reply.success || reply.status != InvoiceStatus.paid) {
       unawaited(applied.then<void>((_) {}, onError: (_) {}));
       originalSender?.tell(reply ??
           InvoiceStatusMessage(

@@ -11,6 +11,7 @@ import 'package:spiffynode/spiffy_node.dart' show BlockHeader, Hash;
 import '../core/channel_events.dart';
 import '../core/wallet_commands.dart' as domain;
 import '../core/wallet_events.dart' as domain_events;
+import '../core/invoice_events.dart' as invoice_events;
 import '../core/wallet/transaction_size.dart';
 import '../models/wallet_event.dart' as wallet_event_model;
 import '../models/bitcoin_transaction.dart';
@@ -61,6 +62,26 @@ class WalletCoordinatorActor extends Actor {
   /// libspiffy-a2v3). Composed like the channel adapter, but always present:
   /// it needs nothing but storage and the SPV actor.
   late final ProofP2PAdapter _proofAdapter;
+
+  StreamSubscription<Event>? _readModelEventsSub;
+
+  /// Announces what the read models applied: a confirmation
+  /// ([TransactionConfirmedEvent]) and a paid invoice ([InvoicePaidEvent]).
+  /// Both public events existed and nothing emitted them, so an app never
+  /// heard its payment confirm or its invoice paid (bead libspiffy-mu09).
+  /// A confirmation journaled without a height, before heights were
+  /// journaled, is not announced: the event states one.
+  void _announceApplied(Event event) {
+    switch (event) {
+      case domain_events.TransactionConfirmedEvent(:final walletId, :final txid, :final blockHeight?):
+        _emitEvent(TransactionConfirmedEvent(walletId: walletId, txid: txid, blockHeight: blockHeight));
+      case invoice_events.InvoicePaidEvent(:final walletId, :final invoiceId, :final txid, :final amountReceived):
+        _emitEvent(InvoicePaidEvent(
+            walletId: walletId, invoiceId: invoiceId, txid: txid, amountReceived: amountReceived));
+      default:
+        break;
+    }
+  }
 
   // Event broadcasting
   late final StreamController<CoordinatorEvent> _eventStream =
@@ -172,6 +193,11 @@ class WalletCoordinatorActor extends Actor {
     ActorRef? importActor,
     required ReadModelStorage storage,
     Stream<ChannelEvent>? channelEvents,
+    /// Events the wallet and invoice read models have applied
+    /// (ProjectionActor.appliedEvents). A confirmation and a paid invoice
+    /// are announced from here, so an app told of one finds it in the read
+    /// model (bead libspiffy-mu09).
+    Stream<Event>? readModelEvents,
     String peerId = '',
     /// The node's channel timing (bead libspiffy-ywbk): the channel adapter
     /// settles each channel this node serves when its settlement margin
@@ -205,6 +231,7 @@ class WalletCoordinatorActor extends Actor {
         _importWalletFromXpriv = importWalletFromXpriv,
         _importWalletFromWif = importWalletFromWif,
         _importNotifications = importNotifications {
+    _readModelEventsSub = readModelEvents?.listen(_announceApplied);
     _proofAdapter = ProofP2PAdapter(
       storage: storage,
       spvActor: spvActor,
@@ -359,6 +386,7 @@ class WalletCoordinatorActor extends Actor {
     _childToParentSettlement.clear();
     _channelAdapter?.dispose();
     _proofAdapter.dispose();
+    unawaited(_readModelEventsSub?.cancel());
     if (!_eventStream.isClosed) {
       unawaited(_eventStream.close());
     }
@@ -1110,6 +1138,7 @@ class WalletCoordinatorActor extends Actor {
 
     // Dispose channel adapter
     _channelAdapter?.dispose();
+    await _readModelEventsSub?.cancel();
 
     // Clear correlation maps
     _beefValidations.clear();

@@ -302,6 +302,16 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### An app hears its payments confirm and its invoices paid
+
+- The coordinator's `TransactionConfirmedEvent` and `InvoicePaidEvent` were
+  never emitted. They are now emitted once the wallet's read model holds
+  the confirmation or the payment, so a query made on hearing one sees it.
+- A payment whose invoice refused to be marked paid (paid or expired
+  between the check and the mark) is now logged as a warning. The invoice
+  aggregate's refusal says `success: false` and gives the invoice's actual
+  status. It used to claim success and a pending invoice.
+
 ### A node restarted at the chain tip follows the chain again — critical
 
 - A node restarted with its headers already at the tip asked for headers,

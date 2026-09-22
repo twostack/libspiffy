@@ -253,6 +253,7 @@ void main() {
       expect(answer.broadcastError, isNull);
     });
 
+
     // Bead libspiffy-6142, seen on the localnet regtest ARC: a payer that
     // heard no answer hands the same payment over again. It is the payment
     // that paid the invoice, not a second one: it used to be refused as
@@ -263,9 +264,15 @@ void main() {
       final answers = answersAboutP();
       final refusals = <String>[];
       final logs = Logger.root.onRecord
-          .where((r) => r.message.contains('is not pending'))
+          .where((r) => r.message.contains('was not marked paid'))
           .listen((r) => refusals.add(r.message));
       addTearDown(logs.cancel);
+      final paid = <coord.InvoicePaidEvent>[];
+      final announcements = system.coordinatorEvents!
+          .where((e) => e is coord.InvoicePaidEvent)
+          .cast<coord.InvoicePaidEvent>()
+          .listen(paid.add);
+      addTearDown(announcements.cancel);
 
       final invoiceId = await invoice();
       pay(invoiceId: invoiceId);
@@ -284,6 +291,8 @@ void main() {
       expect(journal.where((e) => e.typeName == 'invoice.paid'), hasLength(1),
           reason: 'the invoice is paid once, by P');
       expect(refusals, isEmpty, reason: 'the invoice was marked paid again, and refused');
+      // Bead libspiffy-mu09: announced, once, as the read model holds it.
+      expect(paid.map((e) => (e.invoiceId, e.txid, e.amountReceived)), [(invoiceId, p.id, BigInt.from(90000))]);
     });
 
     test('6142: another payment for an invoice P already paid is refused', () async {

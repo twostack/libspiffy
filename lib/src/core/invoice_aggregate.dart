@@ -205,10 +205,16 @@ class InvoiceAggregate extends AggregateRoot<InvoiceState>
     if (sender == null) return;
 
     final invoiceId = command is InvoiceCommand ? command.invoiceId : aggregateId;
+    // A refusal, and the invoice's status as it stands: it used to say
+    // "pending" and succeeded, whatever the invoice was, so a refused
+    // payment of a paid invoice read as a pending invoice (bead
+    // libspiffy-mu09).
     sender.tell(InvoiceStatusMessage(
       invoiceId: invoiceId,
-      status: InvoiceStatus.pending, // Status unchanged on failure
+      status: state?.status ?? InvoiceStatus.pending,
       statusMessage: 'Command failed: $error',
+      success: false,
+      error: '$error',
     ));
   }
 

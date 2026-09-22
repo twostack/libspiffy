@@ -192,6 +192,14 @@ class SPVActor extends Actor {
           await _handleValidateCounterpartyTransaction(msg);
           break;
 
+        // The invoice coordinator's answer to MarkInvoicePaidMessage. A
+        // refusal leaves the invoice as it was while the payment is
+        // received, so it is said (bead libspiffy-mu09).
+        case final InvoiceStatusMessage msg when !msg.success:
+          _log.warning('Invoice ${msg.invoiceId} was not marked paid by '
+              '${msg.txid ?? 'the payment received for it'}: ${msg.error ?? msg.statusMessage}');
+          break;
+
         default:
       }
     } catch (e) {

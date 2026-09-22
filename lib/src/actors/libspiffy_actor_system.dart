@@ -113,6 +113,12 @@ class LibSpiffyActorSystem {
   /// broadcaster wiring to re-broadcast post-applied events.
   ProjectionActor? _channelProjectionActor;
   StreamSubscription<ChannelEvent>? _channelProjectionAppliedSub;
+
+  /// The events the wallet and invoice read models have applied, for the
+  /// coordinator to announce once an app can query their outcome (bead
+  /// libspiffy-mu09).
+  final StreamController<Event> _readModelApplied = StreamController<Event>.broadcast();
+  final List<StreamSubscription<Event>> _readModelAppliedSubs = [];
   
   // Actor references
   ActorRef? _walletManager;
@@ -688,7 +694,11 @@ class LibSpiffyActorSystem {
     );
     _walletProjectionRef = await _actorSystem.spawn(
       'projection-wallet-projection',
-      () => ProjectionActor(_walletProjection!, _eventStream, isar: isar),
+      () {
+        final actor = ProjectionActor(_walletProjection!, _eventStream, isar: isar);
+        _readModelAppliedSubs.add(actor.appliedEvents.listen(_readModelApplied.add));
+        return actor;
+      },
     );
 
     _invoiceProjection = InvoiceProjection(
@@ -698,7 +708,11 @@ class LibSpiffyActorSystem {
     );
     _invoiceProjectionRef = await _actorSystem.spawn(
       'projection-invoice-projection',
-      () => ProjectionActor(_invoiceProjection!, _eventStream, isar: isar),
+      () {
+        final actor = ProjectionActor(_invoiceProjection!, _eventStream, isar: isar);
+        _readModelAppliedSubs.add(actor.appliedEvents.listen(_readModelApplied.add));
+        return actor;
+      },
     );
 
     _channelProjection = ChannelProjection(
@@ -887,6 +901,7 @@ class LibSpiffyActorSystem {
       importActor: _importActor,
       storage: _walletStorage,
       channelEvents: _channelEventBroadcaster.stream,
+      readModelEvents: _readModelApplied.stream,
       // This node's own peer id on the channel transport (libspiffy-36f).
       peerId: _channelPeerId,
       channelTiming: _channelTiming,
@@ -1608,6 +1623,11 @@ class LibSpiffyActorSystem {
       // 6. Close event broadcasters and projection re-broadcast subscription
       await _channelProjectionAppliedSub?.cancel();
       _channelProjectionAppliedSub = null;
+      for (final sub in _readModelAppliedSubs) {
+        await sub.cancel();
+      }
+      _readModelAppliedSubs.clear();
+      await _readModelApplied.close();
       await _walletEventBroadcaster.close();
       await _importNotificationBroadcaster.close();
       await _channelEventBroadcaster.close();

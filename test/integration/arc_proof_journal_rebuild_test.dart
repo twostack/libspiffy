@@ -18,6 +18,7 @@ import 'package:convert/convert.dart';
 import 'package:dactor/dactor.dart';
 import 'package:eventador/eventador.dart';
 import 'package:isar/isar.dart';
+import 'package:libspiffy/coordinator.dart' as coord;
 import 'package:libspiffy/libspiffy.dart';
 import 'package:libspiffy/src/actors/libspiffy_actor_system.dart';
 import 'package:libspiffy/src/actors/spv_messages.dart' show BlockHeadersReceivedMessage;
@@ -199,6 +200,55 @@ void main() {
       await projection.handle(event);
     }
     expect(contentAndStatus(await rebuilt.getMerkleProofHistory(kFixtureTxid)), before);
+  });
+
+  // Bead libspiffy-mu09: the coordinator's TransactionConfirmedEvent
+  // existed and nothing emitted it; an app never heard a payment confirm.
+  test('mu09: the coordinator announces a confirmation once, when the read model holds it', () async {
+    final (bump, root) = blockFor(2);
+    final a1 = RegtestMiner.mine(parent: genesis, seed: 'A1');
+    final a2 = RegtestMiner.mine(parent: a1, merkleRoot: root);
+    await sendHeaders([a1, a2], 2);
+    libspiffy.walletManager.tell(WalletCommandMessage(walletId, RecordImportedTransactionCommand(
+      walletId: walletId,
+      txid: kFixtureTxid,
+      rawHex: kFixtureTxHex,
+      blockHeight: null,
+      bumpProofHex: '',
+      totalOutputSats: 91296559239,
+      numInputs: 1,
+      numOutputs: 2,
+      txVersion: 2,
+      txLockTime: 0,
+      walletReceivingAddresses: [kTestRootAddress],
+      walletReceivedSats: 200000000,
+      totalInputSats: 0,
+      sendingAddresses: const [],
+    )));
+    await _until(() async => (await tx())?.status == TransactionStatus.pending, 'transaction held as pending');
+
+    final announced = <coord.TransactionConfirmedEvent>[];
+    final statusWhenAnnounced = <TransactionStatus?>[];
+    final sub = libspiffy.coordinatorEvents!
+        .where((e) => e is coord.TransactionConfirmedEvent)
+        .cast<coord.TransactionConfirmedEvent>()
+        .listen((e) async {
+      announced.add(e);
+      statusWhenAnnounced.add((await tx())?.status);
+    });
+    addTearDown(sub.cancel);
+
+    arc.responses[kFixtureTxid] = minedAt(bump, a2);
+    libspiffy.arcActor.tell(CheckStoragePendingUTXOsMessage(triggerBlockHeight: 2));
+    await _until(() async => announced.isNotEmpty, 'the confirmation announced');
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+
+    expect(announced, hasLength(1));
+    expect(announced.single.walletId, walletId);
+    expect(announced.single.txid, kFixtureTxid);
+    expect(announced.single.blockHeight, 2);
+    expect(statusWhenAnnounced.single, TransactionStatus.confirmed,
+        reason: 'announced before the read model held the confirmation');
   });
 
   test('9ek: after a reorganization and a re-mine, a rebuild keeps the orphaned proof and the new current one',

@@ -1311,6 +1311,15 @@ class PaymentChannelManagerActor extends Actor {
       } else {
         fundingBeefHex = msg.fundingBeefHex;
         await _verifyFundingBeef(msg, state);
+        // SPV proves the funding's ancestry, not that the network has it: a
+        // client could send a funding it never broadcast, or double-spends,
+        // and every payment would be against an output that never exists.
+        // The receiver submits what it receives (bead libspiffy-3nje), and
+        // opens only on a funding ARC holds uncontested. The client
+        // broadcast it first, so ARC knows it; one ARC refuses is refused
+        // here, and a re-sent channel_open submits it again.
+        await _submitUncontested(state.walletId, msg.fundingTxHex, msg.fundingTxId,
+            'funding transaction ${msg.fundingTxId} of channel ${msg.channelId}');
       }
 
       final openCmd = OpenChannelCommand(
@@ -2565,38 +2574,40 @@ class PaymentChannelManagerActor extends Actor {
   }
 
   /// Submits [leg], the settlement this server holds, to ARC (bead
-  /// libspiffy-u6q6). Throws unless ARC holds it uncontested.
-  ///
-  /// It is our own transaction, so ARC has standing to answer for it. The
-  /// channel owns the retry — closing again re-sends it — so it is not
-  /// queued at ARC as well (bead libspiffy-r56l). BSV has no replacement:
-  /// DOUBLE_SPEND_ATTEMPTED means another spend of the funding output (an
-  /// earlier payment, or the refund) may have got there first, and the
-  /// channel is not recorded as settled by this one.
+  /// libspiffy-u6q6): our own transaction, so ARC has standing to answer for
+  /// it.
   Future<void> _broadcastSettlement(String channelId, FullChannelStateResponse state,
-      ({dartsv.Transaction tx, String hex, String ourAddress}) leg) async {
-    final txid = leg.tx.id;
+          ({dartsv.Transaction tx, String hex, String ourAddress}) leg) =>
+      _submitUncontested(state.walletId, leg.hex, leg.tx.id, 'settlement ${leg.tx.id} of channel $channelId');
+
+  /// Submits [txHex] to ARC and returns once ARC holds it uncontested;
+  /// throws otherwise, saying why.
+  ///
+  /// The channel owns the retry — the step that called this is repeated —
+  /// so it is not queued at ARC as well (bead libspiffy-r56l). BSV has no
+  /// replacement: DOUBLE_SPEND_ATTEMPTED means another spend of the same
+  /// output may have got there first, and nothing is recorded on the
+  /// strength of this one.
+  Future<void> _submitUncontested(String walletId, String txHex, String txid, String what) async {
     final arcActor = _arcActor;
     if (arcActor == null) {
-      throw StateError('No transaction broadcaster (ARC actor) configured: '
-          'settlement $txid of channel $channelId cannot be broadcast');
+      throw StateError('No transaction broadcaster (ARC actor) configured: $what cannot be broadcast');
     }
     final reply = await _request(
       arcActor,
-      BroadcastTransactionMessage(state.walletId, leg.hex, txid, retryOnFailure: false),
+      BroadcastTransactionMessage(walletId, txHex, txid, retryOnFailure: false),
       accept: (r) => r is BroadcastSuccessMessage || r is BroadcastFailedMessage,
-      what: 'Broadcasting settlement $txid of channel $channelId',
+      what: 'Broadcasting $what',
       timeout: _broadcastTimeout,
     );
     if (reply is BroadcastFailedMessage) {
-      throw StateError('Settlement broadcast failed: ${reply.error}');
+      throw StateError('Broadcasting $what failed: ${reply.error}');
     }
     if (reply is! BroadcastSuccessMessage) {
-      throw StateError('Settlement broadcast failed: unexpected reply ${reply.runtimeType}');
+      throw StateError('Broadcasting $what failed: unexpected reply ${reply.runtimeType}');
     }
     if (reply.networkStatus == 'DOUBLE_SPEND_ATTEMPTED') {
-      throw StateError('Settlement $txid of channel $channelId is contested: ARC reports '
-          'another spend of the funding output');
+      throw StateError('The $what is contested: ARC reports another spend of its inputs');
     }
   }
 

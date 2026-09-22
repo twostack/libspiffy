@@ -302,6 +302,20 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### A channel's server opens only on a funding the network has — security
+
+- **The server opened a channel on SPV validation alone.** The funding
+  BEEF proves the funding's ancestry, not that the network has it. A client
+  could send the BEEF of a funding it never broadcast, or double-spend it
+  after the channel opened, and every payment would then be against an
+  output that never exists.
+- The receiver submits what it receives: the server now submits the
+  funding transaction to ARC and opens only once ARC holds it uncontested.
+  A funding ARC refuses, or reports `DOUBLE_SPEND_ATTEMPTED`, refuses the
+  open (and the client is told, as for any refused open); a re-sent
+  `channel_open` submits it again. The client broadcasts first, so ARC
+  already knows the transaction.
+
 ### A channel's server keeps its signature — security, breaking
 
 - **The client could broadcast any earlier state of the channel.**

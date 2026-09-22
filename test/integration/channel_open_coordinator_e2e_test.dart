@@ -1047,7 +1047,9 @@ void main() {
           reason: 'the funding transaction is broadcast exactly once');
       expect(alice.arc.submitted.single, row.fundingTxHex);
       expect(seenAtSubmit.last, 'refund journaled');
-      expect(bob.arc.submitted, isEmpty);
+      // The server submits the funding it receives before it opens (bead
+      // libspiffy-3nje): the same transaction, which ARC already holds.
+      expect(bob.arc.submitted, [row.fundingTxHex]);
     }, timeout: const Timeout(Duration(seconds: 90)));
 
     test('the wallet records the funding: inputs spent, change credited, the '

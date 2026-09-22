@@ -73,6 +73,10 @@ void main() {
   late ({String hex, String txid, String beefHex}) fundingTx;
   late ScriptedSpvActor spv;
 
+  /// The manager's ARC: the server submits the funding it receives before it
+  /// opens the channel (bead libspiffy-3nje).
+  late RecordingArcActor arc;
+
   setUp(() async {
     _lockTime =
         DateTime.now().add(const Duration(days: 1)).millisecondsSinceEpoch ~/
@@ -108,7 +112,10 @@ void main() {
     final walletRef =
         await actorSystem.spawn('wallet-manager', () => walletStub);
     spv = ScriptedSpvActor();
-    final policyArc1 = await actorSystem.spawn('policy-arc-${DateTime.now().microsecondsSinceEpoch}', () => PolicyRateArc());
+    // Answers the policy rate and every broadcast: the server submits the
+    // funding before it opens (bead libspiffy-3nje).
+    arc = RecordingArcActor();
+    final policyArc1 = await actorSystem.spawn('arc', () => arc);
     final spvRef = await actorSystem.spawn('spv', () => spv);
     manager = PaymentChannelManagerActor(
             arcActor: policyArc1,
@@ -306,6 +313,51 @@ void main() {
       expect(opened.success, isFalse);
       expect(opened.error, contains('merkle proof does not match our chain'));
       expect(spv.receives, isEmpty);
+    });
+  });
+
+  // Bead libspiffy-3nje: SPV proves the funding's ancestry, not that the
+  // network has it. A client could send the BEEF of a funding it never
+  // broadcast, or double-spends, and every payment would be against an
+  // output that never exists.
+  group('3nje: the server opens only on a funding ARC holds', () {
+    Future<ChannelOpenedResponse> openAfter(void Function() arrange) async {
+      await spawn(asClient: false);
+      final accepted = await acceptChannel();
+      expect(accepted.success, isTrue, reason: accepted.error);
+      final signed = await signRefund(await buildRefund());
+      expect(signed.success, isTrue, reason: signed.error);
+      arrange();
+      return openChannel();
+    }
+
+    test('the server submits the funding before it journals the channel open', () async {
+      final opened = await openAfter(() => arc.onBroadcast = (_) => expect(
+          broadcast.whereType<ChannelOpenedEvent>(), isEmpty,
+          reason: 'opened before the funding was submitted'));
+
+      expect(opened.success, isTrue, reason: opened.error);
+      // Old code: nothing submitted.
+      expect(arc.broadcasts.map((b) => b.txid), [fundingTx.txid]);
+      expect(arc.broadcasts.single.txHex, fundingTx.hex);
+      expect(arc.broadcasts.single.retryOnFailure, isFalse,
+          reason: 'the client re-sends channel_open; that is the retry');
+    });
+
+    test('a funding ARC refuses does not open the channel', () async {
+      final opened = await openAfter(() => arc.failWith = 'ARC rejected: missing inputs');
+
+      expect(opened.success, isFalse);
+      expect(opened.error, contains('missing inputs'));
+      expect(broadcast.whereType<ChannelOpenedEvent>(), isEmpty);
+    });
+
+    test('a contested funding does not open the channel', () async {
+      final opened = await openAfter(() => arc.networkStatus = 'DOUBLE_SPEND_ATTEMPTED');
+
+      expect(opened.success, isFalse);
+      expect(opened.error, contains('contested'));
+      expect(broadcast.whereType<ChannelOpenedEvent>(), isEmpty);
     });
   });
 

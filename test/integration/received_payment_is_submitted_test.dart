@@ -36,6 +36,7 @@ import 'package:libspiffy/coordinator.dart' as coord;
 import 'package:libspiffy/libspiffy.dart';
 import 'package:libspiffy/src/actors/spv_messages.dart' show BlockHeadersReceivedMessage;
 import 'package:libspiffy/src/spv/network_params.dart';
+import 'package:logging/logging.dart';
 import 'package:spiffynode/spiffy_node.dart';
 import 'package:test/test.dart';
 
@@ -83,6 +84,21 @@ void main() {
         )
         ..spendToLockBuilder(ourLock, BigInt.from(90000))
         ..spendToLockBuilder(bobLock, BigInt.from(300000))
+        ..withOption(dartsv.TransactionOption.DISABLE_DUST_OUTPUTS))
+      .build(false);
+
+  /// Q: Bob spends G differently, also paying us 90,000 satoshis: a second
+  /// payment, where P is the first.
+  final q = (dartsv.TransactionBuilder()
+        ..spendFromOutpointWithSigner(
+          dartsv.DefaultTransactionSigner(
+              dartsv.SighashType.SIGHASH_ALL.value | dartsv.SighashType.SIGHASH_FORKID.value, bobKey),
+          dartsv.TransactionOutpoint(g.id, 0, g.outputs[0].satoshis, g.outputs[0].script),
+          dartsv.TransactionInput.MAX_SEQ_NUMBER,
+          dartsv.P2PKHUnlockBuilder(bobKey.publicKey),
+        )
+        ..spendToLockBuilder(ourLock, BigInt.from(90000))
+        ..spendToLockBuilder(bobLock, BigInt.from(299000))
         ..withOption(dartsv.TransactionOption.DISABLE_DUST_OUTPUTS))
       .build(false);
 
@@ -235,6 +251,58 @@ void main() {
       expect(answer.broadcasted, isTrue);
       expect(answer.networkStatus, 'SEEN_ON_NETWORK');
       expect(answer.broadcastError, isNull);
+    });
+
+    // Bead libspiffy-6142, seen on the localnet regtest ARC: a payer that
+    // heard no answer hands the same payment over again. It is the payment
+    // that paid the invoice, not a second one: it used to be refused as
+    // "Invoice ... is not pending (status: paid)", telling the payer the
+    // payment it made had failed.
+    test('6142: a payment handed over twice for its invoice is answered valid both times, and received and paid once', () async {
+      arc.answer = 'SEEN_ON_NETWORK';
+      final answers = answersAboutP();
+      final refusals = <String>[];
+      final logs = Logger.root.onRecord
+          .where((r) => r.message.contains('is not pending'))
+          .listen((r) => refusals.add(r.message));
+      addTearDown(logs.cancel);
+
+      final invoiceId = await invoice();
+      pay(invoiceId: invoiceId);
+      await verdict(answers);
+      pay(invoiceId: invoiceId);
+      await _until(() async => answers.where((a) => !a.awaitingHeader).length == 2, 'a verdict on each delivery',
+          timeout: const Duration(seconds: 20));
+
+      for (final answer in answers) {
+        expect(answer.valid, isTrue, reason: answer.error);
+        expect(answer.invoiceId, invoiceId);
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      expect(await readModel.getBalance(walletId), BigInt.from(90000));
+      final journal = await system.eventStore.getEvents('Invoice_$invoiceId');
+      expect(journal.where((e) => e.typeName == 'invoice.paid'), hasLength(1),
+          reason: 'the invoice is paid once, by P');
+      expect(refusals, isEmpty, reason: 'the invoice was marked paid again, and refused');
+    });
+
+    test('6142: another payment for an invoice P already paid is refused', () async {
+      arc.answer = 'SEEN_ON_NETWORK';
+      final answers = answersAboutP();
+      final invoiceId = await invoice();
+      pay(invoiceId: invoiceId);
+      expect((await verdict(answers)).valid, isTrue);
+
+      final other = system.coordinatorEvents!
+          .where((e) => e is coord.BEEFValidationResultEvent && e.txid == q.id)
+          .cast<coord.BEEFValidationResultEvent>()
+          .first
+          .timeout(const Duration(seconds: 20));
+      pay(invoiceId: invoiceId, beef: beefHex([(g, gBump), (q, null)]));
+      final answer = await other;
+
+      expect(answer.valid, isFalse);
+      expect(answer.error, contains('is not pending'));
     });
 
     test('a payment ARC rejects is reported as not broadcast, with ARC\'s status and reason', () async {

@@ -673,7 +673,7 @@ class SPVActor extends Actor {
         // expectations, also when no output pays it (that is an underpayment,
         // not a valid receive with nothing in it).
         if (invoiceId != null && invoice != null) {
-          final invoiceValidation = _validateInvoicePayment(invoiceId, invoice, invoiceOutputs);
+          final invoiceValidation = _validateInvoicePayment(invoiceId, invoice, txidHex, invoiceOutputs);
           if (!invoiceValidation.isValid) {
             final error = invoiceValidation.error ?? 'Payment does not match invoice $invoiceId';
             _log.warning('Transaction $txidHex for wallet $walletId is not received: $error');
@@ -688,13 +688,15 @@ class SPVActor extends Actor {
             );
           }
           
-          // Mark invoice as paid
-          _invoiceCoordinator.tell(MarkInvoicePaidMessage(
-            invoiceId: invoiceId,
-            txid: txidHex,
-            amountReceived: invoiceValidation.totalReceived,
-            addressesPaidTo: invoiceOutputs.map((u) => u['address'] as String).toList(),
-          ), sender: context.self);
+          // Mark invoice as paid, unless this payment already did.
+          if (!invoiceValidation.alreadyPaid) {
+            _invoiceCoordinator.tell(MarkInvoicePaidMessage(
+              invoiceId: invoiceId,
+              txid: txidHex,
+              amountReceived: invoiceValidation.totalReceived,
+              addressesPaidTo: invoiceOutputs.map((u) => u['address'] as String).toList(),
+            ), sender: context.self);
+          }
         }
 
 
@@ -2410,12 +2412,20 @@ class SPVActor extends Actor {
   /// Validate that payment matches invoice expectations
   ///
   /// [invoice] is the found invoice [invoiceId] (looked up once per receive).
+  ///
+  /// An invoice [txid] itself paid is paid by this payment, handed over
+  /// again: the payer retries a delivery it heard no answer to (bead
+  /// libspiffy-6142, seen on the localnet regtest ARC). It is checked like
+  /// the first delivery and answered [_InvoiceValidationResult.alreadyPaid];
+  /// refusing it told the payer the payment it made had failed.
   _InvoiceValidationResult _validateInvoicePayment(
     String invoiceId,
     InvoiceDetailsResponse invoice,
+    String txid,
     List<Map<String, dynamic>> spendableUTXOs,
   ) {
-    if (invoice.status != InvoiceStatus.pending) {
+    final alreadyPaid = invoice.status == InvoiceStatus.paid && invoice.paymentTxid == txid;
+    if (invoice.status != InvoiceStatus.pending && !alreadyPaid) {
       return _InvoiceValidationResult(
         isValid: false,
         error: 'Invoice $invoiceId is not pending (status: ${invoice.status})',
@@ -2444,6 +2454,7 @@ class SPVActor extends Actor {
     return _InvoiceValidationResult(
       isValid: true,
       totalReceived: totalReceived,
+      alreadyPaid: alreadyPaid,
     );
   }
   
@@ -2612,11 +2623,15 @@ class _InvoiceValidationResult {
   final bool isValid;
   final String? error;
   final BigInt totalReceived;
-  
+
+  /// The invoice was already paid, by this same transaction.
+  final bool alreadyPaid;
+
   _InvoiceValidationResult({
     required this.isValid,
     this.error,
     required this.totalReceived,
+    this.alreadyPaid = false,
   });
 }
 

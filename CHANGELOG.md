@@ -302,6 +302,15 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### A payment handed over again is the same payment
+
+- A payer that hears no answer hands its payment over again. The second
+  delivery was refused ("Invoice ... is not pending (status: paid)") for
+  the invoice the payment itself had paid, telling the payer it had
+  failed. It is now answered as the payment it is: valid, counted once,
+  and the invoice is not marked paid a second time. Another transaction
+  for a paid invoice is still refused.
+
 ### A channel step waits for ARC's verdict on an answer still in flight
 
 - ARC waits a few seconds for the network to show a transaction back and

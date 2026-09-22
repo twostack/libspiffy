@@ -1412,6 +1412,7 @@ POSTGRES_DATABASE=libspiffy_test dart test --tags=postgres test/storage/postgres
 dart test -P localnet test/integration/localnet_node_e2e_test.dart      # header sync, restarts
 dart test -P localnet test/integration/localnet_payment_e2e_test.dart   # invoices and payments
 dart test -P localnet test/integration/localnet_channel_e2e_test.dart   # payment channels
+dart test -P localnet test/integration/localnet_deferred_e2e_test.dart  # deferred payments, double spends
 ```
 
 ### What the suite covers

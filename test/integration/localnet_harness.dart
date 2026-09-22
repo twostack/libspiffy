@@ -148,6 +148,21 @@ Future<void> arcReports(String txid, String status,
   expect(last, status, reason: 'ARC\'s status of $txid');
 }
 
+/// Waits until ARC reports the network holding [txid]: `SEEN_ON_NETWORK`,
+/// or `MINED` when the stack's autominer (a block every ten minutes) got to
+/// it first.
+Future<void> arcHolds(String txid,
+    {Duration timeout = const Duration(seconds: 10)}) async {
+  const held = {'SEEN_ON_NETWORK', 'MINED'};
+  final deadline = DateTime.now().add(timeout);
+  var last = await arcStatus(txid);
+  while (!held.contains(last) && DateTime.now().isBefore(deadline)) {
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+    last = await arcStatus(txid);
+  }
+  expect(last, isIn(held), reason: 'ARC\'s status of $txid');
+}
+
 /// The regtest node's view of [txid]: verbose, with `confirmations` once
 /// mined; null when the node has never seen it.
 Future<Map<String, dynamic>?> onNode(String txid) async {

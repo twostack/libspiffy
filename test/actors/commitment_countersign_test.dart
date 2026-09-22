@@ -145,7 +145,6 @@ void main() {
   void expectRefused(PaymentAcknowledgedResponse reply, Matcher reason) {
     expect(reply.success, isFalse, reason: 'the server countersigned it');
     expect(reply.error, reason);
-    expect(reply.serverSignatureHex, anyOf(isNull, isEmpty));
     expect(reply.fullySignedPaymentTxHex, anyOf(isNull, isEmpty));
     expect(journal().whereType<PaymentAcknowledgedEvent>(), isEmpty);
   }
@@ -154,7 +153,7 @@ void main() {
     final reply = await send(await honest());
 
     expect(reply.success, isTrue, reason: reply.error);
-    expect(reply.serverSignatureHex, isNotEmpty);
+    expect(reply.fullySignedPaymentTxHex, isNotEmpty);
     expect(journal().whereType<PaymentAcknowledgedEvent>(), hasLength(1));
   });
 

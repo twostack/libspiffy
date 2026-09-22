@@ -320,8 +320,6 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
       return await _handleRecordPayment(currentState, command);
     } else if (command is AcknowledgePaymentCommand) {
       return await _handleAcknowledgePayment(currentState, command);
-    } else if (command is RecordPaymentCountersignatureCommand) {
-      return _handleRecordPaymentCountersignature(currentState, command);
     } else if (command is RecordReturnLegInWalletCommand) {
       return _handleRecordReturnLegInWallet(currentState, command);
     } else if (command is CloseChannelCommand) {
@@ -1258,53 +1256,6 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
         newServerBalanceSats: cmd.proposedServerBalance,
         fullySignedPaymentTxHex: cmd.fullySignedPaymentTxHex,
         serverSignatureHex: cmd.serverSignatureHex,
-        version: currentState.version + 1,
-      ),
-    ];
-  }
-
-  /// The client records the server's countersignature of the latest payment
-  /// (bead libspiffy-z2px).
-  ///
-  /// Nothing about the money moves here: the balances and the sequence were
-  /// settled by the payment this countersigns. What changes is that the
-  /// channel holds a settlement it could broadcast instead of an unsigned
-  /// template whose txid is not the signed transaction's — which is what a
-  /// cooperative close needs before it can record anything in the wallet.
-  ///
-  /// The manager assembles and verifies the transaction against the funding
-  /// output before issuing the command, as the server's acknowledgement path
-  /// does; an assembly that does not verify is never sent.
-  List<Event> _handleRecordPaymentCountersignature(
-    ChannelState currentState,
-    RecordPaymentCountersignatureCommand cmd,
-  ) {
-    if (currentState.status != ChannelStatus.open) {
-      throw StateError('Channel not open');
-    }
-    // A countersignature for an earlier payment would replace the settlement
-    // with a superseded one — paying the client more than it is now owed is
-    // exactly what a payment channel's sequence rule exists to refuse.
-    if (cmd.sequenceNumber != currentState.latestSequenceNumber) {
-      throw StateError(
-          'Countersignature is for sequence ${cmd.sequenceNumber}, but the '
-          'channel is at sequence ${currentState.latestSequenceNumber}');
-    }
-    if (cmd.fullySignedPaymentTxHex.isEmpty) {
-      throw StateError('No fully signed settlement to record');
-    }
-    // A re-delivered `payment_ack` records nothing new.
-    if (currentState.latestPaymentTxHex == cmd.fullySignedPaymentTxHex) {
-      return const [];
-    }
-
-    return [
-      PaymentCountersignedEvent(
-        channelId: cmd.channelId,
-        sequenceNumber: cmd.sequenceNumber,
-        serverSignatureHex: cmd.serverSignatureHex,
-        fullySignedPaymentTxHex: cmd.fullySignedPaymentTxHex,
-        fullySignedPaymentTxId: cmd.fullySignedPaymentTxId,
         version: currentState.version + 1,
       ),
     ];

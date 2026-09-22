@@ -840,14 +840,15 @@ class ReturnLegRecordedInWalletEvent extends ChannelEvent {
   }
 }
 
-/// The client holds the server's countersignature of the latest payment, and
-/// with it a settlement it could broadcast (bead libspiffy-z2px).
+/// The client held the server's countersignature of the latest payment
+/// (bead libspiffy-z2px).
 ///
-/// The server's half of the 2-of-2 signature comes back in `payment_ack`.
-/// Before this event existed the client logged it and dropped it, so its
-/// channel went on holding the unsigned template and a client cooperative
-/// close had nothing to record. The client's counterpart of
-/// [PaymentAcknowledgedEvent], which is the server's.
+/// No longer journaled: the server sends no signature, because with it the
+/// client held a spend of every state and could broadcast the one paying
+/// the server least (bead libspiffy-pkg5). The client closes with the
+/// settlement the server broadcast instead. Kept, registered and applied so
+/// journals that hold it replay (Data Retention).
+@Deprecated('Replay only: clients no longer journal a countersignature (libspiffy-pkg5)')
 class PaymentCountersignedEvent extends ChannelEvent {
   /// Journal identifier of this event type. Stored with every event and
   /// independent of the class name; never change it (audit 2026-09-14 M8).

@@ -120,14 +120,12 @@ void main() {
       expect(told<RecordServerAcceptanceMessage>(), isEmpty);
     });
 
-    test('does not let a third peer close its channel or answer its payments', () async {
+    test('does not let a third peer close its channel or answer its refund', () async {
       adapter.handleP2PMessage(_intruder, 'channel_close', {'channelId': _channelId});
-      adapter.handleP2PMessage(_intruder, 'payment_ack', {'channelId': _channelId, 'sequenceNumber': 1, 'serverSignatureHex': '30'});
       adapter.handleP2PMessage(_intruder, 'refund_signed', {'channelId': _channelId, 'serverSignatureHex': '30'});
       await settle();
 
       expect(told<CloseChannelMessage>(), isEmpty);
-      expect(told<RecordPaymentCountersignatureMessage>(), isEmpty);
       expect(told<RecordRefundSignatureMessage>(), isEmpty);
     });
 

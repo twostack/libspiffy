@@ -413,8 +413,6 @@ class PaymentChannelManagerActor extends Actor {
         case final AcknowledgePaymentMessage msg:
           await _handleAcknowledgePayment(msg);
           break;
-        case final RecordPaymentCountersignatureMessage msg:
-          await _handleRecordPaymentCountersignature(msg);
           break;
         case final CloseChannelMessage msg:
           await _handleCloseChannel(msg);
@@ -1055,9 +1053,8 @@ class PaymentChannelManagerActor extends Actor {
   /// returns the settlement, or `''` when it cannot be assembled or does not
   /// verify against the funding output.
   ///
-  /// Used by both sides (bead libspiffy-z2px): the server reaches it holding
-  /// both halves at acknowledgement, the client when the server's half comes
-  /// back in `payment_ack`. One implementation so the two cannot drift.
+  /// Only the server holds both halves: its own is never sent to the client
+  /// (bead libspiffy-pkg5).
   String _combineSignatures({
     required String channelId,
     required int sequenceNumber,
@@ -1143,7 +1140,6 @@ class PaymentChannelManagerActor extends Actor {
         pending.originalSender?.tell(PaymentAcknowledgedResponse(
           channelId: pending.channelId,
           sequenceNumber: pending.sequenceNumber,
-          serverSignatureHex: response.signatureHex,
           fullySignedPaymentTxHex: fullySigned,
           success: true,
         ));
@@ -2432,69 +2428,6 @@ class PaymentChannelManagerActor extends Actor {
         success: false,
         error: e.toString(),
       ));
-    }
-  }
-
-  /// The client records the server's countersignature of the latest payment
-  /// (bead libspiffy-z2px).
-  ///
-  /// The 2-of-2 funding output needs both signatures. The client signs when
-  /// it records the payment and keeps only that half; the server's half comes
-  /// back once, in `payment_ack`, and the adapter used to log it and drop it.
-  /// The client therefore went on holding the UNSIGNED template, whose txid
-  /// is not the txid the signed transaction will have, so a client
-  /// cooperative close had nothing it could record and the client's return
-  /// leg never reached its wallet.
-  ///
-  /// The settlement is assembled and verified against the funding output
-  /// here, before the command is issued, exactly as the server's
-  /// acknowledgement path does it. One that does not verify is not recorded:
-  /// the channel keeps the template and an absence, never an invented
-  /// transaction.
-  ///
-  /// Nothing replies: the channel's own state is the record, and the peer is
-  /// not waiting on us.
-  Future<void> _handleRecordPaymentCountersignature(
-      RecordPaymentCountersignatureMessage msg) async {
-    try {
-      final aggregateRef = await _channelAggregate(msg.channelId);
-      final state = _stateOrThrow(
-          await aggregateRef.ask(ChannelStateQuery(channelId: msg.channelId)));
-
-      final settlementHex = _combineSignatures(
-        channelId: msg.channelId,
-        sequenceNumber: msg.sequenceNumber,
-        paymentTxHex: state.latestPaymentTxHex ?? '',
-        clientSignatureHex: state.latestClientSignatureHex,
-        serverSignatureHex: msg.serverSignatureHex,
-        clientPubKeyHex: state.clientPubKeyHex,
-        serverPubKeyHex: state.serverPubKeyHex,
-        fundingAmountSats: state.fundingAmountSats,
-      );
-      if (settlementHex.isEmpty) {
-        // _combineSignatures has logged why. An absence, not a guess.
-        return;
-      }
-
-      _broadcastEvents(await _askAggregate(
-        msg.channelId,
-        aggregateRef,
-        RecordPaymentCountersignatureCommand(
-          channelId: msg.channelId,
-          sequenceNumber: msg.sequenceNumber,
-          serverSignatureHex: msg.serverSignatureHex,
-          fullySignedPaymentTxHex: settlementHex,
-          fullySignedPaymentTxId:
-              dartsv.Transaction.fromHex(settlementHex).id,
-        ),
-      ));
-    } catch (e, stackTrace) {
-      _log.warning(
-          'Channel ${msg.channelId}: the server countersignature for sequence '
-          '${msg.sequenceNumber} was not recorded, so this side still holds '
-          'only the unsigned payment template: $e',
-          e,
-          stackTrace);
     }
   }
 

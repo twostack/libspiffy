@@ -507,35 +507,14 @@ class AcknowledgePaymentMessage extends LocalMessage {
   dynamic get payload => this;
 }
 
-/// The client has received the server's countersignature of a payment
-/// (bead libspiffy-z2px).
-///
-/// Sent by `ChannelP2PAdapter` when a `payment_ack` arrives. The manager
-/// combines it with the client's own signature, verifies the result against
-/// the funding output, and records the settlement the client can now
-/// broadcast. Fire-and-forget: the client's channel state is the record, and
-/// nothing is waiting on a reply.
-class RecordPaymentCountersignatureMessage extends LocalMessage {
-  final String channelId;
-  final int sequenceNumber;
-  final String serverSignatureHex;
-
-  RecordPaymentCountersignatureMessage({
-    required this.channelId,
-    required this.sequenceNumber,
-    required this.serverSignatureHex,
-  }) : super(payload: null);
-
-  @override
-  dynamic get payload => this;
-}
-
 /// Response to payment acknowledgment
 class PaymentAcknowledgedResponse extends ActorResponse {
   final String channelId;
   final int sequenceNumber;
+  /// The payment, fully signed: the server's own settlement. Its signature
+  /// alone is never answered, so that nothing hands it to the client (bead
+  /// libspiffy-pkg5).
   final String fullySignedPaymentTxHex;
-  final String serverSignatureHex;
   @override
   final bool success;
   @override
@@ -545,7 +524,6 @@ class PaymentAcknowledgedResponse extends ActorResponse {
     required this.channelId,
     this.sequenceNumber = 0,
     this.fullySignedPaymentTxHex = '',
-    this.serverSignatureHex = '',
     required this.success,
     this.error,
   });

@@ -97,6 +97,54 @@ void main() {
     expect(message.payload['settlementTxId'], 'ab' * 32);
   });
 
+  // Bead libspiffy-pkg5: with the server's half of each payment's
+  // signature, the client held a spend of every state and could broadcast
+  // the one paying the server least.
+  test('the server acknowledges a payment without its signature', () async {
+    await spawn(_server);
+    events.add(ChannelAcceptedEvent(
+      channelId: _channelId,
+      walletId: 'w',
+      clientPeerId: _client,
+      clientPubKeyHex: '02' * 33,
+      clientAddressB58: 'mqCnSf8i6kmaQaJ54HjQ8EUJnuK4AnCv12',
+      serverPubKeyHex: '03' * 33,
+      serverAddressB58: 'mkHS9ne12qx9pS9VojpwU5xtRd4T7X7ZUt',
+      derivationIndex: 3,
+      fundingAmountSats: BigInt.from(100000),
+      lockTimeUnix: 1900000000,
+      serverPeerId: _server,
+    ));
+    adapter.handleAcceptRequest(coord.AcceptChannelCommand(
+      channelId: _channelId,
+      walletId: 'w',
+      clientPeerId: _client,
+      clientPubKey: '02' * 33,
+      clientAddress: 'mqCnSf8i6kmaQaJ54HjQ8EUJnuK4AnCv12',
+      fundingAmountSats: 100000,
+      lockTimeUnix: 1900000000,
+    ));
+    await settle();
+
+    events.add(PaymentAcknowledgedEvent(
+      channelId: _channelId,
+      amountSats: BigInt.from(1000),
+      sequenceNumber: 1,
+      newClientBalanceSats: BigInt.from(99000),
+      newServerBalanceSats: BigInt.from(1000),
+      fullySignedPaymentTxHex: 'cafe',
+      serverSignatureHex: '30' * 36,
+    ));
+    await settle();
+
+    final ack = sent('payment_ack').single;
+    expect(ack.toPeerId, _client);
+    expect(ack.payload['sequenceNumber'], 1);
+    // Old code: the server's signature.
+    expect(ack.payload.containsKey('serverSignatureHex'), isFalse);
+    expect(ack.payload.values, isNot(contains('cafe')));
+  });
+
   group('the client', () {
     setUp(() async {
       await spawn(_client);

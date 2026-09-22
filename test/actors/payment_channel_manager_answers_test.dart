@@ -269,9 +269,6 @@ void main() {
       // payment_channel_manager_rejection_test.
       'InitiateChannelMessage',
       'AcceptChannelMessage',
-      // Answers no sender at all: the countersignature arrives on the
-      // peer-driven path and is reported through the channel's events.
-      'RecordPaymentCountersignatureMessage',
       // The manager's reply to its own signing round trip, not a request.
       'MultisigTransactionSignedResponse',
     };

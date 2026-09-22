@@ -594,15 +594,13 @@ void main() {
         isEmpty);
   });
 
-  /// Bead libspiffy-z2px. The server acknowledges a payment by sending the
-  /// client `payment_ack` carrying its countersignature — the second of the
-  /// two signatures the 2-of-2 funding output needs. The adapter used to log
-  /// that and drop it, so the client's channel went on holding the UNSIGNED
-  /// payment template, whose txid is not the one the signed transaction will
-  /// have. A client cooperative close therefore had nothing it could record,
-  /// and the client's return leg never reached its wallet.
-  test('payment_ack hands the server countersignature to the channel manager', () async {
-    const channelId = 'chan-z2px';
+  /// Bead libspiffy-pkg5. A server's half of a payment's signature gave the
+  /// client a spend of that state it could broadcast later, when it paid the
+  /// server less. The client needs none: it is handed the settlement the
+  /// server broadcast. A `payment_ack` that still carries one (an older
+  /// server) is acknowledged and nothing more.
+  test('payment_ack is not acted on, even when it carries a signature', () async {
+    const channelId = 'chan-pkg5';
 
     channelEvents.add(ch.ChannelRequestedEvent(
       channelId: channelId,
@@ -625,49 +623,12 @@ void main() {
     });
     await Future.delayed(const Duration(milliseconds: 100));
 
-    final toManager = channelManagerProbe.received
-        .map((r) => r.message)
-        .where((m) => m is! ChannelDetailsQueryMessage)
-        .toList();
-    expect(toManager, isNotEmpty,
-        reason: 'the countersignature is the only copy the client will ever '
-            'get; dropping it leaves the client holding an unsigned template');
-    final record = toManager.single as RecordPaymentCountersignatureMessage;
-    expect(record.channelId, channelId);
-    expect(record.sequenceNumber, 3);
-    expect(record.serverSignatureHex, '30' * 36);
-  });
-
-  /// A `payment_ack` with no signature in it is not an acknowledgement we can
-  /// act on. Sending the manager an empty one would have it try to assemble a
-  /// settlement out of half a signature.
-  test('payment_ack without a signature is not passed on as one', () async {
-    const channelId = 'chan-z2px-empty';
-
-    channelEvents.add(ch.ChannelRequestedEvent(
-      channelId: channelId,
-      walletId: 'client-wallet',
-      clientPeerId: 'client-peer',
-      serverPeerId: 'server-peer',
-      clientPubKeyHex: '02' * 33,
-      clientAddressB58: 'mqCnSf8i6kmaQaJ54HjQ8EUJnuK4AnCv12',
-      derivationIndex: 7,
-      fundingAmountSats: BigInt.from(50000),
-      lockTimeUnix: 1700000000,
-    ));
-    await Future.delayed(const Duration(milliseconds: 50));
-    channelManagerProbe.received.clear();
-
-    adapter.handleP2PMessage('server-peer', 'payment_ack', {
-      'channelId': channelId,
-      'sequenceNumber': 3,
-    });
-    await Future.delayed(const Duration(milliseconds: 100));
-
+    // Old code: RecordPaymentCountersignatureMessage, journaling a fully
+    // signed spend of that state on the client.
     expect(
         channelManagerProbe.received
             .map((r) => r.message)
-            .whereType<RecordPaymentCountersignatureMessage>(),
+            .where((m) => m is! ChannelDetailsQueryMessage),
         isEmpty);
   });
 

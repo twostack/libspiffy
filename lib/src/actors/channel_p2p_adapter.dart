@@ -555,33 +555,15 @@ class ChannelP2PAdapter {
     ), sender: _replyTo);
   }
 
-  /// The server's countersignature of a payment, and the only copy of it the
-  /// client will ever be sent (bead libspiffy-z2px).
-  ///
-  /// This used to log the acknowledgement and drop the signature, so the
-  /// client's channel went on holding the UNSIGNED payment template — whose
-  /// txid is not the txid the signed transaction will have — and a client
-  /// cooperative close had nothing it could record in the wallet. The manager
-  /// combines it with the client's own half, verifies the result against the
-  /// funding output, and journals the settlement.
+  /// The server acknowledged a payment. It sends no signature (bead
+  /// libspiffy-pkg5): the client needs none until the server settles, and
+  /// then it is handed the settlement the server broadcast
+  /// (`channel_closed`). A `payment_ack` from an older server that carries
+  /// one is not acted on.
   void _handlePaymentAck(String fromPeerId, Map<String, dynamic> payload) {
     final channelId = payload['channelId'] as String;
     final sequenceNumber = payload['sequenceNumber'] as int;
-    final serverSignatureHex = payload['serverSignatureHex'] as String?;
     _log.fine('Payment acknowledged for channel $channelId, sequence $sequenceNumber');
-
-    if (serverSignatureHex == null || serverSignatureHex.isEmpty) {
-      _log.warning('Payment ack for channel $channelId carries no server '
-          'signature: this side keeps the unsigned payment template and a '
-          'cooperative close will have no settlement to record');
-      return;
-    }
-
-    _channelManager.tell(RecordPaymentCountersignatureMessage(
-      channelId: channelId,
-      sequenceNumber: sequenceNumber,
-      serverSignatureHex: serverSignatureHex,
-    ));
   }
 
   void _handleChannelClose(String fromPeerId, Map<String, dynamic> payload) {
@@ -845,10 +827,13 @@ class ChannelP2PAdapter {
 
     if (serverInfo != null && peers != null) {
       // We are the server - send ack back to client
+      // No signature (bead libspiffy-pkg5). With the server's half of every
+      // payment, the client held a fully signed spend of every state and,
+      // with no replacement on BSV and first seen winning, could broadcast
+      // the one that paid the server least.
       _emitP2PMessage(peers.clientPeerId, 'payment_ack', {
         'channelId': event.channelId,
         'sequenceNumber': event.sequenceNumber,
-        'serverSignatureHex': event.serverSignatureHex,
       });
     }
 

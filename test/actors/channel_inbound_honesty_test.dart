@@ -213,7 +213,6 @@ void main() {
       adapter.handlePaymentAcknowledged(PaymentAcknowledgedResponse(
         channelId: channelId,
         sequenceNumber: 1,
-        serverSignatureHex: '30' * 36,
         success: true,
       ));
       await settle();

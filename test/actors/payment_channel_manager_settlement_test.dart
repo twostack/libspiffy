@@ -621,7 +621,7 @@ void main() {
     });
   });
 
-  group('libspiffy-z2px: the client records the server countersignature', () {
+  group('libspiffy-pkg5: a countersigned copy journaled before pkg5', () {
     late _PaymentPair pair;
 
     setUp(() async {
@@ -629,52 +629,39 @@ void main() {
       pair = await _PaymentPair.build(f, serverAmountSats: BigInt.from(30000));
     });
 
-    /// The client's journal after it has made one payment: it holds the
-    /// unsigned template and its own half of the signature, and nothing else.
-    List<Event> clientJournalWithPayment() => [
-          ...f.openClientJournal(walletId: _walletId),
-          PaymentRecordedEvent(
-            channelId: _channelId,
-            amountSats: BigInt.from(30000),
-            sequenceNumber: 1,
-            paymentTxHex: pair.templateHex,
-            paymentTxId: pair.templateTxId,
-            clientSignatureHex: pair.clientSignatureHex,
-            newClientBalanceSats: f.amountSats - BigInt.from(30000),
-            newServerBalanceSats: BigInt.from(30000),
-            version: 7,
-          ),
-        ];
-
-    /// Delivers the server's countersignature, as `payment_ack` does, and
-    /// returns once the manager has finished with it.
-    ///
-    /// The message is fire-and-forget, so the wait is the manager's own FIFO
-    /// mailbox: a state query answered afterwards cannot have been handled
-    /// before it. No sleeps, and no penalty for the cases that journal
-    /// nothing.
-    Future<void> countersign({String? signatureHex, int sequenceNumber = 1}) async {
-      managerRef.tell(RecordPaymentCountersignatureMessage(
-        channelId: _channelId,
-        sequenceNumber: sequenceNumber,
-        serverSignatureHex: signatureHex ?? pair.serverSignatureHex,
-      ));
-      await managerRef.ask<ChannelStateResponse>(
-          QueryChannelStateMessage(channelId: _channelId), _timeout);
-    }
-
-    test('u6q6: the client does not close with its own countersigned copy', () async {
-      await spawn(clientJournalWithPayment(), key: f.clientKey);
-      await countersign();
-      expect(journal().whereType<PaymentCountersignedEvent>(), hasLength(1));
+    // Clients journaled the server's countersignature (bead z2px) until the
+    // server stopped sending it. Such a journal still replays, and the copy
+    // it holds is not a settlement anybody broadcast.
+    test('replays, and the client does not close with it', () async {
+      await spawn([
+        ...f.openClientJournal(walletId: _walletId),
+        PaymentRecordedEvent(
+          channelId: _channelId,
+          amountSats: BigInt.from(30000),
+          sequenceNumber: 1,
+          paymentTxHex: pair.templateHex,
+          paymentTxId: pair.templateTxId,
+          clientSignatureHex: pair.clientSignatureHex,
+          newClientBalanceSats: f.amountSats - BigInt.from(30000),
+          newServerBalanceSats: BigInt.from(30000),
+          version: 7,
+        ),
+        // ignore: deprecated_member_use_from_same_package
+        PaymentCountersignedEvent(
+          channelId: _channelId,
+          sequenceNumber: 1,
+          serverSignatureHex: pair.serverSignatureHex,
+          fullySignedPaymentTxHex: pair.settlementHex,
+          fullySignedPaymentTxId: pair.settlementTxId,
+          version: 8,
+        ),
+      ], key: f.clientKey);
 
       final closed = await managerRef.ask<ChannelClosedResponse>(
         CloseChannelMessage(channelId: _channelId, reason: 'done'),
         _timeout,
       );
 
-      // Old code: finalised, with the copy recorded in the wallet and
-      // nobody broadcasting it.
       expect(closed.success, isTrue, reason: closed.error);
       expect(closed.finalized, isFalse,
           reason: 'the client closes with the settlement its server broadcast and hands over');
@@ -682,57 +669,12 @@ void main() {
       expect(arc.broadcasts, isEmpty);
       await flushWallet();
       expect(imported(), isEmpty);
-    });
 
-    test('a re-delivered payment_ack records nothing new', () async {
-      await spawn(clientJournalWithPayment(), key: f.clientKey);
-
-      await countersign();
-      final after = journal().length;
-      await countersign();
-
-      expect(journal().length, after,
-          reason: 'the same countersignature is the same settlement');
-      expect(journal().whereType<PaymentCountersignedEvent>(), hasLength(1));
-    });
-
-    test('a countersignature for a superseded sequence is refused', () async {
-      await spawn(clientJournalWithPayment(), key: f.clientKey);
-
-      await countersign(sequenceNumber: 0);
-
-      expect(journal().whereType<PaymentCountersignedEvent>(), isEmpty,
-          reason: 'a signature for an earlier payment would replace the '
-              'settlement with one that pays the client more than it is owed');
-    });
-
-    test('a signature that does not verify leaves the template in place', () async {
-      await spawn(clientJournalWithPayment(), key: f.clientKey);
-
-      // A well-formed signature of the wrong transaction: it parses, and it
-      // does not satisfy the funding output.
-      final wrong = (await const PaymentChannelBuilder()
-              .signMultisigInput(
-        transaction: dartsv.Transaction.fromHex(f.refundTxHex),
-        inputIndex: 0,
-        privateKey: f.serverKey,
-        clientPubKey: f.clientKey.publicKey,
-        serverPubKey: f.serverKey.publicKey,
-        inputAmountSats: f.amountSats,
-      ))
-          .signatureHex;
-
-      await countersign(signatureHex: wrong);
-
-      expect(journal().whereType<PaymentCountersignedEvent>(), isEmpty,
-          reason: 'a settlement that does not verify is not held: an absence, '
-              'not an invented transaction');
-
-      final closed = await managerRef.ask<ChannelClosedResponse>(
-        CloseChannelMessage(channelId: _channelId), _timeout);
-      expect(closed.finalized, isFalse,
-          reason: 'nothing to record, so the channel stays closing');
-      expect(closed.settlementTxId, isNull);
+      // ...and the settlement its server hands over is still recognised as
+      // its latest payment.
+      final handed = await managerRef.ask<ChannelClosedResponse>(
+          RecordSettlementMessage(channelId: _channelId, settlementTxHex: pair.settlementHex), _timeout);
+      expect(handed.finalized, isTrue, reason: handed.error);
     });
   });
 

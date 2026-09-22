@@ -302,6 +302,26 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### A channel's server keeps its signature — security, breaking
+
+- **The client could broadcast any earlier state of the channel.**
+  `payment_ack` carried the server's signature of each payment, and the
+  client journaled it (bead z2px), so the client held a fully signed spend
+  of every state. BSV has no replacement and the first spend seen wins:
+  after paying the server 60,000 sats, a client could broadcast the state
+  in which it had paid 30,000.
+- In a one-way channel only the payee holds full signatures. `payment_ack`
+  now carries the sequence and nothing else; the client needs no signature
+  until the server settles, and then it is handed the settlement the server
+  broadcast (`channel_closed`, previous entry).
+- Removed: `RecordPaymentCountersignatureMessage`,
+  `RecordPaymentCountersignatureCommand` and
+  `PaymentAcknowledgedResponse.serverSignatureHex` (the response's
+  `fullySignedPaymentTxHex` is the server's own settlement).
+  `PaymentCountersignedEvent` is deprecated and kept, registered and applied
+  so journals that hold it replay; a client never closes with the copy it
+  records.
+
 ### A channel's server broadcasts its settlement — security
 
 - **Nothing broadcast a channel's settlement.** A cooperative close

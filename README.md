@@ -1147,9 +1147,12 @@ Peer messages travel over the app's own transport: deliver what arrives as
 - **What counts as on the network:** a channel transaction the library
   submits (the server's funding submission, the settlement, the refund)
   counts as held only when ARC reports `SEEN_ON_NETWORK` or `MINED`. A
-  double spend, an orphan (an input the node cannot connect, or one
-  already spent in a block), or a status ARC gives while still processing
-  fails the step, and nothing is recorded; repeating the step retries it.
+  double spend, or an orphan (an input the node cannot connect, or one
+  already spent in a block), fails the step, and nothing is recorded;
+  repeating the step retries it. A status ARC gives while still processing
+  is no verdict: the library asks ARC again until it gives one, for up to
+  the manager's `inFlightTimeout` (30 s by default), and fails the step if
+  it has not.
 - **Peers:** messages about a channel are accepted only from the channel's
   counterparty, and only in that counterparty's role.
 

@@ -408,10 +408,24 @@ class RecordingArcActor extends Actor {
   /// The status a successful broadcast is answered with.
   String networkStatus = 'SEEN_ON_NETWORK';
 
+  /// What status checks are answered with, in turn; once they are used up,
+  /// [networkStatus] (ARC still where it answered the broadcast).
+  final List<String> laterStatuses = [];
+
+  final List<CheckTransactionStatusMessage> statusChecks = [];
+
   @override
   Future<void> onMessage(dynamic message) async {
     if (message is GetFeeRateMessage) {
       context.sender?.tell(FeeRateQuote(feeRate));
+      return;
+    }
+    if (message is CheckTransactionStatusMessage) {
+      statusChecks.add(message);
+      context.sender?.tell(TransactionStatusMessage(
+        txid: message.txid,
+        status: laterStatuses.isEmpty ? networkStatus : laterStatuses.removeAt(0),
+      ));
       return;
     }
     if (message is! BroadcastTransactionMessage) return;

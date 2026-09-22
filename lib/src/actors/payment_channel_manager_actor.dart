@@ -87,6 +87,12 @@ class PaymentChannelManagerActor extends Actor {
   /// How long a funding broadcast may take before it counts as failed.
   final Duration _broadcastTimeout;
 
+  /// How long a transaction ARC answered with an in-flight status is
+  /// followed for ARC's verdict before it counts as not held, and how often
+  /// ARC is asked meanwhile (see [_submitUncontested]).
+  final Duration _inFlightTimeout;
+  final Duration _inFlightPollInterval;
+
   /// SPVActor that validates the BEEF of a funding transaction a client
   /// hands this node as server (libspiffy-fsy), with the same checks as a
   /// received payment. Without one a server channel cannot open.
@@ -152,6 +158,8 @@ class PaymentChannelManagerActor extends Actor {
     ActorRef? walletProjection,
     Duration signingTimeout = const Duration(seconds: 30),
     Duration broadcastTimeout = const Duration(seconds: 45),
+    Duration inFlightTimeout = const Duration(seconds: 30),
+    Duration inFlightPollInterval = const Duration(seconds: 1),
     ActorRef? spvActor,
     /// The wallet read model. **Production always supplies it**
     /// (`LibSpiffyActorSystem`), and the manager cannot do its whole job
@@ -200,6 +208,8 @@ class PaymentChannelManagerActor extends Actor {
         _arcActor = arcActor,
         _walletProjection = walletProjection,
         _broadcastTimeout = broadcastTimeout,
+        _inFlightTimeout = inFlightTimeout,
+        _inFlightPollInterval = inFlightPollInterval,
         _signingTimeout = signingTimeout {
     _channelBuilder = const PaymentChannelBuilder();
   }
@@ -2639,11 +2649,15 @@ class PaymentChannelManagerActor extends Actor {
   ///   parent is unknown, or the output is already spent in a block, which
   ///   the node cannot tell apart. A refund over a mined settlement gets
   ///   this answer, not DOUBLE_SPEND_ATTEMPTED.
-  /// * An in-flight status (RECEIVED, STORED, SENT_TO_NETWORK, ...): ARC
-  ///   stopped waiting, or the same transaction was submitted while ARC
-  ///   was still processing it, and it answers with where it got to. A
-  ///   settlement submitted twice at once was answered so while ARC was
-  ///   finding it a double spend, and the server closed on it.
+  /// * An in-flight status ([DeferredNetworkStatus.inFlight]): ARC stopped
+  ///   waiting, or the same transaction was submitted while ARC was still
+  ///   processing it, and it answers with where it got to. A settlement
+  ///   submitted twice at once was answered so while ARC was finding it a
+  ///   double spend, and the server closed on it. An in-flight answer is no
+  ///   verdict either way, so ARC is followed until it gives one, for up to
+  ///   [_inFlightTimeout] (bead libspiffy-m715: a funding ARC answered
+  ///   ACCEPTED_BY_NETWORK, when its five-second wait for the network ran
+  ///   out, failed an open the network went on to hold).
   Future<void> _submitUncontested(String walletId, String txHex, String txid, String what) async {
     final arcActor = _arcActor;
     if (arcActor == null) {
@@ -2662,7 +2676,19 @@ class PaymentChannelManagerActor extends Actor {
     if (reply is! BroadcastSuccessMessage) {
       throw StateError('Broadcasting $what failed: unexpected reply ${reply.runtimeType}');
     }
-    final status = reply.networkStatus;
+    String? status = reply.networkStatus;
+    final deadline = DateTime.now().add(_inFlightTimeout);
+    while (DeferredNetworkStatus.isInFlight(status) && DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(_inFlightPollInterval);
+      final check = await _request(
+        arcActor,
+        CheckTransactionStatusMessage(txid),
+        accept: (r) => r is TransactionStatusMessage,
+        what: 'Asking ARC for the status of the $what',
+        timeout: _broadcastTimeout,
+      );
+      if (check is TransactionStatusMessage && check.success) status = check.status;
+    }
     if (DeferredNetworkStatus.isOnNetwork(status)) return;
     if (DeferredNetworkStatus.isContested(status)) {
       throw StateError('The $what is contested: ARC reports another spend of its inputs');

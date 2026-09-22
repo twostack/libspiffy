@@ -604,7 +604,7 @@ class ARCActor extends Actor {
             broadcastResponse: response.status.wireName,
           )));
 
-          _log.info('Retry broadcast succeeded for $txid (status: ${_arcStatusToString(response.status)})');
+          _log.info('Retry broadcast succeeded for $txid (status: ${response.status.wireName})');
           // As for a first submission: record ARC's answer and apply the
           // deferred spend if the transaction is already on the network.
           _updateTransactionStatusFromArc(walletId, txid, response.status);
@@ -635,7 +635,7 @@ class ARCActor extends Actor {
       // Query ARC service for transaction status
       final response = await _arcService!.getTransaction(msg.txid);
 
-      final status = _arcStatusToString(response.status);
+      final status = response.status.wireName;
 
       // No confirmation count is reported (bead libspiffy-jc3h). ARC answers
       // with a status and a block height; it says nothing about depth, and
@@ -1617,7 +1617,7 @@ class ARCActor extends Actor {
           try {
             final parentStatus = await _arcService!.getTransaction(parentTxid);
             _log.info('Orphan remediation: parent $parentTxid current status: '
-                '${_arcStatusToString(parentStatus.status)}');
+                '${parentStatus.status.wireName}');
             if (_isAcceptedStatus(parentStatus.status)) {
               parentAlreadyAccepted = true;
               _log.info('Orphan remediation: parent $parentTxid already accepted — no rebroadcast needed');
@@ -1638,7 +1638,7 @@ class ARCActor extends Actor {
             try {
               final submitResponse = await _arcService!.submitTransaction(parentTx.rawHex);
               _log.info('Orphan remediation: broadcast parent $parentTxid — '
-                  'response: ${_arcStatusToString(submitResponse.status)}');
+                  'response: ${submitResponse.status.wireName}');
             } catch (e) {
               _log.warning('Orphan remediation: parent $parentTxid broadcast error: $e');
             }
@@ -1661,7 +1661,7 @@ class ARCActor extends Actor {
         _log.info('Orphan remediation: all parents accepted, rebroadcasting child $txid');
         try {
           final response = await _arcService!.submitTransaction(childTx.rawHex);
-          final newStatus = _arcStatusToString(response.status);
+          final newStatus = response.status.wireName;
           _log.info('Orphan remediation: child $txid submit response — '
               'status: $newStatus, txid: ${response.txid}, message: ${response.message}');
 
@@ -1674,7 +1674,7 @@ class ARCActor extends Actor {
           // Submit threw but parent is accepted; check child status directly
           try {
             final statusResp = await _arcService!.getTransaction(txid);
-            final fallbackStatus = _arcStatusToString(statusResp.status);
+            final fallbackStatus = statusResp.status.wireName;
             _log.info('Orphan remediation: child $txid status query — '
                 'status: $fallbackStatus, blockHeight: ${statusResp.blockHeight}');
             if (_isAcceptedStatus(statusResp.status)) {
@@ -1724,40 +1724,6 @@ class ARCActor extends Actor {
     return status == ArcTransactionStatus.seenOnNetwork ||
            status == ArcTransactionStatus.mined ||
            status == ArcTransactionStatus.acceptedByNetwork;
-  }
-
-  /// Convert ARC transaction status to string
-  String _arcStatusToString(ArcTransactionStatus status) {
-    switch (status) {
-      case ArcTransactionStatus.queued:
-        return 'queued';
-      case ArcTransactionStatus.received:
-        return 'received';
-      case ArcTransactionStatus.stored:
-        return 'stored';
-      case ArcTransactionStatus.announcedToNetwork:
-        return 'announced';
-      case ArcTransactionStatus.requestedByNetwork:
-        return 'requested';
-      case ArcTransactionStatus.sentToNetwork:
-        return 'sent';
-      case ArcTransactionStatus.acceptedByNetwork:
-        return 'accepted';
-      case ArcTransactionStatus.seenInOrphanMempool:
-        return 'seen_in_orphan_mempool';
-      case ArcTransactionStatus.seenOnNetwork:
-        return 'seen_on_network';
-      case ArcTransactionStatus.mined:
-        return 'mined';
-      case ArcTransactionStatus.minedInStaleBlock:
-        return 'mined_in_stale_block';
-      case ArcTransactionStatus.rejected:
-        return 'rejected';
-      case ArcTransactionStatus.doubleSpendAttempted:
-        return 'double_spend';
-      default:
-        return 'unknown';
-    }
   }
 
   /// Send error response based on message type

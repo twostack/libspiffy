@@ -132,6 +132,8 @@ void main() {
         channelEvents.add(event);
       },
       signingTimeout: const Duration(seconds: 2),
+      inFlightTimeout: const Duration(milliseconds: 300),
+      inFlightPollInterval: const Duration(milliseconds: 20),
       spvActor: spvRef,
     );
     managerRef = await actorSystem.spawn('channel-manager', () => manager);
@@ -378,11 +380,36 @@ void main() {
       expect(broadcast.whereType<ChannelOpenedEvent>(), isEmpty);
     });
 
-    test('jh6a: a funding ARC is still processing does not open the channel', () async {
+    test('jh6a: a funding ARC is still processing when the wait for it ends does not open the channel', () async {
       final opened = await openAfter(() => arc.networkStatus = 'STORED');
 
       expect(opened.success, isFalse);
       expect(opened.error, contains('STORED'));
+      expect(arc.statusChecks, isNotEmpty, reason: 'ARC was not followed');
+      expect(broadcast.whereType<ChannelOpenedEvent>(), isEmpty);
+    });
+
+    // Bead libspiffy-m715, seen on the localnet regtest ARC: ARC's wait for
+    // the network ran out and it answered the funding ACCEPTED_BY_NETWORK.
+    // That is no verdict; the server follows ARC to one.
+    test('m715: a funding ARC answers in flight and then reports held opens the channel', () async {
+      final opened = await openAfter(() => arc
+        ..networkStatus = 'ACCEPTED_BY_NETWORK'
+        ..laterStatuses.addAll(['ACCEPTED_BY_NETWORK', 'SEEN_ON_NETWORK']));
+
+      expect(opened.success, isTrue, reason: opened.error);
+      expect(arc.statusChecks, hasLength(2));
+      expect(arc.statusChecks.map((c) => c.txid), everyElement(arc.broadcasts.single.txid));
+      expect(broadcast.whereType<ChannelOpenedEvent>(), hasLength(1));
+    });
+
+    test('m715: a funding ARC answers in flight and then finds contested does not open the channel', () async {
+      final opened = await openAfter(() => arc
+        ..networkStatus = 'STORED'
+        ..laterStatuses.add('DOUBLE_SPEND_ATTEMPTED'));
+
+      expect(opened.success, isFalse);
+      expect(opened.error, contains('contested'));
       expect(broadcast.whereType<ChannelOpenedEvent>(), isEmpty);
     });
   });

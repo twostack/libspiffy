@@ -1241,8 +1241,9 @@ class CheckTransactionStatusMessage implements Message {
 class TransactionStatusMessage extends ActorResponse {
   final String txid;
 
-  /// What the network says about the transaction: 'pending', 'confirmed',
-  /// 'failed' and so on. **Null when [success] is false**: the status could
+  /// What ARC says about the transaction, by ARC's name for it
+  /// ([ArcTransactionStatus.wireName]: `SEEN_ON_NETWORK`, `MINED`, ...), as
+  /// every other status the wallet handles. **Null when [success] is false**: the status could
   /// not be read, which is not the same as a transaction whose status is
   /// bad. It used to be the string 'error' — a value no caller could tell
   /// from a real status (bead libspiffy-97zj).

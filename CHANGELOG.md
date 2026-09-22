@@ -302,6 +302,21 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### A channel step waits for ARC's verdict on an answer still in flight
+
+- ARC waits a few seconds for the network to show a transaction back and
+  otherwise answers with where it got to (`ACCEPTED_BY_NETWORK`, `STORED`,
+  ...). A server refused a channel open on such an answer for a funding
+  the network went on to hold. The funding, the settlement and the refund
+  claim now follow ARC until it says held, contested or orphaned, for up
+  to `inFlightTimeout` (new `PaymentChannelManagerActor` parameter,
+  default 30 s; `inFlightPollInterval`, default 1 s). Still in flight at
+  that point fails the step as before.
+- New: `DeferredNetworkStatus.inFlight` and `isInFlight`.
+- Changed: `TransactionStatusMessage.status` carries ARC's status name
+  (`SEEN_ON_NETWORK`, `MINED`, ...), as every other status in the library,
+  instead of a lowercase name of its own.
+
 ### The channel state drops the client's payment signature
 
 - `ChannelState.latestClientSignatureHex` and the state query's field of

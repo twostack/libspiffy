@@ -161,6 +161,23 @@ abstract final class DeferredNetworkStatus {
   /// applies).
   static bool isOnNetwork(String? status) => status == seenOnNetwork || status == mined;
 
+  /// ARC's statuses for a transaction it is still taking to the network:
+  /// where it had got to when it answered, not a verdict. ARC answers a
+  /// submission with one when its wait for the network ran out, or when the
+  /// same transaction was already being processed.
+  static const Set<String> inFlight = {
+    'QUEUED',
+    'RECEIVED',
+    'STORED',
+    'ANNOUNCED_TO_NETWORK',
+    'REQUESTED_BY_NETWORK',
+    'SENT_TO_NETWORK',
+    'ACCEPTED_BY_NETWORK',
+  };
+
+  /// Whether [status] is one of ARC's [inFlight] statuses.
+  static bool isInFlight(String? status) => inFlight.contains(status);
+
   /// Whether a payment with this status may be cancelled: when the source
   /// said it does not know the transaction, or when ARC reports it contested
   /// (DOUBLE_SPEND_ATTEMPTED, bead libspiffy-ey2: the user may give it up;

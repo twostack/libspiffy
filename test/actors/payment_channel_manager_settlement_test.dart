@@ -252,6 +252,8 @@ void main() {
         eventStore: store,
         cryptoService: DartSVCryptoService(),
         signingTimeout: const Duration(seconds: 2),
+        inFlightTimeout: const Duration(milliseconds: 300),
+        inFlightPollInterval: const Duration(milliseconds: 20),
       ),
     );
   }
@@ -444,6 +446,35 @@ void main() {
         expect(imported(), isEmpty);
       });
     }
+
+    // Bead libspiffy-m715: an in-flight answer is followed to ARC's verdict.
+    test('m715: a settlement ARC answers in flight and then reports held closes the channel', () async {
+      await spawn(await serverJournalWithPayment(), key: f.serverKey);
+      arc
+        ..networkStatus = 'ACCEPTED_BY_NETWORK'
+        ..laterStatuses.add('SEEN_ON_NETWORK');
+
+      final closed = await close();
+
+      expect(closed.success, isTrue, reason: closed.error);
+      expect(arc.statusChecks.single.txid, settlement.txid);
+      expect(journal().whereType<ChannelClosedEvent>(), hasLength(1));
+    });
+
+    test('m715: a settlement ARC answers in flight and then finds contested does not close the channel', () async {
+      await spawn(await serverJournalWithPayment(), key: f.serverKey);
+      arc
+        ..networkStatus = 'RECEIVED'
+        ..laterStatuses.addAll(['STORED', 'DOUBLE_SPEND_ATTEMPTED']);
+
+      final closed = await close();
+      await flushWallet();
+
+      expect(closed.success, isFalse);
+      expect(closed.error, contains('contested'));
+      expect(journal().whereType<ChannelClosedEvent>(), isEmpty);
+      expect(imported(), isEmpty);
+    });
 
     test('jh6a: a mined settlement closes the channel', () async {
       await spawn(await serverJournalWithPayment(), key: f.serverKey);

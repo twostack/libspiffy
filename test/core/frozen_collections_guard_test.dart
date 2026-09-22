@@ -59,8 +59,10 @@ const _sources = <String, String?>{
 /// `BEEFValidationResultEvent.unreadableOutputs` (xggs), 139 again once
 /// `FeeQuoteMessage` went (bg7n: ARC answers a `FeeRate`, which holds no
 /// collection). A new one must be frozen, and adding it must bump this
-/// number deliberately.
-const _expectedFields = 139;
+/// number deliberately: 140 with `SPVValidationResult.invoicePaidAddresses`
+/// (yyby: what a payment pays its invoice, for the coordinator to mark it
+/// paid with once the network holds the payment).
+const _expectedFields = 140;
 
 final _classStart = RegExp(r'^(?:abstract |sealed )?class (\w+)', multiLine: true);
 final _field = RegExp(r'^  final ((?:List|Map|Set)<.*?>\??) (\w+);(?: *//.*)?$', multiLine: true);

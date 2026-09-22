@@ -76,11 +76,57 @@ class WalletCoordinatorActor extends Actor {
     switch (event) {
       case domain_events.TransactionConfirmedEvent(:final walletId, :final txid, :final blockHeight?):
         _emitEvent(TransactionConfirmedEvent(walletId: walletId, txid: txid, blockHeight: blockHeight));
+        unawaited(_payInvoiceOfHeldPayment(walletId, txid, DeferredNetworkStatus.mined));
+      // The network holds a payment we received: ARCActor makes its outputs
+      // available as it hears so (bead libspiffy-vj4j).
+      case domain_events.UTXOMarkedAvailableEvent(:final walletId, :final txid):
+        unawaited(_payInvoiceOfHeldPayment(walletId, txid, DeferredNetworkStatus.seenOnNetwork));
       case invoice_events.InvoicePaidEvent(:final walletId, :final invoiceId, :final txid, :final amountReceived):
         _emitEvent(InvoicePaidEvent(
             walletId: walletId, invoiceId: invoiceId, txid: txid, amountReceived: amountReceived));
       default:
         break;
+    }
+  }
+
+  /// Marks the invoice [txid] pays as paid, when the network turned out to
+  /// hold it after all ([networkStatus]) and nothing marked it at the time
+  /// (bead libspiffy-yyby).
+  ///
+  /// The receive answers for the payment ARC took straight away; this is the
+  /// payment ARC first called contested, or put in the orphan mempool, or
+  /// answered after the process that received it stopped — all of which
+  /// ARC keeps following to a block, so the invoice must settle when the
+  /// network does. The payment is matched to the invoice as the receive
+  /// matched it: an invoice's addresses are its own, used once, so the
+  /// outputs paying them are its payment, and they must cover it.
+  Future<void> _payInvoiceOfHeldPayment(String walletId, String txid, String networkStatus) async {
+    try {
+      final pending = await _storage.getInvoicesByStatus(inv.InvoiceStatus.pending, walletId: walletId);
+      if (pending.isEmpty) return;
+      final outputs = (await _storage.getTransactionAddresses(walletId, txid)).outputs;
+      if (outputs.isEmpty) return;
+      final paid = <String, BigInt>{};
+      for (final output in outputs) {
+        paid[output.address] = (paid[output.address] ?? BigInt.zero) + output.amount;
+      }
+      for (final invoice in pending) {
+        final addresses = invoice.allAddresses;
+        if (addresses.isEmpty) continue;
+        final received = addresses.fold(BigInt.zero, (sum, a) => sum + (paid[a] ?? BigInt.zero));
+        if (received < invoice.totalAmount) continue;
+        _log.info('Invoice ${invoice.invoiceId} is paid by $txid, which the network reports '
+            '$networkStatus');
+        _invoiceCoordinator.tell(inv.MarkInvoicePaidMessage(
+          invoiceId: invoice.invoiceId,
+          txid: txid,
+          amountReceived: received,
+          addressesPaidTo: [for (final a in addresses) if (paid.containsKey(a)) a],
+        ));
+        return;
+      }
+    } catch (e, stackTrace) {
+      _log.warning('Could not settle the invoice $txid pays in wallet $walletId: $e', e, stackTrace);
     }
   }
 
@@ -142,6 +188,9 @@ class WalletCoordinatorActor extends Actor {
 
   /// How long a received payment's submission waits for ARC's answer.
   static const _paymentSubmitTimeout = Duration(minutes: 2);
+
+  /// How long the invoice coordinator has to answer a payment's mark-paid.
+  static const _invoiceMarkPaidTimeout = Duration(seconds: 30);
   final Map<String, String> _paymentInvoiceCorrelation = {}; // invoiceId → walletId
   final Map<String, String> _timestampCorrelation = {}; // invoiceId → archiveId
   final Map<String, CreateWalletCommand> _pendingCreateWallet = {}; // walletId → original cmd
@@ -1181,16 +1230,26 @@ class WalletCoordinatorActor extends Actor {
   /// check. Returns the last answer; still in flight after
   /// [_inFlightTimeout] when ARC gave no verdict.
   Future<wm.DeferredPaymentNetworkResult> _followInFlight(
-      String walletId, String txid, wm.DeferredPaymentNetworkResult result) async {
-    var current = result;
+          String walletId, String txid, wm.DeferredPaymentNetworkResult result) =>
+      _followAnswer<wm.DeferredPaymentNetworkResult>(result, (r) => r.networkStatus, () async {
+        final check = await _arcActor.ask<wm.DeferredPaymentNetworkResult>(
+          wm.CheckDeferredPaymentStatusMessage(walletId: walletId, txid: txid, via: DeferredPaymentNetworkSource.arc),
+          _deferredNetworkTimeout,
+        );
+        return check.success && check.networkStatus != null ? check : null;
+      });
+
+  /// ARC's answer about a transaction, followed while [statusOf] it is in
+  /// flight: [recheck] asks ARC again every [_inFlightPollInterval] until it
+  /// gives a verdict or [_inFlightTimeout] passes (null: ARC did not
+  /// answer, so the answer in hand stands).
+  Future<T> _followAnswer<T>(T answer, String? Function(T) statusOf, Future<T?> Function() recheck) async {
+    var current = answer;
     final deadline = DateTime.now().add(_inFlightTimeout);
-    while (DeferredNetworkStatus.isInFlight(current.networkStatus) && DateTime.now().isBefore(deadline)) {
+    while (DeferredNetworkStatus.isInFlight(statusOf(current)) && DateTime.now().isBefore(deadline)) {
       await Future<void>.delayed(_inFlightPollInterval);
-      final check = await _arcActor.ask<wm.DeferredPaymentNetworkResult>(
-        wm.CheckDeferredPaymentStatusMessage(walletId: walletId, txid: txid, via: DeferredPaymentNetworkSource.arc),
-        _deferredNetworkTimeout,
-      );
-      if (check.success && check.networkStatus != null) current = check;
+      final check = await recheck();
+      if (check != null) current = check;
     }
     return current;
   }
@@ -2285,7 +2344,13 @@ class WalletCoordinatorActor extends Actor {
 
     final mined = result.provenTransactions.any((p) => p.txid == result.txid);
     if (mined) {
-      _emitEvent(answer(valid: applyError == null, error: applyError));
+      // It came with its own proof, verified against our headers: the
+      // network has it, so it pays its invoice.
+      final invoiceError = await _markInvoicePaid(result, DeferredNetworkStatus.mined);
+      _emitEvent(answer(
+          valid: applyError == null,
+          error: applyError ?? invoiceError,
+          networkStatus: DeferredNetworkStatus.mined));
       return;
     }
 
@@ -2327,9 +2392,24 @@ class WalletCoordinatorActor extends Actor {
         }
       }
     }
+    // The invoice is paid when the network holds the payment, and not
+    // before (bead libspiffy-yyby): a payment ARC calls a double spend, or
+    // one spending an output already spent in a block, pays nothing, and a
+    // paid invoice refuses every other transaction. An answer ARC gave
+    // while still taking the payment to the network (ACCEPTED_BY_NETWORK
+    // and the rest of DeferredNetworkStatus.inFlight) is no verdict either,
+    // so it pays nothing yet: ARC keeps following the payment to its block,
+    // and _payInvoiceOfHeldPayment marks the invoice paid when the network
+    // turns out to hold it.
+    final held = reply is wm.BroadcastSuccessMessage &&
+        DeferredNetworkStatus.isOnNetwork(reply.networkStatus);
+    final invoiceError = held ? await _markInvoicePaid(result, reply.networkStatus) : null;
     _emitEvent(switch (reply) {
-      wm.BroadcastSuccessMessage(:final networkStatus) =>
-        answer(valid: applyError == null, error: applyError, broadcasted: true, networkStatus: networkStatus),
+      wm.BroadcastSuccessMessage(:final networkStatus) => answer(
+          valid: applyError == null,
+          error: applyError ?? invoiceError,
+          broadcasted: true,
+          networkStatus: networkStatus),
       wm.BroadcastFailedMessage(:final error, :final networkStatus) => answer(
           valid: applyError == null, error: applyError, networkStatus: networkStatus, broadcastError: error),
       _ => answer(
@@ -2337,6 +2417,40 @@ class WalletCoordinatorActor extends Actor {
           error: applyError,
           broadcastError: 'ARC answered the submission with ${reply.runtimeType}'),
     });
+  }
+
+  /// Marks the invoice [result] pays as paid, now that the network holds
+  /// the payment ([networkStatus]), and waits for the invoice aggregate's
+  /// answer. Returns why it was not marked, or null — including when there
+  /// is nothing to mark: no invoice, or the delivery that already paid it
+  /// (bead libspiffy-6142).
+  Future<String?> _markInvoicePaid(wm.SPVValidationResult result, String? networkStatus) async {
+    final invoiceId = result.invoiceId;
+    final amount = result.invoicePaidAmount;
+    if (invoiceId == null || amount == null) return null;
+    try {
+      final reply = await _invoiceCoordinator.ask<dynamic>(
+        inv.MarkInvoicePaidMessage(
+          invoiceId: invoiceId,
+          txid: result.txid,
+          amountReceived: amount,
+          addressesPaidTo: result.invoicePaidAddresses,
+        ),
+        _invoiceMarkPaidTimeout,
+      );
+      if (reply is inv.InvoiceStatusMessage && !reply.success) {
+        final error = 'Invoice $invoiceId was not marked paid by ${result.txid} '
+            '(the network reports $networkStatus): ${reply.error ?? reply.statusMessage}';
+        _log.warning(error);
+        return error;
+      }
+      return null;
+    } catch (e) {
+      final error = 'Invoice $invoiceId was not marked paid by ${result.txid} '
+          '(the network reports $networkStatus): $e';
+      _log.warning(error);
+      return error;
+    }
   }
 
   /// Waits (off the mailbox) until the wallet read model holds [result]'s

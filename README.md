@@ -677,9 +677,9 @@ await broadcastTransaction(
 //    - Confirms outputs match invoice addresses
 //    - Validates payment amount
 //    - Calculates transaction fee from BEEF data
-//    - Marks invoice as paid
 
-// 5. Receiver's wallet is automatically updated with new UTXOs
+// 5. Receiver's wallet is automatically updated with new UTXOs, and the
+//    invoice is marked paid once ARC says the network holds the payment
 ```
 
 ### SPV Validation Flow
@@ -1036,7 +1036,9 @@ spvActor.tell(ReceiveTransactionMessage(
 // 3. Calculate transaction fee
 // 4. Extract spendable UTXOs
 // 5. Update wallet state via commands
-// 6. Mark invoice as paid
+// The coordinator then submits the payment to ARC and marks the invoice
+// paid once ARC says the network holds it (SEEN_ON_NETWORK or MINED), not
+// on validation alone: a payment the network refuses pays nothing.
 ```
 
 ### 8. ARC Actor

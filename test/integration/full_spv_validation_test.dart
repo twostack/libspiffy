@@ -216,7 +216,7 @@ void main() {
       expect(result.isValid, isTrue, 
         reason: 'SPV validation should succeed with valid merkle proof and matching addresses. Error: ${result.validationError}');
       
-      // Check if invoice was marked as paid
+      // What the invoice knows about it
       final queryCompleter = Completer<InvoiceDetailsResponse>();
       final queryReceiver = await actorSystem.spawn(
         'query-receiver',
@@ -234,10 +234,14 @@ void main() {
       
       print('Invoice Status: ${invoiceDetails.status}');
       
-      // If validation succeeded, invoice should be marked as paid
-      // Note: This depends on address matching logic working correctly
+      // The payment validates and is reported as paying the invoice, which
+      // is marked paid by the coordinator once ARC says the network holds
+      // it (bead libspiffy-yyby). Nothing submitted it here, so it is
+      // still pending.
       expect(invoiceDetails.found, isTrue);
-      expect(invoiceDetails.status, InvoiceStatus.paid,
+      expect(invoiceDetails.status, InvoiceStatus.pending,
+          reason: 'no network has taken this payment');
+      expect(result.invoicePaidAmount, isNotNull,
           reason: 'the transaction pays the invoice address the invoice amount');
       expect([for (final u in result.spendableUTXOs) u['vout']], [0, 1]);
     });

@@ -332,6 +332,91 @@ void main() {
       expect(answer.error, contains('is not pending'));
     });
 
+
+    // Bead libspiffy-yyby. The invoice is paid when the network holds the
+    // payment, not when a valid BEEF arrives: ARC answers a submission
+    // DOUBLE_SPEND_ATTEMPTED when another transaction spends an input
+    // (the payer reclaimed first), and SEEN_IN_ORPHAN_MEMPOOL when an
+    // input is unknown or already spent in a block. Both seen on the
+    // localnet regtest ARC. A paid invoice refuses every other transaction
+    // (bead libspiffy-6142), so an invoice paid by a payment the network
+    // refuses turns the payer's genuine replacement away.
+    for (final refused in ['DOUBLE_SPEND_ATTEMPTED', 'SEEN_IN_ORPHAN_MEMPOOL']) {
+      test('yyby: a payment ARC answers $refused does not pay the invoice, and the payer\'s '
+          'replacement still can', () async {
+        arc.answer = refused;
+        final answers = answersAboutP();
+        final paid = <coord.InvoicePaidEvent>[];
+        final announcements = system.coordinatorEvents!
+            .where((e) => e is coord.InvoicePaidEvent)
+            .cast<coord.InvoicePaidEvent>()
+            .listen(paid.add);
+        addTearDown(announcements.cancel);
+
+        final invoiceId = await invoice();
+        pay(invoiceId: invoiceId);
+        final answer = await verdict(answers);
+
+        expect(answer.valid, isTrue, reason: 'the payment is valid; the network did not take it');
+        expect(answer.networkStatus, refused);
+        await Future<void>.delayed(const Duration(milliseconds: 300));
+        // Old code: paid at validation, before ARC said anything.
+        expect((await readModel.getInvoice(invoiceId))?.status, InvoiceStatus.pending);
+        final journal = await system.eventStore.getEvents('Invoice_$invoiceId');
+        expect(journal.where((e) => e.typeName == 'invoice.paid'), isEmpty,
+            reason: 'the invoice was paid by a payment the network refused');
+        expect(paid, isEmpty);
+
+        // The payment the network does take pays it.
+        arc.answer = 'SEEN_ON_NETWORK';
+        final replacement = system.coordinatorEvents!
+            .where((e) => e is coord.BEEFValidationResultEvent && e.txid == q.id)
+            .cast<coord.BEEFValidationResultEvent>()
+            .first
+            .timeout(const Duration(seconds: 20));
+        pay(invoiceId: invoiceId, beef: beefHex([(g, gBump), (q, null)]));
+        final second = await replacement;
+
+        expect(second.valid, isTrue, reason: second.error);
+        expect(second.networkStatus, 'SEEN_ON_NETWORK');
+        await _until(() async => (await readModel.getInvoice(invoiceId))?.status == InvoiceStatus.paid,
+            'the invoice paid by the replacement');
+        expect(paid.map((e) => (e.invoiceId, e.txid)), [(invoiceId, q.id)]);
+      });
+    }
+
+    test('yyby: an answer ARC gave while it was still taking the payment to the network pays '
+        'nothing yet', () async {
+      arc.answer = 'ACCEPTED_BY_NETWORK'; // ARC's wait for the network ran out
+      final answers = answersAboutP();
+
+      final invoiceId = await invoice();
+      pay(invoiceId: invoiceId);
+      final answer = await verdict(answers);
+
+      expect(answer.valid, isTrue, reason: answer.error);
+      expect(answer.networkStatus, 'ACCEPTED_BY_NETWORK', reason: 'what ARC said, not a verdict');
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      expect((await readModel.getInvoice(invoiceId))?.status, InvoiceStatus.pending,
+          reason: 'ARC has not said the network holds it; its status scan follows it '
+              'and the invoice settles then (invoice_paid_when_the_network_holds_the_payment_test)');
+    });
+
+    test('yyby: a payment that arrives already mined, with its own verified proof, pays its invoice',
+        () async {
+      await sendHeaders([a4], 4, 4);
+      final answers = answersAboutP();
+
+      final invoiceId = await invoice();
+      pay(invoiceId: invoiceId, beef: beefHex([(g, gBump), (p, pBump)]));
+      final answer = await verdict(answers);
+
+      expect(answer.valid, isTrue, reason: answer.error);
+      expect(answer.networkStatus, 'MINED');
+      expect(arc.submitted, isEmpty, reason: 'a mined payment needs no broadcast');
+      expect((await readModel.getInvoice(invoiceId))?.status, InvoiceStatus.paid);
+    });
+
     test('a payment ARC rejects is reported as not broadcast, with ARC\'s status and reason', () async {
       arc.answer = 'REJECTED';
       final answers = answersAboutP();
@@ -485,6 +570,10 @@ class _RecordingArc extends ArcService {
 
   final List<String> submitted = [];
   String answer = 'SEEN_ON_NETWORK';
+
+  /// What a status query answers, as ARC does after answering a submission
+  /// with where it had got to; null: ARC does not know the transaction.
+  String? statusAnswer;
   Completer<void>? _gate;
 
   void hold() => _gate = Completer<void>();
@@ -508,6 +597,14 @@ class _RecordingArc extends ArcService {
 
   @override
   Future<ArcTransactionResponse> getTransaction(String txid) async {
-    throw ArcException('Failed to get transaction: {"status":404}', statusCode: 404);
+    final status = statusAnswer;
+    if (status == null) {
+      throw ArcException('Failed to get transaction: {"status":404}', statusCode: 404);
+    }
+    return ArcTransactionResponse.fromJson({
+      'timestamp': '2026-09-21T08:00:00Z',
+      'txid': txid,
+      'txStatus': status,
+    });
   }
 }

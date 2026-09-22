@@ -302,6 +302,18 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### An invoice is paid when the network holds the payment
+
+- An invoice was marked paid as soon as a payment's BEEF validated, before
+  it was submitted — so a payment ARC calls a double spend, or one
+  spending an output already spent in a block, paid it too. Since a paid
+  invoice refuses every other transaction, the payer's genuine replacement
+  was then refused. An invoice is now paid when ARC says the network holds
+  the payment (`SEEN_ON_NETWORK` or `MINED`), or when the payment arrives
+  with its own verified proof.
+- A payment the network turns out to hold after all — ARC follows every
+  submission to its block — pays its invoice then, after a restart too.
+
 ### A failed payment's inputs are free when the failure is answered
 
 - A payment that failed after reserving its inputs was answered before the

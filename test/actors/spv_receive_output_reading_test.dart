@@ -8,7 +8,7 @@
 /// - libspiffy-n8b9: with an invoice id, an invoice lookup that failed (the
 ///   invoice coordinator did not answer) or found no such invoice returned
 ///   no outputs and skipped the invoice check: the result was valid with
-///   nothing credited and the invoice not marked paid.
+///   nothing credited and nothing reported as paying the invoice.
 /// - libspiffy-rp6x: an output whose locking script could not be read (a
 ///   template or a plugin threw) was logged and treated as nobody's while the
 ///   result stayed valid, with no way for a caller to see it.
@@ -255,7 +255,7 @@ void main() {
       expect(invoices.markedPaid, isEmpty);
     });
 
-    test('a found invoice that the transaction pays is still received and marked paid', () async {
+    test('a found invoice that the transaction pays is received, and reported as what pays it', () async {
       await createWallet('paid');
       final address = (await generateAddress('paid')).address;
       final invoices = _Invoices({'inv-paid': (walletId: 'paid', address: address, amount: 150000000)});
@@ -266,7 +266,13 @@ void main() {
       expect(result.isValid, isTrue, reason: result.validationError);
       expect([for (final u in result.spendableUTXOs) u['address']], [address]);
       await settled('paid', payment.id);
-      expect(invoices.markedPaid, ['inv-paid']);
+      // Bead libspiffy-yyby: the invoice is marked paid by the coordinator,
+      // once ARC says the network holds the payment; a valid BEEF says
+      // nothing about the network having taken it. What it pays the invoice
+      // is reported here, for the coordinator to mark it with.
+      expect(invoices.markedPaid, isEmpty);
+      expect(result.invoicePaidAmount, BigInt.from(150000000));
+      expect(result.invoicePaidAddresses, [address]);
       expect(invoices.checks, 1, reason: 'the invoice is looked up once per receive');
     });
   });

@@ -739,6 +739,20 @@ class SPVValidationResult extends ActorResponse {
   /// still answered as the payment of that invoice.
   final String? invoiceId;
 
+  /// What this payment pays its invoice ([invoiceId]), when it validated
+  /// against one and is not the delivery that already paid it: the
+  /// satoshis of the outputs that pay the invoice (bead libspiffy-n0p: an
+  /// invoice output the wallet cannot spend alone pays the invoice and is
+  /// no wallet UTXO) and the addresses they pay.
+  ///
+  /// The invoice is marked paid from these, by the coordinator, once ARC
+  /// says the network holds the payment (bead libspiffy-yyby): a payment
+  /// the network refuses — a double spend, or one spending an output
+  /// already spent in a block — must not pay an invoice, and a paid
+  /// invoice refuses every other transaction.
+  final BigInt? invoicePaidAmount;
+  final List<String> invoicePaidAddresses;
+
   /// Not a verdict: the BEEF's proofs name a block header we have not
   /// synced, the receive is parked, and it is validated again — and
   /// answered again — once the header arrives (bead libspiffy-xggs).
@@ -765,9 +779,12 @@ class SPVValidationResult extends ActorResponse {
     this.counterpartyMarker,
     this.requestId,
     this.invoiceId,
+    this.invoicePaidAmount,
+    List<String> invoicePaidAddresses = const [],
     this.awaitingHeader = false,
     this.subjectCarriesProof = false,
-  })  : spendableUTXOs = frozenMapList(spendableUTXOs),
+  })  : invoicePaidAddresses = frozenList(invoicePaidAddresses),
+        spendableUTXOs = frozenMapList(spendableUTXOs),
         spentUTXOs = frozenMapList(spentUTXOs),
         transactionData = frozenPlainMapOrNull(transactionData),
         unreadableOutputs = frozenMapList(unreadableOutputs),
@@ -796,6 +813,8 @@ class SPVValidationResult extends ActorResponse {
         counterpartyMarker: (marker == null || marker.isEmpty) ? null : marker,
         requestId: requestId ?? this.requestId,
         invoiceId: invoiceId ?? this.invoiceId,
+        invoicePaidAmount: invoicePaidAmount,
+        invoicePaidAddresses: invoicePaidAddresses,
         awaitingHeader: awaitingHeader,
         subjectCarriesProof: subjectCarriesProof ?? this.subjectCarriesProof,
       );

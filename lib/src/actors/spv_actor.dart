@@ -192,14 +192,6 @@ class SPVActor extends Actor {
           await _handleValidateCounterpartyTransaction(msg);
           break;
 
-        // The invoice coordinator's answer to MarkInvoicePaidMessage. A
-        // refusal leaves the invoice as it was while the payment is
-        // received, so it is said (bead libspiffy-mu09).
-        case final InvoiceStatusMessage msg when !msg.success:
-          _log.warning('Invoice ${msg.invoiceId} was not marked paid by '
-              '${msg.txid ?? 'the payment received for it'}: ${msg.error ?? msg.statusMessage}');
-          break;
-
         default:
       }
     } catch (e) {
@@ -680,6 +672,8 @@ class SPVActor extends Actor {
         // Step 4: If invoice-based, verify payment matches invoice
         // expectations, also when no output pays it (that is an underpayment,
         // not a valid receive with nothing in it).
+        BigInt? invoicePaidAmount;
+        var invoicePaidAddresses = const <String>[];
         if (invoiceId != null && invoice != null) {
           final invoiceValidation = _validateInvoicePayment(invoiceId, invoice, txidHex, invoiceOutputs);
           if (!invoiceValidation.isValid) {
@@ -696,14 +690,14 @@ class SPVActor extends Actor {
             );
           }
           
-          // Mark invoice as paid, unless this payment already did.
+          // What it pays the invoice, for the coordinator to mark it paid
+          // once ARC says the network holds the payment (bead
+          // libspiffy-yyby). Not marked here: this is a valid BEEF, which
+          // says nothing about the network having taken it. Nothing to pay
+          // again for the delivery that already paid it.
           if (!invoiceValidation.alreadyPaid) {
-            _invoiceCoordinator.tell(MarkInvoicePaidMessage(
-              invoiceId: invoiceId,
-              txid: txidHex,
-              amountReceived: invoiceValidation.totalReceived,
-              addressesPaidTo: invoiceOutputs.map((u) => u['address'] as String).toList(),
-            ), sender: context.self);
+            invoicePaidAmount = invoiceValidation.totalReceived;
+            invoicePaidAddresses = [for (final u in invoiceOutputs) u['address'] as String];
           }
         }
 
@@ -728,6 +722,8 @@ class SPVActor extends Actor {
           transactionData: transactionData,
           unreadableOutputs: unreadableOutputs,
           provenTransactions: proven,
+          invoicePaidAmount: invoicePaidAmount,
+          invoicePaidAddresses: invoicePaidAddresses,
         );
 
 

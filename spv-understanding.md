@@ -179,12 +179,31 @@ A counterparty's payment arrives as a BEEF: the payment itself, usually unproven
    TransactionImportedEvent) and WalletProjection writes the read model
 4. Once the read model holds it, the coordinator submits the payment to ARC,
    unless it carried a proof of its own that verified (it is already mined)
-5. Coordinator emits BEEFValidationResultEvent: valid, broadcasted, and
+5. ARC's answer, followed while it is in flight (ARC answers with where it
+   got to when its own wait for the network runs out). The invoice the
+   payment pays is marked paid when the network holds it -- SEEN_ON_NETWORK
+   or MINED -- and not before
+6. Coordinator emits BEEFValidationResultEvent: valid, broadcasted, and
    ARC's networkStatus or the broadcastError -- what ARC actually said
-6. ARCActor's status scan follows it to its block (SEEN_ON_NETWORK makes its
+7. ARCActor's status scan follows it to its block (SEEN_ON_NETWORK makes its
    outputs spendable; MINED confirms it only with a merkle path that matches
-   our headers)
+   our headers), whatever ARC said first: a payment it called
+   DOUBLE_SPEND_ATTEMPTED, or put in the orphan mempool, may still be mined.
+   When the network turns out to hold a payment after all, the invoice it
+   pays is marked paid then -- after a restart too
 ```
+
+**When an invoice is paid.** A valid BEEF says the payment's funding history
+is anchored in real blocks; it says nothing about the network having taken
+this payment. So the invoice is paid when ARC reports the network holding it
+(`SEEN_ON_NETWORK`, or `MINED` for a payment that arrived with its own
+verified proof), never on validation alone. This matters because the payment
+may be a double spend the payer reclaimed, or spend an output already spent
+in a block (ARC: `DOUBLE_SPEND_ATTEMPTED`, `SEEN_IN_ORPHAN_MEMPOOL`), and a
+paid invoice refuses every other transaction -- so an invoice paid by a
+payment the network refuses turns the payer's genuine replacement away. The
+received outputs stay pending until the network holds it either way (bead
+libspiffy-vj4j), so no balance counts what the network has not taken.
 
 `ImportTransactionCommand` is not a way to receive a payment. It brings in a transaction the wallet knows to be mined — recovering a wallet, importing its own history — and so accepts only a BEEF carrying the proof of the transaction it imports; one without is refused and names `ValidateBEEFCommand`. It is submitted nowhere, and answered with `SPVValidationResultEvent`, then `TransactionImportedEvent` once the projection has applied it. There is no `TransactionReceivedEvent` (bead libspiffy-5ml6), and no `ReceiveTransactionCommand`: it was the same pipeline as the import, and submitted nothing (bead libspiffy-ckr4).
 

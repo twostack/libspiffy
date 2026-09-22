@@ -1240,6 +1240,7 @@ class WalletCoordinatorActor extends Actor {
       if (beefError != null) {
         _log.info('Broadcasting deferred payment ${cmd.txid} without ancestors: $beefError');
       }
+      final asked = DateTime.now();
       final result = await _arcActor.ask<wm.DeferredPaymentNetworkResult>(
         wm.BroadcastDeferredPaymentMessage(
           walletId: cmd.walletId,
@@ -1250,6 +1251,7 @@ class WalletCoordinatorActor extends Actor {
         ),
         _deferredNetworkTimeout,
       );
+      final notApplied = await _awaitNetworkAnswerApplied(cmd.walletId, cmd.txid, tx.rawHex, result, asked);
       final rejected = DeferredNetworkStatus.isDefinitiveFailure(result.networkStatus);
       // A competing transaction contests it (bead libspiffy-ey2): not
       // accepted, not failed either; the payment stays held.
@@ -1268,7 +1270,7 @@ class WalletCoordinatorActor extends Actor {
             : contested
                 ? 'ARC reports ${result.networkStatus} for ${cmd.txid}: a competing transaction spends an input; '
                     'the payment stays outstanding with its inputs held${result.error != null ? ' (${result.error})' : ''}'
-                : result.error,
+                : result.error ?? notApplied,
         competingTxids: result.competingTxids,
       ));
     } catch (e) {
@@ -1290,10 +1292,13 @@ class WalletCoordinatorActor extends Actor {
         ));
         return;
       }
+      final asked = DateTime.now();
       final result = await _arcActor.ask<wm.DeferredPaymentNetworkResult>(
         wm.CheckDeferredPaymentStatusMessage(walletId: cmd.walletId, txid: cmd.txid, via: cmd.via),
         _deferredNetworkTimeout,
       );
+      final tx = await _storage.getTransaction(cmd.txid, walletId: cmd.walletId);
+      final notApplied = await _awaitNetworkAnswerApplied(cmd.walletId, cmd.txid, tx?.rawHex, result, asked);
       _emitEvent(DeferredPaymentStatusEvent(
         walletId: cmd.walletId,
         txid: cmd.txid,
@@ -1304,7 +1309,7 @@ class WalletCoordinatorActor extends Actor {
         blockHeight: result.blockHeight,
         proofStatus: result.proofStatus,
         confirmed: result.confirmed,
-        error: result.error,
+        error: result.error ?? notApplied,
         competingTxids: result.competingTxids,
       ));
     } catch (e) {
@@ -1396,6 +1401,72 @@ class WalletCoordinatorActor extends Actor {
     } catch (e) {
       _emitEvent(refused('Cancellation of deferred payment ${cmd.txid} failed: $e'));
     }
+  }
+
+  /// Waits until the wallet read model shows what the network answered,
+  /// in [result], about the deferred payment [txid] ([rawHex]) asked of it
+  /// at [asked]: the status journaled; a payment the network rejected
+  /// failed, its inputs released; and, when the network has the
+  /// transaction, the wallet's inputs to it spent and its outputs to the
+  /// wallet available. The answer to a check, a broadcast or a reclaim
+  /// waits for this, so an app that lists its deferred payments or reads
+  /// its balance on hearing it sees what it heard. ARCActor tells the
+  /// wallet all of it before answering. Returns why the read model does
+  /// not show it, or null.
+  Future<String?> _awaitNetworkAnswerApplied(
+      String walletId, String txid, String? rawHex, wm.DeferredPaymentNetworkResult result, DateTime asked) async {
+    final status = result.networkStatus;
+    if (!result.success || status == null) return null;
+    final reasons = <String>[];
+    Future<void> awaitApplied(String what, bool Function(Event e) matches, Future<bool> Function() alreadyApplied) async {
+      final reason = await _awaitProjectionApplied(matches: matches, alreadyApplied: alreadyApplied);
+      if (reason != null) reasons.add('$what: $reason');
+    }
+
+    await awaitApplied(
+      'the $status status of $txid',
+      (e) => e is domain_events.TransactionNetworkStatusCheckedEvent && e.txid == txid && !e.checkedAt.isBefore(asked),
+      () async {
+        final checkedAt = (await _storage.getDeferredPayment(walletId, txid))?.lastCheckedAt;
+        return checkedAt != null && !checkedAt.isBefore(asked);
+      },
+    );
+    if (DeferredNetworkStatus.isDefinitiveFailure(status)) {
+      await awaitApplied(
+        'the failure of $txid',
+        (e) => e is domain_events.DeferredTransactionFailedEvent && e.txid == txid,
+        () async => (await _storage.getDeferredPayment(walletId, txid))?.isOutstanding == false,
+      );
+    }
+    if (DeferredNetworkStatus.isOnNetwork(status) && rawHex != null && rawHex.isNotEmpty) {
+      final tx = dartsv.Transaction.fromHex(rawHex);
+      for (final input in tx.inputs) {
+        final prevTxid = input.prevTxnId;
+        final vout = input.prevTxnOutputIndex;
+        if (await _storage.getUTXO(walletId, prevTxid, vout) == null) continue;
+        await awaitApplied(
+          'the spend of $prevTxid:$vout',
+          (e) => e is domain_events.UTXOSpentEvent && e.txid == prevTxid && e.vout == vout,
+          () async => (await _storage.getUTXO(walletId, prevTxid, vout))?.status == UTXOStatus.spent,
+        );
+      }
+      for (var vout = 0; vout < tx.outputs.length; vout++) {
+        if (await _storage.getUTXO(walletId, txid, vout) == null) continue;
+        await awaitApplied(
+          'output $txid:$vout available',
+          (e) => e is domain_events.UTXOMarkedAvailableEvent && e.txid == txid && e.vout == vout,
+          () async => switch ((await _storage.getUTXO(walletId, txid, vout))?.status) {
+            UTXOStatus.available || UTXOStatus.spent => true,
+            _ => false,
+          },
+        );
+      }
+    }
+    if (reasons.isEmpty) return null;
+    final reason = 'The network answered $status for $txid, but the read model does not show it yet '
+        '(${reasons.join('; ')})';
+    _log.warning(reason);
+    return reason;
   }
 
   /// Reclaims an outstanding deferred payment (bead libspiffy-87a): builds
@@ -1582,6 +1653,7 @@ class WalletCoordinatorActor extends Actor {
         }
       }
 
+      final asked = DateTime.now();
       final result = await _arcActor.ask<wm.DeferredPaymentNetworkResult>(
         wm.BroadcastDeferredPaymentMessage(
           walletId: cmd.walletId,
@@ -1592,6 +1664,7 @@ class WalletCoordinatorActor extends Actor {
         ),
         _deferredNetworkTimeout,
       );
+      final answerNotApplied = await _awaitNetworkAnswerApplied(cmd.walletId, reclaimTxid, signedHex, result, asked);
       final rejected = DeferredNetworkStatus.isDefinitiveFailure(result.networkStatus);
       final contested = DeferredNetworkStatus.isContested(result.networkStatus);
       _emitEvent(DeferredPaymentReclaimedEvent(
@@ -1617,7 +1690,7 @@ class WalletCoordinatorActor extends Actor {
                     'is settled'
                 : result.error ??
                     (notApplied == null
-                        ? null
+                        ? answerNotApplied
                         : 'Reclaimed and journaled, but the read model has not applied it yet: $notApplied'),
       ));
     } catch (e) {

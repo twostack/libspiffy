@@ -302,6 +302,12 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### A deferred payment's check, broadcast and reclaim answer what the wallet shows
+
+- Checking, broadcasting or reclaiming a deferred payment was answered
+  before the wallet showed the status, the spent inputs, the change or the
+  reclaim. Each answer now waits for them.
+
 ### A deferred payment can be cancelled the moment it is answered
 
 - A payment's answer (`PaymentReadyEvent`) came a moment before the wallet

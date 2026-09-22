@@ -93,6 +93,9 @@ void main() {
     return result;
   }
 
+  Future<BitcoinUtxo> funding() async =>
+      (await storage().getUTXOs(walletId, includeSpent: true)).firstWhere((u) => u.key == _fundingKey);
+
   Future<void> until(Future<bool> Function() condition, String what) async {
     final deadline = DateTime.now().add(const Duration(seconds: 10));
     while (!await condition()) {
@@ -100,9 +103,6 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 20));
     }
   }
-
-  Future<BitcoinUtxo> funding() async =>
-      (await storage().getUTXOs(walletId, includeSpent: true)).firstWhere((u) => u.key == _fundingKey);
 
   Future<PaymentReadyEvent> pay(String invoiceId, {int amount = 100000}) async {
     final ready = await send<PaymentReadyEvent>(
@@ -175,8 +175,9 @@ void main() {
         (e) => e.requestId == 'c1');
     expect(checked.success, isTrue, reason: checked.error);
     expect(checked.networkStatus, DeferredNetworkStatus.notFound);
-    await until(() async => (await storage().getDeferredPayment(walletId, ready.txid))!.lastCheckedAt != null,
-        'the status projected');
+    // Each answer comes once the read model shows it: no polling.
+    expect((await storage().getDeferredPayment(walletId, ready.txid))!.lastCheckedAt, isNotNull,
+        reason: 'the answer came before the read model had the status');
     final notFound = (await list(GetDeferredPaymentsQuery(
             walletId: walletId, lastNetworkStatuses: const {DeferredNetworkStatus.notFound}, queryId: 'q4')))
         .payments
@@ -191,11 +192,9 @@ void main() {
     expect(broadcast.success, isTrue, reason: broadcast.error);
     expect(broadcast.networkStatus, DeferredNetworkStatus.seenOnNetwork);
     expect(arc.seen, contains(ready.txid));
-    await until(() async => (await funding()).status == UTXOStatus.spent, 'the input spent');
+    expect((await funding()).status, UTXOStatus.spent);
     expect((await funding()).spentInTxId, ready.txid);
-    await until(
-        () async => (await storage().getDeferredPayment(walletId, ready.txid))!.state == DeferredPaymentState.seen,
-        'the payment seen');
+    expect((await storage().getDeferredPayment(walletId, ready.txid))!.state, DeferredPaymentState.seen);
 
     // Again: idempotent.
     final again = await send<DeferredPaymentBroadcastEvent>(
@@ -346,7 +345,7 @@ void main() {
         CheckDeferredPaymentStatusCommand(walletId: walletId, txid: first.txid, requestId: 'r4'),
         (e) => e.requestId == 'r4');
     expect(checked.networkStatus, DeferredNetworkStatus.rejected);
-    await until(() async => (await funding()).status == UTXOStatus.available, 'the input released');
+    expect((await funding()).status, UTXOStatus.available);
 
     final second = await payAgain('inv-repay-rejected');
 
@@ -384,11 +383,8 @@ void main() {
         (e) => e.requestId == 'ds1');
     expect(checked.networkStatus, DeferredNetworkStatus.doubleSpendAttempted);
 
-    await until(
-        () async =>
-            (await storage().getDeferredPayment(walletId, ready.txid))!.lastNetworkStatus ==
-            DeferredNetworkStatus.doubleSpendAttempted,
-        'the status recorded');
+    expect((await storage().getDeferredPayment(walletId, ready.txid))!.lastNetworkStatus,
+        DeferredNetworkStatus.doubleSpendAttempted);
     final listed = await list(GetDeferredPaymentsQuery(walletId: walletId, queryId: 'ds2'));
     // Old code: failed (not listed as outstanding) and its input released.
     expect(listed.payments.map((p) => (p.txid, p.state, p.lastNetworkStatus)),
@@ -417,11 +413,8 @@ void main() {
     expect(broadcast.success, isFalse);
     expect(broadcast.networkStatus, DeferredNetworkStatus.doubleSpendAttempted);
     expect(broadcast.error, contains('DOUBLE_SPEND_ATTEMPTED'));
-    await until(
-        () async =>
-            (await storage().getDeferredPayment(walletId, ready.txid))!.lastNetworkStatus ==
-            DeferredNetworkStatus.doubleSpendAttempted,
-        'the status recorded');
+    expect((await storage().getDeferredPayment(walletId, ready.txid))!.lastNetworkStatus,
+        DeferredNetworkStatus.doubleSpendAttempted);
     expect((await storage().getDeferredPayment(walletId, ready.txid))!.state, DeferredPaymentState.outstanding);
     expect((await funding()).status, UTXOStatus.reserved);
   });
@@ -439,9 +432,6 @@ void main() {
     expect(checked.networkStatus, DeferredNetworkStatus.doubleSpendAttempted);
     expect(checked.competingTxids, [rival]);
 
-    await until(
-        () async => (await storage().getDeferredPayment(walletId, ready.txid))!.competingTxids.isNotEmpty,
-        'the competing txids recorded');
     final listed = await list(GetDeferredPaymentsQuery(walletId: walletId, queryId: 'pk2'));
     expect(listed.payments.single.txid, ready.txid);
     expect(listed.payments.single.state, DeferredPaymentState.outstanding);
@@ -469,10 +459,8 @@ void main() {
         (e) => e.requestId == 'c2');
     expect(checked.networkStatus, DeferredNetworkStatus.rejected);
 
-    await until(() async => (await funding()).status == UTXOStatus.available, 'the input released');
-    await until(
-        () async => (await storage().getDeferredPayment(walletId, ready.txid))!.state == DeferredPaymentState.failed,
-        'the payment failed');
+    expect((await funding()).status, UTXOStatus.available);
+    expect((await storage().getDeferredPayment(walletId, ready.txid))!.state, DeferredPaymentState.failed);
     final failed = await list(GetDeferredPaymentsQuery(
         walletId: walletId, states: const {DeferredPaymentState.failed}, queryId: 'q7'));
     expect(failed.payments.single.lastNetworkStatus, DeferredNetworkStatus.rejected);
@@ -520,12 +508,9 @@ void main() {
 
     // The network has the self-spend: the input is spent by it and the
     // payment is reclaimed. Not before: that is the one resolution point.
-    await until(() async => (await funding()).status == UTXOStatus.spent, 'the held input spent');
+    expect((await funding()).status, UTXOStatus.spent);
     expect((await funding()).spentInTxId, reclaimTxid);
-    await until(
-        () async =>
-            (await storage().getDeferredPayment(walletId, ready.txid))!.state == DeferredPaymentState.reclaimed,
-        'the payment reclaimed');
+    expect((await storage().getDeferredPayment(walletId, ready.txid))!.state, DeferredPaymentState.reclaimed);
     final row = (await storage().getDeferredPayment(walletId, ready.txid))!;
     expect(row.resolutionReason, contains(reclaimTxid));
     expect(row.resolvedAt, isNotNull);
@@ -554,10 +539,6 @@ void main() {
         reason: 'and the payment names the self-spend that reclaimed it');
 
     // Balance restored less the fee.
-    await until(
-        () async => (await storage().getPaymentUTXOs(walletId))
-            .any((u) => u.satoshis == BigInt.from(1000000) - policyFee),
-        'the reclaimed output spendable');
     expect((await storage().getPaymentUTXOs(walletId)).map((u) => u.satoshis),
         [BigInt.from(1000000) - policyFee]);
 
@@ -596,10 +577,7 @@ void main() {
     expect(refusedCancel.success, isFalse);
     expect(refusedCancel.error, contains('reclaim'));
 
-    await until(
-        () async =>
-            (await storage().getDeferredPayment(walletId, ready.txid))!.state == DeferredPaymentState.reclaimed,
-        'the payment reclaimed');
+    expect((await storage().getDeferredPayment(walletId, ready.txid))!.state, DeferredPaymentState.reclaimed);
     final again = await send<DeferredPaymentReclaimedEvent>(
         ReclaimDeferredPaymentCommand(walletId: walletId, txid: ready.txid, requestId: 'rf3'),
         (e) => e.requestId == 'rf3');

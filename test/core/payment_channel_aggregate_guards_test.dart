@@ -25,6 +25,7 @@ import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 import '../actors/channel_test_fixtures.dart';
 import '../actors/in_memory_event_store.dart';
 import 'package:libspiffy/src/models/fee_rate.dart';
+import '../mocks/test_channel_timing.dart';
 
 const _channelId = 'channel-guards';
 const _persistenceId = 'PaymentChannel_$_channelId';
@@ -63,7 +64,7 @@ ServerAcceptanceRecordedEvent _serverAcceptanceRecorded() =>
       version: 2,
     );
 
-ChannelAcceptedEvent _accepted() => ChannelAcceptedEvent(
+ChannelAcceptedEvent _accepted({int? lockTimeUnix}) => ChannelAcceptedEvent(
       channelId: _channelId,
       walletId: 'wallet',
       clientPeerId: 'client-peer',
@@ -73,14 +74,14 @@ ChannelAcceptedEvent _accepted() => ChannelAcceptedEvent(
       serverAddressB58: _serverAddress,
       derivationIndex: 0,
       fundingAmountSats: _funding,
-      lockTimeUnix: _nowUnix() + 86400,
+      lockTimeUnix: lockTimeUnix ?? _nowUnix() + 86400,
       version: 1,
     );
 
 /// Journal of a server-side channel that is open with balances
-/// client = funding, server = 0.
-List<Event> _openServerChannel() => [
-      _accepted(),
+/// client = funding, server = 0, locked until [lockTimeUnix] (a day ahead).
+List<Event> _openServerChannel({int? lockTimeUnix}) => [
+      _accepted(lockTimeUnix: lockTimeUnix),
       RefundCountersignedEvent(
           channelId: _channelId, serverSignatureHex: '30' * 36, version: 2),
       ChannelOpenedEvent(
@@ -107,7 +108,7 @@ AcknowledgePaymentCommand _ack({
     server: BigInt.from(server),
     client: BigInt.from(client),
   );
-  return AcknowledgePaymentCommand(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
+  return AcknowledgePaymentCommand(timing: testChannelTiming, feeRate: const FeeRate(satoshis: 100, bytes: 1000),
       channelId: _channelId,
       amountSats: BigInt.from(amount),
       paymentTxHex: paymentTxHex,
@@ -123,9 +124,10 @@ AcknowledgePaymentCommand _ack({
 }
 
 /// Journal of a client-side channel that is open with balances
-/// client = funding, server = 0 (the client journals its own request).
-List<Event> _openClientChannel() => [
-      _requested(lockTimeUnix: _nowUnix() + 86400),
+/// client = funding, server = 0 (the client journals its own request),
+/// locked until [lockTimeUnix] (a day ahead).
+List<Event> _openClientChannel({int? lockTimeUnix}) => [
+      _requested(lockTimeUnix: lockTimeUnix ?? _nowUnix() + 86400),
       _serverAcceptanceRecorded(),
       RefundCountersignedEvent(
           channelId: _channelId, serverSignatureHex: '30' * 36, version: 3),
@@ -146,7 +148,7 @@ RecordPaymentCommand _record({
   required int server,
   int sequence = 1,
 }) =>
-    RecordPaymentCommand(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
+    RecordPaymentCommand(timing: testChannelTiming, feeRate: const FeeRate(satoshis: 100, bytes: 1000),
       channelId: _channelId,
       amountSats: BigInt.from(amount),
       sequenceNumber: sequence,
@@ -210,13 +212,101 @@ void main() {
   // The adversarial channel review (22 Sep): the client journals its request
   // only for a positive amount, and the server accepted any amount a
   // channel_request named.
+  // Bead libspiffy-ywbk: the server acknowledged payments until the second
+  // the refund became valid, and accepted any lock time the client named.
+  group('ywbk: channel timing', () {
+    AcceptChannelCommand accept(int lockTimeUnix) => AcceptChannelCommand(
+          timing: testChannelTiming,
+          channelId: _channelId,
+          walletId: 'wallet',
+          clientPeerId: 'client-peer',
+          clientPubKeyHex: _clientPub,
+          clientAddressB58: _clientAddress,
+          serverPubKeyHex: _serverPub,
+          serverAddressB58: _serverAddress,
+          derivationIndex: 1,
+          fundingAmountSats: _funding,
+          lockTimeUnix: lockTimeUnix,
+        );
+
+    test('a channel is not accepted with less than the minimum lifetime to run', () async {
+      final ref = await spawn(const []);
+
+      // Old code: accepted, and the client could refund at the lock time.
+      expectRejected(await ref.ask<dynamic>(accept(_nowUnix() + 3000), _ask), 'minimum lifetime');
+      expect(journalLength(), 0);
+    });
+
+    test('a channel is not accepted with a lock time that is a block height', () async {
+      final ref = await spawn(const []);
+
+      expectRejected(await ref.ask<dynamic>(accept(900000), _ask), 'block height');
+      expect(journalLength(), 0);
+    });
+
+    test('a channel with the minimum lifetime to run is accepted', () async {
+      final ref = await spawn(const []);
+
+      expect(await ref.ask<dynamic>(accept(_nowUnix() + 3700), _ask), _applied);
+    });
+
+    test('a channel shorter than the minimum lifetime is not requested', () async {
+      final ref = await spawn(const []);
+
+      final reply = await ref.ask<dynamic>(
+          RequestChannelCommand(
+            timing: testChannelTiming,
+            channelId: _channelId,
+            walletId: 'wallet',
+            clientPeerId: 'client-peer',
+            serverPeerId: 'server-peer',
+            clientPubKeyHex: _clientPub,
+            clientAddressB58: _clientAddress,
+            derivationIndex: 0,
+            fundingAmountSats: _funding,
+            lockTimeDurationSeconds: 3000,
+          ),
+          _ask);
+
+      expectRejected(reply, 'minimum lifetime');
+      expect(journalLength(), 0);
+    });
+
+    test('the server acknowledges no payment within the settlement margin', () async {
+      // Five minutes to the lock time; the margin is ten.
+      final ref = await spawn(_openServerChannel(lockTimeUnix: _nowUnix() + 300));
+
+      final reply = await ref.ask<dynamic>(_ack(amount: 1000, client: 99000, server: 1000), _ask);
+
+      // Old code: acknowledged, five minutes before the client could
+      // refund it.
+      expectRejected(reply, 'takes no more payments');
+      expect(journalLength(), 3);
+    });
+
+    test('the server acknowledges a payment before the settlement margin', () async {
+      final ref = await spawn(_openServerChannel(lockTimeUnix: _nowUnix() + 900));
+
+      expect(await ref.ask<dynamic>(_ack(amount: 1000, client: 99000, server: 1000), _ask), _applied);
+    });
+
+    test('the client makes no payment within the settlement margin', () async {
+      final ref = await spawn(_openClientChannel(lockTimeUnix: _nowUnix() + 300));
+
+      final reply = await ref.ask<dynamic>(_record(amount: 1000, client: 99000, server: 1000), _ask);
+
+      expectRejected(reply, 'takes no more payments');
+      expect(journalLength(), 4);
+    });
+  });
+
   group('AcceptChannelCommand amount', () {
     for (final amount in [0, -1000]) {
       test('refuses a funding amount of $amount, and journals nothing', () async {
         final ref = await spawn(const []);
 
         final reply = await ref.ask<dynamic>(
-            AcceptChannelCommand(
+            AcceptChannelCommand(timing: testChannelTiming, 
               channelId: _channelId,
               walletId: 'wallet',
               clientPeerId: 'client-peer',

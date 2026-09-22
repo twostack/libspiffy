@@ -46,6 +46,7 @@ import 'channel_test_fixtures.dart';
 import 'in_memory_event_store.dart';
 import 'package:libspiffy/src/models/fee_rate.dart';
 import '../mocks/policy_rate_arc.dart';
+import '../mocks/test_channel_timing.dart';
 
 const _channelId = 'chan-marker';
 const _walletId = 'wallet';
@@ -165,7 +166,7 @@ void main() {
     final arcRef = await system.spawn('arc', () => arc);
     managerRef = await system.spawn(
       'manager',
-      () => PaymentChannelManagerActor(
+      () => PaymentChannelManagerActor(timing: testChannelTiming, 
         walletManager: walletRef,
         eventStore: store,
         cryptoService: DartSVCryptoService(),
@@ -413,7 +414,7 @@ void main() {
           clientPeerId: 'client-peer',
           serverPeerId: 'server-peer',
           fundingAmountSats: BigInt.from(100000),
-          lockTimeDurationSeconds: 3600,
+          lockTimeDurationSeconds: 7200,
           counterpartyMarker: _appMarker,
         ),
         _timeout,
@@ -542,7 +543,7 @@ void main() {
         walletId: _walletId,
         serverPeerId: 'server-peer',
         fundingAmountSats: 100000,
-        lockTimeDurationSeconds: 3600,
+        lockTimeDurationSeconds: 7200,
         context: 'address-label',
         counterpartyMarker: _appMarker,
       ));

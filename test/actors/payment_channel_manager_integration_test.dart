@@ -24,6 +24,7 @@ import 'package:libspiffy/src/storage/in_memory_secure_storage.dart';
 
 import 'channel_test_fixtures.dart';
 import '../mocks/policy_rate_arc.dart';
+import '../mocks/test_channel_timing.dart';
 
 void main() {
   late Isar isar;
@@ -75,7 +76,7 @@ void main() {
     final policyArc1 = await actorSystem.spawn('policy-arc-${DateTime.now().microsecondsSinceEpoch}', () => PolicyRateArc());
     channelManagerRef = await actorSystem.spawn(
       'channel-manager',
-      () => PaymentChannelManagerActor(
+      () => PaymentChannelManagerActor(timing: testChannelTiming, 
             arcActor: policyArc1,
         walletManager: walletManagerRef,
         eventStore: eventStore,
@@ -137,7 +138,7 @@ void main() {
         clientPeerId: 'peer-client',
         serverPeerId: 'peer-server',
         fundingAmountSats: BigInt.from(100000),
-        lockTimeDurationSeconds: 3600,
+        lockTimeDurationSeconds: 7200,
       ), sender: probe.ref);
       
       // Assert - Wait for response
@@ -184,7 +185,7 @@ void main() {
         clientPeerId: 'peer-client',
         serverPeerId: 'peer-server',
         fundingAmountSats: BigInt.from(100000),
-        lockTimeDurationSeconds: 3600,
+        lockTimeDurationSeconds: 7200,
       ), sender: probe.ref);
       
       // Assert
@@ -225,7 +226,7 @@ void main() {
         clientPubKeyHex: clientPubKey.toString(),
         clientAddressB58: clientAddress.toString(),
         fundingAmountSats: BigInt.from(100000),
-        lockTimeUnix: now + 3600,
+        lockTimeUnix: now + 7200,
       ), sender: probe.ref);
       
       // Assert
@@ -419,7 +420,7 @@ void main() {
         clientPeerId: 'peer-client',
         serverPeerId: 'peer-server',
         fundingAmountSats: BigInt.from(100000),
-        lockTimeDurationSeconds: 3600,
+        lockTimeDurationSeconds: 7200,
       ), sender: clientProbe.ref);
       
       final initiateResponse = await clientProbe.expectMsgType<ChannelInitiatedResponse>(
@@ -602,7 +603,7 @@ void main() {
       final policyArc2 = await clientActorSystem.spawn('policy-arc-${DateTime.now().microsecondsSinceEpoch}', () => PolicyRateArc());
       final clientChannelManager = await clientActorSystem.spawn(
         'channel-manager',
-        () => PaymentChannelManagerActor(
+        () => PaymentChannelManagerActor(timing: testChannelTiming, 
               arcActor: policyArc2,
           walletManager: clientWalletManager,
           eventStore: clientEventStore,
@@ -653,7 +654,7 @@ void main() {
       final policyArc3 = await serverActorSystem.spawn('policy-arc-${DateTime.now().microsecondsSinceEpoch}', () => PolicyRateArc());
       final serverChannelManager = await serverActorSystem.spawn(
         'channel-manager',
-        () => PaymentChannelManagerActor(
+        () => PaymentChannelManagerActor(timing: testChannelTiming, 
               arcActor: policyArc3,
           walletManager: serverWalletManager,
           eventStore: serverEventStore,
@@ -694,7 +695,7 @@ void main() {
           clientPeerId: 'peer-client',
           serverPeerId: 'peer-server',
           fundingAmountSats: BigInt.from(100000),
-          lockTimeDurationSeconds: 3600,
+          lockTimeDurationSeconds: 7200,
         ), sender: clientProbe.ref);
         
         final initiateResponse = await clientProbe.expectMsgType<ChannelInitiatedResponse>(
@@ -942,7 +943,7 @@ void main() {
           clientPeerId: 'peer-client-$i',
           serverPeerId: 'peer-server',
           fundingAmountSats: BigInt.from(100000 * (i + 1)),
-          lockTimeDurationSeconds: 3600,
+          lockTimeDurationSeconds: 7200,
         ), sender: probes[i].ref);
       }
       

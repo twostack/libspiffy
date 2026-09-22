@@ -57,6 +57,7 @@ import 'p2p_test_helpers.dart';
 import '../spv/testnet_proof_fixture.dart';
 import 'package:libspiffy/src/models/fee_rate.dart';
 import '../mocks/offline_arc.dart';
+import '../mocks/test_channel_timing.dart';
 
 const _alicePeer = 'alice-peer';
 
@@ -83,6 +84,9 @@ class _Node {
   /// Boot with this node's own channel peer id passed to
   /// LibSpiffyActorSystem.initialize (`channelPeerId`, libspiffy-36f).
   bool announcePeerId = false;
+
+  /// The channel timing this node boots with (bead libspiffy-ywbk).
+  ChannelTiming channelTiming = testChannelTiming;
 
   /// Rewrites this node's outgoing channel messages (see [_link]).
   Future<Map<String, dynamic>> Function(
@@ -167,6 +171,7 @@ class _Node {
       #secureStorage: secureStorage,
       #arcService: arc,
       if (announcePeerId) #channelPeerId: peerId,
+      #channelTiming: channelTiming,
     });
     // setupTestHeaders stores the real header of block 1239645, which the
     // fundWallet proof of [_parentTxid] leads to: the server SPV-validates
@@ -984,7 +989,18 @@ void main() {
 
     test('ClaimRefundCommand uses the retained refund once the lockTime has '
         'passed, and is refused before', () async {
+      // A channel that expires within the test: both nodes run a
+      // three-second minimum lifetime (bead libspiffy-ywbk).
+      final short = ChannelTiming(
+          settlementMargin: const Duration(seconds: 1), minimumLifetime: const Duration(seconds: 3));
+      alice.channelTiming = short;
+      bob.channelTiming = short;
+      await alice.restart();
+      await bob.restart();
       final row = await openFunded(lockTimeDurationSeconds: 3);
+      // The server goes silent, which is what a refund claim is for: left
+      // running, it settles the channel itself when the margin begins.
+      await bob._halt();
 
       // A process restart: the claim runs on the journal alone.
       await alice.restart();

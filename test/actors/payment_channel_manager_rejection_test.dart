@@ -31,6 +31,8 @@ import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 import 'channel_test_fixtures.dart';
 import 'in_memory_event_store.dart';
 import '../mocks/policy_rate_arc.dart';
+import '../mocks/test_channel_timing.dart';
+import 'package:libspiffy/src/models/channel_timing.dart';
 
 const _walletId = 'channel-wallet';
 const _channelId = 'chan-reject';
@@ -104,7 +106,9 @@ void main() {
     await channelEvents.close();
   });
 
-  Future<void> spawn({required bool asClient}) async {
+  /// [timing] is the node's channel timing; `null` is a node configured to do
+  /// no channels (bead libspiffy-ywbk).
+  Future<void> spawn({required bool asClient, ChannelTiming? Function()? timing}) async {
     walletStub = _SigningWalletManager(
       pubKeyHex: asClient ? clientPubKeyHex : serverPubKeyHex,
       addressB58: asClient ? clientAddressB58 : serverAddressB58,
@@ -117,7 +121,7 @@ void main() {
     arc = RecordingArcActor();
     final policyArc1 = await actorSystem.spawn('arc', () => arc);
     final spvRef = await actorSystem.spawn('spv', () => spv);
-    manager = PaymentChannelManagerActor(
+    manager = PaymentChannelManagerActor(timing: timing == null ? testChannelTiming : timing(), 
             arcActor: policyArc1,
       walletManager: walletRef,
       eventStore: eventStore = _ReadCountingEventStore(),
@@ -358,6 +362,38 @@ void main() {
       expect(opened.success, isFalse);
       expect(opened.error, contains('contested'));
       expect(broadcast.whereType<ChannelOpenedEvent>(), isEmpty);
+    });
+  });
+
+  // Bead libspiffy-ywbk: the timing is the operator's, with no default. A
+  // node given none does no channels, and says why.
+  group('ywbk: a node with no channel timing', () {
+    test('requests no channel', () async {
+      await spawn(asClient: true, timing: () => null);
+
+      final initiated = await managerRef.ask<ChannelInitiatedResponse>(
+        InitiateChannelMessage(
+          channelId: _channelId,
+          walletId: _walletId,
+          clientPeerId: 'client-peer',
+          serverPeerId: 'server-peer',
+          fundingAmountSats: _funding,
+          lockTimeDurationSeconds: 86400,
+        ),
+        _timeout,
+      );
+
+      expect(initiated.success, isFalse);
+      expect(initiated.error, contains('No channel timing'));
+    });
+
+    test('accepts no channel', () async {
+      await spawn(asClient: false, timing: () => null);
+
+      final accepted = await acceptChannel();
+
+      expect(accepted.success, isFalse);
+      expect(accepted.error, contains('No channel timing'));
     });
   });
 

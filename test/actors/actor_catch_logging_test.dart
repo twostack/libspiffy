@@ -24,6 +24,7 @@ import 'package:libspiffy/src/storage/in_memory_wallet_storage.dart';
 import '../integration/isar_test_helper.dart';
 import 'in_memory_event_store.dart';
 import '../mocks/policy_rate_arc.dart';
+import '../mocks/test_channel_timing.dart';
 
 const _mnemonic = 'abandon abandon abandon abandon abandon abandon '
     'abandon abandon abandon abandon abandon about';
@@ -121,7 +122,7 @@ void main() {
       final probe = await actorSystem.spawn('probe-m0xj', () => _Collector());
       await actorSystem.spawn(
         'channel-manager-no-storage',
-        () => PaymentChannelManagerActor(
+        () => PaymentChannelManagerActor(timing: testChannelTiming, 
           walletManager: probe,
           eventStore: InMemoryEventStore(),
           cryptoService: DartSVCryptoService(),
@@ -140,7 +141,7 @@ void main() {
       records.clear();
       await actorSystem.spawn(
         'channel-manager-with-storage',
-        () => PaymentChannelManagerActor(
+        () => PaymentChannelManagerActor(timing: testChannelTiming, 
           walletManager: probe,
           eventStore: InMemoryEventStore(),
           cryptoService: DartSVCryptoService(),
@@ -159,7 +160,7 @@ void main() {
       final replyTo = await actorSystem.spawn('reply-to', () => replies);
       final manager = await actorSystem.spawn(
         'payment-channel-manager',
-        () => PaymentChannelManagerActor(
+        () => PaymentChannelManagerActor(timing: testChannelTiming, 
           walletManager: probe,
           eventStore: InMemoryEventStore(),
           cryptoService: DartSVCryptoService(),

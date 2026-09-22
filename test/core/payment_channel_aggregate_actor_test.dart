@@ -26,6 +26,7 @@ import 'package:libspiffy/src/core/channel_events.dart';
 import 'package:libspiffy/src/core/payment_channel_aggregate.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:libspiffy/src/actors/payment_channel_messages.dart';
+import '../mocks/test_channel_timing.dart';
 
 /// Test mnemonic for generating predictable keys
 const testMnemonic = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
@@ -138,7 +139,7 @@ void main() {
       final clientKeys = await PrecomputedKeys.generate(cryptoService);
 
       // Send a request command from probe with pre-computed keys
-      final requestCmd = RequestChannelCommand(
+      final requestCmd = RequestChannelCommand(timing: testChannelTiming, 
         channelId: 'channel-actor-test',
         walletId: 'wallet-123',
         clientPeerId: 'peer-client',
@@ -147,7 +148,7 @@ void main() {
         clientAddressB58: clientKeys.addressB58,
         derivationIndex: clientKeys.derivationIndex,
         fundingAmountSats: BigInt.from(1000),
-        lockTimeDurationSeconds: 3600,
+        lockTimeDurationSeconds: 7200, // Above the one-hour minimum: the acceptance comes later (ywbk).
       );
 
       aggregateRef.tell(requestCmd, sender: probe.ref);
@@ -186,7 +187,7 @@ void main() {
 
       // 1. Request channel
       final clientKeys = await PrecomputedKeys.generate(cryptoService);
-      final requestCmd = RequestChannelCommand(
+      final requestCmd = RequestChannelCommand(timing: testChannelTiming, 
         channelId: 'channel-seq-test',
         walletId: 'wallet-123',
         clientPeerId: 'peer-client',
@@ -195,7 +196,7 @@ void main() {
         clientAddressB58: clientKeys.addressB58,
         derivationIndex: clientKeys.derivationIndex,
         fundingAmountSats: BigInt.from(1000),
-        lockTimeDurationSeconds: 3600,
+        lockTimeDurationSeconds: 7200, // Above the one-hour minimum: the acceptance comes later (ywbk).
       );
 
       aggregateRef.tell(requestCmd, sender: probe.ref);
@@ -208,7 +209,7 @@ void main() {
 
       // 2. Accept channel
       final serverKeys = await PrecomputedKeys.generate(cryptoService);
-      final acceptCmd = AcceptChannelCommand(
+      final acceptCmd = AcceptChannelCommand(timing: testChannelTiming, 
         channelId: 'channel-seq-test',
         walletId: 'wallet-123',
         clientPeerId: 'peer-client',
@@ -278,7 +279,7 @@ void main() {
 
       // Send commands to both channels concurrently
       final keys1 = await PrecomputedKeys.generate(cryptoService);
-      final cmd1 = RequestChannelCommand(
+      final cmd1 = RequestChannelCommand(timing: testChannelTiming, 
         channelId: 'channel-1',
         walletId: 'wallet-123',
         clientPeerId: 'peer-client-1',
@@ -287,11 +288,11 @@ void main() {
         clientAddressB58: keys1.addressB58,
         derivationIndex: keys1.derivationIndex,
         fundingAmountSats: BigInt.from(1000),
-        lockTimeDurationSeconds: 3600,
+        lockTimeDurationSeconds: 7200, // Above the one-hour minimum: the acceptance comes later (ywbk).
       );
 
       final keys2 = await PrecomputedKeys.generate(cryptoService);
-      final cmd2 = RequestChannelCommand(
+      final cmd2 = RequestChannelCommand(timing: testChannelTiming, 
         channelId: 'channel-2',
         walletId: 'wallet-123',
         clientPeerId: 'peer-client-2',
@@ -341,7 +342,7 @@ void main() {
 
       // Create a channel and make some state changes
       final clientKeys = await PrecomputedKeys.generate(cryptoService);
-      final requestCmd = RequestChannelCommand(
+      final requestCmd = RequestChannelCommand(timing: testChannelTiming, 
         channelId: 'channel-recovery-test',
         walletId: 'wallet-123',
         clientPeerId: 'peer-client',
@@ -350,7 +351,7 @@ void main() {
         clientAddressB58: clientKeys.addressB58,
         derivationIndex: clientKeys.derivationIndex,
         fundingAmountSats: BigInt.from(1000),
-        lockTimeDurationSeconds: 3600,
+        lockTimeDurationSeconds: 7200, // Above the one-hour minimum: the acceptance comes later (ywbk).
       );
 
       aggregateRef1.tell(requestCmd, sender: probe1.ref);
@@ -359,7 +360,7 @@ void main() {
       final requestEvent = response[0] as ChannelRequestedEvent;
 
       final serverKeys = await PrecomputedKeys.generate(cryptoService);
-      final acceptCmd = AcceptChannelCommand(
+      final acceptCmd = AcceptChannelCommand(timing: testChannelTiming, 
         channelId: 'channel-recovery-test',
         walletId: 'wallet-123',
         clientPeerId: 'peer-client',
@@ -417,7 +418,7 @@ void main() {
 
       // Try to request a channel with zero amount (should fail)
       final keys = await PrecomputedKeys.generate(cryptoService);
-      final invalidCmd = RequestChannelCommand(
+      final invalidCmd = RequestChannelCommand(timing: testChannelTiming, 
         channelId: 'channel-validation-test',
         walletId: 'wallet-123',
         clientPeerId: 'peer-client',
@@ -426,7 +427,7 @@ void main() {
         clientAddressB58: keys.addressB58,
         derivationIndex: keys.derivationIndex,
         fundingAmountSats: BigInt.zero, // Invalid!
-        lockTimeDurationSeconds: 3600,
+        lockTimeDurationSeconds: 7200, // Above the one-hour minimum: the acceptance comes later (ywbk).
       );
 
       // Send invalid command - actor will handle error internally, no response
@@ -456,6 +457,10 @@ void main() {
       // shortly after we issue the expire command.
       final clientKeys = await PrecomputedKeys.generate(cryptoService);
       final requestCmd = RequestChannelCommand(
+        // A one-second channel needs a one-second minimum (bead
+        // libspiffy-ywbk).
+        timing: ChannelTiming(
+            settlementMargin: const Duration(milliseconds: 500), minimumLifetime: const Duration(seconds: 1)),
         channelId: 'channel-expire-test',
         walletId: 'wallet-123',
         clientPeerId: 'peer-client',

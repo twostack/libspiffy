@@ -37,6 +37,7 @@ import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 import 'package:libspiffy/src/storage/in_memory_wallet_storage.dart';
 
 import 'in_memory_event_store.dart';
+import '../mocks/test_channel_timing.dart';
 
 /// A channel id no journal and no aggregate knows.
 const _ghost = 'channel-that-does-not-exist';
@@ -53,7 +54,7 @@ void main() {
     final wallet = await system.spawn('wallet', () => _SilentWallet());
     manager = await system.spawn(
       'channel-manager',
-      () => PaymentChannelManagerActor(
+      () => PaymentChannelManagerActor(timing: testChannelTiming, 
         walletManager: wallet,
         eventStore: InMemoryEventStore(),
         cryptoService: DartSVCryptoService(),

@@ -5,6 +5,7 @@ import 'package:logging/logging.dart';
 
 import '../core/channel_events.dart' as ch;
 import '../core/wallet_commands.dart';
+import '../models/channel_timing.dart';
 import '../models/fee_rate.dart';
 import 'coordinator_messages.dart' as coord;
 import 'payment_channel_messages.dart';
@@ -62,7 +63,9 @@ class ChannelP2PAdapter {
     required Stream<ch.ChannelEvent> channelEvents,
     required String walletId,
     required String myPeerId,
+    ChannelTiming? timing,
   })  : _channelManager = channelManager,
+        _timing = timing,
         _walletManager = walletManager,
         _arcActor = arcActor,
         _emitEvent = emitEvent,
@@ -89,7 +92,42 @@ class ChannelP2PAdapter {
   void updatePeerId(String peerId) => _myPeerId = peerId;
   void updateReplyTo(ActorRef replyTo) => _replyTo = replyTo;
 
+  /// The node's channel timing (bead libspiffy-ywbk); null for a node that
+  /// does no channels, which then settles nothing by itself.
+  final ChannelTiming? _timing;
+
+  /// The settlement armed for each channel this node serves, by channel id.
+  final Map<String, Timer> _settlements = {};
+
+  /// Closes [channelId], a channel this node serves locked until
+  /// [lockTimeUnix], when its settlement margin begins — or [now] (bead
+  /// libspiffy-ywbk).
+  ///
+  /// The server's payments exist only once its settlement is on the network
+  /// before the client's refund becomes valid, and nothing used to settle a
+  /// channel unless the app remembered to close it. The close is the
+  /// ordinary one: the settlement is broadcast before the channel is
+  /// journaled closed (V-140), and a failure reaches the host as an
+  /// [coord.ErrorEvent]. Re-armed at startup by the coordinator.
+  void settleBeforeLockTime(String channelId, int lockTimeUnix, {bool now = false}) {
+    final timing = _timing;
+    if (timing == null || _disposed) return;
+    _settlements.remove(channelId)?.cancel();
+    final settleBy = DateTime.fromMillisecondsSinceEpoch(timing.settleByUnix(lockTimeUnix) * 1000);
+    final wait = now ? Duration.zero : settleBy.difference(DateTime.now());
+    _settlements[channelId] = Timer(wait.isNegative ? Duration.zero : wait, () {
+      _settlements.remove(channelId);
+      if (_disposed) return;
+      handleCloseChannel(coord.CloseChannelCommand(
+          channelId: channelId, reason: 'settling ${timing.settlementMargin.inSeconds} s before the lock time'));
+    });
+  }
+
   void dispose() {
+    for (final timer in _settlements.values) {
+      timer.cancel();
+    }
+    _settlements.clear();
     _disposed = true;
     _eventSubscription?.cancel();
   }
@@ -769,6 +807,13 @@ class ChannelP2PAdapter {
     final clientInfo = _clientChannelInfo[event.channelId];
     final peers = _channelPeers[event.channelId];
 
+    // The server settles by itself when the margin begins (bead
+    // libspiffy-ywbk).
+    final serverInfo = _serverChannelInfo[event.channelId];
+    if (serverInfo != null) {
+      settleBeforeLockTime(event.channelId, serverInfo.lockTimeUnix);
+    }
+
     if (clientInfo != null && peers != null) {
       // We are the client - notify server that channel is open
       _emitP2PMessage(peers.serverPeerId, 'channel_open', {
@@ -1411,6 +1456,7 @@ class ChannelP2PAdapter {
       _walletId;
 
   void _cleanupChannel(String channelId) {
+    _settlements.remove(channelId)?.cancel();
     _channelPeers.remove(channelId);
     _pendingRequests.remove(channelId);
     _clientChannelInfo.remove(channelId);

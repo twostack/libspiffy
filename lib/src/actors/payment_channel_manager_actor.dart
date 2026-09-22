@@ -31,6 +31,7 @@ import '../core/wallet_events.dart'
         TransactionRecordedEvent;
 import '../models/bitcoin_transaction.dart';
 import '../models/bitcoin_utxo.dart' show UTXOStatus;
+import '../models/channel_timing.dart';
 import '../models/fee_rate.dart';
 import '../services/ancestor_chain_service.dart';
 import '../services/crypto_service.dart';
@@ -122,6 +123,15 @@ class PaymentChannelManagerActor extends Actor {
   /// before the caller is failed and its pending entry dropped.
   final Duration _signingTimeout;
 
+  /// See the constructor's `timing`.
+  final ChannelTiming? _timing;
+
+  /// The node's channel timing, or a refusal naming its absence.
+  ChannelTiming _timingOrThrow() =>
+      _timing ??
+      (throw StateError('No channel timing is configured (ChannelTiming): this node does no '
+          'channels, so none is requested, accepted or paid'));
+
   int _signRequestSeq = 0;
 
   PaymentChannelManagerActor({
@@ -160,7 +170,14 @@ class PaymentChannelManagerActor extends Actor {
     /// Nothing here is a correctness hole; the first item is a capability
     /// that simply does not work.
     ReadModelStorage? storage,
+    /// When channels stop taking payments and how long they must run (bead
+    /// libspiffy-ywbk). Required, with no default: the operator chooses it.
+    /// Null is a node that does no channels — requests, acceptances and
+    /// payments are refused, while an existing channel can still be closed,
+    /// expired or refunded.
+    required ChannelTiming? timing,
   })  : _walletManager = walletManager,
+        _timing = timing,
         _spvActor = spvActor,
         _storage = storage,
         _eventStore = eventStore,
@@ -517,6 +534,7 @@ class PaymentChannelManagerActor extends Actor {
         derivationIndex: addressResponse.derivationIndex,
         fundingAmountSats: msg.fundingAmountSats,
         lockTimeDurationSeconds: msg.lockTimeDurationSeconds,
+        timing: _timingOrThrow(),
         context: msg.context,
         counterpartyMarker: msg.counterpartyMarker,
       );
@@ -613,6 +631,7 @@ class PaymentChannelManagerActor extends Actor {
         derivationIndex: addressResponse.derivationIndex,
         fundingAmountSats: msg.fundingAmountSats,
         lockTimeUnix: msg.lockTimeUnix,
+        timing: _timingOrThrow(),
         context: msg.context,
         serverPeerId: msg.serverPeerId,
         counterpartyMarker: msg.counterpartyMarker,
@@ -1132,6 +1151,7 @@ class PaymentChannelManagerActor extends Actor {
           proposedClientBalance: pending.newClientBalance,
           proposedServerBalance: pending.newServerBalance,
           feeRate: pending.feeRate,
+          timing: pending.timing,
         );
 
         final events = await _askAggregate(pending.channelId, aggregateRef, ackCmd);
@@ -1159,6 +1179,7 @@ class PaymentChannelManagerActor extends Actor {
           purpose: pending.purpose,
           invoiceId: pending.invoiceId,
           feeRate: pending.feeRate,
+          timing: pending.timing,
         );
         
         final events = await _askAggregate(pending.channelId, aggregateRef, recordCmd);
@@ -2268,6 +2289,7 @@ class PaymentChannelManagerActor extends Actor {
       final newClientBalance = stateResponse.clientBalanceSats - msg.amountSats;
       final newServerBalance = stateResponse.serverBalanceSats + msg.amountSats;
       
+      final timing = _timingOrThrow();
       final feeRate = await _policyRate();
       final paymentTxResult = await _channelBuilder.buildPaymentTransaction(
         fundingTxId: stateResponse.fundingTxId!,
@@ -2312,6 +2334,7 @@ class PaymentChannelManagerActor extends Actor {
         purpose: msg.purpose,
         invoiceId: msg.invoiceId,
         feeRate: feeRate,
+        timing: timing,
       );
       _pendingPaymentSignatures[correlationId] = pending;
 
@@ -2375,6 +2398,7 @@ class PaymentChannelManagerActor extends Actor {
       // The rate the transaction's fee is held to before the server signs
       // it: a payment the server cannot get mined is not a payment (bead
       // libspiffy-zs4l).
+      final timing = _timingOrThrow();
       final feeRate = await _policyRate();
 
       // Step 3: Sign the payment TX as server
@@ -2415,6 +2439,7 @@ class PaymentChannelManagerActor extends Actor {
         fundingAmountSats: stateResponse.fundingAmountSats,
         isAcknowledgment: true,
         feeRate: feeRate,
+        timing: timing,
       );
       _pendingPaymentSignatures[correlationId] = pending;
 
@@ -3149,6 +3174,9 @@ class _PaymentSignatureContext {
   /// libspiffy-zs4l).
   final FeeRate feeRate;
 
+  /// The node's channel timing (bead libspiffy-ywbk).
+  final ChannelTiming timing;
+
   _PaymentSignatureContext({
     required this.channelId,
     this.originalSender,
@@ -3166,6 +3194,7 @@ class _PaymentSignatureContext {
     this.fundingAmountSats,
     this.isAcknowledgment = false,
     required this.feeRate,
+    required this.timing,
   });
 }
 

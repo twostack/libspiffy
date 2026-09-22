@@ -31,6 +31,7 @@ import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 
 import 'channel_test_fixtures.dart';
 import 'in_memory_event_store.dart';
+import '../mocks/test_channel_timing.dart';
 
 const _walletId = 'kyw-wallet';
 const _channelId = 'chan-kyw';
@@ -83,7 +84,7 @@ void main() {
     final policyArc1 = await actorSystem.spawn('arc-${DateTime.now().microsecondsSinceEpoch}', () => RecordingArcActor());
     managerRef = await actorSystem.spawn(
       'channel-manager',
-      () => PaymentChannelManagerActor(
+      () => PaymentChannelManagerActor(timing: testChannelTiming, 
             arcActor: policyArc1,
         walletManager: walletRef,
         eventStore: InMemoryEventStore(),

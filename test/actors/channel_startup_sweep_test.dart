@@ -20,8 +20,12 @@ import 'package:dactor/dactor.dart';
 import 'package:test/test.dart';
 
 import 'package:libspiffy/src/actors/coordinator_messages.dart' as coord;
+import 'package:libspiffy/src/actors/payment_channel_messages.dart';
 import 'package:libspiffy/src/actors/wallet_coordinator_actor.dart';
+import 'package:libspiffy/src/core/channel_events.dart';
 import 'package:libspiffy/src/models/payment_channel.dart';
+
+import '../mocks/test_channel_timing.dart';
 import 'package:libspiffy/src/storage/in_memory_wallet_storage.dart';
 
 const _wallet = 'sweep-wallet';
@@ -247,6 +251,80 @@ void main() {
         reason: 'a report that cannot be made must not stop the coordinator');
     expect(events.whereType<coord.UnfinishedChannelsFoundEvent>(), isEmpty);
   });
+
+  // Bead libspiffy-ywbk: a server settles each channel when its settlement
+  // margin begins, and that timer does not outlive the process. At startup
+  // the coordinator arms it again for every channel this node serves.
+  group('ywbk: settlement is re-armed at startup', () {
+    late _Recorder channelManager;
+
+    Future<void> startWithTiming() async {
+      channelManager = _Recorder();
+      final managerRef = await system.spawn('channel-manager', () => channelManager);
+      final channelEvents = StreamController<ChannelEvent>.broadcast();
+      addTearDown(channelEvents.close);
+      final coordinator = WalletCoordinatorActor(
+        walletManager: noop,
+        invoiceCoordinator: noop,
+        paymentCoordinator: noop,
+        spvActor: noop,
+        arcActor: noop,
+        headerSyncActor: noop,
+        benfordCoordinator: noop,
+        channelManager: managerRef,
+        walletProjection: noop,
+        storage: storage,
+        channelEvents: channelEvents.stream,
+        channelTiming: testChannelTiming,
+      );
+      await system.spawn('coordinator-${DateTime.now().microsecondsSinceEpoch}', () => coordinator);
+      // The re-arming runs off the mailbox.
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+    }
+
+    PaymentChannel served(String id, PaymentChannelState state, int lockTimeUnix) => PaymentChannel(
+          channelId: id,
+          walletId: _wallet,
+          role: PaymentChannelRole.server,
+          clientPeerId: 'client-peer',
+          serverPeerId: 'server-peer',
+          clientPubKeyHex: '02${'ab' * 32}',
+          serverPubKeyHex: '03${'cd' * 32}',
+          fundingAmountSats: BigInt.from(50000),
+          lockTimeUnix: lockTimeUnix,
+          state: state,
+        );
+
+    int nowUnix() => DateTime.now().millisecondsSinceEpoch ~/ 1000;
+
+    test('a served channel inside its margin, and one left closing, are settled; the rest wait', () async {
+      await storage.storeWallet(_wallet, 'Sweep');
+      // Five minutes to the lock time; the margin is ten.
+      await storage.storePaymentChannel(served('due', PaymentChannelState.open, nowUnix() + 300));
+      await storage.storePaymentChannel(served('interrupted', PaymentChannelState.closing, nowUnix() + 86400));
+      await storage.storePaymentChannel(served('later', PaymentChannelState.open, nowUnix() + 86400));
+      await storage.storePaymentChannel(served('done', PaymentChannelState.closed, nowUnix() + 300));
+      // A client's channel inside the margin is its server's to settle.
+      await storage.storePaymentChannel(PaymentChannel(
+        channelId: 'paying',
+        walletId: _wallet,
+        role: PaymentChannelRole.client,
+        clientPeerId: 'client-peer',
+        serverPeerId: 'server-peer',
+        clientPubKeyHex: '02${'ab' * 32}',
+        serverPubKeyHex: '03${'cd' * 32}',
+        fundingAmountSats: BigInt.from(50000),
+        lockTimeUnix: nowUnix() + 300,
+        state: PaymentChannelState.open,
+      ));
+
+      await startWithTiming();
+
+      // Old code: nothing, ever, after a restart.
+      expect(channelManager.received.whereType<CloseChannelMessage>().map((c) => c.channelId),
+          unorderedEquals(['due', 'interrupted']));
+    });
+  });
 }
 
 class _Noop extends Actor {
@@ -259,4 +337,11 @@ class _ThrowingStorage extends InMemoryWalletStorage {
   @override
   Future<List<String>> listWallets() async =>
       throw StateError('the read model is unavailable');
+}
+
+/// Records what it is told.
+class _Recorder extends Actor {
+  final List<dynamic> received = [];
+  @override
+  Future<void> onMessage(dynamic message) async => received.add(message);
 }

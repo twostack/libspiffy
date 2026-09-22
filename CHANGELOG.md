@@ -302,6 +302,36 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### A channel settles before its lock time, and runs long enough to — breaking
+
+- **Nothing settled a channel before its refund became valid.** The server
+  acknowledged payments until the second of the lock time, accepted any
+  lock time the client proposed (even a block height), and settled only if
+  the app remembered to close. A settlement broadcast at or after the lock
+  time races the client's refund, and on BSV the first spend seen wins.
+- New `ChannelTiming` (exported): `settlementMargin` and `minimumLifetime`,
+  both required. There are no defaults: the operator chooses them.
+  - `LibSpiffyActorSystem.initialize(channelTiming:)` and
+    `initializeLibSpiffy(channelTiming:)` take it.
+  - A node given none requests, accepts and pays no channels, and says why.
+    Its existing channels can still be closed, expired and refunded.
+- Within the margin of the lock time, no payment is made or acknowledged.
+- The server settles each channel it serves when the margin begins, through
+  the ordinary close. The timers are re-armed at startup, and a server
+  channel left `closing` is settled at once.
+- A channel is requested or accepted only with at least the minimum
+  lifetime to run, and its lock time must be a time rather than a block
+  height. Request comfortably more than your server's minimum: the server
+  measures the remaining time when it accepts.
+- Breaking:
+  - `PaymentChannelManagerActor` takes a required `timing` (nullable).
+  - `RequestChannelCommand`, `AcceptChannelCommand`, `RecordPaymentCommand`
+    and `AcknowledgePaymentCommand` take a required `timing`.
+- The README's channel section is rewritten for the protocol as it now
+  stands. It documents one known risk: a settlement's fee is fixed when its
+  payment is acknowledged, so a policy rate rise before the server settles
+  can leave the settlement underpaying.
+
 ### A channel's server refuses a funding amount that is not positive
 
 - The client journals a channel request only for a positive amount; the

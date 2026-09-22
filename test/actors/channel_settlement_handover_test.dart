@@ -17,6 +17,7 @@ import 'package:libspiffy/src/actors/channel_p2p_adapter.dart';
 import 'package:libspiffy/src/actors/coordinator_messages.dart' as coord;
 import 'package:libspiffy/src/actors/payment_channel_messages.dart';
 import 'package:libspiffy/src/core/channel_events.dart';
+import 'package:libspiffy/src/models/channel_timing.dart';
 import 'package:libspiffy/src/models/fee_rate.dart';
 
 import '../mocks/policy_rate_arc.dart';
@@ -32,7 +33,7 @@ void main() {
   late StreamController<ChannelEvent> events;
   late ChannelP2PAdapter adapter;
 
-  Future<void> spawn(String myPeerId) async {
+  Future<void> spawn(String myPeerId, {ChannelTiming? timing}) async {
     adapter = ChannelP2PAdapter(
       channelManager: await system.spawn('manager', () => manager),
       walletManager: await system.spawn('wallet', () => _Probe()),
@@ -41,6 +42,7 @@ void main() {
       channelEvents: events.stream,
       walletId: 'w',
       myPeerId: myPeerId,
+      timing: timing,
     );
     adapter.updateReplyTo(await system.spawn('coordinator', () => _Probe()));
   }
@@ -207,6 +209,102 @@ void main() {
     await settle();
 
     expect(manager.senders.whereType<ActorRef>(), hasLength(1));
+  });
+
+  // Bead libspiffy-ywbk: nothing settled a channel unless the app remembered
+  // to close it, and a settlement at or after the lock time races the
+  // client's refund.
+  group('ywbk: the server settles when the settlement margin begins', () {
+    // Lock times three seconds out settle at least a second later: time
+    // enough to see that nothing settled early.
+    final timing = ChannelTiming(settlementMargin: const Duration(seconds: 1), minimumLifetime: const Duration(seconds: 2));
+    int nowUnix() => DateTime.now().millisecondsSinceEpoch ~/ 1000;
+
+    ChannelAcceptedEvent accepted(int lockTimeUnix) => ChannelAcceptedEvent(
+          channelId: _channelId,
+          walletId: 'w',
+          clientPeerId: _client,
+          clientPubKeyHex: '02' * 33,
+          clientAddressB58: 'mqCnSf8i6kmaQaJ54HjQ8EUJnuK4AnCv12',
+          serverPubKeyHex: '03' * 33,
+          serverAddressB58: 'mkHS9ne12qx9pS9VojpwU5xtRd4T7X7ZUt',
+          derivationIndex: 3,
+          fundingAmountSats: BigInt.from(100000),
+          lockTimeUnix: lockTimeUnix,
+          serverPeerId: _server,
+        );
+
+    ChannelOpenedEvent opened() => ChannelOpenedEvent(
+          channelId: _channelId,
+          fundingTxId: 'ab' * 32,
+          fundingOutputIndex: 0,
+          fundingTxHex: '00',
+          initialClientBalanceSats: BigInt.from(100000),
+          initialServerBalanceSats: BigInt.zero,
+        );
+
+    /// The closes told to the manager within [within].
+    Future<List<CloseChannelMessage>> closesWithin(Duration within) async {
+      final deadline = DateTime.now().add(within);
+      while (manager.received.whereType<CloseChannelMessage>().isEmpty && DateTime.now().isBefore(deadline)) {
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+      }
+      return manager.received.whereType<CloseChannelMessage>().toList();
+    }
+
+    test('an open channel is closed when the margin begins, with a reply target', () async {
+      await spawn(_server, timing: timing);
+      events.add(accepted(nowUnix() + 3));
+      events.add(opened());
+      await settle();
+      expect(manager.received.whereType<CloseChannelMessage>(), isEmpty, reason: 'settled before the margin began');
+
+      // Old code: never.
+      final closes = await closesWithin(const Duration(seconds: 5));
+
+      expect(closes.map((c) => c.channelId), [_channelId]);
+      final i = manager.received.indexOf(closes.single);
+      expect(manager.senders[i], isNotNull, reason: 'a failed settlement must reach the host');
+    });
+
+    test('a channel inside its margin, or left closing, is settled now', () async {
+      await spawn(_server, timing: timing);
+
+      adapter.settleBeforeLockTime(_channelId, nowUnix() + 86400, now: true);
+
+      expect((await closesWithin(const Duration(seconds: 1))).map((c) => c.channelId), [_channelId]);
+    });
+
+    test('a channel that ends first is not settled', () async {
+      await spawn(_server, timing: timing);
+      events.add(accepted(nowUnix() + 3));
+      events.add(opened());
+      await settle();
+
+      events.add(closed());
+      await settle();
+
+      expect(await closesWithin(const Duration(seconds: 3)), isEmpty);
+    });
+
+    test('the client does not settle: the server does', () async {
+      await spawn(_client, timing: timing);
+      events.add(ChannelRequestedEvent(
+        channelId: _channelId,
+        walletId: 'w',
+        clientPeerId: _client,
+        serverPeerId: _server,
+        clientPubKeyHex: '02' * 33,
+        clientAddressB58: 'mqCnSf8i6kmaQaJ54HjQ8EUJnuK4AnCv12',
+        derivationIndex: 7,
+        fundingAmountSats: BigInt.from(100000),
+        lockTimeUnix: nowUnix() + 3,
+      ));
+      events.add(opened());
+      await settle();
+
+      expect(await closesWithin(const Duration(seconds: 3)), isEmpty);
+    });
   });
 }
 

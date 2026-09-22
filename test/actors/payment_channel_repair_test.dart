@@ -34,6 +34,7 @@ import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 
 import 'channel_test_fixtures.dart';
 import 'in_memory_event_store.dart';
+import '../mocks/test_channel_timing.dart';
 
 const _channelId = 'chan-repair';
 const _walletId = 'client-wallet';
@@ -69,7 +70,7 @@ void main() {
     final arcRef = await system.spawn('arc', () => arc);
     managerRef = await system.spawn(
       'manager',
-      () => PaymentChannelManagerActor(
+      () => PaymentChannelManagerActor(timing: testChannelTiming, 
         walletManager: walletRef,
         eventStore: store,
         cryptoService: DartSVCryptoService(),

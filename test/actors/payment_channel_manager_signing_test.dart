@@ -27,6 +27,7 @@ import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 import 'channel_test_fixtures.dart';
 import 'in_memory_event_store.dart';
 import '../mocks/policy_rate_arc.dart';
+import '../mocks/test_channel_timing.dart';
 
 const _walletId = 'server-wallet';
 const _channelId = 'chan-sign';
@@ -72,7 +73,7 @@ void main() {
     );
     final policyArc1 = await actorSystem.spawn('policy-arc-${DateTime.now().microsecondsSinceEpoch}', () => PolicyRateArc());
     final walletRef = await actorSystem.spawn('wallet-manager', () => walletStub);
-    manager = PaymentChannelManagerActor(
+    manager = PaymentChannelManagerActor(timing: testChannelTiming, 
             arcActor: policyArc1,
       walletManager: walletRef,
       eventStore: eventStore = InMemoryEventStore(),

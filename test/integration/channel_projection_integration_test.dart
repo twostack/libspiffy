@@ -16,6 +16,7 @@ import 'package:libspiffy/src/actors/payment_channel_manager_actor.dart';
 import 'package:libspiffy/src/actors/wallet_messages.dart';
 import 'package:libspiffy/src/storage/payment_channel_entity.dart';
 import 'isar_test_helper.dart';
+import '../mocks/test_channel_timing.dart';
 
 void main() {
   group('Channel Projection Integration Tests', () {
@@ -61,7 +62,7 @@ void main() {
       // Spawn PaymentChannelManagerActor manually
       channelManager = await actorSystem.spawn(
         'test-channel-manager',
-        () => PaymentChannelManagerActor(
+        () => PaymentChannelManagerActor(timing: testChannelTiming, 
           walletManager: libspiffy.walletManager,
           eventStore: libspiffy.eventStore,
           cryptoService: libspiffy.cryptoService,
@@ -127,7 +128,7 @@ void main() {
           clientPeerId: 'client-peer-1',
           serverPeerId: 'server-peer-1',
           fundingAmountSats: BigInt.from(100000),
-          lockTimeDurationSeconds: 3600,
+          lockTimeDurationSeconds: 7200,
         ),
         sender: cmdReceiver,
       );
@@ -191,7 +192,7 @@ void main() {
           clientPeerId: 'client-peer',
           serverPeerId: 'server-peer',
           fundingAmountSats: BigInt.from(200000),
-          lockTimeDurationSeconds: 3600,
+          lockTimeDurationSeconds: 7200,
         ),
         sender: initiateReceiver,
       );
@@ -230,7 +231,7 @@ void main() {
           clientPubKeyHex: initiateResponse.clientPubKeyHex,
           clientAddressB58: initiateResponse.clientAddressB58,
           fundingAmountSats: BigInt.from(200000),
-          lockTimeUnix: DateTime.now().millisecondsSinceEpoch ~/ 1000 + 3600,
+          lockTimeUnix: DateTime.now().millisecondsSinceEpoch ~/ 1000 + 7200,
         ),
         sender: acceptReceiver,
       );

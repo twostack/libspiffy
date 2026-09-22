@@ -21,6 +21,7 @@ import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 import 'package:libspiffy/src/storage/in_memory_secure_storage.dart';
 
 import 'in_memory_event_store.dart';
+import '../mocks/test_channel_timing.dart';
 
 void main() {
   late TestActorSystem actorSystem;
@@ -43,7 +44,7 @@ void main() {
     );
     channelManager = await actorSystem.spawn(
       'channel-manager',
-      () => PaymentChannelManagerActor(
+      () => PaymentChannelManagerActor(timing: testChannelTiming, 
         walletManager: walletManager,
         eventStore: eventStore,
         cryptoService: cryptoService,
@@ -66,7 +67,7 @@ void main() {
           clientPeerId: 'client',
           serverPeerId: 'server',
           fundingAmountSats: BigInt.from(100000),
-          lockTimeDurationSeconds: 3600,
+          lockTimeDurationSeconds: 7200,
         ),
         const Duration(seconds: 10),
       );

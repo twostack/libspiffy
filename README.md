@@ -1090,25 +1090,78 @@ See [Plugin API Guide](docs/script-plugin-api-guide.md) for the full interface r
 
 ### 11. Payment Channels
 
-Off-chain micropayment channels with on-chain funding and settlement:
+One-way payment channels: a client locks funds in a 2-of-2 output shared with
+a server, then pays the server in small increments off-chain. The server
+settles on-chain once.
 
 ```dart
-// Open a channel via coordinator
+// A node that does channels says when they stop taking payments and how long
+// they must run. There is no default: without it, no channel is requested,
+// accepted or paid.
+await libspiffy.initialize(
+  // ...
+  channelPeerId: myPeerId,
+  channelTiming: ChannelTiming(
+    settlementMargin: const Duration(hours: 1),
+    minimumLifetime: const Duration(days: 1),
+  ),
+);
+
+// Client: open, pay, close.
 coordinator.tell(OpenChannelCommand(
   walletId: 'my-wallet',
-  counterpartyPubKey: counterpartyKey,
-  fundingAmount: BigInt.from(1000000),
+  serverPeerId: serverPeerId,
+  fundingAmountSats: 1000000,
+  lockTimeDurationSeconds: 7 * 24 * 3600,
 ));
-
-// Make off-chain payments
-coordinator.tell(MakeChannelPaymentCommand(
-  channelId: 'channel-123',
-  amount: BigInt.from(1000),
-));
-
-// Close and settle on-chain
-coordinator.tell(CloseChannelCommand(channelId: 'channel-123'));
+coordinator.tell(ChannelPayCommand(channelId: channelId, walletId: 'my-wallet', amountSats: 1000));
+coordinator.tell(CloseChannelCommand(channelId: channelId));
 ```
+
+Peer messages travel over the app's own transport: deliver what arrives as
+`ChannelP2PReceived`, and send what the coordinator emits as
+`ChannelP2PMessageToSendEvent`.
+
+**How the protocol protects each side.**
+
+- **Funding:** before the client broadcasts its funding, it holds a refund
+  that the server has signed. The refund returns everything to the client
+  once the lock time passes. The server opens the channel only after it
+  has SPV-validated the funding and submitted it to ARC, and ARC holds it
+  with no double spend reported.
+- **Payments:** each payment is a transaction spending the funding output,
+  signed by the client. The server checks what it pays, its fee, and the
+  client's signature. The server keeps its own signature: only the server
+  ever holds a fully signed payment, so the client cannot broadcast an
+  earlier state that pays the server less.
+- **Settlement:** the server settles by broadcasting its latest payment. It
+  does this when either side closes the channel, and on its own once the
+  settlement margin begins. It then hands the settlement to the client,
+  which records its share.
+- **Peers:** messages about a channel are accepted only from the channel's
+  counterparty, and only in that counterparty's role.
+
+**Timing (`ChannelTiming`).**
+
+- Within `settlementMargin` of the lock time, no payment is made or
+  acknowledged, and the server settles. The margin must cover:
+  - the broadcast itself;
+  - clock skew between the parties;
+  - that the network judges a time lock against the median time of the
+    last eleven blocks, not the clock.
+- A server accepts a channel only if it has at least `minimumLifetime` to
+  run, and only if its lock time is a time rather than a block height.
+- A client should ask for comfortably more than its server's minimum,
+  because the server measures the remaining time when it accepts.
+- A settlement ARC does not take leaves the channel `closing`, and the
+  host is told. Closing again retries it, and so does a restart.
+
+**Known risk: fee changes.** A payment's fee is checked against ARC's
+policy rate when the server acknowledges it, and the settlement is that
+payment. If the policy rate rises before the server settles, ARC may refuse
+the settlement. The server cannot re-sign it alone, and BSV has no
+replacement. Network fee changes are announced well in advance, so
+operators can settle their channels before a change takes effect.
 
 ### 12. Additional Coordinators
 
@@ -1182,10 +1235,15 @@ All events are persisted to EventStore and streamed to Projections for read-mode
 - **InvoiceCancelledEvent**: Invoice cancelled by user
 
 #### Payment Channel Events (PaymentChannelAggregate)
-- **ChannelOpenedEvent**: Channel created with funding parameters
-- **ChannelFundedEvent**: Funding transaction broadcast
-- **ChannelPaymentMadeEvent**: Off-chain payment within channel
-- **ChannelClosedEvent**: Channel closed and settled on-chain
+- **ChannelRequestedEvent** / **ChannelAcceptedEvent** / **ChannelRejectedEvent**: a channel proposed, accepted by the server, or refused
+- **RefundBuiltEvent** / **RefundCountersignedEvent**: the client's refund, and the server's signature on it
+- **FundingBroadcastStartedEvent** / **FundingBroadcastFailedEvent** / **FundingRecordedInWalletEvent**: the client's funding reaching the network and its wallet
+- **ChannelOpenedEvent**: the funding output the channel spends
+- **PaymentRecordedEvent** (client) / **PaymentAcknowledgedEvent** (server): a payment
+- **ChannelClosingEvent** / **ChannelClosedEvent**: a cooperative close, and its settlement
+- **ChannelExpiredEvent** / **RefundClaimedEvent**: the lock time passed; the client's refund broadcast
+- **ReturnLegRecordedInWalletEvent**: the transaction that ended the channel is in this side's wallet
+- **PaymentCountersignedEvent**: deprecated, replayed from older client journals only
 
 **Note**: All domain events are persisted to EventStore and streamed to their respective projections (WalletProjection, InvoiceProjection, ChannelProjection) for read model updates.
 

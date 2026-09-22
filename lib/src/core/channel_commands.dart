@@ -1,3 +1,4 @@
+import '../models/channel_timing.dart';
 import 'package:eventador/eventador.dart';
 
 import '../models/fee_rate.dart';
@@ -32,6 +33,10 @@ abstract class ChannelCommand extends Command {
 /// Note: clientPubKeyHex, clientAddressB58, and derivationIndex must be 
 /// pre-computed by WalletManager before creating this command.
 class RequestChannelCommand extends ChannelCommand {
+  /// The node's channel timing: a channel is requested only with at least
+  /// its minimum lifetime to run (bead libspiffy-ywbk).
+  final ChannelTiming timing;
+
   final String walletId;
   final String clientPeerId;
   final String serverPeerId;
@@ -57,6 +62,7 @@ class RequestChannelCommand extends ChannelCommand {
 
   RequestChannelCommand({
     required String channelId,
+    required this.timing,
     required this.walletId,
     required this.clientPeerId,
     required this.serverPeerId,
@@ -88,6 +94,10 @@ class RequestChannelCommand extends ChannelCommand {
 /// Note: serverPubKeyHex, serverAddressB58, and derivationIndex must be 
 /// pre-computed by WalletManager before creating this command.
 class AcceptChannelCommand extends ChannelCommand {
+  /// The node's channel timing: a channel is accepted only with at least
+  /// its minimum lifetime to run (bead libspiffy-ywbk).
+  final ChannelTiming timing;
+
   final String walletId;
   final String clientPeerId;
   final String clientPubKeyHex;
@@ -117,6 +127,7 @@ class AcceptChannelCommand extends ChannelCommand {
 
   AcceptChannelCommand({
     required String channelId,
+    required this.timing,
     required this.walletId,
     required this.clientPeerId,
     required this.clientPubKeyHex,
@@ -431,6 +442,10 @@ class RecordFundingBroadcastFailedCommand extends ChannelCommand {
 /// 1. Validation (channel open, balance sufficient, sequence incrementing)
 /// 2. PaymentRecordedEvent emission
 class RecordPaymentCommand extends ChannelCommand {
+  /// The node's channel timing: no payment within its settlement margin
+  /// of the lock time (bead libspiffy-ywbk).
+  final ChannelTiming timing;
+
   final BigInt amountSats;
   final int sequenceNumber;               // New sequence number for this payment
   final String paymentTxHex;              // Pre-built payment TX (from WalletManager)
@@ -447,6 +462,7 @@ class RecordPaymentCommand extends ChannelCommand {
 
   RecordPaymentCommand({
     required String channelId,
+    required this.timing,
     required this.amountSats,
     required this.sequenceNumber,
     required this.paymentTxHex,
@@ -480,6 +496,10 @@ class RecordPaymentCommand extends ChannelCommand {
 /// 1. Validation (sequence incrementing, amounts correct)
 /// 2. PaymentAcknowledgedEvent emission with fully signed TX
 class AcknowledgePaymentCommand extends ChannelCommand {
+  /// The node's channel timing: no payment acknowledged within its
+  /// settlement margin of the lock time (bead libspiffy-ywbk).
+  final ChannelTiming timing;
+
   final BigInt amountSats;                  // Incremental payment amount
   final String paymentTxHex;
   final String clientSignatureHex;
@@ -496,6 +516,7 @@ class AcknowledgePaymentCommand extends ChannelCommand {
 
   AcknowledgePaymentCommand({
     required String channelId,
+    required this.timing,
     required this.amountSats,
     required this.paymentTxHex,
     required this.clientSignatureHex,

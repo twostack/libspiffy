@@ -16,6 +16,7 @@ import '../models/wallet_event.dart' as wallet_event_model;
 import '../models/bitcoin_transaction.dart';
 import '../models/bitcoin_utxo.dart';
 import '../models/invoice_output_spec.dart';
+import '../models/channel_timing.dart';
 import '../models/payment_channel.dart' show PaymentChannelRole, PaymentChannelState;
 import '../models/wallet_balances.dart' show BalanceBucket, WalletBalances;
 import '../services/ancestor_chain_service.dart';
@@ -172,6 +173,10 @@ class WalletCoordinatorActor extends Actor {
     required ReadModelStorage storage,
     Stream<ChannelEvent>? channelEvents,
     String peerId = '',
+    /// The node's channel timing (bead libspiffy-ywbk): the channel adapter
+    /// settles each channel this node serves when its settlement margin
+    /// begins. Null for a node that does no channels.
+    ChannelTiming? channelTiming,
     /// Unused; accepted for compatibility with existing callers.
     void Function(wallet_event_model.WalletEvent)? broadcastWalletEvent,
     dynamic Function({
@@ -215,6 +220,7 @@ class WalletCoordinatorActor extends Actor {
         channelEvents: channelEvents,
         walletId: '',
         myPeerId: peerId,
+        timing: channelTiming,
       );
     }
   }
@@ -256,6 +262,32 @@ class WalletCoordinatorActor extends Actor {
     // Off the mailbox: it only reads the read model and emits, so it must
     // not delay the actor becoming able to serve commands.
     unawaited(_reportUnfinishedChannels());
+    unawaited(_settleServedChannels());
+  }
+
+  /// Arms, once at startup, the settlement of every channel this node
+  /// serves that is open or was closing when it stopped (bead
+  /// libspiffy-ywbk). A timer does not outlive the process, and a channel
+  /// nobody settles before its lock time is one the client's refund takes
+  /// back. A channel already inside its margin, or left closing, is settled
+  /// now.
+  Future<void> _settleServedChannels() async {
+    final adapter = _channelAdapter;
+    if (adapter == null) return;
+    try {
+      for (final walletId in await _storage.listWallets()) {
+        for (final channel in await _storage.getPaymentChannelsForWallet(walletId)) {
+          if (channel.role != PaymentChannelRole.server) continue;
+          if (channel.state == PaymentChannelState.open) {
+            adapter.settleBeforeLockTime(channel.channelId, channel.lockTimeUnix);
+          } else if (channel.state == PaymentChannelState.closing) {
+            adapter.settleBeforeLockTime(channel.channelId, channel.lockTimeUnix, now: true);
+          }
+        }
+      }
+    } catch (e, stackTrace) {
+      _log.warning('Could not arm the settlement of served channels at startup: $e', e, stackTrace);
+    }
   }
 
   /// Tells the app, once at startup, about channels that started opening and

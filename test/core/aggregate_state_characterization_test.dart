@@ -37,6 +37,7 @@ import 'package:libspiffy/src/storage/in_memory_secure_storage.dart';
 
 import '../actors/in_memory_event_store.dart';
 import 'package:libspiffy/src/models/fee_rate.dart';
+import '../mocks/test_channel_timing.dart';
 
 const _walletId = 'mmb-wallet';
 const _mnemonic = 'abandon abandon abandon abandon abandon abandon '
@@ -564,7 +565,7 @@ void main() {
     test('rejected commands leave the state and the journal unchanged', () async {
       final (channel, store) = await openChannel();
       Map<String, dynamic> snapshot() => PaymentChannelAggregate.channelStateToMap(channel.currentState);
-      RecordPaymentCommand pay({required int amount, required int sequence, int? client}) => RecordPaymentCommand(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
+      RecordPaymentCommand pay({required int amount, required int sequence, int? client}) => RecordPaymentCommand(timing: testChannelTiming, feeRate: const FeeRate(satoshis: 100, bytes: 1000),
             channelId: channelId,
             amountSats: BigInt.from(amount),
             sequenceNumber: sequence,
@@ -578,7 +579,7 @@ void main() {
         pay(amount: 1000000, sequence: 4),
         pay(amount: 1000, sequence: 3),
         pay(amount: 1000, sequence: 4, client: 1),
-        AcceptChannelCommand(
+        AcceptChannelCommand(timing: testChannelTiming, 
           channelId: channelId,
           walletId: 'w1',
           clientPeerId: 'p',

@@ -96,6 +96,10 @@ class LibSpiffyActorSystem {
   /// This node's own peer id on the payment-channel transport, as given to
   /// [initialize] (or [initializeLibSpiffy]). Empty when none was given.
   String get channelPeerId => _channelPeerId;
+
+  /// The channel timing given to [initialize] (bead libspiffy-ywbk); null
+  /// for a node that does no channels.
+  ChannelTiming? _channelTiming;
   InvoiceProjection? _invoiceProjection;
   ChannelProjection? _channelProjection;
   ActorRef? _walletProjectionRef;
@@ -237,6 +241,10 @@ class LibSpiffyActorSystem {
     // clientPeerId in channel_request and journaled with the channel
     // (libspiffy-36f). Empty when not given.
     String channelPeerId = '',
+    // When payment channels stop taking payments and settle, and how long
+    // they must run (bead libspiffy-ywbk). The operator's choice: without it
+    // this node requests, accepts and pays no channels.
+    ChannelTiming? channelTiming,
   }) async {
     // An instance is initialized once. A second call used to build a second
     // actor system and storage stack over the first (A-M5).
@@ -253,6 +261,7 @@ class LibSpiffyActorSystem {
     }
     _lifecycle = _Lifecycle.initializing;
     _channelPeerId = channelPeerId;
+    _channelTiming = channelTiming;
     try {
       await _initialize(
         actorSystem: actorSystem,
@@ -840,6 +849,7 @@ class LibSpiffyActorSystem {
       // (server) (libspiffy-fsy).
       spvActor: _spvActor!,
       storage: _walletStorage,
+      timing: _channelTiming,
     ));
     
     // Spawn ImportActor if blockchain data source is provided
@@ -877,6 +887,7 @@ class LibSpiffyActorSystem {
       channelEvents: _channelEventBroadcaster.stream,
       // This node's own peer id on the channel transport (libspiffy-36f).
       peerId: _channelPeerId,
+      channelTiming: _channelTiming,
       broadcastWalletEvent: broadcastWalletEvent,
       importWalletFromXpriv: _importActor != null ? ({
         required String walletId,
@@ -1677,6 +1688,7 @@ Future<void> initializeLibSpiffy({
   // free function got an empty channel peer id and its channels could not
   // address it.
   String channelPeerId = '',
+  ChannelTiming? channelTiming,
 }) async {
   final system = getLibSpiffySystem();
   await system.initialize(
@@ -1694,6 +1706,7 @@ Future<void> initializeLibSpiffy({
     peerAddresses: peerAddresses,
     userAgent: userAgent,
     channelPeerId: channelPeerId,
+    channelTiming: channelTiming,
   );
 }
 

@@ -35,6 +35,7 @@ import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 import 'package:libspiffy/src/storage/in_memory_secure_storage.dart';
 import '../actors/channel_test_fixtures.dart';
 import 'isar_test_helper.dart';
+import '../mocks/test_channel_timing.dart';
 
 void main() {
   group('Alice-to-Bob CQRS Payment Channel Integration', () {
@@ -112,7 +113,7 @@ void main() {
       // Spawn Alice's ChannelManager
       aliceChannelManager = await aliceActorSystem.spawn(
         'alice-channel-manager',
-        () => PaymentChannelManagerActor(
+        () => PaymentChannelManagerActor(timing: testChannelTiming, 
           walletManager: aliceWalletManager,
           eventStore: aliceEventStore,
           cryptoService: cryptoService,
@@ -170,7 +171,7 @@ void main() {
       final bobArcRef = await bobActorSystem.spawn('bob-arc', () => RecordingArcActor());
       bobChannelManager = await bobActorSystem.spawn(
         'bob-channel-manager',
-        () => PaymentChannelManagerActor(
+        () => PaymentChannelManagerActor(timing: testChannelTiming, 
           walletManager: bobWalletManager,
           arcActor: bobArcRef,
           eventStore: bobEventStore,

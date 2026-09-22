@@ -626,11 +626,15 @@ class FinalizeCloseCommand extends ChannelCommand {
   final BigInt finalClientBalanceSats;
   final BigInt finalServerBalanceSats;
 
+  /// The settlement transaction (bead libspiffy-u6q6).
+  final String settlementTxHex;
+
   FinalizeCloseCommand({
     required String channelId,
     required this.settlementTxId,
     required this.finalClientBalanceSats,
     required this.finalServerBalanceSats,
+    required this.settlementTxHex,
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,

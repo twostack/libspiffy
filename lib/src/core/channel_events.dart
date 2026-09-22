@@ -1043,11 +1043,17 @@ class ChannelClosedEvent extends ChannelEvent {
   final BigInt finalClientBalanceSats;
   final BigInt finalServerBalanceSats;
 
+  /// The settlement itself (bead libspiffy-u6q6): the server broadcast it,
+  /// and hands it to the client in `channel_closed` so the client can
+  /// record its return leg. Null in events journaled before it was kept.
+  final String? settlementTxHex;
+
   ChannelClosedEvent({
     required String channelId,
     required this.settlementTxId,
     required this.finalClientBalanceSats,
     required this.finalServerBalanceSats,
+    this.settlementTxHex,
     String? eventId,
     DateTime? timestamp,
     int? version,
@@ -1065,6 +1071,7 @@ class ChannelClosedEvent extends ChannelEvent {
         'settlementTxId': settlementTxId,
         'finalClientBalanceSats': finalClientBalanceSats.toString(),
         'finalServerBalanceSats': finalServerBalanceSats.toString(),
+        if (settlementTxHex != null) 'settlementTxHex': settlementTxHex,
       };
 
   factory ChannelClosedEvent.fromMap(Map<String, dynamic> map) {
@@ -1075,6 +1082,7 @@ class ChannelClosedEvent extends ChannelEvent {
           BigInt.parse(map['finalClientBalanceSats'] as String),
       finalServerBalanceSats:
           BigInt.parse(map['finalServerBalanceSats'] as String),
+      settlementTxHex: map['settlementTxHex'] as String?,
       eventId: map['eventId'] as String?,
       timestamp: ChannelEvent._parseTimestamp(map['timestamp']),
       version: map['version'] as int?,

@@ -418,6 +418,8 @@ class PaymentChannelManagerActor extends Actor {
           break;
         case final CloseChannelMessage msg:
           await _handleCloseChannel(msg);
+        case final RecordSettlementMessage msg:
+          await _handleRecordSettlement(msg);
           break;
         case final ExpireChannelMessage msg:
           await _handleExpireChannel(msg);
@@ -2433,22 +2435,6 @@ class PaymentChannelManagerActor extends Actor {
     }
   }
 
-  /// Close a channel cooperatively, in two journaled steps.
-  ///
-  /// [CloseChannelCommand] records the decision (`closing`); then the
-  /// settlement transaction this side holds is recorded in the wallet (bead
-  /// libspiffy-f5p2) and [FinalizeCloseCommand] closes the channel with that
-  /// txid and the final balances. `closing` is the resumable middle: a close
-  /// re-delivered after the first step (a restart, a failed wallet write)
-  /// picks up there instead of being refused, and a channel already `closed`
-  /// answers without recording anything again.
-  ///
-  /// A side that holds no fully signed settlement records nothing and does
-  /// not finalise: the channel stays `closing`, which is the honest state —
-  /// the parties agreed to close and we do not have the transaction that
-  /// ends it. Today that is every client, because the server's
-  /// countersignature is dropped where the acknowledgment reaches the
-  /// client (see the report for bead libspiffy-f5p2).
   /// The client records the server's countersignature of the latest payment
   /// (bead libspiffy-z2px).
   ///
@@ -2512,6 +2498,20 @@ class PaymentChannelManagerActor extends Actor {
     }
   }
 
+  /// Close a channel cooperatively, in two journaled steps.
+  ///
+  /// [CloseChannelCommand] records the decision (`closing`); then
+  /// [_finalizeClose] closes the channel with its settlement — the server
+  /// broadcasting it first (bead libspiffy-u6q6). `closing` is the
+  /// resumable middle: a close re-delivered after the first step (a
+  /// restart, a failed broadcast or wallet write) picks up there instead of
+  /// being refused, and a channel already `closed` answers without
+  /// recording anything again.
+  ///
+  /// A side with no settlement to close with records nothing and does not
+  /// finalise: the channel stays `closing`, which is the honest state. That
+  /// is a client until its server hands over the settlement it broadcast
+  /// ([_handleRecordSettlement]).
   Future<void> _handleCloseChannel(CloseChannelMessage msg) async {
 
     // Capture sender immediately (context.sender changes with each new message)
@@ -2568,21 +2568,34 @@ class PaymentChannelManagerActor extends Actor {
     }
   }
 
-  /// Records the settlement of a channel in `closing` in the wallet and
-  /// closes it with [FinalizeCloseCommand]; does neither when this side
-  /// holds no settlement transaction.
-  /// Returns the settlement txid it recorded, or null when this side holds
-  /// no settlement and the channel therefore stays in `closing`.
+  /// Closes a channel in `closing` with its settlement: broadcasts it (the
+  /// server's), records its return leg in the wallet and journals
+  /// [FinalizeCloseCommand]. Returns the settlement txid, or null when this
+  /// side has no settlement to close with, and the channel stays `closing`.
+  ///
+  /// The server holds the latest payment fully signed; the settlement is
+  /// its own broadcast (bead libspiffy-u6q6). The channel used to be
+  /// journaled closed with the settlement only recorded in the wallet:
+  /// nothing submitted it, and at the lock time the client's refund
+  /// returned every payment. A broadcast that fails leaves the channel
+  /// `closing`, and closing it again retries it.
+  ///
+  /// The client closes only with the settlement its server broadcast and
+  /// handed over in `channel_closed` ([handedOver], see
+  /// [_handleRecordSettlement]), never with a copy of its own.
   Future<String?> _finalizeClose(String channelId, ActorRef aggregateRef,
-      FullChannelStateResponse state) async {
-    final leg = _returnLeg(state);
+      FullChannelStateResponse state,
+      {({dartsv.Transaction tx, String hex, String ourAddress})? handedOver}) async {
+    final leg = state.role == 'server' ? _returnLeg(state) : handedOver;
     if (leg == null) {
-      _log.warning('Channel $channelId is closing and this side holds no '
-          'fully signed settlement transaction: nothing is recorded in '
-          'wallet ${state.walletId} and the channel is not finalised. The '
-          'settlement reaches the wallet when the counterparty hands it '
-          'over, as any other payment does.');
+      _log.warning('Channel $channelId is closing and '
+          '${state.role == 'server' ? 'this server holds no fully signed payment to settle it with' : 'its server has not handed over the settlement it broadcast'}'
+          ': nothing is recorded in wallet ${state.walletId} and the channel '
+          'is not finalised.');
       return null;
+    }
+    if (state.role == 'server') {
+      await _broadcastSettlement(channelId, state, leg);
     }
     final settlementTxId =
         await _recordReturnLegInWallet(channelId, state, leg);
@@ -2600,6 +2613,7 @@ class PaymentChannelManagerActor extends Actor {
           settlementTxId: settlementTxId,
           finalClientBalanceSats: state.clientBalanceSats,
           finalServerBalanceSats: state.serverBalanceSats,
+          settlementTxHex: leg.hex,
         ),
       ));
     } catch (e) {
@@ -2615,6 +2629,126 @@ class PaymentChannelManagerActor extends Actor {
       }
     }
     return settlementTxId;
+  }
+
+  /// Submits [leg], the settlement this server holds, to ARC (bead
+  /// libspiffy-u6q6). Throws unless ARC holds it uncontested.
+  ///
+  /// It is our own transaction, so ARC has standing to answer for it. The
+  /// channel owns the retry — closing again re-sends it — so it is not
+  /// queued at ARC as well (bead libspiffy-r56l). BSV has no replacement:
+  /// DOUBLE_SPEND_ATTEMPTED means another spend of the funding output (an
+  /// earlier payment, or the refund) may have got there first, and the
+  /// channel is not recorded as settled by this one.
+  Future<void> _broadcastSettlement(String channelId, FullChannelStateResponse state,
+      ({dartsv.Transaction tx, String hex, String ourAddress}) leg) async {
+    final txid = leg.tx.id;
+    final arcActor = _arcActor;
+    if (arcActor == null) {
+      throw StateError('No transaction broadcaster (ARC actor) configured: '
+          'settlement $txid of channel $channelId cannot be broadcast');
+    }
+    final reply = await _request(
+      arcActor,
+      BroadcastTransactionMessage(state.walletId, leg.hex, txid, retryOnFailure: false),
+      accept: (r) => r is BroadcastSuccessMessage || r is BroadcastFailedMessage,
+      what: 'Broadcasting settlement $txid of channel $channelId',
+      timeout: _broadcastTimeout,
+    );
+    if (reply is BroadcastFailedMessage) {
+      throw StateError('Settlement broadcast failed: ${reply.error}');
+    }
+    if (reply is! BroadcastSuccessMessage) {
+      throw StateError('Settlement broadcast failed: unexpected reply ${reply.runtimeType}');
+    }
+    if (reply.networkStatus == 'DOUBLE_SPEND_ATTEMPTED') {
+      throw StateError('Settlement $txid of channel $channelId is contested: ARC reports '
+          'another spend of the funding output');
+    }
+  }
+
+  /// The settlement [settlementTxHex] the server handed this client, as the
+  /// return leg to record, after checking it is the client's latest
+  /// payment — the transaction the client signed last — with both
+  /// signatures, spending the funding output (bead libspiffy-u6q6).
+  ({dartsv.Transaction tx, String hex, String ourAddress}) _handedOverSettlement(
+      FullChannelStateResponse state, String settlementTxHex) {
+    final channelId = state.channelId;
+    final latestHex = state.latestPaymentTxHex;
+    final clientAddress = state.clientAddressB58;
+    final clientPubKeyHex = state.clientPubKeyHex;
+    final serverPubKeyHex = state.serverPubKeyHex;
+    if (latestHex == null || latestHex.isEmpty || clientAddress == null ||
+        clientPubKeyHex == null || serverPubKeyHex == null) {
+      throw StateError('Channel $channelId holds no payment for a settlement to settle');
+    }
+    final dartsv.Transaction settlement;
+    try {
+      settlement = dartsv.Transaction.fromHex(settlementTxHex);
+    } catch (e) {
+      throw StateError('The settlement of channel $channelId does not parse: $e');
+    }
+    final latest = dartsv.Transaction.fromHex(latestHex);
+    String outputs(dartsv.Transaction tx) =>
+        tx.outputs.map((o) => '${o.satoshis}:${o.script.toHex()}').join(',');
+    final input = settlement.inputs.length == 1 ? settlement.inputs.single : null;
+    if (input == null ||
+        input.prevTxnId != latest.inputs.single.prevTxnId ||
+        input.prevTxnOutputIndex != latest.inputs.single.prevTxnOutputIndex ||
+        input.sequenceNumber != latest.inputs.single.sequenceNumber ||
+        settlement.nLockTime != latest.nLockTime ||
+        settlement.version != latest.version ||
+        outputs(settlement) != outputs(latest)) {
+      throw StateError('Settlement ${settlement.id} of channel $channelId is not the '
+          'latest payment (sequence ${state.latestSequenceNumber})');
+    }
+    final clientPubKey = dartsv.SVPublicKey.fromHex(clientPubKeyHex);
+    final serverPubKey = dartsv.SVPublicKey.fromHex(serverPubKeyHex);
+    _channelBuilder.verifyMultisigSpend(
+      signedTx: settlement,
+      redeemScript: _channelBuilder.buildMultisigRedeemScript(clientPubKey: clientPubKey, serverPubKey: serverPubKey),
+      inputValueSats: state.fundingAmountSats,
+    );
+    return (tx: settlement, hex: settlement.serialize(), ourAddress: clientAddress);
+  }
+
+  /// The client is handed the settlement its server broadcast (bead
+  /// libspiffy-u6q6): checked, recorded in the wallet, and the channel
+  /// closed with it — first journaling the close, when `channel_close` did
+  /// not arrive before it. Answered with [ChannelClosedResponse].
+  Future<void> _handleRecordSettlement(RecordSettlementMessage msg) async {
+    final originalSender = context.sender;
+    try {
+      final aggregateRef = await _channelAggregate(msg.channelId);
+      var state = _stateOrThrow(await aggregateRef.ask(ChannelStateQuery(channelId: msg.channelId)));
+      if (state.role != 'client') {
+        throw StateError('Only a client is handed its settlement; this side of channel '
+            '${msg.channelId} is the ${state.role}');
+      }
+      String? settlementTxId;
+      if (state.status != 'closed') {
+        final leg = _handedOverSettlement(state, msg.settlementTxHex);
+        if (state.status != 'closing') {
+          _broadcastEvents(await _askAggregate(msg.channelId, aggregateRef,
+              CloseChannelCommand(channelId: msg.channelId, reason: 'settled by the server')));
+          state = _stateOrThrow(await aggregateRef.ask(ChannelStateQuery(channelId: msg.channelId)));
+        }
+        settlementTxId = await _finalizeClose(msg.channelId, aggregateRef, state, handedOver: leg);
+      }
+      originalSender?.tell(ChannelClosedResponse(
+        channelId: msg.channelId,
+        success: true,
+        finalized: true,
+        settlementTxId: settlementTxId,
+      ));
+    } catch (e, stackTrace) {
+      _log.warning('Recording the settlement of channel ${msg.channelId} failed: $e', e, stackTrace);
+      originalSender?.tell(ChannelClosedResponse(
+        channelId: msg.channelId,
+        success: false,
+        error: e.toString(),
+      ));
+    }
   }
 
   /// Journals that this side's wallet now holds [txId], the transaction that
@@ -2717,8 +2851,15 @@ class PaymentChannelManagerActor extends Actor {
         }
       }
 
+      // The refund is the client's to claim; a server's return leg is its
+      // settlement, which it broadcasts before recording it (bead
+      // libspiffy-u6q6): first seen wins, and it may still get there before
+      // the refund.
       final leg = _returnLeg(state,
-          preferTxId: msg.settlementOrRefundTxId, allowRefund: true);
+          preferTxId: msg.settlementOrRefundTxId, allowRefund: state.role == 'client');
+      if (leg != null && state.role == 'server') {
+        await _broadcastSettlement(msg.channelId, state, leg);
+      }
       if (leg == null) {
         _log.warning('Channel ${msg.channelId} expired and this side holds no '
             'fully signed transaction spending its funding output'

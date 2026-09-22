@@ -591,7 +591,11 @@ void main() {
           lockTimeUnix: 1,
         ),
         FinalizeCloseCommand(
-            channelId: channelId, settlementTxId: 'aa' * 32, finalClientBalanceSats: BigInt.one, finalServerBalanceSats: BigInt.one),
+            channelId: channelId,
+            settlementTxId: 'aa' * 32,
+            finalClientBalanceSats: BigInt.one,
+            finalServerBalanceSats: BigInt.one,
+            settlementTxHex: '00'),
         ClaimRefundCommand(channelId: channelId),
         ExpireChannelCommand(channelId: channelId, observedBy: 'test'),
         StartFundingBroadcastCommand(channelId: channelId, fundingTxId: 'cd' * 32),

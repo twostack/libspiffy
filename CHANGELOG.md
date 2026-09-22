@@ -302,6 +302,34 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### A channel's server broadcasts its settlement — security
+
+- **Nothing broadcast a channel's settlement.** A cooperative close
+  recorded the server's latest fully signed payment in the wallet as a
+  pending receive and journaled the channel `closed` — the state documented
+  as "settlement broadcast" — but no code submitted it. At the lock time the
+  client's refund became valid and returned the whole funding output: the
+  server lost every payment while its wallet and channel said it had been
+  paid. A server's expiry did the same.
+- Now the server submits the settlement to ARC before the channel is
+  journaled closed, and at expiry before its return leg is recorded. A
+  settlement ARC does not take, or reports as contested
+  (`DOUBLE_SPEND_ATTEMPTED`), leaves the channel `closing` (or expired with
+  no return leg), and closing it again retries the broadcast.
+- `channel_closed` now carries the settlement (`settlementTxHex`) as well
+  as its txid. The client checks it is its latest payment with both
+  signatures, records its return leg, and closes the channel — journaling
+  the close first if `channel_close` did not arrive. It used to drop its
+  records and tell the host the channel had closed, journaling nothing. A
+  client never closes with a copy of its own, and a `channel_closed`
+  without a settlement closes nothing.
+- New `RecordSettlementMessage`; `FinalizeCloseCommand.settlementTxHex`
+  (required) and `ChannelClosedEvent.settlementTxHex` (null in older
+  journals).
+- A close or expiry that fails is now reported to the host as an
+  `ErrorEvent`: the adapter used to tell the manager with no reply target,
+  so the failure reached only the log.
+
 ### A channel server acknowledges only a payment the client signed — security
 
 - **The server acknowledged payments it could never claim.** It signed the

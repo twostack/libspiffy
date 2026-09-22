@@ -1380,6 +1380,7 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
         settlementTxId: cmd.settlementTxId,
         finalClientBalanceSats: cmd.finalClientBalanceSats,
         finalServerBalanceSats: cmd.finalServerBalanceSats,
+        settlementTxHex: cmd.settlementTxHex,
         version: currentState.version + 1,
       ),
     ];

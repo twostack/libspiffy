@@ -405,6 +405,9 @@ class RecordingArcActor extends Actor {
 
   String? failWith;
 
+  /// The status a successful broadcast is answered with.
+  String networkStatus = 'SEEN_ON_NETWORK';
+
   @override
   Future<void> onMessage(dynamic message) async {
     if (message is GetFeeRateMessage) {
@@ -416,7 +419,7 @@ class RecordingArcActor extends Actor {
     onBroadcast?.call(message);
     final error = failWith;
     context.sender?.tell(error == null
-        ? BroadcastSuccessMessage(message.txid, message.txid, networkStatus: 'SEEN_ON_NETWORK')
+        ? BroadcastSuccessMessage(message.txid, message.txid, networkStatus: networkStatus)
         : BroadcastFailedMessage(message.txid, error));
   }
 }

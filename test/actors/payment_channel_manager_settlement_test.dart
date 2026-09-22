@@ -38,7 +38,6 @@ import 'package:libspiffy/src/storage/in_memory_wallet_storage.dart';
 import 'channel_test_fixtures.dart';
 import 'in_memory_event_store.dart';
 import 'package:libspiffy/src/models/fee_rate.dart';
-import '../mocks/policy_rate_arc.dart';
 
 const _channelId = 'chan-settle';
 const _walletId = 'wallet';
@@ -221,6 +220,10 @@ void main() {
   late ActorRef walletRef;
   late ActorRef managerRef;
 
+  /// The manager's ARC: it answers the policy rate and records every
+  /// broadcast (bead libspiffy-u6q6: the server broadcasts its settlement).
+  late RecordingArcActor arc;
+
   setUpAll(LibSpiffyActorSystem.registerEventTypes);
 
   setUp(() async {
@@ -238,7 +241,8 @@ void main() {
     }
     wallet = FixtureWalletManager(key);
     walletRef = await system.spawn('wallet', () => wallet);
-    final policyArc1 = await system.spawn('policy-arc-${DateTime.now().microsecondsSinceEpoch}', () => PolicyRateArc());
+    arc = RecordingArcActor();
+    final policyArc1 = await system.spawn('arc', () => arc);
     managerRef = await system.spawn(
       'manager',
       () => PaymentChannelManagerActor(
@@ -363,6 +367,61 @@ void main() {
       expect(journal().last, isA<ChannelClosedEvent>());
       expect((journal().last as ChannelClosedEvent).settlementTxId,
           settlement.txid);
+      expect((journal().last as ChannelClosedEvent).settlementTxHex, settlement.hex,
+          reason: 'the server hands the client the settlement it broadcast');
+    });
+
+    // Bead libspiffy-u6q6: the settlement is the server's own broadcast. The
+    // channel was journaled closed with the settlement only recorded in the
+    // wallet; nothing submitted it, and the client's refund took everything
+    // back at the lock time.
+    test('u6q6: the server broadcasts the settlement before the channel is closed', () async {
+      await spawn(await serverJournalWithPayment(), key: f.serverKey);
+      arc.onBroadcast = (_) => expect(journal().whereType<ChannelClosedEvent>(), isEmpty,
+          reason: 'journaled closed before the settlement was submitted');
+
+      final closed = await close();
+
+      expect(closed.success, isTrue, reason: closed.error);
+      // Old code: nothing broadcast.
+      expect(arc.broadcasts.map((b) => b.txid), [settlement.txid]);
+      expect(arc.broadcasts.single.txHex, settlement.hex);
+      expect(arc.broadcasts.single.retryOnFailure, isFalse,
+          reason: 'the channel owns the retry: closing again re-sends it');
+    });
+
+    test('u6q6: a settlement ARC did not take leaves the channel closing, and closing again closes it', () async {
+      await spawn(await serverJournalWithPayment(), key: f.serverKey);
+      arc.failWith = 'ARC unavailable';
+
+      final failed = await close();
+      await flushWallet();
+
+      expect(failed.success, isFalse);
+      expect(failed.error, contains('ARC unavailable'));
+      expect(journal().last, isA<ChannelClosingEvent>());
+      expect(imported(), isEmpty, reason: 'a settlement the network does not have is not a receive');
+
+      arc.failWith = null;
+      final closed = await close();
+
+      expect(closed.success, isTrue, reason: closed.error);
+      expect(closed.finalized, isTrue);
+      expect(arc.broadcasts, hasLength(2));
+      expect(journal().whereType<ChannelClosedEvent>(), hasLength(1));
+    });
+
+    test('u6q6: a contested settlement does not close the channel', () async {
+      await spawn(await serverJournalWithPayment(), key: f.serverKey);
+      arc.networkStatus = 'DOUBLE_SPEND_ATTEMPTED';
+
+      final closed = await close();
+      await flushWallet();
+
+      expect(closed.success, isFalse);
+      expect(closed.error, contains('contested'));
+      expect(journal().whereType<ChannelClosedEvent>(), isEmpty);
+      expect(imported(), isEmpty);
     });
 
     test('the wallet shows the settlement in its history, its share as a '
@@ -604,45 +663,25 @@ void main() {
           QueryChannelStateMessage(channelId: _channelId), _timeout);
     }
 
-    test('the countersigned payment becomes a settlement, and the close '
-        'records it and finalises the channel', () async {
+    test('u6q6: the client does not close with its own countersigned copy', () async {
       await spawn(clientJournalWithPayment(), key: f.clientKey);
-
       await countersign();
-      final countersigned =
-          journal().whereType<PaymentCountersignedEvent>().toList();
-      expect(countersigned, hasLength(1),
-          reason: 'the server signature is the second half of the 2-of-2; '
-              'without it the client holds only a template');
-      expect(countersigned.single.fullySignedPaymentTxId, pair.settlementTxId);
+      expect(journal().whereType<PaymentCountersignedEvent>(), hasLength(1));
 
       final closed = await managerRef.ask<ChannelClosedResponse>(
         CloseChannelMessage(channelId: _channelId, reason: 'done'),
         _timeout,
       );
+
+      // Old code: finalised, with the copy recorded in the wallet and
+      // nobody broadcasting it.
       expect(closed.success, isTrue, reason: closed.error);
-      expect(closed.finalized, isTrue,
-          reason: 'the client now holds a settlement, so the close completes');
-      expect(closed.settlementTxId, pair.settlementTxId);
-      expect(journal().whereType<ChannelClosedEvent>(), hasLength(1));
-
+      expect(closed.finalized, isFalse,
+          reason: 'the client closes with the settlement its server broadcast and hands over');
+      expect(journal().whereType<ChannelClosedEvent>(), isEmpty);
+      expect(arc.broadcasts, isEmpty);
       await flushWallet();
-      final w = await readBack();
-
-      final tx = await w.storage
-          .getTransaction(pair.settlementTxId, walletId: _walletId);
-      expect(tx, isNotNull,
-          reason: "the client's return leg reaches its own history");
-      expect(tx!.status, TransactionStatus.pending);
-      expect(tx.blockHeight, isNull,
-          reason: 'nothing has proved the settlement mined');
-
-      final ours = (await w.storage.getUTXOs(_walletId))
-          .where((u) => u.txid == pair.settlementTxId)
-          .toList();
-      expect(ours, hasLength(1));
-      expect(ours.single.value.getValue(), pair.clientAmount);
-      expect(ours.single.status, UTXOStatus.pending);
+      expect(imported(), isEmpty);
     });
 
     test('a re-delivered payment_ack records nothing new', () async {
@@ -697,6 +736,118 @@ void main() {
     });
   });
 
+  group('libspiffy-u6q6: the client closes with the settlement its server broadcast', () {
+    late _PaymentPair pair;
+
+    setUp(() async {
+      f = await ChannelRefundFixture.create(channelId: _channelId);
+      pair = await _PaymentPair.build(f, serverAmountSats: BigInt.from(30000));
+    });
+
+    List<Event> clientJournalWithPayment() => [
+          ...f.openClientJournal(walletId: _walletId),
+          PaymentRecordedEvent(
+            channelId: _channelId,
+            amountSats: BigInt.from(30000),
+            sequenceNumber: 1,
+            paymentTxHex: pair.templateHex,
+            paymentTxId: pair.templateTxId,
+            clientSignatureHex: pair.clientSignatureHex,
+            newClientBalanceSats: f.amountSats - BigInt.from(30000),
+            newServerBalanceSats: BigInt.from(30000),
+            version: 7,
+          ),
+        ];
+
+    Future<ChannelClosedResponse> handOver(String hex) => managerRef.ask<ChannelClosedResponse>(
+        RecordSettlementMessage(channelId: _channelId, settlementTxHex: hex), _timeout);
+
+    test('the settlement handed over closes the channel and reaches the wallet', () async {
+      await spawn(clientJournalWithPayment(), key: f.clientKey);
+
+      final closed = await handOver(pair.settlementHex);
+
+      expect(closed.success, isTrue, reason: closed.error);
+      expect(closed.finalized, isTrue);
+      expect(closed.settlementTxId, pair.settlementTxId);
+      expect(journal().whereType<ChannelClosingEvent>(), hasLength(1),
+          reason: 'closed from open: channel_close had not arrived');
+      final ended = journal().whereType<ChannelClosedEvent>().single;
+      expect(ended.settlementTxId, pair.settlementTxId);
+      expect(arc.broadcasts, isEmpty, reason: 'the server broadcast it; the client records it');
+
+      await flushWallet();
+      final w = await readBack();
+      final tx = await w.storage.getTransaction(pair.settlementTxId, walletId: _walletId);
+      expect(tx, isNotNull, reason: "the client's return leg reaches its own history");
+      expect(tx!.status, TransactionStatus.pending);
+      final ours = (await w.storage.getUTXOs(_walletId)).where((u) => u.txid == pair.settlementTxId).toList();
+      expect(ours.single.value.getValue(), pair.clientAmount);
+      expect(ours.single.status, UTXOStatus.pending);
+    });
+
+    test('a channel already closing is closed by it; a second hand-over records nothing', () async {
+      await spawn(clientJournalWithPayment(), key: f.clientKey);
+      await managerRef.ask<ChannelClosedResponse>(CloseChannelMessage(channelId: _channelId), _timeout);
+
+      expect((await handOver(pair.settlementHex)).finalized, isTrue);
+      expect((await handOver(pair.settlementHex)).success, isTrue);
+      await flushWallet();
+
+      expect(journal().whereType<ChannelClosingEvent>(), hasLength(1));
+      expect(journal().whereType<ChannelClosedEvent>(), hasLength(1));
+      expect(imported(), hasLength(1));
+    });
+
+    test('a settlement that is not the latest payment is refused', () async {
+      await spawn(clientJournalWithPayment(), key: f.clientKey);
+      final other = await _PaymentPair.build(f, serverAmountSats: BigInt.from(40000));
+
+      final closed = await handOver(other.settlementHex);
+
+      expect(closed.success, isFalse);
+      expect(closed.error, contains('not the latest payment'));
+      expect(journal().whereType<ChannelClosedEvent>(), isEmpty);
+      await flushWallet();
+      expect(imported(), isEmpty);
+    });
+
+    test('an unsigned settlement is refused: it is not a transaction the network has', () async {
+      await spawn(clientJournalWithPayment(), key: f.clientKey);
+
+      final closed = await handOver(pair.templateHex);
+
+      expect(closed.success, isFalse);
+      expect(journal().whereType<ChannelClosedEvent>(), isEmpty);
+    });
+
+    test('a server is not handed a settlement', () async {
+      await spawn([
+        f.serverAccepted(version: 1),
+        RefundCountersignedEvent(
+          channelId: _channelId,
+          serverSignatureHex: f.serverSignatureHex,
+          signedRefundTxHex: f.signedRefundTxHex(),
+          version: 2,
+        ),
+        ChannelOpenedEvent(
+          channelId: _channelId,
+          fundingTxId: f.fundingTxId,
+          fundingOutputIndex: 0,
+          fundingTxHex: f.fundingTxHex,
+          initialClientBalanceSats: f.amountSats,
+          initialServerBalanceSats: BigInt.zero,
+          version: 3,
+        ),
+      ], key: f.serverKey);
+
+      final closed = await handOver(pair.settlementHex);
+
+      expect(closed.success, isFalse);
+      expect(closed.error, contains('Only a client'));
+    });
+  });
+
   group('libspiffy-f5p2: an expiry records the refund', () {
     setUp(() async {
       f = await ChannelRefundFixture.create(
@@ -710,6 +861,73 @@ void main() {
           ExpireChannelMessage(channelId: _channelId, observedBy: 'client'),
           _timeout,
         );
+
+    /// A server's journal past its lockTime, holding one acknowledged payment.
+    Future<({List<Event> journal, _Settlement settlement})> serverPastLockTime() async {
+      final settlement = await _Settlement.build(f, serverAmountSats: BigInt.from(30000));
+      return (
+        settlement: settlement,
+        journal: <Event>[
+          f.serverAccepted(version: 1),
+          RefundCountersignedEvent(
+            channelId: _channelId,
+            serverSignatureHex: f.serverSignatureHex,
+            signedRefundTxHex: f.signedRefundTxHex(),
+            version: 2,
+          ),
+          ChannelOpenedEvent(
+            channelId: _channelId,
+            fundingTxId: f.fundingTxId,
+            fundingOutputIndex: 0,
+            fundingTxHex: f.fundingTxHex,
+            initialClientBalanceSats: f.amountSats,
+            initialServerBalanceSats: BigInt.zero,
+            version: 3,
+          ),
+          PaymentAcknowledgedEvent(
+            channelId: _channelId,
+            amountSats: BigInt.from(30000),
+            sequenceNumber: 1,
+            newClientBalanceSats: f.amountSats - BigInt.from(30000),
+            newServerBalanceSats: BigInt.from(30000),
+            fullySignedPaymentTxHex: settlement.hex,
+            serverSignatureHex: f.serverSignatureHex,
+            version: 4,
+          ),
+        ],
+      );
+    }
+
+    // Bead libspiffy-u6q6: at expiry the server's return leg is its
+    // settlement, which it recorded in the wallet without submitting it.
+    test('u6q6: a server\'s expiry broadcasts its settlement before recording it', () async {
+      final server = await serverPastLockTime();
+      await spawn(server.journal, key: f.serverKey);
+
+      final expired = await expire();
+      await flushWallet();
+
+      expect(expired.success, isTrue, reason: expired.error);
+      expect(arc.broadcasts.map((b) => b.txid), [server.settlement.txid]);
+      expect(imported().single.txid, server.settlement.txid);
+    });
+
+    test('u6q6: a server\'s settlement ARC did not take at expiry is not recorded', () async {
+      final server = await serverPastLockTime();
+      await spawn(server.journal, key: f.serverKey);
+      arc.failWith = 'missing inputs';
+
+      final expired = await expire();
+      await flushWallet();
+
+      // Old code: success, with a receive recorded that the refund may
+      // already have taken.
+      expect(expired.success, isFalse);
+      expect(expired.error, contains('missing inputs'));
+      expect(imported(), isEmpty);
+      expect(journal().whereType<ChannelExpiredEvent>(), hasLength(1),
+          reason: 'the expiry is a fact either way');
+    });
 
     test('the fully signed refund reaches the client wallet as an unproven '
         'receive', () async {

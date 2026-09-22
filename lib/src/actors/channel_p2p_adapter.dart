@@ -599,18 +599,25 @@ class ChannelP2PAdapter {
     ));
   }
 
+  /// The server closed the channel with the settlement it broadcast (bead
+  /// libspiffy-u6q6). The client checks and records it, and the channel's
+  /// own [ch.ChannelClosedEvent] then tells the host.
+  ///
+  /// This used to drop the channel's records and tell the host it had
+  /// closed, journaling nothing: the client's channel stayed open, its
+  /// return leg never reached the wallet, and the settlement it was told of
+  /// was one nobody had broadcast.
   void _handleChannelClosed(String fromPeerId, Map<String, dynamic> payload) {
     final channelId = payload['channelId'] as String;
-    final settlementTxId = payload['settlementTxId'] as String?;
-    final walletId = _walletFor(channelId);
-
-    _cleanupChannel(channelId);
-
-    _emitEvent(coord.ChannelClosedEvent(
-      walletId: walletId,
-      channelId: channelId,
-      settlementTxId: settlementTxId,
-    ));
+    final settlementTxHex = payload['settlementTxHex'] as String?;
+    if (settlementTxHex == null || settlementTxHex.isEmpty) {
+      _log.warning('channel_closed for $channelId carries no settlement: nothing '
+          'is recorded and the channel is not closed on this side');
+      return;
+    }
+    _channelManager.tell(
+        RecordSettlementMessage(channelId: channelId, settlementTxHex: settlementTxHex),
+        sender: _replyTo);
   }
 
   void _handleChannelError(String fromPeerId, Map<String, dynamic> payload) {
@@ -871,20 +878,18 @@ class ChannelP2PAdapter {
   }
 
   void _onChannelClosed(ch.ChannelClosedEvent event) {
-    final peers = _channelPeers[event.channelId];
-    if (peers != null) {
-      final serverInfo = _serverChannelInfo[event.channelId];
-      final clientInfo = _clientChannelInfo[event.channelId];
-      final targetPeerId = clientInfo != null
-          ? peers.serverPeerId
-          : serverInfo?.clientPeerId;
-
-      if (targetPeerId != null) {
-        _emitP2PMessage(targetPeerId, 'channel_closed', {
-          'channelId': event.channelId,
-          'settlementTxId': event.settlementTxId,
-        });
-      }
+    // The server closes with the settlement it broadcast and hands it to
+    // the client, which records its return leg from it (bead
+    // libspiffy-u6q6). The client, closing with what it was handed, has
+    // nothing to tell.
+    final serverInfo = _serverChannelInfo[event.channelId];
+    final clientPeerId = serverInfo == null ? null : _counterpartyPeer(event.channelId);
+    if (clientPeerId != null) {
+      _emitP2PMessage(clientPeerId, 'channel_closed', {
+        'channelId': event.channelId,
+        'settlementTxId': event.settlementTxId,
+        'settlementTxHex': event.settlementTxHex,
+      });
     }
 
     final walletId = _walletFor(event.channelId);
@@ -939,19 +944,43 @@ class ChannelP2PAdapter {
 
   /// Handle a request to close a channel.
   void handleCloseChannel(coord.CloseChannelCommand command) {
-    _channelManager.tell(CloseChannelMessage(
-      channelId: command.channelId,
-      reason: command.reason,
-    ));
+    _channelManager.tell(
+        CloseChannelMessage(
+          channelId: command.channelId,
+          reason: command.reason,
+        ),
+        // A close that fails — a settlement ARC did not take — is reported
+        // (bead libspiffy-u6q6); see [handleChannelCloseAnswered].
+        sender: _replyTo);
+  }
+
+  /// The manager's answer to a close, or to a settlement handed over: a
+  /// failure is reported to the host, whose channel stays `closing` until
+  /// it closes again (bead libspiffy-u6q6). A close that succeeded is
+  /// reported by its [ch.ChannelClosedEvent].
+  void handleChannelCloseAnswered(ChannelClosedResponse response) {
+    if (!response.success) {
+      _reportFailure(response.channelId, 'closing the channel', response.error);
+    }
+  }
+
+  /// The manager's answer to an expiry: a failure (a server whose
+  /// settlement ARC did not take, bead libspiffy-u6q6) is reported.
+  void handleChannelExpiryAnswered(ChannelExpiredResponse response) {
+    if (!response.success) {
+      _reportFailure(response.channelId, 'recording the expiry', response.error);
+    }
   }
 
   /// Handle a request to record channel expiry (lockTime elapsed).
   void handleExpireChannel(coord.ExpireChannelCommand command) {
-    _channelManager.tell(ExpireChannelMessage(
-      channelId: command.channelId,
-      observedBy: command.observedBy,
-      settlementOrRefundTxId: command.settlementOrRefundTxId,
-    ));
+    _channelManager.tell(
+        ExpireChannelMessage(
+          channelId: command.channelId,
+          observedBy: command.observedBy,
+          settlementOrRefundTxId: command.settlementOrRefundTxId,
+        ),
+        sender: _replyTo);
   }
 
   /// Handle a request to claim the refund of an expired channel.

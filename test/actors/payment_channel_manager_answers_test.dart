@@ -202,6 +202,13 @@ void main() {
       );
     });
 
+    test('RecordSettlementMessage', () async {
+      await answersFailure<ChannelClosedResponse>(
+        'RecordSettlementMessage',
+        RecordSettlementMessage(channelId: _ghost, settlementTxHex: '00'),
+      );
+    });
+
     test('ExpireChannelMessage', () async {
       await answersFailure<ChannelExpiredResponse>(
         'ExpireChannelMessage',
@@ -249,6 +256,7 @@ void main() {
       'RecordPaymentMessage',
       'AcknowledgePaymentMessage',
       'CloseChannelMessage',
+      'RecordSettlementMessage',
       'ExpireChannelMessage',
       'ClaimRefundMessage',
       'QueryChannelStateMessage',

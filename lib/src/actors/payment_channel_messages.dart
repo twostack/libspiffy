@@ -569,6 +569,23 @@ class CloseChannelMessage extends LocalMessage {
   dynamic get payload => this;
 }
 
+/// The settlement a channel's server broadcast, handed to the client in
+/// `channel_closed` (bead libspiffy-u6q6): the client checks it is its
+/// latest payment, fully signed, records its return leg and closes the
+/// channel. Answered with [ChannelClosedResponse].
+class RecordSettlementMessage extends LocalMessage {
+  final String channelId;
+  final String settlementTxHex;
+
+  RecordSettlementMessage({
+    required this.channelId,
+    required this.settlementTxHex,
+  }) : super(payload: null);
+
+  @override
+  dynamic get payload => this;
+}
+
 /// Request to record that a channel has expired (lockTime elapsed).
 ///
 /// Sent by the expiry monitor when it detects a channel past its lockTime.

@@ -561,6 +561,54 @@ void main() {
         UTXOStatus.spent);
   });
 
+  // Bead libspiffy-ggsg. ARC answers with where it got to when its own wait
+  // for the network runs out (ACCEPTED_BY_NETWORK): no verdict either way.
+  test('ggsg: a broadcast ARC answers in flight is followed until the network holds it', () async {
+    final ready = await pay('inv-in-flight');
+    arc.answerInFlight = true;
+
+    final broadcast = await send<DeferredPaymentBroadcastEvent>(
+        BroadcastDeferredPaymentCommand(walletId: walletId, txid: ready.txid, requestId: 'if1'),
+        (e) => e.requestId == 'if1');
+
+    expect(broadcast.success, isTrue, reason: broadcast.error);
+    expect(broadcast.networkStatus, DeferredNetworkStatus.seenOnNetwork);
+    expect((await storage().getDeferredPayment(walletId, ready.txid))!.state, DeferredPaymentState.seen);
+  });
+
+  test('ggsg: a reclaim ARC answers in flight after the recipient\'s copy reached the network is not '
+      'reported reclaimed: ARC rejects it, and the recipient\'s copy is named', () async {
+    final ready = await pay('inv-in-flight-reclaim');
+    // The recipient broadcasts their copy first.
+    await arc.submitTransaction((await storage().getTransaction(ready.txid))!.rawHex);
+    arc.answerInFlight = true;
+
+    final reclaimed = await send<DeferredPaymentReclaimedEvent>(
+        ReclaimDeferredPaymentCommand(walletId: walletId, txid: ready.txid, requestId: 'if2'),
+        (e) => e.requestId == 'if2');
+
+    expect(reclaimed.success, isFalse, reason: 'the network holds the payment, not the reclaim');
+    expect(reclaimed.networkStatus, DeferredNetworkStatus.rejected);
+    expect(reclaimed.competingTxids, [ready.txid]);
+    expect((await storage().getDeferredPayment(walletId, ready.txid))!.state, isNot(DeferredPaymentState.reclaimed));
+  });
+
+  test('ggsg: a broadcast ARC puts in the orphan mempool (an input unknown or already spent in a block) '
+      'is not reported as on the network, and the payment stays held', () async {
+    final ready = await pay('inv-orphan');
+    arc.statusOverrides[ready.txid] = DeferredNetworkStatus.seenInOrphanMempool;
+
+    final broadcast = await send<DeferredPaymentBroadcastEvent>(
+        BroadcastDeferredPaymentCommand(walletId: walletId, txid: ready.txid, requestId: 'if3'),
+        (e) => e.requestId == 'if3');
+
+    expect(broadcast.success, isFalse);
+    expect(broadcast.networkStatus, DeferredNetworkStatus.seenInOrphanMempool);
+    expect(broadcast.error, contains('orphan mempool'));
+    expect((await storage().getDeferredPayment(walletId, ready.txid))!.state, DeferredPaymentState.outstanding);
+    expect((await funding()).status, UTXOStatus.reserved);
+  });
+
   test('87a: reclaiming is refused for a payment that is not outstanding, and cancelling one being '
       'reclaimed is refused', () async {
     final ready = await pay('inv-reclaim-refused');

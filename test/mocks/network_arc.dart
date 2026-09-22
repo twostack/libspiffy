@@ -35,8 +35,24 @@ class NetworkArc extends OfflineArc {
   /// The transaction each spent outpoint (`txid:vout`) went to.
   final Map<String, String> spentOutpoints = {};
 
+  /// Answer a submission `ACCEPTED_BY_NETWORK`, as ARC does when its wait
+  /// for the network runs out, while deciding it as usual: a status query
+  /// then gives the verdict.
+  bool answerInFlight = false;
+
+  /// The verdicts given to status queries for submissions answered in
+  /// flight.
+  final Map<String, ArcSubmitResponse> _verdicts = {};
+
   @override
   Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl}) async {
+    final verdict = await _decide(rawTx);
+    if (!answerInFlight) return verdict;
+    _verdicts[verdict.txid] = verdict;
+    return ArcSubmitResponse.fromJson({'txid': verdict.txid, 'txStatus': 'ACCEPTED_BY_NETWORK'});
+  }
+
+  Future<ArcSubmitResponse> _decide(String rawTx) async {
     final tx = dartsv.Transaction.fromHex(rawTx);
     final txid = tx.id;
     final override = statusOverrides[txid];
@@ -76,6 +92,14 @@ class NetworkArc extends OfflineArc {
     if (override != null) {
       return ArcTransactionResponse.fromJson(
           {'txid': txid, 'txStatus': override, if (competingTxs[txid] != null) 'competingTxs': competingTxs[txid]});
+    }
+    final verdict = _verdicts[txid];
+    if (verdict != null && !seen.contains(txid)) {
+      return ArcTransactionResponse.fromJson({
+        'txid': txid,
+        'txStatus': verdict.status.wireName,
+        if (verdict.doubleSpendTxids != null) 'competingTxs': verdict.doubleSpendTxids,
+      });
     }
     if (!seen.contains(txid)) {
       throw ArcException('Failed to get transaction: {"status":404}', statusCode: 404);

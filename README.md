@@ -701,8 +701,19 @@ broadcasts it. Until the network has it, the wallet holds its inputs: they are
 reserved by the transaction with no expiry, and neither the reservation cleanup
 nor another payment can take them. The hold ends when ARC reports the
 transaction `SEEN_ON_NETWORK` or `MINED` (inputs spent), when ARC reports it
-`REJECTED` or `DOUBLE_SPEND_ATTEMPTED` (payment failed, inputs released), or
-when you cancel it. Every step is journaled; resolved payments stay listable.
+`REJECTED` (payment failed, inputs released), when you cancel it, or when
+the network holds your reclaim of it. `DOUBLE_SPEND_ATTEMPTED` (another
+transaction spends an input) is no verdict: the payment stays outstanding,
+its inputs held, until one of the two is mined. Every step is journaled;
+resolved payments stay listable.
+
+Each answer below comes once the wallet's read model shows it, so a query
+made on hearing it sees the status, the spent inputs and the change. A
+broadcast or a reclaim succeeds only when the network holds the
+transaction: a status ARC gives while still processing is followed for up
+to 30 s until it gives a verdict, and one still processing then, in the
+orphan mempool (an input unknown or already spent in a block), contested or
+rejected is reported unsuccessful with the reason.
 
 ```dart
 // Payments the recipient has not broadcast after an hour
@@ -726,11 +737,18 @@ coordinator.tell(BroadcastDeferredPaymentCommand(walletId: 'alice-wallet', txid:
 // Give up on it: refused if the network knows the transaction
 coordinator.tell(CancelDeferredPaymentCommand(walletId: 'alice-wallet', txid: txid, reason: 'expired'));
 // -> DeferredPaymentCancelledEvent
+
+// Revoke it: spend its inputs back to the wallet at ARC's policy fee
+coordinator.tell(ReclaimDeferredPaymentCommand(walletId: 'alice-wallet', txid: txid));
+// -> DeferredPaymentReclaimedEvent (reclaimTxid, fee, competing txids)
 ```
 
 Cancelling does not revoke the signed transaction the recipient holds: if they
 broadcast it later and it still reaches miners, it spends those inputs, and a
-later payment that reused them fails.
+later payment that reused them fails. Reclaiming does revoke it, if the
+reclaim reaches the network first: first seen wins, and no fee changes that.
+If the recipient's copy got there first, the reclaim is rejected and names
+it.
 
 ### Benefits
 

@@ -302,6 +302,15 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### A deferred broadcast or reclaim succeeds only when the network holds it
+
+- ARC answers with where it got to when its own wait for the network runs
+  out. A reclaim answered so after the recipient's copy had reached the
+  network was reported reclaimed, and ARC then rejected it. Broadcasting
+  and reclaiming now follow such an answer for up to 30 s, and succeed
+  only on `SEEN_ON_NETWORK` or `MINED`; the orphan mempool is no longer a
+  success.
+
 ### A deferred payment's check, broadcast and reclaim answer what the wallet shows
 
 - Checking, broadcasting or reclaiming a deferred payment was answered

@@ -1164,6 +1164,52 @@ class WalletCoordinatorActor extends Actor {
   /// requests time out after 30 s each; a broadcast submits ancestors too).
   static const _deferredNetworkTimeout = Duration(minutes: 2);
 
+  /// How long a broadcast ARC answered in flight is followed for a verdict,
+  /// and how often ARC is asked meanwhile (as channel submissions are,
+  /// V-150).
+  static const _inFlightTimeout = Duration(seconds: 30);
+  static const _inFlightPollInterval = Duration(seconds: 1);
+
+  /// ARC's answer to a broadcast of [txid], followed while it is in flight
+  /// ([DeferredNetworkStatus.inFlight]): ARC answers with where it got to
+  /// when its own wait for the network runs out, which is no verdict either
+  /// way (bead libspiffy-ggsg: a reclaim answered so after the recipient's
+  /// copy was on the network was reported reclaimed, and ARC then rejected
+  /// it). Each status ARC gives meanwhile is recorded like any explicit
+  /// check. Returns the last answer; still in flight after
+  /// [_inFlightTimeout] when ARC gave no verdict.
+  Future<wm.DeferredPaymentNetworkResult> _followInFlight(
+      String walletId, String txid, wm.DeferredPaymentNetworkResult result) async {
+    var current = result;
+    final deadline = DateTime.now().add(_inFlightTimeout);
+    while (DeferredNetworkStatus.isInFlight(current.networkStatus) && DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(_inFlightPollInterval);
+      final check = await _arcActor.ask<wm.DeferredPaymentNetworkResult>(
+        wm.CheckDeferredPaymentStatusMessage(walletId: walletId, txid: txid, via: DeferredPaymentNetworkSource.arc),
+        _deferredNetworkTimeout,
+      );
+      if (check.success && check.networkStatus != null) current = check;
+    }
+    return current;
+  }
+
+  /// Why a broadcast the network does not hold did not succeed, or null
+  /// when it holds it ([DeferredNetworkStatus.isOnNetwork]).
+  static String? _notHeldReason(String what, wm.DeferredPaymentNetworkResult result) {
+    final status = result.networkStatus;
+    if (result.success && DeferredNetworkStatus.isOnNetwork(status)) return null;
+    if (!result.success) return result.error ?? 'The broadcast of $what failed';
+    if (status == DeferredNetworkStatus.seenInOrphanMempool) {
+      return 'The network cannot connect $what: ARC reports it in the orphan mempool, so one of its '
+          'inputs is unknown or already spent';
+    }
+    if (DeferredNetworkStatus.isInFlight(status)) {
+      return 'ARC is still taking $what to the network ($status after ${_inFlightTimeout.inSeconds} s); '
+          'it is not known to be on the network yet';
+    }
+    return 'The network does not hold $what ($status)${result.error != null ? ': ${result.error}' : ''}';
+  }
+
   Future<void> _handleGetDeferredPayments(GetDeferredPaymentsQuery query) async {
     try {
       final page = await _storage.listDeferredPayments(query.walletId, query: query.toStorageQuery());
@@ -1241,26 +1287,30 @@ class WalletCoordinatorActor extends Actor {
         _log.info('Broadcasting deferred payment ${cmd.txid} without ancestors: $beefError');
       }
       final asked = DateTime.now();
-      final result = await _arcActor.ask<wm.DeferredPaymentNetworkResult>(
-        wm.BroadcastDeferredPaymentMessage(
-          walletId: cmd.walletId,
-          txid: cmd.txid,
-          rawTxHex: tx.rawHex,
-          beefHex: beef == null ? null : hex.encode(beef),
-          via: cmd.via,
-        ),
-        _deferredNetworkTimeout,
-      );
+      final result = await _followInFlight(
+          cmd.walletId,
+          cmd.txid,
+          await _arcActor.ask<wm.DeferredPaymentNetworkResult>(
+            wm.BroadcastDeferredPaymentMessage(
+              walletId: cmd.walletId,
+              txid: cmd.txid,
+              rawTxHex: tx.rawHex,
+              beefHex: beef == null ? null : hex.encode(beef),
+              via: cmd.via,
+            ),
+            _deferredNetworkTimeout,
+          ));
       final notApplied = await _awaitNetworkAnswerApplied(cmd.walletId, cmd.txid, tx.rawHex, result, asked);
       final rejected = DeferredNetworkStatus.isDefinitiveFailure(result.networkStatus);
       // A competing transaction contests it (bead libspiffy-ey2): not
       // accepted, not failed either; the payment stays held.
       final contested = DeferredNetworkStatus.isContested(result.networkStatus);
+      final notHeld = _notHeldReason(cmd.txid, result);
       _emitEvent(DeferredPaymentBroadcastEvent(
         walletId: cmd.walletId,
         txid: cmd.txid,
         requestId: requestId,
-        success: result.success && !rejected && !contested,
+        success: notHeld == null,
         networkStatus: result.networkStatus,
         source: result.source,
         confirmed: result.confirmed,
@@ -1270,7 +1320,7 @@ class WalletCoordinatorActor extends Actor {
             : contested
                 ? 'ARC reports ${result.networkStatus} for ${cmd.txid}: a competing transaction spends an input; '
                     'the payment stays outstanding with its inputs held${result.error != null ? ' (${result.error})' : ''}'
-                : result.error ?? notApplied,
+                : notHeld ?? notApplied,
         competingTxids: result.competingTxids,
       ));
     } catch (e) {
@@ -1654,16 +1704,19 @@ class WalletCoordinatorActor extends Actor {
       }
 
       final asked = DateTime.now();
-      final result = await _arcActor.ask<wm.DeferredPaymentNetworkResult>(
-        wm.BroadcastDeferredPaymentMessage(
-          walletId: cmd.walletId,
-          txid: reclaimTxid,
-          rawTxHex: signedHex,
-          beefHex: beef == null ? null : hex.encode(beef),
-          via: cmd.via,
-        ),
-        _deferredNetworkTimeout,
-      );
+      final result = await _followInFlight(
+          cmd.walletId,
+          reclaimTxid,
+          await _arcActor.ask<wm.DeferredPaymentNetworkResult>(
+            wm.BroadcastDeferredPaymentMessage(
+              walletId: cmd.walletId,
+              txid: reclaimTxid,
+              rawTxHex: signedHex,
+              beefHex: beef == null ? null : hex.encode(beef),
+              via: cmd.via,
+            ),
+            _deferredNetworkTimeout,
+          ));
       final answerNotApplied = await _awaitNetworkAnswerApplied(cmd.walletId, reclaimTxid, signedHex, result, asked);
       final rejected = DeferredNetworkStatus.isDefinitiveFailure(result.networkStatus);
       final contested = DeferredNetworkStatus.isContested(result.networkStatus);
@@ -1672,7 +1725,7 @@ class WalletCoordinatorActor extends Actor {
         txid: cmd.txid,
         reclaimTxid: reclaimTxid,
         requestId: requestId,
-        success: result.success && !rejected && !contested,
+        success: _notHeldReason('the reclaim $reclaimTxid', result) == null,
         reclaimedUtxoKeys: response.reclaimedUtxoKeys,
         reclaimedSatoshis: amount,
         fee: fee,
@@ -1688,7 +1741,7 @@ class WalletCoordinatorActor extends Actor {
                     'transaction spends the same inputs. Of two spends of one input the one that reached '
                     'the network first is mined; deferred payment ${cmd.txid} stays outstanding until that '
                     'is settled'
-                : result.error ??
+                : _notHeldReason('the reclaim $reclaimTxid', result) ??
                     (notApplied == null
                         ? answerNotApplied
                         : 'Reclaimed and journaled, but the read model has not applied it yet: $notApplied'),

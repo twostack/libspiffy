@@ -1950,10 +1950,14 @@ class DeferredPaymentBroadcastEvent extends CoordinatorEvent {
   final String txid;
   final String requestId;
 
-  /// The source took the transaction (or already had it).
+  /// The network holds the transaction (`SEEN_ON_NETWORK` or `MINED`), or
+  /// already did. An answer ARC gave in flight (it stopped waiting for the
+  /// network) is followed for up to 30 s until ARC gives a verdict; one
+  /// still in flight then, in the orphan mempool, contested or rejected is
+  /// not a success, and [error] says why.
   final bool success;
 
-  /// The source's answer (`SEEN_ON_NETWORK`, `MINED`, `REJECTED`, ...).
+  /// The source's last answer (`SEEN_ON_NETWORK`, `MINED`, `REJECTED`, ...).
   final String? networkStatus;
 
   /// `arc` or `dataSource`.
@@ -2770,11 +2774,14 @@ class ReclaimDeferredPaymentCommand implements Message {
 
 /// Result of [ReclaimDeferredPaymentCommand].
 ///
-/// [success] says the self-spend was journaled and the network took it, not
-/// that the payment is reclaimed yet: it resolves as
-/// [DeferredPaymentState.reclaimed] when the network reports the self-spend
-/// (watch it with [GetDeferredPaymentsQuery] or
-/// [CheckDeferredPaymentStatusCommand] on [reclaimTxid]).
+/// [success] says the self-spend was journaled and the network holds it
+/// (`SEEN_ON_NETWORK` or `MINED`; an answer ARC gave in flight is followed
+/// for up to 30 s until it gives a verdict), and the payment is then
+/// [DeferredPaymentState.reclaimed]. Otherwise the payment stays
+/// outstanding with its inputs held by the self-spend, and it resolves as
+/// reclaimed if the network reports the self-spend later (watch it with
+/// [GetDeferredPaymentsQuery] or [CheckDeferredPaymentStatusCommand] on
+/// [reclaimTxid]).
 class DeferredPaymentReclaimedEvent extends CoordinatorEvent {
   @override
   final String walletId;

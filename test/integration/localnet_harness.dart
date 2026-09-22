@@ -25,7 +25,11 @@ import 'package:test/test.dart';
 import 'package:libspiffy/coordinator.dart';
 import 'package:libspiffy/libspiffy.dart';
 
-const arcUrl = 'http://localhost:9090/v1';
+/// ARC's address, found by [localnetProblem]: Docker publishes ARC on every
+/// loopback address, but another program may hold `127.0.0.1:9090`, so
+/// the first address that answers as ARC is used.
+var arcUrl = _arcUrls.first;
+const _arcUrls = ['http://127.0.0.1:9090/v1', 'http://[::1]:9090/v1'];
 const _rpcUrl = 'http://localhost:18332';
 const _nodePeer = '127.0.0.1:18333';
 
@@ -61,18 +65,39 @@ Future<int> mine([int count = 1]) async {
 /// Why the localnet stack cannot run a test, or null when it can.
 Future<String?> localnetProblem() async {
   try {
-    final health = await http
-        .get(Uri.parse('$arcUrl/health'))
-        .timeout(const Duration(seconds: 3));
-    if (health.statusCode != 200 ||
-        (jsonDecode(health.body) as Map)['healthy'] != true) {
-      return 'ARC at $arcUrl is not healthy: ${health.body}';
+    final answers = <String>[];
+    String? found;
+    for (final url in _arcUrls) {
+      final health = await _arcHealth(url);
+      if (health == null) {
+        found = url;
+        break;
+      }
+      answers.add('$url: $health');
     }
+    if (found == null) return 'ARC is not healthy (${answers.join('; ')})';
+    arcUrl = found;
     final chain = await rpc('getblockchaininfo') as Map<String, dynamic>;
     if (chain['chain'] != 'regtest') return 'the node runs ${chain['chain']}';
     return null;
   } catch (e) {
     return 'localnet is not reachable: $e';
+  }
+}
+
+/// What is wrong with the ARC at [url], or null when it is healthy.
+Future<String?> _arcHealth(String url) async {
+  try {
+    final health = await http
+        .get(Uri.parse('$url/health'))
+        .timeout(const Duration(seconds: 3));
+    if (health.statusCode == 200 &&
+        (jsonDecode(health.body) as Map)['healthy'] == true) {
+      return null;
+    }
+    return health.body.trim();
+  } catch (e) {
+    return '$e';
   }
 }
 
@@ -209,7 +234,7 @@ class LocalnetNode {
       networkType: 'regtest',
       enableP2P: true,
       peerAddresses: [_nodePeer],
-      arcConfig: const ArcServiceConfig(baseUrl: arcUrl),
+      arcConfig: ArcServiceConfig(baseUrl: arcUrl),
       channelPeerId: peerId,
       channelTiming: timing,
     );

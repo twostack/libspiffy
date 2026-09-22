@@ -302,6 +302,12 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### A failed payment's inputs are free when the failure is answered
+
+- A payment that failed after reserving its inputs was answered before the
+  wallet released them, so paying again on hearing it could find them
+  still reserved. The failure is now answered once they are released.
+
 ### A deferred broadcast or reclaim succeeds only when the network holds it
 
 - ARC answers with where it got to when its own wait for the network runs

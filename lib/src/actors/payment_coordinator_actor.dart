@@ -28,6 +28,7 @@ import '../core/wallet/transaction_signer.dart' show WalletTransactionSigner;
 import '../core/wallet/transaction_size.dart';
 import '../services/transaction/builder/op_return_lockbuilder.dart';
 import 'aggregate_signing_client.dart';
+import 'projection_barrier.dart';
 import 'payment_messages.dart';
 import 'wallet_messages.dart';
 
@@ -223,6 +224,10 @@ class PaymentCoordinatorActor extends Actor {
     var paymentDelivered = false;
     final inFlight = _InFlightPayment(msg.invoiceId, msg.counterpartyMarker);
     _inFlightPayment = inFlight;
+    // A failure is answered once its inputs are released in the read model,
+    // so a caller that retries on hearing it can select them again (bead
+    // libspiffy-64un).
+    String? failure;
     try {
       paymentDelivered = await _payWithReservedUtxos(
         msg: msg,
@@ -231,14 +236,14 @@ class PaymentCoordinatorActor extends Actor {
         fee: fee,
         rate: rate,
         originalSender: originalSender,
+        fail: (error) => failure = error,
         totalSw: totalSw,
       );
     } catch (e, stackTrace) {
       _log.warning('[pay ${msg.invoiceId}] failed after reserving UTXOs: $e\n$stackTrace');
       // A third-party plugin's failure is reported by the plugin's id, not
       // as an internal error of ours (bead libspiffy-uetb).
-      _sendError(msg.invoiceId, e is _PluginCallFailure ? e.message : 'Internal error: $e',
-          sender: originalSender);
+      failure = e is _PluginCallFailure ? e.message : 'Internal error: $e';
     } finally {
       _inFlightPayment = null;
       if (!paymentDelivered) {
@@ -257,6 +262,30 @@ class PaymentCoordinatorActor extends Actor {
           ));
         }
         _releaseReservation(walletId: msg.walletId, reservationId: reservationId);
+        await _awaitReleased(msg.walletId, selectedUtxos, {reservationId, ...inFlight.deferredTxids});
+        if (failure != null) _sendError(msg.invoiceId, failure!, sender: originalSender);
+      }
+    }
+  }
+
+  /// Waits until the read model shows none of [utxos] reserved by any of
+  /// [holders] (the payment's reservation and the deferred spends it
+  /// recorded), after they were told to let go of them. A wait that fails
+  /// is logged: the reservation's expiry still frees them.
+  Future<void> _awaitReleased(String walletId, List<BitcoinUtxo> utxos, Set<String> holders) async {
+    for (final utxo in utxos) {
+      final reason = await awaitProjectionApplied(
+        _walletProjection,
+        matches: (e) =>
+            e is wevent.UTXOReleasedEvent && e.txid == utxo.txid && e.vout == utxo.vout ||
+            e is wevent.DeferredTransactionCancelledEvent && e.releasedInputs.any((i) => i.utxoKey == utxo.key),
+        alreadyApplied: () async {
+          final row = await _storage.getUTXO(walletId, utxo.txid, utxo.vout);
+          return row == null || row.status != UTXOStatus.reserved || !holders.contains(row.reservedByTxId);
+        },
+      );
+      if (reason != null) {
+        _log.warning('Input ${utxo.key} of a failed payment is not shown released yet: $reason');
       }
     }
   }
@@ -266,8 +295,9 @@ class PaymentCoordinatorActor extends Actor {
   /// [paymentOutputs] and paying [fee].
   ///
   /// Returns true once a successful [BEEFPaymentResponse] has been sent.
-  /// Returns false after reporting a failure to [originalSender]; throws on
-  /// unexpected errors. The caller owns the reservation in every case.
+  /// Returns false after reporting a failure to [fail], which the caller
+  /// answers once the reservation is released; throws on unexpected errors.
+  /// The caller owns the reservation in every case.
   Future<bool> _payWithReservedUtxos({
     required PayInvoiceMessage msg,
     required List<BitcoinUtxo> selectedUtxos,
@@ -275,6 +305,7 @@ class PaymentCoordinatorActor extends Actor {
     required BigInt fee,
     required FeeRate rate,
     required ActorRef? originalSender,
+    required void Function(String error) fail,
     required Stopwatch totalSw,
   }) async {
     final effectiveAmount = msg.effectiveAmount;
@@ -291,7 +322,7 @@ class PaymentCoordinatorActor extends Actor {
       final bestHeight = await _storage.getBestHeight();
       if (bestHeight == 0) {
         _log.warning('[pay ${msg.invoiceId}] No block headers synced yet - cannot construct BEEF payment');
-        _sendError(msg.invoiceId, 'No block headers synced yet - cannot construct BEEF payment', sender: originalSender);
+        fail('No block headers synced yet - cannot construct BEEF payment');
         return false;
       }
 
@@ -304,11 +335,7 @@ class PaymentCoordinatorActor extends Actor {
           'ancestors=${ancestorResult.isValid ? ancestorResult.ancestorTransactions.length : "N/A"}, '
           'proofs=${ancestorResult.isValid ? ancestorResult.merkleProofs.length : "N/A"}');
       if (!ancestorResult.isValid) {
-        _sendError(
-          msg.invoiceId,
-          'Incomplete transaction chain: ${ancestorResult.error}',
-          sender: originalSender,
-        );
+        fail('Incomplete transaction chain: ${ancestorResult.error}');
         return false;
       }
     } else {
@@ -332,7 +359,7 @@ class PaymentCoordinatorActor extends Actor {
 
     _log.info('[pay ${msg.invoiceId}] buildTx: ${buildSw.elapsedMilliseconds}ms, preSigned=$preSigned');
     if (paymentTx == null) {
-      _sendError(msg.invoiceId, 'Failed to build payment transaction', sender: originalSender);
+      fail('Failed to build payment transaction');
       return false;
     }
 
@@ -355,7 +382,7 @@ class PaymentCoordinatorActor extends Actor {
         );
       } on AggregateSigningException catch (e) {
         _log.warning('[sign] Failed: $e');
-        _sendError(msg.invoiceId, 'Failed to sign transaction: $e', sender: originalSender);
+        fail('Failed to sign transaction: $e');
         return false;
       }
       _log.info('[pay ${msg.invoiceId}] signing: ${signSw.elapsedMilliseconds}ms');
@@ -418,8 +445,7 @@ class PaymentCoordinatorActor extends Actor {
             : null,
       );
     } on _RecordingRefused catch (refused) {
-      _sendError(msg.invoiceId, 'The wallet refused to record payment transaction ${signedPaymentTx.txid}: '
-          '${refused.error}', sender: originalSender);
+      fail('The wallet refused to record payment transaction ${signedPaymentTx.txid}: ${refused.error}');
       return false;
     }
 
@@ -510,7 +536,7 @@ class PaymentCoordinatorActor extends Actor {
         }
         return true;
       } catch (e) {
-        _sendError(msg.invoiceId, 'Failed to package plugin transaction: $e', sender: originalSender);
+        fail('Failed to package plugin transaction: $e');
         return false;
       }
     } else {
@@ -551,7 +577,7 @@ class PaymentCoordinatorActor extends Actor {
         }
         return true;
       } catch (e) {
-        _sendError(msg.invoiceId, 'Failed to create BEEF: $e', sender: originalSender);
+        fail('Failed to create BEEF: $e');
         return false;
       }
     }

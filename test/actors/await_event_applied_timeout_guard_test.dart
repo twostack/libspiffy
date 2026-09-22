@@ -10,7 +10,7 @@
 /// The invoice path is also covered behaviourally in
 /// invoice_coordinator_actor_test.dart; the payment and wallet-coordinator
 /// sites sit too deep in the payment flow to drive cheaply, so this scan
-/// keeps every site honest (seven at the audit; three more channel-manager sites were added by the funding-broadcast fix, libspiffy-9f7; libspiffy-fsy folded the four channel-manager sites into one `_awaitApplied` helper; libspiffy-u0x folded the two invoice-creation sites into `_createInAggregate`; libspiffy-kyw added `awaitId:` after `timeout:`, which the argument scan now handles wherever it sits).
+/// keeps every site honest (seven at the audit; three more channel-manager sites were added by the funding-broadcast fix, libspiffy-9f7; libspiffy-fsy folded the four channel-manager sites into one `_awaitApplied` helper; libspiffy-u0x folded the two invoice-creation sites into `_createInAggregate`; libspiffy-kyw added `awaitId:` after `timeout:`, which the argument scan now handles wherever it sits; libspiffy-64un moved the wallet coordinator's site into `awaitProjectionApplied`, shared with the payment coordinator).
 
 import 'dart:io';
 import 'package:test/test.dart';
@@ -19,6 +19,7 @@ const _files = [
   'lib/src/actors/invoice_coordinator_actor.dart',
   'lib/src/actors/payment_channel_manager_actor.dart',
   'lib/src/actors/payment_coordinator_actor.dart',
+  'lib/src/actors/projection_barrier.dart',
   'lib/src/actors/wallet_coordinator_actor.dart',
 ];
 

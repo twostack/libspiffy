@@ -8,6 +8,7 @@
 import 'dart:async';
 
 import 'package:dactor/dactor.dart';
+import 'package:eventador/eventador.dart' show EventAppliedResponse, GetProjectionInfo;
 import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:test/test.dart';
 
@@ -33,7 +34,7 @@ void main() {
     actorSystem = LocalActorSystem();
     walletManagerProbe = _SilentWalletManager();
     final walletManager = await actorSystem.spawn('wallet-manager', () => walletManagerProbe);
-    final projection = await actorSystem.spawn('projection', () => _SilentWalletManager());
+    final projection = await actorSystem.spawn('projection', () => _ReadModel());
 
     final now = DateTime.now();
     final storage = _UtxoOnlyStorage({
@@ -133,7 +134,7 @@ void main() {
       final system = LocalActorSystem();
       try {
         final walletManagerRef = await system.spawn('wallet-manager', () => walletManager);
-        final projection = await system.spawn('projection', () => _SilentWalletManager());
+        final projection = await system.spawn('projection', () => _ReadModel());
         final secureStorage = InMemorySecureStorage();
         // Key material the pre-fix coordinator read for itself; the fixed
         // coordinator never touches it.
@@ -321,8 +322,22 @@ class _ScriptedStorage implements ReadModelStorage {
   Future<List<AddressMetadata>> getAddressesByPurpose(String walletId, String purpose) async => const [];
 
   @override
+  Future<BitcoinUtxo?> getUTXO(String walletId, String txid, int vout) async =>
+      (await getPaymentUTXOs(walletId)).where((u) => u.txid == txid && u.vout == vout).firstOrNull;
+
+  @override
   dynamic noSuchMethod(Invocation invocation) =>
       throw UnimplementedError('ReadModelStorage.${invocation.memberName} not expected');
+}
+
+/// The wallet read model's projection: it answers the barrier a payment's
+/// failure waits behind ([GetProjectionInfo]). The fake wallet manager
+/// applies nothing, so the read model never shows the inputs reserved.
+class _ReadModel extends Actor {
+  @override
+  Future<void> onMessage(dynamic message) async {
+    if (message is GetProjectionInfo) context.sender?.tell(EventAppliedResponse());
+  }
 }
 
 /// Wallet manager stand-in that records what it is told and never replies.
@@ -367,6 +382,10 @@ class _UtxoOnlyStorage implements ReadModelStorage {
   /// out (bead libspiffy-87a2).
   @override
   Future<List<AddressMetadata>> getAddressesByPurpose(String walletId, String purpose) async => const [];
+
+  @override
+  Future<BitcoinUtxo?> getUTXO(String walletId, String txid, int vout) async =>
+      (await getPaymentUTXOs(walletId)).where((u) => u.txid == txid && u.vout == vout).firstOrNull;
 
   @override
   dynamic noSuchMethod(Invocation invocation) =>

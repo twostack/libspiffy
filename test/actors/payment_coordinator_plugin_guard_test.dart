@@ -22,6 +22,7 @@ import 'dart:async';
 
 import 'package:convert/convert.dart';
 import 'package:dactor/dactor.dart';
+import 'package:eventador/eventador.dart' show EventAppliedResponse, GetProjectionInfo;
 import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:logging/logging.dart' as log;
 import 'package:test/test.dart';
@@ -70,7 +71,7 @@ void main() {
 
     system = LocalActorSystem();
     final walletManager = await system.spawn('wallet-manager', () => _SigningWalletManager());
-    final projection = await system.spawn('projection', () => _Silent());
+    final projection = await system.spawn('projection', () => _ReadModel());
     final arc = await system.spawn('arc', () => PolicyRateArc());
     coordinator = await system.spawn(
       'payment-coordinator',
@@ -347,13 +348,22 @@ class _PluginStorage implements ReadModelStorage {
       {'walletId': walletId, 'walletType': 'wif', 'network': 'testnet'};
 
   @override
+  Future<BitcoinUtxo?> getUTXO(String walletId, String txid, int vout) async =>
+      (await getPaymentUTXOs(walletId)).where((u) => u.txid == txid && u.vout == vout).firstOrNull;
+
+  @override
   dynamic noSuchMethod(Invocation invocation) =>
       throw UnimplementedError('ReadModelStorage.${invocation.memberName} not expected');
 }
 
-class _Silent extends Actor {
+/// The wallet read model's projection: it answers the barrier a payment's
+/// failure waits behind ([GetProjectionInfo]). The fake wallet manager
+/// applies nothing, so the read model never shows the inputs reserved.
+class _ReadModel extends Actor {
   @override
-  Future<void> onMessage(dynamic message) async {}
+  Future<void> onMessage(dynamic message) async {
+    if (message is GetProjectionInfo) context.sender?.tell(EventAppliedResponse());
+  }
 }
 
 class _Collector extends Actor {

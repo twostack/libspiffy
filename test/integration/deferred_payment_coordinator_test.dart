@@ -96,14 +96,6 @@ void main() {
   Future<BitcoinUtxo> funding() async =>
       (await storage().getUTXOs(walletId, includeSpent: true)).firstWhere((u) => u.key == _fundingKey);
 
-  Future<void> until(Future<bool> Function() condition, String what) async {
-    final deadline = DateTime.now().add(const Duration(seconds: 10));
-    while (!await condition()) {
-      if (DateTime.now().isAfter(deadline)) fail('Timed out waiting for $what');
-      await Future<void>.delayed(const Duration(milliseconds: 20));
-    }
-  }
-
   Future<PaymentReadyEvent> pay(String invoiceId, {int amount = 100000}) async {
     final ready = await send<PaymentReadyEvent>(
       PayInvoiceCommand(
@@ -352,7 +344,8 @@ void main() {
     expect(second.success, isFalse);
     expect(second.error, allOf(contains(first.txid), contains('failed')));
     expect((await storage().getDeferredPayment(walletId, first.txid))!.state, DeferredPaymentState.failed);
-    await until(() async => (await funding()).status == UTXOStatus.available, 'the input available');
+    expect((await funding()).status, UTXOStatus.available,
+        reason: 'the failure was answered before the input was released');
     expect(await journalOf(first.txid), [
       we.TransactionRecordedEvent,
       we.TransactionSpendDeferredEvent,

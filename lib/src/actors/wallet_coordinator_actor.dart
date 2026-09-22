@@ -27,6 +27,7 @@ import '../utils/beef.dart';
 import 'aggregate_signing_client.dart';
 import 'channel_p2p_adapter.dart';
 import 'coordinator_messages.dart';
+import 'projection_barrier.dart';
 import 'proof_p2p_adapter.dart';
 import 'invoice_messages.dart' as inv;
 import 'payment_messages.dart' as pay;
@@ -1013,7 +1014,8 @@ class WalletCoordinatorActor extends Actor {
   /// success once the read model has its row. Runs off the mailbox.
   Future<void> _handleRegisterWatchAddress(RegisterWatchAddressCommand cmd) async {
     try {
-      final applied = _awaitProjectionApplied(
+      final applied = awaitProjectionApplied(
+        _walletProjection,
         matches: (e) =>
             e is domain_events.WatchAddressAddedEvent && e.walletId == cmd.walletId && e.address == cmd.address,
         alreadyApplied: () async => (await _storage.getAddressMetadata(cmd.walletId, cmd.address))?.purpose == 'watch',
@@ -1414,7 +1416,8 @@ class WalletCoordinatorActor extends Actor {
         return;
       }
 
-      final applied = _awaitProjectionApplied(
+      final applied = awaitProjectionApplied(
+        _walletProjection,
         matches: (e) => e is domain_events.DeferredTransactionCancelledEvent && e.txid == cmd.txid,
         alreadyApplied: () async =>
             (await _storage.getDeferredPayment(cmd.walletId, cmd.txid))?.state == DeferredPaymentState.cancelled,
@@ -1469,7 +1472,7 @@ class WalletCoordinatorActor extends Actor {
     if (!result.success || status == null) return null;
     final reasons = <String>[];
     Future<void> awaitApplied(String what, bool Function(Event e) matches, Future<bool> Function() alreadyApplied) async {
-      final reason = await _awaitProjectionApplied(matches: matches, alreadyApplied: alreadyApplied);
+      final reason = await awaitProjectionApplied(_walletProjection, matches: matches, alreadyApplied: alreadyApplied);
       if (reason != null) reasons.add('$what: $reason');
     }
 
@@ -1659,7 +1662,8 @@ class WalletCoordinatorActor extends Actor {
 
       // Journal it before anything reaches the network: a self-spend that is
       // broadcast is always in the journal first.
-      final applied = _awaitProjectionApplied(
+      final applied = awaitProjectionApplied(
+        _walletProjection,
         matches: (e) => e is domain_events.DeferredSpendReclaimedEvent && e.txid == cmd.txid,
         alreadyApplied: () async =>
             (await _storage.getDeferredPayment(cmd.walletId, reclaimTxid)) != null,
@@ -1829,7 +1833,8 @@ class WalletCoordinatorActor extends Actor {
     final walletId = response.walletId;
     String? awaitError;
     try {
-      final reason = await _awaitProjectionApplied(
+      final reason = await awaitProjectionApplied(
+        _walletProjection,
         matches: (e) =>
             e is domain_events.WalletCreatedEvent && e.walletId == walletId,
         alreadyApplied: () async => await _storage.getWallet(walletId) != null,
@@ -2310,7 +2315,8 @@ class WalletCoordinatorActor extends Actor {
       for (final utxo in result.spendableUTXOs) {
         final vout = utxo['vout'];
         if (vout is! int) continue;
-        final notAvailable = await _awaitProjectionApplied(
+        final notAvailable = await awaitProjectionApplied(
+        _walletProjection,
           matches: (e) => e is domain_events.UTXOMarkedAvailableEvent && e.txid == result.txid && e.vout == vout,
           alreadyApplied: () async =>
               (await _storage.getUTXO(walletId, result.txid, vout))?.status == UTXOStatus.available,
@@ -2376,60 +2382,14 @@ class WalletCoordinatorActor extends Actor {
   /// The SPV result reaches this coordinator after WalletManagerActor was
   /// told to record the transaction, so the projection may already have
   /// applied the event by the time an awaiter could be registered, and an
-  /// awaiter only matches events applied after it (A-M2). So:
-  /// 1. register the awaiter;
-  /// 2. send GetProjectionInfo behind it. The projection's mailbox is FIFO,
-  ///    so its reply proves the awaiter is registered: every event applied
-  ///    from then on resolves the awaiter, and every event applied before
-  ///    has finished its read-model write;
-  /// 3. then look for the row. Present means "already applied".
-  Future<String?> _awaitImportApplied(String txid) => _awaitProjectionApplied(
+  /// awaiter only matches events applied after it (A-M2):
+  /// [awaitProjectionApplied] also looks for the row.
+  Future<String?> _awaitImportApplied(String txid) => awaitProjectionApplied(
+        _walletProjection,
         matches: (e) =>
             e is domain_events.TransactionImportedEvent && e.txid == txid,
         alreadyApplied: () async => await _storage.getTransaction(txid) != null,
       );
-
-  /// Resolves with null once the wallet projection has applied an event
-  /// satisfying [matches], or with the failure reason; [alreadyApplied]
-  /// checks the read model for the effect of an event applied before the
-  /// awaiter was registered. See [_awaitImportApplied] for the barrier.
-  Future<String?> _awaitProjectionApplied({
-    required bool Function(Event e) matches,
-    required Future<bool> Function() alreadyApplied,
-  }) async {
-    final applied = _walletProjection.ask<dynamic>(
-      AwaitEventApplied(
-        matches,
-        timeout: const Duration(seconds: 30),
-      ),
-      // Ask timeout must outlast the awaiter's own window, otherwise dactor's
-      // default (5 s) fires first and a slow projection looks like a failure.
-      const Duration(seconds: 32),
-    );
-    // Whichever branch loses must not surface as an unhandled error.
-    final appliedOutcome = applied.then<String?>(
-      (response) => response is AwaitFailed ? response.reason : null,
-      onError: (Object e) => e.toString(),
-    );
-
-    final applyVisible = () async {
-      try {
-        await _walletProjection.ask<dynamic>(
-            GetProjectionInfo(), const Duration(seconds: 30));
-        return await alreadyApplied();
-      } catch (_) {
-        return false; // No barrier answer: rely on the awaiter alone.
-      }
-    }();
-
-    final first = await Future.any<Object?>([
-      appliedOutcome.then((reason) => _AwaiterOutcome(reason)),
-      applyVisible,
-    ]);
-    if (first is _AwaiterOutcome) return first.reason;
-    if (first == true) return null;
-    return appliedOutcome;
-  }
 
   void _handleSplitUTXOsResponse(wm.SplitUTXOsResponse response) {
     // Each number is read from what the split actually reports, not inferred
@@ -2517,7 +2477,8 @@ class WalletCoordinatorActor extends Actor {
     // "Recorded" means queryable, the promise WalletCreatedEvent (bead
     // libspiffy-p56) and TransactionImportedEvent already make: an app told
     // its payment is recorded asks for it next.
-    final notApplied = await _awaitProjectionApplied(
+    final notApplied = await awaitProjectionApplied(
+        _walletProjection,
       matches: (e) => e is domain_events.TransactionRecordedEvent && e.txid == response.txid,
       alreadyApplied: () async => await _storage.getTransaction(response.txid) != null,
     );
@@ -2563,11 +2524,6 @@ class _PendingBeefValidation {
 
 /// The awaiter's result, distinguished from the "already applied" check in
 /// [WalletCoordinatorActor._awaitImportApplied].
-class _AwaiterOutcome {
-  final String? reason;
-  const _AwaiterOutcome(this.reason);
-}
-
 /// Tracks an in-flight SettleBEEFCommand. One of these lives in
 /// [WalletCoordinatorActor._pendingSettlements] from the moment the settle
 /// command is accepted until either (a) every child TX has reported back

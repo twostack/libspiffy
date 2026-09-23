@@ -365,6 +365,13 @@ depend on their behaviour.
 - Announcements are made one at a time in the order the read model applied
   the events that caused them, and an event that leaves the numbers alone
   is silent.
+- `LibSpiffyActorSystem.shutdown` waits for an announcement still reading
+  the read model, through the new
+  `WalletCoordinatorActor.stopAnnouncements()`, in the step beside the one
+  that lets `ARCActor` finish its queued work. A read that outlived
+  shutdown landed in a store the host had already closed — with Isar a
+  native crash, not a catchable exception. Nothing starts a read after the
+  coordinator is stopped.
 
 ### A wallet's unspendable money is reported, not lost
 

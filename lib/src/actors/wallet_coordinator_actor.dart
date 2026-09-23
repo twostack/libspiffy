@@ -138,6 +138,23 @@ class WalletCoordinatorActor extends Actor {
   /// last.
   Future<void> _balanceAnnouncements = Future<void>.value();
 
+  /// Set by [stopAnnouncements] and [postStop]: no further balance is read
+  /// or announced.
+  bool _announcementsStopped = false;
+
+  /// Stops announcing balances and waits for an announcement already reading
+  /// the read model to finish.
+  ///
+  /// The rule bead libspiffy-vr89 gave `ARCActor`, for the same reason: the
+  /// host closes its storage once `LibSpiffyActorSystem.shutdown` returns,
+  /// and a read still running lands in a closed store. With Isar that is not
+  /// an exception to catch - it is a native segmentation fault that takes
+  /// the process down, which is how this was found (bead libspiffy-7ye4).
+  Future<void> stopAnnouncements() async {
+    _announcementsStopped = true;
+    await _balanceAnnouncements;
+  }
+
   /// The wallet whose balance the read model may have just moved, or null
   /// for an event that cannot move one.
   ///
@@ -178,6 +195,7 @@ class WalletCoordinatorActor extends Actor {
   /// an all-zero balance is what an application already assumes of a wallet
   /// it has heard nothing about.
   Future<void> _announceBalance(String walletId) async {
+    if (_announcementsStopped) return;
     try {
       final now = await _balancesOf(walletId);
       final before = _lastAnnouncedBalance[walletId];
@@ -548,6 +566,10 @@ class WalletCoordinatorActor extends Actor {
   /// in a host-owned actor system).
   @override
   void postStop() {
+    // Nothing more reads the read model: the host closes its storage after
+    // this (bead libspiffy-7ye4). An announcement already reading is waited
+    // for by [stopAnnouncements], which shutdown calls before it gets here.
+    _announcementsStopped = true;
     for (final sub in _eventSubscriptions.values) {
       unawaited(sub.cancel());
     }
@@ -1356,6 +1378,7 @@ class WalletCoordinatorActor extends Actor {
     // Dispose channel adapter
     _channelAdapter?.dispose();
     await _readModelEventsSub?.cancel();
+    await stopAnnouncements();
 
     // Clear correlation maps
     _beefValidations.clear();

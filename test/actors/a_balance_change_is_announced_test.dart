@@ -89,6 +89,7 @@ void main() {
   late List<CoordinatorEvent> announced;
   late StreamSubscription<CoordinatorEvent> sub;
   late ActorRef coordinatorRef;
+  late WalletCoordinatorActor coordinator;
 
   setUp(() async {
     actorSystem = LocalActorSystem();
@@ -99,7 +100,7 @@ void main() {
     announced = [];
 
     final noop = await actorSystem.spawn('noop', () => _Noop());
-    final coordinator = WalletCoordinatorActor(
+    coordinator = WalletCoordinatorActor(
       walletManager: noop,
       invoiceCoordinator: noop,
       paymentCoordinator: noop,
@@ -271,6 +272,44 @@ void main() {
             'last balance an app hears is the balance the wallet holds');
   });
 
+  test('shutdown waits for a balance that is being read', () async {
+    // The read runs off the mailbox and the host closes its storage once
+    // `LibSpiffyActorSystem.shutdown` returns. With Isar a read that lands in
+    // a closed store is a native segmentation fault that takes the process
+    // down — not an exception anything can catch — which is how this was
+    // found: every suite after the one that shut down first was skipped.
+    storage.holdRowsFor = [const Duration(milliseconds: 300)];
+    await storage.upsertUTXO(_walletId, _utxo(14, 40000));
+    readModel.add(_received(14));
+    while (storage.readsInFlight == 0) {
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+    }
+
+    await coordinator.stopAnnouncements();
+    final inFlight = storage.readsInFlight;
+
+    expect(inFlight, 0,
+        reason: 'shutdown returned while a read was still running, and the '
+            'store is closed next');
+    // The event stream delivers in a later turn than the announcement.
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    expect(announced.whereType<BalanceUpdatedEvent>().single.totalBalance,
+        BigInt.from(40000),
+        reason: 'the read that was already running still reports');
+  });
+
+  test('nothing is read after shutdown has waited', () async {
+    await storage.upsertUTXO(_walletId, _utxo(15, 40000));
+    await announce(_received(15));
+    await coordinator.stopAnnouncements();
+    final reads = storage.reads;
+
+    await storage.upsertUTXO(_walletId, _utxo(16, 60000));
+    expect(await announce(_received(16)), isEmpty);
+    expect(storage.reads, reads,
+        reason: 'a balance read after shutdown lands in a closed store');
+  });
+
   test('an event of a kind that cannot move money is not read', () async {
     await storage.upsertUTXO(_walletId, _utxo(13, 70000));
 
@@ -300,15 +339,23 @@ class _StaggeredStorage extends InMemoryWalletStorage {
   /// How long each successive [getUTXOs] holds its rows; reads past the end
   /// of this list answer at once.
   List<Duration> holdRowsFor = const [];
-  int _reads = 0;
+
+  /// Reads started, and reads started but not yet answered.
+  int reads = 0;
+  int readsInFlight = 0;
 
   @override
   Future<List<BitcoinUtxo>> getUTXOs(String walletId,
       {bool includeSpent = false}) async {
-    final hold = _reads < holdRowsFor.length ? holdRowsFor[_reads] : Duration.zero;
-    _reads++;
-    final rows = await super.getUTXOs(walletId, includeSpent: includeSpent);
-    if (hold > Duration.zero) await Future<void>.delayed(hold);
-    return rows;
+    final hold = reads < holdRowsFor.length ? holdRowsFor[reads] : Duration.zero;
+    reads++;
+    readsInFlight++;
+    try {
+      final rows = await super.getUTXOs(walletId, includeSpent: includeSpent);
+      if (hold > Duration.zero) await Future<void>.delayed(hold);
+      return rows;
+    } finally {
+      readsInFlight--;
+    }
   }
 }

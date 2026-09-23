@@ -1541,6 +1541,13 @@ class LibSpiffyActorSystem {
         }
       }
 
+      // 3b. Let the coordinator finish any balance it is reading (bead
+      //     libspiffy-7ye4). Same rule as the ARC step above: the read runs
+      //     off the mailbox, the host closes Isar once this returns, and a
+      //     read that lands in a closed store is a native crash, not an
+      //     exception.
+      await _coordinatorInstance?.stopAnnouncements();
+
       // 4. Shutdown actor system only if we own it. In a host-owned system,
       //    stop every actor libspiffy spawned instead (A-M5), public facade
       //    first; the managers' postStop stops the aggregates they spawned.

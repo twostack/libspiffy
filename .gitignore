@@ -6,7 +6,10 @@
 # https://dart.dev/guides/libraries/private-files#pubspeclock.
 pubspec.lock
 
-docs
+# `docs` was ignored wholesale, so four of the five guides README links to
+# were never in the repository - present on this machine, shipped in the
+# published archive, and absent from a fresh clone (release prep, 23 Sep).
+# They are tracked now.
 
 *.iml
 .idea

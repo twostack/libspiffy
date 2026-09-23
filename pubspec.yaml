@@ -1,7 +1,17 @@
 name: libspiffy
-description: An actor-based Bitcoin SPV Wallet Library
+description: >-
+  An actor-based Bitcoin SV SPV wallet library: event-sourced wallets, BEEF
+  payments with merkle-proof validation, ARC broadcast, payment channels and
+  pluggable token scripts.
 version: 2.0.0
 repository: https://github.com/twostack/libspiffy
+issue_tracker: https://github.com/twostack/libspiffy/issues
+topics:
+  - bitcoin
+  - wallet
+  - spv
+  - event-sourcing
+  - actors
 
 environment:
   sdk: ^3.5.1

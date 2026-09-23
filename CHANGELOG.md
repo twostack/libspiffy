@@ -302,6 +302,27 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### An app hears a UTXO split start, not only finish
+
+- `UTXOSplitStartedEvent` is emitted. It was exported beside
+  `UTXOSplitCompleteEvent`, which was emitted, and nothing in the library
+  ever constructed it — so an application heard a Benford split finish and
+  never heard one start, through a wait that builds, signs and broadcasts
+  one transaction per source UTXO and waits for ARC's answer to each.
+- `BenfordCoordinatorActor` reports the start once the split cannot be
+  refused any more, with the number of UTXOs it will actually take (which
+  `maxUtxosToSplit` bounds and the wallet's holdings decide). A split that
+  cannot start — no wallet, a watch-only wallet, nothing spendable, no fee
+  rate from ARC — announces no start.
+- New internal `SetCoordinatorForSplitsMessage`, sent by
+  `WalletCoordinatorActor.preStart` as `SetCoordinatorForSPVMessage`
+  already was. The start is never sent to the split command's sender: a
+  caller that used `ask` holds a one-shot reply reference, and a second
+  message told to it would resolve the ask in place of the
+  `SplitUTXOsResponse` it asked for.
+- `WalletCoordinatorActor(benfordCoordinator:)` is no longer deprecated: it
+  is used again, for that registration.
+
 ### An app is told when its balance changes
 
 - `BalanceUpdatedEvent` is emitted. It was public and nothing in the

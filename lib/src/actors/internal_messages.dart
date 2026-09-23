@@ -190,6 +190,32 @@ class SetCoordinatorForSPVMessage implements Message {
   DateTime get timestamp => DateTime.now();
 }
 
+/// Tells [BenfordCoordinatorActor] which actor announces a split's progress
+/// to the application (bead libspiffy-7ye4).
+///
+/// Sent by `WalletCoordinatorActor.preStart`, as
+/// [SetCoordinatorForSPVMessage] is, because the coordinator is spawned
+/// after the actors it registers with.
+///
+/// The split's start goes here rather than to the command's sender: a caller
+/// that used `ask` holds a one-shot reply reference, and a second message
+/// told to it resolves the ask with the wrong answer. The reply to a split
+/// command is `SplitUTXOsResponse` and nothing else.
+class SetCoordinatorForSplitsMessage implements Message {
+  final ActorRef coordinator;
+
+  SetCoordinatorForSplitsMessage(this.coordinator);
+
+  @override
+  String get correlationId => 'set-coordinator-splits-${DateTime.now().millisecondsSinceEpoch}';
+  @override
+  Map<String, dynamic> get metadata => {'coordinatorRef': coordinator.toString()};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
 /// Message to set HeaderSyncActor reference in SPVActor
 class SetHeaderSyncActorMessage implements Message {
   final ActorRef headerSyncActor;

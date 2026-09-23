@@ -2580,11 +2580,33 @@ class AncestorProofRequestReceivedEvent extends CoordinatorEvent {
 
 // --- Benford Split Events ---
 
-/// Benford UTXO split started
+/// A Benford UTXO split has started: the wallet's spendable outputs have
+/// been chosen and the first split transaction is about to be built.
+///
+/// This event was exported and nothing in the library constructed it, while
+/// [UTXOSplitCompleteEvent] was emitted — so an application heard a split
+/// finish and never heard one start (bead libspiffy-7ye4). That gap is not
+/// cosmetic: a split of several UTXOs builds, signs and broadcasts one
+/// transaction per source output and waits for ARC's answer to each, so the
+/// silence could last a long time.
+///
+/// Emitted when the split can actually start, and never when it cannot: a
+/// missing wallet, a watch-only wallet, no spendable UTXOs, or no policy fee
+/// rate from ARC all end in [UTXOSplitCompleteEvent] with an error and no
+/// start, because nothing was started.
+///
+/// The numbers are `BenfordCoordinatorActor`'s own, measured rather than
+/// restated from the command: [utxoCount] is how many of the wallet's
+/// spendable UTXOs this split will take, which `SplitUTXOsCommand`'s
+/// `maxUtxosToSplit` bounds but does not decide.
 class UTXOSplitStartedEvent extends CoordinatorEvent {
   @override
   final String walletId;
+
+  /// The wallet's spendable UTXOs this split will take.
   final int utxoCount;
+
+  /// The outputs each of them is split into.
   final int targetOutputsPerUtxo;
 
   UTXOSplitStartedEvent({

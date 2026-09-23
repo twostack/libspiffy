@@ -56,6 +56,11 @@ class BenfordCoordinatorActor extends Actor {
   final Duration _walletReplyTimeout;
   final Duration _broadcastReplyTimeout;
 
+  /// The actor that announces a split's start to the application, named by
+  /// [SetCoordinatorForSplitsMessage] (bead libspiffy-7ye4). Null until the
+  /// coordinator registers, and for a node that runs no coordinator.
+  ActorRef? _coordinator;
+
   /// Split requests waiting for ARC's answers, by request id.
   final Map<int, _PendingSplitReply> _pendingReplies = {};
   int _nextRequestId = 0;
@@ -88,6 +93,8 @@ class BenfordCoordinatorActor extends Actor {
       if (message is SplitUTXOsToBenfordCommand) {
         // Command can be sent directly to coordinator
         await _handleSplitCommand(message);
+      } else if (message is SetCoordinatorForSplitsMessage) {
+        _coordinator = message.coordinator;
       } else if (message is _SplitBroadcastOutcome) {
         _handleBroadcastOutcome(message);
       }
@@ -163,6 +170,18 @@ class BenfordCoordinatorActor extends Actor {
       _reply(sender, command, error: "ARC's policy fee rate could not be read ($e); nothing was split");
       return;
     }
+
+    // Everything the split needs is in hand and nothing has been refused, so
+    // the split starts here and its size is now a fact rather than a guess
+    // (bead libspiffy-7ye4). Told to the coordinator, which announces the
+    // public UTXOSplitStartedEvent, and never to [sender]: a caller that used
+    // `ask` holds a one-shot reply reference, and this would resolve its ask
+    // in place of the SplitUTXOsResponse it asked for.
+    _coordinator?.tell(SplitUTXOsStartedMessage(
+      walletId: command.walletId,
+      utxoCount: utxosToSplit.length,
+      targetUtxoCount: command.targetUtxoCount,
+    ));
 
     // Split each UTXO. A split that is recorded is broadcast; ARC's answer
     // comes back through the mailbox, and the reply waits for every one.

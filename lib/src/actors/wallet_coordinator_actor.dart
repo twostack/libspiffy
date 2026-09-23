@@ -64,6 +64,10 @@ class WalletCoordinatorActor extends Actor {
   final ActorRef _arcActor;
   final ActorRef _walletProjection;
 
+  /// The Benford coordinator, which tells this actor when a UTXO split
+  /// starts so it can announce [UTXOSplitStartedEvent] (bead libspiffy-7ye4).
+  final ActorRef _benfordCoordinator;
+
   // Direct storage access for CQRS read queries
   final ReadModelStorage _storage;
 
@@ -344,9 +348,9 @@ class WalletCoordinatorActor extends Actor {
         'message. Kept so existing callers still compile; will be removed in '
         'a future release.')
     required ActorRef headerSyncActor,
-    @Deprecated('Unused: UTXO splitting is driven through WalletManager, not '
-        'from here. Kept so existing callers still compile; will be removed '
-        'in a future release.')
+    /// The Benford coordinator. Split commands are still driven through
+    /// WalletManager; this actor registers with it so that a split's start
+    /// is announced ([UTXOSplitStartedEvent], bead libspiffy-7ye4).
     required ActorRef benfordCoordinator,
     required ActorRef channelManager,
     required ActorRef walletProjection,
@@ -391,6 +395,7 @@ class WalletCoordinatorActor extends Actor {
         _spvActor = spvActor,
         _arcActor = arcActor,
         _walletProjection = walletProjection,
+        _benfordCoordinator = benfordCoordinator,
         _storage = storage,
         _importWalletFromXpriv = importWalletFromXpriv,
         _importWalletFromWif = importWalletFromWif,
@@ -450,6 +455,13 @@ class WalletCoordinatorActor extends Actor {
     // preStart ran before this actor existed, so doing it there credited the
     // wallet silently (bead libspiffy-4gy8).
     _spvActor.tell(wm.SetCoordinatorForSPVMessage(context.self));
+    // A UTXO split takes as long as building, signing, broadcasting and
+    // waiting on ARC for one transaction per source output, and only the
+    // Benford coordinator knows how many it is about to take. Registering
+    // here is what lets that start be announced (bead libspiffy-7ye4); it is
+    // not sent as a reply to the split command, because a caller that used
+    // `ask` would have its ask resolved by it.
+    _benfordCoordinator.tell(wm.SetCoordinatorForSplitsMessage(context.self));
     // Off the mailbox: it only reads the read model and emits, so it must
     // not delay the actor becoming able to serve commands.
     unawaited(_reportUnfinishedChannels());
@@ -665,6 +677,12 @@ class WalletCoordinatorActor extends Actor {
         await _handleBEEFValidationResult(message);
       } else if (message is wm.SPVValidationResult) {
         _handleSPVValidationResult(message);
+      } else if (message is wm.SplitUTXOsStartedMessage) {
+        _emitEvent(UTXOSplitStartedEvent(
+          walletId: message.walletId,
+          utxoCount: message.utxoCount,
+          targetOutputsPerUtxo: message.targetUtxoCount,
+        ));
       } else if (message is wm.SplitUTXOsResponse) {
         _handleSplitUTXOsResponse(message);
       } else if (message is wm.TransactionRecordedResponse) {

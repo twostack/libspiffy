@@ -14,7 +14,8 @@ export 'internal_messages.dart'
         SetBenfordCoordinatorMessage,
         SetArcActorForSPVMessage,
         SetHeaderSyncActorMessage,
-        SetCoordinatorForSPVMessage;
+        SetCoordinatorForSPVMessage,
+        SetCoordinatorForSplitsMessage;
 // A Benford split's per-transaction outcome (bead libspiffy-wdch), shared
 // with the public UTXOSplitCompleteEvent.
 export 'coordinator_messages.dart' show SplitTransactionOutcome, SplitTransactionStatus;
@@ -281,6 +282,50 @@ class FundingTransactionBuiltResponse extends ActorResponse {
   String get correlationId => 'funding-tx-response-$correlationId_';
   @override
   Map<String, dynamic> get metadata => {'walletId': walletId, 'correlationId': correlationId_, 'channelId': channelId};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+/// The Benford coordinator has decided what a `SplitUTXOsToBenfordCommand`
+/// will split and is about to build the first transaction.
+///
+/// Sent to the actor named by [SetCoordinatorForSplitsMessage], which
+/// announces the public `UTXOSplitStartedEvent` (bead libspiffy-7ye4). An app
+/// heard the split finish and never heard it start, and a split of several
+/// UTXOs is not quick: each one is built, signed, broadcast, and waited on
+/// for ARC's answer.
+///
+/// Not sent to the command's sender: a caller that used `ask` holds a
+/// one-shot reply reference, and this would resolve its ask in place of the
+/// [SplitUTXOsResponse] it asked for.
+///
+/// The numbers are the split's own, not the command's: [utxoCount] is how
+/// many of the wallet's spendable UTXOs this split will actually take, which
+/// is what `maxUtxosToSplit` limits and what the wallet happens to hold, and
+/// only the Benford coordinator knows it. Nothing is sent when the split
+/// cannot start at all - no wallet, a watch-only wallet, nothing spendable,
+/// or no fee rate from ARC - because in those cases nothing was started.
+class SplitUTXOsStartedMessage implements Message {
+  final String walletId;
+
+  /// The wallet's spendable UTXOs this split will take.
+  final int utxoCount;
+
+  /// The outputs each of them is split into.
+  final int targetUtxoCount;
+
+  SplitUTXOsStartedMessage({
+    required this.walletId,
+    required this.utxoCount,
+    required this.targetUtxoCount,
+  });
+
+  @override
+  String get correlationId => 'split-utxos-started-$walletId';
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId};
   @override
   ActorRef? get replyTo => null;
   @override

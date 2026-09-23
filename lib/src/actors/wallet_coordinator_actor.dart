@@ -824,7 +824,7 @@ class WalletCoordinatorActor extends Actor {
     try {
       // Subscribe to import notifications for progress/completion forwarding
       if (_importNotifications != null) {
-        _eventSubscriptions[cmd.walletId] = _importNotifications!
+        _eventSubscriptions[cmd.walletId] = _importNotifications
             .where((e) => e.walletId == cmd.walletId)
             .listen((event) {
           if (event is domain_events.WalletImportProgressEvent) {
@@ -873,7 +873,7 @@ class WalletCoordinatorActor extends Actor {
       }
 
       if (cmd.xpriv != null && _importWalletFromXpriv != null) {
-        _importWalletFromXpriv!(
+        _importWalletFromXpriv(
           walletId: cmd.walletId,
           xpriv: cmd.xpriv!,
           walletName: cmd.walletName,
@@ -881,7 +881,7 @@ class WalletCoordinatorActor extends Actor {
           addressGapLimit: cmd.gapLimit,
         );
       } else if (cmd.wif != null && _importWalletFromWif != null) {
-        _importWalletFromWif!(
+        _importWalletFromWif(
           walletId: cmd.walletId,
           wif: cmd.wif!,
           walletName: cmd.walletName,

@@ -3,11 +3,9 @@ import 'dart:typed_data';
 import 'package:dactor/dactor.dart';
 
 import '../models/bitcoin_transaction.dart';
-import '../models/bitcoin_utxo.dart';
 import '../models/deferred_payment.dart';
 import '../models/invoice_output_spec.dart';
 import '../models/persistent_map.dart';
-import 'invoice_messages.dart' show InvoiceStatus;
 
 export '../models/deferred_payment.dart';
 

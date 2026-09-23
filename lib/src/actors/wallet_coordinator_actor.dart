@@ -77,6 +77,19 @@ class WalletCoordinatorActor extends Actor {
       case domain_events.TransactionConfirmedEvent(:final walletId, :final txid, :final blockHeight?):
         _emitEvent(TransactionConfirmedEvent(walletId: walletId, txid: txid, blockHeight: blockHeight));
         unawaited(_payInvoiceOfHeldPayment(walletId, txid, DeferredNetworkStatus.mined));
+      // The chain stopped supporting a confirmation this wallet announced:
+      // the block its proof named left the active chain, or the header at
+      // that height contradicts the proof. An app told the transaction
+      // confirmed is told it is not (bead libspiffy-hzkf).
+      case domain_events.TransactionConfirmationRevertedEvent(
+            :final walletId, :final txid, :final blockHeight, :final blockHash, :final reason):
+        _emitEvent(TransactionConfirmationRevertedEvent(
+          walletId: walletId,
+          txid: txid,
+          blockHeight: blockHeight,
+          blockHash: blockHash,
+          reason: reason,
+        ));
       // The network holds a payment we received: ARCActor makes its outputs
       // available as it hears so (bead libspiffy-vj4j).
       case domain_events.UTXOMarkedAvailableEvent(:final walletId, :final txid):

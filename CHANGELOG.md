@@ -302,6 +302,16 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### An app hears when the chain takes a confirmation back
+
+- New public `TransactionConfirmationRevertedEvent`: the block a
+  transaction was proven in left the active chain, or the header at its
+  height contradicts the proof. It carries the height the confirmation was
+  recorded at, the block that left, and the reason the wallet recorded.
+  `TransactionConfirmedEvent` had no counterpart, so an application that
+  acted on a confirmation could only learn it was gone by asking again.
+  Both are announced from the events the wallet projection applied.
+
 ### Chain reorganizations are driven through the real stack
 
 - New `localnet_reorg_e2e_test.dart`: the node drops the block a payment

@@ -1513,6 +1513,46 @@ class TransactionConfirmedEvent extends CoordinatorEvent {
   DateTime get eventTimestamp => DateTime.now();
 }
 
+/// The chain no longer supports a confirmation this wallet announced.
+///
+/// Sent when a [TransactionConfirmedEvent] is taken back: the block the
+/// transaction was proven in left the active chain in a reorganization, or
+/// the header at the proof's height contradicts it. The transaction goes
+/// back to unconfirmed and its outputs cannot be spent until a fresh proof
+/// arrives — which it usually does, for the block that replaced the one
+/// that left, and the wallet then announces [TransactionConfirmedEvent]
+/// again.
+///
+/// An application that acted on the confirmation — shipped the goods,
+/// credited an account — learns here that the evidence for it is gone.
+class TransactionConfirmationRevertedEvent extends CoordinatorEvent {
+  @override
+  final String walletId;
+  final String txid;
+
+  /// The height the confirmation was recorded at; null when the row was
+  /// confirmed without one.
+  final int? blockHeight;
+
+  /// The block the proof named, the one that left the active chain; null
+  /// when the proof never named a block.
+  final String? blockHash;
+
+  /// Why it was taken back, as the wallet recorded it.
+  final String reason;
+
+  TransactionConfirmationRevertedEvent({
+    required this.walletId,
+    required this.txid,
+    required this.reason,
+    this.blockHeight,
+    this.blockHash,
+  });
+
+  @override
+  DateTime get eventTimestamp => DateTime.now();
+}
+
 /// Invoice created successfully
 class InvoiceCreatedEvent extends CoordinatorEvent {
   @override

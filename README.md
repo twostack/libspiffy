@@ -177,7 +177,7 @@ await initializeLibSpiffy(dataDirectory: './wallet-data');
 - After restart, Eventador needs to deserialize events back into Dart objects
 - Without registration: `ArgumentError: Event type 'XYZ' not registered`
 
-See the [Eventador README](../eventador/README.md#event-type-registry-critical) for complete details on event registration.
+See the [eventador package](https://pub.dev/packages/eventador) for complete details on event registration.
 
 ### Installation
 

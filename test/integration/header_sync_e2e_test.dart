@@ -34,6 +34,7 @@ void main() {
   group('Header Sync End-to-End Integration Tests', () {
     late LibSpiffyActorSystem libspiffySystem;
     late WalletStorage walletStorage;
+    late _HeaderWritesCanFailStorage failingStorage;
     late BlockHeaderChain headerChain;
     late _MockPeerManager mockPeerManager;
     late SpiffyNodeBridge bridge;
@@ -44,12 +45,17 @@ void main() {
 
     setUp(() async {
       // Initialize LibSpiffy actor system without P2P (we'll inject mock for testing)
-      walletStorage = InMemoryWalletStorage();
+      walletStorage = failingStorage = _HeaderWritesCanFailStorage();
       libspiffySystem = LibSpiffyActorSystem();
       
       await libspiffySystem.initialize(
         readModelStorage: walletStorage,
         enableP2P: false, // Disable automatic P2P since we're using mock
+        // The headers below are the real first blocks of mainnet, and the
+        // header chain is anchored to the configured network's genesis
+        // (SPV-02): on any other network their parent is unknown and every
+        // one of them is rejected.
+        networkType: 'main',
       );
 
       // Get reference to the shared header chain
@@ -265,45 +271,31 @@ void main() {
     });
 
     group('Error Handling and Recovery', () {
-      test('should recover from storage errors gracefully', () async {
-        // Test that the system gracefully handles storage errors without crashing
-        // This simulates real-world scenarios where storage might be temporarily unavailable
-        
-        final realHeaders = await _loadRealBlockHeaders();
-        final headers = realHeaders.take(1).toList();
-        
-        // The bridge should handle any storage errors internally and not crash
-        final success = await bridge.storeHeaders(headers, 0);
-        expect(success, isTrue);
-        
-        // Even if storage has issues, the system should still be responsive
-        final stats = bridge.statistics;
-        expect(stats['initialized'], isTrue);
-        
-        // The header chain should still be functional
-        expect(headerChain.bestHeight, greaterThanOrEqualTo(0));
-        
-        // Note: In a real problematic storage scenario, we'd expect the bridge 
-        // to catch StorageException and handle it gracefully, logging the error 
-        // but not crashing the system. The InMemoryWalletStorage used here is 
-        // reliable, so this test verifies the system's stability under normal conditions.
-      });
+      test('headers whose storage write fails are not counted, and land when storage recovers',
+          () async {
+        // The storage really fails here. This used to store into a healthy
+        // InMemoryWalletStorage and assert that the bridge returned true,
+        // with a comment saying as much: nothing about a storage error.
+        final headers = (await _loadRealBlockHeaders()).take(3).toList();
 
-      test('should handle actor communication failures', () async {
-        // This test verifies that if HeaderSyncActor fails, the system degrades gracefully
-        final realHeaders = await _loadRealBlockHeaders();
-        final headers = realHeaders.take(2).toList();
+        failingStorage.failHeaderWrites = true;
+        expect(await bridge.storeHeaders(headers, 0), isTrue,
+            reason: 'the bridge hands the batch to the actor; the write fails behind it');
+        await Future.delayed(Duration(milliseconds: 500));
 
-        // Note: In a real system, we'd simulate HeaderSyncActor failure
-        // For now, we just test that the bridge handles communication gracefully
-        
-        // Bridge should handle communication failures gracefully
-        final success = await bridge.storeHeaders(headers, 0);
-        expect(success, isTrue);
+        // Nothing is claimed that was not written, and the system is alive.
+        expect(headerChain.bestHeight, equals(0), reason: 'the genesis anchor, and nothing else');
+        expect(await walletStorage.getBlockHeaderByHeight(1), isNull);
+        expect(bridge.statistics['initialized'], isTrue);
 
-        // System should still report statistics
-        final stats = bridge.statistics;
-        expect(stats['initialized'], isTrue);
+        // Storage recovers: the same headers are accepted and stored.
+        failingStorage.failHeaderWrites = false;
+        expect(await bridge.storeHeaders(headers, 0), isTrue);
+        await Future.delayed(Duration(milliseconds: 500));
+
+        expect(headerChain.bestHeight, equals(2));
+        expect(await walletStorage.getBlockHeaderByHeight(1), isNotNull);
+        expect(await walletStorage.getBlockHeaderByHeight(2), isNotNull);
       });
     });
 
@@ -333,10 +325,10 @@ void main() {
         expect(retrievedProof, isNotNull);
         expect(retrievedProof!.blockHash, equals(mockProof.blockHash));
 
-        // Verify header chain can validate the proof
-        final isValid = await headerChain.validateMerkleProof(mockProof);
-        // Note: This might fail with mock data, but the structure should work
-        expect(isValid, isA<bool>());
+        // The siblings are not hashes of anything in this header, so the
+        // proof does not verify (it used to assert only that a bool came
+        // back, which every answer satisfies).
+        expect(await headerChain.validateMerkleProof(mockProof), isFalse);
       });
 
       test('should maintain statistics across all components', () async {
@@ -369,6 +361,24 @@ void main() {
       });
     });
   });
+}
+
+/// Storage whose header writes can be made to fail, for the storage-error
+/// test: everything else behaves as [InMemoryWalletStorage].
+class _HeaderWritesCanFailStorage extends InMemoryWalletStorage {
+  bool failHeaderWrites = false;
+
+  @override
+  Future<void> storeBlockHeader(BlockHeader header, int height) async {
+    if (failHeaderWrites) throw StateError('header storage is unavailable');
+    return super.storeBlockHeader(header, height);
+  }
+
+  @override
+  Future<void> storeBlockHeadersBulk(List<(BlockHeader, int)> headers) async {
+    if (failHeaderWrites) throw StateError('header storage is unavailable');
+    return super.storeBlockHeadersBulk(headers);
+  }
 }
 
 /// Mock implementations for testing

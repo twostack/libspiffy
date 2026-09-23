@@ -302,6 +302,19 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### Three integration test files test what they claim again
+
+- The CDN header sync tests built their chain with proof-of-work
+  validation off, which also skips seeding the genesis anchor, so the
+  service rightly refused the first chunk; they now build the chain as
+  production does for testnet.
+- The header sync end-to-end tests fed mainnet headers to a chain anchored
+  to testnet, so every header was rejected as having an unknown parent.
+- Hollow tests are gone or made real: a storage-error test that never
+  failed the storage now does; two merkle-proof tests that asserted "a
+  bool came back" assert the verdict; the tests that only checked a
+  message constructor kept its arguments are deleted.
+
 ### An invoice is paid when the network holds the payment
 
 - An invoice was marked paid as soon as a payment's BEEF validated, before

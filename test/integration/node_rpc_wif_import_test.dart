@@ -1,3 +1,9 @@
+/// Runs against the localnet regtest node (../localnet): tagged
+/// `localnet`, skipped by default (dart_test.yaml), run with
+///   dart test -P localnet test/integration/node_rpc_wif_import_test.dart
+@Tags(['localnet'])
+library;
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -21,12 +27,12 @@ import 'isar_test_helper.dart';
 ///
 /// Prerequisites:
 ///   - localnet running (docker compose up -d)
-///   - Node RPC at 192.168.50.241:18332
+///   - Node RPC at localhost:18332
 ///
 /// Run:
 ///   dart test test/integration/node_rpc_wif_import_test.dart --timeout 60s
 
-const _rpcUrl = 'http://192.168.50.241:18332';
+const _rpcUrl = 'http://localhost:18332';
 const _rpcUser = 'bitcoin';
 const _rpcPassword = 'bitcoin';
 

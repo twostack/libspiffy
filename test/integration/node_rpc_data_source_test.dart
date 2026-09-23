@@ -1,3 +1,9 @@
+/// Runs against the localnet regtest node (../localnet): tagged
+/// `localnet`, skipped by default (dart_test.yaml), run with
+///   dart test -P localnet test/integration/node_rpc_data_source_test.dart
+@Tags(['localnet'])
+library;
+
 import 'dart:convert';
 import 'dart:io';
 
@@ -16,7 +22,7 @@ import 'package:test/test.dart';
 /// Run:
 ///   dart test test/integration/node_rpc_data_source_test.dart
 
-const _rpcUrl = 'http://192.168.50.241:18332';
+const _rpcUrl = 'http://localhost:18332';
 const _rpcUser = 'bitcoin';
 const _rpcPassword = 'bitcoin';
 

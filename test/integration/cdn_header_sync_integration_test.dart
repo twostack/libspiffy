@@ -11,6 +11,7 @@ import 'package:test/test.dart';
 
 import 'package:libspiffy/src/spv/block_header_chain.dart';
 import 'package:libspiffy/src/spv/cdn_header_sync_config.dart';
+import 'package:libspiffy/src/spv/network_params.dart';
 import 'package:libspiffy/src/spv/cdn_header_sync_service.dart';
 import 'package:libspiffy/src/spv/cdn_manifest.dart';
 import 'package:libspiffy/src/storage/in_memory_wallet_storage.dart';
@@ -59,7 +60,13 @@ void main() {
 
     setUp(() async {
       storage = InMemoryWalletStorage();
-      headerChain = BlockHeaderChain(storage, skipProofOfWorkValidation: true);
+      // As production builds it for testnet: the chunks below are real
+      // testnet headers from height 1, and `initialize()` seeds the testnet
+      // genesis they link to. With `skipProofOfWorkValidation` the anchor is
+      // not seeded, so the chain had no tip and the service refused the
+      // first chunk for not starting at genesis. The service checks
+      // continuity and proof of work over every chunk itself.
+      headerChain = BlockHeaderChain(storage, params: NetworkParams.testnet);
       await headerChain.initialize();
     });
 
@@ -181,7 +188,7 @@ void main() {
 
       final result = await service.synchronize();
 
-      expect(result.success, isTrue);
+      expect(result.success, isTrue, reason: result.error);
       expect(result.headersImported, equals(50000));
       expect(result.finalHeight, equals(50000));
       expect(result.error, isNull);
@@ -308,7 +315,7 @@ void main() {
       );
 
       final result = await service.synchronize();
-      expect(result.success, isTrue);
+      expect(result.success, isTrue, reason: result.error);
       expect(result.headersImported, equals(50000)); // Only chunk 2
       expect(headerChain.bestHeight, equals(100000));
       expect(chunk1Downloaded, isFalse, reason: 'Should not re-download chunk 1');
@@ -462,7 +469,7 @@ void main() {
       );
 
       final result = await service.synchronize();
-      expect(result.success, isTrue);
+      expect(result.success, isTrue, reason: result.error);
       expect(result.headersImported, equals(0));
     }, timeout: Timeout(Duration(minutes: 2)));
   });

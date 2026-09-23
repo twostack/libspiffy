@@ -44,6 +44,11 @@ void main() {
     });
 
     group('Block Header Chain Integration', () {
+      // A reorganization across the whole system is covered by
+      // header_sync_e2e_test ('should handle blockchain reorganization
+      // across full system') and by the chain's own fork-choice tests; the
+      // test that used to sit here built a message and asserted its own
+      // getters, and said so in a comment.
       test('should handle SpiffyNode ChainTipEvent integration', () async {
         // Simulate SpiffyNode ChainTipEvent
         final mockChainTip = TestChainTip(
@@ -141,23 +146,12 @@ void main() {
         expect(retrievedProof!.txid, equals('test_transaction_001'));
         expect(retrievedProof.blockHeight, equals(1));
 
-        // Test merkle proof validation against header chain
-        final isValid = await headerChain.validateMerkleProof(merkleProof);
-        expect(isValid, isA<bool>()); // Structure test - actual validation needs real crypto
+        // The proof's siblings are not hashes of anything in this header,
+        // so it does not verify: the chain says so rather than taking the
+        // claim (it used to assert only that a bool came back).
+        expect(await headerChain.validateMerkleProof(merkleProof), isFalse);
       });
 
-      test('should handle BEEF validation messages', () async {
-        final beefMessage = ValidateBEEFMessage(
-          walletId: 'test_wallet_001',
-          beefHex: 'deadbeef', // Mock BEEF data
-          fromCounterparty: 'trading_partner_001',
-        );
-
-        expect(beefMessage.walletId, equals('test_wallet_001'));
-        expect(beefMessage.beefHex, equals('deadbeef'));
-        expect(beefMessage.storeMerkleProofs, isTrue);
-        expect(beefMessage.receivedAt, isA<DateTime>());
-      });
     });
 
     group('Actor Message Flow Integration', () {
@@ -181,113 +175,38 @@ void main() {
         );
 
         expect(statusResponse.currentHeight, equals(headerChain.bestHeight));
-        expect(statusResponse.syncProgress, lessThanOrEqualTo(1.0));
+        expect(statusResponse.syncProgress, closeTo(headerChain.bestHeight / 1000, 1e-9),
+            reason: 'progress is how far the headers we hold reach towards the network height');
         expect(statusResponse.connectedPeers.length, equals(2));
       });
 
-      test('should handle SPV control messages', () async {
-        final controlMessage = SPVControlMessage(
-          action: SPVControlAction.start,
-          walletId: 'test_wallet',
-          parameters: {'syncFromHeight': 0},
-        );
-
-        expect(controlMessage.action, equals(SPVControlAction.start));
-        expect(controlMessage.walletId, equals('test_wallet'));
-        expect(controlMessage.parameters!['syncFromHeight'], equals(0));
-      });
-
-      test('should handle SPV error scenarios', () async {
-        final errorMessage = SPVErrorMessage(
-          operation: 'block_header_validation',
-          error: 'Invalid previous block hash',
-          walletId: 'test_wallet',
-          isFatal: false,
-        );
-
-        expect(errorMessage.operation, equals('block_header_validation'));
-        expect(errorMessage.error, contains('Invalid previous block hash'));
-        expect(errorMessage.isFatal, isFalse);
-        expect(errorMessage.errorTime, isA<DateTime>());
-      });
     });
 
     group('Configuration and Performance', () {
-      test('should handle SPV configuration correctly', () async {
-        final config = SPVConfigMessage(
-          enableHeaderValidation: true,
-          enableMerkleProofValidation: true,
-          maxHeaderCacheSize: 2016,
-          headerSyncTimeout: Duration(minutes: 10),
-          reorgProtectionDepth: 6,
-        );
-
-        expect(config.enableHeaderValidation, isTrue);
-        expect(config.maxHeaderCacheSize, equals(2016));
-        expect(config.reorgProtectionDepth, equals(6));
-      });
-
-      test('should simulate realistic header sync performance', () async {
+      test('a chain of headers arriving in batches is accepted in order', () async {
+        // One chain, delivered twenty at a time as a peer would. It used to
+        // be five separate twenty-header chains stored at made-up heights
+        // (0..99), which the chain accepted while heights came from the
+        // caller; each header's height is derived from its parent now, so
+        // only the first batch ever linked and the rest were rejected.
         const totalHeaders = 100;
-        final startTime = DateTime.now();
+        final chain = _createTestBlockHeaders(totalHeaders);
 
-        // Simulate processing headers in batches (as SpiffyNode would provide)
-        for (int batch = 0; batch < 5; batch++) {
-          final batchHeaders = _createTestBlockHeaders(20);
-          
-          for (int i = 0; i < batchHeaders.length; i++) {
-            final globalHeight = (batch * 20) + i;
-            await headerChain.validateAndStoreHeader(batchHeaders[i], globalHeight);
+        for (var batch = 0; batch < 5; batch++) {
+          for (var i = 0; i < 20; i++) {
+            final height = (batch * 20) + i;
+            expect(await headerChain.validateAndStoreHeader(chain[height], height), isTrue,
+                reason: 'header $height was not accepted');
           }
         }
 
-        final endTime = DateTime.now();
-        final duration = endTime.difference(startTime);
-
         expect(headerChain.bestHeight, equals(totalHeaders - 1));
-        print('Processed $totalHeaders headers in ${duration.inMilliseconds}ms');
-        
-        // Performance expectation: should process headers quickly
-        expect(duration.inMilliseconds, lessThan(5000)); // Under 5 seconds
+        expect(headerChain.chainTip?.blockHash().toString(),
+            equals(chain.last.blockHash().toString()));
+        expect(await storage.getBlockHeaderByHeight(totalHeaders - 1), isNotNull);
       });
     });
 
-    group('Reorganization Simulation', () {
-      test('should simulate blockchain reorganization workflow', () async {
-        // Create initial chain
-        final initialChain = _createTestBlockHeaders(5);
-        for (int i = 0; i < initialChain.length; i++) {
-          await headerChain.validateAndStoreHeader(initialChain[i], i);
-        }
-
-        final initialHeight = headerChain.bestHeight;
-        expect(initialHeight, equals(4));
-
-        // Simulate reorganization message from SpiffyNode
-        final reorgMessage = ChainTipEventMessage(
-          oldTip: TestChainTip(
-            blockHash: initialChain.last.blockHash().toString(),
-            height: 4,
-            peerCount: 2,
-            confidence: 0.8,
-          ),
-          newTip: TestChainTip(
-            blockHash: 'new_chain_tip_hash',
-            height: 6,
-            peerCount: 4,
-            confidence: 0.95,
-          ),
-          eventType: ChainTipEventType.reorganization,
-          description: 'Blockchain reorganization detected',
-        );
-
-        expect(reorgMessage.isReorganization, isTrue);
-        expect(reorgMessage.heightChange, equals(2)); // From 4 to 6
-
-        // In a real implementation, this would trigger reorganization handling
-        // For now, we test that the message structure works correctly
-      });
-    });
   });
 }
 

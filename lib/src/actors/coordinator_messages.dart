@@ -1443,20 +1443,64 @@ class TransactionDetailResponse extends CoordinatorEvent {
   DateTime get eventTimestamp => DateTime.now();
 }
 
-/// Balance updated asynchronously (e.g., new UTXO received)
+/// The wallet's balance changed: the read model applied an event that moved
+/// money, and these are the numbers it now holds (bead libspiffy-7ye4).
+///
+/// This event existed and nothing emitted it, so the only way an application
+/// could learn its balance had changed was to send a [GetBalanceQuery] again
+/// and compare — which means polling, or missing the change entirely.
+///
+/// **The numbers are the ones [BalanceResponse] answers with**, computed by
+/// the same code over the same rows at the same moment
+/// (`WalletCoordinatorActor._balancesOf`), so an application cannot be told
+/// one balance by the event and a different one by the query. That mattered
+/// enough to widen this event: it used to carry only the confirmed,
+/// unconfirmed and total numbers, and would have left out the wallet's
+/// reserved, watch-only and pending funds — exactly the money beads
+/// libspiffy-a5h8, libspiffy-87a2 and libspiffy-z84j found reported nowhere.
+///
+/// Announced from the events the wallet read model applied, like
+/// [TransactionConfirmedEvent] and [TransactionConfirmationRevertedEvent],
+/// so a balance an app is told about is one the read model already holds
+/// (bead libspiffy-mu09). It is emitted only when a number actually
+/// differs from the one last announced for the wallet, so an event that
+/// leaves the balance alone is silent.
 class BalanceUpdatedEvent extends CoordinatorEvent {
   @override
   final String walletId;
+
+  /// See [BalanceResponse.confirmedBalance].
   final BigInt confirmedBalance;
+
+  /// See [BalanceResponse.unconfirmedBalance].
   final BigInt unconfirmedBalance;
+
+  /// [confirmedBalance] + [unconfirmedBalance]; see
+  /// [BalanceResponse.totalBalance].
   final BigInt totalBalance;
+
+  /// See [BalanceResponse.pendingBalance]: the wallet's money the network is
+  /// not known to hold, or whose proof a reorganization took away. Not part
+  /// of [totalBalance].
+  final BigInt pendingBalance;
+
+  /// See [BalanceResponse.watchOnlyBalance]. Not part of [totalBalance].
+  final BigInt watchOnlyBalance;
+
+  /// See [BalanceResponse.reservedBalance]. Not part of [totalBalance].
+  final BigInt reservedBalance;
 
   BalanceUpdatedEvent({
     required this.walletId,
     required this.confirmedBalance,
     required this.unconfirmedBalance,
     required this.totalBalance,
-  });
+    BigInt? pendingBalance,
+    BigInt? watchOnlyBalance,
+    BigInt? reservedBalance,
+  })  : pendingBalance = pendingBalance ?? BigInt.zero,
+        watchOnlyBalance = watchOnlyBalance ?? BigInt.zero,
+        reservedBalance = reservedBalance ?? BigInt.zero;
 
   @override
   DateTime get eventTimestamp => DateTime.now();

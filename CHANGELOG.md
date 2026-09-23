@@ -302,6 +302,25 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### An app is told when its balance changes
+
+- `BalanceUpdatedEvent` is emitted. It was public and nothing in the
+  library ever constructed it, so the only way an application could learn
+  that money had arrived, been spent, been reserved or lost its proof was
+  to send `GetBalanceQuery` again and compare — and anything that happened
+  between two polls was invisible. It is announced from the events the
+  wallet read model applied, beside `TransactionConfirmedEvent` and
+  `TransactionConfirmationRevertedEvent`.
+- The event now carries `pendingBalance`, `watchOnlyBalance` and
+  `reservedBalance` beside the confirmed, unconfirmed and total numbers it
+  already declared, from the same computation that answers
+  `GetBalanceQuery`, so the event and the query cannot report different
+  money. Additive: the three new parameters are optional and default to
+  zero.
+- Announcements are made one at a time in the order the read model applied
+  the events that caused them, and an event that leaves the numbers alone
+  is silent.
+
 ### A wallet's unspendable money is reported, not lost
 
 - New `BalanceResponse.pendingBalance`: the wallet's unspent outputs that

@@ -34,6 +34,17 @@ import 'payment_messages.dart' as pay;
 import 'wallet_messages.dart' as wm;
 import 'payment_channel_messages.dart' as ch;
 
+/// The five numbers `WalletCoordinatorActor._balancesOf` computes, which
+/// [BalanceResponse] answers a [GetBalanceQuery] with and
+/// [BalanceUpdatedEvent] announces (bead libspiffy-7ye4).
+typedef _Balances = ({
+  BigInt confirmed,
+  BigInt unconfirmed,
+  BigInt reserved,
+  BigInt watchOnly,
+  BigInt pending,
+});
+
 /// The canonical public interface for third-party apps using LibSpiffy.
 ///
 /// Receives coordinator commands, delegates to internal actors, tracks
@@ -67,12 +78,23 @@ class WalletCoordinatorActor extends Actor {
   StreamSubscription<Event>? _readModelEventsSub;
 
   /// Announces what the read models applied: a confirmation
-  /// ([TransactionConfirmedEvent]) and a paid invoice ([InvoicePaidEvent]).
-  /// Both public events existed and nothing emitted them, so an app never
-  /// heard its payment confirm or its invoice paid (bead libspiffy-mu09).
-  /// A confirmation journaled without a height, before heights were
-  /// journaled, is not announced: the event states one.
+  /// ([TransactionConfirmedEvent]), a confirmation the chain took back
+  /// ([TransactionConfirmationRevertedEvent]), a paid invoice
+  /// ([InvoicePaidEvent]) and the wallet's balance when one of these moved
+  /// it ([BalanceUpdatedEvent]).
+  ///
+  /// Each of those public events existed and nothing emitted them, so an app
+  /// never heard its payment confirm, its invoice paid, its confirmation
+  /// taken back or its balance change (beads libspiffy-mu09,
+  /// libspiffy-hzkf, libspiffy-7ye4). A confirmation journaled without a
+  /// height, before heights were journaled, is not announced: the event
+  /// states one.
   void _announceApplied(Event event) {
+    final moved = _walletWhoseBalanceMoved(event);
+    if (moved != null) {
+      _balanceAnnouncements =
+          _balanceAnnouncements.then((_) => _announceBalance(moved));
+    }
     switch (event) {
       case domain_events.TransactionConfirmedEvent(:final walletId, :final txid, :final blockHeight?):
         _emitEvent(TransactionConfirmedEvent(walletId: walletId, txid: txid, blockHeight: blockHeight));
@@ -99,6 +121,85 @@ class WalletCoordinatorActor extends Actor {
             walletId: walletId, invoiceId: invoiceId, txid: txid, amountReceived: amountReceived));
       default:
         break;
+    }
+  }
+
+
+  /// The last balance announced for each wallet, so an event that leaves the
+  /// numbers alone is silent (see [_announceBalance]).
+  final Map<String, _Balances> _lastAnnouncedBalance = {};
+
+  /// Balance announcements run one at a time, in the order the read model
+  /// applied the events that caused them. Each reads the UTXO rows, so
+  /// without this two overlapping reads could announce the older balance
+  /// last.
+  Future<void> _balanceAnnouncements = Future<void>.value();
+
+  /// The wallet whose balance the read model may have just moved, or null
+  /// for an event that cannot move one.
+  ///
+  /// These are the events `WalletProjection` recalculates a wallet's
+  /// balances for — the UTXO events, the two confirmation events, the
+  /// deferred-payment resolutions, a watch address (which changes the
+  /// watch-only number), and a new address whose key can make a bare
+  /// multisig UTXO spendable (bead libspiffy-hccp).
+  ///
+  /// Missing one from this list delays an announcement; it cannot produce a
+  /// wrong one. [_announceBalance] reads the rows and compares, so the next
+  /// event that does reach here announces the accumulated change.
+  static String? _walletWhoseBalanceMoved(Event event) => switch (event) {
+        domain_events.AddressGeneratedEvent(:final walletId) => walletId,
+        domain_events.AddressDiscoveredEvent(:final walletId) => walletId,
+        domain_events.WatchAddressAddedEvent(:final walletId) => walletId,
+        domain_events.UTXOReceivedEvent(:final walletId) => walletId,
+        domain_events.UTXOMarkedAvailableEvent(:final walletId) => walletId,
+        domain_events.UTXOSpentEvent(:final walletId) => walletId,
+        domain_events.UTXOConfirmationUpdatedEvent(:final walletId) => walletId,
+        domain_events.UTXOReservedEvent(:final walletId) => walletId,
+        domain_events.UTXOReleasedEvent(:final walletId) => walletId,
+        domain_events.TransactionConfirmedEvent(:final walletId) => walletId,
+        domain_events.TransactionConfirmationRevertedEvent(:final walletId) => walletId,
+        domain_events.TransactionSpendDeferredEvent(:final walletId) => walletId,
+        domain_events.DeferredTransactionFailedEvent(:final walletId) => walletId,
+        domain_events.DeferredTransactionCancelledEvent(:final walletId) => walletId,
+        domain_events.DeferredSpendReclaimedEvent(:final walletId) => walletId,
+        _ => null,
+      };
+
+  /// Announces [walletId]'s balance when a number differs from the one last
+  /// announced for it (bead libspiffy-7ye4).
+  ///
+  /// The numbers come from [_balancesOf], the computation that answers
+  /// [GetBalanceQuery], so the event and the query cannot disagree. A wallet
+  /// heard from for the first time is announced only if it holds something:
+  /// an all-zero balance is what an application already assumes of a wallet
+  /// it has heard nothing about.
+  Future<void> _announceBalance(String walletId) async {
+    try {
+      final now = await _balancesOf(walletId);
+      final before = _lastAnnouncedBalance[walletId];
+      if (before == now) return;
+      _lastAnnouncedBalance[walletId] = now;
+      if (before == null &&
+          now.confirmed == BigInt.zero &&
+          now.unconfirmed == BigInt.zero &&
+          now.reserved == BigInt.zero &&
+          now.watchOnly == BigInt.zero &&
+          now.pending == BigInt.zero) {
+        return;
+      }
+      _emitEvent(BalanceUpdatedEvent(
+        walletId: walletId,
+        confirmedBalance: now.confirmed,
+        unconfirmedBalance: now.unconfirmed,
+        totalBalance: now.confirmed + now.unconfirmed,
+        pendingBalance: now.pending,
+        watchOnlyBalance: now.watchOnly,
+        reservedBalance: now.reserved,
+      ));
+    } catch (e, stackTrace) {
+      _log.warning('Could not read wallet $walletId\'s balance to announce it: $e',
+          e, stackTrace);
     }
   }
 
@@ -775,77 +876,95 @@ class WalletCoordinatorActor extends Actor {
     }
   }
 
+  /// The wallet's balances, as [BalanceResponse] and [BalanceUpdatedEvent]
+  /// both report them.
+  ///
+  /// One computation for both (bead libspiffy-7ye4): the query and the
+  /// announcement must not be able to tell an application two different
+  /// things about the same money.
+  ///
+  /// The wallet's own unspent funds: UTXOs at watch addresses are reported
+  /// apart, as watch-only (bead libspiffy-87a2); a bare multisig UTXO the
+  /// wallet cannot spend alone counts nowhere (bead libspiffy-0k8). The same
+  /// split as ReadModelStorage.getBalance.
+  ///
+  /// Reserved UTXOs are read here too (bead libspiffy-a5h8). They are the
+  /// wallet's money, committed rather than gone — an in-flight payment's
+  /// inputs, or a deferred payment's held ones — and getPaymentUTXOs, whose
+  /// contract is `isAvailable && !isPluginManaged`, filters them out before
+  /// this could see them, so through this API they used to vanish from every
+  /// number. Taken from the same rows as the rest, in one read, so no bucket
+  /// can be a moment older than another; the read model's wallet row
+  /// computes its own `reservedBalance` from these rows by the same rule
+  /// (WalletProjection).
+  ///
+  /// Pending rows are read for the same reason (bead libspiffy-z84j): the
+  /// wallet's money, which the network is not known to hold or whose proof a
+  /// reorganization took away, and which used to vanish from every number
+  /// here exactly as reserved money did. It is reported on its own rather
+  /// than as unconfirmed, because unlike the rest of `total` it cannot be
+  /// spent.
+  Future<_Balances> _balancesOf(String walletId) async {
+    final all = await _storage.getUTXOs(walletId);
+    final counted = [
+      for (final utxo in all)
+        if (!utxo.isPluginManaged && (utxo.isAvailable || utxo.isReserved)) utxo,
+    ];
+    final waiting = [
+      for (final utxo in all)
+        if (!utxo.isPluginManaged && utxo.status == UTXOStatus.pending) utxo,
+    ];
+    final paymentUtxos = await splitBalanceUtxos(_storage, walletId, counted);
+    // The same ownership rules as the rest: watch-only outputs and ones
+    // the wallet cannot unlock alone are not its spendable money, pending
+    // or not.
+    final pendingUtxos = await splitBalanceUtxos(_storage, walletId, waiting);
+    BigInt confirmed = BigInt.zero;
+    BigInt unconfirmed = BigInt.zero;
+    BigInt reserved = BigInt.zero;
+    final pending = pendingUtxos.spendable
+        .fold(BigInt.zero, (sum, utxo) => sum + utxo.satoshis);
+
+    for (final utxo in paymentUtxos.spendable) {
+      // WalletBalances.bucketOf, asked rather than restated: reserved
+      // first, then a verified proof putting the UTXO in a block on our
+      // active chain, and nothing else, as confirmed (beads libspiffy-8oaq,
+      // libspiffy-jc3h; spv-understanding.md, "Balances"). The wallet
+      // aggregate's balances and the read model's wallet row are the same
+      // three buckets over the same rule, so the layers cannot drift.
+      switch (WalletBalances.bucketOf(utxo)) {
+        case BalanceBucket.reserved:
+          reserved += utxo.satoshis;
+        case BalanceBucket.confirmed:
+          confirmed += utxo.satoshis;
+        case BalanceBucket.unconfirmed:
+          unconfirmed += utxo.satoshis;
+        case null:
+          break;
+      }
+    }
+
+    return (
+      confirmed: confirmed,
+      unconfirmed: unconfirmed,
+      reserved: reserved,
+      watchOnly: paymentUtxos.watchOnlySatoshis,
+      pending: pending,
+    );
+  }
+
   Future<void> _handleGetBalance(GetBalanceQuery query) async {
     try {
-      // The wallet's own unspent funds: UTXOs at watch addresses are
-      // reported apart, as watch-only (bead libspiffy-87a2); a bare multisig
-      // UTXO the wallet cannot spend alone counts nowhere (bead
-      // libspiffy-0k8). The same split as ReadModelStorage.getBalance.
-      //
-      // Reserved UTXOs are read here too (bead libspiffy-a5h8). They are the
-      // wallet's money, committed rather than gone — an in-flight payment's
-      // inputs, or a deferred payment's held ones — and getPaymentUTXOs,
-      // whose contract is `isAvailable && !isPluginManaged`, filters them
-      // out before this handler can see them, so through this API they used
-      // to vanish from every number. Taken from the same rows as the rest,
-      // in one read, so no bucket here can be a moment older than another;
-      // the read model's wallet row computes its own `reservedBalance` from
-      // these rows by the same rule (WalletProjection).
-      //
-      // Pending rows are read for the same reason (bead libspiffy-z84j):
-      // the wallet's money, which the network is not known to hold or whose
-      // proof a reorganization took away, and which used to vanish from
-      // every number here exactly as reserved money did. It is reported on
-      // its own rather than as unconfirmed, because unlike the rest of
-      // `totalBalance` it cannot be spent.
-      final all = await _storage.getUTXOs(query.walletId);
-      final counted = [
-        for (final utxo in all)
-          if (!utxo.isPluginManaged && (utxo.isAvailable || utxo.isReserved)) utxo,
-      ];
-      final waiting = [
-        for (final utxo in all)
-          if (!utxo.isPluginManaged && utxo.status == UTXOStatus.pending) utxo,
-      ];
-      final paymentUtxos = await splitBalanceUtxos(_storage, query.walletId, counted);
-      // The same ownership rules as the rest: watch-only outputs and ones
-      // the wallet cannot unlock alone are not its spendable money, pending
-      // or not.
-      final pendingUtxos = await splitBalanceUtxos(_storage, query.walletId, waiting);
-      BigInt confirmed = BigInt.zero;
-      BigInt unconfirmed = BigInt.zero;
-      BigInt reserved = BigInt.zero;
-      final pending = pendingUtxos.spendable
-          .fold(BigInt.zero, (sum, utxo) => sum + utxo.satoshis);
-
-      for (final utxo in paymentUtxos.spendable) {
-        // WalletBalances.bucketOf, asked rather than restated: reserved
-        // first, then a verified proof putting the UTXO in a block on our
-        // active chain, and nothing else, as confirmed (beads libspiffy-8oaq,
-        // libspiffy-jc3h; spv-understanding.md, "Balances"). The wallet
-        // aggregate's balances and the read model's wallet row are the same
-        // three buckets over the same rule, so the layers cannot drift.
-        switch (WalletBalances.bucketOf(utxo)) {
-          case BalanceBucket.reserved:
-            reserved += utxo.satoshis;
-          case BalanceBucket.confirmed:
-            confirmed += utxo.satoshis;
-          case BalanceBucket.unconfirmed:
-            unconfirmed += utxo.satoshis;
-          case null:
-            break;
-        }
-      }
-
+      final balances = await _balancesOf(query.walletId);
       _emitEvent(BalanceResponse(
         walletId: query.walletId,
         queryId: query.correlationId,
-        confirmedBalance: confirmed,
-        unconfirmedBalance: unconfirmed,
-        totalBalance: confirmed + unconfirmed,
-        pendingBalance: pending,
-        watchOnlyBalance: paymentUtxos.watchOnlySatoshis,
-        reservedBalance: reserved,
+        confirmedBalance: balances.confirmed,
+        unconfirmedBalance: balances.unconfirmed,
+        totalBalance: balances.confirmed + balances.unconfirmed,
+        pendingBalance: balances.pending,
+        watchOnlyBalance: balances.watchOnly,
+        reservedBalance: balances.reserved,
       ));
     } catch (e) {
       _emitEvent(ErrorEvent(

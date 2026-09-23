@@ -136,8 +136,9 @@ All third-party interaction flows through a single unified facade — **WalletCo
 **Key Events (emitted on stream):**
 - `WalletCreatedEvent`, `BalanceResponse`, `TransactionsResponse`
 - `InvoiceCreatedEvent`, `PaymentReadyEvent` (BEEF ready for transmission)
-- `SPVValidationResultEvent`, `TransactionImportedEvent`, `TransactionRecordedEvent`, `TransactionConfirmedEvent`
-- `UTXOSplitCompleteEvent`, `TimestampCompleteEvent`
+- `SPVValidationResultEvent`, `TransactionImportedEvent`, `TransactionRecordedEvent`, `TransactionConfirmedEvent`, `TransactionConfirmationRevertedEvent`
+- `BalanceUpdatedEvent` (the balance changed; the app did not have to ask)
+- `UTXOSplitStartedEvent`, `UTXOSplitCompleteEvent`, `TimestampCompleteEvent`
 - `ChannelOpenedEvent`, `ChannelPaymentEvent`, `ChannelClosedEvent`
 - `DeferredPaymentsResponse`, `DeferredPaymentBroadcastEvent`, `DeferredPaymentStatusEvent`, `DeferredPaymentCancelledEvent`
 
@@ -342,6 +343,7 @@ Three judgements are shared by every layer:
 | `WalletState.confirmedBalance` / `unconfirmedBalance` / `reservedBalance` (`WalletBalances.bucketOf`, journaled in snapshots) | Every unspent UTXO in exactly one bucket, pending, plugin-managed, watch-only and cannot-spend-alone included: everything the wallet holds. Not a spendable amount. | Unreserved and `blockHeight != null`: a proof puts it in a block on our active chain |
 | Read model wallet row (`WalletProjection`: `confirmedBalance`, `unconfirmedBalance`, `reservedBalance`, `totalBalance`, `watchOnlyBalance`) | The same buckets over unspent UTXOs, leaving out plugin-managed, watch-only and cannot-spend-alone UTXOs (`splitBalanceUtxos`); `watchOnlyBalance` is the unspent watch-only UTXOs, any status. | `blockHeight != null`: a proof puts it in a block on our active chain |
 | `BalanceResponse` (`GetBalanceQuery`) | Payment UTXOs the wallet can spend alone, not plugin-managed. `confirmedBalance` + `unconfirmedBalance` = `totalBalance` is the spendable money, and equals `getBalance`. Three kinds of the wallet's own money that cannot be spent are reported apart and are in none of those totals: `reservedBalance` (committed to a payment or held by a deferred one, bead libspiffy-a5h8), `watchOnlyBalance` (no key for it, bead libspiffy-87a2), and `pendingBalance` (the network is not known to hold it, or a reorganization took its proof away, bead libspiffy-z84j). | `blockHeight != null`: a proof puts it in a block on our active chain |
+| `BalanceUpdatedEvent` (announced, not asked for) | The same six numbers as `BalanceResponse`, from the same computation (`WalletCoordinatorActor._balancesOf`), announced when an event the wallet read model applied moved any of them (bead libspiffy-7ye4). An application does not have to poll `GetBalanceQuery` to notice a change, and cannot be told one balance by the event and another by the query. | `blockHeight != null`: a proof puts it in a block on our active chain |
 | `ReadModelStorage.getBalance` / `getWatchOnlyBalance` | Sum of the payment UTXOs the wallet can spend alone / of the watch-only payment UTXOs. | n/a |
 
 The read side learns of a hold when it is journaled: the inputs of a deferred payment recorded before holds were journaled stay available rows until the wallet manager reconciles the wallet at spawn.

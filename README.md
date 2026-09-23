@@ -220,6 +220,9 @@ libspiffy.coordinatorEvents?.listen((event) {
     print('BEEF ready to send: ${event.txid}');
   } else if (event is BalanceResponse) {
     print('Balance: ${event.totalBalance} sats');
+  } else if (event is BalanceUpdatedEvent) {
+    // Announced when the balance changes; no need to poll GetBalanceQuery.
+    print('Balance now: ${event.totalBalance} sats');
   }
 });
 

@@ -12,11 +12,10 @@ import '../storage/wallet_storage.dart';
 import '../utils/beef.dart';
 import '../utils/bump.dart';
 import '../models/invoice_output_spec.dart';
-import 'spv_messages.dart' hide ValidateBEEFMessage;
+import 'spv_messages.dart';
 import 'wallet_messages.dart';
 // Both message libraries declare RetrieveMerkleProofMessage; ARCActor handles
 // the one in wallet_messages.dart (bead libspiffy-0lx).
-import 'wallet_messages.dart' as wmsg show RetrieveMerkleProofMessage;
 import 'invoice_messages.dart';
 import '../utils/network_name.dart';
 import '../utils/unique_id.dart';

@@ -302,6 +302,15 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### Duplicate SPV message classes are gone
+
+- `spv_messages.dart` held a second `ValidateBEEFMessage` and
+  `RetrieveMerkleProofMessage` that nothing sent; the live ones are in
+  `wallet_messages.dart`. `SPVActor` no longer needs a `hide` clause and a
+  second aliased import to tell them apart.
+- `SPVControlMessage`, `SPVControlAction` and `SPVConfigMessage` are
+  removed: nothing in the library ever sent or handled one.
+
 ### Three integration test files test what they claim again
 
 - The CDN header sync tests built their chain with proof-of-work

@@ -211,50 +211,6 @@ class ValidateTransactionMessage implements SPVMessage {
       'tx: ${transaction.txid}, proofs: ${merkleProofs.length})';
 }
 
-/// Message to validate a BEEF (Bitcoin Extended Format) transaction package
-class ValidateBEEFMessage implements SPVMessage {
-  final String walletId;
-  final String beefHex;
-  final String fromCounterparty;
-  final bool storeMerkleProofs; // Whether to store extracted proofs
-  final DateTime receivedAt;
-
-  ValidateBEEFMessage({
-    required this.walletId,
-    required this.beefHex,
-    required this.fromCounterparty,
-    this.storeMerkleProofs = true,
-    DateTime? receivedAt,
-  }) : receivedAt = receivedAt ?? DateTime.now();
-
-  @override
-  String toString() => 'ValidateBEEFMessage(wallet: $walletId, '
-      'beef: ${beefHex.length} bytes)';
-}
-
-/// Request to retrieve merkle proof from ARC or other source
-class RetrieveMerkleProofMessage implements SPVMessage {
-  final String txid;
-  final int? knownBlockHeight;
-  final String? knownBlockHash;
-  final String walletId;
-  final bool storeAfterRetrieval;
-  final DateTime requestedAt;
-
-  RetrieveMerkleProofMessage({
-    required this.txid,
-    this.knownBlockHeight,
-    this.knownBlockHash,
-    required this.walletId,
-    this.storeAfterRetrieval = true,
-    DateTime? requestedAt,
-  }) : requestedAt = requestedAt ?? DateTime.now();
-
-  @override
-  String toString() => 'RetrieveMerkleProofMessage(tx: $txid, '
-      'wallet: $walletId, height: $knownBlockHeight)';
-}
-
 /// Message sent when a merkle proof is retrieved/stored
 class MerkleProofStoredMessage implements SPVMessage {
   final String txid;
@@ -370,31 +326,6 @@ class SPVStatusMessage extends ActorResponse implements SPVMessage {
       'synced: $isSynced, healthy: $isHealthy)';
 }
 
-/// Message to start/stop SPV operations
-class SPVControlMessage implements SPVMessage {
-  final SPVControlAction action;
-  final String? walletId; // null = global control
-  final Map<String, dynamic>? parameters;
-
-  SPVControlMessage({
-    required this.action,
-    this.walletId,
-    Map<String, dynamic>? parameters,
-  })  : parameters = frozenPlainMapOrNull(parameters);
-
-  @override
-  String toString() => 'SPVControlMessage(action: $action, wallet: $walletId)';
-}
-
-enum SPVControlAction {
-  start,
-  stop,
-  pause,
-  resume,
-  reset,
-  forceSync,
-}
-
 /// Error message for SPV operations
 class SPVErrorMessage extends ActorResponse implements SPVMessage {
   final String operation;
@@ -432,29 +363,6 @@ class SPVErrorMessage extends ActorResponse implements SPVMessage {
   @override
   String toString() => 'SPVErrorMessage(op: $operation, '
       'error: $error, fatal: $isFatal)';
-}
-
-/// Configuration message for SPV operations
-class SPVConfigMessage implements SPVMessage {
-  final bool enableHeaderValidation;
-  final bool enableMerkleProofValidation;
-  final int maxHeaderCacheSize;
-  final Duration headerSyncTimeout;
-  final int reorgProtectionDepth;
-  final bool autoRetryFailedValidations;
-
-  SPVConfigMessage({
-    this.enableHeaderValidation = true,
-    this.enableMerkleProofValidation = true,
-    this.maxHeaderCacheSize = 2016,
-    this.headerSyncTimeout = const Duration(minutes: 10),
-    this.reorgProtectionDepth = 6,
-    this.autoRetryFailedValidations = true,
-  });
-
-  @override
-  String toString() => 'SPVConfigMessage(headerValidation: $enableHeaderValidation, '
-      'proofValidation: $enableMerkleProofValidation)';
 }
 
 /// Request a specific block header by height (for opportunistic fetching)

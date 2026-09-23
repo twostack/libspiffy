@@ -61,8 +61,9 @@ const _sources = <String, String?>{
 /// collection). A new one must be frozen, and adding it must bump this
 /// number deliberately: 140 with `SPVValidationResult.invoicePaidAddresses`
 /// (yyby: what a payment pays its invoice, for the coordinator to mark it
-/// paid with once the network holds the payment).
-const _expectedFields = 140;
+/// paid with once the network holds the payment), 139 again once the dead
+/// `SPVControlMessage` went with its frozen `parameters` map.
+const _expectedFields = 139;
 
 final _classStart = RegExp(r'^(?:abstract |sealed )?class (\w+)', multiLine: true);
 final _field = RegExp(r'^  final ((?:List|Map|Set)<.*?>\??) (\w+);(?: *//.*)?$', multiLine: true);

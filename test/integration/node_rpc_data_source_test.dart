@@ -5,7 +5,6 @@
 library;
 
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:http/http.dart' as http;
@@ -56,6 +55,24 @@ Future<dynamic> _bitcoinRpc(String method,
 }
 
 /// Check that the regtest node is reachable.
+/// Funds [address] on the regtest chain and confirms it, so a test that
+/// imports the key has something to find.
+///
+/// The node is told to watch the address first: the import path asks for
+/// `importaddress` without a rescan, so anything paid to it beforehand
+/// would be invisible. The chain is shared and long-lived, which is why
+/// the state a test needs is made by the test.
+Future<String> _fundWatched(String address, {double bsv = 0.5}) async {
+  await _bitcoinRpc('importaddress', [address, '', false]);
+  final mining = await _bitcoinRpc('getnewaddress') as String;
+  if ((await _bitcoinRpc('getbalance') as num) < bsv + 1) {
+    await _bitcoinRpc('generatetoaddress', [101, mining]);
+  }
+  final txid = await _bitcoinRpc('sendtoaddress', [address, bsv]) as String;
+  await _bitcoinRpc('generatetoaddress', [1, mining]);
+  return txid;
+}
+
 Future<bool> _isNodeReachable() async {
   try {
     await _bitcoinRpc('getblockcount');
@@ -278,9 +295,17 @@ void main() {
     });
   });
 
-  group('Reproduce production failure — WIF cTQt7Q...', () {
+  // The key that once failed to import in production. Its funds were on
+  // that node, not this chain, so the test pays its address here first.
+  group('A key imported from a WIF finds its funds', () {
     const prodWif = 'cTQt7QmW5BnbjaHRGgf4X1H51EXTW8sT6UVSS6YsvBNDQDtKN51c';
     const expectedAddr = 'micocA8ttajyG1NihapQmxXu8FqWbKSJ79';
+
+    setUpAll(() async {
+      if (!await _isNodeReachable()) return;
+      final funding = await _fundWatched(expectedAddr);
+      print('Funded $expectedAddr with $funding');
+    });
 
     test('address derivation matches', () async {
       if (!await _isNodeReachable()) return;
@@ -304,7 +329,7 @@ void main() {
         print('  txid=${tx.txid} blockHeight=${tx.blockHeight}');
       }
       expect(history, isNotEmpty,
-          reason: 'Production address should have transactions');
+          reason: 'the address was paid and the payment was mined');
     });
 
     test('getUtxos finds UTXO', () async {
@@ -316,7 +341,7 @@ void main() {
         print('  txid=${u.txid} vout=${u.vout} value=${u.value} sats');
       }
       expect(utxos, isNotEmpty,
-          reason: 'Production address should have UTXOs');
+          reason: 'the address was paid and nothing has spent it');
     });
 
     test('full import simulation succeeds', () async {

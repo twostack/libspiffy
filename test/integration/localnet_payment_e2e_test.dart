@@ -120,8 +120,10 @@ void main() {
     final received = await receive(bob, bobWallet, invoiceId, payment);
     expect(received.valid, isTrue, reason: received.error);
     expect(received.broadcasted, isTrue, reason: received.broadcastError);
-    expect(received.networkStatus, 'SEEN_ON_NETWORK');
-    await arcReports(payment.txid, 'SEEN_ON_NETWORK');
+    expect(received.networkStatus, isIn(const ['SEEN_ON_NETWORK', 'MINED']),
+        reason: 'the network holds the payment; a block may have taken it '
+            'within ARC\'s wait');
+    await arcHolds(payment.txid);
     expect(await onNode(payment.txid), isNotNull,
         reason: 'ARC accepted the payment but the node does not hold it');
 
@@ -148,9 +150,11 @@ void main() {
         (e) => e.txid == payment.txid, timeout: const Duration(minutes: 2));
     final aliceConfirmed = alice.next<TransactionConfirmedEvent>(
         (e) => e.txid == payment.txid, timeout: const Duration(minutes: 2));
-    final height = await mine();
-    expect((await bobConfirmed).blockHeight, height);
-    expect((await aliceConfirmed).blockHeight, height);
+    await mine();
+    final minedIn = await minedAt(payment.txid);
+    expect(minedIn, isNotNull);
+    expect((await bobConfirmed).blockHeight, minedIn);
+    expect((await aliceConfirmed).blockHeight, minedIn);
     await arcReports(payment.txid, 'MINED');
 
     final bobAfter = await bob.balance(bobWallet);
@@ -183,7 +187,7 @@ void main() {
     final back = await receive(alice, aliceWallet, aliceInvoice, second);
     expect(back.valid, isTrue, reason: back.error);
     expect(back.broadcasted, isTrue, reason: back.broadcastError);
-    await arcReports(second.txid, 'SEEN_ON_NETWORK');
+    await arcHolds(second.txid);
 
     final confirmations = [
       for (final node in [alice, bob])
@@ -191,9 +195,9 @@ void main() {
           node.next<TransactionConfirmedEvent>((e) => e.txid == txid,
               timeout: const Duration(minutes: 2)),
     ];
-    final height = await mine();
+    await mine();
     for (final confirmed in await Future.wait(confirmations)) {
-      expect(confirmed.blockHeight, height);
+      expect(confirmed.blockHeight, await minedAt(confirmed.txid));
     }
 
     final bobAfter = await bob.balance(bobWallet);
@@ -242,7 +246,7 @@ void main() {
         (e) => e.txid == payment.txid, timeout: const Duration(minutes: 2));
     final height = await mine();
     await bob.headersAt(height, timeout: const Duration(seconds: 30));
-    expect((await confirmed).blockHeight, height);
+    expect((await confirmed).blockHeight, await minedAt(payment.txid));
     final bobAfter = await bob.balance(bobWallet);
     expect(bobAfter.confirmedBalance, BigInt.from(40000));
     expect(bobAfter.unconfirmedBalance, BigInt.zero);

@@ -302,6 +302,24 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### The localnet tests survive a chain anything can mine
+
+- `mine()` in the localnet harness returned the chain tip rather than the
+  block it had just mined. Those are the same number only while nothing
+  else extends the chain, so every assertion that a wallet recorded "the
+  height `mine()` returned" was a guess. It returns the height of the
+  block `generatetoaddress` produced, and the new `minedAt(txid)` asks the
+  node which block holds a transaction: the payment and deferred suites
+  check a wallet's recorded height against the chain's own answer.
+- The payment suite demanded `SEEN_ON_NETWORK` from ARC where a block can
+  land inside ARC's five-second wait; it accepts a held payment the way
+  the deferred suite already did.
+- The two node-RPC tests were pinned to a key whose funds were on the node
+  they no longer talk to, so four of them asserted that an address this
+  chain has never seen should have transactions. They fund their own
+  address first - watched before it is paid, since the import path never
+  rescans - and test what they claim again.
+
 ### Duplicate SPV message classes are gone
 
 - `spv_messages.dart` held a second `ValidateBEEFMessage` and

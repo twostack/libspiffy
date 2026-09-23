@@ -55,12 +55,20 @@ Future<dynamic> rpc(String method, [List<dynamic> params = const []]) async {
   return body['result'];
 }
 
-/// Mines [count] blocks and returns the new height.
+/// Mines [count] blocks and returns the height of the last one mined.
+///
+/// Not the tip: the chain is shared, and anything else on it can mine
+/// between the block this asks for and the answer.
 Future<int> mine([int count = 1]) async {
   final address = await rpc('getnewaddress') as String;
-  await rpc('generatetoaddress', [count, address]);
-  return await rpc('getblockcount') as int;
+  final mined = await rpc('generatetoaddress', [count, address]) as List;
+  return heightOf(mined.last as String);
 }
+
+/// The height of the block [hash].
+Future<int> heightOf(String hash) async =>
+    (await rpc('getblockheader', [hash]) as Map<String, dynamic>)['height']
+        as int;
 
 /// Why the localnet stack cannot run a test, or null when it can.
 Future<String?> localnetProblem() async {
@@ -171,6 +179,14 @@ Future<Map<String, dynamic>?> onNode(String txid) async {
   } on StateError {
     return null;
   }
+}
+
+/// The height of the block the node holds [txid] in; null when the node
+/// does not have it in a block. The chain's own answer, which is what a
+/// wallet's recorded height has to agree with however the block was mined.
+Future<int?> minedAt(String txid) async {
+  final hash = (await onNode(txid))?['blockhash'] as String?;
+  return hash == null ? null : await heightOf(hash);
 }
 
 /// Mines blocks until the chain's median time past (what the network holds

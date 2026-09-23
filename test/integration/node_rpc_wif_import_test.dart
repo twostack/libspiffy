@@ -14,7 +14,6 @@ import 'package:http/http.dart' as http;
 import 'package:isar/isar.dart';
 import 'package:libspiffy/libspiffy.dart';
 import 'package:libspiffy/internals.dart';
-import 'package:libspiffy/src/storage/isar_wallet_storage.dart';
 import 'package:test/test.dart';
 
 import 'isar_test_helper.dart';
@@ -64,6 +63,24 @@ Future<dynamic> _bitcoinRpc(String method,
   } finally {
     client.close();
   }
+}
+
+/// Funds [address] on the regtest chain and confirms it, so a test that
+/// imports the key has something to find.
+///
+/// The node is told to watch the address first: the import path asks for
+/// `importaddress` without a rescan, so anything paid to it beforehand
+/// would be invisible. The chain is shared and long-lived, which is why
+/// the state a test needs is made by the test.
+Future<String> _fundWatched(String address, {double bsv = 0.5}) async {
+  await _bitcoinRpc('importaddress', [address, '', false]);
+  final mining = await _bitcoinRpc('getnewaddress') as String;
+  if ((await _bitcoinRpc('getbalance') as num) < bsv + 1) {
+    await _bitcoinRpc('generatetoaddress', [101, mining]);
+  }
+  final txid = await _bitcoinRpc('sendtoaddress', [address, bsv]) as String;
+  await _bitcoinRpc('generatetoaddress', [1, mining]);
+  return txid;
 }
 
 Future<bool> _isNodeReachable() async {
@@ -144,6 +161,11 @@ void main() {
     }
 
     print('\n=== WIF Import Integration Test (regtest) ===\n');
+
+    // The key's funds were on the node this test was written against, not
+    // on this chain: pay its address here so there is something to import.
+    final funding = await _fundWatched(_expectedAddr);
+    print('Funded $_expectedAddr with $funding');
 
     final context = await setupTestContext();
     final walletId = 'regtest-wif-${DateTime.now().millisecondsSinceEpoch}';

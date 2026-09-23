@@ -146,8 +146,9 @@ void main() {
           walletId: aliceWallet, txid: txid, reason: 'Bob never took it', requestId: id),
       (e) => e.requestId);
 
-  /// Mines a block and waits until [node] confirms each of [txids] in it,
-  /// or in a block the stack's autominer mined just before.
+  /// Mines a block and waits until [node] confirms each of [txids], at the
+  /// height the chain holds it at: ours, or an earlier block anything else
+  /// mining this shared chain took it in first.
   Future<int> mineAndConfirm(Map<LocalnetNode, List<String>> txids) async {
     final confirmations = [
       for (final MapEntry(key: node, value: ids) in txids.entries)
@@ -157,7 +158,7 @@ void main() {
     ];
     final height = await mine();
     for (final confirmed in await Future.wait(confirmations)) {
-      expect(confirmed.blockHeight, lessThanOrEqualTo(height));
+      expect(confirmed.blockHeight, await minedAt(confirmed.txid));
     }
     return height;
   }

@@ -2802,6 +2802,12 @@ architecture audit accompanied the move.
      stored afterwards.
    - `WalletCoordinatorActor(benfordCoordinator:)` is no longer deprecated:
      it is used again, to register for split announcements.
+10. **`WalletStateBuilder` is no longer exported** from
+    `package:libspiffy/libspiffy.dart`. It is marked `@internal` and mutates
+    wallet state in place, so it was never usable from outside; exporting it
+    was an accident that `dart analyze` reports as
+    `invalid_export_of_internal_element`. `WalletState` itself is unchanged
+    and still exported.
 
 ### Fixed
 

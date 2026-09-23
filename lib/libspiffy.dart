@@ -7,7 +7,10 @@ library libspiffy;
 // ✅ CORE MODELS - Complete domain models with DartSV integration
 export 'src/models/wallet_event.dart';          // Event sourcing base class
 export 'src/models/bitcoin_utxo.dart';          // UTXO tracking with reservations
-export 'src/models/wallet_state.dart';          // Write model for wallet aggregate
+export 'src/models/wallet_state.dart'
+    hide WalletStateBuilder;                    // Write model for wallet aggregate
+                                                // (WalletStateBuilder is @internal:
+                                                //  it mutates state in place)
 export 'src/models/wallet_type.dart';           // Wallet type enum (HD, WIF, XPRIV)
 export 'src/models/wallet_read_model.dart';     // Read model for wallet queries (CQRS)
 export 'src/models/bitcoin_transaction.dart';   // Transaction tracking

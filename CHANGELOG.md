@@ -1,10 +1,25 @@
-## Unreleased
+## 2.0.0
 
-Test-coverage and follow-up fixes for the 2.0.0 audit. Every finding marked
-fixed in `doc/audit-2026-09-14.md` now has a regression test that was shown
-to fail with the fix reverted and pass with it applied (report section 2,
-`Test` rows). Writing those tests found five more defects (report section
-11), all fixed here:
+The dependency upgrade, the audit it prompted, and the work of closing that
+audit — one release, because none of it was ever published. pub.dev holds
+1.1.0; everything below landed on top of it.
+
+libspiffy tracks **dactor 1.3.0**, **eventador 3.1.0**, **duraq 3.0.0** and
+**duraq_isar 2.0.0**. The audit report is `doc/audit-2026-09-14.md`; every
+finding it records is either fixed here with a regression test that was shown
+to fail on the previous code, or open as a beads issue labelled
+`audit-2026-09`.
+
+**Start with [Upgrading from 1.x](#upgrading-from-1x)**, at the end of this
+section — the dependency bumps and the shared-Isar requirement are not
+optional.
+
+### Audit follow-up
+
+Every finding marked fixed in `doc/audit-2026-09-14.md` has a regression
+test that was shown to fail with the fix reverted and pass with it applied
+(report section 2, `Test` rows). Writing those tests found five more
+defects (report section 11), all fixed here:
 
 - **Mainnet wallets could not sign after output scanning, and the wallet
   projection threw on imported mainnet transactions.** Both sites built the
@@ -2737,17 +2752,15 @@ walletProjection:, broadcastTimeout:)`, `TransactionConfirmedEvent.bumpHex`,
 `WalletManagerActor(readModelStorage:)`, `BalanceResponse.watchOnlyBalance`,
 `isWatchOnlyOutput`, `splitWatchOnlyUtxos` / `SignableUtxos`, `IsarWalletStorage.onQuery` (test seam).
 
-## 2.0.0
+### Dependency upgrade
 
-Dependency upgrade and audit release. libspiffy now tracks **dactor 1.3.0**,
-**eventador 3.0.0**, **duraq 3.0.0** and **duraq_isar 2.0.0**. A full
-correctness, security, performance and architecture audit accompanies the
-upgrade; its report is `doc/audit-2026-09-14.md` and every open finding is
-a beads issue labelled `audit-2026-09`.
+libspiffy moved to dactor 1.3.0, eventador 3.x, duraq 3.0.0 and
+duraq_isar 2.0.0, and a full correctness, security, performance and
+architecture audit accompanied the move.
 
 ### Upgrading from 1.x
 
-1. **Bump the dependencies together**: `dactor: ^1.3.0`, `eventador: ^3.0.0`,
+1. **Bump the dependencies together**: `dactor: ^1.3.0`, `eventador: ^3.1.0`,
    `duraq: ^3.0.0`, `duraq_isar: ^2.0.0`. `IsarStorage` now comes from
    `package:duraq_isar/duraq_isar.dart`. Read the duraq 2.0.0/3.0.0 notes:
    the broadcast-retry queue database is migrated in place on first open and
@@ -2776,6 +2789,21 @@ a beads issue labelled `audit-2026-09`.
    `'test'`/`'testnet'` are accepted everywhere and persisted canonically.
    A BIP39 passphrase given at creation is now stored (secure storage key
    `wallet_passphrase_<walletId>`) and used for signing.
+9. **Four public API members are gone**, each of them something that could
+   never do anything (see *Two APIs that could never deliver anything are
+   gone*, above). Removing them breaks compilation, not behaviour:
+   - `LibSpiffyActorSystem.subscribeToWalletEvents`, the `walletEvents`
+     getter and `broadcastWalletEvent` — the stream behind all three was
+     never written to. Listen to `coordinatorEvents` instead, which
+     announces from the read model.
+   - `WalletCoordinatorActor(broadcastWalletEvent:)` — accepted and ignored.
+     Drop the argument.
+   - `HeaderSyncProgressEvent` — never emitted. Header progress is
+     `LibSpiffyActorSystem.initialize(onHeaderSyncProgress:)` for the
+     initial CDN download and `BlockHeadersStoredEvent` for every batch
+     stored afterwards.
+   - `WalletCoordinatorActor(benfordCoordinator:)` is no longer deprecated:
+     it is used again, to register for split announcements.
 
 ### Fixed
 

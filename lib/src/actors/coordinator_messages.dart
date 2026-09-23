@@ -1926,6 +1926,15 @@ class TransactionImportedEvent extends CoordinatorEvent {
 }
 
 /// Block headers stored
+/// Block headers were stored: how many, and the heights they span.
+///
+/// This is how an application follows the header chain. There was a second,
+/// emptier way — a `HeaderSyncProgressEvent` that nothing in the library ever
+/// constructed — and it is gone (bead libspiffy-7ye4). The initial CDN
+/// download reports its own progress through
+/// `LibSpiffyActorSystem.initialize(onHeaderSyncProgress:)`, which gives the
+/// headers downloaded, the total, and the phase; every batch of headers
+/// stored after that is this event.
 class BlockHeadersStoredEvent extends CoordinatorEvent {
   @override
   String? get walletId => null;
@@ -2770,28 +2779,6 @@ class TimestampCompleteEvent extends CoordinatorEvent {
     required this.success,
     this.error,
   });
-
-  @override
-  DateTime get eventTimestamp => DateTime.now();
-}
-
-// --- Header Sync Events ---
-
-/// CDN/P2P header sync progress
-class HeaderSyncProgressEvent extends CoordinatorEvent {
-  @override
-  String? get walletId => null;
-  final int currentHeight;
-  final int totalHeight;
-  final String phase;
-
-  HeaderSyncProgressEvent({
-    required this.currentHeight,
-    required this.totalHeight,
-    required this.phase,
-  });
-
-  double get progress => totalHeight > 0 ? currentHeight / totalHeight : 0;
 
   @override
   DateTime get eventTimestamp => DateTime.now();

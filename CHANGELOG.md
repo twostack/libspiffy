@@ -302,6 +302,22 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### An event that could never be emitted is gone
+
+Breaking at compile time only: it never fired, so nothing can depend on its
+behaviour.
+
+- **Removed `HeaderSyncProgressEvent`.** Nothing in the library ever
+  constructed it. Header progress is reported by the two mechanisms that
+  work: `LibSpiffyActorSystem.initialize(onHeaderSyncProgress:)` for the
+  initial CDN download (downloaded, total, `CdnSyncPhase`), and
+  `BlockHeadersStoredEvent` for every batch stored afterwards, with its
+  count and the heights it spans. Its own `currentHeight` / `totalHeight`
+  fields could only ever have carried header counts.
+- New guard test: every `CoordinatorEvent` subclass declared in
+  `coordinator_messages.dart` must be constructed somewhere in `lib/`, with
+  no exemptions, so the next public event nothing emits arrives red.
+
 ### An app hears a UTXO split start, not only finish
 
 - `UTXOSplitStartedEvent` is emitted. It was exported beside

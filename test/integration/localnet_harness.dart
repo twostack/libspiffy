@@ -171,6 +171,41 @@ Future<void> arcHolds(String txid,
   expect(last, isIn(held), reason: 'ARC\'s status of $txid');
 }
 
+/// The hash of the block ARC says [txid] is in; null when ARC does not have
+/// it in a block, or has never heard of it.
+Future<String?> arcBlock(String txid) async {
+  final response = await http.get(Uri.parse('$arcUrl/tx/$txid'));
+  if (response.statusCode == 404) return null;
+  return (jsonDecode(response.body) as Map)['blockHash'] as String?;
+}
+
+/// Waits until ARC answers for [txid] with [blockHash].
+///
+/// After a reorganization ARC goes on naming the block that left the chain
+/// until its own block processing catches up, which it does as further
+/// blocks arrive. No wallet can re-prove the transaction before that, so
+/// waiting for it on its own keeps a slow ARC from reading as a wallet
+/// defect. With [mineWhileWaiting] the chain is kept moving meanwhile, as a
+/// live one would be.
+Future<void> arcProves(String txid, String blockHash,
+    {Duration timeout = const Duration(minutes: 4),
+    bool mineWhileWaiting = false}) async {
+  final deadline = DateTime.now().add(timeout);
+  const nudgeEvery = Duration(seconds: 15);
+  var nudgeAt = DateTime.now().add(nudgeEvery);
+  var last = await arcBlock(txid);
+  while (last != blockHash && DateTime.now().isBefore(deadline)) {
+    if (mineWhileWaiting && DateTime.now().isAfter(nudgeAt)) {
+      await mine();
+      nudgeAt = DateTime.now().add(nudgeEvery);
+    }
+    await Future<void>.delayed(const Duration(seconds: 1));
+    last = await arcBlock(txid);
+  }
+  expect(last, blockHash,
+      reason: 'ARC has not caught up with the chain for $txid');
+}
+
 /// The regtest node's view of [txid]: verbose, with `confirmations` once
 /// mined; null when the node has never seen it.
 Future<Map<String, dynamic>?> onNode(String txid) async {

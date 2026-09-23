@@ -1415,6 +1415,7 @@ dart test -P localnet test/integration/localnet_node_e2e_test.dart      # header
 dart test -P localnet test/integration/localnet_payment_e2e_test.dart   # invoices and payments
 dart test -P localnet test/integration/localnet_channel_e2e_test.dart   # payment channels
 dart test -P localnet test/integration/localnet_deferred_e2e_test.dart  # deferred payments, double spends
+dart test -P localnet test/integration/localnet_reorg_e2e_test.dart     # chain reorganizations
 dart test -P localnet test/integration/node_rpc_data_source_test.dart  # node RPC data source
 dart test -P localnet test/integration/node_rpc_wif_import_test.dart   # WIF import from the node
 ```

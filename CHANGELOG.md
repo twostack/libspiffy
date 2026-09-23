@@ -302,6 +302,21 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### Chain reorganizations are driven through the real stack
+
+- New `localnet_reorg_e2e_test.dart`: the node drops the block a payment
+  was confirmed in and builds a longer branch in its place, and both
+  wallets take the confirmation back, keep the proof of the block that
+  left marked `orphaned`, and record the block that replaces it - at the
+  same height, and at another height when the branch moves it. Until now
+  reorganizations were only covered by tests that hand headers to the
+  actor directly.
+- `arcProves` in the harness waits for ARC to catch up with the chain on
+  its own. After a reorganization ARC goes on naming the block that left
+  until its block processing catches up, and no wallet can re-prove a
+  transaction before it does; waiting for it separately keeps a slow ARC
+  from reading as a wallet defect.
+
 ### The localnet tests survive a chain anything can mine
 
 - `mine()` in the localnet harness returned the chain tip rather than the

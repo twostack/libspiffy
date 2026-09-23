@@ -1341,6 +1341,26 @@ class BalanceResponse extends CoordinatorEvent {
   /// [confirmedBalance] + [unconfirmedBalance].
   final BigInt totalBalance;
 
+  /// Value of the wallet's unspent UTXOs that are not spendable yet: the
+  /// network is not known to hold the transaction that pays them, or it held
+  /// it and a reorganization took the proof away. The wallet's own money,
+  /// and not part of [totalBalance] — the same treatment as
+  /// [watchOnlyBalance] and [reservedBalance], which are also the wallet's
+  /// and also unspendable (bead libspiffy-z84j).
+  ///
+  /// It was reported nowhere before, so an application saw it as zero: at
+  /// its worst, a payment that confirmed and then lost its block to a
+  /// reorganization read as money gone, for as long as it took a fresh proof
+  /// to arrive. `TransactionConfirmationRevertedEvent` says when that
+  /// happens and this says what it is worth.
+  ///
+  /// These outputs cannot be selected for spending, by design: an output
+  /// whose proof left the active chain cannot be put in a BEEF anyone can
+  /// verify (bead libspiffy-0lx). The wallet's own write model and the read
+  /// model's wallet row count them as unconfirmed instead; this API reports
+  /// them apart so that neither number claims the money can be spent.
+  final BigInt pendingBalance;
+
   /// Value of the wallet's unspent UTXOs at watch addresses: credited to the
   /// wallet but not spendable by it, and not part of [totalBalance].
   final BigInt watchOnlyBalance;
@@ -1374,9 +1394,11 @@ class BalanceResponse extends CoordinatorEvent {
     required this.confirmedBalance,
     required this.unconfirmedBalance,
     required this.totalBalance,
+    BigInt? pendingBalance,
     BigInt? watchOnlyBalance,
     BigInt? reservedBalance,
-  })  : watchOnlyBalance = watchOnlyBalance ?? BigInt.zero,
+  })  : pendingBalance = pendingBalance ?? BigInt.zero,
+        watchOnlyBalance = watchOnlyBalance ?? BigInt.zero,
         reservedBalance = reservedBalance ?? BigInt.zero;
 
   @override

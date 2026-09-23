@@ -791,14 +791,32 @@ class WalletCoordinatorActor extends Actor {
       // in one read, so no bucket here can be a moment older than another;
       // the read model's wallet row computes its own `reservedBalance` from
       // these rows by the same rule (WalletProjection).
+      //
+      // Pending rows are read for the same reason (bead libspiffy-z84j):
+      // the wallet's money, which the network is not known to hold or whose
+      // proof a reorganization took away, and which used to vanish from
+      // every number here exactly as reserved money did. It is reported on
+      // its own rather than as unconfirmed, because unlike the rest of
+      // `totalBalance` it cannot be spent.
+      final all = await _storage.getUTXOs(query.walletId);
       final counted = [
-        for (final utxo in await _storage.getUTXOs(query.walletId))
+        for (final utxo in all)
           if (!utxo.isPluginManaged && (utxo.isAvailable || utxo.isReserved)) utxo,
       ];
+      final waiting = [
+        for (final utxo in all)
+          if (!utxo.isPluginManaged && utxo.status == UTXOStatus.pending) utxo,
+      ];
       final paymentUtxos = await splitBalanceUtxos(_storage, query.walletId, counted);
+      // The same ownership rules as the rest: watch-only outputs and ones
+      // the wallet cannot unlock alone are not its spendable money, pending
+      // or not.
+      final pendingUtxos = await splitBalanceUtxos(_storage, query.walletId, waiting);
       BigInt confirmed = BigInt.zero;
       BigInt unconfirmed = BigInt.zero;
       BigInt reserved = BigInt.zero;
+      final pending = pendingUtxos.spendable
+          .fold(BigInt.zero, (sum, utxo) => sum + utxo.satoshis);
 
       for (final utxo in paymentUtxos.spendable) {
         // WalletBalances.bucketOf, asked rather than restated: reserved
@@ -825,6 +843,7 @@ class WalletCoordinatorActor extends Actor {
         confirmedBalance: confirmed,
         unconfirmedBalance: unconfirmed,
         totalBalance: confirmed + unconfirmed,
+        pendingBalance: pending,
         watchOnlyBalance: paymentUtxos.watchOnlySatoshis,
         reservedBalance: reserved,
       ));

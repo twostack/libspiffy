@@ -302,6 +302,17 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
+### A wallet's unspendable money is reported, not lost
+
+- New `BalanceResponse.pendingBalance`: the wallet's unspent outputs that
+  cannot be spent yet, because the network is not known to hold the
+  transaction that pays them or because a reorganization took its proof
+  away. `_handleGetBalance` counted only available and reserved rows, so
+  a pending output was in no bucket at all — after a reorganization an
+  owner was shown zero until a fresh proof arrived. Reported apart and
+  outside `totalBalance`, the treatment `reservedBalance` and
+  `watchOnlyBalance` already have. No existing field changes.
+
 ### An app hears when the chain takes a confirmation back
 
 - New public `TransactionConfirmationRevertedEvent`: the block a

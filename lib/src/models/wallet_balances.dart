@@ -25,6 +25,14 @@ enum BalanceBucket { confirmed, unconfirmed, reserved }
 ///   state holds, plugin-managed and watch-only UTXOs included, so
 ///   confirmed + unconfirmed + reserved is everything the wallet holds.
 ///   These totals are journaled in snapshots.
+///
+///   `GetBalanceQuery` deliberately splits them further. Its
+///   `BalanceResponse` is the spendable balance, so it reports pending
+///   UTXOs apart as `pendingBalance` rather than as unconfirmed: money the
+///   network is not known to hold, or whose proof a reorganization took
+///   away, is the wallet's but cannot be spent (bead libspiffy-z84j). The
+///   buckets here answer a different question — what the wallet holds —
+///   and that is what a snapshot must be able to restore.
 /// * The spendable rule ([isSpendable], [spendableTotal]) says which UTXOs
 ///   the aggregate's coin selection may pick (`UtxoLedger.available`,
 ///   `BitcoinWalletAggregate.selectUTXOsForAmount`), and so what

@@ -140,7 +140,6 @@ class LibSpiffyActorSystem {
   dynamic _blockchainDataSource;
   
   // Event broadcast for UI subscriptions
-  final StreamController<WalletEvent> _walletEventBroadcaster = StreamController<WalletEvent>.broadcast();
   final StreamController<WalletImportNotification> _importNotificationBroadcaster =
       StreamController<WalletImportNotification>.broadcast();
   final StreamController<ChannelEvent> _channelEventBroadcaster = StreamController<ChannelEvent>.broadcast();
@@ -905,7 +904,6 @@ class LibSpiffyActorSystem {
       // This node's own peer id on the channel transport (libspiffy-36f).
       peerId: _channelPeerId,
       channelTiming: _channelTiming,
-      broadcastWalletEvent: broadcastWalletEvent,
       importWalletFromXpriv: _importActor != null ? ({
         required String walletId,
         required String xpriv,
@@ -1239,8 +1237,6 @@ class LibSpiffyActorSystem {
   /// 
   /// External components (like P2P adapters) can subscribe to this stream
   /// to receive payment channel events for protocol message translation.
-  Stream<WalletEvent> get walletEvents => _walletEventBroadcaster.stream;
-
   Stream<ChannelEvent> get channelEvents => _channelEventBroadcaster.stream;
 
   /// Broadcast a channel event to external subscribers.
@@ -1360,28 +1356,6 @@ class LibSpiffyActorSystem {
   /// The ARC configuration resolved by [initialize] (explicit [arcConfig],
   /// otherwise the TAAL endpoint for [networkType]).
   ArcServiceConfig? get arcConfig => _arcConfig;
-
-  /// Broadcast a wallet event to UI subscribers
-  /// 
-  /// Internal method used by actors to notify the UI of events
-  void broadcastWalletEvent(WalletEvent event) {
-    if (_walletEventBroadcaster.isClosed) return;
-    _walletEventBroadcaster.add(event);
-  }
-  
-  /// Subscribe to wallet events for a specific wallet
-  ///
-  /// Returns the events passed to [broadcastWalletEvent] for [walletId].
-  /// Wallet import progress is not delivered here: it is a
-  /// [WalletImportNotification], see [subscribeToImportNotifications].
-  Stream<WalletEvent> subscribeToWalletEvents(String walletId) {
-    if (!isInitialized) {
-      throw StateError('LibSpiffy actor system not initialized');
-    }
-
-    // Return filtered broadcast stream
-    return _walletEventBroadcaster.stream.where((event) => event.walletId == walletId);
-  }
 
   /// Broadcast an import notification to [importNotifications] subscribers.
   ///
@@ -1516,7 +1490,6 @@ class LibSpiffyActorSystem {
     final wasStarted = _lifecycle != _Lifecycle.uninitialized;
     _lifecycle = _Lifecycle.shutDown;
     if (!wasStarted) {
-      await _walletEventBroadcaster.close();
       await _importNotificationBroadcaster.close();
       await _channelEventBroadcaster.close();
       return;
@@ -1628,7 +1601,6 @@ class LibSpiffyActorSystem {
       }
       _readModelAppliedSubs.clear();
       await _readModelApplied.close();
-      await _walletEventBroadcaster.close();
       await _importNotificationBroadcaster.close();
       await _channelEventBroadcaster.close();
 

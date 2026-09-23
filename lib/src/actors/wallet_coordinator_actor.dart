@@ -13,7 +13,6 @@ import '../core/wallet_commands.dart' as domain;
 import '../core/wallet_events.dart' as domain_events;
 import '../core/invoice_events.dart' as invoice_events;
 import '../core/wallet/transaction_size.dart';
-import '../models/wallet_event.dart' as wallet_event_model;
 import '../models/bitcoin_transaction.dart';
 import '../models/bitcoin_utxo.dart';
 import '../models/invoice_output_spec.dart';
@@ -371,8 +370,6 @@ class WalletCoordinatorActor extends Actor {
     /// settles each channel this node serves when its settlement margin
     /// begins. Null for a node that does no channels.
     ChannelTiming? channelTiming,
-    /// Unused; accepted for compatibility with existing callers.
-    void Function(wallet_event_model.WalletEvent)? broadcastWalletEvent,
     dynamic Function({
       required String walletId,
       required String xpriv,

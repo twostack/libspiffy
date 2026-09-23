@@ -302,10 +302,10 @@ Additive API: `PostgresConfig.sslMode`, `toPoolSettings()`,
 `BitcoinUtxoEntity` / `BitcoinTransactionEntity` `applyDomain`. Deprecated:
 `IsolateConfig` and the `isolateConfig:` / `config:` parameters that carry it.
 
-### An event that could never be emitted is gone
+### Two APIs that could never deliver anything are gone
 
-Breaking at compile time only: it never fired, so nothing can depend on its
-behaviour.
+Both are breaking at compile time only: neither ever fired, so nothing can
+depend on their behaviour.
 
 - **Removed `HeaderSyncProgressEvent`.** Nothing in the library ever
   constructed it. Header progress is reported by the two mechanisms that
@@ -314,6 +314,14 @@ behaviour.
   `BlockHeadersStoredEvent` for every batch stored afterwards, with its
   count and the heights it spans. Its own `currentHeight` / `totalHeight`
   fields could only ever have carried header counts.
+- **Removed `LibSpiffyActorSystem.subscribeToWalletEvents`, the
+  `walletEvents` getter and `broadcastWalletEvent`**, with the controller
+  behind them and `WalletCoordinatorActor(broadcastWalletEvent:)`. They
+  were three faces on a stream nothing ever added to: an application could
+  wire a listener and wait forever, with no error. What it offered was also
+  the journal's own `WalletEvent` (`AggregateEventBase`), a second public
+  event contract parallel to `coordinatorEvents`. Use `coordinatorEvents`,
+  whose events say what the read model holds.
 - New guard test: every `CoordinatorEvent` subclass declared in
   `coordinator_messages.dart` must be constructed somewhere in `lib/`, with
   no exemptions, so the next public event nothing emits arrives red.

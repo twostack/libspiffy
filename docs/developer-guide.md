@@ -457,7 +457,7 @@ The coordinator creates an OP_RETURN transaction, broadcasts it, and emits `Time
 
 ### Watch Addresses
 
-Monitor an external address for activity:
+Label outputs paying an address the wallet holds no key for. This is not monitoring: nothing is fetched from the network. It only changes how the wallet records outputs to that address in transactions it receives. They are kept, reported as `watchOnlyBalance`, and never spent:
 
 ```dart
 coordinator.tell(RegisterWatchAddressCommand(

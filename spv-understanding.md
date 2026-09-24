@@ -50,6 +50,22 @@ Based on the [BSV Wiki on SPV](https://wiki.bitcoinsv.io/index.php/Simplified_Pa
 
 **Analogy**: Like receiving a cheque - the customer hands you the signed cheque (transaction), you then bank/cash it (settle on-chain).
 
+The exchange between two peers:
+
+1. **The payer asks the payee — or the payee's agent — for an address**, usually by requesting an invoice (`CreateInvoiceCommand` on the payee's side).
+2. **The payer builds the payment for that invoice**, paying the address from (1) (`PayInvoiceCommand`).
+3. **The payer hands the payment to the payee**, usually as BEEF. The payer does not broadcast it.
+4. **The payee broadcasts it** (`ValidateBEEFCommand`). It is the payee's payment now, like a cheque the payee deposits at their bank.
+5. **The payer still has a stake in it.** The payer needs to know when the UTXOs it spent are spent on chain. Only then does its hold on those inputs end, and only once the transaction is mined can it get merkle proofs for the change outputs it put in the payment in (3).
+6. **So both the payer and the payee follow how ARC settles that payment.** Each of them asks about one transaction it is a party to, and asks while that payment is active.
+
+### Payment modes
+
+Both modes follow the exchange above. They differ only in who answers step (1) and who receives the payment:
+
+- **Both parties online.** The payee answers the invoice request itself with a plain address from its own wallet. It checks the BEEF it receives and broadcasts it, and both parties follow the payment in ARC to its block.
+- **A service acting for an offline payee.** A payee registers its xpub with a service that takes payments for its users. The service keeps that xpub as a watch-only wallet. It answers the invoice request with an address derived from the payee's xpub, then receives the BEEF, checks it and broadcasts it for the payee. It tells the payee about the payment out of band. The payee's own wallet takes the payment only once it is proven, with `ImportTransactionCommand`.
+
 ### 2. What the Receiver Gets
 
 When receiving a transaction, the sender provides:
@@ -68,13 +84,13 @@ The receiver validates by:
 3. **If match**: Accept that Transaction₀ is in the chain
 4. **Validate** Transaction₁ can legitimately spend from Transaction₀
 
-**ARC is asked only about transactions we broadcast ourselves.** An ARC instance answers for the transactions submitted through it and no others, so it has no standing to prove a counterparty's transaction, and a `NOT_FOUND` from it means nothing about whether that transaction was mined. A transaction reaching us from a counterparty arrives with the proofs its ancestry needs, or we reject it: supplying them is the sender's obligation, not something we go and fetch. When a proof we hold later leaves the active chain, we say which output is blocked and on which ancestor — and wait for the counterparty or for the block to return. We never fill the gap from a service.
+**ARC is asked only about payments we are a party to and still have a stake in.** A payee asks about a payment it broadcast. A payer asks about a payment it built and handed to the payee (a deferred payment), from the time it hands it over until the network settles it, fails it, or the payment is cancelled or reclaimed. ARC is never asked about any other transaction, including the ancestors of a counterparty's payment. An ARC instance can only answer for the transactions submitted through it, so it has no standing to prove a counterparty's history. A `NOT_FOUND` from it tells you nothing about whether a transaction was mined. That includes a payment the payee submitted through a different ARC, which is why a payer's check falls back to its configured data source. A transaction reaching us from a counterparty arrives with the proofs its ancestry needs, or we reject it: supplying them is the sender's obligation, not something we go and fetch. When a proof we hold later leaves the active chain, we say which output is blocked and on which ancestor — and wait for the counterparty or for the block to return. We never fill the gap from a service.
 
 ### 4. Broadcasting & Settlement
 
 - **Primary**: Broadcast via **ARC Service**
 - **Backup**: SpiffyNode for transaction broadcast  
-- **Monitor**: Poll ARC for transaction lifecycle (pending → confirmed)
+- **Monitor**: Poll ARC for the lifecycle (pending → confirmed) of the payments we are a party to: the ones we broadcast, and our deferred payments until they settle
 - **Proof Retrieval**: Get merkle proof from ARC once transaction is mined
 
 ## LibSpiffy Implementation Requirements
@@ -159,7 +175,7 @@ All third-party interaction flows through a single unified facade — **WalletCo
 | **TransactionLifecycleCoordinatorActor** | Transaction lifecycle tracking |
 
 **What SPVActor does NOT do (corrected from earlier assumptions):**
-- ~~Address monitoring~~ — Transactions come directly from counterparties
+- ~~Address monitoring~~ — Transactions come directly from counterparties (Critical Implementation Note 2)
 - ~~Block scanning~~ — We don't scan blocks for transactions
 - ~~Transaction discovery~~ — Transactions are handed to us
 - ~~Block header sync~~ — That's HeaderSyncActor's job
@@ -215,13 +231,14 @@ libspiffy-vj4j), so no balance counts what the network has not taken.
 2. Coordinator routes to PaymentCoordinatorActor
 3. PaymentCoordinator selects UTXOs, collects ancestor proofs, builds BEEF
 4. PaymentCoordinator returns BEEFPaymentResponse → Coordinator
-5. Coordinator emits PaymentReadyEvent (contains BEEF bytes)
-6. App transmits BEEF to counterparty (pure SPV peer-to-peer model)
-7. Optionally: App calls RecordOutgoingCommand to record in wallet
-8. Optionally: App triggers ARC broadcast for on-chain settlement
+5. The payment is recorded as a deferred payment: its inputs are held
+6. Coordinator emits PaymentReadyEvent (contains BEEF bytes)
+7. App hands the BEEF to the payee, who broadcasts it
+8. ARCActor follows the payment until the network settles it or fails it
+   (see Deferred payments below)
 ```
 
-**Key insight**: PaymentCoordinatorActor builds the BEEF but does **not** auto-broadcast. The app decides whether to transmit peer-to-peer, broadcast via ARC, or both.
+**Key insight**: PaymentCoordinatorActor builds the BEEF but does **not** broadcast it. Broadcasting is the payee's job. The payer follows the payment in ARC because its inputs and its change depend on the outcome. If the payee never broadcasts, `BroadcastDeferredPaymentCommand` lets the payer broadcast it instead.
 
 **Deferred payments.** The payment is recorded with a deferred spend: the wallet aggregate holds its inputs (reserved by the txid, no expiry) until exactly one of: ARC (or, on an explicit check, the configured data source) reports it `SEEN_ON_NETWORK`/`MINED` and the spend applies; ARC reports it `REJECTED` and it fails, releasing the inputs; or the user cancels it. `DOUBLE_SPEND_ATTEMPTED` (a competing transaction spends an input) is not final, since either transaction may still be mined: the status is journaled and listed, the payment stays outstanding with its inputs held (a third spend of them would conflict anyway), and ARC keeps being polled until it reports ours on the network or rejected. Journals written before this rule, where `DOUBLE_SPEND_ATTEMPTED` failed the payment, replay unchanged. Reservation expiry and cleanup never release a held input, so a later payment cannot double-spend the one the recipient holds. `GetDeferredPaymentsQuery` lists them (e.g. `olderThan` to find recipients who have not broadcast); `BroadcastDeferredPaymentCommand` broadcasts one yourself; `CheckDeferredPaymentStatusCommand` asks the network now (a MINED claim confirms only with a merkle proof that matches our headers); `CancelDeferredPaymentCommand` releases the inputs of a payment the network does not know, or one ARC reports contested (`DOUBLE_SPEND_ATTEMPTED`). Cancelling does not revoke the signed transaction the recipient holds: if it still reaches miners, it spends those inputs. `ReclaimDeferredPaymentCommand` does revoke it, by broadcasting a self-spend of exactly those inputs back to the wallet; the payment resolves as `reclaimed` once the network has the self-spend, and the recipient's copy is then rejected as a double spend. The self-spend pays ARC's published policy fee and nothing else: there is no replace-by-fee here, so first seen wins and no fee changes the outcome (see Critical Implementation Note 3). If the recipient reached the network first, ours is the one rejected — an ordering fact, not a fee question. A reclaim is immediate and irreversible: libspiffy does not own the confirmation UX, so the app decides whether to warn the user first.
 
@@ -414,11 +431,16 @@ This is **non-negotiable** for SPV wallets:
 
 ### 2. No Address Monitoring
 
-The fundamental paradigm shift:
-- ❌ Don't monitor addresses on the network
-- ❌ Don't scan blocks for transactions  
+No address monitoring, whether on the blockchain directly or in ARC. We do not follow payments we are not a party to, or payments whose state has no bearing on a payment of ours that is still active.
+
+- ❌ Don't monitor addresses on the network or through any service
+- ❌ Don't scan blocks for transactions
+- ❌ Don't ask ARC about a transaction just because it touches an address we know
 - ✅ Receive transactions directly from counterparties
 - ✅ Validate received transactions using proofs
+- ✅ Follow in ARC each payment we are a party to, while it is active, whether we are its payer or its payee (see "The Real SPV Transaction Flow", step 6)
+
+A watch address (`RegisterWatchAddressCommand`) is not address monitoring. It only labels outputs in transactions that already reach the wallet. The wallet holds no key for those outputs, so it keeps them apart and never spends them.
 
 ### 3. This Is BSV: No Replace-By-Fee, First Seen Wins
 

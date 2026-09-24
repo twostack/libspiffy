@@ -44,6 +44,7 @@ export 'src/storage/postgres/postgres_secure_storage.dart'; // Encrypted xpub st
 
 // ✅ CRYPTOGRAPHY - Encryption services for secure storage
 export 'src/crypto/encryption_service.dart';               // AES-256-GCM encryption with HKDF
+export 'src/crypto/type42.dart';                           // BRC-42 (type-42) key derivation (NodeCast pay-per-view)
 
 // ✅ PAYMENT CHANNEL READ MODEL - Channel entity for queries
 export 'src/storage/payment_channel_entity.dart'; // Channel read model entity
@@ -80,6 +81,12 @@ export 'src/services/callback_transaction_signer.dart';
 export 'src/spv/cdn_header_sync_config.dart';
 export 'src/spv/cdn_header_sync_service.dart';
 export 'src/spv/cdn_manifest.dart';
+
+// SPV HEADER CHAIN - the validated, anchored header chain, for a host that
+// answers header questions from it (cloak-cli's HeaderSource)
+export 'src/spv/block_header_chain.dart'
+    show BlockHeaderChain, BlockHeaderAnchor, HeaderAcceptResult, HeaderRejectReason;
+export 'src/spv/network_params.dart' show NetworkParams;
 
 // 🚀 SPV VALIDATION - BEEF/BUMP utilities for SPV transaction validation
 export 'src/utils/bump.dart';                   // BSV Universal Merkle Path (BUMP) implementation

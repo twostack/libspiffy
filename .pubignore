@@ -10,11 +10,3 @@ build/
 .beads/
 test/data/
 test/cdn/
-
-# Not part of the 2.0.0 release (owner's decision, 23 Sep). pub packs from
-# disk rather than from git, so an untracked file ships unless it is named
-# here. NOTE: the matching `export 'src/crypto/type42.dart';` line in
-# lib/libspiffy.dart must also be absent when publishing, or the published
-# package exports a file it does not contain and compiles for nobody.
-lib/src/crypto/type42.dart
-test/crypto/type42_test.dart

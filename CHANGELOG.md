@@ -22,6 +22,14 @@
     issued with its chain and derivation index (`IssuedAddress`), so the
     payment mode is visible where it is chosen; `TransactionExportedEvent
     .delegatedIndices` carries the indices the payee imports with.
+- **`Type42`: BRC-42 (type-42) key derivation.** A payer derives a
+  per-invoice destination from the recipient's public key
+  (`deriveChildPublic`), and the recipient the matching spend key
+  (`deriveChildPrivate`). Pinned to the official BRC-42 test vectors and to
+  the Go-verified values of NodeCast's Tier-0 harness.
+- **The validated header chain is exported**: `BlockHeaderChain`,
+  `BlockHeaderAnchor`, `HeaderAcceptResult`, `HeaderRejectReason` and
+  `NetworkParams`, for a host that answers header questions from it.
 
 ### Breaking
 

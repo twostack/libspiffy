@@ -13,6 +13,7 @@ import '../core/wallet_commands.dart' as domain;
 import '../core/wallet_events.dart' as domain_events;
 import '../core/invoice_events.dart' as invoice_events;
 import '../core/wallet/transaction_size.dart';
+import '../models/address_chain.dart';
 import '../models/bitcoin_transaction.dart';
 import '../models/bitcoin_utxo.dart';
 import '../models/invoice_output_spec.dart';
@@ -690,8 +691,6 @@ class WalletCoordinatorActor extends Actor {
         _handleWalletCreatedResponseAlt(message);
       } else if (message is inv.InvoiceCreatedMessage) {
         _handleInvoiceCreatedResponse(message);
-      } else if (message is inv.InvoiceDetailsResponse) {
-        _handleInvoiceDetailsResponse(message);
       } else if (message is pay.BEEFPaymentResponse) {
         await _handleBEEFPaymentResponse(message);
       } else if (message is wm.BEEFValidationResult) {
@@ -1249,6 +1248,15 @@ class WalletCoordinatorActor extends Actor {
     );
   }
 
+  /// Those of [addresses] the wallet [walletId] derived, as the read model's
+  /// address rows record them.
+  Future<List<IssuedAddress>> _issuedAddresses(String walletId, Iterable<String> addresses) async => [
+        for (final address in addresses)
+          if (await _storage.getAddressMetadata(walletId, address) case final row?
+              when row.derivationIndex != null && row.purpose != 'watch')
+            IssuedAddress(address: address, chain: row.chain, derivationIndex: row.derivationIndex!),
+      ];
+
   /// Exports [query]'s transaction with its proof (bead libspiffy-m8qu): the
   /// transaction, whose own proof must be verified on our header chain, and
   /// nothing else, since a proven transaction needs no ancestry.
@@ -1256,7 +1264,8 @@ class WalletCoordinatorActor extends Actor {
     TransactionExportedEvent refuse(String error) => TransactionExportedEvent(
         walletId: query.walletId, txid: query.txid, queryId: query.correlationId, success: false, error: error);
     try {
-      if (await _storage.getTransaction(query.txid, walletId: query.walletId) == null) {
+      final tx = await _storage.getTransaction(query.txid, walletId: query.walletId);
+      if (tx == null) {
         _emitEvent(refuse('Transaction ${query.txid} is not a transaction of wallet ${query.walletId}'));
         return;
       }
@@ -1277,6 +1286,10 @@ class WalletCoordinatorActor extends Actor {
         queryId: query.correlationId,
         success: true,
         beef: beef,
+        delegatedIndices: [
+          for (final issued in await _issuedAddresses(query.walletId, tx.receivingAddresses.toSet()))
+            if (issued.chain == AddressChain.delegated) issued.derivationIndex,
+        ]..sort(),
       ));
     } catch (e) {
       _emitEvent(refuse('Exporting ${query.txid} failed: $e'));
@@ -2215,23 +2228,10 @@ class WalletCoordinatorActor extends Actor {
       addresses: response.addresses,
       amount: response.amount,
       outputs: response.outputs,
+      issuedAddresses: response.issuedAddresses,
       description: response.description,
       expiresAt: response.expiresAt,
       success: response.success,
-      error: response.error,
-    ));
-  }
-
-  void _handleInvoiceDetailsResponse(inv.InvoiceDetailsResponse response) {
-    _emitEvent(InvoiceCreatedEvent(
-      walletId: response.walletId ?? '',
-      invoiceId: response.invoiceId,
-      addresses: response.addresses,
-      amount: response.amount,
-      outputs: response.outputs,
-      description: response.description,
-      expiresAt: response.expiresAt,
-      success: response.found,
       error: response.error,
     ));
   }

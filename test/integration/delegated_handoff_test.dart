@@ -142,15 +142,25 @@ void main() {
     await createWallet('service', xpub: accountXpub.xpubkey);
     await createWallet('payee', mnemonic: _mnemonic);
 
-    final invoiced = next<coord.InvoiceCreatedEvent>((e) => e.walletId == 'service');
-    libspiffy.coordinator.tell(coord.CreateInvoiceCommand(walletId: 'service', amount: BigInt.from(70000)));
-    final address = (await invoiced).addresses.single;
-    final index = [
-      for (var i = 0; i < 10; i++)
-        if (crypto.deriveAddress(accountXpub, i, chain: AddressChain.delegated, network: dartsv.NetworkType.TEST) ==
-            address)
-          i,
-    ].single;
+    Future<IssuedAddress> invoice(String walletId) async {
+      final invoiced = next<coord.InvoiceCreatedEvent>((e) => e.walletId == walletId);
+      libspiffy.coordinator.tell(coord.CreateInvoiceCommand(walletId: walletId, amount: BigInt.from(70000)));
+      final event = await invoiced;
+      expect(event.addresses, [event.issuedAddresses.single.address]);
+      return event.issuedAddresses.single;
+    }
+
+    // The invoice names its payment mode: the payee's own wallet issues on
+    // the receive chain, the service's copy of it on the delegated chain.
+    final own = await invoice('payee');
+    expect(own.chain, AddressChain.receive);
+    final issued = await invoice('service');
+    expect(issued.chain, AddressChain.delegated);
+    final address = issued.address;
+    final index = issued.derivationIndex;
+    expect(address,
+        crypto.deriveAddress(accountXpub, index, chain: AddressChain.delegated, network: dartsv.NetworkType.TEST));
+    expect(address, isNot(own.address));
 
     final (txid, mined) = await minedPayment(address, 70000);
     final serviceImport = await import('service', mined);
@@ -162,8 +172,9 @@ void main() {
     final exported = await export('service', txid);
     expect(exported.success, isTrue, reason: exported.error);
     expect(BEEF.parse(Uint8List.fromList(exported.beef!)).carriesProofOf(txid), isTrue);
+    expect(exported.delegatedIndices, [index], reason: 'the export carries what the payee imports it with');
 
-    final payeeImport = await import('payee', exported.beef!, delegated: [index]);
+    final payeeImport = await import('payee', exported.beef!, delegated: exported.delegatedIndices);
     expect(payeeImport.success, isTrue, reason: payeeImport.error);
     final payee = await balance('payee');
     expect(payee.confirmedBalance, BigInt.from(70000));

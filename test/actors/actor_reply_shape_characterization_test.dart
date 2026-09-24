@@ -36,6 +36,7 @@ import 'package:libspiffy/src/actors/payment_messages.dart';
 import 'package:libspiffy/src/actors/spv_messages.dart';
 import 'package:libspiffy/src/actors/wallet_messages.dart';
 import 'package:libspiffy/src/models/fee_rate.dart';
+import 'package:libspiffy/src/models/address_chain.dart';
 
 /// One reply, built for the failure path ([ok] false, error 'boom') or the
 /// success path.
@@ -79,7 +80,7 @@ final Map<String, ReplyFactory> replies = {
   'SpecificHeaderResponseMessage': (ok) =>
       SpecificHeaderResponseMessage(blockHeight: 7, success: ok, error: _err(ok)),
   'AddressGeneratedResponse': (ok) => AddressGeneratedResponse(
-      walletId: 'w', address: 'addr', derivationIndex: 3, success: ok, error: _err(ok)),
+      walletId: 'w', address: 'addr', derivationIndex: 3, chain: AddressChain.receive, success: ok, error: _err(ok)),
   'WatchAddressAddedResponse': (ok) =>
       WatchAddressAddedResponse(walletId: 'w', address: 'addr', success: ok, error: _err(ok)),
   'DeferredSpendCancelledResponse': (ok) =>

@@ -66,8 +66,11 @@ const _sources = <String, String?>{
 /// offline-payee hand-off (m8qu: `RecordDelegatedAddressesCommand
 /// .derivationIndices`, `ImportTransactionCommand.delegatedIndices`,
 /// `TransactionExportedEvent.beef` and `DelegatedAddressesRecordedResponse
-/// .addresses` and `.journaled`).
-const _expectedFields = 144;
+/// .addresses` and `.journaled`), 147 once an invoice reports the addresses
+/// it issued and an export the delegated indices it pays
+/// (`InvoiceCreatedMessage.issuedAddresses`, `InvoiceCreatedEvent
+/// .issuedAddresses`, `TransactionExportedEvent.delegatedIndices`).
+const _expectedFields = 147;
 
 final _classStart = RegExp(r'^(?:abstract |sealed )?class (\w+)', multiLine: true);
 final _field = RegExp(r'^  final ((?:List|Map|Set)<.*?>\??) (\w+);(?: *//.*)?$', multiLine: true);

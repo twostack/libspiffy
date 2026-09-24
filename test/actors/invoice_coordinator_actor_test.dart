@@ -27,6 +27,7 @@ import 'package:libspiffy/src/core/wallet_commands.dart';
 import 'package:libspiffy/src/models/invoice_output_spec.dart';
 import 'package:libspiffy/src/storage/in_memory_wallet_storage.dart';
 import 'package:libspiffy/src/storage/read_model_storage.dart';
+import 'package:libspiffy/src/models/address_chain.dart';
 
 import 'in_memory_event_store.dart';
 import '../storage/invoice_read_model_contract.dart';
@@ -80,6 +81,7 @@ void main() {
               walletId: cmd.walletId,
               address: '',
               derivationIndex: 0,
+              chain: AddressChain.receive,
               success: false,
               error: 'key derivation failed',
               metadata: cmd.metadata,
@@ -92,6 +94,7 @@ void main() {
               walletId: cmd.walletId,
               address: '',
               derivationIndex: 0,
+              chain: AddressChain.receive,
               success: true,
               metadata: cmd.metadata,
             ),
@@ -175,6 +178,7 @@ void main() {
           walletId: cmd.walletId,
           address: _testnetAddress,
           derivationIndex: 0,
+          chain: AddressChain.receive,
           success: true,
           metadata: cmd.metadata,
         );

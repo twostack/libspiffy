@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import 'package:dactor/dactor.dart';
 
+import '../models/address_chain.dart';
 import '../models/bitcoin_transaction.dart';
 import '../models/deferred_payment.dart';
 import '../models/invoice_output_spec.dart';
@@ -1668,6 +1669,15 @@ class InvoiceCreatedEvent extends CoordinatorEvent {
   final List<String> addresses;
   final BigInt amount;
   final List<InvoiceOutputSpec>? outputs;
+
+  /// The addresses the wallet issued for the invoice, each with its chain
+  /// and derivation index (bead libspiffy-m8qu). The chain is the payment
+  /// mode (spv-understanding.md, "Payment modes"): receive for a wallet
+  /// that holds its keys; delegated for a service's xpub wallet answering
+  /// for an offline payee, which hands the payment over later with the
+  /// index ([TransactionExportedEvent.delegatedIndices] carries it too). An
+  /// address the caller supplied in an output is not among them.
+  final List<IssuedAddress> issuedAddresses;
   final String? description;
   final DateTime? expiresAt;
   final bool success;
@@ -1679,12 +1689,14 @@ class InvoiceCreatedEvent extends CoordinatorEvent {
     required List<String> addresses,
     required this.amount,
     List<InvoiceOutputSpec>? outputs,
+    List<IssuedAddress> issuedAddresses = const [],
     this.description,
     this.expiresAt,
     required this.success,
     this.error,
   })  : addresses = frozenList(addresses),
-        outputs = frozenOutputSpecsOrNull(outputs);
+        outputs = frozenOutputSpecsOrNull(outputs),
+        issuedAddresses = frozenList(issuedAddresses);
 
   @override
   DateTime get eventTimestamp => DateTime.now();
@@ -1975,6 +1987,11 @@ class TransactionExportedEvent extends CoordinatorEvent {
   final String queryId;
   final bool success;
   final List<int>? beef;
+
+  /// The derivation indices of the wallet's delegated addresses the
+  /// transaction pays: what the payee's wallet imports it with
+  /// ([ImportTransactionCommand.delegatedIndices]). Empty when it pays none.
+  final List<int> delegatedIndices;
   final String? error;
 
   TransactionExportedEvent({
@@ -1983,8 +2000,10 @@ class TransactionExportedEvent extends CoordinatorEvent {
     required this.queryId,
     required this.success,
     List<int>? beef,
+    List<int> delegatedIndices = const [],
     this.error,
-  }) : beef = frozenListOrNull(beef);
+  })  : beef = frozenListOrNull(beef),
+        delegatedIndices = frozenList(delegatedIndices);
 
   @override
   DateTime get eventTimestamp => DateTime.now();

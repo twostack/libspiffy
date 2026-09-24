@@ -17,6 +17,7 @@ import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 import 'package:libspiffy/src/services/payment_channel_builder.dart';
 import 'package:libspiffy/src/utils/beef.dart';
 import 'package:libspiffy/src/models/fee_rate.dart';
+import 'package:libspiffy/src/models/address_chain.dart';
 
 const channelFixtureMnemonic = 'abandon abandon abandon abandon abandon '
     'abandon abandon abandon abandon abandon abandon about';
@@ -464,6 +465,7 @@ class FixtureWalletManager extends Actor {
         walletId: command.walletId,
         address: key.publicKey.toAddress(dartsv.NetworkType.TEST).toString(),
         derivationIndex: derivationIndex,
+        chain: AddressChain.receive,
         success: true,
         publicKeyHex: key.publicKey.toString(),
       ));

@@ -41,3 +41,31 @@ enum AddressChain {
     return isChange == true ? AddressChain.change : AddressChain.receive;
   }
 }
+
+/// An address the wallet issued, with where it sits in the HD tree.
+///
+/// The chain names the payment mode an invoice was made in
+/// (spv-understanding.md, "Payment modes"): an invoice of a wallet that
+/// holds its keys issues on [AddressChain.receive]; one of a service's xpub
+/// wallet, answering for an offline payee, on [AddressChain.delegated], and
+/// the service later hands the payment to the payee with [derivationIndex].
+class IssuedAddress {
+  final String address;
+  final AddressChain chain;
+  final int derivationIndex;
+
+  const IssuedAddress({required this.address, required this.chain, required this.derivationIndex});
+
+  @override
+  bool operator ==(Object other) =>
+      other is IssuedAddress &&
+      other.address == address &&
+      other.chain == chain &&
+      other.derivationIndex == derivationIndex;
+
+  @override
+  int get hashCode => Object.hash(address, chain, derivationIndex);
+
+  @override
+  String toString() => '$address (m/${chain.index}/$derivationIndex)';
+}

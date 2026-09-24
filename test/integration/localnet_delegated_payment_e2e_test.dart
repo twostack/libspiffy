@@ -72,7 +72,7 @@ void main() {
     carolNode = null;
   });
 
-  Future<(String, String)> invoice(LocalnetNode payee, String walletId, int amount) async {
+  Future<InvoiceCreatedEvent> createInvoice(LocalnetNode payee, String walletId, int amount) async {
     final created = payee.next<InvoiceCreatedEvent>((e) => e.walletId == walletId);
     payee.coordinator.tell(CreateInvoiceCommand(
       walletId: walletId,
@@ -82,6 +82,11 @@ void main() {
     ));
     final event = await created;
     expect(event.success, isTrue, reason: event.error);
+    return event;
+  }
+
+  Future<(String, String)> invoice(LocalnetNode payee, String walletId, int amount) async {
+    final event = await createInvoice(payee, walletId, amount);
     return (event.invoiceId, event.addresses.first);
   }
 
@@ -115,14 +120,14 @@ void main() {
     await alice.receiveMined(aliceWallet, kTestRootAddress);
     await service.headersAt(await rpc('getblockcount') as int);
 
-    // The service answers the invoice request for Carol, on m/2/i.
-    final (invoiceId, address) = await invoice(service, serviceWallet, 50000);
-    final index = [
-      for (var i = 0; i < 20; i++)
-        if (crypto.deriveAddress(carolXpub, i, chain: AddressChain.delegated, network: dartsv.NetworkType.TEST) ==
-            address)
-          i,
-    ].single;
+    // The service answers the invoice request for Carol, on m/2/i: the
+    // invoice says so.
+    final serviceInvoice = await createInvoice(service, serviceWallet, 50000);
+    final invoiceId = serviceInvoice.invoiceId;
+    final IssuedAddress(:address, :chain, derivationIndex: index) = serviceInvoice.issuedAddresses.single;
+    expect(chain, AddressChain.delegated);
+    expect(address,
+        crypto.deriveAddress(carolXpub, index, chain: AddressChain.delegated, network: dartsv.NetworkType.TEST));
     expect(address, isNot(crypto.deriveAddress(carolXpub, index, network: dartsv.NetworkType.TEST)),
         reason: 'the address Carol\'s own wallet issues at that index is a different one');
 
@@ -156,6 +161,7 @@ void main() {
     service.coordinator.tell(ExportTransactionQuery(walletId: serviceWallet, txid: payment.txid));
     final export = await exported;
     expect(export.success, isTrue, reason: export.error);
+    expect(export.delegatedIndices, [index]);
 
     // Carol comes online and is handed the payment and its index.
     final carol = carolNode = await LocalnetNode.start('carol-peer', timing);
@@ -165,7 +171,7 @@ void main() {
     carol.coordinator.tell(ImportTransactionCommand(
       walletId: carolWallet,
       beef: export.beef!,
-      delegatedIndices: [index],
+      delegatedIndices: export.delegatedIndices,
     ));
     final import = await imported;
     expect(import.success, isTrue, reason: import.error);

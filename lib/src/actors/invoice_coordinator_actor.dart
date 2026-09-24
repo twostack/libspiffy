@@ -9,6 +9,7 @@ import '../core/invoice_aggregate.dart';
 import '../core/invoice_commands.dart';
 import '../core/invoice_events.dart';
 import '../core/wallet_commands.dart';
+import '../models/address_chain.dart';
 import '../models/invoice_output_spec.dart';
 import '../models/invoice_read_model.dart';
 import 'invoice_messages.dart';
@@ -480,13 +481,13 @@ class InvoiceCoordinatorActor extends Actor {
     }
 
     // Add the generated address to collected addresses
-    pendingRequest.collectedAddresses.add(msg.address);
+    pendingRequest.issued
+        .add(IssuedAddress(address: msg.address, chain: msg.chain, derivationIndex: msg.derivationIndex));
 
     // Check if we have all addresses we need
-    if (pendingRequest.collectedAddresses.length < pendingRequest.numberOfAddressesNeeded) {
+    if (pendingRequest.issued.length < pendingRequest.numberOfAddressesNeeded) {
       // Request more addresses
-      _requestAddress(pendingRequest,
-          'invoice-$invoiceId-${pendingRequest.collectedAddresses.length}');
+      _requestAddress(pendingRequest, 'invoice-$invoiceId-${pendingRequest.issued.length}');
       return;
     }
 
@@ -523,6 +524,7 @@ class InvoiceCoordinatorActor extends Actor {
           addresses: addresses,
           amount: pendingRequest.amount,
           outputs: finalOutputs,
+          issuedAddresses: pendingRequest.issued,
           description: pendingRequest.description,
           createdAt: DateTime.now(),
           expiresAt: pendingRequest.expiresAt,
@@ -939,7 +941,10 @@ class _PendingInvoiceRequest {
   final ActorRef? originalSender;
   final Map<String, dynamic>? metadata;
   final int numberOfAddressesNeeded;
-  final List<String> collectedAddresses = [];
+  /// The addresses the wallet issued for this invoice so far, in order.
+  final List<IssuedAddress> issued = [];
+
+  List<String> get collectedAddresses => [for (final a in issued) a.address];
 
   /// Command id of the address request in flight; outcomes of any other
   /// request are not applied to this invoice.

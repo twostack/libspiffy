@@ -6,6 +6,7 @@ import 'package:libspiffy/src/actors/wallet_messages.dart';
 import 'package:libspiffy/src/core/wallet_commands.dart';
 import 'package:libspiffy/src/storage/in_memory_wallet_storage.dart';
 import 'package:spiffynode/spiffy_node.dart';
+import 'package:libspiffy/src/models/address_chain.dart';
 
 void main() {
   group('Invoice-based SPV Integration Tests', () {
@@ -439,6 +440,7 @@ class _MockWalletManagerActor extends Actor {
           walletId: message.walletId,
           address: address,
           derivationIndex: _addressCounter,
+          chain: AddressChain.receive,
           success: true,
           metadata: command.metadata, // Pass through metadata
         ));

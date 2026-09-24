@@ -28,6 +28,7 @@ import 'package:libspiffy/src/actors/payment_channel_messages.dart';
 import 'package:libspiffy/src/actors/wallet_messages.dart';
 import 'package:libspiffy/src/core/wallet_commands.dart';
 import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
+import 'package:libspiffy/src/models/address_chain.dart';
 
 import 'channel_test_fixtures.dart';
 import 'in_memory_event_store.dart';
@@ -262,6 +263,7 @@ class _SigningWalletManager extends Actor {
         walletId: command.walletId,
         address: addressB58,
         derivationIndex: 2,
+        chain: AddressChain.receive,
         success: true,
         publicKeyHex: pubKeyHex,
       ));

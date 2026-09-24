@@ -2,6 +2,7 @@ import 'package:dactor/dactor.dart';
 import 'package:libspiffy/libspiffy.dart';
 import '../core/wallet_commands.dart';
 import '../models/deferred_payment.dart';
+import '../models/address_chain.dart';
 import '../models/persistent_map.dart';
 
 // The reply bases and the actor wiring messages live in
@@ -109,6 +110,10 @@ class AddressGeneratedResponse extends ActorResponse {
   final String walletId;
   final String address;
   final int derivationIndex;
+
+  /// The chain [derivationIndex] is on (bead libspiffy-m8qu): delegated for
+  /// an xpub wallet's addresses.
+  final AddressChain chain;
   @override
   final bool success;
   @override
@@ -119,6 +124,7 @@ class AddressGeneratedResponse extends ActorResponse {
     required this.walletId,
     required this.address,
     required this.derivationIndex,
+    required this.chain,
     required this.success,
     this.error,
     this.publicKeyHex,

@@ -70,9 +70,10 @@ How the second mode works in libspiffy:
 
 1. **The two issuers use separate chains.** An address is on one of three chains of the wallet's HD tree (`AddressChain`, with key path `m/{chain}/{index}`): receive (`m/0/i`), change (`m/1/i`) and delegated (`m/2/i`). The payee's own wallet issues receive addresses. An xpub wallet, which has no private key, issues every address on the delegated chain. Each keeps its own counter and never sees the other's, so on one chain they would hand out the same address.
 2. **The service's money is watch-only.** An xpub wallet holds no key, so everything it receives is reported as `watchOnlyBalance` and is never spendable.
-3. **The service follows the payment to its block** like any payee, then exports it with its proof: `ExportTransactionQuery` answers with a `TransactionExportedEvent` carrying the BEEF. It refuses while the transaction has no proof verified on our header chain.
-4. **The hand-off is the BEEF and the delegated indices the service issued.** The payee's wallet imports it with `ImportTransactionCommand(delegatedIndices: [...])`. It derives each address from its own key, and never takes the address it is handed, records them (they do not move its own counter), and then imports the payment. From then on it signs for them like any other address.
-5. **A restored wallet finds them too.** Address discovery scans all three chains.
+3. **An invoice names its mode.** `InvoiceCreatedEvent.issuedAddresses` gives each address with its chain and derivation index: receive for a wallet that holds its keys, delegated for a service's xpub wallet.
+4. **The service follows the payment to its block** like any payee, then exports it with its proof: `ExportTransactionQuery` answers with a `TransactionExportedEvent` carrying the BEEF and the delegated indices of the addresses it pays. It refuses while the transaction has no proof verified on our header chain.
+5. **The hand-off is the BEEF and those delegated indices.** The payee's wallet imports it with `ImportTransactionCommand(delegatedIndices: [...])`. It derives each address from its own key, and never takes the address it is handed, records them (they do not move its own counter), and then imports the payment. From then on it signs for them like any other address.
+6. **A restored wallet finds them too.** Address discovery scans all three chains.
 
 ### 2. What the Receiver Gets
 

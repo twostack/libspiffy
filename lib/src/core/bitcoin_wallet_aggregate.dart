@@ -3,6 +3,7 @@ import 'package:eventador/eventador.dart';
 import 'package:logging/logging.dart';
 import 'package:dactor/dactor.dart';
 
+import '../models/address_chain.dart';
 import '../models/wallet_event.dart';
 import '../models/wallet_state.dart';
 import '../models/bitcoin_utxo.dart';
@@ -308,6 +309,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
               walletId: event.walletId,
               address: event.address,
               derivationIndex: event.derivationIndex,
+              chain: event.chain,
               success: true,
               publicKeyHex: event.publicKeyHex,
               metadata: event.metadata,
@@ -446,6 +448,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         walletId: command.walletId,
         address: '',
         derivationIndex: 0,
+        chain: AddressChain.receive,
         success: false,
         error: errorMessage,
         metadata: command.metadata, // Pass through metadata even on error

@@ -33,6 +33,7 @@ import 'in_memory_event_store.dart';
 import '../mocks/policy_rate_arc.dart';
 import '../mocks/test_channel_timing.dart';
 import 'package:libspiffy/src/models/channel_timing.dart';
+import 'package:libspiffy/src/models/address_chain.dart';
 
 const _walletId = 'channel-wallet';
 const _channelId = 'chan-reject';
@@ -797,6 +798,7 @@ class _SigningWalletManager extends Actor {
         walletId: command.walletId,
         address: addressB58,
         derivationIndex: 2,
+        chain: AddressChain.receive,
         success: true,
         publicKeyHex: pubKeyHex,
       ));

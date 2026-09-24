@@ -18,6 +18,10 @@
     can spend like any other.
   - Address discovery (wallet import) scans the delegated chain as well as
     the receive and change chains.
+  - `InvoiceCreatedEvent.issuedAddresses` names each address an invoice
+    issued with its chain and derivation index (`IssuedAddress`), so the
+    payment mode is visible where it is chosen; `TransactionExportedEvent
+    .delegatedIndices` carries the indices the payee imports with.
 
 ### Breaking
 
@@ -38,6 +42,7 @@
   `generateReceivingAddress` / `generateChangeAddress`.
 - `BuildFundingTransactionCommand` loses `derivationIndex` and `isChange`,
   which nothing read: channel funding signs each UTXO with its own path.
+- `AddressGeneratedResponse` carries the address's `chain`.
 
 ### Fixed
 

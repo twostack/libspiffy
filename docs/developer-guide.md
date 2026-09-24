@@ -258,20 +258,28 @@ A service can take payments for users who are offline (spv-understanding.md, "Pa
 coordinator.tell(CreateWalletCommand(walletId: 'carol-at-service', name: 'Carol', xpub: carolXpub));
 ```
 
-Invoices on that wallet get addresses on the user's **delegated chain** (`m/2/i`), never on the receive chain (`m/0/i`) the user's own wallet issues from. The service receives the payment with `ValidateBEEFCommand` as usual. The money appears as `watchOnlyBalance`: the service holds no key for it and can never spend it. Once the payment is mined, the service exports it with its proof:
+Invoices on that wallet get addresses on the user's **delegated chain** (`m/2/i`), never on the receive chain (`m/0/i`) the user's own wallet issues from. The invoice says which it is: `InvoiceCreatedEvent.issuedAddresses` gives each address with its chain and derivation index.
+
+```dart
+final issued = invoiceCreated.issuedAddresses.single;
+issued.chain;            // AddressChain.delegated: a payment to hand over later
+issued.derivationIndex;  // the index the user's wallet will need
+```
+
+The service receives the payment with `ValidateBEEFCommand` as usual. The money appears as `watchOnlyBalance`: the service holds no key for it and can never spend it. Once the payment is mined, the service exports it with its proof and the delegated indices it pays:
 
 ```dart
 coordinator.tell(ExportTransactionQuery(walletId: 'carol-at-service', txid: txid));
-// → TransactionExportedEvent(success, beef, error)
+// → TransactionExportedEvent(success, beef, delegatedIndices, error)
 ```
 
-It hands the BEEF to the user, together with the derivation index of the delegated address the invoice used. The user's wallet imports it with that index. It derives the address from its own key, records it, and can then spend the payment like any other:
+It hands both to the user. The user's wallet imports the BEEF with those indices. It derives the addresses from its own key, records them, and can then spend the payment like any other:
 
 ```dart
 coordinator.tell(ImportTransactionCommand(
   walletId: 'carol',
-  beef: exportedBeef,
-  delegatedIndices: [index],
+  beef: exported.beef!,
+  delegatedIndices: exported.delegatedIndices,
 ));
 // → TransactionImportedEvent
 ```

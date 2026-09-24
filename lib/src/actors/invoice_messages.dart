@@ -1,5 +1,6 @@
 import 'package:dactor/dactor.dart';
 import 'internal_messages.dart';
+import '../models/address_chain.dart';
 import '../models/invoice_output_spec.dart';
 import '../models/persistent_map.dart';
 
@@ -140,6 +141,11 @@ class InvoiceCreatedMessage extends ActorResponse {
   /// Structured output specifications (P2PKH, P2MS, etc.)
   final List<InvoiceOutputSpec>? outputs;
 
+  /// The addresses the wallet issued for the invoice, with their chain and
+  /// derivation index (bead libspiffy-m8qu). An address the caller supplied
+  /// in an output is not among them.
+  final List<IssuedAddress> issuedAddresses;
+
   final String? description;
   final DateTime createdAt;
   final DateTime? expiresAt;
@@ -155,6 +161,7 @@ class InvoiceCreatedMessage extends ActorResponse {
     required List<String> addresses,
     required this.amount,
     List<InvoiceOutputSpec>? outputs,
+    List<IssuedAddress> issuedAddresses = const [],
     this.description,
     required this.createdAt,
     this.expiresAt,
@@ -163,6 +170,7 @@ class InvoiceCreatedMessage extends ActorResponse {
     Map<String, dynamic>? customMetadata,
   })  : addresses = frozenList(addresses),
         outputs = frozenOutputSpecsOrNull(outputs),
+        issuedAddresses = frozenList(issuedAddresses),
         customMetadata = frozenPlainMapOrNull(customMetadata);
 
   /// Get effective total amount

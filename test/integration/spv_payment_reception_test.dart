@@ -13,6 +13,7 @@ import 'package:libspiffy/src/storage/in_memory_wallet_storage.dart';
 import 'package:libspiffy/src/utils/beef.dart';
 import 'package:libspiffy/src/utils/crypto_utils.dart';
 import 'package:spiffynode/spiffy_node.dart';
+import 'package:libspiffy/src/models/address_chain.dart';
 
 /// SPV Payment Reception Integration Tests
 /// 
@@ -487,6 +488,7 @@ class _MockWalletManagerActor extends Actor {
           walletId: message.walletId,
           address: address,
           derivationIndex: _addressCounter,
+          chain: AddressChain.receive,
           success: true,
           metadata: command.metadata,
         ));

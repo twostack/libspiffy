@@ -6,6 +6,7 @@ import 'package:libspiffy/src/services/script_type_registry.dart';
 import 'package:logging/logging.dart';
 import '../core/wallet/address_book.dart' show AddressBook;
 import '../core/wallet/state_records.dart';
+import '../core/wallet/type42_book.dart' show Type42Book;
 import '../core/wallet_events.dart';
 import '../models/wallet_event.dart';
 import '../models/wallet_type.dart';
@@ -62,6 +63,7 @@ class WalletProjection extends Projection<void> {
         WalletConfigurationUpdatedEvent,
         AddressGeneratedEvent,
         AddressDiscoveredEvent,
+        Type42AddressRecordedEvent,
         AddressLabelUpdatedEvent,
         WatchAddressAddedEvent,
         UTXOReceivedEvent,
@@ -137,6 +139,9 @@ class WalletProjection extends Projection<void> {
         return true;
       case final AddressDiscoveredEvent evt:
         await _handleAddressDiscovered(evt);
+        return true;
+      case final Type42AddressRecordedEvent evt:
+        await _handleType42AddressRecorded(evt);
         return true;
       case AddressLabelUpdatedEvent():
         // Label updates don't affect read model statistics
@@ -331,6 +336,26 @@ class WalletProjection extends Projection<void> {
     await _storage.upsertAddress(event.walletId, metadata);
     
     // Update wallet metadata with new address count (read from storage, update, write back)
+    final row = await _updateWalletAddressCount(event.walletId, event.timestamp);
+    await _recalculateForNewKey(event.walletId, row, event.timestamp);
+  }
+
+  /// A payer's type-42 address (bead libspiffy-zxkd): a row with its
+  /// derivation and no chain, which is how signing finds its key.
+  Future<void> _handleType42AddressRecorded(Type42AddressRecordedEvent event) async {
+    final metadata = await _preservingUsage(event.walletId, AddressMetadata(
+      address: event.address,
+      scriptType: 'p2pkh',
+      chain: null,
+      type42: event.derivation,
+      label: Type42Book.label(event.derivation),
+      purpose: 'type42',
+      usageCount: 0,
+      balance: BigInt.zero,
+      createdAt: event.timestamp,
+      isWatched: true,
+    ));
+    await _storage.upsertAddress(event.walletId, metadata);
     final row = await _updateWalletAddressCount(event.walletId, event.timestamp);
     await _recalculateForNewKey(event.walletId, row, event.timestamp);
   }
@@ -612,6 +637,7 @@ class WalletProjection extends Projection<void> {
         derivationPath: derivationPath ?? m.derivationPath,
         derivationIndex: derivationIndex ?? m.derivationIndex,
         chain: m.chain,
+        type42: m.type42,
         label: m.label,
         purpose: m.purpose,
         firstUsedAt: firstUsedAt ?? m.firstUsedAt,

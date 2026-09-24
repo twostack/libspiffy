@@ -37,6 +37,7 @@ import 'package:test/test.dart';
 import 'package:dactor/dactor.dart';
 import 'package:libspiffy/src/actors/coordinator_messages.dart' as coord;
 import 'package:libspiffy/src/actors/wallet_coordinator_actor.dart';
+import 'package:libspiffy/src/models/key_path.dart';
 import 'package:libspiffy/src/actors/wallet_messages.dart' as wm;
 import 'package:libspiffy/src/storage/in_memory_wallet_storage.dart';
 import 'package:libspiffy/src/actors/invoice_messages.dart' show InvoiceStatus;
@@ -610,16 +611,14 @@ void main() {
     test('a command does not share the collections the caller built it from', () {
       final utxoKeys = ['${'ab' * 32}:0'];
       final publicKeys = ['02' * 33];
-      final indices = [4];
-      final flags = [AddressChain.receive];
+      final paths = <KeyPath>[const HdKeyPath(4)];
       final sign = SignTransactionCommand(
         walletId: _walletId,
         transactionId: 'tx-1',
         rawTransaction: '00',
         utxoKeys: utxoKeys,
         publicKeys: publicKeys,
-        derivationIndices: indices,
-        chains: flags,
+        keyPaths: paths,
       );
       final signerMetadata = <String, dynamic>{'signer': {'ids': [1]}};
       final recipients = ['muq9kAb9ri62VChAMRkuwK5bTve4iDLWBg'];
@@ -642,15 +641,13 @@ void main() {
 
       utxoKeys.add('late:0');
       publicKeys.clear();
-      indices.add(9);
-      flags.add(AddressChain.change);
+      paths.add(const HdKeyPath(9, chain: AddressChain.change));
       recipients.add('mlate');
       ((signerMetadata['signer'] as Map)['ids'] as List).add(2);
 
       expect(sign.utxoKeys, ['${'ab' * 32}:0']);
       expect(sign.publicKeys, ['02' * 33]);
-      expect(sign.derivationIndices, [4]);
-      expect(sign.chains, [AddressChain.receive]);
+      expect(sign.keyPaths, [const HdKeyPath(4)]);
       expect(record.spentUtxoKeys, ['${'ab' * 32}:0']);
       expect(record.recipientAddresses, ['muq9kAb9ri62VChAMRkuwK5bTve4iDLWBg']);
       expect((record.signerMetadata!['signer'] as Map)['ids'], [1]);

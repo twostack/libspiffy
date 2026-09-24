@@ -23,6 +23,7 @@ import 'package:eventador/eventador.dart';
 import 'package:test/test.dart';
 
 import 'package:libspiffy/src/actors/wallet_messages.dart';
+import 'package:libspiffy/src/models/key_path.dart';
 import 'package:libspiffy/src/core/bitcoin_wallet_aggregate.dart';
 import 'package:libspiffy/src/core/wallet_commands.dart';
 import 'package:libspiffy/src/core/wallet_events.dart';
@@ -459,7 +460,7 @@ void main() {
           rawTransaction: _txHex([_key(6)], [(_p2pkh(_foreign), 1000)]),
           utxoKeys: [_key(6)],
           publicKeys: const [],
-          derivationIndices: const [0],
+          keyPaths: const [HdKeyPath(0)],
         )),
         throwsA(isA<StateError>().having((e) => e.message, 'message',
             'Failed to sign transaction: Bad state: Cannot sign UTXO ${_key(6)} at ${wallet.receive1}: the wallet '

@@ -3,12 +3,17 @@
 /// libspiffy-dp4; part of `BitcoinWalletAggregate`).
 library;
 
+import 'dart:convert';
+import 'dart:math';
+
 import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:eventador/eventador.dart';
 import 'package:logging/logging.dart';
 import 'package:uuid/uuid.dart';
 
+import '../../crypto/type42.dart';
 import '../../models/address_chain.dart';
+import '../../models/key_path.dart';
 import '../../models/wallet_state.dart';
 import '../../models/wallet_type.dart';
 import '../../services/crypto_service.dart';
@@ -18,6 +23,7 @@ import '../../utils/network_name.dart';
 import '../wallet_commands.dart';
 import '../wallet_events.dart';
 import 'address_book.dart';
+import 'type42_book.dart';
 import 'state_records.dart';
 
 final _log = Logger('BitcoinWalletAggregate');
@@ -348,24 +354,160 @@ class WalletKeys {
   }
 
   // ---------------------------------------------------------------------------
+  // Type-42 (BRC-42) keys (bead libspiffy-zxkd)
+  // ---------------------------------------------------------------------------
+
+  /// Path of the anchor key A, which payers derive type-42 destinations
+  /// from. Hardened: the payer of a type-42 payment knows its tweak t, so a
+  /// child key c = a + t that leaks gives away a; under a hardened path a
+  /// does not give away the account key the wallet's xpub is published for.
+  static const String anchorPath = "m/3'/0'";
+
+  /// Path of payer key [index], the key B the wallet derives a type-42
+  /// destination with (fresh for every destination).
+  static String payerKeyPath(int index) => "m/3'/1'/$index'";
+
+  /// The HD private key the wallet's key paths are relative to: from the
+  /// xpriv, else from the mnemonic (and the passphrase it was created with).
+  Future<dartsv.HDPrivateKey> _hdPrivateKey(String walletId, WalletState currentState) async {
+    final xpriv = await secureStorage.getXPriv(walletId);
+    if (xpriv != null) return dartsv.HDPrivateKey.fromXpriv(xpriv);
+    final mnemonic = await secureStorage.getMnemonic(walletId);
+    if (mnemonic != null) {
+      return cryptoService.mnemonicToHDPrivateKey(
+        mnemonic,
+        passphrase: await mnemonicPassphrase(walletId),
+        network: NetworkName.toDartsv(currentState.networkType),
+      );
+    }
+    throw StateError('No xpriv or mnemonic found for wallet $walletId');
+  }
+
+  /// The private key at the hardened [path] of an HD or XPRIV wallet.
+  /// Throws for a wallet that has no HD private key: an xpub wallet holds no
+  /// private key, and a WIF wallet no HD tree to put an anchor key on.
+  Future<dartsv.SVPrivateKey> _type42Key(String walletId, WalletState currentState, String path, String what) async {
+    if (!currentState.isCreated || currentState.isDeleted) {
+      throw StateError('Wallet $walletId does not exist');
+    }
+    switch (currentState.walletType) {
+      case WalletType.hd || WalletType.xpriv:
+        return Bip32.derivePrivatePath(await _hdPrivateKey(walletId, currentState), path).privateKey;
+      case WalletType.xpub:
+        throw StateError('Wallet $walletId is watch-only (XPUB): it holds no $what, so it can neither '
+            'take nor make type-42 payments');
+      case WalletType.wif:
+        throw StateError('Wallet $walletId is a single-key (WIF) wallet: it has no HD tree to derive a $what on');
+    }
+  }
+
+  /// The anchor key a at [anchorPath].
+  Future<dartsv.SVPrivateKey> anchorKey(String walletId, WalletState currentState) =>
+      _type42Key(walletId, currentState, anchorPath, 'anchor key');
+
+  /// The type-42 child of the anchor key for [derivation]: c = a + t.
+  Future<dartsv.SVPrivateKey> type42ChildKey(
+          String walletId, WalletState currentState, Type42Derivation derivation) async =>
+      Type42.deriveChildPrivate(await anchorKey(walletId, currentState),
+          dartsv.SVPublicKey.fromHex(derivation.senderPublicKey), derivation.invoiceNumber);
+
+  String _p2pkh(dartsv.SVPublicKey key, WalletState currentState) =>
+      key.toAddress(NetworkName.toDartsv(currentState.networkType)).toBase58();
+
+  /// The addresses [command]'s derivations give from the wallet's own anchor
+  /// key, in the command's order, and a [Type42AddressRecordedEvent] for
+  /// each the wallet has not recorded yet.
+  Future<({List<Event> events, List<String> addresses})> recordType42Addresses(
+      WalletState currentState, RecordType42AddressesCommand command) async {
+    final anchor = await anchorKey(command.walletId, currentState);
+    final recorded = Type42Book.addressDerivations(currentState.metadata);
+    final events = <Event>[];
+    final addresses = <String>[];
+    for (final derivation in command.derivations) {
+      final child = Type42.deriveChildPrivate(
+          anchor, dartsv.SVPublicKey.fromHex(derivation.senderPublicKey), derivation.invoiceNumber);
+      final address = _p2pkh(child.publicKey, currentState);
+      addresses.add(address);
+      if (recorded.containsKey(address) || addresses.indexOf(address) != addresses.length - 1) continue;
+      if (currentState.addresses.containsKey(address)) {
+        throw StateError('Type-42 address $address of wallet ${command.walletId} is already one of its HD addresses');
+      }
+      events.add(Type42AddressRecordedEvent(
+        walletId: command.walletId,
+        address: address,
+        derivation: derivation,
+        version: currentState.version + events.length + 1,
+      ));
+    }
+    return (events: events, addresses: addresses);
+  }
+
+  /// The type-42 destination [command] asks for, derived with the wallet's
+  /// next payer key, as a [Type42DestinationDerivedEvent].
+  Future<Type42DestinationDerivedEvent> deriveType42Destination(
+      WalletState currentState, DeriveType42DestinationCommand command) async {
+    final recipientHex = Type42Derivation.publicKeyHex(command.recipientPublicKey, 'recipientPublicKey');
+    final index = Type42Book.payerKeysUsed(currentState.metadata);
+    final payer = await _type42Key(command.walletId, currentState, payerKeyPath(index), 'payer key');
+    final derivation = Type42Derivation(
+      senderPublicKey: payer.publicKey.toHex(),
+      invoiceNumber: command.invoiceNumber ?? Type42Derivation.brc29InvoiceNumber(_randomBase64(), _randomBase64()),
+    );
+    final destination =
+        Type42.deriveChildPublic(dartsv.SVPublicKey.fromHex(recipientHex), payer, derivation.invoiceNumber);
+    return Type42DestinationDerivedEvent(
+      walletId: command.walletId,
+      destination: Type42Destination(
+        address: _p2pkh(destination, currentState),
+        recipientPublicKey: recipientHex,
+        derivation: derivation,
+        payerKeyIndex: index,
+      ),
+      version: currentState.version + 1,
+    );
+  }
+
+  static final Random _random = Random.secure();
+
+  /// 16 random bytes, base64: a BRC-29 derivation prefix or suffix.
+  static String _randomBase64() => base64.encode([for (var i = 0; i < 16; i++) _random.nextInt(256)]);
+
+  // ---------------------------------------------------------------------------
   // Private keys
   // ---------------------------------------------------------------------------
+
+  /// The private key [path] names.
+  Future<dartsv.SVPrivateKey> privateKeyAt(String walletId, WalletState currentState, KeyPath path) =>
+      switch (path) {
+        HdKeyPath(:final derivationIndex, :final chain) =>
+          privateKeyAtIndex(walletId, derivationIndex, currentState, chain: chain),
+        Type42KeyPath(:final derivation) => type42ChildKey(walletId, currentState, derivation),
+      };
 
   /// Retrieve the private key for a given address from secure storage
   /// Supports WIF, XPRIV, and HD wallets.
   ///
-  /// [derivationIndex] and [chain] let a caller that holds the derivation
-  /// path (e.g. from the read model) supply it directly. When [chain] is
-  /// null the chain is resolved from the aggregate's own address records,
-  /// which is correct for every address the aggregate generated or
-  /// discovered; unknown addresses default to the receive chain.
+  /// [keyPath] lets a caller that holds the key's path (e.g. from the read
+  /// model) supply it directly. When it is null the path is resolved from
+  /// the aggregate's own address records, which is correct for every
+  /// address the aggregate generated, discovered or recorded; unknown
+  /// addresses default to the receive chain. A type-42 address the
+  /// aggregate recorded is signed for with its record's key.
   Future<dartsv.SVPrivateKey> privateKeyForAddress(
     String address,
     String walletId,
     WalletState currentState, {
-    int? derivationIndex,
-    AddressChain? chain,
+    KeyPath? keyPath,
   }) async {
+    // A type-42 address is signed for with its recorded derivation, whatever
+    // path the caller names: the aggregate's record is the authority.
+    if (Type42Book.addressDerivations(currentState.metadata)[address] case final derivation?) {
+      return type42ChildKey(walletId, currentState, derivation);
+    }
+    if (keyPath is Type42KeyPath) return type42ChildKey(walletId, currentState, keyPath.derivation);
+    final hdPath = keyPath as HdKeyPath?;
+    final derivationIndex = hdPath?.derivationIndex;
+    final chain = hdPath?.chain;
     if (currentState.walletType == WalletType.wif) {
       // WIF wallet: single private key
       final wif = await secureStorage.getWIF(walletId);
@@ -533,8 +675,6 @@ class WalletKeys {
     WalletState currentState, {
     AddressChain chain = AddressChain.receive,
   }) async {
-    final networkType = NetworkName.toDartsv(currentState.networkType);
-
     if (currentState.walletType == WalletType.wif) {
       // WIF wallet: single private key
       final wif = await secureStorage.getWIF(walletId);
@@ -543,25 +683,8 @@ class WalletKeys {
       }
       return dartsv.SVPrivateKey.fromWIF(wif);
     } else if (currentState.walletType == WalletType.xpriv || currentState.walletType == WalletType.hd) {
-      // HD/XPRIV wallet: derive key at specific index
-      final xprivStr = await secureStorage.getXPriv(walletId);
-      if (xprivStr != null) {
-        final hdPrivateKey = dartsv.HDPrivateKey.fromXpriv(xprivStr);
-        return await cryptoService.derivePrivateKey(hdPrivateKey, derivationIndex, chain: chain);
-      }
-
-      // Try mnemonic if xpriv not found
-      final mnemonic = await secureStorage.getMnemonic(walletId);
-      if (mnemonic != null) {
-        final hdPrivateKey = await cryptoService.mnemonicToHDPrivateKey(
-          mnemonic,
-          passphrase: await mnemonicPassphrase(walletId),
-          network: networkType,
-        );
-        return await cryptoService.derivePrivateKey(hdPrivateKey, derivationIndex, chain: chain);
-      }
-
-      throw StateError('No xpriv or mnemonic found for wallet $walletId');
+      final hdPrivateKey = await _hdPrivateKey(walletId, currentState);
+      return await cryptoService.derivePrivateKey(hdPrivateKey, derivationIndex, chain: chain);
     } else {
       throw StateError('Unsupported wallet type: ${currentState.walletType}');
     }

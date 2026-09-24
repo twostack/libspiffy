@@ -25,6 +25,8 @@ const goldenTypeNames = <String, String>{
   'AddressLabelUpdatedEvent': 'wallet.address.label_updated',
   'AddressDiscoveredEvent': 'wallet.address.discovered',
   'WatchAddressAddedEvent': 'wallet.watch_address.added',
+  'Type42AddressRecordedEvent': 'wallet.type42_address.recorded',
+  'Type42DestinationDerivedEvent': 'wallet.type42_destination.derived',
   'UTXOReceivedEvent': 'wallet.utxo.received',
   'UTXOMarkedAvailableEvent': 'wallet.utxo.marked_available',
   'UTXOSpentEvent': 'wallet.utxo.spent',
@@ -79,6 +81,16 @@ const goldenTypeNames = <String, String>{
 
 final _t = DateTime.utc(2026, 1, 2, 3, 4, 5);
 const _w = 'wallet-1';
+const _senderKey = '02dfcbe35d95b55b5f3168ea8f12717e266ceddf88d04d2ff741272dfb0e542c2a';
+
+/// Event types added after the journal stored stable identifiers (audit
+/// 2026-09-14 M8): no release ever stored them under their class name, so
+/// they are registered without a class-name alias.
+const _bornWithStableIds = {'Type42AddressRecordedEvent', 'Type42DestinationDerivedEvent'};
+
+/// The samples a journal written before M8 could hold.
+Iterable<MapEntry<String, Event>> _legacySamples() =>
+    sampleEvents().entries.where((e) => !_bornWithStableIds.contains(e.key));
 const _c = 'channel-1';
 const _i = 'invoice-1';
 const _txid = 'aa00000000000000000000000000000000000000000000000000000000000001';
@@ -106,6 +118,22 @@ Map<String, Event> sampleEvents() => <String, Event>{
       'WatchAddressAddedEvent': WatchAddressAddedEvent(
           walletId: _w, address: 'addr', scriptType: 'p2pkh', label: 'l',
           registeredAt: _t, reconciled: true, timestamp: _t, version: 6),
+      'Type42AddressRecordedEvent': Type42AddressRecordedEvent(
+          walletId: _w,
+          address: 'addr',
+          derivation: Type42Derivation(senderPublicKey: _senderKey, invoiceNumber: '2-3241645161d8-a b'),
+          timestamp: _t,
+          version: 6),
+      'Type42DestinationDerivedEvent': Type42DestinationDerivedEvent(
+          walletId: _w,
+          destination: Type42Destination(
+            address: 'addr',
+            recipientPublicKey: _senderKey,
+            derivation: Type42Derivation(senderPublicKey: _senderKey, invoiceNumber: '2-3241645161d8-a b'),
+            payerKeyIndex: 3,
+          ),
+          timestamp: _t,
+          version: 6),
       'UTXOReceivedEvent': UTXOReceivedEvent(
           walletId: _w, txid: _txid, vout: 0, satoshis: 1000,
           scriptPubKey: '76a9', address: 'addr', blockHeight: 10,
@@ -359,7 +387,7 @@ void main() {
   });
 
   test('a row stored under the old class name still deserializes', () {
-    for (final entry in sampleEvents().entries) {
+    for (final entry in _legacySamples()) {
       final stored = _StoredUnderLegacyName(entry.key, entry.value);
       final restored = CborSerializer.deserializeEvent(
           CborSerializer.serializeEvent(stored), entry.key);
@@ -389,7 +417,7 @@ void main() {
     });
 
     test('an old journal (class-name rows) replays, and new rows use stable ids', () async {
-      final samples = sampleEvents().entries.toList();
+      final samples = _legacySamples().toList();
       for (var n = 0; n < samples.length; n++) {
         await store.persistEvent('legacy',
             _StoredUnderLegacyName(samples[n].key, samples[n].value), n);

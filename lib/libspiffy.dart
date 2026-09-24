@@ -19,6 +19,7 @@ export 'src/models/channel_timing.dart';        // When channels stop taking pay
 export 'src/models/invoice_state.dart';         // Write model for invoice aggregate
 export 'src/models/invoice_read_model.dart';    // Read model for invoice queries (CQRS)
 export 'src/models/address_chain.dart';         // HD chain of an address (receive, change, delegated)
+export 'src/models/key_path.dart';             // Where a wallet key comes from: HD path or type-42 derivation
 export 'src/models/address_metadata.dart';      // Address metadata with script type support
 export 'src/models/transaction_address_link.dart'; // Transaction-address junction models
 export 'src/models/invoice_output_spec.dart';   // Multi-output invoice specifications (P2PKH, P2MS)

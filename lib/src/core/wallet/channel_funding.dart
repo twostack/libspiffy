@@ -9,12 +9,14 @@ import 'package:dartsv/dartsv.dart' as dartsv;
 import '../../actors/wallet_messages.dart' show FundingTransactionBuiltResponse;
 import '../../models/bitcoin_utxo.dart';
 import '../../models/fee_rate.dart';
+import '../../models/key_path.dart';
 import '../../models/wallet_balances.dart';
 import '../../models/wallet_state.dart';
 import '../../models/wallet_type.dart';
 import '../wallet_commands.dart';
 import '../wallet_events.dart';
 import '../wallet_output_ownership.dart';
+import 'address_book.dart';
 import 'deferred_payments.dart';
 import 'transaction_signer.dart';
 import 'transaction_size.dart';
@@ -199,12 +201,16 @@ class ChannelFunding {
 
       // Get the correct private key(s) for THIS specific UTXO. The UTXO
       // carries only the index; the chain comes from the aggregate's address
-      // records (change-chain UTXOs were unsignable before H3).
+      // records (change-chain UTXOs were unsignable before H3), and a type-42
+      // address is signed for with its recorded derivation.
       final unlock = await signer.unlockFor(
         currentState,
         command.walletId,
         utxo,
-        derivationIndex: utxo.derivationIndex,
+        keyPath: switch (utxo.derivationIndex) {
+          final index? => HdKeyPath(index, chain: AddressBook.chainOf(currentState, utxo.address)),
+          null => null,
+        },
       );
       if (unlock == null) {
         throw StateError('Cannot fund a channel with UTXO ${utxo.key}: the wallet has no unlocking '

@@ -2,6 +2,7 @@ import 'package:libspiffy/src/models/bitcoin_transaction.dart';
 import 'package:libspiffy/src/models/bitcoin_utxo.dart';
 
 import '../models/address_chain.dart';
+import '../models/key_path.dart';
 import '../models/persistent_map.dart';
 import '../models/wallet_event.dart';
 import '../models/wallet_type.dart';
@@ -657,6 +658,90 @@ class WatchAddressAddedEvent extends WalletEvent {
         reconciled: map['reconciled'] as bool? ?? false,
         eventId: map['eventId'] as String?,
         timestamp: map['timestamp'] != null ? _date(map['timestamp']) : null,
+        version: map['version'] as int?,
+        metadata: map['metadata'] as Map<String, dynamic>?,
+      );
+}
+
+/// A payer's type-42 address was recorded (bead libspiffy-zxkd): [address]
+/// is the anchor key's type-42 child for [derivation], which the wallet
+/// derived itself from its anchor private key. The wallet signs for it with
+/// that child key, derived again for each signature; the key itself is
+/// never journaled.
+class Type42AddressRecordedEvent extends WalletEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'wallet.type42_address.recorded';
+
+  @override
+  String get typeName => stableTypeName;
+
+  final String address;
+  final Type42Derivation derivation;
+
+  Type42AddressRecordedEvent({
+    required String walletId,
+    required this.address,
+    required this.derivation,
+    String? eventId,
+    DateTime? timestamp,
+    int? version,
+    Map<String, dynamic>? metadata,
+  }) : super(walletId: walletId, eventId: eventId, timestamp: timestamp, version: version, metadata: metadata);
+
+  @override
+  Map<String, dynamic> getWalletEventData() => {'address': address, ...derivation.toMap()};
+
+  static Type42AddressRecordedEvent fromMap(Map<String, dynamic> map) => Type42AddressRecordedEvent(
+        walletId: map['walletId'] as String,
+        address: map['address'] as String,
+        derivation: Type42Derivation.fromMap(map)!,
+        eventId: map['eventId'] as String?,
+        timestamp: map['timestamp'] == null
+            ? null
+            : map['timestamp'] is DateTime
+                ? map['timestamp'] as DateTime
+                : DateTime.parse(map['timestamp'] as String),
+        version: map['version'] as int?,
+        metadata: map['metadata'] as Map<String, dynamic>?,
+      );
+}
+
+/// The wallet derived a type-42 destination as a payer (bead
+/// libspiffy-zxkd): it used payer key [Type42Destination.payerKeyIndex],
+/// which it never uses again, and [destination] is the hand-off the
+/// recipient takes the payment in with. Nothing here is a private key.
+class Type42DestinationDerivedEvent extends WalletEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'wallet.type42_destination.derived';
+
+  @override
+  String get typeName => stableTypeName;
+
+  final Type42Destination destination;
+
+  Type42DestinationDerivedEvent({
+    required String walletId,
+    required this.destination,
+    String? eventId,
+    DateTime? timestamp,
+    int? version,
+    Map<String, dynamic>? metadata,
+  }) : super(walletId: walletId, eventId: eventId, timestamp: timestamp, version: version, metadata: metadata);
+
+  @override
+  Map<String, dynamic> getWalletEventData() => destination.toMap();
+
+  static Type42DestinationDerivedEvent fromMap(Map<String, dynamic> map) => Type42DestinationDerivedEvent(
+        walletId: map['walletId'] as String,
+        destination: Type42Destination.fromMap(map)!,
+        eventId: map['eventId'] as String?,
+        timestamp: map['timestamp'] == null
+            ? null
+            : map['timestamp'] is DateTime
+                ? map['timestamp'] as DateTime
+                : DateTime.parse(map['timestamp'] as String),
         version: map['version'] as int?,
         metadata: map['metadata'] as Map<String, dynamic>?,
       );

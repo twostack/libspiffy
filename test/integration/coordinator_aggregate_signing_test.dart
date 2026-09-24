@@ -909,8 +909,7 @@ void main() {
             utxoKeys: [key],
             publicKeys: const [],
             addresses: [watchAddress],
-            derivationIndices: const [0],
-            chains: const [AddressChain.receive],
+            keyPaths: const [HdKeyPath(0)],
           ),
         ),
       );

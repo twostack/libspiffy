@@ -518,6 +518,10 @@ Map<String, dynamic> frozenPlainMap(Map<String, dynamic> value) =>
 Map<String, dynamic>? frozenPlainMapOrNull(Map<String, dynamic>? value) =>
     value == null ? null : unmodifiableDeepCopy(value) as Map<String, dynamic>;
 
+/// [value] copied into an unmodifiable map, the [frozenList] of maps whose
+/// keys and values are immutable values.
+Map<K, V> frozenMap<K, V>(Map<K, V> value) => Map<K, V>.unmodifiable(value);
+
 /// [value] copied into an unmodifiable set, the [frozenList] of sets.
 Set<T> frozenSet<T>(Iterable<T> value) => Set<T>.unmodifiable(value);
 

@@ -24,6 +24,7 @@ import 'package:dactor/dactor.dart';
 import 'package:dactor_test/dactor_test.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:libspiffy/src/actors/wallet_messages.dart';
+import 'package:libspiffy/src/models/key_path.dart';
 import 'package:libspiffy/src/core/bitcoin_wallet_aggregate.dart';
 import 'package:libspiffy/src/core/wallet_commands.dart';
 import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
@@ -182,8 +183,7 @@ void main() {
                 .getScriptPubkey()
                 .toHex(),
             satoshis: BigInt.from(5000),
-            derivationIndex: index,
-            chain: chain,
+            keyPath: HdKeyPath(index, chain: chain),
           ),
           sender: probe);
       return completer.future.timeout(const Duration(seconds: 10));

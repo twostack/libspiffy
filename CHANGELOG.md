@@ -26,7 +26,35 @@
   per-invoice destination from the recipient's public key
   (`deriveChildPublic`), and the recipient the matching spend key
   (`deriveChildPrivate`). Pinned to the official BRC-42 test vectors and to
-  the Go-verified values of NodeCast's Tier-0 harness.
+  the Go-verified values of NodeCast's Tier-0 harness. A tweak of 0 mod N
+  is refused.
+- **Payer-broadcast payments to an offline payee with type-42** (bead
+  libspiffy-zxkd; spv-understanding.md, "Payment modes"). No service and no
+  xpub: the payer derives the address from the payee's published anchor
+  key, broadcasts the payment itself and hands it over.
+  - The **anchor key** of a wallet that holds its keys, at the hardened path
+    `m/3'/0'`: `GetAnchorPublicKeyQuery` / `AnchorPublicKeyEvent`, and
+    `SignWithAnchorKeyCommand` / `AnchorSignedEvent` (ECDSA over SHA-256 of
+    a message, RFC 6979, low S; byte for byte go-sdk's).
+  - `DeriveType42DestinationCommand` / `Type42DestinationEvent`: a
+    destination for a recipient's anchor key, with a payer key at
+    `m/3'/1'/n'` never used twice, and a BRC-29 invoice number unless one is
+    given. Journaled (`Type42DestinationDerivedEvent`), so a restarted
+    wallet does not reuse a payer key.
+  - `ImportTransactionCommand.type42Derivations` and
+    `ValidateBEEFCommand.type42Derivations`: the payee's wallet derives each
+    destination from its own anchor key, journals the derivation
+    (`Type42AddressRecordedEvent`; never a private key), takes the payment
+    in and signs for it with the anchor key's type-42 child.
+  - `TransactionExportedEvent.type42Derivations`: the hand-off for each
+    type-42 destination the exported transaction pays, on the payer's side
+    and the payee's.
+  - `KeyPath` (`HdKeyPath`, `Type42KeyPath`), `Type42Derivation` and
+    `Type42Destination` are exported; `AddressMetadata.type42` records a
+    type-42 address row. Postgres migration v027 adds its columns.
+  - A type-42 output cannot be found from the seed alone: a wallet restored
+    by address discovery does not see it, and the payer's hand-off, given
+    again, recovers it.
 - **The validated header chain is exported**: `BlockHeaderChain`,
   `BlockHeaderAnchor`, `HeaderAcceptResult`, `HeaderRejectReason` and
   `NetworkParams`, for a host that answers header questions from it.
@@ -35,10 +63,15 @@
 
 - **`AddressChain` replaces every change/receive flag.** `isChange` becomes
   `chain` on `AddressMetadata`, `DiscoveredAddress`,
-  `RegisterDiscoveredAddressCommand`, `AddressDiscoveredEvent`,
-  `SignMultisigTransactionCommand`, `SignInputCommand` and `SigningPath`;
-  `SignTransactionCommand.isChangeFlags` becomes `chains`; the
-  `ReadModelStorage` address queries take `AddressChain? chain`.
+  `RegisterDiscoveredAddressCommand`, `AddressDiscoveredEvent` and
+  `SignMultisigTransactionCommand`; the `ReadModelStorage` address queries
+  take `AddressChain? chain`.
+- **A key's path is a `KeyPath`**: an HD path (`HdKeyPath(index, chain:)`)
+  or a type-42 derivation (`Type42KeyPath`). `SigningPath` is gone for it;
+  `SignInputCommand.keyPath` replaces `derivationIndex` and `isChange`, and
+  `SignTransactionCommand.keyPaths` replaces `derivationIndices` and
+  `isChangeFlags`. `AddressMetadata.chain` is null for a type-42 address,
+  which is on no chain.
   Journals, snapshots and stored rows written before are read as they were:
   an event or snapshot without a chain reads its `isChange`, and an Isar
   address row keeps `isChange` beside the new nullable `chain`. Postgres

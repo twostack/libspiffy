@@ -442,7 +442,7 @@ void main() {
       print('✓ Address metadata preserved after restart');
       print('  Address: ${metadata.address}');
       print('  Derivation Index: ${metadata.derivationIndex}');
-      print('  Chain: ${metadata.chain.name}');
+      print('  Chain: ${metadata.chain?.name}');
       
       // Cleanup new instance
       await newLibspiffy.shutdown();

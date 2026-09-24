@@ -3,6 +3,7 @@ import 'package:libspiffy/libspiffy.dart';
 import '../core/wallet_commands.dart';
 import '../models/deferred_payment.dart';
 import '../models/address_chain.dart';
+import '../models/key_path.dart';
 import '../models/persistent_map.dart';
 
 // The reply bases and the actor wiring messages live in
@@ -1055,6 +1056,86 @@ class DelegatedAddressesRecordedResponse extends ActorResponse {
     this.error,
   })  : addresses = frozenList(addresses),
         journaled = frozenList(journaled),
+        super(metadata: {'walletId': walletId, 'success': success});
+}
+
+/// Reply of the wallet aggregate to RecordType42AddressesCommand (bead
+/// libspiffy-zxkd): the address of each requested derivation, in order,
+/// and those it journaled (the others it had recorded already).
+class Type42AddressesRecordedResponse extends ActorResponse {
+  final String walletId;
+  final List<String> addresses;
+  final List<String> journaled;
+  @override
+  final bool success;
+  @override
+  final String? error;
+
+  Type42AddressesRecordedResponse({
+    required this.walletId,
+    List<String> addresses = const [],
+    List<String> journaled = const [],
+    required this.success,
+    this.error,
+  })  : addresses = frozenList(addresses),
+        journaled = frozenList(journaled),
+        super(metadata: {'walletId': walletId, 'success': success});
+}
+
+/// Reply of the wallet aggregate to DeriveType42DestinationCommand (bead
+/// libspiffy-zxkd), sent once the destination is journaled; [destination]
+/// is null on failure.
+class Type42DestinationDerivedResponse extends ActorResponse {
+  final String walletId;
+  final Type42Destination? destination;
+  @override
+  final bool success;
+  @override
+  final String? error;
+
+  Type42DestinationDerivedResponse({required this.walletId, this.destination, required this.success, this.error})
+      : super(metadata: {'walletId': walletId, 'success': success});
+}
+
+/// Reply of the wallet aggregate to GetAnchorPublicKeyCommand and
+/// SignWithAnchorKeyCommand (bead libspiffy-zxkd): the anchor public key
+/// (compressed hex), and for a signing request the DER signature (hex) of
+/// SHA-256 of the message. Empty on failure.
+class AnchorKeyResponse extends ActorResponse {
+  final String walletId;
+  final String publicKeyHex;
+  final String? signatureDerHex;
+  @override
+  final bool success;
+  @override
+  final String? error;
+
+  AnchorKeyResponse({
+    required this.walletId,
+    this.publicKeyHex = '',
+    this.signatureDerHex,
+    required this.success,
+    this.error,
+  }) : super(metadata: {'walletId': walletId, 'success': success});
+}
+
+/// Reply of the wallet aggregate to LookupType42AddressesCommand (bead
+/// libspiffy-zxkd): the type-42 derivation of each requested address the
+/// wallet knows one of.
+class Type42AddressesResponse extends ActorResponse {
+  final String walletId;
+  final Map<String, Type42Derivation> derivations;
+  @override
+  final bool success;
+  @override
+  final String? error;
+
+  Type42AddressesResponse({
+    required this.walletId,
+    Map<String, Type42Derivation> derivations = const {},
+    required this.success,
+    this.error,
+  })  : derivations = frozenMap(derivations),
         super(metadata: {'walletId': walletId, 'success': success});
 }
 

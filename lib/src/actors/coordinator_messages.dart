@@ -6,6 +6,7 @@ import '../models/address_chain.dart';
 import '../models/bitcoin_transaction.dart';
 import '../models/deferred_payment.dart';
 import '../models/invoice_output_spec.dart';
+import '../models/key_path.dart';
 import '../models/persistent_map.dart';
 
 export '../models/deferred_payment.dart';
@@ -283,12 +284,22 @@ class ValidateBEEFCommand implements Message {
   /// Null when the app supplies none — no placeholder is invented.
   final String? fromCounterparty;
 
+  /// The type-42 hand-off of a payment to this wallet's anchor key (bead
+  /// libspiffy-zxkd; spv-understanding.md, "Payment modes"): the payer's
+  /// public key and the invoice number of each destination it paid. The
+  /// wallet derives those addresses from its own anchor key and records
+  /// them before the payment is validated, so it is attributed to the
+  /// wallet and can be spent. The payer has broadcast the payment already;
+  /// submitting it again is harmless.
+  final List<Type42Derivation> type42Derivations;
+
   ValidateBEEFCommand({
     required this.walletId,
     required this.beefHex,
     this.invoiceId,
     this.fromCounterparty,
-  });
+    List<Type42Derivation> type42Derivations = const [],
+  }) : type42Derivations = frozenList(type42Derivations);
 
   @override
   String get correlationId => 'validate-beef-$walletId-${DateTime.now().millisecondsSinceEpoch}';
@@ -376,19 +387,29 @@ class RecordOutgoingCommand implements Message {
 /// service's side). The wallet derives those addresses from its own key and
 /// records them before the import, so the payment is attributed to it and
 /// can be spent.
+///
+/// [type42Derivations] is the hand-off of a payer that paid this wallet's
+/// anchor key with type-42 (bead libspiffy-zxkd): the payer's public key
+/// and invoice number of each destination, which the payer's own export
+/// carries ([TransactionExportedEvent.type42Derivations]). The wallet
+/// derives each address from its anchor key and records it before the
+/// import, as for [delegatedIndices].
 class ImportTransactionCommand implements Message {
   final String walletId;
   final List<int> beef;
   final String? fromCounterparty;
   final List<int> delegatedIndices;
+  final List<Type42Derivation> type42Derivations;
 
   ImportTransactionCommand({
     required this.walletId,
     required List<int> beef,
     this.fromCounterparty,
     List<int> delegatedIndices = const [],
+    List<Type42Derivation> type42Derivations = const [],
   })  : beef = frozenList(beef),
-        delegatedIndices = frozenList(delegatedIndices);
+        delegatedIndices = frozenList(delegatedIndices),
+        type42Derivations = frozenList(type42Derivations);
 
   @override
   String get correlationId => 'import-tx-$walletId-${DateTime.now().microsecondsSinceEpoch}';
@@ -404,9 +425,11 @@ class ImportTransactionCommand implements Message {
 /// another wallet imports with [ImportTransactionCommand] (bead
 /// libspiffy-m8qu).
 ///
-/// This is the service's side of the hand-off in the offline-payee mode
-/// (spv-understanding.md, "Payment modes"): the service's xpub wallet
-/// received the payment, broadcast it and holds its proof once it is mined.
+/// This is the sending side of the hand-off in both offline-payee modes
+/// (spv-understanding.md, "Payment modes"): a service's xpub wallet that
+/// received the payment, broadcast it and holds its proof once it is mined
+/// (bead libspiffy-m8qu), or a payer that paid a type-42 destination and
+/// broadcast the payment itself (bead libspiffy-zxkd).
 /// Answered with a [TransactionExportedEvent]; refused while the
 /// transaction has no proof verified on our header chain, because the
 /// importing wallet accepts only a proven transaction.
@@ -425,6 +448,82 @@ class ExportTransactionQuery implements Message {
   String get correlationId => queryId ?? 'export-tx-$txid';
   @override
   Map<String, dynamic> get metadata => {'walletId': walletId, 'txid': txid};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+/// Asks for the wallet's anchor public key (bead libspiffy-zxkd): the key
+/// a payer derives type-42 destinations from to pay this wallet while it is
+/// offline (spv-understanding.md, "Payment modes"). The app publishes it,
+/// bound to its identity. Answered with [AnchorPublicKeyEvent].
+class GetAnchorPublicKeyQuery implements Message {
+  final String walletId;
+  final String? queryId;
+
+  GetAnchorPublicKeyQuery({required this.walletId, this.queryId});
+
+  @override
+  String get correlationId => queryId ?? 'anchor-key-$walletId';
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+/// Signs `SHA-256(message)` with the wallet's anchor key (bead
+/// libspiffy-zxkd), to bind the anchor key to an identity — a NodeCast
+/// registration, say. The message is hashed by the wallet, so the anchor
+/// key never signs a digest the caller chose; the message should name its
+/// purpose (domain separation). Answered with [AnchorSignedEvent].
+class SignWithAnchorKeyCommand implements Message {
+  final String walletId;
+  final List<int> message;
+  final String? requestId;
+
+  SignWithAnchorKeyCommand({required this.walletId, required List<int> message, this.requestId})
+      : message = frozenList(message);
+
+  @override
+  String get correlationId => requestId ?? 'anchor-sign-$walletId';
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+/// Derives a type-42 destination for paying the holder of anchor key
+/// [recipientPublicKey] while it is offline (bead libspiffy-zxkd;
+/// spv-understanding.md, "Payment modes"). Answered with
+/// [Type42DestinationEvent]: the address to pay, and the hand-off (the
+/// payer key B and the invoice number) the payee takes the payment in with.
+///
+/// The wallet uses a fresh payer key each time. Without an [invoiceNumber]
+/// it makes up a BRC-29 one. The payee is offline, so the payer broadcasts
+/// the payment itself (`BroadcastDeferredPaymentCommand`), follows it to
+/// its block, and hands it over with `ExportTransactionQuery`.
+class DeriveType42DestinationCommand implements Message {
+  final String walletId;
+  final String recipientPublicKey;
+  final String? invoiceNumber;
+  final String? requestId;
+
+  DeriveType42DestinationCommand({
+    required this.walletId,
+    required this.recipientPublicKey,
+    this.invoiceNumber,
+    this.requestId,
+  });
+
+  @override
+  String get correlationId => requestId ?? 'type42-destination-$walletId';
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId};
   @override
   ActorRef? get replyTo => null;
   @override
@@ -1992,6 +2091,13 @@ class TransactionExportedEvent extends CoordinatorEvent {
   /// transaction pays: what the payee's wallet imports it with
   /// ([ImportTransactionCommand.delegatedIndices]). Empty when it pays none.
   final List<int> delegatedIndices;
+
+  /// The type-42 derivations of the destinations the transaction pays that
+  /// the wallet knows (bead libspiffy-zxkd): ones it derived as the payer,
+  /// and ones payers derived from its anchor key. What the payee's wallet
+  /// imports it with ([ImportTransactionCommand.type42Derivations]). Empty
+  /// when it pays none.
+  final List<Type42Derivation> type42Derivations;
   final String? error;
 
   TransactionExportedEvent({
@@ -2001,9 +2107,82 @@ class TransactionExportedEvent extends CoordinatorEvent {
     required this.success,
     List<int>? beef,
     List<int> delegatedIndices = const [],
+    List<Type42Derivation> type42Derivations = const [],
     this.error,
   })  : beef = frozenListOrNull(beef),
-        delegatedIndices = frozenList(delegatedIndices);
+        delegatedIndices = frozenList(delegatedIndices),
+        type42Derivations = frozenList(type42Derivations);
+
+  @override
+  DateTime get eventTimestamp => DateTime.now();
+}
+
+/// Answer to [GetAnchorPublicKeyQuery]: the wallet's anchor public key
+/// (compressed, hex), or why there is none (an xpub or WIF wallet has no
+/// anchor key).
+class AnchorPublicKeyEvent extends CoordinatorEvent {
+  @override
+  final String walletId;
+  final String queryId;
+  final String? publicKey;
+  final bool success;
+  final String? error;
+
+  AnchorPublicKeyEvent({
+    required this.walletId,
+    required this.queryId,
+    this.publicKey,
+    required this.success,
+    this.error,
+  });
+
+  @override
+  DateTime get eventTimestamp => DateTime.now();
+}
+
+/// Answer to [SignWithAnchorKeyCommand]: the DER signature (hex) of
+/// SHA-256 of the message by the anchor key [publicKey], or why there is
+/// none. The signature is deterministic (RFC 6979) with a low S.
+class AnchorSignedEvent extends CoordinatorEvent {
+  @override
+  final String walletId;
+  final String requestId;
+  final String? publicKey;
+  final String? signatureDer;
+  final bool success;
+  final String? error;
+
+  AnchorSignedEvent({
+    required this.walletId,
+    required this.requestId,
+    this.publicKey,
+    this.signatureDer,
+    required this.success,
+    this.error,
+  });
+
+  @override
+  DateTime get eventTimestamp => DateTime.now();
+}
+
+/// Answer to [DeriveType42DestinationCommand]: the destination, or why
+/// there is none. [Type42Destination.address] is what the payer pays;
+/// [Type42Destination.derivation] is the hand-off.
+class Type42DestinationEvent extends CoordinatorEvent {
+  @override
+  final String walletId;
+  final String requestId;
+  final Type42Destination? destination;
+  final bool success;
+  final String? error;
+
+  Type42DestinationEvent({
+    required this.walletId,
+    required this.requestId,
+    this.destination,
+    required this.success,
+    this.error,
+  });
 
   @override
   DateTime get eventTimestamp => DateTime.now();

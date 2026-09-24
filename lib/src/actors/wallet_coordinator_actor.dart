@@ -14,9 +14,11 @@ import '../core/wallet_events.dart' as domain_events;
 import '../core/invoice_events.dart' as invoice_events;
 import '../core/wallet/transaction_size.dart';
 import '../models/address_chain.dart';
+import '../models/address_metadata.dart';
 import '../models/bitcoin_transaction.dart';
 import '../models/bitcoin_utxo.dart';
 import '../models/invoice_output_spec.dart';
+import '../models/key_path.dart';
 import '../models/channel_timing.dart';
 import '../models/payment_channel.dart' show PaymentChannelRole, PaymentChannelState;
 import '../models/wallet_balances.dart' show BalanceBucket, WalletBalances;
@@ -171,6 +173,7 @@ class WalletCoordinatorActor extends Actor {
   static String? _walletWhoseBalanceMoved(Event event) => switch (event) {
         domain_events.AddressGeneratedEvent(:final walletId) => walletId,
         domain_events.AddressDiscoveredEvent(:final walletId) => walletId,
+        domain_events.Type42AddressRecordedEvent(:final walletId) => walletId,
         domain_events.WatchAddressAddedEvent(:final walletId) => walletId,
         domain_events.UTXOReceivedEvent(:final walletId) => walletId,
         domain_events.UTXOMarkedAvailableEvent(:final walletId) => walletId,
@@ -606,6 +609,12 @@ class WalletCoordinatorActor extends Actor {
         await _handleGetTransactionDetail(message);
       } else if (message is ExportTransactionQuery) {
         await _handleExportTransaction(message);
+      } else if (message is GetAnchorPublicKeyQuery) {
+        unawaited(_handleGetAnchorPublicKey(message)); // off the mailbox: a wallet round trip
+      } else if (message is SignWithAnchorKeyCommand) {
+        unawaited(_handleSignWithAnchorKey(message)); // off the mailbox: a wallet round trip
+      } else if (message is DeriveType42DestinationCommand) {
+        unawaited(_handleDeriveType42Destination(message)); // off the mailbox: a wallet round trip
       } else if (message is CreateInvoiceCommand) {
         await _handleCreateInvoice(message);
       } else if (message is PayInvoiceCommand) {
@@ -1094,6 +1103,40 @@ class WalletCoordinatorActor extends Actor {
   }
 
   Future<void> _handleValidateBEEF(ValidateBEEFCommand cmd) async {
+    if (cmd.type42Derivations.isNotEmpty) {
+      // Off the mailbox: a wallet and a projection round trip.
+      unawaited(_recordType42AddressesThenValidate(cmd));
+      return;
+    }
+    _validateBEEF(cmd);
+  }
+
+  /// Records the type-42 addresses [cmd] names in its wallet, waits for the
+  /// read model to hold them (SPV attributes outputs by the read model's
+  /// address rows), then validates the payment (bead libspiffy-zxkd).
+  Future<void> _recordType42AddressesThenValidate(ValidateBEEFCommand cmd) async {
+    final error = await _recordHandedAddresses(cmd.walletId, type42Derivations: cmd.type42Derivations);
+    if (error == null) {
+      _validateBEEF(cmd);
+      return;
+    }
+    String? txid;
+    try {
+      final beef = BEEF.parse(Uint8List.fromList(hex.decode(cmd.beefHex)));
+      txid = hex.encode(beef.calculateTxid(beef.txs.last));
+    } catch (_) {
+      // Unreadable: the failure names no transaction.
+    }
+    _emitEvent(BEEFValidationResultEvent(
+      walletId: cmd.walletId,
+      invoiceId: cmd.invoiceId,
+      txid: txid,
+      valid: false,
+      error: error,
+    ));
+  }
+
+  void _validateBEEF(ValidateBEEFCommand cmd) {
     _log.info('Validating BEEF for wallet ${cmd.walletId}');
 
     // Track this request under its own id for the multi-step validation flow.
@@ -1184,49 +1227,78 @@ class WalletCoordinatorActor extends Actor {
       ));
       return;
     }
-    if (cmd.delegatedIndices.isNotEmpty) {
+    if (cmd.delegatedIndices.isNotEmpty || cmd.type42Derivations.isNotEmpty) {
       // Off the mailbox: a wallet and a projection round trip.
-      unawaited(_recordDelegatedAddressesThenImport(cmd, beef, txid));
+      unawaited(_recordHandedAddressesThenImport(cmd, beef, txid));
       return;
     }
     _receiveImport(cmd, beef, txid);
   }
 
-  /// Records the delegated addresses [cmd] names in its wallet, waits for
-  /// the read model to hold them (SPV attributes outputs by the read
-  /// model's address rows), then imports the transaction (bead
-  /// libspiffy-m8qu).
-  Future<void> _recordDelegatedAddressesThenImport(ImportTransactionCommand cmd, BEEF beef, String txid) async {
-    String? error;
-    try {
-      final response = await _walletManager.ask<wm.DelegatedAddressesRecordedResponse>(
-        wm.WalletCommandMessage(
-          cmd.walletId,
-          domain.RecordDelegatedAddressesCommand(walletId: cmd.walletId, derivationIndices: cmd.delegatedIndices),
-        ),
-        const Duration(seconds: 30),
-      );
-      if (!response.success) {
-        error = 'The wallet did not record the delegated addresses: ${response.error}';
-      } else if (response.journaled.isNotEmpty) {
-        final last = response.journaled.last;
-        error = await awaitProjectionApplied(
-          _walletProjection,
-          matches: (e) =>
-              e is domain_events.AddressDiscoveredEvent && e.walletId == cmd.walletId && e.address == last,
-          alreadyApplied: () async =>
-              (await _storage.checkAddresses(cmd.walletId, response.journaled)).values.every((known) => known),
-        );
-        if (error != null) error = 'The delegated addresses were recorded, but the read model did not apply them: $error';
-      }
-    } catch (e) {
-      error = 'Recording the delegated addresses failed: $e';
-    }
+  /// Records the addresses [cmd]'s hand-off names in its wallet, then
+  /// imports the transaction (beads libspiffy-m8qu, libspiffy-zxkd).
+  Future<void> _recordHandedAddressesThenImport(ImportTransactionCommand cmd, BEEF beef, String txid) async {
+    final error = await _recordHandedAddresses(cmd.walletId,
+        delegatedIndices: cmd.delegatedIndices, type42Derivations: cmd.type42Derivations);
     if (error != null) {
       _emitEvent(TransactionImportedEvent(walletId: cmd.walletId, transactionId: txid, success: false, error: error));
       return;
     }
     _receiveImport(cmd, beef, txid);
+  }
+
+  /// Records the addresses a hand-off names in [walletId] — delegated
+  /// indices ([domain.RecordDelegatedAddressesCommand]) and type-42
+  /// derivations ([domain.RecordType42AddressesCommand]), each derived by
+  /// the wallet from its own key — and waits for the read model to hold
+  /// them: SPV attributes outputs by the read model's address rows. Null
+  /// once they are held, else why not.
+  Future<String?> _recordHandedAddresses(String walletId,
+      {List<int> delegatedIndices = const [], List<Type42Derivation> type42Derivations = const []}) async {
+    try {
+      if (delegatedIndices.isNotEmpty) {
+        final response = await _walletManager.ask<wm.DelegatedAddressesRecordedResponse>(
+          wm.WalletCommandMessage(
+              walletId, domain.RecordDelegatedAddressesCommand(walletId: walletId, derivationIndices: delegatedIndices)),
+          const Duration(seconds: 30),
+        );
+        if (!response.success) return 'The wallet did not record the delegated addresses: ${response.error}';
+        final error = await _awaitAddressRows(walletId, response.journaled,
+            (e) => e is domain_events.AddressDiscoveredEvent && e.walletId == walletId && e.address == response.journaled.last);
+        if (error != null) return 'The delegated addresses were recorded, but the read model did not apply them: $error';
+      }
+      if (type42Derivations.isNotEmpty) {
+        final response = await _walletManager.ask<wm.Type42AddressesRecordedResponse>(
+          wm.WalletCommandMessage(
+              walletId, domain.RecordType42AddressesCommand(walletId: walletId, derivations: type42Derivations)),
+          const Duration(seconds: 30),
+        );
+        if (!response.success) return 'The wallet did not record the type-42 addresses: ${response.error}';
+        final error = await _awaitAddressRows(
+            walletId,
+            response.journaled,
+            (e) =>
+                e is domain_events.Type42AddressRecordedEvent &&
+                e.walletId == walletId &&
+                e.address == response.journaled.last);
+        if (error != null) return 'The type-42 addresses were recorded, but the read model did not apply them: $error';
+      }
+    } catch (e) {
+      return 'Recording the handed-over addresses failed: $e';
+    }
+    return null;
+  }
+
+  /// Waits for the read model to hold [journaled], the addresses [walletId]
+  /// just journaled, the last with the event [matches] picks. Null once it
+  /// does, else why not.
+  Future<String?> _awaitAddressRows(String walletId, List<String> journaled, bool Function(Event) matches) async {
+    if (journaled.isEmpty) return null;
+    return awaitProjectionApplied(
+      _walletProjection,
+      matches: matches,
+      alreadyApplied: () async => (await _storage.checkAddresses(walletId, journaled)).values.every((known) => known),
+    );
   }
 
   void _receiveImport(ImportTransactionCommand cmd, BEEF beef, String txid) {
@@ -1248,13 +1320,13 @@ class WalletCoordinatorActor extends Actor {
     );
   }
 
-  /// Those of [addresses] the wallet [walletId] derived, as the read model's
-  /// address rows record them.
+  /// Those of [addresses] the wallet [walletId] derived on its HD tree, as
+  /// the read model's address rows record them.
   Future<List<IssuedAddress>> _issuedAddresses(String walletId, Iterable<String> addresses) async => [
         for (final address in addresses)
-          if (await _storage.getAddressMetadata(walletId, address) case final row?
-              when row.derivationIndex != null && row.purpose != 'watch')
-            IssuedAddress(address: address, chain: row.chain, derivationIndex: row.derivationIndex!),
+          if (await _storage.getAddressMetadata(walletId, address)
+              case AddressMetadata(:final chain?, derivationIndex: final index?, :final purpose) when purpose != 'watch')
+            IssuedAddress(address: address, chain: chain, derivationIndex: index),
       ];
 
   /// Exports [query]'s transaction with its proof (bead libspiffy-m8qu): the
@@ -1280,6 +1352,17 @@ class WalletCoordinatorActor extends Actor {
         return;
       }
       final beef = AncestorChainService.buildBeef(chain.ancestorTransactions, const [], chain.merkleProofs).serialize();
+      final type42 = await _walletManager.ask<wm.Type42AddressesResponse>(
+        wm.WalletCommandMessage(
+          query.walletId,
+          domain.LookupType42AddressesCommand(walletId: query.walletId, rawTransaction: tx.rawHex),
+        ),
+        const Duration(seconds: 30),
+      );
+      if (!type42.success) {
+        _emitEvent(refuse('The wallet did not say which type-42 destinations ${query.txid} pays: ${type42.error}'));
+        return;
+      }
       _emitEvent(TransactionExportedEvent(
         walletId: query.walletId,
         txid: query.txid,
@@ -1290,9 +1373,75 @@ class WalletCoordinatorActor extends Actor {
           for (final issued in await _issuedAddresses(query.walletId, tx.receivingAddresses.toSet()))
             if (issued.chain == AddressChain.delegated) issued.derivationIndex,
         ]..sort(),
+        type42Derivations: type42.derivations.values.toSet().toList(),
       ));
     } catch (e) {
       _emitEvent(refuse('Exporting ${query.txid} failed: $e'));
+    }
+  }
+
+  Future<void> _handleGetAnchorPublicKey(GetAnchorPublicKeyQuery query) async {
+    final queryId = query.correlationId;
+    try {
+      final response = await _walletManager.ask<wm.AnchorKeyResponse>(
+        wm.WalletCommandMessage(query.walletId, domain.GetAnchorPublicKeyCommand(walletId: query.walletId)),
+        const Duration(seconds: 30),
+      );
+      _emitEvent(AnchorPublicKeyEvent(
+        walletId: query.walletId,
+        queryId: queryId,
+        publicKey: response.success ? response.publicKeyHex : null,
+        success: response.success,
+        error: response.error,
+      ));
+    } catch (e) {
+      _emitEvent(AnchorPublicKeyEvent(walletId: query.walletId, queryId: queryId, success: false, error: '$e'));
+    }
+  }
+
+  Future<void> _handleSignWithAnchorKey(SignWithAnchorKeyCommand cmd) async {
+    final requestId = cmd.correlationId;
+    try {
+      final response = await _walletManager.ask<wm.AnchorKeyResponse>(
+        wm.WalletCommandMessage(cmd.walletId, domain.SignWithAnchorKeyCommand(walletId: cmd.walletId, message: cmd.message)),
+        const Duration(seconds: 30),
+      );
+      _emitEvent(AnchorSignedEvent(
+        walletId: cmd.walletId,
+        requestId: requestId,
+        publicKey: response.success ? response.publicKeyHex : null,
+        signatureDer: response.signatureDerHex,
+        success: response.success,
+        error: response.error,
+      ));
+    } catch (e) {
+      _emitEvent(AnchorSignedEvent(walletId: cmd.walletId, requestId: requestId, success: false, error: '$e'));
+    }
+  }
+
+  Future<void> _handleDeriveType42Destination(DeriveType42DestinationCommand cmd) async {
+    final requestId = cmd.correlationId;
+    try {
+      final response = await _walletManager.ask<wm.Type42DestinationDerivedResponse>(
+        wm.WalletCommandMessage(
+          cmd.walletId,
+          domain.DeriveType42DestinationCommand(
+            walletId: cmd.walletId,
+            recipientPublicKey: cmd.recipientPublicKey,
+            invoiceNumber: cmd.invoiceNumber,
+          ),
+        ),
+        const Duration(seconds: 30),
+      );
+      _emitEvent(Type42DestinationEvent(
+        walletId: cmd.walletId,
+        requestId: requestId,
+        destination: response.destination,
+        success: response.success,
+        error: response.error,
+      ));
+    } catch (e) {
+      _emitEvent(Type42DestinationEvent(walletId: cmd.walletId, requestId: requestId, success: false, error: '$e'));
     }
   }
 

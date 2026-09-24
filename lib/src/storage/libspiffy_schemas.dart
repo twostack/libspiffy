@@ -1118,6 +1118,15 @@ class AddressEntity {
   /// existed; read it through [AddressChain.fromRecord], never on its own.
   late bool isChange;
 
+  /// The payer's public key (compressed hex) of a type-42 address: one a
+  /// payer derived from the wallet's anchor key (bead libspiffy-zxkd,
+  /// `Type42Derivation`). Null for every other address; a type-42 row has no
+  /// [chain] and no [derivationIndex].
+  String? type42SenderPublicKey;
+
+  /// The invoice number of a type-42 address, with [type42SenderPublicKey].
+  String? type42InvoiceNumber;
+
   /// Address label (user-friendly name)
   String? label;
 
@@ -1154,6 +1163,8 @@ class AddressEntity {
       'derivationIndex': derivationIndex,
       'chain': chain,
       'isChange': isChange,
+      'type42SenderPublicKey': type42SenderPublicKey,
+      'type42InvoiceNumber': type42InvoiceNumber,
       'label': label,
       'purpose': purpose,
       'firstUsedAt': firstUsedAt?.toIso8601String(),
@@ -1175,6 +1186,8 @@ class AddressEntity {
       ..derivationIndex = json['derivationIndex'] as int?
       ..chain = json['chain'] as int?
       ..isChange = json['isChange'] as bool
+      ..type42SenderPublicKey = json['type42SenderPublicKey'] as String?
+      ..type42InvoiceNumber = json['type42InvoiceNumber'] as String?
       ..label = json['label'] as String?
       ..purpose = json['purpose'] as String
       ..firstUsedAt = json['firstUsedAt'] != null ? DateTime.parse(json['firstUsedAt'] as String) : null

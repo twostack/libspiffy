@@ -134,7 +134,6 @@ void main() {
         rawTransaction: unsignedSpend(txid),
         utxoKeys: ['$txid:0'],
         publicKeys: const [],
-        derivationIndices: const [],
       ));
 
   test('a P2PK input locked to a key the wallet does not hold is refused, not signed',

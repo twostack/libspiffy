@@ -18,6 +18,7 @@ import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:test/test.dart';
 
 import 'package:libspiffy/src/actors/aggregate_signing_client.dart';
+import 'package:libspiffy/src/models/key_path.dart';
 import 'package:libspiffy/src/actors/wallet_messages.dart';
 import 'package:libspiffy/src/core/bitcoin_wallet_aggregate.dart';
 import 'package:libspiffy/src/core/wallet_commands.dart';
@@ -176,7 +177,7 @@ void main() {
 
     final tx = await client.buildWithSigner<dartsv.Transaction>(
       walletId: _walletId,
-      fallbackPath: const SigningPath(0),
+      fallbackPath: const HdKeyPath(0),
       build: (signer) async {
         final builder = dartsv.TransactionBuilder();
         for (final f in funded) {

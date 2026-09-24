@@ -14,6 +14,7 @@ import 'package:spiffynode/spiffy_node.dart';
 
 import '../../actors/invoice_messages.dart' show InvoiceStatus;
 import '../../models/address_chain.dart';
+import '../../models/key_path.dart';
 import '../../models/bitcoin_utxo.dart';
 import '../../models/bitcoin_transaction.dart';
 import '../../models/address_metadata.dart';
@@ -230,7 +231,8 @@ class PostgresWalletStorage implements ReadModelStorage {
       Sql.named('''
         SELECT address, script_type, derivation_path, derivation_index,
                chain, label, purpose, first_used_at, last_used_at,
-               usage_count, balance, is_watched, created_at
+               usage_count, balance, is_watched, created_at,
+               type42_sender_public_key, type42_invoice_number
         FROM addresses
         WHERE wallet_id = @walletId AND address = @address
       '''),
@@ -279,7 +281,8 @@ class PostgresWalletStorage implements ReadModelStorage {
     var sql = '''
       SELECT address, script_type, derivation_path, derivation_index,
              chain, label, purpose, first_used_at, last_used_at,
-             usage_count, balance, is_watched, created_at
+             usage_count, balance, is_watched, created_at,
+               type42_sender_public_key, type42_invoice_number
       FROM addresses
       WHERE wallet_id = @walletId
     ''';
@@ -323,7 +326,8 @@ class PostgresWalletStorage implements ReadModelStorage {
       Sql.named('''
         SELECT address, script_type, derivation_path, derivation_index,
                chain, label, purpose, first_used_at, last_used_at,
-               usage_count, balance, is_watched, created_at
+               usage_count, balance, is_watched, created_at,
+               type42_sender_public_key, type42_invoice_number
         FROM addresses
         WHERE wallet_id = @walletId
           AND chain = @chain
@@ -350,7 +354,8 @@ class PostgresWalletStorage implements ReadModelStorage {
       Sql.named('''
         SELECT address, script_type, derivation_path, derivation_index,
                chain, label, purpose, first_used_at, last_used_at,
-               usage_count, balance, is_watched, created_at
+               usage_count, balance, is_watched, created_at,
+               type42_sender_public_key, type42_invoice_number
         FROM addresses
         WHERE wallet_id = @walletId
           AND purpose = @purpose
@@ -370,11 +375,13 @@ class PostgresWalletStorage implements ReadModelStorage {
         INSERT INTO addresses (
           wallet_id, address, script_type, derivation_path, derivation_index,
           chain, label, purpose, first_used_at, last_used_at,
-          usage_count, balance, created_at, is_watched
+          usage_count, balance, created_at, is_watched,
+          type42_sender_public_key, type42_invoice_number
         ) VALUES (
           @walletId, @address, @scriptType, @derivationPath, @derivationIndex,
           @chain, @label, @purpose, @firstUsedAt, @lastUsedAt,
-          @usageCount, @balance, @createdAt, @isWatched
+          @usageCount, @balance, @createdAt, @isWatched,
+          @type42SenderPublicKey, @type42InvoiceNumber
         )
         ON CONFLICT (wallet_id, address) DO UPDATE SET
           script_type = COALESCE(@scriptType, addresses.script_type),
@@ -387,7 +394,9 @@ class PostgresWalletStorage implements ReadModelStorage {
           last_used_at = @lastUsedAt,
           usage_count = @usageCount,
           balance = @balance,
-          is_watched = @isWatched
+          is_watched = @isWatched,
+          type42_sender_public_key = @type42SenderPublicKey,
+          type42_invoice_number = @type42InvoiceNumber
       '''),
       parameters: {
         'walletId': walletId,
@@ -395,7 +404,9 @@ class PostgresWalletStorage implements ReadModelStorage {
         'scriptType': metadata.scriptType,
         'derivationPath': metadata.derivationPath,
         'derivationIndex': metadata.derivationIndex,
-        'chain': metadata.chain.index,
+        'chain': metadata.chain?.index,
+        'type42SenderPublicKey': metadata.type42?.senderPublicKey,
+        'type42InvoiceNumber': metadata.type42?.invoiceNumber,
         'label': metadata.label,
         'purpose': metadata.purpose,
         'firstUsedAt': metadata.firstUsedAt,
@@ -466,7 +477,8 @@ class PostgresWalletStorage implements ReadModelStorage {
       scriptType: row[1] as String,
       derivationPath: row[2] as String?,
       derivationIndex: row[3] as int?,
-      chain: AddressChain.fromIndex(row[4] as int),
+      chain: row[4] == null ? null : AddressChain.fromIndex(row[4] as int),
+      type42: Type42Derivation.fromMap({'senderPublicKey': row[13], 'invoiceNumber': row[14]}),
       label: row[5] as String?,
       purpose: row[6] as String, // purpose is a String, not an enum
       firstUsedAt: row[7] as DateTime?,

@@ -1,7 +1,10 @@
+import 'dart:typed_data';
 
+import 'package:convert/convert.dart';
 import 'package:eventador/eventador.dart';
 import 'package:logging/logging.dart';
 import 'package:dactor/dactor.dart';
+import 'package:dartsv/dartsv.dart' as dartsv;
 
 import '../models/address_chain.dart';
 import '../models/wallet_event.dart';
@@ -17,6 +20,7 @@ import 'wallet/address_book.dart';
 import 'wallet/channel_funding.dart';
 import 'wallet/deferred_payments.dart';
 import 'wallet/outgoing_transactions.dart';
+import 'wallet/type42_book.dart';
 import 'wallet/transaction_signer.dart';
 import 'wallet/utxo_ledger.dart';
 import 'wallet/utxo_reservations.dart';
@@ -536,6 +540,14 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         success: false,
         error: errorMessage,
       ));
+    } else if (command is RecordType42AddressesCommand) {
+      sender.tell(Type42AddressesRecordedResponse(walletId: command.walletId, success: false, error: errorMessage));
+    } else if (command is DeriveType42DestinationCommand) {
+      sender.tell(Type42DestinationDerivedResponse(walletId: command.walletId, success: false, error: errorMessage));
+    } else if (command is GetAnchorPublicKeyCommand || command is SignWithAnchorKeyCommand) {
+      sender.tell(AnchorKeyResponse(walletId: (command as WalletCommand).walletId, success: false, error: errorMessage));
+    } else if (command is LookupType42AddressesCommand) {
+      sender.tell(Type42AddressesResponse(walletId: command.walletId, success: false, error: errorMessage));
     } else {
       // Every other command: the aggregate has no reply of its own for it,
       // so the failure is reported in the shape every caller understands
@@ -598,6 +610,51 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
           );
         }
         return recorded.events;
+      case final RecordType42AddressesCommand cmd:
+        final recorded = await _keys.recordType42Addresses(currentState, cmd);
+        // Sent once the addresses are journaled, and also when every one
+        // was recorded already (nothing to journal).
+        if (_replyTo(cmd) != null) {
+          _repliesAwaitingPersist[cmd.commandId] = Type42AddressesRecordedResponse(
+            walletId: cmd.walletId,
+            addresses: recorded.addresses,
+            journaled: [for (final e in recorded.events.whereType<Type42AddressRecordedEvent>()) e.address],
+            success: true,
+          );
+        }
+        return recorded.events;
+      case final DeriveType42DestinationCommand cmd:
+        final derived = await _keys.deriveType42Destination(currentState, cmd);
+        if (_replyTo(cmd) != null) {
+          _repliesAwaitingPersist[cmd.commandId] = Type42DestinationDerivedResponse(
+            walletId: cmd.walletId,
+            destination: derived.destination,
+            success: true,
+          );
+        }
+        return [derived];
+      case final GetAnchorPublicKeyCommand cmd:
+        final anchor = await _keys.anchorKey(cmd.walletId, currentState);
+        _replyTo(cmd)?.tell(AnchorKeyResponse(walletId: cmd.walletId, publicKeyHex: anchor.publicKey.toHex(), success: true));
+        return const [];
+      case final SignWithAnchorKeyCommand cmd:
+        final anchor = await _keys.anchorKey(cmd.walletId, currentState);
+        final digest = dartsv.sha256(cmd.message);
+        final signature = await _keys.cryptoService.signData(anchor, Uint8List.fromList(digest));
+        _replyTo(cmd)?.tell(AnchorKeyResponse(
+          walletId: cmd.walletId,
+          publicKeyHex: anchor.publicKey.toHex(),
+          signatureDerHex: hex.encode(signature.toDER()),
+          success: true,
+        ));
+        return const [];
+      case final LookupType42AddressesCommand cmd:
+        _replyTo(cmd)?.tell(Type42AddressesResponse(
+          walletId: cmd.walletId,
+          derivations: Type42Book.paidBy(currentState, cmd.rawTransaction),
+          success: true,
+        ));
+        return const [];
       case final ReconcileWatchAddressesCommand cmd:
         return AddressBook.reconcileWatchAddresses(currentState, cmd);
       case final ReceiveUTXOCommand cmd:
@@ -711,6 +768,10 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         UtxoReservations.applyRenewed(state, evt);
       case final AddressDiscoveredEvent evt:
         AddressBook.applyAddressDiscovered(state, evt);
+      case final Type42AddressRecordedEvent evt:
+        Type42Book.applyAddressRecorded(state, evt);
+      case final Type42DestinationDerivedEvent evt:
+        Type42Book.applyDestinationDerived(state, evt);
       case final TransactionImportedEvent evt:
         OutgoingTransactions.applyImported(state, evt);
       case final TransactionRecordedEvent evt:

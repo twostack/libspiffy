@@ -13,6 +13,7 @@ import '../models/bitcoin_utxo.dart';
 import '../models/bitcoin_transaction.dart';
 import '../models/fee_rate.dart';
 import '../models/invoice_output_spec.dart';
+import '../models/key_path.dart';
 import '../plugin/plugin_registry.dart';
 import '../plugin/plugin_types.dart';
 import '../plugin/transaction_builder_plugin.dart';
@@ -418,10 +419,7 @@ class PaymentCoordinatorActor extends Actor {
     final recipientAddresses = _getRecipientAddresses(msg.outputs, msg.addresses);
 
     final spentUtxoKeys = selectedUtxos.map((u) => '${u.txid}:${u.vout}').toList();
-    final primaryDerivationIndex = preSigned
-        ? (await signing.pathForAddress(msg.walletId, selectedUtxos.first.address))
-            ?.derivationIndex
-        : null;
+    final primaryKeyPath = preSigned ? await signing.pathForAddress(msg.walletId, selectedUtxos.first.address) : null;
     // Phase 4: when this TX was built by a plugin (preSigned=true), emit a
     // TransactionSignedEvent alongside the recording for audit-trail parity
     // with the SignTransactionCommand path.
@@ -440,7 +438,7 @@ class PaymentCoordinatorActor extends Actor {
             ? {
                 'signerType': 'plugin-callback',
                 'role': 'primary',
-                'derivationIndex': primaryDerivationIndex,
+                'keyPath': primaryKeyPath?.toString(),
               }
             : null,
       );
@@ -473,7 +471,7 @@ class PaymentCoordinatorActor extends Actor {
             signerMetadata: {
               'signerType': 'plugin-callback',
               'role': 'witness',
-              'derivationIndex': primaryDerivationIndex,
+              'keyPath': primaryKeyPath?.toString(),
             },
           );
         }
@@ -878,12 +876,12 @@ class PaymentCoordinatorActor extends Actor {
             // Each funding UTXO's derivation path (index and chain) comes from
             // the read model's address metadata; its public key is the one the
             // aggregate proves it controls the address with.
-            final fundingPaths = <SigningPath>[];
+            final fundingPaths = <KeyPath>[];
             final publicKeys = <dartsv.SVPublicKey>[];
             final keysByAddress = <String, dartsv.SVPublicKey>{};
             for (final utxo in selectedUtxos) {
               final path = await signing.pathForAddress(walletId, utxo.address) ??
-                  SigningPath(utxo.derivationIndex ?? 0);
+                  HdKeyPath(utxo.derivationIndex ?? 0);
               fundingPaths.add(path);
               publicKeys.add(keysByAddress[utxo.address] ??=
                   await signing.publicKeyForAddress(walletId, utxo.address, path: path));
@@ -1279,7 +1277,7 @@ class PaymentCoordinatorActor extends Actor {
     required BitcoinUtxo sourceUtxo,
     required int count,
     required AggregateSigningClient signing,
-    required SigningPath sourcePath,
+    required KeyPath sourcePath,
     required dartsv.SVPublicKey publicKey,
     required String walletId,
     required FeeRate rate,
@@ -1409,7 +1407,7 @@ class PaymentCoordinatorActor extends Actor {
       signerMetadata: {
         'signerType': 'plugin-callback',
         'role': 'provisioning-split',
-        'derivationIndex': sourcePath.derivationIndex,
+        'keyPath': sourcePath.toString(),
       },
     );
 
@@ -1447,7 +1445,7 @@ class PaymentCoordinatorActor extends Actor {
           'signerType': 'plugin-callback',
           'role': 'provisioning-earmark',
           'earmarkIndex': i,
-          'derivationIndex': sourcePath.derivationIndex,
+          'keyPath': sourcePath.toString(),
         },
       );
       ancestorTxids.add(earmarkTx.id);
@@ -1633,8 +1631,7 @@ class PaymentCoordinatorActor extends Actor {
       // payment path); the derivation path from the read model.
       final signing = _signingClient();
       final path = await signing.pathForAddress(walletId, selectedUtxo.address) ??
-          SigningPath(selectedUtxo.derivationIndex ?? 0);
-      final derivationIndex = path.derivationIndex;
+          HdKeyPath(selectedUtxo.derivationIndex ?? 0);
       final publicKey =
           await signing.publicKeyForAddress(walletId, selectedUtxo.address, path: path);
 
@@ -1692,7 +1689,7 @@ class PaymentCoordinatorActor extends Actor {
                 ? 'provisioning-earmark'
                 : 'provisioning-split',
             'pluginId': msg.pluginId,
-            'derivationIndex': derivationIndex,
+            'keyPath': path.toString(),
           },
         );
       }
@@ -1712,7 +1709,7 @@ class PaymentCoordinatorActor extends Actor {
             scriptPubKey: scriptPubKey,
             address: changeAddress,
             initialStatus: UTXOStatus.available,
-            derivationIndex: derivationIndex,
+            derivationIndex: path.derivationIndex,
             pluginMetadata: {
               'pluginId': 'funding-earmark',
               'purpose': earmark.purpose,

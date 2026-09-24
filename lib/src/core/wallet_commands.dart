@@ -3,6 +3,7 @@ import '../models/bitcoin_transaction.dart'; // For TransactionStatus
 import '../models/address_chain.dart';
 import '../models/bitcoin_utxo.dart'; // For UTXOStatus
 import '../models/fee_rate.dart';
+import '../models/key_path.dart';
 import '../models/persistent_map.dart';
 import 'wallet_events.dart' show BeefAncestor;
 
@@ -300,6 +301,109 @@ class RecordDelegatedAddressesCommand extends WalletCommand {
 
   @override
   String get commandType => 'RecordDelegatedAddressesCommand';
+}
+
+/// Records addresses payers derived from the wallet's anchor key with
+/// type-42 (BRC-42) while the wallet was offline, so that a payment to them
+/// can be taken in and spent (bead libspiffy-zxkd; spv-understanding.md,
+/// "Payment modes").
+///
+/// The payer hands over its public key and the invoice number with the
+/// payment. The wallet derives each address from its own anchor key: an
+/// address it is handed is never taken on trust, so a wrong derivation
+/// yields an address that simply receives nothing. A derivation already
+/// recorded journals nothing. Only the derivation is journaled, never the
+/// child private key.
+class RecordType42AddressesCommand extends WalletCommand {
+  final List<Type42Derivation> derivations;
+
+  RecordType42AddressesCommand({
+    required super.walletId,
+    required List<Type42Derivation> derivations,
+    super.commandId,
+    super.timestamp,
+    super.metadata,
+  }) : derivations = frozenList(derivations);
+
+  @override
+  String get commandType => 'RecordType42AddressesCommand';
+}
+
+/// Derives a type-42 destination for paying the holder of anchor key
+/// [recipientPublicKey] (bead libspiffy-zxkd): the wallet's next payer key
+/// B (`m/3'/1'/n'`, never used twice) and [invoiceNumber] give
+/// `C = A + HMAC-SHA256(ECDH(b, A), invoiceNumber)·G`.
+///
+/// Without an [invoiceNumber] a BRC-29 one is made up with a random
+/// derivation prefix and suffix. The destination is journaled
+/// ([Type42DestinationDerivedEvent]) so the payer key is not reused and the
+/// hand-off can be given again.
+class DeriveType42DestinationCommand extends WalletCommand {
+  final String recipientPublicKey;
+  final String? invoiceNumber;
+
+  DeriveType42DestinationCommand({
+    required super.walletId,
+    required this.recipientPublicKey,
+    this.invoiceNumber,
+    super.commandId,
+    super.timestamp,
+    super.metadata,
+  });
+
+  @override
+  String get commandType => 'DeriveType42DestinationCommand';
+}
+
+/// Asks for the wallet's anchor public key A (`m/3'/0'`), the key payers
+/// derive type-42 destinations from (bead libspiffy-zxkd). Journals
+/// nothing.
+class GetAnchorPublicKeyCommand extends WalletCommand {
+  GetAnchorPublicKeyCommand({required super.walletId, super.commandId, super.timestamp, super.metadata});
+
+  @override
+  String get commandType => 'GetAnchorPublicKeyCommand';
+}
+
+/// Signs `SHA-256(message)` with the wallet's anchor key, for binding the
+/// anchor key to an identity (a registration such as NodeCast's). Journals
+/// nothing.
+///
+/// The message is always hashed here, so no caller can have the anchor key
+/// sign a digest of its choosing (a transaction's sighash, say); a message
+/// should still name its purpose, so that a signature for one is no
+/// signature for another.
+class SignWithAnchorKeyCommand extends WalletCommand {
+  final List<int> message;
+
+  SignWithAnchorKeyCommand({
+    required super.walletId,
+    required List<int> message,
+    super.commandId,
+    super.timestamp,
+    super.metadata,
+  }) : message = frozenList(message);
+
+  @override
+  String get commandType => 'SignWithAnchorKeyCommand';
+}
+
+/// Asks which type-42 addresses the wallet knows the transaction
+/// [rawTransaction] (hex) pays: ones it derived as a payer, and ones payers
+/// derived from its anchor key. Journals nothing.
+class LookupType42AddressesCommand extends WalletCommand {
+  final String rawTransaction;
+
+  LookupType42AddressesCommand({
+    required super.walletId,
+    required this.rawTransaction,
+    super.commandId,
+    super.timestamp,
+    super.metadata,
+  });
+
+  @override
+  String get commandType => 'LookupType42AddressesCommand';
 }
 
 /// Adds a watch address to the wallet (bead libspiffy-p4kv): an address the
@@ -908,15 +1012,14 @@ class SignTransactionCommand extends WalletCommand {
   final List<String> publicKeys;
   /// Addresses for each UTXO (parallel to utxoKeys). Used for key derivation.
   final List<String> addresses;
-  /// Derivation indices for each UTXO (parallel to utxoKeys).
-  /// When provided, the aggregate uses these directly instead of looking up in state.
-  final List<int> derivationIndices;
-  /// Derivation chain for each UTXO (parallel to utxoKeys): the key is at
-  /// m/{chain}/{index}. Entries beyond the list's length, or an empty list,
-  /// mean "resolve the chain from the aggregate's own address records",
-  /// which is correct for every address the aggregate generated or
-  /// discovered itself.
-  final List<AddressChain> chains;
+
+  /// Where the key of each UTXO comes from (parallel to utxoKeys), as the
+  /// read model records it. Entries beyond the list's length, or an empty
+  /// list, mean "resolve the key from the aggregate's own address records",
+  /// which is correct for every address the aggregate generated, discovered
+  /// or recorded itself. An address the aggregate holds a type-42 record for
+  /// is signed with that record's key whatever is given here.
+  final List<KeyPath> keyPaths;
 
   SignTransactionCommand({
     required String walletId,
@@ -925,16 +1028,14 @@ class SignTransactionCommand extends WalletCommand {
     required List<String> utxoKeys,
     required List<String> publicKeys,
     List<String> addresses = const [],
-    List<int> derivationIndices = const [],
-    List<AddressChain> chains = const [],
+    List<KeyPath> keyPaths = const [],
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,
   })  : utxoKeys = frozenList(utxoKeys),
         publicKeys = frozenList(publicKeys),
         addresses = frozenList(addresses),
-        derivationIndices = frozenList(derivationIndices),
-        chains = frozenList(chains),
+        keyPaths = frozenList(keyPaths),
         super(
           walletId: walletId,
           commandId: commandId,
@@ -1038,9 +1139,9 @@ class SignInputCommand extends WalletCommand {
   /// Value of the output being spent, in satoshis.
   final BigInt satoshis;
 
-  /// Key path `m/{chain}/{derivationIndex}`.
-  final int derivationIndex;
-  final AddressChain chain;
+  /// Where the signing key comes from: an HD path, or a type-42 derivation
+  /// the wallet recorded.
+  final KeyPath keyPath;
 
   /// SIGHASH flags; SIGHASH_ALL | SIGHASH_FORKID by default.
   final int sighashType;
@@ -1051,8 +1152,7 @@ class SignInputCommand extends WalletCommand {
     required this.inputIndex,
     required this.subscriptHex,
     required this.satoshis,
-    required this.derivationIndex,
-    this.chain = AddressChain.receive,
+    required this.keyPath,
     this.sighashType = 0x41,
     super.commandId,
     super.timestamp,

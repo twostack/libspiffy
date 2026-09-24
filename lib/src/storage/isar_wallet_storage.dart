@@ -241,14 +241,17 @@ class IsarWalletStorage implements ReadModelStorage {
 
   /// Address rows on [chain]: its index in `chain`, or, in a row written
   /// before the delegated chain existed (`chain` null), the change/receive
-  /// flag ([AddressChain.fromRecord]). No such row is delegated.
+  /// flag ([AddressChain.fromRecord]). No such row is delegated. A type-42
+  /// row has no chain either, and is on none.
   static QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition> _onChain(
       QueryBuilder<AddressEntity, AddressEntity, QFilterCondition> q, AddressChain chain) {
     if (chain == AddressChain.delegated) return q.chainEqualTo(chain.index);
-    return q
-        .chainEqualTo(chain.index)
-        .or()
-        .group((legacy) => legacy.chainIsNull().and().isChangeEqualTo(chain == AddressChain.change));
+    return q.chainEqualTo(chain.index).or().group((legacy) => legacy
+        .chainIsNull()
+        .and()
+        .type42SenderPublicKeyIsNull()
+        .and()
+        .isChangeEqualTo(chain == AddressChain.change));
   }
 
   @override

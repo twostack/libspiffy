@@ -3,6 +3,7 @@ import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:eventador/eventador.dart';
 
 import 'package:libspiffy/src/actors/libspiffy_actor_system.dart';
+import 'package:libspiffy/src/models/key_path.dart';
 import 'package:libspiffy/src/core/bitcoin_wallet_aggregate.dart';
 import 'package:libspiffy/src/core/wallet_commands.dart';
 import 'package:libspiffy/src/core/wallet_events.dart';
@@ -129,8 +130,7 @@ void main() {
     required String id,
     required String rawTx,
     required List<String> utxoKeys,
-    List<int> derivationIndices = const [],
-    List<AddressChain> chains = const [],
+    List<KeyPath> keyPaths = const [],
   }) async {
     await wallet.commandHandler(SignTransactionCommand(
       walletId: wallet.aggregateId,
@@ -138,8 +138,7 @@ void main() {
       rawTransaction: rawTx,
       utxoKeys: utxoKeys,
       publicKeys: const [],
-      derivationIndices: derivationIndices,
-      chains: chains,
+      keyPaths: keyPaths,
     ));
     return eventStore.journal[wallet.persistenceId]!
         .whereType<TransactionSignedEvent>()
@@ -267,25 +266,6 @@ void main() {
       expect(fresh.currentState.version, equals(versionBefore + 1));
     });
 
-    test('a caller-supplied derivation index without a chain still signs change', () async {
-      // Coordinators pass the index from the read model; when they do not
-      // pass the chain the aggregate must resolve it from its own state.
-      final setup = await walletWithChangeUtxo('wallet-change-4');
-      final wallet = setup.wallet;
-      final index =
-          (wallet.currentState.metadata['address_indices'] as Map)[setup.changeAddress] as int;
-
-      final versionBefore = wallet.currentState.version;
-      await sign(
-        wallet,
-        id: 'spend-change-with-index',
-        rawTx: unsignedTx([setup.changeUtxoKey], {externalAddress: 48000}),
-        utxoKeys: [setup.changeUtxoKey],
-        derivationIndices: [index],
-      );
-      expect(wallet.currentState.version, equals(versionBefore + 1));
-    });
-
     test('a caller-supplied chain flag is honoured', () async {
       final setup = await walletWithChangeUtxo('wallet-change-5');
       final wallet = setup.wallet;
@@ -298,8 +278,7 @@ void main() {
         id: 'spend-change-with-flag',
         rawTx: unsignedTx([setup.changeUtxoKey], {externalAddress: 48000}),
         utxoKeys: [setup.changeUtxoKey],
-        derivationIndices: [index],
-        chains: [AddressChain.change],
+        keyPaths: [HdKeyPath(index, chain: AddressChain.change)],
       );
       expect(wallet.currentState.version, equals(versionBefore + 1));
     });

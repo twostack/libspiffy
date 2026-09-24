@@ -7,24 +7,12 @@ import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:logging/logging.dart';
 
 import '../core/wallet_commands.dart';
-import '../models/address_chain.dart';
+import '../models/key_path.dart';
 import '../models/bitcoin_utxo.dart';
 import '../storage/read_model_storage.dart';
 import '../utils/network_name.dart';
 import '../core/wallet_output_ownership.dart' show BareMultisigScript;
 import 'wallet_messages.dart';
-
-/// Where a wallet key sits in the HD tree: `m/{chain}/{derivationIndex}`.
-/// Ignored by the aggregate for single-key (WIF) wallets.
-class SigningPath {
-  final int derivationIndex;
-  final AddressChain chain;
-
-  const SigningPath(this.derivationIndex, {this.chain = AddressChain.receive});
-
-  @override
-  String toString() => 'm/${chain.index}/$derivationIndex';
-}
 
 /// A signing request the wallet aggregate rejected, did not answer, or
 /// answered with something that does not match the request.
@@ -90,14 +78,12 @@ class AggregateSigningClient {
   /// libspiffy-vsap): the wallet holds no key for it, and the row has no
   /// derivation index, which read as m/0/0 (the root key's path). The
   /// aggregate refuses such an input too; this refuses before asking it.
-  Future<SigningPath?> pathForAddress(String walletId, String address) async {
+  Future<KeyPath?> pathForAddress(String walletId, String address) async {
     final metadata = await _storage.getAddressMetadata(walletId, address);
     if (metadata == null) return null;
-    if (metadata.purpose == 'watch') {
-      throw AggregateSigningException('Address $address of wallet $walletId is a watch address: '
-          'the wallet holds no key for it and has no signing path');
-    }
-    return SigningPath(metadata.derivationIndex ?? 0, chain: metadata.chain);
+    return metadata.keyPath ??
+        (throw AggregateSigningException('Address $address of wallet $walletId is a watch address: '
+            'the wallet holds no key for it and has no signing path'));
   }
 
   /// The path of the wallet key at [address], or null when the read model
@@ -105,11 +91,8 @@ class AggregateSigningClient {
   /// For signing that falls back to the aggregate's own key records: a
   /// bare multisig UTXO attributed to a watch address can still be the
   /// wallet's to sign with another of its keys.
-  Future<SigningPath?> _keyPathOrNull(String walletId, String address) async {
-    final metadata = await _storage.getAddressMetadata(walletId, address);
-    if (metadata == null || metadata.purpose == 'watch') return null;
-    return SigningPath(metadata.derivationIndex ?? 0, chain: metadata.chain);
-  }
+  Future<KeyPath?> _keyPathOrNull(String walletId, String address) async =>
+      (await _storage.getAddressMetadata(walletId, address))?.keyPath;
 
   // ---------------------------------------------------------------------------
   // Whole-transaction signing (P2PKH wallet UTXOs)
@@ -127,7 +110,7 @@ class AggregateSigningClient {
     required String unsignedTxHex,
     required List<BitcoinUtxo> utxos,
   }) async {
-    final paths = <SigningPath>[];
+    final paths = <KeyPath>[];
     for (final utxo in utxos) {
       final path = await _keyPathOrNull(walletId, utxo.address);
       if (path == null) {
@@ -148,8 +131,7 @@ class AggregateSigningClient {
         utxoKeys: utxos.map((u) => u.key).toList(),
         publicKeys: const [],
         addresses: utxos.map((u) => u.address).toList(),
-        derivationIndices: paths.map((p) => p.derivationIndex).toList(),
-        chains: paths.map((p) => p.chain).toList(),
+        keyPaths: paths,
       ),
       'signing $transactionId',
     );
@@ -172,7 +154,7 @@ class AggregateSigningClient {
     required int inputIndex,
     required dartsv.SVScript subscript,
     required BigInt satoshis,
-    required SigningPath path,
+    required KeyPath path,
     int? sighashType,
   }) async =>
       (await _signInputWithKey(
@@ -195,7 +177,7 @@ class AggregateSigningClient {
     required int inputIndex,
     required dartsv.SVScript subscript,
     required BigInt satoshis,
-    required SigningPath path,
+    required KeyPath path,
     required int sighashType,
   }) async {
     final reply = await _request<InputSignedResponse>(
@@ -206,8 +188,7 @@ class AggregateSigningClient {
         inputIndex: inputIndex,
         subscriptHex: subscript.toHex(),
         satoshis: satoshis,
-        derivationIndex: path.derivationIndex,
-        chain: path.chain,
+        keyPath: path,
         sighashType: sighashType,
       ),
       'signing input $inputIndex',
@@ -235,9 +216,9 @@ class AggregateSigningClient {
   /// [address]. Throws [AggregateSigningException] when the key at that path
   /// does not control the address.
   Future<dartsv.SVPublicKey> publicKeyForAddress(String walletId, String address,
-      {SigningPath? path}) async {
+      {KeyPath? path}) async {
     final effectivePath =
-        path ?? await pathForAddress(walletId, address) ?? const SigningPath(0);
+        path ?? await pathForAddress(walletId, address) ?? const HdKeyPath(0);
     final lockingScript =
         dartsv.P2PKHLockBuilder.fromAddress(dartsv.Address.fromBase58(address)).getScriptPubkey();
     final probe = dartsv.Transaction()
@@ -290,7 +271,7 @@ class AggregateSigningClient {
   /// an arbitrary digest.
   Future<T> buildWithSigner<T>({
     required String walletId,
-    required SigningPath fallbackPath,
+    required KeyPath fallbackPath,
     required Future<T> Function(dartsv.TransactionSigner signer) build,
     int maxPasses = 8,
   }) async {
@@ -320,7 +301,7 @@ class AggregateSigningClient {
   Future<void> _signPending(
     String walletId,
     dartsv.NetworkType network,
-    SigningPath fallbackPath,
+    KeyPath fallbackPath,
     Map<String, _PendingInput> pending,
     Map<String, dartsv.SVSignature> signatures,
   ) async {
@@ -355,9 +336,9 @@ class AggregateSigningClient {
   /// reads signatures in (bead libspiffy-0nfk; the aggregate's own
   /// `_multisigSigningKeys` picks the same keys). Throws when the wallet
   /// holds fewer of the keys than the script requires.
-  Future<({SigningPath path, String pubkeyHash})> _multisigSigner(String walletId, dartsv.NetworkType network,
+  Future<({KeyPath path, String pubkeyHash})> _multisigSigner(String walletId, dartsv.NetworkType network,
       BareMultisigScript multisig, int index, int inputIndex) async {
-    final owners = <({SigningPath path, String pubkeyHash})>[];
+    final owners = <({KeyPath path, String pubkeyHash})>[];
     for (final keyHex in multisig.publicKeysHex) {
       if (owners.length == multisig.threshold) break;
       final hashHex = hex.encode(dartsv.hash160(hex.decode(keyHex)));
@@ -372,7 +353,7 @@ class AggregateSigningClient {
   }
 
   /// The wallet address named by [script], if any.
-  Future<({SigningPath path, String pubkeyHash})?> _ownerOf(
+  Future<({KeyPath path, String pubkeyHash})?> _ownerOf(
       String walletId, dartsv.NetworkType network, dartsv.SVScript script) async {
     final seen = <String>{};
     for (final chunk in script.chunks) {

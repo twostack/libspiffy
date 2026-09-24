@@ -16,6 +16,7 @@ import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:test/test.dart';
 
 import 'package:libspiffy/src/actors/wallet_messages.dart';
+import 'package:libspiffy/src/models/key_path.dart';
 import 'package:libspiffy/src/core/bitcoin_wallet_aggregate.dart';
 import 'package:libspiffy/src/core/wallet_commands.dart';
 import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
@@ -115,8 +116,7 @@ void main() {
         inputIndex: inputIndex,
         subscriptHex: _p2pkh(address).toHex(),
         satoshis: BigInt.from(sats),
-        derivationIndex: index,
-        chain: chain,
+        keyPath: HdKeyPath(index, chain: chain),
       );
 
   test('mnemonic wallet: receive and change keys sign the input and report their public key',

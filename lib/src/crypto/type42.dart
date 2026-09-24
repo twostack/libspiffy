@@ -74,7 +74,7 @@ class Type42 {
     dartsv.SVPrivateKey senderPriv,
     String invoiceNumber,
   ) {
-    final t = tweak(sharedSecret(senderPriv, recipientPub), invoiceNumber);
+    final t = _nonZero(tweak(sharedSecret(senderPriv, recipientPub), invoiceNumber));
     final c = recipientPub.point + _scalarBaseMult(t);
     if (c == null || c.isInfinity) {
       throw StateError('Derived child public key is the point at infinity');
@@ -94,9 +94,19 @@ class Type42 {
     dartsv.SVPublicKey senderPub,
     String invoiceNumber,
   ) {
-    final t = tweak(sharedSecret(recipientPriv, senderPub), invoiceNumber);
+    final t = _nonZero(tweak(sharedSecret(recipientPriv, senderPub), invoiceNumber));
     final c = (recipientPriv.privateKey + t) % _n;
     return dartsv.SVPrivateKey.fromBigInt(c);
+  }
+
+  // A tweak of 0 mod N would make the child the anchor key itself
+  // (PAYMENT_SCHEME.md §11): refused, although HMAC output hits it with
+  // probability 2^-256.
+  static BigInt _nonZero(BigInt t) {
+    if (t % _n == BigInt.zero) {
+      throw StateError('The type-42 tweak is 0 mod N: the child key would be the anchor key');
+    }
+    return t;
   }
 
   // t·G, computed as the public key of the scalar t — keeps all point math on

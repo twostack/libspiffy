@@ -9,7 +9,7 @@ import 'dart:typed_data';
 import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
 
-import '../../models/address_chain.dart';
+import '../../models/key_path.dart';
 import '../../models/bitcoin_utxo.dart';
 import '../../models/wallet_state.dart';
 import '../../models/wallet_type.dart';
@@ -92,11 +92,9 @@ class WalletTransactionSigner {
         utxoScript,
       );
 
-      // Get private key for this UTXO's address
-      // Use command-provided derivation index if available (from read model)
-      final cmdDerivationIndex = (i < command.derivationIndices.length) ? command.derivationIndices[i] : null;
-      // The chain is optional: absent means "resolve from aggregate state".
-      final cmdChain = (i < command.chains.length) ? command.chains[i] : null;
+      // The key path the command names for this UTXO (from the read model);
+      // absent means "resolve from aggregate state".
+      final keyPath = (i < command.keyPaths.length) ? command.keyPaths[i] : null;
 
       final sighashType = _sighashAllForkId;
       final unlock = await unlockFor(
@@ -104,8 +102,7 @@ class WalletTransactionSigner {
         command.walletId,
         utxo,
         utxoKey: utxoKey,
-        derivationIndex: cmdDerivationIndex,
-        chain: cmdChain,
+        keyPath: keyPath,
       );
       if (unlock == null) {
         // A script type the wallet has no standard unlocking script for: sign
@@ -114,8 +111,7 @@ class WalletTransactionSigner {
           utxo.address,
           command.walletId,
           currentState,
-          derivationIndex: cmdDerivationIndex,
-          chain: cmdChain,
+          keyPath: keyPath,
         );
         signedTx = dartsv.DefaultTransactionSigner(sighashType, privateKey).sign(unsignedTx, utxoOutput, i);
       } else {
@@ -203,8 +199,7 @@ class WalletTransactionSigner {
     String walletId,
     BitcoinUtxo utxo, {
     String? utxoKey,
-    int? derivationIndex,
-    AddressChain? chain,
+    KeyPath? keyPath,
   }) async {
     // ScriptTypeRegistry is a singleton pinned to the first network it
     // is built with; the default (testnet) threw for mainnet wallets
@@ -225,8 +220,7 @@ class WalletTransactionSigner {
             utxo.address,
             walletId,
             currentState,
-            derivationIndex: derivationIndex,
-            chain: chain,
+            keyPath: keyPath,
           );
 
     if (multisig != null) {
@@ -423,12 +417,7 @@ class WalletTransactionSigner {
       throw ArgumentError('Spent amount must not be negative');
     }
 
-    final privateKey = await keys.privateKeyAtIndex(
-      command.walletId,
-      command.derivationIndex,
-      currentState,
-      chain: command.chain,
-    );
+    final privateKey = await keys.privateKeyAt(command.walletId, currentState, command.keyPath);
 
     // What dartsv's DefaultTransactionSigner does, without needing an
     // unlocking-script builder on the input.

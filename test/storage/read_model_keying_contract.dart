@@ -17,6 +17,7 @@ import 'package:libspiffy/src/models/bitcoin_utxo.dart';
 import 'package:libspiffy/src/models/transaction_address_link.dart';
 import 'package:libspiffy/src/storage/read_model_storage.dart';
 import 'package:libspiffy/src/models/address_chain.dart';
+import 'package:libspiffy/src/models/key_path.dart';
 
 /// A 64-hex id derived from [tag] (unique per tag).
 String contractHex64(String tag) =>
@@ -328,6 +329,48 @@ void defineReadModelKeyingContract(
       await s.upsertAddress(wallet, _address(r0, index: 0, label: 'relabelled'));
       expect(await s.getAddressCount(wallet), 4);
       expect((await s.getAddressMetadata(wallet, r0))!.label, 'relabelled');
+    });
+
+    test('zxkd: a type-42 address row keeps its derivation, has no chain, and its usage survives a re-upsert',
+        () async {
+      final s = storage();
+      final u = unique();
+      final wallet = 'kc-type42-$u';
+      final address = 'addr-t42-$u';
+      final derivation = Type42Derivation(
+          senderPublicKey: '02dfcbe35d95b55b5f3168ea8f12717e266ceddf88d04d2ff741272dfb0e542c2a',
+          invoiceNumber: '2-3241645161d8-cHJlZml4 c3VmZml4');
+      AddressMetadata row({int usage = 0}) => AddressMetadata(
+            address: address,
+            scriptType: 'p2pkh',
+            chain: null,
+            type42: derivation,
+            purpose: 'type42',
+            usageCount: usage,
+            balance: BigInt.zero,
+            createdAt: DateTime.utc(2026, 9, 24),
+            isWatched: true,
+          );
+
+      await s.upsertAddress(wallet, _address('addr-r0-$u'));
+      await s.upsertAddress(wallet, row());
+      final stored = await s.getAddressMetadata(wallet, address);
+      expect((stored!.type42, stored.chain, stored.derivationIndex), (derivation, null, null));
+      expect(stored.keyPath, Type42KeyPath(derivation));
+      expect((await s.getAddressMetadata(wallet, 'addr-r0-$u'))!.type42, isNull);
+      expect(await s.isWalletAddress(wallet, address), isTrue);
+      expect((await s.getAddressesWithMetadata(wallet, chain: AddressChain.receive)).map((a) => a.address),
+          ['addr-r0-$u'], reason: 'a type-42 address is on no chain');
+      expect((await s.getAddressesByPurpose(wallet, 'type42')).single.type42, derivation);
+
+      await s.updateAddressUsage(wallet, address, usedAt: DateTime.utc(2026, 9, 25), balanceDelta: BigInt.from(500));
+      final used = await s.getAddressMetadata(wallet, address);
+      expect((used!.type42, used.usageCount, used.balance), (derivation, 1, BigInt.from(500)));
+
+      // A Postgres schema holding a type-42 row refuses to go back below
+      // v027, and the database outlives the run.
+      await s.deleteWallet(wallet);
+      expect(await s.getAddressMetadata(wallet, address), isNull);
     });
 
     test('p4kv: getAddressesByPurpose returns only that wallet\'s rows with that purpose', () async {

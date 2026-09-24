@@ -1360,6 +1360,7 @@ _balanceCache.remove(walletId);
         derivationPath: current.derivationPath,
         derivationIndex: current.derivationIndex,
         chain: current.chain,
+        type42: current.type42,
         label: current.label,
         purpose: current.purpose,
         firstUsedAt: current.firstUsedAt ?? usedAt,

@@ -530,7 +530,7 @@ class LibSpiffyActorSystem {
   /// LibSpiffy journal without the actor system (tests, tools, a custom
   /// event store).
   static void registerEventTypes() {
-    // WALLET EVENTS (25)
+    // WALLET EVENTS (27)
     EventRegistry.register<WalletCreatedEvent>(WalletCreatedEvent.stableTypeName, WalletCreatedEvent.fromMap,
         aliases: const ['WalletCreatedEvent']);
     EventRegistry.register<WalletConfigurationUpdatedEvent>(WalletConfigurationUpdatedEvent.stableTypeName, WalletConfigurationUpdatedEvent.fromMap,
@@ -546,6 +546,11 @@ class LibSpiffyActorSystem {
     // Watch addresses (bead libspiffy-p4kv)
     EventRegistry.register<WatchAddressAddedEvent>(WatchAddressAddedEvent.stableTypeName, WatchAddressAddedEvent.fromMap,
         aliases: const ['WatchAddressAddedEvent']);
+    // Type-42 payments (bead libspiffy-zxkd)
+    EventRegistry.register<Type42AddressRecordedEvent>(
+        Type42AddressRecordedEvent.stableTypeName, Type42AddressRecordedEvent.fromMap);
+    EventRegistry.register<Type42DestinationDerivedEvent>(
+        Type42DestinationDerivedEvent.stableTypeName, Type42DestinationDerivedEvent.fromMap);
     EventRegistry.register<UTXOReceivedEvent>(UTXOReceivedEvent.stableTypeName, UTXOReceivedEvent.fromMap,
         aliases: const ['UTXOReceivedEvent']);
     EventRegistry.register<UTXOMarkedAvailableEvent>(UTXOMarkedAvailableEvent.stableTypeName, UTXOMarkedAvailableEvent.fromMap,

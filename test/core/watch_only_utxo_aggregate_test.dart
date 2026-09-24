@@ -19,6 +19,7 @@ import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:test/test.dart';
 
 import 'package:libspiffy/src/actors/wallet_messages.dart';
+import 'package:libspiffy/src/models/key_path.dart';
 import 'package:libspiffy/src/core/bitcoin_wallet_aggregate.dart';
 import 'package:libspiffy/src/core/wallet_commands.dart';
 import 'package:libspiffy/src/core/wallet_events.dart';
@@ -170,7 +171,7 @@ void main() {
     final (_, _, wallet) = await watchingWallet();
     await receive(wallet, 'b' * 64, p2pkh(watchAddress), watchAddress, 90000);
 
-    for (final indices in [const <int>[], const [0]]) {
+    for (final paths in [const <KeyPath>[], const [HdKeyPath(0)]]) {
       await expectLater(
         wallet.commandHandler(SignTransactionCommand(
           walletId: _walletId,
@@ -178,11 +179,11 @@ void main() {
           rawTransaction: unsignedSpend('b' * 64, 80000),
           utxoKeys: ['${'b' * 64}:0'],
           publicKeys: const [],
-          derivationIndices: indices,
+          keyPaths: paths,
         )),
         throwsA(predicate((e) => '$e'.contains('watch address $watchAddress') && '$e'.contains('no key'),
             'an error naming the watch address')),
-        reason: 'derivation indices $indices',
+        reason: 'key paths $paths',
       );
     }
     expect(wallet.currentState.utxos['${'b' * 64}:0']!.status, UTXOStatus.available);
@@ -201,7 +202,7 @@ void main() {
         rawTransaction: unsignedSpend('c' * 64, 40000),
         utxoKeys: ['${'c' * 64}:0'],
         publicKeys: const [],
-        derivationIndices: const [3], // the root address is m/0/0
+        keyPaths: const [HdKeyPath(3)], // the root address is m/0/0
       )),
       throwsA(predicate((e) => '$e'.contains('the wallet holds no key for it'), 'an error saying so')),
     );

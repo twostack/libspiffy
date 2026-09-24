@@ -286,6 +286,56 @@ coordinator.tell(ImportTransactionCommand(
 
 Without the index the import is refused: the payment pays none of the wallet's addresses, so it is not the wallet's transaction.
 
+### Paying an Offline Payee Directly (Type-42)
+
+A payer can pay a payee that is offline with no service in between (spv-understanding.md, "Payment modes"). The payee publishes one public key, its **anchor key**, and the payer derives a fresh address from it for every payment with BRC-42 ("type-42").
+
+The payee's side, once: get the anchor key and publish it, bound to the payee's identity. An xpub wallet and a WIF wallet have none.
+
+```dart
+coordinator.tell(GetAnchorPublicKeyQuery(walletId: 'carol'));
+// → AnchorPublicKeyEvent(publicKey, success, error)
+
+coordinator.tell(SignWithAnchorKeyCommand(
+  walletId: 'carol',
+  message: utf8.encode('overmedia:register_payment_pubkey:$peerId:$anchorKey'),
+));
+// → AnchorSignedEvent(publicKey, signatureDer, success, error): ECDSA over SHA-256(message)
+```
+
+The payer's side: derive a destination, pay it, broadcast it yourself (the payee is not there to), and hand it over once it is mined.
+
+```dart
+coordinator.tell(DeriveType42DestinationCommand(walletId: 'alice', recipientPublicKey: anchorKey));
+// → Type42DestinationEvent(destination: Type42Destination(address, derivation, ...))
+
+coordinator.tell(PayInvoiceCommand(
+  walletId: 'alice',
+  invoiceId: destination.derivation.invoiceNumber,
+  addresses: [destination.address],
+  amount: BigInt.from(40000),
+));
+// → PaymentReadyEvent(txid, ...)
+coordinator.tell(BroadcastDeferredPaymentCommand(walletId: 'alice', txid: txid));
+// ... TransactionConfirmedEvent once it is mined, then:
+coordinator.tell(ExportTransactionQuery(walletId: 'alice', txid: txid));
+// → TransactionExportedEvent(beef, type42Derivations)
+```
+
+Hand `beef` and `type42Derivations` to the payee out of band. The payee's wallet imports them. It derives each address from its own anchor key, records the derivation (never a private key), and can then spend the payment like any other:
+
+```dart
+coordinator.tell(ImportTransactionCommand(
+  walletId: 'carol',
+  beef: exported.beef!,
+  type42Derivations: exported.type42Derivations,
+));
+```
+
+If the payee is online before the payment is mined, it can take it in unproven, as any payment handed to it: `ValidateBEEFCommand(..., type42Derivations: [destination.derivation])`.
+
+**Recovery has a limit.** A type-42 output cannot be found from the seed. A wallet restored from its journal keeps it. A wallet restored from its seed alone does not see it: the import without the derivations is refused as unrelated. Keep the payer's hand-off, and give it again to recover the payment.
+
 ## Sending Payments
 
 ### Step 1: Pay an Invoice
@@ -602,7 +652,10 @@ Key points for coordinator users:
 | `BalanceResponse` | In response to `GetBalanceQuery` |
 | `TransactionsResponse` | In response to `GetTransactionsQuery` |
 | `TransactionDetailResponse` | In response to `GetTransactionDetailQuery` |
-| `TransactionExportedEvent` | In response to `ExportTransactionQuery`: a proven transaction as BEEF |
+| `TransactionExportedEvent` | In response to `ExportTransactionQuery`: a proven transaction as BEEF, with its delegated indices and type-42 derivations |
+| `AnchorPublicKeyEvent` | In response to `GetAnchorPublicKeyQuery`: the wallet's anchor key |
+| `AnchorSignedEvent` | In response to `SignWithAnchorKeyCommand` |
+| `Type42DestinationEvent` | In response to `DeriveType42DestinationCommand`: an address to pay and its hand-off |
 | `DeferredPaymentsResponse` | In response to `GetDeferredPaymentsQuery` |
 
 ### Transaction Events

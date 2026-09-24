@@ -18,6 +18,7 @@ import 'package:test/test.dart';
 
 import 'package:libspiffy/src/actors/invoice_messages.dart' show InvoiceStatus;
 import 'package:libspiffy/src/core/bitcoin_wallet_aggregate.dart';
+import 'package:libspiffy/src/models/key_path.dart';
 import 'package:libspiffy/src/core/channel_commands.dart';
 import 'package:libspiffy/src/core/channel_events.dart';
 import 'package:libspiffy/src/core/channel_state.dart';
@@ -361,7 +362,7 @@ void main() {
           rawTransaction: _paymentHex([_key(5, 0)]),
           utxoKeys: [_key(5, 0)],
           publicKeys: const [],
-          derivationIndices: const [3],
+          keyPaths: const [HdKeyPath(3)],
         ),
         BuildFundingTransactionCommand(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
           walletId: _walletId,

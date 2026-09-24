@@ -35,63 +35,8 @@ import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 import 'package:libspiffy/src/storage/in_memory_secure_storage.dart';
 import 'package:libspiffy/src/models/address_chain.dart';
 
+import 'snapshot_event_store.dart';
 import 'wallet_event_fixtures.dart';
-
-/// In-memory event store with snapshots (CBOR-serialized, like the real
-/// stores) and exclusive `fromSequence`.
-class _SnapshotStore implements EventStore {
-  final Map<String, List<Event>> journal = {};
-  final Map<String, ({List<int> bytes, int sequenceNumber, String type})> snapshots = {};
-
-  void append(String persistenceId, Iterable<Event> events) =>
-      journal.putIfAbsent(persistenceId, () => []).addAll(events);
-
-  @override
-  Future<void> persistEvent(String persistenceId, Event event, int expectedVersion) async =>
-      append(persistenceId, [event]);
-
-  @override
-  Future<void> persistEvents(String persistenceId, List<Event> events, int expectedVersion) async =>
-      append(persistenceId, events);
-
-  @override
-  Future<List<Event>> getEvents(String persistenceId, {int fromSequence = 0, int? toSequence}) async {
-    final events = journal[persistenceId] ?? const <Event>[];
-    final end = toSequence == null || toSequence > events.length ? events.length : toSequence;
-    if (fromSequence >= end) return const [];
-    return events.sublist(fromSequence, end);
-  }
-
-  @override
-  Future<int> getHighestSequenceNumber(String persistenceId) async =>
-      journal[persistenceId]?.length ?? 0;
-
-  @override
-  Future<void> saveSnapshot(String persistenceId, dynamic state, int sequenceNumber) async {
-    snapshots[persistenceId] = (
-      bytes: CborSerializer.serializeState(state),
-      sequenceNumber: sequenceNumber,
-      type: state is State ? state.typeName : state.runtimeType.toString(),
-    );
-  }
-
-  @override
-  Future<SnapshotData?> loadSnapshot(String persistenceId) async {
-    final s = snapshots[persistenceId];
-    if (s == null) return null;
-    return SnapshotData(
-      state: CborSerializer.deserializeState(s.bytes, s.type),
-      sequenceNumber: s.sequenceNumber,
-      timestamp: DateTime.utc(2026),
-    );
-  }
-
-  @override
-  Future<void> deleteOldSnapshots(String persistenceId, int keepCount) async {}
-
-  @override
-  Future<void> close() async {}
-}
 
 // ---------------------------------------------------------------------------
 // Aggregates that can be told to snapshot (createSnapshot is protected).
@@ -133,7 +78,7 @@ Future<(T restored, T replayed)> _snapshotAndRestart<T extends PersistentActor>(
   required T Function(EventStore store) create,
   required Future<void> Function(T aggregate) snapshot,
 }) async {
-  final store = _SnapshotStore()..append(persistenceId, before);
+  final store = SnapshotEventStore()..append(persistenceId, before);
   final first = create(store);
   await first.preStart();
   await snapshot(first);
@@ -144,7 +89,7 @@ Future<(T restored, T replayed)> _snapshotAndRestart<T extends PersistentActor>(
   final restored = create(store);
   await restored.preStart();
 
-  final plain = _SnapshotStore()..append(persistenceId, [...before, ...after]);
+  final plain = SnapshotEventStore()..append(persistenceId, [...before, ...after]);
   final replayed = create(plain);
   await replayed.preStart();
   return (restored, replayed);
@@ -302,7 +247,7 @@ void main() {
     // only the events after the snapshot: the history silently disappeared.
     Future<PersistentActor> recoverWithBadSnapshot(
         String persistenceId, PersistentActor Function(EventStore) create, List<Event> journal) async {
-      final store = _SnapshotStore()..append(persistenceId, journal);
+      final store = SnapshotEventStore()..append(persistenceId, journal);
       await store.saveSnapshot(persistenceId, {'unexpected': 'shape'}, 1);
       final actor = create(store);
       await actor.preStart();

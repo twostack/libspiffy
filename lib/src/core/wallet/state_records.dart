@@ -33,8 +33,24 @@ abstract final class WalletMetadataKeys {
   /// address -> derivation index (signing key lookup).
   static const String addressIndices = 'address_indices';
 
-  /// address -> derivation chain (true = change chain m/1/i).
+  /// address -> [AddressChain.index] of its derivation chain (a bool, true =
+  /// change, in a snapshot written before the delegated chain existed).
   static const String addressChains = 'address_chains';
+
+  /// address -> type-42 derivation (`Type42Derivation.toMap`) of an address
+  /// a payer derived from the wallet's anchor key (bead libspiffy-zxkd). Its
+  /// key is the anchor key's type-42 child, derived when it signs.
+  static const String addressType42 = 'address_type42';
+
+  /// address -> type-42 destination the wallet derived as a payer
+  /// (`Type42Destination.toMap`): the recipient's anchor key, the payer key
+  /// it used and the invoice number, which is the hand-off the recipient
+  /// takes the payment in with.
+  static const String type42Destinations = 'type42_destinations';
+
+  /// Number of payer keys (`m/3'/1'/n'`) the wallet has used for type-42
+  /// destinations: the next one is at this index.
+  static const String type42PayerKeys = 'type42_payer_keys';
 
   /// Canonical network name. A wallet's network is given under this key in
   /// `CreateWalletCommand.walletMetadata` ([creationInputs]) and is fixed
@@ -75,6 +91,9 @@ abstract final class WalletMetadataKeys {
     deferredHolds,
     addressIndices,
     addressChains,
+    addressType42,
+    type42Destinations,
+    type42PayerKeys,
     network,
     ...readModel,
   };

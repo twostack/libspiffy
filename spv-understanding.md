@@ -351,7 +351,7 @@ to the application, not to this library.
 Three judgements are shared by every layer:
 
 - **Plugin-managed**: the UTXO's plugin metadata names a `pluginId` (`BitcoinUtxo.isPluginManaged`). Metadata without one (the read model's script analysis of a plain output, a label) does not count. A script a registered plugin claims gets its `pluginId` on both layers even when the plugin's metadata omits it.
-- **Watch-only**: a key the UTXO needs is a watch address the wallet holds no key for (`isWatchOnlyOutput`). Kept with its transaction and proof, reported apart, never spent.
+- **Watch-only**: the wallet holds no key for the UTXO. Either it belongs to a watch-only (xpub) wallet, which holds no private key at all (for example, a service's copy of a payee's wallet, see "Payment modes"), or a key it needs is a watch address (`isWatchOnlyOutput`). Kept with its transaction and proof, reported apart, never spent. The write side reads the wallet type from its state, the read side from the wallet row's `walletType`.
 - **Cannot spend alone**: a bare multisig UTXO whose threshold the wallet's own keys do not meet. The wallet no longer takes one as a UTXO, but a journal written before can hold one (a channel's 2-of-2 funding output, an escrow); it is kept, with its row, and counts in no spendable balance. Derived from the script and the wallet's keys, so no corrective event is needed.
 
 | API | Counts | Confirmed means |

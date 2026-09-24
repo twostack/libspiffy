@@ -97,7 +97,7 @@ class PostgresWalletStorage implements ReadModelStorage {
           derivation_index, is_created, created_at, last_accessed_at,
           metadata_json, aggregate_version, confirmed_balance, unconfirmed_balance
         ) VALUES (
-          @walletId, @name, 'hd',
+          @walletId, @name, COALESCE(@walletType::text, 'hd'),
           COALESCE(@network::text, @defaultNetwork::text), @rootAddress,
           0, true, @now, @now, @metadataJson, 0, 0, 0
         )
@@ -127,6 +127,9 @@ class PostgresWalletStorage implements ReadModelStorage {
         // backend (bead libspiffy-sxk5).
         'defaultNetwork': WalletRowRules.defaultNetwork,
         'metadataJson': metadata != null ? jsonEncode(metadata) : null,
+        // Set when the row is created and never changed, as on every
+        // backend: it used to be 'hd' for every wallet (bead libspiffy-bfs1).
+        'walletType': metadata?['walletType'] as String?,
         'now': DateTime.now(),
       },
     );

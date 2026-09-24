@@ -14,6 +14,9 @@
 /// * libspiffy-0k8: a journal written before bead viy can hold a bare
 ///   multisig UTXO the wallet cannot spend alone; replay counted it as
 ///   spendable on both layers. It is kept (state and row) but not spendable.
+/// * libspiffy-bfs1: an xpub (watch-only) wallet holds no private key, yet
+///   both layers counted its UTXOs as spendable; coin selection picked them
+///   and signing then threw. They are watch-only funds on both layers.
 library;
 
 import 'package:dartsv/dartsv.dart' as dartsv;
@@ -24,6 +27,7 @@ import 'package:libspiffy/src/core/wallet_commands.dart';
 import 'package:libspiffy/src/core/wallet_events.dart';
 import 'package:libspiffy/src/models/bitcoin_utxo.dart';
 import 'package:libspiffy/src/models/invoice_output_spec.dart';
+import 'package:libspiffy/src/models/wallet_balances.dart';
 import 'package:libspiffy/src/models/wallet_state.dart';
 import 'package:libspiffy/src/plugin/plugin_registry.dart';
 import 'package:libspiffy/src/plugin/plugin_types.dart';
@@ -162,6 +166,62 @@ void main() {
     expect(row['totalBalance'], '40000');
     expect(row['watchOnlyBalance'], '90000');
     expect(await storage.getWatchOnlyBalance(_walletId), BigInt.from(90000));
+  });
+
+  test('bfs1: every UTXO of an xpub wallet is watch-only on both layers, after replay and a snapshot', () async {
+    const xpubWalletId = 'balance-agreement-xpub';
+    final crypto = DartSVCryptoService();
+    final xpub = crypto
+        .deriveHDPublicKey(await crypto.mnemonicToHDPrivateKey(_mnemonic, network: dartsv.NetworkType.TEST))
+        .xpubkey;
+    BitcoinWalletAggregate newXpubAggregate() => BitcoinWalletAggregate(
+          aggregateId: xpubWalletId,
+          aggregateType: 'BitcoinWallet',
+          eventStore: store,
+          cryptoService: crypto,
+          secureStorage: secureStorage,
+        );
+    final watcher = newXpubAggregate();
+    await watcher.preStart();
+    await watcher.commandHandler(CreateWalletCommand(walletId: xpubWalletId, walletName: 'service', xpub: xpub));
+    final address = watcher.currentState.rootAddress!;
+    await watcher.commandHandler(ReceiveUTXOCommand(
+      walletId: xpubWalletId,
+      txid: _txid(1),
+      vout: 0,
+      satoshis: BigInt.from(90000),
+      scriptPubKey: _p2pkh(address),
+      address: address,
+      blockHeight: 900,
+      confirmations: 6,
+      initialStatus: UTXOStatus.available,
+    ));
+
+    final replayed = newXpubAggregate();
+    await replayed.preStart();
+    for (final state in [
+      watcher.currentState,
+      replayed.currentState,
+      WalletState.fromMap(watcher.currentState.toMap()),
+    ]) {
+      expect(state.utxos[_key(1)]?.status, UTXOStatus.available, reason: 'the UTXO is kept as received');
+      expect(state.availableBalance, BigInt.zero);
+      expect(state.balance, BigInt.from(90000), reason: 'the buckets count everything the wallet holds');
+    }
+    expect(watcher.getAvailableUTXOs(watcher.currentState), isEmpty);
+    expect(() => watcher.selectUTXOsForAmount(watcher.currentState, BigInt.from(1000)), throwsA(isA<StateError>()));
+    expect(WalletBalances.noneSelectableReason(watcher.currentState, noneMessage: 'No funds'),
+        'No funds: the wallet is watch-only (xpub) and holds no key for its 1 unspent UTXO(s)');
+
+    final storage = await project();
+    expect((await storage.getUTXOs(xpubWalletId)).map((u) => u.key), [_key(1)], reason: 'the row is kept');
+    expect(await storage.getPaymentUTXOs(xpubWalletId), isNotEmpty, reason: 'a payment UTXO, not a plugin one');
+    expect(await storage.getBalance(xpubWalletId), BigInt.zero);
+    expect(await storage.getWatchOnlyBalance(xpubWalletId), BigInt.from(90000));
+    final row = (await storage.getWallet(xpubWalletId))!['metadata'] as Map<String, dynamic>;
+    expect(row['totalBalance'], '0');
+    expect(row['confirmedBalance'], '0');
+    expect(row['watchOnlyBalance'], '90000');
   });
 
   test('ecy8: plugin metadata without a pluginId leaves a UTXO spendable on both layers; one naming a pluginId '

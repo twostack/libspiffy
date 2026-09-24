@@ -2,6 +2,7 @@ import '../core/wallet_output_ownership.dart' show isWatchOnlyOutput, unlocksAlo
 import '../utils/network_name.dart';
 import 'bitcoin_utxo.dart';
 import 'wallet_state.dart';
+import 'wallet_type.dart';
 
 /// The balance a wallet UTXO counts towards in the wallet's write model
 /// ([WalletState.confirmedBalance], [WalletState.unconfirmedBalance],
@@ -188,20 +189,23 @@ abstract final class WalletBalances {
         network: NetworkName.toDartsv(state.networkType),
       );
 
-  /// Whether [utxo] is watch-only funds: attributed to the wallet through a
-  /// watch address the wallet holds no key for (bead libspiffy-87a2). Such a
-  /// UTXO is kept (with its transaction and proof) but never funds a
-  /// transaction. A bare multisig UTXO over a watch address is not
-  /// watch-only when the wallet's own keys meet its threshold.
+  /// Whether [utxo] is watch-only funds, which the wallet holds no key for:
+  /// any UTXO of a watch-only (xpub) wallet, which holds no private key at
+  /// all (bead libspiffy-bfs1), or one attributed to the wallet through a
+  /// watch address (bead libspiffy-87a2). Such a UTXO is kept (with its
+  /// transaction and proof) but never funds a transaction. A bare multisig
+  /// UTXO over a watch address is not watch-only when the wallet's own keys
+  /// meet its threshold.
   static bool isWatchOnly(WalletState state, BitcoinUtxo utxo) =>
-      state.watchAddresses.isNotEmpty &&
-      isWatchOnlyOutput(
-        scriptHex: utxo.scriptPubKey,
-        address: utxo.address,
-        isWatchAddress: state.watchAddresses.containsKey,
-        hasKeyFor: state.addresses.containsKey,
-        network: NetworkName.toDartsv(state.networkType),
-      );
+      state.walletType == WalletType.xpub ||
+      (state.watchAddresses.isNotEmpty &&
+          isWatchOnlyOutput(
+            scriptHex: utxo.scriptPubKey,
+            address: utxo.address,
+            isWatchAddress: state.watchAddresses.containsKey,
+            hasKeyFor: state.addresses.containsKey,
+            network: NetworkName.toDartsv(state.networkType),
+          ));
 
   /// Why no UTXO of [state] could be selected: the first exclusion of
   /// [isSpendable] that emptied the wallet's unspent funds, so a caller
@@ -253,6 +257,10 @@ abstract final class WalletBalances {
 
     final ownKeyed = ownFunds.where((u) => !isWatchOnly(state, u)).toList();
     if (ownKeyed.isEmpty) {
+      if (state.walletType == WalletType.xpub) {
+        return '$noneMessage: the wallet is watch-only (xpub) and holds no key for its '
+            '${ownFunds.length} unspent UTXO(s)';
+      }
       return '$noneMessage: the ${ownFunds.length} unspent UTXO(s) are at watch addresses, '
           'watch-only funds the wallet holds no key for';
     }

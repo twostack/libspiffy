@@ -185,6 +185,9 @@ class InMemoryWalletStorage implements WalletStorage {
     _walletMetadata[walletId] = {
       'walletId': walletId,
       'name': name,
+      // Set when the row is created and never changed, as on every backend
+      // (bead libspiffy-bfs1).
+      'walletType': existing?['walletType'] ?? metadata?['walletType'] ?? 'hd',
       'rootAddress': rootAddress ?? existing?['rootAddress'],
       'network': network,
       'networkType': network, // legacy key

@@ -57,6 +57,23 @@ void defineWalletMetadataTypesContract(
       expect((await s.getWallet(wallet))!['network'], 'testnet');
     });
 
+    // Bead libspiffy-bfs1: the read side's balances ask the row's
+    // `walletType` whether the wallet holds keys at all. Postgres wrote 'hd'
+    // for every wallet and the in-memory backend wrote no `walletType`, so an
+    // xpub wallet's money was spendable there.
+    test('the wallet type given on creation is the row\'s walletType, kept by a later update', () async {
+      final s = storage();
+      final wallet = 'wmt-type-${unique()}';
+      await s.storeWallet(wallet, 'W', networkType: 'testnet', metadata: {'walletType': 'xpub', 'totalBalance': '0'});
+      expect((await s.getWallet(wallet))!['walletType'], 'xpub');
+      await s.storeWallet(wallet, 'W', metadata: {'totalBalance': '5'});
+      expect((await s.getWallet(wallet))!['walletType'], 'xpub');
+
+      final plain = 'wmt-type-hd-${unique()}';
+      await s.storeWallet(plain, 'W', networkType: 'testnet');
+      expect((await s.getWallet(plain))!['walletType'], 'hd', reason: 'a row created without a type');
+    });
+
     test('a value that cannot be read as its type, or is not JSON, is rejected naming its key; nothing is written',
         () async {
       final s = storage();

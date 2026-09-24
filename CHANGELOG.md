@@ -1,3 +1,18 @@
+## Unreleased
+
+### Fixed
+
+- **An xpub (watch-only) wallet's money was reported as spendable.** Such a
+  wallet holds no private key, yet `WalletState.availableBalance`,
+  `BalanceResponse.totalBalance`, `ReadModelStorage.getBalance` and the
+  wallet row's balances counted its UTXOs, coin selection picked them, and
+  signing then failed. Every UTXO of an xpub wallet is now watch-only funds on
+  both layers: kept, reported as `watchOnlyBalance`, never spent (bead
+  libspiffy-bfs1).
+- **The Postgres wallet row recorded every wallet as `hd`**, and the
+  in-memory row had no `walletType` at all. `getWallet(id)['walletType']` is
+  now the type the wallet was created with, on every backend.
+
 ## 2.0.0
 
 The dependency upgrade, the audit it prompted, and the work of closing that

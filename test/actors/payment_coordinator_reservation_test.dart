@@ -378,6 +378,12 @@ class _UtxoOnlyStorage implements ReadModelStorage {
   Future<List<BitcoinUtxo>> getPaymentUTXOs(String walletId) async =>
       List.of(_utxos[walletId] ?? const []);
 
+  /// A wallet that holds keys: an xpub wallet's UTXOs are all watch-only
+  /// (bead libspiffy-bfs1).
+  @override
+  Future<Map<String, dynamic>?> getWallet(String walletId) async =>
+      {'walletId': walletId, 'walletType': 'wif', 'network': 'testnet'};
+
   /// No watch addresses: the payment coordinator leaves watch-only UTXOs
   /// out (bead libspiffy-87a2).
   @override

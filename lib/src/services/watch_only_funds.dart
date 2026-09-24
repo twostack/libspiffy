@@ -1,15 +1,19 @@
-/// Watch-only funds (bead libspiffy-87a2): wallet UTXOs at watch addresses.
+/// Watch-only funds: wallet UTXOs the wallet holds no key for. Either a
+/// watch address received them (bead libspiffy-87a2), or they belong to a
+/// watch-only (xpub) wallet, which holds no key at all (bead libspiffy-bfs1).
 ///
 /// A watch address is attributed to its wallet, so a payment to it is
 /// recorded as a wallet UTXO (with its transaction and proof), but the wallet
-/// holds no key for it. Such a UTXO is kept and reported, never selected to
+/// holds no key for it. An xpub wallet derives its addresses from the
+/// payee's extended public key and records what they receive, for instance a
+/// service taking payments for an offline payee (spv-understanding.md,
+/// "Payment modes"). Such a UTXO is kept and reported, never selected to
 /// fund a transaction and not counted as spendable balance.
 library;
 
-import 'package:dartsv/dartsv.dart' as dartsv;
-
 import '../core/wallet_output_ownership.dart';
 import '../models/bitcoin_utxo.dart';
+import '../models/wallet_type.dart';
 import '../storage/read_model_storage.dart';
 import '../utils/network_name.dart';
 
@@ -19,8 +23,7 @@ class SignableUtxos {
   /// UTXOs the wallet can spend with its own keys, in their original order.
   final List<BitcoinUtxo> signable;
 
-  /// UTXOs at watch addresses (see [isWatchOnlyOutput]), in their original
-  /// order.
+  /// Watch-only UTXOs ([BalanceUtxos.watchOnly]), in their original order.
   final List<BitcoinUtxo> watchOnly;
 
   /// UTXOs the wallet cannot unlock on its own
@@ -33,12 +36,12 @@ class SignableUtxos {
   /// Total value of [watchOnly].
   BigInt get watchOnlySatoshis => watchOnly.fold(BigInt.zero, (sum, u) => sum + u.satoshis);
 
-  /// ' (N satoshis in M UTXO(s) at watch addresses are watch-only: the
-  /// wallet holds no key for them)', or '' when there are none. Appended to
-  /// a funding failure so it names funds the wallet cannot spend.
+  /// ' (N satoshis in M UTXO(s) are watch-only funds: the wallet holds no
+  /// key for them)', or '' when there are none. Appended to a funding
+  /// failure so it names funds the wallet cannot spend.
   String get watchOnlyNote => watchOnly.isEmpty
       ? ''
-      : ' ($watchOnlySatoshis satoshis in ${watchOnly.length} UTXO(s) at watch addresses '
+      : ' ($watchOnlySatoshis satoshis in ${watchOnly.length} UTXO(s) '
           'are watch-only funds: the wallet holds no key for them)';
 
   /// [watchOnlyNote], followed by ' (N satoshis in M UTXO(s) need a
@@ -62,11 +65,6 @@ Future<SignableUtxos> splitWatchOnlyUtxos(ReadModelStorage storage, String walle
   return SignableUtxos(split.spendable, split.watchOnly, split.notSpendableAlone);
 }
 
-Future<String?> _walletNetwork(ReadModelStorage storage, String walletId) async {
-  final wallet = await storage.getWallet(walletId);
-  return (wallet?['network'] ?? wallet?['networkType']) as String?;
-}
-
 /// A wallet's UTXOs as the read side's balances count them (beads
 /// libspiffy-vsap, libspiffy-0k8, libspiffy-kfvv): spendable, watch-only,
 /// and UTXOs the wallet cannot unlock alone.
@@ -74,8 +72,9 @@ class BalanceUtxos {
   /// UTXOs the wallet can spend with its own keys, in their original order.
   final List<BitcoinUtxo> spendable;
 
-  /// UTXOs the wallet holds no key for because a key they need is a watch
-  /// address ([isWatchOnlyOutput]), in their original order.
+  /// UTXOs the wallet holds no key for: every UTXO of a watch-only (xpub)
+  /// wallet (bead libspiffy-bfs1), and otherwise those for which a key they
+  /// need is a watch address ([isWatchOnlyOutput]). In their original order.
   final List<BitcoinUtxo> watchOnly;
 
   /// UTXOs the wallet cannot build the whole unlocking script for
@@ -101,16 +100,23 @@ class BalanceUtxos {
 /// read-side balance counts them ([BalanceUtxos]). The wallet aggregate's
 /// rule is `WalletBalances.isSpendable`; spv-understanding.md, "Balances".
 ///
-/// Watch addresses come from the read model's `watch` address rows. The row
-/// is written from the wallet's WatchAddressAddedEvent, which precedes every
-/// UTXO the wallet attributes to that address in the same journal, so a UTXO
-/// row at a watch address never exists without its address row. The keys
-/// the wallet holds come from its other address rows. Costs one address
-/// query, plus one wallet read and one batch address check when a bare
-/// multisig or P2PK UTXO is among [utxos]. Leaving out plugin-managed UTXOs
-/// is the caller's part.
+/// An xpub wallet's row names its type (`walletType`, written when the row
+/// is created), and every UTXO of such a wallet is watch-only: the wallet
+/// holds no private key. Watch addresses come from the read model's `watch`
+/// address rows. The row is written from the wallet's WatchAddressAddedEvent,
+/// which precedes every UTXO the wallet attributes to that address in the
+/// same journal, so a UTXO row at a watch address never exists without its
+/// address row. The keys the wallet holds come from its other address rows.
+/// Costs one wallet read and one address query, plus one batch address check
+/// when a bare multisig or P2PK UTXO is among [utxos]. Leaving out
+/// plugin-managed UTXOs is the caller's part.
 Future<BalanceUtxos> splitBalanceUtxos(ReadModelStorage storage, String walletId, List<BitcoinUtxo> utxos) async {
   if (utxos.isEmpty) return const BalanceUtxos([], [], []);
+  final wallet = await storage.getWallet(walletId);
+  if (wallet?['walletType'] == WalletType.xpub.toStorageString()) {
+    return BalanceUtxos(const [], List.of(utxos), const []);
+  }
+  final network = NetworkName.toDartsv((wallet?['network'] ?? wallet?['networkType']) as String?);
   final watch = {for (final row in await storage.getAddressesByPurpose(walletId, 'watch')) row.address};
 
   // Every key address of a multisig UTXO and of a P2PK one: whether the
@@ -121,24 +127,23 @@ Future<BalanceUtxos> splitBalanceUtxos(ReadModelStorage storage, String walletId
   // ends with OP_CHECKMULTISIG and a P2PK one with OP_CHECKSIG, which P2PKH
   // is told apart from by its OP_DUP OP_HASH160 prefix; no other script is
   // parsed.
-  dartsv.NetworkType? walletNetwork;
+  var keyScripts = false;
   final keyAddresses = <String>{};
   for (final utxo in utxos) {
     final script = utxo.scriptPubKey.toLowerCase();
     final multisig = script.endsWith('ae') ? BareMultisigScript.parseHex(utxo.scriptPubKey) : null;
     if (multisig != null) {
-      walletNetwork ??= NetworkName.toDartsv(await _walletNetwork(storage, walletId));
-      keyAddresses.addAll(multisig.keyAddresses(walletNetwork).whereType<String>().where((a) => !watch.contains(a)));
+      keyScripts = true;
+      keyAddresses.addAll(multisig.keyAddresses(network).whereType<String>().where((a) => !watch.contains(a)));
       continue;
     }
     if (!script.endsWith('ac') || script.startsWith('76a914')) continue;
-    walletNetwork ??= NetworkName.toDartsv(await _walletNetwork(storage, walletId));
+    keyScripts = true;
     // Both encodings of the key: the wallet may hold it under either
     // (bead libspiffy-abwk), and one batched lookup answers for both.
-    keyAddresses.addAll(p2pkAddresses(utxo.scriptPubKey, walletNetwork).where((a) => !watch.contains(a)));
+    keyAddresses.addAll(p2pkAddresses(utxo.scriptPubKey, network).where((a) => !watch.contains(a)));
   }
-  if (watch.isEmpty && walletNetwork == null) return BalanceUtxos(List.of(utxos), const [], const []);
-  final network = walletNetwork ?? dartsv.NetworkType.TEST; // only multisig and P2PK scripts need it
+  if (watch.isEmpty && !keyScripts) return BalanceUtxos(List.of(utxos), const [], const []);
   final keyed = keyAddresses.isEmpty
       ? const <String>{}
       : {

@@ -9,7 +9,9 @@ import '../postgres_migrations.dart';
 /// from the wallet's anchor key with BRC-42 (`Type42Derivation`). Such an
 /// address is not on the HD tree, so its row has no chain: `chain` becomes
 /// nullable, and the derivation the wallet signs for it with is recorded in
-/// `type42_sender_public_key` and `type42_invoice_number`.
+/// `type42_anchor_public_key`, `type42_anchor_context` (bead libspiffy-fdal:
+/// one anchor per context), `type42_sender_public_key` and
+/// `type42_invoice_number`.
 class V027Type42Addresses extends Migration {
   @override
   int get version => 27;
@@ -22,6 +24,8 @@ class V027Type42Addresses extends Migration {
     await conn.execute('ALTER TABLE addresses ALTER COLUMN chain DROP NOT NULL');
     await conn.execute('ALTER TABLE addresses ADD COLUMN IF NOT EXISTS type42_sender_public_key TEXT');
     await conn.execute('ALTER TABLE addresses ADD COLUMN IF NOT EXISTS type42_invoice_number TEXT');
+    await conn.execute('ALTER TABLE addresses ADD COLUMN IF NOT EXISTS type42_anchor_public_key TEXT');
+    await conn.execute('ALTER TABLE addresses ADD COLUMN IF NOT EXISTS type42_anchor_context TEXT');
   }
 
   /// Refused while a type-42 row exists: a v026 schema cannot say where its
@@ -35,6 +39,8 @@ class V027Type42Addresses extends Migration {
       throw StateError('Cannot revert v027: $count address row(s) record a type-42 derivation, '
           'which a v026 schema has no place for');
     }
+    await conn.execute('ALTER TABLE addresses DROP COLUMN IF EXISTS type42_anchor_context');
+    await conn.execute('ALTER TABLE addresses DROP COLUMN IF EXISTS type42_anchor_public_key');
     await conn.execute('ALTER TABLE addresses DROP COLUMN IF EXISTS type42_invoice_number');
     await conn.execute('ALTER TABLE addresses DROP COLUMN IF EXISTS type42_sender_public_key');
     await conn.execute('ALTER TABLE addresses ALTER COLUMN chain SET NOT NULL');

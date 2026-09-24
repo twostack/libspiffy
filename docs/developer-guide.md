@@ -288,16 +288,18 @@ Without the index the import is refused: the payment pays none of the wallet's a
 
 ### Paying an Offline Payee Directly (Type-42)
 
-A payer can pay a payee that is offline with no service in between (spv-understanding.md, "Payment modes"). The payee publishes one public key, its **anchor key**, and the payer derives a fresh address from it for every payment with BRC-42 ("type-42").
+A payer can pay a payee that is offline with no service in between (spv-understanding.md, "Payment modes"). The payee publishes a public key, its **anchor key**, and the payer derives a fresh address from it for every payment with BRC-42 ("type-42").
 
-The payee's side, once: get the anchor key and publish it, bound to the payee's identity. An xpub wallet and a WIF wallet have none.
+The payee's side, once per identity: issue the anchor for that identity and publish it, bound to the identity. The **anchor context** is opaque bytes of your choosing. A wallet issues one anchor per context, so identities sharing a wallet publish unrelated anchors. Put a rotation epoch in the context (`identityKey ‖ epoch`, say) to be able to retire an anchor: bump the epoch and publish the new anchor with it. An empty context is refused. An xpub wallet and a WIF wallet have no anchors.
 
 ```dart
-coordinator.tell(GetAnchorPublicKeyQuery(walletId: 'carol'));
-// → AnchorPublicKeyEvent(publicKey, success, error)
+final context = [...identityKey, ...epochBytes];
+coordinator.tell(IssueAnchorKeyCommand(walletId: 'carol', anchorContext: context));
+// → AnchorPublicKeyEvent(publicKey, success, error); the same context always gives the same anchor
 
 coordinator.tell(SignWithAnchorKeyCommand(
   walletId: 'carol',
+  anchorContext: context,
   message: utf8.encode('overmedia:register_payment_pubkey:$peerId:$anchorKey'),
 ));
 // → AnchorSignedEvent(publicKey, signatureDer, success, error): ECDSA over SHA-256(message)
@@ -306,7 +308,11 @@ coordinator.tell(SignWithAnchorKeyCommand(
 The payer's side: derive a destination, pay it, broadcast it yourself (the payee is not there to), and hand it over once it is mined.
 
 ```dart
-coordinator.tell(DeriveType42DestinationCommand(walletId: 'alice', recipientPublicKey: anchorKey));
+coordinator.tell(DeriveType42DestinationCommand(
+  walletId: 'alice',
+  anchorPublicKey: anchorKey,
+  anchorContext: publishedContext, // the context published with the anchor, when there is one
+));
 // → Type42DestinationEvent(destination: Type42Destination(address, derivation, ...))
 
 coordinator.tell(PayInvoiceCommand(
@@ -322,7 +328,7 @@ coordinator.tell(ExportTransactionQuery(walletId: 'alice', txid: txid));
 // → TransactionExportedEvent(beef, type42Derivations)
 ```
 
-Hand `beef` and `type42Derivations` to the payee out of band. The payee's wallet imports them. It derives each address from its own anchor key, records the derivation (never a private key), and can then spend the payment like any other:
+Hand `beef` and `type42Derivations` to the payee out of band. Each derivation names the anchor, its context (when the payer passed it), the payer key and the invoice number. The payee's wallet imports them. It finds the anchor among those it issued, or derives it from the context, and refuses a context that does not give that anchor. It then derives each address from its own anchor key, records the derivation (never a private key), and can spend the payment like any other:
 
 ```dart
 coordinator.tell(ImportTransactionCommand(
@@ -334,7 +340,7 @@ coordinator.tell(ImportTransactionCommand(
 
 If the payee is online before the payment is mined, it can take it in unproven, as any payment handed to it: `ValidateBEEFCommand(..., type42Derivations: [destination.derivation])`.
 
-**Recovery has a limit.** A type-42 output cannot be found from the seed. A wallet restored from its journal keeps it. A wallet restored from its seed alone does not see it: the import without the derivations is refused as unrelated. Keep the payer's hand-off, and give it again to recover the payment.
+**Recovery has a limit.** A type-42 output cannot be found from the seed. A wallet restored from its journal keeps it. A wallet restored from its seed alone does not see it: the import without the derivations is refused as unrelated. Keep the payer's hand-off, and give it again to recover the payment. A restored wallet has issued no anchors yet, so the hand-off must name the anchor's context, or the app issues its anchors again first.
 
 ## Sending Payments
 
@@ -653,7 +659,7 @@ Key points for coordinator users:
 | `TransactionsResponse` | In response to `GetTransactionsQuery` |
 | `TransactionDetailResponse` | In response to `GetTransactionDetailQuery` |
 | `TransactionExportedEvent` | In response to `ExportTransactionQuery`: a proven transaction as BEEF, with its delegated indices and type-42 derivations |
-| `AnchorPublicKeyEvent` | In response to `GetAnchorPublicKeyQuery`: the wallet's anchor key |
+| `AnchorPublicKeyEvent` | In response to `IssueAnchorKeyCommand`: the wallet's anchor key for a context |
 | `AnchorSignedEvent` | In response to `SignWithAnchorKeyCommand` |
 | `Type42DestinationEvent` | In response to `DeriveType42DestinationCommand`: an address to pay and its hand-off |
 | `DeferredPaymentsResponse` | In response to `GetDeferredPaymentsQuery` |

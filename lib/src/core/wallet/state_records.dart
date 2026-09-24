@@ -43,10 +43,14 @@ abstract final class WalletMetadataKeys {
   static const String addressType42 = 'address_type42';
 
   /// address -> type-42 destination the wallet derived as a payer
-  /// (`Type42Destination.toMap`): the recipient's anchor key, the payer key
-  /// it used and the invoice number, which is the hand-off the recipient
-  /// takes the payment in with.
+  /// (`Type42Destination.toMap`): the recipient's anchor key and context,
+  /// the payer key it used and the invoice number, which is the hand-off the
+  /// recipient takes the payment in with.
   static const String type42Destinations = 'type42_destinations';
+
+  /// anchor public key -> the context (hex) the wallet issued it for (bead
+  /// libspiffy-fdal).
+  static const String type42Anchors = 'type42_anchors';
 
   /// Number of payer keys (`m/3'/1'/n'`) the wallet has used for type-42
   /// destinations: the next one is at this index.
@@ -94,6 +98,7 @@ abstract final class WalletMetadataKeys {
     addressType42,
     type42Destinations,
     type42PayerKeys,
+    type42Anchors,
     network,
     ...readModel,
   };

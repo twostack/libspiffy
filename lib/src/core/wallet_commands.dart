@@ -330,59 +330,80 @@ class RecordType42AddressesCommand extends WalletCommand {
 }
 
 /// Derives a type-42 destination for paying the holder of anchor key
-/// [recipientPublicKey] (bead libspiffy-zxkd): the wallet's next payer key
-/// B (`m/3'/1'/n'`, never used twice) and [invoiceNumber] give
-/// `C = A + HMAC-SHA256(ECDH(b, A), invoiceNumber)·G`.
+/// [anchorPublicKey] (beads libspiffy-zxkd, libspiffy-fdal): the wallet's
+/// next payer key B (`m/3'/1'/n'`, never used twice) and [invoiceNumber]
+/// give `C = A + HMAC-SHA256(ECDH(b, A), invoiceNumber)·G`.
 ///
-/// Without an [invoiceNumber] a BRC-29 one is made up with a random
-/// derivation prefix and suffix. The destination is journaled
+/// [anchorContext] is the context the recipient published its anchor for,
+/// when the payer has it; it is passed through into the hand-off
+/// unchecked (the payer cannot check it), and the recipient's wallet checks
+/// it gives A. Without an [invoiceNumber] a BRC-29 one is made up with a
+/// random derivation prefix and suffix. The destination is journaled
 /// ([Type42DestinationDerivedEvent]) so the payer key is not reused and the
 /// hand-off can be given again.
 class DeriveType42DestinationCommand extends WalletCommand {
-  final String recipientPublicKey;
+  final String anchorPublicKey;
+  final List<int>? anchorContext;
   final String? invoiceNumber;
 
   DeriveType42DestinationCommand({
     required super.walletId,
-    required this.recipientPublicKey,
+    required this.anchorPublicKey,
+    List<int>? anchorContext,
     this.invoiceNumber,
     super.commandId,
     super.timestamp,
     super.metadata,
-  });
+  }) : anchorContext = frozenListOrNull(anchorContext);
 
   @override
   String get commandType => 'DeriveType42DestinationCommand';
 }
 
-/// Asks for the wallet's anchor public key A (`m/3'/0'`), the key payers
-/// derive type-42 destinations from (bead libspiffy-zxkd). Journals
-/// nothing.
-class GetAnchorPublicKeyCommand extends WalletCommand {
-  GetAnchorPublicKeyCommand({required super.walletId, super.commandId, super.timestamp, super.metadata});
+/// Issues the wallet's anchor key for [anchorContext] (bead
+/// libspiffy-fdal): the key payers derive type-42 destinations from, one
+/// per context (`m/3'/0'/k1'/k2'`), so identities sharing the wallet
+/// publish unrelated anchors. The context is opaque bytes, such as an
+/// identity key followed by a rotation epoch; an empty one is refused.
+/// Journals the anchor the first time it is issued for a context
+/// ([AnchorKeyIssuedEvent]), so a hand-off that names only the anchor is
+/// matched to its context; answers from that record after.
+class IssueAnchorKeyCommand extends WalletCommand {
+  final List<int> anchorContext;
+
+  IssueAnchorKeyCommand({
+    required super.walletId,
+    required List<int> anchorContext,
+    super.commandId,
+    super.timestamp,
+    super.metadata,
+  }) : anchorContext = frozenList(anchorContext);
 
   @override
-  String get commandType => 'GetAnchorPublicKeyCommand';
+  String get commandType => 'IssueAnchorKeyCommand';
 }
 
-/// Signs `SHA-256(message)` with the wallet's anchor key, for binding the
-/// anchor key to an identity (a registration such as NodeCast's). Journals
-/// nothing.
+/// Signs `SHA-256(message)` with the wallet's anchor key for
+/// [anchorContext], for binding that anchor to an identity (a registration
+/// such as NodeCast's). Journals nothing.
 ///
 /// The message is always hashed here, so no caller can have the anchor key
 /// sign a digest of its choosing (a transaction's sighash, say); a message
 /// should still name its purpose, so that a signature for one is no
 /// signature for another.
 class SignWithAnchorKeyCommand extends WalletCommand {
+  final List<int> anchorContext;
   final List<int> message;
 
   SignWithAnchorKeyCommand({
     required super.walletId,
+    required List<int> anchorContext,
     required List<int> message,
     super.commandId,
     super.timestamp,
     super.metadata,
-  }) : message = frozenList(message);
+  })  : anchorContext = frozenList(anchorContext),
+        message = frozenList(message);
 
   @override
   String get commandType => 'SignWithAnchorKeyCommand';

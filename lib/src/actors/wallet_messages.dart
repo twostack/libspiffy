@@ -1097,8 +1097,9 @@ class Type42DestinationDerivedResponse extends ActorResponse {
       : super(metadata: {'walletId': walletId, 'success': success});
 }
 
-/// Reply of the wallet aggregate to GetAnchorPublicKeyCommand and
-/// SignWithAnchorKeyCommand (bead libspiffy-zxkd): the anchor public key
+/// Reply of the wallet aggregate to IssueAnchorKeyCommand and
+/// SignWithAnchorKeyCommand (beads libspiffy-zxkd, libspiffy-fdal): the
+/// anchor public key
 /// (compressed hex), and for a signing request the DER signature (hex) of
 /// SHA-256 of the message. Empty on failure.
 class AnchorKeyResponse extends ActorResponse {

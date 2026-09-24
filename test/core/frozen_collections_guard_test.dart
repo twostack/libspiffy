@@ -76,8 +76,10 @@ const _sources = <String, String?>{
 /// `Type42AddressesRecordedResponse.addresses` and `.journaled`,
 /// `Type42AddressesResponse.derivations`, and `.type42Derivations` of
 /// `ValidateBEEFCommand`, `ImportTransactionCommand` and
-/// `TransactionExportedEvent`).
-const _expectedFields = 155;
+/// `TransactionExportedEvent`), 161 with an anchor per context (fdal:
+/// `.anchorContext` of both `IssueAnchorKeyCommand`s, both
+/// `SignWithAnchorKeyCommand`s and both `DeriveType42DestinationCommand`s).
+const _expectedFields = 161;
 
 final _classStart = RegExp(r'^(?:abstract |sealed )?class (\w+)', multiLine: true);
 final _field = RegExp(r'^  final ((?:List|Map|Set)<.*?>\??) (\w+);(?: *//.*)?$', multiLine: true);

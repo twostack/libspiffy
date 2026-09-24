@@ -3,42 +3,77 @@
 /// modes").
 library;
 
+import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
 
 import 'address_chain.dart';
 
-/// A payment destination a payer derived from the payee's anchor key with
-/// BRC-42 (bead libspiffy-zxkd): the payer's public key [senderPublicKey]
-/// (compressed, hex) and the [invoiceNumber] the two agreed.
+/// The type-42 (BRC-42) derivation of a payment destination (beads
+/// libspiffy-zxkd, libspiffy-fdal): the payee's anchor key
+/// [anchorPublicKey] A, the [anchorContext] it was issued for, the payer's
+/// key [senderPublicKey] B, and the [invoiceNumber] the two agreed. This is
+/// the hand-off a payer gives with the payment.
 ///
-/// With the anchor private key a, the payee's wallet derives the
-/// destination `C = A + t·G` and its spend key `c = a + t`, where
+/// A wallet has one anchor per context (`WalletKeys.anchorPath`), so
+/// identities that share a wallet publish unrelated anchors. With the
+/// anchor private key a, the payee's wallet derives the destination
+/// `C = A + t·G` and its spend key `c = a + t`, where
 /// `t = HMAC-SHA256(ECDH(a, B), invoiceNumber)` ([Type42]). This record is
 /// what the wallet keeps for such an address, and all it keeps: the child
 /// private key is derived when a spend is signed and never stored, because
 /// the payer knows t, and c with t gives away a.
+///
+/// [anchorContext] is null in a hand-off whose payer did not have it; the
+/// payee's wallet then finds the context among the anchors it issued. The
+/// record the payee's wallet keeps always has it.
 class Type42Derivation {
+  /// The payee's anchor key A, compressed (33 bytes), lower-case hex.
+  final String anchorPublicKey;
+
+  /// The opaque bytes the anchor was issued for, lower-case hex.
+  final String? anchorContext;
+
   /// The payer's public key B, compressed (33 bytes), lower-case hex.
   final String senderPublicKey;
   final String invoiceNumber;
 
-  /// Throws [ArgumentError] unless [senderPublicKey] is a compressed point
-  /// on secp256k1 and [invoiceNumber] is 1 to [maxInvoiceNumberLength]
-  /// characters. The key is stored as it is re-encoded, so one key has one
+  /// Throws [ArgumentError] unless both keys are compressed points on
+  /// secp256k1, [anchorContext] (when given) is 1 to [maxAnchorContextLength]
+  /// bytes, and [invoiceNumber] is 1 to [maxInvoiceNumberLength] characters.
+  /// Keys and context are stored as they are re-encoded, so each has one
   /// spelling.
-  factory Type42Derivation({required String senderPublicKey, required String invoiceNumber}) {
+  factory Type42Derivation({
+    required String anchorPublicKey,
+    List<int>? anchorContext,
+    required String senderPublicKey,
+    required String invoiceNumber,
+  }) {
     if (invoiceNumber.isEmpty || invoiceNumber.length > maxInvoiceNumberLength) {
       throw ArgumentError.value(
           invoiceNumber, 'invoiceNumber', 'must be 1 to $maxInvoiceNumberLength characters');
     }
-    return Type42Derivation._(publicKeyHex(senderPublicKey, 'senderPublicKey'), invoiceNumber);
+    return Type42Derivation._(
+      publicKeyHex(anchorPublicKey, 'anchorPublicKey'),
+      anchorContext == null ? null : anchorContextHex(anchorContext),
+      publicKeyHex(senderPublicKey, 'senderPublicKey'),
+      invoiceNumber,
+    );
   }
 
-  const Type42Derivation._(this.senderPublicKey, this.invoiceNumber);
+  const Type42Derivation._(this.anchorPublicKey, this.anchorContext, this.senderPublicKey, this.invoiceNumber);
+
+  /// This derivation with its anchor's context [contextHex] (as
+  /// [anchorContextHex] spells it).
+  Type42Derivation withAnchorContext(String contextHex) =>
+      Type42Derivation._(anchorPublicKey, contextHex, senderPublicKey, invoiceNumber);
 
   /// The longest invoice number taken: BRC-43's 800-character key ID behind
   /// the security level and a 400-character protocol name.
   static const int maxInvoiceNumberLength = 1203;
+
+  /// The longest anchor context taken, in bytes: room for an identity key,
+  /// an epoch and more, without letting a context grow every record.
+  static const int maxAnchorContextLength = 256;
 
   /// BRC-29's protocol ID: the invoice number of a BRC-29 payment is
   /// `2-3241645161d8-<derivationPrefix> <derivationSuffix>` (BRC-43
@@ -49,6 +84,17 @@ class Type42Derivation {
   /// [derivationSuffix], as go-sdk's key deriver spells it.
   static String brc29InvoiceNumber(String derivationPrefix, String derivationSuffix) =>
       '2-$brc29Protocol-$derivationPrefix $derivationSuffix';
+
+  /// [context] in lower-case hex. Throws [ArgumentError] when it is empty or
+  /// longer than [maxAnchorContextLength] bytes: an anchor is never issued
+  /// for no context, because every caller that forgot one would share it.
+  static String anchorContextHex(List<int> context) {
+    if (context.isEmpty || context.length > maxAnchorContextLength) {
+      throw ArgumentError.value(
+          context.length, 'anchorContext', 'must be 1 to $maxAnchorContextLength bytes');
+    }
+    return hex.encode(context);
+  }
 
   /// [hex] as a compressed public key, re-encoded in lower-case hex. Throws
   /// [ArgumentError] naming [name] when it is not a compressed point on
@@ -65,76 +111,76 @@ class Type42Derivation {
     }
   }
 
-  Map<String, String> toMap() => {'senderPublicKey': senderPublicKey, 'invoiceNumber': invoiceNumber};
+  Map<String, String> toMap() => {
+        'anchorPublicKey': anchorPublicKey,
+        if (anchorContext != null) 'anchorContext': anchorContext!,
+        'senderPublicKey': senderPublicKey,
+        'invoiceNumber': invoiceNumber,
+      };
 
   /// Reads [toMap]'s output; null for anything else (a snapshot's record
   /// may come back as an untyped map).
   static Type42Derivation? fromMap(Object? map) {
     if (map is! Map) return null;
+    final anchor = map['anchorPublicKey'];
+    final context = map['anchorContext'];
     final sender = map['senderPublicKey'];
     final invoice = map['invoiceNumber'];
-    if (sender is! String || invoice is! String) return null;
-    return Type42Derivation._(sender, invoice);
+    if (anchor is! String || (context != null && context is! String) || sender is! String || invoice is! String) {
+      return null;
+    }
+    return Type42Derivation._(anchor, context as String?, sender, invoice);
   }
 
   @override
   bool operator ==(Object other) =>
-      other is Type42Derivation && other.senderPublicKey == senderPublicKey && other.invoiceNumber == invoiceNumber;
+      other is Type42Derivation &&
+      other.anchorPublicKey == anchorPublicKey &&
+      other.anchorContext == anchorContext &&
+      other.senderPublicKey == senderPublicKey &&
+      other.invoiceNumber == invoiceNumber;
 
   @override
-  int get hashCode => Object.hash(senderPublicKey, invoiceNumber);
+  int get hashCode => Object.hash(anchorPublicKey, anchorContext, senderPublicKey, invoiceNumber);
 
   @override
-  String toString() => 'type-42($senderPublicKey, $invoiceNumber)';
+  String toString() => 'type-42($anchorPublicKey${anchorContext == null ? '' : '/$anchorContext'}, '
+      '$senderPublicKey, $invoiceNumber)';
 }
 
 /// A type-42 destination the wallet derived as a payer (bead
-/// libspiffy-zxkd): [address] pays the recipient whose anchor key is
-/// [recipientPublicKey], and [derivation] (the wallet's payer key B at
-/// `m/3'/1'/{payerKeyIndex}'` and the invoice number) is what the recipient
-/// derives it from, so it is the hand-off that goes with the payment.
+/// libspiffy-zxkd): [address] pays the holder of the anchor key
+/// [Type42Derivation.anchorPublicKey], and [derivation] (with the wallet's
+/// payer key B at `m/3'/1'/{payerKeyIndex}'`) is what the recipient derives
+/// it from, so it is the hand-off that goes with the payment.
 class Type42Destination {
   final String address;
-  final String recipientPublicKey;
   final Type42Derivation derivation;
   final int payerKeyIndex;
 
-  const Type42Destination({
-    required this.address,
-    required this.recipientPublicKey,
-    required this.derivation,
-    required this.payerKeyIndex,
-  });
+  const Type42Destination({required this.address, required this.derivation, required this.payerKeyIndex});
 
-  Map<String, Object> toMap() => {
-        'address': address,
-        'recipientPublicKey': recipientPublicKey,
-        ...derivation.toMap(),
-        'payerKeyIndex': payerKeyIndex,
-      };
+  Map<String, Object> toMap() => {'address': address, ...derivation.toMap(), 'payerKeyIndex': payerKeyIndex};
 
   /// Reads [toMap]'s output; null for anything else.
   static Type42Destination? fromMap(Object? map) {
     if (map is! Map) return null;
     final derivation = Type42Derivation.fromMap(map);
     final address = map['address'];
-    final recipient = map['recipientPublicKey'];
     final index = map['payerKeyIndex'];
-    if (derivation == null || address is! String || recipient is! String || index is! int) return null;
-    return Type42Destination(
-        address: address, recipientPublicKey: recipient, derivation: derivation, payerKeyIndex: index);
+    if (derivation == null || address is! String || index is! int) return null;
+    return Type42Destination(address: address, derivation: derivation, payerKeyIndex: index);
   }
 
   @override
   bool operator ==(Object other) =>
       other is Type42Destination &&
       other.address == address &&
-      other.recipientPublicKey == recipientPublicKey &&
       other.derivation == derivation &&
       other.payerKeyIndex == payerKeyIndex;
 
   @override
-  int get hashCode => Object.hash(address, recipientPublicKey, derivation, payerKeyIndex);
+  int get hashCode => Object.hash(address, derivation, payerKeyIndex);
 
   @override
   String toString() => '$address <- $derivation';

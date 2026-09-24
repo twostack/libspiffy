@@ -32,20 +32,29 @@
   libspiffy-zxkd; spv-understanding.md, "Payment modes"). No service and no
   xpub: the payer derives the address from the payee's published anchor
   key, broadcasts the payment itself and hands it over.
-  - The **anchor key** of a wallet that holds its keys, at the hardened path
-    `m/3'/0'`: `GetAnchorPublicKeyQuery` / `AnchorPublicKeyEvent`, and
-    `SignWithAnchorKeyCommand` / `AnchorSignedEvent` (ECDSA over SHA-256 of
-    a message, RFC 6979, low S; byte for byte go-sdk's).
+  - **Anchor keys, one per anchor context** (bead libspiffy-fdal), for a
+    wallet that holds its keys: `m/3'/0'/k1'/k2'`, k1 and k2 from
+    `SHA-256("libspiffy/type42-anchor" ‖ context)`. Identities sharing a
+    wallet publish unrelated anchors; a context carrying an epoch lets an
+    app rotate one. An empty context is refused. `IssueAnchorKeyCommand` /
+    `AnchorPublicKeyEvent` (journaled once per context,
+    `AnchorKeyIssuedEvent`), and `SignWithAnchorKeyCommand` /
+    `AnchorSignedEvent` (ECDSA over SHA-256 of a message, RFC 6979, low S;
+    byte for byte go-sdk's).
   - `DeriveType42DestinationCommand` / `Type42DestinationEvent`: a
-    destination for a recipient's anchor key, with a payer key at
-    `m/3'/1'/n'` never used twice, and a BRC-29 invoice number unless one is
-    given. Journaled (`Type42DestinationDerivedEvent`), so a restarted
-    wallet does not reuse a payer key.
+    destination for a recipient's anchor key (and the context it was
+    published with, passed through), with a payer key at `m/3'/1'/n'` never
+    used twice, and a BRC-29 invoice number unless one is given. Journaled
+    (`Type42DestinationDerivedEvent`), so a restarted wallet does not reuse
+    a payer key.
   - `ImportTransactionCommand.type42Derivations` and
-    `ValidateBEEFCommand.type42Derivations`: the payee's wallet derives each
-    destination from its own anchor key, journals the derivation
-    (`Type42AddressRecordedEvent`; never a private key), takes the payment
-    in and signs for it with the anchor key's type-42 child.
+    `ValidateBEEFCommand.type42Derivations`: the hand-off {anchor, context,
+    payer key, invoice number}. The payee's wallet finds the anchor's
+    context (its issued anchors first, else the hand-off's, refused unless
+    it gives the anchor), derives each destination from its own anchor key,
+    journals the derivation (`Type42AddressRecordedEvent`; never a private
+    key), takes the payment in and signs for it with the anchor key's
+    type-42 child.
   - `TransactionExportedEvent.type42Derivations`: the hand-off for each
     type-42 destination the exported transaction pays, on the payer's side
     and the payee's.

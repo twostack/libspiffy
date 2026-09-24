@@ -1127,6 +1127,11 @@ class AddressEntity {
   /// The invoice number of a type-42 address, with [type42SenderPublicKey].
   String? type42InvoiceNumber;
 
+  /// The anchor key (compressed hex) a type-42 address was derived from, and
+  /// the context (hex) the wallet issued it for (bead libspiffy-fdal).
+  String? type42AnchorPublicKey;
+  String? type42AnchorContext;
+
   /// Address label (user-friendly name)
   String? label;
 
@@ -1165,6 +1170,8 @@ class AddressEntity {
       'isChange': isChange,
       'type42SenderPublicKey': type42SenderPublicKey,
       'type42InvoiceNumber': type42InvoiceNumber,
+      'type42AnchorPublicKey': type42AnchorPublicKey,
+      'type42AnchorContext': type42AnchorContext,
       'label': label,
       'purpose': purpose,
       'firstUsedAt': firstUsedAt?.toIso8601String(),
@@ -1188,6 +1195,8 @@ class AddressEntity {
       ..isChange = json['isChange'] as bool
       ..type42SenderPublicKey = json['type42SenderPublicKey'] as String?
       ..type42InvoiceNumber = json['type42InvoiceNumber'] as String?
+      ..type42AnchorPublicKey = json['type42AnchorPublicKey'] as String?
+      ..type42AnchorContext = json['type42AnchorContext'] as String?
       ..label = json['label'] as String?
       ..purpose = json['purpose'] as String
       ..firstUsedAt = json['firstUsedAt'] != null ? DateTime.parse(json['firstUsedAt'] as String) : null

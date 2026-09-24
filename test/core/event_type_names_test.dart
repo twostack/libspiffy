@@ -25,6 +25,7 @@ const goldenTypeNames = <String, String>{
   'AddressLabelUpdatedEvent': 'wallet.address.label_updated',
   'AddressDiscoveredEvent': 'wallet.address.discovered',
   'WatchAddressAddedEvent': 'wallet.watch_address.added',
+  'AnchorKeyIssuedEvent': 'wallet.anchor_key.issued',
   'Type42AddressRecordedEvent': 'wallet.type42_address.recorded',
   'Type42DestinationDerivedEvent': 'wallet.type42_destination.derived',
   'UTXOReceivedEvent': 'wallet.utxo.received',
@@ -86,7 +87,7 @@ const _senderKey = '02dfcbe35d95b55b5f3168ea8f12717e266ceddf88d04d2ff741272dfb0e
 /// Event types added after the journal stored stable identifiers (audit
 /// 2026-09-14 M8): no release ever stored them under their class name, so
 /// they are registered without a class-name alias.
-const _bornWithStableIds = {'Type42AddressRecordedEvent', 'Type42DestinationDerivedEvent'};
+const _bornWithStableIds = {'AnchorKeyIssuedEvent', 'Type42AddressRecordedEvent', 'Type42DestinationDerivedEvent'};
 
 /// The samples a journal written before M8 could hold.
 Iterable<MapEntry<String, Event>> _legacySamples() =>
@@ -118,18 +119,24 @@ Map<String, Event> sampleEvents() => <String, Event>{
       'WatchAddressAddedEvent': WatchAddressAddedEvent(
           walletId: _w, address: 'addr', scriptType: 'p2pkh', label: 'l',
           registeredAt: _t, reconciled: true, timestamp: _t, version: 6),
+      'AnchorKeyIssuedEvent': AnchorKeyIssuedEvent(
+          walletId: _w, anchorPublicKey: _senderKey, anchorContext: '010203', timestamp: _t, version: 6),
       'Type42AddressRecordedEvent': Type42AddressRecordedEvent(
           walletId: _w,
           address: 'addr',
-          derivation: Type42Derivation(senderPublicKey: _senderKey, invoiceNumber: '2-3241645161d8-a b'),
+          derivation: Type42Derivation(
+              anchorPublicKey: _senderKey,
+              anchorContext: [1, 2, 3],
+              senderPublicKey: _senderKey,
+              invoiceNumber: '2-3241645161d8-a b'),
           timestamp: _t,
           version: 6),
       'Type42DestinationDerivedEvent': Type42DestinationDerivedEvent(
           walletId: _w,
           destination: Type42Destination(
             address: 'addr',
-            recipientPublicKey: _senderKey,
-            derivation: Type42Derivation(senderPublicKey: _senderKey, invoiceNumber: '2-3241645161d8-a b'),
+            derivation: Type42Derivation(
+                anchorPublicKey: _senderKey, senderPublicKey: _senderKey, invoiceNumber: '2-3241645161d8-a b'),
             payerKeyIndex: 3,
           ),
           timestamp: _t,

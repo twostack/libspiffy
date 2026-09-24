@@ -1,12 +1,14 @@
 /// The type-42 hand-off through the coordinator (bead libspiffy-zxkd;
 /// spv-understanding.md, "Payment modes").
 ///
-/// The payee's wallet answers its anchor key (GetAnchorPublicKeyQuery) and
-/// signs a registration with it (SignWithAnchorKeyCommand). A payer derives
-/// a destination from the anchor key (DeriveType42DestinationCommand), and
-/// the payee's wallet takes the proven payment in with the payer's key and
-/// invoice number (ImportTransactionCommand.type42Derivations), deriving
-/// the address itself, and exports it again with them.
+/// The payee's wallet issues its anchor key for an identity
+/// (IssueAnchorKeyCommand) and signs a registration with it
+/// (SignWithAnchorKeyCommand). A payer derives a destination from the
+/// anchor key (DeriveType42DestinationCommand), and the payee's wallet takes
+/// the proven payment in with the hand-off — the anchor and its context,
+/// the payer's key and the invoice number
+/// (ImportTransactionCommand.type42Derivations) — deriving the address
+/// itself, and exports it again with it.
 ///
 /// The block is made up: one transaction, so its merkle root is the txid and
 /// its merkle path is empty. localnet_type42_payment_e2e_test.dart runs the
@@ -35,6 +37,9 @@ import 'isar_test_helper.dart';
 const _payeeMnemonic = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
 const _payerMnemonic = 'legal winner thank year wave sausage worth useful legal winner thank yellow';
 const _height = 1239700;
+
+final _identity = utf8.encode('carol|epoch-0');
+final _otherIdentity = utf8.encode('carol-at-work|epoch-0');
 
 void main() {
   late Directory dir;
@@ -81,16 +86,16 @@ void main() {
     expect((await created).success, isTrue);
   }
 
-  Future<coord.AnchorPublicKeyEvent> anchorKey(String walletId) {
+  Future<coord.AnchorPublicKeyEvent> anchorKey(String walletId, [List<int>? context]) {
     final answer = next<coord.AnchorPublicKeyEvent>((e) => e.walletId == walletId);
-    libspiffy.coordinator.tell(coord.GetAnchorPublicKeyQuery(walletId: walletId));
+    libspiffy.coordinator.tell(coord.IssueAnchorKeyCommand(walletId: walletId, anchorContext: context ?? _identity));
     return answer;
   }
 
-  Future<Type42Destination> destinationFor(String payer, String anchor, {String? invoiceNumber}) async {
+  Future<Type42Destination> destinationFor(String payer, String anchor, {List<int>? context}) async {
     final answer = next<coord.Type42DestinationEvent>((e) => e.walletId == payer);
     libspiffy.coordinator.tell(
-        coord.DeriveType42DestinationCommand(walletId: payer, recipientPublicKey: anchor, invoiceNumber: invoiceNumber));
+        coord.DeriveType42DestinationCommand(walletId: payer, anchorPublicKey: anchor, anchorContext: context));
     final event = await answer;
     expect(event.success, isTrue, reason: event.error);
     return event.destination!;
@@ -143,7 +148,8 @@ void main() {
     return (txid, beef.serialize().toList());
   }
 
-  test('the payee answers its anchor key and signs a registration with it; an xpub wallet has none', () async {
+  test('the payee issues an anchor per identity and signs a registration with it; an xpub wallet has none',
+      () async {
     await createWallet('payee', mnemonic: _payeeMnemonic);
     await createWallet('service', xpub: DartSVCryptoService()
         .deriveHDPublicKey(await DartSVCryptoService().mnemonicToHDPrivateKey(_payeeMnemonic))
@@ -153,10 +159,13 @@ void main() {
     expect(anchor.success, isTrue, reason: anchor.error);
     expect(anchor.publicKey, hasLength(66));
     expect((await anchorKey('payee')).publicKey, anchor.publicKey, reason: 'the anchor key is stable');
+    expect((await anchorKey('payee', _otherIdentity)).publicKey, isNot(anchor.publicKey),
+        reason: 'another identity on the same wallet publishes an unrelated anchor');
 
     final message = utf8.encode('overmedia:register_payment_pubkey:12D3KooWTestPeer:${anchor.publicKey}');
     final signed = next<coord.AnchorSignedEvent>((e) => e.walletId == 'payee');
-    libspiffy.coordinator.tell(coord.SignWithAnchorKeyCommand(walletId: 'payee', message: message));
+    libspiffy.coordinator
+        .tell(coord.SignWithAnchorKeyCommand(walletId: 'payee', anchorContext: _identity, message: message));
     final signature = await signed;
     expect(signature.success, isTrue, reason: signature.error);
     expect(signature.publicKey, anchor.publicKey);
@@ -184,18 +193,21 @@ void main() {
     expect(imported.success, isTrue, reason: imported.error);
     expect((await balance('payee')).confirmedBalance, BigInt.from(60000));
     final row = await storage.getAddressMetadata('payee', destination.address);
-    expect((row!.type42, row.chain, row.keyPath), (destination.derivation, null, Type42KeyPath(destination.derivation)));
+    // The record names the context the wallet issued the anchor for: the
+    // hand-off did not need to.
+    final recorded = destination.derivation.withAnchorContext(hex.encode(_identity));
+    expect((row!.type42, row.chain, row.keyPath), (recorded, null, Type42KeyPath(recorded)));
 
     final exported = next<coord.TransactionExportedEvent>((e) => e.walletId == 'payee' && e.txid == txid);
     libspiffy.coordinator.tell(coord.ExportTransactionQuery(walletId: 'payee', txid: txid));
     final export = await exported;
     expect(export.success, isTrue, reason: export.error);
-    expect(export.type42Derivations, [destination.derivation]);
+    expect(export.type42Derivations, [recorded]);
     expect(export.delegatedIndices, isEmpty);
   });
 
   test('a payment is refused as unrelated without its derivation, with a wrong invoice number, or with another '
-      'payer\'s key; nothing is recorded', () async {
+      'payer\'s key, and a context that does not give the anchor is refused; nothing is recorded', () async {
     await createWallet('payee', mnemonic: _payeeMnemonic);
     await createWallet('payer', mnemonic: _payerMnemonic);
     final anchor = (await anchorKey('payee')).publicKey!;
@@ -205,11 +217,17 @@ void main() {
 
     for (final (what, derivations) in [
       ('no derivation', const <Type42Derivation>[]),
-      ('a wrong invoice number',
-          [Type42Derivation(senderPublicKey: destination.derivation.senderPublicKey, invoiceNumber: 'wrong')]),
+      ('a wrong invoice number', [
+        Type42Derivation(
+            anchorPublicKey: anchor,
+            senderPublicKey: destination.derivation.senderPublicKey,
+            invoiceNumber: 'wrong')
+      ]),
       ('another payer key', [
         Type42Derivation(
-            senderPublicKey: other.derivation.senderPublicKey, invoiceNumber: destination.derivation.invoiceNumber)
+            anchorPublicKey: anchor,
+            senderPublicKey: other.derivation.senderPublicKey,
+            invoiceNumber: destination.derivation.invoiceNumber)
       ]),
       ('the derivation of a destination it does not pay', [other.derivation]),
     ]) {
@@ -217,6 +235,17 @@ void main() {
       expect(refused.success, isFalse, reason: what);
       expect(refused.error, contains('pays none of wallet payee\'s addresses'), reason: what);
     }
+    final wrongContext = await import('payee', mined, type42: [
+      Type42Derivation(
+        anchorPublicKey: (await anchorKey('payer')).publicKey!,
+        anchorContext: _identity,
+        senderPublicKey: destination.derivation.senderPublicKey,
+        invoiceNumber: destination.derivation.invoiceNumber,
+      )
+    ]);
+    expect(wrongContext.success, isFalse);
+    expect(wrongContext.error, contains('gives wallet payee the anchor'),
+        reason: 'the context names the payee\'s anchor, not the one the hand-off names');
     expect(await storage.getTransaction(txid, walletId: 'payee'), isNull,
         reason: 'a transaction that is not the wallet\'s is not recorded in its history');
     expect((await balance('payee')).totalBalance, BigInt.zero);
@@ -259,22 +288,32 @@ void main() {
   });
 
   test('a wallet restored from its seed alone does not hold a type-42 payment: the import says so, and the '
-      'payer\'s hand-off, given again, brings it back', () async {
+      'payer\'s hand-off, given again with the anchor\'s context, brings it back', () async {
     await createWallet('payer', mnemonic: _payerMnemonic);
     await createWallet('payee', mnemonic: _payeeMnemonic);
-    final destination = await destinationFor('payer', (await anchorKey('payee')).publicKey!);
+    final anchor = (await anchorKey('payee')).publicKey!;
+    final destination = await destinationFor('payer', anchor, context: _identity);
     final (_, mined) = await minedPayment([destination.address], 25000);
     expect((await import('payee', mined, type42: [destination.derivation])).success, isTrue);
 
-    // The same seed, a new journal: nothing on the seed leads to C.
+    // The same seed, a new journal: nothing on the seed leads to C, and the
+    // restored wallet has issued no anchor yet.
     await createWallet('restored', mnemonic: _payeeMnemonic);
-    expect((await anchorKey('restored')).publicKey, (await anchorKey('payee')).publicKey);
     final absent = await import('restored', mined);
     expect(absent.success, isFalse);
     expect(absent.error, contains('pays none of wallet restored\'s addresses'));
+    final withoutContext = Type42Derivation(
+      anchorPublicKey: anchor,
+      senderPublicKey: destination.derivation.senderPublicKey,
+      invoiceNumber: destination.derivation.invoiceNumber,
+    );
+    final unknownAnchor = await import('restored', mined, type42: [withoutContext]);
+    expect(unknownAnchor.success, isFalse);
+    expect(unknownAnchor.error, contains('never issued anchor'));
 
     final recovered = await import('restored', mined, type42: [destination.derivation]);
     expect(recovered.success, isTrue, reason: recovered.error);
     expect((await balance('restored')).confirmedBalance, BigInt.from(25000));
+    expect((await anchorKey('restored')).publicKey, anchor, reason: 'the seed and the context give the same anchor');
   });
 }

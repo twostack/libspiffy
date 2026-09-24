@@ -66,8 +66,12 @@ class AddressMetadata {
       chain: entity.type42SenderPublicKey != null
           ? null
           : AddressChain.fromRecord(chain: entity.chain, isChange: entity.isChange),
-      type42: Type42Derivation.fromMap(
-          {'senderPublicKey': entity.type42SenderPublicKey, 'invoiceNumber': entity.type42InvoiceNumber}),
+      type42: Type42Derivation.fromMap({
+        'anchorPublicKey': entity.type42AnchorPublicKey,
+        'anchorContext': entity.type42AnchorContext,
+        'senderPublicKey': entity.type42SenderPublicKey,
+        'invoiceNumber': entity.type42InvoiceNumber,
+      }),
       label: entity.label,
       purpose: entity.purpose,
       firstUsedAt: entity.firstUsedAt,
@@ -91,6 +95,8 @@ class AddressMetadata {
       ..isChange = chain == AddressChain.change
       ..type42SenderPublicKey = type42?.senderPublicKey
       ..type42InvoiceNumber = type42?.invoiceNumber
+      ..type42AnchorPublicKey = type42?.anchorPublicKey
+      ..type42AnchorContext = type42?.anchorContext
       ..label = label
       ..purpose = purpose
       ..firstUsedAt = firstUsedAt

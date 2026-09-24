@@ -21,6 +21,8 @@ import 'state_records.dart';
 /// * [WalletMetadataKeys.type42Destinations]: address -> destination of
 ///   each type-42 destination the wallet derived as a payer.
 /// * [WalletMetadataKeys.type42PayerKeys]: how many payer keys it used.
+/// * [WalletMetadataKeys.type42Anchors]: anchor -> context of each anchor
+///   it issued.
 abstract final class Type42Book {
   /// The derivation of every type-42 address the wallet recorded.
   static Map<String, Type42Derivation> addressDerivations(Map<String, dynamic> metadata) => {
@@ -34,6 +36,12 @@ abstract final class Type42Book {
         for (final MapEntry(:key, :value) in _records(metadata[WalletMetadataKeys.type42Destinations]))
           if (key is String)
             if (Type42Destination.fromMap(value) case final destination?) key: destination,
+      };
+
+  /// Every anchor the wallet issued, with the context (hex) it issued it for.
+  static Map<String, String> issuedAnchors(Map<String, dynamic> metadata) => {
+        for (final MapEntry(:key, :value) in _records(metadata[WalletMetadataKeys.type42Anchors]))
+          if (key is String && value is String) key: value,
       };
 
   /// How many payer keys the wallet used: the index of the next.
@@ -72,6 +80,16 @@ abstract final class Type42Book {
     state.addresses = state.addresses.put(event.address, label(event.derivation));
     state.metadata = state.metadata.put(WalletMetadataKeys.addressType42,
         _put(state.metadata[WalletMetadataKeys.addressType42], event.address, event.derivation.toMap()));
+    state.version = event.version;
+    state.lastModified = event.timestamp;
+  }
+
+  static void applyAnchorKeyIssued(WalletStateBuilder state, AnchorKeyIssuedEvent event) {
+    final anchors = state.metadata[WalletMetadataKeys.type42Anchors];
+    state.metadata = state.metadata.put(
+        WalletMetadataKeys.type42Anchors,
+        (anchors is Map ? freezeMap(anchors) : PersistentMap<String, dynamic>.empty())
+            .put(event.anchorPublicKey, event.anchorContext));
     state.version = event.version;
     state.lastModified = event.timestamp;
   }

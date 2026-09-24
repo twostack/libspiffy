@@ -6,6 +6,7 @@ library;
 import 'dart:convert';
 import 'dart:math';
 
+import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:eventador/eventador.dart';
 import 'package:logging/logging.dart';
@@ -357,11 +358,29 @@ class WalletKeys {
   // Type-42 (BRC-42) keys (bead libspiffy-zxkd)
   // ---------------------------------------------------------------------------
 
-  /// Path of the anchor key A, which payers derive type-42 destinations
-  /// from. Hardened: the payer of a type-42 payment knows its tweak t, so a
-  /// child key c = a + t that leaks gives away a; under a hardened path a
-  /// does not give away the account key the wallet's xpub is published for.
-  static const String anchorPath = "m/3'/0'";
+  /// Path of the anchor key A the wallet issues for [anchorContext] (bead
+  /// libspiffy-fdal): `m/3'/0'/k1'/k2'`, where k1 and k2 are the first two
+  /// 31-bit halves of `SHA-256("libspiffy/type42-anchor" ‖ context)`.
+  ///
+  /// One anchor per context, so two identities sharing a wallet publish
+  /// unrelated anchors, and nobody holding both records can link them. Two
+  /// levels, 62 bits: a collision would silently give two contexts one
+  /// anchor. The context is opaque; an app that puts a rotation epoch in it
+  /// retires an anchor by bumping the epoch. Hardened throughout: the payer
+  /// of a type-42 payment knows its tweak t, so a child key c = a + t that
+  /// leaks gives away a; under hardened paths a gives away neither the
+  /// wallet's other anchors nor its account key, whose xpub may be public.
+  static String anchorPath(List<int> anchorContext) {
+    Type42Derivation.anchorContextHex(anchorContext); // refuses an empty or oversized context
+    final digest = dartsv.sha256([...utf8.encode(anchorDomain), ...anchorContext]);
+    int half(int offset) =>
+        ((digest[offset] << 24) | (digest[offset + 1] << 16) | (digest[offset + 2] << 8) | digest[offset + 3]) &
+        0x7fffffff;
+    return "m/3'/0'/${half(0)}'/${half(4)}'";
+  }
+
+  /// The domain separator hashed in front of an anchor context.
+  static const String anchorDomain = 'libspiffy/type42-anchor';
 
   /// Path of payer key [index], the key B the wallet derives a type-42
   /// destination with (fresh for every destination).
@@ -387,12 +406,19 @@ class WalletKeys {
   /// Throws for a wallet that has no HD private key: an xpub wallet holds no
   /// private key, and a WIF wallet no HD tree to put an anchor key on.
   Future<dartsv.SVPrivateKey> _type42Key(String walletId, WalletState currentState, String path, String what) async {
+    _requireType42Keys(walletId, currentState, what);
+    return Bip32.derivePrivatePath(await _hdPrivateKey(walletId, currentState), path).privateKey;
+  }
+
+  /// Throws unless the wallet is an HD or XPRIV wallet, the only kind with
+  /// the private HD tree a type-42 key ([what]) is on.
+  static void _requireType42Keys(String walletId, WalletState currentState, String what) {
     if (!currentState.isCreated || currentState.isDeleted) {
       throw StateError('Wallet $walletId does not exist');
     }
     switch (currentState.walletType) {
       case WalletType.hd || WalletType.xpriv:
-        return Bip32.derivePrivatePath(await _hdPrivateKey(walletId, currentState), path).privateKey;
+        return;
       case WalletType.xpub:
         throw StateError('Wallet $walletId is watch-only (XPUB): it holds no $what, so it can neither '
             'take nor make type-42 payments');
@@ -401,15 +427,66 @@ class WalletKeys {
     }
   }
 
-  /// The anchor key a at [anchorPath].
-  Future<dartsv.SVPrivateKey> anchorKey(String walletId, WalletState currentState) =>
-      _type42Key(walletId, currentState, anchorPath, 'anchor key');
+  /// The anchor key a the wallet issues for the context [contextHex]
+  /// ([Type42Derivation.anchorContextHex]).
+  Future<dartsv.SVPrivateKey> anchorKey(String walletId, WalletState currentState, String contextHex) =>
+      _type42Key(walletId, currentState, anchorPath(hex.decode(contextHex)), 'anchor key');
 
-  /// The type-42 child of the anchor key for [derivation]: c = a + t.
+  /// The type-42 child of the anchor key for [derivation]: c = a + t. The
+  /// derivation must name its anchor's context, as every record the wallet
+  /// keeps does.
   Future<dartsv.SVPrivateKey> type42ChildKey(
-          String walletId, WalletState currentState, Type42Derivation derivation) async =>
-      Type42.deriveChildPrivate(await anchorKey(walletId, currentState),
-          dartsv.SVPublicKey.fromHex(derivation.senderPublicKey), derivation.invoiceNumber);
+      String walletId, WalletState currentState, Type42Derivation derivation) async {
+    final context = derivation.anchorContext ??
+        (throw StateError('Type-42 derivation $derivation names no anchor context: no key signs for it'));
+    return Type42.deriveChildPrivate(await anchorKey(walletId, currentState, context),
+        dartsv.SVPublicKey.fromHex(derivation.senderPublicKey), derivation.invoiceNumber);
+  }
+
+  /// The [AnchorKeyIssuedEvent] for [command]'s context, or none when the
+  /// wallet issued that anchor already; and the anchor's public key.
+  Future<({List<Event> events, String anchorPublicKey})> issueAnchorKey(
+      WalletState currentState, IssueAnchorKeyCommand command) async {
+    final contextHex = Type42Derivation.anchorContextHex(command.anchorContext);
+    final anchor = (await anchorKey(command.walletId, currentState, contextHex)).publicKey.toHex();
+    if (Type42Book.issuedAnchors(currentState.metadata)[anchor] == contextHex) {
+      return (events: const <Event>[], anchorPublicKey: anchor);
+    }
+    return (
+      events: <Event>[
+        AnchorKeyIssuedEvent(
+          walletId: command.walletId,
+          anchorPublicKey: anchor,
+          anchorContext: contextHex,
+          version: currentState.version + 1,
+        ),
+      ],
+      anchorPublicKey: anchor,
+    );
+  }
+
+  /// [derivation] with the context of the anchor it names, checked (bead
+  /// libspiffy-fdal). The context of an anchor the wallet issued comes
+  /// first; else the hand-off's own, which must give that anchor. Throws
+  /// when the context the hand-off names gives another anchor, or when it
+  /// names none and the wallet never issued the anchor: an anchor is never
+  /// taken on trust, as an address is not.
+  Future<Type42Derivation> _resolveAnchor(
+      String walletId, WalletState currentState, Type42Derivation derivation) async {
+    final anchor = derivation.anchorPublicKey;
+    if (Type42Book.issuedAnchors(currentState.metadata)[anchor] case final issued?) {
+      return derivation.withAnchorContext(issued);
+    }
+    final context = derivation.anchorContext ??
+        (throw StateError('Wallet $walletId never issued anchor $anchor, and the hand-off names no anchor '
+            'context to derive it from'));
+    final derived = (await anchorKey(walletId, currentState, context)).publicKey.toHex();
+    if (derived != anchor) {
+      throw StateError('The anchor context $context gives wallet $walletId the anchor $derived, not $anchor '
+          'the hand-off names');
+    }
+    return derivation;
+  }
 
   String _p2pkh(dartsv.SVPublicKey key, WalletState currentState) =>
       key.toAddress(NetworkName.toDartsv(currentState.networkType)).toBase58();
@@ -419,13 +496,13 @@ class WalletKeys {
   /// each the wallet has not recorded yet.
   Future<({List<Event> events, List<String> addresses})> recordType42Addresses(
       WalletState currentState, RecordType42AddressesCommand command) async {
-    final anchor = await anchorKey(command.walletId, currentState);
+    _requireType42Keys(command.walletId, currentState, 'anchor key');
     final recorded = Type42Book.addressDerivations(currentState.metadata);
     final events = <Event>[];
     final addresses = <String>[];
-    for (final derivation in command.derivations) {
-      final child = Type42.deriveChildPrivate(
-          anchor, dartsv.SVPublicKey.fromHex(derivation.senderPublicKey), derivation.invoiceNumber);
+    for (final handedOver in command.derivations) {
+      final derivation = await _resolveAnchor(command.walletId, currentState, handedOver);
+      final child = await type42ChildKey(command.walletId, currentState, derivation);
       final address = _p2pkh(child.publicKey, currentState);
       addresses.add(address);
       if (recorded.containsKey(address) || addresses.indexOf(address) != addresses.length - 1) continue;
@@ -446,20 +523,20 @@ class WalletKeys {
   /// next payer key, as a [Type42DestinationDerivedEvent].
   Future<Type42DestinationDerivedEvent> deriveType42Destination(
       WalletState currentState, DeriveType42DestinationCommand command) async {
-    final recipientHex = Type42Derivation.publicKeyHex(command.recipientPublicKey, 'recipientPublicKey');
     final index = Type42Book.payerKeysUsed(currentState.metadata);
     final payer = await _type42Key(command.walletId, currentState, payerKeyPath(index), 'payer key');
     final derivation = Type42Derivation(
+      anchorPublicKey: command.anchorPublicKey,
+      anchorContext: command.anchorContext,
       senderPublicKey: payer.publicKey.toHex(),
       invoiceNumber: command.invoiceNumber ?? Type42Derivation.brc29InvoiceNumber(_randomBase64(), _randomBase64()),
     );
-    final destination =
-        Type42.deriveChildPublic(dartsv.SVPublicKey.fromHex(recipientHex), payer, derivation.invoiceNumber);
+    final destination = Type42.deriveChildPublic(
+        dartsv.SVPublicKey.fromHex(derivation.anchorPublicKey), payer, derivation.invoiceNumber);
     return Type42DestinationDerivedEvent(
       walletId: command.walletId,
       destination: Type42Destination(
         address: _p2pkh(destination, currentState),
-        recipientPublicKey: recipientHex,
         derivation: derivation,
         payerKeyIndex: index,
       ),

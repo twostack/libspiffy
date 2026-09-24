@@ -94,6 +94,8 @@ void main() {
       final pool = await config.createPool();
       final wallet = 'v027-$run';
       final derivation = Type42Derivation(
+          anchorPublicKey: '02133b035cda4ba15f93b5fdde11c1f73eb9f1a79b60c6caa1c78e1c4c64ed72ce',
+          anchorContext: [7, 7, 7],
           senderPublicKey: '02dfcbe35d95b55b5f3168ea8f12717e266ceddf88d04d2ff741272dfb0e542c2a',
           invoiceNumber: 'inv-$run');
       try {

@@ -707,6 +707,50 @@ class Type42AddressRecordedEvent extends WalletEvent {
       );
 }
 
+/// The wallet issued its anchor key for a context (bead libspiffy-fdal):
+/// [anchorPublicKey] is the key at `m/3'/0'/k1'/k2'` for [anchorContext]
+/// (hex). Journaled once per context, so a hand-off that names only the
+/// anchor is matched to the context that derives its key. Nothing here is
+/// a private key.
+class AnchorKeyIssuedEvent extends WalletEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it (audit 2026-09-14 M8).
+  static const String stableTypeName = 'wallet.anchor_key.issued';
+
+  @override
+  String get typeName => stableTypeName;
+
+  final String anchorPublicKey;
+  final String anchorContext;
+
+  AnchorKeyIssuedEvent({
+    required String walletId,
+    required this.anchorPublicKey,
+    required this.anchorContext,
+    String? eventId,
+    DateTime? timestamp,
+    int? version,
+    Map<String, dynamic>? metadata,
+  }) : super(walletId: walletId, eventId: eventId, timestamp: timestamp, version: version, metadata: metadata);
+
+  @override
+  Map<String, dynamic> getWalletEventData() => {'anchorPublicKey': anchorPublicKey, 'anchorContext': anchorContext};
+
+  static AnchorKeyIssuedEvent fromMap(Map<String, dynamic> map) => AnchorKeyIssuedEvent(
+        walletId: map['walletId'] as String,
+        anchorPublicKey: map['anchorPublicKey'] as String,
+        anchorContext: map['anchorContext'] as String,
+        eventId: map['eventId'] as String?,
+        timestamp: map['timestamp'] == null
+            ? null
+            : map['timestamp'] is DateTime
+                ? map['timestamp'] as DateTime
+                : DateTime.parse(map['timestamp'] as String),
+        version: map['version'] as int?,
+        metadata: map['metadata'] as Map<String, dynamic>?,
+      );
+}
+
 /// The wallet derived a type-42 destination as a payer (bead
 /// libspiffy-zxkd): it used payer key [Type42Destination.payerKeyIndex],
 /// which it never uses again, and [destination] is the hand-off the

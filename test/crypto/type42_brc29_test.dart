@@ -59,10 +59,14 @@ void main() {
   });
 
   group('Type42Derivation takes', () {
-    test('a compressed public key and re-encodes it in lower case', () {
-      final derivation = Type42Derivation(senderPublicKey: _payerPublic.toUpperCase().replaceFirst('0X', ''),
-          invoiceNumber: 'x');
-      expect(derivation.senderPublicKey, _payerPublic);
+    Type42Derivation derivation(
+            {String anchor = _anchorPublic, List<int>? context, String sender = _payerPublic, String invoice = 'x'}) =>
+        Type42Derivation(anchorPublicKey: anchor, anchorContext: context, senderPublicKey: sender, invoiceNumber: invoice);
+
+    test('compressed public keys and a context, re-encoded in lower case', () {
+      final taken = derivation(anchor: _anchorPublic.toUpperCase(), sender: _payerPublic.toUpperCase(), context: [0xAB, 1]);
+      expect((taken.anchorPublicKey, taken.senderPublicKey, taken.anchorContext), (_anchorPublic, _payerPublic, 'ab01'));
+      expect(derivation().anchorContext, isNull, reason: 'a payer may not have the context');
     });
 
     for (final (what, key) in [
@@ -71,17 +75,20 @@ void main() {
       ('something that is not hex', 'zz' * 33),
       ('an empty key', ''),
     ]) {
-      test('no $what', () {
-        expect(() => Type42Derivation(senderPublicKey: key, invoiceNumber: 'x'), throwsArgumentError);
+      test('no $what, for the anchor or the payer', () {
+        expect(() => derivation(sender: key), throwsArgumentError);
+        expect(() => derivation(anchor: key), throwsArgumentError);
       });
     }
 
     test('no empty invoice number, and none longer than BRC-43 allows', () {
-      expect(() => Type42Derivation(senderPublicKey: _payerPublic, invoiceNumber: ''), throwsArgumentError);
-      expect(
-          () => Type42Derivation(
-              senderPublicKey: _payerPublic, invoiceNumber: 'x' * (Type42Derivation.maxInvoiceNumberLength + 1)),
-          throwsArgumentError);
+      expect(() => derivation(invoice: ''), throwsArgumentError);
+      expect(() => derivation(invoice: 'x' * (Type42Derivation.maxInvoiceNumberLength + 1)), throwsArgumentError);
+    });
+
+    test('no empty context, and none longer than its limit', () {
+      expect(() => derivation(context: const []), throwsArgumentError);
+      expect(() => derivation(context: List.filled(Type42Derivation.maxAnchorContextLength + 1, 1)), throwsArgumentError);
     });
   });
 }

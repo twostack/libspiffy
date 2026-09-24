@@ -7,6 +7,7 @@ import 'package:dactor/dactor.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
 
 import '../models/address_chain.dart';
+import '../models/key_path.dart';
 import '../models/wallet_event.dart';
 import '../models/wallet_state.dart';
 import '../models/bitcoin_utxo.dart';
@@ -544,7 +545,7 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
       sender.tell(Type42AddressesRecordedResponse(walletId: command.walletId, success: false, error: errorMessage));
     } else if (command is DeriveType42DestinationCommand) {
       sender.tell(Type42DestinationDerivedResponse(walletId: command.walletId, success: false, error: errorMessage));
-    } else if (command is GetAnchorPublicKeyCommand || command is SignWithAnchorKeyCommand) {
+    } else if (command is IssueAnchorKeyCommand || command is SignWithAnchorKeyCommand) {
       sender.tell(AnchorKeyResponse(walletId: (command as WalletCommand).walletId, success: false, error: errorMessage));
     } else if (command is LookupType42AddressesCommand) {
       sender.tell(Type42AddressesResponse(walletId: command.walletId, success: false, error: errorMessage));
@@ -633,12 +634,18 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
           );
         }
         return [derived];
-      case final GetAnchorPublicKeyCommand cmd:
-        final anchor = await _keys.anchorKey(cmd.walletId, currentState);
-        _replyTo(cmd)?.tell(AnchorKeyResponse(walletId: cmd.walletId, publicKeyHex: anchor.publicKey.toHex(), success: true));
-        return const [];
+      case final IssueAnchorKeyCommand cmd:
+        final issued = await _keys.issueAnchorKey(currentState, cmd);
+        // Sent once the anchor is journaled, and also when it was issued
+        // already (nothing to journal).
+        if (_replyTo(cmd) != null) {
+          _repliesAwaitingPersist[cmd.commandId] =
+              AnchorKeyResponse(walletId: cmd.walletId, publicKeyHex: issued.anchorPublicKey, success: true);
+        }
+        return issued.events;
       case final SignWithAnchorKeyCommand cmd:
-        final anchor = await _keys.anchorKey(cmd.walletId, currentState);
+        final anchor = await _keys.anchorKey(
+            cmd.walletId, currentState, Type42Derivation.anchorContextHex(cmd.anchorContext));
         final digest = dartsv.sha256(cmd.message);
         final signature = await _keys.cryptoService.signData(anchor, Uint8List.fromList(digest));
         _replyTo(cmd)?.tell(AnchorKeyResponse(
@@ -768,6 +775,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         UtxoReservations.applyRenewed(state, evt);
       case final AddressDiscoveredEvent evt:
         AddressBook.applyAddressDiscovered(state, evt);
+      case final AnchorKeyIssuedEvent evt:
+        Type42Book.applyAnchorKeyIssued(state, evt);
       case final Type42AddressRecordedEvent evt:
         Type42Book.applyAddressRecorded(state, evt);
       case final Type42DestinationDerivedEvent evt:

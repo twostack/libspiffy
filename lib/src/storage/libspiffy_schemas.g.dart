@@ -23881,23 +23881,33 @@ const AddressEntitySchema = CollectionSchema(
       name: r'scriptType',
       type: IsarType.string,
     ),
-    r'type42InvoiceNumber': PropertySchema(
+    r'type42AnchorContext': PropertySchema(
       id: 13,
+      name: r'type42AnchorContext',
+      type: IsarType.string,
+    ),
+    r'type42AnchorPublicKey': PropertySchema(
+      id: 14,
+      name: r'type42AnchorPublicKey',
+      type: IsarType.string,
+    ),
+    r'type42InvoiceNumber': PropertySchema(
+      id: 15,
       name: r'type42InvoiceNumber',
       type: IsarType.string,
     ),
     r'type42SenderPublicKey': PropertySchema(
-      id: 14,
+      id: 16,
       name: r'type42SenderPublicKey',
       type: IsarType.string,
     ),
     r'usageCount': PropertySchema(
-      id: 15,
+      id: 17,
       name: r'usageCount',
       type: IsarType.long,
     ),
     r'walletId': PropertySchema(
-      id: 16,
+      id: 18,
       name: r'walletId',
       type: IsarType.string,
     )
@@ -24002,6 +24012,18 @@ int _addressEntityEstimateSize(
   bytesCount += 3 + object.purpose.length * 3;
   bytesCount += 3 + object.scriptType.length * 3;
   {
+    final value = object.type42AnchorContext;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
+  {
+    final value = object.type42AnchorPublicKey;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
+  {
     final value = object.type42InvoiceNumber;
     if (value != null) {
       bytesCount += 3 + value.length * 3;
@@ -24036,10 +24058,12 @@ void _addressEntitySerialize(
   writer.writeDateTime(offsets[10], object.lastUsedAt);
   writer.writeString(offsets[11], object.purpose);
   writer.writeString(offsets[12], object.scriptType);
-  writer.writeString(offsets[13], object.type42InvoiceNumber);
-  writer.writeString(offsets[14], object.type42SenderPublicKey);
-  writer.writeLong(offsets[15], object.usageCount);
-  writer.writeString(offsets[16], object.walletId);
+  writer.writeString(offsets[13], object.type42AnchorContext);
+  writer.writeString(offsets[14], object.type42AnchorPublicKey);
+  writer.writeString(offsets[15], object.type42InvoiceNumber);
+  writer.writeString(offsets[16], object.type42SenderPublicKey);
+  writer.writeLong(offsets[17], object.usageCount);
+  writer.writeString(offsets[18], object.walletId);
 }
 
 AddressEntity _addressEntityDeserialize(
@@ -24063,10 +24087,12 @@ AddressEntity _addressEntityDeserialize(
   object.lastUsedAt = reader.readDateTimeOrNull(offsets[10]);
   object.purpose = reader.readString(offsets[11]);
   object.scriptType = reader.readString(offsets[12]);
-  object.type42InvoiceNumber = reader.readStringOrNull(offsets[13]);
-  object.type42SenderPublicKey = reader.readStringOrNull(offsets[14]);
-  object.usageCount = reader.readLong(offsets[15]);
-  object.walletId = reader.readString(offsets[16]);
+  object.type42AnchorContext = reader.readStringOrNull(offsets[13]);
+  object.type42AnchorPublicKey = reader.readStringOrNull(offsets[14]);
+  object.type42InvoiceNumber = reader.readStringOrNull(offsets[15]);
+  object.type42SenderPublicKey = reader.readStringOrNull(offsets[16]);
+  object.usageCount = reader.readLong(offsets[17]);
+  object.walletId = reader.readString(offsets[18]);
   return object;
 }
 
@@ -24108,8 +24134,12 @@ P _addressEntityDeserializeProp<P>(
     case 14:
       return (reader.readStringOrNull(offset)) as P;
     case 15:
-      return (reader.readLong(offset)) as P;
+      return (reader.readStringOrNull(offset)) as P;
     case 16:
+      return (reader.readStringOrNull(offset)) as P;
+    case 17:
+      return (reader.readLong(offset)) as P;
+    case 18:
       return (reader.readString(offset)) as P;
     default:
       throw IsarError('Unknown property with id $propertyId');
@@ -25927,6 +25957,315 @@ extension AddressEntityQueryFilter
   }
 
   QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      type42AnchorContextIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'type42AnchorContext',
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      type42AnchorContextIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'type42AnchorContext',
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      type42AnchorContextEqualTo(
+    String? value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'type42AnchorContext',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      type42AnchorContextGreaterThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'type42AnchorContext',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      type42AnchorContextLessThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'type42AnchorContext',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      type42AnchorContextBetween(
+    String? lower,
+    String? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'type42AnchorContext',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      type42AnchorContextStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'type42AnchorContext',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      type42AnchorContextEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'type42AnchorContext',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      type42AnchorContextContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'type42AnchorContext',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      type42AnchorContextMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'type42AnchorContext',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      type42AnchorContextIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'type42AnchorContext',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      type42AnchorContextIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'type42AnchorContext',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      type42AnchorPublicKeyIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'type42AnchorPublicKey',
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      type42AnchorPublicKeyIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'type42AnchorPublicKey',
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      type42AnchorPublicKeyEqualTo(
+    String? value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'type42AnchorPublicKey',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      type42AnchorPublicKeyGreaterThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'type42AnchorPublicKey',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      type42AnchorPublicKeyLessThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'type42AnchorPublicKey',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      type42AnchorPublicKeyBetween(
+    String? lower,
+    String? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'type42AnchorPublicKey',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      type42AnchorPublicKeyStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'type42AnchorPublicKey',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      type42AnchorPublicKeyEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'type42AnchorPublicKey',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      type42AnchorPublicKeyContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'type42AnchorPublicKey',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      type42AnchorPublicKeyMatches(String pattern,
+          {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'type42AnchorPublicKey',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      type42AnchorPublicKeyIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'type42AnchorPublicKey',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      type42AnchorPublicKeyIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'type42AnchorPublicKey',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
       type42InvoiceNumberIsNull() {
     return QueryBuilder.apply(this, (query) {
       return query.addFilterCondition(const FilterCondition.isNull(
@@ -26603,6 +26942,34 @@ extension AddressEntityQuerySortBy
   }
 
   QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy>
+      sortByType42AnchorContext() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'type42AnchorContext', Sort.asc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy>
+      sortByType42AnchorContextDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'type42AnchorContext', Sort.desc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy>
+      sortByType42AnchorPublicKey() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'type42AnchorPublicKey', Sort.asc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy>
+      sortByType42AnchorPublicKeyDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'type42AnchorPublicKey', Sort.desc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy>
       sortByType42InvoiceNumber() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'type42InvoiceNumber', Sort.asc);
@@ -26838,6 +27205,34 @@ extension AddressEntityQuerySortThenBy
   }
 
   QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy>
+      thenByType42AnchorContext() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'type42AnchorContext', Sort.asc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy>
+      thenByType42AnchorContextDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'type42AnchorContext', Sort.desc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy>
+      thenByType42AnchorPublicKey() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'type42AnchorPublicKey', Sort.asc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy>
+      thenByType42AnchorPublicKeyDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'type42AnchorPublicKey', Sort.desc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy>
       thenByType42InvoiceNumber() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'type42InvoiceNumber', Sort.asc);
@@ -26982,6 +27377,22 @@ extension AddressEntityQueryWhereDistinct
   }
 
   QueryBuilder<AddressEntity, AddressEntity, QDistinct>
+      distinctByType42AnchorContext({bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'type42AnchorContext',
+          caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QDistinct>
+      distinctByType42AnchorPublicKey({bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'type42AnchorPublicKey',
+          caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QDistinct>
       distinctByType42InvoiceNumber({bool caseSensitive = true}) {
     return QueryBuilder.apply(this, (query) {
       return query.addDistinctBy(r'type42InvoiceNumber',
@@ -27098,6 +27509,20 @@ extension AddressEntityQueryProperty
   QueryBuilder<AddressEntity, String, QQueryOperations> scriptTypeProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'scriptType');
+    });
+  }
+
+  QueryBuilder<AddressEntity, String?, QQueryOperations>
+      type42AnchorContextProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'type42AnchorContext');
+    });
+  }
+
+  QueryBuilder<AddressEntity, String?, QQueryOperations>
+      type42AnchorPublicKeyProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'type42AnchorPublicKey');
     });
   }
 

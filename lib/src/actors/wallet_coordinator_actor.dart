@@ -609,8 +609,8 @@ class WalletCoordinatorActor extends Actor {
         await _handleGetTransactionDetail(message);
       } else if (message is ExportTransactionQuery) {
         await _handleExportTransaction(message);
-      } else if (message is GetAnchorPublicKeyQuery) {
-        unawaited(_handleGetAnchorPublicKey(message)); // off the mailbox: a wallet round trip
+      } else if (message is IssueAnchorKeyCommand) {
+        unawaited(_handleIssueAnchorKey(message)); // off the mailbox: a wallet round trip
       } else if (message is SignWithAnchorKeyCommand) {
         unawaited(_handleSignWithAnchorKey(message)); // off the mailbox: a wallet round trip
       } else if (message is DeriveType42DestinationCommand) {
@@ -1380,22 +1380,23 @@ class WalletCoordinatorActor extends Actor {
     }
   }
 
-  Future<void> _handleGetAnchorPublicKey(GetAnchorPublicKeyQuery query) async {
-    final queryId = query.correlationId;
+  Future<void> _handleIssueAnchorKey(IssueAnchorKeyCommand cmd) async {
+    final requestId = cmd.correlationId;
     try {
       final response = await _walletManager.ask<wm.AnchorKeyResponse>(
-        wm.WalletCommandMessage(query.walletId, domain.GetAnchorPublicKeyCommand(walletId: query.walletId)),
+        wm.WalletCommandMessage(
+            cmd.walletId, domain.IssueAnchorKeyCommand(walletId: cmd.walletId, anchorContext: cmd.anchorContext)),
         const Duration(seconds: 30),
       );
       _emitEvent(AnchorPublicKeyEvent(
-        walletId: query.walletId,
-        queryId: queryId,
+        walletId: cmd.walletId,
+        requestId: requestId,
         publicKey: response.success ? response.publicKeyHex : null,
         success: response.success,
         error: response.error,
       ));
     } catch (e) {
-      _emitEvent(AnchorPublicKeyEvent(walletId: query.walletId, queryId: queryId, success: false, error: '$e'));
+      _emitEvent(AnchorPublicKeyEvent(walletId: cmd.walletId, requestId: requestId, success: false, error: '$e'));
     }
   }
 
@@ -1403,7 +1404,11 @@ class WalletCoordinatorActor extends Actor {
     final requestId = cmd.correlationId;
     try {
       final response = await _walletManager.ask<wm.AnchorKeyResponse>(
-        wm.WalletCommandMessage(cmd.walletId, domain.SignWithAnchorKeyCommand(walletId: cmd.walletId, message: cmd.message)),
+        wm.WalletCommandMessage(
+          cmd.walletId,
+          domain.SignWithAnchorKeyCommand(
+              walletId: cmd.walletId, anchorContext: cmd.anchorContext, message: cmd.message),
+        ),
         const Duration(seconds: 30),
       );
       _emitEvent(AnchorSignedEvent(
@@ -1427,7 +1432,8 @@ class WalletCoordinatorActor extends Actor {
           cmd.walletId,
           domain.DeriveType42DestinationCommand(
             walletId: cmd.walletId,
-            recipientPublicKey: cmd.recipientPublicKey,
+            anchorPublicKey: cmd.anchorPublicKey,
+            anchorContext: cmd.anchorContext,
             invoiceNumber: cmd.invoiceNumber,
           ),
         ),

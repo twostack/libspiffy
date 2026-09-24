@@ -284,13 +284,16 @@ class ValidateBEEFCommand implements Message {
   /// Null when the app supplies none — no placeholder is invented.
   final String? fromCounterparty;
 
-  /// The type-42 hand-off of a payment to this wallet's anchor key (bead
-  /// libspiffy-zxkd; spv-understanding.md, "Payment modes"): the payer's
-  /// public key and the invoice number of each destination it paid. The
-  /// wallet derives those addresses from its own anchor key and records
-  /// them before the payment is validated, so it is attributed to the
-  /// wallet and can be spent. The payer has broadcast the payment already;
-  /// submitting it again is harmless.
+  /// The type-42 hand-off of a payment to one of this wallet's anchor keys
+  /// (beads libspiffy-zxkd, libspiffy-fdal; spv-understanding.md, "Payment
+  /// modes"): for each destination paid, the anchor and (when the payer had
+  /// it) its context, the payer's public key and the invoice number. The
+  /// wallet finds the anchor's context — among the anchors it issued, else
+  /// the hand-off's, which must give that anchor — derives each address
+  /// from its own anchor key and records it before the payment is
+  /// validated, so it is attributed to the wallet and can be spent. The
+  /// payer has broadcast the payment already; submitting it again is
+  /// harmless.
   final List<Type42Derivation> type42Derivations;
 
   ValidateBEEFCommand({
@@ -388,10 +391,13 @@ class RecordOutgoingCommand implements Message {
 /// records them before the import, so the payment is attributed to it and
 /// can be spent.
 ///
-/// [type42Derivations] is the hand-off of a payer that paid this wallet's
-/// anchor key with type-42 (bead libspiffy-zxkd): the payer's public key
-/// and invoice number of each destination, which the payer's own export
-/// carries ([TransactionExportedEvent.type42Derivations]). The wallet
+/// [type42Derivations] is the hand-off of a payer that paid one of this
+/// wallet's anchor keys with type-42 (beads libspiffy-zxkd, libspiffy-fdal):
+/// for each destination the anchor and its context, the payer's public key
+/// and the invoice number, which the payer's own export carries
+/// ([TransactionExportedEvent.type42Derivations]). The wallet finds the
+/// anchor's context (its issued anchors first, else the hand-off's, which
+/// must give the anchor: a wallet restored from its seed has issued none),
 /// derives each address from its anchor key and records it before the
 /// import, as for [delegatedIndices].
 class ImportTransactionCommand implements Message {
@@ -454,18 +460,29 @@ class ExportTransactionQuery implements Message {
   DateTime get timestamp => DateTime.now();
 }
 
-/// Asks for the wallet's anchor public key (bead libspiffy-zxkd): the key
-/// a payer derives type-42 destinations from to pay this wallet while it is
-/// offline (spv-understanding.md, "Payment modes"). The app publishes it,
-/// bound to its identity. Answered with [AnchorPublicKeyEvent].
-class GetAnchorPublicKeyQuery implements Message {
+/// Issues the wallet's anchor key for [anchorContext] (beads
+/// libspiffy-zxkd, libspiffy-fdal): the key a payer derives type-42
+/// destinations from to pay this wallet while it is offline
+/// (spv-understanding.md, "Payment modes"). The app publishes it, bound to
+/// the identity it is for. Answered with [AnchorPublicKeyEvent].
+///
+/// A wallet has one anchor per context, so identities that share it publish
+/// unrelated anchors. The context is opaque bytes: an identity key, for
+/// example, followed by a rotation epoch, which the app bumps to retire an
+/// anchor (a leaked child key c = a + t gives away that anchor's a, since
+/// the payer knows t). An empty context is refused. The same context always
+/// gives the same anchor; the wallet journals it the first time, so a
+/// hand-off that names only the anchor is matched to its context.
+class IssueAnchorKeyCommand implements Message {
   final String walletId;
-  final String? queryId;
+  final List<int> anchorContext;
+  final String? requestId;
 
-  GetAnchorPublicKeyQuery({required this.walletId, this.queryId});
+  IssueAnchorKeyCommand({required this.walletId, required List<int> anchorContext, this.requestId})
+      : anchorContext = frozenList(anchorContext);
 
   @override
-  String get correlationId => queryId ?? 'anchor-key-$walletId';
+  String get correlationId => requestId ?? 'anchor-key-$walletId';
   @override
   Map<String, dynamic> get metadata => {'walletId': walletId};
   @override
@@ -474,18 +491,25 @@ class GetAnchorPublicKeyQuery implements Message {
   DateTime get timestamp => DateTime.now();
 }
 
-/// Signs `SHA-256(message)` with the wallet's anchor key (bead
-/// libspiffy-zxkd), to bind the anchor key to an identity — a NodeCast
-/// registration, say. The message is hashed by the wallet, so the anchor
-/// key never signs a digest the caller chose; the message should name its
-/// purpose (domain separation). Answered with [AnchorSignedEvent].
+/// Signs `SHA-256(message)` with the wallet's anchor key for
+/// [anchorContext] (beads libspiffy-zxkd, libspiffy-fdal), to bind that
+/// anchor to an identity — a NodeCast registration, say. The message is
+/// hashed by the wallet, so the anchor key never signs a digest the caller
+/// chose; the message should name its purpose (domain separation).
+/// Answered with [AnchorSignedEvent].
 class SignWithAnchorKeyCommand implements Message {
   final String walletId;
+  final List<int> anchorContext;
   final List<int> message;
   final String? requestId;
 
-  SignWithAnchorKeyCommand({required this.walletId, required List<int> message, this.requestId})
-      : message = frozenList(message);
+  SignWithAnchorKeyCommand({
+    required this.walletId,
+    required List<int> anchorContext,
+    required List<int> message,
+    this.requestId,
+  })  : anchorContext = frozenList(anchorContext),
+        message = frozenList(message);
 
   @override
   String get correlationId => requestId ?? 'anchor-sign-$walletId';
@@ -498,10 +522,16 @@ class SignWithAnchorKeyCommand implements Message {
 }
 
 /// Derives a type-42 destination for paying the holder of anchor key
-/// [recipientPublicKey] while it is offline (bead libspiffy-zxkd;
-/// spv-understanding.md, "Payment modes"). Answered with
-/// [Type42DestinationEvent]: the address to pay, and the hand-off (the
-/// payer key B and the invoice number) the payee takes the payment in with.
+/// [anchorPublicKey] while it is offline (beads libspiffy-zxkd,
+/// libspiffy-fdal; spv-understanding.md, "Payment modes"). Answered with
+/// [Type42DestinationEvent]: the address to pay, and the hand-off (A, its
+/// [anchorContext] when given, the payer key B and the invoice number) the
+/// payee takes the payment in with.
+///
+/// Pass the context the recipient published with its anchor when there is
+/// one: the recipient's wallet then finds the anchor from the hand-off
+/// alone, after a restore too. The payer passes it through unchecked; the
+/// recipient's wallet refuses a context that does not give A.
 ///
 /// The wallet uses a fresh payer key each time. Without an [invoiceNumber]
 /// it makes up a BRC-29 one. The payee is offline, so the payer broadcasts
@@ -509,16 +539,18 @@ class SignWithAnchorKeyCommand implements Message {
 /// its block, and hands it over with `ExportTransactionQuery`.
 class DeriveType42DestinationCommand implements Message {
   final String walletId;
-  final String recipientPublicKey;
+  final String anchorPublicKey;
+  final List<int>? anchorContext;
   final String? invoiceNumber;
   final String? requestId;
 
   DeriveType42DestinationCommand({
     required this.walletId,
-    required this.recipientPublicKey,
+    required this.anchorPublicKey,
+    List<int>? anchorContext,
     this.invoiceNumber,
     this.requestId,
-  });
+  }) : anchorContext = frozenListOrNull(anchorContext);
 
   @override
   String get correlationId => requestId ?? 'type42-destination-$walletId';
@@ -2117,20 +2149,20 @@ class TransactionExportedEvent extends CoordinatorEvent {
   DateTime get eventTimestamp => DateTime.now();
 }
 
-/// Answer to [GetAnchorPublicKeyQuery]: the wallet's anchor public key
-/// (compressed, hex), or why there is none (an xpub or WIF wallet has no
-/// anchor key).
+/// Answer to [IssueAnchorKeyCommand]: the wallet's anchor public key for
+/// the context (compressed, hex), or why there is none (an xpub or WIF
+/// wallet has no anchor key; an empty context is refused).
 class AnchorPublicKeyEvent extends CoordinatorEvent {
   @override
   final String walletId;
-  final String queryId;
+  final String requestId;
   final String? publicKey;
   final bool success;
   final String? error;
 
   AnchorPublicKeyEvent({
     required this.walletId,
-    required this.queryId,
+    required this.requestId,
     this.publicKey,
     required this.success,
     this.error,

@@ -241,7 +241,7 @@ class ScriptTypeRegistry {
       int? m;
       int? n;
 
-      final lockBuilder = P2MSLockBuilder.fromScript(script);
+      P2MSLockBuilder.fromScript(script); // throws for a script that is not bare multisig
 
       // The first chunk contains the threshold (m)
       if (script.chunks.isNotEmpty) {

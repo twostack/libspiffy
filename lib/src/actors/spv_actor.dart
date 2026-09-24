@@ -412,13 +412,6 @@ class SPVActor extends Actor {
 
       final txMap= beef.findTransactionByTxid(txid);
 
-      // Debug: Print what TXIDs are actually in the BEEF
-      if (txMap == null) {
-        for (int i = 0; i < beef.txs.length; i++) {
-          final calculatedTxid = beef.calculateTxid(beef.txs[i]);
-        }
-      }
-
       if (txMap!= null){
         final txIndex = txMap['index'] as int;
         final transaction = dartsv.Transaction.fromHex(hex.encode(txMap['txData']));
@@ -1218,7 +1211,8 @@ class SPVActor extends Actor {
 
         return true;
 
-      } on dartsv.ScriptException catch (ex) {
+      } on dartsv.ScriptException catch (e) {
+        _log.warning('${hex.encode(txid)} fails its script check: $e');
         return false;
       }
     }

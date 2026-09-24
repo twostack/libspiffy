@@ -458,7 +458,6 @@ class PaymentChannelManagerActor extends Actor {
         case final AcknowledgePaymentMessage msg:
           await _handleAcknowledgePayment(msg);
           break;
-          break;
         case final CloseChannelMessage msg:
           await _handleCloseChannel(msg);
         case final RecordSettlementMessage msg:

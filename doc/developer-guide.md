@@ -401,7 +401,7 @@ outputs: [
 ]
 ```
 
-For token protocols and custom script types, use the plugin system. Register your plugin at startup, then include `PluginOutputSpec` in payments. See the [Script Plugin API Guide](docs/script-plugin-api-guide.md) for the full plugin interface.
+For token protocols and custom script types, use the plugin system. Register your plugin at startup, then include `PluginOutputSpec` in payments. See the [Script Plugin API Guide](doc/script-plugin-api-guide.md) for the full plugin interface.
 
 ```dart
 // After registering your plugin (see plugin guide):

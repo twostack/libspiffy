@@ -1109,7 +1109,7 @@ coordinator.tell(PayInvoiceCommand(
 
 The `CallbackTransactionSigner` enables plugins to sign transactions without exposing private keys — the wallet aggregate retains exclusive control of key material.
 
-See [Plugin API Guide](docs/script-plugin-api-guide.md) for the full interface reference.
+See [Plugin API Guide](doc/script-plugin-api-guide.md) for the full interface reference.
 
 ### 11. Payment Channels
 
@@ -1830,11 +1830,11 @@ Future<bool> handle(Event event) async {
 
 ## Documentation
 
-- [Developer Guide](docs/developer-guide.md) — Public API reference and programming model
-- [Plugin API Guide](docs/script-plugin-api-guide.md) — Building custom script/token plugins
-- [Multi-Output Invoice Guide](docs/multi-output-invoice-guide.md) — P2PKH, P2MS, OP_RETURN, and plugin outputs
-- [CDN Header Sync Guide](docs/cdn-header-sync-guide.md) — Fast block header synchronization
-- [PostgreSQL Secure Storage Guide](docs/postgres-secure-storage-guide.md) — Server deployment with encrypted keys
+- [Developer Guide](doc/developer-guide.md) — Public API reference and programming model
+- [Plugin API Guide](doc/script-plugin-api-guide.md) — Building custom script/token plugins
+- [Multi-Output Invoice Guide](doc/multi-output-invoice-guide.md) — P2PKH, P2MS, OP_RETURN, and plugin outputs
+- [CDN Header Sync Guide](doc/cdn-header-sync-guide.md) — Fast block header synchronization
+- [PostgreSQL Secure Storage Guide](doc/postgres-secure-storage-guide.md) — Server deployment with encrypted keys
 - [Projections Guide](projections-guide.md) — Building CQRS read models
 - [Wallet Architecture](wallet-architecture.md) — Detailed system architecture
 - [SPV Understanding](spv-understanding.md) — SPV concepts and implementation

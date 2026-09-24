@@ -1,4 +1,3 @@
-import 'package:uuid/uuid.dart';
 import 'package:eventador/eventador.dart';
 
 /// Base class for all wallet events that integrates with Eventador event sourcing

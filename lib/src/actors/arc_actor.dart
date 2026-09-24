@@ -320,7 +320,7 @@ class ARCActor extends Actor {
     }
 
     try {
-      final isarStorage = duraq_isar.IsarStorage(_isar!);
+      final isarStorage = duraq_isar.IsarStorage(_isar);
       _broadcastQueue = duraq.Queue<Map<String, dynamic>>(
         'arc_broadcast_retry',
         isarStorage,
@@ -460,29 +460,9 @@ class ARCActor extends Actor {
       // The payment transaction is the last one in the BEEF
       final paymentTxData = beef.txs.last;
       paymentTxHex = hex.encode(paymentTxData);
-      final paymentTx = dartsv.Transaction.fromHex(paymentTxHex);
 
-
-      // 2. Build a map of ancestor transactions for UTXO lookup
-      final ancestorTxMap = <String, dartsv.Transaction>{};
-      for (int i = 0; i < beef.txs.length - 1; i++) {
-        final ancestorTxHex = hex.encode(beef.txs[i]);
-        final ancestorTx = dartsv.Transaction.fromHex(ancestorTxHex);
-        final ancestorTxid = ancestorTx.id;
-        ancestorTxMap[ancestorTxid] = ancestorTx;
-      }
-
-
-      // // 3. Convert payment transaction to Extended Format (EF)
-      // final extendedFormatTxHex = _convertToExtendedFormat(
-      //   paymentTx,
-      //   ancestorTxMap,
-      // );
-      //
-
-      // 4a (deferred) Broadcast Extended Format transaction via ARC service
-      // 4b (deferred) Broadcast Raw Format transaction via ARC service. Extended format seems still not supported by Arc API
-
+      // 2. Submit the payment transaction in raw format: the ancestors stay
+      // in the BEEF the payee holds, and ARC is sent the one transaction.
       final response = await _arcService!.submitTransaction(paymentTxHex);
 
       final command = BroadcastTransactionCommand(

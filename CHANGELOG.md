@@ -1,4 +1,28 @@
-## Unreleased
+## 3.0.0
+
+Three payment modes, made explicit (spv-understanding.md, "Payment modes"):
+both parties online; a service taking payments for an offline payee on the
+payee's **delegated chain** (`m/2/i`) and handing them over proven; and a
+payer paying an offline payee directly with **type-42 (BRC-42)** keys from an
+anchor the payee publishes, one anchor per identity. An xpub wallet's money
+is now watch-only, as it always should have been, and a transaction that is
+not the wallet's is refused rather than recorded.
+
+### Upgrading from 2.x
+
+- **Change/receive flags are an `AddressChain`, and signing paths a
+  `KeyPath`.** Replace `isChange: true` with `chain: AddressChain.change`,
+  `SigningPath(i)` with `HdKeyPath(i)`, and the `derivationIndices` /
+  `isChangeFlags` of `SignTransactionCommand` with `keyPaths`. See
+  **Breaking** below for every renamed member.
+- **`AddressMetadata.chain` is nullable**: null for a type-42 address.
+- **Stored data needs no conversion.** Journals and snapshots written by 2.x
+  replay as they were. Isar adds the new address fields itself. PostgreSQL
+  deployments run migrations v025–v027 (`PostgresMigrations.migrate()`); v027
+  refuses to roll back while a type-42 address row exists.
+- An xpub wallet no longer reports spendable money: its UTXOs are
+  `watchOnlyBalance`. An app that showed them as spendable was showing money
+  it could not spend.
 
 ### Added
 
@@ -75,16 +99,16 @@
   `RegisterDiscoveredAddressCommand`, `AddressDiscoveredEvent` and
   `SignMultisigTransactionCommand`; the `ReadModelStorage` address queries
   take `AddressChain? chain`.
+  Journals, snapshots and stored rows written before are read as they were:
+  an event or snapshot without a chain reads its `isChange`, and an Isar
+  address row keeps `isChange` beside the new nullable `chain`. Postgres
+  migration v026 replaces `addresses.is_change` with `chain`.
 - **A key's path is a `KeyPath`**: an HD path (`HdKeyPath(index, chain:)`)
   or a type-42 derivation (`Type42KeyPath`). `SigningPath` is gone for it;
   `SignInputCommand.keyPath` replaces `derivationIndex` and `isChange`, and
   `SignTransactionCommand.keyPaths` replaces `derivationIndices` and
   `isChangeFlags`. `AddressMetadata.chain` is null for a type-42 address,
   which is on no chain.
-  Journals, snapshots and stored rows written before are read as they were:
-  an event or snapshot without a chain reads its `isChange`, and an Isar
-  address row keeps `isChange` beside the new nullable `chain`. Postgres
-  migration v026 replaces `addresses.is_change` with `chain`.
 - **`CryptoService`**: `derivePrivateKey(hdKey, addressIndex, {chain})` and
   `deriveAddress(hdPublicKey, addressIndex, {chain, network})` replace
   `derivePrivateKey(hdKey, accountIndex, addressIndex, {coinType, isChange})`
@@ -93,6 +117,12 @@
 - `BuildFundingTransactionCommand` loses `derivationIndex` and `isChange`,
   which nothing read: channel funding signs each UTXO with its own path.
 - `AddressGeneratedResponse` carries the address's `chain`.
+
+### Changed
+
+- The guides moved from `docs/` to `doc/`, pub's layout, beside the audit
+  reports already there. `spv-understanding.md`, which the API documentation
+  cites throughout, ships with the package.
 
 ### Fixed
 

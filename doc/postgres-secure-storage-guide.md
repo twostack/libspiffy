@@ -264,7 +264,7 @@ Future<PostgresSecureStorage> createSecureStorage(Pool pool) async {
   if (masterKey == null || masterKey.isEmpty) {
     throw StateError(
       'LIBSPIFFY_MASTER_KEY environment variable is not set. '
-      'See docs/postgres-secure-storage-guide.md for setup instructions.',
+      'See doc/postgres-secure-storage-guide.md for setup instructions.',
     );
   }
 

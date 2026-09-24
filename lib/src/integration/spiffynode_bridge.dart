@@ -97,25 +97,6 @@ class SpiffyNodeBridge {
     }
   }
 
-  /// Convert SpiffyNode ChainTip to LibSpiffy format
-  /// 
-  /// Note: This creates a simple data structure since we don't have direct
-  /// access to the full ChainTip class structure
-  dynamic _createChainTipFromSpiffyNode(dynamic spiffyNodeTip) {
-    // Return a simple object with the properties LibSpiffy expects
-    // Convert Hash to string if needed
-    final blockHash = spiffyNodeTip.blockHash != null 
-        ? spiffyNodeTip.blockHash.toString() 
-        : 'unknown';
-    
-    return _SimpleChainTip(
-      blockHash: blockHash,
-      height: spiffyNodeTip.height ?? 0,
-      peerCount: spiffyNodeTip.peerCount ?? 1,
-      confidence: spiffyNodeTip.confidence ?? 1.0,
-    );
-  }
-
   /// Store headers received from enhanced SpiffyNode integration
   /// 
   /// This method can be called when SpiffyNode is enhanced to provide
@@ -202,21 +183,6 @@ class SpiffyNodeBridge {
     // Note: For HeaderSyncActor stats (blockHeight, headerCount), 
     // query via LibSpiffyActorSystem.getHeaderSyncStats()
   };
-}
-
-/// Simple ChainTip data structure for LibSpiffy messages
-class _SimpleChainTip {
-  final String blockHash;
-  final int height;
-  final int peerCount;
-  final double confidence;
-
-  _SimpleChainTip({
-    required this.blockHash,
-    required this.height,
-    required this.peerCount,
-    required this.confidence,
-  });
 }
 
 /// Enhanced PeerHandler that captures headers for LibSpiffy storage

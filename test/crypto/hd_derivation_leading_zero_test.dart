@@ -29,6 +29,7 @@ import 'package:libspiffy/src/core/wallet_commands.dart';
 import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 import 'package:libspiffy/src/storage/in_memory_secure_storage.dart';
 import 'package:test/test.dart';
+import 'package:libspiffy/src/models/address_chain.dart';
 
 import '../actors/in_memory_event_store.dart';
 import 'bip32_reference.dart';
@@ -48,19 +49,17 @@ void main() {
   /// Derives m/{chain}/{index} through the service, checks it against the
   /// reference and against the address the wallet hands out for it.
   Future<void> expectServiceKey(dartsv.HDPrivateKey root, RefNode refRoot,
-      {required int index, required bool isChange}) async {
-    final chain = isChange ? 1 : 0;
-    final expected = refDerive(refRoot, 'm/$chain/$index');
-    final key = await crypto.derivePrivateKey(root, 0, index, isChange: isChange);
-    expect(key.toHex(), expected.keyHex, reason: 'private key at m/$chain/$index');
+      {required int index, required AddressChain chain}) async {
+    final path = 'm/${chain.index}/$index';
+    final expected = refDerive(refRoot, path);
+    final key = await crypto.derivePrivateKey(root, index, chain: chain);
+    expect(key.toHex(), expected.keyHex, reason: 'private key at $path');
     expect(key.publicKey.getEncoded(true), expected.publicKeyHex);
 
     final xpub = crypto.deriveHDPublicKey(root);
-    final handedOut = isChange
-        ? crypto.generateChangeAddress(xpub, index)
-        : crypto.generateReceivingAddress(xpub, index);
+    final handedOut = crypto.deriveAddress(xpub, index, chain: chain);
     expect(handedOut, _testnetAddress(expected.publicKeyHex),
-        reason: 'the address the wallet hands out for m/$chain/$index');
+        reason: 'the address the wallet hands out for $path');
     expect(key.toAddress(networkType: dartsv.NetworkType.TEST).toBase58(), handedOut,
         reason: 'the signing key matches the handed-out address');
   }
@@ -71,7 +70,7 @@ void main() {
       final ref = _refRoot(kShortReceive00Mnemonic);
       expect(refDerive(ref, 'm/0/0').key.bitLength, lessThanOrEqualTo(248),
           reason: 'fixture: the key has a leading zero byte');
-      await expectServiceKey(root, ref, index: 0, isChange: false);
+      await expectServiceKey(root, ref, index: 0, chain: AddressChain.receive);
     });
 
     test('a mnemonic whose receive chain key m/0 is short derives its receive keys',
@@ -81,7 +80,7 @@ void main() {
       expect(refDerive(ref, 'm/0').key.bitLength, lessThanOrEqualTo(248),
           reason: 'fixture: the chain key has a leading zero byte');
       for (final index in [0, 1, 2]) {
-        await expectServiceKey(root, ref, index: index, isChange: false);
+        await expectServiceKey(root, ref, index: index, chain: AddressChain.receive);
       }
     });
 
@@ -92,7 +91,7 @@ void main() {
       expect(refDerive(ref, 'm/1').key.bitLength, lessThanOrEqualTo(248),
           reason: 'fixture: the chain key has a leading zero byte');
       for (final index in [0, 1, 2]) {
-        await expectServiceKey(root, ref, index: index, isChange: true);
+        await expectServiceKey(root, ref, index: index, chain: AddressChain.change);
       }
     });
 
@@ -102,7 +101,7 @@ void main() {
       for (final index in kAbandonShortReceiveIndexes) {
         expect(refDerive(ref, 'm/0/$index').key.bitLength, lessThanOrEqualTo(248),
             reason: 'fixture: m/0/$index has a leading zero byte');
-        await expectServiceKey(root, ref, index: index, isChange: false);
+        await expectServiceKey(root, ref, index: index, chain: AddressChain.receive);
       }
     });
 
@@ -110,7 +109,7 @@ void main() {
       final master = dartsv.HDPrivateKey.fromXpriv(
           (await crypto.mnemonicToHDPrivateKey(kShortReceiveChainMnemonic)).xprivkey);
       await expectServiceKey(master, _refRoot(kShortReceiveChainMnemonic),
-          index: 7, isChange: false);
+          index: 7, chain: AddressChain.receive);
     });
 
     test('near miss: a receive chain public key with a short x coordinate', () async {
@@ -119,7 +118,7 @@ void main() {
       expect(refDerive(ref, 'm/0').publicKeyHex.substring(2, 4), '00',
           reason: 'fixture: x of m/0 starts with a zero byte');
       for (final index in [0, 1]) {
-        await expectServiceKey(root, ref, index: index, isChange: false);
+        await expectServiceKey(root, ref, index: index, chain: AddressChain.receive);
       }
     });
 
@@ -130,8 +129,8 @@ void main() {
       expect(ref.key.bitLength, lessThanOrEqualTo(248),
           reason: 'fixture: the master key has a leading zero byte');
       expect(hex.encode(root.keyBuffer), '00${ref.keyHex}');
-      for (final (index, isChange) in [(0, false), (0, true)]) {
-        await expectServiceKey(root, ref, index: index, isChange: isChange);
+      for (final chain in [AddressChain.receive, AddressChain.change]) {
+        await expectServiceKey(root, ref, index: 0, chain: chain);
       }
     });
   });
@@ -161,7 +160,7 @@ void main() {
         );
 
     Future<InputSignedResponse> sign(String walletId, String address,
-        {required int index, required bool isChange}) async {
+        {required int index, required AddressChain chain}) async {
       final tx = dartsv.Transaction()
         ..version = 1
         ..nLockTime = 0;
@@ -184,7 +183,7 @@ void main() {
                 .toHex(),
             satoshis: BigInt.from(5000),
             derivationIndex: index,
-            isChange: isChange,
+            chain: chain,
           ),
           sender: probe);
       return completer.future.timeout(const Duration(seconds: 10));
@@ -212,7 +211,8 @@ void main() {
         final expected = refDerive(_refRoot(mnemonic), 'm/${isChange ? 1 : 0}/$index');
         expect(address, _testnetAddress(expected.publicKeyHex));
 
-        final reply = await sign(walletId, address, index: index, isChange: isChange);
+        final reply = await sign(walletId, address,
+            index: index, chain: isChange ? AddressChain.change : AddressChain.receive);
         expect(reply.success, isTrue, reason: '$walletId: ${reply.error}');
         expect(reply.publicKeyHex, expected.publicKeyHex);
       }

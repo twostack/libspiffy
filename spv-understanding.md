@@ -66,6 +66,14 @@ Both modes follow the exchange above. They differ only in who answers step (1) a
 - **Both parties online.** The payee answers the invoice request itself with a plain address from its own wallet. It checks the BEEF it receives and broadcasts it, and both parties follow the payment in ARC to its block.
 - **A service acting for an offline payee.** A payee registers its xpub with a service that takes payments for its users. The service keeps that xpub as a watch-only wallet. It answers the invoice request with an address derived from the payee's xpub, then receives the BEEF, checks it and broadcasts it for the payee. It tells the payee about the payment out of band. The payee's own wallet takes the payment only once it is proven, with `ImportTransactionCommand`.
 
+How the second mode works in libspiffy:
+
+1. **The two issuers use separate chains.** An address is on one of three chains of the wallet's HD tree (`AddressChain`, with key path `m/{chain}/{index}`): receive (`m/0/i`), change (`m/1/i`) and delegated (`m/2/i`). The payee's own wallet issues receive addresses. An xpub wallet, which has no private key, issues every address on the delegated chain. Each keeps its own counter and never sees the other's, so on one chain they would hand out the same address.
+2. **The service's money is watch-only.** An xpub wallet holds no key, so everything it receives is reported as `watchOnlyBalance` and is never spendable.
+3. **The service follows the payment to its block** like any payee, then exports it with its proof: `ExportTransactionQuery` answers with a `TransactionExportedEvent` carrying the BEEF. It refuses while the transaction has no proof verified on our header chain.
+4. **The hand-off is the BEEF and the delegated indices the service issued.** The payee's wallet imports it with `ImportTransactionCommand(delegatedIndices: [...])`. It derives each address from its own key, and never takes the address it is handed, records them (they do not move its own counter), and then imports the payment. From then on it signs for them like any other address.
+5. **A restored wallet finds them too.** Address discovery scans all three chains.
+
 ### 2. What the Receiver Gets
 
 When receiving a transaction, the sender provides:
@@ -144,7 +152,7 @@ All third-party interaction flows through a single unified facade — **WalletCo
 - `CreateWalletCommand`, `ImportWalletCommand`
 - `GetBalanceQuery`, `GetTransactionsQuery`, `GetTransactionDetailQuery`
 - `CreateInvoiceCommand`, `PayInvoiceCommand`
-- `ValidateBEEFCommand` (a counterparty's payment: checked, recorded, submitted to ARC), `ImportTransactionCommand` (a transaction that carries its own proof: recovery, our own history), `RecordOutgoingCommand`
+- `ValidateBEEFCommand` (a counterparty's payment: checked, recorded, submitted to ARC), `ImportTransactionCommand` (a transaction that carries its own proof: recovery, our own history, or a payment a service took on the delegated chain), `ExportTransactionQuery` (a proven transaction as BEEF, for the payee a service took it for), `RecordOutgoingCommand`
 - `StoreHeadersCommand`, `SplitUTXOsCommand`, `TimestampCommand`
 - `OpenChannelCommand`, `ChannelPayCommand`, `CloseChannelCommand`
 - `GetDeferredPaymentsQuery`, `BroadcastDeferredPaymentCommand`, `CheckDeferredPaymentStatusCommand`, `CancelDeferredPaymentCommand`, `ReclaimDeferredPaymentCommand` (payments handed to a recipient that the network has not settled yet)
@@ -152,7 +160,7 @@ All third-party interaction flows through a single unified facade — **WalletCo
 **Key Events (emitted on stream):**
 - `WalletCreatedEvent`, `BalanceResponse`, `TransactionsResponse`
 - `InvoiceCreatedEvent`, `PaymentReadyEvent` (BEEF ready for transmission)
-- `SPVValidationResultEvent`, `TransactionImportedEvent`, `TransactionRecordedEvent`, `TransactionConfirmedEvent`, `TransactionConfirmationRevertedEvent`
+- `SPVValidationResultEvent`, `TransactionImportedEvent`, `TransactionExportedEvent`, `TransactionRecordedEvent`, `TransactionConfirmedEvent`, `TransactionConfirmationRevertedEvent`
 - `BalanceUpdatedEvent` (the balance changed; the app did not have to ask)
 - `UTXOSplitStartedEvent`, `UTXOSplitCompleteEvent`, `TimestampCompleteEvent`
 - `ChannelOpenedEvent`, `ChannelPaymentEvent`, `ChannelClosedEvent`
@@ -221,6 +229,8 @@ paid invoice refuses every other transaction -- so an invoice paid by a
 payment the network refuses turns the payer's genuine replacement away. The
 received outputs stay pending until the network holds it either way (bead
 libspiffy-vj4j), so no balance counts what the network has not taken.
+
+Either way in, the transaction must be the wallet's: an output paying one of its addresses or an invoice of it, or an input spending one of its outputs. One with none of these is refused, not recorded in the wallet's history with nothing in it, and not submitted for it.
 
 `ImportTransactionCommand` is not a way to receive a payment. It brings in a transaction the wallet knows to be mined — recovering a wallet, importing its own history — and so accepts only a BEEF carrying the proof of the transaction it imports; one without is refused and names `ValidateBEEFCommand`. It is submitted nowhere, and answered with `SPVValidationResultEvent`, then `TransactionImportedEvent` once the projection has applied it. There is no `TransactionReceivedEvent` (bead libspiffy-5ml6), and no `ReceiveTransactionCommand`: it was the same pipeline as the import, and submitted nothing (bead libspiffy-ckr4).
 

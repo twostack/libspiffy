@@ -1,6 +1,56 @@
 ## Unreleased
 
+### Added
+
+- **Payments for an offline payee** (bead libspiffy-m8qu; spv-understanding.md,
+  "Payment modes"). A service keeps a payee's xpub as a watch-only wallet and
+  answers invoice requests for them; the payee's wallet takes the payment
+  once it is mined.
+  - A third chain of the HD tree, **delegated** (`m/2/i`): an xpub wallet
+    issues every address on it, so the service and the payee's own wallet
+    (receive chain, `m/0/i`) can never hand out the same address.
+  - `ExportTransactionQuery` / `TransactionExportedEvent`: a proven
+    transaction of the wallet as a BEEF carrying its proof. Refused while
+    the transaction has no proof verified on our header chain.
+  - `ImportTransactionCommand.delegatedIndices`: the payee's wallet derives
+    those delegated addresses from its own key, records them (without
+    moving its own address counter) and then imports the payment, which it
+    can spend like any other.
+  - Address discovery (wallet import) scans the delegated chain as well as
+    the receive and change chains.
+
+### Breaking
+
+- **`AddressChain` replaces every change/receive flag.** `isChange` becomes
+  `chain` on `AddressMetadata`, `DiscoveredAddress`,
+  `RegisterDiscoveredAddressCommand`, `AddressDiscoveredEvent`,
+  `SignMultisigTransactionCommand`, `SignInputCommand` and `SigningPath`;
+  `SignTransactionCommand.isChangeFlags` becomes `chains`; the
+  `ReadModelStorage` address queries take `AddressChain? chain`.
+  Journals, snapshots and stored rows written before are read as they were:
+  an event or snapshot without a chain reads its `isChange`, and an Isar
+  address row keeps `isChange` beside the new nullable `chain`. Postgres
+  migration v026 replaces `addresses.is_change` with `chain`.
+- **`CryptoService`**: `derivePrivateKey(hdKey, addressIndex, {chain})` and
+  `deriveAddress(hdPublicKey, addressIndex, {chain, network})` replace
+  `derivePrivateKey(hdKey, accountIndex, addressIndex, {coinType, isChange})`
+  (whose `accountIndex` was, in fact, the chain) and
+  `generateReceivingAddress` / `generateChangeAddress`.
+- `BuildFundingTransactionCommand` loses `derivationIndex` and `isChange`,
+  which nothing read: channel funding signs each UTXO with its own path.
+
 ### Fixed
+
+- **An import was announced before the wallet's read model held it** when
+  another wallet of the same process already held the transaction (a payer
+  and its payee, or a service and the payee it hands a payment to): the
+  wait matched any wallet's row and event of the txid. Every read-model
+  wait of the coordinator and the channel manager now names its wallet.
+- **A transaction that is not the wallet's was recorded as if it were.**
+  One that pays none of the wallet's addresses (nor an invoice of it) and
+  spends none of its outputs passed SPV: `ImportTransactionCommand` put it
+  in the wallet's history with nothing in it, and `ValidateBEEFCommand`
+  submitted it to ARC. Both now refuse it, saying so.
 
 - **An xpub (watch-only) wallet's money was reported as spendable.** Such a
   wallet holds no private key, yet `WalletState.availableBalance`,

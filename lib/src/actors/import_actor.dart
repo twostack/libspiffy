@@ -11,6 +11,7 @@ import '../services/address_discovery_service.dart';
 import '../services/transaction_import_service.dart';
 import '../services/script_type_registry.dart';
 import '../storage/read_model_storage.dart';
+import '../models/address_chain.dart';
 import '../models/blockchain_data_models.dart';
 import '../models/bitcoin_utxo.dart'; // For UTXOStatus
 import '../core/wallet_commands.dart';
@@ -351,7 +352,7 @@ class ImportActor extends Actor {
     _logger.info('   → Discovery complete: ${discoveryResult.usedAddresses.length} addresses, '
         '${discoveryResult.totalTransactions} transactions');
     for (final addr in discoveryResult.usedAddresses) {
-      _logger.fine('      • ${addr.address} (index: ${addr.derivationIndex}, change: ${addr.isChange}, txs: ${addr.transactionCount})');
+      _logger.fine('      • ${addr.address} (index: ${addr.derivationIndex}, chain: ${addr.chain.name}, txs: ${addr.transactionCount})');
     }
 
     await _registerAddresses(message.walletId, discoveryResult.usedAddresses);
@@ -397,7 +398,7 @@ class ImportActor extends Actor {
     final discoveredAddress = DiscoveredAddress(
       address: address,
       derivationIndex: 0, // WIF has no derivation
-      isChange: false, // Not applicable for WIF
+      chain: AddressChain.receive, // Not applicable for WIF
       transactionCount: history.length,
       txids: history.map((tx) => tx.txid).toList(),
     );
@@ -440,7 +441,7 @@ class ImportActor extends Actor {
           walletId: walletId,
           address: address.address,
           derivationIndex: address.derivationIndex,
-          isChange: address.isChange,
+          chain: address.chain,
           transactionCount: address.transactionCount,
         )),
         sender: context.self,

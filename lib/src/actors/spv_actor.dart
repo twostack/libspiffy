@@ -701,6 +701,27 @@ class SPVActor extends Actor {
         }
 
 
+        // Received for a wallet, and nothing in it is the wallet's: no
+        // output pays one of its addresses or an invoice of it, and no input
+        // spends one of its outputs. It is not the wallet's transaction, so
+        // it is neither recorded in its history nor submitted for it. An
+        // import without the delegated indices a service handed over lands
+        // here (bead libspiffy-m8qu). A BEEF checked for no wallet (a
+        // channel's funding, say) is not a receive and is not asked this.
+        if (walletId != null && spendableUTXOs.isEmpty && spentUTXOs.isEmpty && invoiceOutputs.isEmpty) {
+          final error = 'Transaction $txidHex pays none of wallet $walletId\'s addresses and spends none of '
+              'its outputs: it is not the wallet\'s transaction'
+              '${unreadableOutputs.isEmpty ? '' : ' (output(s) ${[for (final o in unreadableOutputs) o['vout']]} could not be read)'}';
+          _log.warning(error);
+          return SPVValidationResult(
+            txid: txidHex,
+            isValid: false,
+            validationError: error,
+            targetWalletId: walletId,
+            unreadableOutputs: unreadableOutputs,
+          );
+        }
+
         // Build complete transaction data for recording in transaction history
         final transactionData = await _buildTransactionData(
           transaction,

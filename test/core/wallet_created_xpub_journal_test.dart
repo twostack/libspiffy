@@ -84,9 +84,14 @@ void main() {
         .toList();
   }
 
-  String receivingAddress(int index) => crypto.generateReceivingAddress(
+  String receivingAddress(int index) => crypto.deriveAddress(
       dartsv.HDPublicKey.fromXpub(xpub), index,
       network: dartsv.NetworkType.TEST);
+
+  /// What an xpub wallet issues: the delegated chain (bead libspiffy-m8qu).
+  String delegatedAddress(int index) => crypto.deriveAddress(
+      dartsv.HDPublicKey.fromXpub(xpub), index,
+      chain: AddressChain.delegated, network: dartsv.NetworkType.TEST);
 
   for (final variant in ['mnemonic', 'xpriv', 'xpub']) {
     test('$variant wallet: the journaled WalletCreatedEvent carries no xpub', () async {
@@ -131,7 +136,7 @@ void main() {
     final generated = (await store.getEvents('Wallet_$walletId'))
         .whereType<AddressGeneratedEvent>()
         .single;
-    expect(generated.address, receivingAddress(1));
+    expect(generated.address, delegatedAddress(1));
   });
 
   test('an old journal whose WalletCreatedEvent holds the xpub still replays', () async {
@@ -176,6 +181,6 @@ void main() {
             .whereType<AddressGeneratedEvent>()
             .single
             .address,
-        receivingAddress(1));
+        delegatedAddress(1));
   });
 }

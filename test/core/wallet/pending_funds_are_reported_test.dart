@@ -38,6 +38,7 @@ import 'package:libspiffy/src/models/bitcoin_utxo.dart';
 import 'package:libspiffy/src/projections/wallet_projection.dart';
 import 'package:libspiffy/src/storage/in_memory_wallet_storage.dart';
 import 'package:libspiffy/src/storage/read_model_storage.dart';
+import 'package:libspiffy/src/models/address_chain.dart';
 
 const _w = 'z84j';
 final _t0 = DateTime.utc(2026, 1, 1);
@@ -186,7 +187,7 @@ void main() {
     await storage.upsertAddress(_w, AddressMetadata(
       address: _stranger,
       scriptType: 'p2pkh',
-      isChange: false,
+      chain: AddressChain.receive,
       purpose: 'watch',
       usageCount: 0,
       balance: BigInt.zero,

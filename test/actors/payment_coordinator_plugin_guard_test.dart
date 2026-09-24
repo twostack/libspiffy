@@ -40,6 +40,7 @@ import 'package:libspiffy/src/plugin/provisioned_transaction.dart';
 import 'package:libspiffy/src/plugin/transaction_builder_plugin.dart';
 import 'package:libspiffy/src/storage/in_memory_secure_storage.dart';
 import 'package:libspiffy/src/storage/read_model_storage.dart';
+import 'package:libspiffy/src/models/address_chain.dart';
 import '../mocks/policy_rate_arc.dart';
 
 const _pluginId = 'uetb_faulty';
@@ -334,7 +335,7 @@ class _PluginStorage implements ReadModelStorage {
               address: _walletAddress,
               scriptType: 'p2pkh',
               derivationIndex: 0,
-              isChange: false,
+              chain: AddressChain.receive,
               purpose: 'receive',
               usageCount: 1,
               balance: BigInt.from(100000),

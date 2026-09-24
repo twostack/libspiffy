@@ -360,13 +360,14 @@ class LocalnetNode {
   }
 
   Future<void> createWallet(String walletId,
-      {String? xpriv, String? mnemonic}) async {
+      {String? xpriv, String? mnemonic, String? xpub}) async {
     final created = next<WalletCreatedEvent>((e) => e.walletId == walletId);
     coordinator.tell(CreateWalletCommand(
       walletId: walletId,
       name: walletId,
       xpriv: xpriv,
       mnemonic: mnemonic,
+      xpub: xpub,
     ));
     final event = await created;
     expect(event.success, isTrue, reason: event.error);

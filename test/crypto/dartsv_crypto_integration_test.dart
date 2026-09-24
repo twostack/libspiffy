@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:libspiffy/src/services/crypto_service.dart';
 import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
+import 'package:libspiffy/src/models/address_chain.dart';
 
 void main() {
   group('DartSVCryptoService Integration Tests', () {
@@ -94,11 +95,10 @@ void main() {
         final hdPublicKey = cryptoService.deriveHDPublicKey(hdPrivateKey);
 
         // Generate root address
-        var rootAddress = cryptoService.generateReceivingAddress(
+        var rootAddress = cryptoService.deriveAddress(
           hdPublicKey,
           0,
-          network: dartsv.NetworkType.TEST,
-        );
+          network: dartsv.NetworkType.TEST);
 
         print("root address : ${rootAddress}");
         print("tpriv : ${hdPrivateKey.xprivkey}");
@@ -155,16 +155,16 @@ void main() {
       });
 
       test('should derive private key for account 0, address 0', () async {
-        final privateKey = await cryptoService.derivePrivateKey(hdPrivateKey, 0, 0);
+        final privateKey = await cryptoService.derivePrivateKey(hdPrivateKey, 0);
         
         expect(privateKey, isNotNull);
         expect(privateKey, isA<dartsv.SVPrivateKey>());
       });
 
       test('should derive different private keys for different addresses', () async {
-        final privateKey1 = await cryptoService.derivePrivateKey(hdPrivateKey, 0, 0);
-        final privateKey2 = await cryptoService.derivePrivateKey(hdPrivateKey, 0, 1);
-        final privateKey3 = await cryptoService.derivePrivateKey(hdPrivateKey, 1, 0);
+        final privateKey1 = await cryptoService.derivePrivateKey(hdPrivateKey, 0);
+        final privateKey2 = await cryptoService.derivePrivateKey(hdPrivateKey, 1);
+        final privateKey3 = await cryptoService.derivePrivateKey(hdPrivateKey, 0, chain: AddressChain.change);
         
         expect(privateKey1.toWIF(), isNot(equals(privateKey2.toWIF())));
         expect(privateKey1.toWIF(), isNot(equals(privateKey3.toWIF())));
@@ -172,15 +172,15 @@ void main() {
       });
 
       test('should derive consistent private keys for same path', () async {
-        final privateKey1 = await cryptoService.derivePrivateKey(hdPrivateKey, 0, 5);
-        final privateKey2 = await cryptoService.derivePrivateKey(hdPrivateKey, 0, 5);
+        final privateKey1 = await cryptoService.derivePrivateKey(hdPrivateKey, 5);
+        final privateKey2 = await cryptoService.derivePrivateKey(hdPrivateKey, 5);
         
         expect(privateKey1.toWIF(), equals(privateKey2.toWIF()));
       });
 
       test('should derive change and receiving addresses differently', () async {
-        final receivingKey = await cryptoService.derivePrivateKey(hdPrivateKey, 0, 0, isChange: false);
-        final changeKey = await cryptoService.derivePrivateKey(hdPrivateKey, 0, 0, isChange: true);
+        final receivingKey = await cryptoService.derivePrivateKey(hdPrivateKey, 0);
+        final changeKey = await cryptoService.derivePrivateKey(hdPrivateKey, 0, chain: AddressChain.change);
         
         expect(receivingKey.toWIF(), isNot(equals(changeKey.toWIF())));
       }, skip: true);
@@ -195,7 +195,7 @@ void main() {
       });
 
       test('should generate address from private key', () async {
-        final privateKey = await cryptoService.derivePrivateKey(hdPrivateKey, 0, 0);
+        final privateKey = await cryptoService.derivePrivateKey(hdPrivateKey, 0);
         final address = cryptoService.generateAddress(privateKey);
         
         expect(address, isNotNull);
@@ -209,7 +209,7 @@ void main() {
           testMnemonic, 
           network: dartsv.NetworkType.MAIN,
         );
-        final privateKey = await cryptoService.derivePrivateKey(mainnetHDKey, 0, 0);
+        final privateKey = await cryptoService.derivePrivateKey(mainnetHDKey, 0);
         final address = cryptoService.generateAddress(privateKey, network: dartsv.NetworkType.MAIN);
         
         expect(address, isNotNull);
@@ -217,7 +217,7 @@ void main() {
       });
 
       test('should generate consistent addresses from same private key', () async {
-        final privateKey = await cryptoService.derivePrivateKey(hdPrivateKey, 0, 0);
+        final privateKey = await cryptoService.derivePrivateKey(hdPrivateKey, 0);
         
         final address1 = cryptoService.generateAddress(privateKey);
         final address2 = cryptoService.generateAddress(privateKey);
@@ -226,8 +226,8 @@ void main() {
       });
 
       test('should generate different addresses for different private keys', () async {
-        final privateKey1 = await cryptoService.derivePrivateKey(hdPrivateKey, 0, 0);
-        final privateKey2 = await cryptoService.derivePrivateKey(hdPrivateKey, 0, 1);
+        final privateKey1 = await cryptoService.derivePrivateKey(hdPrivateKey, 0);
+        final privateKey2 = await cryptoService.derivePrivateKey(hdPrivateKey, 1);
         
         final address1 = cryptoService.generateAddress(privateKey1);
         final address2 = cryptoService.generateAddress(privateKey2);
@@ -245,7 +245,7 @@ void main() {
       });
 
       test('should generate public key from private key', () async {
-        final privateKey = await cryptoService.derivePrivateKey(hdPrivateKey, 0, 0);
+        final privateKey = await cryptoService.derivePrivateKey(hdPrivateKey, 0);
         final publicKey = cryptoService.getPublicKey(privateKey);
         
         expect(publicKey, isNotNull);
@@ -253,7 +253,7 @@ void main() {
       });
 
       test('should generate consistent public keys from same private key', () async {
-        final privateKey = await cryptoService.derivePrivateKey(hdPrivateKey, 0, 0);
+        final privateKey = await cryptoService.derivePrivateKey(hdPrivateKey, 0);
         
         final publicKey1 = cryptoService.getPublicKey(privateKey);
         final publicKey2 = cryptoService.getPublicKey(privateKey);
@@ -262,8 +262,8 @@ void main() {
       });
 
       test('should generate different public keys for different private keys', () async {
-        final privateKey1 = await cryptoService.derivePrivateKey(hdPrivateKey, 0, 0);
-        final privateKey2 = await cryptoService.derivePrivateKey(hdPrivateKey, 0, 1);
+        final privateKey1 = await cryptoService.derivePrivateKey(hdPrivateKey, 0);
+        final privateKey2 = await cryptoService.derivePrivateKey(hdPrivateKey, 1);
         
         final publicKey1 = cryptoService.getPublicKey(privateKey1);
         final publicKey2 = cryptoService.getPublicKey(privateKey2);
@@ -280,7 +280,7 @@ void main() {
       setUp(() async {
         const testMnemonic = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
         hdPrivateKey = await cryptoService.mnemonicToHDPrivateKey(testMnemonic);
-        privateKey = await cryptoService.derivePrivateKey(hdPrivateKey, 0, 0);
+        privateKey = await cryptoService.derivePrivateKey(hdPrivateKey, 0);
         publicKey = cryptoService.getPublicKey(privateKey);
       });
 
@@ -311,7 +311,7 @@ void main() {
       });
 
       test('should sign and verify with different key pairs', () async {
-        final privateKey2 = await cryptoService.derivePrivateKey(hdPrivateKey, 0, 1);
+        final privateKey2 = await cryptoService.derivePrivateKey(hdPrivateKey, 1);
         final publicKey2 = cryptoService.getPublicKey(privateKey2);
         
         final testData = Uint8List.fromList('Cross-key verification test'.codeUnits);
@@ -332,7 +332,7 @@ void main() {
       setUp(() async {
         const testMnemonic = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
         hdPrivateKey = await cryptoService.mnemonicToHDPrivateKey(testMnemonic);
-        privateKey = await cryptoService.derivePrivateKey(hdPrivateKey, 0, 0);
+        privateKey = await cryptoService.derivePrivateKey(hdPrivateKey, 0);
       });
 
       test('should sign transaction hash correctly', () async {
@@ -487,8 +487,8 @@ void main() {
       test('should generate receiving addresses from HD public key', () async {
         final hdPublicKey = cryptoService.deriveHDPublicKey(hdPrivateKey);
         
-        final address1 = cryptoService.generateReceivingAddress(hdPublicKey, 0);
-        final address2 = cryptoService.generateReceivingAddress(hdPublicKey, 1);
+        final address1 = cryptoService.deriveAddress(hdPublicKey, 0);
+        final address2 = cryptoService.deriveAddress(hdPublicKey, 1);
         
         expect(address1, isNotNull);
         expect(address2, isNotNull);
@@ -500,8 +500,8 @@ void main() {
       test('should generate change addresses from HD public key', () async {
         final hdPublicKey = cryptoService.deriveHDPublicKey(hdPrivateKey);
         
-        final changeAddress1 = cryptoService.generateChangeAddress(hdPublicKey, 0);
-        final changeAddress2 = cryptoService.generateChangeAddress(hdPublicKey, 1);
+        final changeAddress1 = cryptoService.deriveAddress(hdPublicKey, 0, chain: AddressChain.change);
+        final changeAddress2 = cryptoService.deriveAddress(hdPublicKey, 1, chain: AddressChain.change);
         
         expect(changeAddress1, isNotNull);
         expect(changeAddress2, isNotNull);
@@ -511,8 +511,8 @@ void main() {
       test('should generate different receiving and change addresses', () async {
         final hdPublicKey = cryptoService.deriveHDPublicKey(hdPrivateKey);
         
-        final receivingAddress = cryptoService.generateReceivingAddress(hdPublicKey, 0);
-        final changeAddress = cryptoService.generateChangeAddress(hdPublicKey, 0);
+        final receivingAddress = cryptoService.deriveAddress(hdPublicKey, 0);
+        final changeAddress = cryptoService.deriveAddress(hdPublicKey, 0, chain: AddressChain.change);
         
         expect(receivingAddress, isNot(equals(changeAddress)));
       });

@@ -1,7 +1,8 @@
 /// Bead libspiffy-k7na on PostgreSQL: the wallet metadata type contract
 /// shared with the in-memory and Isar backends, and migration v025, which
 /// repairs the `wallet_type` column rows were written with (bead
-/// libspiffy-bfs1).
+/// libspiffy-bfs1), and migration v026, which gives every address row its
+/// chain (bead libspiffy-m8qu).
 @Tags(['postgres', 'integration'])
 library;
 
@@ -10,6 +11,7 @@ import 'dart:io';
 import 'package:postgres/postgres.dart';
 import 'package:test/test.dart';
 
+import 'package:libspiffy/src/models/address_chain.dart';
 import 'package:libspiffy/src/storage/postgres/postgres_config.dart';
 import 'package:libspiffy/src/storage/postgres/postgres_migrations.dart';
 import 'package:libspiffy/src/storage/postgres/postgres_wallet_storage.dart';
@@ -47,6 +49,39 @@ void main() {
 
     defineWalletMetadataTypesContract(() => storage, unique: () => 'pw$run-${counter++}');
 
+    // Bead libspiffy-m8qu: v026 replaces is_change with chain, backfilled
+    // from it, so an address stored before the delegated chain existed is
+    // read on the chain it was on.
+    test('v026 gives every address row the chain its is_change recorded', () async {
+      final migrations = PostgresMigrations(config);
+      final pool = await config.createPool();
+      final wallet = 'v026-$run';
+      try {
+        while (await migrations.getCurrentVersion() >= 26) {
+          await migrations.rollback();
+        }
+        expect(await migrations.getCurrentVersion(), 25);
+        for (final (address, isChange) in [('v026-r-$run', false), ('v026-c-$run', true)]) {
+          await pool.execute(
+            Sql.named('''
+              INSERT INTO addresses (wallet_id, address, script_type, derivation_index, is_change, purpose, created_at)
+              VALUES (@w, @a, 'p2pkh', 3, @c, @p, NOW())
+            '''),
+            parameters: {'w': wallet, 'a': address, 'c': isChange, 'p': isChange ? 'change' : 'receive'},
+          );
+        }
+        await migrations.migrate();
+
+        expect((await storage.getAddressMetadata(wallet, 'v026-c-$run'))!.chain, AddressChain.change);
+        expect((await storage.getAddressMetadata(wallet, 'v026-r-$run'))!.chain, AddressChain.receive);
+        expect((await storage.getAddressRange(wallet, startIndex: 3, count: 1, chain: AddressChain.change))
+            .map((a) => a.address), ['v026-c-$run']);
+      } finally {
+        await pool.execute(Sql.named('DELETE FROM addresses WHERE wallet_id = @w'), parameters: {'w': wallet});
+        await pool.close();
+      }
+    });
+
     // Every row used to be inserted with wallet_type 'hd'. The type the
     // wallet was created with is in the row's metadata, and v025 copies it
     // into the column; a row whose metadata names no type is left alone.
@@ -63,7 +98,9 @@ void main() {
             parameters: {'w': xpubWallet});
         expect((await storage.getWallet(xpubWallet))!['walletType'], 'hd');
 
-        expect(await migrations.rollback(), isTrue); // v025
+        while (await migrations.getCurrentVersion() >= 25) {
+          await migrations.rollback();
+        }
         expect(await migrations.getCurrentVersion(), 24);
         await migrations.migrate();
 

@@ -1,6 +1,7 @@
 import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:logging/logging.dart';
 
+import '../models/address_chain.dart';
 import '../models/blockchain_data_models.dart';
 import 'blockchain_data_source.dart';
 import '../utils/bip32.dart';
@@ -41,8 +42,8 @@ class AddressDiscoveryService {
   ///
   /// Returns [AddressDiscoveryResult] with all discovered addresses.
   ///
-  /// The process checks both receiving addresses (m/44'/0'/0'/0/x) and
-  /// change addresses (m/44'/0'/0'/1/x) according to BIP44.
+  /// The process checks each chain of [AddressChain] (m/{chain}/x):
+  /// receiving, change and delegated addresses.
   Future<AddressDiscoveryResult> discoverAddresses({
     required dartsv.HDPublicKey hdPublicKey,
     required String networkType,
@@ -62,37 +63,23 @@ class AddressDiscoveryService {
     
     _logger.info('   Network type resolved to: ${network == dartsv.NetworkType.MAIN ? "MAINNET" : "TESTNET"}');
 
-    // Scan receiving addresses (m/44'/236'/0'/0/x for BSV)
-    _logger.fine('Scanning receiving addresses...');
-    final receivingResults = await _scanAddressChain(
-      hdPublicKey: hdPublicKey,
-      isChange: false,
-      network: network,
-      gapLimit: gapLimit,
-      onProgress: onProgress,
-      shouldStop: shouldStop,
-    );
-    usedAddresses.addAll(receivingResults);
-    totalTransactions += receivingResults.fold<int>(
-      0,
-      (sum, addr) => sum + addr.transactionCount,
-    );
-
-    // Scan change addresses (m/44'/236'/0'/1/x for BSV)
-    _logger.fine('Scanning change addresses...');
-    final changeResults = await _scanAddressChain(
-      hdPublicKey: hdPublicKey,
-      isChange: true,
-      network: network,
-      gapLimit: gapLimit,
-      onProgress: onProgress,
-      shouldStop: shouldStop,
-    );
-    usedAddresses.addAll(changeResults);
-    totalTransactions += changeResults.fold<int>(
-      0,
-      (sum, addr) => sum + addr.transactionCount,
-    );
+    // Every chain the wallet's addresses can be on (m/{chain}/x): receive,
+    // change, and delegated — addresses a service issued from this wallet's
+    // xpub for it while it was offline (spv-understanding.md, "Payment
+    // modes"), which a restored wallet must find as well.
+    for (final chain in AddressChain.values) {
+      _logger.fine('Scanning ${chain.name} addresses...');
+      final results = await _scanAddressChain(
+        hdPublicKey: hdPublicKey,
+        chain: chain,
+        network: network,
+        gapLimit: gapLimit,
+        onProgress: onProgress,
+        shouldStop: shouldStop,
+      );
+      usedAddresses.addAll(results);
+      totalTransactions += results.fold<int>(0, (sum, addr) => sum + addr.transactionCount);
+    }
 
     final lastCheckedIndex = usedAddresses.isEmpty
         ? 0
@@ -112,10 +99,10 @@ class AddressDiscoveryService {
     );
   }
 
-  /// Scan a single chain (receiving or change) for used addresses
+  /// Scan a single chain for used addresses
   Future<List<DiscoveredAddress>> _scanAddressChain({
     required dartsv.HDPublicKey hdPublicKey,
-    required bool isChange,
+    required AddressChain chain,
     required dartsv.NetworkType network,
     required int gapLimit,
     void Function(int scannedCount, int usedCount)? onProgress,
@@ -126,9 +113,8 @@ class AddressDiscoveryService {
     int index = 0;
     int scannedCount = 0;
 
-    // Derive the change or receiving chain key
-    final chainKey = Bip32.derivePublicChild(hdPublicKey, isChange ? 1 : 0);
-    _logger.info('   → Scanning ${isChange ? "change" : "receiving"} address chain...');
+    final chainKey = Bip32.derivePublicChild(hdPublicKey, chain.index);
+    _logger.info('   → Scanning ${chain.name} address chain...');
 
     while (consecutiveUnused < gapLimit) {
       if (shouldStop?.call() ?? false) {
@@ -145,7 +131,7 @@ class AddressDiscoveryService {
       if (index < 3 || usedAddresses.isNotEmpty) {
         // Log first 3 addresses always, and any address when we've found used ones
         _logger.info(
-          '      Checking ${isChange ? "change" : "receiving"} address m/44\'/236\'/0\'/${isChange ? "1" : "0"}/$index: $address',
+          '      Checking ${chain.name} address m/${chain.index}/$index: $address',
         );
       }
 
@@ -162,7 +148,7 @@ class AddressDiscoveryService {
           usedAddresses.add(DiscoveredAddress(
             address: address,
             derivationIndex: index,
-            isChange: isChange,
+            chain: chain,
             transactionCount: history.length,
             txids: history.map((tx) => tx.txid).toList(),
             scripts: const [], // Scripts not needed for import, saves API call
@@ -191,7 +177,7 @@ class AddressDiscoveryService {
     }
 
     _logger.fine(
-      'Finished scanning ${isChange ? 'change' : 'receiving'} chain: '
+      'Finished scanning ${chain.name} chain: '
       '${usedAddresses.length} used addresses found',
     );
 
@@ -205,7 +191,7 @@ class AddressDiscoveryService {
   /// Parameters:
   /// - [hdPublicKey]: The HD public key to derive addresses from
   /// - [networkType]: Network type ('main' or 'test')
-  /// - [isChange]: Whether to scan change addresses (true) or receiving addresses (false)
+  /// - [chain]: The chain to scan
   /// - [startIndex]: Starting derivation index (default: 0)
   /// - [endIndex]: Ending derivation index (exclusive)
   ///
@@ -213,7 +199,7 @@ class AddressDiscoveryService {
   Future<List<DiscoveredAddress>> discoverAddressRange({
     required dartsv.HDPublicKey hdPublicKey,
     required String networkType,
-    required bool isChange,
+    required AddressChain chain,
     required int startIndex,
     required int endIndex,
   }) async {
@@ -224,7 +210,7 @@ class AddressDiscoveryService {
     final network = NetworkName.toDartsv(networkType);
 
     final usedAddresses = <DiscoveredAddress>[];
-    final chainKey = Bip32.derivePublicChild(hdPublicKey, isChange ? 1 : 0);
+    final chainKey = Bip32.derivePublicChild(hdPublicKey, chain.index);
 
     for (int index = startIndex; index < endIndex; index++) {
       final addressKey = Bip32.derivePublicChild(chainKey, index);
@@ -237,7 +223,7 @@ class AddressDiscoveryService {
           usedAddresses.add(DiscoveredAddress(
             address: address,
             derivationIndex: index,
-            isChange: isChange,
+            chain: chain,
             transactionCount: history.length,
             txids: history.map((tx) => tx.txid).toList(),
             scripts: const [], // Scripts not needed for import, saves API call

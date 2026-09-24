@@ -17,6 +17,7 @@ import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 import 'package:libspiffy/src/storage/in_memory_secure_storage.dart';
 import 'package:libspiffy/src/storage/in_memory_wallet_storage.dart';
 import 'package:test/test.dart';
+import 'package:libspiffy/src/models/address_chain.dart';
 
 import 'in_memory_event_store.dart';
 
@@ -46,7 +47,7 @@ class _FlakyStorage extends InMemoryWalletStorage {
 AddressMetadata _legacyRow(String address, {String? label}) => AddressMetadata(
       address: address,
       scriptType: 'p2pkh',
-      isChange: false,
+      chain: AddressChain.receive,
       purpose: 'watch',
       label: label,
       usageCount: 3,

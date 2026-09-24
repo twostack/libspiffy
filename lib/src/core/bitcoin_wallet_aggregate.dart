@@ -387,8 +387,9 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
 
   /// Success replies whose payload exists only once the command's events are
   /// persisted, keyed by command id: the signed transaction
-  /// ([TransactionSignedResponse]) and the funding transaction
-  /// ([FundingTransactionBuiltResponse]). [onCommandProcessed] sends them;
+  /// ([TransactionSignedResponse]), the funding transaction
+  /// ([FundingTransactionBuiltResponse]) and the delegated addresses
+  /// ([DelegatedAddressesRecordedResponse]). [onCommandProcessed] sends them;
   /// [onCommandFailure] discards them, so a failed persist never hands the
   /// caller a transaction the journal did not record (audit 2026-09-14 M5).
   final Map<String, Message> _repliesAwaitingPersist = {};
@@ -526,6 +527,12 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         success: false,
         error: errorMessage,
       ));
+    } else if (command is RecordDelegatedAddressesCommand) {
+      sender.tell(DelegatedAddressesRecordedResponse(
+        walletId: command.walletId,
+        success: false,
+        error: errorMessage,
+      ));
     } else {
       // Every other command: the aggregate has no reply of its own for it,
       // so the failure is reported in the shape every caller understands
@@ -575,6 +582,19 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         return AddressBook.registerDiscoveredAddress(currentState, cmd);
       case final AddWatchAddressCommand cmd:
         return AddressBook.addWatchAddress(currentState, cmd);
+      case final RecordDelegatedAddressesCommand cmd:
+        final recorded = await _keys.recordDelegatedAddresses(currentState, cmd);
+        // Sent once the addresses are journaled, and also when every one
+        // was recorded already (nothing to journal).
+        if (_replyTo(cmd) != null) {
+          _repliesAwaitingPersist[cmd.commandId] = DelegatedAddressesRecordedResponse(
+            walletId: cmd.walletId,
+            addresses: recorded.addresses,
+            journaled: [for (final e in recorded.events.whereType<AddressDiscoveredEvent>()) e.address],
+            success: true,
+          );
+        }
+        return recorded.events;
       case final ReconcileWatchAddressesCommand cmd:
         return AddressBook.reconcileWatchAddresses(currentState, cmd);
       case final ReceiveUTXOCommand cmd:

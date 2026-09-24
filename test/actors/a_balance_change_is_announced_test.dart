@@ -33,6 +33,7 @@ import 'package:libspiffy/src/core/wallet_events.dart' as domain;
 import 'package:libspiffy/src/models/address_metadata.dart';
 import 'package:libspiffy/src/models/bitcoin_utxo.dart';
 import 'package:libspiffy/src/storage/in_memory_wallet_storage.dart';
+import 'package:libspiffy/src/models/address_chain.dart';
 
 const _walletId = 'wallet-7ye4';
 final _t0 = DateTime.utc(2026, 1, 1);
@@ -171,7 +172,7 @@ void main() {
         AddressMetadata(
           address: _stranger,
           scriptType: 'p2pkh',
-          isChange: false,
+          chain: AddressChain.receive,
           purpose: 'watch',
           usageCount: 0,
           balance: BigInt.zero,

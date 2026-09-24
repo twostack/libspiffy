@@ -2,9 +2,10 @@ import 'dart:typed_data';
 import 'package:test/test.dart';
 import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
+import 'package:libspiffy/src/models/address_chain.dart';
+import 'package:libspiffy/src/services/crypto_service.dart';
+import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 
-import '../lib/src/services/crypto_service.dart';
-import '../lib/src/services/dartsv_crypto_service.dart';
 import 'crypto/hd_leading_zero_fixtures.dart';
 
 void main() {
@@ -85,8 +86,8 @@ void main() {
         );
         
         // Keys with different passphrases should be different
-        final childKey1 = await cryptoService.derivePrivateKey(hdKey1, 0, 0);
-        final childKey2 = await cryptoService.derivePrivateKey(hdKey2, 0, 0);
+        final childKey1 = await cryptoService.derivePrivateKey(hdKey1, 0);
+        final childKey2 = await cryptoService.derivePrivateKey(hdKey2, 0);
         expect(childKey1.toWIF(), isNot(equals(childKey2.toWIF())));
       });
 
@@ -95,20 +96,18 @@ void main() {
         const mnemonic = kShortChangeChainMnemonic;
         final hdKey = await cryptoService.mnemonicToHDPrivateKey(mnemonic);
         
-        // Test receiving address derivation (isChange: false)
+        // Test receiving address derivation (m/0/0)
         final receivingKey = await cryptoService.derivePrivateKey(
           hdKey,
-          0, // account index
           0, // address index
-          isChange: false,
+          chain: AddressChain.receive,
         );
         
-        // Test change address derivation (isChange: true)
+        // Test change address derivation (m/1/0)
         final changeKey = await cryptoService.derivePrivateKey(
           hdKey,
-          0, // account index
           0, // address index
-          isChange: true,
+          chain: AddressChain.change,
         );
         
         expect(receivingKey, isNotNull);
@@ -121,9 +120,9 @@ void main() {
         const mnemonic = kShortReceiveChainMnemonic;
         final hdKey = await cryptoService.mnemonicToHDPrivateKey(mnemonic);
         
-        final key0 = await cryptoService.derivePrivateKey(hdKey, 0, 0);
-        final key1 = await cryptoService.derivePrivateKey(hdKey, 0, 1);
-        final key2 = await cryptoService.derivePrivateKey(hdKey, 1, 0);
+        final key0 = await cryptoService.derivePrivateKey(hdKey, 0);
+        final key1 = await cryptoService.derivePrivateKey(hdKey, 1);
+        final key2 = await cryptoService.derivePrivateKey(hdKey, 0, chain: AddressChain.change);
         
         expect(key0.toWIF(), isNot(equals(key1.toWIF())));
         expect(key0.toWIF(), isNot(equals(key2.toWIF())));
@@ -138,7 +137,7 @@ void main() {
         // Fixed, not random: m/0/0 has a leading zero byte (libspiffy-hvp).
         const mnemonic = kShortReceive00Mnemonic;
         final hdKey = await cryptoService.mnemonicToHDPrivateKey(mnemonic);
-        final privateKey = await cryptoService.derivePrivateKey(hdKey, 0, 0);
+        final privateKey = await cryptoService.derivePrivateKey(hdKey, 0);
         
         final address = cryptoService.generateAddress(
           privateKey,
@@ -293,8 +292,8 @@ void main() {
         final hdPrivateKey = await cryptoService.mnemonicToHDPrivateKey(mnemonic);
         final hdPublicKey = cryptoService.deriveHDPublicKey(hdPrivateKey);
         
-        final address0 = cryptoService.generateReceivingAddress(hdPublicKey, 0);
-        final address1 = cryptoService.generateReceivingAddress(hdPublicKey, 1);
+        final address0 = cryptoService.deriveAddress(hdPublicKey, 0);
+        final address1 = cryptoService.deriveAddress(hdPublicKey, 1);
         
         expect(address0, isNotEmpty);
         expect(address1, isNotEmpty);
@@ -306,8 +305,8 @@ void main() {
         final hdPrivateKey = await cryptoService.mnemonicToHDPrivateKey(mnemonic);
         final hdPublicKey = cryptoService.deriveHDPublicKey(hdPrivateKey);
         
-        final changeAddress0 = cryptoService.generateChangeAddress(hdPublicKey, 0);
-        final changeAddress1 = cryptoService.generateChangeAddress(hdPublicKey, 1);
+        final changeAddress0 = cryptoService.deriveAddress(hdPublicKey, 0, chain: AddressChain.change);
+        final changeAddress1 = cryptoService.deriveAddress(hdPublicKey, 1, chain: AddressChain.change);
         
         expect(changeAddress0, isNotEmpty);
         expect(changeAddress1, isNotEmpty);
@@ -359,8 +358,8 @@ void main() {
         final hdKey = await cryptoService.mnemonicToHDPrivateKey(mnemonic);
         
         // Derive child keys
-        final receivingKey = await cryptoService.derivePrivateKey(hdKey, 0, 0, isChange: false);
-        final changeKey = await cryptoService.derivePrivateKey(hdKey, 0, 0, isChange: true);
+        final receivingKey = await cryptoService.derivePrivateKey(hdKey, 0);
+        final changeKey = await cryptoService.derivePrivateKey(hdKey, 0, chain: AddressChain.change);
         
         // Generate addresses
         final receivingAddr = cryptoService.generateAddress(receivingKey);
@@ -386,13 +385,13 @@ void main() {
         final hdKey2 = await cryptoService.mnemonicToHDPrivateKey(mnemonic);
         
         // Verify consistency by deriving same child key from both
-        final testKey1 = await cryptoService.derivePrivateKey(hdKey1, 0, 0);
-        final testKey2 = await cryptoService.derivePrivateKey(hdKey2, 0, 0);
+        final testKey1 = await cryptoService.derivePrivateKey(hdKey1, 0);
+        final testKey2 = await cryptoService.derivePrivateKey(hdKey2, 0);
         expect(testKey1.toWIF(), equals(testKey2.toWIF()));
         
         // Same derivation paths should produce same results
-        final childKey1 = await cryptoService.derivePrivateKey(hdKey1, 0, 0);
-        final childKey2 = await cryptoService.derivePrivateKey(hdKey2, 0, 0);
+        final childKey1 = await cryptoService.derivePrivateKey(hdKey1, 0);
+        final childKey2 = await cryptoService.derivePrivateKey(hdKey2, 0);
         
         expect(childKey1.toWIF(), equals(childKey2.toWIF()));
         

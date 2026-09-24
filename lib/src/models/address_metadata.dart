@@ -1,4 +1,5 @@
 import '../storage/libspiffy_schemas.dart';
+import 'address_chain.dart';
 
 /// Domain model for address metadata
 class AddressMetadata {
@@ -6,7 +7,8 @@ class AddressMetadata {
   final String scriptType;
   final String? derivationPath;
   final int? derivationIndex;
-  final bool isChange;
+  /// The chain the address is on: its key is at m/{chain}/{derivationIndex}.
+  final AddressChain chain;
   final String? label;
   final String purpose;
   final DateTime? firstUsedAt;
@@ -21,7 +23,7 @@ class AddressMetadata {
     required this.scriptType,
     this.derivationPath,
     this.derivationIndex,
-    required this.isChange,
+    required this.chain,
     this.label,
     required this.purpose,
     this.firstUsedAt,
@@ -45,7 +47,7 @@ class AddressMetadata {
       scriptType: entity.scriptType,
       derivationPath: entity.derivationPath,
       derivationIndex: entity.derivationIndex,
-      isChange: entity.isChange,
+      chain: AddressChain.fromRecord(chain: entity.chain, isChange: entity.isChange),
       label: entity.label,
       purpose: entity.purpose,
       firstUsedAt: entity.firstUsedAt,
@@ -65,7 +67,8 @@ class AddressMetadata {
       ..scriptType = scriptType
       ..derivationPath = derivationPath
       ..derivationIndex = derivationIndex
-      ..isChange = isChange
+      ..chain = chain.index
+      ..isChange = chain == AddressChain.change
       ..label = label
       ..purpose = purpose
       ..firstUsedAt = firstUsedAt

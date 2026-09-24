@@ -23826,63 +23826,68 @@ const AddressEntitySchema = CollectionSchema(
       name: r'balance',
       type: IsarType.string,
     ),
-    r'createdAt': PropertySchema(
+    r'chain': PropertySchema(
       id: 2,
+      name: r'chain',
+      type: IsarType.long,
+    ),
+    r'createdAt': PropertySchema(
+      id: 3,
       name: r'createdAt',
       type: IsarType.dateTime,
     ),
     r'derivationIndex': PropertySchema(
-      id: 3,
+      id: 4,
       name: r'derivationIndex',
       type: IsarType.long,
     ),
     r'derivationPath': PropertySchema(
-      id: 4,
+      id: 5,
       name: r'derivationPath',
       type: IsarType.string,
     ),
     r'firstUsedAt': PropertySchema(
-      id: 5,
+      id: 6,
       name: r'firstUsedAt',
       type: IsarType.dateTime,
     ),
     r'isChange': PropertySchema(
-      id: 6,
+      id: 7,
       name: r'isChange',
       type: IsarType.bool,
     ),
     r'isWatched': PropertySchema(
-      id: 7,
+      id: 8,
       name: r'isWatched',
       type: IsarType.bool,
     ),
     r'label': PropertySchema(
-      id: 8,
+      id: 9,
       name: r'label',
       type: IsarType.string,
     ),
     r'lastUsedAt': PropertySchema(
-      id: 9,
+      id: 10,
       name: r'lastUsedAt',
       type: IsarType.dateTime,
     ),
     r'purpose': PropertySchema(
-      id: 10,
+      id: 11,
       name: r'purpose',
       type: IsarType.string,
     ),
     r'scriptType': PropertySchema(
-      id: 11,
+      id: 12,
       name: r'scriptType',
       type: IsarType.string,
     ),
     r'usageCount': PropertySchema(
-      id: 12,
+      id: 13,
       name: r'usageCount',
       type: IsarType.long,
     ),
     r'walletId': PropertySchema(
-      id: 13,
+      id: 14,
       name: r'walletId',
       type: IsarType.string,
     )
@@ -23998,18 +24003,19 @@ void _addressEntitySerialize(
 ) {
   writer.writeString(offsets[0], object.address);
   writer.writeString(offsets[1], object.balance);
-  writer.writeDateTime(offsets[2], object.createdAt);
-  writer.writeLong(offsets[3], object.derivationIndex);
-  writer.writeString(offsets[4], object.derivationPath);
-  writer.writeDateTime(offsets[5], object.firstUsedAt);
-  writer.writeBool(offsets[6], object.isChange);
-  writer.writeBool(offsets[7], object.isWatched);
-  writer.writeString(offsets[8], object.label);
-  writer.writeDateTime(offsets[9], object.lastUsedAt);
-  writer.writeString(offsets[10], object.purpose);
-  writer.writeString(offsets[11], object.scriptType);
-  writer.writeLong(offsets[12], object.usageCount);
-  writer.writeString(offsets[13], object.walletId);
+  writer.writeLong(offsets[2], object.chain);
+  writer.writeDateTime(offsets[3], object.createdAt);
+  writer.writeLong(offsets[4], object.derivationIndex);
+  writer.writeString(offsets[5], object.derivationPath);
+  writer.writeDateTime(offsets[6], object.firstUsedAt);
+  writer.writeBool(offsets[7], object.isChange);
+  writer.writeBool(offsets[8], object.isWatched);
+  writer.writeString(offsets[9], object.label);
+  writer.writeDateTime(offsets[10], object.lastUsedAt);
+  writer.writeString(offsets[11], object.purpose);
+  writer.writeString(offsets[12], object.scriptType);
+  writer.writeLong(offsets[13], object.usageCount);
+  writer.writeString(offsets[14], object.walletId);
 }
 
 AddressEntity _addressEntityDeserialize(
@@ -24021,19 +24027,20 @@ AddressEntity _addressEntityDeserialize(
   final object = AddressEntity();
   object.address = reader.readString(offsets[0]);
   object.balance = reader.readString(offsets[1]);
-  object.createdAt = reader.readDateTime(offsets[2]);
-  object.derivationIndex = reader.readLongOrNull(offsets[3]);
-  object.derivationPath = reader.readStringOrNull(offsets[4]);
-  object.firstUsedAt = reader.readDateTimeOrNull(offsets[5]);
+  object.chain = reader.readLongOrNull(offsets[2]);
+  object.createdAt = reader.readDateTime(offsets[3]);
+  object.derivationIndex = reader.readLongOrNull(offsets[4]);
+  object.derivationPath = reader.readStringOrNull(offsets[5]);
+  object.firstUsedAt = reader.readDateTimeOrNull(offsets[6]);
   object.id = id;
-  object.isChange = reader.readBool(offsets[6]);
-  object.isWatched = reader.readBool(offsets[7]);
-  object.label = reader.readStringOrNull(offsets[8]);
-  object.lastUsedAt = reader.readDateTimeOrNull(offsets[9]);
-  object.purpose = reader.readString(offsets[10]);
-  object.scriptType = reader.readString(offsets[11]);
-  object.usageCount = reader.readLong(offsets[12]);
-  object.walletId = reader.readString(offsets[13]);
+  object.isChange = reader.readBool(offsets[7]);
+  object.isWatched = reader.readBool(offsets[8]);
+  object.label = reader.readStringOrNull(offsets[9]);
+  object.lastUsedAt = reader.readDateTimeOrNull(offsets[10]);
+  object.purpose = reader.readString(offsets[11]);
+  object.scriptType = reader.readString(offsets[12]);
+  object.usageCount = reader.readLong(offsets[13]);
+  object.walletId = reader.readString(offsets[14]);
   return object;
 }
 
@@ -24049,28 +24056,30 @@ P _addressEntityDeserializeProp<P>(
     case 1:
       return (reader.readString(offset)) as P;
     case 2:
-      return (reader.readDateTime(offset)) as P;
-    case 3:
       return (reader.readLongOrNull(offset)) as P;
+    case 3:
+      return (reader.readDateTime(offset)) as P;
     case 4:
-      return (reader.readStringOrNull(offset)) as P;
+      return (reader.readLongOrNull(offset)) as P;
     case 5:
-      return (reader.readDateTimeOrNull(offset)) as P;
+      return (reader.readStringOrNull(offset)) as P;
     case 6:
-      return (reader.readBool(offset)) as P;
+      return (reader.readDateTimeOrNull(offset)) as P;
     case 7:
       return (reader.readBool(offset)) as P;
     case 8:
-      return (reader.readStringOrNull(offset)) as P;
+      return (reader.readBool(offset)) as P;
     case 9:
-      return (reader.readDateTimeOrNull(offset)) as P;
+      return (reader.readStringOrNull(offset)) as P;
     case 10:
-      return (reader.readString(offset)) as P;
+      return (reader.readDateTimeOrNull(offset)) as P;
     case 11:
       return (reader.readString(offset)) as P;
     case 12:
-      return (reader.readLong(offset)) as P;
+      return (reader.readString(offset)) as P;
     case 13:
+      return (reader.readLong(offset)) as P;
+    case 14:
       return (reader.readString(offset)) as P;
     default:
       throw IsarError('Unknown property with id $propertyId');
@@ -24877,6 +24886,80 @@ extension AddressEntityQueryFilter
       return query.addFilterCondition(FilterCondition.greaterThan(
         property: r'balance',
         value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      chainIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'chain',
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      chainIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'chain',
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      chainEqualTo(int? value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'chain',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      chainGreaterThan(
+    int? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'chain',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      chainLessThan(
+    int? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'chain',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition>
+      chainBetween(
+    int? lower,
+    int? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'chain',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
       ));
     });
   }
@@ -26038,6 +26121,18 @@ extension AddressEntityQuerySortBy
     });
   }
 
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy> sortByChain() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'chain', Sort.asc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy> sortByChainDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'chain', Sort.desc);
+    });
+  }
+
   QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy> sortByCreatedAt() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'createdAt', Sort.asc);
@@ -26218,6 +26313,18 @@ extension AddressEntityQuerySortThenBy
   QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy> thenByBalanceDesc() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'balance', Sort.desc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy> thenByChain() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'chain', Sort.asc);
+    });
+  }
+
+  QueryBuilder<AddressEntity, AddressEntity, QAfterSortBy> thenByChainDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'chain', Sort.desc);
     });
   }
 
@@ -26406,6 +26513,12 @@ extension AddressEntityQueryWhereDistinct
     });
   }
 
+  QueryBuilder<AddressEntity, AddressEntity, QDistinct> distinctByChain() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'chain');
+    });
+  }
+
   QueryBuilder<AddressEntity, AddressEntity, QDistinct> distinctByCreatedAt() {
     return QueryBuilder.apply(this, (query) {
       return query.addDistinctBy(r'createdAt');
@@ -26504,6 +26617,12 @@ extension AddressEntityQueryProperty
   QueryBuilder<AddressEntity, String, QQueryOperations> balanceProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'balance');
+    });
+  }
+
+  QueryBuilder<AddressEntity, int?, QQueryOperations> chainProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'chain');
     });
   }
 

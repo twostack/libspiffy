@@ -35,6 +35,7 @@ import 'package:libspiffy/src/storage/in_memory_secure_storage.dart';
 import 'package:libspiffy/src/storage/in_memory_wallet_storage.dart';
 import 'package:libspiffy/src/utils/beef.dart';
 import 'package:test/test.dart';
+import 'package:libspiffy/src/models/address_chain.dart';
 
 import '../spv/testnet_proof_fixture.dart';
 import 'in_memory_event_store.dart';
@@ -272,7 +273,7 @@ void main() {
     await readModel.upsertAddress('watcher', AddressMetadata(
       address: watchAddress,
       scriptType: 'p2pkh',
-      isChange: false,
+      chain: AddressChain.receive,
       purpose: 'watch',
       usageCount: 0,
       balance: BigInt.zero,

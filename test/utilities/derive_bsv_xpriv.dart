@@ -38,7 +38,7 @@ Future<void> main() async {
     final j1 = jopKey.deriveChildNumber(i);
     print("j1 Addr : " +  j1.publicKey.toAddress(dartsv.NetworkType.MAIN).toBase58());
 
-    final j2 = await cryptoService.derivePrivateKey(jopKey, 0, i, coinType: 236, isChange: false);
+    final j2 = await cryptoService.derivePrivateKey(jopKey, i);
     // final j2 = jopKey.deriveChildKey("m/0'/${i}");
     print("j2 Addr : " + j2.publicKey.toAddress(dartsv.NetworkType.TEST).toBase58());
   }

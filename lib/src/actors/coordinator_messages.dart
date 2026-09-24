@@ -366,21 +366,64 @@ class RecordOutgoingCommand implements Message {
 /// counterparty's payment is received with [ValidateBEEFCommand], which
 /// submits it and follows it to its block. The txid is the BEEF's; it is
 /// not the caller's to name.
+///
+/// [delegatedIndices] is the other half of a service's hand-off (bead
+/// libspiffy-m8qu; spv-understanding.md, "Payment modes"): a service holding
+/// this wallet's xpub took a payment for it on the delegated chain
+/// (`m/2/{index}`), broadcast it and followed it to its block, and hands it
+/// over with the indices it issued (`ExportTransactionQuery` on the
+/// service's side). The wallet derives those addresses from its own key and
+/// records them before the import, so the payment is attributed to it and
+/// can be spent.
 class ImportTransactionCommand implements Message {
   final String walletId;
   final List<int> beef;
   final String? fromCounterparty;
+  final List<int> delegatedIndices;
 
   ImportTransactionCommand({
     required this.walletId,
     required List<int> beef,
     this.fromCounterparty,
-  }) : beef = frozenList(beef);
+    List<int> delegatedIndices = const [],
+  })  : beef = frozenList(beef),
+        delegatedIndices = frozenList(delegatedIndices);
 
   @override
   String get correlationId => 'import-tx-$walletId-${DateTime.now().microsecondsSinceEpoch}';
   @override
   Map<String, dynamic> get metadata => {'walletId': walletId};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+/// Export a transaction of the wallet with its merkle proof, as a BEEF that
+/// another wallet imports with [ImportTransactionCommand] (bead
+/// libspiffy-m8qu).
+///
+/// This is the service's side of the hand-off in the offline-payee mode
+/// (spv-understanding.md, "Payment modes"): the service's xpub wallet
+/// received the payment, broadcast it and holds its proof once it is mined.
+/// Answered with a [TransactionExportedEvent]; refused while the
+/// transaction has no proof verified on our header chain, because the
+/// importing wallet accepts only a proven transaction.
+class ExportTransactionQuery implements Message {
+  final String walletId;
+  final String txid;
+  final String? queryId;
+
+  ExportTransactionQuery({
+    required this.walletId,
+    required this.txid,
+    this.queryId,
+  });
+
+  @override
+  String get correlationId => queryId ?? 'export-tx-$txid';
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId, 'txid': txid};
   @override
   ActorRef? get replyTo => null;
   @override
@@ -1918,6 +1961,30 @@ class TransactionImportedEvent extends CoordinatorEvent {
     this.totalValueReceived,
     this.error,
   });
+
+  @override
+  DateTime get eventTimestamp => DateTime.now();
+}
+
+/// Answer to [ExportTransactionQuery]: the transaction with its proof and
+/// what proves its ancestry, as BEEF bytes, or why there is none.
+class TransactionExportedEvent extends CoordinatorEvent {
+  @override
+  final String walletId;
+  final String txid;
+  final String queryId;
+  final bool success;
+  final List<int>? beef;
+  final String? error;
+
+  TransactionExportedEvent({
+    required this.walletId,
+    required this.txid,
+    required this.queryId,
+    required this.success,
+    List<int>? beef,
+    this.error,
+  }) : beef = frozenListOrNull(beef);
 
   @override
   DateTime get eventTimestamp => DateTime.now();

@@ -9,6 +9,7 @@ import 'dart:typed_data';
 import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
 
+import '../../models/address_chain.dart';
 import '../../models/bitcoin_utxo.dart';
 import '../../models/wallet_state.dart';
 import '../../models/wallet_type.dart';
@@ -94,8 +95,8 @@ class WalletTransactionSigner {
       // Get private key for this UTXO's address
       // Use command-provided derivation index if available (from read model)
       final cmdDerivationIndex = (i < command.derivationIndices.length) ? command.derivationIndices[i] : null;
-      // Chain flag is optional: absent means "resolve from aggregate state".
-      final cmdIsChange = (i < command.isChangeFlags.length) ? command.isChangeFlags[i] : null;
+      // The chain is optional: absent means "resolve from aggregate state".
+      final cmdChain = (i < command.chains.length) ? command.chains[i] : null;
 
       final sighashType = _sighashAllForkId;
       final unlock = await unlockFor(
@@ -104,7 +105,7 @@ class WalletTransactionSigner {
         utxo,
         utxoKey: utxoKey,
         derivationIndex: cmdDerivationIndex,
-        isChange: cmdIsChange,
+        chain: cmdChain,
       );
       if (unlock == null) {
         // A script type the wallet has no standard unlocking script for: sign
@@ -114,7 +115,7 @@ class WalletTransactionSigner {
           command.walletId,
           currentState,
           derivationIndex: cmdDerivationIndex,
-          isChange: cmdIsChange,
+          chain: cmdChain,
         );
         signedTx = dartsv.DefaultTransactionSigner(sighashType, privateKey).sign(unsignedTx, utxoOutput, i);
       } else {
@@ -203,7 +204,7 @@ class WalletTransactionSigner {
     BitcoinUtxo utxo, {
     String? utxoKey,
     int? derivationIndex,
-    bool? isChange,
+    AddressChain? chain,
   }) async {
     // ScriptTypeRegistry is a singleton pinned to the first network it
     // is built with; the default (testnet) threw for mainnet wallets
@@ -225,7 +226,7 @@ class WalletTransactionSigner {
             walletId,
             currentState,
             derivationIndex: derivationIndex,
-            isChange: isChange,
+            chain: chain,
           );
 
     if (multisig != null) {
@@ -350,7 +351,7 @@ class WalletTransactionSigner {
       command.walletId,
       command.derivationIndex,
       currentState,
-      isChange: command.isChange,
+      chain: command.chain,
     );
 
     // Parse the redeem script (2-of-2 multisig locking script)
@@ -426,7 +427,7 @@ class WalletTransactionSigner {
       command.walletId,
       command.derivationIndex,
       currentState,
-      isChange: command.isChange,
+      chain: command.chain,
     );
 
     // What dartsv's DefaultTransactionSigner does, without needing an

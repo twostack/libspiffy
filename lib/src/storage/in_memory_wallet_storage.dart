@@ -4,6 +4,7 @@ import 'package:collection/collection.dart' show mergeSort;
 import 'package:meta/meta.dart' show visibleForTesting;
 import 'package:spiffynode/spiffy_node.dart';
 import '../models/wallet_event.dart';
+import '../models/address_chain.dart';
 import '../models/bitcoin_utxo.dart';
 import '../models/bitcoin_transaction.dart';
 import '../models/address_metadata.dart';
@@ -1291,14 +1292,14 @@ _balanceCache.remove(walletId);
   Future<List<AddressMetadata>> getAddressesWithMetadata(
     String walletId, {
     bool? includeUnused,
-    bool? isChange,
+    AddressChain? chain,
     int? limit,
     int? offset,
   }) async {
     // Newest first, as the Isar backend sorts by creation time.
     final matching = (_addresses[walletId]?.values ?? const <AddressMetadata>[])
         .where((a) => includeUnused != false || a.usageCount > 0)
-        .where((a) => isChange == null || a.isChange == isChange)
+        .where((a) => chain == null || a.chain == chain)
         .toList()
       ..sort((a, b) => b.createdAt.compareTo(a.createdAt));
     Iterable<AddressMetadata> result = matching;
@@ -1312,12 +1313,12 @@ _balanceCache.remove(walletId);
     String walletId, {
     required int startIndex,
     required int count,
-    bool isChange = false,
+    AddressChain chain = AddressChain.receive,
   }) async {
     final endIndex = startIndex + count - 1;
     return (_addresses[walletId]?.values ?? const <AddressMetadata>[])
         .where((a) =>
-            a.isChange == isChange &&
+            a.chain == chain &&
             a.derivationIndex != null &&
             a.derivationIndex! >= startIndex &&
             a.derivationIndex! <= endIndex)
@@ -1358,7 +1359,7 @@ _balanceCache.remove(walletId);
         scriptType: current.scriptType,
         derivationPath: current.derivationPath,
         derivationIndex: current.derivationIndex,
-        isChange: current.isChange,
+        chain: current.chain,
         label: current.label,
         purpose: current.purpose,
         firstUsedAt: current.firstUsedAt ?? usedAt,

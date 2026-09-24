@@ -463,7 +463,6 @@ class ChannelP2PAdapter {
           serverPubKeyHex: serverPubKey,
           fundingAmountSats: clientInfo.fundingAmountSats,
           changeAddressBase58: clientInfo.clientAddressB58,
-          derivationIndex: clientInfo.clientDerivationIndex,
           feeRate: feeRate,
         ),
       ),

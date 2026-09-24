@@ -2036,7 +2036,7 @@ class PaymentChannelManagerActor extends Actor {
 
     final applied = _awaitApplied(
       _walletProjection,
-      (e) => e is TransactionRecordedEvent && e.txid == txid,
+      (e) => e is TransactionRecordedEvent && e.walletId == walletId && e.txid == txid,
       _walletPersistTimeout,
     );
     _walletManager.tell(WalletCommandMessage(walletId, command));
@@ -2192,7 +2192,7 @@ class PaymentChannelManagerActor extends Actor {
     final fundingTxHex = state.fundingTxHex;
     final applied = _awaitApplied(
       _walletProjection,
-      (e) => e is TransactionImportedEvent && e.txid == txid,
+      (e) => e is TransactionImportedEvent && e.walletId == walletId && e.txid == txid,
       _walletPersistTimeout,
     );
     _walletManager.tell(WalletCommandMessage(

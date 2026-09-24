@@ -29,6 +29,7 @@ import 'package:libspiffy/src/projections/wallet_projection.dart';
 import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 import 'package:libspiffy/src/storage/in_memory_secure_storage.dart';
 import 'package:libspiffy/src/storage/in_memory_wallet_storage.dart';
+import 'package:libspiffy/src/models/address_chain.dart';
 
 import '../actors/in_memory_event_store.dart';
 
@@ -119,8 +120,9 @@ class _History {
     // Index 2 on the receive chain: a lookup that loses the index (0) or the
     // chain resolves another key.
     final receive = addresses.firstWhere((a) => wallet.state.metadata['address_indices'][a] == 2 &&
-        wallet.state.metadata['address_chains'][a] == false);
-    final change = addresses.firstWhere((a) => wallet.state.metadata['address_chains'][a] == true);
+        wallet.state.metadata['address_chains'][a] == AddressChain.receive.index);
+    final change =
+        addresses.firstWhere((a) => wallet.state.metadata['address_chains'][a] == AddressChain.change.index);
 
     for (final (n, address) in [(1, receive), (2, change), (3, wallet.state.rootAddress!)]) {
       await wallet.handle(ReceiveUTXOCommand(
@@ -185,7 +187,7 @@ class _History {
     expect(other.state.utxos[heldInput]!.reservedByTxId, paymentTxid, reason: 'the deferred payment holds its input');
     final metadata = other.state.metadata;
     expect((metadata['address_indices'] as Map)[receiveAddress], 2);
-    expect((metadata['address_chains'] as Map)[changeAddress], isTrue);
+    expect((metadata['address_chains'] as Map)[changeAddress], AddressChain.change.index);
     expect((metadata['outgoingTransactions'] as Map).keys, [paymentTxid]);
     expect((metadata['importedTransactions'] as Map).keys, [_txid(1)]);
     expect((metadata['deferredSpends'] as Map)[paymentTxid]['state'], 'outstanding');
@@ -287,7 +289,7 @@ void main() {
       final store = InMemoryEventStore();
       final held = '${_txid(7)}:0';
       final root = (await _crypto.derivePrivateKey(
-              await _crypto.mnemonicToHDPrivateKey(_mnemonic, network: dartsv.NetworkType.TEST), 0, 0))
+              await _crypto.mnemonicToHDPrivateKey(_mnemonic, network: dartsv.NetworkType.TEST), 0))
           .publicKey
           .toAddress(dartsv.NetworkType.TEST)
           .toBase58();

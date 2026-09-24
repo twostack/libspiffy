@@ -67,9 +67,14 @@ void main() {
     return aggregate;
   }
 
-  String receivingAddress(int index) => crypto.generateReceivingAddress(
+  String receivingAddress(int index) => crypto.deriveAddress(
       dartsv.HDPublicKey.fromXpub(xpub), index,
       network: dartsv.NetworkType.TEST);
+
+  /// What an xpub wallet issues: the delegated chain (bead libspiffy-m8qu).
+  String delegatedAddress(int index) => crypto.deriveAddress(
+      dartsv.HDPublicKey.fromXpub(xpub), index,
+      chain: AddressChain.delegated, network: dartsv.NetworkType.TEST);
 
   /// A wallet as the journal holds it, with the `wallet_hdpubkey_` key taken
   /// back out: the state this bead is about. Whatever [seed] leaves behind is
@@ -158,7 +163,7 @@ void main() {
               .whereType<AddressGeneratedEvent>()
               .single
               .address,
-          receivingAddress(1));
+          delegatedAddress(1));
     });
 
     test('writes the recovered xpub back, so the recovery happens once',

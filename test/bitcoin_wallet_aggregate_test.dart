@@ -1127,7 +1127,7 @@ void main() {
         
         // Add this address to the wallet manually
         await wallet.commandHandler(RegisterDiscoveredAddressCommand(
-            walletId: wallet.currentState.walletId, address: testAddress, derivationIndex: 0, isChange: false, transactionCount: 0));
+            walletId: wallet.currentState.walletId, address: testAddress, derivationIndex: 0, chain: AddressChain.receive, transactionCount: 0));
         
         // Build transaction with P2PK output using P2PKLockBuilder
         final tx = dartsv.Transaction();
@@ -1188,7 +1188,7 @@ void main() {
         
         // Add wallet address
         await wallet.commandHandler(RegisterDiscoveredAddressCommand(
-            walletId: wallet.currentState.walletId, address: walletAddr, derivationIndex: 0, isChange: false, transactionCount: 0));
+            walletId: wallet.currentState.walletId, address: walletAddr, derivationIndex: 0, chain: AddressChain.receive, transactionCount: 0));
         
         // Build transaction with 2-of-2 multisig output
         final tx = dartsv.Transaction();
@@ -1397,7 +1397,7 @@ void main() {
         
         // Add server address to wallet
         await wallet.commandHandler(RegisterDiscoveredAddressCommand(
-            walletId: wallet.currentState.walletId, address: serverAddr, derivationIndex: 0, isChange: false, transactionCount: 0));
+            walletId: wallet.currentState.walletId, address: serverAddr, derivationIndex: 0, chain: AddressChain.receive, transactionCount: 0));
         
         // Create the multisig funding UTXO
         final fundingTxid = 'abcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcdabcd';
@@ -1897,11 +1897,10 @@ void main() {
             passphrase: pass,
             network: dartsv.NetworkType.TEST,
           );
-          return cryptoService.generateReceivingAddress(
+          return cryptoService.deriveAddress(
             cryptoService.deriveHDPublicKey(hdPriv),
             i,
-            network: dartsv.NetworkType.TEST,
-          );
+            network: dartsv.NetworkType.TEST);
         }
         expect(await addressAt(index, passphrase), equals(address));
         expect(await addressAt(index, ''), isNot(equals(address)));

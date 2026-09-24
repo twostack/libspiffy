@@ -1,6 +1,7 @@
 import 'package:collection/collection.dart' show mergeSort;
 import 'package:dartsv/dartsv.dart' as dartsv;
 
+import '../models/address_chain.dart';
 import '../models/bitcoin_utxo.dart';
 import '../models/bitcoin_transaction.dart';
 import '../models/address_metadata.dart';
@@ -95,21 +96,23 @@ abstract class ReadModelStorage {
   /// Batch check if addresses belong to wallet (optimized for bulk operations)
   Future<Map<String, bool>> checkAddresses(String walletId, List<String> addresses);
 
-  /// Get all addresses for a wallet with pagination
+  /// Get all addresses for a wallet with pagination; only those on [chain]
+  /// when it is given.
   Future<List<AddressMetadata>> getAddressesWithMetadata(
     String walletId, {
     bool? includeUnused,
-    bool? isChange,
+    AddressChain? chain,
     int? limit,
     int? offset,
   });
 
-  /// Get addresses by derivation range (efficient for HD wallets)
+  /// Get the addresses on [chain] by derivation range (efficient for HD
+  /// wallets)
   Future<List<AddressMetadata>> getAddressRange(
     String walletId, {
     required int startIndex,
     required int count,
-    bool isChange = false,
+    AddressChain chain = AddressChain.receive,
   });
 
   /// The wallet's address rows whose purpose is [purpose] (for example

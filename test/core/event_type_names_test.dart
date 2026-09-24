@@ -101,7 +101,7 @@ Map<String, Event> sampleEvents() => <String, Event>{
           walletId: _w, address: 'addr', newLabel: 'b', oldLabel: 'a',
           timestamp: _t, version: 5),
       'AddressDiscoveredEvent': AddressDiscoveredEvent(
-          walletId: _w, address: 'addr', derivationIndex: 2, isChange: false,
+          walletId: _w, address: 'addr', derivationIndex: 2, chain: AddressChain.receive,
           transactionCount: 1, timestamp: _t, version: 6),
       'WatchAddressAddedEvent': WatchAddressAddedEvent(
           walletId: _w, address: 'addr', scriptType: 'p2pkh', label: 'l',

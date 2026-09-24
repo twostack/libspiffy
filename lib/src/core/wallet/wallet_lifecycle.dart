@@ -5,6 +5,7 @@ library;
 import 'package:eventador/eventador.dart';
 import 'package:uuid/uuid.dart';
 
+import '../../models/address_chain.dart';
 import '../../models/persistent_map.dart';
 import '../../models/wallet_state.dart';
 import '../../utils/network_name.dart';
@@ -112,7 +113,7 @@ abstract final class WalletLifecycle {
     // Add root address to addresses map with derivation index 0 (receive chain)
     if (event.rootAddress.isNotEmpty) {
       state.addresses = state.addresses.put(event.rootAddress, null);
-      AddressBook.recordAddressDerivation(state, event.rootAddress, 0, isChange: false);
+      AddressBook.recordAddressDerivation(state, event.rootAddress, 0, chain: AddressChain.receive);
     }
   }
 

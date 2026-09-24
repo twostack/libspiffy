@@ -1,6 +1,7 @@
 import 'package:libspiffy/src/models/bitcoin_transaction.dart';
 import 'package:libspiffy/src/models/bitcoin_utxo.dart';
 
+import '../models/address_chain.dart';
 import '../models/persistent_map.dart';
 import '../models/wallet_event.dart';
 import '../models/wallet_type.dart';
@@ -206,14 +207,17 @@ class AddressDiscoveredEvent extends WalletEvent {
 
   final String address;
   final int derivationIndex;
-  final bool isChange;
+
+  /// The chain the address is on. Events journaled before the delegated
+  /// chain existed carry only `isChange` ([AddressChain.fromRecord]).
+  final AddressChain chain;
   final int transactionCount;
 
   AddressDiscoveredEvent({
     required String walletId,
     required this.address,
     required this.derivationIndex,
-    required this.isChange,
+    required this.chain,
     required this.transactionCount,
     String? eventId,
     DateTime? timestamp,
@@ -232,7 +236,9 @@ class AddressDiscoveredEvent extends WalletEvent {
     return {
       'address': address,
       'derivationIndex': derivationIndex,
-      'isChange': isChange,
+      'chain': chain.index,
+      // Kept so a release that knows only `isChange` still reads the event.
+      'isChange': chain == AddressChain.change,
       'transactionCount': transactionCount,
     };
   }
@@ -242,7 +248,7 @@ class AddressDiscoveredEvent extends WalletEvent {
       walletId: map['walletId'] as String,
       address: map['address'] as String,
       derivationIndex: map['derivationIndex'] as int,
-      isChange: map['isChange'] as bool,
+      chain: AddressChain.fromRecord(chain: map['chain'], isChange: map['isChange']),
       transactionCount: map['transactionCount'] as int,
       eventId: map['eventId'] as String?,
       timestamp: map['timestamp'] != null
@@ -463,6 +469,11 @@ class AddressGeneratedEvent extends WalletEvent {
   final String? purpose;
   final String? publicKeyHex; // Optional: Public key hex (for multisig/channels)
 
+  /// The chain the address was derived on. Defaults from [purpose] (change
+  /// for `'change'`, receive otherwise), which is all an event journaled
+  /// before the delegated chain existed carries.
+  final AddressChain chain;
+
   AddressGeneratedEvent({
     required String walletId,
     required this.address,
@@ -470,12 +481,14 @@ class AddressGeneratedEvent extends WalletEvent {
     this.label,
     this.purpose,
     this.publicKeyHex,
+    AddressChain? chain,
     String? correlationId,
     String? eventId,
     DateTime? timestamp,
     int? version,
     Map<String, dynamic>? metadata,
-  }) : super(
+  })  : chain = chain ?? AddressChain.fromRecord(isChange: purpose == 'change'),
+        super(
           walletId: walletId,
           eventId: eventId,
           timestamp: timestamp,
@@ -497,6 +510,7 @@ class AddressGeneratedEvent extends WalletEvent {
       'label': label,
       'purpose': purpose,
       'publicKeyHex': publicKeyHex,
+      'chain': chain.index,
     };
   }
 
@@ -508,6 +522,7 @@ class AddressGeneratedEvent extends WalletEvent {
       label: map['label'] as String?,
       purpose: map['purpose'] as String?,
       publicKeyHex: map['publicKeyHex'] as String?,
+      chain: AddressChain.fromRecord(chain: map['chain'], isChange: map['purpose'] == 'change'),
       correlationId: map['correlationId'] as String? ?? map['metadata']?['correlationId'] as String?,
       eventId: map['eventId'] as String?,
       timestamp: map['timestamp'] != null

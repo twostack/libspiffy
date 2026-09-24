@@ -34,6 +34,7 @@ import 'package:libspiffy/src/models/transaction_address_link.dart';
 import 'package:libspiffy/src/storage/read_model_storage.dart';
 import 'package:libspiffy/src/storage/wallet_row_rules.dart';
 import 'package:libspiffy/src/utils/network_name.dart';
+import 'package:libspiffy/src/models/address_chain.dart';
 
 import 'read_model_keying_contract.dart' show contractHex64;
 
@@ -94,7 +95,7 @@ AddressMetadata _address(String address, int index, DateTime createdAt) =>
       scriptType: 'p2pkh',
       derivationPath: 'm/0/$index',
       derivationIndex: index,
-      isChange: false,
+      chain: AddressChain.receive,
       purpose: 'receive',
       usageCount: 0,
       balance: BigInt.zero,

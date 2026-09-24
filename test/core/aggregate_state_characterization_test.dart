@@ -37,6 +37,7 @@ import 'package:libspiffy/src/storage/in_memory_secure_storage.dart';
 
 import '../actors/in_memory_event_store.dart';
 import 'package:libspiffy/src/models/fee_rate.dart';
+import 'package:libspiffy/src/models/address_chain.dart';
 import '../mocks/test_channel_timing.dart';
 
 const _walletId = 'mmb-wallet';
@@ -145,7 +146,7 @@ Future<(_Wallet, InMemoryEventStore, InMemorySecureStorage)> _liveWallet() async
   await run(GenerateAddressCommand(walletId: _walletId, purpose: BitcoinWalletAggregate.changePurpose));
   await run(UpdateAddressLabelCommand(walletId: _walletId, address: root, newLabel: 'root'));
   await run(RegisterDiscoveredAddressCommand(
-      walletId: _walletId, address: 'mdiscovered7', derivationIndex: 7, isChange: true, transactionCount: 2));
+      walletId: _walletId, address: 'mdiscovered7', derivationIndex: 7, chain: AddressChain.change, transactionCount: 2));
   await run(AddWatchAddressCommand(walletId: _walletId, address: 'mwatched1', scriptType: 'p2pkh', label: 'cold'));
   await run(UpdateWalletConfigurationCommand(
       walletId: _walletId, newName: 'Renamed', newMetadata: {'theme': 'dark', 'limits': {'daily': 5}}));

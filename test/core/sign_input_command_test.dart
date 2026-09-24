@@ -20,6 +20,7 @@ import 'package:libspiffy/src/core/bitcoin_wallet_aggregate.dart';
 import 'package:libspiffy/src/core/wallet_commands.dart';
 import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 import 'package:libspiffy/src/storage/in_memory_secure_storage.dart';
+import 'package:libspiffy/src/models/address_chain.dart';
 
 import '../actors/in_memory_event_store.dart';
 
@@ -107,7 +108,7 @@ void main() {
   }
 
   SignInputCommand signCommand(String walletId, String address,
-          {int index = 0, bool isChange = false, int inputIndex = 1, int sats = 12345}) =>
+          {int index = 0, AddressChain chain = AddressChain.receive, int inputIndex = 1, int sats = 12345}) =>
       SignInputCommand(
         walletId: walletId,
         rawTransaction: _unsignedTx().serialize(),
@@ -115,7 +116,7 @@ void main() {
         subscriptHex: _p2pkh(address).toHex(),
         satoshis: BigInt.from(sats),
         derivationIndex: index,
-        isChange: isChange,
+        chain: chain,
       );
 
   test('mnemonic wallet: receive and change keys sign the input and report their public key',
@@ -131,17 +132,17 @@ void main() {
     final root = setup.currentState.rootAddress!;
     final eventsBefore = store.allEvents.length;
 
-    for (final (address, index, isChange) in [
-      (root, 0, false),
-      (receive1, 1, false),
-      (change2, 2, true),
+    for (final (address, index, chain) in [
+      (root, 0, AddressChain.receive),
+      (receive1, 1, AddressChain.receive),
+      (change2, 2, AddressChain.change),
     ]) {
-      final reply = await ask(signCommand(walletId, address, index: index, isChange: isChange));
+      final reply = await ask(signCommand(walletId, address, index: index, chain: chain));
       expect(reply.success, isTrue, reason: '$address: ${reply.error}');
       expect(reply.inputIndex, 1);
       final publicKey = dartsv.SVPublicKey.fromHex(reply.publicKeyHex);
       expect(_hash160(publicKey), dartsv.Address.fromBase58(address).pubkeyHash160,
-          reason: 'the reported key is the one at m/${isChange ? 1 : 0}/$index');
+          reason: 'the reported key is the one at m/${chain.index}/$index');
       final signature = dartsv.SVSignature.fromTxFormat(reply.signatureHex);
       _verifyP2pkhSpend(_unsignedTx(), 1, address, BigInt.from(12345), signature, publicKey);
       expect(
@@ -179,7 +180,7 @@ void main() {
     }));
     final root = setup.currentState.rootAddress!;
 
-    final reply = await ask(signCommand(walletId, root, index: 9, isChange: true));
+    final reply = await ask(signCommand(walletId, root, index: 9, chain: AddressChain.change));
     expect(reply.success, isTrue, reason: reply.error);
     expect(reply.publicKeyHex, key.publicKey.toHex());
     _verifyP2pkhSpend(_unsignedTx(), 1, root, BigInt.from(12345),

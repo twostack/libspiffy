@@ -9,6 +9,7 @@ import 'package:libspiffy/src/core/wallet_events.dart';
 import 'package:libspiffy/src/models/bitcoin_utxo.dart';
 import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 import 'package:libspiffy/src/storage/in_memory_secure_storage.dart';
+import 'package:libspiffy/src/models/address_chain.dart';
 
 import '../actors/in_memory_event_store.dart';
 
@@ -129,7 +130,7 @@ void main() {
     required String rawTx,
     required List<String> utxoKeys,
     List<int> derivationIndices = const [],
-    List<bool> isChangeFlags = const [],
+    List<AddressChain> chains = const [],
   }) async {
     await wallet.commandHandler(SignTransactionCommand(
       walletId: wallet.aggregateId,
@@ -138,7 +139,7 @@ void main() {
       utxoKeys: utxoKeys,
       publicKeys: const [],
       derivationIndices: derivationIndices,
-      isChangeFlags: isChangeFlags,
+      chains: chains,
     ));
     return eventStore.journal[wallet.persistenceId]!
         .whereType<TransactionSignedEvent>()
@@ -164,11 +165,10 @@ void main() {
     final hdPriv = await cryptoService.mnemonicToHDPrivateKey(mnemonic,
         network: dartsv.NetworkType.TEST);
     expect(
-      cryptoService.generateChangeAddress(
+      cryptoService.deriveAddress(
         cryptoService.deriveHDPublicKey(hdPriv),
         changeIndex,
-        network: dartsv.NetworkType.TEST,
-      ),
+        network: dartsv.NetworkType.TEST, chain: AddressChain.change),
       equals(changeAddress),
     );
 
@@ -233,9 +233,9 @@ void main() {
       final state = setup.wallet.currentState;
       final chains = state.metadata['address_chains'] as Map?;
       expect(chains, isNotNull);
-      expect(chains![setup.changeAddress], isTrue);
+      expect(chains![setup.changeAddress], AddressChain.change.index);
       // Root and receive addresses are on the receive chain.
-      expect(chains[state.rootAddress] ?? false, isFalse);
+      expect(chains[state.rootAddress] ?? AddressChain.receive.index, AddressChain.receive.index);
     });
 
     test('chain information survives a journal round-trip and replay', () async {
@@ -254,7 +254,7 @@ void main() {
       expect(fresh.currentState.isCreated, isTrue);
       expect(fresh.currentState.utxos.containsKey(setup.changeUtxoKey), isTrue);
       expect((fresh.currentState.metadata['address_chains'] as Map?)?[setup.changeAddress],
-          isTrue);
+          AddressChain.change.index);
 
       final versionBefore = fresh.currentState.version;
       await fresh.commandHandler(SignTransactionCommand(
@@ -299,28 +299,27 @@ void main() {
         rawTx: unsignedTx([setup.changeUtxoKey], {externalAddress: 48000}),
         utxoKeys: [setup.changeUtxoKey],
         derivationIndices: [index],
-        isChangeFlags: [true],
+        chains: [AddressChain.change],
       );
       expect(wallet.currentState.version, equals(versionBefore + 1));
     });
 
     test('discovered change addresses are signable', () async {
       // Import path: the address is registered via RegisterDiscoveredAddressCommand
-      // with isChange: true, which the aggregate previously dropped.
+      // with chain: AddressChain.change, which the aggregate previously dropped.
       final wallet = await createWallet('wallet-change-6');
       final hdPriv = await cryptoService.mnemonicToHDPrivateKey(mnemonic,
           network: dartsv.NetworkType.TEST);
       const index = 7;
-      final discovered = cryptoService.generateChangeAddress(
+      final discovered = cryptoService.deriveAddress(
         cryptoService.deriveHDPublicKey(hdPriv),
         index,
-        network: dartsv.NetworkType.TEST,
-      );
+        network: dartsv.NetworkType.TEST, chain: AddressChain.change);
       await wallet.commandHandler(RegisterDiscoveredAddressCommand(
         walletId: wallet.aggregateId,
         address: discovered,
         derivationIndex: index,
-        isChange: true,
+        chain: AddressChain.change,
         transactionCount: 1,
       ));
       final utxoKey = await fund(wallet, discovered,

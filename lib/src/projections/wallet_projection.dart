@@ -4,12 +4,14 @@ import 'package:eventador/eventador.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:libspiffy/src/services/script_type_registry.dart';
 import 'package:logging/logging.dart';
+import '../core/wallet/address_book.dart' show AddressBook;
 import '../core/wallet/state_records.dart';
 import '../core/wallet_events.dart';
 import '../models/wallet_event.dart';
 import '../models/wallet_type.dart';
 import '../models/bitcoin_utxo.dart';
 import '../models/bitcoin_transaction.dart';
+import '../models/address_chain.dart';
 import '../models/address_metadata.dart';
 import '../models/transaction_address_link.dart';
 import '../models/deferred_payment.dart';
@@ -212,7 +214,7 @@ class WalletProjection extends Projection<void> {
         scriptType: 'p2pkh',
         derivationPath: 'm/0/0', // First receiving address
         derivationIndex: 0,
-        isChange: false,
+        chain: AddressChain.receive,
         label: 'Root address (m/0/0)',
         purpose: 'receive',
         firstUsedAt: null,
@@ -291,7 +293,7 @@ class WalletProjection extends Projection<void> {
       scriptType: 'p2pkh', // Standard HD wallet addresses are P2PKH
       derivationPath: null, // AddressGeneratedEvent doesn't include derivation path
       derivationIndex: event.derivationIndex,
-      isChange: event.purpose == 'change',
+      chain: event.chain,
       label: event.label,
       purpose: event.purpose ?? 'receive',
       firstUsedAt: null,
@@ -316,9 +318,9 @@ class WalletProjection extends Projection<void> {
       scriptType: 'p2pkh', // Discovered addresses are typically P2PKH
       derivationPath: null,
       derivationIndex: event.derivationIndex,
-      isChange: event.isChange,
-      label: 'Imported (${event.isChange ? 'change' : 'receive'} #${event.derivationIndex})',
-      purpose: event.isChange ? 'change' : 'receive',
+      chain: event.chain,
+      label: AddressBook.discoveredLabel(event.chain, event.derivationIndex),
+      purpose: event.chain.name,
       firstUsedAt: null,
       lastUsedAt: null,
       usageCount: event.transactionCount,
@@ -359,7 +361,7 @@ class WalletProjection extends Projection<void> {
     final metadata = await _preservingUsage(event.walletId, AddressMetadata(
       address: event.address,
       scriptType: event.scriptType,
-      isChange: false,
+      chain: AddressChain.receive,
       label: event.label,
       purpose: 'watch',
       usageCount: 0,
@@ -442,7 +444,7 @@ class WalletProjection extends Projection<void> {
           scriptType: scriptType,
           derivationPath: null,
           derivationIndex: null,
-          isChange: false,
+          chain: AddressChain.receive,
           label: 'Received UTXO ($scriptType)',
           purpose: 'receive',
           firstUsedAt: null,
@@ -609,7 +611,7 @@ class WalletProjection extends Projection<void> {
         scriptType: m.scriptType,
         derivationPath: derivationPath ?? m.derivationPath,
         derivationIndex: derivationIndex ?? m.derivationIndex,
-        isChange: m.isChange,
+        chain: m.chain,
         label: m.label,
         purpose: m.purpose,
         firstUsedAt: firstUsedAt ?? m.firstUsedAt,

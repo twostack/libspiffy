@@ -7,6 +7,7 @@ import 'package:eventador/eventador.dart';
 import 'package:logging/logging.dart';
 import 'package:uuid/uuid.dart';
 
+import '../../models/address_chain.dart';
 import '../../models/persistent_map.dart';
 import '../../models/wallet_state.dart';
 import '../wallet_commands.dart';
@@ -21,12 +22,14 @@ final _log = Logger('BitcoinWalletAggregate');
 /// ADDRESS DERIVATION RECORDS. Every address the aggregate generates or
 /// discovers is recorded with its derivation index
 /// (metadata['address_indices']: address -> int) AND its chain
-/// (metadata['address_chains']: address -> bool, true = change chain m/1/i,
-/// false = receive chain m/0/i). Both are rebuilt from the journal:
-/// AddressGeneratedEvent.purpose == 'change' and AddressDiscoveredEvent
-/// .isChange carry the chain; events without either are receive-chain.
-/// Before the 2026-09 audit (H3) only the index was kept and every signing
-/// path derived m/0/i, so change outputs were unspendable.
+/// (metadata['address_chains']: address -> [AddressChain.index], the key
+/// path being m/{chain}/{index}). Both are rebuilt from the journal:
+/// AddressGeneratedEvent.chain and AddressDiscoveredEvent.chain carry the
+/// chain ([AddressChain.fromRecord] reads the events written before them).
+/// A snapshot written before the delegated chain existed stores a bool
+/// (true = change), which [addressChains] reads as such. Before the 2026-09
+/// audit (H3) only the index was kept and every signing path derived m/0/i,
+/// so change outputs were unspendable.
 ///
 /// WATCH ADDRESSES (bead libspiffy-p4kv). A watch address is attributed to
 /// the wallet (it answers ownership for it) but the wallet holds no key for
@@ -45,8 +48,25 @@ abstract final class AddressBook {
   static PersistentMap<String, int> addressIndices(Map<String, dynamic> metadata) =>
       typedEntries<int>(metadata[addressIndicesKey]);
 
-  static PersistentMap<String, bool> addressChains(Map<String, dynamic> metadata) =>
-      typedEntries<bool>(metadata[addressChainsKey]);
+  /// The chain records in [metadata], as [AddressChain.index] values (a
+  /// snapshot must stay plain data). A record a snapshot wrote before the
+  /// delegated chain existed is a bool (true = change) and is read as that
+  /// chain's index; anything else is dropped, as [typedEntries] drops it.
+  static PersistentMap<String, int> addressChains(Map<String, dynamic> metadata) {
+    final value = metadata[addressChainsKey];
+    if (value is PersistentMap<String, int>) return value;
+    var map = PersistentMap<String, int>.empty();
+    if (value is Map) {
+      value.forEach((k, v) {
+        if (v is bool) {
+          map = map.put(k.toString(), AddressChain.fromRecord(isChange: v).index);
+        } else if (v is int && v >= 0 && v < AddressChain.values.length) {
+          map = map.put(k.toString(), v);
+        }
+      });
+    }
+    return map;
+  }
 
   /// Stores both derivation records in [state] in their typed form (as the
   /// first read of an untyped record did).
@@ -64,19 +84,21 @@ abstract final class AddressBook {
   static void typeRestoredDerivationRecords(WalletStateBuilder state) {
     state.metadata = state.metadata
         .put(addressIndicesKey, typedEntries<int>(state.metadata[addressIndicesKey]))
-        .put(addressChainsKey, typedEntries<bool>(state.metadata[addressChainsKey]));
+        .put(addressChainsKey, addressChains(state.metadata));
   }
 
-  static void recordAddressDerivation(WalletStateBuilder state, String address, int index, {required bool isChange}) {
+  static void recordAddressDerivation(WalletStateBuilder state, String address, int index,
+      {required AddressChain chain}) {
     state.metadata = state.metadata
         .put(addressIndicesKey, addressIndices(state.metadata).put(address, index))
-        .put(addressChainsKey, addressChains(state.metadata).put(address, isChange));
+        .put(addressChainsKey, addressChains(state.metadata).put(address, chain.index));
   }
 
-  /// Whether [address] was derived on the change chain. Unknown addresses
-  /// (and the root address) are receive-chain, matching every journal
-  /// written before the chain was recorded.
-  static bool isChangeAddress(WalletState state, String address) => addressChains(state.metadata)[address] ?? false;
+  /// The chain [address] was derived on. Unknown addresses (and the root
+  /// address) are receive-chain, matching every journal written before the
+  /// chain was recorded.
+  static AddressChain chainOf(WalletState state, String address) =>
+      AddressChain.fromIndex(addressChains(state.metadata)[address] ?? AddressChain.receive.index);
 
   /// Whether [address] needs no watch-address event: already watched, or an
   /// address the wallet derived (owned already; its row keeps its index).
@@ -109,6 +131,11 @@ abstract final class AddressBook {
     return [event];
   }
 
+  /// The label of an address the wallet discovered or was handed, the same
+  /// in the aggregate and the read model.
+  static String discoveredLabel(AddressChain chain, int derivationIndex) =>
+      'Imported (${chain.name} #$derivationIndex)';
+
   static List<Event> registerDiscoveredAddress(WalletState currentState, RegisterDiscoveredAddressCommand command) {
     // Business rule: Wallet must exist
     if (!currentState.isCreated) {
@@ -127,7 +154,7 @@ abstract final class AddressBook {
       version: currentState.version + 1,
       address: command.address,
       derivationIndex: command.derivationIndex,
-      isChange: command.isChange,
+      chain: command.chain,
       transactionCount: command.transactionCount,
     );
 
@@ -191,12 +218,7 @@ abstract final class AddressBook {
     state.nextDerivationIndex = event.derivationIndex + 1;
 
     // Store the derivation index and chain for key derivation during signing
-    recordAddressDerivation(
-      state,
-      event.address,
-      event.derivationIndex,
-      isChange: event.purpose == changePurpose,
-    );
+    recordAddressDerivation(state, event.address, event.derivationIndex, chain: event.chain);
 
     state.version = event.version;
     state.lastModified = event.timestamp;
@@ -210,14 +232,16 @@ abstract final class AddressBook {
 
   static void applyAddressDiscovered(WalletStateBuilder state, AddressDiscoveredEvent event) {
     // Add discovered address to wallet
-    state.addresses = state.addresses
-        .put(event.address, 'Imported (${event.isChange ? 'change' : 'receive'} #${event.derivationIndex})');
+    state.addresses = state.addresses.put(event.address, discoveredLabel(event.chain, event.derivationIndex));
 
     // Store the derivation index and chain for key derivation during signing
-    recordAddressDerivation(state, event.address, event.derivationIndex, isChange: event.isChange);
+    recordAddressDerivation(state, event.address, event.derivationIndex, chain: event.chain);
 
-    // Update next derivation index if this is higher
-    if (event.derivationIndex >= state.nextDerivationIndex) {
+    // Update next derivation index if this is higher. A delegated address
+    // does not: someone else issues that chain (a service holding the
+    // wallet's xpub), and the wallet's own receive and change addresses
+    // have nothing to skip past.
+    if (event.chain != AddressChain.delegated && event.derivationIndex >= state.nextDerivationIndex) {
       state.nextDerivationIndex = event.derivationIndex + 1;
     }
 

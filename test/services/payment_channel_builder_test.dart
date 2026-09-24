@@ -36,10 +36,10 @@ void main() {
       );
       
       // Client key at derivation index 0
-      clientPrivateKey = await cryptoService.derivePrivateKey(hdPrivateKey, 0, 0);
+      clientPrivateKey = await cryptoService.derivePrivateKey(hdPrivateKey, 0);
       
       // Server key at derivation index 1 (different from client)
-      serverPrivateKey = await cryptoService.derivePrivateKey(hdPrivateKey, 0, 1);
+      serverPrivateKey = await cryptoService.derivePrivateKey(hdPrivateKey, 1);
 
       clientPubKey = clientPrivateKey.publicKey;
       serverPubKey = serverPrivateKey.publicKey;

@@ -1029,6 +1029,29 @@ class WatchAddressAddedResponse extends ActorResponse {
   }) : super(metadata: {'walletId': walletId, 'address': address, 'success': success});
 }
 
+/// Reply of the wallet aggregate to RecordDelegatedAddressesCommand (bead
+/// libspiffy-m8qu): the address of each requested index, in order, and
+/// those it journaled (the others it had recorded already).
+class DelegatedAddressesRecordedResponse extends ActorResponse {
+  final String walletId;
+  final List<String> addresses;
+  final List<String> journaled;
+  @override
+  final bool success;
+  @override
+  final String? error;
+
+  DelegatedAddressesRecordedResponse({
+    required this.walletId,
+    List<String> addresses = const [],
+    List<String> journaled = const [],
+    required this.success,
+    this.error,
+  })  : addresses = frozenList(addresses),
+        journaled = frozenList(journaled),
+        super(metadata: {'walletId': walletId, 'success': success});
+}
+
 /// Block header update from SpiffyNode
 class BlockHeaderUpdateMessage implements Message {
   final dynamic blockHeader; // Will be SpiffyNode's BlockHeader type

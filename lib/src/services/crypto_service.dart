@@ -2,6 +2,8 @@ import 'dart:typed_data';
 
 import 'package:dartsv/dartsv.dart' as dartsv;
 
+import '../models/address_chain.dart';
+
 /// Cryptographic service interface for Bitcoin operations
 /// Provides all cryptographic functionality needed by the wallet
 abstract class CryptoService {
@@ -21,19 +23,13 @@ abstract class CryptoService {
     dartsv.NetworkType network = dartsv.NetworkType.TEST,
   });
 
-  /// Derive a child private key from an HD private key.
-  ///
-  /// The key must correspond to the address produced by
-  /// [generateReceivingAddress] (when [isChange] is false) or
-  /// [generateChangeAddress] (when [isChange] is true) at [addressIndex].
-  /// Implementations must honour [isChange]; see [DartSVCryptoService] for
-  /// the path scheme in use.
+  /// Derive the private key at [addressIndex] on [chain] of an HD private
+  /// key: the key of the address [deriveAddress] gives for the same index
+  /// and chain. See [DartSVCryptoService] for the path scheme in use.
   Future<dartsv.SVPrivateKey> derivePrivateKey(
     dartsv.HDPrivateKey hdPrivateKey,
-    int accountIndex,
     int addressIndex, {
-    int coinType = 236, // 236 for Bitcoin SV testnet
-    bool isChange = false,
+    AddressChain chain = AddressChain.receive,
   });
 
   /// Generate public key from private key
@@ -95,19 +91,11 @@ abstract class CryptoService {
   /// Returns the extended public key for receiving addresses
   dartsv.HDPublicKey deriveHDPublicKey(dartsv.HDPrivateKey hdPrivateKey);
 
-  /// Generate receiving address from HD public key
-  /// Returns a receiving address at the specified index
-  String generateReceivingAddress(
+  /// The P2PKH address at [addressIndex] on [chain] of an HD public key.
+  String deriveAddress(
     dartsv.HDPublicKey hdPublicKey,
     int addressIndex, {
-    dartsv.NetworkType network = dartsv.NetworkType.TEST,
-  });
-
-  /// Generate change address from HD public key
-  /// Returns a change address at the specified index
-  String generateChangeAddress(
-    dartsv.HDPublicKey hdPublicKey,
-    int addressIndex, {
+    AddressChain chain = AddressChain.receive,
     dartsv.NetworkType network = dartsv.NetworkType.TEST,
   });
 }

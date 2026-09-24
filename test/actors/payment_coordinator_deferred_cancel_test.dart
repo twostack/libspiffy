@@ -18,6 +18,7 @@ import 'package:libspiffy/src/models/address_metadata.dart';
 import 'package:libspiffy/src/models/bitcoin_transaction.dart';
 import 'package:libspiffy/src/models/bitcoin_utxo.dart';
 import 'package:libspiffy/src/storage/read_model_storage.dart';
+import 'package:libspiffy/src/models/address_chain.dart';
 
 import '../spv/testnet_proof_fixture.dart';
 import '../mocks/policy_rate_arc.dart';
@@ -200,7 +201,7 @@ class _ScriptedStorage implements ReadModelStorage {
           address: _address,
           scriptType: 'p2pkh',
           derivationIndex: 0,
-          isChange: false,
+          chain: AddressChain.receive,
           purpose: 'receive',
           usageCount: 1,
           balance: BigInt.from(100000),

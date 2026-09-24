@@ -1,5 +1,6 @@
 import 'package:eventador/eventador.dart';
 import '../models/bitcoin_transaction.dart'; // For TransactionStatus
+import '../models/address_chain.dart';
 import '../models/bitcoin_utxo.dart'; // For UTXOStatus
 import '../models/fee_rate.dart';
 import '../models/persistent_map.dart';
@@ -243,14 +244,14 @@ class UpdateAddressLabelCommand extends WalletCommand {
 class RegisterDiscoveredAddressCommand extends WalletCommand {
   final String address;
   final int derivationIndex;
-  final bool isChange;
+  final AddressChain chain;
   final int transactionCount;
 
   RegisterDiscoveredAddressCommand({
     required String walletId,
     required this.address,
     required this.derivationIndex,
-    required this.isChange,
+    required this.chain,
     required this.transactionCount,
     String? commandId,
     DateTime? timestamp,
@@ -271,10 +272,34 @@ class RegisterDiscoveredAddressCommand extends WalletCommand {
       ...super.toMap(),
       'address': address,
       'derivationIndex': derivationIndex,
-      'isChange': isChange,
+      'chain': chain.index,
       'transactionCount': transactionCount,
     };
   }
+}
+
+/// Records addresses a service issued on the wallet's delegated chain
+/// (`m/2/{index}`, [AddressChain.delegated]) while the wallet was offline,
+/// so that a payment to them can be imported and spent (bead
+/// libspiffy-m8qu; spv-understanding.md, "Payment modes").
+///
+/// The service hands over the derivation index with the proven payment. The
+/// wallet derives each address from its own account key: an address it is
+/// handed is never taken on trust, so a wrong index yields an address that
+/// simply receives nothing. An index already recorded journals nothing.
+class RecordDelegatedAddressesCommand extends WalletCommand {
+  final List<int> derivationIndices;
+
+  RecordDelegatedAddressesCommand({
+    required super.walletId,
+    required List<int> derivationIndices,
+    super.commandId,
+    super.timestamp,
+    super.metadata,
+  }) : derivationIndices = frozenList(derivationIndices);
+
+  @override
+  String get commandType => 'RecordDelegatedAddressesCommand';
 }
 
 /// Adds a watch address to the wallet (bead libspiffy-p4kv): an address the
@@ -886,13 +911,12 @@ class SignTransactionCommand extends WalletCommand {
   /// Derivation indices for each UTXO (parallel to utxoKeys).
   /// When provided, the aggregate uses these directly instead of looking up in state.
   final List<int> derivationIndices;
-  /// Derivation chain for each UTXO (parallel to utxoKeys): true when the
-  /// UTXO's address is on the change chain (m/1/{index}), false for the
-  /// receive chain (m/0/{index}). Entries beyond the list's length, or an
-  /// empty list, mean "resolve the chain from the aggregate's own address
-  /// records", which is correct for every address the aggregate generated
-  /// or discovered itself.
-  final List<bool> isChangeFlags;
+  /// Derivation chain for each UTXO (parallel to utxoKeys): the key is at
+  /// m/{chain}/{index}. Entries beyond the list's length, or an empty list,
+  /// mean "resolve the chain from the aggregate's own address records",
+  /// which is correct for every address the aggregate generated or
+  /// discovered itself.
+  final List<AddressChain> chains;
 
   SignTransactionCommand({
     required String walletId,
@@ -902,7 +926,7 @@ class SignTransactionCommand extends WalletCommand {
     required List<String> publicKeys,
     List<String> addresses = const [],
     List<int> derivationIndices = const [],
-    List<bool> isChangeFlags = const [],
+    List<AddressChain> chains = const [],
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,
@@ -910,7 +934,7 @@ class SignTransactionCommand extends WalletCommand {
         publicKeys = frozenList(publicKeys),
         addresses = frozenList(addresses),
         derivationIndices = frozenList(derivationIndices),
-        isChangeFlags = frozenList(isChangeFlags),
+        chains = frozenList(chains),
         super(
           walletId: walletId,
           commandId: commandId,
@@ -961,9 +985,8 @@ class SignMultisigTransactionCommand extends WalletCommand {
   final String transactionId;
   final String rawTransaction; // Unsigned transaction hex
   final int derivationIndex; // Which key to use (m/{chain}/{index})
-  /// Whether [derivationIndex] is on the change chain (m/1/{index}) rather
-  /// than the receive chain (m/0/{index}).
-  final bool isChange;
+  /// The chain [derivationIndex] is on.
+  final AddressChain chain;
   final int inputIndex; // Which input to sign
   final int prevOutValue; // Satoshi value of input being spent
   final String redeemScriptHex; // 2-of-2 multisig redeem script
@@ -974,7 +997,7 @@ class SignMultisigTransactionCommand extends WalletCommand {
     required this.transactionId,
     required this.rawTransaction,
     required this.derivationIndex,
-    this.isChange = false,
+    this.chain = AddressChain.receive,
     required this.inputIndex,
     required this.prevOutValue,
     required this.redeemScriptHex,
@@ -1015,9 +1038,9 @@ class SignInputCommand extends WalletCommand {
   /// Value of the output being spent, in satoshis.
   final BigInt satoshis;
 
-  /// Key path `m/{isChange ? 1 : 0}/{derivationIndex}`.
+  /// Key path `m/{chain}/{derivationIndex}`.
   final int derivationIndex;
-  final bool isChange;
+  final AddressChain chain;
 
   /// SIGHASH flags; SIGHASH_ALL | SIGHASH_FORKID by default.
   final int sighashType;
@@ -1029,7 +1052,7 @@ class SignInputCommand extends WalletCommand {
     required this.subscriptHex,
     required this.satoshis,
     required this.derivationIndex,
-    this.isChange = false,
+    this.chain = AddressChain.receive,
     this.sighashType = 0x41,
     super.commandId,
     super.timestamp,
@@ -1051,10 +1074,6 @@ class BuildFundingTransactionCommand extends WalletCommand {
   final String serverPubKeyHex;
   final int fundingAmountSats;
   final String changeAddressBase58;
-  final int? derivationIndex; // If provided, use this key; otherwise use default
-  /// Whether [derivationIndex] is on the change chain (m/1/{index}) rather
-  /// than the receive chain (m/0/{index}).
-  final bool isChange;
 
   /// ARC's published policy rate, which the funding pays on its signed size
   /// (bead libspiffy-zs4l). The aggregate cannot ask ARC; the sender does.
@@ -1068,8 +1087,6 @@ class BuildFundingTransactionCommand extends WalletCommand {
     required this.serverPubKeyHex,
     required this.fundingAmountSats,
     required this.changeAddressBase58,
-    this.derivationIndex,
-    this.isChange = false,
     required this.feeRate,
     String? commandId,
     DateTime? timestamp,

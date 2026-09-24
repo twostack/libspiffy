@@ -7,6 +7,7 @@ import 'package:eventador/eventador.dart';
 import 'package:duraq_isar/duraq_isar.dart' show IsarStorage;
 import 'read_model_storage.dart';
 import 'transaction_row_rules.dart';
+import '../models/address_chain.dart';
 import '../models/bitcoin_utxo.dart';
 import '../models/bitcoin_transaction.dart';
 import '../models/invoice_output_spec.dart';
@@ -1107,7 +1108,14 @@ class AddressEntity {
   @Index()
   int? derivationIndex;
 
-  /// Is this a change address?
+  /// The address's chain, as [AddressChain.index]: the key is at
+  /// m/{chain}/{derivationIndex}. Null in a row written before the delegated
+  /// chain existed, whose chain [isChange] alone records.
+  int? chain;
+
+  /// Whether the address is on the change chain. Written with [chain] for
+  /// every row, and the only chain record of a row written before [chain]
+  /// existed; read it through [AddressChain.fromRecord], never on its own.
   late bool isChange;
 
   /// Address label (user-friendly name)
@@ -1144,6 +1152,7 @@ class AddressEntity {
       'scriptType': scriptType,
       'derivationPath': derivationPath,
       'derivationIndex': derivationIndex,
+      'chain': chain,
       'isChange': isChange,
       'label': label,
       'purpose': purpose,
@@ -1164,6 +1173,7 @@ class AddressEntity {
       ..scriptType = json['scriptType'] as String
       ..derivationPath = json['derivationPath'] as String?
       ..derivationIndex = json['derivationIndex'] as int?
+      ..chain = json['chain'] as int?
       ..isChange = json['isChange'] as bool
       ..label = json['label'] as String?
       ..purpose = json['purpose'] as String

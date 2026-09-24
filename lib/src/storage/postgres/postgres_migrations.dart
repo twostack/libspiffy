@@ -33,6 +33,7 @@ import 'migrations/v022_channel_lock_time_bigint.dart';
 import 'migrations/v023_transaction_lock_time_and_version.dart';
 import 'migrations/v024_utxo_is_available_column.dart';
 import 'migrations/v025_wallet_type_from_metadata.dart';
+import 'migrations/v026_address_chain.dart';
 
 /// Base class for database migrations.
 ///
@@ -84,6 +85,7 @@ class PostgresMigrations {
     V023TransactionLockTimeAndVersion(),
     V024UtxoIsAvailableColumn(),
     V025WalletTypeFromMetadata(),
+    V026AddressChain(),
   ];
 
   /// Test hook awaited by [migrate] right after it reads the current schema

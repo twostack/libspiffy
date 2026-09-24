@@ -147,7 +147,6 @@ void main() {
     expect(build.serverPubKeyHex, equals('03' * 33));
     expect(build.fundingAmountSats, equals(50000));
     expect(build.changeAddressBase58, equals('mqCnSf8i6kmaQaJ54HjQ8EUJnuK4AnCv12'));
-    expect(build.derivationIndex, equals(7));
     expect(build.feeRate, const FeeRate(satoshis: 250, bytes: 1000),
         reason: "the funding pays ARC's published rate (bead libspiffy-zs4l)");
 

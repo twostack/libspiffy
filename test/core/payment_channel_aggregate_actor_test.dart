@@ -58,7 +58,7 @@ class PrecomputedKeys {
     final n = _generated++;
     final derivationIndex =
         n < _shortKeyIndexes.length ? _shortKeyIndexes[n] : 1000 + n;
-    final privateKey = await cryptoService.derivePrivateKey(hdKey, 0, derivationIndex);
+    final privateKey = await cryptoService.derivePrivateKey(hdKey, derivationIndex);
     final publicKey = privateKey.publicKey;
     final address = publicKey.toAddress(dartsv.NetworkType.TEST);
     

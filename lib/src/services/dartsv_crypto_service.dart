@@ -9,6 +9,7 @@ import 'package:pointycastle/ecc/api.dart';
 import 'package:pointycastle/macs/hmac.dart';
 import 'package:pointycastle/signers/ecdsa_signer.dart';
 
+import '../models/address_chain.dart';
 import '../utils/bip32.dart';
 import '../utils/crypto_utils.dart';
 import 'crypto_service.dart';
@@ -18,9 +19,10 @@ import 'crypto_service.dart';
 /// ## Key derivation and its trust boundary (audit 2026-09-14 KM-10)
 ///
 /// HD wallets use a two-level, entirely non-hardened scheme directly under
-/// the wallet's root key: receive keys are `m/0/i`, change keys `m/1/i`
-/// (see [derivePrivateKey], [generateReceivingAddress],
-/// [generateChangeAddress]). For a mnemonic wallet the root is the BIP32
+/// the wallet's root key: `m/{chain}/i`, where the chain is receive (0),
+/// change (1) or delegated (2, addresses a service issues from the xpub for
+/// an offline payee) — see [AddressChain], [derivePrivateKey] and
+/// [deriveAddress]. For a mnemonic wallet the root is the BIP32
 /// master key; for an xpriv wallet it is the imported key. The matching
 /// extended public key is what the wallet stores as its xpub
 /// (`wallet_hdpubkey_<walletId>` in secure storage) and what watch-only
@@ -87,16 +89,12 @@ class DartSVCryptoService implements CryptoService {
     return privKey;
   }
 
-  /// Derives the private key for an address produced by
-  /// [generateReceivingAddress] (m/0/{index}) or [generateChangeAddress]
-  /// (m/1/{index}).
+  /// Derives the private key at `m/{chain.index}/{addressIndex}`: the key
+  /// of the address [deriveAddress] gives for the same index and chain.
   ///
   /// This service uses a simplified two-level scheme, m/{chain}/{index},
-  /// rather than full BIP44; the first path component is the chain. The
-  /// chain is 1 when [isChange] is true, otherwise [accountIndex] (every
-  /// in-tree caller passes 0, so receive keys are m/0/{index}). Before the
-  /// 2026-09 audit (H3) [isChange] was ignored and change-chain keys could
-  /// never be derived. [coinType] is unused in this scheme.
+  /// rather than full BIP44. Before the 2026-09 audit (H3) the chain was
+  /// ignored and change-chain keys could never be derived.
   ///
   /// The returned key is a non-hardened child of the wallet root: together
   /// with the wallet xpub it recovers the root xpriv. Use it to sign inside
@@ -104,15 +102,12 @@ class DartSVCryptoService implements CryptoService {
   @override
   Future<dartsv.SVPrivateKey> derivePrivateKey(
     dartsv.HDPrivateKey hdPrivateKey,
-    int accountIndex,
     int addressIndex, {
-    int coinType = 0,
-    bool isChange = false,
+    AddressChain chain = AddressChain.receive,
   }) async {
-    final chain = isChange ? 1 : accountIndex;
     // Bip32, not dartsv's deriveChildKey: dartsv throws 'Too few elements'
     // for the 1 in 256 child keys with a leading zero byte (libspiffy-hvp).
-    final privKey = Bip32.derivePrivatePath(hdPrivateKey, "m/$chain/$addressIndex");
+    final privKey = Bip32.derivePrivatePath(hdPrivateKey, "m/${chain.index}/$addressIndex");
 
     return privKey.privateKey;
   }
@@ -212,28 +207,15 @@ class DartSVCryptoService implements CryptoService {
   }
 
   @override
-  String generateReceivingAddress(
+  String deriveAddress(
     dartsv.HDPublicKey hdPublicKey,
     int addressIndex, {
+    AddressChain chain = AddressChain.receive,
     dartsv.NetworkType network = dartsv.NetworkType.TEST,
   }) {
-    final childKey = Bip32.derivePublicPath(hdPublicKey, "m/0/$addressIndex");
-    final address = Address.fromPublicKey(childKey.publicKey, network);
-    return address.toBase58();
+    final childKey = Bip32.derivePublicPath(hdPublicKey, "m/${chain.index}/$addressIndex");
+    return Address.fromPublicKey(childKey.publicKey, network).toBase58();
   }
-
-  @override
-  String generateChangeAddress(
-    dartsv.HDPublicKey hdPublicKey,
-    int addressIndex, {
-    dartsv.NetworkType network = dartsv.NetworkType.TEST,
-  }) {
-    final childKey = Bip32.derivePublicPath(hdPublicKey, "m/1/$addressIndex");
-    final address = Address.fromPublicKey(childKey.publicKey, network);
-    return address.toBase58();
-
-  }
-
 
   /// Get network type
   dartsv.NetworkType get networkType => _networkType;

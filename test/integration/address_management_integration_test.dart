@@ -93,7 +93,7 @@ void main() {
           walletId: 'test-wallet-001',
           address: '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa',
           derivationIndex: 0,
-          isChange: false,
+          chain: AddressChain.receive,
           transactionCount: 5,
         );
         
@@ -119,7 +119,7 @@ void main() {
           final event = addressEvents.first;
           expect(event.address, equals('1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa'));
           expect(event.derivationIndex, equals(0));
-          expect(event.isChange, isFalse);
+          expect(event.chain, AddressChain.receive);
           expect(event.transactionCount, equals(5));
           print('   ✅ EventStore verification passed');
         }
@@ -134,7 +134,7 @@ void main() {
           walletId: 'idempotent-test',
           address: '1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2',
           derivationIndex: 0,
-          isChange: false,
+          chain: AddressChain.receive,
           transactionCount: 1,
         );
         
@@ -160,7 +160,7 @@ void main() {
           walletId: 'event-store-test',
           address: '1HLoD9E4SDFFPDiYfNYnkBLQ85Y51J3Zb1',
           derivationIndex: 5,
-          isChange: true,
+          chain: AddressChain.change,
           transactionCount: 3,
         );
         
@@ -198,7 +198,7 @@ void main() {
           scriptType: 'p2pkh',
           derivationPath: "m/44'/236'/0'/0/0",
           derivationIndex: 0,
-          isChange: false,
+          chain: AddressChain.receive,
           label: 'Genesis Address',
           purpose: 'receive',
           firstUsedAt: DateTime.now().subtract(Duration(days: 30)),
@@ -218,7 +218,7 @@ void main() {
         expect(retrieved!.address, equals('1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa'));
         expect(retrieved.scriptType, equals('p2pkh'));
         expect(retrieved.derivationIndex, equals(0));
-        expect(retrieved.isChange, isFalse);
+        expect(retrieved.chain, AddressChain.receive);
         expect(retrieved.label, equals('Genesis Address'));
         expect(retrieved.purpose, equals('receive'));
         expect(retrieved.usageCount, equals(42));
@@ -233,7 +233,7 @@ void main() {
           address: '1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2',
           scriptType: 'p2pkh',
           derivationIndex: 1,
-          isChange: false,
+          chain: AddressChain.receive,
           purpose: 'receive',
           usageCount: 1,
           balance: BigInt.zero,
@@ -248,7 +248,7 @@ void main() {
           address: '1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2',
           scriptType: 'p2pkh',
           derivationIndex: 1,
-          isChange: false,
+          chain: AddressChain.receive,
           purpose: 'receive',
           usageCount: 5,
           balance: BigInt.from(50000000),
@@ -275,7 +275,7 @@ void main() {
             address: 'address_$i',
             scriptType: 'p2pkh',
             derivationIndex: i,
-            isChange: i % 2 == 1,
+            chain: i % 2 == 1 ? AddressChain.change : AddressChain.receive,
             purpose: i % 2 == 1 ? 'change' : 'receive',
             usageCount: 0,
             balance: BigInt.zero,
@@ -302,7 +302,7 @@ void main() {
           address: 'exists',
           scriptType: 'p2pkh',
           derivationIndex: 0,
-          isChange: false,
+          chain: AddressChain.receive,
           purpose: 'receive',
           usageCount: 0,
           balance: BigInt.zero,
@@ -325,7 +325,7 @@ void main() {
             address: 'addr_$i',
             scriptType: 'p2pkh',
             derivationIndex: i,
-            isChange: false,
+            chain: AddressChain.receive,
             purpose: 'receive',
             usageCount: 0,
             balance: BigInt.zero,
@@ -363,7 +363,7 @@ void main() {
             address: 'addr_$i',
             scriptType: 'p2pkh',
             derivationIndex: i,
-            isChange: i >= 25,
+            chain: i >= 25 ? AddressChain.change : AddressChain.receive,
             purpose: i >= 25 ? 'change' : 'receive',
             usageCount: i % 3 == 0 ? 0 : 1, // Some unused
             balance: BigInt.zero,
@@ -375,18 +375,18 @@ void main() {
         // Filter: only receiving addresses
         final receiving = await storage.getAddressesWithMetadata(
           'filter-wallet',
-          isChange: false,
+          chain: AddressChain.receive,
         );
         expect(receiving, hasLength(25));
-        expect(receiving.every((a) => !a.isChange), isTrue);
+        expect(receiving.every((a) => a.chain == AddressChain.receive), isTrue);
 
         // Filter: only change addresses
         final change = await storage.getAddressesWithMetadata(
           'filter-wallet',
-          isChange: true,
+          chain: AddressChain.change,
         );
         expect(change, hasLength(25));
-        expect(change.every((a) => a.isChange), isTrue);
+        expect(change.every((a) => a.chain == AddressChain.change), isTrue);
 
         // Filter: only used addresses (excludeUnused doesn't exist, so filter by includeUnused: false)
         final used = await storage.getAddressesWithMetadata(
@@ -421,7 +421,7 @@ void main() {
             address: 'hd_addr_$i',
             scriptType: 'p2pkh',
             derivationIndex: i,
-            isChange: false,
+            chain: AddressChain.receive,
             purpose: 'receive',
             usageCount: 0,
             balance: BigInt.zero,
@@ -435,13 +435,13 @@ void main() {
           'hd-wallet',
           startIndex: 20,
           count: 20,
-          isChange: false,
+          chain: AddressChain.receive,
         );
 
         expect(range, hasLength(20));
         expect(range.first.derivationIndex, equals(20));
         expect(range.last.derivationIndex, equals(39));
-        expect(range.every((a) => !a.isChange), isTrue);
+        expect(range.every((a) => a.chain == AddressChain.receive), isTrue);
 
         print('✅ HD wallet range queries work correctly');
       });
@@ -558,7 +558,7 @@ void main() {
           address: '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa',
           scriptType: 'p2pkh',
           derivationIndex: 0,
-          isChange: false,
+          chain: AddressChain.receive,
           purpose: 'receive',
           usageCount: 0,
           balance: BigInt.zero,
@@ -578,7 +578,7 @@ void main() {
           address: '04678afdb0fe5548271967f1a67130b7105cd6a828e03909a67962e0ea1f61deb649f6bc3f4cef38c4f35504e51ec112de5c384df7ba0b8d578a4c702b6bf11d5f',
           scriptType: 'p2pk',
           derivationIndex: 0,
-          isChange: false,
+          chain: AddressChain.receive,
           purpose: 'receive',
           usageCount: 0,
           balance: BigInt.zero,
@@ -598,7 +598,7 @@ void main() {
           address: 'multisig:pubkey1:pubkey2:pubkey3',
           scriptType: 'p2ms',
           derivationIndex: null,
-          isChange: false,
+          chain: AddressChain.receive,
           purpose: 'multisig',
           usageCount: 0,
           balance: BigInt.zero,
@@ -619,7 +619,7 @@ void main() {
           address: 'scripthash:a914ff0102030405060708090a0b0c0d0e0f1011121387',
           scriptType: 'p2sh',
           derivationIndex: null,
-          isChange: false,
+          chain: AddressChain.receive,
           purpose: 'smart_contract',
           usageCount: 0,
           balance: BigInt.zero,
@@ -640,7 +640,7 @@ void main() {
           address: 'script:1a2b3c4d5e6f',
           scriptType: 'custom',
           derivationIndex: null,
-          isChange: false,
+          chain: AddressChain.receive,
           purpose: 'custom_script',
           usageCount: 0,
           balance: BigInt.zero,
@@ -666,7 +666,7 @@ void main() {
           address: address,
           scriptType: 'p2pkh',
           derivationIndex: 0,
-          isChange: false,
+          chain: AddressChain.receive,
           purpose: 'receive',
           usageCount: 0,
           balance: BigInt.zero,

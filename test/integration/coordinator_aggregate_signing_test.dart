@@ -391,7 +391,7 @@ void main() {
       await createXprivWallet(walletId);
       final change = await generateAddress(walletId, purpose: 'change');
       final metadata = await libspiffy.walletStorage.getAddressMetadata(walletId, change);
-      expect(metadata!.isChange, isTrue);
+      expect(metadata!.chain, AddressChain.change);
       await fund(walletId, change, txid: _fakeTxid(4), satoshis: 60000);
 
       final response = await pay(pluginPayment(walletId, 10000));
@@ -910,7 +910,7 @@ void main() {
             publicKeys: const [],
             addresses: [watchAddress],
             derivationIndices: const [0],
-            isChangeFlags: const [false],
+            chains: const [AddressChain.receive],
           ),
         ),
       );

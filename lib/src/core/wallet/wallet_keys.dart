@@ -8,6 +8,7 @@ import 'package:eventador/eventador.dart';
 import 'package:logging/logging.dart';
 import 'package:uuid/uuid.dart';
 
+import '../../models/address_chain.dart';
 import '../../models/wallet_state.dart';
 import '../../models/wallet_type.dart';
 import '../../services/crypto_service.dart';
@@ -164,11 +165,7 @@ class WalletKeys {
       hdPublicKeyXpub = hdPublicKey.xpubkey;
 
       // Generate root address (first receiving address at index 0)
-      rootAddress = cryptoService.generateReceivingAddress(
-        hdPublicKey,
-        0,
-        network: networkType,
-      );
+      rootAddress = cryptoService.deriveAddress(hdPublicKey, 0, network: networkType);
     } else if (command.xpub != null && command.xpub!.isNotEmpty) {
       // XPUB WALLET: Watch-only from extended public key
       walletType = WalletType.xpub;
@@ -182,11 +179,7 @@ class WalletKeys {
       }
 
       // Generate root address
-      rootAddress = cryptoService.generateReceivingAddress(
-        hdPublicKey,
-        0,
-        network: networkType,
-      );
+      rootAddress = cryptoService.deriveAddress(hdPublicKey, 0, network: networkType);
 
       // For XPUB wallets, the xpub itself is the HD public key
       hdPublicKeyXpub = command.xpub!;
@@ -214,11 +207,7 @@ class WalletKeys {
       hdPublicKeyXpub = hdPublicKey.xpubkey;
 
       // Generate root address
-      rootAddress = cryptoService.generateReceivingAddress(
-        hdPublicKey,
-        0,
-        network: networkType,
-      );
+      rootAddress = cryptoService.deriveAddress(hdPublicKey, 0, network: networkType);
     }
 
     return (
@@ -281,30 +270,26 @@ class WalletKeys {
     // wallet's own key material if it is not there (libspiffy-atl2).
     final hdPublicKey = await accountXpub(command.walletId, currentState);
 
-    // Generate address based on purpose
-    final String address;
-    final int derivationPath; // 0 for receiving, 1 for change
+    // The chain: change when asked for, else receive for a wallet that
+    // holds its keys, and delegated for an xpub wallet. An xpub wallet
+    // issues addresses on behalf of the key holder (a service answering
+    // invoice requests for an offline payee, spv-understanding.md "Payment
+    // modes"), and the key holder's own wallet issues receive addresses from
+    // the same xpub: on one chain the two would hand out the same address.
+    final AddressChain chain;
     if (command.purpose == AddressBook.changePurpose) {
-      address = cryptoService.generateChangeAddress(
-        hdPublicKey,
-        derivationIndex,
-        network: networkType,
-      );
-      derivationPath = 1;
+      chain = AddressChain.change;
+    } else if (currentState.walletType == WalletType.xpub) {
+      chain = AddressChain.delegated;
     } else {
-      // Default to receiving address
-      address = cryptoService.generateReceivingAddress(
-        hdPublicKey,
-        derivationIndex,
-        network: networkType,
-      );
-      derivationPath = 0;
+      chain = AddressChain.receive;
     }
+    final address = cryptoService.deriveAddress(hdPublicKey, derivationIndex, chain: chain, network: networkType);
 
     // Derive public key if requested
     String? publicKeyHex;
     if (command.includePublicKey) {
-      final childKey = Bip32.derivePublicPath(hdPublicKey, "m/$derivationPath/$derivationIndex");
+      final childKey = Bip32.derivePublicPath(hdPublicKey, "m/${chain.index}/$derivationIndex");
       publicKeyHex = childKey.publicKey.toHex();
     }
 
@@ -315,6 +300,7 @@ class WalletKeys {
       version: currentState.version + 1,
       address: address,
       derivationIndex: derivationIndex,
+      chain: chain,
       label: command.label,
       purpose: command.purpose,
       publicKeyHex: publicKeyHex,
@@ -325,6 +311,42 @@ class WalletKeys {
     return [event];
   }
 
+  /// The addresses [command] names on the delegated chain, derived from the
+  /// wallet's own account key, in the command's order, and an
+  /// [AddressDiscoveredEvent] for each the wallet has not recorded yet (bead
+  /// libspiffy-m8qu).
+  Future<({List<Event> events, List<String> addresses})> recordDelegatedAddresses(
+      WalletState currentState, RecordDelegatedAddressesCommand command) async {
+    if (!currentState.isCreated || currentState.isDeleted) {
+      throw StateError('Cannot record delegated addresses for non-existent wallet ${command.walletId}');
+    }
+    if (currentState.walletType == WalletType.wif) {
+      throw StateError('Wallet ${command.walletId} is a single-key (WIF) wallet: it has no HD tree, '
+          'so no service can issue addresses on its delegated chain');
+    }
+    for (final index in command.derivationIndices) {
+      if (index < 0) throw ArgumentError.value(index, 'derivationIndices', 'must not be negative');
+    }
+    final hdPublicKey = await accountXpub(command.walletId, currentState);
+    final network = NetworkName.toDartsv(currentState.networkType);
+    final events = <Event>[];
+    final addresses = <String>[];
+    for (final index in command.derivationIndices) {
+      final address = cryptoService.deriveAddress(hdPublicKey, index, chain: AddressChain.delegated, network: network);
+      addresses.add(address);
+      if (currentState.addresses.containsKey(address) || addresses.indexOf(address) != addresses.length - 1) continue;
+      events.add(AddressDiscoveredEvent(
+        walletId: command.walletId,
+        address: address,
+        derivationIndex: index,
+        chain: AddressChain.delegated,
+        transactionCount: 0,
+        version: currentState.version + events.length + 1,
+      ));
+    }
+    return (events: events, addresses: addresses);
+  }
+
   // ---------------------------------------------------------------------------
   // Private keys
   // ---------------------------------------------------------------------------
@@ -332,8 +354,8 @@ class WalletKeys {
   /// Retrieve the private key for a given address from secure storage
   /// Supports WIF, XPRIV, and HD wallets.
   ///
-  /// [derivationIndex] and [isChange] let a caller that holds the derivation
-  /// path (e.g. from the read model) supply it directly. When [isChange] is
+  /// [derivationIndex] and [chain] let a caller that holds the derivation
+  /// path (e.g. from the read model) supply it directly. When [chain] is
   /// null the chain is resolved from the aggregate's own address records,
   /// which is correct for every address the aggregate generated or
   /// discovered; unknown addresses default to the receive chain.
@@ -342,7 +364,7 @@ class WalletKeys {
     String walletId,
     WalletState currentState, {
     int? derivationIndex,
-    bool? isChange,
+    AddressChain? chain,
   }) async {
     if (currentState.walletType == WalletType.wif) {
       // WIF wallet: single private key
@@ -375,13 +397,11 @@ class WalletKeys {
       // The chain: caller-supplied, else whatever the aggregate recorded when
       // it generated/discovered the address (receive for the root address and
       // for journals written before the chain was recorded).
-      final effectiveIsChange = isChange ?? AddressBook.isChangeAddress(currentState, address);
-
       return privateKeyAtIndex(
         walletId,
         effectiveIndex,
         currentState,
-        isChange: effectiveIsChange,
+        chain: chain ?? AddressBook.chainOf(currentState, address),
       );
     } else {
       throw StateError('Unsupported wallet type: ${currentState.walletType}');
@@ -460,7 +480,7 @@ class WalletKeys {
       final String derivedRoot;
       try {
         hdPublicKey = dartsv.HDPublicKey.fromXpub(xpub);
-        derivedRoot = cryptoService.generateReceivingAddress(hdPublicKey, 0,
+        derivedRoot = cryptoService.deriveAddress(hdPublicKey, 0,
             network: networkType);
       } catch (e) {
         _log.warning('Wallet $walletId: the account xpub recovered from $key '
@@ -504,15 +524,14 @@ class WalletKeys {
         'restored; its existing addresses and their coin are untouched.');
   }
 
-  /// Get private key at a specific derivation index on the receive
-  /// ([isChange] false, m/0/{index}) or change ([isChange] true, m/1/{index})
-  /// chain. Used for multisig signing where we know the exact path, and by
-  /// [privateKeyForAddress] once it has resolved the path.
+  /// Get private key at a specific derivation index on [chain]
+  /// (m/{chain}/{index}). Used for multisig signing where we know the exact
+  /// path, and by [privateKeyForAddress] once it has resolved the path.
   Future<dartsv.SVPrivateKey> privateKeyAtIndex(
     String walletId,
     int derivationIndex,
     WalletState currentState, {
-    bool isChange = false,
+    AddressChain chain = AddressChain.receive,
   }) async {
     final networkType = NetworkName.toDartsv(currentState.networkType);
 
@@ -528,13 +547,7 @@ class WalletKeys {
       final xprivStr = await secureStorage.getXPriv(walletId);
       if (xprivStr != null) {
         final hdPrivateKey = dartsv.HDPrivateKey.fromXpriv(xprivStr);
-        // m/{chain}/{index}: chain 0 = receive, 1 = change
-        return await cryptoService.derivePrivateKey(
-          hdPrivateKey,
-          0, // accountIndex
-          derivationIndex, // addressIndex
-          isChange: isChange,
-        );
+        return await cryptoService.derivePrivateKey(hdPrivateKey, derivationIndex, chain: chain);
       }
 
       // Try mnemonic if xpriv not found
@@ -545,13 +558,7 @@ class WalletKeys {
           passphrase: await mnemonicPassphrase(walletId),
           network: networkType,
         );
-        // m/{chain}/{index}: chain 0 = receive, 1 = change
-        return await cryptoService.derivePrivateKey(
-          hdPrivateKey,
-          0, // accountIndex
-          derivationIndex, // addressIndex
-          isChange: isChange,
-        );
+        return await cryptoService.derivePrivateKey(hdPrivateKey, derivationIndex, chain: chain);
       }
 
       throw StateError('No xpriv or mnemonic found for wallet $walletId');

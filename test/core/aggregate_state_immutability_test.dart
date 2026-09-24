@@ -56,6 +56,7 @@ import 'package:libspiffy/src/models/wallet_state.dart';
 import 'package:libspiffy/src/models/wallet_type.dart';
 import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 import 'package:libspiffy/src/storage/in_memory_secure_storage.dart';
+import 'package:libspiffy/src/models/address_chain.dart';
 
 import '../actors/in_memory_event_store.dart';
 import 'wallet_event_fixtures.dart';
@@ -610,7 +611,7 @@ void main() {
       final utxoKeys = ['${'ab' * 32}:0'];
       final publicKeys = ['02' * 33];
       final indices = [4];
-      final flags = [false];
+      final flags = [AddressChain.receive];
       final sign = SignTransactionCommand(
         walletId: _walletId,
         transactionId: 'tx-1',
@@ -618,7 +619,7 @@ void main() {
         utxoKeys: utxoKeys,
         publicKeys: publicKeys,
         derivationIndices: indices,
-        isChangeFlags: flags,
+        chains: flags,
       );
       final signerMetadata = <String, dynamic>{'signer': {'ids': [1]}};
       final recipients = ['muq9kAb9ri62VChAMRkuwK5bTve4iDLWBg'];
@@ -642,14 +643,14 @@ void main() {
       utxoKeys.add('late:0');
       publicKeys.clear();
       indices.add(9);
-      flags.add(true);
+      flags.add(AddressChain.change);
       recipients.add('mlate');
       ((signerMetadata['signer'] as Map)['ids'] as List).add(2);
 
       expect(sign.utxoKeys, ['${'ab' * 32}:0']);
       expect(sign.publicKeys, ['02' * 33]);
       expect(sign.derivationIndices, [4]);
-      expect(sign.isChangeFlags, [false]);
+      expect(sign.chains, [AddressChain.receive]);
       expect(record.spentUtxoKeys, ['${'ab' * 32}:0']);
       expect(record.recipientAddresses, ['muq9kAb9ri62VChAMRkuwK5bTve4iDLWBg']);
       expect((record.signerMetadata!['signer'] as Map)['ids'], [1]);
@@ -919,8 +920,10 @@ class _ThrowingAddressGeneratedEvent extends AddressGeneratedEvent {
     required super.timestamp,
   });
 
+  // Read after the address and the derivation index are applied, so a
+  // failure here is one half-way through the event.
   @override
-  String? get purpose => throw StateError('unreadable purpose');
+  AddressChain get chain => throw StateError('unreadable chain');
 }
 
 /// An [InvoicePaidEvent] whose payment time cannot be read.

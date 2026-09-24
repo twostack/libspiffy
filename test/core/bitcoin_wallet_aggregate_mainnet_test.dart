@@ -88,9 +88,9 @@ void main() {
         await cryptoService.mnemonicToHDPrivateKey(mnemonic, network: dartsv.NetworkType.MAIN),
       );
       expect(wallet.currentState.rootAddress,
-          equals(cryptoService.generateReceivingAddress(hdPub, 0, network: dartsv.NetworkType.MAIN)));
+          equals(cryptoService.deriveAddress(hdPub, 0, network: dartsv.NetworkType.MAIN)));
       expect(generated,
-          equals(cryptoService.generateReceivingAddress(hdPub, 1, network: dartsv.NetworkType.MAIN)));
+          equals(cryptoService.deriveAddress(hdPub, 1, network: dartsv.NetworkType.MAIN)));
     });
 
     test("wallet created with network 'mainnet' records its own outputs when scanning a transaction", () async {

@@ -24,6 +24,7 @@ import 'package:libspiffy/src/models/wallet_state.dart';
 import 'package:libspiffy/src/models/wallet_type.dart';
 import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 import 'package:libspiffy/src/storage/in_memory_secure_storage.dart';
+import 'package:libspiffy/src/models/address_chain.dart';
 
 const _w = 'collaborators';
 final _t0 = DateTime.utc(2026, 1, 1);
@@ -148,8 +149,8 @@ void main() {
       });
       expect(state.metadata[AddressBook.addressIndicesKey], isA<PersistentMap<String, int>>());
       expect(AddressBook.addressIndices(state.metadata), {'a': 3});
-      expect(AddressBook.isChangeAddress(state, 'a'), isTrue);
-      expect(AddressBook.isChangeAddress(state, _rootAddress), isFalse);
+      expect(AddressBook.chainOf(state, 'a'), AddressChain.change, reason: 'a snapshot written before the delegated chain');
+      expect(AddressBook.chainOf(state, _rootAddress), AddressChain.receive);
       expect(AddressBook.addressIndices(state.metadata).containsKey(_rootAddress), isFalse,
           reason: 'the restore typing replaces the records it is given');
     });

@@ -7,22 +7,23 @@ import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:logging/logging.dart';
 
 import '../core/wallet_commands.dart';
+import '../models/address_chain.dart';
 import '../models/bitcoin_utxo.dart';
 import '../storage/read_model_storage.dart';
 import '../utils/network_name.dart';
 import '../core/wallet_output_ownership.dart' show BareMultisigScript;
 import 'wallet_messages.dart';
 
-/// Where a wallet key sits in the HD tree: `m/{isChange ? 1 : 0}/{derivationIndex}`.
+/// Where a wallet key sits in the HD tree: `m/{chain}/{derivationIndex}`.
 /// Ignored by the aggregate for single-key (WIF) wallets.
 class SigningPath {
   final int derivationIndex;
-  final bool isChange;
+  final AddressChain chain;
 
-  const SigningPath(this.derivationIndex, {this.isChange = false});
+  const SigningPath(this.derivationIndex, {this.chain = AddressChain.receive});
 
   @override
-  String toString() => 'm/${isChange ? 1 : 0}/$derivationIndex';
+  String toString() => 'm/${chain.index}/$derivationIndex';
 }
 
 /// A signing request the wallet aggregate rejected, did not answer, or
@@ -96,7 +97,7 @@ class AggregateSigningClient {
       throw AggregateSigningException('Address $address of wallet $walletId is a watch address: '
           'the wallet holds no key for it and has no signing path');
     }
-    return SigningPath(metadata.derivationIndex ?? 0, isChange: metadata.isChange);
+    return SigningPath(metadata.derivationIndex ?? 0, chain: metadata.chain);
   }
 
   /// The path of the wallet key at [address], or null when the read model
@@ -107,7 +108,7 @@ class AggregateSigningClient {
   Future<SigningPath?> _keyPathOrNull(String walletId, String address) async {
     final metadata = await _storage.getAddressMetadata(walletId, address);
     if (metadata == null || metadata.purpose == 'watch') return null;
-    return SigningPath(metadata.derivationIndex ?? 0, isChange: metadata.isChange);
+    return SigningPath(metadata.derivationIndex ?? 0, chain: metadata.chain);
   }
 
   // ---------------------------------------------------------------------------
@@ -148,7 +149,7 @@ class AggregateSigningClient {
         publicKeys: const [],
         addresses: utxos.map((u) => u.address).toList(),
         derivationIndices: paths.map((p) => p.derivationIndex).toList(),
-        isChangeFlags: paths.map((p) => p.isChange).toList(),
+        chains: paths.map((p) => p.chain).toList(),
       ),
       'signing $transactionId',
     );
@@ -206,7 +207,7 @@ class AggregateSigningClient {
         subscriptHex: subscript.toHex(),
         satoshis: satoshis,
         derivationIndex: path.derivationIndex,
-        isChange: path.isChange,
+        chain: path.chain,
         sighashType: sighashType,
       ),
       'signing input $inputIndex',

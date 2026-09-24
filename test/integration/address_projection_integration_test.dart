@@ -106,7 +106,7 @@ void main() {
         walletId: walletId,
         address: '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa',
         derivationIndex: 0,
-        isChange: false,
+        chain: AddressChain.receive,
         transactionCount: 5,
       );
       
@@ -152,7 +152,7 @@ void main() {
       expect(addressEntity!.address, equals('1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa'));
       expect(addressEntity.scriptType, equals('p2pkh'));
       expect(addressEntity.derivationIndex, equals(0));
-      expect(addressEntity.isChange, isFalse);
+      expect(addressEntity.chain, AddressChain.receive.index, reason: 'the stored chain index');
       expect(addressEntity.purpose, isIn(['receive', 'change', 'Imported (receive #0)']));
     });
 
@@ -176,7 +176,7 @@ void main() {
           walletId: walletId,
           address: address,
           derivationIndex: index,
-          isChange: isChange,
+          chain: isChange ? AddressChain.change : AddressChain.receive,
           transactionCount: 1,
         );
         
@@ -280,7 +280,7 @@ void main() {
         walletId: walletId,
         address: testAddress,
         derivationIndex: 10,
-        isChange: false,
+        chain: AddressChain.receive,
         transactionCount: 3,
       );
       
@@ -332,7 +332,7 @@ void main() {
           walletId: walletId,
           address: testAddresses[i],
           derivationIndex: 20 + i,
-          isChange: false,
+          chain: AddressChain.receive,
           transactionCount: 1,
         );
         
@@ -373,7 +373,7 @@ void main() {
         walletId: walletId,
         address: testAddress,
         derivationIndex: 99,
-        isChange: true,
+        chain: AddressChain.change,
         transactionCount: 7,
       );
       
@@ -438,11 +438,11 @@ void main() {
       expect(metadata, isNotNull);
       expect(metadata!.address, equals(testAddress));
       expect(metadata.derivationIndex, equals(99));
-      expect(metadata.isChange, isTrue);
+      expect(metadata.chain, AddressChain.change);
       print('✓ Address metadata preserved after restart');
       print('  Address: ${metadata.address}');
       print('  Derivation Index: ${metadata.derivationIndex}');
-      print('  Is Change: ${metadata.isChange}');
+      print('  Chain: ${metadata.chain.name}');
       
       // Cleanup new instance
       await newLibspiffy.shutdown();
@@ -464,7 +464,7 @@ void main() {
           walletId: walletId,
           address: testAddress,
           derivationIndex: 50,
-          isChange: false,
+          chain: AddressChain.receive,
           transactionCount: 1,
         );
         
@@ -514,7 +514,7 @@ void main() {
           walletId: walletId,
           address: address,
           derivationIndex: index,
-          isChange: isChange,
+          chain: isChange ? AddressChain.change : AddressChain.receive,
           transactionCount: 1,
         );
         
@@ -531,7 +531,7 @@ void main() {
       print('Filtering receiving addresses...');
       final receiving = await libspiffy.walletStorage.getAddressesWithMetadata(
         walletId,
-        isChange: false,
+        chain: AddressChain.receive,
       );
       
       final receivingAddrs = receiving.map((a) => a.address).toList();
@@ -544,7 +544,7 @@ void main() {
       print('Filtering change addresses...');
       final change = await libspiffy.walletStorage.getAddressesWithMetadata(
         walletId,
-        isChange: true,
+        chain: AddressChain.change,
       );
       
       final changeAddrs = change.map((a) => a.address).toList();

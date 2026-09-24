@@ -13,6 +13,7 @@ import 'package:postgres/postgres.dart';
 import 'package:spiffynode/spiffy_node.dart';
 
 import '../../actors/invoice_messages.dart' show InvoiceStatus;
+import '../../models/address_chain.dart';
 import '../../models/bitcoin_utxo.dart';
 import '../../models/bitcoin_transaction.dart';
 import '../../models/address_metadata.dart';
@@ -228,7 +229,7 @@ class PostgresWalletStorage implements ReadModelStorage {
     final result = await _pool!.execute(
       Sql.named('''
         SELECT address, script_type, derivation_path, derivation_index,
-               is_change, label, purpose, first_used_at, last_used_at,
+               chain, label, purpose, first_used_at, last_used_at,
                usage_count, balance, is_watched, created_at
         FROM addresses
         WHERE wallet_id = @walletId AND address = @address
@@ -269,7 +270,7 @@ class PostgresWalletStorage implements ReadModelStorage {
   Future<List<AddressMetadata>> getAddressesWithMetadata(
     String walletId, {
     bool? includeUnused,
-    bool? isChange,
+    AddressChain? chain,
     int? limit,
     int? offset,
   }) async {
@@ -277,7 +278,7 @@ class PostgresWalletStorage implements ReadModelStorage {
 
     var sql = '''
       SELECT address, script_type, derivation_path, derivation_index,
-             is_change, label, purpose, first_used_at, last_used_at,
+             chain, label, purpose, first_used_at, last_used_at,
              usage_count, balance, is_watched, created_at
       FROM addresses
       WHERE wallet_id = @walletId
@@ -288,9 +289,9 @@ class PostgresWalletStorage implements ReadModelStorage {
     if (includeUnused == false) {
       sql += ' AND usage_count > 0';
     }
-    if (isChange != null) {
-      sql += ' AND is_change = @isChange';
-      params['isChange'] = isChange;
+    if (chain != null) {
+      sql += ' AND chain = @chain';
+      params['chain'] = chain.index;
     }
 
     // Newest first by the stored createdAt, as every backend (audit S-19).
@@ -314,25 +315,25 @@ class PostgresWalletStorage implements ReadModelStorage {
     String walletId, {
     required int startIndex,
     required int count,
-    bool isChange = false,
+    AddressChain chain = AddressChain.receive,
   }) async {
     _ensureInitialized();
 
     final result = await _pool!.execute(
       Sql.named('''
         SELECT address, script_type, derivation_path, derivation_index,
-               is_change, label, purpose, first_used_at, last_used_at,
+               chain, label, purpose, first_used_at, last_used_at,
                usage_count, balance, is_watched, created_at
         FROM addresses
         WHERE wallet_id = @walletId
-          AND is_change = @isChange
+          AND chain = @chain
           AND derivation_index >= @startIndex
           AND derivation_index < @endIndex
         ORDER BY derivation_index
       '''),
       parameters: {
         'walletId': walletId,
-        'isChange': isChange,
+        'chain': chain.index,
         'startIndex': startIndex,
         'endIndex': startIndex + count,
       },
@@ -348,7 +349,7 @@ class PostgresWalletStorage implements ReadModelStorage {
     final result = await _pool!.execute(
       Sql.named('''
         SELECT address, script_type, derivation_path, derivation_index,
-               is_change, label, purpose, first_used_at, last_used_at,
+               chain, label, purpose, first_used_at, last_used_at,
                usage_count, balance, is_watched, created_at
         FROM addresses
         WHERE wallet_id = @walletId
@@ -368,18 +369,18 @@ class PostgresWalletStorage implements ReadModelStorage {
       Sql.named('''
         INSERT INTO addresses (
           wallet_id, address, script_type, derivation_path, derivation_index,
-          is_change, label, purpose, first_used_at, last_used_at,
+          chain, label, purpose, first_used_at, last_used_at,
           usage_count, balance, created_at, is_watched
         ) VALUES (
           @walletId, @address, @scriptType, @derivationPath, @derivationIndex,
-          @isChange, @label, @purpose, @firstUsedAt, @lastUsedAt,
+          @chain, @label, @purpose, @firstUsedAt, @lastUsedAt,
           @usageCount, @balance, @createdAt, @isWatched
         )
         ON CONFLICT (wallet_id, address) DO UPDATE SET
           script_type = COALESCE(@scriptType, addresses.script_type),
           derivation_path = COALESCE(@derivationPath, addresses.derivation_path),
           derivation_index = COALESCE(@derivationIndex, addresses.derivation_index),
-          is_change = @isChange,
+          chain = @chain,
           label = @label,
           purpose = @purpose,
           first_used_at = COALESCE(addresses.first_used_at, @firstUsedAt),
@@ -394,7 +395,7 @@ class PostgresWalletStorage implements ReadModelStorage {
         'scriptType': metadata.scriptType,
         'derivationPath': metadata.derivationPath,
         'derivationIndex': metadata.derivationIndex,
-        'isChange': metadata.isChange,
+        'chain': metadata.chain.index,
         'label': metadata.label,
         'purpose': metadata.purpose,
         'firstUsedAt': metadata.firstUsedAt,
@@ -465,7 +466,7 @@ class PostgresWalletStorage implements ReadModelStorage {
       scriptType: row[1] as String,
       derivationPath: row[2] as String?,
       derivationIndex: row[3] as int?,
-      isChange: row[4] as bool,
+      chain: AddressChain.fromIndex(row[4] as int),
       label: row[5] as String?,
       purpose: row[6] as String, // purpose is a String, not an enum
       firstUsedAt: row[7] as DateTime?,

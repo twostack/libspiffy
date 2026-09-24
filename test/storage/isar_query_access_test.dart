@@ -31,6 +31,7 @@ import 'package:libspiffy/src/models/deferred_payment.dart';
 import 'package:libspiffy/src/models/transaction_address_link.dart';
 import 'package:libspiffy/src/storage/isar_wallet_storage.dart';
 import 'package:libspiffy/src/storage/libspiffy_schemas.dart';
+import 'package:libspiffy/src/models/address_chain.dart';
 import 'package:libspiffy/src/storage/read_model_storage.dart' show MerkleProof, MerkleProofStatus;
 
 import '../integration/isar_test_helper.dart';
@@ -119,7 +120,7 @@ AddressMetadata _address(String address, {int index = 0, String purpose = 'recei
       scriptType: 'p2pkh',
       derivationPath: purpose == 'watch' ? null : 'm/0/0/$index',
       derivationIndex: purpose == 'watch' ? null : index,
-      isChange: false,
+      chain: AddressChain.receive,
       purpose: purpose,
       usageCount: index.isEven ? 1 : 0,
       balance: BigInt.zero,
@@ -206,7 +207,7 @@ void main() {
       'getAddressMetadata': () => storage.getAddressMetadata(target, sharedAddresses[0]),
       'checkAddresses': () => storage.checkAddresses(target, [...sharedAddresses, 'addr-unknown']),
       'getAddressesWithMetadata': () =>
-          storage.getAddressesWithMetadata(target, includeUnused: false, isChange: false, limit: 2, offset: 0),
+          storage.getAddressesWithMetadata(target, includeUnused: false, chain: AddressChain.receive, limit: 2, offset: 0),
       'getAddressRange': () => storage.getAddressRange(target, startIndex: 0, count: 2),
       'getAddressesByPurpose': () => storage.getAddressesByPurpose(target, 'watch'),
       'getAddressCount': () => storage.getAddressCount(target),

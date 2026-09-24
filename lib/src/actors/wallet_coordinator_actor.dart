@@ -603,6 +603,8 @@ class WalletCoordinatorActor extends Actor {
         await _handleGetTransactions(message);
       } else if (message is GetTransactionDetailQuery) {
         await _handleGetTransactionDetail(message);
+      } else if (message is ExportTransactionQuery) {
+        await _handleExportTransaction(message);
       } else if (message is CreateInvoiceCommand) {
         await _handleCreateInvoice(message);
       } else if (message is PayInvoiceCommand) {
@@ -1183,6 +1185,52 @@ class WalletCoordinatorActor extends Actor {
       ));
       return;
     }
+    if (cmd.delegatedIndices.isNotEmpty) {
+      // Off the mailbox: a wallet and a projection round trip.
+      unawaited(_recordDelegatedAddressesThenImport(cmd, beef, txid));
+      return;
+    }
+    _receiveImport(cmd, beef, txid);
+  }
+
+  /// Records the delegated addresses [cmd] names in its wallet, waits for
+  /// the read model to hold them (SPV attributes outputs by the read
+  /// model's address rows), then imports the transaction (bead
+  /// libspiffy-m8qu).
+  Future<void> _recordDelegatedAddressesThenImport(ImportTransactionCommand cmd, BEEF beef, String txid) async {
+    String? error;
+    try {
+      final response = await _walletManager.ask<wm.DelegatedAddressesRecordedResponse>(
+        wm.WalletCommandMessage(
+          cmd.walletId,
+          domain.RecordDelegatedAddressesCommand(walletId: cmd.walletId, derivationIndices: cmd.delegatedIndices),
+        ),
+        const Duration(seconds: 30),
+      );
+      if (!response.success) {
+        error = 'The wallet did not record the delegated addresses: ${response.error}';
+      } else if (response.journaled.isNotEmpty) {
+        final last = response.journaled.last;
+        error = await awaitProjectionApplied(
+          _walletProjection,
+          matches: (e) =>
+              e is domain_events.AddressDiscoveredEvent && e.walletId == cmd.walletId && e.address == last,
+          alreadyApplied: () async =>
+              (await _storage.checkAddresses(cmd.walletId, response.journaled)).values.every((known) => known),
+        );
+        if (error != null) error = 'The delegated addresses were recorded, but the read model did not apply them: $error';
+      }
+    } catch (e) {
+      error = 'Recording the delegated addresses failed: $e';
+    }
+    if (error != null) {
+      _emitEvent(TransactionImportedEvent(walletId: cmd.walletId, transactionId: txid, success: false, error: error));
+      return;
+    }
+    _receiveImport(cmd, beef, txid);
+  }
+
+  void _receiveImport(ImportTransactionCommand cmd, BEEF beef, String txid) {
     _log.info('Importing transaction $txid for wallet ${cmd.walletId}');
     final requestId = 'receive-${++_receiveSeq}';
     _receives[requestId] = _Receive(walletId: cmd.walletId, payment: false);
@@ -1199,6 +1247,40 @@ class WalletCoordinatorActor extends Actor {
       ),
       sender: context.self,
     );
+  }
+
+  /// Exports [query]'s transaction with its proof (bead libspiffy-m8qu): the
+  /// transaction, whose own proof must be verified on our header chain, and
+  /// nothing else, since a proven transaction needs no ancestry.
+  Future<void> _handleExportTransaction(ExportTransactionQuery query) async {
+    TransactionExportedEvent refuse(String error) => TransactionExportedEvent(
+        walletId: query.walletId, txid: query.txid, queryId: query.correlationId, success: false, error: error);
+    try {
+      if (await _storage.getTransaction(query.txid, walletId: query.walletId) == null) {
+        _emitEvent(refuse('Transaction ${query.txid} is not a transaction of wallet ${query.walletId}'));
+        return;
+      }
+      final chain = await AncestorChainService(storage: _storage).collectAncestorChainForUtxos([query.txid]);
+      if (!chain.isValid) {
+        _emitEvent(refuse('Transaction ${query.txid} cannot be proven: ${chain.error}'));
+        return;
+      }
+      if (!chain.merkleProofs.any((p) => p.txid == query.txid)) {
+        _emitEvent(refuse('Transaction ${query.txid} has no merkle proof verified on our header chain yet; '
+            'it can be exported once it is mined and its proof is held'));
+        return;
+      }
+      final beef = AncestorChainService.buildBeef(chain.ancestorTransactions, const [], chain.merkleProofs).serialize();
+      _emitEvent(TransactionExportedEvent(
+        walletId: query.walletId,
+        txid: query.txid,
+        queryId: query.correlationId,
+        success: true,
+        beef: beef,
+      ));
+    } catch (e) {
+      _emitEvent(refuse('Exporting ${query.txid} failed: $e'));
+    }
   }
 
   Future<void> _handleStoreHeaders(StoreHeadersCommand cmd) async {
@@ -1666,7 +1748,8 @@ class WalletCoordinatorActor extends Actor {
 
       final applied = awaitProjectionApplied(
         _walletProjection,
-        matches: (e) => e is domain_events.DeferredTransactionCancelledEvent && e.txid == cmd.txid,
+        matches: (e) =>
+            e is domain_events.DeferredTransactionCancelledEvent && e.walletId == cmd.walletId && e.txid == cmd.txid,
         alreadyApplied: () async =>
             (await _storage.getDeferredPayment(cmd.walletId, cmd.txid))?.state == DeferredPaymentState.cancelled,
       );
@@ -1726,7 +1809,11 @@ class WalletCoordinatorActor extends Actor {
 
     await awaitApplied(
       'the $status status of $txid',
-      (e) => e is domain_events.TransactionNetworkStatusCheckedEvent && e.txid == txid && !e.checkedAt.isBefore(asked),
+      (e) =>
+          e is domain_events.TransactionNetworkStatusCheckedEvent &&
+          e.walletId == walletId &&
+          e.txid == txid &&
+          !e.checkedAt.isBefore(asked),
       () async {
         final checkedAt = (await _storage.getDeferredPayment(walletId, txid))?.lastCheckedAt;
         return checkedAt != null && !checkedAt.isBefore(asked);
@@ -1735,7 +1822,7 @@ class WalletCoordinatorActor extends Actor {
     if (DeferredNetworkStatus.isDefinitiveFailure(status)) {
       await awaitApplied(
         'the failure of $txid',
-        (e) => e is domain_events.DeferredTransactionFailedEvent && e.txid == txid,
+        (e) => e is domain_events.DeferredTransactionFailedEvent && e.walletId == walletId && e.txid == txid,
         () async => (await _storage.getDeferredPayment(walletId, txid))?.isOutstanding == false,
       );
     }
@@ -1747,7 +1834,8 @@ class WalletCoordinatorActor extends Actor {
         if (await _storage.getUTXO(walletId, prevTxid, vout) == null) continue;
         await awaitApplied(
           'the spend of $prevTxid:$vout',
-          (e) => e is domain_events.UTXOSpentEvent && e.txid == prevTxid && e.vout == vout,
+          (e) =>
+              e is domain_events.UTXOSpentEvent && e.walletId == walletId && e.txid == prevTxid && e.vout == vout,
           () async => (await _storage.getUTXO(walletId, prevTxid, vout))?.status == UTXOStatus.spent,
         );
       }
@@ -1755,7 +1843,8 @@ class WalletCoordinatorActor extends Actor {
         if (await _storage.getUTXO(walletId, txid, vout) == null) continue;
         await awaitApplied(
           'output $txid:$vout available',
-          (e) => e is domain_events.UTXOMarkedAvailableEvent && e.txid == txid && e.vout == vout,
+          (e) =>
+              e is domain_events.UTXOMarkedAvailableEvent && e.walletId == walletId && e.txid == txid && e.vout == vout,
           () async => switch ((await _storage.getUTXO(walletId, txid, vout))?.status) {
             UTXOStatus.available || UTXOStatus.spent => true,
             _ => false,
@@ -1912,7 +2001,8 @@ class WalletCoordinatorActor extends Actor {
       // broadcast is always in the journal first.
       final applied = awaitProjectionApplied(
         _walletProjection,
-        matches: (e) => e is domain_events.DeferredSpendReclaimedEvent && e.txid == cmd.txid,
+        matches: (e) =>
+            e is domain_events.DeferredSpendReclaimedEvent && e.walletId == cmd.walletId && e.txid == cmd.txid,
         alreadyApplied: () async =>
             (await _storage.getDeferredPayment(cmd.walletId, reclaimTxid)) != null,
       );
@@ -2523,7 +2613,7 @@ class WalletCoordinatorActor extends Actor {
 
     String? notApplied;
     try {
-      notApplied = await _awaitImportApplied(result.txid);
+      notApplied = await _awaitImportApplied(walletId, result.txid);
     } catch (e) {
       notApplied = '$e';
     }
@@ -2571,7 +2661,11 @@ class WalletCoordinatorActor extends Actor {
         if (vout is! int) continue;
         final notAvailable = await awaitProjectionApplied(
         _walletProjection,
-          matches: (e) => e is domain_events.UTXOMarkedAvailableEvent && e.txid == result.txid && e.vout == vout,
+          matches: (e) =>
+              e is domain_events.UTXOMarkedAvailableEvent &&
+              e.walletId == walletId &&
+              e.txid == result.txid &&
+              e.vout == vout,
           alreadyApplied: () async =>
               (await _storage.getUTXO(walletId, result.txid, vout))?.status == UTXOStatus.available,
         );
@@ -2654,7 +2748,7 @@ class WalletCoordinatorActor extends Actor {
     String? awaitError;
     if (result.isValid) {
       try {
-        final reason = await _awaitImportApplied(result.txid);
+        final reason = await _awaitImportApplied(result.targetWalletId!, result.txid);
         if (reason != null) {
           awaitError =
               'Imported transaction ${result.txid} was validated but the wallet '
@@ -2680,18 +2774,21 @@ class WalletCoordinatorActor extends Actor {
   }
 
   /// Resolves with null once the wallet projection has applied the
-  /// TransactionImportedEvent for [txid], or with the failure reason.
+  /// TransactionImportedEvent of [walletId] for [txid], or with the failure
+  /// reason. Both halves name the wallet: another wallet of this process
+  /// can hold the same transaction (a payer and its payee, or a service and
+  /// the payee it hands a payment to), and its row or event said nothing
+  /// about this one's (bead libspiffy-m8qu).
   ///
   /// The SPV result reaches this coordinator after WalletManagerActor was
   /// told to record the transaction, so the projection may already have
   /// applied the event by the time an awaiter could be registered, and an
   /// awaiter only matches events applied after it (A-M2):
   /// [awaitProjectionApplied] also looks for the row.
-  Future<String?> _awaitImportApplied(String txid) => awaitProjectionApplied(
+  Future<String?> _awaitImportApplied(String walletId, String txid) => awaitProjectionApplied(
         _walletProjection,
-        matches: (e) =>
-            e is domain_events.TransactionImportedEvent && e.txid == txid,
-        alreadyApplied: () async => await _storage.getTransaction(txid) != null,
+        matches: (e) => e is domain_events.TransactionImportedEvent && e.walletId == walletId && e.txid == txid,
+        alreadyApplied: () async => await _storage.getTransaction(txid, walletId: walletId) != null,
       );
 
   void _handleSplitUTXOsResponse(wm.SplitUTXOsResponse response) {
@@ -2782,8 +2879,9 @@ class WalletCoordinatorActor extends Actor {
     // its payment is recorded asks for it next.
     final notApplied = await awaitProjectionApplied(
         _walletProjection,
-      matches: (e) => e is domain_events.TransactionRecordedEvent && e.txid == response.txid,
-      alreadyApplied: () async => await _storage.getTransaction(response.txid) != null,
+      matches: (e) =>
+          e is domain_events.TransactionRecordedEvent && e.walletId == response.walletId && e.txid == response.txid,
+      alreadyApplied: () async => await _storage.getTransaction(response.txid, walletId: response.walletId) != null,
     );
     _emitEvent(TransactionRecordedEvent(
       walletId: response.walletId,

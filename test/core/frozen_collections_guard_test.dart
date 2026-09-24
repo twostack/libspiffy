@@ -62,8 +62,12 @@ const _sources = <String, String?>{
 /// number deliberately: 140 with `SPVValidationResult.invoicePaidAddresses`
 /// (yyby: what a payment pays its invoice, for the coordinator to mark it
 /// paid with once the network holds the payment), 139 again once the dead
-/// `SPVControlMessage` went with its frozen `parameters` map.
-const _expectedFields = 139;
+/// `SPVControlMessage` went with its frozen `parameters` map, 144 with the
+/// offline-payee hand-off (m8qu: `RecordDelegatedAddressesCommand
+/// .derivationIndices`, `ImportTransactionCommand.delegatedIndices`,
+/// `TransactionExportedEvent.beef` and `DelegatedAddressesRecordedResponse
+/// .addresses` and `.journaled`).
+const _expectedFields = 144;
 
 final _classStart = RegExp(r'^(?:abstract |sealed )?class (\w+)', multiLine: true);
 final _field = RegExp(r'^  final ((?:List|Map|Set)<.*?>\??) (\w+);(?: *//.*)?$', multiLine: true);

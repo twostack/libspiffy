@@ -2,6 +2,9 @@
 ///
 /// These models provide a standard interface between LibSpiffy's core
 /// wallet functionality and external blockchain data providers.
+library;
+
+import 'address_chain.dart';
 
 /// Information about a single transaction
 class TransactionInfo {
@@ -307,8 +310,8 @@ class DiscoveredAddress {
   /// BIP44 derivation index
   final int derivationIndex;
 
-  /// Whether this is a change address (m/44'/0'/0'/1/x) vs receiving (m/44'/0'/0'/0/x)
-  final bool isChange;
+  /// The chain the address is on (m/{chain}/{derivationIndex}).
+  final AddressChain chain;
 
   /// Number of transactions for this address
   final int transactionCount;
@@ -322,7 +325,7 @@ class DiscoveredAddress {
   DiscoveredAddress({
     required this.address,
     required this.derivationIndex,
-    required this.isChange,
+    required this.chain,
     required this.transactionCount,
     required this.txids,
     this.scripts = const [],

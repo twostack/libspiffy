@@ -25,6 +25,7 @@ import 'package:libspiffy/src/models/address_metadata.dart';
 import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 import 'package:libspiffy/src/storage/in_memory_secure_storage.dart';
 import 'package:libspiffy/src/storage/in_memory_wallet_storage.dart';
+import 'package:libspiffy/src/models/address_chain.dart';
 
 import 'in_memory_event_store.dart';
 
@@ -88,17 +89,17 @@ void main() {
 
     storage = InMemoryWalletStorage();
     await storage.storeWallet(_walletId, 'client', rootAddress: root, networkType: 'testnet');
-    for (final (address, index, isChange) in [(root, 0, false), (change2, 2, true)]) {
+    for (final (address, index, chain) in [(root, 0, AddressChain.receive), (change2, 2, AddressChain.change)]) {
       await storage.upsertAddress(
         _walletId,
         AddressMetadata(
           address: address,
           scriptType: 'p2pkh',
-          derivationPath: 'm/${isChange ? 1 : 0}/$index',
+          derivationPath: 'm/${chain.index}/$index',
           derivationIndex: index,
-          isChange: isChange,
+          chain: chain,
           label: null,
-          purpose: isChange ? 'change' : 'receive',
+          purpose: chain.name,
           firstUsedAt: null,
           lastUsedAt: null,
           usageCount: 0,
@@ -132,7 +133,7 @@ void main() {
       AddressMetadata(
         address: watched,
         scriptType: 'p2pkh',
-        isChange: false,
+        chain: AddressChain.receive,
         purpose: 'watch',
         usageCount: 0,
         balance: BigInt.zero,

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:isar/isar.dart';
 import 'package:meta/meta.dart';
 import 'package:spiffynode/spiffy_node.dart';
+import '../models/address_chain.dart';
 import '../models/bitcoin_utxo.dart';
 import '../models/bitcoin_transaction.dart';
 import '../models/address_metadata.dart';
@@ -238,11 +239,23 @@ class IsarWalletStorage implements ReadModelStorage {
     return result;
   }
 
+  /// Address rows on [chain]: its index in `chain`, or, in a row written
+  /// before the delegated chain existed (`chain` null), the change/receive
+  /// flag ([AddressChain.fromRecord]). No such row is delegated.
+  static QueryBuilder<AddressEntity, AddressEntity, QAfterFilterCondition> _onChain(
+      QueryBuilder<AddressEntity, AddressEntity, QFilterCondition> q, AddressChain chain) {
+    if (chain == AddressChain.delegated) return q.chainEqualTo(chain.index);
+    return q
+        .chainEqualTo(chain.index)
+        .or()
+        .group((legacy) => legacy.chainIsNull().and().isChangeEqualTo(chain == AddressChain.change));
+  }
+
   @override
   Future<List<AddressMetadata>> getAddressesWithMetadata(
     String walletId, {
     bool? includeUnused,
-    bool? isChange,
+    AddressChain? chain,
     int? limit,
     int? offset,
   }) async {
@@ -253,7 +266,7 @@ class IsarWalletStorage implements ReadModelStorage {
         .walletIdEqualToAnyPurpose(walletId)
         .filter()
         .optional(includeUnused == false, (q) => q.usageCountGreaterThan(0))
-        .optional(isChange != null, (q) => q.isChangeEqualTo(isChange!))
+        .optional(chain != null, (q) => q.group((g) => _onChain(g, chain!)))
         .sortByCreatedAtDesc()
         .offset(offset ?? 0)
         .limit(limit ?? _noLimit))
@@ -266,13 +279,13 @@ class IsarWalletStorage implements ReadModelStorage {
     String walletId, {
     required int startIndex,
     required int count,
-    bool isChange = false,
+    AddressChain chain = AddressChain.receive,
   }) async {
     final entities = await _traced('getAddressRange', _isar.addressEntitys
         .where()
         .walletIdEqualToAnyPurpose(walletId)
         .filter()
-        .isChangeEqualTo(isChange)
+        .group((g) => _onChain(g, chain))
         .and()
         .derivationIndexBetween(startIndex, startIndex + count - 1)
         .sortByDerivationIndex())

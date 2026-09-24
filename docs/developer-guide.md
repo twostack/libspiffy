@@ -250,6 +250,34 @@ if (event is BEEFValidationResultEvent) {
 
 The coordinator tracks the correlation between BEEF data, wallet ID, invoice ID, and SPV validation internally. You never need to manage these intermediate states.
 
+### Receiving for an Offline Payee
+
+A service can take payments for users who are offline (spv-understanding.md, "Payment modes"). The user registers their xpub, and the service keeps it as a watch-only wallet:
+
+```dart
+coordinator.tell(CreateWalletCommand(walletId: 'carol-at-service', name: 'Carol', xpub: carolXpub));
+```
+
+Invoices on that wallet get addresses on the user's **delegated chain** (`m/2/i`), never on the receive chain (`m/0/i`) the user's own wallet issues from. The service receives the payment with `ValidateBEEFCommand` as usual. The money appears as `watchOnlyBalance`: the service holds no key for it and can never spend it. Once the payment is mined, the service exports it with its proof:
+
+```dart
+coordinator.tell(ExportTransactionQuery(walletId: 'carol-at-service', txid: txid));
+// → TransactionExportedEvent(success, beef, error)
+```
+
+It hands the BEEF to the user, together with the derivation index of the delegated address the invoice used. The user's wallet imports it with that index. It derives the address from its own key, records it, and can then spend the payment like any other:
+
+```dart
+coordinator.tell(ImportTransactionCommand(
+  walletId: 'carol',
+  beef: exportedBeef,
+  delegatedIndices: [index],
+));
+// → TransactionImportedEvent
+```
+
+Without the index the import is refused: the payment pays none of the wallet's addresses, so it is not the wallet's transaction.
+
 ## Sending Payments
 
 ### Step 1: Pay an Invoice
@@ -566,13 +594,17 @@ Key points for coordinator users:
 | `BalanceResponse` | In response to `GetBalanceQuery` |
 | `TransactionsResponse` | In response to `GetTransactionsQuery` |
 | `TransactionDetailResponse` | In response to `GetTransactionDetailQuery` |
+| `TransactionExportedEvent` | In response to `ExportTransactionQuery`: a proven transaction as BEEF |
+| `DeferredPaymentsResponse` | In response to `GetDeferredPaymentsQuery` |
 
 ### Transaction Events
 | Event | When Emitted |
 |---|---|
-| `TransactionReceivedEvent` | New transaction detected (incoming or outgoing) |
+| `TransactionRecordedEvent` | An outgoing transaction recorded via `RecordOutgoingCommand` |
 | `TransactionConfirmedEvent` | Transaction confirmed on-chain |
+| `TransactionConfirmationRevertedEvent` | A reorganization took the proof of a confirmation away |
 | `TransactionImportedEvent` | Transaction imported via `ImportTransactionCommand` |
+| `BalanceUpdatedEvent` | A wallet's balance changed |
 
 ### Payment Events
 | Event | When Emitted |
@@ -604,7 +636,6 @@ Key points for coordinator users:
 | `TimestampCompleteEvent` | OP_RETURN timestamp archive committed on-chain |
 | `BlockHeadersStoredEvent` | Block headers stored |
 | `WatchAddressRegisteredEvent` | Watch address registered |
-| `HeaderSyncProgressEvent` | Block header sync progress (CDN or P2P) |
 
 ### Error Events
 | Event | When Emitted |

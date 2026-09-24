@@ -33,6 +33,7 @@ import 'package:libspiffy/src/models/invoice_state.dart';
 import 'package:libspiffy/src/models/wallet_event.dart';
 import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 import 'package:libspiffy/src/storage/in_memory_secure_storage.dart';
+import 'package:libspiffy/src/models/address_chain.dart';
 
 import 'wallet_event_fixtures.dart';
 
@@ -162,7 +163,7 @@ void main() {
         walletId: walletId,
         address: 'mdiscovered7',
         derivationIndex: 7,
-        isChange: true,
+        chain: AddressChain.change,
         transactionCount: 2,
         version: j.events.length + 1,
         timestamp: DateTime.utc(2021, 5, 1),
@@ -285,11 +286,12 @@ void main() {
         'mchange1': 1,
         'mdiscovered7': 7,
       });
+      // Each address's AddressChain.index (bead libspiffy-m8qu).
       expect(metadata['address_chains'], {
-        'mrootaddress0000000000000000000000': false,
-        'mreceive1': false,
-        'mchange1': true,
-        'mdiscovered7': true,
+        'mrootaddress0000000000000000000000': AddressChain.receive.index,
+        'mreceive1': AddressChain.receive.index,
+        'mchange1': AddressChain.change.index,
+        'mdiscovered7': AddressChain.change.index,
       });
       expect(restored.currentState.nextDerivationIndex, 8);
     });

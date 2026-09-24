@@ -16,6 +16,7 @@ import 'package:libspiffy/src/models/bitcoin_transaction.dart';
 import 'package:libspiffy/src/models/bitcoin_utxo.dart';
 import 'package:libspiffy/src/models/transaction_address_link.dart';
 import 'package:libspiffy/src/storage/read_model_storage.dart';
+import 'package:libspiffy/src/models/address_chain.dart';
 
 /// A 64-hex id derived from [tag] (unique per tag).
 String contractHex64(String tag) =>
@@ -70,15 +71,15 @@ BitcoinUtxo _utxo(String txid, int vout, int sats,
     );
 
 AddressMetadata _address(String address,
-        {int index = 0, bool isChange = false, String? label}) =>
+        {int index = 0, AddressChain chain = AddressChain.receive, String? label}) =>
     AddressMetadata(
       address: address,
       scriptType: 'p2pkh',
-      derivationPath: "m/0/${isChange ? 1 : 0}/$index",
+      derivationPath: 'm/${chain.index}/$index',
       derivationIndex: index,
-      isChange: isChange,
+      chain: chain,
       label: label,
-      purpose: isChange ? 'change' : 'receive',
+      purpose: chain.name,
       usageCount: 0,
       balance: BigInt.zero,
       createdAt: DateTime.utc(2026, 9, 14, 12, 0, index),
@@ -268,12 +269,14 @@ void defineReadModelKeyingContract(
       final r0 = 'addr-r0-$u';
       final r1 = 'addr-r1-$u';
       final c0 = 'addr-c0-$u';
+      final d1 = 'addr-d1-$u';
 
       await s.upsertAddress(wallet, _address(r0, index: 0));
       await s.upsertAddress(wallet, _address(r1, index: 1));
-      await s.upsertAddress(wallet, _address(c0, index: 0, isChange: true));
+      await s.upsertAddress(wallet, _address(c0, index: 0, chain: AddressChain.change));
+      await s.upsertAddress(wallet, _address(d1, index: 1, chain: AddressChain.delegated));
 
-      expect(await s.getAddressCount(wallet), 3);
+      expect(await s.getAddressCount(wallet), 4);
       expect(await s.isWalletAddress(wallet, r1), isTrue);
       expect(await s.isWalletAddress(other, r1), isFalse);
       expect(await s.checkAddresses(wallet, [r0, 'nope-$u']),
@@ -281,16 +284,24 @@ void defineReadModelKeyingContract(
 
       final meta = await s.getAddressMetadata(wallet, c0);
       expect(meta, isNotNull);
-      expect(meta!.isChange, isTrue);
+      expect(meta!.chain, AddressChain.change);
       expect(meta.derivationIndex, 0);
       expect(meta.purpose, 'change');
 
-      expect((await s.getAddressesWithMetadata(wallet, isChange: false))
+      // Bead libspiffy-m8qu: each chain is its own, the delegated one
+      // included; a delegated address at index 1 is not the receive one.
+      expect((await s.getAddressMetadata(wallet, d1))!.chain, AddressChain.delegated);
+      expect((await s.getAddressesWithMetadata(wallet, chain: AddressChain.receive))
           .map((a) => a.address)
           .toSet(), {r0, r1});
+      expect((await s.getAddressesWithMetadata(wallet, chain: AddressChain.delegated)).map((a) => a.address),
+          [d1]);
       expect((await s.getAddressRange(wallet, startIndex: 0, count: 2))
           .map((a) => a.address)
           .toList(), [r0, r1]);
+      expect((await s.getAddressRange(wallet, startIndex: 0, count: 2, chain: AddressChain.delegated))
+          .map((a) => a.address)
+          .toList(), [d1]);
       expect((await s.getAddressRange(wallet, startIndex: 1, count: 5))
           .map((a) => a.address)
           .toList(), [r1]);
@@ -315,7 +326,7 @@ void defineReadModelKeyingContract(
 
       // Upsert keeps one row per (wallet, address).
       await s.upsertAddress(wallet, _address(r0, index: 0, label: 'relabelled'));
-      expect(await s.getAddressCount(wallet), 3);
+      expect(await s.getAddressCount(wallet), 4);
       expect((await s.getAddressMetadata(wallet, r0))!.label, 'relabelled');
     });
 
@@ -328,7 +339,7 @@ void defineReadModelKeyingContract(
       AddressMetadata watch(String address, {String? label}) => AddressMetadata(
             address: address,
             scriptType: 'p2pk',
-            isChange: false,
+            chain: AddressChain.receive,
             label: label,
             purpose: 'watch',
             usageCount: 2,
@@ -338,7 +349,7 @@ void defineReadModelKeyingContract(
           );
 
       await s.upsertAddress(wallet, _address('addr-r0-$u', index: 0));
-      await s.upsertAddress(wallet, _address('addr-c0-$u', index: 0, isChange: true));
+      await s.upsertAddress(wallet, _address('addr-c0-$u', index: 0, chain: AddressChain.change));
       await s.upsertAddress(wallet, watch('addr-w1-$u', label: 'cold'));
       await s.upsertAddress(wallet, watch('addr-w2-$u'));
       await s.upsertAddress(other, watch('addr-w3-$u'));
@@ -346,8 +357,8 @@ void defineReadModelKeyingContract(
       final rows = await s.getAddressesByPurpose(wallet, 'watch');
       expect(rows.map((a) => a.address).toSet(), {'addr-w1-$u', 'addr-w2-$u'});
       final w1 = rows.firstWhere((a) => a.address == 'addr-w1-$u');
-      expect((w1.scriptType, w1.label, w1.purpose, w1.isChange, w1.usageCount, w1.balance),
-          ('p2pk', 'cold', 'watch', false, 2, BigInt.from(1500)));
+      expect((w1.scriptType, w1.label, w1.purpose, w1.chain, w1.usageCount, w1.balance),
+          ('p2pk', 'cold', 'watch', AddressChain.receive, 2, BigInt.from(1500)));
       expect(w1.createdAt.isAtSameMomentAs(registered), isTrue);
       expect(w1.derivationIndex, isNull);
 
@@ -492,7 +503,7 @@ void defineReadModelKeyingContract(
           AddressMetadata(
             address: watched,
             scriptType: 'p2pkh',
-            isChange: false,
+            chain: AddressChain.receive,
             purpose: 'watch',
             usageCount: 0,
             balance: BigInt.zero,

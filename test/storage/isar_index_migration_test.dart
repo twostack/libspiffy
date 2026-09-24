@@ -17,6 +17,7 @@ import 'package:libspiffy/src/models/address_metadata.dart';
 import 'package:libspiffy/src/models/bitcoin_transaction.dart';
 import 'package:libspiffy/src/storage/isar_wallet_storage.dart';
 import 'package:libspiffy/src/storage/libspiffy_schemas.dart';
+import 'package:libspiffy/src/models/address_chain.dart';
 import 'package:libspiffy/src/storage/read_model_storage.dart' show MerkleProof, MerkleProofStatus;
 
 import '../integration/isar_test_helper.dart';
@@ -91,7 +92,7 @@ AddressMetadata _address(String address, String purpose, int index) => AddressMe
       address: address,
       scriptType: 'p2pkh',
       derivationIndex: index,
-      isChange: false,
+      chain: AddressChain.receive,
       purpose: purpose,
       usageCount: 0,
       balance: BigInt.zero,
@@ -160,6 +161,50 @@ void main() {
     expect(
         // ignore: deprecated_member_use_from_same_package
         await isar.bitcoinTransactionEntitys.where().statusNotEqualTo(TransactionStatus.pending.name).count(), 6);
+  });
+
+  // Bead libspiffy-m8qu: an address row written before the delegated chain
+  // existed has no `chain` (Isar reads the added property as null) and
+  // records its chain in `isChange` alone. It must read, filter and range
+  // as that chain, and a delegated row must not be mistaken for one.
+  test('m8qu: an address row with no chain is read by its isChange, in every chain query', () async {
+    final isar = await Isar.open(LibSpiffySchemas.allSchemas, directory: dir.path, name: 'address_chain_legacy');
+    addTearDown(() => isar.close(deleteFromDisk: true));
+    AddressEntity legacy(String address, int index, {required bool isChange}) =>
+        (_address(address, isChange ? 'change' : 'receive', index).toEntity('w')
+          ..chain = null
+          ..isChange = isChange);
+    await isar.writeTxn(() async {
+      await isar.addressEntitys.putAll([
+        legacy('legacy-r1', 1, isChange: false),
+        legacy('legacy-c1', 1, isChange: true),
+        AddressMetadata(
+          address: 'new-d1',
+          scriptType: 'p2pkh',
+          derivationIndex: 1,
+          chain: AddressChain.delegated,
+          purpose: 'delegated',
+          usageCount: 0,
+          balance: BigInt.zero,
+          createdAt: DateTime.utc(2026, 9, 24),
+          isWatched: true,
+        ).toEntity('w'),
+      ]);
+    });
+    final storage = IsarWalletStorage(isar);
+
+    expect((await storage.getAddressMetadata('w', 'legacy-c1'))!.chain, AddressChain.change);
+    expect((await storage.getAddressMetadata('w', 'legacy-r1'))!.chain, AddressChain.receive);
+    for (final (chain, expected) in [
+      (AddressChain.receive, 'legacy-r1'),
+      (AddressChain.change, 'legacy-c1'),
+      (AddressChain.delegated, 'new-d1'),
+    ]) {
+      expect((await storage.getAddressesWithMetadata('w', chain: chain)).map((a) => a.address), [expected],
+          reason: '$chain');
+      expect((await storage.getAddressRange('w', startIndex: 1, count: 1, chain: chain)).map((a) => a.address),
+          [expected], reason: '$chain');
+    }
   });
 
   test('ctkm: a store written before the (status, blockHeight) index answers the height lookup with every row',

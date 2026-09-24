@@ -40,7 +40,8 @@ const _xpriv =
 
 void main() {
   final key = dartsv.HDPrivateKey.fromXpriv(_xpriv).deriveChildNumber(0).deriveChildNumber(0).privateKey;
-  final lock = dartsv.P2PKHLockBuilder.fromAddress(key.publicKey.toAddress(dartsv.NetworkType.TEST));
+  final address = key.publicKey.toAddress(dartsv.NetworkType.TEST);
+  final lock = dartsv.P2PKHLockBuilder.fromAddress(address);
 
   dartsv.Transaction spend(dartsv.Transaction parent, int vout, int sats) {
     final out = parent.outputs[vout];
@@ -87,7 +88,9 @@ void main() {
 
   Future<SPVValidationResult> receive(ReadModelStorage storage, String txid, BEEF beef) async {
     final tag = DateTime.now().microsecondsSinceEpoch;
-    final sink = await system.spawn('sink-$tag', () => _Sink());
+    // Wallet w owns the address the fixtures pay: a transaction that pays
+    // none of its addresses is not received for it (bead libspiffy-m8qu).
+    final sink = await system.spawn('sink-$tag', () => _Sink({address.toBase58()}));
     final spv = await system.spawn(
         'spv-$tag', () => SPVActor(walletManager: sink, invoiceCoordinator: sink, storage: storage));
     final done = Completer<SPVValidationResult>();
@@ -299,7 +302,9 @@ BitcoinTransaction _record(dartsv.Transaction tx) => BitcoinTransaction(
 
 /// Wallet manager and invoice coordinator stand-in; answers SPVActor's
 /// ownership query (every wallet exists and owns nothing).
-class _Sink extends WalletOwnershipStub {}
+class _Sink extends WalletOwnershipStub {
+  _Sink(Set<String> owned) : super({'w': owned});
+}
 
 class _Receiver extends Actor {
   final Completer<SPVValidationResult> done;

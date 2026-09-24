@@ -63,7 +63,9 @@ void main() {
     await storage.storeBlockHeader(fixtureHeader(), kFixtureHeight);
     await storage.storeBlockHeader(fixture2Header(), kFixture2Height);
     system = LocalActorSystem(ActorSystemConfig());
-    final sink = await system.spawn('sink', () => _Sink());
+    // Wallet w owns the address the fixtures pay: a transaction that pays
+    // none of its addresses is not received for it (bead libspiffy-m8qu).
+    final sink = await system.spawn('sink', () => _Sink({address.toBase58()}));
     spv = await system.spawn(
         'spv', () => SPVActor(walletManager: sink, invoiceCoordinator: sink, storage: storage));
   });
@@ -119,7 +121,9 @@ void main() {
 
 /// Wallet manager and invoice coordinator stand-in; answers SPVActor's
 /// ownership query (every wallet exists and owns nothing).
-class _Sink extends WalletOwnershipStub {}
+class _Sink extends WalletOwnershipStub {
+  _Sink(Set<String> owned) : super({'w': owned});
+}
 
 class _Receiver extends Actor {
   final Completer<SPVValidationResult> done;

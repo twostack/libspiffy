@@ -27,6 +27,7 @@ import '../spv/block_header_chain.dart';
 import '../spv/network_params.dart';
 import '../spv/cdn_header_sync_config.dart';
 import '../spv/cdn_header_sync_service.dart';
+import '../integration/peer_addresses.dart';
 import '../integration/spiffynode_bridge.dart';
 import '../projections/wallet_projection.dart';
 import '../projections/invoice_projection.dart';
@@ -1046,14 +1047,14 @@ class LibSpiffyActorSystem {
         headerSyncActor: _headerSyncActor, // Pass HeaderSyncActor for triggering sync on block announcements
       );
       
-      // 6. Get peer addresses (use provided or defaults)
-      final peers = peerAddresses ?? _getDefaultPeers(networkType);
-      
-      // 7. Connect to peers IN PARALLEL with handler to capture headers
-      // Try ALL peers concurrently, only fail if ALL are unreachable
+      // 6. Resolve the peers (named, or the network's DNS seeds) to every
+      // address each name holds; a seed's first address alone is often dead.
+      final peers = peerAddresses ?? NetworkParams.forNetwork(networkType).dnsSeeds;
+      final resolved = await PeerAddresses.resolve(peers);
+      final failures = <String, String>{...resolved.failures}; // entry or address -> error
 
-      final failures = <String, String>{}; // peer -> error
-
+      // 7. Connect to every address IN PARALLEL with handler to capture
+      // headers; only fail if none can be reached.
       final peerConfig = startHeight != null
           ? PeerConfig(
               startHeight: startHeight,
@@ -1063,53 +1064,50 @@ class LibSpiffyActorSystem {
               userAgent: userAgent ?? '/LibSpiffy:1.0/',
             );
 
-      final connectionFutures = peers.map((peerAddr) async {
-        final parts = peerAddr.split(':');
-        if (parts.length != 2) {
-          failures[peerAddr] = 'Invalid format (expected host:port)';
-          return false;
-        }
+      // The start goes on as soon as one address answers. A dead address
+      // takes its whole connect timeout to fail, and waiting for every one
+      // held each start for that long; the rest keep dialling and join as
+      // peers, or are logged, as they finish.
+      final log = Logger('LibSpiffyActorSystem');
+      final firstPeer = Completer<bool>();
+      var pending = resolved.addresses.length;
+      void settled(bool connected) {
+        pending--;
+        if (connected && !firstPeer.isCompleted) firstPeer.complete(true);
+        if (pending == 0 && !firstPeer.isCompleted) firstPeer.complete(false);
+      }
 
-        final host = parts[0];
-        final port = int.tryParse(parts[1]);
-        if (port == null) {
-          failures[peerAddr] = 'Invalid port number';
+      final peerManager = _peerManager!;
+      for (final address in resolved.addresses) {
+        peerManager
+            .addPeerByAddress(
+              address.host,
+              address.port,
+              peerConfig: peerConfig,
+              handler: peerHandler,
+            )
+            .then((_) => true, onError: (Object e) {
+          failures[address.label] = e.toString();
+          log.warning('P2P peer ${address.label}: $e');
           return false;
-        }
-
-        try {
-          await _peerManager!.addPeerByAddress(
-            host,
-            port,
-            peerConfig: peerConfig,
-            handler: peerHandler,
-          );
-          return true;
-        } catch (e) {
-          failures[peerAddr] = e.toString();
-          return false;
-        }
-      }).toList();
-
-      final results = await Future.wait(connectionFutures);
-      final successCount = results.where((r) => r).length;
-      
-      // Check if we connected to at least one peer
-      if (successCount == 0) {
-        failures.forEach((peer, error) {
+        }).then((connected) {
+          // The start failed, or the system shut down, while this dial was
+          // out. spiffynode adds a peer that connects after its manager shut
+          // down, socket open, so it is removed here.
+          if (!identical(_peerManager, peerManager)) unawaited(peerManager.removePeer(address.endpoint));
+          settled(connected);
         });
+      }
+      resolved.failures.forEach((peer, error) => log.warning('P2P peer $peer: $error'));
+
+      if (!(resolved.addresses.isNotEmpty && await firstPeer.future)) {
         throw StateError(
-          'P2P initialization failed: Could not connect to any of ${peers.length} peer(s). '
-          'LibSpiffy will fall back to API-only mode. Failures: ${failures.keys.join(", ")}'
+          'P2P initialization failed: Could not connect to any of ${resolved.addresses.length} address(es) '
+          'from ${peers.length} peer(s). LibSpiffy will fall back to API-only mode. Failures: '
+          '${failures.entries.map((f) => '${f.key}: ${f.value}').join('; ')}'
         );
       }
-      
-      // Log summary
-      if (failures.isNotEmpty) {
-        failures.forEach((peer, error) {
-        });
-      }
-      
+
       // 8. Set bridge reference in HeaderSyncActor (via mailbox)
       _headerSyncActor?.tell(SetSpiffyNodeBridgeMessage(_spiffyNodeBridge));
 
@@ -1126,13 +1124,6 @@ class LibSpiffyActorSystem {
     }
   }
   
-  /// Get default seed nodes for the specified network
-  List<String> _getDefaultPeers(String networkType) {
-    if (NetworkName.isMainnet(networkType)) return ['seed.bitcoinsv.io:8333'];
-    if (NetworkName.isRegtest(networkType)) return []; // No default seeds for regtest
-    return ['testnet-seed.bitcoinsv.io:18333'];
-  }
-
   /// Get reference to the WalletManager actor
   ActorRef get walletManager {
     if (_walletManager == null) {

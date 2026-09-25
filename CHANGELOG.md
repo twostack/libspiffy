@@ -1,3 +1,34 @@
+## 3.0.1
+
+P2P reaches the network from its DNS seeds again (found by cloak-cli, whose
+first testnet and mainnet starts were refused with `Could not connect to any
+of 1 peer(s)` although the seeds' nodes were up).
+
+- **Every address of a seed is dialled.** A seed was dialled as one
+  `host:port`, which reaches whichever address the resolver lists first; at
+  the time two of `testnet-seed.bitcoinsv.io`'s four nodes accepted a
+  connection and never answered. Peer entries, named or default, are now
+  resolved to every address they hold (`PeerAddresses`), each dialled in
+  parallel, and a start fails only if none answers. The error names each
+  address, the seed it came from and why it failed, and each failure is
+  logged; before, the reasons were collected and dropped.
+- **The start goes on at the first peer that answers.** It waited for every
+  dial, so one dead address held each start for its connect timeout (19 s
+  on testnet). The other dials finish in the background, joining as peers
+  or logged as failures; a peer that connects after the system shut down is
+  closed rather than left holding its socket.
+- **The seeds are the node's own.** `NetworkParams.dnsSeeds` holds them per
+  network, replacing a private one-seed list: mainnet `seed.bitcoinsv.io`,
+  `seed.satoshisvision.network`, `seed.bitcoinseed.directory`; testnet
+  `testnet-seed.bitcoinsv.io`, `testnet-seed.bitcoincloud.net`,
+  `testnet-seed.bitcoinseed.directory`, and GorillaPool's
+  `testnet.gorillapool.io` and `seed.gorillapool.io`; regtest none.
+- **Header sync asks the peer furthest ahead.** `getheaders` went to the
+  first connected peer. With every seed address dialled that can be a node
+  stuck far behind (one mainnet seed's node reports height 413,551), which
+  answers with nothing past its own height. Peers are now asked in order of
+  the height their version handshake reported (`inSyncOrder`).
+
 ## 3.0.0
 
 Three payment modes, made explicit (spv-understanding.md, "Payment modes"):

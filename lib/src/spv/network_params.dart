@@ -37,6 +37,16 @@ class NetworkParams {
   /// Whether the network retargets difficulty at all (regtest does not).
   final bool noRetargeting;
 
+  /// The DNS seeds P2P starts from when no peers are named, as `host:port`.
+  ///
+  /// A seed names many nodes, some of them dead; each is resolved to every
+  /// address it holds and every address is tried (see `PeerAddresses`), since
+  /// dialling the name alone reaches one address and fails whenever that one
+  /// is down. These are the seeds the Bitcoin SV node itself ships
+  /// (`src/chainparams.cpp`), and for testnet GorillaPool's two nodes, which
+  /// answered when the seeds' own did not (2026-09-25).
+  final List<String> dnsSeeds;
+
   const NetworkParams._({
     required this.name,
     required this.genesisHeaderHex,
@@ -44,6 +54,7 @@ class NetworkParams {
     required this.powLimitBits,
     required this.allowMinDifficultyBlocks,
     required this.noRetargeting,
+    required this.dnsSeeds,
   });
 
   /// Target block interval shared by every network.
@@ -67,6 +78,11 @@ class NetworkParams {
     powLimitBits: 0x1d00ffff,
     allowMinDifficultyBlocks: false,
     noRetargeting: false,
+    dnsSeeds: [
+      'seed.bitcoinsv.io:8333',
+      'seed.satoshisvision.network:8333',
+      'seed.bitcoinseed.directory:8333',
+    ],
   );
 
   /// Bitcoin SV testnet (testnet3).
@@ -84,6 +100,13 @@ class NetworkParams {
     powLimitBits: 0x1d00ffff,
     allowMinDifficultyBlocks: true,
     noRetargeting: false,
+    dnsSeeds: [
+      'testnet-seed.bitcoinsv.io:18333',
+      'testnet-seed.bitcoincloud.net:18333',
+      'testnet-seed.bitcoinseed.directory:18333',
+      'testnet.gorillapool.io:18333',
+      'seed.gorillapool.io:18333',
+    ],
   );
 
   /// Regression-test network.
@@ -101,6 +124,8 @@ class NetworkParams {
     powLimitBits: 0x207fffff,
     allowMinDifficultyBlocks: true,
     noRetargeting: true,
+    // a regtest chain is local; its peers are always named
+    dnsSeeds: [],
   );
 
   /// Resolve the parameters for any accepted network spelling

@@ -4,6 +4,7 @@ import 'package:libspiffy/src/actors/spv_messages.dart';
 import 'package:logging/logging.dart';
 import 'package:spiffynode/spiffy_node.dart';
 
+import '../integration/sync_order.dart';
 import '../spv/block_header_chain.dart';
 import 'internal_messages.dart';
 import 'wallet_messages.dart' show HeaderChainReorganizedMessage;
@@ -178,7 +179,7 @@ class HeaderSyncActor extends Actor {
       
       final currentHeight = _headerChain.bestHeight;
 
-      final peers = _peerManager.getPeers();
+      final List<dynamic> peers = inSyncOrder<dynamic>(_peerManager.getPeers() as List);
       _logger.info('Triggering header sync from height $currentHeight... (${peers.length} peers, states: ${peers.map((p) => p.state).toList()})');
       if (peers.isEmpty) {
         // Not marked in progress: nothing was sent, so nothing will arrive to
@@ -201,7 +202,7 @@ class HeaderSyncActor extends Actor {
         hashStop: Hash.zero(), // No stop hash - get all available
       );
       
-      // Send to first healthy peer
+      // Send to the first peer that takes it, the highest reported first
       var sentCount = 0;
       _logger.info('getHeaders locators: ${getHeadersMsg.blockLocatorHashes.map((h) => h.toString().substring(0, 16)).toList()}');
       for (final peer in peers) {
@@ -510,7 +511,7 @@ class HeaderSyncActor extends Actor {
         throw Exception('PeerManager not available for header fetch');
       }
       
-      final peers = _peerManager.getPeers();
+      final List<dynamic> peers = inSyncOrder<dynamic>(_peerManager.getPeers() as List);
       if (peers.isEmpty) {
         throw Exception('No peers available for header fetch');
       }
@@ -535,7 +536,7 @@ class HeaderSyncActor extends Actor {
         hashStop: Hash.zero(),
       );
       
-      // Send to first available peer
+      // Send to the first peer that takes it, the highest reported first
       var sent = false;
       for (final peer in peers) {
         try {

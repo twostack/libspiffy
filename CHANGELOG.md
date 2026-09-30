@@ -1,5 +1,16 @@
 ## Unreleased
 
+- **Reading the chain tip no longer scans the whole header store.**
+  `IsarWalletStorage.getChainTip` and `getBestHeight` walked the height
+  index from the top with Isar's async `findFirst()`, which in Isar 3
+  fetches every matching row and returns the first (only `findFirstSync`
+  passes a limit of 1). Every call therefore read and decoded the entire
+  header store: over a second on a phone holding testnet's history, paid
+  by every SPV check and by every application reading confirmations
+  (found by SpiffyVault: a one-second stall opening a wallet, timed to
+  the tip read). Both queries now carry `limit(1)`, and the read is a
+  one-row index walk. Anyone reading the header store with a descending
+  where clause should do the same.
 - **A wallet import fetches each transaction once and says so as it goes.**
   `ImportActor` fetched every transaction of every discovered address in
   turn, so a transaction touching several of the wallet's addresses (a

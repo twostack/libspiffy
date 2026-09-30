@@ -990,11 +990,17 @@ class IsarWalletStorage implements ReadModelStorage {
     // not orphaned. After a reorg the orphaned and replacement headers share
     // a height, and a lookup by height alone returned whichever was stored
     // first (the orphan).
+    //
+    // The limit(1) is essential: Isar 3's async findFirst() fetches every
+    // matching row and returns the first (only findFirstSync passes a limit
+    // of 1), so without it this read walked and decoded the whole header
+    // store — over a second per call on a phone holding testnet's history.
     final entity = await _traced('getChainTip', _isar.blockHeaderEntitys
         .where(sort: Sort.desc)
         .anyHeight()
         .filter()
-        .isOrphanedEqualTo(false))
+        .isOrphanedEqualTo(false)
+        .limit(1))
         .findFirst();
 
     return entity?.toBlockHeader();
@@ -1002,11 +1008,13 @@ class IsarWalletStorage implements ReadModelStorage {
 
   @override
   Future<int> getBestHeight() async {
+    // limit(1) for the same reason as in getChainTip.
     final entity = await _traced('getBestHeight', _isar.blockHeaderEntitys
         .where(sort: Sort.desc)
         .anyHeight()
         .filter()
-        .isOrphanedEqualTo(false))
+        .isOrphanedEqualTo(false)
+        .limit(1))
         .findFirst();
 
     return entity?.height ?? 0;

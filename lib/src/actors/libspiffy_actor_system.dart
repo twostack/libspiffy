@@ -881,6 +881,8 @@ class LibSpiffyActorSystem {
         storage: _walletStorage,
         walletManagerActor: _walletManager!,
         walletProjection: _walletProjectionRef,
+        // A resumed import reads the wallet's key from here.
+        secureStorage: _secureStorage,
         eventBroadcaster: broadcastImportNotification,
       ));
       
@@ -937,6 +939,19 @@ class LibSpiffyActorSystem {
           wif: wif,
           walletName: walletName,
           networkType: networkType,
+        );
+      } : null,
+      resumeWalletImport: _importActor != null ? ({
+        required String walletId,
+        required String walletName,
+        String networkType = 'test',
+        int addressGapLimit = 20,
+      }) {
+        resumeWalletImport(
+          walletId: walletId,
+          walletName: walletName,
+          networkType: networkType,
+          addressGapLimit: addressGapLimit,
         );
       } : null,
       importNotifications: _importNotificationBroadcaster.stream,
@@ -1445,8 +1460,36 @@ class LibSpiffyActorSystem {
       networkType: networkType,
       addressGapLimit: 1, // Not used for WIF, but required by message
     );
-    
+
     _importActor!.tell(importMessage);
+  }
+
+  /// Resume (or rescan) the import of an existing wallet.
+  ///
+  /// The wallet's key is read from secure storage; addresses the read model
+  /// holds and transactions it has recorded are skipped, the rest imported.
+  /// Send it after a restart that interrupted an import, after a completion
+  /// whose `transactionsFailed` was not zero, or to pick up history the
+  /// wallet gained elsewhere. Progress arrives on
+  /// [subscribeToImportNotifications] exactly as for a first import; a
+  /// resume for a wallet whose import is still running is ignored as a
+  /// duplicate.
+  void resumeWalletImport({
+    required String walletId,
+    required String walletName,
+    String networkType = 'test',
+    int addressGapLimit = 20,
+  }) {
+    if (_importActor == null) {
+      throw StateError('ImportActor not available. Did you provide a blockchainDataSource during initialization?');
+    }
+    _importActor!.tell(ImportWalletMessage(
+      walletId: walletId,
+      walletName: walletName,
+      networkType: networkType,
+      addressGapLimit: addressGapLimit,
+      resume: true,
+    ));
   }
 
   /// Disconnect from SpiffyNode: shut down the bridge and the PeerManager

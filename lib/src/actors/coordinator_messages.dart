@@ -74,7 +74,14 @@ class DeleteWalletCommand implements Message {
   DateTime get timestamp => DateTime.now();
 }
 
-/// Import a wallet from extended private key or WIF
+/// Import a wallet from extended private key or WIF.
+///
+/// With [resume] the wallet must already exist and no key is given: the
+/// ImportActor reads it from secure storage, skips the addresses and
+/// transactions the wallet already holds and imports the rest. The same
+/// command resumes an import after the host was killed, retries one that
+/// finished with `ImportCompleteEvent.transactionsFailed` above zero, and
+/// rescans a wallet for new history.
 class ImportWalletCommand implements Message {
   final String walletId;
   final String walletName;
@@ -83,6 +90,7 @@ class ImportWalletCommand implements Message {
   final String? wif;
   final int gapLimit;
   final String networkType;
+  final bool resume;
 
   ImportWalletCommand({
     required this.walletId,
@@ -92,6 +100,7 @@ class ImportWalletCommand implements Message {
     this.wif,
     this.gapLimit = 20,
     this.networkType = 'test',
+    this.resume = false,
   });
 
   @override
@@ -1424,7 +1433,17 @@ class ImportCompleteEvent extends CoordinatorEvent {
   final bool success;
   final String? error;
   final int addressCount;
+
+  /// Transactions recorded by this run.
   final int transactionCount;
+
+  /// Transactions the wallet already held (a resume or rescan skips them).
+  final int transactionsSkipped;
+
+  /// Transactions that could not be fetched or proven, so not recorded. A
+  /// successful import with this above zero is incomplete: send
+  /// [ImportWalletCommand] with `resume: true` to try them again.
+  final int transactionsFailed;
 
   ImportCompleteEvent({
     required this.walletId,
@@ -1432,6 +1451,8 @@ class ImportCompleteEvent extends CoordinatorEvent {
     this.error,
     this.addressCount = 0,
     this.transactionCount = 0,
+    this.transactionsSkipped = 0,
+    this.transactionsFailed = 0,
   });
 
   @override

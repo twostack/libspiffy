@@ -36,6 +36,14 @@ const kTx1Hex = '020000000165b6c06790c23623c4988ee51b3f27c76bfb6a0c9e5bab3432968
 const kTx1Id = 'a05924fcc63712d3e4b94b0c88baad234c2c8ad3d369704f53765e21a53a2101';
 const kTx1BlockHeight = 1239645;
 
+/// The parent transaction 1 spends (its single input is vout 0 of this):
+/// not the wallet's, so the importer must fetch it from the data source and
+/// journal it as an ancestor for the input to be linked.
+const kTx1ParentId = '6af69a37518c963234ab5b9e0c6afb6bc7273f1be58e98c42336c29067c0b665';
+const kTx1ParentHex = '0200000001df731cb5c339e2c6da461e115e24e441349ff26ce819d4068c7688d7c33ad63c000000006a473044022070cc8b83bf7a83afbee12e986ad5e953cea8d2518619a6dcbdf1ee06544b827302206faabcc21c782dfe8529123e290712caa29c376d71414c105561330afad00c8c41210222c3942cc14211e2eb3aecb99d6eb0658d94a6360141a3facf381fa60f1f2c72feffffff024102b341150000001976a914f581b04d7d97316342b1e6cad4425d2ff726fd5288ac00c2eb0b000000001976a914ff9c60b65d21cef5fb747e1dd2cbb8c8ceab82e688ac5bea1200';
+const kTx1ParentVout0Address = 'n3u5CyoJwQMzrQL1NoooagCxLJQrJdWEA1';
+const kTx1ParentVout0Sats = 91296563777;
+
 /// Transaction 2: 05c4d800ac77703bb00e41d8bf9d006c0e52f8405ba92c4506b80ad8f5337ae1
 /// Block 1701169, spends from tx1
 const kTx2Hex = '020000000101213aa5215e76534f7069d3d38a2c4c23adba880c4bb9e4d31237c6fc2459a0010000006b483045022100b17a54d3b7f232c4c375d6c656001cac54e674aa3bc8cab3eb176668fbf0a15c02207e35eed554edba90e030e46d90f8d9569a4d6a7139d55eafd9e875c9d3ec2c364121033a69d0acd6e9500844ca078fbc4d81b6c95d7967b3106e31618d5987633d41a9ffffffff02affeea0b000000001976a9146a418bf9e2e2b670e1aa7b7da59391e212b4ba1988ac50c30000000000001976a914c8e0448aa60d8335ef57c1d0e2bdec3aa15f257588ac00000000';
@@ -97,9 +105,11 @@ class MockTestnetDataSource implements BlockchainDataSource {
   }
 
   void _initializeTestData() {
-    // Store transaction hex
+    // Store transaction hex (and tx1's parent, which is not a wallet
+    // transaction: the importer fetches it to value tx1's input)
     _rawTransactions[kTx1Id] = kTx1Hex;
     _rawTransactions[kTx2Id] = kTx2Hex;
+    _rawTransactions[kTx1ParentId] = kTx1ParentHex;
 
     // Store merkle proofs (convert TSC format to MerkleProofData)
     final tx1Proof = _getTx1MerkleProof();
@@ -145,10 +155,20 @@ class MockTestnetDataSource implements BlockchainDataSource {
   @override
   String get networkType => 'test';
 
+  /// Raw-transaction fetches served so far (a resume must not repeat them).
+  int rawFetches = 0;
+
+  /// Make [txid] unavailable (a data-source failure for that transaction).
+  void dropRawTransaction(String txid) => _rawTransactions.remove(txid);
+
+  /// Make [txid] available again.
+  void restoreRawTransaction(String txid, String hex) => _rawTransactions[txid] = hex;
+
   @override
   Future<String> getRawTransaction(String txid) async {
     await Future.delayed(Duration(milliseconds: 10)); // Simulate network delay
-    
+    rawFetches++;
+
     if (!_rawTransactions.containsKey(txid)) {
       throw DataSourceException('Transaction not found: $txid', txid: txid);
     }
@@ -433,8 +453,30 @@ void main() {
         }
         
         // Verify the UTXO is from TX2 (not TX1, which should be spent)
-        expect(utxos.first.txid, equals(kTx2Id), 
+        expect(utxos.first.txid, equals(kTx2Id),
           reason: 'The unspent UTXO should be from TX2');
+
+        print('\nStep 7b: Verify every input is linked to the output it spends');
+        // TX1's input spends a transaction that is NOT the wallet's: the
+        // importer fetched it, and must have journaled it as an ancestor so
+        // the projection could link the input (address and amount). Before,
+        // ancestors were empty for an import and the input stayed unlinked.
+        final tx1Links = await context.storage.getTransactionAddresses(walletId, kTx1Id);
+        expect(tx1Links.inputs, hasLength(1),
+          reason: 'TX1 has one input; it spends a fetched (non-wallet) parent');
+        expect(tx1Links.inputs.single.vin, 0);
+        expect(tx1Links.inputs.single.address, kTx1ParentVout0Address);
+        expect(tx1Links.inputs.single.amount, BigInt.from(kTx1ParentVout0Sats));
+        expect(await context.storage.getAncestorTransactionsBatch([kTx1ParentId]),
+          containsPair(kTx1ParentId, kTx1ParentHex),
+          reason: 'the fetched parent is filed in the ancestor store');
+        // TX2's input spends TX1, one of the wallet's own transactions.
+        final tx2Links = await context.storage.getTransactionAddresses(walletId, kTx2Id);
+        expect(tx2Links.inputs, hasLength(1));
+        expect(tx2Links.inputs.single.address, kTestRootAddress);
+        expect(tx2Links.inputs.single.amount, BigInt.from(200000000));
+        print('✓ Inputs linked: TX1 ← ${tx1Links.inputs.single.amount} sats from '
+            '${tx1Links.inputs.single.address}, TX2 ← ${tx2Links.inputs.single.amount} sats');
 
         print('\nStep 8: Verify wallet events were broadcast');
         // Check that events were captured
@@ -682,6 +724,95 @@ void main() {
         print('  (Expected: 0 or partial, due to proof errors)');
 
         print('\n✅ Missing merkle proof error handling test PASSED\n');
+      } finally {
+        await context.dispose();
+      }
+    });
+  });
+
+  group('Resumable import', () {
+    /// The terminal notification of the import of [walletId].
+    Future<WalletImportNotification> outcome(TestContext context, String walletId) =>
+        context.libspiffy
+            .subscribeToImportNotifications(walletId)
+            .firstWhere((e) => e is WalletImportCompletedEvent || e is WalletImportFailedEvent)
+            .timeout(const Duration(seconds: 30));
+
+    test('a resume of a complete import skips every recorded transaction and fetches nothing', () async {
+      final context = await setupTestContext();
+      final walletId = 'resume-complete-${DateTime.now().millisecondsSinceEpoch}';
+      try {
+        final first = outcome(context, walletId);
+        context.libspiffy.importWalletFromXpriv(
+            walletId: walletId, xpriv: kTestXpriv, walletName: 'Resumable', networkType: 'test');
+        final done = await first as WalletImportCompletedEvent;
+        expect(done.totalTransactions, 2);
+        expect(done.transactionsSkipped, 0);
+        expect(done.transactionsFailed, 0);
+        expect(done.isComplete, isTrue);
+        final fetchesAfterFirst = context.mockDataSource.rawFetches;
+
+        final second = outcome(context, walletId);
+        context.libspiffy.resumeWalletImport(walletId: walletId, walletName: 'Resumable', networkType: 'test');
+        final resumed = await second as WalletImportCompletedEvent;
+        expect(resumed.totalTransactions, 0, reason: 'nothing new to record');
+        expect(resumed.transactionsSkipped, 2, reason: 'both transactions were already held');
+        expect(resumed.transactionsFailed, 0);
+        expect(context.mockDataSource.rawFetches, fetchesAfterFirst,
+            reason: 'a recorded transaction is not fetched again');
+
+        // The wallet is untouched: still one unspent UTXO, both transactions.
+        expect((await context.storage.getTransactionHistory(walletId)).length, 2);
+        expect((await context.storage.getUTXOs(walletId)).length, 1);
+      } finally {
+        await context.dispose();
+      }
+    });
+
+    test('a fetch failure is counted, and a resume records exactly the missing transaction', () async {
+      final context = await setupTestContext();
+      final walletId = 'resume-missing-${DateTime.now().millisecondsSinceEpoch}';
+      try {
+        // TX2 (which spends TX1) cannot be fetched during the first run.
+        context.mockDataSource.dropRawTransaction(kTx2Id);
+        final first = outcome(context, walletId);
+        context.libspiffy.importWalletFromXpriv(
+            walletId: walletId, xpriv: kTestXpriv, walletName: 'Partial', networkType: 'test');
+        final done = await first as WalletImportCompletedEvent;
+        expect(done.totalTransactions, 1, reason: 'TX1 recorded');
+        expect(done.transactionsFailed, 1, reason: 'TX2 could not be fetched');
+        expect(done.isComplete, isFalse);
+        expect((await context.storage.getUTXOs(walletId)).length, 1, reason: "TX1's output, unspent so far");
+
+        // The network is back.
+        context.mockDataSource.restoreRawTransaction(kTx2Id, kTx2Hex);
+        final second = outcome(context, walletId);
+        context.libspiffy.resumeWalletImport(walletId: walletId, walletName: 'Partial', networkType: 'test');
+        final resumed = await second as WalletImportCompletedEvent;
+        expect(resumed.totalTransactions, 1, reason: 'only TX2 recorded now');
+        expect(resumed.transactionsSkipped, 1, reason: 'TX1 was already held');
+        expect(resumed.transactionsFailed, 0);
+        expect(resumed.isComplete, isTrue);
+
+        final history = await context.storage.getTransactionHistory(walletId);
+        expect(history.map((t) => t.txid).toSet(), {kTx1Id, kTx2Id});
+        final utxos = await context.storage.getUTXOs(walletId);
+        expect(utxos.length, 1, reason: "TX2 spent TX1's output and left one of its own");
+        expect(utxos.single.txid, kTx2Id);
+      } finally {
+        await context.dispose();
+      }
+    });
+
+    test('a resume of a wallet that does not exist fails, and creates nothing', () async {
+      final context = await setupTestContext();
+      try {
+        final result = outcome(context, 'no-such-wallet');
+        context.libspiffy.resumeWalletImport(walletId: 'no-such-wallet', walletName: 'Ghost', networkType: 'test');
+        final failed = await result;
+        expect(failed, isA<WalletImportFailedEvent>());
+        expect((failed as WalletImportFailedEvent).error, contains('does not exist'));
+        expect(await context.storage.getWallet('no-such-wallet'), isNull);
       } finally {
         await context.dispose();
       }

@@ -1,3 +1,59 @@
+## Unreleased
+
+- **A wallet import fetches each transaction once and says so as it goes.**
+  `ImportActor` fetched every transaction of every discovered address in
+  turn, so a transaction touching several of the wallet's addresses (a
+  payment with its change, a consolidation) was fetched — raw hex, proof
+  and details, three requests — once per address and dropped as a
+  duplicate only afterwards; and it reported progress once per address,
+  so an address with hundreds of transactions left an application without
+  a word for minutes (found by SpiffyVault: 819 history entries, a UI that
+  sat at "Collecting transactions from address 1/…"). The per-address
+  histories are now unioned first, each txid is fetched once, and
+  `WalletImportProgressEvent` is emitted per transaction:
+  `Fetching transactions: n/N` (n fetched with proof, progress 0.40–0.55)
+  and then `Recording transactions: n/N` (n recorded through the wallet,
+  0.55–0.90), with `totalTransactions` the number of distinct transactions.
+  The `Collecting transactions from address i/N` and `Processing
+  transactions` messages are gone.
+- **An imported transaction's inputs are linked to what they spend.**
+  `ImportActor` fetched every parent transaction to compute the fee and
+  the sending addresses, then dropped them: `RecordImportedTransaction
+  Command.ancestors` was empty for an import, so the wallet projection had
+  no evidence for the inputs and left them unlinked (an application showed
+  "Unknown" for the amount of every input of a received transaction). The
+  fetched parents now travel as the import's ancestors (raw transaction,
+  no BUMP), are filed in the ancestor store, and each input gets its
+  transaction-address link with the spent output's address and amount.
+  Transactions imported before this keep their unlinked inputs until
+  re-imported.
+- **A wallet import can be resumed.** An import ran in memory only; a host
+  killed mid-way (a phone suspended and reclaimed) was left with a wallet
+  that looked partly restored and no way to continue. `ImportWalletMessage
+  (resume: true)` / `ImportWalletCommand(resume: true)` /
+  `LibSpiffyActorSystem.resumeWalletImport` import an existing wallet
+  again: the key is read from secure storage (`ImportActor(secureStorage:)`
+  — the xpriv or WIF it was imported with, or the mnemonic and passphrase
+  it was created with), discovery re-runs, addresses the read model holds
+  and transactions it has recorded are skipped, the rest is imported. The
+  same message resumes after a kill, retries after a network failure and
+  rescans a wallet for history it gained elsewhere; sent while the import
+  still runs it is ignored as a duplicate. A watch-only wallet is refused.
+  `WalletImportCompletedEvent` / `ImportCompleteEvent` gain
+  `transactionsSkipped` (already held) and `transactionsFailed` (could not
+  be fetched or proven; not zero means the import is incomplete and a
+  resume tries exactly these again).
+- **A second import command for a running wallet no longer doubles its
+  events.** The coordinator subscribed to the wallet's import notifications
+  again without cancelling the first subscription.
+- **`WhatsOnChainDataSource` abandons and retries a request that hangs.**
+  A request on a connection the network silently dropped (a suspended
+  phone, a carrier NAT) hung until the operating system gave up, a minute
+  or more, and cost the caller a transaction each time. Requests now time
+  out (`requestTimeout`, default 30 s) and a timeout, a dropped or refused
+  connection or a failed handshake is retried with the same backoff as a
+  429; a 404 or a malformed body is still an answer and is not retried.
+
 ## 3.0.1
 
 P2P reaches the network from its DNS seeds again (found by cloak-cli, whose

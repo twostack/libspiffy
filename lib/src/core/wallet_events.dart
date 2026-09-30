@@ -2239,17 +2239,34 @@ class WalletImportProgressEvent extends WalletImportNotification {
 /// The import finished.
 class WalletImportCompletedEvent extends WalletImportNotification {
   final int totalAddresses;
+
+  /// Transactions recorded by this run.
   final int totalTransactions;
+
+  /// Transactions the wallet already held and this run did not fetch again
+  /// (a resumed import or a rescan).
+  final int transactionsSkipped;
+
+  /// Transactions the data source could not deliver, or whose proof was
+  /// refused: not recorded. Not zero means the import is incomplete and a
+  /// resume (`ImportWalletMessage.resume`) will try exactly these again.
+  final int transactionsFailed;
+
   final List<Map<String, dynamic>> importedUtxos;
 
   WalletImportCompletedEvent({
     required super.walletId,
     required this.totalAddresses,
     required this.totalTransactions,
+    this.transactionsSkipped = 0,
+    this.transactionsFailed = 0,
     required List<Map<String, dynamic>> importedUtxos,
     super.timestamp,
     super.metadata,
   }) : importedUtxos = frozenMapList(importedUtxos);
+
+  /// True when every transaction found for the wallet is recorded.
+  bool get isComplete => transactionsFailed == 0;
 }
 
 /// The import failed or was cancelled (`metadata['cancelled'] == true`).

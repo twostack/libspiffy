@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:synchronized/synchronized.dart';
 import 'package:logging/logging.dart';
@@ -39,6 +41,13 @@ class WhatsOnChainDataSource implements BlockchainDataSource {
   final int _initialBackoffMs;
   final int _requestsPerSecondLimit;
 
+  /// How long one request may take before it is abandoned and retried. A
+  /// request to a connection the network silently dropped (a phone that was
+  /// suspended, a carrier NAT that forgot the mapping) otherwise hangs until
+  /// the operating system gives up, a minute or more, and cost the caller a
+  /// transaction each time.
+  final Duration _requestTimeout;
+
   // Rate limiting state
   final List<DateTime> _recentRequests = [];
   final _rateLimitLock = Lock();
@@ -49,11 +58,13 @@ class WhatsOnChainDataSource implements BlockchainDataSource {
     int maxRetries = 3,
     int initialBackoffMs = 1000,
     int requestsPerSecondLimit = 3,
+    Duration requestTimeout = const Duration(seconds: 30),
   })  : _networkType = networkType,
         _client = client ?? http.Client(),
         _maxRetries = maxRetries,
         _initialBackoffMs = initialBackoffMs,
-        _requestsPerSecondLimit = requestsPerSecondLimit {
+        _requestsPerSecondLimit = requestsPerSecondLimit,
+        _requestTimeout = requestTimeout {
     if (!_baseUrls.containsKey(networkType)) {
       throw ArgumentError('Unsupported network type: $networkType');
     }
@@ -611,7 +622,7 @@ class WhatsOnChainDataSource implements BlockchainDataSource {
       try {
         await _waitForRateLimit();
         await _recordRequest();
-        return await apiCall();
+        return await apiCall().timeout(_requestTimeout);
       } catch (e) {
         if (retryCount >= _maxRetries) {
           throw DataSourceException(
@@ -620,14 +631,23 @@ class WhatsOnChainDataSource implements BlockchainDataSource {
           );
         }
 
+        // Retried: the server asking us to slow down, and the transport
+        // failing under us (a timeout, a dropped or refused connection, a
+        // handshake that did not complete). A 404 or a malformed body is
+        // an answer, and is not retried.
         final isRateLimitError = e.toString().contains('429');
-        if (!isRateLimitError) {
+        final isTransportError = e is TimeoutException ||
+            e is SocketException ||
+            e is HandshakeException ||
+            e is http.ClientException;
+        if (!isRateLimitError && !isTransportError) {
           rethrow;
         }
 
         retryCount++;
         _logger.warning(
-          'Rate limit hit, retrying in ${backoffMs}ms (attempt $retryCount of $_maxRetries)',
+          '${isRateLimitError ? 'Rate limit hit' : 'Request failed (${e.runtimeType})'}, '
+          'retrying in ${backoffMs}ms (attempt $retryCount of $_maxRetries)',
         );
 
         await Future.delayed(Duration(milliseconds: backoffMs));

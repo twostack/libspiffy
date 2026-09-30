@@ -135,11 +135,12 @@ void main() {
           reason: 'the answer must arrive while the import is in flight');
       expect(progress.isRunning, isTrue);
       expect(progress.phase, 'import');
-      // The gate sits in the collection sub-phase: all $_kTotalTxs are known
-      // from discovery, none has been processed yet.
+      // The gate sits in the fetch sub-phase: all $_kTotalTxs are known from
+      // discovery, some are fetched (reported per transaction), none is
+      // recorded yet.
       expect(progress.totalTransactions, _kTotalTxs);
-      expect(progress.processedTransactions, 0);
-      expect(progress.message, startsWith('Collecting transactions'));
+      expect(progress.processedTransactions, lessThan(_kTotalTxs));
+      expect(progress.message, startsWith('Fetching transactions'));
       expect(progress.progress, inExclusiveRange(0.39, 0.56));
 
       dataSource.releaseAll();
@@ -233,6 +234,13 @@ class _FakeStorage implements ReadModelStorage {
 
   @override
   Future<BitcoinTransaction?> getTransaction(String txid, {String? walletId}) async => null;
+
+  /// What the wallet already holds, which a (resumed) import skips: nothing,
+  /// so every transaction of the synthetic history is fetched.
+  @override
+  Future<List<BitcoinTransaction>> getTransactionHistory(String walletId,
+          {int? limit, int? offset}) async =>
+      const [];
 
   @override
   Future<List<BitcoinUtxo>> getUTXOs(String walletId, {bool includeSpent = false}) async =>

@@ -11,14 +11,22 @@ import '../services/address_discovery_service.dart';
 import '../services/transaction_import_service.dart';
 import '../services/script_type_registry.dart';
 import '../storage/read_model_storage.dart';
+import '../storage/secure_storage.dart';
 import '../models/address_chain.dart';
 import '../models/blockchain_data_models.dart';
 import '../models/bitcoin_utxo.dart'; // For UTXOStatus
+import '../models/wallet_type.dart';
+import '../core/wallet/wallet_keys.dart' show WalletKeys;
 import '../core/wallet_commands.dart';
 import '../core/wallet_events.dart';
 import '../core/wallet_output_ownership.dart';
 import 'wallet_messages.dart';
+import '../utils/bip32.dart';
 import '../utils/network_name.dart';
+
+/// The key an import derives addresses from: given by the caller for a new
+/// wallet, read back from secure storage for a resumed one.
+typedef _ImportKey = ({String? xpriv, String? wif});
 
 /// Actor for handling long-running wallet import operations
 ///
@@ -39,12 +47,21 @@ import '../utils/network_name.dart';
 /// response, or the wallet projection applying the resulting event); there
 /// are no fixed sleeps. Imports for different wallets queue up and run one
 /// after another.
+///
+/// An import is resumable because it is idempotent, not because it
+/// checkpoints: [ImportWalletMessage.resume] runs the same steps for a
+/// wallet that already exists, reading its key from [SecureStorage] instead
+/// of the message, registering only addresses the read model lacks, and
+/// fetching only transactions it has not recorded. A host killed mid-import
+/// sends the resume on its next start; one whose network dropped sends it
+/// when [WalletImportCompletedEvent.transactionsFailed] is not zero.
 class ImportActor extends Actor {
   final Logger _logger = Logger('ImportActor');
   final BlockchainDataSource _dataSource;
   final AddressDiscoveryService _discoveryService;
   final TransactionImportService _importService;
   final ReadModelStorage _storage;
+  final SecureStorage? _secureStorage;
   final ActorRef _walletManagerActor;
   final ActorRef? _walletProjection;
   final void Function(WalletImportNotification)? _eventBroadcaster;
@@ -67,6 +84,8 @@ class ImportActor extends Actor {
   int _totalAddresses = 0;
   int _totalTransactions = 0;
   int _processedTransactions = 0;
+  int _skippedTransactions = 0;
+  int _failedTransactions = 0;
 
   /// Aggregate acknowledgements awaited when no wallet projection is wired.
   final Map<String, Completer<TransactionRecordedResponse>> _pendingRecordAcks = {};
@@ -76,6 +95,9 @@ class ImportActor extends Actor {
     required ReadModelStorage storage,
     required ActorRef walletManagerActor,
     ActorRef? walletProjection,
+    /// Where a resumed import reads the wallet's key from. Without it a
+    /// resume is refused.
+    SecureStorage? secureStorage,
     void Function(WalletImportNotification)? eventBroadcaster,
     Duration ackTimeout = const Duration(seconds: 30),
   })  : _dataSource = dataSource,
@@ -86,6 +108,7 @@ class ImportActor extends Actor {
           headerAtHeight: storage.getBlockHeaderByHeight,
         ),
         _storage = storage,
+        _secureStorage = secureStorage,
         _walletManagerActor = walletManagerActor,
         _walletProjection = walletProjection,
         _eventBroadcaster = eventBroadcaster,
@@ -170,7 +193,10 @@ class ImportActor extends Actor {
     _totalAddresses = 0;
     _totalTransactions = 0;
     _processedTransactions = 0;
-    _logger.info('▶️  Starting import for wallet: ${message.walletId}, network: ${message.networkType}');
+    _skippedTransactions = 0;
+    _failedTransactions = 0;
+    _logger.info('▶️  Starting ${message.resume ? 'resumed ' : ''}import for wallet: '
+        '${message.walletId}, network: ${message.networkType}');
     // Deliberately not awaited: the job runs outside the message handler so
     // the mailbox keeps serving progress queries, cancellations and replies.
     unawaited(_runImport(message));
@@ -182,12 +208,19 @@ class ImportActor extends Actor {
     _logger.info('   Network: ${message.networkType}, Gap Limit: ${message.addressGapLimit}');
 
     try {
-      _logger.info('📝 Phase 1/4: Creating wallet...');
-      await _createWallet(message);
+      final _ImportKey key;
+      if (message.resume) {
+        _logger.info('📝 Phase 1/4: Opening existing wallet...');
+        key = await _openExistingWallet(message);
+      } else {
+        _logger.info('📝 Phase 1/4: Creating wallet...');
+        await _createWallet(message);
+        key = (xpriv: message.xpriv, wif: message.wif);
+      }
       _throwIfCancelled();
 
       _logger.info('🔍 Phase 2/4: Discovering addresses...');
-      final discoveredAddresses = await _discoverAddresses(message);
+      final discoveredAddresses = await _discoverAddresses(message, key);
       _totalAddresses = discoveredAddresses.length;
       _logger.info('   ✅ Found $_totalAddresses used addresses');
       _throwIfCancelled();
@@ -310,21 +343,72 @@ class ImportActor extends Actor {
     _reportProgress('Wallet created', 0.1, 0, 0, 0, 0);
   }
 
+  /// A resumed import: the wallet must exist, and its key comes from secure
+  /// storage — the xpriv or WIF it was imported with, or the mnemonic (and
+  /// passphrase) it was created with, derived to its root exactly as
+  /// `DartSVCryptoService.mnemonicToHDPrivateKey` does. A watch-only (xpub)
+  /// wallet is refused: it has nothing to sign with, so an import that
+  /// records spendable UTXOs would be a lie.
+  Future<_ImportKey> _openExistingWallet(ImportWalletMessage message) async {
+    final walletId = message.walletId;
+    final secureStorage = _secureStorage;
+    if (secureStorage == null) {
+      throw StateError('Cannot resume the import of $walletId: the ImportActor has no '
+          'secure storage to read its key from');
+    }
+    final row = await _cancellable(_storage.getWallet(walletId));
+    if (row == null) {
+      throw StateError('Cannot resume the import of $walletId: the wallet does not exist');
+    }
+    final walletType = WalletTypeExtension.fromStorageString(row['walletType'] as String? ?? 'hd');
+    final network = NetworkName.toDartsv(message.networkType);
+
+    String? xpriv;
+    String? wif;
+    switch (walletType) {
+      case WalletType.wif:
+        wif = await secureStorage.getWIF(walletId);
+        if (wif == null) throw StateError('Cannot resume $walletId: wallet_wif_$walletId is not in secure storage');
+      case WalletType.xpriv:
+        xpriv = await secureStorage.getXPriv(walletId);
+        if (xpriv == null) throw StateError('Cannot resume $walletId: wallet_xpriv_$walletId is not in secure storage');
+      case WalletType.hd:
+        final mnemonic = await secureStorage.getMnemonic(walletId);
+        if (mnemonic == null) throw StateError('Cannot resume $walletId: wallet_mnemonic_$walletId is not in secure storage');
+        final passphrase = await secureStorage.getString(WalletKeys.passphraseKey(walletId)) ?? '';
+        xpriv = Bip32.masterFromSeed(dartsv.Mnemonic().toSeedHex(mnemonic, passphrase), network).xprivkey;
+      case WalletType.xpub:
+        throw StateError('Cannot resume $walletId: a watch-only wallet is not imported by scanning');
+    }
+    final key = (xpriv: xpriv, wif: wif);
+    _logger.info('   → Wallet $walletId (${walletType.toStorageString()}) opened for a resumed import');
+
+    await _notifyEvent(walletId, WalletImportStartedEvent(
+      walletId: walletId,
+      walletName: message.walletName,
+      addressGapLimit: message.addressGapLimit,
+    ));
+    _reportProgress('Wallet opened', 0.1, 0, 0, 0, 0);
+    return key;
+  }
+
   Future<List<DiscoveredAddress>> _discoverAddresses(
     ImportWalletMessage message,
+    _ImportKey key,
   ) async {
-    if (message.wif != null) {
-      return await _discoverAddressesForWif(message);
+    if (key.wif != null) {
+      return await _discoverAddressesForWif(message, key.wif!);
     } else {
-      return await _discoverAddressesForXpriv(message);
+      return await _discoverAddressesForXpriv(message, key.xpriv!);
     }
   }
 
   Future<List<DiscoveredAddress>> _discoverAddressesForXpriv(
     ImportWalletMessage message,
+    String xpriv,
   ) async {
     _logger.info('   → Deriving HD keys from xpriv');
-    final hdPrivateKey = dartsv.HDPrivateKey.fromXpriv(message.xpriv!);
+    final hdPrivateKey = dartsv.HDPrivateKey.fromXpriv(xpriv);
     final hdPublicKey = hdPrivateKey.hdPublicKey;
     _logger.info('   → Xpriv depth: ${hdPrivateKey.nodeDepth} (BSV account level is m/44\'/236\'/0\', depth 3)');
 
@@ -373,9 +457,10 @@ class ImportActor extends Actor {
   /// Discover the single address associated with a WIF private key
   Future<List<DiscoveredAddress>> _discoverAddressesForWif(
     ImportWalletMessage message,
+    String wif,
   ) async {
     _logger.info('   → Importing from WIF private key');
-    final privateKey = dartsv.SVPrivateKey.fromWIF(message.wif!);
+    final privateKey = dartsv.SVPrivateKey.fromWIF(wif);
     final network = NetworkName.toDartsv(message.networkType);
     final address = dartsv.Address.fromPublicKey(privateKey.publicKey, network).toBase58();
     _logger.info('   → WIF address: $address (network: ${message.networkType})');
@@ -475,50 +560,89 @@ class ImportActor extends Actor {
   ) async {
     _logger.info('   → Importing transactions for ${addresses.length} addresses');
 
-    // PHASE 1: Collect all transactions from all addresses
-    _logger.info('   📥 Phase 1: Collecting all transactions...');
-    final allTransactions = <ImportedTransaction>[];
+    // PHASE 1: Fetch every transaction of every discovered address, once.
+    //
+    // A transaction that touches several of the wallet's addresses (a
+    // payment with change, a consolidation) is in each address's history.
+    // The per-address histories are unioned first so each txid is fetched
+    // (raw hex, proof, details: three requests) exactly once, and the total
+    // reported to the application is the number of transactions there are,
+    // not the number of history entries. Progress is reported per
+    // transaction: an address with hundreds of transactions used to leave
+    // the application without a word for minutes.
+    final txidOrder = <String>[];
     final addressMap = <String, DiscoveredAddress>{}; // txid -> address that found it
-
-    for (int i = 0; i < addresses.length; i++) {
-      final address = addresses[i];
-      _throwIfCancelled();
-
-      _logger.fine('   → [${i+1}/${addresses.length}] Fetching transactions for: ${address.address}');
-
-      // Report progress during collection phase
-      _reportProgress(
-        'Collecting transactions from address ${i+1}/${addresses.length}',
-        0.4 + (0.15 * (i / addresses.length)), // Progress from 0.4 to 0.55
-        _totalAddresses, // addressesFound
-        _totalAddresses, // totalAddresses
-        0, // transactionsProcessed (not processing yet, just collecting)
-        _totalTransactions, // totalTransactions (known from discovery)
-      );
-
-      // Import transactions but don't process yet - just collect them
-      await _cancellable(_importService.importAddressTransactions(
-        address,
-        shouldStop: () => _isCancelled,
-        onProgress: (completed, total) {
-          _logger.fine('      Progress: $completed/$total transactions fetched');
-        },
-        onTransactionImported: (tx) async {
-          if (_isCancelled) return;
-
-          // Only add if not already in collection (same tx can appear for multiple addresses)
-          if (!allTransactions.any((t) => t.txid == tx.txid)) {
-            allTransactions.add(tx);
-            addressMap[tx.txid] = address;
-            _logger.fine('      📦 Collected: ${tx.txid} (block: ${tx.blockHeight})');
-          } else {
-            _logger.fine('      ⏭️ Skipping duplicate: ${tx.txid}');
-          }
-        },
-      ));
+    var historyEntries = 0;
+    for (final address in addresses) {
+      for (final txid in address.txids) {
+        historyEntries++;
+        if (addressMap.containsKey(txid)) continue;
+        addressMap[txid] = address;
+        txidOrder.add(txid);
+      }
     }
 
+    // What the wallet already holds is not fetched again. This is what makes
+    // an import resumable (and a rescan cheap): a transaction recorded by an
+    // earlier run is skipped, and an exactly identical re-record would be
+    // dropped by the aggregate without an event, which the wait below would
+    // take for a failure.
+    final recorded = <String>{
+      for (final tx in await _cancellable(_storage.getTransactionHistory(message.walletId))) tx.txid,
+    };
+    if (recorded.isNotEmpty) {
+      final before = txidOrder.length;
+      txidOrder.removeWhere(recorded.contains);
+      _skippedTransactions = before - txidOrder.length;
+      if (_skippedTransactions > 0) {
+        _logger.info('   ⏭️  $_skippedTransactions of $before transaction(s) already recorded; not fetched again');
+      }
+    }
+
+    _totalTransactions = txidOrder.length;
+    _logger.info('   📥 Phase 1: Fetching ${txidOrder.length} unique transactions '
+        '($historyEntries address-history entries, $_skippedTransactions already held)...');
+    _reportProgress(
+      'Fetching transactions: 0/$_totalTransactions',
+      0.4,
+      _totalAddresses,
+      _totalAddresses,
+      0,
+      _totalTransactions,
+    );
+
+    final allTransactions = <ImportedTransaction>[];
+    await _cancellable(_importService.importTransactions(
+      txids: txidOrder,
+      shouldStop: () => _isCancelled,
+      onProgress: (completed, total) {
+        if (_isCancelled || total == 0) return;
+        _reportProgress(
+          'Fetching transactions: $completed/$total',
+          0.4 + (0.15 * (completed / total)), // Progress from 0.4 to 0.55
+          _totalAddresses,
+          _totalAddresses,
+          completed, // transactionsProcessed: fetched so far
+          total,
+        );
+      },
+      onTransactionImported: (tx) {
+        if (_isCancelled) return;
+        allTransactions.add(tx);
+        _logger.fine('      📦 Collected: ${tx.txid} (block: ${tx.blockHeight})');
+      },
+    ));
+
     _throwIfCancelled();
+
+    // A transaction the data source could not deliver (or whose proof was
+    // refused) is skipped by importTransactions; it is counted so the host
+    // can tell a complete import from one to resume.
+    _failedTransactions = txidOrder.length - allTransactions.length;
+    if (_failedTransactions > 0) {
+      _logger.warning('   ⚠️  $_failedTransactions of ${txidOrder.length} transaction(s) could not be fetched; '
+          'a resumed import will try them again');
+    }
 
     if (allTransactions.isEmpty) {
       _logger.info('   ℹ️ No transactions found to import');
@@ -564,7 +688,7 @@ class ImportActor extends Actor {
 
       _processedTransactions++;
       _reportProgress(
-        'Processing transactions: $_processedTransactions/$_totalTransactions',
+        'Recording transactions: $_processedTransactions/$_totalTransactions',
         0.55 + (0.35 * (_processedTransactions / _totalTransactions)), // Adjusted from 0.4-0.9 to 0.55-0.9
         _totalAddresses, // addressesFound
         _totalAddresses, // totalAddresses
@@ -638,6 +762,15 @@ class ImportActor extends Actor {
     final sendingAddresses = <String>[];
     BigInt totalInputSats = BigInt.zero;
 
+    // The parents fetched here are journaled with the transaction as its
+    // ancestors, so the read model can link every input to the output it
+    // spends (address and amount) instead of leaving it unevidenced — an
+    // application showed "Unknown" for the inputs of every received
+    // transaction. Unproven here (no BUMP): the ancestor store only needs
+    // the raw transaction, and a proof was never fetched for a parent.
+    final ancestors = <BeefAncestor>[];
+    final ancestorTxids = <String>{};
+
     // Fetch parent transactions for each input to get values and addresses
     for (final input in parsedTx.inputs) {
       try {
@@ -646,14 +779,18 @@ class ImportActor extends Actor {
 
         // Fetch parent transaction - check database cache first
         dartsv.Transaction parentTx;
+        final String parentRawHex;
         final cachedTx = await _storage.getTransaction(prevTxid);
         if (cachedTx != null && cachedTx.rawHex.isNotEmpty) {
-          parentTx = dartsv.Transaction.fromHex(cachedTx.rawHex);
+          parentRawHex = cachedTx.rawHex;
           _logger.fine('      ✓ Cache hit for parent tx: $prevTxid');
         } else {
-          final parentRawHex = await _dataSource.getRawTransaction(prevTxid);
-          parentTx = dartsv.Transaction.fromHex(parentRawHex);
+          parentRawHex = await _dataSource.getRawTransaction(prevTxid);
           _logger.fine('      ✗ Cache miss, fetched from API: $prevTxid');
+        }
+        parentTx = dartsv.Transaction.fromHex(parentRawHex);
+        if (ancestorTxids.add(prevTxid)) {
+          ancestors.add(BeefAncestor(txid: prevTxid, rawHex: parentRawHex));
         }
 
         // Get the output being spent
@@ -859,6 +996,7 @@ class ImportActor extends Actor {
       walletReceivedSats: walletReceivedSats.toInt(),
       totalInputSats: totalInputSats.toInt(),
       sendingAddresses: sendingAddresses,
+      ancestors: ancestors,
     );
 
     _walletManagerActor.tell(
@@ -903,6 +1041,8 @@ class ImportActor extends Actor {
       walletId: message.walletId,
       totalAddresses: _totalAddresses,
       totalTransactions: _processedTransactions,
+      transactionsSkipped: _skippedTransactions,
+      transactionsFailed: _failedTransactions,
       importedUtxos: [], // UTXOs are tracked via ReceiveUTXOCommand
     ));
 
@@ -1092,7 +1232,13 @@ class ImportActor extends Actor {
 // IMPORT ACTOR MESSAGES
 // =============================================================================
 
-/// Message to start wallet import
+/// Message to start wallet import.
+///
+/// With [resume] the wallet must already exist and no key is given: it is
+/// read from secure storage (see [ImportActor]). Addresses the read model
+/// holds and transactions it has recorded are skipped, so a resume after a
+/// kill, a rescan for new history and a retry after a network failure are
+/// the same message.
 class ImportWalletMessage implements Message {
   final String walletId;
   final String? xpriv;
@@ -1100,6 +1246,7 @@ class ImportWalletMessage implements Message {
   final String walletName;
   final String networkType;
   final int addressGapLimit;
+  final bool resume;
 
   ImportWalletMessage({
     required this.walletId,
@@ -1108,9 +1255,12 @@ class ImportWalletMessage implements Message {
     required this.walletName,
     this.networkType = 'test',
     this.addressGapLimit = 20,
+    this.resume = false,
   }) : assert(
-          (xpriv != null && wif == null) || (xpriv == null && wif != null),
-          'Exactly one of xpriv or wif must be provided',
+          resume
+              ? (xpriv == null && wif == null)
+              : ((xpriv != null && wif == null) || (xpriv == null && wif != null)),
+          'Exactly one of xpriv or wif must be provided, or resume with neither',
         );
 
   @override
@@ -1124,7 +1274,7 @@ class ImportWalletMessage implements Message {
     'walletId': walletId,
     'networkType': networkType,
     'addressGapLimit': addressGapLimit,
-    'importType': xpriv != null ? 'xpriv' : 'wif',
+    'importType': resume ? 'resume' : (xpriv != null ? 'xpriv' : 'wif'),
   };
 
   @override

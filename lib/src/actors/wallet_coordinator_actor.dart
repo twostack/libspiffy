@@ -355,6 +355,12 @@ class WalletCoordinatorActor extends Actor {
     required String walletName,
     String networkType,
   })? _importWalletFromWif;
+  final dynamic Function({
+    required String walletId,
+    required String walletName,
+    String networkType,
+    int addressGapLimit,
+  })? _resumeWalletImport;
 
   // Import notifications (ImportActor progress), forwarded as CoordinatorEvents
   final Stream<domain_events.WalletImportNotification>? _importNotifications;
@@ -407,6 +413,13 @@ class WalletCoordinatorActor extends Actor {
       String networkType,
     })?
         importWalletFromWif,
+    dynamic Function({
+      required String walletId,
+      required String walletName,
+      String networkType,
+      int addressGapLimit,
+    })?
+        resumeWalletImport,
     Stream<domain_events.WalletImportNotification>? importNotifications,
   })  : _walletManager = walletManager,
         _invoiceCoordinator = invoiceCoordinator,
@@ -418,6 +431,7 @@ class WalletCoordinatorActor extends Actor {
         _storage = storage,
         _importWalletFromXpriv = importWalletFromXpriv,
         _importWalletFromWif = importWalletFromWif,
+        _resumeWalletImport = resumeWalletImport,
         _importNotifications = importNotifications {
     _readModelEventsSub = readModelEvents?.listen(_announceApplied);
     _proofAdapter = ProofP2PAdapter(
@@ -832,8 +846,13 @@ class WalletCoordinatorActor extends Actor {
     _log.info('Importing wallet ${cmd.walletId}');
 
     try {
-      // Subscribe to import notifications for progress/completion forwarding
+      // Subscribe to import notifications for progress/completion forwarding.
+      // A second command for the same wallet (a resume sent while the first
+      // import still runs, which the ImportActor ignores as a duplicate)
+      // must not leave the first subscription behind, or every event would
+      // be announced twice.
       if (_importNotifications != null) {
+        await _eventSubscriptions.remove(cmd.walletId)?.cancel();
         _eventSubscriptions[cmd.walletId] = _importNotifications
             .where((e) => e.walletId == cmd.walletId)
             .listen((event) {
@@ -855,6 +874,8 @@ class WalletCoordinatorActor extends Actor {
               success: true,
               addressCount: event.totalAddresses,
               transactionCount: event.totalTransactions,
+              transactionsSkipped: event.transactionsSkipped,
+              transactionsFailed: event.transactionsFailed,
             ));
           } else if (event is domain_events.WalletImportFailedEvent) {
             _eventSubscriptions.remove(cmd.walletId)?.cancel();
@@ -882,7 +903,14 @@ class WalletCoordinatorActor extends Actor {
         });
       }
 
-      if (cmd.xpriv != null && _importWalletFromXpriv != null) {
+      if (cmd.resume && _resumeWalletImport != null) {
+        _resumeWalletImport(
+          walletId: cmd.walletId,
+          walletName: cmd.walletName,
+          networkType: cmd.networkType,
+          addressGapLimit: cmd.gapLimit,
+        );
+      } else if (cmd.xpriv != null && _importWalletFromXpriv != null) {
         _importWalletFromXpriv(
           walletId: cmd.walletId,
           xpriv: cmd.xpriv!,

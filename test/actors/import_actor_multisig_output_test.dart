@@ -207,6 +207,11 @@ class _NoHeaderStorage implements ReadModelStorage {
   @override
   Future<BitcoinTransaction?> getTransaction(String txid, {String? walletId}) async => null;
 
+  /// Nothing recorded yet, so a (resumed) import skips nothing.
+  @override
+  Future<List<BitcoinTransaction>> getTransactionHistory(String walletId, {int? limit, int? offset}) async =>
+      const [];
+
   @override
   Future<List<BitcoinUtxo>> getUTXOs(String walletId, {bool includeSpent = false}) async => const [];
 

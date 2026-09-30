@@ -630,7 +630,10 @@ class RecordImportedTransactionCommand extends WalletCommand {
 
   /// For a transaction received unproven: the ancestors its BEEF carried
   /// back to proven transactions, with their BUMPs, parents first (bead
-  /// libspiffy-zsh). Journaled on the TransactionImportedEvent.
+  /// libspiffy-zsh). For a transaction found by wallet import: the parents
+  /// the importer fetched to value its inputs, without BUMPs. Journaled on
+  /// the TransactionImportedEvent; the read model links each input to the
+  /// parent output it spends from them.
   final List<BeefAncestor> ancestors;
 
   /// The app's opaque marker for the counterparty this payment is with

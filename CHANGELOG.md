@@ -1,5 +1,12 @@
 ## Unreleased
 
+- **A payment with no outputs is refused, not a division by zero.**
+  `PayInvoiceCommand` with neither `outputs` nor `addresses` split the
+  amount over zero addresses and failed with
+  `IntegerDivisionByZeroException`, which told an application nothing
+  (found by SpiffyVault: a payee whose wallet had refused to create an
+  invoice was relayed to the payer as an invoice with no addresses). It
+  now fails with an `ArgumentError` saying the invoice has nothing to pay.
 - **Reading the chain tip no longer scans the whole header store.**
   `IsarWalletStorage.getChainTip` and `getBestHeight` walked the height
   index from the top with Isar's async `findFirst()`, which in Isar 3

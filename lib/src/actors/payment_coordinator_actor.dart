@@ -723,6 +723,11 @@ class PaymentCoordinatorActor extends Actor {
   static List<_PaymentOutput> _paymentOutputs(PayInvoiceMessage msg) {
     final outputs = msg.outputs;
     if (outputs == null || outputs.isEmpty) {
+      if (msg.addresses.isEmpty) {
+        // Not a division by zero: an invoice with nothing to pay.
+        throw ArgumentError('A payment needs at least one output: '
+            'the invoice has no addresses and no outputs');
+      }
       final amountPerAddress = msg.amount ~/ BigInt.from(msg.addresses.length);
       return [
         for (final address in msg.addresses)

@@ -20,6 +20,7 @@ export 'src/models/invoice_state.dart';         // Write model for invoice aggre
 export 'src/models/invoice_read_model.dart';    // Read model for invoice queries (CQRS)
 export 'src/models/address_chain.dart';         // HD chain of an address (receive, change, delegated)
 export 'src/models/key_path.dart';             // Where a wallet key comes from: HD path or type-42 derivation
+export 'src/models/brc100_key_request.dart';   // A BRC-100 key operation on an anchor key, and its result
 export 'src/models/address_metadata.dart';      // Address metadata with script type support
 export 'src/models/transaction_address_link.dart'; // Transaction-address junction models
 export 'src/models/invoice_output_spec.dart';   // Multi-output invoice specifications (P2PKH, P2MS)
@@ -46,6 +47,7 @@ export 'src/storage/postgres/postgres_secure_storage.dart'; // Encrypted xpub st
 // ✅ CRYPTOGRAPHY - Encryption services for secure storage
 export 'src/crypto/encryption_service.dart';               // AES-256-GCM encryption with HKDF
 export 'src/crypto/type42.dart';                           // BRC-42 (type-42) key derivation (NodeCast pay-per-view)
+export 'src/crypto/brc100_keys.dart';                      // BRC-100 key operations: BRC-43 invoices, BRC-2, BRC-3, HMAC
 
 // ✅ PAYMENT CHANNEL READ MODEL - Channel entity for queries
 export 'src/storage/payment_channel_entity.dart'; // Channel read model entity
@@ -92,6 +94,7 @@ export 'src/spv/network_params.dart' show NetworkParams;
 // 🚀 SPV VALIDATION - BEEF/BUMP utilities for SPV transaction validation
 export 'src/utils/bump.dart';                   // BSV Universal Merkle Path (BUMP) implementation
 export 'src/utils/beef.dart';                   // Background Evaluation Extended Format (BEEF) implementation
+export 'src/utils/atomic_beef.dart';            // BEEF V2 (BRC-96) and Atomic BEEF (BRC-95) at the edge
 export 'src/utils/benford_distribution.dart';   // Benford's Law distribution for privacy
 
 // TRANSACTION BUILDING - Production-ready transaction construction

@@ -97,11 +97,11 @@ abstract final class Type42Book {
   static void applyDestinationDerived(WalletStateBuilder state, Type42DestinationDerivedEvent event) {
     final destination = event.destination;
     final used = payerKeysUsed(state.metadata);
+    final index = destination.payerKeyIndex;
     state.metadata = state.metadata
         .put(WalletMetadataKeys.type42Destinations,
             _put(state.metadata[WalletMetadataKeys.type42Destinations], destination.address, destination.toMap()))
-        .put(WalletMetadataKeys.type42PayerKeys,
-            destination.payerKeyIndex >= used ? destination.payerKeyIndex + 1 : used);
+        .put(WalletMetadataKeys.type42PayerKeys, index != null && index >= used ? index + 1 : used);
     state.version = event.version;
     state.lastModified = event.timestamp;
   }

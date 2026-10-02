@@ -78,8 +78,11 @@ const _sources = <String, String?>{
 /// `ValidateBEEFCommand`, `ImportTransactionCommand` and
 /// `TransactionExportedEvent`), 161 with an anchor per context (fdal:
 /// `.anchorContext` of both `IssueAnchorKeyCommand`s, both
-/// `SignWithAnchorKeyCommand`s and both `DeriveType42DestinationCommand`s).
-const _expectedFields = 161;
+/// `SignWithAnchorKeyCommand`s and both `DeriveType42DestinationCommand`s),
+/// 165 with BRC-100 identities (`.anchorContext` of both
+/// `Brc100KeyOperationCommand`s, `.payerAnchorContext` of both
+/// `DeriveType42DestinationCommand`s).
+const _expectedFields = 165;
 
 final _classStart = RegExp(r'^(?:abstract |sealed )?class (\w+)', multiLine: true);
 final _field = RegExp(r'^  final ((?:List|Map|Set)<.*?>\??) (\w+);(?: *//.*)?$', multiLine: true);

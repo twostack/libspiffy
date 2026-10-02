@@ -3,6 +3,7 @@ import 'package:libspiffy/libspiffy.dart';
 import '../core/wallet_commands.dart';
 import '../models/deferred_payment.dart';
 import '../models/address_chain.dart';
+import '../models/brc100_key_request.dart';
 import '../models/key_path.dart';
 import '../models/persistent_map.dart';
 
@@ -1118,6 +1119,20 @@ class AnchorKeyResponse extends ActorResponse {
     required this.success,
     this.error,
   }) : super(metadata: {'walletId': walletId, 'success': success});
+}
+
+/// Reply of the wallet aggregate to Brc100KeyOperationCommand: the
+/// operation's [result], or why there is none.
+class Brc100KeyOperationResponse extends ActorResponse {
+  final String walletId;
+  final Brc100KeyResult? result;
+  @override
+  final bool success;
+  @override
+  final String? error;
+
+  Brc100KeyOperationResponse({required this.walletId, this.result, required this.success, this.error})
+      : super(metadata: {'walletId': walletId, 'success': success});
 }
 
 /// Reply of the wallet aggregate to LookupType42AddressesCommand (bead

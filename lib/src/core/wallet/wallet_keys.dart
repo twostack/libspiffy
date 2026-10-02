@@ -12,8 +12,10 @@ import 'package:eventador/eventador.dart';
 import 'package:logging/logging.dart';
 import 'package:uuid/uuid.dart';
 
+import '../../crypto/brc100_keys.dart';
 import '../../crypto/type42.dart';
 import '../../models/address_chain.dart';
+import '../../models/brc100_key_request.dart';
 import '../../models/key_path.dart';
 import '../../models/wallet_state.dart';
 import '../../models/wallet_type.dart';
@@ -520,17 +522,28 @@ class WalletKeys {
   }
 
   /// The type-42 destination [command] asks for, derived with the wallet's
-  /// next payer key, as a [Type42DestinationDerivedEvent].
+  /// next payer key, or with its anchor key for the command's
+  /// [DeriveType42DestinationCommand.payerAnchorContext], as a
+  /// [Type42DestinationDerivedEvent].
   Future<Type42DestinationDerivedEvent> deriveType42Destination(
       WalletState currentState, DeriveType42DestinationCommand command) async {
-    final index = Type42Book.payerKeysUsed(currentState.metadata);
-    final payer = await _type42Key(command.walletId, currentState, payerKeyPath(index), 'payer key');
+    final payerContext = command.payerAnchorContext == null
+        ? null
+        : Type42Derivation.anchorContextHex(command.payerAnchorContext!);
+    final index = payerContext == null ? Type42Book.payerKeysUsed(currentState.metadata) : null;
+    final payer = payerContext == null
+        ? await _type42Key(command.walletId, currentState, payerKeyPath(index!), 'payer key')
+        : await anchorKey(command.walletId, currentState, payerContext);
     final derivation = Type42Derivation(
       anchorPublicKey: command.anchorPublicKey,
       anchorContext: command.anchorContext,
       senderPublicKey: payer.publicKey.toHex(),
       invoiceNumber: command.invoiceNumber ?? Type42Derivation.brc29InvoiceNumber(_randomBase64(), _randomBase64()),
     );
+    if (derivation.anchorPublicKey == derivation.senderPublicKey) {
+      throw StateError('Wallet ${command.walletId} would pay its own anchor ${derivation.anchorPublicKey} with that '
+          'anchor as payer key');
+    }
     final destination = Type42.deriveChildPublic(
         dartsv.SVPublicKey.fromHex(derivation.anchorPublicKey), payer, derivation.invoiceNumber);
     return Type42DestinationDerivedEvent(
@@ -539,9 +552,31 @@ class WalletKeys {
         address: _p2pkh(destination, currentState),
         derivation: derivation,
         payerKeyIndex: index,
+        payerAnchorContext: payerContext,
       ),
       version: currentState.version + 1,
     );
+  }
+
+  /// Runs [command]'s BRC-100 key operation with the anchor key for its
+  /// context as the root key. Throws [ArgumentError] for a malformed
+  /// request, and [StateError] for an operation other than `getPublicKey`
+  /// with a payment spend key (see [Brc100KeyOperationCommand]).
+  Future<Brc100KeyResult> brc100KeyOperation(WalletState currentState, Brc100KeyOperationCommand command) async {
+    final keys = Brc100Keys(await anchorKey(
+        command.walletId, currentState, Type42Derivation.anchorContextHex(command.anchorContext)));
+    final request = command.request;
+    if (request.operation != Brc100KeyOperation.getPublicKey) {
+      final protocol = Brc43Protocol(request.securityLevel, request.protocolName);
+      final ownChild =
+          keys.derivePrivateKey(protocol, request.keyID, Brc100Keys.requestCounterparty(request)).publicKey;
+      if (protocol == Brc43Protocol.brc29 ||
+          Type42Book.addressDerivations(currentState.metadata).containsKey(_p2pkh(ownChild, currentState))) {
+        throw StateError(
+            '${request.operation.name} under $protocol, key ${request.keyID}, would use a payment spend key: refused');
+      }
+    }
+    return keys.run(request);
   }
 
   static final Random _random = Random.secure();

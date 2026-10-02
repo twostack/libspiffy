@@ -549,6 +549,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
       sender.tell(AnchorKeyResponse(walletId: (command as WalletCommand).walletId, success: false, error: errorMessage));
     } else if (command is LookupType42AddressesCommand) {
       sender.tell(Type42AddressesResponse(walletId: command.walletId, success: false, error: errorMessage));
+    } else if (command is Brc100KeyOperationCommand) {
+      sender.tell(Brc100KeyOperationResponse(walletId: command.walletId, success: false, error: errorMessage));
     } else {
       // Every other command: the aggregate has no reply of its own for it,
       // so the failure is reported in the shape every caller understands
@@ -652,6 +654,13 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
           walletId: cmd.walletId,
           publicKeyHex: anchor.publicKey.toHex(),
           signatureDerHex: hex.encode(signature.toDER()),
+          success: true,
+        ));
+        return const [];
+      case final Brc100KeyOperationCommand cmd:
+        _replyTo(cmd)?.tell(Brc100KeyOperationResponse(
+          walletId: cmd.walletId,
+          result: await _keys.brc100KeyOperation(currentState, cmd),
           success: true,
         ));
         return const [];

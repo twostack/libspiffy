@@ -627,6 +627,8 @@ class WalletCoordinatorActor extends Actor {
         unawaited(_handleIssueAnchorKey(message)); // off the mailbox: a wallet round trip
       } else if (message is SignWithAnchorKeyCommand) {
         unawaited(_handleSignWithAnchorKey(message)); // off the mailbox: a wallet round trip
+      } else if (message is Brc100KeyOperationCommand) {
+        unawaited(_handleBrc100KeyOperation(message)); // off the mailbox: a wallet round trip
       } else if (message is DeriveType42DestinationCommand) {
         unawaited(_handleDeriveType42Destination(message)); // off the mailbox: a wallet round trip
       } else if (message is CreateInvoiceCommand) {
@@ -1452,6 +1454,29 @@ class WalletCoordinatorActor extends Actor {
     }
   }
 
+  Future<void> _handleBrc100KeyOperation(Brc100KeyOperationCommand cmd) async {
+    final requestId = cmd.correlationId;
+    try {
+      final response = await _walletManager.ask<wm.Brc100KeyOperationResponse>(
+        wm.WalletCommandMessage(
+          cmd.walletId,
+          domain.Brc100KeyOperationCommand(
+              walletId: cmd.walletId, anchorContext: cmd.anchorContext, request: cmd.request),
+        ),
+        const Duration(seconds: 30),
+      );
+      _emitEvent(Brc100KeyOperationEvent(
+        walletId: cmd.walletId,
+        requestId: requestId,
+        result: response.result,
+        success: response.success,
+        error: response.error,
+      ));
+    } catch (e) {
+      _emitEvent(Brc100KeyOperationEvent(walletId: cmd.walletId, requestId: requestId, success: false, error: '$e'));
+    }
+  }
+
   Future<void> _handleDeriveType42Destination(DeriveType42DestinationCommand cmd) async {
     final requestId = cmd.correlationId;
     try {
@@ -1463,6 +1488,7 @@ class WalletCoordinatorActor extends Actor {
             anchorPublicKey: cmd.anchorPublicKey,
             anchorContext: cmd.anchorContext,
             invoiceNumber: cmd.invoiceNumber,
+            payerAnchorContext: cmd.payerAnchorContext,
           ),
         ),
         const Duration(seconds: 30),

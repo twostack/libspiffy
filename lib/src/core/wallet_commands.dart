@@ -1,6 +1,7 @@
 import 'package:eventador/eventador.dart';
 import '../models/bitcoin_transaction.dart'; // For TransactionStatus
 import '../models/address_chain.dart';
+import '../models/brc100_key_request.dart';
 import '../models/bitcoin_utxo.dart'; // For UTXOStatus
 import '../models/fee_rate.dart';
 import '../models/key_path.dart';
@@ -346,15 +347,23 @@ class DeriveType42DestinationCommand extends WalletCommand {
   final List<int>? anchorContext;
   final String? invoiceNumber;
 
+  /// The context of the wallet's own anchor to pay with, as payer key B,
+  /// instead of a fresh payer key: a payment made as the identity that
+  /// anchor stands for (the sender of a BRC-29 payment to a BRC-100
+  /// wallet is its identity key).
+  final List<int>? payerAnchorContext;
+
   DeriveType42DestinationCommand({
     required super.walletId,
     required this.anchorPublicKey,
     List<int>? anchorContext,
     this.invoiceNumber,
+    List<int>? payerAnchorContext,
     super.commandId,
     super.timestamp,
     super.metadata,
-  }) : anchorContext = frozenListOrNull(anchorContext);
+  })  : anchorContext = frozenListOrNull(anchorContext),
+        payerAnchorContext = frozenListOrNull(payerAnchorContext);
 
   @override
   String get commandType => 'DeriveType42DestinationCommand';
@@ -407,6 +416,33 @@ class SignWithAnchorKeyCommand extends WalletCommand {
 
   @override
   String get commandType => 'SignWithAnchorKeyCommand';
+}
+
+/// Runs the BRC-100 key operation [request] with a BRC-42 child of the
+/// wallet's anchor key for [anchorContext]: the anchor is the root key of
+/// BRC-100's key derivation, so an anchor issued as a BRC-100 identity
+/// signs, encrypts and derives as that identity. Journals nothing.
+///
+/// The anchor's BRC-29 children are its payment spend keys, so the wallet
+/// derives their public keys only: it refuses every other operation under
+/// the BRC-29 protocol, and under any invoice number it recorded a type-42
+/// address for. A signature over `SHA-256(data)` with a spend key is a
+/// transaction signature for a caller who picks `data`.
+class Brc100KeyOperationCommand extends WalletCommand {
+  final List<int> anchorContext;
+  final Brc100KeyRequest request;
+
+  Brc100KeyOperationCommand({
+    required super.walletId,
+    required List<int> anchorContext,
+    required this.request,
+    super.commandId,
+    super.timestamp,
+    super.metadata,
+  }) : anchorContext = frozenList(anchorContext);
+
+  @override
+  String get commandType => 'Brc100KeyOperationCommand';
 }
 
 /// Asks which type-42 addresses the wallet knows the transaction

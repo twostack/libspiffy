@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:dactor/dactor.dart';
 
 import '../models/address_chain.dart';
+import '../models/brc100_key_request.dart';
 import '../models/bitcoin_transaction.dart';
 import '../models/deferred_payment.dart';
 import '../models/invoice_output_spec.dart';
@@ -530,6 +531,38 @@ class SignWithAnchorKeyCommand implements Message {
   DateTime get timestamp => DateTime.now();
 }
 
+/// Runs the BRC-100 key operation [request] with a BRC-42 child of the
+/// wallet's anchor key for [anchorContext], the anchor acting as BRC-100's
+/// root key: an anchor issued for a BRC-100 identity signs (BRC-3),
+/// encrypts (BRC-2), and derives keys as that identity. Answered with
+/// [Brc100KeyOperationEvent].
+///
+/// The private keys stay in the wallet. Operations other than
+/// `getPublicKey` are refused for the anchor's payment spend keys: the
+/// BRC-29 protocol, and any type-42 address the wallet recorded.
+class Brc100KeyOperationCommand implements Message {
+  final String walletId;
+  final List<int> anchorContext;
+  final Brc100KeyRequest request;
+  final String? requestId;
+
+  Brc100KeyOperationCommand({
+    required this.walletId,
+    required List<int> anchorContext,
+    required this.request,
+    this.requestId,
+  }) : anchorContext = frozenList(anchorContext);
+
+  @override
+  String get correlationId => requestId ?? 'brc100-key-$walletId';
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
 /// Derives a type-42 destination for paying the holder of anchor key
 /// [anchorPublicKey] while it is offline (beads libspiffy-zxkd,
 /// libspiffy-fdal; spv-understanding.md, "Payment modes"). Answered with
@@ -551,6 +584,12 @@ class DeriveType42DestinationCommand implements Message {
   final String anchorPublicKey;
   final List<int>? anchorContext;
   final String? invoiceNumber;
+
+  /// The context of the wallet's own anchor to pay with, as payer key B,
+  /// instead of a fresh payer key: a payment made as the identity that
+  /// anchor stands for (the sender of a BRC-29 payment to a BRC-100
+  /// wallet is its identity key).
+  final List<int>? payerAnchorContext;
   final String? requestId;
 
   DeriveType42DestinationCommand({
@@ -558,8 +597,10 @@ class DeriveType42DestinationCommand implements Message {
     required this.anchorPublicKey,
     List<int>? anchorContext,
     this.invoiceNumber,
+    List<int>? payerAnchorContext,
     this.requestId,
-  }) : anchorContext = frozenListOrNull(anchorContext);
+  })  : anchorContext = frozenListOrNull(anchorContext),
+        payerAnchorContext = frozenListOrNull(payerAnchorContext);
 
   @override
   String get correlationId => requestId ?? 'type42-destination-$walletId';
@@ -2210,6 +2251,28 @@ class AnchorSignedEvent extends CoordinatorEvent {
     required this.requestId,
     this.publicKey,
     this.signatureDer,
+    required this.success,
+    this.error,
+  });
+
+  @override
+  DateTime get eventTimestamp => DateTime.now();
+}
+
+/// Answer to [Brc100KeyOperationCommand]: the operation's [result], or why
+/// there is none.
+class Brc100KeyOperationEvent extends CoordinatorEvent {
+  @override
+  final String walletId;
+  final String requestId;
+  final Brc100KeyResult? result;
+  final bool success;
+  final String? error;
+
+  Brc100KeyOperationEvent({
+    required this.walletId,
+    required this.requestId,
+    this.result,
     required this.success,
     this.error,
   });

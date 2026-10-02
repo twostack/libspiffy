@@ -150,17 +150,34 @@ class Type42Derivation {
 
 /// A type-42 destination the wallet derived as a payer (bead
 /// libspiffy-zxkd): [address] pays the holder of the anchor key
-/// [Type42Derivation.anchorPublicKey], and [derivation] (with the wallet's
-/// payer key B at `m/3'/1'/{payerKeyIndex}'`) is what the recipient derives
-/// it from, so it is the hand-off that goes with the payment.
+/// [Type42Derivation.anchorPublicKey], and [derivation] is what the
+/// recipient derives it from, so it is the hand-off that goes with the
+/// payment.
+///
+/// The payer key B is the wallet's fresh key at `m/3'/1'/{payerKeyIndex}'`,
+/// or, for a payment made as an identity (a BRC-29 payment to a BRC-100
+/// wallet, whose recipient takes B to be the sender's identity key), the
+/// wallet's anchor key for [payerAnchorContext] (hex). Exactly one of the
+/// two is set.
 class Type42Destination {
   final String address;
   final Type42Derivation derivation;
-  final int payerKeyIndex;
+  final int? payerKeyIndex;
+  final String? payerAnchorContext;
 
-  const Type42Destination({required this.address, required this.derivation, required this.payerKeyIndex});
+  Type42Destination({required this.address, required this.derivation, this.payerKeyIndex, this.payerAnchorContext}) {
+    if ((payerKeyIndex == null) == (payerAnchorContext == null)) {
+      throw ArgumentError('A type-42 destination names a payer key index or a payer anchor context, not '
+          '${payerKeyIndex == null ? 'neither' : 'both'}');
+    }
+  }
 
-  Map<String, Object> toMap() => {'address': address, ...derivation.toMap(), 'payerKeyIndex': payerKeyIndex};
+  Map<String, Object> toMap() => {
+        'address': address,
+        ...derivation.toMap(),
+        if (payerKeyIndex != null) 'payerKeyIndex': payerKeyIndex!,
+        if (payerAnchorContext != null) 'payerAnchorContext': payerAnchorContext!,
+      };
 
   /// Reads [toMap]'s output; null for anything else.
   static Type42Destination? fromMap(Object? map) {
@@ -168,8 +185,17 @@ class Type42Destination {
     final derivation = Type42Derivation.fromMap(map);
     final address = map['address'];
     final index = map['payerKeyIndex'];
-    if (derivation == null || address is! String || index is! int) return null;
-    return Type42Destination(address: address, derivation: derivation, payerKeyIndex: index);
+    final anchorContext = map['payerAnchorContext'];
+    if (derivation == null || address is! String) return null;
+    if ((index is int) == (anchorContext is String) || (index != null && index is! int) ||
+        (anchorContext != null && anchorContext is! String)) {
+      return null;
+    }
+    return Type42Destination(
+        address: address,
+        derivation: derivation,
+        payerKeyIndex: index as int?,
+        payerAnchorContext: anchorContext as String?);
   }
 
   @override
@@ -177,10 +203,11 @@ class Type42Destination {
       other is Type42Destination &&
       other.address == address &&
       other.derivation == derivation &&
-      other.payerKeyIndex == payerKeyIndex;
+      other.payerKeyIndex == payerKeyIndex &&
+      other.payerAnchorContext == payerAnchorContext;
 
   @override
-  int get hashCode => Object.hash(address, derivation, payerKeyIndex);
+  int get hashCode => Object.hash(address, derivation, payerKeyIndex, payerAnchorContext);
 
   @override
   String toString() => '$address <- $derivation';

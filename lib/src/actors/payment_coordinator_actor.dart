@@ -72,6 +72,12 @@ class PaymentCoordinatorActor extends Actor {
   /// How long to wait for ARCActor's policy rate.
   final Duration _feeRateReplyTimeout;
 
+  /// The network this wallet runs on. An address of the other network is
+  /// refused rather than paid: the same keys exist on both networks, so a
+  /// payee on the other network would not see the payment, and the payer's
+  /// coins would stay held for it. Null (tests) skips the check.
+  final dartsv.NetworkType? _network;
+
   /// [secureStorage] is no longer used: every signature is produced by the
   /// wallet aggregate, which alone reads key material (audit A-H8).
   PaymentCoordinatorActor({
@@ -84,7 +90,9 @@ class PaymentCoordinatorActor extends Actor {
     Duration reservationReplyTimeout = const Duration(seconds: 10),
     Duration signingReplyTimeout = const Duration(seconds: 20),
     Duration feeRateReplyTimeout = const Duration(seconds: 30),
+    dartsv.NetworkType? networkType,
   })  : _storage = storage,
+        _network = networkType,
         _walletManager = walletManager,
         _walletProjection = walletProjection,
         _arcActor = arcActor,
@@ -180,7 +188,7 @@ class PaymentCoordinatorActor extends Actor {
       amount = effectiveAmount;
     } else {
       try {
-        paymentOutputs = _paymentOutputs(msg);
+        paymentOutputs = _paymentOutputs(msg, _network);
       } on _PluginCallFailure {
         rethrow;
       } catch (e) {
@@ -720,7 +728,7 @@ class PaymentCoordinatorActor extends Actor {
   /// script: its structured outputs, or the legacy amount split evenly
   /// across its addresses. Built before any UTXO is selected, because their
   /// sizes are part of the fee.
-  static List<_PaymentOutput> _paymentOutputs(PayInvoiceMessage msg) {
+  static List<_PaymentOutput> _paymentOutputs(PayInvoiceMessage msg, dartsv.NetworkType? network) {
     final outputs = msg.outputs;
     if (outputs == null || outputs.isEmpty) {
       if (msg.addresses.isEmpty) {
@@ -732,14 +740,14 @@ class PaymentCoordinatorActor extends Actor {
       return [
         for (final address in msg.addresses)
           _PaymentOutput(
-              _p2pkhTo(address), amountPerAddress, address),
+              _p2pkhTo(address, network), amountPerAddress, address),
       ];
     }
     return [
       for (final output in outputs)
         ...switch (output) {
           P2PKHOutputSpec p2pkh => [
-              _PaymentOutput(_p2pkhTo(p2pkh.address), p2pkh.amount, p2pkh.address),
+              _PaymentOutput(_p2pkhTo(p2pkh.address, network), p2pkh.amount, p2pkh.address),
             ],
           P2MSOutputSpec p2ms => [
               _PaymentOutput(
@@ -767,13 +775,21 @@ class PaymentCoordinatorActor extends Actor {
   }
 
   /// The P2PKH locking script paying [address]; throws, naming it, when it
-  /// is not an address.
-  static dartsv.P2PKHLockBuilder _p2pkhTo(String address) {
+  /// is not an address, or is an address of a network other than [network].
+  static dartsv.P2PKHLockBuilder _p2pkhTo(String address, dartsv.NetworkType? network) {
+    final dartsv.Address parsed;
     try {
-      return dartsv.P2PKHLockBuilder.fromAddress(dartsv.Address.fromBase58(address));
+      parsed = dartsv.Address.fromBase58(address);
     } catch (_) {
       throw ArgumentError.value(address, 'address', 'not a valid address to pay');
     }
+    if (network != null && !parsed.networkTypes.contains(network)) {
+      final mainnet = network == dartsv.NetworkType.MAIN;
+      throw ArgumentError.value(address, 'address',
+          'is a ${mainnet ? 'testnet' : 'mainnet'} address; this wallet is on '
+          '${mainnet ? 'mainnet' : 'testnet'}');
+    }
+    return dartsv.P2PKHLockBuilder.fromAddress(parsed);
   }
 
   /// [utxos] as a TransactionBuilderPlugin spends them (bead

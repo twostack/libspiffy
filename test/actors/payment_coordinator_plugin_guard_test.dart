@@ -184,6 +184,62 @@ void main() {
     });
   });
 
+  // spiffyvault-5he.12: a payer must not pay an address of the other network.
+  // The same keys exist on both networks, so the payee would never see it,
+  // and the payer's coins would stay held for a payment that cannot settle.
+  group('an address of the other network is refused, not paid', () {
+    late ActorRef testnetCoordinator;
+    final mainnetAddress = _walletKey.publicKey.toAddress(dartsv.NetworkType.MAIN).toString();
+
+    setUp(() async {
+      final walletManager = await system.spawn('wm2', () => _SigningWalletManager());
+      final projection = await system.spawn('rm2', () => _ReadModel());
+      final arc = await system.spawn('arc2', () => PolicyRateArc());
+      testnetCoordinator = await system.spawn(
+        'testnet-payment-coordinator',
+        () => PaymentCoordinatorActor(
+          walletManager: walletManager,
+          walletProjection: projection,
+          arcActor: arc,
+          storage: _PluginStorage(),
+          networkType: dartsv.NetworkType.TEST,
+          reservationReplyTimeout: const Duration(seconds: 2),
+          signingReplyTimeout: const Duration(seconds: 5),
+        ),
+      );
+    });
+
+    Future<BEEFPaymentResponse> pay(PayInvoiceMessage msg) async {
+      final collector = _Collector();
+      final replyTo = await system.spawn('reply-net-${DateTime.now().microsecondsSinceEpoch}', () => collector);
+      testnetCoordinator.tell(msg, sender: replyTo);
+      return await collector.firstOfType<BEEFPaymentResponse>().timeout(const Duration(seconds: 20));
+    }
+
+    test('in an invoice\'s address list', () async {
+      final response = await pay(PayInvoiceMessage(
+        walletId: _walletId,
+        invoiceId: 'net-legacy',
+        addresses: [mainnetAddress],
+        amount: BigInt.from(20000),
+      ));
+      expect(response.success, isFalse);
+      expect(response.error, contains('is a mainnet address; this wallet is on testnet'));
+    });
+
+    test('in a structured P2PKH output', () async {
+      final response = await pay(PayInvoiceMessage(
+        walletId: _walletId,
+        invoiceId: 'net-structured',
+        addresses: const [],
+        amount: BigInt.from(20000),
+        outputs: [P2PKHOutputSpec(address: mainnetAddress, amount: BigInt.from(20000))],
+      ));
+      expect(response.success, isFalse);
+      expect(response.error, contains('is a mainnet address; this wallet is on testnet'));
+    });
+  });
+
   // A plugin that works is covered by the cases above: in the
   // `validateTransactionStructure` test, `supportedActions`,
   // `requiredFundingUtxoCount` and `buildTransaction` all run through the

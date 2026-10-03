@@ -830,6 +830,8 @@ class LibSpiffyActorSystem {
       walletProjection: _walletProjectionRef!,
       arcActor: _arcActor!,
       storage: _walletStorage,
+      // Addresses of the other network are refused, not paid.
+      networkType: NetworkName.toDartsv(_networkType),
     ));
     
     // Wire up ARC actor reference in SPVActor for pending UTXO checking

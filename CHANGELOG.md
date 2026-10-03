@@ -16,6 +16,13 @@
   the actor system's network. `WhatsOnChainDataSource` accepts both spellings
   (`main`/`mainnet`, `test`/`testnet`). `NetworkName` is exported so hosts can
   compare network names through one helper.
+- **A payment to an address of the other network is refused.**
+  `PaymentCoordinatorActor` takes the network (`LibSpiffyActorSystem` passes
+  its own) and refuses a P2PKH output, from an invoice's address list or a
+  structured output, whose address belongs to the other network ("is a
+  mainnet address; this wallet is on testnet"). Both networks share keys, so
+  such a payment reached a key the payee owns but a wallet that never sees it,
+  and the payer's coins stayed held for it.
 - **Mainnet ARC defaults to GorillaPool** (`ArcServiceConfig.gorillaPoolMainnet`,
   no API key). `gorillaPoolTestnet` is available too; testnet still defaults
   to TAAL.

@@ -1204,6 +1204,17 @@ class LibSpiffyActorSystem {
   }
 
   /// Get reference to the block header chain
+  /// The network's chain tip as best we know it: the higher of what
+  /// connected peers reported and our own header chain. 0 while no peer is
+  /// connected, so a caller can tell "unknown" from "caught up".
+  int get networkHeight {
+    if (!isInitialized) return 0;
+    final reported = _spiffyNodeBridge?.currentHeight ?? 0;
+    if (reported == 0) return 0;
+    final local = _headerChain.bestHeight;
+    return reported > local ? reported : local;
+  }
+
   BlockHeaderChain get headerChain {
     if (!isInitialized) {
       throw StateError('LibSpiffy actor system not initialized');

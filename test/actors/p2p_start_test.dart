@@ -108,6 +108,22 @@ void main() {
     }
   });
 
+  test('the network height is what peers reported, not an inflated count', () async {
+    // spiffynode's tip tracker adds every headers message to the peer's
+    // tip, so after catching up it sat ahead of the real tip and the app
+    // never showed the chain as synced.
+    await node.close();
+    node = await _Node.start(startHeight: 12);
+    final libspiffy = await start(['127.0.0.1:${node.port}']);
+    try {
+      await _until(() => libspiffy.spiffyNodeBridge!.getConnectedPeerIds().isNotEmpty);
+      expect(libspiffy.headerChain.bestHeight, 0);
+      expect(libspiffy.networkHeight, 12);
+    } finally {
+      await libspiffy.shutdown();
+    }
+  });
+
   test('a start that reaches no one names every address, and why', () async {
     final libspiffy = LibSpiffyActorSystem();
     try {
@@ -142,10 +158,11 @@ class _Node {
   static const _magic = [0xda, 0xb5, 0xbf, 0xfa];
 
   final ServerSocket _server;
+  final int startHeight;
   final List<Socket> _sockets = [];
   int handshakes = 0;
 
-  _Node._(this._server) {
+  _Node._(this._server, this.startHeight) {
     _server.listen((socket) {
       _sockets.add(socket);
       var answered = false;
@@ -156,14 +173,15 @@ class _Node {
         // then a ping, as a real node follows its verack with more: spiffynode
         // 1.1.0 completes a message with no payload only when bytes follow it
         socket
-          ..add(_message('version', _version()))
+          ..add(_message('version', _version(startHeight)))
           ..add(_message('verack', Uint8List(0)))
           ..add(_message('ping', Uint8List(8)));
       }, onError: (_) {});
     });
   }
 
-  static Future<_Node> start() async => _Node._(await ServerSocket.bind(InternetAddress.loopbackIPv4, 0));
+  static Future<_Node> start({int startHeight = 0}) async =>
+      _Node._(await ServerSocket.bind(InternetAddress.loopbackIPv4, 0), startHeight);
 
   int get port => _server.port;
 
@@ -193,7 +211,7 @@ class _Node {
     return b.toBytes();
   }
 
-  static Uint8List _version() {
+  static Uint8List _version(int startHeight) {
     Uint8List le(int value, int bytes) {
       final d = ByteData(8)..setUint64(0, value, Endian.little);
       return d.buffer.asUint8List(0, bytes);
@@ -209,7 +227,7 @@ class _Node {
       ...address, // sender
       ...le(1, 8), // nonce
       agent.length, ...agent.codeUnits,
-      ...le(0, 4), // start height
+      ...le(startHeight, 4), // start height
       0, // relay
     ]);
   }

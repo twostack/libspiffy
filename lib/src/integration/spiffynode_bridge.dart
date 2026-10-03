@@ -166,8 +166,25 @@ class SpiffyNodeBridge {
     }
   }
 
-  /// Get current chain tip height from SpiffyNode
-  int get currentHeight => _peerManager.chainTipTracker.networkHeight;
+  /// The highest chain tip a connected peer reported when it connected (its
+  /// version message), or 0 with no peer.
+  ///
+  /// Not spiffynode's `ChainTipTracker.networkHeight`: that adds the count
+  /// of every headers message to the sending peer's tip, so the headers we
+  /// request to catch up count again on top of a tip that already included
+  /// them, and it adds one per block announcement. It ends up ahead of the
+  /// real tip and the chain never looks caught up. Blocks mined after a
+  /// peer connected are announced and fetched, so our own chain passes this
+  /// height; [LibSpiffyActorSystem.networkHeight] takes the higher of the two.
+  int get currentHeight {
+    var best = 0;
+    for (final peer in _peerManager.getPeers()) {
+      if (peer is! Peer) continue;
+      final height = peer.remoteVersion?.startHeight ?? 0;
+      if (height > best) best = height;
+    }
+    return best;
+  }
   
   /// Get the ActorRef to HeaderSyncActor for querying stats
   ActorRef get headerSyncActor => _headerSyncActor;

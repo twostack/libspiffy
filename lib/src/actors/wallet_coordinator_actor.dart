@@ -1287,7 +1287,7 @@ class WalletCoordinatorActor extends Actor {
       {List<int> delegatedIndices = const [], List<Type42Derivation> type42Derivations = const []}) async {
     try {
       if (delegatedIndices.isNotEmpty) {
-        final response = await _walletManager.ask<wm.DelegatedAddressesRecordedResponse>(
+        final response = await _askWallet<wm.DelegatedAddressesRecordedResponse>(
           wm.WalletCommandMessage(
               walletId, domain.RecordDelegatedAddressesCommand(walletId: walletId, derivationIndices: delegatedIndices)),
           const Duration(seconds: 30),
@@ -1298,7 +1298,7 @@ class WalletCoordinatorActor extends Actor {
         if (error != null) return 'The delegated addresses were recorded, but the read model did not apply them: $error';
       }
       if (type42Derivations.isNotEmpty) {
-        final response = await _walletManager.ask<wm.Type42AddressesRecordedResponse>(
+        final response = await _askWallet<wm.Type42AddressesRecordedResponse>(
           wm.WalletCommandMessage(
               walletId, domain.RecordType42AddressesCommand(walletId: walletId, derivations: type42Derivations)),
           const Duration(seconds: 30),
@@ -1382,7 +1382,7 @@ class WalletCoordinatorActor extends Actor {
         return;
       }
       final beef = AncestorChainService.buildBeef(chain.ancestorTransactions, const [], chain.merkleProofs).serialize();
-      final type42 = await _walletManager.ask<wm.Type42AddressesResponse>(
+      final type42 = await _askWallet<wm.Type42AddressesResponse>(
         wm.WalletCommandMessage(
           query.walletId,
           domain.LookupType42AddressesCommand(walletId: query.walletId, rawTransaction: tx.rawHex),
@@ -1413,7 +1413,7 @@ class WalletCoordinatorActor extends Actor {
   Future<void> _handleIssueAnchorKey(IssueAnchorKeyCommand cmd) async {
     final requestId = cmd.correlationId;
     try {
-      final response = await _walletManager.ask<wm.AnchorKeyResponse>(
+      final response = await _askWallet<wm.AnchorKeyResponse>(
         wm.WalletCommandMessage(
             cmd.walletId, domain.IssueAnchorKeyCommand(walletId: cmd.walletId, anchorContext: cmd.anchorContext)),
         const Duration(seconds: 30),
@@ -1433,7 +1433,7 @@ class WalletCoordinatorActor extends Actor {
   Future<void> _handleSignWithAnchorKey(SignWithAnchorKeyCommand cmd) async {
     final requestId = cmd.correlationId;
     try {
-      final response = await _walletManager.ask<wm.AnchorKeyResponse>(
+      final response = await _askWallet<wm.AnchorKeyResponse>(
         wm.WalletCommandMessage(
           cmd.walletId,
           domain.SignWithAnchorKeyCommand(
@@ -1457,7 +1457,7 @@ class WalletCoordinatorActor extends Actor {
   Future<void> _handleBrc100KeyOperation(Brc100KeyOperationCommand cmd) async {
     final requestId = cmd.correlationId;
     try {
-      final response = await _walletManager.ask<wm.Brc100KeyOperationResponse>(
+      final response = await _askWallet<wm.Brc100KeyOperationResponse>(
         wm.WalletCommandMessage(
           cmd.walletId,
           domain.Brc100KeyOperationCommand(
@@ -1480,7 +1480,7 @@ class WalletCoordinatorActor extends Actor {
   Future<void> _handleDeriveType42Destination(DeriveType42DestinationCommand cmd) async {
     final requestId = cmd.correlationId;
     try {
-      final response = await _walletManager.ask<wm.Type42DestinationDerivedResponse>(
+      final response = await _askWallet<wm.Type42DestinationDerivedResponse>(
         wm.WalletCommandMessage(
           cmd.walletId,
           domain.DeriveType42DestinationCommand(
@@ -1561,7 +1561,7 @@ class WalletCoordinatorActor extends Actor {
             e is domain_events.WatchAddressAddedEvent && e.walletId == cmd.walletId && e.address == cmd.address,
         alreadyApplied: () async => (await _storage.getAddressMetadata(cmd.walletId, cmd.address))?.purpose == 'watch',
       );
-      final response = await _walletManager.ask<wm.WatchAddressAddedResponse>(
+      final response = await _askWallet<wm.WatchAddressAddedResponse>(
         wm.WalletCommandMessage(
           cmd.walletId,
           domain.AddWatchAddressCommand(
@@ -1975,7 +1975,7 @@ class WalletCoordinatorActor extends Actor {
         alreadyApplied: () async =>
             (await _storage.getDeferredPayment(cmd.walletId, cmd.txid))?.state == DeferredPaymentState.cancelled,
       );
-      final response = await _walletManager.ask<wm.DeferredSpendCancelledResponse>(
+      final response = await _askWallet<wm.DeferredSpendCancelledResponse>(
         wm.WalletCommandMessage(
           cmd.walletId,
           domain.CancelDeferredSpendCommand(
@@ -2169,7 +2169,7 @@ class WalletCoordinatorActor extends Actor {
       // Back to an address of ours.
       final wm.AddressGeneratedResponse address;
       try {
-        address = await _walletManager.ask<wm.AddressGeneratedResponse>(
+        address = await _askWallet<wm.AddressGeneratedResponse>(
           wm.WalletCommandMessage(
             cmd.walletId,
             domain.GenerateAddressCommand(
@@ -2230,7 +2230,7 @@ class WalletCoordinatorActor extends Actor {
       );
       final wm.DeferredSpendReclaimedResponse response;
       try {
-        response = await _walletManager.ask<wm.DeferredSpendReclaimedResponse>(
+        response = await _askWallet<wm.DeferredSpendReclaimedResponse>(
           wm.WalletCommandMessage(
             cmd.walletId,
             domain.ReclaimDeferredSpendCommand(
@@ -2313,6 +2313,18 @@ class WalletCoordinatorActor extends Actor {
     } catch (e) {
       _emitEvent(failure('The reclaim of deferred payment ${cmd.txid} failed: $e'));
     }
+  }
+
+  /// Asks the wallet manager for a [T].
+  ///
+  /// The manager answers a request it can't serve (an unknown wallet, say)
+  /// with a [wm.FailureResponse] instead of [T]; that is thrown as a
+  /// [StateError] carrying its reason, not reported as a type mismatch.
+  Future<T> _askWallet<T>(Message message, Duration timeout) async {
+    final reply = await _walletManager.ask<Object>(message, timeout);
+    if (reply is T) return reply as T;
+    if (reply is wm.FailureResponse) throw StateError(reply.error);
+    throw StateError('Expected $T from the wallet manager, received ${reply.runtimeType}');
   }
 
   // ==========================================================================

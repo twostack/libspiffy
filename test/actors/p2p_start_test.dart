@@ -91,6 +91,23 @@ void main() {
     }
   });
 
+  test('peers that drop away are dialled again', () async {
+    // A laptop that sleeps comes back with every peer socket dead, and
+    // spiffynode only removes dead peers; nothing dialled new ones.
+    final interval = LibSpiffyActorSystem.peerUpkeepInterval;
+    LibSpiffyActorSystem.peerUpkeepInterval = const Duration(milliseconds: 200);
+    final libspiffy = await start(['127.0.0.1:${node.port}']);
+    try {
+      expect(node.handshakes, 1);
+      node.dropAll();
+      await _until(() => libspiffy.spiffyNodeBridge!.getConnectedPeerIds().isEmpty);
+      await _until(() => node.handshakes == 2 && libspiffy.spiffyNodeBridge!.getConnectedPeerIds().isNotEmpty);
+    } finally {
+      LibSpiffyActorSystem.peerUpkeepInterval = interval;
+      await libspiffy.shutdown();
+    }
+  });
+
   test('a start that reaches no one names every address, and why', () async {
     final libspiffy = LibSpiffyActorSystem();
     try {
@@ -150,6 +167,14 @@ class _Node {
 
   int get port => _server.port;
 
+  /// Closes every connection, as a network that went away would.
+  void dropAll() {
+    for (final s in _sockets) {
+      s.destroy();
+    }
+    _sockets.clear();
+  }
+
   Future<void> close() async {
     for (final s in _sockets) {
       s.destroy();
@@ -187,5 +212,13 @@ class _Node {
       ...le(0, 4), // start height
       0, // relay
     ]);
+  }
+}
+
+Future<void> _until(bool Function() condition, {Duration timeout = const Duration(seconds: 15)}) async {
+  final deadline = DateTime.now().add(timeout);
+  while (!condition()) {
+    if (DateTime.now().isAfter(deadline)) fail('Timed out waiting for the condition');
+    await Future<void>.delayed(const Duration(milliseconds: 50));
   }
 }

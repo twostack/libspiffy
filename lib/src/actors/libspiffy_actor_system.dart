@@ -1104,14 +1104,8 @@ class LibSpiffyActorSystem {
         headerSyncActor: _headerSyncActor, // Pass HeaderSyncActor for triggering sync on block announcements
       );
       
-      // 6. Resolve the peers (named, or the network's DNS seeds) to every
-      // address each name holds; a seed's first address alone is often dead.
+      // 6. The peers: named ones, or the network's DNS seeds.
       final peers = peerAddresses ?? NetworkParams.forNetwork(networkType).dnsSeeds;
-      final resolved = await PeerAddresses.resolve(peers);
-      final failures = <String, String>{...resolved.failures}; // entry or address -> error
-
-      // 7. Connect to every address IN PARALLEL with handler to capture
-      // headers; only fail if none can be reached.
       final peerConfig = startHeight != null
           ? PeerConfig(
               startHeight: startHeight,
@@ -1121,49 +1115,21 @@ class LibSpiffyActorSystem {
               userAgent: userAgent ?? '/LibSpiffy:1.0/',
             );
 
-      // The start goes on as soon as one address answers. A dead address
-      // takes its whole connect timeout to fail, and waiting for every one
-      // held each start for that long; the rest keep dialling and join as
-      // peers, or are logged, as they finish.
-      final log = Logger('LibSpiffyActorSystem');
-      final firstPeer = Completer<bool>();
-      var pending = resolved.addresses.length;
-      void settled(bool connected) {
-        pending--;
-        if (connected && !firstPeer.isCompleted) firstPeer.complete(true);
-        if (pending == 0 && !firstPeer.isCompleted) firstPeer.complete(false);
-      }
-
+      // 7. Connect to every address in parallel; only fail if none can be
+      // reached.
       final peerManager = _peerManager!;
-      for (final address in resolved.addresses) {
-        peerManager
-            .addPeerByAddress(
-              address.host,
-              address.port,
-              peerConfig: peerConfig,
-              handler: peerHandler,
-            )
-            .then((_) => true, onError: (Object e) {
-          failures[address.label] = e.toString();
-          log.warning('P2P peer ${address.label}: $e');
-          return false;
-        }).then((connected) {
-          // The start failed, or the system shut down, while this dial was
-          // out. spiffynode adds a peer that connects after its manager shut
-          // down, socket open, so it is removed here.
-          if (!identical(_peerManager, peerManager)) unawaited(peerManager.removePeer(address.endpoint));
-          settled(connected);
-        });
-      }
-      resolved.failures.forEach((peer, error) => log.warning('P2P peer $peer: $error'));
-
-      if (!(resolved.addresses.isNotEmpty && await firstPeer.future)) {
+      final dial = await _dialPeers(peerManager, peers, peerConfig, peerHandler);
+      if (!(dial.addresses > 0 && await dial.firstPeer)) {
         throw StateError(
-          'P2P initialization failed: Could not connect to any of ${resolved.addresses.length} address(es) '
+          'P2P initialization failed: Could not connect to any of ${dial.addresses} address(es) '
           'from ${peers.length} peer(s). LibSpiffy will fall back to API-only mode. Failures: '
-          '${failures.entries.map((f) => '${f.key}: ${f.value}').join('; ')}'
+          '${dial.failures.entries.map((f) => '${f.key}: ${f.value}').join('; ')}'
         );
       }
+
+      // Peers drop away (a laptop that slept loses every socket) and
+      // spiffynode only removes them, so dial again whenever none is left.
+      _startPeerUpkeep(peerManager, peers, peerConfig, peerHandler, startHeight);
 
       // 8. Set bridge reference in HeaderSyncActor (via mailbox)
       _headerSyncActor?.tell(SetSpiffyNodeBridgeMessage(_spiffyNodeBridge));
@@ -1534,9 +1500,101 @@ class LibSpiffyActorSystem {
     ));
   }
 
+  /// How often [_startPeerUpkeep] checks that some peer is connected.
+  /// Tests shorten it.
+  static Duration peerUpkeepInterval = const Duration(seconds: 30);
+
+  /// Resolves [peers] to every address each name holds (a seed's first
+  /// address alone is often dead) and dials, in parallel, each one
+  /// [peerManager] isn't already connected to.
+  ///
+  /// [firstPeer] completes with true as soon as one address answers, or
+  /// false once every dial failed. A dead address takes its whole connect
+  /// timeout to fail, so nothing waits for every dial: the rest keep dialling
+  /// and join as peers, or are logged, as they finish. [failures] collects
+  /// why each name or address failed.
+  Future<({int addresses, Future<bool> firstPeer, Map<String, String> failures})> _dialPeers(
+    PeerManager peerManager,
+    List<String> peers,
+    PeerConfig peerConfig,
+    PeerHandlerI handler,
+  ) async {
+    final log = Logger('LibSpiffyActorSystem');
+    final resolved = await PeerAddresses.resolve(peers);
+    final failures = <String, String>{...resolved.failures};
+    resolved.failures.forEach((peer, error) => log.warning('P2P peer $peer: $error'));
+
+    final connected = peerManager.getPeers().whereType<Peer>().map((peer) => '${peer.address}:${peer.port}').toSet();
+    final addresses = resolved.addresses.where((a) => !connected.contains(a.endpoint)).toList();
+    final firstPeer = Completer<bool>();
+    var pending = addresses.length;
+    if (pending == 0) firstPeer.complete(false);
+    void settled(bool ok) {
+      pending--;
+      if (ok && !firstPeer.isCompleted) firstPeer.complete(true);
+      if (pending == 0 && !firstPeer.isCompleted) firstPeer.complete(false);
+    }
+
+    for (final address in addresses) {
+      peerManager
+          .addPeerByAddress(address.host, address.port, peerConfig: peerConfig, handler: handler)
+          .then((_) => true, onError: (Object e) {
+        failures[address.label] = e.toString();
+        log.warning('P2P peer ${address.label}: $e');
+        return false;
+      }).then((ok) {
+        // The start failed, or the system shut down, while this dial was
+        // out. spiffynode adds a peer that connects after its manager shut
+        // down, socket open, so it is removed here.
+        if (!identical(_peerManager, peerManager)) unawaited(peerManager.removePeer(address.endpoint));
+        settled(ok);
+      });
+    }
+    return (addresses: addresses.length, firstPeer: firstPeer.future, failures: failures);
+  }
+
+  Timer? _peerUpkeepTimer;
+
+  /// Every [peerUpkeepInterval], while [peerManager] is the running one:
+  /// if it has no peer left, resolve [peers] again (seeds rotate their
+  /// addresses) and dial them, then restart header sync once one connects.
+  void _startPeerUpkeep(
+    PeerManager peerManager,
+    List<String> peers,
+    PeerConfig peerConfig,
+    PeerHandlerI handler,
+    int? startHeight,
+  ) {
+    _peerUpkeepTimer?.cancel();
+    var dialling = false;
+    _peerUpkeepTimer = Timer.periodic(peerUpkeepInterval, (timer) async {
+      if (!identical(_peerManager, peerManager) || peerManager.isShutdown) {
+        timer.cancel();
+        return;
+      }
+      if (dialling || peerManager.peerCount > 0) return;
+      dialling = true;
+      final log = Logger('LibSpiffyActorSystem');
+      try {
+        log.info('No P2P peers left; dialling ${peers.join(', ')} again');
+        final dial = await _dialPeers(peerManager, peers, peerConfig, handler);
+        if (await dial.firstPeer && identical(_peerManager, peerManager)) {
+          log.info('P2P peers reconnected; resuming header sync');
+          _headerSyncActor?.tell(InitiateHeaderSyncMessage(startHeight: startHeight));
+        }
+      } catch (e) {
+        log.warning('P2P redial failed: $e');
+      } finally {
+        dialling = false;
+      }
+    });
+  }
+
   /// Disconnect from SpiffyNode: shut down the bridge and the PeerManager
   /// (its peer connections and health-check timer).
   Future<void> disconnectFromSpiffyNode() async {
+    _peerUpkeepTimer?.cancel();
+    _peerUpkeepTimer = null;
     final bridge = _spiffyNodeBridge;
     final peerManager = _peerManager;
     _spiffyNodeBridge = null;

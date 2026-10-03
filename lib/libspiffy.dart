@@ -95,7 +95,8 @@ export 'src/spv/network_params.dart' show NetworkParams;
 export 'src/utils/bump.dart';                   // BSV Universal Merkle Path (BUMP) implementation
 export 'src/utils/beef.dart';                   // Background Evaluation Extended Format (BEEF) implementation
 export 'src/utils/atomic_beef.dart';            // BEEF V2 (BRC-96) and Atomic BEEF (BRC-95) at the edge
-export 'src/utils/benford_distribution.dart';   // Benford's Law distribution for privacy
+export 'src/utils/benford_distribution.dart';
+export 'src/utils/network_name.dart';            // One place to compare network names ('main'/'mainnet', ...)   // Benford's Law distribution for privacy
 
 // TRANSACTION BUILDING - Production-ready transaction construction
 export 'src/services/payment_channel_builder.dart'; // Payment channel transactions (funding, refund, payment)

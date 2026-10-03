@@ -7,6 +7,7 @@ import 'package:logging/logging.dart';
 
 import '../models/blockchain_data_models.dart';
 import 'blockchain_data_source.dart';
+import '../utils/network_name.dart';
 
 /// WhatsOnChain implementation of BlockchainDataSource
 ///
@@ -59,13 +60,15 @@ class WhatsOnChainDataSource implements BlockchainDataSource {
     int initialBackoffMs = 1000,
     int requestsPerSecondLimit = 3,
     Duration requestTimeout = const Duration(seconds: 30),
-  })  : _networkType = networkType,
+  })  : _networkType = NetworkName.isMainnet(networkType)
+            ? 'main'
+            : (NetworkName.isRegtest(networkType) ? 'regtest' : 'test'),
         _client = client ?? http.Client(),
         _maxRetries = maxRetries,
         _initialBackoffMs = initialBackoffMs,
         _requestsPerSecondLimit = requestsPerSecondLimit,
         _requestTimeout = requestTimeout {
-    if (!_baseUrls.containsKey(networkType)) {
+    if (!_baseUrls.containsKey(_networkType)) {
       throw ArgumentError('Unsupported network type: $networkType');
     }
   }

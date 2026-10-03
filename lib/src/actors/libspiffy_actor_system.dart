@@ -428,14 +428,16 @@ class LibSpiffyActorSystem {
     _secureStorage = secureStorage ?? InMemorySecureStorage();
     
     // 5. Initialize crypto service (use provided or default to DartSV)
-    _cryptoService = cryptoService ?? DartSVCryptoService();
+    _cryptoService = cryptoService ??
+        DartSVCryptoService(networkType: NetworkName.toDartsv(_networkType));
     
     // 6. Store ARC configuration for actors
     // ARCActor used to fall back to TAAL *mainnet* whenever no config was
     // given, even though networkType defaults to 'test'.
+    // Mainnet defaults to GorillaPool, which needs no API key.
     _arcConfig = arcConfig ??
         (NetworkName.isMainnet(networkType)
-            ? ArcServiceConfig.taalMainnet()
+            ? ArcServiceConfig.gorillaPoolMainnet()
             : ArcServiceConfig.taalTestnet());
     _arcService = arcService;  // ← Store mock service for testing
     
@@ -872,6 +874,9 @@ class LibSpiffyActorSystem {
       // The chain's median time past, for refund claims (libspiffy-lpjh).
       headerChain: _headerChain,
       timing: _channelTiming,
+      // Settlement outputs are encoded for this network and compared with
+      // the wallet's addresses; the actor's default is testnet.
+      networkType: NetworkName.toDartsv(_networkType),
     ));
     
     // Spawn ImportActor if blockchain data source is provided

@@ -35,6 +35,20 @@ class ArcServiceConfig {
         apiKey: apiKey,
       );
 
+  /// Configuration for the GorillaPool mainnet ARC service (no API key).
+  static ArcServiceConfig gorillaPoolMainnet({String? apiKey}) =>
+      ArcServiceConfig(
+        baseUrl: 'https://arc.gorillapool.io/v1',
+        apiKey: apiKey,
+      );
+
+  /// Configuration for the GorillaPool testnet ARC service (no API key).
+  static ArcServiceConfig gorillaPoolTestnet({String? apiKey}) =>
+      ArcServiceConfig(
+        baseUrl: 'https://testnet.arc.gorillapool.io/v1',
+        apiKey: apiKey,
+      );
+
   /// Create a custom configuration
   static ArcServiceConfig custom({
     required String baseUrl,

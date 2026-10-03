@@ -10,6 +10,15 @@
   regenerate `.g.dart` files. Requires `eventador` 4.0.0 and `duraq_isar`
   3.0.0. Schema ids are unchanged, and databases written by Isar 3.1 open
   without migration (checked in both directions).
+- **Mainnet runs on the network it was given, everywhere.** The payment
+  channel manager and the default crypto service were started without a
+  network and so encoded mainnet settlement outputs as testnet; they now get
+  the actor system's network. `WhatsOnChainDataSource` accepts both spellings
+  (`main`/`mainnet`, `test`/`testnet`). `NetworkName` is exported so hosts can
+  compare network names through one helper.
+- **Mainnet ARC defaults to GorillaPool** (`ArcServiceConfig.gorillaPoolMainnet`,
+  no API key). `gorillaPoolTestnet` is available too; testnet still defaults
+  to TAAL.
 - **Shut LibSpiffy down before closing Isar.** The new Isar core crashes the
   process if the database is closed, or the isolate ends, while writes started
   by wallet creation are still running. `LibSpiffyActorSystem.shutdown()`

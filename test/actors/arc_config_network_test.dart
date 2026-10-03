@@ -14,7 +14,8 @@ import 'package:libspiffy/libspiffy.dart';
 import '../integration/isar_test_helper.dart';
 
 const _taalTestnet = 'https://arc-test.taal.com/v1';
-const _taalMainnet = 'https://arc.taal.com/v1';
+// Mainnet defaults to GorillaPool, which needs no API key.
+const _gorillaPoolMainnet = 'https://arc.gorillapool.io/v1';
 
 void main() {
   setUpAll(() async {
@@ -54,12 +55,12 @@ void main() {
     expect(await resolvedArcBaseUrl('test'), equals(_taalTestnet));
   });
 
-  test("networkType 'main' defaults to the TAAL mainnet ARC endpoint", () async {
-    expect(await resolvedArcBaseUrl('main'), equals(_taalMainnet));
+  test("networkType 'main' defaults to the GorillaPool mainnet ARC endpoint", () async {
+    expect(await resolvedArcBaseUrl('main'), equals(_gorillaPoolMainnet));
   });
 
   test("networkType 'mainnet' is treated like 'main'", () async {
-    expect(await resolvedArcBaseUrl('mainnet'), equals(_taalMainnet));
+    expect(await resolvedArcBaseUrl('mainnet'), equals(_gorillaPoolMainnet));
   });
 
   test('an explicit arcConfig is used as given', () async {

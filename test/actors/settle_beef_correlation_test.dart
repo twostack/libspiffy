@@ -33,7 +33,7 @@ import 'dart:typed_data';
 import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:dactor/dactor.dart';
-import 'package:isar/isar.dart';
+import 'package:isar_community/isar.dart';
 import 'package:libspiffy/libspiffy.dart';
 import 'package:libspiffy/src/actors/coordinator_messages.dart' as coord;
 import 'package:libspiffy/src/services/arc_service.dart';

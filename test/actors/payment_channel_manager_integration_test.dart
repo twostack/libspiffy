@@ -10,7 +10,7 @@ import 'package:dactor/dactor.dart';
 import 'package:dactor_test/dactor_test.dart';
 import 'package:eventador/eventador.dart';
 import 'package:dartsv/dartsv.dart';
-import 'package:isar/isar.dart';
+import 'package:isar_community/isar.dart';
 
 import 'package:libspiffy/src/actors/libspiffy_actor_system.dart';
 import 'package:libspiffy/src/actors/payment_channel_manager_actor.dart';

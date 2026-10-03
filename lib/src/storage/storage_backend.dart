@@ -4,7 +4,7 @@
 /// for creating the appropriate storage implementations.
 library;
 
-import 'package:isar/isar.dart';
+import 'package:isar_community/isar.dart';
 import 'package:eventador/eventador.dart';
 
 import 'read_model_storage.dart';

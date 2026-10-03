@@ -3,7 +3,7 @@ description: >-
   An actor-based Bitcoin SV SPV wallet library: event-sourced wallets, BEEF
   payments with merkle-proof validation, ARC broadcast, payment channels and
   pluggable token scripts.
-version: 3.0.1
+version: 4.0.0
 repository: https://github.com/twostack/libspiffy
 issue_tracker: https://github.com/twostack/libspiffy/issues
 topics:
@@ -18,7 +18,7 @@ environment:
 
 dependencies:
   # Core dependencies
-  isar: ^3.1.0+1
+  isar_community: ^3.3.2
   cbor: ^6.0.0
   meta: ^1.16.0
   uuid: ^4.5.1
@@ -40,10 +40,10 @@ dependencies:
 
   # Durable queuing
   duraq: ^3.0.0
-  duraq_isar: ^2.0.0
+  duraq_isar: ^3.0.0
 
   # Event sourcing
-  eventador: ^3.1.0
+  eventador: ^4.0.0
 
   # SPV and P2P networking
   spiffynode: ^1.1.0
@@ -54,12 +54,22 @@ dependencies:
   pointycastle: ^3.0.0
 
 dev_dependencies:
-  isar_generator: ^3.1.0+1
-  build_runner: ^2.4.7
+  isar_community_generator: ^3.3.2
+  build_runner: ^2.7.0
   test: ^1.24.0
-  mockito: ^5.4.2
+  mockito: ^5.5.0
   lints: ^5.0.0
   dactor_test: ^1.0.0
   # Token operations (dev-only: for integration tests, not a runtime dependency)
   tstokenlib: ^1.4.0
 
+
+# eventador 4.0.0 and duraq_isar 3.0.0 (isar_community) are not on pub.dev yet;
+# develop against the sibling checkouts until they are. Remove before publishing.
+dependency_overrides:
+  eventador:
+    path: ../eventador
+  duraq_isar:
+    path: ../duraq/packages/duraq_isar
+  duraq:
+    path: ../duraq/packages/duraq

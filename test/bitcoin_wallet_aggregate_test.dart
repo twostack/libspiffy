@@ -1,6 +1,6 @@
 import 'dart:io';
 import 'package:test/test.dart';
-import 'package:isar/isar.dart';
+import 'package:isar_community/isar.dart';
 import 'package:eventador/eventador.dart';
 import 'package:libspiffy/libspiffy.dart';
 import 'package:libspiffy/internals.dart';

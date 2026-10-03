@@ -1,5 +1,19 @@
-## Unreleased
+## 4.0.0 (unreleased)
 
+- **Breaking: Isar is now `isar_community` 3.3.2.** The original `isar` 3.1.0+1
+  is unmaintained, and its Android library is aligned to 4 KB pages, which
+  Google Play rejects for apps targeting Android 15 or later. `Isar` is part
+  of the public API (`LibSpiffyActorSystem.initialize(isar:)`,
+  `LibSpiffySchemas`), so hosts must switch too: depend on `isar_community`,
+  `isar_community_flutter_libs` and `isar_community_generator` ^3.3.2, change
+  `package:isar/isar.dart` imports to `package:isar_community/isar.dart`, and
+  regenerate `.g.dart` files. Requires `eventador` 4.0.0 and `duraq_isar`
+  3.0.0. Schema ids are unchanged, and databases written by Isar 3.1 open
+  without migration (checked in both directions).
+- **Shut LibSpiffy down before closing Isar.** The new Isar core crashes the
+  process if the database is closed, or the isolate ends, while writes started
+  by wallet creation are still running. `LibSpiffyActorSystem.shutdown()`
+  waits for them; closing the actor system alone does not.
 - **A payment with no outputs is refused, not a division by zero.**
   `PayInvoiceCommand` with neither `outputs` nor `addresses` split the
   amount over zero addresses and failed with

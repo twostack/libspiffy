@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'package:isar/isar.dart';
+import 'package:isar_community/isar.dart';
 
 /// Process-wide singleton for Isar native library initialization.
 ///

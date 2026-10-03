@@ -1,7 +1,7 @@
 import 'dart:io';
 
 import 'package:dactor/dactor.dart';
-import 'package:isar/isar.dart';
+import 'package:isar_community/isar.dart';
 import 'package:logging/logging.dart' as logging;
 import 'package:test/test.dart';
 

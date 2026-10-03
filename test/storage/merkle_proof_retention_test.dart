@@ -3,7 +3,7 @@
 /// postgres/postgres_merkle_proof_retention_test.dart).
 import 'dart:io';
 
-import 'package:isar/isar.dart';
+import 'package:isar_community/isar.dart';
 import 'package:test/test.dart';
 
 import 'package:libspiffy/src/storage/in_memory_wallet_storage.dart';

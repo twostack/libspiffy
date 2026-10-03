@@ -15,7 +15,7 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:test/test.dart';
 import 'package:dactor/dactor.dart';
-import 'package:isar/isar.dart';
+import 'package:isar_community/isar.dart';
 import 'package:convert/convert.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:libspiffy/libspiffy.dart';

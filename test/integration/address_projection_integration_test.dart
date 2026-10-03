@@ -11,7 +11,7 @@ import 'dart:async';
 import 'dart:io';
 import 'package:test/test.dart';
 import 'package:dactor/dactor.dart';
-import 'package:isar/isar.dart';
+import 'package:isar_community/isar.dart';
 import 'package:libspiffy/libspiffy.dart';
 import 'package:libspiffy/internals.dart';
 import 'package:libspiffy/src/actors/libspiffy_actor_system.dart';

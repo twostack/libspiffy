@@ -20,7 +20,7 @@ library;
 import 'dart:io';
 
 import 'package:dartsv/dartsv.dart' as dartsv;
-import 'package:isar/isar.dart';
+import 'package:isar_community/isar.dart';
 import 'package:test/test.dart';
 
 import 'package:libspiffy/src/actors/invoice_messages.dart' show InvoiceStatus;

@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'package:isar/isar.dart';
+import 'package:isar_community/isar.dart';
 import 'package:meta/meta.dart';
 import 'package:spiffynode/spiffy_node.dart';
 import '../models/address_chain.dart';

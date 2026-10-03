@@ -1,6 +1,6 @@
 import 'dart:convert';
 import 'package:dartsv/dartsv.dart' as dartsv;
-import 'package:isar/isar.dart';
+import 'package:isar_community/isar.dart';
 import 'package:libspiffy/src/storage/payment_channel_entity.dart';
 import 'package:spiffynode/spiffy_node.dart';
 import 'package:eventador/eventador.dart';

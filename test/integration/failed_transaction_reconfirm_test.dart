@@ -22,7 +22,7 @@ import 'dart:typed_data';
 
 import 'package:dactor/dactor.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
-import 'package:isar/isar.dart';
+import 'package:isar_community/isar.dart';
 import 'package:libspiffy/libspiffy.dart';
 import 'package:libspiffy/src/actors/spv_messages.dart' show BlockHeadersReceivedMessage;
 import 'package:libspiffy/src/core/wallet_commands.dart';

@@ -2,7 +2,7 @@
 ///
 /// Stores payment channel state in the database for persistence across restarts.
 
-import 'package:isar/isar.dart';
+import 'package:isar_community/isar.dart';
 import '../models/payment_channel.dart';
 
 part 'payment_channel_entity.g.dart';

@@ -5,7 +5,7 @@ import 'dart:async';
 import 'dart:io';
 import 'package:test/test.dart';
 import 'package:dactor/dactor.dart';
-import 'package:isar/isar.dart';
+import 'package:isar_community/isar.dart';
 import 'package:libspiffy/libspiffy.dart';
 import 'package:libspiffy/src/actors/libspiffy_actor_system.dart';
 import 'package:libspiffy/src/actors/wallet_messages.dart';
@@ -101,7 +101,9 @@ void main() {
       print('Stack trace: $stackTrace');
       rethrow;
     } finally {
-      // Cleanup
+      // Cleanup: stop LibSpiffy before the actor system and Isar, so no
+      // write it started is still running when the database closes.
+      await libspiffy.shutdown();
       await actorSystem.shutdown();
       await isar.close();
       try {

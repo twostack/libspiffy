@@ -5,7 +5,7 @@ import 'dart:typed_data';
 import 'package:convert/convert.dart';
 import 'package:test/test.dart';
 import 'package:dactor/dactor.dart';
-import 'package:isar/isar.dart';
+import 'package:isar_community/isar.dart';
 import 'package:libspiffy/libspiffy.dart';
 import 'package:libspiffy/coordinator.dart' as coord;
 import 'package:libspiffy/src/storage/isar_wallet_storage.dart';

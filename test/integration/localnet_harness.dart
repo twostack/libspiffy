@@ -18,7 +18,7 @@ import 'dart:typed_data';
 
 import 'package:dactor/dactor.dart';
 import 'package:http/http.dart' as http;
-import 'package:isar/isar.dart';
+import 'package:isar_community/isar.dart';
 import 'package:logging/logging.dart' as logging;
 import 'package:test/test.dart';
 

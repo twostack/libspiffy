@@ -26,7 +26,7 @@ import 'dart:io';
 import 'package:test/test.dart';
 import 'package:dactor/dactor.dart';
 import 'package:eventador/eventador.dart' show AwaitEventApplied, EventAppliedResponse;
-import 'package:isar/isar.dart';
+import 'package:isar_community/isar.dart';
 import 'package:convert/convert.dart';
 import 'package:libspiffy/libspiffy.dart';
 import 'package:libspiffy/src/actors/libspiffy_actor_system.dart';

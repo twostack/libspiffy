@@ -1,6 +1,6 @@
 import 'dart:io';
 
-import 'package:isar/isar.dart';
+import 'package:isar_community/isar.dart';
 import 'package:spiffynode/spiffy_node.dart';
 import 'package:test/test.dart';
 

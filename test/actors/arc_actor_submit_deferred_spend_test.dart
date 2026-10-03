@@ -22,7 +22,7 @@ import 'dart:typed_data';
 import 'package:convert/convert.dart';
 import 'package:dactor/dactor.dart';
 import 'package:duraq_isar/duraq_isar.dart' as duraq_isar;
-import 'package:isar/isar.dart';
+import 'package:isar_community/isar.dart';
 import 'package:libspiffy/src/actors/arc_actor.dart';
 import 'package:libspiffy/src/actors/wallet_messages.dart';
 import 'package:libspiffy/src/core/wallet_commands.dart';

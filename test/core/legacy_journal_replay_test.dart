@@ -11,7 +11,7 @@ import 'dart:io';
 
 import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:eventador/eventador.dart';
-import 'package:isar/isar.dart';
+import 'package:isar_community/isar.dart';
 import 'package:libspiffy/internals.dart';
 import 'package:libspiffy/libspiffy.dart';
 import 'package:libspiffy/src/models/invoice_state.dart';

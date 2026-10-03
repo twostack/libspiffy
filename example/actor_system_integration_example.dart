@@ -1,5 +1,5 @@
 import 'package:dactor/dactor.dart';
-import 'package:isar/isar.dart';
+import 'package:isar_community/isar.dart';
 import 'package:libspiffy/libspiffy.dart';
 
 /// Demonstrates how to integrate LibSpiffy into a host application's actor system

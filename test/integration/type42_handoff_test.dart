@@ -24,7 +24,7 @@ import 'dart:typed_data';
 import 'package:convert/convert.dart';
 import 'package:dactor/dactor.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
-import 'package:isar/isar.dart';
+import 'package:isar_community/isar.dart';
 import 'package:test/test.dart';
 
 import 'package:libspiffy/coordinator.dart' as coord;

@@ -2,7 +2,7 @@ import 'dart:async';
 import 'package:dactor/dactor.dart';
 import 'package:eventador/eventador.dart';
 
-import 'package:isar/isar.dart';
+import 'package:isar_community/isar.dart';
 import 'package:libspiffy/libspiffy.dart';
 import '../core/wallet_commands.dart';
 import '../utils/network_name.dart';

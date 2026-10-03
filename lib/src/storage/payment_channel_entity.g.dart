@@ -246,7 +246,7 @@ const PaymentChannelEntitySchema = CollectionSchema(
   getId: _paymentChannelEntityGetId,
   getLinks: _paymentChannelEntityGetLinks,
   attach: _paymentChannelEntityAttach,
-  version: '3.1.0+1',
+  version: '3.3.2',
 );
 
 int _paymentChannelEntityEstimateSize(

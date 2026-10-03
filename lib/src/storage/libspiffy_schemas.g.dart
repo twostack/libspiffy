@@ -119,7 +119,7 @@ const BlockHeaderEntitySchema = CollectionSchema(
   getId: _blockHeaderEntityGetId,
   getLinks: _blockHeaderEntityGetLinks,
   attach: _blockHeaderEntityAttach,
-  version: '3.1.0+1',
+  version: '3.3.2',
 );
 
 int _blockHeaderEntityEstimateSize(
@@ -1926,7 +1926,7 @@ const MerkleProofEntitySchema = CollectionSchema(
   getId: _merkleProofEntityGetId,
   getLinks: _merkleProofEntityGetLinks,
   attach: _merkleProofEntityAttach,
-  version: '3.1.0+1',
+  version: '3.3.2',
 );
 
 int _merkleProofEntityEstimateSize(
@@ -3688,7 +3688,7 @@ const AncestorTransactionEntitySchema = CollectionSchema(
   getId: _ancestorTransactionEntityGetId,
   getLinks: _ancestorTransactionEntityGetLinks,
   attach: _ancestorTransactionEntityAttach,
-  version: '3.1.0+1',
+  version: '3.3.2',
 );
 
 int _ancestorTransactionEntityEstimateSize(
@@ -4613,7 +4613,7 @@ const PendingReceiveEntitySchema = CollectionSchema(
   getId: _pendingReceiveEntityGetId,
   getLinks: _pendingReceiveEntityGetLinks,
   attach: _pendingReceiveEntityAttach,
-  version: '3.1.0+1',
+  version: '3.3.2',
 );
 
 int _pendingReceiveEntityEstimateSize(
@@ -6970,7 +6970,7 @@ const DeferredPaymentEntitySchema = CollectionSchema(
   getId: _deferredPaymentEntityGetId,
   getLinks: _deferredPaymentEntityGetLinks,
   attach: _deferredPaymentEntityAttach,
-  version: '3.1.0+1',
+  version: '3.3.2',
 );
 
 int _deferredPaymentEntityEstimateSize(
@@ -10975,7 +10975,7 @@ const BitcoinUtxoEntitySchema = CollectionSchema(
   getId: _bitcoinUtxoEntityGetId,
   getLinks: _bitcoinUtxoEntityGetLinks,
   attach: _bitcoinUtxoEntityAttach,
-  version: '3.1.0+1',
+  version: '3.3.2',
 );
 
 int _bitcoinUtxoEntityEstimateSize(
@@ -15775,7 +15775,7 @@ const BitcoinTransactionEntitySchema = CollectionSchema(
   getId: _bitcoinTransactionEntityGetId,
   getLinks: _bitcoinTransactionEntityGetLinks,
   attach: _bitcoinTransactionEntityAttach,
-  version: '3.1.0+1',
+  version: '3.3.2',
 );
 
 int _bitcoinTransactionEntityEstimateSize(
@@ -21072,7 +21072,7 @@ const WalletMetadataEntitySchema = CollectionSchema(
   getId: _walletMetadataEntityGetId,
   getLinks: _walletMetadataEntityGetLinks,
   attach: _walletMetadataEntityAttach,
-  version: '3.1.0+1',
+  version: '3.3.2',
 );
 
 int _walletMetadataEntityEstimateSize(
@@ -23986,7 +23986,7 @@ const AddressEntitySchema = CollectionSchema(
   getId: _addressEntityGetId,
   getLinks: _addressEntityGetLinks,
   attach: _addressEntityAttach,
-  version: '3.1.0+1',
+  version: '3.3.2',
 );
 
 int _addressEntityEstimateSize(
@@ -27716,7 +27716,7 @@ const TransactionAddressEntitySchema = CollectionSchema(
   getId: _transactionAddressEntityGetId,
   getLinks: _transactionAddressEntityGetLinks,
   attach: _transactionAddressEntityAttach,
-  version: '3.1.0+1',
+  version: '3.3.2',
 );
 
 int _transactionAddressEntityEstimateSize(
@@ -30096,7 +30096,7 @@ const InvoiceEntitySchema = CollectionSchema(
   getId: _invoiceEntityGetId,
   getLinks: _invoiceEntityGetLinks,
   attach: _invoiceEntityAttach,
-  version: '3.1.0+1',
+  version: '3.3.2',
 );
 
 int _invoiceEntityEstimateSize(

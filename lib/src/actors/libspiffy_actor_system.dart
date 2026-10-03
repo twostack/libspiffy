@@ -242,6 +242,10 @@ class LibSpiffyActorSystem {
     PostgresConfig? postgresConfig, // NEW: PostgreSQL configuration
     String? cdnBaseUrl, // CDN URL for fast initial header sync
     CdnSyncProgressCallback? onHeaderSyncProgress, // CDN sync progress callback
+    // How the CDN header sync ended: success, the error after every pass, or
+    // that no CDN was configured. Lets a host show why headers come from
+    // peers instead.
+    void Function(CdnSyncResult result)? onHeaderSyncResult,
     // This node's own peer id on the transport that carries payment channel
     // messages (ChannelP2PMessageToSendEvent / ChannelP2PReceived): sent as
     // clientPeerId in channel_request and journaled with the channel
@@ -289,6 +293,7 @@ class LibSpiffyActorSystem {
         postgresConfig: postgresConfig,
         cdnBaseUrl: cdnBaseUrl,
         onHeaderSyncProgress: onHeaderSyncProgress,
+        onHeaderSyncResult: onHeaderSyncResult,
       );
       _lifecycle = _Lifecycle.initialized;
     } catch (_) {
@@ -321,6 +326,7 @@ class LibSpiffyActorSystem {
     required PostgresConfig? postgresConfig,
     required String? cdnBaseUrl,
     required CdnSyncProgressCallback? onHeaderSyncProgress,
+    void Function(CdnSyncResult result)? onHeaderSyncResult,
   }) async {
     _networkType = networkType;
 
@@ -456,7 +462,15 @@ class LibSpiffyActorSystem {
 
     // 7.1. Start CDN header sync concurrently with actor setup (independent operations)
     Future<void> cdnFuture = Future.value();
-    if (cdnBaseUrl != null) {
+    if (cdnBaseUrl == null) {
+      onHeaderSyncResult?.call(CdnSyncResult(
+        success: false,
+        headersImported: 0,
+        finalHeight: _headerChain.bestHeight,
+        elapsed: Duration.zero,
+        error: 'No header CDN configured',
+      ));
+    } else {
       final cdnLogger = Logger('LibSpiffy-CDNSync');
       cdnFuture = () async {
         try {
@@ -484,6 +498,7 @@ class LibSpiffyActorSystem {
               headerChain: _headerChain,
             ).synchronize();
           }
+          onHeaderSyncResult?.call(result);
           if (result.success) {
             cdnLogger.info('CDN sync complete: ${result.headersImported} headers, '
                 'final height: ${result.finalHeight}, '
@@ -492,6 +507,13 @@ class LibSpiffyActorSystem {
             cdnLogger.warning('CDN sync failed (will fall back to P2P): ${result.error}');
           }
         } catch (e) {
+          onHeaderSyncResult?.call(CdnSyncResult(
+            success: false,
+            headersImported: 0,
+            finalHeight: _headerChain.bestHeight,
+            elapsed: Duration.zero,
+            error: '$e',
+          ));
           cdnLogger.warning('CDN header sync failed, will fall back to P2P: $e');
         }
       }();

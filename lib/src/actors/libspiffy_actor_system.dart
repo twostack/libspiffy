@@ -466,11 +466,24 @@ class LibSpiffyActorSystem {
             onProgress: onHeaderSyncProgress,
             cacheDirectory: dataDirectory,
           );
-          final cdnSyncService = CdnHeaderSyncService(
+          // A pass resumes from wherever the chain is, so a stalled or
+          // dropped download costs a retry, not the rest of the sync: try a
+          // few passes, each on a fresh connection, before leaving the
+          // remaining headers to peers (far slower from far behind).
+          const passes = 3;
+          var result = await CdnHeaderSyncService(
             config: cdnConfig,
             headerChain: _headerChain,
-          );
-          final result = await cdnSyncService.synchronize();
+          ).synchronize();
+          for (var pass = 2; !result.success && pass <= passes; pass++) {
+            cdnLogger.warning('CDN sync pass ${pass - 1} stopped at height '
+                '${_headerChain.bestHeight}: ${result.error}; resuming');
+            await Future<void>.delayed(Duration(seconds: 2 * pass));
+            result = await CdnHeaderSyncService(
+              config: cdnConfig,
+              headerChain: _headerChain,
+            ).synchronize();
+          }
           if (result.success) {
             cdnLogger.info('CDN sync complete: ${result.headersImported} headers, '
                 'final height: ${result.finalHeight}, '

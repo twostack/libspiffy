@@ -529,6 +529,12 @@ class LibSpiffyActorSystem {
     // 9. Spawn coordination actors
     await _spawnActors();
 
+    // The actors take commands from here (spiffyvault-cfh). The header sync
+    // goes on: creating or importing a wallet needs no chain, and a payment
+    // whose header isn't synced yet waits for it (SPVActor), as it does
+    // when headers fall behind later.
+    if (!_ready.isCompleted) _ready.complete();
+
     // 10. Wait for CDN sync to finish before P2P (P2P header sync starts from chain tip)
     await cdnFuture;
 
@@ -1789,6 +1795,18 @@ class LibSpiffyActorSystem {
   }
 
   /// Check if the system is initialized (false again after [shutdown])
+  final Completer<void> _ready = Completer<void>();
+
+  /// Completes once the actors run and take commands, before the header
+  /// sync is done: [initialize] still returns only after the CDN sync and
+  /// the P2P start. A caller that only needs to send commands (create or
+  /// import a wallet, pay) waits for this, not for [initialize]. Never
+  /// completes when [initialize] fails before the actors start.
+  Future<void> get ready => _ready.future;
+
+  /// Whether [ready] has completed.
+  bool get isReady => _ready.isCompleted;
+
   bool get isInitialized => _lifecycle != _Lifecycle.shutDown && _walletManager != null && _invoiceCoordinator != null && _spvActor != null && _arcActor != null && _headerSyncActor != null;
 }
 

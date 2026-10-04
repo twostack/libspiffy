@@ -363,6 +363,12 @@ class TransactionImportedEvent extends WalletEvent {
   /// serializes exactly as before.
   final String? counterpartyMarker;
 
+  /// The payment's note, written by the payer for the payee. libspiffy
+  /// journals it and returns it and never interprets it. Null when none,
+  /// and on rows journaled before the field existed, which replay
+  /// unchanged: the key is written only when there is a memo.
+  final String? memo;
+
   TransactionImportedEvent({
     required String walletId,
     required this.txid,
@@ -380,6 +386,7 @@ class TransactionImportedEvent extends WalletEvent {
     required List<String> sendingAddresses,
     List<BeefAncestor> ancestors = const [],
     this.counterpartyMarker,
+    this.memo,
     String? eventId,
     DateTime? timestamp,
     int? version,
@@ -413,6 +420,7 @@ class TransactionImportedEvent extends WalletEvent {
       'sendingAddresses': sendingAddresses,
       if (ancestors.isNotEmpty) 'ancestors': [for (final a in ancestors) a.toMap()],
       if (counterpartyMarker != null) 'counterpartyMarker': counterpartyMarker,
+      if (memo != null) 'memo': memo,
     };
   }
 
@@ -439,6 +447,8 @@ class TransactionImportedEvent extends WalletEvent {
       ],
       // Absent on rows journaled before cq16: they replay with no marker.
       counterpartyMarker: map['counterpartyMarker'] as String?,
+      // Absent on rows journaled before the memo existed.
+      memo: map['memo'] as String?,
       eventId: map['eventId'] as String?,
       timestamp: map['timestamp'] != null
           ? (map['timestamp'] is String
@@ -826,6 +836,12 @@ class UTXOReceivedEvent extends WalletEvent {
   /// serializes exactly as before.
   final String? counterpartyMarker;
 
+  /// The payment's note, written by the payer for the payee. libspiffy
+  /// journals it and returns it and never interprets it. Null when none,
+  /// and on rows journaled before the field existed, which replay
+  /// unchanged: the key is written only when there is a memo.
+  final String? memo;
+
   UTXOReceivedEvent({
     required String walletId,
     required this.txid,
@@ -839,6 +855,7 @@ class UTXOReceivedEvent extends WalletEvent {
     this.derivationIndex,
     Map<String, dynamic>? pluginMetadata,
     this.counterpartyMarker,
+    this.memo,
     String? eventId,
     DateTime? timestamp,
     int? version,
@@ -866,6 +883,7 @@ class UTXOReceivedEvent extends WalletEvent {
       'derivationIndex': derivationIndex,
       'pluginMetadata': pluginMetadata,
       if (counterpartyMarker != null) 'counterpartyMarker': counterpartyMarker,
+      if (memo != null) 'memo': memo,
     };
   }
 
@@ -894,6 +912,8 @@ class UTXOReceivedEvent extends WalletEvent {
       pluginMetadata: map['pluginMetadata'] as Map<String, dynamic>?,
       // Absent on rows journaled before cq16: they replay with no marker.
       counterpartyMarker: map['counterpartyMarker'] as String?,
+      // Absent on rows journaled before the memo existed.
+      memo: map['memo'] as String?,
       eventId: map['eventId'] as String?,
       timestamp: map['timestamp'] != null
           ? (map['timestamp'] is String 
@@ -1476,6 +1496,12 @@ class TransactionRecordedEvent extends WalletEvent {
   /// serializes exactly as before.
   final String? counterpartyMarker;
 
+  /// The payment's note, written by the payer for the payee. libspiffy
+  /// journals it and returns it and never interprets it. Null when none,
+  /// and on rows journaled before the field existed, which replay
+  /// unchanged: the key is written only when there is a memo.
+  final String? memo;
+
   TransactionRecordedEvent({
     required String walletId,
     required this.txid,
@@ -1493,6 +1519,7 @@ class TransactionRecordedEvent extends WalletEvent {
     this.changeAddress,
     this.changeAmount,
     this.counterpartyMarker,
+    this.memo,
     String? eventId,
     DateTime? timestamp,
     int? version,
@@ -1525,6 +1552,7 @@ class TransactionRecordedEvent extends WalletEvent {
       'changeAddress': changeAddress,
       'changeAmount': changeAmount,
       if (counterpartyMarker != null) 'counterpartyMarker': counterpartyMarker,
+      if (memo != null) 'memo': memo,
     };
   }
 
@@ -1547,6 +1575,8 @@ class TransactionRecordedEvent extends WalletEvent {
       changeAmount: map['changeAmount'] as String?,
       // Absent on rows journaled before cq16: they replay with no marker.
       counterpartyMarker: map['counterpartyMarker'] as String?,
+      // Absent on rows journaled before the memo existed.
+      memo: map['memo'] as String?,
       eventId: map['eventId'] as String?,
       timestamp: map['timestamp'] != null
           ? (map['timestamp'] is String 

@@ -184,6 +184,7 @@ void main() {
         walletId: walletId,
         beef: beef.serialize().toList(),
         fromCounterparty: 'test',
+        memo: 'imported with a note',
       ));
 
       // Step 3: Wait for TransactionImportedEvent
@@ -228,6 +229,16 @@ void main() {
           reason: 'UTXO should have 200M sats');
       expect(fundingUtxo.first.address, equals(kTestRootAddress),
           reason: 'UTXO should belong to root address');
+
+      // The payer's note reaches the transaction row.
+      final row = await _retryUntil(
+        () => storage.getTransaction(kTx1Id, walletId: walletId),
+        (result) => result != null,
+        timeout: Duration(seconds: 5),
+        description: 'the imported transaction row',
+      );
+      expect(row!.memo, 'imported with a note');
+      expect(row.counterpartyMarker, 'test');
 
       print('✓ UTXO verified in read model:');
       print('  txid: ${fundingUtxo.first.txid}');

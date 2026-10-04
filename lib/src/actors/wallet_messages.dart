@@ -673,6 +673,11 @@ class ReceiveTransactionMessage implements Message {
   /// without one behaves exactly as it always did.
   final String? requestId;
 
+  /// The payment's note, written by the payer for the payee, journaled with
+  /// the payment the receive records. libspiffy never interprets it. Null
+  /// when none.
+  final String? memo;
+
   ReceiveTransactionMessage({
     required this.transactionId,
     required this.beef,
@@ -680,6 +685,7 @@ class ReceiveTransactionMessage implements Message {
     this.targetWalletId,
     this.invoiceId,
     this.requestId,
+    this.memo,
     DateTime? receivedAt,
   }) : receivedAt = receivedAt ?? DateTime.now();
 
@@ -776,6 +782,11 @@ class SPVValidationResult extends ActorResponse {
   /// interpreted, validated or parsed.
   final String? counterpartyMarker;
 
+  /// The payment's note, written by the payer for the payee, carried from
+  /// [ReceiveTransactionMessage.memo] so the wallet can journal it with the
+  /// payment. Null when none; never interpreted.
+  final String? memo;
+
   /// The [ReceiveTransactionMessage.requestId] of the receive this is the
   /// verdict on, echoed back unchanged (bead libspiffy-l8uf).
   ///
@@ -830,6 +841,7 @@ class SPVValidationResult extends ActorResponse {
     List<Map<String, dynamic>> unreadableOutputs = const [],
     List<ProvenTransaction> provenTransactions = const [],
     this.counterpartyMarker,
+    this.memo,
     this.requestId,
     this.invoiceId,
     this.invoicePaidAmount,
@@ -844,14 +856,19 @@ class SPVValidationResult extends ActorResponse {
         provenTransactions = frozenList(provenTransactions);
 
   /// This result as the answer to the request that asked for it: [marker]
-  /// as its [counterpartyMarker] (a blank marker is no marker), and the
+  /// as its [counterpartyMarker] (a blank marker is no marker), [memo] as
+  /// its [memo] (a blank memo is no memo), and the
   /// request's [requestId] and [invoiceId]; [awaitingHeader] when the
   /// receive was parked rather than decided; [subjectCarriesProof] from the
   /// BEEF it received. Applied in one place, where the
   /// receive answers, so every branch that builds a result carries them
   /// (beads libspiffy-cq16, libspiffy-l8uf, libspiffy-xggs).
   SPVValidationResult answering(String? marker,
-          {String? requestId, String? invoiceId, bool awaitingHeader = false, bool? subjectCarriesProof}) =>
+          {String? requestId,
+          String? invoiceId,
+          bool awaitingHeader = false,
+          bool? subjectCarriesProof,
+          String? memo}) =>
       SPVValidationResult(
         txid: txid,
         isValid: isValid,
@@ -864,6 +881,7 @@ class SPVValidationResult extends ActorResponse {
         unreadableOutputs: unreadableOutputs,
         provenTransactions: provenTransactions,
         counterpartyMarker: (marker == null || marker.isEmpty) ? null : marker,
+        memo: (memo == null || memo.isEmpty) ? this.memo : memo,
         requestId: requestId ?? this.requestId,
         invoiceId: invoiceId ?? this.invoiceId,
         invoicePaidAmount: invoicePaidAmount,

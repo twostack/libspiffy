@@ -251,6 +251,7 @@ abstract final class UtxoLedger {
       // Who paid us, as the app names them (bead libspiffy-cq16). Journaled
       // verbatim and never interpreted.
       counterpartyMarker: command.counterpartyMarker,
+      memo: command.memo,
       version: currentState.version + 1,
       timestamp: DateTime.now(),
     );

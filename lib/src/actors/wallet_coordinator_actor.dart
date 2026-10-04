@@ -1127,6 +1127,8 @@ class WalletCoordinatorActor extends Actor {
         paymentMetadata: cmd.paymentMetadata,
         // Who we are paying, as the app names them (bead libspiffy-cq16).
         counterpartyMarker: cmd.counterpartyMarker,
+        // The payer's note for the payee, journaled with the payment.
+        memo: cmd.memo,
       ),
       sender: context.self,
     );
@@ -1176,6 +1178,7 @@ class WalletCoordinatorActor extends Actor {
       beefHex: cmd.beefHex,
       invoiceId: cmd.invoiceId,
       fromCounterparty: cmd.fromCounterparty,
+      memo: cmd.memo,
     );
 
     _spvActor.tell(
@@ -1219,6 +1222,7 @@ class WalletCoordinatorActor extends Actor {
           changeAmount: cmd.changeAmount != null ? BigInt.from(cmd.changeAmount!) : null,
           // Who we paid, as the app names them (bead libspiffy-cq16).
           counterpartyMarker: cmd.counterpartyMarker,
+          memo: cmd.memo,
         ),
       ),
       sender: context.self,
@@ -1345,6 +1349,8 @@ class WalletCoordinatorActor extends Actor {
         targetWalletId: cmd.walletId,
         receivedAt: DateTime.now(),
         requestId: requestId,
+        // The payer's note, journaled with the import.
+        memo: cmd.memo,
       ),
       sender: context.self,
     );
@@ -2717,6 +2723,8 @@ class WalletCoordinatorActor extends Actor {
             invoiceId: invoiceId,
             receivedAt: DateTime.now(),
             requestId: receiveId,
+            // The payer's note the ValidateBEEFCommand carried, if any.
+            memo: pending.memo,
           ),
           sender: context.self,
         );
@@ -3136,11 +3144,15 @@ class _PendingBeefValidation {
   /// (bead libspiffy-cq16).
   final String? fromCounterparty;
 
+  /// The payer's note the command carried, if any.
+  final String? memo;
+
   _PendingBeefValidation({
     required this.walletId,
     required this.beefHex,
     required this.invoiceId,
     this.fromCounterparty,
+    this.memo,
   });
 }
 

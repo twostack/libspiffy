@@ -681,6 +681,8 @@ _balanceCache.remove(walletId);
     // replaced (bead libspiffy-cq16).
     final counterpartyMarker = TransactionRowRules.counterpartyMarkerAfter(
         existing?.counterpartyMarker, transaction.counterpartyMarker);
+    // The payer's note, kept the same way (TransactionRowRules.memoAfter).
+    final memo = TransactionRowRules.memoAfter(existing?.memo, transaction.memo);
     // Consensus fields the txid commits to (bead libspiffy-zpu7): taken from
     // the record, or from its raw hex when the record carries none, and then
     // set once — no later record blanks or revises them.
@@ -703,7 +705,7 @@ _balanceCache.remove(walletId);
             netAmount: transaction.netAmount,
             createdAt: transaction.createdAt,
             updatedAt: transaction.updatedAt,
-            memo: transaction.memo,
+            memo: memo,
             lockTime: lockTime,
             version: version,
             counterpartyMarker: counterpartyMarker,
@@ -716,6 +718,7 @@ _balanceCache.remove(walletId);
             lockTime: lockTime,
             version: version,
             counterpartyMarker: counterpartyMarker,
+            memo: memo,
           );
     _indexConfirmed(walletId, stored);
     if (isNew) {
@@ -1030,6 +1033,8 @@ _balanceCache.remove(walletId);
             beefHex: receive.beefHex,
             fromCounterparty: receive.fromCounterparty,
             invoiceId: receive.invoiceId,
+            // A re-park without the payer's note keeps it.
+            memo: TransactionRowRules.memoAfter(previous.memo, receive.memo),
             neededHeight: receive.neededHeight,
             createdAt: previous.createdAt,
             updatedAt: receive.updatedAt,

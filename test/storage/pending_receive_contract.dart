@@ -125,6 +125,42 @@ void definePendingReceiveContract(
       expect((await s.getPendingReceivesUpToHeight(1000)).where((r) => r.txid == txid), isEmpty);
     });
 
+    test('a parked receive keeps the payer\'s memo, and a re-park without one keeps it', () async {
+      final u = unique();
+      final s = storage();
+      final wallet = 'pr-memo-$u';
+      final txid = contractHex64('pr-memo-tx-$u');
+      final plain = contractHex64('pr-memo-plain-$u');
+
+      await s.storePendingReceive(PendingReceive(
+        walletId: wallet,
+        txid: txid,
+        beefHex: '0100beef',
+        fromCounterparty: 'bob',
+        memo: 'for the bicycle',
+        neededHeight: 30,
+        createdAt: DateTime.utc(2026, 9, 16, 9),
+        updatedAt: DateTime.utc(2026, 9, 16, 9),
+      ));
+      expect((await s.getPendingReceive(wallet, txid))!.memo, 'for the bicycle');
+
+      // Parked again (the same receive delivered twice) without a memo.
+      await s.storePendingReceive(parked(wallet, txid, neededHeight: 31));
+      expect((await s.getPendingReceive(wallet, txid))!.memo, 'for the bicycle');
+      expect(
+          [for (final r in await s.getPendingReceivesUpToHeight(31)) if (r.txid == txid) r.memo],
+          ['for the bicycle'],
+          reason: 'the replay reads the memo back with the receive');
+
+      // Resolving the receive keeps it too.
+      await s.resolvePendingReceive(wallet, txid, 'recorded');
+      expect((await s.getPendingReceive(wallet, txid))!.memo, 'for the bicycle');
+
+      // A receive parked without one has none.
+      await s.storePendingReceive(parked(wallet, plain, neededHeight: 30));
+      expect((await s.getPendingReceive(wallet, plain))!.memo, isNull);
+    });
+
     test('vfai: a wallet deletion removes its parked receives', () async {
       final u = unique();
       final s = storage();

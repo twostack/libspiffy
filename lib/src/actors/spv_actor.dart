@@ -256,7 +256,8 @@ class SPVActor extends Actor {
           requestId: msg.requestId,
           invoiceId: msg.invoiceId,
           awaitingHeader: stillWaiting,
-          subjectCarriesProof: msg.beef.carriesProofOf(msg.transactionId));
+          subjectCarriesProof: msg.beef.carriesProofOf(msg.transactionId),
+          memo: msg.memo);
 
       // Send validation result to WalletManager
       _walletManager.tell(validationResult);
@@ -288,7 +289,8 @@ class SPVActor extends Actor {
       ).answering(msg.fromCounterparty,
           requestId: msg.requestId,
           invoiceId: msg.invoiceId,
-          subjectCarriesProof: msg.beef.carriesProofOf(msg.transactionId));
+          subjectCarriesProof: msg.beef.carriesProofOf(msg.transactionId),
+          memo: msg.memo);
 
       _walletManager.tell(errorResult);
       replyTo?.tell(errorResult);
@@ -946,6 +948,7 @@ class SPVActor extends Actor {
         beefHex: hex.encode(msg.beef.serialize()),
         fromCounterparty: msg.fromCounterparty,
         invoiceId: msg.invoiceId,
+        memo: msg.memo,
         neededHeight: neededHeight,
         createdAt: now,
         updatedAt: now,
@@ -1006,6 +1009,8 @@ class SPVActor extends Actor {
           fromCounterparty: row.fromCounterparty,
           targetWalletId: row.walletId.isEmpty ? null : row.walletId,
           invoiceId: row.invoiceId,
+          // The payer's note the receive was parked with.
+          memo: row.memo,
         );
       } catch (e) {
         _log.severe('The stored BEEF of the parked receive of ${row.txid} does not parse: $e');

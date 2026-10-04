@@ -226,6 +226,8 @@ void main() {
       invoiceId: 'fggl-invoice',
       addresses: [bobKey.publicKey.toAddress(dartsv.NetworkType.TEST).toString()],
       amount: BigInt.from(50000),
+      // The payer's note for the payee, journaled with the payment.
+      memo: 'rent for September',
     ));
     final payment = await ready;
     expect(payment.success, isTrue, reason: payment.error);
@@ -238,6 +240,8 @@ void main() {
         await _until(() async => (await readModel.getDeferredPayment(walletId, t.id)) != null,
             'the payment is recorded as deferred');
         expect((await readModel.getDeferredPayment(walletId, t.id))!.state, DeferredPaymentState.outstanding);
+        await _until(() async => (await readModel.getTransaction(t.id, walletId: walletId))?.memo == 'rent for September',
+            'the payment row carries the memo');
         expect((await utxo(f.id, 0))!.status, isNot(UTXOStatus.spent));
         return t;
       }

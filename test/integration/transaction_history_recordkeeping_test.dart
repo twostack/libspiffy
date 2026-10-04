@@ -335,6 +335,7 @@ void main() {
           beef: beef,
           fromCounterparty: 'test-sender',
           targetWalletId: recipientWalletId,
+          memo: 'for the bicycle',
         ),
         sender: spvReceiver,
       );
@@ -383,6 +384,8 @@ void main() {
       // app's opaque marker, end to end from ReceiveTransactionMessage.
       expect(incomingTx.counterpartyMarker, 'test-sender',
           reason: 'the counterparty marker must survive the whole receive');
+      // The payer's note travels the same way.
+      expect(incomingTx.memo, 'for the bicycle', reason: 'the memo must survive the whole receive');
       
       // Step 7: Verify UTXOs were created
       final recipientUtxos = await storage.getAvailableUTXOs(recipientWalletId);

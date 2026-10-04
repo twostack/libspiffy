@@ -107,6 +107,26 @@ abstract final class TransactionRowRules {
     return null;
   }
 
+  /// The payment's note (memo) a row stores after a record carrying
+  /// [incoming], given the [stored] one.
+  ///
+  /// The memo is written by the payer for the payee. It travels exactly as
+  /// the counterparty marker does ([counterpartyMarkerAfter]): set once, by
+  /// the first record that carries one, and kept from then on. No later
+  /// record blanks it (a status update, a confirmation, a stale ARC report,
+  /// a re-delivered BEEF, an import replay, a reorganization) and none
+  /// replaces it with a different value.
+  ///
+  /// A blank string is not a memo: it is what an actor message carries when
+  /// the app supplied nothing, and it is read as absent. The value is
+  /// otherwise opaque — libspiffy journals and returns it and never
+  /// interprets it.
+  static String? memoAfter(String? stored, String? incoming) {
+    if (stored != null && stored.isNotEmpty) return stored;
+    if (incoming != null && incoming.isNotEmpty) return incoming;
+    return null;
+  }
+
   /// The `nLockTime` or `version` a row keeps after a record carrying
   /// [incoming], given the [stored] one (bead libspiffy-zpu7).
   ///

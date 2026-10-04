@@ -152,6 +152,7 @@ class OutgoingTransactions {
       ancestors: command.ancestors,
       // Who handed us the transaction, as the app names them (cq16).
       counterpartyMarker: command.counterpartyMarker,
+      memo: command.memo,
       version: currentState.version + 1,
       timestamp: DateTime.now(),
     );
@@ -240,6 +241,7 @@ class OutgoingTransactions {
       changeAmount: command.changeAmount?.toString(),
       // Who we paid, as the app names them (cq16).
       counterpartyMarker: command.counterpartyMarker,
+      memo: command.memo,
       version: currentState.version + events.length + 1,
       timestamp: DateTime.now(),
     );

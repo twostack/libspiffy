@@ -99,6 +99,9 @@ void main() {
           senderPublicKey: '02dfcbe35d95b55b5f3168ea8f12717e266ceddf88d04d2ff741272dfb0e542c2a',
           invoiceNumber: 'inv-$run');
       try {
+        expect(await migrations.getCurrentVersion(), 28);
+        // v028 (the memo on a parked receive) first, down to v027.
+        expect(await migrations.rollback(), isTrue);
         expect(await migrations.getCurrentVersion(), 27);
         await storage.upsertAddress(
             wallet,
@@ -121,7 +124,7 @@ void main() {
         expect(await migrations.rollback(), isTrue);
         expect(await migrations.getCurrentVersion(), 26);
         await migrations.migrate();
-        expect(await migrations.getCurrentVersion(), 27);
+        expect(await migrations.getCurrentVersion(), 28);
       } finally {
         await pool.execute(Sql.named('DELETE FROM addresses WHERE wallet_id = @w'), parameters: {'w': wallet});
         await pool.close();

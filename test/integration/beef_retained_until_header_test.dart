@@ -162,7 +162,7 @@ void main() {
 
   /// Hands the payment [beef] to the wallet and returns the coordinator's
   /// first answer: a verdict, or word that it waits for a header.
-  Future<coord.BEEFValidationResultEvent> receive(String beef, String subjectTxid) async {
+  Future<coord.BEEFValidationResultEvent> receive(String beef, String subjectTxid, {String? memo}) async {
     final answered = system.coordinatorEvents!
         .where((e) => e is coord.BEEFValidationResultEvent && e.txid == subjectTxid)
         .cast<coord.BEEFValidationResultEvent>()
@@ -172,6 +172,7 @@ void main() {
       walletId: walletId,
       beefHex: beef,
       fromCounterparty: 'bob',
+      memo: memo,
     ));
     return answered;
   }
@@ -223,7 +224,8 @@ void main() {
     final beef = beefHex([(g, gBump), (p, null)]);
 
     // Our chain stops at 2, G claims block 3: nothing can be checked.
-    final tooEarly = await receive(beef, p.id);
+    // The payer's note rides with the parked receive and reaches the row.
+    final tooEarly = await receive(beef, p.id, memo: 'for the bicycle');
     expect(tooEarly.valid, isFalse, reason: 'an unverifiable proof must not credit the wallet');
     expect(tooEarly.awaitingHeader, isTrue, reason: 'not a verdict: the receive waits for the header');
     expect(tooEarly.error, contains('3'), reason: 'the caller is told which header is missing: ${tooEarly.error}');
@@ -250,6 +252,9 @@ void main() {
     final ours = (await utxosOf(p.id)).where((u) => u.satoshis == BigInt.from(90000)).toList();
     expect(ours.map((u) => u.status), [UTXOStatus.pending],
         reason: 'the subject is unmined, so its outputs are pending — a BEEF proves the funding history only');
+    await _until(() async => (await readModel.getTransaction(p.id, walletId: walletId))?.memo == 'for the bicycle',
+        'the replayed receive journals the memo it was parked with');
+    expect((await readModel.getTransaction(p.id, walletId: walletId))!.counterpartyMarker, 'bob');
 
     // And the ancestor's proof is verified against the header we now hold.
     final proof = await readModel.getMerkleProof(g.id);

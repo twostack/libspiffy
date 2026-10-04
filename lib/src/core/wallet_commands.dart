@@ -576,6 +576,10 @@ class ReceiveUTXOCommand extends WalletCommand {
   /// read model. Null when the app supplies none.
   final String? counterpartyMarker;
 
+  /// The payment's note, written by the payer for the payee. libspiffy
+  /// journals it and returns it and never interprets it. Null when none.
+  final String? memo;
+
   ReceiveUTXOCommand({
     required String walletId,
     required this.txid,
@@ -589,6 +593,7 @@ class ReceiveUTXOCommand extends WalletCommand {
     this.derivationIndex,
     Map<String, dynamic>? pluginMetadata,
     this.counterpartyMarker,
+    this.memo,
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,
@@ -682,6 +687,10 @@ class RecordImportedTransactionCommand extends WalletCommand {
   /// read model. Null when the app supplies none.
   final String? counterpartyMarker;
 
+  /// The payment's note, written by the payer for the payee. libspiffy
+  /// journals it and returns it and never interprets it. Null when none.
+  final String? memo;
+
   RecordImportedTransactionCommand({
     required String walletId,
     required this.txid,
@@ -699,6 +708,7 @@ class RecordImportedTransactionCommand extends WalletCommand {
     required List<String> sendingAddresses,
     List<BeefAncestor> ancestors = const [],
     this.counterpartyMarker,
+    this.memo,
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,
@@ -774,6 +784,10 @@ class RecordOutgoingTransactionCommand extends WalletCommand {
   /// read model. Null when the app supplies none.
   final String? counterpartyMarker;
 
+  /// The payment's note, written by the payer for the payee. libspiffy
+  /// journals it and returns it and never interprets it. Null when none.
+  final String? memo;
+
   RecordOutgoingTransactionCommand({
     required String walletId,
     required this.txid,
@@ -796,6 +810,7 @@ class RecordOutgoingTransactionCommand extends WalletCommand {
     this.invoiceId,
     this.purpose,
     this.counterpartyMarker,
+    this.memo,
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,

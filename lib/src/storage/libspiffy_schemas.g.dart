@@ -4529,38 +4529,43 @@ const PendingReceiveEntitySchema = CollectionSchema(
       name: r'invoiceId',
       type: IsarType.string,
     ),
-    r'neededHeight': PropertySchema(
+    r'memo': PropertySchema(
       id: 4,
+      name: r'memo',
+      type: IsarType.string,
+    ),
+    r'neededHeight': PropertySchema(
+      id: 5,
       name: r'neededHeight',
       type: IsarType.long,
     ),
     r'resolution': PropertySchema(
-      id: 5,
+      id: 6,
       name: r'resolution',
       type: IsarType.string,
     ),
     r'resolvedAt': PropertySchema(
-      id: 6,
+      id: 7,
       name: r'resolvedAt',
       type: IsarType.dateTime,
     ),
     r'txid': PropertySchema(
-      id: 7,
+      id: 8,
       name: r'txid',
       type: IsarType.string,
     ),
     r'updatedAt': PropertySchema(
-      id: 8,
+      id: 9,
       name: r'updatedAt',
       type: IsarType.dateTime,
     ),
     r'waiting': PropertySchema(
-      id: 9,
+      id: 10,
       name: r'waiting',
       type: IsarType.bool,
     ),
     r'walletId': PropertySchema(
-      id: 10,
+      id: 11,
       name: r'walletId',
       type: IsarType.string,
     )
@@ -4631,6 +4636,12 @@ int _pendingReceiveEntityEstimateSize(
     }
   }
   {
+    final value = object.memo;
+    if (value != null) {
+      bytesCount += 3 + value.length * 3;
+    }
+  }
+  {
     final value = object.resolution;
     if (value != null) {
       bytesCount += 3 + value.length * 3;
@@ -4651,13 +4662,14 @@ void _pendingReceiveEntitySerialize(
   writer.writeDateTime(offsets[1], object.createdAt);
   writer.writeString(offsets[2], object.fromCounterparty);
   writer.writeString(offsets[3], object.invoiceId);
-  writer.writeLong(offsets[4], object.neededHeight);
-  writer.writeString(offsets[5], object.resolution);
-  writer.writeDateTime(offsets[6], object.resolvedAt);
-  writer.writeString(offsets[7], object.txid);
-  writer.writeDateTime(offsets[8], object.updatedAt);
-  writer.writeBool(offsets[9], object.waiting);
-  writer.writeString(offsets[10], object.walletId);
+  writer.writeString(offsets[4], object.memo);
+  writer.writeLong(offsets[5], object.neededHeight);
+  writer.writeString(offsets[6], object.resolution);
+  writer.writeDateTime(offsets[7], object.resolvedAt);
+  writer.writeString(offsets[8], object.txid);
+  writer.writeDateTime(offsets[9], object.updatedAt);
+  writer.writeBool(offsets[10], object.waiting);
+  writer.writeString(offsets[11], object.walletId);
 }
 
 PendingReceiveEntity _pendingReceiveEntityDeserialize(
@@ -4672,13 +4684,14 @@ PendingReceiveEntity _pendingReceiveEntityDeserialize(
   object.fromCounterparty = reader.readString(offsets[2]);
   object.id = id;
   object.invoiceId = reader.readStringOrNull(offsets[3]);
-  object.neededHeight = reader.readLong(offsets[4]);
-  object.resolution = reader.readStringOrNull(offsets[5]);
-  object.resolvedAt = reader.readDateTimeOrNull(offsets[6]);
-  object.txid = reader.readString(offsets[7]);
-  object.updatedAt = reader.readDateTime(offsets[8]);
-  object.waiting = reader.readBool(offsets[9]);
-  object.walletId = reader.readString(offsets[10]);
+  object.memo = reader.readStringOrNull(offsets[4]);
+  object.neededHeight = reader.readLong(offsets[5]);
+  object.resolution = reader.readStringOrNull(offsets[6]);
+  object.resolvedAt = reader.readDateTimeOrNull(offsets[7]);
+  object.txid = reader.readString(offsets[8]);
+  object.updatedAt = reader.readDateTime(offsets[9]);
+  object.waiting = reader.readBool(offsets[10]);
+  object.walletId = reader.readString(offsets[11]);
   return object;
 }
 
@@ -4698,18 +4711,20 @@ P _pendingReceiveEntityDeserializeProp<P>(
     case 3:
       return (reader.readStringOrNull(offset)) as P;
     case 4:
-      return (reader.readLong(offset)) as P;
-    case 5:
       return (reader.readStringOrNull(offset)) as P;
+    case 5:
+      return (reader.readLong(offset)) as P;
     case 6:
-      return (reader.readDateTimeOrNull(offset)) as P;
+      return (reader.readStringOrNull(offset)) as P;
     case 7:
-      return (reader.readString(offset)) as P;
+      return (reader.readDateTimeOrNull(offset)) as P;
     case 8:
-      return (reader.readDateTime(offset)) as P;
+      return (reader.readString(offset)) as P;
     case 9:
-      return (reader.readBool(offset)) as P;
+      return (reader.readDateTime(offset)) as P;
     case 10:
+      return (reader.readBool(offset)) as P;
+    case 11:
       return (reader.readString(offset)) as P;
     default:
       throw IsarError('Unknown property with id $propertyId');
@@ -5687,6 +5702,162 @@ extension PendingReceiveEntityQueryFilter on QueryBuilder<PendingReceiveEntity,
   }
 
   QueryBuilder<PendingReceiveEntity, PendingReceiveEntity,
+      QAfterFilterCondition> memoIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'memo',
+      ));
+    });
+  }
+
+  QueryBuilder<PendingReceiveEntity, PendingReceiveEntity,
+      QAfterFilterCondition> memoIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'memo',
+      ));
+    });
+  }
+
+  QueryBuilder<PendingReceiveEntity, PendingReceiveEntity,
+      QAfterFilterCondition> memoEqualTo(
+    String? value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'memo',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<PendingReceiveEntity, PendingReceiveEntity,
+      QAfterFilterCondition> memoGreaterThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'memo',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<PendingReceiveEntity, PendingReceiveEntity,
+      QAfterFilterCondition> memoLessThan(
+    String? value, {
+    bool include = false,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'memo',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<PendingReceiveEntity, PendingReceiveEntity,
+      QAfterFilterCondition> memoBetween(
+    String? lower,
+    String? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'memo',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<PendingReceiveEntity, PendingReceiveEntity,
+      QAfterFilterCondition> memoStartsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.startsWith(
+        property: r'memo',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<PendingReceiveEntity, PendingReceiveEntity,
+      QAfterFilterCondition> memoEndsWith(
+    String value, {
+    bool caseSensitive = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.endsWith(
+        property: r'memo',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<PendingReceiveEntity, PendingReceiveEntity,
+          QAfterFilterCondition>
+      memoContains(String value, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.contains(
+        property: r'memo',
+        value: value,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<PendingReceiveEntity, PendingReceiveEntity,
+          QAfterFilterCondition>
+      memoMatches(String pattern, {bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.matches(
+        property: r'memo',
+        wildcard: pattern,
+        caseSensitive: caseSensitive,
+      ));
+    });
+  }
+
+  QueryBuilder<PendingReceiveEntity, PendingReceiveEntity,
+      QAfterFilterCondition> memoIsEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'memo',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<PendingReceiveEntity, PendingReceiveEntity,
+      QAfterFilterCondition> memoIsNotEmpty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        property: r'memo',
+        value: '',
+      ));
+    });
+  }
+
+  QueryBuilder<PendingReceiveEntity, PendingReceiveEntity,
       QAfterFilterCondition> neededHeightEqualTo(int value) {
     return QueryBuilder.apply(this, (query) {
       return query.addFilterCondition(FilterCondition.equalTo(
@@ -6380,6 +6551,20 @@ extension PendingReceiveEntityQuerySortBy
   }
 
   QueryBuilder<PendingReceiveEntity, PendingReceiveEntity, QAfterSortBy>
+      sortByMemo() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'memo', Sort.asc);
+    });
+  }
+
+  QueryBuilder<PendingReceiveEntity, PendingReceiveEntity, QAfterSortBy>
+      sortByMemoDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'memo', Sort.desc);
+    });
+  }
+
+  QueryBuilder<PendingReceiveEntity, PendingReceiveEntity, QAfterSortBy>
       sortByNeededHeight() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'neededHeight', Sort.asc);
@@ -6551,6 +6736,20 @@ extension PendingReceiveEntityQuerySortThenBy
   }
 
   QueryBuilder<PendingReceiveEntity, PendingReceiveEntity, QAfterSortBy>
+      thenByMemo() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'memo', Sort.asc);
+    });
+  }
+
+  QueryBuilder<PendingReceiveEntity, PendingReceiveEntity, QAfterSortBy>
+      thenByMemoDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'memo', Sort.desc);
+    });
+  }
+
+  QueryBuilder<PendingReceiveEntity, PendingReceiveEntity, QAfterSortBy>
       thenByNeededHeight() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'neededHeight', Sort.asc);
@@ -6681,6 +6880,13 @@ extension PendingReceiveEntityQueryWhereDistinct
   }
 
   QueryBuilder<PendingReceiveEntity, PendingReceiveEntity, QDistinct>
+      distinctByMemo({bool caseSensitive = true}) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'memo', caseSensitive: caseSensitive);
+    });
+  }
+
+  QueryBuilder<PendingReceiveEntity, PendingReceiveEntity, QDistinct>
       distinctByNeededHeight() {
     return QueryBuilder.apply(this, (query) {
       return query.addDistinctBy(r'neededHeight');
@@ -6763,6 +6969,12 @@ extension PendingReceiveEntityQueryProperty on QueryBuilder<
       invoiceIdProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'invoiceId');
+    });
+  }
+
+  QueryBuilder<PendingReceiveEntity, String?, QQueryOperations> memoProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'memo');
     });
   }
 

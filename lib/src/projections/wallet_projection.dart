@@ -19,6 +19,7 @@ import '../models/deferred_payment.dart';
 import '../models/wallet_balances.dart' show BalanceBucket, WalletBalances;
 import '../services/watch_only_funds.dart' show splitBalanceUtxos;
 import '../storage/read_model_storage.dart';
+import '../storage/transaction_row_rules.dart';
 import '../spv/merkle_proof_header_check.dart';
 import '../utils/bump.dart';
 import '../utils/network_name.dart';
@@ -515,6 +516,7 @@ class WalletProjection extends Projection<void> {
     }
 
     await _stampCounterpartyMarker(event.walletId, event.txid, event.counterpartyMarker);
+    await _stampMemo(event.walletId, event.txid, event.memo);
 
     await _syncAddress(event.walletId, event.address, await rows.unspent(),
         newUseAt: existing == null ? event.timestamp : null);
@@ -537,6 +539,18 @@ class WalletProjection extends Projection<void> {
     final existing = await _storage.getTransaction(txid, walletId: walletId);
     if (existing == null || (existing.counterpartyMarker ?? '').isNotEmpty) return;
     await _storage.storeTransaction(walletId, existing.copyWith(counterpartyMarker: marker));
+  }
+
+  /// Records [memo] — the payment's note, written by the payer — on the
+  /// transaction row of [txid], as [_stampCounterpartyMarker] records the
+  /// marker and for the same orders of events. Nothing is created here, and
+  /// the memo is set once and never replaced
+  /// ([TransactionRowRules.memoAfter]).
+  Future<void> _stampMemo(String walletId, String txid, String? memo) async {
+    if (memo == null || memo.isEmpty) return;
+    final existing = await _storage.getTransaction(txid, walletId: walletId);
+    if (existing == null || (existing.memo ?? '').isNotEmpty) return;
+    await _storage.storeTransaction(walletId, existing.copyWith(memo: memo));
   }
 
   /// The UTXO rows this handler will read, reading nothing yet.
@@ -1252,6 +1266,9 @@ class WalletProjection extends Projection<void> {
         // Who handed the payment to us, as the app names them (bead
         // libspiffy-cq16). The backends set it once and never blank it.
         counterpartyMarker: event.counterpartyMarker,
+        // The payer's note. The backends set it once and never blank it
+        // (TransactionRowRules.memoAfter).
+        memo: event.memo,
       );
       
       // The ancestors its BEEF carried, before the transaction that needs
@@ -1356,6 +1373,8 @@ class WalletProjection extends Projection<void> {
         // Who we paid, as the app names them (bead libspiffy-cq16). A
         // record without one never blanks the stored marker.
         counterpartyMarker: event.counterpartyMarker ?? existing?.counterpartyMarker,
+        // The payment's note. A record without one never blanks it.
+        memo: TransactionRowRules.memoAfter(existing?.memo, event.memo),
       );
       
       

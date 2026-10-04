@@ -1237,7 +1237,10 @@ class PostgresWalletStorage implements ReadModelStorage {
               WHEN ($setsStatus) AND EXCLUDED.status = 'confirmed'
               THEN COALESCE(bitcoin_transactions.confirmed_at, EXCLUDED.confirmed_at)
               ELSE bitcoin_transactions.confirmed_at END,
-          notes = @notes,
+          -- The payer's note (TransactionRowRules.memoAfter): set once, by
+          -- the first record that carries one; a blank reads as absent. No
+          -- later record blanks it or replaces it.
+          notes = COALESCE(NULLIF(bitcoin_transactions.notes, ''), NULLIF(EXCLUDED.notes, '')),
           receiving_addresses = @receivingAddresses,
           sending_addresses = @sendingAddresses,
           primary_counterparty = @primaryCounterparty,
@@ -1925,7 +1928,7 @@ class PostgresWalletStorage implements ReadModelStorage {
 
   static const _pendingReceiveColumns = '''
     wallet_id, txid, beef_hex, from_counterparty, invoice_id, needed_height,
-    created_at, updated_at, resolved_at, resolution
+    created_at, updated_at, resolved_at, resolution, memo
   ''';
 
   static PendingReceive _pendingReceiveOf(List<dynamic> row) => PendingReceive(
@@ -1939,6 +1942,7 @@ class PostgresWalletStorage implements ReadModelStorage {
         updatedAt: row[7] as DateTime,
         resolvedAt: row[8] as DateTime?,
         resolution: row[9] as String?,
+        memo: row[10] as String?,
       );
 
   @override
@@ -1949,7 +1953,7 @@ class PostgresWalletStorage implements ReadModelStorage {
         INSERT INTO pending_receives ($_pendingReceiveColumns)
         VALUES (
           @walletId, @txid, @beefHex, @fromCounterparty, @invoiceId, @neededHeight,
-          @createdAt, @updatedAt, @resolvedAt, @resolution
+          @createdAt, @updatedAt, @resolvedAt, @resolution, @memo
         )
         ON CONFLICT (wallet_id, txid) DO UPDATE SET
           beef_hex = EXCLUDED.beef_hex,
@@ -1958,7 +1962,9 @@ class PostgresWalletStorage implements ReadModelStorage {
           needed_height = EXCLUDED.needed_height,
           updated_at = EXCLUDED.updated_at,
           resolved_at = EXCLUDED.resolved_at,
-          resolution = EXCLUDED.resolution
+          resolution = EXCLUDED.resolution,
+          -- The payer's note (v028): a re-park without one keeps it.
+          memo = COALESCE(NULLIF(pending_receives.memo, ''), NULLIF(EXCLUDED.memo, ''))
       '''),
       parameters: {
         'walletId': receive.walletId,
@@ -1971,6 +1977,7 @@ class PostgresWalletStorage implements ReadModelStorage {
         'updatedAt': receive.updatedAt.toUtc(),
         'resolvedAt': receive.resolvedAt?.toUtc(),
         'resolution': receive.resolution,
+        'memo': receive.memo,
       },
     );
   }

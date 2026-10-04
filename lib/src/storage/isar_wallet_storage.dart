@@ -1231,7 +1231,11 @@ class IsarWalletStorage implements ReadModelStorage {
           await _isar.pendingReceiveEntitys.getByWalletIdTxid(receive.walletId, receive.txid);
       final entity = PendingReceiveEntity.fromDomain(
           existing == null ? receive : receive.copyWith(createdAt: existing.createdAt));
-      if (existing != null) entity.id = existing.id;
+      if (existing != null) {
+        entity.id = existing.id;
+        // A re-park without the payer's note keeps it.
+        entity.memo = TransactionRowRules.memoAfter(existing.memo, receive.memo);
+      }
       await _isar.pendingReceiveEntitys.put(entity);
     });
   }

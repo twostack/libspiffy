@@ -317,6 +317,10 @@ class PendingReceiveEntity {
 
   String? invoiceId;
 
+  /// The payment's note, written by the payer. Null when none, and on rows
+  /// stored before the field existed.
+  String? memo;
+
   /// The highest block height a proof in the BEEF needs. The replay reads the
   /// waiting rows at or below the chain height through this index.
   @Index(composite: [CompositeIndex('neededHeight')])
@@ -340,6 +344,7 @@ class PendingReceiveEntity {
     ..beefHex = receive.beefHex
     ..fromCounterparty = receive.fromCounterparty
     ..invoiceId = receive.invoiceId
+    ..memo = receive.memo
     ..waiting = receive.isWaiting
     ..neededHeight = receive.neededHeight
     ..createdAt = receive.createdAt
@@ -353,6 +358,7 @@ class PendingReceiveEntity {
         beefHex: beefHex,
         fromCounterparty: fromCounterparty,
         invoiceId: invoiceId,
+        memo: memo,
         neededHeight: neededHeight,
         createdAt: createdAt,
         updatedAt: updatedAt,
@@ -861,7 +867,8 @@ class BitcoinTransactionEntity {
     primaryCounterparty = primaryCounterpartyOf(tx);
     // Set once, never blanked, never replaced (cq16).
     counterpartyMarker = TransactionRowRules.counterpartyMarkerAfter(counterpartyMarker, tx.counterpartyMarker);
-    notes = tx.memo;
+    // The payer's note: set once, never blanked, never replaced.
+    notes = TransactionRowRules.memoAfter(notes, tx.memo);
     // Consensus fields the txid commits to: set once, never blanked and
     // never revised by a later record (zpu7).
     final intrinsics = TransactionRowRules.intrinsicsOf(tx);

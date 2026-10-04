@@ -32,6 +32,12 @@ class PendingReceive {
   /// The invoice the payment is for, if any.
   final String? invoiceId;
 
+  /// The payment's note, written by the payer for the payee
+  /// (`ReceiveTransactionMessage.memo`), journaled with the payment when the
+  /// receive is replayed. libspiffy never interprets it. Null when none, and
+  /// on rows stored before the field existed.
+  final String? memo;
+
   /// The highest block height a proof in the BEEF needs before the receive
   /// can be judged. The replay runs when headers reach it.
   final int neededHeight;
@@ -58,6 +64,7 @@ class PendingReceive {
     required this.createdAt,
     required this.updatedAt,
     this.invoiceId,
+    this.memo,
     this.resolvedAt,
     this.resolution,
   });
@@ -69,6 +76,7 @@ class PendingReceive {
     String? beefHex,
     String? fromCounterparty,
     String? invoiceId,
+    String? memo,
     int? neededHeight,
     DateTime? createdAt,
     DateTime? updatedAt,
@@ -81,6 +89,7 @@ class PendingReceive {
         beefHex: beefHex ?? this.beefHex,
         fromCounterparty: fromCounterparty ?? this.fromCounterparty,
         invoiceId: invoiceId ?? this.invoiceId,
+        memo: memo ?? this.memo,
         neededHeight: neededHeight ?? this.neededHeight,
         createdAt: createdAt ?? this.createdAt,
         updatedAt: updatedAt ?? this.updatedAt,

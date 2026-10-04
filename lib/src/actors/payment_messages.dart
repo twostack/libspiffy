@@ -36,6 +36,10 @@ class PayInvoiceMessage implements Message {
   /// with the transaction this payment records. Never interpreted.
   final String? counterpartyMarker;
 
+  /// The payment's note, written by the payer for the payee. libspiffy
+  /// journals it and returns it and never interprets it. Null when none.
+  final String? memo;
+
   PayInvoiceMessage({
     required this.walletId,
     required this.invoiceId,
@@ -45,6 +49,7 @@ class PayInvoiceMessage implements Message {
     this.changeAddress,
     Map<String, dynamic>? paymentMetadata,
     this.counterpartyMarker,
+    this.memo,
   })  : addresses = frozenList(addresses),
         outputs = frozenOutputSpecsOrNull(outputs),
         paymentMetadata = frozenPlainMapOrNull(paymentMetadata);

@@ -623,6 +623,8 @@ class WalletManagerActor extends Actor {
           initialStatus: hasMerkleProof ? UTXOStatus.available : UTXOStatus.pending,
           // Who paid us, as the app names them (bead libspiffy-cq16).
           counterpartyMarker: result.counterpartyMarker,
+          // The payer's note, journaled with the payment.
+          memo: result.memo,
         );
         
         walletActor.tell(command);
@@ -670,6 +672,8 @@ class WalletManagerActor extends Actor {
         ancestors: List<BeefAncestor>.from(txData['ancestors'] ?? const <BeefAncestor>[]),
         // The payment's own row keeps who handed it to us (cq16).
         counterpartyMarker: result.counterpartyMarker,
+        // The payer's note for the payee.
+        memo: result.memo,
       );
       
       walletActor.tell(command);

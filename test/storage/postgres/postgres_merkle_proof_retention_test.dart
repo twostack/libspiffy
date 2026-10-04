@@ -87,6 +87,7 @@ void main() {
 
     try {
       // --- the pre-v009 shape, with a 'pending' placeholder row ----------
+      expect(await migrations.rollback(), isTrue); // v028 (pending receive memo)
       expect(await migrations.rollback(), isTrue); // v027 (type-42 addresses)
       expect(await migrations.rollback(), isTrue); // v026 (address chain)
       expect(await migrations.rollback(), isTrue); // v025 (wallet type from metadata)
@@ -117,7 +118,7 @@ void main() {
 
       // --- up -------------------------------------------------------------
       await migrations.migrate();
-      expect(await migrations.getCurrentVersion(), equals(27));
+      expect(await migrations.getCurrentVersion(), equals(28));
       expect(await rawRows(pendingTx, 'block_hash, status'), [
         [null, 'pendingHeader']
       ]);
@@ -160,6 +161,7 @@ void main() {
       await expectRejected(orphanOnlyTx, null, 'bogus', 'fe07'); // unknown status
 
       // --- down -----------------------------------------------------------
+      expect(await migrations.rollback(), isTrue); // v028 (pending receive memo)
       expect(await migrations.rollback(), isTrue); // v027 (type-42 addresses)
       expect(await migrations.rollback(), isTrue); // v026 (address chain)
       expect(await migrations.rollback(), isTrue); // v025 (wallet type from metadata)
@@ -193,7 +195,7 @@ void main() {
 
       // --- up again, leaving the database at the latest version ----------
       await migrations.migrate();
-      expect(await migrations.getCurrentVersion(), equals(27));
+      expect(await migrations.getCurrentVersion(), equals(28));
       expect((await storage.getMerkleProof(pendingTx))!.status, MerkleProofStatus.pendingHeader);
     } finally {
       await migrations.migrate();
@@ -235,7 +237,7 @@ void main() {
         );
 
     try {
-      expect(await migrations.getCurrentVersion(), equals(27));
+      expect(await migrations.getCurrentVersion(), equals(28));
       await storage.storeMerkleProof(txid, MerkleProof(
           txid: txid, blockHash: block, blockHeight: 9, position: 0, merkleProof: ['fe12']));
       await storage.storeMerkleProof(txid, MerkleProof(
@@ -259,6 +261,7 @@ void main() {
       await expectLater(insert(null, 'bogus', 'fe16'), throwsA(isA<ServerException>()));
 
       // --- down: rejected rows become orphaned, none is deleted ----------
+      expect(await migrations.rollback(), isTrue); // v028 (pending receive memo)
       expect(await migrations.rollback(), isTrue); // v027 (type-42 addresses)
       expect(await migrations.rollback(), isTrue); // v026 (address chain)
       expect(await migrations.rollback(), isTrue); // v025 (wallet type from metadata)
@@ -286,7 +289,7 @@ void main() {
 
       // --- up again ------------------------------------------------------
       await migrations.migrate();
-      expect(await migrations.getCurrentVersion(), equals(27));
+      expect(await migrations.getCurrentVersion(), equals(28));
       await insert(null, 'rejected', 'fe18');
       expect((await storage.getMerkleProof(txid))!.merkleProof, ['fe12']);
     } finally {
@@ -309,8 +312,9 @@ void main() {
             row[0] as String,
         ];
     try {
-      expect(await migrations.getCurrentVersion(), equals(27));
+      expect(await migrations.getCurrentVersion(), equals(28));
       expect(await indexes(), ['idx_merkle_proofs_status_height']);
+      expect(await migrations.rollback(), isTrue); // v028 (pending receive memo)
       expect(await migrations.rollback(), isTrue); // v027 (type-42 addresses)
       expect(await migrations.rollback(), isTrue); // v026 (address chain)
       expect(await migrations.rollback(), isTrue); // v025 (wallet type from metadata)
@@ -343,8 +347,9 @@ void main() {
             row[0] as String,
         ];
     try {
-      expect(await migrations.getCurrentVersion(), equals(27));
+      expect(await migrations.getCurrentVersion(), equals(28));
       expect(await indexColumns(), [contains('(status, status_changed_at)')]);
+      expect(await migrations.rollback(), isTrue); // v028 (pending receive memo)
       expect(await migrations.rollback(), isTrue); // v027 (type-42 addresses)
       expect(await migrations.rollback(), isTrue); // v026 (address chain)
       expect(await migrations.rollback(), isTrue); // v025 (wallet type from metadata)

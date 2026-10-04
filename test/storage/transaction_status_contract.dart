@@ -38,9 +38,11 @@ BitcoinTransaction _tx(
   List<String> receiving = const [],
   List<String> sending = const [],
   String? counterpartyMarker,
+  String? memo,
 }) =>
     BitcoinTransaction(
       counterpartyMarker: counterpartyMarker,
+      memo: memo,
       txid: txid,
       rawHex: rawHex,
       status: status,
@@ -441,6 +443,56 @@ void defineTransactionStatusContract(
         expect([for (final t in history) if (t.txid == txid) t.counterpartyMarker], [marker]);
         final byStatus = await s.getTransactionsByStatus(TransactionStatus.pending, walletId: wallet);
         expect([for (final t in byStatus) if (t.txid == txid) t.counterpartyMarker], [marker]);
+      });
+    });
+
+    // The payment's note (memo), written by the payer: kept exactly as the
+    // counterparty marker is (TransactionRowRules.memoAfter).
+    group('payment memo', () {
+      const memo = 'for the bicycle';
+      const otherMemo = 'something else';
+
+      test('no later record blanks or replaces a stored memo, a revert included', () async {
+        final s = storage();
+        final u = unique();
+        final wallet = 'ts-memo-keep-$u';
+        await s.storeWallet(wallet, 'W');
+        final txid = contractHex64('ts-memo-keep-tx-$u');
+        Future<String?> stored() async => (await s.getTransaction(txid, walletId: wallet))!.memo;
+
+        await s.storeTransaction(wallet, _tx(txid, status: TransactionStatus.pending, memo: memo));
+        expect(await stored(), memo);
+
+        await s.storeTransaction(wallet, _tx(txid, status: TransactionStatus.seenOnNetwork, second: 1));
+        expect(await stored(), memo, reason: 'a status update with no memo');
+        await s.storeTransaction(wallet,
+            _tx(txid, status: TransactionStatus.confirmed, height: 950, confirmations: 1, second: 2));
+        expect(await stored(), memo, reason: 'a confirmation');
+        await s.storeTransaction(wallet, _tx(txid, status: TransactionStatus.failed, second: 3));
+        expect(await stored(), memo, reason: 'a stale report the status rule refuses');
+        await s.storeTransaction(wallet,
+            _tx(txid, status: TransactionStatus.confirmed, height: 950, second: 4, memo: otherMemo));
+        expect(await stored(), memo, reason: 'a later record with another memo');
+        await s.storeTransaction(wallet,
+            _tx(txid, status: TransactionStatus.confirmed, height: 950, second: 5, memo: ''));
+        expect(await stored(), memo, reason: 'a blank memo is no memo');
+        await s.storeRevertedTransaction(wallet, _tx(txid, status: TransactionStatus.pending, second: 6));
+        expect(await stored(), memo, reason: 'a reorganization blanks nothing');
+      });
+
+      test('a row stored without a memo takes the first one a later record carries', () async {
+        final s = storage();
+        final u = unique();
+        final wallet = 'ts-memo-late-$u';
+        await s.storeWallet(wallet, 'W');
+        final txid = contractHex64('ts-memo-late-tx-$u');
+
+        await s.storeTransaction(wallet, _tx(txid, status: TransactionStatus.pending));
+        expect((await s.getTransaction(txid, walletId: wallet))!.memo, isNull);
+        await s.storeTransaction(wallet, _tx(txid, status: TransactionStatus.seenOnNetwork, second: 1, memo: memo));
+        expect((await s.getTransaction(txid, walletId: wallet))!.memo, memo);
+        final history = await s.getTransactionHistory(wallet);
+        expect([for (final t in history) if (t.txid == txid) t.memo], [memo]);
       });
     });
   });

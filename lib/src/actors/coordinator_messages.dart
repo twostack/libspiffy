@@ -233,6 +233,10 @@ class PayInvoiceCommand implements Message {
   /// record itself stays with the app. Null when none is supplied.
   final String? counterpartyMarker;
 
+  /// The payment's note, written by the payer for the payee. libspiffy
+  /// journals it and returns it and never interprets it. Null when none.
+  final String? memo;
+
   PayInvoiceCommand({
     required this.walletId,
     required this.invoiceId,
@@ -242,6 +246,7 @@ class PayInvoiceCommand implements Message {
     this.changeAddress,
     Map<String, dynamic>? paymentMetadata,
     this.counterpartyMarker,
+    this.memo,
   })  : addresses = frozenList(addresses),
         outputs = frozenOutputSpecsOrNull(outputs),
         paymentMetadata = frozenPlainMapOrNull(paymentMetadata);
@@ -306,11 +311,16 @@ class ValidateBEEFCommand implements Message {
   /// harmless.
   final List<Type42Derivation> type42Derivations;
 
+  /// The payment's note, written by the payer for the payee. libspiffy
+  /// journals it and returns it and never interprets it. Null when none.
+  final String? memo;
+
   ValidateBEEFCommand({
     required this.walletId,
     required this.beefHex,
     this.invoiceId,
     this.fromCounterparty,
+    this.memo,
     List<Type42Derivation> type42Derivations = const [],
   }) : type42Derivations = frozenList(type42Derivations);
 
@@ -351,6 +361,10 @@ class RecordOutgoingCommand implements Message {
   /// record itself stays with the app. Null when none is supplied.
   final String? counterpartyMarker;
 
+  /// The payment's note, written by the payer for the payee. libspiffy
+  /// journals it and returns it and never interprets it. Null when none.
+  final String? memo;
+
   RecordOutgoingCommand({
     required this.walletId,
     required this.txid,
@@ -368,6 +382,7 @@ class RecordOutgoingCommand implements Message {
     this.changeAddress,
     this.changeAmount,
     this.counterpartyMarker,
+    this.memo,
   })  : spentUtxoKeys = frozenList(spentUtxoKeys),
         recipientAddresses = frozenList(recipientAddresses);
 
@@ -417,10 +432,15 @@ class ImportTransactionCommand implements Message {
   final List<int> delegatedIndices;
   final List<Type42Derivation> type42Derivations;
 
+  /// The payment's note, written by the payer for the payee. libspiffy
+  /// journals it and returns it and never interprets it. Null when none.
+  final String? memo;
+
   ImportTransactionCommand({
     required this.walletId,
     required List<int> beef,
     this.fromCounterparty,
+    this.memo,
     List<int> delegatedIndices = const [],
     List<Type42Derivation> type42Derivations = const [],
   })  : beef = frozenList(beef),

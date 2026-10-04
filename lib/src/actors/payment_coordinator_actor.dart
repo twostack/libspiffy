@@ -231,7 +231,7 @@ class PaymentCoordinatorActor extends Actor {
     // payment handed back to the caller (audit A-M7): failures reported by
     // the steps below and any unexpected exception alike.
     var paymentDelivered = false;
-    final inFlight = _InFlightPayment(msg.invoiceId, msg.counterpartyMarker);
+    final inFlight = _InFlightPayment(msg.invoiceId, msg.counterpartyMarker, msg.memo);
     _inFlightPayment = inFlight;
     // A failure is answered once its inputs are released in the read model,
     // so a caller that retries on hearing it can select them again (bead
@@ -1540,6 +1540,9 @@ class PaymentCoordinatorActor extends Actor {
       // Null for the recordings that are not a payment to a counterparty
       // (a UTXO split, a channel funding): no placeholder is invented.
       counterpartyMarker: _inFlightPayment?.counterpartyMarker,
+      // The payer's note for the payee, journaled with the payment; null
+      // for recordings that are not a payment, as the marker.
+      memo: _inFlightPayment?.memo,
     );
 
     // Register the awaiter BEFORE telling the command, so we cannot miss the
@@ -1847,9 +1850,13 @@ class _InFlightPayment {
   /// with each transaction this payment records.
   final String? counterpartyMarker;
 
+  /// The payer's note for the payee, journaled with each transaction this
+  /// payment records.
+  final String? memo;
+
   final List<String> deferredTxids = [];
 
-  _InFlightPayment(this.invoiceId, [this.counterpartyMarker]);
+  _InFlightPayment(this.invoiceId, [this.counterpartyMarker, this.memo]);
 }
 
 /// A call into a third-party [TransactionBuilderPlugin] that threw (bead

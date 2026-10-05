@@ -1,5 +1,8 @@
 ## 4.0.0 (unreleased)
 
+- **Plugin actions that need no funding coin.** When a plugin's `requiredFundingUtxoCount(action)` is 0, the payment coordinator selects and reserves no wallet coin. It does not refuse the payment when the wallet has no coins. It calls the plugin with an empty funding list; the plugin names the keys it signs with through `keyFor`. A token that pays its own fees (tstokenlib's Fuelled NFT) is moved this way. Before, the coordinator always selected a coin for the payment's amount and recorded it as spent, although the transaction never spent it.
+- **Plugin payments hold every wallet output they spend.** A plugin's transaction can spend wallet outputs that the plugin found itself, such as a token the wallet holds, and the earmarks auto-provisioned for the payment. They are now held with the payment and spent when the network takes it, like the funding. A payment that spends an output already held by another payment, spent, or not yet on the network is refused with the reason.
+
 - **A plugin can name the key that signs an input.**
   `PluginTransactionRequest.keyFor(pubkeyHash)` answers a `PluginKey`: a signer bound to the wallet key with that public key hash, and the key's public key. It fails when the wallet holds no such key. libspiffy finds the key for a plugin's input from the script the signature covers. A covenant that signs only the code after an `OP_CODESEPARATOR`, with its owner in a header before it, names nobody there, so its input was signed with the funding key. The payment and provisioning paths both offer the lookup.
 

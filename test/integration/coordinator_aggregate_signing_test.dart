@@ -1136,6 +1136,68 @@ void main() {
       expect(second.error, contains('spends $covenantTxid:0, which the wallet holds as'));
     });
 
+    test('a plugin action that needs no funding coin selects and reserves none; a wallet with no coins can make it',
+        () async {
+      for (final withCoin in [true, false]) {
+        final walletId = withCoin ? 'fundless-with-coin' : 'fundless-no-coin';
+        final root = await createMnemonicWallet(walletId);
+        final owner = await generateAddress(walletId);
+        final ownerHash = dartsv.Address.fromBase58(owner).pubkeyHash160;
+        final script = covenantScriptHex(ownerHash);
+        final covenantTxid = await importParent(walletId, owner, satoshis: 5000, seed: withCoin ? 79 : 80, scriptHex: script);
+        funded['$covenantTxid:0'] = (scriptHex: script, satoshis: 5000);
+        final received = await _tellAndAwait<UTXOReceivedResponse>(
+          actorSystem,
+          libspiffy.walletManager,
+          WalletCommandMessage(
+            walletId,
+            ReceiveUTXOCommand(
+              walletId: walletId,
+              txid: covenantTxid,
+              vout: 0,
+              satoshis: BigInt.from(5000),
+              scriptPubKey: script,
+              address: owner,
+              blockHeight: withCoin ? 3000079 : 3000080,
+              confirmations: 10,
+              initialStatus: UTXOStatus.available,
+            ),
+          ),
+        );
+        expect(received.success, isTrue, reason: received.error);
+        await eventually(() async => (await libspiffy.walletStorage.getUTXO(walletId, covenantTxid, 0))?.isAvailable ?? false,
+            'the covenant output held by the wallet');
+        final coinKey = withCoin ? await fund(walletId, root, txid: _fakeTxid(withCoin ? 65 : 66), satoshis: 60000) : null;
+        final plugin = _FundlessPlugin();
+        PluginRegistry().register(plugin);
+
+        final response = await pay(PayInvoiceMessage(
+          walletId: walletId,
+          invoiceId: 'fundless-$walletId',
+          addresses: const [],
+          amount: BigInt.zero,
+          outputs: [
+            PluginOutputSpec(
+              pluginId: _FundlessPlugin.id,
+              pluginScriptType: 'covenant',
+              params: {'action': 'spend', 'covenant': covenantTxid, 'owner': ownerHash},
+              amount: BigInt.zero,
+            ),
+          ],
+        ));
+        PluginRegistry().unregister(plugin.pluginId);
+        expect(response.success, isTrue, reason: response.error);
+        final tx = primaryTx(response);
+        expect(tx.inputs, hasLength(1), reason: 'the covenant output alone');
+        expect(verifyInputs(tx), isEmpty);
+        expect(response.spentUtxoKeys, ['$covenantTxid:0']);
+        if (coinKey != null) {
+          final coin = (await libspiffy.walletStorage.getPaymentUTXOs(walletId)).where((u) => u.key == coinKey);
+          expect(coin.single.isAvailable, isTrue, reason: 'the coin was neither reserved nor spent');
+        }
+      }
+    });
+
     test('naming a key the wallet does not hold fails with the reason', () async {
       const walletId = 'named-key-missing';
       final root = await createMnemonicWallet(walletId);
@@ -1391,5 +1453,32 @@ class _NamedKeyPlugin extends _SpendAllPlugin {
     builder.spendToLockBuilder(
         dartsv.P2PKHLockBuilder.fromAddress(dartsv.Address.fromBase58(_externalAddress)), total - BigInt.from(fee));
     return TransactionBuilderResult(primaryTx: builder.build(false), primaryFeeSats: BigInt.from(fee));
+  }
+}
+
+/// Spends the covenant-shaped output of [_NamedKeyPlugin] alone, its fee
+/// paid from the output's own value: an action that needs no funding coin.
+class _FundlessPlugin extends _NamedKeyPlugin {
+  static const id = 'test_fundless';
+  @override
+  String get pluginId => id;
+  @override
+  int requiredFundingUtxoCount(String action) => 0;
+
+  @override
+  Future<TransactionBuilderResult> buildTransaction(PluginTransactionRequest request) async {
+    expect(request.fundingUtxos, isEmpty);
+    final owner = await request.keyFor(request.params['owner'] as String);
+    final tx = (dartsv.TransactionBuilder()
+          ..spendFromOutpointWithSigner(
+            owner.signer,
+            dartsv.TransactionOutpoint(request.params['covenant'] as String, 0, BigInt.from(5000), dartsv.SVScript.fromHex('ac')),
+            dartsv.TransactionInput.MAX_SEQ_NUMBER,
+            dartsv.P2PKHUnlockBuilder(owner.publicKey),
+          )
+          ..spendToLockBuilder(
+              dartsv.P2PKHLockBuilder.fromAddress(dartsv.Address.fromBase58(_externalAddress)), BigInt.from(4500)))
+        .build(false);
+    return TransactionBuilderResult(primaryTx: tx, primaryFeeSats: BigInt.from(500));
   }
 }

@@ -166,7 +166,11 @@ class PaymentCoordinatorActor extends Actor {
             'cannot fund a plugin transaction)';
       }
     }
-    if (utxos.isEmpty) {
+    // A plugin action that needs no funding coin (a token that pays its own
+    // fee) is built from no wallet coins: nothing is selected or reserved,
+    // and a wallet with no coins at all can still make it.
+    final fundless = _isPluginTransaction(msg) && _pluginFundingCount(msg) == 0;
+    if (utxos.isEmpty && !fundless) {
       _sendError(msg.invoiceId, 'Insufficient funds$excludedNote', sender: originalSender);
       return;
     }
@@ -202,7 +206,9 @@ class PaymentCoordinatorActor extends Actor {
 
     // 4. Select UTXOs covering the amount and the fee of the transaction
     // they make.
-    final selection = _selectUTXOs(utxos, amount, outputScriptBytes, rate);
+    final selection = fundless
+        ? (selectedUtxos: const <BitcoinUtxo>[], fee: BigInt.zero)
+        : _selectUTXOs(utxos, amount, outputScriptBytes, rate);
     if (selection == null) {
       final totalBalance = utxos.fold<BigInt>(
         BigInt.zero,
@@ -421,7 +427,7 @@ class PaymentCoordinatorActor extends Actor {
 
     // CRITICAL: Use the actual change address (same logic as _buildPaymentTransaction)
     // If no changeAddress was provided, we use the first UTXO's address as change destination
-    final actualChangeAddress = msg.changeAddress ?? selectedUtxos.first.address;
+    final actualChangeAddress = msg.changeAddress ?? selectedUtxos.firstOrNull?.address;
 
     // Get recipient addresses for recording
     final recipientAddresses = _getRecipientAddresses(msg.outputs, msg.addresses);
@@ -451,7 +457,8 @@ class PaymentCoordinatorActor extends Actor {
         spentUtxoKeys.add(key);
       }
     }
-    final primaryKeyPath = preSigned ? await signing.pathForAddress(msg.walletId, selectedUtxos.first.address) : null;
+    final primaryKeyPath =
+        preSigned && selectedUtxos.isNotEmpty ? await signing.pathForAddress(msg.walletId, selectedUtxos.first.address) : null;
     // Phase 4: when this TX was built by a plugin (preSigned=true), emit a
     // TransactionSignedEvent alongside the recording for audit-trail parity
     // with the SignTransactionCommand path.
@@ -843,6 +850,18 @@ class PaymentCoordinatorActor extends Actor {
   /// spends its funding through `PluginTransactionRequest.fundingInputs`
   /// and so can be funded from any output the wallet can spend alone (bead
   /// libspiffy-0nfk).
+  /// The number of funding coins the plugin building [msg] needs for its
+  /// action ([TransactionBuilderPlugin.requiredFundingUtxoCount]), or null
+  /// when no plugin builds it.
+  static int? _pluginFundingCount(PayInvoiceMessage msg) {
+    final spec = msg.outputs?.whereType<PluginOutputSpec>().firstOrNull;
+    if (spec == null) return null;
+    final plugin = PluginRegistry().getPlugin(spec.pluginId);
+    final action = spec.params['action'];
+    if (plugin is! TransactionBuilderPlugin || action is! String) return null;
+    return _guardPlugin(spec.pluginId, 'deciding how many funding UTXOs it needs', () => plugin.requiredFundingUtxoCount(action));
+  }
+
   static bool _pluginSpendsAnyOutput(PayInvoiceMessage msg) {
     final spec = msg.outputs?.whereType<PluginOutputSpec>().firstOrNull;
     if (spec == null) return false;
@@ -960,7 +979,8 @@ class PaymentCoordinatorActor extends Actor {
 
             final result = await signing.buildWithSigner(
               walletId: walletId,
-              fallbackPath: fundingPaths.first,
+              // a fundless plugin names every key it signs with (keyFor)
+              fallbackPath: fundingPaths.firstOrNull ?? const HdKeyPath(0),
               build: (signer) => _guardPluginAsync(
                   pluginOutput.pluginId,
                   'building the transaction',

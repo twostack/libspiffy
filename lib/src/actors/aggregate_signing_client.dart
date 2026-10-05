@@ -9,6 +9,7 @@ import 'package:logging/logging.dart';
 import '../core/wallet_commands.dart';
 import '../models/key_path.dart';
 import '../models/bitcoin_utxo.dart';
+import '../plugin/plugin_types.dart' show PluginKey;
 import '../storage/read_model_storage.dart';
 import '../utils/network_name.dart';
 import '../core/wallet_output_ownership.dart' show BareMultisigScript;
@@ -298,6 +299,29 @@ class AggregateSigningClient {
         'Transaction signing did not settle after $maxPasses passes');
   }
 
+  /// The wallet key whose public key hashes to [pubkeyHash] (hex), for a
+  /// plugin building with [signer] inside [buildWithSigner]: a signer bound
+  /// to that key, sharing [signer]'s passes, and the key's public key.
+  ///
+  /// Throws [AggregateSigningException] when the wallet holds no key for
+  /// that hash (or only watches its address).
+  Future<PluginKey> keyFor(String walletId, dartsv.TransactionSigner signer, String pubkeyHash) async {
+    if (signer is! _AggregateBackedSigner) {
+      throw ArgumentError('keyFor takes the signer buildWithSigner passed to the build');
+    }
+    final hash = pubkeyHash.toLowerCase();
+    if (!RegExp(r'^[0-9a-f]{40}$').hasMatch(hash)) {
+      throw ArgumentError('A public key hash is 40 hex characters, not "$pubkeyHash"');
+    }
+    final address = dartsv.Address.fromPubkeyHash(hash, await _walletNetwork(walletId)).toBase58();
+    final path = await pathForAddress(walletId, address) ??
+        (throw AggregateSigningException('Wallet $walletId holds no key with public key hash $hash'));
+    return PluginKey(
+      signer: signer.boundTo(hash),
+      publicKey: await publicKeyForAddress(walletId, address, path: path),
+    );
+  }
+
   Future<void> _signPending(
     String walletId,
     dartsv.NetworkType network,
@@ -309,10 +333,13 @@ class AggregateSigningClient {
       final input = entry.value;
       // A single signature (P2PKH, P2PK, 1-of-n) comes from the one wallet
       // key the script names; signature i of an m-of-n input from its i-th.
+      // A key the plugin named (keyFor) wins over anything in the script.
       final multisig = BareMultisigScript.parse(input.subscript);
-      final owner = multisig != null && multisig.threshold > 1
-          ? await _multisigSigner(walletId, network, multisig, input.signatureIndex, input.inputIndex)
-          : await _ownerOf(walletId, network, input.subscript);
+      final owner = input.keyHash != null
+          ? await _namedKey(walletId, network, input.keyHash!, input.inputIndex)
+          : multisig != null && multisig.threshold > 1
+              ? await _multisigSigner(walletId, network, multisig, input.signatureIndex, input.inputIndex)
+              : await _ownerOf(walletId, network, input.subscript);
       final signed = await _signInputWithKey(
         walletId: walletId,
         txHex: input.txHex,
@@ -350,6 +377,18 @@ class AggregateSigningClient {
           '${multisig.publicKeysHex.length} multisig output; the wallet holds ${owners.length} of the keys it needs');
     }
     return owners[index];
+  }
+
+  /// The wallet key a plugin named for input [inputIndex] by its public
+  /// key hash [hash].
+  Future<({KeyPath path, String pubkeyHash})> _namedKey(
+      String walletId, dartsv.NetworkType network, String hash, int inputIndex) async {
+    final path = await _keyPathOrNull(walletId, dartsv.Address.fromPubkeyHash(hash, network).toBase58());
+    if (path == null) {
+      throw AggregateSigningException('Input $inputIndex names the key with public key hash $hash, '
+          'which wallet $walletId does not hold');
+    }
+    return (path: path, pubkeyHash: hash);
   }
 
   /// The wallet address named by [script], if any.
@@ -450,8 +489,12 @@ class _PendingInput {
   /// m-of-n bare multisig input.
   final int signatureIndex;
 
+  /// The public key hash of the key a plugin named for this input
+  /// ([AggregateSigningClient.keyFor]), or null to find it in [subscript].
+  final String? keyHash;
+
   _PendingInput(this.txHex, this.inputIndex, this.subscript, this.satoshis, this.sighashType,
-      this.digest, this.signatureIndex);
+      this.digest, this.signatureIndex, this.keyHash);
 }
 
 /// Signs with signatures the aggregate has already produced and records the
@@ -460,9 +503,22 @@ class _AggregateBackedSigner extends dartsv.TransactionSigner {
   @override
   final int sigHashType;
   final Map<String, dartsv.SVSignature> _signatures;
-  final Map<String, _PendingInput> pending = {};
+  final Map<String, _PendingInput> pending;
 
-  _AggregateBackedSigner(this.sigHashType, this._signatures);
+  /// The key every signature must come from, by public key hash; null to
+  /// take it from each input's script.
+  final String? keyHash;
+
+  _AggregateBackedSigner(this.sigHashType, this._signatures)
+      : pending = {},
+        keyHash = null;
+
+  _AggregateBackedSigner._bound(this.sigHashType, this._signatures, this.pending, this.keyHash);
+
+  /// A signer for the key with public key hash [hash] that shares this
+  /// signer's signatures and pending inputs, so its inputs are signed in the
+  /// same passes.
+  _AggregateBackedSigner boundTo(String hash) => _AggregateBackedSigner._bound(sigHashType, _signatures, pending, hash);
 
   /// Well-formed stand-in so a pass can finish before the real signature is
   /// known. Never survives into a returned transaction.
@@ -489,13 +545,13 @@ class _AggregateBackedSigner extends dartsv.TransactionSigner {
     // input needing two signatures could be signed.
     final count = BareMultisigScript.parse(utxo.script)?.threshold ?? 1;
     for (var index = 0; index < count; index++) {
-      final key = '$sigHashType:${hex.encode(digest)}${count == 1 ? '' : ':$index'}';
+      final key = '$sigHashType:${hex.encode(digest)}${count == 1 ? '' : ':$index'}${keyHash == null ? '' : '@$keyHash'}';
       var signature = _signatures[key];
       if (signature == null) {
         pending.putIfAbsent(
           key,
           () => _PendingInput(_withoutUnlockingScripts(unsignedTxn), inputIndex, utxo.script,
-              utxo.satoshis, sigHashType, digest, index),
+              utxo.satoshis, sigHashType, digest, index, keyHash),
         );
         signature = _placeholder(sigHashType);
       }

@@ -202,9 +202,10 @@ void main() {
     return key;
   }
 
-  /// Imports a confirmed parent (with a merkle proof) paying [satoshis] to
-  /// [address] and makes its output spendable. Returns the parent txid.
-  Future<String> fundWithImportedParent(String walletId, String address,
+  /// Imports a confirmed parent (with a merkle proof) whose one output pays
+  /// [satoshis] to [address], locked by [scriptHex] (P2PKH by default).
+  /// Returns the parent txid.
+  Future<String> importParent(String walletId, String address,
       {required int satoshis, int seed = 99, String? scriptHex}) async {
     final parent = dartsv.Transaction()
       ..version = 2
@@ -260,6 +261,14 @@ void main() {
                 null &&
             await libspiffy.walletStorage.getTransaction(parentTxid) != null,
         'the imported parent in the read model');
+    return parentTxid;
+  }
+
+  /// Imports a confirmed parent (with a merkle proof) paying [satoshis] to
+  /// [address] and makes its output spendable. Returns the parent txid.
+  Future<String> fundWithImportedParent(String walletId, String address,
+      {required int satoshis, int seed = 99, String? scriptHex}) async {
+    final parentTxid = await importParent(walletId, address, satoshis: satoshis, seed: seed, scriptHex: scriptHex);
     await fund(walletId, address, txid: parentTxid, satoshis: satoshis, scriptHex: scriptHex);
     return parentTxid;
   }
@@ -322,6 +331,21 @@ void main() {
             pluginScriptType: 'p2pkh',
             params: const {'action': 'spend', 'to': _externalAddress},
             amount: BigInt.from(amount),
+          ),
+        ],
+      );
+
+  PayInvoiceMessage namedKeyPayment(String walletId, String covenantTxid, String ownerHash) => PayInvoiceMessage(
+        walletId: walletId,
+        invoiceId: 'named-${DateTime.now().microsecondsSinceEpoch}',
+        addresses: const [],
+        amount: BigInt.from(10000),
+        outputs: [
+          PluginOutputSpec(
+            pluginId: _NamedKeyPlugin.id,
+            pluginScriptType: 'covenant',
+            params: {'action': 'spend', 'covenant': covenantTxid, 'owner': ownerHash},
+            amount: BigInt.from(10000),
           ),
         ],
       );
@@ -1030,6 +1054,53 @@ void main() {
       expect(verifyInputs(tx), isEmpty);
     });
   });
+
+  group('a plugin names the key for an input (keyFor)', () {
+    // A covenant-shaped output: its owner is in a push before the
+    // separator, so the subscript the signature covers (OP_CHECKSIG) names
+    // no wallet address.
+    String covenantScriptHex(String ownerHash) => hex.encode([
+          53, ...hex.decode(ownerHash), ...List<int>.filled(33, 0), // PUSH(owner ‖ 33 zero bytes)
+          0x75, 0xab, 0xac, // OP_DROP OP_CODESEPARATOR OP_CHECKSIG
+        ]);
+
+    test('the input is signed by the named key, not the funding key', () async {
+      const walletId = 'named-key';
+      final root = await createMnemonicWallet(walletId);
+      final owner = await generateAddress(walletId);
+      final ownerHash = dartsv.Address.fromBase58(owner).pubkeyHash160;
+      final script = covenantScriptHex(ownerHash);
+      final covenantTxid = await importParent(walletId, owner, satoshis: 1, seed: 77, scriptHex: script);
+      funded['$covenantTxid:0'] = (scriptHex: script, satoshis: 1);
+      await fund(walletId, root, txid: _fakeTxid(60), satoshis: 60000);
+      final plugin = _NamedKeyPlugin();
+      PluginRegistry().register(plugin);
+      addTearDown(() => PluginRegistry().unregister(plugin.pluginId));
+
+      final response = await pay(namedKeyPayment(walletId, covenantTxid, ownerHash));
+      expect(response.success, isTrue, reason: response.error);
+      final tx = primaryTx(response);
+      expect(verifyInputs(tx), isEmpty);
+      final pushedKey = tx.inputs[0].script!.chunks[1].buf!;
+      expect(hex.encode(dartsv.hash160(pushedKey)), ownerHash, reason: 'input 0 is signed by the owner');
+      expect(hex.encode(dartsv.hash160(tx.inputs[1].script!.chunks[1].buf!)),
+          dartsv.Address.fromBase58(root).pubkeyHash160, reason: 'the funding input by its own key');
+    });
+
+    test('naming a key the wallet does not hold fails with the reason', () async {
+      const walletId = 'named-key-missing';
+      final root = await createMnemonicWallet(walletId);
+      await fund(walletId, root, txid: _fakeTxid(61), satoshis: 60000);
+      final stranger = dartsv.Address.fromBase58(_externalAddress).pubkeyHash160;
+      final plugin = _NamedKeyPlugin();
+      PluginRegistry().register(plugin);
+      addTearDown(() => PluginRegistry().unregister(plugin.pluginId));
+
+      final response = await pay(namedKeyPayment(walletId, _fakeTxid(62), stranger));
+      expect(response.success, isFalse);
+      expect(response.error, contains('holds no key with public key hash $stranger'));
+    });
+  });
 }
 
 /// Plugin whose transaction spends every funding UTXO to one P2PKH output,
@@ -1236,5 +1307,40 @@ class _TypedReceiver<T> extends Actor {
     if (payload is T && !completer.isCompleted) {
       completer.complete(payload);
     }
+  }
+}
+
+/// Spends output 0 of a covenant-shaped transaction, the 1-sat output
+/// `PUSH(owner ‖ zeros) OP_DROP OP_CODESEPARATOR OP_CHECKSIG`, with the key
+/// the params name by its hash ([PluginTransactionRequest.keyFor]), and the
+/// funding with the request's signer, all to one P2PKH output.
+class _NamedKeyPlugin extends _SpendAllPlugin {
+  static const id = 'test_named_key';
+  @override
+  String get pluginId => id;
+  @override
+  List<String> get scriptTypes => const ['covenant'];
+
+  @override
+  Future<TransactionBuilderResult> buildTransaction(PluginTransactionRequest request) async {
+    final owner = await request.keyFor(request.params['owner'] as String);
+    final builder = dartsv.TransactionBuilder()
+      ..spendFromOutpointWithSigner(
+        owner.signer,
+        dartsv.TransactionOutpoint(request.params['covenant'] as String, 0, BigInt.one,
+            dartsv.SVScript.fromHex('ac')), // the subscript after the separator
+        dartsv.TransactionInput.MAX_SEQ_NUMBER,
+        dartsv.P2PKHUnlockBuilder(owner.publicKey),
+      );
+    var total = BigInt.one;
+    for (final input in request.fundingInputs) {
+      total += input.utxo.satoshis;
+      builder.spendFromOutpointWithSigner(
+          request.signer, input.outpoint, dartsv.TransactionInput.MAX_SEQ_NUMBER, input.newUnlocker());
+    }
+    const fee = 500;
+    builder.spendToLockBuilder(
+        dartsv.P2PKHLockBuilder.fromAddress(dartsv.Address.fromBase58(_externalAddress)), total - BigInt.from(fee));
+    return TransactionBuilderResult(primaryTx: builder.build(false), primaryFeeSats: BigInt.from(fee));
   }
 }

@@ -74,7 +74,7 @@ export 'src/services/script_type_registry.dart'; // Script type identification a
 // 🔌 PLUGIN SYSTEM - Extensible script/token integration
 export 'src/plugin/script_plugin.dart';              // Core plugin interface
 export 'src/plugin/plugin_registry.dart';            // Plugin registration singleton
-export 'src/plugin/plugin_types.dart';               // PluginUnlockSpec, PluginTransactionRequest
+export 'src/plugin/plugin_types.dart';               // PluginUnlockSpec, PluginTransactionRequest, PluginKey
 export 'src/plugin/transaction_builder_plugin.dart'; // Multi-output transaction builder interface
 
 // SECURE SIGNING - Callback-based transaction signing for plugin isolation

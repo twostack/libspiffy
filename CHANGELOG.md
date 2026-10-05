@@ -1,5 +1,8 @@
 ## 4.0.0 (unreleased)
 
+- **A plugin can name the key that signs an input.**
+  `PluginTransactionRequest.keyFor(pubkeyHash)` answers a `PluginKey`: a signer bound to the wallet key with that public key hash, and the key's public key. It fails when the wallet holds no such key. libspiffy finds the key for a plugin's input from the script the signature covers. A covenant that signs only the code after an `OP_CODESEPARATOR`, with its owner in a header before it, names nobody there, so its input was signed with the funding key. The payment and provisioning paths both offer the lookup.
+
 - **Breaking: Isar is now `isar_community` 3.3.2.** The original `isar` 3.1.0+1
   is unmaintained, and its Android library is aligned to 4 KB pages, which
   Google Play rejects for apps targeting Android 15 or later. `Isar` is part

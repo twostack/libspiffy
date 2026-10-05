@@ -124,6 +124,27 @@ class MyTokenTransactionPlugin extends TransactionBuilderPlugin {
 }
 ```
 
+### Signing an input whose owner the signed script does not name
+
+libspiffy signs each input a plugin adds with the wallet key that the spent script names: a 20-byte push (a public key hash) or a public key push that matches a wallet address. That fails for a covenant whose signature covers only the code after an `OP_CODESEPARATOR` while its owner sits in a header before it. The script the signature covers then names nobody, and libspiffy would fall back to the funding key.
+
+The plugin names the key itself with `request.keyFor(pubkeyHash)`, giving the HASH160 as 40 hex characters. It returns a `PluginKey`:
+
+- **`signer`:** signs with that key and no other. It shares the request signer's signing passes.
+- **`publicKey`:** for the unlocking script.
+
+It fails, and so does the payment, when the wallet holds no key with that hash.
+
+```dart
+final owner = await request.keyFor(ownerHashHex);
+builder.spendFromOutpointWithSigner(
+  owner.signer,
+  TransactionOutpoint(tokenTxid, 1, BigInt.one, codeAfterSeparator), // the subscript the signature covers
+  TransactionInput.MAX_SEQ_NUMBER,
+  P2PKHUnlockBuilder(owner.publicKey),
+);
+```
+
 ### PluginRegistry
 
 Singleton that manages all registered plugins.
@@ -365,7 +386,8 @@ void main() {
 | `PluginRegistry` | Singleton registry for managing plugins |
 | `PluginOutputSpec` | Sealed variant of `InvoiceOutputSpec` for plugin-delegated outputs |
 | `PluginUnlockSpec` | Parameters for building an unlocking script |
-| `PluginTransactionRequest` | Request object for `TransactionBuilderPlugin.buildTransaction()` |
+| `PluginTransactionRequest` | Request object for `TransactionBuilderPlugin.buildTransaction()`; `keyFor(pubkeyHash)` names a wallet key |
+| `PluginKey` | A wallet key named by hash: a signer bound to it and its public key |
 
 ### BitcoinUtxo.pluginMetadata
 
@@ -389,5 +411,5 @@ void main() {
 | `lib/src/plugin/script_plugin.dart` | `ScriptPlugin` abstract class |
 | `lib/src/plugin/transaction_builder_plugin.dart` | `TransactionBuilderPlugin` abstract class |
 | `lib/src/plugin/plugin_registry.dart` | `PluginRegistry` singleton |
-| `lib/src/plugin/plugin_types.dart` | `PluginUnlockSpec`, `PluginTransactionRequest` |
+| `lib/src/plugin/plugin_types.dart` | `PluginUnlockSpec`, `PluginTransactionRequest`, `PluginKey` |
 | `lib/src/models/invoice_output_spec.dart` | `PluginOutputSpec` (alongside other sealed variants) |

@@ -81,6 +81,28 @@ class PluginFundingInput {
   UnlockingScriptBuilder newUnlocker() => _newUnlocker();
 }
 
+/// A wallet key a plugin names by the HASH160 of its public key: a signer
+/// whose signatures come from that key, and the public key itself.
+///
+/// For inputs whose spender is named outside the script the signature
+/// covers. libspiffy finds the key for an input from the subscript it signs
+/// (a 20-byte or public-key push naming a wallet address); a covenant that
+/// signs only the code after an OP_CODESEPARATOR, with its owner in a header
+/// before it, names nobody there, so the plugin names the key instead.
+class PluginKey {
+  /// Signs inputs with the named key, and only with it.
+  final TransactionSigner signer;
+
+  /// The named key's public key, for the unlocking script.
+  final SVPublicKey publicKey;
+
+  const PluginKey({required this.signer, required this.publicKey});
+}
+
+/// The wallet key whose public key hashes to [pubkeyHash] (40 hex
+/// characters). Fails when the wallet holds no such key.
+typedef PluginKeyLookup = Future<PluginKey> Function(String pubkeyHash);
+
 /// Request for a [TransactionBuilderPlugin] to build a complete transaction.
 ///
 /// libspiffy provides the funding UTXOs, a [TransactionSigner] for signing
@@ -128,6 +150,16 @@ class PluginTransactionRequest {
   /// may refuse.
   final FeeRate feeRate;
 
+  /// Looks up a wallet key by HASH160 ([keyFor]); null where the caller
+  /// offers none.
+  final PluginKeyLookup? keyLookup;
+
+  /// The wallet key whose public key hashes to [pubkeyHash]: a signer bound
+  /// to it and its public key. Throws when the wallet holds no such key, or
+  /// when this request offers no lookup.
+  Future<PluginKey> keyFor(String pubkeyHash) =>
+      (keyLookup ?? (throw UnsupportedError('This request does not look up wallet keys')))(pubkeyHash);
+
   const PluginTransactionRequest({
     required this.fundingUtxos,
     required this.signer,
@@ -136,6 +168,7 @@ class PluginTransactionRequest {
     this.transactionLookup,
     required this.fundingInputs,
     required this.feeRate,
+    this.keyLookup,
   });
 }
 

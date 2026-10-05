@@ -947,6 +947,7 @@ class PaymentCoordinatorActor extends Actor {
                         params: pluginOutput.params,
                         fundingInputs: _fundingInputs(pluginFundingUtxos, pluginPublicKeys),
                         feeRate: rate,
+                        keyLookup: (hash) => signing.keyFor(walletId, signer, hash),
                         transactionLookup: (txid) async {
                           // All auto-provisioned ancestors are persisted before
                           // _autoProvisionForPlugin returns, so a single storage read
@@ -1673,6 +1674,7 @@ class PaymentCoordinatorActor extends Actor {
                   params: msg.pluginParams,
                   fundingInputs: [_fundingInput(selectedUtxo, publicKey)],
                   feeRate: feeRate,
+                  keyLookup: (hash) => signing.keyFor(walletId, signer, hash),
                 ))),
       );
       _log.info('[provision $walletId] built ${provisions.length} TXs '

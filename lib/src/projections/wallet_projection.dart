@@ -84,6 +84,7 @@ class WalletProjection extends Projection<void> {
         DeferredTransactionFailedEvent,
         DeferredTransactionCancelledEvent,
         DeferredSpendReclaimedEvent,
+        DeferredSpendCompletedEvent,
         TransactionVoidedEvent,
       ];
   
@@ -203,6 +204,9 @@ class WalletProjection extends Projection<void> {
         return true;
       case final DeferredSpendReclaimedEvent reclaimed:
         await _handleDeferredSpendReclaimed(reclaimed);
+        return true;
+      case final DeferredSpendCompletedEvent completed:
+        await _handleDeferredSpendCompleted(completed);
         return true;
       case final TransactionVoidedEvent voided:
         await _handleTransactionVoided(voided);
@@ -979,6 +983,28 @@ class WalletProjection extends Projection<void> {
     final rows = _utxoRows(walletId);
     if (await _voidOwnOutputs(walletId, reclaimedTxid, at, rows)) {
       await _recalculateAndPersistForWallet(walletId, at, await rows.unspent());
+    }
+  }
+
+  /// A half-signed payment was completed by its counterparty: its row is
+  /// resolved as completed, and its own pending outputs are voided (the
+  /// completed transaction's recording added its own).
+  Future<void> _handleDeferredSpendCompleted(DeferredSpendCompletedEvent event) async {
+    final half = await _storage.getDeferredPayment(event.walletId, event.txid);
+    if (half == null) {
+      _log.warning('Completion of ${event.txid} in ${event.walletId}: no deferred payment row; nothing resolved');
+      return;
+    }
+    if (half.state != DeferredPaymentState.outstanding) return;
+    await _storage.storeDeferredPayment(half.copyWith(
+      state: DeferredPaymentState.completed,
+      updatedAt: event.timestamp,
+      resolvedAt: event.timestamp,
+      resolutionReason: DeferredPayment.completedBy(event.completedTxid),
+    ));
+    final rows = _utxoRows(event.walletId);
+    if (await _voidOwnOutputs(event.walletId, event.txid, event.timestamp, rows)) {
+      await _recalculateAndPersistForWallet(event.walletId, event.timestamp, await rows.unspent());
     }
   }
 

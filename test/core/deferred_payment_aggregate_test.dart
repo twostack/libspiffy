@@ -6,6 +6,8 @@
 /// reconciled.
 library;
 
+import 'dart:typed_data';
+
 import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:eventador/eventador.dart';
 import 'package:logging/logging.dart';
@@ -868,6 +870,89 @@ void main() {
       expect(replayed.utxos[_pendingInput]!.status, UTXOStatus.pending);
       expect(DeferredPayment.stateFromName('cancelled'), DeferredPaymentState.cancelled);
       expect(DeferredPayment.stateFromName(null), DeferredPaymentState.outstanding);
+    });
+  });
+
+  group('completion: a payment the wallet signed in part, completed by its counterparty', () {
+    final foreign = '${'f0' * 32}:1';
+
+    /// A sale's transaction: input 0 the counterparty's (no script in the
+    /// half), input 1 the wallet's [_input] with the wallet's own script.
+    String sale({List<int> foreignScript = const [], List<int> ownScript = const [0x51], int sats = 1000, int seq = 0xffffffff}) {
+      final tx = dartsv.Transaction();
+      for (final (key, script) in [(foreign, foreignScript), (_input, ownScript)]) {
+        final parts = key.split(':');
+        final input = dartsv.TransactionInput(parts[0], int.parse(parts[1]), seq);
+        if (script.isNotEmpty) input.script = dartsv.SVScript.fromByteArray(Uint8List.fromList(script));
+        tx.addInput(input);
+      }
+      tx.addOutput(dartsv.TransactionOutput(
+          BigInt.from(sats), dartsv.SVScript.fromHex('76a9149d02ce72bbdc1713d5537a0705d8ec7d9702c81088ac')));
+      return tx.serialize();
+    }
+
+    Future<(String, String)> recordHalf(_Wallet wallet) async {
+      final half = sale();
+      final txid = dartsv.Transaction.fromHex(half).id;
+      await wallet.handle(RecordOutgoingTransactionCommand(
+        walletId: _w, txid: txid, rawHex: half, totalInputSats: 21000, totalOutputSats: 1000, fee: 100,
+        numInputs: 2, numOutputs: 1, txVersion: 1, txLockTime: 0, spentUtxoKeys: [_input],
+        recipientAddresses: const ['muq9kAb9ri62VChAMRkuwK5bTve4iDLWBg'], paymentAmount: BigInt.from(1000),
+        deferSpend: true, invoiceId: 'inv-sale', purpose: 'invoice-payment',
+      ));
+      return (txid, half);
+    }
+
+    CompleteDeferredSpendCommand complete(String txid, String half, String done) => CompleteDeferredSpendCommand(
+        walletId: _w, txid: txid, completedTxid: dartsv.Transaction.fromHex(done).id, rawHex: done, halfRawHex: half,
+        fee: 100, paymentAmount: BigInt.from(1000));
+
+    test('the completed transaction is recorded, takes over the hold, and the half is completed', () async {
+      final wallet = _Wallet();
+      final (txid, half) = await recordHalf(wallet);
+      final done = sale(foreignScript: [0x52, 0x53]);
+      final doneTxid = dartsv.Transaction.fromHex(done).id;
+      expect(doneTxid, isNot(txid));
+
+      final events = await wallet.handle(complete(txid, half, done));
+      expect(events.whereType<TransactionRecordedEvent>().single.txid, doneTxid);
+      final hold = events.whereType<TransactionSpendDeferredEvent>().single;
+      expect((hold.txid, hold.supersedes, hold.purpose), (doneTxid, txid, 'completion:$txid'));
+      expect(events.whereType<DeferredSpendCompletedEvent>().single.completedUtxoKeys, [_input]);
+      for (final state in [wallet.aggregate.currentState, wallet.replay().currentState]) {
+        expect(state.utxos[_input]!.reservedByTxId, doneTxid, reason: 'the hold moved to the completed transaction');
+        expect(state.metadata['deferredSpends'][txid]['state'], 'completed');
+        expect(state.metadata['deferredSpends'][txid]['resolutionReason'], contains(doneTxid));
+        expect(state.metadata['deferredSpends'][doneTxid]['state'], 'outstanding');
+        expect((state.metadata['deferredHolds'] as Map)[_input], doneTxid);
+      }
+
+      // the network takes the completed transaction: spent by it, seen
+      await wallet.handle(SpendUTXOCommand(walletId: _w, utxoKey: _input, spendingTxId: doneTxid, fee: BigInt.zero));
+      expect((wallet.utxo(_input).status, wallet.utxo(_input).spentInTxId), (UTXOStatus.spent, doneTxid));
+      expect(wallet.deferred(doneTxid)['state'], 'seen');
+    });
+
+    test('refused: other outputs, other inputs, another sequence, a changed script on the wallet\'s input, '
+        'a half that is not the payment, a payment not outstanding', () async {
+      final wallet = _Wallet();
+      final (txid, half) = await recordHalf(wallet);
+      for (final (done, why) in [
+        (sale(foreignScript: [0x52], sats: 999), 'same inputs and outputs'),
+        (sale(foreignScript: [0x52], seq: 0xfffffffe), 'not the input the wallet signed'),
+        (sale(foreignScript: [0x52], ownScript: [0x52]), 'changes the unlocking script of the wallet'),
+      ]) {
+        await expectLater(wallet.handle(complete(txid, half, done)), throwsA(predicate((e) => '$e'.contains(why))), reason: why);
+      }
+      await expectLater(wallet.handle(complete(txid, _paymentHex([_input]), sale(foreignScript: [0x52]))),
+          throwsA(predicate((e) => '$e'.contains('not $txid'))));
+      final other = await wallet.pay([_other], sats: 2000);
+      await expectLater(
+          wallet.handle(complete(other, _paymentHex([_other], sats: 2000), _paymentHex([_other], sats: 2000))),
+          throwsA(predicate((e) => '$e'.contains('cannot be the payment itself'))));
+      await wallet.handle(complete(txid, half, sale(foreignScript: [0x52])));
+      await expectLater(wallet.handle(complete(txid, half, sale(foreignScript: [0x53]))),
+          throwsA(predicate((e) => '$e'.contains('completed, not outstanding'))));
     });
   });
 

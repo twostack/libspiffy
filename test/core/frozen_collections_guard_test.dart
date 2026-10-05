@@ -81,8 +81,13 @@ const _sources = <String, String?>{
 /// `SignWithAnchorKeyCommand`s and both `DeriveType42DestinationCommand`s),
 /// 165 with BRC-100 identities (`.anchorContext` of both
 /// `Brc100KeyOperationCommand`s, `.payerAnchorContext` of both
-/// `DeriveType42DestinationCommand`s).
-const _expectedFields = 165;
+/// `DeriveType42DestinationCommand`s), 174 with the completed deferred
+/// payment (`CompleteDeferredSpendCommand.recipientAddresses`,
+/// `DeferredSpendCompletedEvent.completedUtxoKeys`) and the foreign-spend
+/// check (`CheckForeignSpendsCommand.utxoKeys`, `ForeignSpendsCheckedEvent
+/// .checked`, `.spends`, `.unchecked`, `CheckOutputSpendersMessage.utxoKeys`,
+/// `OutputSpendersResult.spends`, `.unchecked`).
+const _expectedFields = 174;
 
 final _classStart = RegExp(r'^(?:abstract |sealed )?class (\w+)', multiLine: true);
 final _field = RegExp(r'^  final ((?:List|Map|Set)<.*?>\??) (\w+);(?: *//.*)?$', multiLine: true);

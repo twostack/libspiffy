@@ -6,6 +6,7 @@ import '../models/address_chain.dart';
 import '../models/brc100_key_request.dart';
 import '../models/bitcoin_transaction.dart';
 import '../models/deferred_payment.dart';
+import '../models/foreign_spend.dart';
 import '../models/invoice_output_spec.dart';
 import '../models/key_path.dart';
 import '../models/persistent_map.dart';
@@ -3284,6 +3285,135 @@ class ReclaimDeferredPaymentCommand implements Message {
   ActorRef? get replyTo => null;
   @override
   DateTime get timestamp => DateTime.now();
+}
+
+/// Completes an outstanding deferred payment that the wallet signed only in
+/// part, with [rawHex]: the same transaction carrying the counterparty's
+/// signatures on the inputs the wallet does not hold.
+///
+/// A sale in one transaction is the case: the first side to sign records a
+/// half that cannot be broadcast, and holds its inputs. When the other side
+/// returns the completed transaction, the wallet records it in the half's
+/// place: same inputs, sequences, outputs, version and lock time, the
+/// wallet's own unlocking scripts unchanged. The completed transaction
+/// takes over the hold, and the half is
+/// [DeferredPaymentState.completed]. Nothing is broadcast here: settle the
+/// completed transaction as any other deferred payment (or the counterparty
+/// broadcasts it). Replied with [DeferredPaymentCompletedEvent].
+class CompleteDeferredPaymentCommand implements Message {
+  final String walletId;
+
+  /// The half-signed deferred payment.
+  final String txid;
+
+  /// The completed transaction.
+  final String rawHex;
+  final String? requestId;
+
+  CompleteDeferredPaymentCommand({
+    required this.walletId,
+    required this.txid,
+    required this.rawHex,
+    this.requestId,
+  });
+
+  @override
+  String get correlationId => requestId ?? 'complete-deferred-$txid';
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId, 'txid': txid};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+/// Result of [CompleteDeferredPaymentCommand]: on [success] the completed
+/// transaction [completedTxid] is recorded and holds the half's inputs.
+class DeferredPaymentCompletedEvent extends CoordinatorEvent {
+  @override
+  final String walletId;
+  final String txid;
+  final String? completedTxid;
+  final String requestId;
+  final bool success;
+  final String? error;
+
+  DeferredPaymentCompletedEvent({
+    required this.walletId,
+    required this.txid,
+    required this.requestId,
+    required this.success,
+    this.completedTxid,
+    this.error,
+  });
+
+  @override
+  DateTime get eventTimestamp => DateTime.now();
+}
+
+/// Asks whether outputs the wallet holds were spent by someone else: by
+/// default every plugin output (a token) the wallet has not spent. For each
+/// one the configured data source answers who spent it; a spender that is
+/// mined and proven against the local headers marks the output spent
+/// (`ForeignSpend.proven`), and its raw transaction comes back so the host
+/// can import it. Anything less is a lead, reported and not acted on.
+///
+/// A token the wallet holds can be spent without the wallet: a Voucher NFT
+/// the issuer forced back after its expiry, a listing a stranger bought, a
+/// pot seized. The wallet learns of it by asking about what it holds, one
+/// output at a time; it never scans the chain. Replied with
+/// [ForeignSpendsCheckedEvent].
+class CheckForeignSpendsCommand implements Message {
+  final String walletId;
+
+  /// `txid:vout` keys to check; null for every unspent plugin output.
+  final List<String>? utxoKeys;
+  final String? requestId;
+
+  CheckForeignSpendsCommand({required this.walletId, List<String>? utxoKeys, this.requestId})
+      : utxoKeys = frozenListOrNull(utxoKeys);
+
+  @override
+  String get correlationId => requestId ?? 'check-foreign-spends-$walletId-${DateTime.now().microsecondsSinceEpoch}';
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+/// Result of [CheckForeignSpendsCommand].
+class ForeignSpendsCheckedEvent extends CoordinatorEvent {
+  @override
+  final String walletId;
+  final String requestId;
+  final bool success;
+
+  /// The outputs checked.
+  final List<String> checked;
+
+  /// The ones another transaction spends.
+  final List<ForeignSpend> spends;
+
+  /// Outputs whose check failed, with why.
+  final Map<String, String> unchecked;
+  final String? error;
+
+  ForeignSpendsCheckedEvent({
+    required this.walletId,
+    required this.requestId,
+    required this.success,
+    List<String> checked = const [],
+    List<ForeignSpend> spends = const [],
+    Map<String, String> unchecked = const {},
+    this.error,
+  })  : checked = frozenList(checked),
+        spends = frozenList(spends),
+        unchecked = frozenMap(unchecked);
+
+  @override
+  DateTime get eventTimestamp => DateTime.now();
 }
 
 /// Result of [ReclaimDeferredPaymentCommand].

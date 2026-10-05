@@ -1,6 +1,7 @@
 import 'package:dactor/dactor.dart';
 import 'package:libspiffy/libspiffy.dart';
 import '../core/wallet_commands.dart';
+import '../models/foreign_spend.dart';
 import '../models/deferred_payment.dart';
 import '../models/address_chain.dart';
 import '../models/brc100_key_request.dart';
@@ -1733,6 +1734,56 @@ class CheckDeferredPaymentStatusMessage implements Message {
   DateTime get timestamp => DateTime.now();
 }
 
+/// Asks ARCActor which of [utxoKeys] (outputs of wallet [walletId]) the
+/// configured data source reports spent, and by what. A spender that is
+/// confirmed and whose merkle proof matches the local headers is evidence:
+/// the output is marked spent by it. Anything less is reported as a lead and
+/// changes nothing. Replied with [OutputSpendersResult].
+///
+/// This is how a wallet learns that something it holds was spent without
+/// it: a token taken back by its issuer after an expiry, a listing bought, a
+/// pot seized. It asks about outputs it holds, one by one; it does not scan
+/// the chain.
+class CheckOutputSpendersMessage implements Message {
+  final String walletId;
+  final List<String> utxoKeys;
+
+  CheckOutputSpendersMessage({required this.walletId, required List<String> utxoKeys})
+      : utxoKeys = frozenList(utxoKeys);
+
+  @override
+  String get correlationId => 'check-spenders-$walletId';
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId, 'count': utxoKeys.length};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+/// Reply to [CheckOutputSpendersMessage].
+class OutputSpendersResult extends ActorResponse {
+  final String walletId;
+  final List<ForeignSpend> spends;
+
+  /// Outputs whose check failed (the data source did not answer), with why.
+  final Map<String, String> unchecked;
+  @override
+  final bool success;
+  @override
+  final String? error;
+
+  OutputSpendersResult({
+    required this.walletId,
+    required this.success,
+    List<ForeignSpend> spends = const [],
+    Map<String, String> unchecked = const {},
+    this.error,
+  })  : spends = frozenList(spends),
+        unchecked = frozenMap(unchecked),
+        super(metadata: {'walletId': walletId, 'success': success});
+}
+
 /// Asks ARCActor to broadcast the deferred payment [txid] itself: the
 /// unproven transactions of [beefHex] (its unconfirmed ancestors) first,
 /// then [rawTxHex]. Idempotent. Replied with [DeferredPaymentNetworkResult].
@@ -1814,6 +1865,35 @@ class DeferredPaymentNetworkResult extends ActorResponse {
   @override
   String toString() => 'DeferredPaymentNetworkResult($txid, success: $success, status: $networkStatus, '
       'source: $source, proof: $proofStatus, confirmed: $confirmed${error != null ? ', error: $error' : ''})';
+}
+
+/// Reply to a `CompleteDeferredSpendCommand`: the wallet journaled the
+/// completed transaction, moved the hold on the half's inputs to it, and
+/// resolved the half as `DeferredPaymentState.completed`.
+class DeferredSpendCompletedResponse extends ActorResponse {
+  final String walletId;
+
+  /// The half-signed deferred payment.
+  final String txid;
+
+  /// The completed transaction.
+  final String completedTxid;
+  @override
+  final bool success;
+  @override
+  final String? error;
+
+  DeferredSpendCompletedResponse({
+    required this.walletId,
+    required this.txid,
+    required this.completedTxid,
+    required this.success,
+    this.error,
+  }) : super(metadata: {'walletId': walletId, 'txid': txid, 'completedTxid': completedTxid, 'success': success});
+
+  @override
+  String toString() => 'DeferredSpendCompletedResponse($walletId, $txid -> $completedTxid, success: $success'
+      '${error != null ? ', error: $error' : ''})';
 }
 
 /// Reply to a `ReclaimDeferredSpendCommand` (bead libspiffy-87a): the

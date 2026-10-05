@@ -679,6 +679,57 @@ void main() {
       expect(failedRows(), isEmpty);
     });
   });
+
+  // A token the wallet holds can be spent without it (a Voucher NFT forced
+  // back by its issuer, a listing bought): the wallet asks about what it
+  // holds, output by output (CheckOutputSpendersMessage).
+  group('outputs the wallet holds, spent by someone else', () {
+    Future<OutputSpendersResult> checkSpenders(List<String> keys, {bool confirmed = true, int? tamper, bool lookup = true}) async {
+      if (lookup) {
+        final l = _LookupDataSource()..spenders['$_fundingTxid:0'] = OutputSpender(txid: kFixtureTxid, vin: 0, confirmed: confirmed);
+        l.raw[kFixtureTxid] = kFixtureTxHex;
+        l.proofs[kFixtureTxid] = MerkleProofData(
+            txid: kFixtureTxid, blockHeight: kFixtureHeight, merkleRoot: '', index: kFixtureIndex,
+            nodes: fixtureNodes(tamperLevel: tamper), format: 'tsc');
+        dataSource = l;
+      }
+      await storage.storeBlockHeader(fixtureHeader(), kFixtureHeight);
+      await storeUtxo(_inputKey, UTXOStatus.available);
+      await spawnActor();
+      final r = await arcActor.ask<OutputSpendersResult>(
+          CheckOutputSpendersMessage(walletId: _wallet, utxoKeys: keys), const Duration(seconds: 10));
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      return r;
+    }
+
+    test('a mined spender proven against the local headers marks the output spent, with its bytes', () async {
+      final r = await checkSpenders([_inputKey, '${'0f' * 32}:3']);
+      expect(r.success, isTrue);
+      final s = r.spends.single;
+      expect((s.utxoKey, s.spentBy, s.confirmed, s.proven), (_inputKey, kFixtureTxid, true, true));
+      expect(s.spenderRawHex, kFixtureTxHex);
+      expect(spends(), ['$_inputKey>$kFixtureTxid']);
+    });
+
+    test('an unconfirmed spender is a lead: reported, nothing marked', () async {
+      final r = await checkSpenders([_inputKey], confirmed: false);
+      expect((r.spends.single.confirmed, r.spends.single.proven), (false, false));
+      expect(spends(), isEmpty);
+    });
+
+    test('a spender whose proof the stored header contradicts is not proven', () async {
+      final r = await checkSpenders([_inputKey], tamper: 0);
+      expect(r.spends.single.proven, isFalse);
+      expect(spends(), isEmpty);
+    });
+
+    test('a data source that cannot look up spenders: refused, nothing marked', () async {
+      final r = await checkSpenders([_inputKey], lookup: false);
+      expect(r.success, isFalse);
+      expect(r.error, contains('cannot look up'));
+      expect(spends(), isEmpty);
+    });
+  });
 }
 
 /// Records every wallet command.

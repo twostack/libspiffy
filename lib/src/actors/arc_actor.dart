@@ -10,6 +10,7 @@ import 'package:logging/logging.dart';
 
 import '../core/wallet_commands.dart';
 import '../models/bitcoin_transaction.dart';
+import '../models/foreign_spend.dart';
 import '../models/bitcoin_utxo.dart' show UTXOStatus;
 import '../models/deferred_payment.dart';
 import '../models/blockchain_data_models.dart' show MerkleProofData;
@@ -286,6 +287,10 @@ class ARCActor extends Actor {
 
         case final BroadcastDeferredPaymentMessage msg:
           context.sender?.tell(await _broadcastDeferredPayment(msg));
+          break;
+
+        case final CheckOutputSpendersMessage msg:
+          context.sender?.tell(await _checkOutputSpenders(msg));
           break;
 
         case StopArcWorkMessage():
@@ -1360,6 +1365,65 @@ class ARCActor extends Actor {
       )));
     }
     return conflict;
+  }
+
+  /// See [CheckOutputSpendersMessage].
+  Future<OutputSpendersResult> _checkOutputSpenders(CheckOutputSpendersMessage msg) async {
+    final dataSource = _dataSource;
+    if (dataSource == null || dataSource is! SpentOutputLookup) {
+      return OutputSpendersResult(
+          walletId: msg.walletId, success: false, error: 'The configured data source cannot look up who spent an output');
+    }
+    final lookup = dataSource as SpentOutputLookup;
+    final spends = <ForeignSpend>[];
+    final unchecked = <String, String>{};
+    for (final key in msg.utxoKeys) {
+      final parts = key.split(':');
+      final vout = parts.length == 2 ? int.tryParse(parts[1]) : null;
+      if (vout == null) {
+        unchecked[key] = 'not txid:vout';
+        continue;
+      }
+      try {
+        final spender = await lookup.getOutputSpender(parts[0], vout);
+        if (spender == null) continue;
+        var proven = false;
+        String? raw;
+        if (spender.confirmed) {
+          // The source's word is a lead; the spender's bytes and its proof
+          // against our own headers are the evidence.
+          ImportedTransaction? imported;
+          try {
+            imported = await TransactionImportService(
+              dataSource: dataSource,
+              headerAtHeight: _storage.getBlockHeaderByHeight,
+              requireVerifiedHeader: true,
+            ).importTransaction(spender.txid);
+          } catch (e) {
+            _log.info('The spender ${spender.txid} of $key is not proven: $e');
+          }
+          proven = imported != null &&
+              imported.headerVerified &&
+              imported.transaction.inputs.any((i) => i.prevTxnId.toString() == parts[0] && i.prevTxnOutputIndex == vout);
+          if (imported != null && proven) {
+            raw = imported.rawHex;
+            _walletManager.tell(WalletCommandMessage(
+                msg.walletId,
+                SpendUTXOCommand(
+                    walletId: msg.walletId,
+                    utxoKey: key,
+                    spendingTxId: spender.txid,
+                    fee: BigInt.zero,
+                    blockHeight: imported.blockHeight)));
+          }
+        }
+        spends.add(ForeignSpend(
+            utxoKey: key, spentBy: spender.txid, confirmed: spender.confirmed, proven: proven, spenderRawHex: raw));
+      } catch (e) {
+        unchecked[key] = '$e';
+      }
+    }
+    return OutputSpendersResult(walletId: msg.walletId, success: true, spends: spends, unchecked: unchecked);
   }
 
   /// The first input of [rawHex] (transaction [txid]) that another

@@ -1766,6 +1766,8 @@ class PaymentChannelManagerActor extends Actor {
       DeferredPaymentState.failed => 'the network rejected it$detail',
       DeferredPaymentState.reclaimed =>
         'the wallet reclaimed its inputs$detail',
+      DeferredPaymentState.completed =>
+        'its counterparty completed it as another transaction$detail',
       DeferredPaymentState.outstanding ||
       DeferredPaymentState.seen ||
       DeferredPaymentState.mined =>

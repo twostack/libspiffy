@@ -431,6 +431,111 @@ class DeferredPayments {
     return events;
   }
 
+  /// Completes the outstanding half-signed deferred payment
+  /// [command]`.txid`: records the counterparty's completed transaction,
+  /// moves the hold to it, and resolves the half as
+  /// [DeferredPaymentState.completed] ([CompleteDeferredSpendCommand]).
+  List<Event> complete(
+      WalletState currentState, CompleteDeferredSpendCommand command, OutgoingTransactions outgoing) {
+    if (!currentState.isCreated) {
+      throw StateError('Cannot complete a deferred payment of non-existent wallet');
+    }
+    final record = DeferredPayments.record(currentState, command.txid);
+    if (record == null) {
+      throw StateError('Transaction ${command.txid} is not a journaled deferred payment of wallet ${command.walletId}');
+    }
+    final state = record['state']?.toString() ?? DeferredPaymentState.outstanding.name;
+    if (state != DeferredPaymentState.outstanding.name) {
+      throw StateError('Deferred payment ${command.txid} is $state, not outstanding; nothing to complete');
+    }
+    if (record['reclaimTxid'] != null) {
+      throw StateError('Deferred payment ${command.txid} is being reclaimed by ${record['reclaimTxid']}; it cannot be completed');
+    }
+    if (command.completedTxid == command.txid) {
+      throw ArgumentError('The completion of ${command.txid} cannot be the payment itself');
+    }
+
+    dartsv.Transaction parse(String raw, String what) {
+      try {
+        return dartsv.Transaction.fromHex(raw);
+      } catch (e) {
+        throw ArgumentError('The $what of ${command.txid} does not parse: $e');
+      }
+    }
+
+    final half = parse(command.halfRawHex, 'half-signed transaction');
+    if (half.id != command.txid) throw ArgumentError('The half-signed transaction is ${half.id}, not ${command.txid}');
+    final done = parse(command.rawHex, 'completed transaction');
+    if (done.id != command.completedTxid) {
+      throw ArgumentError('The completed transaction is ${done.id}, not ${command.completedTxid}');
+    }
+
+    final holds = currentState.metadata[_deferredHoldsKey];
+    final heldKeys = <String>[
+      if (holds is Map)
+        for (final entry in holds.entries)
+          if (entry.value?.toString() == command.txid) entry.key.toString(),
+    ]..sort();
+    if (heldKeys.isEmpty) {
+      throw StateError('Deferred payment ${command.txid} holds no inputs; there is nothing to complete');
+    }
+
+    // The same transaction, with only the counterparty's unlocking scripts
+    // filled in: every input signs SIGHASH_ALL, so this is what the wallet
+    // agreed to, and its own inputs keep the wallet's own scripts.
+    String outs(dartsv.Transaction t) => [for (final o in t.outputs) '${o.satoshis}:${o.script.toHex()}'].join(',');
+    if (half.version != done.version || half.nLockTime != done.nLockTime) {
+      throw StateError('The completion of ${command.txid} changes the version or the lock time');
+    }
+    if (half.inputs.length != done.inputs.length || outs(half) != outs(done)) {
+      throw StateError('The completion of ${command.txid} does not have the same inputs and outputs');
+    }
+    for (var i = 0; i < half.inputs.length; i++) {
+      final a = half.inputs[i], b = done.inputs[i];
+      final key = '${a.prevTxnId}:${a.prevTxnOutputIndex}';
+      if (key != '${b.prevTxnId}:${b.prevTxnOutputIndex}' || a.sequenceNumber != b.sequenceNumber) {
+        throw StateError('Input $i of the completion of ${command.txid} is not the input the wallet signed');
+      }
+      if (heldKeys.contains(key) && a.script?.toHex() != b.script?.toHex()) {
+        throw StateError('The completion of ${command.txid} changes the unlocking script of the wallet\'s input $key');
+      }
+    }
+
+    final totalOut = done.outputs.fold(BigInt.zero, (sum, o) => sum + o.satoshis);
+    final events = outgoing.recordOutgoing(
+      currentState,
+      RecordOutgoingTransactionCommand(
+        walletId: command.walletId,
+        txid: command.completedTxid,
+        rawHex: command.rawHex,
+        totalInputSats: totalOut.toInt() + command.fee,
+        totalOutputSats: totalOut.toInt(),
+        fee: command.fee,
+        numInputs: done.inputs.length,
+        numOutputs: done.outputs.length,
+        txVersion: done.version,
+        txLockTime: done.nLockTime,
+        spentUtxoKeys: heldKeys,
+        recipientAddresses: command.recipientAddresses,
+        paymentAmount: command.paymentAmount,
+        deferSpend: true,
+        preSigned: true,
+        purpose: DeferredPaymentPurpose.completionOf(command.txid),
+      ),
+      supersedesDeferred: command.txid,
+    );
+    events.add(DeferredSpendCompletedEvent(
+      walletId: command.walletId,
+      txid: command.txid,
+      completedTxid: command.completedTxid,
+      completedUtxoKeys: heldKeys,
+      version: currentState.version + events.length + 1,
+      timestamp: DateTime.now(),
+    ));
+    _log.info('Deferred payment ${command.txid} was completed by its counterparty as ${command.completedTxid}');
+    return events;
+  }
+
   // ---------------------------------------------------------------------------
   // Events
   // ---------------------------------------------------------------------------
@@ -624,6 +729,27 @@ class DeferredPayments {
       if (selfState == DeferredPaymentState.seen.name || selfState == DeferredPaymentState.mined.name) {
         _resolveReclaimed(state, event.txid, event.reclaimTxid, event.timestamp);
       }
+    }
+    state.version = event.version;
+    state.lastModified = event.timestamp;
+  }
+
+  /// A half-signed payment was completed: it is resolved as
+  /// [DeferredPaymentState.completed] (the completed transaction already
+  /// holds its inputs), and its own pending outputs are voided, since it can
+  /// never be mined.
+  static void applyCompleted(WalletStateBuilder state, DeferredSpendCompletedEvent event) {
+    final record = _recordForUpdate(state, event.txid);
+    if (record != null && record['state'] == DeferredPaymentState.outstanding.name) {
+      _putRecord(
+        state,
+        event.txid,
+        record
+            .put('state', DeferredPaymentState.completed.name)
+            .put('resolvedAt', event.timestamp.toIso8601String())
+            .put('resolutionReason', DeferredPayment.completedBy(event.completedTxid)),
+      );
+      _voidOwnOutputs(state, event.txid, event.timestamp);
     }
     state.version = event.version;
     state.lastModified = event.timestamp;

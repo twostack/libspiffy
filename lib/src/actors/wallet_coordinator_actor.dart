@@ -671,6 +671,10 @@ class WalletCoordinatorActor extends Actor {
         unawaited(_handleCancelDeferredPayment(message));
       } else if (message is ReclaimDeferredPaymentCommand) {
         unawaited(_handleReclaimDeferredPayment(message));
+      } else if (message is CompleteDeferredPaymentCommand) {
+        unawaited(_handleCompleteDeferredPayment(message));
+      } else if (message is CheckForeignSpendsCommand) {
+        unawaited(_handleCheckForeignSpends(message));
       } else if (message is ShutdownCommand) {
         await _handleShutdown();
       }
@@ -2120,6 +2124,106 @@ class WalletCoordinatorActor extends Actor {
   /// The payment is not resolved here. It becomes
   /// [DeferredPaymentState.reclaimed] when the network reports the
   /// self-spend, which is also when its outputs become spendable.
+  Future<void> _handleCheckForeignSpends(CheckForeignSpendsCommand cmd) async {
+    final requestId = cmd.correlationId;
+    try {
+      final keys = cmd.utxoKeys ??
+          [
+            for (final u in await _storage.getUTXOs(cmd.walletId))
+              if (u.pluginMetadata != null && u.status != UTXOStatus.spent && u.status != UTXOStatus.voided) u.key,
+          ];
+      if (keys.isEmpty) {
+        _emitEvent(ForeignSpendsCheckedEvent(walletId: cmd.walletId, requestId: requestId, success: true));
+        return;
+      }
+      final result = await _arcActor.ask<wm.OutputSpendersResult>(
+          wm.CheckOutputSpendersMessage(walletId: cmd.walletId, utxoKeys: keys), _deferredNetworkTimeout * keys.length);
+      _emitEvent(ForeignSpendsCheckedEvent(
+        walletId: cmd.walletId,
+        requestId: requestId,
+        success: result.success,
+        checked: keys,
+        spends: result.spends,
+        unchecked: result.unchecked,
+        error: result.error,
+      ));
+    } catch (e) {
+      _emitEvent(ForeignSpendsCheckedEvent(
+          walletId: cmd.walletId, requestId: requestId, success: false, error: 'Checking for foreign spends failed: $e'));
+    }
+  }
+
+  Future<void> _handleCompleteDeferredPayment(CompleteDeferredPaymentCommand cmd) async {
+    final requestId = cmd.correlationId;
+    DeferredPaymentCompletedEvent failure(String error, {String? completedTxid}) => DeferredPaymentCompletedEvent(
+        walletId: cmd.walletId, txid: cmd.txid, requestId: requestId, success: false, completedTxid: completedTxid, error: error);
+    try {
+      final payment = await _storage.getDeferredPayment(cmd.walletId, cmd.txid);
+      if (payment == null) {
+        _emitEvent(failure('Transaction ${cmd.txid} is not a deferred payment of wallet ${cmd.walletId}'));
+        return;
+      }
+      if (!payment.isOutstanding) {
+        _emitEvent(failure('Deferred payment ${cmd.txid} is ${payment.state.name}; only an outstanding payment '
+            'can be completed'));
+        return;
+      }
+      final half = await _storage.getTransaction(cmd.txid, walletId: cmd.walletId);
+      if (half == null || half.rawHex.isEmpty) {
+        _emitEvent(failure('The wallet has no stored transaction for ${cmd.txid}'));
+        return;
+      }
+      final String completedTxid;
+      try {
+        completedTxid = dartsv.Transaction.fromHex(cmd.rawHex).id;
+      } catch (e) {
+        _emitEvent(failure('The completed transaction does not parse: $e'));
+        return;
+      }
+      final applied = awaitProjectionApplied(
+        _walletProjection,
+        matches: (e) =>
+            e is domain_events.DeferredSpendCompletedEvent && e.walletId == cmd.walletId && e.txid == cmd.txid,
+        alreadyApplied: () async =>
+            (await _storage.getDeferredPayment(cmd.walletId, cmd.txid))?.state == DeferredPaymentState.completed,
+      );
+      final wm.DeferredSpendCompletedResponse response;
+      try {
+        response = await _askWallet<wm.DeferredSpendCompletedResponse>(
+          wm.WalletCommandMessage(
+            cmd.walletId,
+            domain.CompleteDeferredSpendCommand(
+              walletId: cmd.walletId,
+              txid: cmd.txid,
+              completedTxid: completedTxid,
+              rawHex: cmd.rawHex,
+              halfRawHex: half.rawHex,
+              fee: half.fee.toInt(),
+              recipientAddresses: half.receivingAddresses,
+              paymentAmount: -half.netAmount,
+            ),
+          ),
+          const Duration(seconds: 30),
+        );
+      } catch (e) {
+        unawaited(applied.catchError((_) => null));
+        _emitEvent(failure('The wallet did not answer the completion of ${cmd.txid}: $e', completedTxid: completedTxid));
+        return;
+      }
+      if (!response.success) {
+        unawaited(applied.catchError((_) => null));
+        _emitEvent(failure(response.error ?? 'The wallet refused to complete ${cmd.txid}', completedTxid: completedTxid));
+        return;
+      }
+      await applied;
+      _emitEvent(DeferredPaymentCompletedEvent(
+          walletId: cmd.walletId, txid: cmd.txid, requestId: requestId, success: true, completedTxid: completedTxid));
+    } catch (e, st) {
+      _log.warning('Completing deferred payment ${cmd.txid} failed: $e\n$st');
+      _emitEvent(failure('Completing ${cmd.txid} failed: $e'));
+    }
+  }
+
   Future<void> _handleReclaimDeferredPayment(ReclaimDeferredPaymentCommand cmd) async {
     final requestId = cmd.correlationId;
     DeferredPaymentReclaimedEvent failure(String error, {String? reclaimTxid}) =>

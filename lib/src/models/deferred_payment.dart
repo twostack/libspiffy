@@ -89,6 +89,16 @@ enum DeferredPaymentState {
   /// Appended after [cancelled]: states are journaled and stored by name,
   /// so a journal or a row written before this state replays unchanged.
   reclaimed,
+
+  /// The wallet signed only some inputs of this transaction, and the
+  /// counterparty completed it by signing the others
+  /// (`CompleteDeferredSpendCommand`): the completed transaction, with
+  /// another txid, took over the hold. Terminal: this half was never
+  /// broadcastable, and its own pending outputs are voided. The completed
+  /// transaction's record names it (purpose `completion:<txid>`).
+  ///
+  /// Appended after [reclaimed], for the same reason.
+  completed,
 }
 
 /// The `purpose` a deferred payment carries, for the values the wallet
@@ -109,6 +119,18 @@ abstract final class DeferredPaymentPurpose {
   static String? reclaimedTxid(String? purpose) =>
       purpose != null && purpose.startsWith(reclaimPrefix) && purpose.length > reclaimPrefix.length
           ? purpose.substring(reclaimPrefix.length)
+          : null;
+
+  /// Purpose prefix of a transaction a counterparty completed.
+  static const String completionPrefix = 'completion:';
+
+  /// The purpose of the transaction that completes the half-signed [txid].
+  static String completionOf(String txid) => '$completionPrefix$txid';
+
+  /// The half-signed payment [purpose] completes, or null.
+  static String? completedTxid(String? purpose) =>
+      purpose != null && purpose.startsWith(completionPrefix) && purpose.length > completionPrefix.length
+          ? purpose.substring(completionPrefix.length)
           : null;
 }
 
@@ -371,6 +393,11 @@ class DeferredPayment {
     }
     return added ? merged : null;
   }
+
+  /// The resolution reason recorded when a half-signed payment is completed
+  /// by its counterparty as [completedTxid].
+  static String completedBy(String completedTxid) =>
+      'Completed by the counterparty as $completedTxid, which took over its inputs';
 
   /// The resolution reason recorded when a payment is reclaimed by the
   /// wallet's own self-spend [reclaimTxid] (bead libspiffy-87a).

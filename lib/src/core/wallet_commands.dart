@@ -1609,6 +1609,62 @@ class CancelDeferredSpendCommand extends WalletCommand {
   String get commandType => 'CancelDeferredSpendCommand';
 }
 
+/// Completes the outstanding deferred payment [txid], a transaction the
+/// wallet signed only in part: [rawHex] is the same transaction with the
+/// counterparty's signatures on the inputs the wallet does not hold. A sale
+/// in one transaction is the case: the buyer signs its coin, the seller its
+/// token, and the first to sign records a half that can never be broadcast.
+///
+/// The aggregate refuses unless [rawHex] is [txid] with only unlocking
+/// scripts changed, and none of the inputs the payment holds: the same
+/// version, lock time, input outpoints and sequences in order, and the
+/// same outputs byte for byte. Because every input signs SIGHASH_ALL, that
+/// is the transaction the wallet agreed to. The completed transaction is
+/// recorded as an outgoing deferred payment that takes over the hold
+/// (purpose `completion:<txid>`); [txid] becomes
+/// `DeferredPaymentState.completed` and its own pending outputs are voided.
+/// Refused for a payment that is not outstanding or is being reclaimed.
+class CompleteDeferredSpendCommand extends WalletCommand {
+  /// The half-signed deferred payment.
+  final String txid;
+
+  /// Txid of [rawHex]; it must be the transaction's own id.
+  final String completedTxid;
+
+  /// The completed transaction.
+  final String rawHex;
+
+  /// The half the wallet recorded as [txid] (the aggregate keeps no raw
+  /// transactions; [txid] commits to these bytes, and the aggregate checks).
+  final String halfRawHex;
+
+  /// What the half was recorded with, carried over to the completed
+  /// transaction's record: its fee, payees and payment amount (the
+  /// coordinator reads them from the half's stored record).
+  final int fee;
+  final List<String> recipientAddresses;
+  final BigInt paymentAmount;
+
+  CompleteDeferredSpendCommand({
+    required String walletId,
+    required this.txid,
+    required this.completedTxid,
+    required this.rawHex,
+    required this.halfRawHex,
+    this.fee = 0,
+    List<String> recipientAddresses = const [],
+    BigInt? paymentAmount,
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  })  : recipientAddresses = frozenList(recipientAddresses),
+        paymentAmount = paymentAmount ?? BigInt.zero,
+        super(walletId: walletId, commandId: commandId, timestamp: timestamp, metadata: metadata);
+
+  @override
+  String get commandType => 'CompleteDeferredSpendCommand';
+}
+
 /// Reclaims the outstanding deferred payment [txid]: records [rawHex], the
 /// wallet's own signed transaction spending that payment's held inputs back
 /// to itself, and moves the hold on those inputs to it (bead libspiffy-87a).

@@ -2892,3 +2892,55 @@ class DeferredSpendReclaimedEvent extends WalletEvent {
         metadata: map['metadata'] as Map<String, dynamic>?,
       );
 }
+
+/// The half-signed deferred payment [txid] was completed by its
+/// counterparty as [completedTxid] (`CompleteDeferredSpendCommand`). The
+/// completed transaction's own recording, journaled just before this event,
+/// took over the hold on [completedUtxoKeys]; [txid] is resolved as
+/// `DeferredPaymentState.completed` and its own pending outputs are voided.
+class DeferredSpendCompletedEvent extends WalletEvent {
+  static const String stableTypeName = 'wallet.transaction.deferred_completed';
+
+  @override
+  String get typeName => stableTypeName;
+
+  final String txid;
+  final String completedTxid;
+  final List<String> completedUtxoKeys;
+
+  DeferredSpendCompletedEvent({
+    required String walletId,
+    required this.txid,
+    required this.completedTxid,
+    List<String> completedUtxoKeys = const [],
+    String? eventId,
+    DateTime? timestamp,
+    int? version,
+    Map<String, dynamic>? metadata,
+  })  : completedUtxoKeys = frozenList(completedUtxoKeys),
+        super(
+          walletId: walletId,
+          eventId: eventId,
+          timestamp: timestamp,
+          version: version,
+          metadata: metadata,
+        );
+
+  @override
+  Map<String, dynamic> getWalletEventData() => {
+        'txid': txid,
+        'completedTxid': completedTxid,
+        'completedUtxoKeys': completedUtxoKeys,
+      };
+
+  static DeferredSpendCompletedEvent fromMap(Map<String, dynamic> map) => DeferredSpendCompletedEvent(
+        walletId: map['walletId'] as String,
+        txid: map['txid'] as String,
+        completedTxid: map['completedTxid'] as String,
+        completedUtxoKeys: [for (final k in (map['completedUtxoKeys'] as List? ?? const [])) k.toString()],
+        eventId: map['eventId'] as String?,
+        timestamp: _deferredDate(map['timestamp']),
+        version: map['version'] as int?,
+        metadata: map['metadata'] as Map<String, dynamic>?,
+      );
+}

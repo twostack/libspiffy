@@ -302,7 +302,9 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         // with the first of those instead.
         for (final event in command is ReclaimDeferredSpendCommand
             ? events.whereType<DeferredSpendReclaimedEvent>()
-            : events) {
+            : command is CompleteDeferredSpendCommand
+                ? events.whereType<DeferredSpendCompletedEvent>()
+                : events) {
           if (event is WalletCreatedEvent) {
             sender.tell(WalletCreatedResponse(
               walletId: event.walletId,
@@ -345,6 +347,13 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
               txid: event.txid,
               success: true,
               releasedUtxoKeys: [for (final r in event.releasedInputs) r.utxoKey],
+            ));
+          } else if (event is DeferredSpendCompletedEvent) {
+            sender.tell(DeferredSpendCompletedResponse(
+              walletId: event.walletId,
+              txid: event.txid,
+              completedTxid: event.completedTxid,
+              success: true,
             ));
           } else if (event is DeferredSpendReclaimedEvent) {
             sender.tell(DeferredSpendReclaimedResponse(
@@ -517,6 +526,14 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
       sender.tell(DeferredSpendCancelledResponse(
         walletId: command.walletId,
         txid: command.txid,
+        success: false,
+        error: errorMessage,
+      ));
+    } else if (command is CompleteDeferredSpendCommand) {
+      sender.tell(DeferredSpendCompletedResponse(
+        walletId: command.walletId,
+        txid: command.txid,
+        completedTxid: command.completedTxid,
         success: false,
         error: errorMessage,
       ));
@@ -721,6 +738,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         return _deferred.cancel(currentState, cmd);
       case final ReclaimDeferredSpendCommand cmd:
         return _deferred.reclaim(currentState, cmd, _transactions);
+      case final CompleteDeferredSpendCommand cmd:
+        return _deferred.complete(currentState, cmd, _transactions);
       case final VoidUnsettledTransactionCommand cmd:
         return _deferred.voidUnsettled(currentState, cmd);
       default:
@@ -821,6 +840,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         DeferredPayments.applyCancelled(state, cancelled);
       case final DeferredSpendReclaimedEvent reclaimed:
         DeferredPayments.applyReclaimed(state, reclaimed);
+      case final DeferredSpendCompletedEvent completed:
+        DeferredPayments.applyCompleted(state, completed);
       case final TransactionVoidedEvent voided:
         DeferredPayments.applyVoided(state, voided);
       default:

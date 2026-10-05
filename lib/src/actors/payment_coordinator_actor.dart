@@ -427,6 +427,30 @@ class PaymentCoordinatorActor extends Actor {
     final recipientAddresses = _getRecipientAddresses(msg.outputs, msg.addresses);
 
     final spentUtxoKeys = selectedUtxos.map((u) => '${u.txid}:${u.vout}').toList();
+    if (preSigned) {
+      // A plugin's transaction can also spend wallet outputs the plugin found
+      // itself: a token the wallet holds, which is no funding coin, and the
+      // earmarks auto-provisioned for this payment. They are held with the
+      // payment and spent when the network takes it, like the funding. Any
+      // other output already held by another payment, or spent, would make
+      // two payments of one output: refused.
+      for (final input in dartsv.Transaction.fromHex(signedPaymentTx.rawHex).inputs) {
+        final key = '${input.prevTxnId}:${input.prevTxnOutputIndex}';
+        if (spentUtxoKeys.contains(key)) continue;
+        if (ancestorTxids?.contains(input.prevTxnId) ?? false) {
+          spentUtxoKeys.add(key); // an earmark this payment provisioned, broadcast with it
+          continue;
+        }
+        final utxo = await _storage.getUTXO(msg.walletId, input.prevTxnId, input.prevTxnOutputIndex);
+        if (utxo == null) continue;
+        if (!utxo.isAvailable) {
+          fail('The plugin transaction spends $key, which the wallet holds as ${utxo.status.name}'
+              '${utxo.spentInTxId != null ? ' (spent in ${utxo.spentInTxId})' : ''}');
+          return false;
+        }
+        spentUtxoKeys.add(key);
+      }
+    }
     final primaryKeyPath = preSigned ? await signing.pathForAddress(msg.walletId, selectedUtxos.first.address) : null;
     // Phase 4: when this TX was built by a plugin (preSigned=true), emit a
     // TransactionSignedEvent alongside the recording for audit-trail parity

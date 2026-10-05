@@ -1087,6 +1087,55 @@ void main() {
           dartsv.Address.fromBase58(root).pubkeyHash160, reason: 'the funding input by its own key');
     });
 
+    test('a wallet output the plugin spends itself is held with the payment, and a second payment of it is refused',
+        () async {
+      const walletId = 'named-key-held';
+      final root = await createMnemonicWallet(walletId);
+      final owner = await generateAddress(walletId);
+      final ownerHash = dartsv.Address.fromBase58(owner).pubkeyHash160;
+      final script = covenantScriptHex(ownerHash);
+      final covenantTxid = await importParent(walletId, owner, satoshis: 1, seed: 78, scriptHex: script);
+      funded['$covenantTxid:0'] = (scriptHex: script, satoshis: 1);
+      // the wallet holds the covenant output, as it holds a token
+      final received = await _tellAndAwait<UTXOReceivedResponse>(
+        actorSystem,
+        libspiffy.walletManager,
+        WalletCommandMessage(
+          walletId,
+          ReceiveUTXOCommand(
+            walletId: walletId,
+            txid: covenantTxid,
+            vout: 0,
+            satoshis: BigInt.one,
+            scriptPubKey: script,
+            address: owner,
+            blockHeight: 3000078,
+            confirmations: 10,
+            initialStatus: UTXOStatus.available,
+          ),
+        ),
+      );
+      expect(received.success, isTrue, reason: received.error);
+      await eventually(() async => (await libspiffy.walletStorage.getUTXO(walletId, covenantTxid, 0))?.isAvailable ?? false,
+          'the covenant output held by the wallet');
+      await fund(walletId, root, txid: _fakeTxid(63), satoshis: 60000);
+      await fund(walletId, root, txid: _fakeTxid(64), satoshis: 60000);
+      final plugin = _NamedKeyPlugin();
+      PluginRegistry().register(plugin);
+      addTearDown(() => PluginRegistry().unregister(plugin.pluginId));
+
+      final first = await pay(namedKeyPayment(walletId, covenantTxid, ownerHash));
+      expect(first.success, isTrue, reason: first.error);
+      expect(first.spentUtxoKeys, contains('$covenantTxid:0'));
+      await eventually(
+          () async => !((await libspiffy.walletStorage.getUTXO(walletId, covenantTxid, 0))?.isAvailable ?? true),
+          'the covenant output held by the payment');
+
+      final second = await pay(namedKeyPayment(walletId, covenantTxid, ownerHash));
+      expect(second.success, isFalse);
+      expect(second.error, contains('spends $covenantTxid:0, which the wallet holds as'));
+    });
+
     test('naming a key the wallet does not hold fails with the reason', () async {
       const walletId = 'named-key-missing';
       final root = await createMnemonicWallet(walletId);

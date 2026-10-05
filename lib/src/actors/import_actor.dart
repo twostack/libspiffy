@@ -8,6 +8,8 @@ import 'package:logging/logging.dart';
 
 import '../services/blockchain_data_source.dart';
 import '../services/address_discovery_service.dart';
+import '../services/import_order.dart';
+import '../services/spent_output_repair.dart';
 import '../services/transaction_import_service.dart';
 import '../services/script_type_registry.dart';
 import '../storage/read_model_storage.dart';
@@ -667,10 +669,20 @@ class ImportActor extends Actor {
       allTransactions.length, // totalTransactions (now we know the exact count)
     );
 
-    // PHASE 2: Sort by block height (ascending - oldest first)
-    // This ensures parent transactions are processed before transactions that spend their outputs
-    _logger.info('   🔄 Phase 2: Sorting ${allTransactions.length} transactions by block height...');
-    allTransactions.sort((a, b) => a.blockHeight.compareTo(b.blockHeight));
+    // PHASE 2: Oldest block first and, inside a block, parents before the
+    // transactions that spend them (orderForImport). A child recorded before
+    // its parent could not mark the parent's output spent, and the output
+    // then stayed available for ever: a coin that does not exist.
+    _logger.info('   🔄 Phase 2: Ordering ${allTransactions.length} transactions by block and dependency...');
+    final ordered = orderForImport<ImportedTransaction>(
+      allTransactions,
+      txidOf: (tx) => tx.txid,
+      heightOf: (tx) => tx.blockHeight,
+      parentsOf: (tx) => [for (final input in tx.transaction.inputs) input.prevTxnId.toString()],
+    );
+    allTransactions
+      ..clear()
+      ..addAll(ordered);
 
     _logger.info('   ✅ Sorted: first block ${allTransactions.first.blockHeight}, '
         'last block ${allTransactions.last.blockHeight}');
@@ -711,6 +723,17 @@ class ImportActor extends Actor {
 
     _logger.info('   ✅ All transactions processed');
     _logger.info('   📊 Summary: $_processedTransactions transactions, $totalUtxosFound UTXOs');
+
+    // Safety net behind the order above: an output a recorded, confirmed
+    // transaction spends is marked spent whatever order recorded them.
+    final repaired = await _cancellable(SpentOutputRepair.run(
+      walletId: message.walletId,
+      storage: _storage,
+      send: (command) => _walletManagerActor.tell(WalletCommandMessage(message.walletId, command)),
+    ));
+    if (repaired.isNotEmpty) {
+      _logger.warning('   🔧 ${repaired.length} output(s) were left unspent by the import order and are now marked spent');
+    }
 
     _reportProgress(
       'Finalizing import: $_processedTransactions transactions, $totalUtxosFound UTXOs',

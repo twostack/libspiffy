@@ -1539,6 +1539,43 @@ class RecordTransactionNetworkStatusCommand extends WalletCommand {
   String get commandType => 'RecordTransactionNetworkStatusCommand';
 }
 
+/// Records that [txid], a transaction handed to this wallet that the network
+/// has not settled, can never be mined: an input of it is already spent by
+/// [spentBy], a transaction a merkle proof confirms (checked against the
+/// local header chain by the caller).
+///
+/// The transaction's row becomes failed and its pending outputs become
+/// [UTXOStatus.voided]: they stop counting as funds on the way. Nothing is
+/// deleted. A later proof of [txid] itself still confirms it, which makes
+/// its voided outputs available, as for any voided output.
+///
+/// For a transaction this wallet built, the aggregate refuses: a deferred
+/// payment fails through [RecordTransactionNetworkStatusCommand] with
+/// `INPUT_SPENT`, and an ordinary payment of ours is settled by ARC.
+/// No event when the wallet has nothing to change (already voided).
+class VoidUnsettledTransactionCommand extends WalletCommand {
+  final String txid;
+
+  /// The input of [txid] that is spent elsewhere (`txid:vout` it spends).
+  final String spentInput;
+
+  /// The confirmed transaction that spent [spentInput].
+  final String spentBy;
+
+  VoidUnsettledTransactionCommand({
+    required String walletId,
+    required this.txid,
+    required this.spentInput,
+    required this.spentBy,
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(walletId: walletId, commandId: commandId, timestamp: timestamp, metadata: metadata);
+
+  @override
+  String get commandType => 'VoidUnsettledTransactionCommand';
+}
+
 /// Cancels the outstanding deferred payment [txid] and releases its inputs.
 ///
 /// The aggregate refuses a payment that is not outstanding, or whose last

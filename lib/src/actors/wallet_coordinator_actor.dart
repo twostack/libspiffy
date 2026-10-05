@@ -187,6 +187,7 @@ class WalletCoordinatorActor extends Actor {
         domain_events.DeferredTransactionFailedEvent(:final walletId) => walletId,
         domain_events.DeferredTransactionCancelledEvent(:final walletId) => walletId,
         domain_events.DeferredSpendReclaimedEvent(:final walletId) => walletId,
+        domain_events.TransactionVoidedEvent(:final walletId) => walletId,
         _ => null,
       };
 
@@ -1899,6 +1900,24 @@ class WalletCoordinatorActor extends Actor {
           requestId: requestId,
           success: false,
           error: 'Transaction ${cmd.txid} is not a deferred payment of wallet ${cmd.walletId}',
+        ));
+        return;
+      }
+      if (payment.state == DeferredPaymentState.failed) {
+        // Settled as failed: the wallet's answer stands. Asking ARC again
+        // would report a transaction it keeps in flight for ever (one
+        // whose input is spent elsewhere, INPUT_SPENT) as if it might
+        // still be mined.
+        final last = payment.lastNetworkStatus;
+        _emitEvent(DeferredPaymentStatusEvent(
+          walletId: cmd.walletId,
+          txid: cmd.txid,
+          requestId: requestId,
+          success: true,
+          networkStatus: DeferredNetworkStatus.isDefinitiveFailure(last) ? last : DeferredNetworkStatus.rejected,
+          source: payment.lastNetworkStatusSource,
+          error: payment.resolutionReason,
+          competingTxids: payment.competingTxids,
         ));
         return;
       }

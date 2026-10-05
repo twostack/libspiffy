@@ -14,6 +14,7 @@ import '../models/bitcoin_utxo.dart' show UTXOStatus;
 import '../models/deferred_payment.dart';
 import '../models/blockchain_data_models.dart' show MerkleProofData;
 import '../services/blockchain_data_source.dart';
+import '../services/transaction_import_service.dart';
 import '../utils/tsc_converter.dart';
 
 import '../services/arc_service.dart';
@@ -48,6 +49,15 @@ enum _CheckOutcome { changed, unchanged, unknown }
 
 /// One status check of a transaction: the scan uses [outcome], an explicit
 /// deferred-payment check the rest.
+/// An input of a transaction that another, confirmed transaction spends.
+class _InputConflict {
+  final String spentInput;
+  final String spentBy;
+  const _InputConflict(this.spentInput, this.spentBy);
+
+  String get reason => 'Input $spentInput is already spent by $spentBy, a confirmed transaction';
+}
+
 class _StatusCheck {
   final _CheckOutcome outcome;
 
@@ -115,6 +125,12 @@ class ARCActor extends Actor {
   /// How soon a deferred spend is applied again when the network reported
   /// the transaction before the read model held it (bead libspiffy-onh).
   final Duration deferredSpendRecheckDelay;
+
+  /// How long a transaction may stay unsettled (ARC in flight, or unknown)
+  /// before its inputs are checked for a spend elsewhere
+  /// ([_resolveIfInputSpent]), and how long until the same transaction is
+  /// checked again.
+  final Duration inFlightStuckAfter;
 
   /// How often the recently failed transactions are polled
   /// ([_checkRecentFailedTransactions], bead libspiffy-5bju). Deliberately
@@ -210,6 +226,7 @@ class ARCActor extends Actor {
     this.failedCheckInterval = const Duration(minutes: 30),
     this.failedCheckWindow = const Duration(days: 7),
     this.failedCheckLimit = 25,
+    this.inFlightStuckAfter = const Duration(hours: 1),
     DateTime Function()? clock,
     BlockchainDataSource? dataSource,
   })  : _walletManager = walletManager,
@@ -773,7 +790,13 @@ class ARCActor extends Actor {
 
         checked++;
         _log.fine('  Checking tx ${tx.txid.substring(0, 8)}... stored=${tx.status.name} wallet=$walletId');
-        final outcome = (await _checkAndUpdateTransactionStatus(tx.txid, walletId, tx.status)).outcome;
+        final check = await _checkAndUpdateTransactionStatus(tx.txid, walletId, tx.status);
+        final outcome = check.outcome;
+        if (outcome != _CheckOutcome.changed &&
+            (tx.status == TransactionStatus.broadcast || tx.status == TransactionStatus.pending) &&
+            _unsettled(check.status)) {
+          await _resolveIfInputSpent(walletId, tx.txid, tx.rawHex, since: tx.createdAt);
+        }
 
         if (isPending) {
           if (outcome == _CheckOutcome.changed) {
@@ -1213,7 +1236,32 @@ class ARCActor extends Actor {
   }
 
   /// Checks [txid] now through [via] (see [CheckDeferredPaymentStatusMessage]).
+  ///
+  /// A payment the network still has not settled after
+  /// [inFlightStuckAfter] has its inputs checked ([_resolveIfInputSpent]):
+  /// when one is already spent by a confirmed transaction the payment
+  /// fails, and the answer says [DeferredNetworkStatus.inputSpent].
   Future<DeferredPaymentNetworkResult> _checkDeferredPayment(
+      String walletId, String txid, DeferredPaymentNetworkSource via) async {
+    final result = await _checkDeferredPaymentNow(walletId, txid, via);
+    if (!result.success || !_unsettled(result.networkStatus)) return result;
+    final payment = await _storage.getDeferredPayment(walletId, txid);
+    final row = await _storage.getTransaction(txid, walletId: walletId);
+    if (payment == null || row == null || payment.state != DeferredPaymentState.outstanding) return result;
+    final conflict = await _resolveIfInputSpent(walletId, txid, row.rawHex, since: payment.createdAt);
+    if (conflict == null) return result;
+    return DeferredPaymentNetworkResult(
+      walletId: walletId,
+      txid: txid,
+      success: true,
+      networkStatus: DeferredNetworkStatus.inputSpent,
+      source: 'dataSource',
+      error: conflict.reason,
+      competingTxids: [conflict.spentBy],
+    );
+  }
+
+  Future<DeferredPaymentNetworkResult> _checkDeferredPaymentNow(
       String walletId, String txid, DeferredPaymentNetworkSource via) async {
     DeferredPaymentNetworkResult? arcResult;
     if (via != DeferredPaymentNetworkSource.dataSource) {
@@ -1255,6 +1303,99 @@ class ARCActor extends Actor {
       );
     }
     return fromDataSource;
+  }
+
+  // ==========================================================================
+  // UNSETTLED TRANSACTIONS WITH AN INPUT SPENT ELSEWHERE
+  // ==========================================================================
+
+  /// When each transaction may next have its inputs checked
+  /// ([_resolveIfInputSpent]), by txid.
+  final Map<String, DateTime> _inputCheckDue = {};
+
+  /// Whether [status] leaves a transaction unsettled: ARC still has it in
+  /// flight, or nobody knows it.
+  static bool _unsettled(String? status) =>
+      status == null || status == DeferredNetworkStatus.notFound || DeferredNetworkStatus.isInFlight(status);
+
+  /// A transaction unsettled since [since] for longer than
+  /// [inFlightStuckAfter]: if a coin it spends is already spent by another
+  /// transaction, and that transaction's merkle proof checks out against the
+  /// local header chain, [txid] can never be mined. Then a deferred payment
+  /// of the wallet fails (`INPUT_SPENT`, its inputs released), and a
+  /// transaction handed to the wallet is voided (its row failed, its pending
+  /// outputs voided). Returns the conflict, or null.
+  ///
+  /// This is the case ARC does not resolve: a transaction double-spending a
+  /// coin mined long ago can sit at SENT_TO_NETWORK for ever, and the wallet
+  /// showed it as broadcasting for ever. A spender the data source merely
+  /// reports, or one not yet in a block, changes nothing (bead
+  /// libspiffy-ey2: either may still be mined). Checked at most once per
+  /// [inFlightStuckAfter] per transaction.
+  Future<_InputConflict?> _resolveIfInputSpent(String walletId, String txid, String rawHex,
+      {required DateTime since}) async {
+    final now = _clock();
+    if (now.difference(since) < inFlightStuckAfter) return null;
+    final due = _inputCheckDue[txid];
+    if (due != null && now.isBefore(due)) return null;
+    _inputCheckDue[txid] = now.add(inFlightStuckAfter);
+
+    final conflict = await _findSpentInput(txid, rawHex);
+    if (conflict == null) return null;
+    _log.warning('$txid in wallet $walletId can never be mined: ${conflict.reason}');
+    final payment = await _storage.getDeferredPayment(walletId, txid);
+    if (payment != null) {
+      if (payment.state == DeferredPaymentState.outstanding) {
+        await _recordNetworkStatus(walletId, txid, DeferredNetworkStatus.inputSpent,
+            source: 'dataSource', explicit: true, detail: '${conflict.reason}; this payment can never be mined');
+        _walletManager.tell(WalletCommandMessage(walletId,
+            UpdateTransactionStatusCommand(walletId: walletId, txid: txid, newStatus: TransactionStatus.failed)));
+      }
+    } else {
+      _walletManager.tell(WalletCommandMessage(walletId, VoidUnsettledTransactionCommand(
+        walletId: walletId,
+        txid: txid,
+        spentInput: conflict.spentInput,
+        spentBy: conflict.spentBy,
+      )));
+    }
+    return conflict;
+  }
+
+  /// The first input of [rawHex] (transaction [txid]) that another
+  /// transaction spends, proven by a merkle proof matching a local header.
+  Future<_InputConflict?> _findSpentInput(String txid, String rawHex) async {
+    final dataSource = _dataSource;
+    if (dataSource == null || dataSource is! SpentOutputLookup || rawHex.isEmpty) return null;
+    final lookup = dataSource as SpentOutputLookup;
+    final dartsv.Transaction parsed;
+    try {
+      parsed = dartsv.Transaction.fromHex(rawHex);
+    } catch (_) {
+      return null;
+    }
+    for (final input in parsed.inputs) {
+      final prevTxid = input.prevTxnId.toString();
+      final vout = input.prevTxnOutputIndex;
+      try {
+        final spender = await lookup.getOutputSpender(prevTxid, vout);
+        if (spender == null || spender.txid == txid || !spender.confirmed) continue;
+        // The source's word is a lead. The spender's bytes and its proof
+        // against our own headers are the evidence.
+        final proven = await TransactionImportService(
+          dataSource: dataSource,
+          headerAtHeight: _storage.getBlockHeaderByHeight,
+          requireVerifiedHeader: true,
+        ).importTransaction(spender.txid);
+        final spends = proven.headerVerified &&
+            proven.transaction.inputs
+                .any((i) => i.prevTxnId.toString() == prevTxid && i.prevTxnOutputIndex == vout);
+        if (spends) return _InputConflict('$prevTxid:$vout', spender.txid);
+      } catch (e) {
+        _log.fine('Could not check input $prevTxid:$vout of $txid for a spend elsewhere: $e');
+      }
+    }
+    return null;
   }
 
   /// Looks [txid] up in the configured data source. Known: the deferred

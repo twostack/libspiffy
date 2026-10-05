@@ -53,6 +53,7 @@ const goldenTypeNames = <String, String>{
   'DeferredTransactionFailedEvent': 'wallet.transaction.deferred_failed',
   'DeferredTransactionCancelledEvent': 'wallet.transaction.deferred_cancelled',
   'DeferredSpendReclaimedEvent': 'wallet.transaction.deferred_reclaimed',
+  'TransactionVoidedEvent': 'wallet.transaction.voided',
   // Invoice
   'InvoiceCreatedEvent': 'invoice.created',
   'InvoiceStatusChangedEvent': 'invoice.status_changed',
@@ -242,6 +243,9 @@ Map<String, Event> sampleEvents() => <String, Event>{
           walletId: _w, txid: _txid, reclaimTxid: 'bb' * 32,
           reclaimedUtxoKeys: ['$_txid:0'], reason: 'recipient vanished',
           timestamp: _t, version: 105),
+      'TransactionVoidedEvent': TransactionVoidedEvent(
+          walletId: _w, txid: _txid, spentInput: '${'cc' * 32}:0', spentBy: 'dd' * 32,
+          timestamp: _t, version: 106),
       'InvoiceCreatedEvent': InvoiceCreatedEvent(
           invoiceId: _i, walletId: _w, addresses: ['addr'],
           amount: BigInt.from(10), description: 'd', timestamp: _t,

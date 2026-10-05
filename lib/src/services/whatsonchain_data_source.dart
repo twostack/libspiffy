@@ -25,7 +25,7 @@ import '../utils/network_name.dart';
 /// final dataSource = WhatsOnChainDataSource(networkType: 'test');
 /// final history = await dataSource.getTransactionHistory('address...');
 /// ```
-class WhatsOnChainDataSource implements BlockchainDataSource {
+class WhatsOnChainDataSource implements BlockchainDataSource, SpentOutputLookup {
   final Logger _logger = Logger('WhatsOnChainDataSource');
 
   // Base URLs for WhatsOnChain API
@@ -277,6 +277,29 @@ class WhatsOnChainDataSource implements BlockchainDataSource {
         }
       },
       'Error getting UTXOs',
+    );
+  }
+
+  @override
+  Future<OutputSpender?> getOutputSpender(String txid, int vout) async {
+    _logger.fine('Getting the spender of $txid:$vout');
+
+    return _retryApiCall<OutputSpender?>(
+      () async {
+        final response = await _client.get(Uri.parse('$_baseUrl/tx/$txid/$vout/spent'));
+        if (response.statusCode == 404) return null;
+        if (response.statusCode != 200) {
+          throw DataSourceException('Failed to get the spender of $txid:$vout: ${response.statusCode}', txid: txid);
+        }
+        final data = json.decode(response.body);
+        if (data is! Map || data['txid'] is! String) return null;
+        return OutputSpender(
+          txid: data['txid'] as String,
+          vin: data['vin'] as int? ?? 0,
+          confirmed: data['status'] == 'confirmed',
+        );
+      },
+      'Error getting the spender of an output',
     );
   }
 

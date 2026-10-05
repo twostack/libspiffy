@@ -2709,6 +2709,59 @@ class DeferredTransactionFailedEvent extends WalletEvent {
       );
 }
 
+/// A transaction handed to this wallet can never be mined: [spentInput], an
+/// input of it, is already spent by [spentBy], which a merkle proof confirms.
+/// Its row is failed and its pending outputs are voided (see
+/// [VoidUnsettledTransactionCommand]).
+class TransactionVoidedEvent extends WalletEvent {
+  static const String stableTypeName = 'wallet.transaction.voided';
+
+  @override
+  String get typeName => stableTypeName;
+
+  final String txid;
+  final String spentInput;
+  final String spentBy;
+
+  TransactionVoidedEvent({
+    required String walletId,
+    required this.txid,
+    required this.spentInput,
+    required this.spentBy,
+    String? eventId,
+    DateTime? timestamp,
+    int? version,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          eventId: eventId,
+          timestamp: timestamp,
+          version: version,
+          metadata: metadata,
+        );
+
+  /// Why, in words, for logs and the row.
+  String get reason => 'Input $spentInput is already spent by $spentBy, a confirmed transaction';
+
+  @override
+  Map<String, dynamic> getWalletEventData() => {
+        'txid': txid,
+        'spentInput': spentInput,
+        'spentBy': spentBy,
+      };
+
+  static TransactionVoidedEvent fromMap(Map<String, dynamic> map) => TransactionVoidedEvent(
+        walletId: map['walletId'] as String,
+        txid: map['txid'] as String,
+        spentInput: map['spentInput'] as String,
+        spentBy: map['spentBy'] as String,
+        eventId: map['eventId'] as String?,
+        timestamp: _deferredDate(map['timestamp']),
+        version: map['version'] as int?,
+        metadata: map['metadata'] as Map<String, dynamic>?,
+      );
+}
+
 /// The user cancelled an outstanding deferred payment the network did not
 /// know (or the wallet cancelled a payment it never handed over): its held
 /// inputs return to the status they had before they were reserved. This does

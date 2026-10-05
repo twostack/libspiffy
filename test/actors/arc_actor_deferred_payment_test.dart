@@ -17,6 +17,7 @@ import 'dart:typed_data';
 
 import 'package:convert/convert.dart';
 import 'package:dactor/dactor.dart';
+import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:libspiffy/src/actors/arc_actor.dart';
 import 'package:libspiffy/src/actors/wallet_messages.dart';
 import 'package:libspiffy/src/core/wallet_commands.dart';
@@ -547,6 +548,137 @@ void main() {
       expect(arc.submitted, isEmpty);
     });
   });
+
+  // A payment the network keeps in flight for ever because a coin it spends
+  // is already spent by a confirmed transaction (the TAAL testnet ARC left
+  // one at SENT_TO_NETWORK for a day). The rival here is the fixture
+  // transaction: it spends the same coin, and its proof walks to the
+  // stored header.
+  group('in flight for ever, an input already spent by a confirmed transaction', () {
+    late String stuckHex;
+    late String stuck;
+
+    setUp(() {
+      final tx = dartsv.Transaction()
+        ..addInput(dartsv.TransactionInput(_fundingTxid, 0, dartsv.TransactionInput.MAX_SEQ_NUMBER))
+        ..addOutput(dartsv.TransactionOutput(
+            BigInt.from(900), dartsv.SVScript.fromHex('76a9149d02ce72bbdc1713d5537a0705d8ec7d9702c81088ac')));
+      stuckHex = tx.serialize();
+      stuck = tx.id;
+    });
+
+    MerkleProofData rivalProof({int? tamperLevel}) => MerkleProofData(
+          txid: kFixtureTxid,
+          blockHeight: kFixtureHeight,
+          merkleRoot: '',
+          index: kFixtureIndex,
+          nodes: fixtureNodes(tamperLevel: tamperLevel),
+          format: 'tsc',
+        );
+
+    Future<void> stuckFor(Duration age, {bool deferred = true, bool rivalConfirmed = true, int? tamper}) async {
+      final lookup = _LookupDataSource()
+        ..spenders['$_fundingTxid:0'] = OutputSpender(txid: kFixtureTxid, vin: 0, confirmed: rivalConfirmed);
+      lookup.raw[kFixtureTxid] = kFixtureTxHex;
+      lookup.proofs[kFixtureTxid] = rivalProof(tamperLevel: tamper);
+      dataSource = lookup;
+      await storage.storeBlockHeader(fixtureHeader(), kFixtureHeight);
+      final at = DateTime.now().subtract(age);
+      await storage.storeTransaction(
+        _wallet,
+        BitcoinTransaction(
+          walletId: _wallet,
+          txid: stuck,
+          rawHex: stuckHex,
+          status: TransactionStatus.broadcast,
+          inputValue: BigInt.zero,
+          outputValue: BigInt.from(900),
+          fee: BigInt.zero,
+          receivingAddresses: const [],
+          sendingAddresses: const [],
+          netAmount: BigInt.zero,
+          createdAt: at,
+          updatedAt: at,
+        ),
+      );
+      if (deferred) {
+        await storeUtxo(_inputKey, UTXOStatus.reserved, reservedBy: stuck);
+        await storage.storeDeferredPayment(DeferredPayment(
+          walletId: _wallet,
+          txid: stuck,
+          amount: BigInt.from(900),
+          fee: BigInt.from(100),
+          heldInputs: [DeferredPaymentInput(utxoKey: _inputKey, satoshis: BigInt.from(1000))],
+          createdAt: at,
+          updatedAt: at,
+        ));
+      }
+      arc.statuses[stuck] = ArcTransactionResponse.fromJson({'txid': stuck, 'txStatus': 'SENT_TO_NETWORK'});
+      await spawnActor();
+    }
+
+    Future<void> scan() async {
+      final calls = arc.getTransactionCalls;
+      arcActor.tell(CheckStoragePendingUTXOsMessage(triggerBlockHeight: kFixtureHeight));
+      final deadline = DateTime.now().add(const Duration(seconds: 5));
+      while (arc.getTransactionCalls <= calls && DateTime.now().isBefore(deadline)) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+    }
+
+    List<String> failedRows() => [
+          for (final c in walletManager.commands.whereType<UpdateTransactionStatusCommand>())
+            if (c.newStatus == TransactionStatus.failed) c.txid,
+        ];
+
+    test('the payer\'s deferred payment fails (INPUT_SPENT) and its row fails', () async {
+      await stuckFor(const Duration(hours: 2));
+      await scan();
+      expect(statuses(), contains('INPUT_SPENT/dataSource!'));
+      final failure =
+          walletManager.commands.whereType<RecordTransactionNetworkStatusCommand>().singleWhere((c) => c.networkStatus == 'INPUT_SPENT');
+      expect(failure.txid, stuck);
+      expect(failure.detail, contains(kFixtureTxid));
+      expect(failedRows(), [stuck]);
+      expect(walletManager.commands.whereType<VoidUnsettledTransactionCommand>(), isEmpty);
+    });
+
+    test('an explicit check of the payment answers INPUT_SPENT', () async {
+      await stuckFor(const Duration(hours: 2));
+      final result = await ask(CheckDeferredPaymentStatusMessage(walletId: _wallet, txid: stuck));
+      expect(result.networkStatus, 'INPUT_SPENT');
+      expect(result.competingTxids, [kFixtureTxid]);
+    });
+
+    test('on the payee\'s side the received transaction is voided', () async {
+      await stuckFor(const Duration(hours: 2), deferred: false);
+      await scan();
+      final voided = walletManager.commands.whereType<VoidUnsettledTransactionCommand>().single;
+      expect((voided.txid, voided.spentInput, voided.spentBy), (stuck, _inputKey, kFixtureTxid));
+    });
+
+    test('a transaction younger than the limit is not checked', () async {
+      await stuckFor(const Duration(minutes: 5));
+      await scan();
+      expect(statuses(), isNot(contains('INPUT_SPENT/dataSource!')));
+      expect(failedRows(), isEmpty);
+    });
+
+    test('a rival the source calls unconfirmed changes nothing (either may still be mined)', () async {
+      await stuckFor(const Duration(hours: 2), rivalConfirmed: false);
+      await scan();
+      expect(statuses(), isNot(contains('INPUT_SPENT/dataSource!')));
+      expect(failedRows(), isEmpty);
+    });
+
+    test('a rival whose proof the stored header contradicts changes nothing', () async {
+      await stuckFor(const Duration(hours: 2), tamper: 0);
+      await scan();
+      expect(statuses(), isNot(contains('INPUT_SPENT/dataSource!')));
+      expect(failedRows(), isEmpty);
+    });
+  });
 }
 
 /// Records every wallet command.
@@ -638,4 +770,11 @@ class _FakeDataSource extends BlockchainDataSource {
   Future<List<AddressScriptInfo>> getAddressScripts(String address) async => const [];
   @override
   Future<List<TransactionInfo>> getScriptHistory(String scriptHash, {int? limit, int? offset}) async => const [];
+}
+
+class _LookupDataSource extends _FakeDataSource implements SpentOutputLookup {
+  final Map<String, OutputSpender> spenders = {};
+
+  @override
+  Future<OutputSpender?> getOutputSpender(String txid, int vout) async => spenders['$txid:$vout'];
 }

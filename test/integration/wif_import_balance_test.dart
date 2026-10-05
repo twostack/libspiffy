@@ -171,6 +171,28 @@ class WifTestDataSource implements BlockchainDataSource {
   }
 }
 
+/// The parent and the child that spends it, reported in ONE block and the
+/// child listed first: the shape that left a spent output available after a
+/// real import (both outputs of a parent spent in the parent's own block).
+/// No headers are stored for this one, so the proofs are not checked and
+/// the made-up height is accepted.
+class SameBlockDataSource extends WifTestDataSource {
+  SameBlockDataSource() {
+    final tx2 = _merkleProofs[kTx2Id]!;
+    _merkleProofs[kTx2Id] = MerkleProofData(
+      txid: kTx2Id,
+      blockHeight: kTx1BlockHeight,
+      merkleRoot: tx2.merkleRoot,
+      index: tx2.index,
+      nodes: tx2.nodes,
+    );
+    _addressHistory[kTestAddress] = [
+      TransactionInfo(txid: kTx2Id, blockHeight: kTx1BlockHeight),
+      TransactionInfo(txid: kTx1Id, blockHeight: kTx1BlockHeight),
+    ];
+  }
+}
+
 // =============================================================================
 // TEST SETUP
 // =============================================================================
@@ -203,6 +225,48 @@ Future<void> _setupBlockHeaders(IsarWalletStorage storage) async {
 
 void main() {
   group('WIF Import — Balance E2E', () {
+    test('a parent and its child in one block, child listed first: the spent output is spent', () async {
+      await ensureIsarInitialized();
+      final testDir = Directory.systemTemp.createTempSync('wif-import-same-block-');
+      final actorSystem = LocalActorSystem(ActorSystemConfig());
+      final isar = await Isar.open(
+        LibSpiffySchemas.allSchemas,
+        directory: testDir.path,
+        name: 'test_wif_same_block_${DateTime.now().microsecondsSinceEpoch}',
+      );
+      final libspiffy = LibSpiffyActorSystem();
+      await libspiffy.initialize(
+        actorSystem: actorSystem,
+        isar: isar,
+        dataDirectory: testDir.path,
+        blockchainDataSource: SameBlockDataSource(),
+        enableP2P: false,
+      );
+      final storage = libspiffy.walletStorage as IsarWalletStorage;
+      final walletId = 'wif-same-block-${DateTime.now().millisecondsSinceEpoch}';
+      try {
+        final completer = Completer<WalletImportCompletedEvent>();
+        libspiffy.subscribeToImportNotifications(walletId).listen((event) {
+          if (event is WalletImportCompletedEvent && !completer.isCompleted) completer.complete(event);
+        });
+        libspiffy.importWalletFromWif(
+            walletId: walletId, wif: kTestWif, walletName: 'Same block', networkType: 'test');
+        await completer.future.timeout(const Duration(seconds: 30));
+        await Future.delayed(const Duration(seconds: 2));
+
+        final all = await storage.getUTXOs(walletId, includeSpent: true);
+        final parentOutput = all.where((u) => u.txid == kTx1Id && u.vout == 1).single;
+        expect(parentOutput.status, UTXOStatus.spent,
+            reason: 'TX2 spends TX1:1; recorded child-first, TX1:1 used to stay available');
+        final unspent = await storage.getUTXOs(walletId);
+        expect(unspent.map((u) => '${u.txid}:${u.vout}'), ['$kTx2Id:0']);
+      } finally {
+        await libspiffy.shutdown();
+        await isar.close(deleteFromDisk: true);
+        testDir.deleteSync(recursive: true);
+      }
+    });
+
     test('imported WIF wallet has correct balance after import completes', () async {
       await ensureIsarInitialized();
 

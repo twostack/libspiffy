@@ -9,6 +9,7 @@ import '../core/wallet_commands.dart';
 import '../core/wallet_events.dart' show BeefAncestor;
 import '../models/bitcoin_utxo.dart' show UTXOStatus;
 import '../services/crypto_service.dart';
+import '../services/spent_output_repair.dart';
 import '../storage/read_model_storage.dart';
 import '../storage/secure_storage.dart';
 import 'wallet_messages.dart';
@@ -708,6 +709,24 @@ class WalletManagerActor extends Actor {
   }
 }
 
+  /// Wallets whose outputs [_repairSpentOutputs] has checked in this run.
+  final Set<String> _spentOutputsChecked = {};
+
+  /// Once per wallet and run, in the background: outputs the wallet holds as
+  /// unspent although one of its own confirmed transactions spends them are
+  /// marked spent, and a deferred payment holding one fails
+  /// ([SpentOutputRepair]). It reads only the wallet's own records. A read
+  /// model that lags the journal at worst sends a command the aggregate
+  /// refuses: the spender is confirmed, so every command states a fact.
+  void _repairSpentOutputs(String walletId, ActorRef walletActor) {
+    final storage = _readModelStorage;
+    if (storage == null || !_spentOutputsChecked.add(walletId)) return;
+    unawaited(SpentOutputRepair.run(walletId: walletId, storage: storage, send: walletActor.tell).catchError((Object e) {
+      _log.warning('Could not check wallet $walletId for spent outputs: $e');
+      return const <SpentOutputFinding>[];
+    }));
+  }
+
   /// Load wallet from event store and spawn actor.
   ///
   /// Returns null when no journal exists for [walletId], so commands for an
@@ -744,6 +763,7 @@ class WalletManagerActor extends Actor {
       // wallet: the mailbox is FIFO. No events when there is nothing to do.
       walletActor.tell(ReconcileDeferredSpendsCommand(walletId: walletId));
       await _reconcileWatchAddresses(walletId, walletActor);
+      _repairSpentOutputs(walletId, walletActor);
 
       return walletActor;
 

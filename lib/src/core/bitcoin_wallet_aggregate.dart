@@ -721,6 +721,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         return _deferred.cancel(currentState, cmd);
       case final ReclaimDeferredSpendCommand cmd:
         return _deferred.reclaim(currentState, cmd, _transactions);
+      case final VoidUnsettledTransactionCommand cmd:
+        return _deferred.voidUnsettled(currentState, cmd);
       default:
         throw ArgumentError('Unknown command type: ${command.runtimeType}');
     }
@@ -819,6 +821,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         DeferredPayments.applyCancelled(state, cancelled);
       case final DeferredSpendReclaimedEvent reclaimed:
         DeferredPayments.applyReclaimed(state, reclaimed);
+      case final TransactionVoidedEvent voided:
+        DeferredPayments.applyVoided(state, voided);
       default:
         throw ArgumentError('Unknown event type: ${event.runtimeType}');
     }

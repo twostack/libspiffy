@@ -146,10 +146,19 @@ abstract final class DeferredNetworkStatus {
   /// Filter value matching payments never checked (no recorded status).
   static const String unchecked = 'UNCHECKED';
 
-  /// Statuses that settle a deferred payment as failed: REJECTED only.
-  /// Everything else (404, network errors, orphan mempool, in-flight
-  /// statuses, DOUBLE_SPEND_ATTEMPTED) is not.
-  static bool isDefinitiveFailure(String? status) => status == rejected;
+  /// Not an ARC status: the wallet found that an input of the payment is
+  /// already spent by another transaction, and a merkle proof checked
+  /// against the local header chain confirms that other transaction. The
+  /// payment can never be mined (short of a reorganization, which a later
+  /// proof of the payment itself would show). Set by the wallet's own
+  /// checks ([SpentOutputRepair], the ARC actor's stuck-payment check),
+  /// never from a data source's word alone.
+  static const String inputSpent = 'INPUT_SPENT';
+
+  /// Statuses that settle a deferred payment as failed: REJECTED, and
+  /// [inputSpent]. Everything else (404, network errors, orphan mempool,
+  /// in-flight statuses, DOUBLE_SPEND_ATTEMPTED) is not.
+  static bool isDefinitiveFailure(String? status) => status == rejected || status == inputSpent;
 
   /// ARC saw a competing transaction spending an input (bead libspiffy-ey2).
   /// Not final: ARC documents that the payment may still be mined. The

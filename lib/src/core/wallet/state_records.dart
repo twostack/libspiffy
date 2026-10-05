@@ -30,6 +30,10 @@ abstract final class WalletMetadataKeys {
   /// utxoKey -> txid of the outstanding deferred payment holding it.
   static const String deferredHolds = 'deferredHolds';
 
+  /// txid -> why a transaction handed to the wallet was voided
+  /// (`TransactionVoidedEvent`): an input already spent elsewhere.
+  static const String voidedTransactions = 'voidedTransactions';
+
   /// address -> derivation index (signing key lookup).
   static const String addressIndices = 'address_indices';
 
@@ -93,6 +97,7 @@ abstract final class WalletMetadataKeys {
     outgoingTransactions,
     deferredSpends,
     deferredHolds,
+    voidedTransactions,
     addressIndices,
     addressChains,
     addressType42,

@@ -51,6 +51,7 @@ final _log = Logger('BitcoinWalletAggregate');
 class DeferredPayments {
   static const String _deferredSpendsKey = WalletMetadataKeys.deferredSpends;
   static const String _deferredHoldsKey = WalletMetadataKeys.deferredHolds;
+  static const String _voidedKey = WalletMetadataKeys.voidedTransactions;
 
   /// `reservationReason` of a held input: [WalletBalances.deferredHoldReason],
   /// where it is defined, because both layers read it to tell a hold apart
@@ -732,6 +733,47 @@ class DeferredPayments {
   static void applyCancelled(WalletStateBuilder state, DeferredTransactionCancelledEvent cancelled) =>
       _applyResolution(state, cancelled.txid, DeferredPaymentState.cancelled, cancelled.releasedInputs,
           cancelled.reason, cancelled);
+
+  /// A transaction handed to this wallet can never be mined
+  /// ([VoidUnsettledTransactionCommand]): its pending outputs are voided.
+  /// Refused for a transaction this wallet built. No event when it is
+  /// already voided and nothing is pending.
+  List<Event> voidUnsettled(WalletState currentState, VoidUnsettledTransactionCommand command) {
+    if (!currentState.isCreated) {
+      throw StateError('Cannot void a transaction of non-existent wallet');
+    }
+    if (record(currentState, command.txid) != null) {
+      throw StateError('Transaction ${command.txid} is a deferred payment of this wallet; it fails through '
+          'its network status (${DeferredNetworkStatus.inputSpent}), not by voiding');
+    }
+    if (OutgoingTransactions.isRecorded(currentState, command.txid)) {
+      throw StateError('Transaction ${command.txid} was built by this wallet; only a transaction handed to it '
+          'can be voided');
+    }
+    final voided = currentState.metadata[_voidedKey];
+    final already = voided is Map && voided.containsKey(command.txid);
+    final pending = currentState.utxos.values.any((u) => u.txid == command.txid && u.status == UTXOStatus.pending);
+    if (already && !pending) return const [];
+    return [
+      TransactionVoidedEvent(
+        walletId: command.walletId,
+        txid: command.txid,
+        spentInput: command.spentInput,
+        spentBy: command.spentBy,
+        version: currentState.version + 1,
+        timestamp: DateTime.now(),
+      ),
+    ];
+  }
+
+  static void applyVoided(WalletStateBuilder state, TransactionVoidedEvent event) {
+    _voidOwnOutputs(state, event.txid, event.timestamp);
+    final voided = state.metadata[_voidedKey];
+    final records = voided is Map ? frozenRecord(voided) : freezeMap(<String, dynamic>{});
+    state.metadata = state.metadata.put(_voidedKey, records.put(event.txid, event.reason));
+    state.version = event.version;
+    state.lastModified = event.timestamp;
+  }
 
   /// A deferred payment failed or was cancelled: each released input still
   /// reserved by it returns to its recorded status, and the transaction's own

@@ -172,3 +172,31 @@ class DataSourceException implements Exception {
   }
 }
 
+
+/// A data source that can say which transaction spent an output.
+///
+/// Optional: a [BlockchainDataSource] may also implement this. The wallet
+/// asks it about the inputs of a payment the network has held "in flight"
+/// for a long time, to find one that can never be mined because a coin it
+/// spends is already spent. The answer is a lead, not evidence: the wallet
+/// acts only after it has checked the spender's merkle proof against its own
+/// block headers.
+abstract interface class SpentOutputLookup {
+  /// The spender of output [vout] of [txid], or null when the source knows
+  /// of none (unspent, or unknown to it).
+  Future<OutputSpender?> getOutputSpender(String txid, int vout);
+}
+
+/// The transaction that spent an output, as a data source reports it.
+class OutputSpender {
+  /// The spending transaction.
+  final String txid;
+
+  /// Its input that spends the output.
+  final int vin;
+
+  /// Whether the source says the spender is in a block. A claim only.
+  final bool confirmed;
+
+  const OutputSpender({required this.txid, required this.vin, required this.confirmed});
+}

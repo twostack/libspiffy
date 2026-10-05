@@ -84,6 +84,7 @@ class WalletProjection extends Projection<void> {
         DeferredTransactionFailedEvent,
         DeferredTransactionCancelledEvent,
         DeferredSpendReclaimedEvent,
+        TransactionVoidedEvent,
       ];
   
   @override
@@ -202,6 +203,9 @@ class WalletProjection extends Projection<void> {
         return true;
       case final DeferredSpendReclaimedEvent reclaimed:
         await _handleDeferredSpendReclaimed(reclaimed);
+        return true;
+      case final TransactionVoidedEvent voided:
+        await _handleTransactionVoided(voided);
         return true;
       default:
         return false;
@@ -1052,6 +1056,22 @@ class WalletProjection extends Projection<void> {
     }
     changed = await _voidOwnOutputs(event.walletId, txid, event.timestamp, rows) || changed;
     if (changed) {
+      await _recalculateAndPersistForWallet(event.walletId, event.timestamp, await rows.unspent());
+    }
+  }
+
+  /// A transaction handed to the wallet can never be mined (an input is
+  /// already spent by a confirmed transaction): its row is failed and its
+  /// pending outputs are voided, as the aggregate does it
+  /// (`DeferredPayments.applyVoided`). A confirmed row is left as it is: a
+  /// proof outranks the resolution.
+  Future<void> _handleTransactionVoided(TransactionVoidedEvent event) async {
+    final row = await _storage.getTransaction(event.txid, walletId: event.walletId);
+    if (row != null && row.status != TransactionStatus.confirmed && row.status != TransactionStatus.failed) {
+      await _storage.storeTransaction(event.walletId, row.copyWith(status: TransactionStatus.failed, updatedAt: event.timestamp));
+    }
+    final rows = _utxoRows(event.walletId);
+    if (await _voidOwnOutputs(event.walletId, event.txid, event.timestamp, rows)) {
       await _recalculateAndPersistForWallet(event.walletId, event.timestamp, await rows.unspent());
     }
   }

@@ -46,7 +46,22 @@ class WalletKeys {
   final CryptoService cryptoService;
   final SecureStorage secureStorage;
 
-  WalletKeys({required this.cryptoService, required this.secureStorage});
+  final DateTime Function() _now;
+
+  WalletKeys({required this.cryptoService, required this.secureStorage, DateTime Function()? now})
+      : _now = now ?? DateTime.now;
+
+  /// How long a derived anchor key is kept in memory, counted from its
+  /// derivation (a use does not extend it).
+  ///
+  /// Deriving one reads the mnemonic from secure storage and stretches it
+  /// to the seed (PBKDF2), some 0.3-0.4 s on a phone, and a BRC-100
+  /// message-box check runs two key operations every 30 s. Only the anchor
+  /// key is kept, never the mnemonic or the HD root: it signs for its own
+  /// BRC-100 identity and payments, and nothing else.
+  static const Duration anchorKeyLifetime = Duration(minutes: 5);
+
+  final Map<String, ({Future<dartsv.SVPrivateKey> key, DateTime at})> _anchorKeys = {};
 
   // ---------------------------------------------------------------------------
   // Key material in secure storage
@@ -104,6 +119,7 @@ class WalletKeys {
   /// [walletId]. Failures are logged, never thrown: this runs on an error
   /// path and the original error must reach the caller.
   Future<void> removeKeyMaterial(String walletId, {required Object cause}) async {
+    forgetAnchorKeys(walletId);
     for (final key in keyMaterialKeys(walletId)) {
       try {
         await secureStorage.delete(key);
@@ -431,8 +447,25 @@ class WalletKeys {
 
   /// The anchor key a the wallet issues for the context [contextHex]
   /// ([Type42Derivation.anchorContextHex]).
-  Future<dartsv.SVPrivateKey> anchorKey(String walletId, WalletState currentState, String contextHex) =>
-      _type42Key(walletId, currentState, anchorPath(hex.decode(contextHex)), 'anchor key');
+  /// Kept for [anchorKeyLifetime] after its derivation.
+  Future<dartsv.SVPrivateKey> anchorKey(String walletId, WalletState currentState, String contextHex) {
+    // Checked on every call: a deleted wallet signs nothing, kept key or not.
+    _requireType42Keys(walletId, currentState, 'anchor key');
+    final id = '$walletId/$contextHex';
+    final now = _now();
+    final kept = _anchorKeys[id];
+    if (kept != null && now.difference(kept.at) < anchorKeyLifetime) return kept.key;
+    final key = _type42Key(walletId, currentState, anchorPath(hex.decode(contextHex)), 'anchor key');
+    // Calls while this derivation runs share it; a failed one is not kept.
+    _anchorKeys[id] = (key: key, at: now);
+    key.then<void>((_) {}, onError: (Object _) {
+      if (identical(_anchorKeys[id]?.key, key)) _anchorKeys.remove(id);
+    }).ignore();
+    return key;
+  }
+
+  /// Drops every kept anchor key of [walletId].
+  void forgetAnchorKeys(String walletId) => _anchorKeys.removeWhere((id, _) => id.startsWith('$walletId/'));
 
   /// The type-42 child of the anchor key for [derivation]: c = a + t. The
   /// derivation must name its anchor's context, as every record the wallet

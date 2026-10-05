@@ -3,6 +3,8 @@
 /// event store or aggregate.
 library;
 
+import 'dart:convert';
+
 import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:test/test.dart';
 
@@ -25,6 +27,7 @@ import 'package:libspiffy/src/models/wallet_type.dart';
 import 'package:libspiffy/src/services/dartsv_crypto_service.dart';
 import 'package:libspiffy/src/storage/in_memory_secure_storage.dart';
 import 'package:libspiffy/src/models/address_chain.dart';
+import 'package:libspiffy/src/models/key_path.dart';
 
 const _w = 'collaborators';
 final _t0 = DateTime.utc(2026, 1, 1);
@@ -216,6 +219,58 @@ void main() {
     });
   });
 
+  group('WalletKeys anchor key', () {
+    const mnemonic = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
+    final context = Type42Derivation.anchorContextHex(utf8.encode('identity-1'));
+
+    Future<(WalletKeys, _CountingStorage, WalletState, void Function(Duration))> setUp() async {
+      final storage = _CountingStorage();
+      var now = DateTime(2026, 10, 5, 12);
+      final k = WalletKeys(cryptoService: DartSVCryptoService(), secureStorage: storage, now: () => now);
+      final command = CreateWalletCommand(walletId: _w, walletName: 'w', mnemonic: mnemonic);
+      final root = await k.walletRoot(command);
+      await k.storeKeyMaterial(command, root.hdPublicKeyXpub);
+      final state = _with(WalletState.empty(_w),
+          (b) => WalletLifecycle.applyWalletCreated(b, WalletLifecycle.created(WalletState.empty(_w), command, root)));
+      storage.mnemonicReads = 0;
+      return (k, storage, state, (Duration d) => now = now.add(d));
+    }
+
+    test('is derived once and kept for five minutes from its derivation', () async {
+      final (k, storage, state, advance) = await setUp();
+      final first = await k.anchorKey(_w, state, context);
+      advance(const Duration(minutes: 4));
+      final again = await k.anchorKey(_w, state, context);
+      expect(again.toHex(), first.toHex());
+      expect(storage.mnemonicReads, 1);
+
+      advance(const Duration(minutes: 1));
+      final later = await k.anchorKey(_w, state, context);
+      expect(later.toHex(), first.toHex());
+      expect(storage.mnemonicReads, 2);
+    });
+
+    test('calls during one derivation share it', () async {
+      final (k, storage, state, _) = await setUp();
+      final keys = await Future.wait([for (var i = 0; i < 3; i++) k.anchorKey(_w, state, context)]);
+      expect(keys.map((k) => k.toHex()).toSet(), hasLength(1));
+      expect(storage.mnemonicReads, 1);
+    });
+
+    test('each context has its own key', () async {
+      final (k, _, state, _) = await setUp();
+      final other = Type42Derivation.anchorContextHex(utf8.encode('identity-2'));
+      expect((await k.anchorKey(_w, state, other)).toHex(), isNot((await k.anchorKey(_w, state, context)).toHex()));
+    });
+
+    test('removed key material drops the kept key', () async {
+      final (k, storage, state, _) = await setUp();
+      await k.anchorKey(_w, state, context);
+      await k.removeKeyMaterial(_w, cause: 'test');
+      await expectLater(k.anchorKey(_w, state, context), throwsStateError);
+    });
+  });
+
   group('UtxoLedger', () {
     test('available, selection and watch-only exclusion', () {
       final state = _withUtxos(
@@ -400,4 +455,14 @@ void main() {
     expect(() => WalletLifecycle.delete(deleted, DeleteWalletCommand(walletId: _w)),
         throwsA(isA<StateError>().having((e) => e.message, 'message', 'Wallet $_w is already deleted')));
   });
+}
+
+class _CountingStorage extends InMemorySecureStorage {
+  int mnemonicReads = 0;
+
+  @override
+  Future<String?> getMnemonic(String walletId) {
+    mnemonicReads++;
+    return super.getMnemonic(walletId);
+  }
 }

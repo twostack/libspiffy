@@ -30,7 +30,6 @@ LibSpiffy implements a sophisticated Bitcoin wallet system using modern architec
 - **Payment channels** for off-chain micropayments with on-chain settlement
 - **Benford distribution** UTXO splitting for transaction privacy
 - UTXO holds and reservations with automatic cleanup
-- Transaction lifecycle management with pending transaction recovery
 - Snapshot support for performance optimization
 - Real-time balance calculations
 - **ARC (Authoritative Response Component)** service integration for broadcasting and the policy fee rate every transaction pays
@@ -94,7 +93,7 @@ LibSpiffy implements a **CQRS (Command Query Responsibility Segregation)** archi
 │  ═════════════════════╪═══════════════════════════════════════════════    │
 │                       ▼  Event Stream                                     │
 │              ┌─────────────────┐                                          │
-│              │ Projection Mgr  │  (Read-Only from EventStore)             │
+│              │Projection Actors│  (Read-Only from EventStore)             │
 │              └────────┬────────┘                                          │
 │         ┌─────────────┴─────────────┐                                     │
 │         ▼                           ▼                                     │
@@ -112,7 +111,7 @@ LibSpiffy implements a **CQRS (Command Query Responsibility Segregation)** archi
 │  ┌──────────────────┐     ┌────────────────┐     ┌─────────────────┐      │
 │  │   SPV Actor      │     │   ARC Actor    │     │ Header Sync     │      │
 │  │ • BEEF/BUMP val. │     │ • Broadcast    │     │ • Block headers │      │
-│  │ • Invoice match  │     │ • Fee estimate │     │ • Merkle proofs │      │
+│  │ • Invoice match  │     │ • Fee estimate │     │ • Reorgs        │      │
 │  │ • Fee calc       │     │ • Policy query │     │ • Chain valid.  │      │
 │  └──────────────────┘     └────────────────┘     └─────────────────┘      │
 │                                                                           │
@@ -151,7 +150,7 @@ LibSpiffy implements a **CQRS (Command Query Responsibility Segregation)** archi
 
 **Before using LibSpiffy**, you must understand that all event types must be registered with Eventador's `EventRegistry` for proper CBOR deserialization after system restarts.
 
-**LibSpiffy handles this automatically** during initialization via `_registerEventTypes()`, but if you're extending LibSpiffy with custom events, you'll need to register them:
+**LibSpiffy handles this automatically** during initialization via `LibSpiffyActorSystem.registerEventTypes()`, but if you're extending LibSpiffy with custom events, you'll need to register them:
 
 ```dart
 import 'package:eventador/eventador.dart';
@@ -169,28 +168,56 @@ await initializeLibSpiffy(dataDirectory: './wallet-data');
 ```
 
 **What LibSpiffy registers automatically:**
-- 11 Wallet events (WalletCreatedEvent, AddressGeneratedEvent, UTXOReceivedEvent, etc.)
-- 5 Invoice events (InvoiceCreatedEvent, InvoicePaidEvent, etc.)
+- The wallet events (WalletCreatedEvent, AddressGeneratedEvent, UTXOReceivedEvent, etc.)
+- The invoice events (InvoiceCreatedEvent, InvoicePaidEvent, etc.)
+- The payment channel events (ChannelOpenedEvent, ChannelClosedEvent, etc.)
+
+Each is registered under its stable type name (`wallet.utxo.received`, for example), with the class name as an alias where an earlier release journaled the event under it.
 
 **Why this matters:**
 - Events are stored in CBOR format in the EventStore
 - After restart, Eventador needs to deserialize events back into Dart objects
-- Without registration: `ArgumentError: Event type 'XYZ' not registered`
+- Without registration: `ArgumentError: Event type XYZ not registered`
 
 See the [eventador package](https://pub.dev/packages/eventador) for complete details on event registration.
 
 ### Installation
 
-```bash
-# Clone the repository
-git clone <repository-url>
-cd libspiffy
+Add libspiffy to `pubspec.yaml`. `Isar` is part of the public API
+(`LibSpiffyActorSystem.initialize(isar:)`, `LibSpiffySchemas`), so the host
+depends on Isar too:
 
-# Install dependencies
-dart pub get
+```yaml
+dependencies:
+  libspiffy: ^4.0.0
+  isar_community: ^3.3.2
+  isar_community_flutter_libs: ^3.3.2 # Flutter apps only
 
-# Run the example
-dart run example/bitcoin_wallet_example.dart
+dev_dependencies: # only when the host has Isar collections of its own
+  isar_community_generator: ^3.3.2
+  build_runner: ^2.7.0
+```
+
+Import Isar as `package:isar_community/isar.dart`.
+
+**macOS and iOS hosts:** the published `isar_community` 3.3.2 binary
+preallocates disk space past the end of the database file every time the file
+grows, and never releases it. Until `isar_community` releases the fix,
+override both packages with the 3.3.2 build on libmdbx v0.13.12, as the 4.0.0
+entry in [CHANGELOG.md](CHANGELOG.md) describes:
+
+```yaml
+dependency_overrides:
+  isar_community:
+    git:
+      url: https://github.com/stephanfeb/isar-community.git
+      ref: 3.3.2-libmdbx-0.13.12
+      path: packages/isar_community
+  isar_community_flutter_libs: # Flutter apps only
+    git:
+      url: https://github.com/stephanfeb/isar-community.git
+      ref: 3.3.2-libmdbx-0.13.12
+      path: packages/isar_community_flutter_libs
 ```
 
 ### Basic Usage (Coordinator API - Recommended)
@@ -205,6 +232,7 @@ import 'package:libspiffy/coordinator.dart';
 final libspiffy = LibSpiffyActorSystem();
 await libspiffy.initialize(
   dataDirectory: './wallet-data',
+  networkType: 'main', // 'test' (the default) for testnet
   arcConfig: ArcServiceConfig.taalMainnet(),
   enableP2P: true,
 );
@@ -281,6 +309,7 @@ await initializeLibSpiffy(
 
 // Now all actors are in the same system
 // You can spawn your own actors that interact with LibSpiffy
+// (PaymentProcessorActor is the host's own actor, not part of LibSpiffy)
 final myActor = await hostActorSystem.spawn(
   'payment-processor',
   () => PaymentProcessorActor(
@@ -316,7 +345,7 @@ await initializeLibSpiffy(dataDirectory: './data');
 
 // Use wallet functionality
 final walletManager = getLibSpiffySystem().walletManager;
-walletManager.tell(CreateWalletMessage(...));
+walletManager.tell(CreateWalletMessage('my-wallet', 'My Wallet'));
 
 // LibSpiffy handles its own lifecycle
 await shutdownLibSpiffy();
@@ -340,6 +369,7 @@ await initializeLibSpiffy(
 );
 
 // Your actors can directly communicate with LibSpiffy actors
+// (MyActorBasedApp and PaymentProcessorActor are the host's own classes)
 final paymentProcessor = await app.actorSystem.spawn(
   'payment-processor',
   () => PaymentProcessorActor(
@@ -367,7 +397,12 @@ final coordinator = getLibSpiffySystem().coordinator;
 
 // Send any command
 coordinator.tell(CreateWalletCommand(walletId: 'my-wallet', name: 'My Wallet'));
-coordinator.tell(PayInvoiceCommand(walletId: 'my-wallet', invoiceId: '...', ...));
+coordinator.tell(PayInvoiceCommand(
+  walletId: 'my-wallet',
+  invoiceId: invoiceId,
+  addresses: [paymentAddress],
+  amount: BigInt.from(50000),
+));
 coordinator.tell(GetBalanceQuery(walletId: 'my-wallet'));
 
 // Subscribe to all events
@@ -428,7 +463,7 @@ Commands (Write)                      Events (Immutable)                 Queries
 │   Aggregate      │                    ▼                                │
 │   (Domain Logic) │            ┌──────────────┐                         │
 │ • Wallet         │            │  Projection  │                         │
-│ • Invoice        │            │  Manager     │                         │
+│ • Invoice        │            │  Actors      │                         │
 │                  │            │              │                         │
 │ • Validate       │            │ • Subscribe  │                         │
 │ • Emit Events    │◀───────────│ • Route      │                         │
@@ -460,17 +495,23 @@ invoiceCoordinator.tell(CreateInvoiceMessage(
 
 **Step 2: Aggregate Spawning/Routing**
 ```dart
-// Coordinator spawns or retrieves aggregate actor
-final invoiceAggregateRef = await actorSystem.spawn(
-  'Invoice_$invoiceId',
+// Inside InvoiceCoordinatorActor: spawn the invoice's aggregate actor
+final aggregateActor = await context.system.spawn(
+  'invoice-aggregate-$invoiceId',
   () => InvoiceAggregate(
-    persistenceId: 'Invoice_$invoiceId',
-    eventStore: eventStore,
+    aggregateId: invoiceId,
+    aggregateType: 'Invoice',
+    eventStore: _eventStore,
   ),
 );
 
 // Sends command to aggregate
-invoiceAggregateRef.tell(CreateInvoiceCommand(...));
+aggregateActor.tell(CreateInvoiceCommand(
+  invoiceId: invoiceId,
+  walletId: walletId,
+  addresses: addresses, // generated by the wallet for this invoice
+  amount: amount,
+));
 ```
 
 **Step 3: Event Emission**
@@ -500,24 +541,30 @@ Future<List<Event>> handleCommand(InvoiceState currentState, Command command) as
 ```dart
 // AggregateRoot base class automatically persists events to EventStore
 // Events stored as CBOR in Isar
-// This happens BEFORE eventHandler is called
+// This happens BEFORE the event is applied to the aggregate's state
 ```
 
 **Step 5: Event Application**
 ```dart
-// Inside InvoiceAggregate.eventHandler()
+// Inside InvoiceAggregate.applyEvent(): each event yields a new,
+// immutable InvoiceState. The state passed in is never modified.
 @override
-void eventHandler(Event event) {
-  ensureStateInitialized(); // Critical for recovery
-  
-  if (event is InvoiceCreatedEvent) {
-    // Mutate currentState directly (new in Eventador)
-    currentState.status = InvoiceStatus.pending;
-    currentState.amount = event.amount;
-    currentState.addresses = event.addresses;
-    currentState.createdAt = event.timestamp;
-    currentState.version++;
-  }
+InvoiceState applyEvent(InvoiceState state, Event event) {
+  return switch (event) {
+    final InvoiceCreatedEvent evt => state.copyWith(
+        isCreated: true,
+        walletId: evt.walletId,
+        addresses: evt.addresses,
+        amount: evt.amount,
+        status: InvoiceStatus.pending,
+        createdAt: evt.timestamp,
+        expiresAt: evt.expiresAt,
+        version: evt.version,
+        lastModified: evt.timestamp,
+      ),
+    // ... other events
+    _ => throw ArgumentError('Unknown event type: ${event.runtimeType}'),
+  };
 }
 ```
 
@@ -525,9 +572,13 @@ void eventHandler(Event event) {
 
 **Step 6: Event Streaming**
 ```dart
-// ProjectionManager subscribes to EventStore
-// Streams events to registered projections
-await projectionManager.start(); // Starts event stream processing
+// Each projection runs inside an Eventador ProjectionActor, spawned by
+// LibSpiffyActorSystem. The actor subscribes to the event stream and
+// hands each event to the projection.
+final invoiceProjectionRef = await actorSystem.spawn(
+  'projection-invoice-projection',
+  () => ProjectionActor(invoiceProjection, eventStream, isar: isar),
+);
 ```
 
 **Step 7: Projection Handling**
@@ -537,23 +588,25 @@ await projectionManager.start(); // Starts event stream processing
 Future<bool> handle(Event event) async {
   if (event is InvoiceCreatedEvent) {
     // Create denormalized read model
-    final invoice = Invoice(
+    final readModel = InvoiceReadModel(
       invoiceId: event.invoiceId,
       walletId: event.walletId,
-      addresses: event.addresses,
+      addresses: List.from(event.addresses),
       amount: event.amount,
       status: InvoiceStatus.pending,
-      createdAt: event.createdAt,
+      createdAt: event.timestamp,
+      expiresAt: event.expiresAt,
+      lastUpdated: event.timestamp,
+      metadata: event.invoiceMetadata ?? {},
       // ... optimized for queries
     );
-    
-    // Write to ReadModelStorage (Isar)
-    await storage.storeInvoice(invoice);
-    
-    // Update checkpoint for idempotent replay
-    await updateCheckpoint(event.version);
-    
-    return true; // Event handled
+
+    // Write to ReadModelStorage, unless a replay already stored it
+    if (await _storage.getInvoice(event.invoiceId) == null) {
+      await _storage.storeInvoice(readModel);
+    }
+
+    return true; // Event handled; the ProjectionActor advances the checkpoint
   }
   return false; // Event not handled by this projection
 }
@@ -567,13 +620,14 @@ invoiceCoordinator.tell(CheckInvoiceMessage(invoiceId));
 // Inside coordinator
 Future<void> _handleCheckInvoice(CheckInvoiceMessage msg) async {
   // Query read model storage (fast!)
-  final invoice = await storage.getInvoice(msg.invoiceId);
-  
-  context.sender?.tell(InvoiceDetailsResponse(
-    invoiceId: invoice.invoiceId,
-    status: invoice.status,
-    // ... all denormalized data
-  ));
+  final invoice = await _storage.getInvoice(msg.invoiceId);
+  if (invoice == null) {
+    // Answered with InvoiceDetailsResponse(found: false, error: 'Invoice not found')
+    return;
+  }
+
+  // InvoiceDetailsResponse with all denormalized data
+  context.sender?.tell(_detailsFromReadModel(invoice));
 }
 ```
 
@@ -584,12 +638,13 @@ When the system restarts, aggregates recover their state by replaying events:
 ```dart
 // 1. Aggregate spawned during recovery
 final aggregate = InvoiceAggregate(
-  persistenceId: 'Invoice_abc123',
+  aggregateId: 'abc123',
+  aggregateType: 'Invoice',
   eventStore: eventStore,
 );
 
 // 2. AggregateRoot.preStart() automatically replays events from EventStore
-// 3. Events applied via eventHandler() to rebuild state
+// 3. Events applied via applyEvent() to rebuild state
 // 4. Aggregate ready to process new commands with correct state
 
 // Projections also replay from their last checkpoint
@@ -648,48 +703,56 @@ LibSpiffy implements a streamlined SPV payment verification system using invoice
 
 ```dart
 // 1. Receiver creates an invoice with payment addresses
-final invoice = await createInvoice(
+bobCoordinator.tell(CreateInvoiceCommand(
   walletId: 'bob-wallet',
   amount: BigInt.from(100000), // satoshis
   description: 'Payment for services',
   numberOfAddresses: 1, // Can request multiple addresses
-);
+));
 
-// Invoice contains:
+// -> InvoiceCreatedEvent (coordinator.dart) contains:
 // - invoiceId: Unique identifier
 // - addresses: Pre-generated payment addresses
 // - amount: Expected payment amount
 // - expiresAt: Invoice expiration time
+// The receiver shares these with the sender (`invoice` below).
 
-// 2. Sender creates transaction paying to invoice address(es)
-final tx = await createTransaction(
-  fromWallet: 'alice-wallet',
-  toAddresses: [invoice.addresses.first],
-  amount: invoice.amount,
-);
-
-// 3. Sender broadcasts transaction with BEEF (includes merkle proof)
-await broadcastTransaction(
-  transaction: tx,
-  beef: beef, // Contains tx + parent txs + merkle proof
+// 2. Sender builds and signs a transaction paying the invoice address(es)
+aliceCoordinator.tell(PayInvoiceCommand(
+  walletId: 'alice-wallet',
   invoiceId: invoice.invoiceId, // Links tx to invoice
-);
+  addresses: [invoice.addresses.first],
+  amount: invoice.amount,
+));
+
+// -> PaymentReadyEvent: txid and beefBytes (tx + parent txs + merkle
+//    proofs). The payment is not broadcast; the sender hands the BEEF to the
+//    receiver over the app's own transport.
+
+// 3. Receiver validates the BEEF it was handed
+bobCoordinator.tell(ValidateBEEFCommand(
+  walletId: 'bob-wallet',
+  beefHex: beefHex, // the sender's beefBytes, hex-encoded
+  invoiceId: invoice.invoiceId,
+));
 
 // 4. SPV Actor validates the transaction:
 //    - Verifies merkle proof against block header chain
 //    - Confirms outputs match invoice addresses
 //    - Validates payment amount
 //    - Calculates transaction fee from BEEF data
+// -> BEEFValidationResultEvent (valid, broadcasted, networkStatus)
 
 // 5. Receiver's wallet is automatically updated with new UTXOs, and the
-//    invoice is marked paid once ARC says the network holds the payment
+//    invoice is marked paid (InvoicePaidEvent) once ARC says the network
+//    holds the payment
 ```
 
 ### SPV Validation Flow
 
 1. **Transaction Received**: SPV Actor receives transaction with BEEF and invoice ID
 2. **Merkle Proof Validation**: Validates transaction is in a valid block
-3. **Invoice Lookup**: Retrieves expected payment addresses from Invoice Manager
+3. **Invoice Lookup**: Retrieves expected payment addresses from the Invoice Coordinator
 4. **Output Verification**: Confirms transaction pays to invoice addresses
 5. **Amount Validation**: Verifies payment amount matches invoice
 6. **UTXO Extraction**: Identifies new spendable UTXOs and spent UTXOs
@@ -790,28 +853,27 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState> {
   @override
   Future<List<Event>> handleCommand(WalletState currentState, Command command) async {
     // Validate business rules and return events
-    if (command is GenerateAddressCommand) {
-      return [AddressGeneratedEvent(
-        walletId: persistenceId,
-        address: generatedAddress,
-        derivationIndex: currentState.nextDerivationIndex,
-        // ...
-      )];
+    switch (command) {
+      case final GenerateAddressCommand cmd:
+        // Derives the next key; returns an AddressGeneratedEvent
+        return await _keys.generateAddress(currentState, cmd);
+      // ... other command handlers
     }
-    // ... other command handlers
   }
-  
+
   @override
-  void eventHandler(Event event) {
-    ensureStateInitialized(); // Critical!
-    
-    // Mutate currentState directly based on events
-    if (event is AddressGeneratedEvent) {
-      currentState.addresses[event.address] = event.derivationIndex;
-      currentState.nextDerivationIndex++;
-      currentState.version++;
+  WalletState applyEvent(WalletState current, Event event) {
+    // current is never modified: the event is applied to a draft of it,
+    // and the aggregate's state is replaced with the result
+    final state = current.toBuilder();
+    switch (event) {
+      case final AddressGeneratedEvent evt:
+        state.addresses = state.addresses.put(evt.address, evt.label);
+        state.nextDerivationIndex = evt.derivationIndex + 1;
+        state.version = evt.version;
+      // ... other event handlers
     }
-    // ... other event handlers
+    return state.build();
   }
 }
 ```
@@ -828,24 +890,22 @@ Long-lived coordinator that manages multiple wallet aggregates:
 
 ```dart
 // Create wallet (spawns BitcoinWalletAggregate actor)
-walletManager.tell(CreateWalletMessage(
-  walletId: 'wallet-001',
-  name: 'My Bitcoin Wallet',
-));
+walletManager.tell(CreateWalletMessage('wallet-001', 'My Bitcoin Wallet'));
 
 // Send command to wallet aggregate
+// (GenerateAddressCommand: import 'package:libspiffy/internals.dart')
 walletManager.tell(WalletCommandMessage(
-  walletId: 'wallet-001',
-  command: GenerateAddressCommand(
+  'wallet-001',
+  GenerateAddressCommand(
     walletId: 'wallet-001',
-    metadata: {'purpose': 'receiving'},
+    purpose: 'receive',
   ),
 ));
 
-// Query wallet (reads from ReadModel, not EventStore)
-walletManager.tell(GetWalletBalanceMessage(
-  walletId: 'wallet-001',
-));
+// Query wallet (reads from ReadModel, not EventStore). The wallet manager
+// has no balance message: read the read model, or send the coordinator a
+// GetBalanceQuery and listen for its BalanceResponse.
+final BigInt balance = await getLibSpiffySystem().walletStorage.getBalance('wallet-001');
 ```
 
 **Responsibilities:**
@@ -865,48 +925,56 @@ class InvoiceAggregate extends AggregateRoot<InvoiceState> {
   Future<List<Event>> handleCommand(InvoiceState currentState, Command command) async {
     if (command is CreateInvoiceCommand) {
       return [InvoiceCreatedEvent(
-        invoiceId: persistenceId,
+        invoiceId: command.invoiceId,
         walletId: command.walletId,
         addresses: command.addresses,
         amount: command.amount,
-        createdAt: DateTime.now(),
+        version: currentState.version + 1,
         // ...
       )];
     }
-    
+
     if (command is MarkInvoicePaidCommand) {
       // Business rule validation
       if (currentState.status != InvoiceStatus.pending) {
-        throw StateError('Invoice is not pending');
+        throw StateError('Invoice ${command.invoiceId} is not pending');
       }
-      
+
       return [InvoicePaidEvent(
-        invoiceId: persistenceId,
-        paidAt: DateTime.now(),
+        invoiceId: command.invoiceId,
+        walletId: currentState.walletId,
         txid: command.txid,
         amountReceived: command.amountReceived,
+        addressesPaidTo: command.addressesPaidTo,
+        paidAt: command.paidAt ?? DateTime.now(),
+        version: currentState.version + 1,
       )];
     }
     // ... other commands
   }
-  
+
+  // Each event yields a new, immutable InvoiceState
   @override
-  void eventHandler(Event event) {
-    ensureStateInitialized();
-    
+  InvoiceState applyEvent(InvoiceState state, Event event) {
     if (event is InvoiceCreatedEvent) {
-      currentState.status = InvoiceStatus.pending;
-      currentState.amount = event.amount;
-      currentState.addresses = event.addresses;
-      // ...
+      return state.copyWith(
+        isCreated: true,
+        status: InvoiceStatus.pending,
+        amount: event.amount,
+        addresses: event.addresses,
+        // ...
+      );
     }
-    
+
     if (event is InvoicePaidEvent) {
-      currentState.status = InvoiceStatus.paid;
-      currentState.paidAt = event.paidAt;
-      currentState.paymentTxid = event.txid;
-      // ...
+      return state.copyWith(
+        status: InvoiceStatus.paid,
+        paidAt: event.paidAt,
+        paymentTxid: event.txid,
+        // ...
+      );
     }
+    // ... other events
   }
 }
 ```
@@ -918,7 +986,7 @@ class InvoiceAggregate extends AggregateRoot<InvoiceState> {
 
 ### 4. Invoice Coordinator Actor (Coordinator)
 
-Long-lived coordinator for invoice operations (replaces old InvoiceManagerActor):
+Long-lived coordinator for invoice operations:
 
 ```dart
 // Create an invoice (spawns InvoiceAggregate, requests addresses from wallet)
@@ -932,20 +1000,18 @@ invoiceCoordinator.tell(CreateInvoiceMessage(
 // Mark invoice as paid (routes to InvoiceAggregate)
 invoiceCoordinator.tell(MarkInvoicePaidMessage(
   invoiceId: 'invoice-123',
-  txid: 'transaction-hex',
+  txid: 'txid-hex',
   amountReceived: BigInt.from(100000),
   addressesPaidTo: ['address1'],
 ));
 
 // Check invoice status (queries ReadModel)
-invoiceCoordinator.tell(CheckInvoiceMessage(
-  invoiceId: 'invoice-123',
-));
+invoiceCoordinator.tell(CheckInvoiceMessage('invoice-123'));
 
 // List invoices (queries ReadModel with optional filter)
 invoiceCoordinator.tell(ListInvoicesMessage(
   walletId: 'wallet-001',
-  status: InvoiceStatus.pending, // Optional
+  filterStatus: InvoiceStatus.pending, // Optional
 ));
 
 // Cancel invoice (routes to InvoiceAggregate)
@@ -967,38 +1033,46 @@ Projections listen to EventStore and update ReadModels:
 
 ```dart
 // WalletProjection - Updates wallet read models
-class WalletProjection extends Projection<WalletReadModel> {
+class WalletProjection extends Projection<void> {
   @override
   Future<bool> handle(Event event) async {
-    if (event is UTXOReceivedEvent) {
-      // Update denormalized UTXO view in Isar
-      await storage.storeUTXO(BitcoinUtxo.fromEvent(event));
-      return true;
+    if (event is! WalletEvent) return false;
+
+    switch (event) {
+      case final UTXOReceivedEvent evt:
+        // Update the denormalized UTXO and address rows
+        await _handleUTXOReceived(evt);
+        return true;
+      // ... other wallet events
     }
-    // ... other wallet events
   }
 }
 
-// InvoiceProjection - Updates invoice read models  
+// InvoiceProjection - Updates invoice read models
 class InvoiceProjection extends Projection<InvoiceReadModel> {
   @override
   Future<bool> handle(Event event) async {
     if (event is InvoiceCreatedEvent) {
       // Check for existing invoice (idempotent replay)
-      final existing = await storage.getInvoice(event.invoiceId);
+      final existing = await _storage.getInvoice(event.invoiceId);
       if (existing == null) {
-        await storage.storeInvoice(Invoice.fromEvent(event));
+        await _storage.storeInvoice(InvoiceReadModel(
+          invoiceId: event.invoiceId,
+          walletId: event.walletId,
+          // ...
+        ));
       }
       return true;
     }
-    
+
     if (event is InvoicePaidEvent) {
       // Update existing invoice status
-      await storage.updateInvoiceStatus(
+      await _storage.updateInvoiceStatus(
         event.invoiceId,
         InvoiceStatus.paid,
-        paidAt: event.paidAt,
         txid: event.txid,
+        amountReceived: event.amountReceived,
+        paidAt: event.paidAt,
       );
       return true;
     }
@@ -1013,27 +1087,34 @@ class InvoiceProjection extends Projection<InvoiceReadModel> {
 - Checkpointing for idempotent replay
 - Eventual consistency (async updates)
 
-### 6. Projection Manager (CQRS Orchestration)
+### 6. Projection Actors (CQRS Orchestration)
 
-Coordinates event streaming to all projections:
+Each projection runs inside an Eventador `ProjectionActor`. Spawning the actor
+is the registration; there is no projection manager:
 
 ```dart
-// Initialized automatically by LibSpiffyActorSystem
-final projectionManager = ProjectionManager(eventStore);
+// Done automatically by LibSpiffyActorSystem, for the wallet, invoice and
+// channel projections
+final walletProjection = WalletProjection(
+  projectionId: 'wallet-projection',
+  eventStore: eventStore,
+  storage: walletStorage,
+);
+final walletProjectionRef = await actorSystem.spawn(
+  'projection-wallet-projection',
+  () => ProjectionActor(walletProjection, eventStream, isar: isar),
+);
 
-// Register projections
-await projectionManager.registerProjection(walletProjection);
-await projectionManager.registerProjection(invoiceProjection);
-
-// Start event streaming
-await projectionManager.start();
-
-// ProjectionManager:
-// - Streams events from EventStore
-// - Routes events to interested projections
-// - Manages checkpoints for each projection
-// - Handles projection failures gracefully
+// ProjectionActor:
+// - Owns the event-stream subscription
+// - Hands the projection the events it is interested in
+// - Keeps the projection's checkpoint (not advanced when handle() fails)
+// - Answers AwaitEventApplied, so a coordinator can wait until the read
+//   model shows a command's outcome
 ```
+
+The refs are `LibSpiffyActorSystem.walletProjectionRef`,
+`invoiceProjectionRef` and `channelProjectionRef`.
 
 ### 7. SPV Actor
 
@@ -1083,21 +1164,26 @@ arcActor.tell(CheckTransactionStatusMessage(txid));
 
 ### 9. Block Header Sync Actor
 
-Manages block headers and validates merkle proofs:
+Keeps the block header chain (`BlockHeaderChain`) in step with the network: it
+asks peers for headers, stores the batches they send, and tells the SPV Actor
+about stored headers and reorganizations. Header sync continues from the tip
+of the stored chain. This actor does not validate merkle proofs: the SPV Actor
+checks a proof against the header chain.
+
+Its messages are LibSpiffy's own and are not exported. An application reads
+the chain it keeps:
 
 ```dart
-// Start header sync
-headerSync.tell(StartHeaderSyncMessage(
-  startHeight: 0,
-  targetHeight: null, // null = sync to tip
-));
+final libspiffy = getLibSpiffySystem();
 
-// Validate merkle proof
-headerSync.tell(ValidateMerkleProofMessage(
-  requestId: 'validate-1',
-  merkleProof: proof,
-  txid: 'transaction-id',
-));
+// The stored chain
+final height = libspiffy.headerChain.bestHeight;
+final tip = libspiffy.headerChain.chainTip;
+final header = await libspiffy.headerChain.getHeaderByHeight(850000);
+
+// The network's tip as best we know it: the higher of what connected peers
+// reported and the stored chain; 0 while no peer is connected
+final synced = libspiffy.networkHeight > 0 && height >= libspiffy.networkHeight;
 ```
 
 ### 10. Plugin System
@@ -1119,7 +1205,16 @@ registry.register(myTokenPlugin);
 coordinator.tell(PayInvoiceCommand(
   walletId: 'my-wallet',
   invoiceId: 'invoice-123',
-  pluginOutputs: [PluginOutputSpec(pluginId: 'tsl1', params: {...})],
+  addresses: [],
+  amount: BigInt.zero,
+  outputs: [
+    PluginOutputSpec(
+      pluginId: 'tsl1',
+      pluginScriptType: 'pp1_nft',
+      params: {...},
+      amount: BigInt.one,
+    ),
+  ],
 ));
 ```
 
@@ -1221,7 +1316,6 @@ operators can settle their channels before a change takes effect.
 
 - **PaymentCoordinatorActor**: Orchestrates multi-step payment flows including plugin-based transactions
 - **BenfordCoordinatorActor**: UTXO splitting using Benford's Law distribution for transaction privacy
-- **TransactionLifecycleCoordinatorActor**: Tracks pending transactions and recovers them on restart
 - **ImportActor**: Wallet import from blockchain via address discovery
 
 ## Event Sourcing Flow
@@ -1233,7 +1327,7 @@ operators can settle their channels before a change takes effect.
 final command = GenerateAddressCommand(
   commandId: 'gen-addr-1',
   walletId: 'wallet-001',
-  purpose: AddressPurpose.receiving,
+  purpose: 'receive',
 );
 
 // 2. Command handler produces events
@@ -1241,15 +1335,16 @@ final events = [
   AddressGeneratedEvent(
     eventId: 'event-1',
     walletId: 'wallet-001',
-    address: 'bc1q...',
-    derivationPath: "m/44'/0'/0'/0/0",
-    purpose: AddressPurpose.receiving,
+    address: 'mipc...', // base58 P2PKH: testnet m or n, mainnet 1
+    derivationIndex: 0,
+    chain: AddressChain.receive, // key path m/0/0
+    purpose: 'receive',
     timestamp: DateTime.now(),
   ),
 ];
 
-// 3. Events are applied to update state
-final newState = currentState.applyEvent(events.first);
+// 3. Events are applied to produce the next state (the aggregate's applyEvent)
+final newState = aggregate.applyEvent(currentState, events.first);
 ```
 
 ### Event Types
@@ -1263,27 +1358,28 @@ All events are persisted to EventStore and streamed to Projections for read-mode
 - **UTXOReceivedEvent**: Incoming UTXO detected
 - **UTXOSpentEvent**: UTXO consumed in transaction
 - **UTXOConfirmationUpdatedEvent**: UTXO confirmation count changed
-- **TransactionAddedEvent**: Transaction added to wallet
-- **SpendingTransactionCreatedEvent**: Outgoing transaction created
+- **TransactionRecordedEvent**: Outgoing transaction recorded
+- **TransactionSignedEvent**: Transaction signed
 - **TransactionBroadcastEvent**: Transaction sent to network
 
 #### UTXO Reservation Events (BitcoinWalletAggregate)
-- **UTXOReservationPlacedEvent**: UTXO reserved for future use
-- **UTXOReservationReleasedEvent**: UTXO reservation removed
-- **UTXOReservationExpiredEvent**: UTXO reservation timed out
 - **UTXOReservedEvent**: UTXO marked as reserved
 - **UTXOReleasedEvent**: UTXO released from reservation
 - **UTXOReservationRenewedEvent**: UTXO reservation extended
+- **UTXOReservationPlacedEvent** / **UTXOReservationReleasedEvent** / **UTXOReservationExpiredEvent**: no longer emitted; replayed from journals written by earlier releases
 
 #### Deferred Payment Events (BitcoinWalletAggregate)
 - **TransactionSpendDeferredEvent** (`wallet.transaction.spend_deferred`): inputs of a handed-over payment held
 - **TransactionNetworkStatusCheckedEvent** (`wallet.transaction.network_status_checked`): network status observed
 - **DeferredTransactionFailedEvent** (`wallet.transaction.deferred_failed`): ARC rejected it; inputs released
 - **DeferredTransactionCancelledEvent** (`wallet.transaction.deferred_cancelled`): cancelled; inputs released
+- **DeferredSpendReclaimedEvent** (`wallet.transaction.deferred_reclaimed`): reclaimed; inputs spent back to the wallet
+- **DeferredSpendCompletedEvent** (`wallet.transaction.deferred_completed`): the counterparty's completed transaction recorded in the half's place
+- **TransactionVoidedEvent** (`wallet.transaction.voided`): an unsettled transaction whose input a confirmed transaction spends; its pending outputs are voided
 
 #### Invoice Events (InvoiceAggregate)
 - **InvoiceCreatedEvent**: Invoice created with payment addresses
-- **InvoiceStatusChangedEvent**: Invoice status transition
+- **InvoiceStatusChangedEvent**: no longer emitted; replayed from journals written by earlier releases
 - **InvoicePaidEvent**: Invoice marked as paid after SPV validation
 - **InvoiceExpiredEvent**: Invoice expired before payment
 - **InvoiceCancelledEvent**: Invoice cancelled by user
@@ -1360,20 +1456,34 @@ await libspiffy.initialize(
 ```dart
 // ARC Service (for transaction broadcasting)
 final arcConfig = ArcServiceConfig(
-  baseUrl: 'https://arc.taal.com',
+  baseUrl: 'https://arc.taal.com/v1',
   apiKey: 'your-api-key',
-  network: 'mainnet',
 );
 // Or use presets:
-ArcServiceConfig.taalMainnet();
-ArcServiceConfig.taalTestnet();
+ArcServiceConfig.taalMainnet(apiKey: 'your-api-key');
+ArcServiceConfig.taalTestnet(apiKey: 'your-api-key');
+ArcServiceConfig.gorillaPoolMainnet();
+ArcServiceConfig.gorillaPoolTestnet();
 
-// CDN-based fast header sync
-final cdnConfig = CdnHeaderSyncConfig(
-  baseUrl: 'https://cdn.example.com/headers',
-  concurrentDownloads: 4,
+await libspiffy.initialize(
+  dataDirectory: './wallet-data',
+  networkType: 'main', // 'main' or 'test' (default)
+  arcConfig: arcConfig,
+  // CDN-based fast header sync (https), before headers come from peers
+  cdnBaseUrl: 'https://cdn.example.com/headers',
+  onHeaderSyncProgress: (current, total, phase) {},
+  onHeaderSyncResult: (CdnSyncResult result) {
+    // success, or the error that ended it, or that no CDN was configured
+  },
+  // P2P header sync
+  enableP2P: true,
+  peerAddresses: ['seed.example.com:8333'], // optional; the network's DNS seeds otherwise
 );
 ```
+
+`startHeight` is the block height this node reports to peers in its version
+handshake. Header sync does not start from it: it continues from the tip of
+the stored header chain.
 
 ## Monitoring and Observability
 
@@ -1455,8 +1565,9 @@ dart test -P localnet test/integration/node_rpc_wif_import_test.dart   # WIF imp
 ### Project Structure
 ```
 lib/
-├── libspiffy.dart                       # Primary barrel file (~100 exports)
+├── libspiffy.dart                       # Primary barrel file
 ├── coordinator.dart                     # Public API (WalletCoordinatorActor)
+├── internals.dart                       # Aggregate commands, domain events (advanced use)
 └── src/
     ├── actors/                          # Actor System
     │   ├── libspiffy_actor_system.dart      # System initialization & event registration
@@ -1468,7 +1579,6 @@ lib/
     │   ├── arc_actor.dart                    # ARC service integration
     │   ├── header_sync_actor.dart            # Block header synchronization
     │   ├── benford_coordinator_actor.dart    # Privacy-preserving UTXO splitting
-    │   ├── transaction_lifecycle_coordinator_actor.dart  # Pending tx recovery
     │   ├── import_actor.dart                 # Wallet import from blockchain
     │   ├── channel_p2p_adapter.dart          # Payment channel P2P communication
     │   ├── coordinator_messages.dart         # Public API commands/events
@@ -1476,7 +1586,7 @@ lib/
     │   ├── invoice_messages.dart             # Invoice actor messages
     │   ├── payment_messages.dart             # Payment flow messages
     │   ├── payment_channel_messages.dart     # Channel protocol messages
-    │   └── spv_messages.dart                 # SPV validation messages
+    │   └── spv_messages.dart                 # SPV and header sync messages
     ├── core/                            # Domain Aggregates (Write Side)
     │   ├── bitcoin_wallet_aggregate.dart     # Event-sourced wallet
     │   ├── invoice_aggregate.dart            # Event-sourced invoices
@@ -1511,8 +1621,6 @@ lib/
     │   ├── transaction_address_link.dart    # Transaction-address junction
     │   └── wallet_type.dart                 # Enum: HD, WIF, XPRIV, XPUB
     ├── spv/                             # SPV Validation
-    │   ├── beef.dart                        # BEEF format implementation
-    │   ├── bump.dart                        # BUMP merkle path implementation
     │   ├── block_header_chain.dart          # Header chain management
     │   ├── cdn_header_sync_service.dart     # Fast CDN-based header sync
     │   ├── cdn_header_sync_config.dart      # CDN sync configuration
@@ -1535,9 +1643,10 @@ lib/
     │       ├── postgres_migrations.dart          # Migration infrastructure
     │       └── migrations/                      # Schema versions
     │           ├── v001_initial_schema.dart
-    │           └── v002_secure_secrets.dart
+    │           ├── v002_secure_secrets.dart
+    │           └── ...                              # up to v029_deferred_payment_deadline.dart
     ├── services/                        # Business Logic Services
-    │   ├── crypto_service.dart              # Cryptographic interface (BIP32/39/44)
+    │   ├── crypto_service.dart              # Cryptographic interface (BIP32/39)
     │   ├── dartsv_crypto_service.dart       # DartSV crypto implementation
     │   ├── callback_transaction_signer.dart # Secure signer for plugins
     │   ├── arc_service.dart                 # ARC API client
@@ -1551,12 +1660,10 @@ lib/
     │   ├── blockchain_data_source.dart      # Blockchain API interface
     │   ├── whatsonchain_data_source.dart    # WhatsOnChain implementation
     │   └── transaction/builder/             # Lock/unlock script builders
-    │       ├── p2pkh_lockbuilder.dart           # Standard P2PKH
-    │       ├── p2pkh_unlockbuilder.dart
     │       ├── hodl_lockbuilder.dart            # Time-locked scripts
     │       ├── hodl_unlockbuilder.dart
     │       ├── op_return_lockbuilder.dart       # OP_RETURN metadata
-    │       └── ...                              # AIP, BMAP, B://, PP1, PP2
+    │       └── ...                              # AIP, BMAP, MAP, B://, PP1, PP2, partial witness
     ├── crypto/                          # Encryption
     │   └── encryption_service.dart          # AES-256-GCM with HKDF
     ├── integration/                     # External System Bridges
@@ -1567,7 +1674,7 @@ lib/
         ├── benford_distribution.dart        # Benford's Law splitting
         ├── crypto_utils.dart                # Cryptographic helpers
         ├── hex_utils.dart                   # Hex conversion
-        └── tsc_converter.dart               # Token/satoshi conversion
+        └── tsc_converter.dart               # TSC merkle proof to BUMP conversion
 ```
 
 **Key Architectural Layers:**
@@ -1576,7 +1683,7 @@ lib/
 - **plugin/**: Extensible system for custom script types and token protocols
 - **projections/**: Read-side event handlers (update read models)
 - **models/**: Separated into aggregate state (mutable) and read models (denormalized)
-- **spv/**: BEEF/BUMP validation and block header synchronization
+- **spv/**: Block header chain, CDN header sync and merkle proof checks (BEEF/BUMP parsing is in utils/)
 - **storage/**: Read model persistence — Isar (mobile), PostgreSQL (server), in-memory (dev); EventStore managed by Eventador
 
 ### Adding New Features
@@ -1588,14 +1695,24 @@ Follow these steps to add new functionality using proper CQRS patterns:
 **Step 1: Define Command**
 ```dart
 // Add to lib/src/core/wallet_commands.dart
-class MyNewCommand extends Command {
-  final String walletId;
+class MyNewCommand extends WalletCommand {
   final String someParameter;
-  
+
   MyNewCommand({
-    required this.walletId,
+    required String walletId,
     required this.someParameter,
-  });
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(
+          walletId: walletId,
+          commandId: commandId,
+          timestamp: timestamp,
+          metadata: metadata,
+        );
+
+  @override
+  String get commandType => 'MyNewCommand';
 }
 ```
 
@@ -1603,8 +1720,15 @@ class MyNewCommand extends Command {
 ```dart
 // Add to lib/src/core/wallet_events.dart
 class MyNewEvent extends WalletEvent {
+  /// Journal identifier of this event type. Stored with every event and
+  /// independent of the class name; never change it.
+  static const String stableTypeName = 'wallet.my_new';
+
+  @override
+  String get typeName => stableTypeName;
+
   final String someData;
-  
+
   MyNewEvent({
     required String walletId,
     required this.someData,
@@ -1617,9 +1741,9 @@ class MyNewEvent extends WalletEvent {
     timestamp: timestamp,
     version: version,
   );
-  
+
   @override
-  Map<String, dynamic> getEventData() {
+  Map<String, dynamic> getWalletEventData() {
     return {
       'someData': someData,
     };
@@ -1644,11 +1768,8 @@ class MyNewEvent extends WalletEvent {
 
 **Step 3: Register Event Type**
 ```dart
-// Add to lib/src/actors/libspiffy_actor_system.dart → _registerEventTypes()
-EventRegistry.register<MyNewEvent>(
-  'MyNewEvent',
-  (map) => MyNewEvent.fromMap(map),
-);
+// Add to lib/src/actors/libspiffy_actor_system.dart → registerEventTypes()
+EventRegistry.register<MyNewEvent>(MyNewEvent.stableTypeName, MyNewEvent.fromMap);
 ```
 
 **Step 4: Add Command Handler in BitcoinWalletAggregate**
@@ -1656,11 +1777,11 @@ EventRegistry.register<MyNewEvent>(
 // In lib/src/core/bitcoin_wallet_aggregate.dart → handleCommand()
 @override
 Future<List<Event>> handleCommand(WalletState currentState, Command command) async {
-  return switch (command.runtimeType) {
-    MyNewCommand => _handleMyNewCommand(currentState, command as MyNewCommand),
+  switch (command) {
+    case final MyNewCommand cmd:
+      return _handleMyNewCommand(currentState, cmd);
     // ... other commands
-    _ => throw ArgumentError('Unknown command: ${command.runtimeType}'),
-  };
+  }
 }
 
 List<Event> _handleMyNewCommand(WalletState state, MyNewCommand cmd) {
@@ -1677,54 +1798,58 @@ List<Event> _handleMyNewCommand(WalletState state, MyNewCommand cmd) {
     MyNewEvent(
       walletId: cmd.walletId,
       someData: result,
+      version: state.version + 1,
     ),
   ];
 }
 ```
 
-**Step 5: Add Event Handler in BitcoinWalletAggregate**
+**Step 5: Apply the Event in BitcoinWalletAggregate**
 ```dart
-// In lib/src/core/bitcoin_wallet_aggregate.dart → eventHandler()
+// In lib/src/core/bitcoin_wallet_aggregate.dart → applyEvent()
 @override
-void eventHandler(Event event) {
-  ensureStateInitialized(); // CRITICAL!
-  
+WalletState applyEvent(WalletState current, Event event) {
   if (event is! WalletEvent) {
     throw ArgumentError('Expected WalletEvent, got ${event.runtimeType}');
   }
+  // current is never modified: the event is applied to a draft of it
+  final state = current.toBuilder();
 
-  switch (event.runtimeType) {
-    case MyNewEvent:
-      _applyMyNewEvent(event as MyNewEvent);
-      break;
+  switch (event) {
+    case final MyNewEvent evt:
+      _applyMyNewEvent(state, evt);
     // ... other events
-    default:
-      throw ArgumentError('Unknown event: ${event.runtimeType}');
   }
+
+  return state.build();
 }
 
-// Mutate currentState directly (new Eventador pattern)
-void _applyMyNewEvent(MyNewEvent event) {
-  currentState.someField = event.someData;
-  currentState.version++;
-  currentState.lastModified = event.timestamp;
+// Fill in the draft (add someField to WalletState and WalletStateBuilder)
+void _applyMyNewEvent(WalletStateBuilder state, MyNewEvent event) {
+  state.someField = event.someData;
+  state.version = event.version;
+  state.lastModified = event.timestamp;
 }
 ```
 
 **Step 6: Update Projection (if needed)**
 ```dart
-// In lib/src/projections/wallet_projection.dart → handle()
+// In lib/src/projections/wallet_projection.dart: add MyNewEvent to
+// interestedEventTypes, and an arm to handle()
 @override
 Future<bool> handle(Event event) async {
-  if (event is MyNewEvent) {
-    // Update read model in Isar
-    await _storage.updateSomeReadModel(
-      event.walletId,
-      event.someData,
-    );
-    return true;
+  if (event is! WalletEvent) {
+    return false;
   }
-  // ... other events
+
+  switch (event) {
+    case final MyNewEvent evt:
+      // Update the read model through ReadModelStorage (_storage); a new
+      // kind of row needs a method on the interface and on every backend
+      await _handleMyNewEvent(evt);
+      return true;
+    // ... other events
+  }
 }
 ```
 
@@ -1742,13 +1867,17 @@ Future<bool> handle(Event event) async {
    ```dart
    class MyNewMessage implements Message {
      final String data;
-     
+
      MyNewMessage(this.data);
-     
+
      @override
-     String? get correlationId => null;
+     String get correlationId => 'my-new-message-$data';
      @override
      Map<String, dynamic> get metadata => {'data': data};
+     @override
+     ActorRef? get replyTo => null;
+     @override
+     DateTime get timestamp => DateTime.now();
    }
    ```
 
@@ -1756,10 +1885,9 @@ Future<bool> handle(Event event) async {
    ```dart
    @override
    Future<void> onMessage(dynamic message) async {
-     switch (message.runtimeType) {
-       case MyNewMessage:
-         await _handleMyNewMessage(message as MyNewMessage);
-         break;
+     switch (message) {
+       case final MyNewMessage msg:
+         await _handleMyNewMessage(msg);
        // ... other cases
      }
    }

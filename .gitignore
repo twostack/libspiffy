@@ -23,6 +23,10 @@ test/data/cdn/
 # every test run, recreated on demand, referenced by nothing in this repo.
 data/eventador.isar
 data/eventador.isar.lock
+data/eventador.isar-lck
+
+# The Isar core a Dart script downloads beside itself (tool/).
+libisar.dylib
 
 # Claude Code agent worktrees
 .claude/worktrees/

@@ -22,6 +22,7 @@ import '../wallet_events.dart';
 import '../wallet_output_ownership.dart';
 import 'deferred_payments.dart';
 import 'state_records.dart';
+import 'utxo_ledger.dart';
 
 final _log = Logger('BitcoinWalletAggregate');
 
@@ -250,7 +251,8 @@ class OutgoingTransactions {
     // Mark spent UTXOs — unless deferSpend is true: then the wallet holds
     // the inputs (no expiry) until the network settles the transaction,
     // ARC reports it failed, or it is cancelled (bead libspiffy-7p2);
-    // ARCActor issues SpendUTXOCommand when it reaches SEEN_ON_NETWORK.
+    // ARCActor sends ApplyDeferredSpendCommand when it reaches
+    // SEEN_ON_NETWORK ([applyDeferredSpend]).
     if (command.deferSpend) {
       final hold = deferred.holdEvent(currentState, command,
           version: currentState.version + events.length + 1, supersedes: supersedesDeferred);
@@ -562,25 +564,11 @@ class OutgoingTransactions {
     // spendable (bead libspiffy-fggl). A pending UTXO under a reservation
     // keeps the reservation and is available once it is released, as
     // MarkUTXOAvailableCommand does it (UTXOLedger.markAvailable).
-    for (final entry in currentState.utxos.entries) {
-      final utxo = entry.value;
-      if (utxo.txid != command.txid) continue;
-      final pendingUnderReservation =
-          utxo.status == UTXOStatus.reserved && utxo.statusBeforeReservation == UTXOStatus.pending;
-      // A voided output of this transaction (its change, after the payment
-      // was cancelled, failed or reclaimed) is promoted too: the proof says
-      // the transaction is mined after all (bead libspiffy-3arz).
-      if (utxo.status != UTXOStatus.pending && utxo.status != UTXOStatus.voided && !pendingUnderReservation) {
-        continue;
-      }
-      events.add(UTXOMarkedAvailableEvent(
-        walletId: command.walletId,
-        txid: utxo.txid,
-        vout: utxo.vout,
-        version: currentState.version + events.length + 1,
-        timestamp: DateTime.now(),
-      ));
-    }
+    //
+    // A voided output of this transaction (its change, after the payment
+    // was cancelled, failed or reclaimed) is promoted too: the proof says
+    // the transaction is mined after all (bead libspiffy-3arz).
+    _promoteOwnOutputs(currentState, command.walletId, command.txid, events);
 
     events.add(TransactionConfirmedEvent(
       walletId: command.walletId,
@@ -591,6 +579,83 @@ class OutgoingTransactions {
       version: currentState.version + events.length + 1,
       timestamp: DateTime.now(),
     ));
+    return events;
+  }
+
+  /// Adds a [UTXOMarkedAvailableEvent] to [events] for each output of [txid]
+  /// the wallet holds that is still to become spendable
+  /// ([BitcoinUtxo.awaitsPromotion]).
+  static void _promoteOwnOutputs(WalletState currentState, String walletId, String txid, List<Event> events) {
+    for (final utxo in currentState.utxos.values) {
+      if (utxo.txid != txid || !utxo.awaitsPromotion) continue;
+      events.add(UTXOMarkedAvailableEvent(
+        walletId: walletId,
+        txid: utxo.txid,
+        vout: utxo.vout,
+        version: currentState.version + events.length + 1,
+        timestamp: DateTime.now(),
+      ));
+    }
+  }
+
+  /// The network has the transaction ([ApplyDeferredSpendCommand]): the
+  /// wallet's UTXOs it spends are spent and its outputs the wallet holds
+  /// become available, as [confirm] does on a proof — from the aggregate's
+  /// own state, which holds a recording whole from the moment it is
+  /// accepted.
+  ///
+  /// An input the wallet does not hold or that is spent already is skipped;
+  /// so is one that is not this transaction's to spend
+  /// ([UtxoLedger.spendableBy]), with a warning, and the rest still applies.
+  static List<Event> applyDeferredSpend(WalletState currentState, ApplyDeferredSpendCommand command) {
+    if (!currentState.isCreated) {
+      throw StateError('Cannot apply a deferred spend for non-existent wallet');
+    }
+    final txid = command.txid;
+    final inputKeys = <String>{..._recordedSpentKeys(currentState, txid)};
+    final rawHex = command.rawHex;
+    if (rawHex != null && rawHex.isNotEmpty) {
+      final tx = dartsv.Transaction.fromHex(rawHex);
+      if (tx.id != txid) {
+        throw StateError('The transaction handed over as $txid is ${tx.id}');
+      }
+      for (final input in tx.inputs) {
+        inputKeys.add('${input.prevTxnId}:${input.prevTxnOutputIndex}');
+      }
+    }
+
+    final events = <Event>[];
+    for (final key in inputKeys) {
+      final utxo = currentState.utxos[key];
+      if (utxo == null) continue;
+      if (utxo.status == UTXOStatus.spent) {
+        final spender = utxo.spentInTxId;
+        if (spender != null && spender != txid) {
+          _log.warning('Transaction $txid is on the network and spends input $key of wallet '
+              '${command.walletId}, which is recorded as spent by $spender; left as recorded');
+        }
+        continue;
+      }
+      if (!UtxoLedger.spendableBy(currentState, utxo, txid)) {
+        _log.warning('Transaction $txid is on the network and spends input $key of wallet ${command.walletId}, '
+            'which is not its to spend (status: ${utxo.status}, reservedBy: ${utxo.reservedByTxId}); not spent');
+        continue;
+      }
+      events.add(UTXOSpentEvent(
+        walletId: command.walletId,
+        txid: utxo.txid,
+        vout: utxo.vout,
+        spentInTxId: txid,
+        version: currentState.version + events.length + 1,
+        timestamp: DateTime.now(),
+      ));
+    }
+    final spent = events.length;
+    _promoteOwnOutputs(currentState, command.walletId, txid, events);
+    if (events.isNotEmpty) {
+      _log.info('Transaction $txid on the network: $spent input(s) spent, '
+          '${events.length - spent} output(s) available in wallet ${command.walletId}');
+    }
     return events;
   }
 

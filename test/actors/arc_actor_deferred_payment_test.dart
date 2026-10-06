@@ -136,6 +136,10 @@ void main() {
   Future<DeferredPaymentNetworkResult> check({DeferredPaymentNetworkSource via = DeferredPaymentNetworkSource.arc}) =>
       ask(CheckDeferredPaymentStatusMessage(walletId: _wallet, txid: kFixtureTxid, via: via));
 
+  /// The transactions whose deferred spend the wallet was sent.
+  List<String> applied() => [for (final c in walletManager.commands.whereType<ApplyDeferredSpendCommand>()) c.txid];
+
+  /// The outputs the wallet was told someone else spent ([CheckOutputSpendersMessage]).
   List<String> spends() =>
       [for (final c in walletManager.commands.whereType<SpendUTXOCommand>()) '${c.utxoKey}>${c.spendingTxId}'];
   List<ConfirmTransactionCommand> confirms() => walletManager.commands.whereType<ConfirmTransactionCommand>().toList();
@@ -198,7 +202,7 @@ void main() {
       expect(result.networkStatus, 'SEEN_ON_NETWORK');
       expect(result.source, 'arc');
       expect(statuses(), ['SEEN_ON_NETWORK/arc!']);
-      expect(spends(), ['$_inputKey>$kFixtureTxid']);
+      expect(applied(), [kFixtureTxid]);
       expect(confirms(), isEmpty);
     });
 
@@ -214,7 +218,7 @@ void main() {
       expect(result.proofStatus, 'verified');
       expect(result.confirmed, isTrue);
       expect(confirms().single.bumpHex, fixtureBumpHex());
-      expect(spends(), ['$_inputKey>$kFixtureTxid']);
+      expect(applied(), [kFixtureTxid]);
     });
 
     test('MINED with a proof the stored header contradicts: not confirmed (a status string is not proof)',
@@ -242,7 +246,7 @@ void main() {
 
         expect(result.networkStatus, failure);
         expect(statuses(), ['$failure/arc!']);
-        expect(spends(), isEmpty);
+        expect(applied(), isEmpty);
       });
     }
 
@@ -255,7 +259,7 @@ void main() {
       expect(result.success, isTrue);
       expect(result.networkStatus, DeferredNetworkStatus.notFound);
       expect(statuses(), ['NOT_FOUND/arc!']);
-      expect(spends(), isEmpty);
+      expect(applied(), isEmpty);
     });
 
     test('pkum: DOUBLE_SPEND_ATTEMPTED with ARC\'s competing txids: the recorded status and the result carry them',
@@ -274,7 +278,7 @@ void main() {
       expect(result.competingTxids, [_rivalA, _rivalB]);
       final recorded = walletManager.commands.whereType<RecordTransactionNetworkStatusCommand>().single;
       expect(recorded.competingTxids, [_rivalA, _rivalB]);
-      expect(spends(), isEmpty);
+      expect(applied(), isEmpty);
     });
 
     test('pkum: a status without competing txids records none', () async {
@@ -298,7 +302,7 @@ void main() {
       expect(result.success, isFalse);
       expect(result.error, contains('unreachable'));
       expect(statuses(), isEmpty);
-      expect(spends(), isEmpty);
+      expect(applied(), isEmpty);
     });
   });
 
@@ -321,7 +325,7 @@ void main() {
       await scan();
 
       expect(statuses(), ['REJECTED/arc']);
-      expect(spends(), isEmpty);
+      expect(applied(), isEmpty);
     });
 
     test('pkum: a contested payment the scan meets reaches the wallet with ARC\'s competing txids', () async {
@@ -402,7 +406,7 @@ void main() {
       expect(result.networkStatus, 'MINED');
       expect(result.proofStatus, 'verified');
       expect(confirms().single.bumpHex, fixtureBumpHex());
-      expect(spends(), ['$_inputKey>$kFixtureTxid']);
+      expect(applied(), [kFixtureTxid]);
       expect(arc.getTransactionCalls, 0);
     });
 
@@ -418,7 +422,7 @@ void main() {
       expect(result.proofStatus, 'rootMismatch');
       expect(result.confirmed, isFalse);
       expect(confirms(), isEmpty);
-      expect(spends(), ['$_inputKey>$kFixtureTxid']);
+      expect(applied(), [kFixtureTxid]);
     });
 
     test('ARC does not know it, then the data source does (arcThenDataSource)', () async {
@@ -431,7 +435,7 @@ void main() {
       expect(result.networkStatus, 'SEEN_ON_NETWORK');
       expect(result.source, 'dataSource');
       expect(statuses(), ['NOT_FOUND/arc!', 'SEEN_ON_NETWORK/dataSource!']);
-      expect(spends(), ['$_inputKey>$kFixtureTxid']);
+      expect(applied(), [kFixtureTxid]);
     });
 
     test('a data source returning another transaction for the txid is not believed', () async {
@@ -442,7 +446,7 @@ void main() {
       final result = await check(via: DeferredPaymentNetworkSource.dataSource);
 
       expect(result.success, isFalse);
-      expect(spends(), isEmpty);
+      expect(applied(), isEmpty);
     });
 
     test('without a configured data source: an error', () async {
@@ -489,7 +493,7 @@ void main() {
         expect(result.success, isTrue);
         expect(result.networkStatus, 'SEEN_ON_NETWORK');
       }
-      expect(spends(), ['$kFixtureTxid:1>$kFixture2Txid'], reason: 'spent once');
+      expect(applied(), [kFixture2Txid], reason: 'spent once');
       expect(statuses(), ['SEEN_ON_NETWORK/arc!', 'SEEN_ON_NETWORK/arc!']);
     });
 
@@ -502,7 +506,7 @@ void main() {
 
       expect(result.networkStatus, 'REJECTED');
       expect(statuses(), ['REJECTED/arc!']);
-      expect(spends(), isEmpty);
+      expect(applied(), isEmpty);
     });
 
     test('pkum: ARC answers DOUBLE_SPEND_ATTEMPTED with competing txids: recorded and reported with them', () async {
@@ -518,7 +522,7 @@ void main() {
       final recorded = walletManager.commands.whereType<RecordTransactionNetworkStatusCommand>().single;
       expect((recorded.txid, recorded.explicit), (kFixture2Txid, true));
       expect(recorded.competingTxids, [_rivalB]);
-      expect(spends(), isEmpty);
+      expect(applied(), isEmpty);
     });
 
     test('ARC unreachable: failure reported, nothing recorded', () async {
@@ -544,7 +548,7 @@ void main() {
       expect(dataSource.submitted, [kFixtureTxHex, kFixture2TxHex]);
       expect(result.success, isTrue);
       expect(result.networkStatus, 'SEEN_ON_NETWORK');
-      expect(spends(), ['$kFixtureTxid:1>$kFixture2Txid']);
+      expect(applied(), [kFixture2Txid]);
       expect(arc.submitted, isEmpty);
     });
   });

@@ -240,7 +240,7 @@ void main() {
           ),
         );
 
-    test('marks the wallet inputs spent and the wallet outputs available on confirmation', () async {
+    test('the wallet is sent the deferred spend, with the transaction, and the confirmation', () async {
       await storage.storeBlockHeader(fixtureHeader(), kFixtureHeight);
       await storeTx(kFixtureTxid, TransactionStatus.broadcast, rawHex: kFixtureTxHex);
       await storeUtxo(fundingTxid, 0, UTXOStatus.reserved); // the input it spends
@@ -252,15 +252,17 @@ void main() {
       await settleAfterArcCalls(1);
 
       expect(walletManager.commands.whereType<ConfirmTransactionCommand>(), hasLength(1));
-      final spends = walletManager.commands.whereType<SpendUTXOCommand>().toList();
-      expect(spends.map((c) => c.utxoKey), equals(['$fundingTxid:0']));
-      expect(spends.single.spendingTxId, kFixtureTxid);
-      final available = walletManager.commands.whereType<MarkUTXOAvailableCommand>().toList();
-      expect(available.map((c) => '${c.txid}:${c.vout}'), equals(['$kFixtureTxid:1']),
-          reason: 'output 0 is not a wallet UTXO; only wallet outputs are promoted');
+      // Which inputs and outputs are the wallet's is the aggregate's to say
+      // (test/core/apply_deferred_spend_test.dart).
+      final applied = walletManager.commands.whereType<ApplyDeferredSpendCommand>().single;
+      expect((applied.txid, applied.rawHex), (kFixtureTxid, kFixtureTxHex));
     });
 
-    test('an input already spent (SEEN_ON_NETWORK applied it) is not spent again', () async {
+    // The read model showing nothing outstanding is no reason to keep the
+    // first report from the wallet: it may only be late (bead
+    // libspiffy-3egy). The aggregate journals nothing for a spend that was
+    // applied.
+    test('the first report is sent to the wallet also when the read model shows the spend applied', () async {
       await storage.storeBlockHeader(fixtureHeader(), kFixtureHeight);
       await storeTx(kFixtureTxid, TransactionStatus.seenOnNetwork, rawHex: kFixtureTxHex);
       await storeUtxo(fundingTxid, 0, UTXOStatus.spent);
@@ -272,8 +274,7 @@ void main() {
       await settleAfterArcCalls(1);
 
       expect(walletManager.commands.whereType<ConfirmTransactionCommand>(), hasLength(1));
-      expect(walletManager.commands.whereType<SpendUTXOCommand>(), isEmpty);
-      expect(walletManager.commands.whereType<MarkUTXOAvailableCommand>(), isEmpty);
+      expect(walletManager.commands.whereType<ApplyDeferredSpendCommand>(), hasLength(1));
     });
   });
 

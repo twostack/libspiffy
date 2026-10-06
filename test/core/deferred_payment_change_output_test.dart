@@ -239,8 +239,8 @@ void main() {
       await wallet.handle(CancelDeferredSpendCommand(walletId: _w, txid: txid));
       expect(wallet.utxo(changeKey).status, UTXOStatus.voided);
 
-      // ARCActor promotes the outputs of a transaction it saw mined through
-      // this command, beside the confirmation itself.
+      // SPVActor promotes the outputs of a transaction whose confirmation it
+      // restores through this command, beside the confirmation itself.
       final events = await wallet.handle(MarkUTXOAvailableCommand(walletId: _w, txid: txid, vout: 1));
 
       expect(events.single, isA<UTXOMarkedAvailableEvent>());

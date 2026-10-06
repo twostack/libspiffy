@@ -11,6 +11,11 @@
 /// reserved and change pending until the transaction was mined and its proof
 /// verified. A submit answering MINED applied nothing either.
 ///
+/// What the spend is, the wallet aggregate decides (ApplyDeferredSpendCommand,
+/// bead libspiffy-3egy): this actor sends it the transaction on the first
+/// report, whatever the read model shows, and afterwards only when the read
+/// model still shows something outstanding.
+///
 /// Fixture: a real testnet transaction (spends 6af69a37…:0, output 1 is the
 /// wallet's change), its real BRC-74 proof and the real header of its block.
 library;
@@ -21,6 +26,7 @@ import 'dart:typed_data';
 
 import 'package:convert/convert.dart';
 import 'package:dactor/dactor.dart';
+import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:duraq_isar/duraq_isar.dart' as duraq_isar;
 import 'package:isar_community/isar.dart';
 import 'package:libspiffy/src/actors/arc_actor.dart';
@@ -42,7 +48,7 @@ const _changeKey = '$kFixtureTxid:1';
 
 void main() {
   late LocalActorSystem system;
-  late _CountingStorage storage;
+  late InMemoryWalletStorage storage;
   late _ProjectingWalletManager walletManager;
   late _SubmitArc arc;
   late ActorRef arcActor;
@@ -111,6 +117,9 @@ void main() {
         },
       });
 
+  /// The ARC actor's clock: the wall clock plus [clockAhead].
+  var clockAhead = Duration.zero;
+
   Future<void> spawnActor({Isar? isar, Duration statusCheckInterval = const Duration(minutes: 10)}) async {
     final wm = await system.spawn('wallet-manager', () => walletManager);
     arcActor = await system.spawn(
@@ -122,6 +131,7 @@ void main() {
         isar: isar,
         statusCheckInterval: statusCheckInterval,
         headerTriggerDebounce: const Duration(milliseconds: 10),
+        clock: () => DateTime.now().add(clockAhead),
       ),
     );
   }
@@ -150,16 +160,17 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 250));
   }
 
-  List<String> spends() =>
-      [for (final c in walletManager.commands.whereType<SpendUTXOCommand>()) '${c.utxoKey}>${c.spendingTxId}'];
-  List<String> promoted() =>
-      [for (final c in walletManager.commands.whereType<MarkUTXOAvailableCommand>()) '${c.txid}:${c.vout}'];
+  /// The transactions whose deferred spend the wallet was sent.
+  List<String> applied() => [for (final c in walletManager.commands.whereType<ApplyDeferredSpendCommand>()) c.txid];
+  Future<Map<String, UTXOStatus>> rows() async =>
+      {for (final u in await storage.getUTXOs(_wallet, includeSpent: true)) u.key: u.status};
   List<ConfirmTransactionCommand> confirms() =>
       walletManager.commands.whereType<ConfirmTransactionCommand>().toList();
 
   setUp(() {
+    clockAhead = Duration.zero;
     system = LocalActorSystem(ActorSystemConfig());
-    storage = _CountingStorage();
+    storage = InMemoryWalletStorage();
     walletManager = _ProjectingWalletManager(storage);
     arc = _SubmitArc();
   });
@@ -177,10 +188,9 @@ void main() {
       expect(await broadcast(), isA<BroadcastSuccessMessage>());
       await scan(); // ARC still reports SEEN_ON_NETWORK
 
-      expect(spends(), ['$_inputKey>$kFixtureTxid'],
-          reason: 'the input is spent once ARC accepted the transaction on the network');
-      expect(promoted(), [_changeKey], reason: 'only the wallet change output becomes available');
-      final stored = {for (final u in await storage.getUTXOs(_wallet, includeSpent: true)) u.key: u.status};
+      expect(applied(), [kFixtureTxid], reason: 'sent once ARC accepted the transaction on the network');
+      expect(walletManager.commands.whereType<ApplyDeferredSpendCommand>().single.rawHex, kFixtureTxHex);
+      final stored = await rows();
       expect(stored[_inputKey], UTXOStatus.spent);
       expect(stored[_changeKey], UTXOStatus.available);
 
@@ -191,8 +201,7 @@ void main() {
 
       expect(confirms(), hasLength(1));
       expect(confirms().single.bumpHex, fixtureBumpHex(), reason: 'the proof is journaled with the confirmation');
-      expect(spends(), ['$_inputKey>$kFixtureTxid'], reason: 'no second spend command');
-      expect(promoted(), [_changeKey], reason: 'no second available command');
+      expect(applied(), [kFixtureTxid], reason: 'not sent a second time');
     });
 
     test('exactly once also when the read model has not caught up with the commands yet', () async {
@@ -204,8 +213,7 @@ void main() {
 
       await broadcast();
       await scan();
-      expect(spends(), ['$_inputKey>$kFixtureTxid']);
-      expect(promoted(), [_changeKey]);
+      expect(applied(), [kFixtureTxid]);
 
       await scan(); // SEEN_ON_NETWORK again; the read model still shows the input reserved
       await storage.storeBlockHeader(fixtureHeader(), kFixtureHeight);
@@ -213,8 +221,7 @@ void main() {
       await scan();
 
       expect(confirms(), hasLength(1));
-      expect(spends(), ['$_inputKey>$kFixtureTxid'], reason: 'no second spend command');
-      expect(promoted(), [_changeKey], reason: 'no second available command');
+      expect(applied(), [kFixtureTxid], reason: 'not sent again while the read model catches up');
     });
 
     test('after a restart: a transaction stored SEEN_ON_NETWORK with its spend outstanding gets it from the '
@@ -229,8 +236,10 @@ void main() {
       await scan();
       await scan();
 
-      expect(spends(), ['$_inputKey>$kFixtureTxid']);
-      expect(promoted(), [_changeKey]);
+      expect(applied(), [kFixtureTxid]);
+      final stored = await rows();
+      expect(stored[_inputKey], UTXOStatus.spent);
+      expect(stored[_changeKey], UTXOStatus.available);
     });
 
     test('BroadcastBEEFMessage: inputs spent and change available', () async {
@@ -251,8 +260,10 @@ void main() {
       expect(arc.submitted, [kFixtureTxHex]);
       await scan();
 
-      expect(spends(), ['$_inputKey>$kFixtureTxid']);
-      expect(promoted(), [_changeKey]);
+      expect(applied(), [kFixtureTxid]);
+      final stored = await rows();
+      expect(stored[_inputKey], UTXOStatus.spent);
+      expect(stored[_changeKey], UTXOStatus.available);
     });
 
     // The retry path discarded the submit status altogether, so the spend
@@ -283,63 +294,105 @@ void main() {
       expect(arc.submitted, hasLength(2), reason: 'the queued transaction was retried');
       await Future<void>.delayed(const Duration(milliseconds: 400)); // several more ticks and scans
 
-      expect(spends(), ['$_inputKey>$kFixtureTxid']);
-      expect(promoted(), [_changeKey]);
+      expect(applied(), [kFixtureTxid]);
+      final stored = await rows();
+      expect(stored[_inputKey], UTXOStatus.spent);
+      expect(stored[_changeKey], UTXOStatus.available);
       expect((await storage.getTransaction(kFixtureTxid, walletId: _wallet))!.status,
           TransactionStatus.seenOnNetwork);
     });
   });
 
-  // Bead libspiffy-onh: ARC answered before the read model held the
-  // recording. The deferred spend is driven by what the read model shows
-  // outstanding, and at that moment it showed no change output at all, so
-  // the change waited for the next status scan (statusCheckInterval, 30 s
-  // by default) -- which asks ARC again for an answer it already gave.
-  group('onh: ARC answers before the read model holds the recording', () {
+  // Beads libspiffy-onh and libspiffy-3egy: ARC answered before the read
+  // model held the recording, or held all of it. The deferred spend used to
+  // be worked out from the read model, which at that moment showed no
+  // change output, so the change waited for the next status scan
+  // (statusCheckInterval, 30 s by default). The projection applies a
+  // recording one event at a time, the transaction row before its outputs.
+  group('ARC answers before the read model holds the recording', () {
     for (final status in ['SEEN_ON_NETWORK', 'MINED']) {
-      test('$status: the change becomes available once the recording is projected, '
-          'without waiting for a scan or asking ARC again', () async {
-        // Only the reservation of the input is projected; the recording
-        // (transaction row, change output) is not, yet.
+      test('$status, nothing of the recording projected: the wallet is sent the spend at once, '
+          'with the transaction', () async {
         await storeUtxo(_fundingTxid, 0, UTXOStatus.reserved);
         arc.submitResponses.add(submitResponse(status));
         await spawnActor(); // status scan every 10 minutes
 
         await broadcast();
-        expect(spends(), ['$_inputKey>$kFixtureTxid'], reason: 'the input was projected: spent at once');
-        expect(promoted(), isEmpty, reason: 'precondition: no change output to promote yet');
 
-        // The projection catches up.
-        await storeTx(TransactionStatus.seenOnNetwork);
-        await storeUtxo(kFixtureTxid, 1, UTXOStatus.pending);
-
-        final deadline = DateTime.now().add(const Duration(seconds: 5));
-        while (promoted().isEmpty && DateTime.now().isBefore(deadline)) {
-          await Future<void>.delayed(const Duration(milliseconds: 20));
-        }
-        // Old code: nothing until the next scan, ten minutes away.
-        expect(promoted(), [_changeKey]);
+        final sent = walletManager.commands.whereType<ApplyDeferredSpendCommand>().single;
+        expect((sent.txid, sent.rawHex), (kFixtureTxid, kFixtureTxHex));
         expect(arc.getTransactionCalls, 0, reason: 'ARC already answered; it is not asked again');
-        expect(spends(), ['$_inputKey>$kFixtureTxid'], reason: 'the input is not spent twice');
+      });
+
+      // The reported case: the row is there, its outputs are not.
+      test('$status, the transaction row projected and its outputs not yet: sent at once all the same', () async {
+        await storeUtxo(_fundingTxid, 0, UTXOStatus.reserved);
+        await storeTx(TransactionStatus.pending);
+        arc.submitResponses.add(submitResponse(status));
+        await spawnActor();
+
+        await broadcast();
+
+        // Old code: the input spent, no output to promote, and no recheck
+        // (the row was there): nothing more until the next scan.
+        expect(applied(), [kFixtureTxid]);
       });
     }
+  });
 
-    test('a recording the read model never shows is rechecked only until a scan would have covered it', () async {
-      await storeUtxo(_fundingTxid, 0, UTXOStatus.reserved);
+  group('a later report of a transaction the wallet was sent', () {
+    Future<void> reportedOnce() async {
+      await recordDeferredSpendPayment();
       arc.submitResponses.add(submitResponse('SEEN_ON_NETWORK'));
-      await spawnActor(statusCheckInterval: const Duration(seconds: 2));
-
+      arc.statusResponses[kFixtureTxid] = statusResponse('SEEN_ON_NETWORK');
+      await spawnActor();
       await broadcast();
-      await Future<void>.delayed(const Duration(seconds: 4));
-      final looks = storage.transactionLookups[kFixtureTxid] ?? 0;
-      await Future<void>.delayed(const Duration(seconds: 3));
+      expect(applied(), [kFixtureTxid]);
+      expect(await rows(), {_inputKey: UTXOStatus.spent, _changeKey: UTXOStatus.available});
+    }
 
-      // One look per second while a scan was still to come, then none: the
-      // scan's own storage query reads no row for it (there is none).
-      expect(looks, inInclusiveRange(2, 4));
-      expect(storage.transactionLookups[kFixtureTxid], looks, reason: 'the recheck never stops');
-      expect(promoted(), isEmpty);
-      expect(arc.getTransactionCalls, 0, reason: 'a transaction the read model does not hold is not polled');
+    test('is not sent while the read model shows nothing outstanding, however long ago the last was', () async {
+      await reportedOnce();
+
+      clockAhead = const Duration(hours: 1);
+      await scan();
+      await scan();
+
+      expect(applied(), [kFixtureTxid], reason: 'a wallet is not woken for a spend that is applied');
+    });
+
+    test('is sent when an output of the transaction has become pending since', () async {
+      await reportedOnce();
+      await storeUtxo(kFixtureTxid, 0, UTXOStatus.pending); // received another way, after the first report
+
+      await scan();
+      expect(applied(), [kFixtureTxid], reason: 'not within the reconfirm window: the read model may only be late');
+
+      clockAhead = const Duration(hours: 1);
+      await scan();
+      expect(applied(), [kFixtureTxid, kFixtureTxid]);
+      expect((await rows())['$kFixtureTxid:0'], UTXOStatus.available);
+    });
+
+    test('is sent when the read model still shows an input unspent', () async {
+      await reportedOnce();
+      await storeUtxo(_fundingTxid, 0, UTXOStatus.reserved); // a reservation held it back
+
+      clockAhead = const Duration(hours: 1);
+      await scan();
+
+      expect(applied(), [kFixtureTxid, kFixtureTxid]);
+      expect((await rows())[_inputKey], UTXOStatus.spent);
+    });
+
+    test('is sent once more after a day, whatever the read model shows', () async {
+      await reportedOnce();
+
+      clockAhead = const Duration(days: 1, minutes: 1);
+      await scan();
+      await scan();
+
+      expect(applied(), [kFixtureTxid, kFixtureTxid]);
     });
   });
 
@@ -354,8 +407,7 @@ void main() {
       await broadcast();
       await Future<void>.delayed(const Duration(milliseconds: 300));
 
-      expect(spends(), ['$_inputKey>$kFixtureTxid']);
-      expect(promoted(), [_changeKey]);
+      expect(applied(), [kFixtureTxid]);
       expect(confirms(), hasLength(1));
       expect(confirms().single.blockHash, kFixtureBlockHash);
       expect(confirms().single.bumpHex, fixtureBumpHex());
@@ -363,8 +415,7 @@ void main() {
       // A later MINED status report changes nothing.
       arc.statusResponses[kFixtureTxid] = statusResponse('MINED');
       await scan();
-      expect(spends(), hasLength(1));
-      expect(promoted(), hasLength(1));
+      expect(applied(), hasLength(1));
       expect(confirms(), hasLength(1));
     });
 
@@ -378,8 +429,7 @@ void main() {
       await broadcast();
       await scan();
 
-      expect(spends(), ['$_inputKey>$kFixtureTxid'], reason: 'a mined transaction is on the network');
-      expect(promoted(), [_changeKey]);
+      expect(applied(), [kFixtureTxid], reason: 'a mined transaction is on the network');
       expect(confirms(), isEmpty, reason: 'no header at that height yet');
 
       await storage.storeBlockHeader(fixtureHeader(), kFixtureHeight);
@@ -387,8 +437,7 @@ void main() {
 
       expect(confirms(), hasLength(1));
       expect(confirms().single.bumpHex, fixtureBumpHex());
-      expect(spends(), ['$_inputKey>$kFixtureTxid'], reason: 'no second spend command');
-      expect(promoted(), [_changeKey], reason: 'no second available command');
+      expect(applied(), [kFixtureTxid], reason: 'not sent a second time');
     });
 
     test('with a merklePath, header not stored yet: spend applied, confirmation held', () async {
@@ -399,8 +448,7 @@ void main() {
       await broadcast();
       await Future<void>.delayed(const Duration(milliseconds: 300));
 
-      expect(spends(), ['$_inputKey>$kFixtureTxid'], reason: 'a mined transaction is on the network');
-      expect(promoted(), [_changeKey]);
+      expect(applied(), [kFixtureTxid], reason: 'a mined transaction is on the network');
       expect(confirms(), isEmpty, reason: 'the proof is not checked against a header yet');
     });
   });
@@ -417,9 +465,8 @@ void main() {
         // A failed transaction is terminal and no longer polled.
         await scan(queriesArc: !['REJECTED', 'DOUBLE_SPEND_ATTEMPTED'].contains(status));
 
-        expect(spends(), isEmpty);
-        expect(promoted(), isEmpty);
-        final stored = {for (final u in await storage.getUTXOs(_wallet, includeSpent: true)) u.key: u.status};
+        expect(applied(), isEmpty);
+        final stored = await rows();
         expect(stored[_inputKey], UTXOStatus.reserved);
         expect(stored[_changeKey], UTXOStatus.pending);
       });
@@ -428,7 +475,7 @@ void main() {
 }
 
 /// Records every wallet command and applies the ones ARCActor sends to the
-/// read model, as WalletProjection would.
+/// read model, as the wallet aggregate and WalletProjection would.
 class _ProjectingWalletManager extends Actor {
   _ProjectingWalletManager(this.storage);
 
@@ -451,24 +498,18 @@ class _ProjectingWalletManager extends Actor {
       if (tx != null) {
         await storage.storeTransaction(command.walletId, tx.copyWith(status: TransactionStatus.confirmed));
       }
-    } else if (projectUtxoCommands && command is SpendUTXOCommand) {
-      final utxo = await _utxo(command.walletId, command.utxoKey);
-      if (utxo != null && utxo.status != UTXOStatus.spent) {
-        await storage.upsertUTXO(command.walletId, utxo.markSpent(spentInTxId: command.spendingTxId));
-      }
-    } else if (projectUtxoCommands && command is MarkUTXOAvailableCommand) {
-      final utxo = await _utxo(command.walletId, '${command.txid}:${command.vout}');
-      if (utxo != null && utxo.status == UTXOStatus.pending) {
-        await storage.upsertUTXO(command.walletId, utxo.copyWith(status: UTXOStatus.available));
+    } else if (projectUtxoCommands && command is ApplyDeferredSpendCommand) {
+      final inputs = {
+        for (final i in dartsv.Transaction.fromHex(command.rawHex!).inputs) '${i.prevTxnId}:${i.prevTxnOutputIndex}',
+      };
+      for (final utxo in await storage.getUTXOs(command.walletId)) {
+        if (inputs.contains(utxo.key)) {
+          await storage.upsertUTXO(command.walletId, utxo.markSpent(spentInTxId: command.txid));
+        } else if (utxo.txid == command.txid && utxo.awaitsPromotion) {
+          await storage.upsertUTXO(command.walletId, utxo.copyWith(status: UTXOStatus.available));
+        }
       }
     }
-  }
-
-  Future<BitcoinUtxo?> _utxo(String walletId, String key) async {
-    for (final u in await storage.getUTXOs(walletId, includeSpent: true)) {
-      if (u.key == key) return u;
-    }
-    return null;
   }
 }
 
@@ -507,16 +548,5 @@ class _SubmitArc extends ArcService {
     final response = statusResponses[txid];
     if (response == null) throw ArcException('Failed to get transaction: {"status":404}');
     return response;
-  }
-}
-
-/// The read model, counting lookups of one transaction by txid.
-class _CountingStorage extends InMemoryWalletStorage {
-  final Map<String, int> transactionLookups = {};
-
-  @override
-  Future<BitcoinTransaction?> getTransaction(String txid, {String? walletId}) {
-    transactionLookups[txid] = (transactionLookups[txid] ?? 0) + 1;
-    return super.getTransaction(txid, walletId: walletId);
   }
 }

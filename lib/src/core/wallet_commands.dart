@@ -1665,6 +1665,41 @@ class CompleteDeferredSpendCommand extends WalletCommand {
   String get commandType => 'CompleteDeferredSpendCommand';
 }
 
+/// The network has the transaction [txid]: the wallet's UTXOs it spends are
+/// spent, and its outputs the wallet holds pending become available.
+///
+/// The aggregate decides both from its own state. It journals a recording
+/// whole, so it knows every wallet output of a transaction from the moment
+/// the recording is accepted; the read model shows them one event at a time
+/// and, for a moment, a transaction row without its outputs.
+///
+/// The inputs are those of [rawHex] (which must be [txid]) and the ones the
+/// wallet recorded [txid] as spending; the aggregate keeps no raw
+/// transactions, so without [rawHex] only the recorded ones are spent. An
+/// input that is not the wallet's, is spent already, or is not this
+/// transaction's to spend (`UtxoLedger.spendableBy`) is left as it is. An
+/// output already available or spent is left alone, so the command may be
+/// sent for every report of the transaction: one that finds the spend
+/// applied journals nothing.
+class ApplyDeferredSpendCommand extends WalletCommand {
+  final String txid;
+
+  /// The transaction, when the sender has it.
+  final String? rawHex;
+
+  ApplyDeferredSpendCommand({
+    required String walletId,
+    required this.txid,
+    this.rawHex,
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  }) : super(walletId: walletId, commandId: commandId, timestamp: timestamp, metadata: metadata);
+
+  @override
+  String get commandType => 'ApplyDeferredSpendCommand';
+}
+
 /// Reclaims the outstanding deferred payment [txid]: records [rawHex], the
 /// wallet's own signed transaction spending that payment's held inputs back
 /// to itself, and moves the hold on those inputs to it (bead libspiffy-87a).

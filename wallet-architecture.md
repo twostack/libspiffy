@@ -686,10 +686,13 @@ ARC: every request answers "ARC service not available".
   seen-on-network and orphaned rows are asked about, pending ones with
   back-off; recently failed rows are re-polled within a bounded window.
 - **On the network** (`SEEN_ON_NETWORK` or `MINED`, on submit or in a
-  scan): the deferred spend applies -- the wallet's inputs are marked spent
-  (`SpendUTXOCommand`) and its outputs of the transaction available
-  (`MarkUTXOAvailableCommand`), from what the read model still shows
-  outstanding, re-applied shortly if the recording is not projected yet.
+  scan): the deferred spend applies -- ARCActor sends the wallet
+  `ApplyDeferredSpendCommand` with the transaction, and the aggregate marks
+  the wallet's inputs spent and its outputs of the transaction available
+  from its own state, which holds a recording whole (the read model shows it
+  one event at a time, and for a moment a transaction row without its
+  outputs). The first report of a transaction is always sent; a later one
+  only when the read model still shows something outstanding.
 - **Confirmation**: a `MINED` report confirms nothing by itself.
   `ConfirmTransactionCommand` is sent only when ARC's merkle path verifies
   against the header we hold at that height; one whose header has not

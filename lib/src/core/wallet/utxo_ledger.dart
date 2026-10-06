@@ -31,6 +31,23 @@ abstract final class UtxoLedger {
   /// Whether [utxo] is watch-only funds ([WalletBalances.isWatchOnly]).
   static bool isWatchOnly(WalletState state, BitcoinUtxo utxo) => WalletBalances.isWatchOnly(state, utxo);
 
+  /// Whether the unspent [utxo] may be spent by [spendingTxId].
+  ///
+  /// A spend supersedes a reservation: the payment coordinator reserves the
+  /// inputs, records the transaction with deferSpend, and they are spent
+  /// once the transaction is seen on the network. Rejecting reserved UTXOs
+  /// meant that spend never applied, and the reservation expiry later
+  /// returned an on-chain-spent coin to `available`. The payment coordinator
+  /// reserves under a payment id (the txid exists only after signing), so a
+  /// reservation by another id is superseded too when the wallet's own
+  /// recorded transaction [spendingTxId] spends this UTXO (T-1: every
+  /// standard payment's input stayed reserved).
+  static bool spendableBy(WalletState state, BitcoinUtxo utxo, String spendingTxId) =>
+      utxo.status == UTXOStatus.available ||
+      (utxo.status == UTXOStatus.reserved && (utxo.reservedByTxId == null || utxo.reservedByTxId == spendingTxId)) ||
+      ((utxo.status == UTXOStatus.reserved || utxo.status == UTXOStatus.pending) &&
+          OutgoingTransactions.recordedTransactionSpends(state, spendingTxId, utxo.key));
+
   /// Available UTXOs for spending ([WalletBalances.isSpendable]: excludes
   /// plugin-managed UTXOs like tokens, watch-only UTXOs at watch addresses
   /// (bead libspiffy-87a2), bare multisig UTXOs the wallet cannot spend
@@ -272,13 +289,7 @@ abstract final class UtxoLedger {
       throw StateError('UTXO $utxoKey not found');
     }
 
-    // A pending UTXO that is reserved still needs the promotion: the
-    // reservation stays, and its release then restores `available` (M4).
-    final pendingUnderReservation =
-        utxo.status == UTXOStatus.reserved && utxo.statusBeforeReservation == UTXOStatus.pending;
-    // A voided output is promoted too (bead libspiffy-3arz): the command says
-    // it is in a block, which outranks the resolution that voided it.
-    if (utxo.status != UTXOStatus.pending && utxo.status != UTXOStatus.voided && !pendingUnderReservation) {
+    if (!utxo.awaitsPromotion) {
       // Already available or spent, no-op
       return [];
     }
@@ -306,21 +317,7 @@ abstract final class UtxoLedger {
       throw StateError('UTXO ${command.utxoKey} not found in wallet');
     }
 
-    // A spend supersedes a reservation: the payment coordinator reserves the
-    // inputs, records the transaction with deferSpend, and ARC marks them
-    // spent once the transaction is seen on the network. Rejecting reserved
-    // UTXOs here meant that spend never applied, and the reservation expiry
-    // later returned an on-chain-spent coin to `available`.
-    // The payment coordinator reserves under a payment id (the txid exists
-    // only after signing), so a reservation by another id is superseded too
-    // when the wallet's own recorded transaction [SpendUTXOCommand.spendingTxId]
-    // spends this UTXO (T-1: every standard payment's input stayed reserved).
-    final spendable = utxo.status == UTXOStatus.available ||
-        (utxo.status == UTXOStatus.reserved &&
-            (utxo.reservedByTxId == null || utxo.reservedByTxId == command.spendingTxId)) ||
-        ((utxo.status == UTXOStatus.reserved || utxo.status == UTXOStatus.pending) &&
-            OutgoingTransactions.recordedTransactionSpends(currentState, command.spendingTxId, command.utxoKey));
-    if (!spendable) {
+    if (!spendableBy(currentState, utxo, command.spendingTxId)) {
       throw StateError('UTXO ${command.utxoKey} is not available for spending (status: ${utxo.status}, reservedBy: ${utxo.reservedByTxId})');
     }
 

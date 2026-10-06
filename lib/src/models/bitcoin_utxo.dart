@@ -196,6 +196,16 @@ class BitcoinUtxo {
   /// settle ([UTXOStatus.voided], bead libspiffy-3arz).
   bool get isVoided => status == UTXOStatus.voided;
 
+  /// Whether the UTXO is still to become spendable: pending, pending under a
+  /// reservation (the reservation stays, and its release then restores
+  /// `available`, M4), or voided (bead libspiffy-3arz: word that its
+  /// transaction is on the network or in a block outranks the resolution
+  /// that voided it). An available or spent UTXO is not.
+  bool get awaitsPromotion =>
+      status == UTXOStatus.pending ||
+      status == UTXOStatus.voided ||
+      (status == UTXOStatus.reserved && statusBeforeReservation == UTXOStatus.pending);
+
   /// Create a copy with updated fields
   BitcoinUtxo copyWith({
     String? txid,

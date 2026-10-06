@@ -740,6 +740,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         return _deferred.reclaim(currentState, cmd, _transactions);
       case final CompleteDeferredSpendCommand cmd:
         return _deferred.complete(currentState, cmd, _transactions);
+      case final ApplyDeferredSpendCommand cmd:
+        return OutgoingTransactions.applyDeferredSpend(currentState, cmd);
       case final VoidUnsettledTransactionCommand cmd:
         return _deferred.voidUnsettled(currentState, cmd);
       default:

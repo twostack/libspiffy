@@ -12,7 +12,6 @@ import '../core/wallet_commands.dart';
 import '../models/bitcoin_transaction.dart';
 import '../models/foreign_spend.dart';
 import '../models/bitcoin_utxo.dart' show UTXOStatus;
-import '../models/deferred_payment.dart';
 import '../models/blockchain_data_models.dart' show MerkleProofData;
 import '../services/blockchain_data_source.dart';
 import '../services/transaction_import_service.dart';
@@ -123,10 +122,6 @@ class ARCActor extends Actor {
   /// Header notifications within this window coalesce into one scan.
   final Duration headerTriggerDebounce;
 
-  /// How soon a deferred spend is applied again when the network reported
-  /// the transaction before the read model held it (bead libspiffy-onh).
-  final Duration deferredSpendRecheckDelay;
-
   /// How long a transaction may stay unsettled (ARC in flight, or unknown)
   /// before its inputs are checked for a spend elsewhere
   /// ([_resolveIfInputSpent]), and how long until the same transaction is
@@ -147,9 +142,10 @@ class ARCActor extends Actor {
   /// one pass. Zero or less turns the poll off.
   final int failedCheckLimit;
 
-  /// Time source of the poll's interval (injectable for tests). The window
-  /// itself is measured with the wall clock, since storage stamps
-  /// `updatedAt` with it.
+  /// Time source of the failed-transaction poll's interval and of when a
+  /// deferred spend was last sent ([_applyDeferredSpend]); injectable for
+  /// tests. The poll's window itself is measured with the wall clock, since
+  /// storage stamps `updatedAt` with it.
   final DateTime Function() _clock;
 
   /// When ([_clock]) the last failed-transaction poll ran.
@@ -190,27 +186,15 @@ class ARCActor extends Actor {
     return false;
   }
 
-  /// Deferred-spend commands this actor sent recently, keyed by wallet and
-  /// `spend:<utxoKey>` / `available:<utxoKey>` (bead libspiffy-09k). The
-  /// read model lags the commands; this keeps a submit response, a status
-  /// scan and a MINED report arriving close together from sending the same
-  /// command twice. Entries expire after [_reconfirmWindow]: a command the
-  /// read model still does not reflect by then is sent again (the aggregate
-  /// ignores a UTXO already made available and refuses to spend one twice).
-  final Map<(String, String), DateTime> _deferredSpendIssued = {};
+  /// When this actor last sent a wallet the deferred spend of a transaction
+  /// ([_applyDeferredSpend]), by wallet and txid. A submit response, a
+  /// status scan and a MINED report arriving close together send it once.
+  /// Forgotten after [_deferredSpendMemory].
+  final Map<(String, String), DateTime> _deferredSpendSent = {};
 
-  /// Claims [action] on [utxoKey] in [walletId]; false if it was sent recently.
-  bool _claimDeferredSpend(String walletId, String action, String utxoKey, DateTime now) {
-    final key = (walletId, '$action:$utxoKey');
-    final at = _deferredSpendIssued[key];
-    if (at != null && now.difference(at) < _reconfirmWindow) return false;
-    _deferredSpendIssued[key] = now;
-    return true;
-  }
-
-  /// Deferred spends waiting for the read model to hold their transaction
-  /// (bead libspiffy-onh): the recheck timer, by wallet and txid.
-  final Map<(String, String), Timer> _spendRechecks = {};
+  /// Long enough that a transaction still unmined is not sent to its wallet
+  /// again for nothing more than once a day.
+  static const Duration _deferredSpendMemory = Duration(days: 1);
 
   // Durable broadcast retry queue (persisted via Isar)
   duraq.Queue<Map<String, dynamic>>? _broadcastQueue;
@@ -223,7 +207,6 @@ class ARCActor extends Actor {
     Isar? isar,
     this.statusCheckInterval = const Duration(seconds: 30),
     this.headerTriggerDebounce = const Duration(milliseconds: 500),
-    this.deferredSpendRecheckDelay = const Duration(seconds: 1),
     this.failedCheckInterval = const Duration(minutes: 30),
     this.failedCheckWindow = const Duration(days: 7),
     this.failedCheckLimit = 25,
@@ -539,10 +522,6 @@ class ARCActor extends Actor {
     _stopped = true;
     _statusCheckTimer?.cancel();
     _headerDebounceTimer?.cancel();
-    for (final timer in _spendRechecks.values) {
-      timer.cancel();
-    }
-    _spendRechecks.clear();
     await _scanDone?.future;
     _log.info('ARC work stopped: nothing in flight, nothing more will be started');
   }
@@ -1107,89 +1086,62 @@ class ARCActor extends Actor {
   /// status scan) its wallet inputs are spent and its wallet outputs become
   /// available. The one path for every such report (zvj part 3, 09k).
   ///
-  /// Driven by what the read model still shows outstanding, not by a status
-  /// transition, so it may run on every report: an input no longer unspent
-  /// (or not the wallet's) and an output already available (or not the
-  /// wallet's) are skipped, and a command sent within the last
-  /// [_reconfirmWindow] is not repeated while the read model catches up.
-  /// [rawHex] is the submitted transaction; otherwise the stored one is used.
-  /// Nothing is deleted: spending is a status change of the UTXO row.
+  /// The wallet aggregate decides what that is ([ApplyDeferredSpendCommand]).
+  /// This actor used to work it out from the read model and send a command
+  /// per UTXO, and the read model lags: ARC answers a submission in one
+  /// round trip, while the projection applies a recording one event at a
+  /// time, its transaction row before its outputs. A report in between
+  /// found the row and no output to promote, and the change waited for the
+  /// next status scan (beads libspiffy-onh, libspiffy-3egy). The aggregate
+  /// holds the recording whole from the moment it accepts it.
   ///
-  /// The network can report a transaction before the read model holds its
-  /// recording: ARC answers a submission in one round trip, the projection
-  /// applies the recording when it gets to it. Its outputs are then not
-  /// rows yet, and nothing here promotes them; the change used to wait for
-  /// the next status scan, which asks ARC again for the answer it already
-  /// gave (bead libspiffy-onh). So when the transaction's own row is
-  /// missing, the spend is applied again from storage after
-  /// [deferredSpendRecheckDelay], until the row appears -- the recording's
-  /// outputs are journaled before its transaction row, so the row says they
-  /// are there -- or until a periodic scan would have covered it anyway.
-  Future<void> _applyDeferredSpend(String txid, String walletId, {String? rawHex, DateTime? reportedAt}) async {
+  /// The first report of a transaction this actor hears is always sent. A
+  /// later one is sent only when the read model still shows something
+  /// outstanding (an output received since, an input a reservation held
+  /// back), and not within [_reconfirmWindow] of the last, while the read
+  /// model catches up: a wallet is not woken for a transaction that has
+  /// nothing left to apply. [rawHex] is the submitted transaction; otherwise
+  /// the stored one is used.
+  Future<void> _applyDeferredSpend(String txid, String walletId, {String? rawHex}) async {
+    final key = (walletId, txid);
+    final now = _clock();
+    _deferredSpendSent.removeWhere((_, at) => now.difference(at) >= _deferredSpendMemory);
+    final sent = _deferredSpendSent[key];
+    if (sent != null && now.difference(sent) < _reconfirmWindow) return;
+    // Claimed before the first await: a scan and a submit response racing
+    // send it once.
+    _deferredSpendSent[key] = now;
+    void unclaim() => sent == null ? _deferredSpendSent.remove(key) : _deferredSpendSent[key] = sent;
     try {
-      final stored = await _storage.getTransaction(txid, walletId: walletId);
-      if (stored == null) _recheckSpendLater(txid, walletId, rawHex, reportedAt ?? DateTime.now());
       var txHex = rawHex;
-      if (txHex == null || txHex.isEmpty) txHex = stored?.rawHex;
-      if (txHex == null || txHex.isEmpty) return;
-      final parsed = dartsv.Transaction.fromHex(txHex);
-      // Unspent UTXOs only: a spent row needs nothing, and the unspent set
-      // stays small while the spent history grows without bound.
-      final unspent = {
-        for (final u in await _storage.getUTXOs(walletId)) u.key: u,
-      };
-      final now = DateTime.now();
-      _deferredSpendIssued.removeWhere((_, at) => now.difference(at) >= _reconfirmWindow);
-
-      var spent = 0;
-      for (final input in parsed.inputs) {
-        final utxo = unspent['${input.prevTxnId}:${input.prevTxnOutputIndex}'];
-        if (utxo == null || utxo.status == UTXOStatus.spent) continue;
-        if (!_claimDeferredSpend(walletId, 'spend', utxo.key, now)) continue;
-        _walletManager.tell(WalletCommandMessage(walletId, SpendUTXOCommand(
-          walletId: walletId,
-          utxoKey: utxo.key,
-          spendingTxId: txid,
-          fee: BigInt.zero,
-        )));
-        spent++;
+      if (txHex == null || txHex.isEmpty) {
+        txHex = (await _storage.getTransaction(txid, walletId: walletId))?.rawHex;
       }
-
-      var promoted = 0;
-      for (var vout = 0; vout < parsed.outputs.length; vout++) {
-        final utxo = unspent['$txid:$vout'];
-        if (utxo == null || utxo.status == UTXOStatus.spent || utxo.status == UTXOStatus.available) continue;
-        if (!_claimDeferredSpend(walletId, 'available', utxo.key, now)) continue;
-        _walletManager.tell(WalletCommandMessage(walletId, MarkUTXOAvailableCommand(
-          walletId: walletId,
-          txid: txid,
-          vout: vout,
-        )));
-        promoted++;
+      if (txHex != null && txHex.isEmpty) txHex = null;
+      if (sent != null && !await _showsSpendOutstanding(walletId, txid, txHex)) {
+        unclaim();
+        return;
       }
-      if (spent > 0 || promoted > 0) {
-        _log.info('Transaction $txid on the network: marked $spent input(s) spent, '
-            '$promoted output(s) available in wallet $walletId');
-      }
+      _walletManager.tell(WalletCommandMessage(
+          walletId, ApplyDeferredSpendCommand(walletId: walletId, txid: txid, rawHex: txHex)));
     } catch (e) {
+      unclaim();
       _log.warning('Failed to apply the deferred spend of transaction $txid: $e');
     }
   }
 
-
-  /// Applies the deferred spend of [txid] again after
-  /// [deferredSpendRecheckDelay] ([_applyDeferredSpend]), unless one is
-  /// already scheduled, the actor stopped, or a status scan has run since
-  /// [reportedAt] would have: from then on the scan covers it.
-  void _recheckSpendLater(String txid, String walletId, String? rawHex, DateTime reportedAt) {
-    final key = (walletId, txid);
-    if (_stopped || _spendRechecks.containsKey(key)) return;
-    if (DateTime.now().difference(reportedAt) >= statusCheckInterval) return;
-    _spendRechecks[key] = Timer(deferredSpendRecheckDelay, () {
-      _spendRechecks.remove(key);
-      if (_stopped) return;
-      unawaited(_applyDeferredSpend(txid, walletId, rawHex: rawHex, reportedAt: reportedAt));
-    });
+  /// Whether the read model still shows something of [txid]'s deferred spend
+  /// outstanding in [walletId]: an output of it that is still to become
+  /// spendable, or an unspent wallet UTXO it ([txHex]) spends. Indexed
+  /// lookups only; the wallet's unspent set is not read.
+  Future<bool> _showsSpendOutstanding(String walletId, String txid, String? txHex) async {
+    if ((await _storage.getUTXOsByTxid(walletId, txid)).any((u) => u.awaitsPromotion)) return true;
+    if (txHex == null) return false;
+    for (final input in dartsv.Transaction.fromHex(txHex).inputs) {
+      final utxo = await _storage.getUTXO(walletId, input.prevTxnId, input.prevTxnOutputIndex);
+      if (utxo != null && utxo.status != UTXOStatus.spent) return true;
+    }
+    return false;
   }
 
   // ==========================================================================
@@ -1937,10 +1889,6 @@ class ARCActor extends Actor {
     _stopped = true;
     _statusCheckTimer?.cancel();
     _headerDebounceTimer?.cancel();
-    for (final timer in _spendRechecks.values) {
-      timer.cancel();
-    }
-    _spendRechecks.clear();
   }
 
 }

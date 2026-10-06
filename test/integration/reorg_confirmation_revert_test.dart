@@ -41,7 +41,6 @@ import 'package:libspiffy/src/actors/wallet_messages.dart';
 import 'package:libspiffy/src/core/wallet_commands.dart';
 import 'package:libspiffy/src/core/wallet_events.dart';
 import 'package:libspiffy/src/models/bitcoin_transaction.dart';
-import 'package:libspiffy/src/models/bitcoin_utxo.dart';
 import 'package:libspiffy/src/spv/network_params.dart';
 import 'package:libspiffy/src/utils/beef.dart';
 import 'package:libspiffy/src/utils/bump.dart';
@@ -330,7 +329,9 @@ void main() {
       expect([for (final p in history) (p.merkleProof.join(), p.status)], [
         (bump.toHex(), MerkleProofStatus.rejected)
       ], reason: 'the mismatching proof is kept (mny), as rejected: it never verified on our chain (azl)');
-      expect((await walletUtxo())!.status, UTXOStatus.pending);
+      // The projection writes the transaction row before the UTXO rows when
+      // it applies the revert: the output is waited for, not read at once.
+      await _until(() async => (await walletUtxo())?.status == UTXOStatus.pending, 'the output is pending again');
       expect((await tx())!.rawHex, kFixtureTxHex);
     });
   });

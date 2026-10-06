@@ -3176,7 +3176,6 @@ class PaymentChannelManagerActor extends Actor {
         aggregateId: channelId,
         eventStore: _eventStore,
         cryptoService: _cryptoService,
-        networkType: _networkType,
       ),
     );
     

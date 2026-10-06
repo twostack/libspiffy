@@ -131,7 +131,6 @@ void main() {
           aggregateId: 'channel-actor-test',
           eventStore: eventStore,
           cryptoService: cryptoService,
-          networkType: dartsv.NetworkType.TEST,
         ),
       );
 
@@ -181,7 +180,6 @@ void main() {
           aggregateId: 'channel-seq-test',
           eventStore: eventStore,
           cryptoService: cryptoService,
-          networkType: dartsv.NetworkType.TEST,
         ),
       );
 
@@ -263,7 +261,6 @@ void main() {
           aggregateId: 'channel-1',
           eventStore: eventStore,
           cryptoService: cryptoService,
-          networkType: dartsv.NetworkType.TEST,
         ),
       );
 
@@ -273,7 +270,6 @@ void main() {
           aggregateId: 'channel-2',
           eventStore: eventStore,
           cryptoService: cryptoService,
-          networkType: dartsv.NetworkType.TEST,
         ),
       );
 
@@ -336,7 +332,6 @@ void main() {
           aggregateId: 'channel-recovery-test',
           eventStore: eventStore,
           cryptoService: cryptoService,
-          networkType: dartsv.NetworkType.TEST,
         ),
       );
 
@@ -389,7 +384,6 @@ void main() {
           aggregateId: 'channel-recovery-test',
           eventStore: eventStore,
           cryptoService: cryptoService,
-          networkType: dartsv.NetworkType.TEST,
         ),
       );
 
@@ -412,7 +406,6 @@ void main() {
           aggregateId: 'channel-validation-test',
           eventStore: eventStore,
           cryptoService: cryptoService,
-          networkType: dartsv.NetworkType.TEST,
         ),
       );
 
@@ -449,7 +442,6 @@ void main() {
           aggregateId: 'channel-expire-test',
           eventStore: eventStore,
           cryptoService: cryptoService,
-          networkType: dartsv.NetworkType.TEST,
         ),
       );
 

@@ -24,7 +24,6 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
     with CommandFailureContainment<ChannelState> {
   late final PaymentChannelBuilder _channelBuilder;
   final CryptoService _cryptoService;
-  final dartsv.NetworkType _networkType;
   
   // Capture sender for responses (same pattern as BitcoinWalletAggregate)
   final Map<String, ActorRef> _capturedSenders = {};
@@ -33,9 +32,7 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
     required String aggregateId, // This is the channelId
     required EventStore eventStore,
     required CryptoService cryptoService,
-    dartsv.NetworkType networkType = dartsv.NetworkType.TEST,
-  }) : _networkType = networkType,
-        _cryptoService = cryptoService,
+  }) : _cryptoService = cryptoService,
         super(
           aggregateId: aggregateId,
           aggregateType: 'PaymentChannel',

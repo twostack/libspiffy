@@ -266,9 +266,7 @@ class SetPeerManagerMessage implements Message {
 
 /// Message to initiate header sync after P2P setup is complete
 class InitiateHeaderSyncMessage implements Message {
-  final int? startHeight;
-
-  InitiateHeaderSyncMessage({this.startHeight});
+  InitiateHeaderSyncMessage();
 
   @override
   String get correlationId => 'initiate-sync-${DateTime.now().millisecondsSinceEpoch}';

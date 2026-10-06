@@ -34,7 +34,6 @@ class HeaderSyncActor extends Actor {
   // Integration state
   bool _isInitialized = false;
   int _lastProcessedHeight = 0;
-  int? _startHeight; // Configured starting height for sync
   
   // Statistics
   int _headersProcessed = 0;
@@ -63,7 +62,6 @@ class HeaderSyncActor extends Actor {
     ActorRef? spvActor,
     dynamic spiffyNodeBridge,
     dynamic peerManager,
-    int? startHeight,
     Logger? logger,
     Duration syncRequestTimeout = const Duration(seconds: 30),
   }) : _headerChain = headerChain,
@@ -71,7 +69,6 @@ class HeaderSyncActor extends Actor {
        _spvActor = spvActor,
        _spiffyNodeBridge = spiffyNodeBridge,
        _peerManager = peerManager,
-       _startHeight = startHeight,
        _logger = logger ?? Logger('HeaderSyncActor');
 
   /// Initiate header sync after P2P setup is complete
@@ -107,7 +104,6 @@ class HeaderSyncActor extends Actor {
         _peerManager = message.peerManager;
         _logger.info('PeerManager set via message');
       } else if (message is InitiateHeaderSyncMessage) {
-        _startHeight = message.startHeight;
         _initiateSyncAfterP2PSetup();
       } else if (message is BlockHeadersReceivedMessage) {
         await _handleBlockHeadersReceived(message);

@@ -29,11 +29,11 @@ export 'src/models/invoice_output_spec.dart';   // Multi-output invoice specific
 // ✅ STORAGE INTERFACES - Platform-agnostic storage abstraction
 export 'src/storage/event_storage.dart';        // Event storage interface
 export 'src/storage/read_model_storage.dart';   // Read model storage interface
+export 'src/storage/wallet_row_rules.dart';     // The rules every ReadModelStorage applies to a wallet row
 export 'src/storage/wallet_storage.dart';       // Combined interface (backward compat)
 export 'src/storage/secure_storage.dart';       // Secure key storage interface
 export 'src/storage/in_memory_wallet_storage.dart';  // Development implementation
 export 'src/storage/in_memory_secure_storage.dart';  // Development implementation
-export 'src/storage/isar_config.dart';          // Isolate configuration
 export 'src/storage/libspiffy_schemas.dart';    // Isar schemas for host integration
 export 'src/storage/isar_wallet_storage.dart';  // Production Isar storage
 export 'src/storage/storage_backend.dart';      // Storage backend enum and factory
@@ -96,8 +96,8 @@ export 'src/spv/network_params.dart' show NetworkParams;
 export 'src/utils/bump.dart';                   // BSV Universal Merkle Path (BUMP) implementation
 export 'src/utils/beef.dart';                   // Background Evaluation Extended Format (BEEF) implementation
 export 'src/utils/atomic_beef.dart';            // BEEF V2 (BRC-96) and Atomic BEEF (BRC-95) at the edge
-export 'src/utils/benford_distribution.dart';
-export 'src/utils/network_name.dart';            // One place to compare network names ('main'/'mainnet', ...)   // Benford's Law distribution for privacy
+export 'src/utils/benford_distribution.dart';   // Benford's Law distribution for privacy
+export 'src/utils/network_name.dart';           // One place to compare network names ('main'/'mainnet', ...)
 
 // TRANSACTION BUILDING - Production-ready transaction construction
 export 'src/services/payment_channel_builder.dart'; // Payment channel transactions (funding, refund, payment)

@@ -18,7 +18,6 @@ import 'libspiffy_schemas.dart';
 import 'merkle_proof_rows.dart';
 import 'transaction_row_rules.dart';
 import 'wallet_row_rules.dart';
-import 'isar_config.dart';
 import 'payment_channel_entity.dart';
 
 /// Isar-based implementation of ReadModelStorage.
@@ -43,14 +42,7 @@ class IsarWalletStorage implements ReadModelStorage {
   Isar get isar => _isar;
   
   /// Creates the storage on [_isar].
-  ///
-  /// [config] is ignored: no operation ever ran in an isolate (audit
-  /// 2026-09-14 S-21). It is accepted for source compatibility only.
-  IsarWalletStorage(
-    this._isar, {
-    @Deprecated('Ignored: IsarWalletStorage never used isolates. Will be removed.')
-    IsolateConfig? config,
-  });
+  IsarWalletStorage(this._isar);
 
   /// Test seam (audit S-16): when set, receives every query this storage
   /// runs, with the name of the operation running it, before it executes.

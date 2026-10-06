@@ -12,7 +12,6 @@ import 'package:spiffynode/spiffy_node.dart';
 import '../storage/wallet_storage.dart';
 import '../storage/in_memory_wallet_storage.dart';
 import '../storage/isar_wallet_storage.dart';
-import '../storage/isar_config.dart';
 import '../storage/secure_storage.dart';
 import '../storage/storage_backend.dart';
 import '../storage/postgres/postgres_config.dart';
@@ -163,7 +162,9 @@ class LibSpiffyActorSystem {
   /// P2P Configuration:
   /// - [networkType]: 'main' for mainnet, 'test' for testnet (default: 'test')
   /// - [enableP2P]: Enable automatic P2P block header synchronization (default: true)
-  /// - [startHeight]: Optional starting block height for SPV sync
+  /// - [startHeight]: The block height this node reports to peers in its
+  ///   version handshake. Header sync does not start from it: it continues
+  ///   from the tip of the stored header chain.
   /// - [peerAddresses]: Optional custom peer addresses in 'host:port' format
   /// - [userAgent]: Optional custom user agent string (default: '/LibSpiffy:1.0/')
   /// 
@@ -228,11 +229,6 @@ class LibSpiffyActorSystem {
     ArcServiceConfig? arcConfig,
     dynamic arcService,  // ← Allow injecting mock service for testing (dynamic for test mocks)
     Isar? isar,
-    @Deprecated('Ignored: libspiffy never runs storage operations in an '
-        'isolate, and nothing has read this since audit 2026-09-14 S-21. '
-        'Kept so existing callers still compile; will be removed together '
-        'with IsolateConfig.')
-    IsolateConfig? isolateConfig,
     String networkType = 'test',
     bool enableP2P = true,
     int? startHeight,
@@ -579,7 +575,7 @@ class LibSpiffyActorSystem {
   /// LibSpiffy journal without the actor system (tests, tools, a custom
   /// event store).
   static void registerEventTypes() {
-    // WALLET EVENTS (28)
+    // WALLET EVENTS
     EventRegistry.register<WalletCreatedEvent>(WalletCreatedEvent.stableTypeName, WalletCreatedEvent.fromMap,
         aliases: const ['WalletCreatedEvent']);
     EventRegistry.register<WalletConfigurationUpdatedEvent>(WalletConfigurationUpdatedEvent.stableTypeName, WalletConfigurationUpdatedEvent.fromMap,
@@ -672,7 +668,7 @@ class LibSpiffyActorSystem {
     EventRegistry.register<TransactionVoidedEvent>(TransactionVoidedEvent.stableTypeName, TransactionVoidedEvent.fromMap,
         aliases: const ['TransactionVoidedEvent']);
 
-    // INVOICE EVENTS (5)
+    // INVOICE EVENTS
     EventRegistry.register<InvoiceCreatedEvent>(InvoiceCreatedEvent.stableTypeName, InvoiceCreatedEvent.fromMap,
         aliases: const ['InvoiceCreatedEvent']);
     // Replay-only registration: nothing emits InvoiceStatusChangedEvent any
@@ -688,7 +684,7 @@ class LibSpiffyActorSystem {
     EventRegistry.register<InvoiceCancelledEvent>(InvoiceCancelledEvent.stableTypeName, InvoiceCancelledEvent.fromMap,
         aliases: const ['InvoiceCancelledEvent']);
 
-    // PAYMENT CHANNEL EVENTS (16)
+    // PAYMENT CHANNEL EVENTS
     EventRegistry.register<ChannelRequestedEvent>(ChannelRequestedEvent.stableTypeName, ChannelRequestedEvent.fromMap,
         aliases: const ['ChannelRequestedEvent']);
     EventRegistry.register<ChannelAcceptedEvent>(ChannelAcceptedEvent.stableTypeName, ChannelAcceptedEvent.fromMap,
@@ -849,7 +845,6 @@ class LibSpiffyActorSystem {
       spvActor: _spvActor,
       spiffyNodeBridge: null, // Will be set after SpiffyNode connection
       peerManager: null, // Will be set after P2P initialization
-      startHeight: null, // Will be set via _initializeP2P parameter
     );
     _headerSyncActor = await _actorSystem.spawn('header-sync', () => _headerSyncActorInstance!);
     
@@ -1145,14 +1140,14 @@ class LibSpiffyActorSystem {
 
       // Peers drop away (a laptop that slept loses every socket) and
       // spiffynode only removes them, so dial again whenever none is left.
-      _startPeerUpkeep(peerManager, peers, peerConfig, peerHandler, startHeight);
+      _startPeerUpkeep(peerManager, peers, peerConfig, peerHandler);
 
       // 8. Set bridge reference in HeaderSyncActor (via mailbox)
       _headerSyncActor?.tell(SetSpiffyNodeBridgeMessage(_spiffyNodeBridge));
 
       // 9. Set PeerManager and trigger initial header sync (via mailbox)
       _headerSyncActor?.tell(SetPeerManagerMessage(_peerManager));
-      _headerSyncActor?.tell(InitiateHeaderSyncMessage(startHeight: startHeight));
+      _headerSyncActor?.tell(InitiateHeaderSyncMessage());
       
       
     } catch (e) {
@@ -1590,7 +1585,6 @@ class LibSpiffyActorSystem {
     List<String> peers,
     PeerConfig peerConfig,
     PeerHandlerI handler,
-    int? startHeight,
   ) {
     _peerUpkeepTimer?.cancel();
     var dialling = false;
@@ -1607,7 +1601,7 @@ class LibSpiffyActorSystem {
         final dial = await _dialPeers(peerManager, peers, peerConfig, handler);
         if (await dial.firstPeer && identical(_peerManager, peerManager)) {
           log.info('P2P peers reconnected; resuming header sync');
-          _headerSyncActor?.tell(InitiateHeaderSyncMessage(startHeight: startHeight));
+          _headerSyncActor?.tell(InitiateHeaderSyncMessage());
         }
       } catch (e) {
         log.warning('P2P redial failed: $e');
@@ -1841,7 +1835,9 @@ LibSpiffyActorSystem getLibSpiffySystem() {
 /// P2P Parameters:
 /// - [networkType]: 'main' for mainnet, 'test' for testnet (default: 'test')
 /// - [enableP2P]: Enable automatic P2P block header synchronization (default: true)
-/// - [startHeight]: Optional starting block height for SPV sync
+/// - [startHeight]: The block height this node reports to peers in its
+///   version handshake. Header sync does not start from it: it continues
+///   from the tip of the stored header chain.
 /// - [peerAddresses]: Optional custom peer addresses (format: 'host:port')
 /// - [userAgent]: Optional custom user agent string (default: '/LibSpiffy:1.0/')
 Future<void> initializeLibSpiffy({
@@ -1853,11 +1849,6 @@ Future<void> initializeLibSpiffy({
   CryptoService? cryptoService,
   ArcServiceConfig? arcConfig,
   Isar? isar,
-  @Deprecated('Ignored: libspiffy never runs storage operations in an '
-      'isolate, and nothing has read this since audit 2026-09-14 S-21. Kept '
-      'so existing callers still compile; will be removed together with '
-      'IsolateConfig.')
-  IsolateConfig? isolateConfig,
   String networkType = 'test',
   bool enableP2P = true,
   int? startHeight,

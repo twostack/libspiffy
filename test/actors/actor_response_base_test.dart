@@ -67,7 +67,7 @@ void main() {
     final ref = _Ref();
     expect(header_sync.SetSpiffyNodeBridgeMessage('bridge'), isA<SetSpiffyNodeBridgeMessage>());
     expect(header_sync.SetPeerManagerMessage('pm'), isA<SetPeerManagerMessage>());
-    expect(header_sync.InitiateHeaderSyncMessage(startHeight: 3), isA<InitiateHeaderSyncMessage>());
+    expect(header_sync.InitiateHeaderSyncMessage(), isA<InitiateHeaderSyncMessage>());
     expect(wallet_messages.SetBenfordCoordinatorMessage(ref), isA<SetBenfordCoordinatorMessage>());
     expect(wallet_messages.SetArcActorForSPVMessage(ref), isA<SetArcActorForSPVMessage>());
     expect(wallet_messages.SetHeaderSyncActorMessage(ref), isA<SetHeaderSyncActorMessage>());

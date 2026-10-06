@@ -10,7 +10,6 @@ import 'package:eventador/eventador.dart';
 import 'read_model_storage.dart';
 import 'isar_wallet_storage.dart';
 import 'in_memory_wallet_storage.dart';
-import 'isar_config.dart';
 import 'postgres/postgres_config.dart';
 import 'postgres/postgres_wallet_storage.dart';
 import 'postgres/postgres_event_store.dart';
@@ -44,15 +43,12 @@ class StorageFactory {
   /// Parameters:
   /// - [backend]: The storage backend to use
   /// - [isar]: Required for [StorageBackend.isar] - the Isar database instance
-  /// - [isolateConfig]: Ignored (deprecated, audit S-21)
   /// - [postgresConfig]: Required for [StorageBackend.postgres] - PostgreSQL connection config
   ///
   /// Throws [ArgumentError] if required configuration is missing for the backend.
   static Future<ReadModelStorage> createReadModelStorage({
     required StorageBackend backend,
     Isar? isar,
-    @Deprecated('Ignored: storage never used isolates. Will be removed.')
-    IsolateConfig? isolateConfig,
     PostgresConfig? postgresConfig,
   }) async {
     switch (backend) {
@@ -121,8 +117,6 @@ class StorageFactory {
       createStorages({
     required StorageBackend backend,
     Isar? isar,
-    @Deprecated('Ignored: storage never used isolates. Will be removed.')
-    IsolateConfig? isolateConfig,
     PostgresConfig? postgresConfig,
   }) async {
     final readModel = await createReadModelStorage(

@@ -73,3 +73,13 @@ dependency_overrides:
     path: ../duraq/packages/duraq_isar
   duraq:
     path: ../duraq/packages/duraq
+  # isar_community 3.3.2 with the native library built on libmdbx v0.13.12.
+  # The published 3.3.2 binary (libmdbx v0.13.8-temp-upstream-fix) preallocates
+  # the whole new file size past the end of the database file on every growth
+  # step on macOS and iOS: a full testnet header store held about 59 GiB on
+  # disk. Remove when isar_community releases isar-community/isar-community#129.
+  isar_community:
+    git:
+      url: https://github.com/stephanfeb/isar-community.git
+      ref: 3.3.2-libmdbx-0.13.12
+      path: packages/isar_community

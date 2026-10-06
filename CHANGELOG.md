@@ -20,6 +20,35 @@
   regenerate `.g.dart` files. Requires `eventador` 4.0.0 and `duraq_isar`
   3.0.0. Schema ids are unchanged, and databases written by Isar 3.1 open
   without migration (checked in both directions).
+- **Hosts on macOS and iOS: the published `isar_community` 3.3.2 binary
+  wastes disk space without bound.** It is built on libmdbx
+  `v0.13.8-temp-upstream-fix`, which on Apple platforms preallocates the whole
+  new file size past the end of the database file every time the file grows,
+  and never releases it: a 135 MiB header store holds 1.9 GiB on disk, a full
+  testnet header store about 59 GiB. Every Isar database is affected, not
+  only headers. libmdbx fixed it in v0.13.9; `isar_community` has not released
+  the upgrade (isar-community/isar-community#85, #129). Until it does,
+  override both packages with the 3.3.2 build on libmdbx v0.13.12, as
+  libspiffy's own `pubspec.yaml` does for `isar_community`:
+
+  ```yaml
+  dependency_overrides:
+    isar_community:
+      git:
+        url: https://github.com/stephanfeb/isar-community.git
+        ref: 3.3.2-libmdbx-0.13.12
+        path: packages/isar_community
+    isar_community_flutter_libs: # Flutter apps only
+      git:
+        url: https://github.com/stephanfeb/isar-community.git
+        ref: 3.3.2-libmdbx-0.13.12
+        path: packages/isar_community_flutter_libs
+  ```
+
+  The fixed binary does not give back space a database already holds past
+  its end. With the database closed, extending the file by one page and
+  truncating it back to its length releases it.
+  `test/storage/isar_disk_allocation_test.dart` fails on the published binary.
 - **Mainnet runs on the network it was given, everywhere.** The payment
   channel manager and the default crypto service were started without a
   network and so encoded mainnet settlement outputs as testnet; they now get

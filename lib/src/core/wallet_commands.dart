@@ -788,6 +788,10 @@ class RecordOutgoingTransactionCommand extends WalletCommand {
   /// journals it and returns it and never interprets it. Null when none.
   final String? memo;
 
+  /// With [deferSpend]: when the wallet reclaims the payment by itself if
+  /// it is still outstanding then (bead libspiffy-8442). Null for never.
+  final DateTime? deadline;
+
   RecordOutgoingTransactionCommand({
     required String walletId,
     required this.txid,
@@ -811,6 +815,7 @@ class RecordOutgoingTransactionCommand extends WalletCommand {
     this.purpose,
     this.counterpartyMarker,
     this.memo,
+    this.deadline,
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,

@@ -2503,6 +2503,11 @@ class TransactionSpendDeferredEvent extends WalletEvent {
   /// everywhere else.
   final String? supersedes;
 
+  /// When the wallet reclaims the payment by itself if it is still
+  /// outstanding (bead libspiffy-8442); null for never, and for every hold
+  /// journaled before deadlines existed.
+  final DateTime? deadline;
+
   TransactionSpendDeferredEvent({
     required String walletId,
     required this.txid,
@@ -2515,6 +2520,7 @@ class TransactionSpendDeferredEvent extends WalletEvent {
     this.inferred = false,
     this.reactivated = false,
     this.supersedes,
+    this.deadline,
     DateTime? recordedAt,
     String? eventId,
     DateTime? timestamp,
@@ -2546,6 +2552,7 @@ class TransactionSpendDeferredEvent extends WalletEvent {
         'inferred': inferred,
         if (reactivated) 'reactivated': true,
         if (supersedes != null) 'supersedes': supersedes,
+        if (deadline != null) 'deadline': deadline!.toUtc().toIso8601String(),
         'recordedAt': recordedAt.toIso8601String(),
       };
 
@@ -2564,6 +2571,7 @@ class TransactionSpendDeferredEvent extends WalletEvent {
         inferred: map['inferred'] as bool? ?? false,
         reactivated: map['reactivated'] as bool? ?? false,
         supersedes: map['supersedes'] as String?,
+        deadline: _deferredDate(map['deadline']),
         recordedAt: _deferredDate(map['recordedAt']),
         eventId: map['eventId'] as String?,
         timestamp: _deferredDate(map['timestamp']),

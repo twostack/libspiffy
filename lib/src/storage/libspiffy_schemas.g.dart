@@ -7053,78 +7053,83 @@ const DeferredPaymentEntitySchema = CollectionSchema(
       name: r'createdAt',
       type: IsarType.dateTime,
     ),
-    r'fee': PropertySchema(
+    r'deadline': PropertySchema(
       id: 3,
+      name: r'deadline',
+      type: IsarType.dateTime,
+    ),
+    r'fee': PropertySchema(
+      id: 4,
       name: r'fee',
       type: IsarType.string,
     ),
     r'heldInputsJson': PropertySchema(
-      id: 4,
+      id: 5,
       name: r'heldInputsJson',
       type: IsarType.string,
     ),
     r'inferred': PropertySchema(
-      id: 5,
+      id: 6,
       name: r'inferred',
       type: IsarType.bool,
     ),
     r'invoiceId': PropertySchema(
-      id: 6,
+      id: 7,
       name: r'invoiceId',
       type: IsarType.string,
     ),
     r'lastCheckedAt': PropertySchema(
-      id: 7,
+      id: 8,
       name: r'lastCheckedAt',
       type: IsarType.dateTime,
     ),
     r'lastNetworkStatus': PropertySchema(
-      id: 8,
+      id: 9,
       name: r'lastNetworkStatus',
       type: IsarType.string,
     ),
     r'lastNetworkStatusSource': PropertySchema(
-      id: 9,
+      id: 10,
       name: r'lastNetworkStatusSource',
       type: IsarType.string,
     ),
     r'purpose': PropertySchema(
-      id: 10,
+      id: 11,
       name: r'purpose',
       type: IsarType.string,
     ),
     r'recipientAddresses': PropertySchema(
-      id: 11,
+      id: 12,
       name: r'recipientAddresses',
       type: IsarType.stringList,
     ),
     r'resolutionReason': PropertySchema(
-      id: 12,
+      id: 13,
       name: r'resolutionReason',
       type: IsarType.string,
     ),
     r'resolvedAt': PropertySchema(
-      id: 13,
+      id: 14,
       name: r'resolvedAt',
       type: IsarType.dateTime,
     ),
     r'state': PropertySchema(
-      id: 14,
+      id: 15,
       name: r'state',
       type: IsarType.string,
     ),
     r'txid': PropertySchema(
-      id: 15,
+      id: 16,
       name: r'txid',
       type: IsarType.string,
     ),
     r'updatedAt': PropertySchema(
-      id: 16,
+      id: 17,
       name: r'updatedAt',
       type: IsarType.dateTime,
     ),
     r'walletId': PropertySchema(
-      id: 17,
+      id: 18,
       name: r'walletId',
       type: IsarType.string,
     )
@@ -7253,21 +7258,22 @@ void _deferredPaymentEntitySerialize(
   writer.writeString(offsets[0], object.amount);
   writer.writeStringList(offsets[1], object.competingTxids);
   writer.writeDateTime(offsets[2], object.createdAt);
-  writer.writeString(offsets[3], object.fee);
-  writer.writeString(offsets[4], object.heldInputsJson);
-  writer.writeBool(offsets[5], object.inferred);
-  writer.writeString(offsets[6], object.invoiceId);
-  writer.writeDateTime(offsets[7], object.lastCheckedAt);
-  writer.writeString(offsets[8], object.lastNetworkStatus);
-  writer.writeString(offsets[9], object.lastNetworkStatusSource);
-  writer.writeString(offsets[10], object.purpose);
-  writer.writeStringList(offsets[11], object.recipientAddresses);
-  writer.writeString(offsets[12], object.resolutionReason);
-  writer.writeDateTime(offsets[13], object.resolvedAt);
-  writer.writeString(offsets[14], object.state);
-  writer.writeString(offsets[15], object.txid);
-  writer.writeDateTime(offsets[16], object.updatedAt);
-  writer.writeString(offsets[17], object.walletId);
+  writer.writeDateTime(offsets[3], object.deadline);
+  writer.writeString(offsets[4], object.fee);
+  writer.writeString(offsets[5], object.heldInputsJson);
+  writer.writeBool(offsets[6], object.inferred);
+  writer.writeString(offsets[7], object.invoiceId);
+  writer.writeDateTime(offsets[8], object.lastCheckedAt);
+  writer.writeString(offsets[9], object.lastNetworkStatus);
+  writer.writeString(offsets[10], object.lastNetworkStatusSource);
+  writer.writeString(offsets[11], object.purpose);
+  writer.writeStringList(offsets[12], object.recipientAddresses);
+  writer.writeString(offsets[13], object.resolutionReason);
+  writer.writeDateTime(offsets[14], object.resolvedAt);
+  writer.writeString(offsets[15], object.state);
+  writer.writeString(offsets[16], object.txid);
+  writer.writeDateTime(offsets[17], object.updatedAt);
+  writer.writeString(offsets[18], object.walletId);
 }
 
 DeferredPaymentEntity _deferredPaymentEntityDeserialize(
@@ -7280,22 +7286,23 @@ DeferredPaymentEntity _deferredPaymentEntityDeserialize(
   object.amount = reader.readString(offsets[0]);
   object.competingTxids = reader.readStringList(offsets[1]) ?? [];
   object.createdAt = reader.readDateTime(offsets[2]);
-  object.fee = reader.readString(offsets[3]);
-  object.heldInputsJson = reader.readString(offsets[4]);
+  object.deadline = reader.readDateTimeOrNull(offsets[3]);
+  object.fee = reader.readString(offsets[4]);
+  object.heldInputsJson = reader.readString(offsets[5]);
   object.id = id;
-  object.inferred = reader.readBool(offsets[5]);
-  object.invoiceId = reader.readStringOrNull(offsets[6]);
-  object.lastCheckedAt = reader.readDateTimeOrNull(offsets[7]);
-  object.lastNetworkStatus = reader.readStringOrNull(offsets[8]);
-  object.lastNetworkStatusSource = reader.readStringOrNull(offsets[9]);
-  object.purpose = reader.readStringOrNull(offsets[10]);
-  object.recipientAddresses = reader.readStringList(offsets[11]) ?? [];
-  object.resolutionReason = reader.readStringOrNull(offsets[12]);
-  object.resolvedAt = reader.readDateTimeOrNull(offsets[13]);
-  object.state = reader.readString(offsets[14]);
-  object.txid = reader.readString(offsets[15]);
-  object.updatedAt = reader.readDateTime(offsets[16]);
-  object.walletId = reader.readString(offsets[17]);
+  object.inferred = reader.readBool(offsets[6]);
+  object.invoiceId = reader.readStringOrNull(offsets[7]);
+  object.lastCheckedAt = reader.readDateTimeOrNull(offsets[8]);
+  object.lastNetworkStatus = reader.readStringOrNull(offsets[9]);
+  object.lastNetworkStatusSource = reader.readStringOrNull(offsets[10]);
+  object.purpose = reader.readStringOrNull(offsets[11]);
+  object.recipientAddresses = reader.readStringList(offsets[12]) ?? [];
+  object.resolutionReason = reader.readStringOrNull(offsets[13]);
+  object.resolvedAt = reader.readDateTimeOrNull(offsets[14]);
+  object.state = reader.readString(offsets[15]);
+  object.txid = reader.readString(offsets[16]);
+  object.updatedAt = reader.readDateTime(offsets[17]);
+  object.walletId = reader.readString(offsets[18]);
   return object;
 }
 
@@ -7313,34 +7320,36 @@ P _deferredPaymentEntityDeserializeProp<P>(
     case 2:
       return (reader.readDateTime(offset)) as P;
     case 3:
-      return (reader.readString(offset)) as P;
+      return (reader.readDateTimeOrNull(offset)) as P;
     case 4:
       return (reader.readString(offset)) as P;
     case 5:
-      return (reader.readBool(offset)) as P;
+      return (reader.readString(offset)) as P;
     case 6:
-      return (reader.readStringOrNull(offset)) as P;
+      return (reader.readBool(offset)) as P;
     case 7:
-      return (reader.readDateTimeOrNull(offset)) as P;
-    case 8:
       return (reader.readStringOrNull(offset)) as P;
+    case 8:
+      return (reader.readDateTimeOrNull(offset)) as P;
     case 9:
       return (reader.readStringOrNull(offset)) as P;
     case 10:
       return (reader.readStringOrNull(offset)) as P;
     case 11:
-      return (reader.readStringList(offset) ?? []) as P;
-    case 12:
       return (reader.readStringOrNull(offset)) as P;
+    case 12:
+      return (reader.readStringList(offset) ?? []) as P;
     case 13:
-      return (reader.readDateTimeOrNull(offset)) as P;
+      return (reader.readStringOrNull(offset)) as P;
     case 14:
-      return (reader.readString(offset)) as P;
+      return (reader.readDateTimeOrNull(offset)) as P;
     case 15:
       return (reader.readString(offset)) as P;
     case 16:
-      return (reader.readDateTime(offset)) as P;
+      return (reader.readString(offset)) as P;
     case 17:
+      return (reader.readDateTime(offset)) as P;
+    case 18:
       return (reader.readString(offset)) as P;
     default:
       throw IsarError('Unknown property with id $propertyId');
@@ -8230,6 +8239,80 @@ extension DeferredPaymentEntityQueryFilter on QueryBuilder<
     return QueryBuilder.apply(this, (query) {
       return query.addFilterCondition(FilterCondition.between(
         property: r'createdAt',
+        lower: lower,
+        includeLower: includeLower,
+        upper: upper,
+        includeUpper: includeUpper,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> deadlineIsNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNull(
+        property: r'deadline',
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> deadlineIsNotNull() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(const FilterCondition.isNotNull(
+        property: r'deadline',
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> deadlineEqualTo(DateTime? value) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.equalTo(
+        property: r'deadline',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> deadlineGreaterThan(
+    DateTime? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.greaterThan(
+        include: include,
+        property: r'deadline',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> deadlineLessThan(
+    DateTime? value, {
+    bool include = false,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.lessThan(
+        include: include,
+        property: r'deadline',
+        value: value,
+      ));
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity,
+      QAfterFilterCondition> deadlineBetween(
+    DateTime? lower,
+    DateTime? upper, {
+    bool includeLower = true,
+    bool includeUpper = true,
+  }) {
+    return QueryBuilder.apply(this, (query) {
+      return query.addFilterCondition(FilterCondition.between(
+        property: r'deadline',
         lower: lower,
         includeLower: includeLower,
         upper: upper,
@@ -10247,6 +10330,20 @@ extension DeferredPaymentEntityQuerySortBy
   }
 
   QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      sortByDeadline() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'deadline', Sort.asc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      sortByDeadlineDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'deadline', Sort.desc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
       sortByFee() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'fee', Sort.asc);
@@ -10470,6 +10567,20 @@ extension DeferredPaymentEntityQuerySortThenBy
       thenByCreatedAtDesc() {
     return QueryBuilder.apply(this, (query) {
       return query.addSortBy(r'createdAt', Sort.desc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      thenByDeadline() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'deadline', Sort.asc);
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QAfterSortBy>
+      thenByDeadlineDesc() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addSortBy(r'deadline', Sort.desc);
     });
   }
 
@@ -10708,6 +10819,13 @@ extension DeferredPaymentEntityQueryWhereDistinct
   }
 
   QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QDistinct>
+      distinctByDeadline() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addDistinctBy(r'deadline');
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DeferredPaymentEntity, QDistinct>
       distinctByFee({bool caseSensitive = true}) {
     return QueryBuilder.apply(this, (query) {
       return query.addDistinctBy(r'fee', caseSensitive: caseSensitive);
@@ -10843,6 +10961,13 @@ extension DeferredPaymentEntityQueryProperty on QueryBuilder<
       createdAtProperty() {
     return QueryBuilder.apply(this, (query) {
       return query.addPropertyName(r'createdAt');
+    });
+  }
+
+  QueryBuilder<DeferredPaymentEntity, DateTime?, QQueryOperations>
+      deadlineProperty() {
+    return QueryBuilder.apply(this, (query) {
+      return query.addPropertyName(r'deadline');
     });
   }
 

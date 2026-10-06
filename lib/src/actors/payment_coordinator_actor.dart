@@ -237,7 +237,7 @@ class PaymentCoordinatorActor extends Actor {
     // payment handed back to the caller (audit A-M7): failures reported by
     // the steps below and any unexpected exception alike.
     var paymentDelivered = false;
-    final inFlight = _InFlightPayment(msg.invoiceId, msg.counterpartyMarker, msg.memo);
+    final inFlight = _InFlightPayment(msg.invoiceId, msg.counterpartyMarker, msg.memo, msg.deadline);
     _inFlightPayment = inFlight;
     // A failure is answered once its inputs are released in the read model,
     // so a caller that retries on hearing it can select them again (bead
@@ -1588,6 +1588,9 @@ class PaymentCoordinatorActor extends Actor {
       // The payer's note for the payee, journaled with the payment; null
       // for recordings that are not a payment, as the marker.
       memo: _inFlightPayment?.memo,
+      // When the wallet reclaims the payment by itself (bead libspiffy-8442):
+      // only a deferred payment can be reclaimed.
+      deadline: deferSpend ? _inFlightPayment?.deadline : null,
     );
 
     // Register the awaiter BEFORE telling the command, so we cannot miss the
@@ -1900,9 +1903,12 @@ class _InFlightPayment {
   /// payment records.
   final String? memo;
 
+  /// When the wallet reclaims this payment by itself (bead libspiffy-8442).
+  final DateTime? deadline;
+
   final List<String> deferredTxids = [];
 
-  _InFlightPayment(this.invoiceId, [this.counterpartyMarker, this.memo]);
+  _InFlightPayment(this.invoiceId, [this.counterpartyMarker, this.memo, this.deadline]);
 }
 
 /// A call into a third-party [TransactionBuilderPlugin] that threw (bead

@@ -304,6 +304,13 @@ class DeferredPayment {
   /// holds were journaled.
   final bool inferred;
 
+  /// When the wallet reclaims this payment by itself if it is still
+  /// outstanding (bead libspiffy-8442): a half the counterparty has not
+  /// completed, a payment the recipient has not broadcast. Null: never by
+  /// itself. The deadline bounds the option the payment gives its holder;
+  /// it does not end it: the option lasts until the reclaim is mined.
+  final DateTime? deadline;
+
   const DeferredPayment({
     required this.walletId,
     required this.txid,
@@ -323,7 +330,12 @@ class DeferredPayment {
     this.resolvedAt,
     this.resolutionReason,
     this.inferred = false,
+    this.deadline,
   });
+
+  /// Whether [deadline] is set and has passed at [now]: an outstanding
+  /// payment the wallet reclaims by itself.
+  bool isDue(DateTime now) => deadline != null && !deadline!.isAfter(now);
 
   bool get isOutstanding => state == DeferredPaymentState.outstanding;
 
@@ -342,6 +354,7 @@ class DeferredPayment {
     Object? resolvedAt = _unset,
     Object? resolutionReason = _unset,
     List<DeferredPaymentInput>? heldInputs,
+    Object? deadline = _unset,
   }) =>
       DeferredPayment(
         walletId: walletId,
@@ -366,6 +379,7 @@ class DeferredPayment {
         resolutionReason:
             identical(resolutionReason, _unset) ? this.resolutionReason : resolutionReason as String?,
         inferred: inferred,
+        deadline: identical(deadline, _unset) ? this.deadline : deadline as DateTime?,
       );
 
   /// JSON of [heldInputs] (storage backends keep it in one column).
@@ -439,7 +453,8 @@ class DeferredPayment {
       _sameInstant(other.updatedAt, updatedAt) &&
       _sameInstant(other.resolvedAt, resolvedAt) &&
       other.resolutionReason == resolutionReason &&
-      other.inferred == inferred;
+      other.inferred == inferred &&
+      _sameInstant(other.deadline, deadline);
 
   @override
   int get hashCode => Object.hash(walletId, txid, state);
@@ -482,6 +497,10 @@ class DeferredPaymentQuery {
   /// Only payments paying this address.
   final String? recipientAddress;
 
+  /// Only payments with a deadline at or before this instant (bead
+  /// libspiffy-8442): what the wallet reclaims by itself.
+  final DateTime? dueBefore;
+
   /// Page size (1 to 1000).
   final int limit;
   final String? cursor;
@@ -494,6 +513,7 @@ class DeferredPaymentQuery {
     this.lastNetworkStatuses,
     this.invoiceId,
     this.recipientAddress,
+    this.dueBefore,
     this.limit = 50,
     this.cursor,
     this.oldestFirst = false,
@@ -507,6 +527,7 @@ class DeferredPaymentQuery {
     DeferredPaymentState.failed,
     DeferredPaymentState.cancelled,
     DeferredPaymentState.reclaimed,
+    DeferredPaymentState.completed,
   };
 
   int get effectiveLimit => limit < 1 ? 1 : (limit > 1000 ? 1000 : limit);
@@ -523,6 +544,7 @@ class DeferredPaymentQuery {
     }
     if (invoiceId != null && p.invoiceId != invoiceId) return false;
     if (recipientAddress != null && !p.recipientAddresses.contains(recipientAddress)) return false;
+    if (dueBefore != null && !p.isDue(dueBefore!)) return false;
     return true;
   }
 

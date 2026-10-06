@@ -36,6 +36,7 @@ import 'migrations/v025_wallet_type_from_metadata.dart';
 import 'migrations/v026_address_chain.dart';
 import 'migrations/v027_type42_addresses.dart';
 import 'migrations/v028_pending_receive_memo.dart';
+import 'migrations/v029_deferred_payment_deadline.dart';
 
 /// Base class for database migrations.
 ///
@@ -90,6 +91,7 @@ class PostgresMigrations {
     V026AddressChain(),
     V027Type42Addresses(),
     V028PendingReceiveMemo(),
+    V029DeferredPaymentDeadline(),
   ];
 
   /// Test hook awaited by [migrate] right after it reads the current schema

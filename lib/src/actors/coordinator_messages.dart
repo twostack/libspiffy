@@ -238,6 +238,13 @@ class PayInvoiceCommand implements Message {
   /// journals it and returns it and never interprets it. Null when none.
   final String? memo;
 
+  /// When the wallet reclaims this payment by itself if it is still
+  /// outstanding then (bead libspiffy-8442): a half the counterparty has
+  /// not completed, a payment the recipient has not broadcast. Null for
+  /// never. The deadline bounds the option; the reclaim ends it only once
+  /// the network has it.
+  final DateTime? deadline;
+
   PayInvoiceCommand({
     required this.walletId,
     required this.invoiceId,
@@ -248,6 +255,7 @@ class PayInvoiceCommand implements Message {
     Map<String, dynamic>? paymentMetadata,
     this.counterpartyMarker,
     this.memo,
+    this.deadline,
   })  : addresses = frozenList(addresses),
         outputs = frozenOutputSpecsOrNull(outputs),
         paymentMetadata = frozenPlainMapOrNull(paymentMetadata);
@@ -849,6 +857,10 @@ class GetDeferredPaymentsQuery implements Message {
   /// Only payments paying this address.
   final String? recipientAddress;
 
+  /// Only payments with a deadline at or before this instant (bead
+  /// libspiffy-8442).
+  final DateTime? dueBefore;
+
   /// Page size (1 to 1000).
   final int limit;
 
@@ -870,6 +882,7 @@ class GetDeferredPaymentsQuery implements Message {
     Set<String>? lastNetworkStatuses,
     this.invoiceId,
     this.recipientAddress,
+    this.dueBefore,
     this.limit = 50,
     this.cursor,
     this.oldestFirst = false,
@@ -893,6 +906,7 @@ class GetDeferredPaymentsQuery implements Message {
       lastNetworkStatuses: lastNetworkStatuses,
       invoiceId: invoiceId,
       recipientAddress: recipientAddress,
+      dueBefore: dueBefore,
       limit: limit,
       cursor: cursor,
       oldestFirst: oldestFirst,

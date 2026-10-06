@@ -40,6 +40,10 @@ class PayInvoiceMessage implements Message {
   /// journals it and returns it and never interprets it. Null when none.
   final String? memo;
 
+  /// When the wallet reclaims the payment by itself if it is still
+  /// outstanding then (bead libspiffy-8442). Null for never.
+  final DateTime? deadline;
+
   PayInvoiceMessage({
     required this.walletId,
     required this.invoiceId,
@@ -50,6 +54,7 @@ class PayInvoiceMessage implements Message {
     Map<String, dynamic>? paymentMetadata,
     this.counterpartyMarker,
     this.memo,
+    this.deadline,
   })  : addresses = frozenList(addresses),
         outputs = frozenOutputSpecsOrNull(outputs),
         paymentMetadata = frozenPlainMapOrNull(paymentMetadata);

@@ -101,6 +101,7 @@ class LibSpiffyActorSystem {
   /// The channel timing given to [initialize] (bead libspiffy-ywbk); null
   /// for a node that does no channels.
   ChannelTiming? _channelTiming;
+  Duration _deadlineSweepInterval = const Duration(minutes: 1);
   InvoiceProjection? _invoiceProjection;
   ChannelProjection? _channelProjection;
   ActorRef? _walletProjectionRef;
@@ -255,6 +256,9 @@ class LibSpiffyActorSystem {
     // they must run (bead libspiffy-ywbk). The operator's choice: without it
     // this node requests, accepts and pays no channels.
     ChannelTiming? channelTiming,
+    // How often outstanding deferred payments whose deadline has passed are
+    // reclaimed by the coordinator itself (bead libspiffy-8442).
+    Duration deadlineSweepInterval = const Duration(minutes: 1),
   }) async {
     // An instance is initialized once. A second call used to build a second
     // actor system and storage stack over the first (A-M5).
@@ -272,6 +276,7 @@ class LibSpiffyActorSystem {
     _lifecycle = _Lifecycle.initializing;
     _channelPeerId = channelPeerId;
     _channelTiming = channelTiming;
+    _deadlineSweepInterval = deadlineSweepInterval;
     try {
       await _initialize(
         actorSystem: actorSystem,
@@ -965,6 +970,7 @@ class LibSpiffyActorSystem {
       // This node's own peer id on the channel transport (libspiffy-36f).
       peerId: _channelPeerId,
       channelTiming: _channelTiming,
+      deadlineSweepInterval: _deadlineSweepInterval,
       importWalletFromXpriv: _importActor != null ? ({
         required String walletId,
         required String xpriv,

@@ -710,6 +710,22 @@ transaction spends an input) is no verdict: the payment stays outstanding,
 its inputs held, until one of the two is mined. Every step is journaled;
 resolved payments stay listable.
 
+A payment can carry a **deadline** (`PayInvoiceCommand(deadline:)`, a UTC
+instant; bead libspiffy-8442). While it is still outstanding when the deadline
+passes, the wallet reclaims it by itself: the coordinator sweeps the wallets'
+outstanding payments once a minute (`LibSpiffyActorSystem.initialize(
+deadlineSweepInterval:)`) and sends the reclaim for each one that is due, as a
+`ReclaimDeferredPaymentCommand` would, answered by a
+`DeferredPaymentReclaimedEvent` whose request id is `deadline-<txid>`. A
+payment the network has taken, that its counterparty completed, or that you
+cancelled before the deadline is no longer outstanding and is left alone. The
+deadline bounds the option the payment gives its holder; it does not end it:
+the holder can still complete or broadcast the payment until the reclaim is
+mined, and the two then race as any reclaim does. `GetDeferredPaymentsQuery(
+dueBefore:)` lists what is due. A half that the counterparty must complete is
+the case this is for: a node that withdraws its halves past an age sets the
+deadline instead of running its own clock.
+
 Each answer below comes once the wallet's read model shows it, so a query
 made on hearing it sees the status, the spent inputs and the change. A
 broadcast or a reclaim succeeds only when the network holds the

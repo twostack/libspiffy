@@ -148,6 +148,7 @@ class DeferredPayments {
       purpose: command.purpose,
       reactivated: reactivated,
       supersedes: supersedes,
+      deadline: command.deadline?.toUtc(),
       recordedAt: now,
       version: version,
       timestamp: now,

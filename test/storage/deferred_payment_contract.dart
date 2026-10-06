@@ -28,6 +28,7 @@ DeferredPayment contractDeferredPayment({
   String? invoiceId,
   List<String> recipients = const ['mkHS9ne12qx9pS9VojpwU5xtRd4T7X7ZUt'],
   String? lastNetworkStatus,
+  DateTime? deadline,
 }) {
   final created = _base.add(Duration(minutes: minutesAfterBase));
   return DeferredPayment(
@@ -45,6 +46,7 @@ DeferredPayment contractDeferredPayment({
     state: state,
     lastNetworkStatus: lastNetworkStatus,
     lastNetworkStatusSource: lastNetworkStatus == null ? null : 'arc',
+    deadline: deadline,
     lastCheckedAt: lastNetworkStatus == null ? null : created.add(const Duration(seconds: 30)),
     createdAt: created,
     updatedAt: created.add(const Duration(seconds: 31)),
@@ -69,12 +71,14 @@ void defineDeferredPaymentContract(
         invoiceId: 'inv-1',
         recipients: const ['mkHS9ne12qx9pS9VojpwU5xtRd4T7X7ZUt', 'n2eMqTT929pb1RDNuqEnxdaLau1rxy3efi'],
         lastNetworkStatus: DeferredNetworkStatus.notFound,
+        deadline: _base.add(const Duration(hours: 2)),
       );
       await storage().storeDeferredPayment(payment);
 
       final read = await storage().getDeferredPayment(walletId, payment.txid);
       expect(read, payment);
-      expect(read!.heldInputs, payment.heldInputs);
+      expect(read!.deadline, _base.add(const Duration(hours: 2)), reason: 'the deadline reads back (bead libspiffy-8442)');
+      expect(read.heldInputs, payment.heldInputs);
       expect(read.heldSatoshis, BigInt.from(20546));
       expect(await storage().getDeferredPayment('other-$walletId', payment.txid), isNull);
     });
@@ -208,6 +212,37 @@ void defineDeferredPaymentContract(
       expect(await txids(const DeferredPaymentQuery(recipientAddress: 'n2eMqTT929pb1RDNuqEnxdaLau1rxy3efi')),
           [b.txid]);
       expect(await txids(const DeferredPaymentQuery(recipientAddress: 'nobody')), isEmpty);
+    });
+
+    test('8442: dueBefore lists the outstanding payments whose deadline has passed, oldest first', () async {
+      final walletId = 'w-${unique()}';
+      final t = unique();
+      final due = contractDeferredPayment(
+          walletId: walletId, txid: contractTxid('due$t'), minutesAfterBase: 0, deadline: _base.add(const Duration(hours: 1)));
+      final later = contractDeferredPayment(
+          walletId: walletId, txid: contractTxid('lat$t'), minutesAfterBase: 10, deadline: _base.add(const Duration(hours: 3)));
+      final never = contractDeferredPayment(walletId: walletId, txid: contractTxid('nev$t'), minutesAfterBase: 20);
+      final resolved = contractDeferredPayment(
+          walletId: walletId,
+          txid: contractTxid('res$t'),
+          minutesAfterBase: 30,
+          state: DeferredPaymentState.completed,
+          deadline: _base.add(const Duration(hours: 1)));
+      for (final p in [due, later, never, resolved]) {
+        await storage().storeDeferredPayment(p);
+      }
+      Future<List<String>> txids(DeferredPaymentQuery q) async =>
+          [for (final p in (await storage().listDeferredPayments(walletId, query: q)).payments) p.txid];
+      final at = _base.add(const Duration(hours: 2));
+      expect(await txids(DeferredPaymentQuery(dueBefore: at, oldestFirst: true)), [due.txid],
+          reason: 'only an outstanding payment with a deadline at or before the instant');
+      expect(await txids(DeferredPaymentQuery(dueBefore: _base.add(const Duration(hours: 1)), oldestFirst: true)), [due.txid],
+          reason: 'at the deadline itself it is due');
+      expect(await txids(DeferredPaymentQuery(dueBefore: _base.add(const Duration(minutes: 59)))), isEmpty);
+      expect(await txids(DeferredPaymentQuery(dueBefore: at, states: DeferredPaymentQuery.allStates, oldestFirst: true)),
+          [due.txid, resolved.txid]);
+      expect(await txids(const DeferredPaymentQuery(states: DeferredPaymentQuery.allStates, oldestFirst: true)),
+          [due.txid, later.txid, never.txid, resolved.txid]);
     });
 
     for (final oldestFirst in [false, true]) {

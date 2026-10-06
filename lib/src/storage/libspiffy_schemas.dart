@@ -410,6 +410,10 @@ class DeferredPaymentEntity {
   /// before the property existed.
   List<String> competingTxids = [];
 
+  /// When the wallet reclaims it by itself (bead libspiffy-8442); null for
+  /// never, and for a row stored before the property existed.
+  DateTime? deadline;
+
   DeferredPaymentEntity();
 
   factory DeferredPaymentEntity.fromDomain(DeferredPayment p) => DeferredPaymentEntity()
@@ -430,7 +434,8 @@ class DeferredPaymentEntity {
     ..resolvedAt = p.resolvedAt
     ..resolutionReason = p.resolutionReason
     ..inferred = p.inferred
-    ..competingTxids = List<String>.from(p.competingTxids);
+    ..competingTxids = List<String>.from(p.competingTxids)
+    ..deadline = p.deadline;
 
   DeferredPayment toDomain() => DeferredPayment(
         walletId: walletId,
@@ -451,6 +456,7 @@ class DeferredPaymentEntity {
         resolutionReason: resolutionReason,
         inferred: inferred,
         competingTxids: List<String>.from(competingTxids),
+        deadline: deadline?.toUtc(),
       );
 }
 

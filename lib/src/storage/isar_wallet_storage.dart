@@ -1344,6 +1344,8 @@ class IsarWalletStorage implements ReadModelStorage {
             .optional(query.invoiceId != null, (q) => q.invoiceIdEqualTo(query.invoiceId!))
             .optional(query.recipientAddress != null,
                 (q) => q.recipientAddressesElementEqualTo(query.recipientAddress!))
+            .optional(query.dueBefore != null,
+                (q) => q.group((g) => g.deadlineIsNotNull().and().deadlineLessThan(query.dueBefore!, include: true)))
             .optional(cursorAt != null && !query.oldestFirst,
                 (q) => q.createdAtLessThan(cursorAt!, include: true))
             .optional(

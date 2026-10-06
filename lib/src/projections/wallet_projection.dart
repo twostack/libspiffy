@@ -881,6 +881,7 @@ class WalletProjection extends Projection<void> {
         createdAt: event.recordedAt,
         updatedAt: event.timestamp,
         inferred: event.inferred,
+        deadline: event.deadline,
       ));
     } else if (event.reactivated && existing.state == DeferredPaymentState.cancelled) {
       // A cancelled payment recorded again is outstanding again (bead
@@ -895,6 +896,7 @@ class WalletProjection extends Projection<void> {
         updatedAt: event.timestamp,
         resolvedAt: null,
         resolutionReason: null,
+        deadline: event.deadline,
       ));
     }
     // A replay re-applies the hold even to a resolved payment: the event that

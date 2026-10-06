@@ -366,6 +366,13 @@ class WalletCoordinatorActor extends Actor {
   // Import notifications (ImportActor progress), forwarded as CoordinatorEvents
   final Stream<domain_events.WalletImportNotification>? _importNotifications;
 
+  /// How often outstanding deferred payments whose deadline has passed are
+  /// reclaimed (bead libspiffy-8442). The sweep is what sends the reclaim;
+  /// a deadline is met within one interval of passing.
+  final Duration _deadlineSweepInterval;
+  Timer? _deadlineSweep;
+  bool _sweepingDeadlines = false;
+
   WalletCoordinatorActor({
     required ActorRef walletManager,
     required ActorRef invoiceCoordinator,
@@ -399,6 +406,9 @@ class WalletCoordinatorActor extends Actor {
     /// settles each channel this node serves when its settlement margin
     /// begins. Null for a node that does no channels.
     ChannelTiming? channelTiming,
+    /// How often outstanding deferred payments whose deadline has passed are
+    /// reclaimed by this actor itself (bead libspiffy-8442).
+    Duration deadlineSweepInterval = const Duration(minutes: 1),
     dynamic Function({
       required String walletId,
       required String xpriv,
@@ -430,6 +440,7 @@ class WalletCoordinatorActor extends Actor {
         _walletProjection = walletProjection,
         _benfordCoordinator = benfordCoordinator,
         _storage = storage,
+        _deadlineSweepInterval = deadlineSweepInterval,
         _importWalletFromXpriv = importWalletFromXpriv,
         _importWalletFromWif = importWalletFromWif,
         _resumeWalletImport = resumeWalletImport,
@@ -496,6 +507,10 @@ class WalletCoordinatorActor extends Actor {
     // not sent as a reply to the split command, because a caller that used
     // `ask` would have its ask resolved by it.
     _benfordCoordinator.tell(wm.SetCoordinatorForSplitsMessage(context.self));
+    // Outstanding deferred payments whose deadline has passed are reclaimed
+    // by this actor itself (bead libspiffy-8442). Off the mailbox: the sweep
+    // reads the read model and asks ARC, and must not delay commands.
+    _deadlineSweep = Timer.periodic(_deadlineSweepInterval, (_) => unawaited(_sweepDeadlines()));
     // Off the mailbox: it only reads the read model and emits, so it must
     // not delay the actor becoming able to serve commands.
     unawaited(_reportUnfinishedChannels());
@@ -589,6 +604,8 @@ class WalletCoordinatorActor extends Actor {
     // this (bead libspiffy-7ye4). An announcement already reading is waited
     // for by [stopAnnouncements], which shutdown calls before it gets here.
     _announcementsStopped = true;
+    _deadlineSweep?.cancel();
+    _deadlineSweep = null;
     for (final sub in _eventSubscriptions.values) {
       unawaited(sub.cancel());
     }
@@ -1134,6 +1151,8 @@ class WalletCoordinatorActor extends Actor {
         counterpartyMarker: cmd.counterpartyMarker,
         // The payer's note for the payee, journaled with the payment.
         memo: cmd.memo,
+        // When the wallet reclaims it by itself (bead libspiffy-8442).
+        deadline: cmd.deadline,
       ),
       sender: context.self,
     );
@@ -2221,6 +2240,39 @@ class WalletCoordinatorActor extends Actor {
     } catch (e, st) {
       _log.warning('Completing deferred payment ${cmd.txid} failed: $e\n$st');
       _emitEvent(failure('Completing ${cmd.txid} failed: $e'));
+    }
+  }
+
+  /// Reclaims every outstanding deferred payment of every wallet whose
+  /// deadline has passed (bead libspiffy-8442), oldest first, one at a
+  /// time, each as [ReclaimDeferredPaymentCommand] would: the answer is a
+  /// [DeferredPaymentReclaimedEvent] whose request id is `deadline-<txid>`.
+  /// A payment completed, seen, mined, failed or cancelled before its
+  /// deadline is no longer outstanding and is left alone; one whose
+  /// reclaim fails (an input already spent, no network) is tried again at
+  /// the next sweep while it stays outstanding.
+  Future<void> _sweepDeadlines() async {
+    if (_sweepingDeadlines || _announcementsStopped) return;
+    _sweepingDeadlines = true;
+    try {
+      final now = DateTime.now().toUtc();
+      for (final walletId in await _storage.listWallets()) {
+        final due = await _storage.listDeferredPayments(walletId,
+            query: DeferredPaymentQuery(dueBefore: now, limit: 100, oldestFirst: true));
+        for (final payment in due.payments) {
+          if (_announcementsStopped) return;
+          await _handleReclaimDeferredPayment(ReclaimDeferredPaymentCommand(
+            walletId: walletId,
+            txid: payment.txid,
+            reason: 'deadline ${payment.deadline!.toUtc().toIso8601String()} passed',
+            requestId: 'deadline-${payment.txid}',
+          ));
+        }
+      }
+    } catch (e, st) {
+      _log.warning('The deferred payment deadline sweep failed: $e', e, st);
+    } finally {
+      _sweepingDeadlines = false;
     }
   }
 

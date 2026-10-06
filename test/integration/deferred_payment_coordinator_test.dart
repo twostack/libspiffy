@@ -53,6 +53,8 @@ void main() {
       enableP2P: false,
       arcService: arc,
       secureStorage: InMemorySecureStorage(),
+      // Deadlines (bead libspiffy-8442) are met within a sweep interval.
+      deadlineSweepInterval: const Duration(seconds: 1),
     );
     await setupTestHeaders(libspiffy.walletStorage as IsarWalletStorage);
     events = libspiffy.coordinatorEvents!;
@@ -96,13 +98,14 @@ void main() {
   Future<BitcoinUtxo> funding() async =>
       (await storage().getUTXOs(walletId, includeSpent: true)).firstWhere((u) => u.key == _fundingKey);
 
-  Future<PaymentReadyEvent> pay(String invoiceId, {int amount = 100000}) async {
+  Future<PaymentReadyEvent> pay(String invoiceId, {int amount = 100000, DateTime? deadline}) async {
     final ready = await send<PaymentReadyEvent>(
       PayInvoiceCommand(
         walletId: walletId,
         invoiceId: invoiceId,
         addresses: const [_recipient],
         amount: BigInt.from(amount),
+        deadline: deadline,
       ),
       (e) => e.invoiceId == invoiceId,
     );
@@ -631,4 +634,67 @@ void main() {
     expect(unknown.success, isFalse);
     expect(unknown.error, contains('not a deferred payment'));
   });
+
+  test('8442: a payment with a deadline is reclaimed by the wallet itself once the deadline passes; one '
+      'cancelled before it, and one whose deadline is far off, are left alone; the deadline is journaled', () async {
+    // The wallet has one coin, and a payment holds it while outstanding, so
+    // the three cases run one after another: the coin comes back from the
+    // cancellation, and the reclaim's own output funds the last one.
+    final now = DateTime.now().toUtc();
+
+    // Cancelled before its deadline: no longer outstanding, so the sweep leaves it.
+    final cancelled = await pay('inv-cancelled', deadline: now.add(const Duration(seconds: 2)));
+    // Distinct amounts: the same coin to the same recipient for the same amount
+    // is the same transaction, and a cancelled payment recorded again is
+    // outstanding again (bead libspiffy-4r0), not a second payment.
+    expect((await list(GetDeferredPaymentsQuery(walletId: walletId, queryId: 'dl1'))).payments.single.payment.deadline,
+        now.add(const Duration(seconds: 2)));
+    expect((await list(GetDeferredPaymentsQuery(walletId: walletId, dueBefore: now, queryId: 'dl2'))).payments, isEmpty,
+        reason: 'not due yet');
+    final gone = await send<DeferredPaymentCancelledEvent>(
+        CancelDeferredPaymentCommand(walletId: walletId, txid: cancelled.txid, requestId: 'dl-cancel'),
+        (e) => e.requestId == 'dl-cancel');
+    expect(gone.success, isTrue, reason: gone.error);
+    await Future<void>.delayed(const Duration(seconds: 3));
+    expect((await storage().getDeferredPayment(walletId, cancelled.txid))!.state, DeferredPaymentState.cancelled,
+        reason: 'a sweep ran after its deadline and left it cancelled');
+
+    // Due: the sweep reclaims it by itself, with the answer a
+    // ReclaimDeferredPaymentCommand gives, under the request id deadline-<txid>.
+    final soon = DateTime.now().toUtc().add(const Duration(seconds: 2));
+    final due = await pay('inv-due', amount: 90000, deadline: soon);
+    expect(due.txid, isNot(cancelled.txid));
+    final reclaimed = await events
+        .where((e) => e is DeferredPaymentReclaimedEvent && e.requestId == 'deadline-${due.txid}')
+        .cast<DeferredPaymentReclaimedEvent>()
+        .first
+        .timeout(const Duration(seconds: 20));
+    expect(reclaimed.success, isTrue, reason: reclaimed.error);
+    expect(reclaimed.reclaimTxid, isNotNull);
+    expect(arc.seen, contains(reclaimed.reclaimTxid));
+    final row = (await storage().getDeferredPayment(walletId, due.txid))!;
+    expect(row.state, DeferredPaymentState.reclaimed);
+    expect(row.resolutionReason, contains(reclaimed.reclaimTxid!));
+    expect(row.deadline, soon);
+    // The reclaim's own self-spend carries no deadline: a wallet never reclaims its reclaim.
+    expect((await storage().getDeferredPayment(walletId, reclaimed.reclaimTxid!))!.deadline, isNull);
+
+    // Far off: outstanding, with its deadline ahead, after sweeps have run.
+    final far = DateTime.now().toUtc().add(const Duration(days: 1));
+    final later = await pay('inv-later', amount: 80000, deadline: far);
+    await Future<void>.delayed(const Duration(seconds: 2));
+    final still = (await storage().getDeferredPayment(walletId, later.txid))!;
+    expect(still.state, DeferredPaymentState.outstanding);
+    expect(still.deadline, far);
+    expect((await list(GetDeferredPaymentsQuery(walletId: walletId, dueBefore: far, queryId: 'dl3'))).payments.single.txid,
+        later.txid);
+
+    // Journaled: a read model rebuilt from the journal has the deadlines and the states.
+    final rebuilt = await rebuildFromJournal();
+    expect((await rebuilt.getDeferredPayment(walletId, later.txid))!.deadline, far);
+    expect((await rebuilt.getDeferredPayment(walletId, due.txid))!.deadline, soon);
+    expect((await rebuilt.getDeferredPayment(walletId, due.txid))!.state, DeferredPaymentState.reclaimed);
+    expect((await rebuilt.getDeferredPayment(walletId, cancelled.txid))!.state, DeferredPaymentState.cancelled);
+  });
+
 }

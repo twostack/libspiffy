@@ -7,6 +7,7 @@ import 'package:spiffynode/spiffy_node.dart';
 import '../integration/sync_order.dart';
 import '../spv/block_header_chain.dart';
 import 'internal_messages.dart';
+import 'coordinator_messages.dart' show GetHeaderSyncStatusQuery;
 import 'wallet_messages.dart' show HeaderChainReorganizedMessage;
 
 // The header sync wiring messages moved to internal_messages.dart.
@@ -47,6 +48,18 @@ class HeaderSyncActor extends Actor {
   /// (bead libspiffy-3pyc).
   DateTime? _syncRequestedAt;
   final Duration _syncRequestTimeout;
+
+  /// Whether the last answer a peer gave held fewer headers than a full
+  /// batch, all of them accepted: the peer had nothing more. False until the
+  /// first answer.
+  bool _synced = false;
+
+  /// Most headers a peer sends in one answer to getheaders.
+  static const int _fullBatch = 2000;
+
+  /// The actor that announces header sync to the application
+  /// ([SetCoordinatorForHeadersMessage]); null until it registers.
+  ActorRef? _coordinator;
 
   // Consecutive batches whose first header had no known parent; each one
   // triggers a re-request with a full locator, up to this many times.
@@ -115,6 +128,11 @@ class HeaderSyncActor extends Actor {
         await _handleSpecificHeaderRequest(message);
       } else if (message is GetSPVStatusMessage) {
         await _handleGetSPVStatus(message);
+      } else if (message is SetCoordinatorForHeadersMessage) {
+        _coordinator = message.coordinator;
+        _report();
+      } else if (message is GetHeaderSyncStatusQuery) {
+        _report(queryId: message.queryId);
       } else {
         _logger.warning('HeaderSyncActor received unknown message: ${message.runtimeType}');
       }
@@ -136,22 +154,7 @@ class HeaderSyncActor extends Actor {
     
     _logger.info('HeaderSyncActor initialized successfully');
     _logger.info('Current chain state: height ${_headerChain.bestHeight}');
-    
-    // Notify SPVActor that header chain is ready
-    if (_spvActor != null) {
-      _spvActor.tell(SPVStatusMessage(
-        currentHeight: _headerChain.bestHeight,
-        networkHeight: _headerChain.bestHeight, // Assume synced initially
-        isSynced: true,
-        headersCached: _headerChain.cacheSize,
-        merkleProofsStored: 0, // Will be queried from storage when needed
-        lastHeaderUpdate: DateTime.now(),
-        connectedPeers: _spiffyNodeBridge?.getConnectedPeerIds() ?? [],
-        isHealthy: true,
-        statusMessage: 'Header chain initialized and ready for SPV validation',
-      ) as dynamic);
-    }
-    
+
     // NOTE: Do NOT trigger sync here - PeerManager is set after spawn
     // Sync will be triggered by initiateSyncAfterP2PSetup() call from system
   }
@@ -226,15 +229,21 @@ class HeaderSyncActor extends Actor {
     }
   }
 
-  /// Handle incoming block headers from SpiffyNode
+  /// Handle a batch of headers: a peer's answer to getheaders, or headers
+  /// a StoreHeadersCommand handed in ([BlockHeadersReceivedMessage.answersGetHeaders]).
   Future<void> _handleBlockHeadersReceived(BlockHeadersReceivedMessage msg) async {
     // preStart initializes the actor before its mailbox delivers anything,
     // so there is no pre-initialization queue (audit A-L2).
     _logger.info('Processing ${msg.headers.length} headers from peer ${msg.peerId} '
         '(sender says start height ${msg.startHeight})');
 
+    final fromPeer = msg.answersGetHeaders;
     var successCount = 0;
     var failureCount = 0;
+    var storedCount = 0;
+    int? firstStoredHeight;
+    int? lastStoredHeight;
+    String? firstRejection;
     var reorganized = false;
     int? forkHeight;
     final orphanedHashes = <String>{};
@@ -242,18 +251,25 @@ class HeaderSyncActor extends Actor {
     BlockHeader? lastStored;
 
     try {
-      for (var i = 0; i < msg.headers.length; i++) {
+      // The chain derives each height from the header's parent. The
+      // sender's startHeight is not trusted: after a reorg the peer sends
+      // from the fork point, which is below our tip. The batch is written
+      // in one storage transaction.
+      final results = await _headerChain.acceptHeaders(msg.headers);
+      for (var i = 0; i < results.length; i++) {
         final header = msg.headers[i];
-        // The chain derives the height from the header's parent. The
-        // sender's startHeight is not trusted: after a reorg the peer sends
-        // from the fork point, which is below our tip.
-        final result = await _headerChain.acceptHeader(header);
+        final result = results[i];
 
         if (result.accepted) {
           successCount++;
           lastStored = header;
           _lastProcessedHeight = result.height ?? _lastProcessedHeight;
-          _lastHeaderAt = DateTime.now();
+          if (!result.alreadyKnown) {
+            storedCount++;
+            firstStoredHeight ??= result.height;
+            lastStoredHeight = result.height;
+            _lastHeaderAt = DateTime.now();
+          }
           if (result.reorganized) {
             reorganized = true;
             _reorgsHandled++;
@@ -265,6 +281,7 @@ class HeaderSyncActor extends Actor {
           }
         } else {
           failureCount++;
+          firstRejection ??= '${result.reason?.name}: ${result.detail}';
           _logger.warning('Rejected header from ${msg.peerId}: ${result.reason} - ${result.detail}');
           if (i == 0 && result.reason == HeaderRejectReason.unknownParent) {
             firstParentUnknown = true;
@@ -272,41 +289,66 @@ class HeaderSyncActor extends Actor {
         }
       }
 
-      _headersProcessed += successCount;
+      _headersProcessed += storedCount;
 
       await _resolvePendingHeaderRequests();
 
-      _logger.info('Header processing complete: $successCount stored, $failureCount failed');
+      _logger.info('Header processing complete: $storedCount stored, '
+          '${successCount - storedCount} already known, $failureCount failed');
       _logger.info('Current height: $_lastProcessedHeight');
 
-      // Clear sync-in-progress flag BEFORE potentially triggering next batch
-      _syncRequestedAt = null;
+      if (fromPeer) {
+        // The answer ends the request in flight, before the next is sent.
+        _syncRequestedAt = null;
 
-      if (firstParentUnknown && successCount == 0) {
-        // The peer answered from a point we do not know (its branch forks
-        // below anything in our locator, or it ignored the locator). Ask
-        // again with a fresh locator; bounded so a misbehaving peer cannot
-        // keep us in a loop.
-        _unknownParentBatches++;
-        if (_unknownParentBatches <= _maxUnknownParentRetries) {
-          _logger.warning('Batch from ${msg.peerId} does not connect to any known header; '
-              're-requesting with a full block locator (attempt $_unknownParentBatches)');
-          _triggerHeaderSync();
-        } else {
-          _logger.severe('Giving up on unconnectable batches from ${msg.peerId} after '
-              '$_maxUnknownParentRetries attempts');
+        if (firstParentUnknown && successCount == 0) {
+          // The peer answered from a point we do not know (its branch forks
+          // below anything in our locator, or it ignored the locator). Ask
+          // again with a fresh locator; bounded so a misbehaving peer cannot
+          // keep us in a loop.
+          _unknownParentBatches++;
+          if (_unknownParentBatches <= _maxUnknownParentRetries) {
+            _logger.warning('Batch from ${msg.peerId} does not connect to any known header; '
+                're-requesting with a full block locator (attempt $_unknownParentBatches)');
+            _triggerHeaderSync();
+          } else {
+            _logger.severe('Giving up on unconnectable batches from ${msg.peerId} after '
+                '$_maxUnknownParentRetries attempts');
+          }
+        } else if (successCount > 0) {
+          _unknownParentBatches = 0;
         }
-      } else if (successCount > 0) {
-        _unknownParentBatches = 0;
+
+        if (msg.headers.length >= _fullBatch) {
+          _synced = false;
+          // A full batch: the peer has more. Ask for them when this batch
+          // moved the chain or ends at its tip. A full batch of headers we
+          // already had that ends below the tip is a late duplicate answer;
+          // the answer it duplicates already asked for the next batch, and
+          // asking again would have every later batch sent twice.
+          final tipHash = _headerChain.chainTip?.blockHash().toString();
+          final reachesTip = msg.headers.last.blockHash().toString() == tipHash;
+          if (failureCount == 0 && (storedCount > 0 || reachesTip)) {
+            _logger.info('📡 Received full batch ($_fullBatch headers), requesting more...');
+            _triggerHeaderSync();
+          }
+        } else if (failureCount == 0) {
+          if (!_synced) {
+            _logger.info('✅ Header sync caught up with its peer at height ${_headerChain.bestHeight}');
+          }
+          _synced = true;
+        }
       }
 
-      // Check if we received a full batch (2000 = protocol limit = more headers available)
-      if (successCount >= 2000) {
-        _logger.info('📡 Received full batch (2000 headers), requesting more...');
-        _triggerHeaderSync(); // Request next batch automatically
-      } else if (successCount > 0) {
-        _logger.info('✅ Sync complete: received ${successCount} headers (less than 2000)');
-      }
+      _report(batch: HeaderBatchOutcome(
+        fromPeer: fromPeer,
+        source: msg.peerId,
+        stored: storedCount,
+        firstHeight: firstStoredHeight ?? 0,
+        lastHeight: lastStoredHeight ?? 0,
+        rejected: failureCount,
+        firstRejection: firstRejection,
+      ));
 
       // A reorganization first: SPVActor takes back confirmations that rested
       // on the orphaned blocks before the header notification below makes
@@ -339,7 +381,7 @@ class HeaderSyncActor extends Actor {
       
     } catch (e) {
       _logger.severe('Error processing headers from ${msg.peerId}: $e');
-      _syncRequestedAt = null; // Clear flag on error
+      if (fromPeer) _syncRequestedAt = null; // Clear flag on error
       
       if (context.sender != null) {
         context.sender!.tell(SPVErrorMessage(
@@ -452,16 +494,18 @@ class HeaderSyncActor extends Actor {
     try {
       final status = SPVStatusMessage(
         currentHeight: _isInitialized ? _headerChain.bestHeight : 0,
-        networkHeight: _isInitialized ? _headerChain.bestHeight : 0, // Assume synced
-        isSynced: _isInitialized,
+        networkHeight: _isInitialized ? _networkHeight() : 0,
+        isSynced: _isInitialized && _synced,
         headersCached: _isInitialized ? _headerChain.cacheSize : 0,
         merkleProofsStored: 0, // Will be queried from storage when needed
         lastHeaderUpdate: _lastHeaderAt ?? DateTime.now(),
         connectedPeers: _spiffyNodeBridge?.getConnectedPeerIds() ?? [],
         isHealthy: _isInitialized,
-        statusMessage: _isInitialized 
-          ? 'Header sync active and ready'
-          : 'Header sync initializing',
+        statusMessage: !_isInitialized
+          ? 'Header sync initializing'
+          : _synced
+              ? 'Headers caught up with the peers'
+              : 'Headers not caught up with the peers yet',
       );
       
       context.sender?.tell(status as dynamic);
@@ -675,9 +719,39 @@ class HeaderSyncActor extends Actor {
     }
   }
 
+  /// The connected peers; none without a peer manager.
+  List<dynamic> _peers() {
+    try {
+      return _peerManager == null ? const [] : List<dynamic>.of(_peerManager.getPeers() as List);
+    } catch (e) {
+      _logger.warning('Could not list the peers: $e');
+      return const [];
+    }
+  }
+
+  int _networkHeight([List<dynamic>? peers]) =>
+      networkHeightOf(peers ?? _peers(), _headerChain.bestHeight);
+
+  /// Tells the coordinator where sync stands, after [batch] or in answer
+  /// to the query [queryId].
+  void _report({HeaderBatchOutcome? batch, String? queryId}) {
+    final coordinator = _coordinator;
+    if (coordinator == null) return;
+    final peers = _peers();
+    coordinator.tell(HeaderSyncReport(
+      height: _headerChain.bestHeight,
+      networkHeight: _networkHeight(peers),
+      synced: _synced,
+      peerCount: peers.length,
+      batch: batch,
+      queryId: queryId,
+    ));
+  }
+
   /// Get current header chain status
   Map<String, dynamic> get statistics => {
     'initialized': _isInitialized,
+    'synced': _synced,
     'currentHeight': _isInitialized ? _headerChain.bestHeight : 0,
     'headersProcessed': _headersProcessed,
     'reorgsHandled': _reorgsHandled,

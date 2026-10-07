@@ -501,7 +501,8 @@ abstract class ReadModelStorage {
   /// - [height]: Block height
   Future<void> storeBlockHeader(BlockHeader header, int height);
 
-  /// Bulk store block headers for fast initial sync (CDN import).
+  /// Bulk store block headers: a CDN import, or a run of headers a peer
+  /// sent (`BlockHeaderChain.acceptHeaders`).
   ///
   /// Same upsert semantics as [storeBlockHeader].
   ///

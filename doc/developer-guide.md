@@ -103,6 +103,27 @@ final coordinator = libspiffy.coordinator;
 final events = libspiffy.coordinatorEvents;
 ```
 
+### Ready Before the Headers Are
+
+The coordinator takes commands before the block headers are synced: creating or importing a wallet needs no chain, and a received payment whose block header has not arrived yet waits for it, then completes. From far behind (a first start with no header CDN) the sync from peers can take minutes. To show it, or to wait for it, ask where it stands and listen for the change:
+
+```dart
+events.listen((event) {
+  if (event is HeaderSyncStatusEvent) {
+    // event.status.synced: caught up with the peers, or fell behind them
+  }
+  if (event is BlockHeadersStoredEvent) {
+    // each batch stored: event.endHeight of event.source ('p2p' for peers)
+  }
+});
+
+coordinator.tell(GetHeaderSyncStatusQuery(queryId: 'sync-1'));
+// -> HeaderSyncStatusResponse(queryId: 'sync-1', status: HeaderSyncStatus(
+//      height, networkHeight, synced, peerCount))
+```
+
+`synced` turns true when a peer answers header sync with less than a full batch: it had nothing more. `networkHeight` is the best height the connected peers reported, for a progress bar; 0 while no peer has reported one. `peerCount` is 0 when P2P is off or every peer has dropped.
+
 ### What the Host Application Must Provide
 
 LibSpiffy handles Bitcoin mechanics. The host handles platform concerns:
@@ -663,6 +684,7 @@ Key points for coordinator users:
 | `AnchorSignedEvent` | In response to `SignWithAnchorKeyCommand` |
 | `Type42DestinationEvent` | In response to `DeriveType42DestinationCommand`: an address to pay and its hand-off |
 | `DeferredPaymentsResponse` | In response to `GetDeferredPaymentsQuery` |
+| `HeaderSyncStatusResponse` | In response to `GetHeaderSyncStatusQuery` |
 
 ### Transaction Events
 | Event | When Emitted |
@@ -701,7 +723,8 @@ Key points for coordinator users:
 | `UTXOSplitStartedEvent` | Benford split operation started |
 | `UTXOSplitCompleteEvent` | Benford split operation finished |
 | `TimestampCompleteEvent` | OP_RETURN timestamp archive committed on-chain |
-| `BlockHeadersStoredEvent` | Block headers stored |
+| `BlockHeadersStoredEvent` | A batch of block headers stored, from peers or a `StoreHeadersCommand` |
+| `HeaderSyncStatusEvent` | Header sync caught up with its peers, or fell behind them |
 | `WatchAddressRegisteredEvent` | Watch address registered |
 
 ### Error Events

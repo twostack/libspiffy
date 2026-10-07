@@ -232,6 +232,86 @@ class SetHeaderSyncActorMessage implements Message {
   DateTime get timestamp => DateTime.now();
 }
 
+/// Tells `HeaderSyncActor` which actor announces header sync to the
+/// application: it reports every batch it processes there as a
+/// [HeaderSyncReport]. Sent by `WalletCoordinatorActor.preStart`, as
+/// [SetCoordinatorForSPVMessage] is.
+class SetCoordinatorForHeadersMessage implements Message {
+  final ActorRef coordinator;
+
+  SetCoordinatorForHeadersMessage(this.coordinator);
+
+  @override
+  String get correlationId => 'set-coordinator-headers-${DateTime.now().millisecondsSinceEpoch}';
+  @override
+  Map<String, dynamic> get metadata => {'coordinatorRef': coordinator.toString()};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+/// What `HeaderSyncActor` tells the coordinator: where sync stands, and,
+/// after a batch, what the batch stored. Sent after every batch, and in
+/// answer to a `GetHeaderSyncStatusQuery` (then with its [queryId]).
+class HeaderSyncReport implements Message {
+  final int height;
+  final int networkHeight;
+  final bool synced;
+  final int peerCount;
+
+  /// The batch this report follows; null for a report that follows none.
+  final HeaderBatchOutcome? batch;
+
+  /// The `GetHeaderSyncStatusQuery` this report answers, if any.
+  final String? queryId;
+
+  HeaderSyncReport({
+    required this.height,
+    required this.networkHeight,
+    required this.synced,
+    required this.peerCount,
+    this.batch,
+    this.queryId,
+  });
+
+  @override
+  String get correlationId => queryId ?? 'header-sync-report-${DateTime.now().microsecondsSinceEpoch}';
+  @override
+  Map<String, dynamic> get metadata => {};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+/// What one batch of headers did to the chain.
+class HeaderBatchOutcome {
+  /// Whether a peer sent the batch in answer to header sync; otherwise a
+  /// `StoreHeadersCommand` did, and [source] is the command's source.
+  final bool fromPeer;
+  final String source;
+  final int stored;
+
+  /// Heights of the first and last header stored; 0 when none was.
+  final int firstHeight;
+  final int lastHeight;
+  final int rejected;
+
+  /// Why the first rejected header was rejected.
+  final String? firstRejection;
+
+  const HeaderBatchOutcome({
+    required this.fromPeer,
+    required this.source,
+    required this.stored,
+    required this.firstHeight,
+    required this.lastHeight,
+    required this.rejected,
+    this.firstRejection,
+  });
+}
+
 /// Message to set the SpiffyNode bridge reference after P2P initialization
 class SetSpiffyNodeBridgeMessage implements Message {
   final dynamic bridge;

@@ -5,7 +5,10 @@ import 'package:logging/logging.dart';
 import 'package:dactor/dactor.dart';
 import 'package:spiffynode/spiffy_node.dart';
 
+import 'package:libspiffy/src/actors/coordinator_messages.dart' show GetHeaderSyncStatusQuery;
 import 'package:libspiffy/src/actors/header_sync_actor.dart';
+import 'package:libspiffy/src/actors/internal_messages.dart'
+    show HeaderSyncReport, SetCoordinatorForHeadersMessage;
 import 'package:libspiffy/src/actors/spv_messages.dart';
 import 'package:libspiffy/src/actors/wallet_messages.dart' show HeaderChainReorganizedMessage;
 import 'package:libspiffy/src/spv/network_params.dart';
@@ -287,6 +290,134 @@ void main() {
         headerSyncActor.tell(InitiateHeaderSyncMessage());
         await Future.delayed(Duration(milliseconds: 100));
         expect(peer.getHeadersRequests, 2, reason: 'the unanswered request held off every later sync');
+      });
+    });
+
+    group('Sync status (bead libspiffy-ndfr)', () {
+      late _ReportProbe probe;
+      late ActorRef probeRef;
+
+      setUp(() async {
+        probe = _ReportProbe();
+        probeRef = await actorSystem.spawn('report-probe', () => probe);
+        headerSyncActor.tell(SetCoordinatorForHeadersMessage(probeRef));
+        await Future.delayed(Duration(milliseconds: 50));
+      });
+
+      tearDown(() async => actorSystem.stop(probeRef));
+
+      test('registering is answered with where sync stands: not synced before any answer', () async {
+        expect(probe.reports, hasLength(1));
+        final r = probe.reports.single;
+        expect(r.synced, isFalse);
+        expect(r.height, 0);
+        expect(r.batch, isNull);
+        expect(r.peerCount, 0);
+      });
+
+      test('a full batch is not caught up and asks for more; a short one is caught up', () async {
+        final headers = RegtestMiner.mineChain(genesis, 2500);
+        final sent = <MsgGetHeaders>[];
+        headerSyncActor.tell(SetPeerManagerMessage(_FakePeerManager(onGetHeaders: sent.add)));
+
+        headerSyncActor.tell(BlockHeadersReceivedMessage(
+            peerId: 'peer', headers: headers.take(2000).toList(), startHeight: 1));
+        await Future.delayed(Duration(milliseconds: 500));
+        expect(sent, hasLength(1), reason: 'the peer has more');
+        var r = probe.reports.last;
+        expect(r.synced, isFalse);
+        expect(r.height, 2000);
+        expect(r.batch!.fromPeer, isTrue);
+        expect(r.batch!.stored, 2000);
+        expect((r.batch!.firstHeight, r.batch!.lastHeight), (1, 2000));
+
+        headerSyncActor.tell(BlockHeadersReceivedMessage(
+            peerId: 'peer', headers: headers.skip(2000).toList(), startHeight: 2001));
+        await Future.delayed(Duration(milliseconds: 300));
+        expect(sent, hasLength(1), reason: 'nothing more to ask for');
+        r = probe.reports.last;
+        expect(r.synced, isTrue);
+        expect(r.height, 2500);
+        expect(r.batch!.stored, 500);
+
+        // A block later: one header, still caught up.
+        headerSyncActor.tell(BlockHeadersReceivedMessage(
+            peerId: 'peer', headers: [RegtestMiner.mine(parent: headers.last)], startHeight: 2501));
+        await Future.delayed(Duration(milliseconds: 100));
+        expect(probe.reports.last.synced, isTrue);
+        expect(probe.reports.last.height, 2501);
+      });
+
+      test('a late duplicate of a full batch does not ask for the next batch again', () async {
+        final headers = RegtestMiner.mineChain(genesis, 4000);
+        final sent = <MsgGetHeaders>[];
+        headerSyncActor.tell(SetPeerManagerMessage(_FakePeerManager(onGetHeaders: sent.add)));
+
+        final first = headers.take(2000).toList();
+        headerSyncActor.tell(BlockHeadersReceivedMessage(peerId: 'peer', headers: first, startHeight: 1));
+        headerSyncActor.tell(BlockHeadersReceivedMessage(
+            peerId: 'peer', headers: headers.skip(2000).toList(), startHeight: 2001));
+        await Future.delayed(Duration(milliseconds: 800));
+        expect(sent, hasLength(2));
+
+        // The first batch again, after the chain moved past it.
+        headerSyncActor.tell(BlockHeadersReceivedMessage(peerId: 'peer', headers: first, startHeight: 1));
+        await Future.delayed(Duration(milliseconds: 300));
+        expect(sent, hasLength(2), reason: 'the batch it duplicates already asked for the next');
+        expect(probe.reports.last.batch!.stored, 0);
+      });
+
+      test('a full batch of known headers ending at the tip asks for more', () async {
+        final headers = RegtestMiner.mineChain(genesis, 2000);
+        await headerChain.acceptHeaders(headers);
+        final sent = <MsgGetHeaders>[];
+        headerSyncActor.tell(SetPeerManagerMessage(_FakePeerManager(onGetHeaders: sent.add)));
+
+        headerSyncActor.tell(BlockHeadersReceivedMessage(peerId: 'peer', headers: headers, startHeight: 1));
+        await Future.delayed(Duration(milliseconds: 300));
+        expect(sent, hasLength(1));
+      });
+
+      test('headers from a StoreHeadersCommand neither end the request in flight nor decide sync',
+          () async {
+        final headers = RegtestMiner.mineChain(genesis, 5);
+        final peer = _FakePeerManager(onGetHeaders: (_) {});
+        headerSyncActor.tell(SetPeerManagerMessage(peer));
+        headerSyncActor.tell(InitiateHeaderSyncMessage());
+        await Future.delayed(Duration(milliseconds: 100));
+        expect(peer.getHeadersRequests, 1);
+
+        headerSyncActor.tell(BlockHeadersReceivedMessage(
+            peerId: 'app', headers: headers, startHeight: 1, answersGetHeaders: false));
+        headerSyncActor.tell(InitiateHeaderSyncMessage());
+        await Future.delayed(Duration(milliseconds: 200));
+
+        expect(headerChain.bestHeight, 5);
+        expect(peer.getHeadersRequests, 1, reason: 'still waiting for the peer');
+        final r = probe.reports.last;
+        expect(r.synced, isFalse);
+        expect(r.batch!.fromPeer, isFalse);
+        expect(r.batch!.source, 'app');
+        expect(r.batch!.stored, 5);
+      });
+
+      test('a status query is answered with its id', () async {
+        headerSyncActor.tell(GetHeaderSyncStatusQuery(queryId: 'q1'));
+        await Future.delayed(Duration(milliseconds: 100));
+        expect(probe.reports.last.queryId, 'q1');
+        expect(probe.reports.last.batch, isNull);
+      });
+
+      test('GetSPVStatusMessage says synced only once a peer has said so', () async {
+        final replies = _ReportProbe();
+        final repliesRef = await actorSystem.spawn('spv-status-probe', () => replies);
+        headerSyncActor.tell(GetSPVStatusMessage(replyTo: repliesRef), sender: repliesRef);
+        headerSyncActor.tell(BlockHeadersReceivedMessage(peerId: 'peer', headers: const [], startHeight: 0));
+        headerSyncActor.tell(GetSPVStatusMessage(replyTo: repliesRef), sender: repliesRef);
+        await Future.delayed(Duration(milliseconds: 200));
+        final statuses = replies.other.whereType<SPVStatusMessage>().toList();
+        expect(statuses.map((s) => s.isSynced), [false, true]);
+        await actorSystem.stop(repliesRef);
       });
     });
 
@@ -592,6 +723,21 @@ void main() {
       });
     });
   });
+}
+
+/// Stands in for the coordinator: keeps what header sync reports.
+class _ReportProbe extends Actor {
+  final List<HeaderSyncReport> reports = [];
+  final List<dynamic> other = [];
+
+  @override
+  Future<void> onMessage(dynamic message) async {
+    if (message is HeaderSyncReport) {
+      reports.add(message);
+    } else {
+      other.add(message);
+    }
+  }
 }
 
 /// Mock SPV Actor for testing communication

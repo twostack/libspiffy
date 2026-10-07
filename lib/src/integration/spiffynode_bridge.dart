@@ -5,6 +5,7 @@ import 'package:logging/logging.dart';
 import 'package:spiffynode/spiffy_node.dart';
 
 import '../actors/spv_messages.dart';
+import 'sync_order.dart';
 
 /// Integration bridge between SpiffyNode and LibSpiffy
 /// 
@@ -176,15 +177,7 @@ class SpiffyNodeBridge {
   /// real tip and the chain never looks caught up. Blocks mined after a
   /// peer connected are announced and fetched, so our own chain passes this
   /// height; [LibSpiffyActorSystem.networkHeight] takes the higher of the two.
-  int get currentHeight {
-    var best = 0;
-    for (final peer in _peerManager.getPeers()) {
-      if (peer is! Peer) continue;
-      final height = peer.remoteVersion?.startHeight ?? 0;
-      if (height > best) best = height;
-    }
-    return best;
-  }
+  int get currentHeight => networkHeightOf(_peerManager.getPeers(), 0);
   
   /// Get the ActorRef to HeaderSyncActor for querying stats
   ActorRef get headerSyncActor => _headerSyncActor;

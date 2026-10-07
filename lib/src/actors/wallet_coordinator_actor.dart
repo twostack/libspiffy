@@ -30,6 +30,8 @@ import '../utils/beef.dart';
 import 'aggregate_signing_client.dart';
 import 'channel_p2p_adapter.dart';
 import 'coordinator_messages.dart';
+import 'internal_messages.dart' show HeaderSyncReport, SetCoordinatorForHeadersMessage;
+import 'spv_messages.dart' show BlockHeadersReceivedMessage;
 import 'projection_barrier.dart';
 import 'proof_p2p_adapter.dart';
 import 'invoice_messages.dart' as inv;
@@ -66,6 +68,14 @@ class WalletCoordinatorActor extends Actor {
   final ActorRef _spvActor;
   final ActorRef _arcActor;
   final ActorRef _walletProjection;
+
+  /// Header sync: takes [StoreHeadersCommand]'s headers and
+  /// [GetHeaderSyncStatusQuery], and reports every batch it processes
+  /// ([HeaderSyncReport]).
+  final ActorRef _headerSyncActor;
+
+  /// Where header sync stood at its last report; null before the first.
+  HeaderSyncStatus? _headerSyncStatus;
 
   /// The Benford coordinator, which tells this actor when a UTXO split
   /// starts so it can announce [UTXOSplitStartedEvent] (bead libspiffy-7ye4).
@@ -380,9 +390,6 @@ class WalletCoordinatorActor extends Actor {
     required ActorRef paymentCoordinator,
     required ActorRef spvActor,
     required ActorRef arcActor,
-    @Deprecated('Unused: the coordinator never sends the header-sync actor a '
-        'message. Kept so existing callers still compile; will be removed in '
-        'a future release.')
     required ActorRef headerSyncActor,
     /// The Benford coordinator. Split commands are still driven through
     /// WalletManager; this actor registers with it so that a split's start
@@ -438,6 +445,7 @@ class WalletCoordinatorActor extends Actor {
         _paymentCoordinator = paymentCoordinator,
         _spvActor = spvActor,
         _arcActor = arcActor,
+        _headerSyncActor = headerSyncActor,
         _walletProjection = walletProjection,
         _benfordCoordinator = benfordCoordinator,
         _storage = storage,
@@ -508,6 +516,10 @@ class WalletCoordinatorActor extends Actor {
     // not sent as a reply to the split command, because a caller that used
     // `ask` would have its ask resolved by it.
     _benfordCoordinator.tell(wm.SetCoordinatorForSplitsMessage(context.self));
+    // The actor system is ready before its headers are synced; registering
+    // is what lets the application hear each batch stored and when the
+    // chain catches up with its peers.
+    _headerSyncActor.tell(SetCoordinatorForHeadersMessage(context.self));
     // Outstanding deferred payments whose deadline has passed are reclaimed
     // by this actor itself (bead libspiffy-8442). Off the mailbox: the sweep
     // reads the read model and asks ARC, and must not delay commands.
@@ -661,7 +673,11 @@ class WalletCoordinatorActor extends Actor {
       } else if (message is ImportTransactionCommand) {
         await _handleImportTransaction(message);
       } else if (message is StoreHeadersCommand) {
-        await _handleStoreHeaders(message);
+        _handleStoreHeaders(message);
+      } else if (message is GetHeaderSyncStatusQuery) {
+        _headerSyncActor.tell(message);
+      } else if (message is HeaderSyncReport) {
+        _handleHeaderSyncReport(message);
       } else if (message is GenerateAddressCommand) {
         unawaited(_handleGenerateAddress(message));
       } else if (message is RegisterWatchAddressCommand) {
@@ -1538,48 +1554,72 @@ class WalletCoordinatorActor extends Actor {
     }
   }
 
-  Future<void> _handleStoreHeaders(StoreHeadersCommand cmd) async {
+  /// Hands the headers to header sync, which validates them into the chain
+  /// like a peer's; its report of the batch answers the command.
+  void _handleStoreHeaders(StoreHeadersCommand cmd) {
+    final List<BlockHeader> headers;
     try {
-      int startHeight = 0;
-      int endHeight = 0;
-      int stored = 0;
-
-      for (final headerData in cmd.headers) {
-        final height = headerData['height'] as int;
-        if (stored == 0) startHeight = height;
-        endHeight = height;
-
-        final prevBlockHashStr = headerData['prevBlockHash'] as String;
-        final merkleRootStr = headerData['merkleRoot'] as String;
-        final timestampInt = headerData['timestamp'] as int;
-
-        final header = BlockHeader(
-          version: headerData['version'] as int,
-          prevBlock: Hash.fromBytes(Uint8List.fromList(hex.decode(prevBlockHashStr))),
-          merkleRoot: Hash.fromBytes(Uint8List.fromList(hex.decode(merkleRootStr))),
-          timestamp: DateTime.fromMillisecondsSinceEpoch(timestampInt * 1000),
-          bits: headerData['bits'] as int,
-          nonce: headerData['nonce'] as int,
-        );
-
-        await _storage.storeBlockHeader(header, height);
-        stored++;
-      }
-
-      _emitEvent(BlockHeadersStoredEvent(
-        headersStored: stored,
-        startHeight: startHeight,
-        endHeight: endHeight,
-        success: true,
-      ));
+      headers = [
+        for (final headerData in cmd.headers)
+          BlockHeader(
+            version: headerData['version'] as int,
+            prevBlock: Hash.fromBytes(Uint8List.fromList(hex.decode(headerData['prevBlockHash'] as String))),
+            merkleRoot: Hash.fromBytes(Uint8List.fromList(hex.decode(headerData['merkleRoot'] as String))),
+            timestamp: DateTime.fromMillisecondsSinceEpoch((headerData['timestamp'] as int) * 1000),
+            bits: headerData['bits'] as int,
+            nonce: headerData['nonce'] as int,
+          ),
+      ];
     } catch (e) {
       _emitEvent(BlockHeadersStoredEvent(
         headersStored: 0,
         startHeight: 0,
         endHeight: 0,
         success: false,
-        error: e.toString(),
+        error: 'malformed header: $e',
+        source: cmd.source,
       ));
+      return;
+    }
+    _headerSyncActor.tell(BlockHeadersReceivedMessage(
+      peerId: cmd.source,
+      headers: headers,
+      startHeight: cmd.headers.isEmpty ? 0 : cmd.headers.first['height'] as int? ?? 0,
+      answersGetHeaders: false,
+    ));
+  }
+
+  /// Announces what header sync reported: the batch it stored
+  /// ([BlockHeadersStoredEvent]; every StoreHeadersCommand is answered, a
+  /// peer's batch when it stored or rejected something), a change in
+  /// whether the chain has caught up ([HeaderSyncStatusEvent]), and the
+  /// answer to a [GetHeaderSyncStatusQuery].
+  void _handleHeaderSyncReport(HeaderSyncReport report) {
+    final status = HeaderSyncStatus(
+      height: report.height,
+      networkHeight: report.networkHeight,
+      synced: report.synced,
+      peerCount: report.peerCount,
+    );
+    final batch = report.batch;
+    if (batch != null && (!batch.fromPeer || batch.stored > 0 || batch.rejected > 0)) {
+      _emitEvent(BlockHeadersStoredEvent(
+        headersStored: batch.stored,
+        startHeight: batch.firstHeight,
+        endHeight: batch.lastHeight,
+        success: batch.rejected == 0,
+        error: batch.firstRejection,
+        source: batch.fromPeer ? BlockHeadersStoredEvent.peerSource : batch.source,
+      ));
+    }
+    final previous = _headerSyncStatus;
+    _headerSyncStatus = status;
+    if (previous != null && previous.synced != status.synced) {
+      _emitEvent(HeaderSyncStatusEvent(status: status));
+    }
+    final queryId = report.queryId;
+    if (queryId != null) {
+      _emitEvent(HeaderSyncStatusResponse(queryId: queryId, status: status));
     }
   }
 

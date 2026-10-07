@@ -641,7 +641,13 @@ class DeriveType42DestinationCommand implements Message {
   DateTime get timestamp => DateTime.now();
 }
 
-/// Store block headers for SPV validation
+/// Store block headers for SPV validation.
+///
+/// The headers go through the header chain like headers from a peer:
+/// validated, placed by their parents, and the tip moved by chainwork. A
+/// header's `height` is informational; the chain derives it from the
+/// parent. Answered with [BlockHeadersStoredEvent] (its `source` is
+/// [source]).
 class StoreHeadersCommand implements Message {
   final List<Map<String, dynamic>> headers;
   final String source;
@@ -2402,24 +2408,36 @@ class Type42DestinationEvent extends CoordinatorEvent {
   DateTime get eventTimestamp => DateTime.now();
 }
 
-/// Block headers stored
 /// Block headers were stored: how many, and the heights they span.
 ///
-/// This is how an application follows the header chain. There was a second,
-/// emptier way — a `HeaderSyncProgressEvent` that nothing in the library ever
-/// constructed — and it is gone (bead libspiffy-7ye4). The initial CDN
+/// This is how an application follows the header chain. The initial CDN
 /// download reports its own progress through
 /// `LibSpiffyActorSystem.initialize(onHeaderSyncProgress:)`, which gives the
 /// headers downloaded, the total, and the phase; every batch of headers
-/// stored after that is this event.
+/// stored after that — a peer's answer to header sync, or a
+/// [StoreHeadersCommand] — is this event. Whether the chain has caught up
+/// with its peers is [HeaderSyncStatusEvent].
+///
+/// A batch whose headers were all known already stores nothing and is not
+/// announced. [success] is false when a header of the batch was rejected;
+/// [error] says why the first one was.
 class BlockHeadersStoredEvent extends CoordinatorEvent {
   @override
   String? get walletId => null;
   final int headersStored;
+
+  /// Height of the first and the last header stored; 0 when none was.
   final int startHeight;
   final int endHeight;
   final bool success;
   final String? error;
+
+  /// Where the headers came from: [peerSource] for header sync from peers,
+  /// otherwise the [StoreHeadersCommand]'s `source`.
+  final String source;
+
+  /// [source] of headers a peer sent.
+  static const peerSource = 'p2p';
 
   BlockHeadersStoredEvent({
     required this.headersStored,
@@ -2427,7 +2445,101 @@ class BlockHeadersStoredEvent extends CoordinatorEvent {
     required this.endHeight,
     required this.success,
     this.error,
+    this.source = peerSource,
   });
+
+  @override
+  DateTime get eventTimestamp => DateTime.now();
+}
+
+/// Where header sync stands: the chain's height, the height its peers
+/// reported, and whether it has caught up with them.
+///
+/// The actor system is ready before its headers are: wallets can be
+/// created and payments made at once, and a payment whose block header has
+/// not arrived yet waits for it. [synced] is how an application tells when
+/// that wait is over for the chain as a whole (bead libspiffy-ndfr).
+class HeaderSyncStatus {
+  /// Height of the active chain's tip.
+  final int height;
+
+  /// The higher of [height] and the heights the connected peers reported
+  /// in their version handshake, as `LibSpiffyActorSystem.networkHeight`;
+  /// 0 while no peer reported one. A peer's handshake height is from when it
+  /// connected, so this is for showing progress; [synced] is the verdict.
+  final int networkHeight;
+
+  /// Whether the last answer a peer gave header sync held fewer headers
+  /// than a full batch (2,000): the peer had nothing more after them.
+  /// False until the first answer, and while a sync from far behind is
+  /// still receiving full batches.
+  final bool synced;
+
+  /// Peers connected now. With none, nothing syncs: P2P is disabled, or
+  /// every peer has dropped and the system is dialling again.
+  final int peerCount;
+
+  const HeaderSyncStatus({
+    required this.height,
+    required this.networkHeight,
+    required this.synced,
+    required this.peerCount,
+  });
+
+  @override
+  bool operator ==(Object other) =>
+      other is HeaderSyncStatus &&
+      other.height == height &&
+      other.networkHeight == networkHeight &&
+      other.synced == synced &&
+      other.peerCount == peerCount;
+
+  @override
+  int get hashCode => Object.hash(height, networkHeight, synced, peerCount);
+
+  @override
+  String toString() => 'HeaderSyncStatus(height: $height/$networkHeight, '
+      'synced: $synced, peers: $peerCount)';
+}
+
+/// Asks where header sync stands; answered with [HeaderSyncStatusResponse].
+class GetHeaderSyncStatusQuery implements Message {
+  final String queryId;
+
+  GetHeaderSyncStatusQuery({required this.queryId});
+
+  @override
+  String get correlationId => queryId;
+  @override
+  Map<String, dynamic> get metadata => {};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+/// Answer to [GetHeaderSyncStatusQuery].
+class HeaderSyncStatusResponse extends CoordinatorEvent {
+  @override
+  String? get walletId => null;
+  final String queryId;
+  final HeaderSyncStatus status;
+
+  HeaderSyncStatusResponse({required this.queryId, required this.status});
+
+  @override
+  DateTime get eventTimestamp => DateTime.now();
+}
+
+/// Header sync caught up with its peers, or fell behind them: emitted when
+/// [HeaderSyncStatus.synced] changes. Each batch of headers stored on the
+/// way is a [BlockHeadersStoredEvent].
+class HeaderSyncStatusEvent extends CoordinatorEvent {
+  @override
+  String? get walletId => null;
+  final HeaderSyncStatus status;
+
+  HeaderSyncStatusEvent({required this.status});
 
   @override
   DateTime get eventTimestamp => DateTime.now();

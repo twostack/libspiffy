@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'package:logging/logging.dart';
 import 'package:spiffynode/spiffy_node.dart';
 
@@ -156,9 +157,10 @@ class BlockHeaderChain {
   final BlockHeaderAnchor anchor;
   final DateTime Function() _clock;
 
-  // In-memory cache of recent active-chain headers.
+  // In-memory cache of recent active-chain headers. Heights are ordered so
+  // the lowest is evicted without sorting the cache (bead libspiffy-j1yc).
   final Map<String, BlockHeader> _headerCache = {};
-  final Map<int, String> _heightToHash = {};
+  final SplayTreeMap<int, String> _heightToHash = SplayTreeMap();
   final Map<String, int> _hashToHeight = {};
 
   // Headers off the active chain, keyed by hash.
@@ -171,6 +173,11 @@ class BlockHeaderChain {
   // Memoised work of the active chain above a fork height; cleared when
   // the tip changes.
   final Map<int, BigInt> _activeWorkAboveFork = {};
+
+  /// Active-chain headers [acceptHeaders] has accepted and not yet written,
+  /// oldest first; null outside [acceptHeaders]. They are cached (and kept
+  /// in the cache until written), so the chain reads them like stored ones.
+  List<(BlockHeader, int)>? _unwritten;
 
   static const int _maxCacheSize = 2016;
   static const int _maxSideHeaders = 200000;
@@ -266,6 +273,82 @@ class BlockHeaderChain {
   Future<bool> validateAndStoreHeader(BlockHeader header, int height) async {
     final result = await acceptHeader(header, expectedHeight: height);
     return result.accepted;
+  }
+
+  /// [acceptHeader] for each of [headers] in order, writing the run of
+  /// headers that extend the tip in one storage transaction rather than one
+  /// each. A getheaders reply holds up to 2,000 headers, and a transaction
+  /// per header made P2P sync about 2 ms a header (bead libspiffy-mii4).
+  ///
+  /// A header that does not extend the tip (a side branch, a reorganization,
+  /// a header already known) is accepted after the run before it is written,
+  /// so the chain decides it on what storage holds. When writing a run fails,
+  /// none of it stays: the tip returns to where the run began, the run's
+  /// results become [HeaderRejectReason.storage] rejections, and so do the
+  /// headers after it.
+  Future<List<HeaderAcceptResult>> acceptHeaders(List<BlockHeader> headers) async {
+    if (_unwritten != null) {
+      throw StateError('acceptHeaders is already running on this chain');
+    }
+    final unwritten = _unwritten = [];
+    final results = <HeaderAcceptResult>[];
+    // Where the unwritten run starts: its first result and the tip before it.
+    var runFrom = 0;
+    var tipBefore = _chainTip;
+    var heightBefore = _bestHeight;
+
+    Future<bool> write() async {
+      if (unwritten.isEmpty) return true;
+      try {
+        await _storage.storeBlockHeadersBulk(List.of(unwritten));
+        return true;
+      } catch (e) {
+        _logger.severe('Could not write ${unwritten.length} header(s) from height '
+            '${unwritten.first.$2}: $e; the tip stays at height $heightBefore');
+        for (final (header, height) in unwritten) {
+          _uncacheActive(header.blockHash().toString(), height);
+        }
+        _chainTip = tipBefore;
+        _bestHeight = heightBefore;
+        _activeWorkAboveFork.clear();
+        for (var i = runFrom; i < results.length; i++) {
+          final r = results[i];
+          if (r.accepted && !r.alreadyKnown) {
+            results[i] = HeaderAcceptResult.rejected(HeaderRejectReason.storage, '$e', height: r.height);
+          }
+        }
+        return false;
+      } finally {
+        unwritten.clear();
+      }
+    }
+
+    try {
+      for (var i = 0; i < headers.length; i++) {
+        final header = headers[i];
+        final tip = _chainTip;
+        final extendsTip = tip != null && header.prevBlock.toString() == tip.blockHash().toString();
+        if (!extendsTip && !await write()) {
+          results.addAll([
+            for (var j = i; j < headers.length; j++)
+              HeaderAcceptResult.rejected(HeaderRejectReason.storage,
+                  'not accepted: writing the headers before it failed'),
+          ]);
+          return results;
+        }
+        if (unwritten.isEmpty) {
+          runFrom = results.length;
+          tipBefore = _chainTip;
+          heightBefore = _bestHeight;
+        }
+        results.add(await acceptHeader(header));
+      }
+      await write();
+      return results;
+    } finally {
+      _unwritten = null;
+      _maintainCacheSize();
+    }
   }
 
   /// Validate [header], place it on the branch its parent belongs to, and
@@ -596,9 +679,15 @@ class BlockHeaderChain {
     return orphaned;
   }
 
-  /// Store [header] as the active tip at [height].
+  /// Store [header] as the active tip at [height]; inside [acceptHeaders]
+  /// it is written with the rest of its run.
   Future<void> _storeActive(BlockHeader header, int height) async {
-    await _storage.storeBlockHeader(header, height);
+    final unwritten = _unwritten;
+    if (unwritten != null) {
+      unwritten.add((header, height));
+    } else {
+      await _storage.storeBlockHeader(header, height);
+    }
     _cacheActive(header, height);
     if (_chainTip == null || height >= _bestHeight) {
       _bestHeight = height;
@@ -815,13 +904,13 @@ class BlockHeaderChain {
   }
 
   /// Keep the active-header cache bounded (evicts the lowest heights).
+  /// Not inside [acceptHeaders]: an unwritten header is read from the cache
+  /// alone.
   void _maintainCacheSize() {
-    if (_headerCache.length <= _maxCacheSize) return;
-    final heights = _heightToHash.keys.toList()..sort();
-    final excess = _headerCache.length - _maxCacheSize;
-    for (final h in heights.take(excess)) {
-      final hash = _heightToHash[h];
-      if (hash != null) _uncacheActive(hash, h);
+    if (_unwritten != null) return;
+    while (_heightToHash.length > _maxCacheSize) {
+      final lowest = _heightToHash.firstKey()!;
+      _uncacheActive(_heightToHash[lowest]!, lowest);
     }
     // Cached headers without a height mapping (loaded by hash) go too.
     if (_headerCache.length > _maxCacheSize) {

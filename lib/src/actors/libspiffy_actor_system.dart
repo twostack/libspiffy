@@ -28,6 +28,7 @@ import '../spv/cdn_header_sync_config.dart';
 import '../spv/cdn_header_sync_service.dart';
 import '../integration/peer_addresses.dart';
 import '../integration/spiffynode_bridge.dart';
+import '../integration/sync_order.dart';
 import '../projections/wallet_projection.dart';
 import '../projections/invoice_projection.dart';
 import '../projections/channel_projection.dart';
@@ -1220,10 +1221,8 @@ class LibSpiffyActorSystem {
   /// connected, so a caller can tell "unknown" from "caught up".
   int get networkHeight {
     if (!isInitialized) return 0;
-    final reported = _spiffyNodeBridge?.currentHeight ?? 0;
-    if (reported == 0) return 0;
-    final local = _headerChain.bestHeight;
-    return reported > local ? reported : local;
+    final peerManager = _peerManager;
+    return peerManager == null ? 0 : networkHeightOf(peerManager.getPeers(), _headerChain.bestHeight);
   }
 
   BlockHeaderChain get headerChain {
@@ -1307,6 +1306,7 @@ class LibSpiffyActorSystem {
         'blockHeight': 0,
         'headerCount': 0,
         'isInitialized': false,
+        'synced': false,
       };
     }
     
@@ -1315,6 +1315,7 @@ class LibSpiffyActorSystem {
       'blockHeight': stats['currentHeight'] ?? 0,
       'headerCount': stats['headersProcessed'] ?? 0,
       'isInitialized': stats['initialized'] ?? false,
+      'synced': stats['synced'] ?? false,
       'lastHeaderAt': stats['lastHeaderAt'],
     };
   }

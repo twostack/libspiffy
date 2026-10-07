@@ -16,6 +16,12 @@ class BlockHeadersReceivedMessage implements SPVMessage, Message {
   final List<BlockHeader> headers;
   final int startHeight;
   final bool isReorganization;
+
+  /// Whether a peer sent these headers in answer to header sync's
+  /// getheaders. Only such an answer ends the request in flight and says
+  /// whether the peer has more; headers from a `StoreHeadersCommand` do
+  /// neither.
+  final bool answersGetHeaders;
   final DateTime receivedAt;
   final String _correlationId;
   final ActorRef? _replyTo;
@@ -26,6 +32,7 @@ class BlockHeadersReceivedMessage implements SPVMessage, Message {
     required List<BlockHeader> headers,
     required this.startHeight,
     this.isReorganization = false,
+    this.answersGetHeaders = true,
     DateTime? receivedAt,
     String? correlationId,
     ActorRef? replyTo,

@@ -189,7 +189,7 @@ depends on Isar too:
 
 ```yaml
 dependencies:
-  libspiffy: ^4.1.0
+  libspiffy: ^4.2.0
   isar_community: ^3.3.2
   isar_community_flutter_libs: ^3.3.2 # Flutter apps only
 
@@ -1184,10 +1184,25 @@ final height = libspiffy.headerChain.bestHeight;
 final tip = libspiffy.headerChain.chainTip;
 final header = await libspiffy.headerChain.getHeaderByHeight(850000);
 
-// The network's tip as best we know it: the higher of what connected peers
-// reported and the stored chain; 0 while no peer is connected
-final synced = libspiffy.networkHeight > 0 && height >= libspiffy.networkHeight;
 ```
+
+The system takes commands before its headers are synced; a payment whose
+block header has not arrived yet waits for it. Whether the chain has caught
+up with its peers comes from the coordinator:
+
+```dart
+libspiffy.coordinatorEvents!.listen((event) {
+  if (event is HeaderSyncStatusEvent) {
+    final status = event.status; // height, networkHeight, synced, peerCount
+  }
+});
+libspiffy.coordinator.tell(GetHeaderSyncStatusQuery(queryId: 'sync-1'));
+// -> HeaderSyncStatusResponse(queryId: 'sync-1', status: ...)
+```
+
+`synced` turns true when a peer answers with less than a full batch of
+headers: it had nothing more. Every batch stored is a
+`BlockHeadersStoredEvent`.
 
 ### 10. Plugin System
 

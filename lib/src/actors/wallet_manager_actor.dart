@@ -644,6 +644,10 @@ class WalletManagerActor extends Actor {
         utxoKey: utxoKey,
         spendingTxId: result.txid,
         fee: fee,
+        // The spender's own proof verified against our headers: the spend
+        // is mined, and stands over a reservation for another transaction
+        // (bead libspiffy-bapp). Without one it does not.
+        blockHeight: hasMerkleProof ? blockHeight : null,
       );
       
       walletActor.tell(command);

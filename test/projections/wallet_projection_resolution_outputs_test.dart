@@ -200,6 +200,66 @@ void main() {
         reason: "the payment's own change is still on the way: its copy is the one on the network");
   });
 
+  /// The reclaim of [handedOver]'s payment: the self-spend takes over the
+  /// hold and names the payment it reclaims in its purpose.
+  void reclaim(_Journal j) {
+    j.add((v, at) => TransactionRecordedEvent(
+        walletId: _w, txid: _reclaimTxid, rawHex: '00', totalInputSats: 20000, totalOutputSats: 19900,
+        fee: 100, numInputs: 1, numOutputs: 1, txVersion: 1, txLockTime: 0, spentUtxoKeys: [_input],
+        recipientAddresses: const ['mroot'], paymentAmount: '19900', version: v, timestamp: at));
+    j.add((v, at) => TransactionSpendDeferredEvent(
+        walletId: _w, txid: _reclaimTxid,
+        heldInputs: [
+          {'utxoKey': _input, 'satoshis': '20000'},
+        ],
+        recipientAddresses: const ['mroot'], paymentAmount: '19900', fee: 100,
+        purpose: DeferredPaymentPurpose.reclaimOf(_txid), supersedes: _txid, recordedAt: at,
+        version: v, timestamp: at));
+    j.add((v, at) => DeferredSpendReclaimedEvent(
+        walletId: _w, txid: _txid, reclaimTxid: _reclaimTxid, reclaimedUtxoKeys: [_input],
+        reason: 'withdrawn', version: v, timestamp: at));
+  }
+
+  test('bapp: a reclaim the network rejects hands its hold back to the payment, which is outstanding again',
+      () async {
+    final j = handedOver();
+    reclaim(j);
+    await project(j.events);
+    expect((await utxos())[_input]!.reservedByTxId, _reclaimTxid);
+
+    j.add((v, at) => DeferredTransactionFailedEvent(
+        walletId: _w, txid: _reclaimTxid, networkStatus: 'REJECTED', reason: 'txn-mempool-conflict',
+        releasedInputs: [ReleasedDeferredInput(utxoKey: _input, restoredStatus: UTXOStatus.available)],
+        version: v, timestamp: at));
+    await project(j.events.sublist(j.events.length - 1));
+
+    expect((await storage.getDeferredPayment(_w, _reclaimTxid))!.state, DeferredPaymentState.failed);
+    expect((await storage.getDeferredPayment(_w, _txid))!.state, DeferredPaymentState.outstanding);
+    final input = (await utxos())[_input]!;
+    expect((input.status, input.reservedByTxId), (UTXOStatus.reserved, _txid),
+        reason: 'held by the payment again, not released: the payment may still settle');
+  });
+
+  test('bapp: a reclaim that lost its race to a completion fails; the payment stays outstanding, its coin spent '
+      'by the completion', () async {
+    final j = handedOver();
+    reclaim(j);
+    await project(j.events);
+
+    final completion = 'ff' * 32;
+    j.add((v, at) => UTXOSpentEvent(
+        walletId: _w, txid: 'a1' * 32, vout: 0, spentInTxId: completion, version: v, timestamp: at));
+    await project(j.events.sublist(j.events.length - 1));
+
+    final selfSpend = (await storage.getDeferredPayment(_w, _reclaimTxid))!;
+    expect(selfSpend.state, DeferredPaymentState.failed);
+    expect(selfSpend.resolutionReason, contains(completion));
+    expect((await storage.getDeferredPayment(_w, _txid))!.state, DeferredPaymentState.outstanding,
+        reason: 'the completion is not the payment: the host completes the half with it');
+    final input = (await utxos())[_input]!;
+    expect((input.status, input.spentInTxId), (UTXOStatus.spent, completion));
+  });
+
   test('wfvi: an ordinary deferred payment whose input another transaction spends stays outstanding',
       () async {
     final j = handedOver();

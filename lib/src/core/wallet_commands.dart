@@ -904,7 +904,13 @@ class SpendUTXOCommand extends WalletCommand {
   final String utxoKey; // Format: "txid:vout"
   final String spendingTxId;
   final BigInt fee; // Fee portion allocated to this input
-  final int? blockHeight; // Block height when spending was confirmed
+
+  /// The block a merkle proof that verified against the local headers puts
+  /// [spendingTxId] in; null while the spender is unproven. Set only by a
+  /// sender that checked the proof, as for [ReceiveUTXOCommand.blockHeight].
+  /// A proven spend is recorded even over a reservation for another
+  /// transaction; an unproven one is not (bead libspiffy-bapp).
+  final int? blockHeight;
 
   SpendUTXOCommand({
     required String walletId,

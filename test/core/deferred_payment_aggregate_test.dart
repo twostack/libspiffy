@@ -248,8 +248,15 @@ void main() {
       expect(wallet.utxo(_input).status, UTXOStatus.spent);
       expect(wallet.deferred(txid)['state'], 'seen');
       expect((wallet.aggregate.currentState.metadata['deferredHolds'] as Map), isEmpty);
-      expect(() => wallet.handle(SpendUTXOCommand(walletId: _w, utxoKey: _input, spendingTxId: txid, fee: BigInt.zero)),
-          throwsA(isA<StateError>()), reason: 'spent once');
+      // Spent once. The same spend reported again (a redelivered BEEF, the
+      // next status scan) is nothing new; a spend by another transaction
+      // is a double spend, which contradicts the record and is refused.
+      expect(await wallet.handle(SpendUTXOCommand(walletId: _w, utxoKey: _input, spendingTxId: txid, fee: BigInt.zero)),
+          isEmpty, reason: 'the same spender again: nothing to journal');
+      await expectLater(
+          wallet.handle(SpendUTXOCommand(walletId: _w, utxoKey: _input, spendingTxId: 'ee' * 32, fee: BigInt.zero)),
+          throwsA(predicate((e) => '$e'.contains('recorded as spent by $txid, not by ${'ee' * 32}'))),
+          reason: 'a second spender is a double spend');
 
       await wallet.handle(ConfirmTransactionCommand(walletId: _w, txid: txid, blockHeight: 10, blockHash: 'h'));
       expect(wallet.deferred(txid)['state'], 'mined');
@@ -953,6 +960,165 @@ void main() {
       await wallet.handle(complete(txid, half, sale(foreignScript: [0x52])));
       await expectLater(wallet.handle(complete(txid, half, sale(foreignScript: [0x53]))),
           throwsA(predicate((e) => '$e'.contains('completed, not outstanding'))));
+    });
+
+    // Bead libspiffy-bapp: the counterparty completes the half and the
+    // network takes the completion while the wallet withdraws. First seen
+    // wins, so the reclaim loses; the half must not be stranded by it.
+    Future<String> withdraw(_Wallet wallet, String txid, {int sats = 19900}) async {
+      final raw = _paymentHex([_input], sats: sats);
+      final reclaimTxid = dartsv.Transaction.fromHex(raw).id;
+      await wallet.handle(ReclaimDeferredSpendCommand(
+          walletId: _w, txid: txid, reclaimTxid: reclaimTxid, rawHex: raw,
+          recipientAddresses: const ['mrootaddress0000000000000000000000'], reason: 'withdrawn'));
+      expect(wallet.utxo(_input).reservedByTxId, reclaimTxid, reason: 'the hold moved to the self-spend');
+      expect(wallet.deferred(txid)['reclaimTxid'], reclaimTxid);
+      return reclaimTxid;
+    }
+
+    test('the completion reaches the network while the wallet withdraws: the reclaim fails, the half is plain '
+        'outstanding again, and the completion completes it', () async {
+      final wallet = _Wallet();
+      final (txid, half) = await recordHalf(wallet);
+      final done = sale(foreignScript: [0x52, 0x53]);
+      final doneTxid = dartsv.Transaction.fromHex(done).id;
+      final reclaimTxid = await withdraw(wallet, txid);
+
+      // Too late: the network mined the completion, and the wallet received
+      // it with its proof. A mined spend of the coin is a fact, hold or no
+      // hold (before this it was refused: "not available for spending
+      // (status: reserved, reservedBy: <the self-spend>)").
+      final spent = await wallet.handle(SpendUTXOCommand(
+          walletId: _w, utxoKey: _input, spendingTxId: doneTxid, fee: BigInt.zero, blockHeight: 100));
+      expect(spent.whereType<UTXOSpentEvent>().single.spentInTxId, doneTxid);
+      for (final state in [wallet.aggregate.currentState, wallet.replay().currentState]) {
+        expect((state.utxos[_input]!.status, state.utxos[_input]!.spentInTxId), (UTXOStatus.spent, doneTxid));
+        final spends = state.metadata['deferredSpends'] as Map;
+        expect(spends[reclaimTxid]['state'], 'failed');
+        expect(spends[reclaimTxid]['resolutionReason'], allOf(contains(doneTxid), contains('first seen wins')));
+        expect(spends[txid]['state'], 'outstanding');
+        expect(spends[txid]['reclaimTxid'], isNull, reason: 'the reclaim is over: the half is plain outstanding');
+        expect((state.metadata['deferredHolds'] as Map).containsKey(_input), isFalse, reason: 'spent: held by nobody');
+      }
+
+      // The host records the completion the chain kept.
+      final events = await wallet.handle(complete(txid, half, done));
+      expect(events.whereType<TransactionRecordedEvent>().single.txid, doneTxid);
+      expect(events.whereType<DeferredSpendCompletedEvent>().single.completedUtxoKeys, [_input]);
+      final status = events.whereType<TransactionNetworkStatusCheckedEvent>().single;
+      expect((status.txid, status.networkStatus, status.source), (doneTxid, 'SEEN_ON_NETWORK', 'wallet'),
+          reason: 'its inputs are spent by it: the network has it');
+      for (final state in [wallet.aggregate.currentState, wallet.replay().currentState]) {
+        final spends = state.metadata['deferredSpends'] as Map;
+        expect(spends[txid]['state'], 'completed');
+        expect(spends[txid]['resolutionReason'], contains(doneTxid));
+        expect(spends[doneTxid]['state'], 'seen');
+        expect((state.utxos[_input]!.status, state.utxos[_input]!.spentInTxId), (UTXOStatus.spent, doneTxid));
+      }
+    });
+
+    test('a completion the wallet already holds as an imported transaction completes the half without '
+        'recording it again', () async {
+      final wallet = _Wallet();
+      final (txid, half) = await recordHalf(wallet);
+      final done = sale(foreignScript: [0x52, 0x53]);
+      final doneTxid = dartsv.Transaction.fromHex(done).id;
+      // Received with its proof (CheckForeignSpendsCommand, an import): the
+      // coin spent by it, the transaction in the history.
+      await wallet.handle(SpendUTXOCommand(
+          walletId: _w, utxoKey: _input, spendingTxId: doneTxid, fee: BigInt.zero, blockHeight: 100));
+      await wallet.handle(RecordImportedTransactionCommand(
+          walletId: _w, txid: doneTxid, rawHex: done, blockHeight: 100, bumpProofHex: '', totalOutputSats: 1000,
+          numInputs: 2, numOutputs: 1, txVersion: 1, txLockTime: 0, walletReceivingAddresses: const [],
+          walletReceivedSats: 0, totalInputSats: 21000, sendingAddresses: const []));
+
+      final events = await wallet.handle(complete(txid, half, done));
+      expect(events.single, isA<DeferredSpendCompletedEvent>(),
+          reason: 'the import recorded it, with its spends and outputs; only the half is resolved');
+      expect((events.single as DeferredSpendCompletedEvent).completedUtxoKeys, [_input]);
+      expect(wallet.deferred(txid)['state'], 'completed');
+      expect((wallet.aggregate.currentState.metadata['deferredSpends'] as Map).containsKey(doneTxid), isFalse,
+          reason: 'an imported, proven transaction is no deferred payment');
+    });
+
+    test('a reclaim the network rejects hands the hold back: the half is plain outstanding again, and can be '
+        'reclaimed again', () async {
+      final wallet = _Wallet();
+      final (txid, _) = await recordHalf(wallet);
+      final reclaimTxid = await withdraw(wallet, txid);
+
+      await wallet.handle(RecordTransactionNetworkStatusCommand(
+          walletId: _w, txid: reclaimTxid, networkStatus: DeferredNetworkStatus.rejected, explicit: true,
+          detail: 'txn-mempool-conflict'));
+      for (final state in [wallet.aggregate.currentState, wallet.replay().currentState]) {
+        final spends = state.metadata['deferredSpends'] as Map;
+        expect(spends[reclaimTxid]['state'], 'failed');
+        expect(spends[txid]['state'], 'outstanding');
+        expect(spends[txid]['reclaimTxid'], isNull);
+        expect((state.utxos[_input]!.status, state.utxos[_input]!.reservedByTxId), (UTXOStatus.reserved, txid),
+            reason: 'the hold is the half\'s again, not released');
+        expect((state.metadata['deferredHolds'] as Map)[_input], txid);
+      }
+
+      final again = await withdraw(wallet, txid, sats: 19800);
+      expect(again, isNot(reclaimTxid));
+      expect((wallet.aggregate.currentState.metadata['deferredHolds'] as Map)[_input], again);
+    });
+
+    test('a half whose reclaim the network rejected can be cancelled', () async {
+      final wallet = _Wallet();
+      final (txid, _) = await recordHalf(wallet);
+      final reclaimTxid = await withdraw(wallet, txid);
+      await wallet.handle(RecordTransactionNetworkStatusCommand(
+          walletId: _w, txid: reclaimTxid, networkStatus: DeferredNetworkStatus.rejected, explicit: true));
+
+      await wallet.handle(CancelDeferredSpendCommand(walletId: _w, txid: txid, reason: 'the sale is off'));
+      expect(wallet.deferred(txid)['state'], 'cancelled');
+      expect(wallet.utxo(_input).status, UTXOStatus.available, reason: 'the coin is the wallet\'s to spend again');
+    });
+  });
+
+  // Bead libspiffy-bapp: a spend whose spender is proven in a block stands
+  // whatever the wallet reserved the output for. An unproven one does not:
+  // either transaction may still be mined (audit C1, bead libspiffy-ey2).
+  group('a spend over a hold for another transaction', () {
+    test('unproven: refused, the hold stays', () async {
+      final wallet = _Wallet();
+      final txid = await wallet.pay([_input]);
+      await expectLater(
+          wallet.handle(SpendUTXOCommand(walletId: _w, utxoKey: _input, spendingTxId: 'ab' * 32, fee: BigInt.zero)),
+          throwsA(predicate((e) => '$e'.contains('not proven in a block'))));
+      expect((wallet.utxo(_input).status, wallet.utxo(_input).reservedByTxId), (UTXOStatus.reserved, txid));
+    });
+
+    test('proven in a block: the input is spent; the payment stays outstanding and holds nothing', () async {
+      final wallet = _Wallet();
+      final txid = await wallet.pay([_input]);
+      expect(wallet.utxo(_input).reservedByTxId, txid);
+      final spender = 'ab' * 32;
+
+      final events = await wallet.handle(SpendUTXOCommand(
+          walletId: _w, utxoKey: _input, spendingTxId: spender, fee: BigInt.zero, blockHeight: 100));
+      expect(events.whereType<UTXOSpentEvent>().single.spentInTxId, spender);
+      expect((wallet.utxo(_input).status, wallet.utxo(_input).spentInTxId), (UTXOStatus.spent, spender));
+      expect(wallet.deferred(txid)['state'], 'outstanding', reason: 'bead libspiffy-ey2: either may still be mined');
+      expect((wallet.aggregate.currentState.metadata['deferredHolds'] as Map).containsKey(_input), isFalse);
+    });
+
+    test('the same spend again is nothing new; a spend by another transaction contradicts the record', () async {
+      final wallet = _Wallet();
+      final spender = 'ab' * 32;
+      await wallet.handle(SpendUTXOCommand(walletId: _w, utxoKey: _other, spendingTxId: spender, fee: BigInt.zero));
+      expect(await wallet.handle(SpendUTXOCommand(walletId: _w, utxoKey: _other, spendingTxId: spender, fee: BigInt.zero)),
+          isEmpty);
+      await expectLater(
+          wallet.handle(SpendUTXOCommand(walletId: _w, utxoKey: _other, spendingTxId: 'cd' * 32, fee: BigInt.zero)),
+          throwsA(predicate((e) => '$e'.contains('recorded as spent by $spender'))));
+      await expectLater(
+          wallet.handle(SpendUTXOCommand(
+              walletId: _w, utxoKey: _other, spendingTxId: 'cd' * 32, fee: BigInt.zero, blockHeight: 100)),
+          throwsA(predicate((e) => '$e'.contains('a double spend'))),
+          reason: 'a proof does not overrule a recorded spend');
     });
   });
 

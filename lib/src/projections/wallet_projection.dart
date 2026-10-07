@@ -742,12 +742,36 @@ class WalletProjection extends Projection<void> {
       resolutionReason: DeferredPayment.reclaimLostRace(utxoKey, spentInTxId),
     ));
     final rows = _utxoRows(walletId);
-    if (await _voidOwnOutputs(walletId, reclaimTxid, at, rows)) {
+    var changed = await _voidOwnOutputs(walletId, reclaimTxid, at, rows);
+    changed = await _returnReclaimedHolds(walletId, reclaims, reclaimTxid, at, rows) || changed;
+    if (changed) {
       await _recalculateAndPersistForWallet(walletId, at, await rows.unspent());
     }
     _log.warning('The reclaim $reclaimTxid of deferred payment $reclaims failed in $walletId: its input '
         '$utxoKey was spent by $spentInTxId. First seen wins on this network, so the self-spend can no '
         'longer be mined; no fee would have changed that');
+  }
+
+  /// The reclaim [reclaimTxid] of [paymentTxid] is over without the
+  /// self-spend reaching the network: every row the self-spend still holds
+  /// is held by the payment again, as the wallet aggregate does it
+  /// (`DeferredPayments._returnReclaimedHolds`, bead libspiffy-bapp). The
+  /// payment is outstanding again and may still settle, be completed,
+  /// cancelled or reclaimed again. Nothing is done to a payment resolved
+  /// meanwhile. True when a row changed.
+  Future<bool> _returnReclaimedHolds(
+      String walletId, String paymentTxid, String reclaimTxid, DateTime at, _UtxoRows rows) async {
+    final payment = await _storage.getDeferredPayment(walletId, paymentTxid);
+    if (payment == null || payment.state != DeferredPaymentState.outstanding) return false;
+    var changed = false;
+    for (final utxo in await rows.unspent()) {
+      if (utxo.status != UTXOStatus.reserved || utxo.reservedByTxId != reclaimTxid) continue;
+      final returned = utxo.copyWith(reservedByTxId: paymentTxid, updatedAt: at);
+      await _storage.upsertUTXO(walletId, returned);
+      rows.put(returned);
+      changed = true;
+    }
+    return changed;
   }
 
   Future<void> _handleUTXOConfirmationUpdated(UTXOConfirmationUpdatedEvent event) async {
@@ -1070,7 +1094,11 @@ class WalletProjection extends Projection<void> {
     }
 
     final rows = _utxoRows(event.walletId);
-    var changed = false;
+    // A reclaim's self-spend that failed hands its holds back to the
+    // payment it reclaimed, which is outstanding again (bead libspiffy-bapp);
+    // the loop below then finds no row of [txid]'s left to release.
+    final reclaims = DeferredPaymentPurpose.reclaimedTxid(deferred?.purpose);
+    var changed = reclaims != null && await _returnReclaimedHolds(event.walletId, reclaims, txid, event.timestamp, rows);
     for (final input in released) {
       final sep = input.utxoKey.lastIndexOf(':');
       final vout = sep > 0 ? int.tryParse(input.utxoKey.substring(sep + 1)) : null;

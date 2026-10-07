@@ -305,20 +305,48 @@ abstract final class UtxoLedger {
     ];
   }
 
+  /// [command]'s UTXO is spent by its `spendingTxId`.
+  ///
+  /// An output the wallet can spend now, or one reserved or held for this
+  /// very transaction, is spent as reported. An output reserved or held for
+  /// another transaction is spent only when the spender is proven in a
+  /// block: [SpendUTXOCommand.blockHeight] set, which its senders do only
+  /// for a spender whose merkle proof verified against the local headers
+  /// (bead libspiffy-bapp). A mined spend is a fact the reservation cannot
+  /// undo: a swap the counterparty completed and the network mined, while
+  /// the buyer's own reclaim held the coin, spent that coin. What held it is
+  /// released or failed as the event applies
+  /// ([DeferredPayments.applyInputSpent]).
+  ///
+  /// An unproven spend of an output reserved for another transaction stays
+  /// refused (audit C1, bead libspiffy-hhj): a counterparty's transaction
+  /// received without a proof may never be mined, and either spend may
+  /// still win.
+  ///
+  /// The same spend reported again (a redelivered BEEF, the next status
+  /// scan) is nothing new and journals nothing. A spend by another
+  /// transaction of an output already recorded as spent is a double spend:
+  /// it contradicts the record and is refused, proven or not.
   static List<Event> spend(WalletState currentState, SpendUTXOCommand command) {
     // Business rule: Wallet must exist
     if (!currentState.isCreated) {
       throw StateError('Cannot spend UTXO for non-existent wallet');
     }
 
-    // Business rule: UTXO must exist and be available
     final utxo = currentState.utxos[command.utxoKey];
     if (utxo == null) {
       throw StateError('UTXO ${command.utxoKey} not found in wallet');
     }
-
-    if (!spendableBy(currentState, utxo, command.spendingTxId)) {
-      throw StateError('UTXO ${command.utxoKey} is not available for spending (status: ${utxo.status}, reservedBy: ${utxo.reservedByTxId})');
+    if (utxo.status == UTXOStatus.spent) {
+      final spender = utxo.spentInTxId;
+      if (spender == command.spendingTxId) return const [];
+      throw StateError('UTXO ${command.utxoKey} is recorded as spent by ${spender ?? 'an unknown transaction'}, '
+          'not by ${command.spendingTxId}: a double spend');
+    }
+    final proven = command.blockHeight != null;
+    if (!proven && !spendableBy(currentState, utxo, command.spendingTxId)) {
+      throw StateError('UTXO ${command.utxoKey} is not available for spending by ${command.spendingTxId} '
+          '(status: ${utxo.status}, reservedBy: ${utxo.reservedByTxId}), and the spend is not proven in a block');
     }
 
     // Parse txid and vout from utxoKey

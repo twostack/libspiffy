@@ -84,10 +84,10 @@ class SpentOutputRepair {
   ///
   /// An output held by an outstanding deferred payment fails that payment
   /// first (`INPUT_SPENT`, which releases its inputs, and its row becomes
-  /// failed), then is spent. An
-  /// output held by anything else (a payment being built) is left alone and
-  /// logged: the aggregate refuses to spend an output reserved for another
-  /// transaction, and the reservation ends by itself.
+  /// failed), then is spent. An output reserved for anything else (a payment
+  /// being built) is spent too when the spender's row has its block: a
+  /// proven spend stands over a reservation (bead libspiffy-bapp). Without a
+  /// height it is left alone and logged, for the reservation to end.
   static Future<List<SpentOutputFinding>> run({
     required String walletId,
     required ReadModelStorage storage,
@@ -102,12 +102,13 @@ class SpentOutputRepair {
       final heldBy = finding.heldBy;
       if (heldBy != null) {
         final payment = await storage.getDeferredPayment(walletId, heldBy);
-        if (payment == null || payment.state != DeferredPaymentState.outstanding) {
+        final outstanding = payment != null && payment.state == DeferredPaymentState.outstanding;
+        if (!outstanding && finding.blockHeight == null) {
           _log.warning('Wallet $walletId: ${finding.utxoKey} is spent by ${finding.spentBy} but reserved for '
-              '$heldBy; left for the reservation to end');
+              '$heldBy, and the spender has no block height; left for the reservation to end');
           continue;
         }
-        if (failed.add(heldBy)) {
+        if (outstanding && failed.add(heldBy)) {
           send(RecordTransactionNetworkStatusCommand(
             walletId: walletId,
             txid: heldBy,

@@ -471,12 +471,39 @@ class DeferredPayments {
       throw ArgumentError('The completed transaction is ${done.id}, not ${command.completedTxid}');
     }
 
+    // The wallet's inputs of the sale: what the half holds now, and what
+    // the completion itself already spent. The completion can reach the
+    // network before the wallet hears of it (the counterparty broadcasts it
+    // while the wallet tries to withdraw; bead libspiffy-bapp): the input is
+    // then spent by the completion, held by nobody, and the half is still
+    // the wallet's agreement to exactly that transaction. An input held by
+    // another payment, spent by something else, or unknown refuses it.
     final holds = currentState.metadata[_deferredHoldsKey];
-    final heldKeys = <String>[
+    final ownKeys = <String>{
       if (holds is Map)
         for (final entry in holds.entries)
           if (entry.value?.toString() == command.txid) entry.key.toString(),
-    ]..sort();
+    };
+    final recordedKeys = record['heldUtxoKeys'];
+    for (final key in recordedKeys is List ? recordedKeys.map((k) => k.toString()) : const <String>[]) {
+      if (ownKeys.contains(key)) continue;
+      final utxo = currentState.utxos[key];
+      if (utxo != null && utxo.status == UTXOStatus.spent && utxo.spentInTxId == command.completedTxid) {
+        ownKeys.add(key);
+        continue;
+      }
+      final holder = holderOf(currentState, key);
+      final where = utxo == null
+          ? 'unknown'
+          : utxo.status == UTXOStatus.spent
+              ? 'spent by ${utxo.spentInTxId}'
+              : holder != null
+                  ? 'held by deferred payment $holder'
+                  : 'held by nobody';
+      throw StateError('Input $key of deferred payment ${command.txid} is $where, neither held by the payment '
+          'nor spent by its completion ${command.completedTxid}; it cannot be completed');
+    }
+    final heldKeys = ownKeys.toList()..sort();
     if (heldKeys.isEmpty) {
       throw StateError('Deferred payment ${command.txid} holds no inputs; there is nothing to complete');
     }
@@ -503,28 +530,55 @@ class DeferredPayments {
     }
 
     final totalOut = done.outputs.fold(BigInt.zero, (sum, o) => sum + o.satoshis);
-    final events = outgoing.recordOutgoing(
-      currentState,
-      RecordOutgoingTransactionCommand(
+    // A completion the wallet already received with its proof (an import,
+    // say through CheckForeignSpendsCommand) is in the history with its
+    // spends and its outputs; only the half is resolved then (bead
+    // libspiffy-bapp). One the wallet recorded as outgoing is not recorded
+    // again either ([OutgoingTransactions.recordOutgoing]).
+    final imported = OutgoingTransactions.importedRecord(currentState, command.completedTxid) != null;
+    final events = imported
+        ? <Event>[]
+        : outgoing.recordOutgoing(
+            currentState,
+            RecordOutgoingTransactionCommand(
+              walletId: command.walletId,
+              txid: command.completedTxid,
+              rawHex: command.rawHex,
+              totalInputSats: totalOut.toInt() + command.fee,
+              totalOutputSats: totalOut.toInt(),
+              fee: command.fee,
+              numInputs: done.inputs.length,
+              numOutputs: done.outputs.length,
+              txVersion: done.version,
+              txLockTime: done.nLockTime,
+              spentUtxoKeys: heldKeys,
+              recipientAddresses: command.recipientAddresses,
+              paymentAmount: command.paymentAmount,
+              deferSpend: true,
+              preSigned: true,
+              purpose: DeferredPaymentPurpose.completionOf(command.txid),
+            ),
+            supersedesDeferred: command.txid,
+          );
+    // A completion whose every input the wallet already recorded as spent by
+    // it is on the network: that is what marked them spent. Its record says
+    // so now rather than after the next status scan, as [applyInputSpent]
+    // does for a spend that arrives after the record (bead libspiffy-bapp).
+    final onNetwork = events.any((e) => e is TransactionSpendDeferredEvent) &&
+        heldKeys.every((k) => currentState.utxos[k]?.spentInTxId == command.completedTxid);
+    if (onNetwork) {
+      final now = DateTime.now();
+      events.add(TransactionNetworkStatusCheckedEvent(
         walletId: command.walletId,
         txid: command.completedTxid,
-        rawHex: command.rawHex,
-        totalInputSats: totalOut.toInt() + command.fee,
-        totalOutputSats: totalOut.toInt(),
-        fee: command.fee,
-        numInputs: done.inputs.length,
-        numOutputs: done.outputs.length,
-        txVersion: done.version,
-        txLockTime: done.nLockTime,
-        spentUtxoKeys: heldKeys,
-        recipientAddresses: command.recipientAddresses,
-        paymentAmount: command.paymentAmount,
-        deferSpend: true,
-        preSigned: true,
-        purpose: DeferredPaymentPurpose.completionOf(command.txid),
-      ),
-      supersedesDeferred: command.txid,
-    );
+        networkStatus: DeferredNetworkStatus.seenOnNetwork,
+        source: 'wallet',
+        checkedAt: now,
+        explicit: true,
+        version: currentState.version + events.length + 1,
+        timestamp: now,
+      ));
+    }
     events.add(DeferredSpendCompletedEvent(
       walletId: command.walletId,
       txid: command.txid,
@@ -533,7 +587,8 @@ class DeferredPayments {
       version: currentState.version + events.length + 1,
       timestamp: DateTime.now(),
     ));
-    _log.info('Deferred payment ${command.txid} was completed by its counterparty as ${command.completedTxid}');
+    _log.info('Deferred payment ${command.txid} was completed by its counterparty as ${command.completedTxid}'
+        '${onNetwork ? ', which the network already has' : ''}');
     return events;
   }
 
@@ -808,9 +863,43 @@ class DeferredPayments {
           .put('resolutionReason', DeferredPayment.reclaimLostRace(utxoKey, spentInTxId)),
     );
     _voidOwnOutputs(state, reclaimTxid, at);
+    _returnReclaimedHolds(state, reclaims, reclaimTxid, at);
     _log.warning('The reclaim $reclaimTxid of deferred payment $reclaims failed: its input $utxoKey was '
         'spent by $spentInTxId. First seen wins on this network, so the self-spend can no longer be '
         'mined; no fee would have changed that');
+  }
+
+  /// The reclaim [reclaimTxid] of [paymentTxid] is over without the
+  /// self-spend reaching the network: the payment is plain outstanding again
+  /// (bead libspiffy-bapp). Its `reclaimTxid` goes, and every input the
+  /// self-spend still holds is held by the payment again, the way the hold
+  /// moved to the self-spend when the reclaim was journaled. The payment can
+  /// then be completed by its counterparty, cancelled, or reclaimed again.
+  /// Nothing is done to a payment resolved meanwhile.
+  ///
+  /// Before this, the payment kept `reclaimTxid` for ever: completing,
+  /// cancelling and reclaiming it were all refused as "being reclaimed", and
+  /// a buyer whose swap the seller completed first could never record the
+  /// swap the chain kept.
+  static void _returnReclaimedHolds(WalletStateBuilder state, String paymentTxid, String reclaimTxid, DateTime at) {
+    final payment = _recordForUpdate(state, paymentTxid);
+    if (payment == null || payment['state'] != DeferredPaymentState.outstanding.name) return;
+    if (payment['reclaimTxid']?.toString() == reclaimTxid) {
+      _putRecord(state, paymentTxid, payment.without('reclaimTxid'));
+    }
+    var holds = _holdsForUpdate(state);
+    for (final entry in holds.entries.toList()) {
+      if (entry.value?.toString() != reclaimTxid) continue;
+      final key = entry.key;
+      final utxo = state.utxos[key];
+      if (utxo == null || utxo.status == UTXOStatus.spent) {
+        holds = holds.without(key);
+        continue;
+      }
+      holds = holds.put(key, paymentTxid);
+      state.putUtxo(key, utxo.copyWith(reservedByTxId: paymentTxid, updatedAt: at));
+    }
+    state.metadata = state.metadata.put(_deferredHoldsKey, holds);
   }
 
   /// [txid] is confirmed: a deferred payment of it is mined.
@@ -921,6 +1010,14 @@ class DeferredPayments {
       );
     }
     _voidOwnOutputs(state, txid, event.timestamp);
+    // A reclaim's self-spend that failed (ARC rejected it: the recipient's
+    // copy, or a completion, reached the network first) hands its holds
+    // back to the payment it reclaimed instead of releasing them: that
+    // payment is outstanding again, and may still settle (bead
+    // libspiffy-bapp). The loop below then finds nothing of [txid]'s left
+    // to release.
+    final reclaims = record?['reclaimOf']?.toString();
+    if (reclaims != null) _returnReclaimedHolds(state, reclaims, txid, event.timestamp);
     for (final input in released) {
       final holds = state.metadata[_deferredHoldsKey];
       if (holds is Map && holds[input.utxoKey]?.toString() == txid) {

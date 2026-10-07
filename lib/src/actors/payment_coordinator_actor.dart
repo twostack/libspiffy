@@ -171,7 +171,13 @@ class PaymentCoordinatorActor extends Actor {
     // and a wallet with no coins at all can still make it.
     final fundless = _isPluginTransaction(msg) && _pluginFundingCount(msg) == 0;
     if (utxos.isEmpty && !fundless) {
-      _sendError(msg.invoiceId, 'Insufficient funds$excludedNote', sender: originalSender);
+      // The shortfall is named so the app can report it without working it
+      // out itself (bead libspiffy-khb7).
+      _sendError(
+          msg.invoiceId,
+          'Insufficient funds: need $effectiveAmount satoshis and the fee of the transaction, have no spendable '
+          'coin (short by $effectiveAmount satoshis and the fee)$excludedNote',
+          sender: originalSender);
       return;
     }
 
@@ -214,11 +220,13 @@ class PaymentCoordinatorActor extends Actor {
         BigInt.zero,
         (sum, utxo) => sum + utxo.satoshis,
       );
+      final feeForAll = _feeFor(rate, utxos, outputScriptBytes);
       _sendError(
         msg.invoiceId,
         'Insufficient funds: need $amount satoshis and the fee of the transaction '
-        '(${_feeFor(rate, utxos, outputScriptBytes)} satoshis at ARC\'s policy rate of $rate spending all '
-        '${utxos.length} UTXO(s)), have $totalBalance$excludedNote',
+        '($feeForAll satoshis at ARC\'s policy rate of $rate spending all '
+        '${utxos.length} UTXO(s)), have $totalBalance (short by ${amount + feeForAll - totalBalance} satoshis)'
+        '$excludedNote',
         sender: originalSender,
       );
       return;

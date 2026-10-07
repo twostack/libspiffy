@@ -20,6 +20,7 @@ import '../models/bitcoin_utxo.dart';
 import '../models/invoice_output_spec.dart';
 import '../models/key_path.dart';
 import '../models/channel_timing.dart';
+import '../models/foreign_spend.dart';
 import '../models/payment_channel.dart' show PaymentChannelRole, PaymentChannelState;
 import '../models/wallet_balances.dart' show BalanceBucket, WalletBalances;
 import '../services/ancestor_chain_service.dart';
@@ -1738,6 +1739,11 @@ class WalletCoordinatorActor extends Actor {
   /// requests time out after 30 s each; a broadcast submits ancestors too).
   static const _deferredNetworkTimeout = Duration(minutes: 2);
 
+  /// How long [_recordForeignSpender] waits for SPVActor's verdict on a
+  /// proven spender: its validation asks the wallet which outputs are its
+  /// own, which itself waits up to 30 s.
+  static const _foreignSpendRecordTimeout = Duration(minutes: 1);
+
   /// How long a broadcast ARC answered in flight is followed for a verdict,
   /// and how often ARC is asked meanwhile (as channel submissions are,
   /// V-150).
@@ -2129,20 +2135,14 @@ class WalletCoordinatorActor extends Actor {
     return reason;
   }
 
-  /// Reclaims an outstanding deferred payment (bead libspiffy-87a): builds
-  /// and signs a transaction spending exactly the inputs it holds back into
-  /// this wallet, has the wallet journal it (the hold moves to it), and
-  /// broadcasts it. One shot: there is no build-then-confirm step.
-  ///
-  /// The fee is ARC's published policy rate on the transaction's signed
-  /// size ([TransactionSize]). It is not
-  /// raised, and there is no caller override: this is Bitcoin SV, where a
-  /// conflicting transaction cannot be displaced by paying more and the
-  /// transaction that reached the network first is the one that is mined.
-  ///
-  /// The payment is not resolved here. It becomes
-  /// [DeferredPaymentState.reclaimed] when the network reports the
-  /// self-spend, which is also when its outputs become spendable.
+  /// Checks the outputs [cmd] names, or every unspent plugin output of the
+  /// wallet, for a spender ([CheckForeignSpendsCommand]). ARCActor asks the
+  /// data source and proves a confirmed spender against the local headers;
+  /// each proven spender is then received by the wallet as any mined
+  /// transaction of its is ([_recordForeignSpender]), and the result is
+  /// announced once the read model shows what was recorded. A listing
+  /// bought by a stranger: the token output goes and the price arrives,
+  /// both before the event (bead libspiffy-zyfr).
   Future<void> _handleCheckForeignSpends(CheckForeignSpendsCommand cmd) async {
     final requestId = cmd.correlationId;
     try {
@@ -2157,18 +2157,82 @@ class WalletCoordinatorActor extends Actor {
       }
       final result = await _arcActor.ask<wm.OutputSpendersResult>(
           wm.CheckOutputSpendersMessage(walletId: cmd.walletId, utxoKeys: keys), _deferredNetworkTimeout * keys.length);
+      final spends = <ForeignSpend>[];
+      for (final spend in result.spends) {
+        spends.add(spend.proven ? await _recordForeignSpender(cmd.walletId, spend) : spend);
+      }
       _emitEvent(ForeignSpendsCheckedEvent(
         walletId: cmd.walletId,
         requestId: requestId,
         success: result.success,
         checked: keys,
-        spends: result.spends,
+        spends: spends,
         unchecked: result.unchecked,
         error: result.error,
       ));
     } catch (e) {
       _emitEvent(ForeignSpendsCheckedEvent(
           walletId: cmd.walletId, requestId: requestId, success: false, error: 'Checking for foreign spends failed: $e'));
+    }
+  }
+
+  /// Receives the proven [spend]er into [walletId] through the import path
+  /// (SPVActor, then the wallet aggregate), the path every mined transaction
+  /// handed to the wallet takes: the wallet marks the output it spends
+  /// spent, receives its outputs that pay the wallet's addresses as
+  /// available in the block its proof names, and records it in its history.
+  /// Returns the spend with its recording outcome, after the read model
+  /// holds the transaction. A spender the wallet already holds, from an
+  /// earlier check, is recorded already and is not sent again.
+  Future<ForeignSpend> _recordForeignSpender(String walletId, ForeignSpend spend) async {
+    final beefHex = spend.spenderBeefHex;
+    if (beefHex == null) {
+      return spend.recordedAs(recorded: false, error: 'ARCActor proved ${spend.spentBy} but returned no BEEF for it');
+    }
+    try {
+      if (await _storage.getTransaction(spend.spentBy, walletId: walletId) != null) {
+        return spend.recordedAs(recorded: true);
+      }
+      final beef = BEEF.parse(Uint8List.fromList(hex.decode(beefHex)));
+      final verdict = Completer<wm.SPVValidationResult>();
+      final requestId = 'receive-${++_receiveSeq}';
+      _receives[requestId] = _Receive(walletId: walletId, payment: false, verdict: verdict);
+      _spvActor.tell(
+        wm.ReceiveTransactionMessage(
+          transactionId: spend.spentBy,
+          beef: beef,
+          // Nobody handed it over: the wallet found it by asking who spent
+          // what it holds.
+          fromCounterparty: '',
+          targetWalletId: walletId,
+          receivedAt: DateTime.now(),
+          requestId: requestId,
+        ),
+        sender: context.self,
+      );
+      final result = await verdict.future.timeout(_foreignSpendRecordTimeout, onTimeout: () {
+        _receives.remove(requestId);
+        throw TimeoutException('SPVActor did not answer within $_foreignSpendRecordTimeout');
+      });
+      if (result.awaitingHeader) {
+        return spend.recordedAs(
+            recorded: false,
+            error: 'Waiting for the block header that proves ${spend.spentBy}; '
+                'it is recorded when the header arrives');
+      }
+      if (!result.isValid) {
+        return spend.recordedAs(
+            recorded: false, error: result.validationError ?? 'The wallet did not accept ${spend.spentBy}');
+      }
+      final notApplied = await _awaitImportApplied(walletId, spend.spentBy);
+      if (notApplied != null) {
+        return spend.recordedAs(
+            recorded: false,
+            error: '${spend.spentBy} was validated but the wallet read model failed to apply it: $notApplied');
+      }
+      return spend.recordedAs(recorded: true);
+    } catch (e) {
+      return spend.recordedAs(recorded: false, error: 'Recording ${spend.spentBy} failed: $e');
     }
   }
 
@@ -2276,6 +2340,20 @@ class WalletCoordinatorActor extends Actor {
     }
   }
 
+  /// Reclaims an outstanding deferred payment (bead libspiffy-87a): builds
+  /// and signs a transaction spending exactly the inputs it holds back into
+  /// this wallet, has the wallet journal it (the hold moves to it), and
+  /// broadcasts it. One shot: there is no build-then-confirm step.
+  ///
+  /// The fee is ARC's published policy rate on the transaction's signed
+  /// size ([TransactionSize]). It is not raised, and there is no caller
+  /// override: this is Bitcoin SV, where a conflicting transaction cannot be
+  /// displaced by paying more and the transaction that reached the network
+  /// first is the one that is mined.
+  ///
+  /// The payment is not resolved here. It becomes
+  /// [DeferredPaymentState.reclaimed] when the network reports the
+  /// self-spend, which is also when its outputs become spendable.
   Future<void> _handleReclaimDeferredPayment(ReclaimDeferredPaymentCommand cmd) async {
     final requestId = cmd.correlationId;
     DeferredPaymentReclaimedEvent failure(String error, {String? reclaimTxid}) =>
@@ -2930,6 +3008,10 @@ class WalletCoordinatorActor extends Actor {
     // invoice, is a payment.
     final requestId = result.requestId;
     final request = requestId == null ? null : _receives.remove(requestId);
+    // A receive this coordinator itself is waiting on (a proven foreign
+    // spender) gets its verdict; the import events below are emitted for
+    // it too, as for any other import.
+    if (request?.verdict case final verdict? when !verdict.isCompleted) verdict.complete(result);
     final walletId = request?.walletId ?? result.targetWalletId;
     final payment = request?.payment ?? (result.invoiceId != null || !result.subjectCarriesProof);
 
@@ -3307,7 +3389,11 @@ class _Receive {
   final bool payment;
   final String? invoiceId;
 
-  _Receive({required this.walletId, required this.payment, this.invoiceId});
+  /// Completed with SPVActor's answer when the coordinator itself waits for
+  /// it (a proven foreign spender it receives into the wallet).
+  final Completer<wm.SPVValidationResult>? verdict;
+
+  _Receive({required this.walletId, required this.payment, this.invoiceId, this.verdict});
 }
 
 class _PendingBeefValidation {

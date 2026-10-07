@@ -1736,9 +1736,11 @@ class CheckDeferredPaymentStatusMessage implements Message {
 
 /// Asks ARCActor which of [utxoKeys] (outputs of wallet [walletId]) the
 /// configured data source reports spent, and by what. A spender that is
-/// confirmed and whose merkle proof matches the local headers is evidence:
-/// the output is marked spent by it. Anything less is reported as a lead and
-/// changes nothing. Replied with [OutputSpendersResult].
+/// confirmed and whose merkle proof matches the local headers is evidence,
+/// and comes back with its proof as a BEEF (`ForeignSpend.spenderBeefHex`)
+/// for the coordinator to receive into the wallet. Anything less is reported
+/// as a lead. Nothing is recorded here: the wallet decides what in the
+/// spender is its own. Replied with [OutputSpendersResult].
 ///
 /// This is how a wallet learns that something it holds was spent without
 /// it: a token taken back by its issuer after an expiry, a listing bought, a

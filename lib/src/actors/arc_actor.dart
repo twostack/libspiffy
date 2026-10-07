@@ -1341,6 +1341,7 @@ class ARCActor extends Actor {
         if (spender == null) continue;
         var proven = false;
         String? raw;
+        String? beef;
         if (spender.confirmed) {
           // The source's word is a lead; the spender's bytes and its proof
           // against our own headers are the evidence.
@@ -1358,19 +1359,26 @@ class ARCActor extends Actor {
               imported.headerVerified &&
               imported.transaction.inputs.any((i) => i.prevTxnId.toString() == parts[0] && i.prevTxnOutputIndex == vout);
           if (imported != null && proven) {
+            // The spender with its proof, for the coordinator to receive
+            // into the wallet as any mined transaction of its is. Nothing
+            // is recorded here: the wallet decides what in it is its own.
             raw = imported.rawHex;
-            _walletManager.tell(WalletCommandMessage(
-                msg.walletId,
-                SpendUTXOCommand(
-                    walletId: msg.walletId,
-                    utxoKey: key,
-                    spendingTxId: spender.txid,
-                    fee: BigInt.zero,
-                    blockHeight: imported.blockHeight)));
+            beef = hex.encode(BEEF.create(
+              bumps: [imported.bump],
+              txs: [Uint8List.fromList(hex.decode(raw))],
+              hasMerkle: [true],
+              bumpIndex: [0],
+            ).serialize());
           }
         }
         spends.add(ForeignSpend(
-            utxoKey: key, spentBy: spender.txid, confirmed: spender.confirmed, proven: proven, spenderRawHex: raw));
+          utxoKey: key,
+          spentBy: spender.txid,
+          confirmed: spender.confirmed,
+          proven: proven,
+          spenderRawHex: raw,
+          spenderBeefHex: beef,
+        ));
       } catch (e) {
         unchecked[key] = '$e';
       }

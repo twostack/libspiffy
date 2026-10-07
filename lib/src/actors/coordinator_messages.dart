@@ -3367,16 +3367,22 @@ class DeferredPaymentCompletedEvent extends CoordinatorEvent {
 
 /// Asks whether outputs the wallet holds were spent by someone else: by
 /// default every plugin output (a token) the wallet has not spent. For each
-/// one the configured data source answers who spent it; a spender that is
-/// mined and proven against the local headers marks the output spent
-/// (`ForeignSpend.proven`), and its raw transaction comes back so the host
-/// can import it. Anything less is a lead, reported and not acted on.
+/// one the configured data source answers who spent it. A spender that is
+/// mined and proven against the local headers (`ForeignSpend.proven`) is
+/// received by the wallet as any mined transaction of its is: the output it
+/// spends is marked spent, its outputs that pay the wallet's addresses are
+/// received as available in the block its proof names, and it joins the
+/// wallet's transaction history (`ForeignSpend.recorded`). Its raw
+/// transaction and its BEEF come back too. Anything less is a lead,
+/// reported and not acted on.
 ///
 /// A token the wallet holds can be spent without the wallet: a Voucher NFT
 /// the issuer forced back after its expiry, a listing a stranger bought, a
 /// pot seized. The wallet learns of it by asking about what it holds, one
-/// output at a time; it never scans the chain. Replied with
-/// [ForeignSpendsCheckedEvent].
+/// output at a time; it never scans the chain. A listing bought: the token
+/// output goes and the price arrives, both in the same check. Replied with
+/// [ForeignSpendsCheckedEvent] once the read model shows what was
+/// recorded, so a balance read on hearing it is current.
 class CheckForeignSpendsCommand implements Message {
   final String walletId;
 
@@ -3407,7 +3413,8 @@ class ForeignSpendsCheckedEvent extends CoordinatorEvent {
   /// The outputs checked.
   final List<String> checked;
 
-  /// The ones another transaction spends.
+  /// The ones another transaction spends, each saying whether its spender
+  /// is proven and recorded in the wallet.
   final List<ForeignSpend> spends;
 
   /// Outputs whose check failed, with why.

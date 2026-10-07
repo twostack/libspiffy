@@ -139,9 +139,6 @@ void main() {
   /// The transactions whose deferred spend the wallet was sent.
   List<String> applied() => [for (final c in walletManager.commands.whereType<ApplyDeferredSpendCommand>()) c.txid];
 
-  /// The outputs the wallet was told someone else spent ([CheckOutputSpendersMessage]).
-  List<String> spends() =>
-      [for (final c in walletManager.commands.whereType<SpendUTXOCommand>()) '${c.utxoKey}>${c.spendingTxId}'];
   List<ConfirmTransactionCommand> confirms() => walletManager.commands.whereType<ConfirmTransactionCommand>().toList();
   List<String> statuses() => [
         for (final c in walletManager.commands.whereType<RecordTransactionNetworkStatusCommand>())
@@ -686,7 +683,10 @@ void main() {
 
   // A token the wallet holds can be spent without it (a Voucher NFT forced
   // back by its issuer, a listing bought): the wallet asks about what it
-  // holds, output by output (CheckOutputSpendersMessage).
+  // holds, output by output (CheckOutputSpendersMessage). ARCActor finds
+  // and proves the spender and hands it back with its proof; the
+  // coordinator receives it into the wallet (bead libspiffy-zyfr), so
+  // nothing here reaches the wallet manager.
   group('outputs the wallet holds, spent by someone else', () {
     Future<OutputSpendersResult> checkSpenders(List<String> keys, {bool confirmed = true, int? tamper, bool lookup = true}) async {
       if (lookup) {
@@ -706,32 +706,38 @@ void main() {
       return r;
     }
 
-    test('a mined spender proven against the local headers marks the output spent, with its bytes', () async {
+    test('a mined spender proven against the local headers comes back with its bytes and its proof as a BEEF', () async {
       final r = await checkSpenders([_inputKey, '${'0f' * 32}:3']);
       expect(r.success, isTrue);
       final s = r.spends.single;
-      expect((s.utxoKey, s.spentBy, s.confirmed, s.proven), (_inputKey, kFixtureTxid, true, true));
+      expect((s.utxoKey, s.spentBy, s.confirmed, s.proven, s.recorded), (_inputKey, kFixtureTxid, true, true, false));
       expect(s.spenderRawHex, kFixtureTxHex);
-      expect(spends(), ['$_inputKey>$kFixtureTxid']);
+      final beef = BEEF.parse(Uint8List.fromList(hex.decode(s.spenderBeefHex!)));
+      expect(hex.encode(beef.txs.single), kFixtureTxHex);
+      expect(beef.carriesProofOf(kFixtureTxid), isTrue);
+      expect(beef.bumps.single.toHex(), fixtureBumpHex());
+      expect(walletManager.commands, isEmpty, reason: 'the coordinator receives the spender into the wallet');
     });
 
-    test('an unconfirmed spender is a lead: reported, nothing marked', () async {
+    test('an unconfirmed spender is a lead: reported, no proof, nothing sent', () async {
       final r = await checkSpenders([_inputKey], confirmed: false);
       expect((r.spends.single.confirmed, r.spends.single.proven), (false, false));
-      expect(spends(), isEmpty);
+      expect(r.spends.single.spenderBeefHex, isNull);
+      expect(walletManager.commands, isEmpty);
     });
 
     test('a spender whose proof the stored header contradicts is not proven', () async {
       final r = await checkSpenders([_inputKey], tamper: 0);
       expect(r.spends.single.proven, isFalse);
-      expect(spends(), isEmpty);
+      expect(r.spends.single.spenderBeefHex, isNull);
+      expect(walletManager.commands, isEmpty);
     });
 
-    test('a data source that cannot look up spenders: refused, nothing marked', () async {
+    test('a data source that cannot look up spenders: refused, nothing sent', () async {
       final r = await checkSpenders([_inputKey], lookup: false);
       expect(r.success, isFalse);
       expect(r.error, contains('cannot look up'));
-      expect(spends(), isEmpty);
+      expect(walletManager.commands, isEmpty);
     });
   });
 }

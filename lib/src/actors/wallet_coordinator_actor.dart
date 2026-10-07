@@ -662,6 +662,8 @@ class WalletCoordinatorActor extends Actor {
         await _handleImportTransaction(message);
       } else if (message is StoreHeadersCommand) {
         await _handleStoreHeaders(message);
+      } else if (message is GenerateAddressCommand) {
+        unawaited(_handleGenerateAddress(message));
       } else if (message is RegisterWatchAddressCommand) {
         unawaited(_handleRegisterWatchAddress(message)); // off the mailbox: wallet and projection round trips
       } else if (message is ReleaseUTXOsCommand) {
@@ -1584,6 +1586,54 @@ class WalletCoordinatorActor extends Actor {
   /// Journals the watch address in the wallet (bead libspiffy-p4kv; it was
   /// written to the read model only, so a rebuild lost it) and reports
   /// success once the read model has its row. Runs off the mailbox.
+  /// Asks the wallet for a fresh address ([GenerateAddressCommand]) and
+  /// answers once the read model holds it: SPV attributes a payment's
+  /// outputs by the read model's address rows, so an address announced
+  /// before its row exists could be paid and the payment not credited.
+  Future<void> _handleGenerateAddress(GenerateAddressCommand cmd) async {
+    final requestId = cmd.correlationId;
+    AddressGeneratedEvent failure(String error) =>
+        AddressGeneratedEvent(walletId: cmd.walletId, requestId: requestId, success: false, error: error);
+    try {
+      final response = await _askWallet<wm.AddressGeneratedResponse>(
+        wm.WalletCommandMessage(
+          cmd.walletId,
+          domain.GenerateAddressCommand(
+            walletId: cmd.walletId,
+            label: cmd.label,
+            purpose: cmd.purpose,
+            includePublicKey: cmd.includePublicKey,
+            commandId: 'generate-address-$requestId',
+          ),
+        ),
+        const Duration(seconds: 30),
+      );
+      if (!response.success || response.address.isEmpty) {
+        _emitEvent(failure(response.error ?? 'The wallet gave no address'));
+        return;
+      }
+      final notApplied = await _awaitAddressRows(
+          cmd.walletId,
+          [response.address],
+          (e) =>
+              e is domain_events.AddressGeneratedEvent && e.walletId == cmd.walletId && e.address == response.address);
+      _emitEvent(AddressGeneratedEvent(
+        walletId: cmd.walletId,
+        requestId: requestId,
+        success: notApplied == null,
+        address: response.address,
+        derivationIndex: response.derivationIndex,
+        chain: response.chain,
+        publicKeyHex: response.publicKeyHex,
+        error: notApplied == null
+            ? null
+            : 'The address was generated and journaled, but the read model has not applied it yet: $notApplied',
+      ));
+    } catch (e) {
+      _emitEvent(failure('Generating an address for wallet ${cmd.walletId} failed: $e'));
+    }
+  }
+
   Future<void> _handleRegisterWatchAddress(RegisterWatchAddressCommand cmd) async {
     try {
       final applied = awaitProjectionApplied(

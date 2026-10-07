@@ -892,8 +892,11 @@ Long-lived coordinator that manages multiple wallet aggregates:
 // Create wallet (spawns BitcoinWalletAggregate actor)
 walletManager.tell(CreateWalletMessage('wallet-001', 'My Bitcoin Wallet'));
 
-// Send command to wallet aggregate
-// (GenerateAddressCommand: import 'package:libspiffy/internals.dart')
+// Send a command to a wallet aggregate. An application asks the
+// coordinator instead: its GenerateAddressCommand answers with an
+// AddressGeneratedEvent once the read model holds the address, with the
+// key's public key when asked for (includePublicKey). The aggregate's own
+// command is in 'package:libspiffy/internals.dart'.
 walletManager.tell(WalletCommandMessage(
   'wallet-001',
   GenerateAddressCommand(

@@ -661,6 +661,69 @@ class StoreHeadersCommand implements Message {
   DateTime get timestamp => DateTime.now();
 }
 
+/// Asks wallet [walletId] for a fresh address of its own: a key no payment
+/// has named yet, derived on its receive chain ([purpose] `'receive'`, the
+/// default) or its change chain (`'change'`), with an optional [label]. With
+/// [includePublicKey] the answer carries the key's public key, which a
+/// counterparty needs to name the wallet's coin by key (a swap's funding, a
+/// P2PK output) or to build a multisig with it. Answered with
+/// [AddressGeneratedEvent] once the read model holds the address, so a
+/// payment to it validates at once (SPV attributes outputs by the read
+/// model's address rows).
+class GenerateAddressCommand implements Message {
+  final String walletId;
+  final String? label;
+  final String? purpose;
+  final bool includePublicKey;
+  final String? requestId;
+
+  GenerateAddressCommand({
+    required this.walletId,
+    this.label,
+    this.purpose,
+    this.includePublicKey = false,
+    this.requestId,
+  });
+
+  @override
+  String get correlationId => requestId ?? 'generate-address-$walletId-${DateTime.now().microsecondsSinceEpoch}';
+  @override
+  Map<String, dynamic> get metadata => {'walletId': walletId};
+  @override
+  ActorRef? get replyTo => null;
+  @override
+  DateTime get timestamp => DateTime.now();
+}
+
+/// Result of [GenerateAddressCommand]: the wallet's fresh [address], where
+/// it sits on the wallet's keys ([chain], [derivationIndex]) and, when asked
+/// for, its [publicKeyHex].
+class AddressGeneratedEvent extends CoordinatorEvent {
+  @override
+  final String walletId;
+  final String requestId;
+  final bool success;
+  final String? address;
+  final int? derivationIndex;
+  final AddressChain? chain;
+  final String? publicKeyHex;
+  final String? error;
+
+  AddressGeneratedEvent({
+    required this.walletId,
+    required this.requestId,
+    required this.success,
+    this.address,
+    this.derivationIndex,
+    this.chain,
+    this.publicKeyHex,
+    this.error,
+  });
+
+  @override
+  DateTime get eventTimestamp => DateTime.now();
+}
+
 /// Register an address to watch for activity
 class RegisterWatchAddressCommand implements Message {
   final String walletId;

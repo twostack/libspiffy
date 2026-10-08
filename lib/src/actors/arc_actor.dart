@@ -418,6 +418,7 @@ class ARCActor extends Actor {
     }
 
     try {
+      await _submitAncestors(_unprovenAncestors(msg.beefHex, msg.txHex, msg.txid), msg.txid);
       // Broadcast transaction via ARC service
       final response = await _arcService!.submitTransaction(msg.txHex);
 
@@ -1499,6 +1500,36 @@ class ARCActor extends Actor {
     );
   }
 
+  /// The transactions of [beefHex] before [rawTxHex] that carry no proof, in
+  /// the BEEF's order (parents first). Empty without a BEEF, or with one that
+  /// does not parse: the transaction is then broadcast alone.
+  List<String> _unprovenAncestors(String? beefHex, String rawTxHex, String txid) {
+    if (beefHex == null || beefHex.isEmpty) return const [];
+    try {
+      final beef = BEEF.parse(Uint8List.fromList(hex.decode(beefHex)));
+      return [
+        for (var i = 0; i < beef.txs.length; i++)
+          if (!(i < beef.hasMerkle.length && beef.hasMerkle[i]) && hex.encode(beef.txs[i]) != rawTxHex)
+            hex.encode(beef.txs[i]),
+      ];
+    } catch (e) {
+      _log.warning('BEEF of $txid does not parse; broadcasting the transaction alone: $e');
+      return const [];
+    }
+  }
+
+  /// Submits [ancestors] of [txid] to ARC, parents first. A refusal is
+  /// logged and passed over: ARC may know the ancestor already.
+  Future<void> _submitAncestors(List<String> ancestors, String txid) async {
+    for (final ancestor in ancestors) {
+      try {
+        await _arcService!.submitTransaction(ancestor);
+      } catch (e) {
+        _log.info('Ancestor of $txid not accepted by ARC (it may know it already): $e');
+      }
+    }
+  }
+
   /// Broadcasts a deferred payment through [BroadcastDeferredPaymentMessage.via]:
   /// the BEEF's unproven ancestors first (a failure there is logged, the
   /// source may know them already), then the payment. The answer is handled
@@ -1506,29 +1537,11 @@ class ARCActor extends Actor {
   /// hold kept on DOUBLE_SPEND_ATTEMPTED). A failed ARC submission is queued
   /// for retry.
   Future<DeferredPaymentNetworkResult> _broadcastDeferredPayment(BroadcastDeferredPaymentMessage msg) async {
-    final ancestors = <String>[];
-    if (msg.beefHex != null && msg.beefHex!.isNotEmpty) {
-      try {
-        final beef = BEEF.parse(Uint8List.fromList(hex.decode(msg.beefHex!)));
-        for (var i = 0; i < beef.txs.length; i++) {
-          final proven = i < beef.hasMerkle.length && beef.hasMerkle[i];
-          final txHex = hex.encode(beef.txs[i]);
-          if (!proven && txHex != msg.rawTxHex) ancestors.add(txHex);
-        }
-      } catch (e) {
-        _log.warning('BEEF of deferred payment ${msg.txid} does not parse; broadcasting the transaction alone: $e');
-      }
-    }
+    final ancestors = _unprovenAncestors(msg.beefHex, msg.rawTxHex, msg.txid);
 
     String? arcError;
     if (msg.via != DeferredPaymentNetworkSource.dataSource && _arcService != null) {
-      for (final ancestor in ancestors) {
-        try {
-          await _arcService!.submitTransaction(ancestor);
-        } catch (e) {
-          _log.info('Ancestor of deferred payment ${msg.txid} not accepted by ARC (it may know it already): $e');
-        }
-      }
+      await _submitAncestors(ancestors, msg.txid);
       try {
         final response = await _arcService!.submitTransaction(msg.rawTxHex);
         _walletManager.tell(WalletCommandMessage(msg.walletId, BroadcastTransactionCommand(

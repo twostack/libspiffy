@@ -109,6 +109,10 @@ void main() {
       expect(arc.broadcasts.single.walletId, _walletId);
       expect(arc.broadcasts.single.retryOnFailure, isFalse,
           reason: 'the channel retries its funding itself; ARC must not queue a second retry (r56l)');
+      expect(arc.broadcasts.single.beefHex,
+          journal().whereType<ChannelOpenedEvent>().single.fundingBeefHex,
+          reason: 'the funding goes to ARC with the BEEF the channel built, '
+              'so its unproven ancestors are submitted first');
       expect(log, [
         'RecordOutgoingTransactionCommand',
         'broadcast',

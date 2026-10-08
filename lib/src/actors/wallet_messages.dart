@@ -1325,7 +1325,14 @@ class BroadcastTransactionMessage implements Message {
   /// failed (bead libspiffy-r56l).
   final bool retryOnFailure;
 
-  BroadcastTransactionMessage(this.walletId, this.txHex, this.txid, {this.retryOnFailure = true});
+  /// The transaction as a BEEF with its ancestry, when the caller has one.
+  /// Its unproven ancestors are submitted to ARC before the transaction, so
+  /// ARC can build the extended format of a transaction whose parent it has
+  /// not seen (ARC 460, "parent transaction not found"), as a deferred
+  /// payment's are.
+  final String? beefHex;
+
+  BroadcastTransactionMessage(this.walletId, this.txHex, this.txid, {this.retryOnFailure = true, this.beefHex});
 
   @override
   String get correlationId => 'broadcast-$txid';

@@ -494,6 +494,48 @@ void main() {
       expect(statuses(), ['SEEN_ON_NETWORK/arc!', 'SEEN_ON_NETWORK/arc!']);
     });
 
+    group('a plain broadcast with its BEEF (a channel funding)', () {
+      Future<Message> broadcastPlain({String? beefHex}) => arcActor.ask<Message>(
+          BroadcastTransactionMessage(_wallet, kFixture2TxHex, kFixture2Txid, retryOnFailure: false, beefHex: beefHex),
+          const Duration(seconds: 10));
+
+      test('the unconfirmed parent first, then the transaction: ARC can build its extended format', () async {
+        final beefHex = await beefWithUnconfirmedParent();
+        arc.submitStatus = 'SEEN_ON_NETWORK';
+        await spawnActor();
+
+        final reply = await broadcastPlain(beefHex: beefHex);
+
+        expect(reply, isA<BroadcastSuccessMessage>());
+        expect(arc.submitted, [kFixtureTxHex, kFixture2TxHex]);
+      });
+
+      test('a proven parent is not submitted again', () async {
+        await storeTx(kFixture2Txid, kFixture2TxHex);
+        final proven = BEEF(
+          version: 0x0100BEEF,
+          bumps: const [],
+          txs: [Uint8List.fromList(hex.decode(kFixtureTxHex)), Uint8List.fromList(hex.decode(kFixture2TxHex))],
+          hasMerkle: const [true, false],
+          bumpIndex: const [0],
+        );
+        await spawnActor();
+
+        await broadcastPlain(beefHex: hex.encode(proven.serialize()));
+
+        expect(arc.submitted, [kFixture2TxHex]);
+      });
+
+      test('without a BEEF the transaction goes alone, as before', () async {
+        await storeTx(kFixture2Txid, kFixture2TxHex);
+        await spawnActor();
+
+        await broadcastPlain();
+
+        expect(arc.submitted, [kFixture2TxHex]);
+      });
+    });
+
     test('ARC answers REJECTED: recorded for the wallet to fail the payment, nothing spent', () async {
       final beefHex = await beefWithUnconfirmedParent();
       arc.submitStatus = 'REJECTED';

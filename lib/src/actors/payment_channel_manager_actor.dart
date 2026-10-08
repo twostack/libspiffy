@@ -1367,7 +1367,8 @@ class PaymentChannelManagerActor extends Actor {
         // broadcast it first, so ARC knows it; one ARC refuses is refused
         // here, and a re-sent channel_open submits it again.
         await _submitUncontested(state.walletId, msg.fundingTxHex, msg.fundingTxId,
-            'funding transaction ${msg.fundingTxId} of channel ${msg.channelId}');
+            'funding transaction ${msg.fundingTxId} of channel ${msg.channelId}',
+            beefHex: fundingBeefHex);
       }
 
       final openCmd = OpenChannelCommand(
@@ -1875,7 +1876,8 @@ class PaymentChannelManagerActor extends Actor {
         arcActor,
         // The channel owns the retry of its funding (RetryChannelFunding):
         // not queued at ARC as well (bead libspiffy-r56l).
-        BroadcastTransactionMessage(state.walletId, fundingTxHex, fundingTxId, retryOnFailure: false),
+        BroadcastTransactionMessage(state.walletId, fundingTxHex, fundingTxId,
+            retryOnFailure: false, beefHex: fundingBeefHex),
         accept: (r) => r is BroadcastSuccessMessage || r is BroadcastFailedMessage,
         what: 'Broadcasting funding transaction $fundingTxId',
         timeout: _broadcastTimeout,
@@ -2659,14 +2661,14 @@ class PaymentChannelManagerActor extends Actor {
   ///   [_inFlightTimeout] (bead libspiffy-m715: a funding ARC answered
   ///   ACCEPTED_BY_NETWORK, when its five-second wait for the network ran
   ///   out, failed an open the network went on to hold).
-  Future<void> _submitUncontested(String walletId, String txHex, String txid, String what) async {
+  Future<void> _submitUncontested(String walletId, String txHex, String txid, String what, {String? beefHex}) async {
     final arcActor = _arcActor;
     if (arcActor == null) {
       throw StateError('No transaction broadcaster (ARC actor) configured: $what cannot be broadcast');
     }
     final reply = await _request(
       arcActor,
-      BroadcastTransactionMessage(walletId, txHex, txid, retryOnFailure: false),
+      BroadcastTransactionMessage(walletId, txHex, txid, retryOnFailure: false, beefHex: beefHex),
       accept: (r) => r is BroadcastSuccessMessage || r is BroadcastFailedMessage,
       what: 'Broadcasting $what',
       timeout: _broadcastTimeout,

@@ -349,6 +349,9 @@ void main() {
       expect(arc.broadcasts.single.txHex, fundingTx.hex);
       expect(arc.broadcasts.single.retryOnFailure, isFalse,
           reason: 'the client re-sends channel_open; that is the retry');
+      expect(arc.broadcasts.single.beefHex, fundingTx.beefHex,
+          reason: 'its unproven ancestors go to ARC first: ARC refuses a '
+              'transaction whose parent it has not seen (460)');
     });
 
     test('a funding ARC refuses does not open the channel', () async {

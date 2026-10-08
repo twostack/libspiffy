@@ -111,6 +111,15 @@ void main() {
     await storeDeferred(kFixtureTxid, [_inputKey]);
   }
 
+  MerkleProofData proof({int? tamperLevel}) => MerkleProofData(
+        txid: kFixtureTxid,
+        blockHeight: kFixtureHeight,
+        merkleRoot: '',
+        index: kFixtureIndex,
+        nodes: fixtureNodes(tamperLevel: tamperLevel),
+        format: 'tsc',
+      );
+
   ArcTransactionResponse status(String txStatus, {String? bumpHex}) => ArcTransactionResponse.fromJson({
         'txid': kFixtureTxid,
         'txStatus': txStatus,
@@ -195,6 +204,54 @@ void main() {
       // Null since bead libspiffy-8743: a rate nobody published is no rate.
       expect(answer.rate, isNull);
       expect(answer.error, contains('policy'));
+    });
+  });
+
+  // The temporary stopgap of bead libspiffy-tfks (to be removed, bead
+  // libspiffy-5it6): an ARC that calls a transaction orphaned for good left
+  // its outputs pending, so the wallet could not spend them.
+  group('ARC still calls a transaction orphaned after remediation gives up', () {
+    Future<void> scanUntil(bool Function() done) async {
+      final deadline = DateTime.now().add(const Duration(seconds: 10));
+      while (!done() && DateTime.now().isBefore(deadline)) {
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+      }
+    }
+
+    test('the data source is asked; known and proven, it applies and confirms', () async {
+      await handedOver();
+      await storage.storeBlockHeader(fixtureHeader(), kFixtureHeight);
+      arc.statuses[kFixtureTxid] = status('SEEN_IN_ORPHAN_MEMPOOL');
+      dataSource.raw[kFixtureTxid] = kFixtureTxHex;
+      dataSource.proofs[kFixtureTxid] = proof();
+      await spawnActor(statusCheckInterval: const Duration(milliseconds: 50));
+
+      await scanUntil(() => confirms().isNotEmpty);
+
+      expect(applied(), contains(kFixtureTxid));
+      expect(confirms().first.bumpHex, isNotEmpty);
+    });
+
+    test('nothing from the data source while remediation still tries', () async {
+      await handedOver();
+      arc.statuses[kFixtureTxid] = status('SEEN_IN_ORPHAN_MEMPOOL');
+      dataSource.raw[kFixtureTxid] = kFixtureTxHex;
+      await spawnActor(statusCheckInterval: const Duration(milliseconds: 50));
+
+      await scanUntil(() => arc.getTransactionCalls >= 3);
+
+      expect(applied(), isEmpty, reason: 'remediation gets its three attempts first');
+    });
+
+    test('a transaction the data source does not know stays as it is', () async {
+      await handedOver();
+      arc.statuses[kFixtureTxid] = status('SEEN_IN_ORPHAN_MEMPOOL');
+      await spawnActor(statusCheckInterval: const Duration(milliseconds: 50));
+
+      await scanUntil(() => arc.getTransactionCalls >= 6);
+
+      expect(applied(), isEmpty);
+      expect(confirms(), isEmpty);
     });
   });
 
@@ -392,15 +449,6 @@ void main() {
   });
 
   group('data source fallback', () {
-    MerkleProofData proof({int? tamperLevel}) => MerkleProofData(
-          txid: kFixtureTxid,
-          blockHeight: kFixtureHeight,
-          merkleRoot: '',
-          index: kFixtureIndex,
-          nodes: fixtureNodes(tamperLevel: tamperLevel),
-          format: 'tsc',
-        );
-
     test('known with a proof matching the header: spend applied and confirmed', () async {
       await handedOver();
       await storage.storeBlockHeader(fixtureHeader(), kFixtureHeight);

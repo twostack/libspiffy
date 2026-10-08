@@ -114,6 +114,13 @@ class ARCActor extends Actor {
   final Map<String, int> _orphanRemediationAttempts = {}; // txid -> attempt count
   static const int _maxOrphanRemediationAttempts = 3;
 
+  /// When the data source was last asked about a transaction ARC still calls
+  /// orphaned after remediation gave up (transient, like the attempts).
+  final Map<String, DateTime> _orphanSourceCheckedAt = {};
+
+  /// How often such a transaction is looked up in the data source.
+  static const Duration orphanSourceCheckInterval = Duration(minutes: 5);
+
   // Periodic status checking
   Timer? _statusCheckTimer;
 
@@ -897,7 +904,11 @@ class ARCActor extends Actor {
         if (currentStatus != TransactionStatus.orphaned) {
           _updateTransactionStatusFromArc(walletId, txid, response.status);
         }
-        _handleOrphanedTransaction(txid);
+        if ((_orphanRemediationAttempts[txid] ?? 0) < _maxOrphanRemediationAttempts) {
+          _handleOrphanedTransaction(txid);
+        } else {
+          await _checkOrphanViaDataSource(walletId, txid);
+        }
         return _StatusCheck(_CheckOutcome.changed, status: wireStatus);
       }
 
@@ -906,6 +917,7 @@ class ARCActor extends Actor {
       // headers.
       if (response.status == ArcTransactionStatus.mined) {
         _orphanRemediationAttempts.remove(txid);
+        _orphanSourceCheckedAt.remove(txid);
         await _applyDeferredSpend(txid, walletId);
         final proofStatus = await _handleMinedReport(txid, walletId, response);
         return _StatusCheck(_CheckOutcome.changed,
@@ -946,6 +958,7 @@ class ARCActor extends Actor {
       // shows outstanding, not from a status transition.
       if (response.status == ArcTransactionStatus.seenOnNetwork) {
         _orphanRemediationAttempts.remove(txid);
+        _orphanSourceCheckedAt.remove(txid);
         await _applyDeferredSpend(txid, walletId);
       }
 
@@ -1768,6 +1781,27 @@ class ARCActor extends Actor {
     }
   }
 
+  /// TEMPORARY STOPGAP (bead libspiffy-tfks), to be removed once ARC is
+  /// fixed (bead libspiffy-5it6): transaction status comes from ARC, and the
+  /// data source is for wallet recovery only.
+  ///
+  /// A transaction ARC calls orphaned for good (an ARC whose node cannot
+  /// have its parents, as a regtest ARC configured for a testnet wallet)
+  /// kept its outputs pending, so nothing could spend them. Once remediation
+  /// gave up, the data source is asked every [orphanSourceCheckInterval]: a
+  /// transaction it knows applies as on the network, and its proof confirms
+  /// it only against our own headers ([_checkViaDataSource]).
+  Future<void> _checkOrphanViaDataSource(String walletId, String txid) async {
+    if (_dataSource == null) return;
+    final now = _clock();
+    final last = _orphanSourceCheckedAt[txid];
+    if (last != null && now.difference(last) < orphanSourceCheckInterval) return;
+    _orphanSourceCheckedAt[txid] = now;
+    final result = await _checkViaDataSource(walletId, txid);
+    _log.info('ARC calls $txid orphaned; the data source says '
+        '${result.success ? result.networkStatus : 'nothing (${result.error})'}');
+  }
+
   /// Handle an orphaned transaction by finding and rebroadcasting its missing parent(s),
   /// then rebroadcasting the child once parents are accepted.
   ///
@@ -1840,7 +1874,7 @@ class ARCActor extends Actor {
             }
 
             try {
-              final submitResponse = await _arcService!.submitTransaction(parentTx.rawHex);
+              final submitResponse = await _arcService!.submitTransaction(await _submitForm(parentTx.rawHex, null));
               _log.info('Orphan remediation: broadcast parent $parentTxid — '
                   'response: ${submitResponse.status.wireName}');
             } catch (e) {
@@ -1864,7 +1898,7 @@ class ARCActor extends Actor {
       if (allParentsAccepted) {
         _log.info('Orphan remediation: all parents accepted, rebroadcasting child $txid');
         try {
-          final response = await _arcService!.submitTransaction(childTx.rawHex);
+          final response = await _arcService!.submitTransaction(await _submitForm(childTx.rawHex, null));
           final newStatus = response.status.wireName;
           _log.info('Orphan remediation: child $txid submit response — '
               'status: $newStatus, txid: ${response.txid}, message: ${response.message}');

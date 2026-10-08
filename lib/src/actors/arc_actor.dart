@@ -25,6 +25,7 @@ import '../storage/transaction_row_rules.dart';
 import '../utils/beef.dart';
 import '../utils/extended_format.dart';
 import 'spv_messages.dart' show BlockHeaderStoredMessage;
+import 'submission_watcher_actor.dart';
 import 'wallet_messages.dart';
 
 /// A MINED report whose block header is not stored yet (SPV-09), with every
@@ -43,6 +44,16 @@ class _Backoff {
   final int misses;
 
   _Backoff(this.due, this.misses);
+}
+
+/// A submission ARC answered in flight, followed by the
+/// [SubmissionWatcherActor]: its first [answer], and what to do with the
+/// answer the follow ends with.
+class _Following {
+  final ArcSubmitResponse answer;
+  final Future<void> Function(ArcSubmitResponse settled) finish;
+
+  _Following(this.answer, this.finish);
 }
 
 /// What one status check of a transaction found.
@@ -209,6 +220,27 @@ class ARCActor extends Actor {
   // Durable broadcast retry queue (persisted via Isar)
   duraq.Queue<Map<String, dynamic>>? _broadcastQueue;
 
+  /// How long the [SubmissionWatcherActor] waits before each query of a
+  /// submission ARC answered in flight. Empty: a submission is answered
+  /// with ARC's first answer, whatever it is.
+  final List<Duration> inFlightFollowDelays;
+
+  /// About 30 s in all, as ARC's callers followed it before (V-150).
+  static const List<Duration> defaultInFlightFollowDelays = [
+    Duration(seconds: 1),
+    Duration(seconds: 2),
+    Duration(seconds: 4),
+    Duration(seconds: 8),
+    Duration(seconds: 15),
+  ];
+
+  /// Spawned on the first submission answered in flight.
+  ActorRef? _watcher;
+  int _followSeq = 0;
+
+  /// Submissions the watcher follows, by token.
+  final Map<int, _Following> _following = {};
+
   ARCActor({
     required ActorRef walletManager,
     required ReadModelStorage storage,
@@ -223,6 +255,7 @@ class ARCActor extends Actor {
     this.inFlightStuckAfter = const Duration(hours: 1),
     DateTime Function()? clock,
     BlockchainDataSource? dataSource,
+    this.inFlightFollowDelays = defaultInFlightFollowDelays,
   })  : _walletManager = walletManager,
         _storage = storage,
         _arcConfig = arcConfig,
@@ -279,7 +312,11 @@ class ARCActor extends Actor {
           break;
 
         case final BroadcastDeferredPaymentMessage msg:
-          context.sender?.tell(await _broadcastDeferredPayment(msg));
+          await _broadcastDeferredPayment(msg, context.sender);
+          break;
+
+        case final SubmissionSettledMessage msg:
+          await _onSettled(msg);
           break;
 
         case final CheckOutputSpendersMessage msg:
@@ -442,12 +479,12 @@ class ARCActor extends Actor {
       );
       _walletManager.tell(WalletCommandMessage(msg.walletId, command));
 
-      // Update transaction status based on ARC's initial response
-      _updateTransactionStatusFromArc(msg.walletId, msg.txid, response.status);
-      await _onSubmitResponse(msg.walletId, msg.txid, msg.txHex, response);
-
-      context.sender?.tell(_submitReply(msg.txid, response));
-
+      await _applySubmitAnswer(msg.walletId, msg.txid, msg.txHex, response);
+      final replyTo = context.sender;
+      await _settle(msg.txid, response, (answer) async {
+        if (!identical(answer, response)) await _applySettledAnswer(msg.walletId, msg.txid, msg.txHex, answer);
+        replyTo?.tell(_submitReply(msg.txid, answer));
+      });
     } catch (e) {
       _log.warning('Broadcast failed for ${msg.txid}${msg.retryOnFailure ? ', queueing for retry' : ''}: $e');
       final queued =
@@ -492,12 +529,13 @@ class ARCActor extends Actor {
       );
       _walletManager.tell(WalletCommandMessage(msg.walletId, command));
 
-      // Update transaction status based on ARC's initial response
-      _updateTransactionStatusFromArc(msg.walletId, msg.txid, response.status);
-      await _onSubmitResponse(msg.walletId, msg.txid, paymentTxHex, response);
-
-      context.sender?.tell(_submitReply(msg.txid, response));
-
+      final txHex = paymentTxHex;
+      await _applySubmitAnswer(msg.walletId, msg.txid, txHex, response);
+      final replyTo = context.sender;
+      await _settle(msg.txid, response, (answer) async {
+        if (!identical(answer, response)) await _applySettledAnswer(msg.walletId, msg.txid, txHex, answer);
+        replyTo?.tell(_submitReply(msg.txid, answer));
+      });
     } catch (e) {
       _log.warning('BEEF broadcast failed for ${msg.txid}, queueing for retry: $e');
       final queued =
@@ -527,6 +565,56 @@ class ARCActor extends Actor {
     return BroadcastSuccessMessage(txid, response.txid, networkStatus: status);
   }
 
+  /// Acts on ARC's answer to a submission: the wallet's status, and what
+  /// [_onSubmitResponse] does with it. Returns the proof check of a MINED
+  /// answer.
+  Future<ProofHeaderStatus?> _applySubmitAnswer(String walletId, String txid, String txHex, ArcSubmitResponse answer,
+      {bool explicit = false}) {
+    _updateTransactionStatusFromArc(walletId, txid, answer.status);
+    return _onSubmitResponse(walletId, txid, txHex, answer, explicit: explicit);
+  }
+
+  /// [_applySubmitAnswer] for the answer a follow ended with. A failure is
+  /// logged: the caller is answered either way, and the status scan acts on
+  /// the transaction again.
+  Future<ProofHeaderStatus?> _applySettledAnswer(String walletId, String txid, String txHex, ArcSubmitResponse answer,
+      {bool explicit = false}) async {
+    try {
+      return await _applySubmitAnswer(walletId, txid, txHex, answer, explicit: explicit);
+    } catch (e) {
+      _log.warning('Could not act on ARC\'s ${answer.status.wireName} for $txid: $e');
+      return null;
+    }
+  }
+
+  /// Finishes the submission of [txid] that ARC answered [answer]: at once
+  /// when the answer is no longer in flight ([DeferredNetworkStatus.inFlight]),
+  /// otherwise with the answer [SubmissionWatcherActor] follows it to.
+  ///
+  /// Arcade answers every submission RECEIVED and takes it to the network
+  /// afterwards, so its first answer says nothing of the network; ARC
+  /// waited for it before answering. Either way the caller is answered with
+  /// the status the network got to. The follow runs outside this mailbox:
+  /// this returns as soon as it is handed over.
+  Future<void> _settle(String txid, ArcSubmitResponse answer, Future<void> Function(ArcSubmitResponse) finish) async {
+    if (!DeferredNetworkStatus.isInFlight(answer.status.wireName) || inFlightFollowDelays.isEmpty || _stopped) {
+      await finish(answer);
+      return;
+    }
+    final watcher = _watcher ??= await context.spawn('${context.self.id}-submission-watcher',
+        () => SubmissionWatcherActor(arcService: _arcService, delays: inFlightFollowDelays));
+    final token = ++_followSeq;
+    _following[token] = _Following(answer, finish);
+    watcher.tell(LocalMessage(
+        payload: FollowSubmissionMessage(token: token, txid: txid, answer: answer, owner: context.self)));
+  }
+
+  Future<void> _onSettled(SubmissionSettledMessage msg) async {
+    final following = _following.remove(msg.token);
+    if (following == null) return;
+    await following.finish(msg.answer);
+  }
+
   /// Stops starting work and waits for the work in flight (bead
   /// libspiffy-vr89): the host closes the retry queue's Isar store after
   /// shutdown, and a write into a closed store crashes the process (SEGV in
@@ -537,6 +625,13 @@ class ARCActor extends Actor {
     _stopped = true;
     _statusCheckTimer?.cancel();
     _headerDebounceTimer?.cancel();
+    // Submissions still followed are answered with what ARC said so far.
+    _watcher?.tell(LocalMessage(payload: const StopFollowingMessage()));
+    final following = List.of(_following.values);
+    _following.clear();
+    for (final f in following) {
+      await f.finish(f.answer);
+    }
     await _scanDone?.future;
     _log.info('ARC work stopped: nothing in flight, nothing more will be started');
   }
@@ -958,7 +1053,8 @@ class ARCActor extends Actor {
       // the stored status already is SEEN_ON_NETWORK (the submit response
       // said so, 09k): the spend is applied from what the read model still
       // shows outstanding, not from a status transition.
-      if (response.status == ArcTransactionStatus.seenOnNetwork) {
+      if (response.status == ArcTransactionStatus.seenOnNetwork ||
+          response.status == ArcTransactionStatus.seenMultipleNodes) {
         _orphanRemediationAttempts.remove(txid);
         _orphanSourceCheckedAt.removeWhere((key, _) => key.$2 == txid);
         await _applyDeferredSpend(txid, walletId);
@@ -1021,6 +1117,7 @@ class ARCActor extends Actor {
         competingTxids: response.doubleSpendTxids ?? const []);
     switch (response.status) {
       case ArcTransactionStatus.seenOnNetwork:
+      case ArcTransactionStatus.seenMultipleNodes:
         await _applyDeferredSpend(txid, walletId, rawHex: txHex);
         return null;
       case ArcTransactionStatus.mined:
@@ -1594,9 +1691,10 @@ class ARCActor extends Actor {
   /// the BEEF's unproven ancestors first (a failure there is logged, the
   /// source may know them already), then the payment. The answer is handled
   /// like any submit answer (spend, proof check, failure on REJECTED; the
-  /// hold kept on DOUBLE_SPEND_ATTEMPTED). A failed ARC submission is queued
-  /// for retry.
-  Future<DeferredPaymentNetworkResult> _broadcastDeferredPayment(BroadcastDeferredPaymentMessage msg) async {
+  /// hold kept on DOUBLE_SPEND_ATTEMPTED), and [replyTo] is answered once
+  /// it is not in flight ([_settle]). A failed ARC submission is queued for
+  /// retry.
+  Future<void> _broadcastDeferredPayment(BroadcastDeferredPaymentMessage msg, ActorRef? replyTo) async {
     final beef = _parseBeef(msg.beefHex, msg.txid);
     final ancestors = _unprovenAncestors(beef, msg.rawTxHex);
 
@@ -1611,50 +1709,59 @@ class ARCActor extends Actor {
           signedTransaction: msg.rawTxHex,
           broadcastResponse: response.status.wireName,
         )));
-        _updateTransactionStatusFromArc(msg.walletId, msg.txid, response.status);
-        final proofStatus = await _onSubmitResponse(msg.walletId, msg.txid, msg.rawTxHex, response, explicit: true);
-        return DeferredPaymentNetworkResult(
-          walletId: msg.walletId,
-          txid: msg.txid,
-          success: true,
-          networkStatus: response.status.wireName,
-          source: 'arc',
-          blockHeight: response.blockHeight,
-          proofStatus: proofStatus?.name,
-          confirmed: proofStatus == ProofHeaderStatus.verified,
-          error: DeferredNetworkStatus.isDefinitiveFailure(response.status.wireName) ||
-                  DeferredNetworkStatus.isContested(response.status.wireName)
-              ? response.message
-              : null,
-          competingTxids: response.doubleSpendTxids ?? const [],
-        );
+        final proofStatus =
+            await _applySubmitAnswer(msg.walletId, msg.txid, msg.rawTxHex, response, explicit: true);
+        await _settle(msg.txid, response, (answer) async {
+          final answerProof = identical(answer, response)
+              ? proofStatus
+              : await _applySettledAnswer(msg.walletId, msg.txid, msg.rawTxHex, answer, explicit: true);
+          replyTo?.tell(DeferredPaymentNetworkResult(
+            walletId: msg.walletId,
+            txid: msg.txid,
+            success: true,
+            networkStatus: answer.status.wireName,
+            source: 'arc',
+            blockHeight: answer.blockHeight,
+            proofStatus: answerProof?.name,
+            confirmed: answerProof == ProofHeaderStatus.verified,
+            error: DeferredNetworkStatus.isDefinitiveFailure(answer.status.wireName) ||
+                    DeferredNetworkStatus.isContested(answer.status.wireName)
+                ? answer.message
+                : null,
+            competingTxids: answer.doubleSpendTxids ?? const [],
+          ));
+        });
+        return;
       } catch (e) {
         arcError = e.toString();
         _log.warning('ARC broadcast of deferred payment ${msg.txid} failed: $e');
       }
       if (msg.via == DeferredPaymentNetworkSource.arc) {
         await _enqueueForRetry(msg.txid, msg.walletId, msg.rawTxHex, beefHex: msg.beefHex);
-        return DeferredPaymentNetworkResult(
+        replyTo?.tell(DeferredPaymentNetworkResult(
           walletId: msg.walletId,
           txid: msg.txid,
           success: false,
           willRetry: _broadcastQueue != null,
           error: arcError,
-        );
+        ));
+        return;
       }
     } else if (msg.via == DeferredPaymentNetworkSource.arc) {
-      return DeferredPaymentNetworkResult(
-          walletId: msg.walletId, txid: msg.txid, success: false, error: 'ARC service not available');
+      replyTo?.tell(DeferredPaymentNetworkResult(
+          walletId: msg.walletId, txid: msg.txid, success: false, error: 'ARC service not available'));
+      return;
     }
 
     final dataSource = _dataSource;
     if (dataSource == null) {
-      return DeferredPaymentNetworkResult(
+      replyTo?.tell(DeferredPaymentNetworkResult(
         walletId: msg.walletId,
         txid: msg.txid,
         success: false,
         error: [if (arcError != null) 'ARC: $arcError', 'No blockchain data source is configured'].join('; '),
-      );
+      ));
+      return;
     }
     for (final ancestor in ancestors) {
       try {
@@ -1673,8 +1780,11 @@ class ARCActor extends Actor {
     // tells (and applies the spend and any proof exactly like a check).
     final check = await _checkViaDataSource(msg.walletId, msg.txid);
     final known = check.success && check.networkStatus != DeferredNetworkStatus.notFound;
-    if (known) return check;
-    return DeferredPaymentNetworkResult(
+    if (known) {
+      replyTo?.tell(check);
+      return;
+    }
+    replyTo?.tell(DeferredPaymentNetworkResult(
       walletId: msg.walletId,
       txid: msg.txid,
       success: false,
@@ -1684,7 +1794,7 @@ class ARCActor extends Actor {
         if (arcError != null) 'ARC: $arcError',
         'data source: ${dataSourceError ?? check.error ?? 'transaction not known after submission'}',
       ].join('; '),
-    );
+    ));
   }
 
   /// Re-check held MINED proofs against the headers stored since.
@@ -1719,8 +1829,10 @@ class ARCActor extends Actor {
       case ArcTransactionStatus.requestedByNetwork:
       case ArcTransactionStatus.sentToNetwork:
       case ArcTransactionStatus.acceptedByNetwork:
+      case ArcTransactionStatus.pendingRetry:
         return TransactionStatus.broadcast;
       case ArcTransactionStatus.seenOnNetwork:
+      case ArcTransactionStatus.seenMultipleNodes:
         return TransactionStatus.seenOnNetwork;
       case ArcTransactionStatus.mined:
         return TransactionStatus.confirmed;
@@ -1747,9 +1859,11 @@ class ARCActor extends Actor {
       case ArcTransactionStatus.requestedByNetwork:
       case ArcTransactionStatus.sentToNetwork:
       case ArcTransactionStatus.acceptedByNetwork:
+      case ArcTransactionStatus.pendingRetry:
         txStatus = TransactionStatus.broadcast;
         break;
       case ArcTransactionStatus.seenOnNetwork:
+      case ArcTransactionStatus.seenMultipleNodes:
         txStatus = TransactionStatus.seenOnNetwork;
         break;
       case ArcTransactionStatus.mined:
@@ -1962,6 +2076,7 @@ class ARCActor extends Actor {
   /// Whether a status indicates the transaction is accepted by the network
   bool _isAcceptedStatus(ArcTransactionStatus status) {
     return status == ArcTransactionStatus.seenOnNetwork ||
+           status == ArcTransactionStatus.seenMultipleNodes ||
            status == ArcTransactionStatus.mined ||
            status == ArcTransactionStatus.acceptedByNetwork;
   }
@@ -1992,6 +2107,8 @@ class ARCActor extends Actor {
     _stopped = true;
     _statusCheckTimer?.cancel();
     _headerDebounceTimer?.cancel();
+    final watcher = _watcher;
+    if (watcher != null) unawaited(context.system.stop(watcher));
   }
 
 }

@@ -24,10 +24,20 @@ tags:
     #   dart test -P localnet test/integration/localnet_channel_e2e_test.dart
     skip: "needs ../localnet; run with -P localnet"
 
+  arcade:
+    # Runs against the BSV Association's public testnet Arcade and reads
+    # testnet transactions from WhatsOnChain, so it runs only when asked for:
+    #   dart test -P arcade test/integration/arcade_testnet_live_test.dart
+    skip: "needs the public testnet Arcade; run with -P arcade"
+
 presets:
   localnet:
     tags:
       localnet:
+        skip: false
+  arcade:
+    tags:
+      arcade:
         skip: false
 
 # Increase timeout for slow tests

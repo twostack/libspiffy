@@ -49,6 +49,16 @@ class ArcServiceConfig {
         apiKey: apiKey,
       );
 
+  /// Configuration for the BSV Association's testnet Arcade (no API key).
+  ///
+  /// Arcade is the Teranode-era successor to ARC. It serves the ARC API at
+  /// its root, so the base URL has no `/v1`.
+  static ArcServiceConfig bsvaArcadeTestnet({String? apiKey}) =>
+      ArcServiceConfig(
+        baseUrl: 'https://arcade-v2-testnet-us-1.bsvblockchain.tech',
+        apiKey: apiKey,
+      );
+
   /// Create a custom configuration
   static ArcServiceConfig custom({
     required String baseUrl,

@@ -148,6 +148,23 @@ void main() {
           ));
         });
 
+        test("accepts Arcade's 202 RECEIVED", () async {
+          // Arcade's exact reply to POST /tx (captured from the testnet instance).
+          when(mockClient.post(
+            any,
+            headers: anyNamed('headers'),
+            body: anyNamed('body'),
+          )).thenAnswer((_) async => http.Response(
+            '{"txid":"$testTxId","status":202,"txStatus":"RECEIVED"}',
+            202,
+          ));
+
+          final result = await arcService.submitTransaction(testRawTx);
+
+          expect(result.txid, equals(testTxId));
+          expect(result.status, equals(ArcTransactionStatus.received));
+        });
+
         test('should handle transaction submission error', () async {
           when(mockClient.post(
             any,

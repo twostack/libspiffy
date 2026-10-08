@@ -155,6 +155,10 @@ enum DeferredPaymentNetworkSource {
 /// values below are the ones the wallet acts on, plus the two it adds.
 abstract final class DeferredNetworkStatus {
   static const String seenOnNetwork = 'SEEN_ON_NETWORK';
+
+  /// Arcade: more than one miner has the transaction in a subtree. On the
+  /// network, as [seenOnNetwork] is.
+  static const String seenMultipleNodes = 'SEEN_MULTIPLE_NODES';
   static const String mined = 'MINED';
   static const String rejected = 'REJECTED';
   static const String doubleSpendAttempted = 'DOUBLE_SPEND_ATTEMPTED';
@@ -190,12 +194,14 @@ abstract final class DeferredNetworkStatus {
 
   /// Statuses that mean the network has the transaction (the deferred spend
   /// applies).
-  static bool isOnNetwork(String? status) => status == seenOnNetwork || status == mined;
+  static bool isOnNetwork(String? status) =>
+      status == seenOnNetwork || status == seenMultipleNodes || status == mined;
 
   /// ARC's statuses for a transaction it is still taking to the network:
   /// where it had got to when it answered, not a verdict. ARC answers a
   /// submission with one when its wait for the network ran out, or when the
-  /// same transaction was already being processed.
+  /// same transaction was already being processed. Arcade answers every
+  /// submission RECEIVED, and PENDING_RETRY while it retries a broadcast.
   static const Set<String> inFlight = {
     'QUEUED',
     'RECEIVED',
@@ -204,6 +210,7 @@ abstract final class DeferredNetworkStatus {
     'REQUESTED_BY_NETWORK',
     'SENT_TO_NETWORK',
     'ACCEPTED_BY_NETWORK',
+    'PENDING_RETRY',
   };
 
   /// Whether [status] is one of ARC's [inFlight] statuses.

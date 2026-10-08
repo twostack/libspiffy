@@ -132,6 +132,8 @@ void main() {
         statusCheckInterval: statusCheckInterval,
         headerTriggerDebounce: const Duration(milliseconds: 10),
         clock: () => DateTime.now().add(clockAhead),
+        // An answer still in flight is followed briefly, then reported.
+        inFlightFollowDelays: const [Duration(milliseconds: 10)],
       ),
     );
   }

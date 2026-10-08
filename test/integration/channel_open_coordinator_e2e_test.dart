@@ -171,6 +171,8 @@ class _Node {
       #enableP2P: false,
       #secureStorage: secureStorage,
       #arcService: arc,
+      // ARC's answers here are what it holds: its follow is brief.
+      #arcInFlightFollowDelays: const [Duration(milliseconds: 20)],
       if (announcePeerId) #channelPeerId: peerId,
       #channelTiming: channelTiming,
     });

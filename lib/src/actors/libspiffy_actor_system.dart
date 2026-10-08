@@ -102,6 +102,7 @@ class LibSpiffyActorSystem {
   /// for a node that does no channels.
   ChannelTiming? _channelTiming;
   Duration _deadlineSweepInterval = const Duration(minutes: 1);
+  List<Duration> _arcInFlightFollowDelays = ARCActor.defaultInFlightFollowDelays;
   InvoiceProjection? _invoiceProjection;
   ChannelProjection? _channelProjection;
   ActorRef? _walletProjectionRef;
@@ -256,6 +257,9 @@ class LibSpiffyActorSystem {
     // How often outstanding deferred payments whose deadline has passed are
     // reclaimed by the coordinator itself (bead libspiffy-8442).
     Duration deadlineSweepInterval = const Duration(minutes: 1),
+    // How long ARCActor waits before each query of a submission ARC
+    // answered in flight (Arcade answers every submission RECEIVED).
+    List<Duration> arcInFlightFollowDelays = ARCActor.defaultInFlightFollowDelays,
   }) async {
     // An instance is initialized once. A second call used to build a second
     // actor system and storage stack over the first (A-M5).
@@ -274,6 +278,7 @@ class LibSpiffyActorSystem {
     _channelPeerId = channelPeerId;
     _channelTiming = channelTiming;
     _deadlineSweepInterval = deadlineSweepInterval;
+    _arcInFlightFollowDelays = arcInFlightFollowDelays;
     try {
       await _initialize(
         actorSystem: actorSystem,
@@ -864,6 +869,7 @@ class LibSpiffyActorSystem {
       dataSource: _blockchainDataSource is BlockchainDataSource
           ? _blockchainDataSource as BlockchainDataSource
           : null,
+      inFlightFollowDelays: _arcInFlightFollowDelays,
     ));
     
     // Wire up ARC actor reference in WalletManager

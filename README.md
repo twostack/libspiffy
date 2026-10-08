@@ -1482,6 +1482,8 @@ ArcServiceConfig.taalMainnet(apiKey: 'your-api-key');
 ArcServiceConfig.taalTestnet(apiKey: 'your-api-key');
 ArcServiceConfig.gorillaPoolMainnet();
 ArcServiceConfig.gorillaPoolTestnet();
+// Arcade, the Teranode-era ARC, serves the same API at its root (no /v1):
+ArcServiceConfig.bsvaArcadeTestnet();
 
 await libspiffy.initialize(
   dataDirectory: './wallet-data',

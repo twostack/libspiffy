@@ -830,6 +830,13 @@ class SPVValidationResult extends ActorResponse {
   /// carrying its proof is already mined.
   final bool subjectCarriesProof;
 
+  /// The BEEF the receive came in, as hex, set where the receive answers.
+  /// A payment's broadcast takes the outputs it spends from it (Extended
+  /// Format): they are the payer's, and no wallet here stores them. Arcade
+  /// refuses a raw transaction with 460. Null for a verdict that is not a
+  /// receive.
+  final String? beefHex;
+
   SPVValidationResult({
     required this.txid,
     required this.isValid,
@@ -849,6 +856,7 @@ class SPVValidationResult extends ActorResponse {
     List<String> invoicePaidAddresses = const [],
     this.awaitingHeader = false,
     this.subjectCarriesProof = false,
+    this.beefHex,
   })  : invoicePaidAddresses = frozenList(invoicePaidAddresses),
         spendableUTXOs = frozenMapList(spendableUTXOs),
         spentUTXOs = frozenMapList(spentUTXOs),
@@ -869,7 +877,8 @@ class SPVValidationResult extends ActorResponse {
           String? invoiceId,
           bool awaitingHeader = false,
           bool? subjectCarriesProof,
-          String? memo}) =>
+          String? memo,
+          String? beefHex}) =>
       SPVValidationResult(
         txid: txid,
         isValid: isValid,
@@ -889,6 +898,7 @@ class SPVValidationResult extends ActorResponse {
         invoicePaidAddresses: invoicePaidAddresses,
         awaitingHeader: awaitingHeader,
         subjectCarriesProof: subjectCarriesProof ?? this.subjectCarriesProof,
+        beefHex: beefHex ?? this.beefHex,
       );
 
   @override

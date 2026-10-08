@@ -51,6 +51,8 @@ void main() {
         isar: isar,
         statusCheckInterval: const Duration(minutes: 30),
         failedCheckInterval: const Duration(minutes: 30),
+        // An answer still in flight is followed briefly, then reported.
+        inFlightFollowDelays: const [Duration(milliseconds: 10)],
       ),
     );
   }
@@ -200,6 +202,8 @@ void main() {
         isar: isar,
         statusCheckInterval: const Duration(milliseconds: 100),
         failedCheckInterval: const Duration(minutes: 30),
+        // An answer still in flight is followed briefly, then reported.
+        inFlightFollowDelays: const [Duration(milliseconds: 10)],
       ),
     );
     // Queued; the next retry pass resubmits it and is held there.

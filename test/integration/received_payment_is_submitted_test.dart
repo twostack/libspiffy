@@ -158,6 +158,7 @@ void main() {
       networkType: 'regtest',
       enableP2P: false,
       arcService: arc,
+      arcInFlightFollowDelays: const [Duration(milliseconds: 20), Duration(milliseconds: 20)],
     );
   });
 
@@ -249,6 +250,9 @@ void main() {
       expect(answer.valid, isTrue, reason: answer.error);
       expect(answer.invoiceId, invoiceId);
       expect(arc.submitted, [p.serialize()], reason: 'the receiver submits the payment it cares about');
+      // Arcade refuses a raw transaction (460): P spends G, the payer's,
+      // which only the BEEF it came in holds.
+      expect(arc.extended, [isTrue], reason: 'submitted in Extended Format, from the BEEF');
       expect(answer.broadcasted, isTrue);
       expect(answer.networkStatus, 'SEEN_ON_NETWORK');
       expect(answer.broadcastError, isNull);
@@ -403,6 +407,28 @@ void main() {
               'and the invoice settles then (invoice_paid_when_the_network_holds_the_payment_test)');
     });
 
+    // Arcade answers every submission RECEIVED and takes it to the network
+    // afterwards. ARCActor follows it, so the payment is answered, and its
+    // invoice paid, with the status the network got to: on the device the
+    // payee's payment stayed "broadcasting" and its invoice unpaid.
+    test('a payment Arcade answers RECEIVED is answered with, and paid on, the status it gets to',
+        () async {
+      arc
+        ..answer = 'RECEIVED'
+        ..statusAnswer = 'SEEN_ON_NETWORK';
+      final answers = answersAboutP();
+
+      final invoiceId = await invoice();
+      pay(invoiceId: invoiceId);
+      final answer = await verdict(answers);
+
+      expect(answer.valid, isTrue, reason: answer.error);
+      expect(answer.broadcasted, isTrue);
+      expect(answer.networkStatus, 'SEEN_ON_NETWORK', reason: 'the status Arcade got to, not its first answer');
+      await _until(() async => (await readModel.getInvoice(invoiceId))?.status == InvoiceStatus.paid,
+          'the invoice paid');
+    });
+
     test('yyby: a payment that arrives already mined, with its own verified proof, pays its invoice',
         () async {
       await sendHeaders([a4], 4, 4);
@@ -487,6 +513,7 @@ void main() {
     expect(answer.valid, isTrue, reason: answer.error);
     expect(answer.invoiceId, invoiceId, reason: 'the stored receive keeps the invoice it paid');
     expect(arc.submitted, [p.serialize()]);
+    expect(arc.extended, [isTrue], reason: 'submitted in Extended Format, from the BEEF');
     expect(answer.broadcasted, isTrue);
     expect(answer.networkStatus, 'SEEN_ON_NETWORK');
   });
@@ -570,6 +597,9 @@ class _RecordingArc extends ArcService {
   _RecordingArc() : super(baseUrl: 'fake://arc');
 
   final List<String> submitted = [];
+
+  /// Whether each submission in [submitted] came in Extended Format.
+  final List<bool> extended = [];
   String answer = 'SEEN_ON_NETWORK';
 
   /// What a status query answers, as ARC does after answering a submission
@@ -586,6 +616,7 @@ class _RecordingArc extends ArcService {
 
   @override
   Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl}) async {
+    extended.add(ExtendedFormat.isExtended(Uint8List.fromList(hex.decode(rawTx))));
     rawTx = ExtendedFormat.rawHexOf(rawTx); // ARC takes raw and extended alike
     submitted.add(rawTx);
     await _gate?.future;

@@ -132,6 +132,8 @@ void main() {
       networkType: 'regtest',
       enableP2P: false,
       arcService: _FakeArc(),
+      // ARC holds a payment and says nothing more: its follow is brief.
+      arcInFlightFollowDelays: const [Duration(milliseconds: 20)],
     );
     return booted;
   }

@@ -1838,45 +1838,6 @@ class WalletCoordinatorActor extends Actor {
   /// own, which itself waits up to 30 s.
   static const _foreignSpendRecordTimeout = Duration(minutes: 1);
 
-  /// How long a broadcast ARC answered in flight is followed for a verdict,
-  /// and how often ARC is asked meanwhile (as channel submissions are,
-  /// V-150).
-  static const _inFlightTimeout = Duration(seconds: 30);
-  static const _inFlightPollInterval = Duration(seconds: 1);
-
-  /// ARC's answer to a broadcast of [txid], followed while it is in flight
-  /// ([DeferredNetworkStatus.inFlight]): ARC answers with where it got to
-  /// when its own wait for the network runs out, which is no verdict either
-  /// way (bead libspiffy-ggsg: a reclaim answered so after the recipient's
-  /// copy was on the network was reported reclaimed, and ARC then rejected
-  /// it). Each status ARC gives meanwhile is recorded like any explicit
-  /// check. Returns the last answer; still in flight after
-  /// [_inFlightTimeout] when ARC gave no verdict.
-  Future<wm.DeferredPaymentNetworkResult> _followInFlight(
-          String walletId, String txid, wm.DeferredPaymentNetworkResult result) =>
-      _followAnswer<wm.DeferredPaymentNetworkResult>(result, (r) => r.networkStatus, () async {
-        final check = await _arcActor.ask<wm.DeferredPaymentNetworkResult>(
-          wm.CheckDeferredPaymentStatusMessage(walletId: walletId, txid: txid, via: DeferredPaymentNetworkSource.arc),
-          _deferredNetworkTimeout,
-        );
-        return check.success && check.networkStatus != null ? check : null;
-      });
-
-  /// ARC's answer about a transaction, followed while [statusOf] it is in
-  /// flight: [recheck] asks ARC again every [_inFlightPollInterval] until it
-  /// gives a verdict or [_inFlightTimeout] passes (null: ARC did not
-  /// answer, so the answer in hand stands).
-  Future<T> _followAnswer<T>(T answer, String? Function(T) statusOf, Future<T?> Function() recheck) async {
-    var current = answer;
-    final deadline = DateTime.now().add(_inFlightTimeout);
-    while (DeferredNetworkStatus.isInFlight(statusOf(current)) && DateTime.now().isBefore(deadline)) {
-      await Future<void>.delayed(_inFlightPollInterval);
-      final check = await recheck();
-      if (check != null) current = check;
-    }
-    return current;
-  }
-
   /// Why a broadcast the network does not hold did not succeed, or null
   /// when it holds it ([DeferredNetworkStatus.isOnNetwork]).
   static String? _notHeldReason(String what, wm.DeferredPaymentNetworkResult result) {
@@ -1888,7 +1849,7 @@ class WalletCoordinatorActor extends Actor {
           'inputs is unknown or already spent';
     }
     if (DeferredNetworkStatus.isInFlight(status)) {
-      return 'ARC is still taking $what to the network ($status after ${_inFlightTimeout.inSeconds} s); '
+      return 'ARC is still taking $what to the network ($status when its follow ran out); '
           'it is not known to be on the network yet';
     }
     return 'The network does not hold $what ($status)${result.error != null ? ': ${result.error}' : ''}';
@@ -1971,19 +1932,16 @@ class WalletCoordinatorActor extends Actor {
         _log.info('Broadcasting deferred payment ${cmd.txid} without ancestors: $beefError');
       }
       final asked = DateTime.now();
-      final result = await _followInFlight(
-          cmd.walletId,
-          cmd.txid,
-          await _arcActor.ask<wm.DeferredPaymentNetworkResult>(
-            wm.BroadcastDeferredPaymentMessage(
-              walletId: cmd.walletId,
-              txid: cmd.txid,
-              rawTxHex: tx.rawHex,
-              beefHex: beef == null ? null : hex.encode(beef),
-              via: cmd.via,
-            ),
-            _deferredNetworkTimeout,
-          ));
+      final result = await _arcActor.ask<wm.DeferredPaymentNetworkResult>(
+        wm.BroadcastDeferredPaymentMessage(
+          walletId: cmd.walletId,
+          txid: cmd.txid,
+          rawTxHex: tx.rawHex,
+          beefHex: beef == null ? null : hex.encode(beef),
+          via: cmd.via,
+        ),
+        _deferredNetworkTimeout,
+      );
       final notApplied = await _awaitNetworkAnswerApplied(cmd.walletId, cmd.txid, tx.rawHex, result, asked);
       final rejected = DeferredNetworkStatus.isDefinitiveFailure(result.networkStatus);
       // A competing transaction contests it (bead libspiffy-ey2): not
@@ -2621,19 +2579,16 @@ class WalletCoordinatorActor extends Actor {
       }
 
       final asked = DateTime.now();
-      final result = await _followInFlight(
-          cmd.walletId,
-          reclaimTxid,
-          await _arcActor.ask<wm.DeferredPaymentNetworkResult>(
-            wm.BroadcastDeferredPaymentMessage(
-              walletId: cmd.walletId,
-              txid: reclaimTxid,
-              rawTxHex: signedHex,
-              beefHex: beef == null ? null : hex.encode(beef),
-              via: cmd.via,
-            ),
-            _deferredNetworkTimeout,
-          ));
+      final result = await _arcActor.ask<wm.DeferredPaymentNetworkResult>(
+        wm.BroadcastDeferredPaymentMessage(
+          walletId: cmd.walletId,
+          txid: reclaimTxid,
+          rawTxHex: signedHex,
+          beefHex: beef == null ? null : hex.encode(beef),
+          via: cmd.via,
+        ),
+        _deferredNetworkTimeout,
+      );
       final answerNotApplied = await _awaitNetworkAnswerApplied(cmd.walletId, reclaimTxid, signedHex, result, asked);
       final rejected = DeferredNetworkStatus.isDefinitiveFailure(result.networkStatus);
       final contested = DeferredNetworkStatus.isContested(result.networkStatus);
@@ -3226,7 +3181,12 @@ class WalletCoordinatorActor extends Actor {
     dynamic reply;
     try {
       reply = await _arcActor.ask<dynamic>(
-          wm.BroadcastTransactionMessage(walletId, row.rawHex, result.txid), _paymentSubmitTimeout);
+          // With the BEEF it came in, ARC is sent its Extended Format: the
+          // outputs it spends are the payer's, which no wallet here stores,
+          // and Arcade refuses a raw transaction with 460. A receive parked
+          // for a header and replayed carries its BEEF too.
+          wm.BroadcastTransactionMessage(walletId, row.rawHex, result.txid, beefHex: result.beefHex),
+          _paymentSubmitTimeout);
     } catch (e) {
       reply = wm.BroadcastFailedMessage(result.txid, 'ARC did not answer the submission: $e');
     }

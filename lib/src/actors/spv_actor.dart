@@ -257,7 +257,8 @@ class SPVActor extends Actor {
           invoiceId: msg.invoiceId,
           awaitingHeader: stillWaiting,
           subjectCarriesProof: msg.beef.carriesProofOf(msg.transactionId),
-          memo: msg.memo);
+          memo: msg.memo,
+          beefHex: hex.encode(msg.beef.serialize()));
 
       // Send validation result to WalletManager
       _walletManager.tell(validationResult);
@@ -290,7 +291,8 @@ class SPVActor extends Actor {
           requestId: msg.requestId,
           invoiceId: msg.invoiceId,
           subjectCarriesProof: msg.beef.carriesProofOf(msg.transactionId),
-          memo: msg.memo);
+          memo: msg.memo,
+          beefHex: hex.encode(msg.beef.serialize()));
 
       _walletManager.tell(errorResult);
       replyTo?.tell(errorResult);

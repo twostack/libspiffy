@@ -23,6 +23,11 @@ enum ArcTransactionStatus {
   acceptedByNetwork('ACCEPTED_BY_NETWORK'),
   seenInOrphanMempool('SEEN_IN_ORPHAN_MEMPOOL'),
   seenOnNetwork('SEEN_ON_NETWORK'),
+  /// Arcade: miners other than the first have the transaction in a subtree
+  /// too. On the network, as [seenOnNetwork] is.
+  seenMultipleNodes('SEEN_MULTIPLE_NODES'),
+  /// Arcade: its broadcast failed in a way it retries. Still in flight.
+  pendingRetry('PENDING_RETRY'),
   doubleSpendAttempted('DOUBLE_SPEND_ATTEMPTED'),
   minedInStaleBlock('MINED_IN_STALE_BLOCK'),
   rejected('REJECTED'),
@@ -74,6 +79,20 @@ class ArcSubmitResponse {
     this.doubleSpendTxids,
     this.merklePath,
   });
+
+  /// A submission's answer as a later status query of it ([status]) gave
+  /// it: Arcade answers a submission RECEIVED and takes it to the network
+  /// afterwards, so where it got to is learnt by asking.
+  factory ArcSubmitResponse.fromStatus(ArcTransactionResponse status) => ArcSubmitResponse(
+        txid: status.txid,
+        status: status.status,
+        message: status.message,
+        blockHeight: status.blockHeight,
+        blockHash: status.blockHash,
+        timestamp: status.timestamp,
+        doubleSpendTxids: status.doubleSpendTxids,
+        merklePath: status.merklePath,
+      );
 
   factory ArcSubmitResponse.fromJson(Map<String, dynamic> json) {
     final status = ArcTransactionStatus.fromWire(json['txStatus']);
@@ -369,7 +388,9 @@ class ArcService {
       }),
     ).timeout(requestTimeout);
 
-    if (response.statusCode == 200 || response.statusCode == 201) {
+    // Arcade answers 202 with `txStatus: RECEIVED`: it accepts at once and
+    // broadcasts asynchronously.
+    if (response.statusCode == 200 || response.statusCode == 201 || response.statusCode == 202) {
       return ArcSubmitResponse.fromJson(jsonDecode(response.body));
     } else {
       throw ArcException('Failed to submit transaction: ${response.body}',

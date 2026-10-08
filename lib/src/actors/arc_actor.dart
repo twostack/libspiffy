@@ -23,6 +23,7 @@ import '../spv/merkle_proof_header_check.dart';
 import '../storage/read_model_storage.dart';
 import '../storage/transaction_row_rules.dart';
 import '../utils/beef.dart';
+import '../utils/extended_format.dart';
 import 'spv_messages.dart' show BlockHeaderStoredMessage;
 import 'wallet_messages.dart';
 
@@ -418,9 +419,10 @@ class ARCActor extends Actor {
     }
 
     try {
-      await _submitAncestors(_unprovenAncestors(msg.beefHex, msg.txHex, msg.txid), msg.txid);
+      final beef = _parseBeef(msg.beefHex, msg.txid);
+      await _submitAncestors(beef, _unprovenAncestors(beef, msg.txHex), msg.txid);
       // Broadcast transaction via ARC service
-      final response = await _arcService!.submitTransaction(msg.txHex);
+      final response = await _arcService!.submitTransaction(await _submitForm(msg.txHex, beef));
 
       // Notify wallet of successful broadcast
       final command = BroadcastTransactionCommand(
@@ -439,7 +441,8 @@ class ARCActor extends Actor {
 
     } catch (e) {
       _log.warning('Broadcast failed for ${msg.txid}${msg.retryOnFailure ? ', queueing for retry' : ''}: $e');
-      final queued = msg.retryOnFailure && await _enqueueForRetry(msg.txid, msg.walletId, msg.txHex);
+      final queued =
+          msg.retryOnFailure && await _enqueueForRetry(msg.txid, msg.walletId, msg.txHex, beefHex: msg.beefHex);
       context.sender?.tell(BroadcastFailedMessage(msg.txid, e.toString(), willRetry: queued));
     }
   }
@@ -467,9 +470,10 @@ class ARCActor extends Actor {
       final paymentTxData = beef.txs.last;
       paymentTxHex = hex.encode(paymentTxData);
 
-      // 2. Submit the payment transaction in raw format: the ancestors stay
-      // in the BEEF the payee holds, and ARC is sent the one transaction.
-      final response = await _arcService!.submitTransaction(paymentTxHex);
+      // 2. Its unproven ancestors first, then the payment, each extended
+      // with the outputs it spends.
+      await _submitAncestors(beef, _unprovenAncestors(beef, paymentTxHex), msg.txid);
+      final response = await _arcService!.submitTransaction(await _submitForm(paymentTxHex, beef));
 
       final command = BroadcastTransactionCommand(
         walletId: msg.walletId,
@@ -487,7 +491,8 @@ class ARCActor extends Actor {
 
     } catch (e) {
       _log.warning('BEEF broadcast failed for ${msg.txid}, queueing for retry: $e');
-      final queued = paymentTxHex != null && await _enqueueForRetry(msg.txid, msg.walletId, paymentTxHex);
+      final queued =
+          paymentTxHex != null && await _enqueueForRetry(msg.txid, msg.walletId, paymentTxHex, beefHex: msg.beefHex);
       context.sender?.tell(BroadcastFailedMessage(msg.txid, e.toString(), willRetry: queued));
     }
   }
@@ -531,7 +536,9 @@ class ARCActor extends Actor {
   /// Nothing is queued once the actor is stopping: the store may be closed
   /// next, and the caller is told `willRetry: false` rather than promised a
   /// retry that could crash the process.
-  Future<bool> _enqueueForRetry(String txid, String walletId, String rawTxHex) async {
+  /// The [beefHex] it was broadcast with, if any, goes with it: a retry
+  /// submits the same ancestors and extended form.
+  Future<bool> _enqueueForRetry(String txid, String walletId, String rawTxHex, {String? beefHex}) async {
     if (_stopped) {
       _log.warning('Not queueing transaction $txid for retry: ARCActor is stopping');
       return false;
@@ -546,6 +553,7 @@ class ARCActor extends Actor {
         'txid': txid,
         'walletId': walletId,
         'rawTxHex': rawTxHex,
+        if (beefHex != null) 'beefHex': beefHex,
       });
       _log.info('Queued transaction $txid for broadcast retry');
       return true;
@@ -576,7 +584,11 @@ class ARCActor extends Actor {
           final walletId = data['walletId'] as String;
 
           _log.info('Retrying broadcast for transaction $txid');
-          final response = await _arcService!.submitTransaction(rawTxHex);
+          // Entries queued before the BEEF was kept have none: the extended
+          // form then comes from the stored parents.
+          final beef = _parseBeef(data['beefHex'] as String?, txid);
+          await _submitAncestors(beef, _unprovenAncestors(beef, rawTxHex), txid);
+          final response = await _arcService!.submitTransaction(await _submitForm(rawTxHex, beef));
 
           // Notify wallet aggregate of successful broadcast
           _walletManager.tell(WalletCommandMessage(walletId, BroadcastTransactionCommand(
@@ -1500,30 +1512,63 @@ class ARCActor extends Actor {
     );
   }
 
-  /// The transactions of [beefHex] before [rawTxHex] that carry no proof, in
-  /// the BEEF's order (parents first). Empty without a BEEF, or with one that
+  /// The BEEF [beefHex] of [txid], or null without one or with one that
   /// does not parse: the transaction is then broadcast alone.
-  List<String> _unprovenAncestors(String? beefHex, String rawTxHex, String txid) {
-    if (beefHex == null || beefHex.isEmpty) return const [];
+  BEEF? _parseBeef(String? beefHex, String txid) {
+    if (beefHex == null || beefHex.isEmpty) return null;
     try {
-      final beef = BEEF.parse(Uint8List.fromList(hex.decode(beefHex)));
-      return [
-        for (var i = 0; i < beef.txs.length; i++)
-          if (!(i < beef.hasMerkle.length && beef.hasMerkle[i]) && hex.encode(beef.txs[i]) != rawTxHex)
-            hex.encode(beef.txs[i]),
-      ];
+      return BEEF.parse(Uint8List.fromList(hex.decode(beefHex)));
     } catch (e) {
       _log.warning('BEEF of $txid does not parse; broadcasting the transaction alone: $e');
-      return const [];
+      return null;
     }
   }
 
-  /// Submits [ancestors] of [txid] to ARC, parents first. A refusal is
+  /// The transactions of [beef] before [rawTxHex] that carry no proof, in
+  /// the BEEF's order (parents first). Empty without a BEEF.
+  List<String> _unprovenAncestors(BEEF? beef, String rawTxHex) {
+    if (beef == null) return const [];
+    return [
+      for (var i = 0; i < beef.txs.length; i++)
+        if (!(i < beef.hasMerkle.length && beef.hasMerkle[i]) && hex.encode(beef.txs[i]) != rawTxHex)
+          hex.encode(beef.txs[i]),
+    ];
+  }
+
+  /// What ARC is sent for [rawTxHex]: its Extended Format ([ExtendedFormat])
+  /// when the transactions it spends are in [beef] or stored in any wallet,
+  /// so ARC need not find its parents (a coin mined long ago, which ARC
+  /// never saw, answers 460); the raw transaction otherwise.
+  Future<String> _submitForm(String rawTxHex, BEEF? beef) async {
+    try {
+      final raw = Uint8List.fromList(hex.decode(rawTxHex));
+      final sources = <String, Uint8List>{};
+      for (final txid in ExtendedFormat.spentTxids(raw)) {
+        if (sources.containsKey(txid)) continue;
+        final inBeef = beef?.findTransactionByTxid(Uint8List.fromList(hex.decode(txid)))?['txData'] as Uint8List?;
+        if (inBeef != null) {
+          sources[txid] = inBeef;
+          continue;
+        }
+        final stored = (await _storage.getTransaction(txid))?.rawHex;
+        if (stored == null || stored.isEmpty) return rawTxHex;
+        sources[txid] = Uint8List.fromList(hex.decode(stored));
+      }
+      final extended = ExtendedFormat.encode(raw, sources);
+      return extended == null ? rawTxHex : hex.encode(extended);
+    } catch (e) {
+      _log.info('No extended format for a transaction; submitting it raw: $e');
+      return rawTxHex;
+    }
+  }
+
+  /// Submits [ancestors] of [txid] to ARC, parents first, each in its
+  /// extended form when [beef] or storage holds its parents. A refusal is
   /// logged and passed over: ARC may know the ancestor already.
-  Future<void> _submitAncestors(List<String> ancestors, String txid) async {
+  Future<void> _submitAncestors(BEEF? beef, List<String> ancestors, String txid) async {
     for (final ancestor in ancestors) {
       try {
-        await _arcService!.submitTransaction(ancestor);
+        await _arcService!.submitTransaction(await _submitForm(ancestor, beef));
       } catch (e) {
         _log.info('Ancestor of $txid not accepted by ARC (it may know it already): $e');
       }
@@ -1537,13 +1582,14 @@ class ARCActor extends Actor {
   /// hold kept on DOUBLE_SPEND_ATTEMPTED). A failed ARC submission is queued
   /// for retry.
   Future<DeferredPaymentNetworkResult> _broadcastDeferredPayment(BroadcastDeferredPaymentMessage msg) async {
-    final ancestors = _unprovenAncestors(msg.beefHex, msg.rawTxHex, msg.txid);
+    final beef = _parseBeef(msg.beefHex, msg.txid);
+    final ancestors = _unprovenAncestors(beef, msg.rawTxHex);
 
     String? arcError;
     if (msg.via != DeferredPaymentNetworkSource.dataSource && _arcService != null) {
-      await _submitAncestors(ancestors, msg.txid);
+      await _submitAncestors(beef, ancestors, msg.txid);
       try {
-        final response = await _arcService!.submitTransaction(msg.rawTxHex);
+        final response = await _arcService!.submitTransaction(await _submitForm(msg.rawTxHex, beef));
         _walletManager.tell(WalletCommandMessage(msg.walletId, BroadcastTransactionCommand(
           walletId: msg.walletId,
           transactionId: msg.txid,
@@ -1572,7 +1618,7 @@ class ARCActor extends Actor {
         _log.warning('ARC broadcast of deferred payment ${msg.txid} failed: $e');
       }
       if (msg.via == DeferredPaymentNetworkSource.arc) {
-        await _enqueueForRetry(msg.txid, msg.walletId, msg.rawTxHex);
+        await _enqueueForRetry(msg.txid, msg.walletId, msg.rawTxHex, beefHex: msg.beefHex);
         return DeferredPaymentNetworkResult(
           walletId: msg.walletId,
           txid: msg.txid,

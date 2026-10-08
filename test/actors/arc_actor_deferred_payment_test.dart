@@ -13,11 +13,14 @@
 library;
 
 import 'dart:async';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:convert/convert.dart';
 import 'package:dactor/dactor.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
+import 'package:duraq_isar/duraq_isar.dart' as duraq_isar;
+import 'package:isar_community/isar.dart';
 import 'package:libspiffy/src/actors/arc_actor.dart';
 import 'package:libspiffy/src/actors/wallet_messages.dart';
 import 'package:libspiffy/src/core/wallet_commands.dart';
@@ -30,6 +33,7 @@ import 'package:libspiffy/src/services/arc_service.dart';
 import 'package:libspiffy/src/services/blockchain_data_source.dart';
 import 'package:libspiffy/src/storage/in_memory_wallet_storage.dart';
 import 'package:libspiffy/src/utils/beef.dart';
+import 'package:libspiffy/src/utils/extended_format.dart';
 import 'package:test/test.dart';
 
 import '../spv/testnet_proof_fixture.dart';
@@ -37,6 +41,11 @@ import '../spv/testnet_proof_fixture.dart';
 const _wallet = 'w';
 const _fundingTxid = '6af69a37518c963234ab5b9e0c6afb6bc7273f1be58e98c42336c29067c0b665';
 const _inputKey = '$_fundingTxid:0';
+
+/// kFixture2 in Extended Format: its one input carries the output of
+/// kFixture it spends. What ARC is sent when kFixture is at hand.
+final _fixture2Extended = hex.encode(ExtendedFormat.encode(
+    Uint8List.fromList(hex.decode(kFixture2TxHex)), {kFixtureTxid: Uint8List.fromList(hex.decode(kFixtureTxHex))})!);
 final _rivalA = 'a1' * 32;
 final _rivalB = 'b2' * 32;
 
@@ -112,7 +121,8 @@ void main() {
         },
       });
 
-  Future<void> spawnActor({bool withDataSource = true}) async {
+  Future<void> spawnActor(
+      {bool withDataSource = true, Isar? isar, Duration statusCheckInterval = const Duration(minutes: 10)}) async {
     final wm = await system.spawn('wallet-manager', () => walletManager);
     arcActor = await system.spawn(
       'arc',
@@ -120,7 +130,8 @@ void main() {
         walletManager: wm,
         storage: storage,
         arcService: arc,
-        statusCheckInterval: const Duration(minutes: 10),
+        isar: isar,
+        statusCheckInterval: statusCheckInterval,
         headerTriggerDebounce: const Duration(milliseconds: 10),
         dataSource: withDataSource ? dataSource : null,
       ),
@@ -485,7 +496,7 @@ void main() {
       final first = await ask(broadcast(beefHex));
       final second = await ask(broadcast(beefHex));
 
-      expect(arc.submitted, [kFixtureTxHex, kFixture2TxHex, kFixtureTxHex, kFixture2TxHex]);
+      expect(arc.submitted, [kFixtureTxHex, _fixture2Extended, kFixtureTxHex, _fixture2Extended]);
       for (final result in [first, second]) {
         expect(result.success, isTrue);
         expect(result.networkStatus, 'SEEN_ON_NETWORK');
@@ -499,7 +510,9 @@ void main() {
           BroadcastTransactionMessage(_wallet, kFixture2TxHex, kFixture2Txid, retryOnFailure: false, beefHex: beefHex),
           const Duration(seconds: 10));
 
-      test('the unconfirmed parent first, then the transaction: ARC can build its extended format', () async {
+      // The parent's own parent is in neither the BEEF nor storage: it goes
+      // raw. The transaction goes extended with the parent's output.
+      test('the unconfirmed parent first, then the transaction, extended with the output it spends', () async {
         final beefHex = await beefWithUnconfirmedParent();
         arc.submitStatus = 'SEEN_ON_NETWORK';
         await spawnActor();
@@ -507,14 +520,17 @@ void main() {
         final reply = await broadcastPlain(beefHex: beefHex);
 
         expect(reply, isA<BroadcastSuccessMessage>());
-        expect(arc.submitted, [kFixtureTxHex, kFixture2TxHex]);
+        expect(arc.submitted, [kFixtureTxHex, _fixture2Extended]);
       });
 
-      test('a proven parent is not submitted again', () async {
+      // ARC never saw a coin mined long ago and answers a raw spend of it
+      // with 460, "parent transaction not found": the extended form needs
+      // no lookup.
+      test('a proven parent is not submitted again; the transaction carries its output', () async {
         await storeTx(kFixture2Txid, kFixture2TxHex);
         final proven = BEEF(
           version: 0x0100BEEF,
-          bumps: const [],
+          bumps: [fixtureBump()],
           txs: [Uint8List.fromList(hex.decode(kFixtureTxHex)), Uint8List.fromList(hex.decode(kFixture2TxHex))],
           hasMerkle: const [true, false],
           bumpIndex: const [0],
@@ -523,16 +539,66 @@ void main() {
 
         await broadcastPlain(beefHex: hex.encode(proven.serialize()));
 
-        expect(arc.submitted, [kFixture2TxHex]);
+        expect(arc.submitted, [_fixture2Extended]);
       });
 
-      test('without a BEEF the transaction goes alone, as before', () async {
+      test('without a BEEF, extended from the parent a wallet stores', () async {
+        await storeTx(kFixture2Txid, kFixture2TxHex);
+        await storeTx(kFixtureTxid, kFixtureTxHex, status: TransactionStatus.confirmed);
+        await spawnActor();
+
+        await broadcastPlain();
+
+        expect(arc.submitted, [_fixture2Extended]);
+      });
+
+      test('without a BEEF or a stored parent the transaction goes raw', () async {
         await storeTx(kFixture2Txid, kFixture2TxHex);
         await spawnActor();
 
         await broadcastPlain();
 
         expect(arc.submitted, [kFixture2TxHex]);
+      });
+
+      test('a BEEF broadcast: the unconfirmed parent first, then the payment extended', () async {
+        final beefHex = await beefWithUnconfirmedParent();
+        await spawnActor();
+
+        final reply = await arcActor.ask<Message>(
+            BroadcastBEEFMessage(_wallet, beefHex, kFixture2Txid), const Duration(seconds: 10));
+
+        expect(reply, isA<BroadcastSuccessMessage>());
+        expect(arc.submitted, [kFixtureTxHex, _fixture2Extended]);
+      });
+
+      // The retry queue kept the raw transaction only, so every retry was
+      // sent raw and refused with 460 for as long as it was retried.
+      test('a retry submits the ancestors again and the transaction extended', () async {
+        await Isar.initializeIsarCore(download: true);
+        final dir = await Directory.systemTemp.createTemp('arc_retry_ef_');
+        final isar = await Isar.open(duraq_isar.IsarStorage.requiredSchemas,
+            directory: dir.path, name: 'arc_retry_ef_${DateTime.now().microsecondsSinceEpoch}');
+        addTearDown(() async {
+          await isar.close(deleteFromDisk: true);
+          await dir.delete(recursive: true);
+        });
+        final beefHex = await beefWithUnconfirmedParent();
+        arc.unreachable = true;
+        await spawnActor(isar: isar, statusCheckInterval: const Duration(milliseconds: 100));
+
+        final reply = await arcActor.ask<Message>(
+            BroadcastTransactionMessage(_wallet, kFixture2TxHex, kFixture2Txid, beefHex: beefHex),
+            const Duration(seconds: 10));
+        expect(reply, isA<BroadcastFailedMessage>());
+        expect((reply as BroadcastFailedMessage).willRetry, isTrue);
+
+        arc.unreachable = false;
+        final deadline = DateTime.now().add(const Duration(seconds: 5));
+        while (arc.submitted.length < 2 && DateTime.now().isBefore(deadline)) {
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+        }
+        expect(arc.submitted, [kFixtureTxHex, _fixture2Extended]);
       });
     });
 

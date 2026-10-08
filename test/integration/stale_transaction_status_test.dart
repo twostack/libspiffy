@@ -36,6 +36,7 @@ import '../spv/regtest_chain_builder.dart';
 import '../spv/testnet_proof_fixture.dart';
 import 'isar_test_helper.dart';
 import 'p2p_test_helpers.dart';
+import 'package:libspiffy/src/utils/extended_format.dart';
 
 void main() {
   final genesis = NetworkParams.regtest.genesisHeader;
@@ -218,6 +219,7 @@ class _SeenOnNetworkArc extends ArcService {
 
   @override
   Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl}) async {
+    rawTx = ExtendedFormat.rawHexOf(rawTx); // ARC takes raw and extended alike
     final txid = dartsv.Transaction.fromHex(rawTx).id;
     submitted.add(txid);
     return ArcSubmitResponse(txid: txid, status: ArcTransactionStatus.seenOnNetwork);

@@ -5,6 +5,7 @@ import 'package:convert/convert.dart';
 import 'package:libspiffy/src/services/arc_service.dart';
 import '../../lib/src/utils/beef.dart';
 import '../../lib/src/utils/bump.dart';
+import 'package:libspiffy/src/utils/extended_format.dart';
 
 /// Mock ARC service for testing
 /// Simulates transaction broadcasting and merkle proof generation
@@ -56,6 +57,7 @@ class MockArcService extends ArcService {
   /// Override submitTransaction to intercept ARC service calls (PRIMARY METHOD CALLED BY ARCActor)
   @override
   Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl}) async {
+    rawTx = ExtendedFormat.rawHexOf(rawTx); // ARC takes raw and extended alike
     print('[MockArcService] ✅ submitTransaction OVERRIDE CALLED');
     print('[MockArcService]    Raw TX length: ${rawTx.length} chars');
     

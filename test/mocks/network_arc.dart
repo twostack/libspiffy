@@ -2,6 +2,7 @@ import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:libspiffy/src/services/arc_service.dart';
 
 import 'offline_arc.dart';
+import 'package:libspiffy/src/utils/extended_format.dart';
 
 /// One ARC service shared by every party in a test (no network).
 ///
@@ -46,6 +47,7 @@ class NetworkArc extends OfflineArc {
 
   @override
   Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl}) async {
+    rawTx = ExtendedFormat.rawHexOf(rawTx); // ARC takes raw and extended alike
     final verdict = await _decide(rawTx);
     if (!answerInFlight) return verdict;
     _verdicts[verdict.txid] = verdict;

@@ -40,6 +40,7 @@ import 'package:test/test.dart';
 import 'in_memory_event_store.dart';
 import '../mocks/offline_arc.dart';
 import 'package:libspiffy/src/models/fee_rate.dart';
+import 'package:libspiffy/src/utils/extended_format.dart';
 
 const _xpriv =
     'tprv8ZgxMBicQKsPeMiDjtXBGAyFY1wEMGgomjwf54ZmiZfKTNYvVdBa6GqWUwnvtHm6NKVkQkhCKxaobd9JPxNEXgDfVgJ5RNHJ3ivogSG3V1R';
@@ -563,6 +564,7 @@ class _SilentArc extends OfflineArc {
 
   @override
   Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl}) async {
+    rawTx = ExtendedFormat.rawHexOf(rawTx); // ARC takes raw and extended alike
     final txid = dartsv.Transaction.fromHex(rawTx).id;
     submitted.add(txid);
     submittedHex.add(rawTx);

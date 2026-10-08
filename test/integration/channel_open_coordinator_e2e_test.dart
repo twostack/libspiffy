@@ -58,6 +58,7 @@ import '../spv/testnet_proof_fixture.dart';
 import 'package:libspiffy/src/models/fee_rate.dart';
 import '../mocks/offline_arc.dart';
 import '../mocks/test_channel_timing.dart';
+import 'package:libspiffy/src/utils/extended_format.dart';
 
 const _alicePeer = 'alice-peer';
 
@@ -310,6 +311,7 @@ class _RecordingArc extends OfflineArc {
   @override
   Future<ArcSubmitResponse> submitTransaction(String rawTx,
       {String? callbackUrl}) async {
+    rawTx = ExtendedFormat.rawHexOf(rawTx); // ARC takes raw and extended alike
     submitted.add(rawTx);
     await onSubmit?.call(rawTx);
     if (failWith != null) throw ArcException(failWith!);

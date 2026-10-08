@@ -40,6 +40,7 @@ import 'package:libspiffy/src/services/arc_service.dart';
 import 'package:test/test.dart';
 
 import '../integration/isar_test_helper.dart';
+import 'package:libspiffy/src/utils/extended_format.dart';
 
 // =============================================================================
 // CONFIGURABLE MOCK ARC SERVICE
@@ -66,6 +67,7 @@ class _ConfigurableArcService extends ArcService {
 
   @override
   Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl}) async {
+    rawTx = ExtendedFormat.rawHexOf(rawTx); // ARC takes raw and extended alike
     // Tiny delay to simulate network
     await Future.delayed(const Duration(milliseconds: 5));
     final tx = dartsv.Transaction.fromHex(rawTx);

@@ -43,6 +43,7 @@ import 'package:test/test.dart';
 import '../spv/regtest_chain_builder.dart';
 import 'isar_test_helper.dart';
 import 'p2p_test_helpers.dart';
+import 'package:libspiffy/src/utils/extended_format.dart';
 
 void main() {
   final genesis = NetworkParams.regtest.genesisHeader;
@@ -585,6 +586,7 @@ class _RecordingArc extends ArcService {
 
   @override
   Future<ArcSubmitResponse> submitTransaction(String rawTx, {String? callbackUrl}) async {
+    rawTx = ExtendedFormat.rawHexOf(rawTx); // ARC takes raw and extended alike
     submitted.add(rawTx);
     await _gate?.future;
     return ArcSubmitResponse.fromJson({

@@ -7,6 +7,7 @@ import '../models/brc100_key_request.dart';
 import '../models/bitcoin_transaction.dart';
 import '../models/deferred_payment.dart';
 import '../models/foreign_spend.dart';
+import '../models/payment_privacy.dart';
 import '../models/invoice_output_spec.dart';
 import '../models/key_path.dart';
 import '../models/persistent_map.dart';
@@ -245,6 +246,9 @@ class PayInvoiceCommand implements Message {
   /// the network has it.
   final DateTime? deadline;
 
+  /// Split change and spread inputs; null builds the payment as before.
+  final PaymentPrivacy? privacy;
+
   PayInvoiceCommand({
     required this.walletId,
     required this.invoiceId,
@@ -256,6 +260,7 @@ class PayInvoiceCommand implements Message {
     this.counterpartyMarker,
     this.memo,
     this.deadline,
+    this.privacy,
   })  : addresses = frozenList(addresses),
         outputs = frozenOutputSpecsOrNull(outputs),
         paymentMetadata = frozenPlainMapOrNull(paymentMetadata);

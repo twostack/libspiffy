@@ -377,6 +377,117 @@ void main() {
     // Nothing was reserved or recorded for it: the UTXO is spendable.
     await _until(() async => (await system.walletStorage.getPaymentUTXOs(_walletId)).length == 1, 'UTXO available');
   });
+
+  group('o7a4: payment privacy', () {
+    String changeAddress(int i) =>
+        hd.deriveChildNumber(1).deriveChildNumber(i).privateKey.publicKey.toAddress(dartsv.NetworkType.TEST).toBase58();
+    String addressOf(dartsv.TransactionOutput o) =>
+        dartsv.P2PKHLockBuilder.fromScript(o.script, networkType: dartsv.NetworkType.TEST).address!.toBase58();
+
+    Future<coord.PaymentReadyEvent> payPrivately(String invoiceId, int amount, PaymentPrivacy privacy) {
+      final ready = system.coordinatorEvents!
+          .where((e) => e is coord.PaymentReadyEvent && e.invoiceId == invoiceId)
+          .cast<coord.PaymentReadyEvent>()
+          .first
+          .timeout(const Duration(seconds: 30));
+      system.coordinator.tell(coord.PayInvoiceCommand(
+        walletId: _walletId,
+        invoiceId: invoiceId,
+        addresses: [counterparty],
+        amount: BigInt.from(amount),
+        privacy: privacy,
+      ));
+      return ready;
+    }
+
+    test('change is paid in parts, each to a fresh change address, and the fee covers them', () async {
+      final parent = await receiveMined([(p2pkhScript, 100000)]);
+
+      final ready = await payPrivately('o7a4-split', 40000, const PaymentPrivacy(maxChangeParts: 3));
+
+      expect(ready.success, isTrue, reason: ready.error);
+      final (payment, spent) = signedPayment(ready, parent);
+      expectPolicyFee(payment, spent);
+      final byAddress = {for (final o in payment.outputs) addressOf(o): o.satoshis};
+      expect(byAddress[counterparty], BigInt.from(40000));
+      final change = {for (var i = 0; i < 3; i++) changeAddress(i)};
+      expect(byAddress.keys.toSet(), {counterparty, ...change});
+      for (final address in change) {
+        expect(byAddress[address]! >= BigInt.from(1000), isTrue, reason: '$address: ${byAddress[address]}');
+      }
+      expect(change.map((a) => byAddress[a]!).toSet(), hasLength(3), reason: 'not equal shares');
+      expect(ready.changeAmount, change.fold<BigInt>(BigInt.zero, (sum, a) => sum + byAddress[a]!));
+    });
+
+    test('change too small for parts of the minimum is one output, at one output\'s fee', () async {
+      final parent = await receiveMined([(p2pkhScript, 100000)]);
+
+      final ready = await payPrivately('o7a4-small', 98000, const PaymentPrivacy(maxChangeParts: 5));
+
+      expect(ready.success, isTrue, reason: ready.error);
+      final (payment, spent) = signedPayment(ready, parent);
+      expectPolicyFee(payment, spent);
+      expect(payment.outputs.map(addressOf).toSet(), {counterparty, changeAddress(0)});
+    });
+
+    test('spread inputs: smaller coins fund the payment, not the largest', () async {
+      final parent = await receiveMined([(p2pkhScript, 100000), (p2pkhScript, 3000), (p2pkhScript, 4000), (p2pkhScript, 5000)]);
+
+      final ready = await payPrivately('o7a4-spread', 10000, const PaymentPrivacy(spreadInputs: true));
+
+      expect(ready.success, isTrue, reason: ready.error);
+      final (payment, spent) = signedPayment(ready, parent);
+      expect(payment.inputs.map((i) => i.prevTxnOutputIndex).toSet(), {1, 2, 3});
+      expect(spent, BigInt.from(12000));
+      expectPolicyFee(payment, spent);
+    });
+
+    test('spread inputs fall back to the largest coin when the smaller ones cannot pay within the input limit',
+        () async {
+      final parent = await receiveMined([(p2pkhScript, 100000), (p2pkhScript, 3000), (p2pkhScript, 4000), (p2pkhScript, 5000)]);
+
+      final ready =
+          await payPrivately('o7a4-fallback', 10000, const PaymentPrivacy(spreadInputs: true, maxInputs: 2));
+
+      expect(ready.success, isTrue, reason: ready.error);
+      final (payment, _) = signedPayment(ready, parent);
+      expect(payment.inputs.map((i) => i.prevTxnOutputIndex).toList(), [0]);
+    });
+
+    test('the same invoice paid again after a cancel is the same transaction (4r0)', () async {
+      await receiveMined([(p2pkhScript, 100000), (p2pkhScript, 30000), (p2pkhScript, 40000), (p2pkhScript, 50000)]);
+      const privacy = PaymentPrivacy(maxChangeParts: 5, randomChangeParts: true, spreadInputs: true);
+
+      final first = await payPrivately('o7a4-again', 60000, privacy);
+      expect(first.success, isTrue, reason: first.error);
+      await _until(() async => (await system.walletStorage.getDeferredPayment(_walletId, first.txid)) != null,
+          'payment recorded');
+      final cancelled = system.coordinatorEvents!
+          .where((e) => e is coord.DeferredPaymentCancelledEvent && e.requestId == 'o7a4-c')
+          .cast<coord.DeferredPaymentCancelledEvent>()
+          .first
+          .timeout(const Duration(seconds: 30));
+      system.coordinator.tell(coord.CancelDeferredPaymentCommand(
+          walletId: _walletId, txid: first.txid, reason: 'again', requestId: 'o7a4-c'));
+      expect((await cancelled).success, isTrue);
+
+      final second = await payPrivately('o7a4-again', 60000, privacy);
+
+      expect(second.success, isTrue, reason: second.error);
+      expect(second.txid, first.txid);
+    });
+
+    test('without privacy the payment is built as before: largest coin, one change output', () async {
+      final parent = await receiveMined([(p2pkhScript, 100000), (p2pkhScript, 3000), (p2pkhScript, 4000), (p2pkhScript, 5000)]);
+
+      final ready = await pay('o7a4-none', 10000);
+
+      expect(ready.success, isTrue, reason: ready.error);
+      final (payment, _) = signedPayment(ready, parent);
+      expect(payment.inputs.map((i) => i.prevTxnOutputIndex).toList(), [0]);
+      expect(payment.outputs, hasLength(2));
+    });
+  });
 }
 
 /// A raw transaction with one input spending [prevTxid]:0 (display order

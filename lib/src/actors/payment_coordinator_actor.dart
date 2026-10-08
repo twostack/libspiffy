@@ -1,5 +1,8 @@
 import 'dart:typed_data';
 import 'dart:async';
+import 'dart:convert' show utf8;
+import 'dart:math' as math;
+import 'package:crypto/crypto.dart' as crypto;
 import 'package:dactor/dactor.dart';
 import 'package:dartsv/dartsv.dart' as dartsv;
 import 'package:eventador/eventador.dart';
@@ -13,6 +16,8 @@ import '../models/bitcoin_utxo.dart';
 import '../models/bitcoin_transaction.dart';
 import '../models/fee_rate.dart';
 import '../models/invoice_output_spec.dart';
+import '../models/payment_privacy.dart';
+import '../utils/benford_distribution.dart';
 import '../models/key_path.dart';
 import '../plugin/plugin_registry.dart';
 import '../plugin/plugin_types.dart';
@@ -213,9 +218,14 @@ class PaymentCoordinatorActor extends Actor {
 
     // 4. Select UTXOs covering the amount and the fee of the transaction
     // they make.
+    // With privacy, every random choice below comes from one generator
+    // seeded with the invoice id: the same invoice over the same coins is
+    // the same transaction (bead libspiffy-4r0).
+    final privacy = _isPluginTransaction(msg) ? null : msg.privacy;
+    final rng = privacy == null ? null : _seededRandom(msg.invoiceId);
     final selection = fundless
         ? (selectedUtxos: const <BitcoinUtxo>[], fee: BigInt.zero)
-        : _selectUTXOs(utxos, amount, outputScriptBytes, rate);
+        : _selectFor(utxos, amount, outputScriptBytes, rate, privacy, rng);
     if (selection == null) {
       final totalBalance = utxos.fold<BigInt>(
         BigInt.zero,
@@ -259,6 +269,7 @@ class PaymentCoordinatorActor extends Actor {
         paymentOutputs: paymentOutputs,
         fee: fee,
         rate: rate,
+        rng: rng,
         originalSender: originalSender,
         fail: (error) => failure = error,
         totalSw: totalSw,
@@ -328,6 +339,7 @@ class PaymentCoordinatorActor extends Actor {
     required List<_PaymentOutput> paymentOutputs,
     required BigInt fee,
     required FeeRate rate,
+    math.Random? rng,
     required ActorRef? originalSender,
     required void Function(String error) fail,
     required Stopwatch totalSw,
@@ -370,13 +382,38 @@ class PaymentCoordinatorActor extends Actor {
     // or a fresh one on the wallet's change chain (bead libspiffy-zjyu).
     // A plugin builds its own outputs and takes none.
     var changeAddress = msg.changeAddress;
-    if (changeAddress == null && !isPluginTransaction && _paysChange(selectedUtxos, paymentOutputs, fee)) {
-      final fresh = await _changeAddressFor(msg.walletId, msg.invoiceId);
+    // With privacy, change of enough sats is paid in parts, each to a fresh
+    // change address (bead libspiffy-o7a4); a caller's change address keeps
+    // the change in one output to it.
+    final changeParts = changeAddress == null && !isPluginTransaction && msg.privacy != null && rng != null
+        ? _changeParts(msg.privacy!, selectedUtxos, paymentOutputs, rate, rng)
+        : null;
+    List<_PaymentOutput>? changeOutputs;
+    if (changeParts != null) {
+      final fresh = await _changeAddressesFor(msg.walletId, msg.invoiceId, changeParts.amounts.length);
       if (fresh.error != null) {
         fail('No change address for the payment: ${fresh.error}');
         return false;
       }
-      changeAddress = fresh.address;
+      fee = changeParts.fee;
+      changeOutputs = [
+        for (var i = 0; i < changeParts.amounts.length; i++)
+          _PaymentOutput(_p2pkhTo(fresh.addresses[i], _network), changeParts.amounts[i], fresh.addresses[i]),
+      ];
+      changeAddress = fresh.addresses.first;
+    } else if (msg.privacy != null && !isPluginTransaction) {
+      // The selection's fee counted every change part privacy may pay; one
+      // change output (or none) needs only one's worth.
+      fee = _feeFor(rate, selectedUtxos, [for (final output in paymentOutputs) output.scriptBytes]);
+    }
+    if (changeOutputs == null && changeAddress == null && !isPluginTransaction &&
+        _paysChange(selectedUtxos, paymentOutputs, fee)) {
+      final fresh = await _changeAddressesFor(msg.walletId, msg.invoiceId, 1);
+      if (fresh.error != null) {
+        fail('No change address for the payment: ${fresh.error}');
+        return false;
+      }
+      changeAddress = fresh.addresses.single;
     }
 
     // 4. Build payment transaction (with outputs if provided)
@@ -390,6 +427,7 @@ class PaymentCoordinatorActor extends Actor {
       fee: fee,
       rate: rate,
       changeAddress: changeAddress,
+      changeOutputs: changeOutputs,
       walletId: msg.walletId,
       signing: signing,
     );
@@ -747,11 +785,99 @@ class PaymentCoordinatorActor extends Actor {
   /// The fee of a transaction spending [inputs] and creating outputs whose
   /// locking scripts are [outputScriptBytes] long, plus a P2PKH change
   /// output: [rate] on its signed size.
-  static BigInt _feeFor(FeeRate rate, Iterable<BitcoinUtxo> inputs, List<int> outputScriptBytes) =>
+  static BigInt _feeFor(FeeRate rate, Iterable<BitcoinUtxo> inputs, List<int> outputScriptBytes,
+          {int changeOutputs = 1}) =>
       rate.feeFor(TransactionSize.of(
         inputLockingScripts: [for (final utxo in inputs) utxo.scriptPubKey],
-        outputScriptBytes: [...outputScriptBytes, TransactionSize.p2pkhScriptBytes],
+        outputScriptBytes: [
+          ...outputScriptBytes,
+          for (var i = 0; i < changeOutputs; i++) TransactionSize.p2pkhScriptBytes,
+        ],
       ));
+
+  /// A generator for [invoiceId]'s random choices: seeded with its hash, so
+  /// a payment of the same invoice draws the same ones (bead libspiffy-o7a4).
+  static math.Random _seededRandom(String invoiceId) {
+    final digest = crypto.sha256.convert(utf8.encode('libspiffy/payment-privacy/$invoiceId')).bytes;
+    return math.Random(digest[0] << 24 | digest[1] << 16 | digest[2] << 8 | digest[3]);
+  }
+
+  /// The UTXOs paying [amount] and their fee: without [privacy] the largest
+  /// first ([_selectUTXOs]); with it, the fee counts every change part it may
+  /// pay, and with [PaymentPrivacy.spreadInputs] smaller coins are tried
+  /// first ([_selectSpread]). A selection the extra change outputs make
+  /// short is tried again with one.
+  static ({List<BitcoinUtxo> selectedUtxos, BigInt fee})? _selectFor(List<BitcoinUtxo> utxos, BigInt amount,
+      List<int> outputScriptBytes, FeeRate rate, PaymentPrivacy? privacy, math.Random? rng) {
+    if (privacy == null || rng == null) return _selectUTXOs(utxos, amount, outputScriptBytes, rate);
+    final changeOutputs = privacy.maxChangeParts;
+    if (privacy.spreadInputs) {
+      final spread = _selectSpread(utxos, amount, outputScriptBytes, rate,
+          changeOutputs: changeOutputs, maxInputs: privacy.maxInputs, rng: rng);
+      if (spread != null) return spread;
+    }
+    return _selectUTXOs(utxos, amount, outputScriptBytes, rate, changeOutputs: changeOutputs) ??
+        (changeOutputs > 1 ? _selectUTXOs(utxos, amount, outputScriptBytes, rate) : null);
+  }
+
+  /// Coins smaller than [amount] that pay it and the fee, in random order,
+  /// coins of one parent transaction together and those with siblings
+  /// first: they are linked to each other on chain already, so spending them
+  /// together shows nothing new (bead libspiffy-o7a4). Null when they cannot
+  /// within [maxInputs].
+  static ({List<BitcoinUtxo> selectedUtxos, BigInt fee})? _selectSpread(
+      List<BitcoinUtxo> utxos, BigInt amount, List<int> outputScriptBytes, FeeRate rate,
+      {required int changeOutputs, required int maxInputs, required math.Random rng}) {
+    final smaller = utxos.where((u) => u.satoshis < amount).toList()..sort((a, b) => a.key.compareTo(b.key));
+    final byParent = <String, List<BitcoinUtxo>>{};
+    for (final utxo in smaller) {
+      byParent.putIfAbsent(utxo.txid, () => []).add(utxo);
+    }
+    final groups = byParent.values.toList()..shuffle(rng);
+    for (final group in groups) {
+      group.shuffle(rng);
+    }
+    final ordered = [
+      for (final group in groups) if (group.length > 1) ...group,
+      for (final group in groups) if (group.length == 1) ...group,
+    ];
+
+    final selected = <BitcoinUtxo>[];
+    var total = BigInt.zero;
+    for (final utxo in ordered) {
+      if (selected.length == maxInputs) return null;
+      selected.add(utxo);
+      total += utxo.satoshis;
+      final fee = _feeFor(rate, selected, outputScriptBytes, changeOutputs: changeOutputs);
+      if (total >= amount + fee) return (selectedUtxos: selected, fee: fee);
+    }
+    return null;
+  }
+
+  /// The change of a payment spending [selectedUtxos] in parts (bead
+  /// libspiffy-o7a4): as many as [privacy] asks for, fewer when the change
+  /// cannot give each [PaymentPrivacy.minChangePartSats], with Benford
+  /// amounts in random order, and the fee for that many outputs. Null for
+  /// change paid as one output (or none).
+  static ({List<BigInt> amounts, BigInt fee})? _changeParts(PaymentPrivacy privacy,
+      List<BitcoinUtxo> selectedUtxos, List<_PaymentOutput> paymentOutputs, FeeRate rate, math.Random rng) {
+    if (privacy.maxChangeParts < 2) return null;
+    final wanted = privacy.randomChangeParts
+        ? 2 + rng.nextInt(privacy.maxChangeParts - 1)
+        : privacy.maxChangeParts;
+    final total = selectedUtxos.fold<BigInt>(BigInt.zero, (sum, u) => sum + u.satoshis);
+    final paid = paymentOutputs.fold<BigInt>(BigInt.zero, (sum, o) => sum + o.amount);
+    final scripts = [for (final output in paymentOutputs) output.scriptBytes];
+    final min = BigInt.from(privacy.minChangePartSats);
+    for (var count = wanted; count >= 2; count--) {
+      final fee = _feeFor(rate, selectedUtxos, scripts, changeOutputs: count);
+      final change = total - paid - fee;
+      if (change < min * BigInt.from(count)) continue;
+      final amounts = BenfordDistribution.distribute(change, count, minOutputAmount: min, random: rng)..shuffle(rng);
+      return (amounts: amounts, fee: fee);
+    }
+    return null;
+  }
 
   /// The UTXOs, largest first, that cover [amount] and the fee of the
   /// transaction they make ([_feeFor]), and that fee; null when all of
@@ -763,7 +889,7 @@ class PaymentCoordinatorActor extends Actor {
   /// payment a UTXO did cover was refused, and one whose fee was larger was
   /// selected short.
   static ({List<BitcoinUtxo> selectedUtxos, BigInt fee})? _selectUTXOs(
-      List<BitcoinUtxo> utxos, BigInt amount, List<int> outputScriptBytes, FeeRate rate) {
+      List<BitcoinUtxo> utxos, BigInt amount, List<int> outputScriptBytes, FeeRate rate, {int changeOutputs = 1}) {
     final sortedUtxos = List<BitcoinUtxo>.from(utxos)..sort((a, b) => b.satoshis.compareTo(a.satoshis));
 
     final selected = <BitcoinUtxo>[];
@@ -771,7 +897,7 @@ class PaymentCoordinatorActor extends Actor {
     for (final utxo in sortedUtxos) {
       selected.add(utxo);
       total += utxo.satoshis;
-      final fee = _feeFor(rate, selected, outputScriptBytes);
+      final fee = _feeFor(rate, selected, outputScriptBytes, changeOutputs: changeOutputs);
       if (total >= amount + fee) return (selectedUtxos: selected, fee: fee);
     }
     return null;
@@ -928,6 +1054,7 @@ class PaymentCoordinatorActor extends Actor {
     required BigInt fee,
     required FeeRate rate,
     String? changeAddress,
+    List<_PaymentOutput>? changeOutputs,
     required String walletId,
     required AggregateSigningClient signing,
   }) async {
@@ -1084,7 +1211,14 @@ class PaymentCoordinatorActor extends Actor {
       if (change < BigInt.zero) {
         throw StateError('$totalInput satoshis of inputs do not cover $totalOutputAmount of outputs and a $fee fee');
       }
-      if (change > BigInt.zero) {
+      if (changeOutputs != null) {
+        // Change in parts (bead libspiffy-o7a4), which add up to the change.
+        final parts = changeOutputs.fold<BigInt>(BigInt.zero, (sum, o) => sum + o.amount);
+        if (parts != change) throw StateError('Change parts of $parts satoshis for $change of change');
+        for (final output in changeOutputs) {
+          txBuilder.spendToLockBuilder(output.lock, output.amount);
+        }
+      } else if (change > BigInt.zero) {
         txBuilder.sendChangeToPKH(dartsv.Address.fromBase58(changeAddress ?? selectedUtxos.first.address));
       }
 
@@ -1287,21 +1421,39 @@ class PaymentCoordinatorActor extends Actor {
     return totalInput - totalOutput - fee > BigInt.zero;
   }
 
-  /// The change address of the payment of [invoiceId] (bead
-  /// libspiffy-zjyu): the one an earlier attempt at it took, else the next
-  /// address on the wallet's change chain. Paying an invoice again over the
+  /// The [count] change addresses of the payment of [invoiceId], one per
+  /// change part (beads libspiffy-zjyu, libspiffy-o7a4): those an earlier
+  /// attempt at it took, else the next addresses on the wallet's change
+  /// chain. Paying an invoice again over the
   /// same inputs must sign the same transaction, which is how the wallet
   /// knows the payment again (a cancelled one re-activated, a rejected one
   /// refused, bead libspiffy-4r0); a new change address would make it a
   /// second payment of the same coins. A single-key wallet answers with its
-  /// one address.
-  Future<({String? address, String? error})> _changeAddressFor(String walletId, String invoiceId) async {
-    final label = 'change:$invoiceId';
-    final earlier = (await _storage.getAddressesByPurpose(walletId, AddressBook.changePurpose))
-        .where((a) => a.label == label)
-        .firstOrNull;
-    if (earlier != null) return (address: earlier.address, error: null);
+  /// one address for every part.
+  Future<({List<String> addresses, String? error})> _changeAddressesFor(
+      String walletId, String invoiceId, int count) async {
+    final earlier = {
+      for (final row in await _storage.getAddressesByPurpose(walletId, AddressBook.changePurpose))
+        if (row.label != null) row.label!: row.address,
+    };
+    final addresses = <String>[];
+    for (var i = 0; i < count; i++) {
+      // The first part keeps the label a payment in one part has.
+      final label = i == 0 ? 'change:$invoiceId' : 'change:$invoiceId:$i';
+      final known = earlier[label];
+      if (known != null) {
+        addresses.add(known);
+        continue;
+      }
+      final fresh = await _freshChangeAddress(walletId, label);
+      if (fresh.error != null) return (addresses: const <String>[], error: fresh.error);
+      addresses.add(fresh.address!);
+    }
+    return (addresses: addresses, error: null);
+  }
 
+  /// The next address on [walletId]'s change chain, labelled [label].
+  Future<({String? address, String? error})> _freshChangeAddress(String walletId, String label) async {
     final command = GenerateAddressCommand(
       walletId: walletId,
       label: label,

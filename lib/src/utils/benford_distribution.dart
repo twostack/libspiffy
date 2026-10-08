@@ -41,6 +41,8 @@ class BenfordDistribution {
   /// - [totalAmount]: Total amount in satoshis to distribute
   /// - [outputCount]: Number of outputs to create
   /// - [minOutputAmount]: Minimum amount per output (default: 1 sat, BSV has no dust limit)
+  /// - [random]: Source of the amounts' variation; a secure one by default.
+  ///   A seeded one gives the same amounts again (a payment signed again)
   /// 
   /// Returns a list of BigInt amounts that sum to approximately totalAmount
   /// (may differ slightly due to rounding and ensuring each output meets minimum)
@@ -57,6 +59,7 @@ class BenfordDistribution {
     BigInt totalAmount,
     int outputCount, {
     BigInt? minOutputAmount,
+    math.Random? random,
   }) {
     if (outputCount < 2) {
       throw ArgumentError('Output count must be at least 2');
@@ -81,7 +84,7 @@ class BenfordDistribution {
     final targetAmounts = <double>[];
     
     // Generate Benford-distributed proportions
-    final proportions = _generateBenfordProportions(outputCount);
+    final proportions = _generateBenfordProportions(outputCount, random ?? math.Random.secure());
     
     // Calculate actual amounts
     double sum = 0;
@@ -136,9 +139,8 @@ class BenfordDistribution {
   /// 
   /// This assigns leading digits to outputs according to Benford probabilities,
   /// then adds random trailing digits to create variation.
-  static List<double> _generateBenfordProportions(int count) {
+  static List<double> _generateBenfordProportions(int count, math.Random random) {
     final proportions = <double>[];
-    final random = math.Random.secure();
 
     // Assign leading digits according to Benford distribution
     final leadingDigits = <int>[];

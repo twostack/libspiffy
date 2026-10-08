@@ -24,7 +24,8 @@ export 'src/models/key_path.dart';             // Where a wallet key comes from:
 export 'src/models/brc100_key_request.dart';   // A BRC-100 key operation on an anchor key, and its result
 export 'src/models/address_metadata.dart';      // Address metadata with script type support
 export 'src/models/transaction_address_link.dart'; // Transaction-address junction models
-export 'src/models/invoice_output_spec.dart';   // Multi-output invoice specifications (P2PKH, P2MS)
+export 'src/models/invoice_output_spec.dart';
+export 'src/models/payment_privacy.dart';         // Opt-in change split and spread coin selection   // Multi-output invoice specifications (P2PKH, P2MS)
 
 // ✅ STORAGE INTERFACES - Platform-agnostic storage abstraction
 export 'src/storage/event_storage.dart';        // Event storage interface

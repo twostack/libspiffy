@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 import 'package:dactor/dactor.dart';
 import 'internal_messages.dart';
+import '../models/payment_privacy.dart';
 import '../models/invoice_output_spec.dart';
 import '../models/persistent_map.dart';
 
@@ -44,6 +45,9 @@ class PayInvoiceMessage implements Message {
   /// outstanding then (bead libspiffy-8442). Null for never.
   final DateTime? deadline;
 
+  /// Split change and spread inputs; null builds the payment as before.
+  final PaymentPrivacy? privacy;
+
   PayInvoiceMessage({
     required this.walletId,
     required this.invoiceId,
@@ -55,6 +59,7 @@ class PayInvoiceMessage implements Message {
     this.counterpartyMarker,
     this.memo,
     this.deadline,
+    this.privacy,
   })  : addresses = frozenList(addresses),
         outputs = frozenOutputSpecsOrNull(outputs),
         paymentMetadata = frozenPlainMapOrNull(paymentMetadata);

@@ -1172,6 +1172,7 @@ class WalletCoordinatorActor extends Actor {
         memo: cmd.memo,
         // When the wallet reclaims it by itself (bead libspiffy-8442).
         deadline: cmd.deadline,
+        privacy: cmd.privacy,
       ),
       sender: context.self,
     );

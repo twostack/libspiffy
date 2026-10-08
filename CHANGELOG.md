@@ -1,4 +1,4 @@
-## 4.4.0 (unreleased)
+## 4.4.0
 
 - **Opt-in payment privacy: change in parts, funding from smaller coins.** A payment's change was one output and its inputs the largest coins, so next to a payment split into parts the large input and the large change output told an observer which output was the payer's (bead libspiffy-o7a4). `PayInvoiceCommand(privacy: PaymentPrivacy(...))` asks for both remedies; without it a payment is built exactly as before.
   - `maxChangeParts` pays the change as up to that many outputs, each to a fresh change-chain address, with Benford-distributed amounts in random order; `randomChangeParts` draws the count from 2 to the maximum per payment; `minChangePartSats` (1,000 by default) is the smallest part, and less change makes fewer parts, or one output. The selection's fee counts every change output it may pay, and the fee is worked out again for the parts it does pay. `PaymentReadyEvent.changeAmount` is the change of all parts.

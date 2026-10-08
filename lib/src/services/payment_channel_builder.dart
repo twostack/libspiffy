@@ -77,8 +77,11 @@ class MultisigSignatureResult {
 /// dartsv's P2MSLockBuilder and P2MSUnlockBuilder.
 class PaymentChannelBuilder {
 
-  /// Dust threshold in satoshis
-  static const int dustThreshold = 546;
+  /// The least an output may carry. BSV has no dust limit: any output of
+  /// a satoshi or more is standard, and ARC asks for none. The 546 sats of
+  /// Bitcoin Core used to leave a party's share out of a payment whenever it
+  /// was that small — a host's earnings on a room tab went to the miner.
+  static const int minimumOutputSats = 1;
 
   /// nLockTime values below this are block heights; values at or above it
   /// are Unix timestamps (consensus LOCKTIME_THRESHOLD).
@@ -214,9 +217,9 @@ class PaymentChannelBuilder {
     ));
     final outputAmount = fundingAmountSats - fee;
 
-    if (outputAmount <= BigInt.from(dustThreshold)) {
+    if (outputAmount < BigInt.from(minimumOutputSats)) {
       throw TransactionBuildException(
-        'Refund amount after fee is below dust threshold',
+        'Refund amount after fee is below $minimumOutputSats sat',
         code: 'DUST_OUTPUT',
       );
     }
@@ -302,14 +305,16 @@ class PaymentChannelBuilder {
     );
     transaction.inputs.add(input);
 
-    if (serverAmountSats > BigInt.from(dustThreshold)) {
+    // Each party's share is paid, however small: a share left out goes to
+    // the miner. A share of nothing has no output.
+    if (serverAmountSats >= BigInt.from(minimumOutputSats)) {
       final serverScript =
           dartsv.P2PKHLockBuilder.fromAddress(serverAddress).getScriptPubkey();
       transaction.outputs
           .add(dartsv.TransactionOutput(serverAmountSats, serverScript));
     }
 
-    if (clientAmount > BigInt.from(dustThreshold)) {
+    if (clientAmount >= BigInt.from(minimumOutputSats)) {
       final clientScript =
           dartsv.P2PKHLockBuilder.fromAddress(clientAddress).getScriptPubkey();
       transaction.outputs
@@ -318,7 +323,7 @@ class PaymentChannelBuilder {
 
     if (transaction.outputs.isEmpty) {
       throw TransactionBuildException(
-        'No outputs above dust threshold',
+        'The fee takes the whole funding amount: neither party is paid',
         code: 'NO_OUTPUTS',
       );
     }

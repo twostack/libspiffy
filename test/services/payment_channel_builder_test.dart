@@ -164,10 +164,10 @@ void main() {
         expect(input.prevTxnOutputIndex, equals(fundingOutputIndex));
       });
 
-      test('should throw when refund amount after fee is dust', () async {
+      test('should throw when the fee takes the whole refund', () async {
         const fundingTxId =
             'abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890';
-        final fundingAmount = BigInt.from(100); // Very small amount
+        final fundingAmount = BigInt.from(20); // Less than the fee
         final lockTimeUnix =
             DateTime.now().add(const Duration(hours: 24)).millisecondsSinceEpoch ~/
                 1000;
@@ -217,6 +217,20 @@ void main() {
     // PAYMENT TRANSACTION (T3) TESTS
     // =========================================================================
     group('Payment Transaction (T3)', () {
+      Future<ChannelTransactionResult> buildPayment({required int funding, required int server}) =>
+          channelBuilder.buildPaymentTransaction(
+            feeRate: const FeeRate(satoshis: 100, bytes: 1000),
+            fundingTxId: 'abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890',
+            fundingOutputIndex: 0,
+            fundingAmountSats: BigInt.from(funding),
+            clientPubKey: clientPubKey,
+            serverPubKey: serverPubKey,
+            clientAddress: clientAddress,
+            serverAddress: serverAddress,
+            serverAmountSats: BigInt.from(server),
+            sequenceNumber: 1,
+          );
+
       test('should build payment transaction with correct balance split', () async {
         const fundingTxId =
             'abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890';
@@ -316,49 +330,43 @@ void main() {
         }
       });
 
-      test('should omit dust server output', () async {
-        const fundingTxId =
-            'abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890';
-        final fundingAmount = BigInt.from(100000);
-        final serverAmount = BigInt.from(100); // Below dust threshold
+      // BSV has no dust limit (bead libspiffy-b4kv): a host paid 350 sats
+      // of a 1000 sat tab got nothing, the 350 went to the miner.
+      test('pays a small server share', () async {
+        final result = await buildPayment(funding: 1000, server: 350);
 
-        final result = await channelBuilder.buildPaymentTransaction(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
-          fundingTxId: fundingTxId,
-          fundingOutputIndex: 0,
-          fundingAmountSats: fundingAmount,
-          clientPubKey: clientPubKey,
-          serverPubKey: serverPubKey,
-          clientAddress: clientAddress,
-          serverAddress: serverAddress,
-          serverAmountSats: serverAmount,
-          sequenceNumber: 1,
-        );
-
-        // Should only have client output (server amount is dust)
-        expect(result.transaction.outputs.length, equals(1));
+        expect(result.transaction.outputs.map((o) => o.satoshis.toInt()), [350, 1000 - 350 - result.fee.toInt()]);
+        expect(result.transaction.outputs.first.script.toHex(),
+            dartsv.P2PKHLockBuilder.fromAddress(serverAddress).getScriptPubkey().toHex());
       });
 
-      test('should omit dust client output', () async {
-        const fundingTxId =
-            'abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890';
-        final fundingAmount = BigInt.from(10000);
-        // Server takes almost everything, leaving dust for client
-        final serverAmount = BigInt.from(9500);
+      test('pays a server share of one sat', () async {
+        final result = await buildPayment(funding: 100000, server: 1);
 
-        final result = await channelBuilder.buildPaymentTransaction(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
-          fundingTxId: fundingTxId,
-          fundingOutputIndex: 0,
-          fundingAmountSats: fundingAmount,
-          clientPubKey: clientPubKey,
-          serverPubKey: serverPubKey,
-          clientAddress: clientAddress,
-          serverAddress: serverAddress,
-          serverAmountSats: serverAmount,
-          sequenceNumber: 1,
-        );
+        expect(result.transaction.outputs.first.satoshis, BigInt.one);
+        expect(result.transaction.outputs, hasLength(2));
+      });
 
-        // Should only have server output (client amount is dust)
-        expect(result.transaction.outputs.length, equals(1));
+      test('pays a small client share', () async {
+        final probe = await buildPayment(funding: 10000, server: 0);
+        final server = 10000 - probe.fee.toInt() - 100;
+        final result = await buildPayment(funding: 10000, server: server);
+
+        expect(result.transaction.outputs.map((o) => o.satoshis.toInt()), [server, 100]);
+      });
+
+      test('leaves out a share of nothing', () async {
+        final result = await buildPayment(funding: 10000, server: 0);
+
+        expect(result.transaction.outputs, hasLength(1));
+        expect(result.transaction.outputs.single.script.toHex(),
+            dartsv.P2PKHLockBuilder.fromAddress(clientAddress).getScriptPubkey().toHex());
+      });
+
+      test('pays both parties when both shares are below 546 sats', () async {
+        final result = await buildPayment(funding: 700, server: 300);
+
+        expect(result.transaction.outputs.map((o) => o.satoshis.toInt()), [300, 700 - 300 - result.fee.toInt()]);
       });
 
       test('should throw when server amount exceeds funding', () async {
@@ -387,26 +395,11 @@ void main() {
         );
       });
 
-      test('should throw when no outputs above dust threshold', () async {
-        const fundingTxId =
-            'abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890';
-        // Use values that will result in both outputs being below dust
-        // Server gets 300 (below 546), client gets ~300 after fee (below 546)
-        final fundingAmount = BigInt.from(700);
-        final serverAmount = BigInt.from(300);
+      test('should throw when the fee takes the whole funding amount', () async {
+        final probe = await buildPayment(funding: 100000, server: 0);
 
         expect(
-          () => channelBuilder.buildPaymentTransaction(feeRate: const FeeRate(satoshis: 100, bytes: 1000),
-            fundingTxId: fundingTxId,
-            fundingOutputIndex: 0,
-            fundingAmountSats: fundingAmount,
-            clientPubKey: clientPubKey,
-            serverPubKey: serverPubKey,
-            clientAddress: clientAddress,
-            serverAddress: serverAddress,
-            serverAmountSats: serverAmount,
-            sequenceNumber: 1,
-          ),
+          () => buildPayment(funding: probe.fee.toInt(), server: 0),
           throwsA(isA<TransactionBuildException>().having(
             (e) => e.code,
             'code',

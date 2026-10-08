@@ -224,6 +224,61 @@ void main() {
       expectRejected(reply, allOf(contains('pays the server 999'), contains('1000')));
       expect(journal().whereType<PaymentRecordedEvent>(), isEmpty);
     });
+
+    // Bead libspiffy-b4kv: a server balance at or below 546 sats could go
+    // unpaid, and the settlement of a 1000 sat tab paid the host nothing.
+    test('b4kv: a payment leaving out a small server balance is not recorded', () async {
+      final ref = await spawn(f.openClientJournal());
+
+      final reply = await ref.ask<dynamic>(
+        RecordPaymentCommand(timing: testChannelTiming, feeRate: const FeeRate(satoshis: 100, bytes: 1000),
+          channelId: _channelId,
+          amountSats: BigInt.from(350),
+          newClientBalanceSats: f.amountSats - BigInt.from(350),
+          newServerBalanceSats: BigInt.from(350),
+          sequenceNumber: 1,
+          paymentTxHex: channelPaymentTxHex(
+            fundingTxId: f.fundingTxId,
+            serverAddress: f.serverAddressB58,
+            clientAddress: f.clientAddressB58,
+            server: BigInt.zero,
+            client: f.amountSats - BigInt.from(350),
+          ),
+          paymentTxId: 'aa' * 32,
+          clientSignatureHex: 'ab',
+        ),
+        _ask,
+      );
+
+      expectRejected(reply, allOf(contains('pays the server 0'), contains('350')));
+      expect(journal().whereType<PaymentRecordedEvent>(), isEmpty);
+    });
+
+    test('b4kv: a payment paying a small server balance is recorded', () async {
+      final ref = await spawn(f.openClientJournal());
+
+      final reply = await ref.ask<dynamic>(
+        RecordPaymentCommand(timing: testChannelTiming, feeRate: const FeeRate(satoshis: 100, bytes: 1000),
+          channelId: _channelId,
+          amountSats: BigInt.from(50),
+          newClientBalanceSats: f.amountSats - BigInt.from(50),
+          newServerBalanceSats: BigInt.from(50),
+          sequenceNumber: 1,
+          paymentTxHex: channelPaymentTxHex(
+            fundingTxId: f.fundingTxId,
+            serverAddress: f.serverAddressB58,
+            clientAddress: f.clientAddressB58,
+            server: BigInt.from(50),
+            client: f.amountSats - BigInt.from(50),
+          ),
+          paymentTxId: 'aa' * 32,
+          clientSignatureHex: 'ab',
+        ),
+        _ask,
+      );
+
+      expect(reply, _applied, reason: '$reply');
+    });
   });
 
   group('a repeated inbound protocol message is a repeat (libspiffy-y8x3)',

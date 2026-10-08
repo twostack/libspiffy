@@ -1106,8 +1106,9 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
   /// anyone but the two parties. The client's output may be less than
   /// [clientBalanceSats]: the fee comes out of the client's share.
   ///
-  /// The server's balance may go unpaid only while it is at or below the
-  /// dust threshold, where the builder leaves the output out.
+  /// The server's balance is paid in full, however small: the builder
+  /// used to leave it out at or below 546 sats, and the server accepted
+  /// that, so a settlement paid the host nothing (bead libspiffy-b4kv).
   ///
   /// The server used to countersign whatever transaction came with the
   /// balances, and the signature went back to the client: a transaction
@@ -1162,9 +1163,7 @@ class PaymentChannelAggregate extends AggregateRoot<ChannelState>
             'which is neither party of channel ${state.channelId}');
       }
     }
-    final serverUnpaidAsDust =
-        toServer == BigInt.zero && serverBalanceSats <= BigInt.from(PaymentChannelBuilder.dustThreshold);
-    if (toServer != serverBalanceSats && !serverUnpaidAsDust) {
+    if (toServer != serverBalanceSats) {
       throw StateError('Payment transaction pays the server $toServer sats, not its balance of '
           '$serverBalanceSats');
     }

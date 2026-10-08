@@ -57,11 +57,12 @@ void main() {
   late _FakeDataSource dataSource;
   late ActorRef arcActor;
 
-  Future<void> storeTx(String txid, String rawHex, {TransactionStatus status = TransactionStatus.pending}) =>
+  Future<void> storeTx(String txid, String rawHex,
+          {TransactionStatus status = TransactionStatus.pending, String wallet = _wallet}) =>
       storage.storeTransaction(
-        _wallet,
+        wallet,
         BitcoinTransaction(
-          walletId: _wallet,
+          walletId: wallet,
           txid: txid,
           rawHex: rawHex,
           status: status,
@@ -230,6 +231,22 @@ void main() {
 
       expect(applied(), contains(kFixtureTxid));
       expect(confirms().first.bumpHex, isNotEmpty);
+    });
+
+    // The payer's and the payee's rows of one transaction (a move between
+    // two wallets on one device): the check of one kept the other waiting.
+    test("each wallet's row of the transaction is checked", () async {
+      await handedOver();
+      await storeTx(kFixtureTxid, kFixtureTxHex, wallet: 'payee');
+      await storage.storeBlockHeader(fixtureHeader(), kFixtureHeight);
+      arc.statuses[kFixtureTxid] = status('SEEN_IN_ORPHAN_MEMPOOL');
+      dataSource.raw[kFixtureTxid] = kFixtureTxHex;
+      dataSource.proofs[kFixtureTxid] = proof();
+      await spawnActor(statusCheckInterval: const Duration(milliseconds: 50));
+
+      await scanUntil(() => confirms().map((c) => c.walletId).toSet().length == 2);
+
+      expect(confirms().map((c) => c.walletId).toSet(), {_wallet, 'payee'});
     });
 
     test('nothing from the data source while remediation still tries', () async {

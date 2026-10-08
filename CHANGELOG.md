@@ -1,3 +1,7 @@
+## 4.5.3
+
+- **Each wallet's row of an orphaned transaction gets the temporary data-source check.** The 4.5.2 stopgap waited 5 minutes between checks per transaction, not per wallet: a move between two wallets on one device has a row in each, and checking the payer's kept the payee's waiting, so the coin the payee received stayed pending while the payer's side confirmed (bead libspiffy-tfks). The wait is now per wallet and transaction. The check is still temporary (bead libspiffy-5it6).
+
 ## 4.5.2
 
 - **Temporary stopgap: a transaction ARC goes on calling orphaned is looked up in the data source.** Transaction status comes from ARC; the data source (WhatsOnChain) is for wallet recovery, and this check is to be removed once ARC is fixed (bead libspiffy-5it6). A transaction ARC answered SEEN_IN_ORPHAN_MEMPOOL for good (here an ARC whose node could not have its parents: a regtest ARC configured for a testnet wallet) went through orphan remediation three times, after which only ARC was asked, so its outputs stayed pending and nothing could spend them (bead libspiffy-tfks). Once remediation has given up, the scan asks the configured data source every `ARCActor.orphanSourceCheckInterval` (5 minutes): a transaction it knows applies as on the network, and its merkle proof confirms it only when it matches a local header. Orphan remediation's resubmissions go in Extended Format too.

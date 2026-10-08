@@ -115,8 +115,10 @@ class ARCActor extends Actor {
   static const int _maxOrphanRemediationAttempts = 3;
 
   /// When the data source was last asked about a transaction ARC still calls
-  /// orphaned after remediation gave up (transient, like the attempts).
-  final Map<String, DateTime> _orphanSourceCheckedAt = {};
+  /// orphaned after remediation gave up, by wallet and txid: the payer's and
+  /// the payee's rows of one transaction are each checked (transient, like
+  /// the attempts).
+  final Map<(String, String), DateTime> _orphanSourceCheckedAt = {};
 
   /// How often such a transaction is looked up in the data source.
   static const Duration orphanSourceCheckInterval = Duration(minutes: 5);
@@ -917,7 +919,7 @@ class ARCActor extends Actor {
       // headers.
       if (response.status == ArcTransactionStatus.mined) {
         _orphanRemediationAttempts.remove(txid);
-        _orphanSourceCheckedAt.remove(txid);
+        _orphanSourceCheckedAt.removeWhere((key, _) => key.$2 == txid);
         await _applyDeferredSpend(txid, walletId);
         final proofStatus = await _handleMinedReport(txid, walletId, response);
         return _StatusCheck(_CheckOutcome.changed,
@@ -958,7 +960,7 @@ class ARCActor extends Actor {
       // shows outstanding, not from a status transition.
       if (response.status == ArcTransactionStatus.seenOnNetwork) {
         _orphanRemediationAttempts.remove(txid);
-        _orphanSourceCheckedAt.remove(txid);
+        _orphanSourceCheckedAt.removeWhere((key, _) => key.$2 == txid);
         await _applyDeferredSpend(txid, walletId);
       }
 
@@ -1794,9 +1796,9 @@ class ARCActor extends Actor {
   Future<void> _checkOrphanViaDataSource(String walletId, String txid) async {
     if (_dataSource == null) return;
     final now = _clock();
-    final last = _orphanSourceCheckedAt[txid];
+    final last = _orphanSourceCheckedAt[(walletId, txid)];
     if (last != null && now.difference(last) < orphanSourceCheckInterval) return;
-    _orphanSourceCheckedAt[txid] = now;
+    _orphanSourceCheckedAt[(walletId, txid)] = now;
     final result = await _checkViaDataSource(walletId, txid);
     _log.info('ARC calls $txid orphaned; the data source says '
         '${result.success ? result.networkStatus : 'nothing (${result.error})'}');

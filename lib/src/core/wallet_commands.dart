@@ -1359,18 +1359,36 @@ class SplitUTXOsToBenfordCommand extends WalletCommand {
   /// Number of outputs to create per source UTXO
   final int targetUtxoCount;
   
-  /// Maximum number of UTXOs to split (null = split all available)
+  /// Maximum number of UTXOs to split (null = split all available), the
+  /// largest first (bead libspiffy-5hnt).
   /// This allows users to keep some UTXOs available for transactions
   final int? maxUtxosToSplit;
+
+  /// Split only these UTXOs (`txid:vout`), the largest first; null for any
+  /// (bead libspiffy-5hnt). One the wallet cannot spend is not split.
+  final List<String>? utxoKeys;
+
+  /// Split each UTXO into pieces of about this many satoshis, at least 2 and
+  /// at most [targetUtxoCount] of them; null for [targetUtxoCount] pieces
+  /// each (bead libspiffy-5hnt).
+  final BigInt? partSats;
+
+  /// No piece is smaller than this: a UTXO makes fewer pieces, or is not
+  /// split when it cannot make two (bead libspiffy-5hnt). Null for no minimum.
+  final BigInt? minPartSats;
 
   SplitUTXOsToBenfordCommand({
     required String walletId,
     required this.targetUtxoCount,
     this.maxUtxosToSplit,
+    List<String>? utxoKeys,
+    this.partSats,
+    this.minPartSats,
     String? commandId,
     DateTime? timestamp,
     Map<String, dynamic>? metadata,
-  }) : super(
+  })  : utxoKeys = frozenListOrNull(utxoKeys),
+        super(
           walletId: walletId,
           commandId: commandId,
           timestamp: timestamp,
@@ -1385,6 +1403,12 @@ class SplitUTXOsToBenfordCommand extends WalletCommand {
     }
     if (maxUtxosToSplit != null && maxUtxosToSplit! < 1) {
       throw ArgumentError('maxUtxosToSplit must be at least 1');
+    }
+    if (partSats != null && partSats! <= BigInt.zero) {
+      throw ArgumentError('partSats must be positive');
+    }
+    if (minPartSats != null && minPartSats! <= BigInt.zero) {
+      throw ArgumentError('minPartSats must be positive');
     }
   }
 

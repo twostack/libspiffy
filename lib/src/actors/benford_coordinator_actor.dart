@@ -151,10 +151,22 @@ class BenfordCoordinatorActor extends Actor {
       return;
     }
 
-    // Determine how many UTXOs to split
+    // The UTXOs to split: the largest first, the named ones only when the
+    // command names them (bead libspiffy-5hnt). They used to be the first in storage
+    // order, so a wallet's largest coin could stay whole while its small
+    // ones were split again.
+    final keys = command.utxoKeys?.toSet();
+    final candidates = [
+      for (final utxo in availableUtxos)
+        if (keys == null || keys.contains(utxo.key)) utxo,
+    ]..sort((a, b) => b.satoshis != a.satoshis ? b.satoshis.compareTo(a.satoshis) : a.key.compareTo(b.key));
+    if (candidates.isEmpty) {
+      _reply(sender, command, error: 'None of the named UTXOs is available to split');
+      return;
+    }
     final utxosToSplit = command.maxUtxosToSplit != null
-        ? availableUtxos.take(command.maxUtxosToSplit!).toList()
-        : availableUtxos;
+        ? candidates.take(command.maxUtxosToSplit!).toList()
+        : candidates;
 
     // ARC's published policy rate: every split pays it on its signed size
     // (bead libspiffy-lph4). The split used to take an app-supplied rate in
@@ -194,11 +206,13 @@ class BenfordCoordinatorActor extends Actor {
           walletId: command.walletId,
           walletType: wallet.walletType!,
           sourceUtxo: sourceUtxo,
-          targetCount: command.targetUtxoCount,
+          targetCount: _piecesFor(sourceUtxo, command),
           feeRate: feeRate,
+          minPartSats: command.minPartSats,
         );
         final index = pending.outcomes.length;
         pending.outcomes.add(attempt.settled);
+        if (attempt.txid != null) pending.outputCounts[attempt.txid!] = attempt.outputCount;
         if (attempt.settled == null) {
           pending.awaiting++;
           unawaited(_awaitBroadcast(context.self, requestId, index, command.walletId, attempt));
@@ -316,7 +330,7 @@ class BenfordCoordinatorActor extends Actor {
       walletId: pending.command.walletId,
       success: failed.isEmpty,
       error: failed.isEmpty ? null : failed.join('; '),
-      splitCount: made.length * pending.command.targetUtxoCount,
+      splitCount: made.fold<int>(0, (sum, txid) => sum + (pending.outputCounts[txid] ?? 0)),
       txids: made,
       splits: outcomes,
     ));
@@ -331,13 +345,41 @@ class BenfordCoordinatorActor extends Actor {
   /// libspiffy-q28i these four paths returned null and the source vanished
   /// from the answer, which made a run where every source failed look like a
   /// success.
+  /// How many pieces [utxo] is split into: about [SplitUTXOsToBenfordCommand.partSats]
+  /// each, from 2 to the command's target count (bead libspiffy-5hnt); the target
+  /// count without a piece size.
+  static int _piecesFor(BitcoinUtxo utxo, SplitUTXOsToBenfordCommand command) {
+    final partSats = command.partSats;
+    if (partSats == null) return command.targetUtxoCount;
+    final pieces = (utxo.satoshis ~/ partSats).toInt();
+    return pieces.clamp(2, command.targetUtxoCount);
+  }
+
   Future<_SplitAttempt> _splitSingleUtxo({
     required String walletId,
     required WalletType walletType,
     required BitcoinUtxo sourceUtxo,
     required int targetCount,
     required FeeRate feeRate,
+    BigInt? minPartSats,
   }) async {
+    // Fewer pieces when the source cannot give each [minPartSats] after the
+    // fee; none when it cannot make two (bead libspiffy-5hnt).
+    if (minPartSats != null) {
+      BigInt feeFor(int pieces) => feeRate.feeFor(TransactionSize.of(
+            inputLockingScripts: [_lockingScript(sourceUtxo)],
+            outputScriptBytes: List.filled(pieces, TransactionSize.p2pkhScriptBytes),
+          ));
+      while (targetCount >= 2 && sourceUtxo.satoshis - feeFor(targetCount) < minPartSats * BigInt.from(targetCount)) {
+        targetCount--;
+      }
+      if (targetCount < 2) {
+        return _SplitAttempt.notBuilt(
+            sourceUtxo.key,
+            '${sourceUtxo.key} holds ${sourceUtxo.satoshis} satoshis: too few for two pieces of at least '
+            '$minPartSats and the fee. Nothing was reserved and the source is untouched.');
+      }
+    }
     // 1. The fee, before anything is reserved: [feeRate] on the split's
     // signed size — the source input by the unlocking script the wallet
     // writes for it, and [targetCount] P2PKH outputs, no change (bead
@@ -380,6 +422,7 @@ class BenfordCoordinatorActor extends Actor {
       final outputAmounts = BenfordDistribution.distribute(
         amountToDistribute,
         targetCount,
+        minOutputAmount: minPartSats,
       );
 
       // 4. Generate new addresses
@@ -472,7 +515,7 @@ class BenfordCoordinatorActor extends Actor {
       // 7. Broadcast via ARCActor: the caller does, and waits for ARC's
       // answer outside the mailbox. ARC's answer settles the hold; a failed
       // submission is retried from ARCActor's queue.
-      return _SplitAttempt(txid, txHex, sourceUtxo.key, feePaid: actualFee);
+      return _SplitAttempt(txid, txHex, sourceUtxo.key, feePaid: actualFee, outputCount: targetCount);
 
     } catch (e) {
       _log.warning('Failed to build or record Benford split transaction: $e');
@@ -741,8 +784,11 @@ class _SplitAttempt {
   /// is waiting for ARC's answer to its broadcast.
   final SplitTransactionOutcome? settled;
 
+  /// The pieces the built transaction makes; 0 when none was built.
+  final int outputCount;
+
   _SplitAttempt(this.txid, this.txHex, this.sourceUtxoKey,
-      {this.feePaid, this.settled});
+      {this.feePaid, this.settled, this.outputCount = 0});
 
   /// No transaction was built for [sourceUtxoKey]: [reason] says why.
   _SplitAttempt.notBuilt(String sourceUtxoKey, String reason)
@@ -763,6 +809,9 @@ class _PendingSplitReply {
   /// One per split transaction, in split order; null while its broadcast
   /// is unanswered.
   final List<SplitTransactionOutcome?> outcomes = [];
+
+  /// The pieces each built split makes, by txid.
+  final Map<String, int> outputCounts = {};
   int awaiting = 0;
 
   /// Every source UTXO has been attempted.

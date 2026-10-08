@@ -785,11 +785,24 @@ class SplitUTXOsCommand implements Message {
   final int? targetUtxoCount;
   final int? maxUtxosToSplit;
 
+  /// The UTXOs to split (`txid:vout`); null for any, the largest first
+  /// (bead libspiffy-5hnt).
+  final List<String>? utxoKeys;
+
+  /// Pieces of about this many satoshis, at most [targetUtxoCount] per UTXO.
+  final BigInt? partSats;
+
+  /// No piece smaller than this.
+  final BigInt? minPartSats;
+
   SplitUTXOsCommand({
     required this.walletId,
     this.targetUtxoCount,
     this.maxUtxosToSplit,
-  });
+    List<String>? utxoKeys,
+    this.partSats,
+    this.minPartSats,
+  }) : utxoKeys = frozenListOrNull(utxoKeys);
 
   @override
   String get correlationId => 'split-utxos-$walletId';

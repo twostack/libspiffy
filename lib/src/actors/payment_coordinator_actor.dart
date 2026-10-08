@@ -812,8 +812,14 @@ class PaymentCoordinatorActor extends Actor {
     if (privacy == null || rng == null) return _selectUTXOs(utxos, amount, outputScriptBytes, rate);
     final changeOutputs = privacy.maxChangeParts;
     if (privacy.spreadInputs) {
+      // Smaller coins at random; else the largest of them, within the same
+      // limit; else the one coin closest above the payment, so its change
+      // is as small as it can be (bead libspiffy-5hnt). Only then the largest coins.
       final spread = _selectSpread(utxos, amount, outputScriptBytes, rate,
-          changeOutputs: changeOutputs, maxInputs: privacy.maxInputs, rng: rng);
+              changeOutputs: changeOutputs, maxInputs: privacy.maxInputs, rng: rng) ??
+          _selectLargestSmaller(utxos, amount, outputScriptBytes, rate,
+              changeOutputs: changeOutputs, maxInputs: privacy.maxInputs) ??
+          _selectSmallestCovering(utxos, amount, outputScriptBytes, rate, changeOutputs: changeOutputs);
       if (spread != null) return spread;
     }
     return _selectUTXOs(utxos, amount, outputScriptBytes, rate, changeOutputs: changeOutputs) ??
@@ -850,6 +856,38 @@ class PaymentCoordinatorActor extends Actor {
       total += utxo.satoshis;
       final fee = _feeFor(rate, selected, outputScriptBytes, changeOutputs: changeOutputs);
       if (total >= amount + fee) return (selectedUtxos: selected, fee: fee);
+    }
+    return null;
+  }
+
+  /// The coins smaller than [amount], largest first, that pay it and the
+  /// fee within [maxInputs] (bead libspiffy-5hnt); null when they cannot.
+  static ({List<BitcoinUtxo> selectedUtxos, BigInt fee})? _selectLargestSmaller(
+      List<BitcoinUtxo> utxos, BigInt amount, List<int> outputScriptBytes, FeeRate rate,
+      {required int changeOutputs, required int maxInputs}) {
+    final smaller = utxos.where((u) => u.satoshis < amount).toList()
+      ..sort((a, b) => b.satoshis != a.satoshis ? b.satoshis.compareTo(a.satoshis) : a.key.compareTo(b.key));
+    final selected = <BitcoinUtxo>[];
+    var total = BigInt.zero;
+    for (final utxo in smaller.take(maxInputs)) {
+      selected.add(utxo);
+      total += utxo.satoshis;
+      final fee = _feeFor(rate, selected, outputScriptBytes, changeOutputs: changeOutputs);
+      if (total >= amount + fee) return (selectedUtxos: selected, fee: fee);
+    }
+    return null;
+  }
+
+  /// The smallest single coin that pays [amount] and the fee (bead libspiffy-5hnt):
+  /// the least change a one-coin payment can have. Null when no coin can.
+  static ({List<BitcoinUtxo> selectedUtxos, BigInt fee})? _selectSmallestCovering(
+      List<BitcoinUtxo> utxos, BigInt amount, List<int> outputScriptBytes, FeeRate rate,
+      {required int changeOutputs}) {
+    final ascending = List<BitcoinUtxo>.from(utxos)
+      ..sort((a, b) => a.satoshis != b.satoshis ? a.satoshis.compareTo(b.satoshis) : a.key.compareTo(b.key));
+    for (final utxo in ascending) {
+      final fee = _feeFor(rate, [utxo], outputScriptBytes, changeOutputs: changeOutputs);
+      if (utxo.satoshis >= amount + fee) return (selectedUtxos: [utxo], fee: fee);
     }
     return null;
   }

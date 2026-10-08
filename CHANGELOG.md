@@ -1,3 +1,8 @@
+## 4.5.0 (unreleased)
+
+- **Spread inputs no longer fall back to the largest coin first.** `PaymentPrivacy.spreadInputs` tried random coins smaller than the payment and, when six of them could not pay it, took the wallet's largest coin: in a wallet of many small coins and one large one, nearly every payment was still funded by the large one (bead libspiffy-5hnt). It now tries the largest of the smaller coins within `maxInputs`, then the smallest single coin that pays, so the change is as small as one coin allows, and only then the largest coins.
+- **A Benford split takes the largest coins first.** `SplitUTXOsToBenfordCommand(maxUtxosToSplit:)` took the first coins in storage order, so a wallet's largest coin could stay whole while its small coins were split again and again. It now takes the largest. New, all optional: `utxoKeys` splits only the coins named; `partSats` splits each into pieces of about that size, from 2 to `targetUtxoCount` of them; `minPartSats` makes no piece smaller, so a coin makes fewer pieces, or none when it cannot make two (its outcome says so). `SplitUTXOsCommand` carries the same three. `SplitUTXOsResponse.splitCount` counts the pieces each split made.
+
 ## 4.4.0
 
 - **Opt-in payment privacy: change in parts, funding from smaller coins.** A payment's change was one output and its inputs the largest coins, so next to a payment split into parts the large input and the large change output told an observer which output was the payer's (bead libspiffy-o7a4). `PayInvoiceCommand(privacy: PaymentPrivacy(...))` asks for both remedies; without it a payment is built exactly as before.

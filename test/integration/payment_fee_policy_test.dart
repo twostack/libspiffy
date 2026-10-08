@@ -477,6 +477,38 @@ void main() {
       expect(second.txid, first.txid);
     });
 
+    test('5hnt: when the smaller coins cannot pay, the smallest coin that can pays, not the largest', () async {
+      final parent = await receiveMined([
+        (p2pkhScript, 100000),
+        (p2pkhScript, 20000),
+        (p2pkhScript, 900),
+        (p2pkhScript, 800),
+        (p2pkhScript, 700),
+      ]);
+
+      final ready = await payPrivately('5hnt-smallest', 10000, const PaymentPrivacy(spreadInputs: true));
+
+      expect(ready.success, isTrue, reason: ready.error);
+      final (payment, _) = signedPayment(ready, parent);
+      expect(payment.inputs.map((i) => i.prevTxnOutputIndex).toList(), [1]);
+    });
+
+    test('5hnt: the largest of the smaller coins pay when random ones cannot within the input limit', () async {
+      final parent = await receiveMined([
+        (p2pkhScript, 100000),
+        (p2pkhScript, 6000),
+        (p2pkhScript, 5000),
+        for (var i = 0; i < 8; i++) (p2pkhScript, 100),
+      ]);
+
+      final ready =
+          await payPrivately('5hnt-largest-smaller', 10000, const PaymentPrivacy(spreadInputs: true, maxInputs: 2));
+
+      expect(ready.success, isTrue, reason: ready.error);
+      final (payment, _) = signedPayment(ready, parent);
+      expect(payment.inputs.map((i) => i.prevTxnOutputIndex).toSet(), {1, 2});
+    });
+
     test('without privacy the payment is built as before: largest coin, one change output', () async {
       final parent = await receiveMined([(p2pkhScript, 100000), (p2pkhScript, 3000), (p2pkhScript, 4000), (p2pkhScript, 5000)]);
 

@@ -86,8 +86,10 @@ const _sources = <String, String?>{
 /// `DeferredSpendCompletedEvent.completedUtxoKeys`) and the foreign-spend
 /// check (`CheckForeignSpendsCommand.utxoKeys`, `ForeignSpendsCheckedEvent
 /// .checked`, `.spends`, `.unchecked`, `CheckOutputSpendersMessage.utxoKeys`,
-/// `OutputSpendersResult.spends`, `.unchecked`).
-const _expectedFields = 174;
+/// `OutputSpendersResult.spends`, `.unchecked`), 176 with the coins a
+/// split names (5hnt: `.utxoKeys` of `SplitUTXOsToBenfordCommand` and
+/// `SplitUTXOsCommand`).
+const _expectedFields = 176;
 
 final _classStart = RegExp(r'^(?:abstract |sealed )?class (\w+)', multiLine: true);
 final _field = RegExp(r'^  final ((?:List|Map|Set)<.*?>\??) (\w+);(?: *//.*)?$', multiLine: true);

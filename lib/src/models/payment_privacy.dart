@@ -20,8 +20,10 @@ class PaymentPrivacy {
 
   /// Fund the payment from coins smaller than it, coins of one parent
   /// transaction together (already linked to each other on chain), rather
-  /// than from the largest coins. Falls back to the largest coins when the
-  /// smaller ones cannot pay within [maxInputs].
+  /// than from the largest coins. When they cannot pay within [maxInputs],
+  /// the largest of the smaller coins are tried within it, then the smallest
+  /// single coin that pays, so its change is as small as it can be; only
+  /// then the largest coins (bead libspiffy-5hnt).
   final bool spreadInputs;
 
   /// The most inputs a spread selection takes. Coins spent together show

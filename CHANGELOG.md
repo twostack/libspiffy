@@ -1,3 +1,7 @@
+## 4.3.1
+
+- **A channel funding goes to ARC with its unconfirmed ancestors.** The channel built its funding BEEF and then broadcast the funding transaction alone, so a funding that spent a coin from a transaction ARC had not seen (fresh change, a split, a payment received peer to peer) was refused with 460, "Not extended format: parent transaction not found", and the channel never opened (bead libspiffy-b3z4). `BroadcastTransactionMessage` takes the transaction's `beefHex`, and ARCActor submits the BEEF's unproven ancestors, parents first, before the transaction, as it already did for a deferred payment; one ARC refuses is logged and passed over, since ARC may know it already. The client's funding broadcast and the server's re-submission of the funding it receives both pass their BEEF. A broadcast without one is unchanged.
+
 ## 4.3.0
 
 - **A payment's change goes to a fresh address.** `PayInvoiceCommand` without a `changeAddress` sent the change back to the address of the payment's first input, so every payment reused an address and linked the change to the coin it came from (bead libspiffy-zjyu). The payment coordinator now asks the wallet for the next address on its change chain (m/1/i) when the payment pays change; a payment with no change takes none, and a plugin-built transaction is unchanged. A caller's `changeAddress` is still used as given. A single-key (WIF) wallet still has its one address. If the wallet gives no change address, the payment fails and says so rather than reuse one.

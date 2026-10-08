@@ -320,9 +320,16 @@ void main() {
 
     expect(ready.success, isTrue, reason: ready.error);
     final (payment, _) = signedPayment(ready, parent);
+    // Everything not paid to the counterparty: the change goes to a fresh
+    // change address, not back to the input's (bead libspiffy-zjyu).
+    final counterpartyScript = dartsv.P2PKHLockBuilder.fromAddress(dartsv.Address.fromBase58(counterparty))
+        .getScriptPubkey()
+        .toHex();
     final change = payment.outputs
-        .where((o) => o.script.toHex() == p2pkhScript.toHex())
+        .where((o) => o.script.toHex() != counterpartyScript)
         .fold<BigInt>(BigInt.zero, (sum, o) => sum + o.satoshis);
+    expect(payment.outputs.where((o) => o.script.toHex() == p2pkhScript.toHex()), isEmpty,
+        reason: 'no output pays back to the input address');
     // Old code: 100000 - 40000 - 1000 = 59000, while the transaction's
     // change output holds 59994.
     expect(ready.changeAmount, change);

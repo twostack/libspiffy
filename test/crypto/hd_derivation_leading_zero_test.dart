@@ -199,7 +199,7 @@ void main() {
         await setup.preStart();
         await setup.commandHandler(
             CreateWalletCommand(walletId: walletId, walletName: 'w', mnemonic: mnemonic));
-        final changeIndex = setup.currentState.nextDerivationIndex;
+        const changeIndex = 0; // the change chain counts on its own (libspiffy-zjyu)
         if (isChange) {
           await setup.commandHandler(GenerateAddressCommand(
               walletId: walletId, label: 'c', purpose: BitcoinWalletAggregate.changePurpose));

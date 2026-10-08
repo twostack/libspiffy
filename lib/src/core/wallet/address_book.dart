@@ -94,6 +94,22 @@ abstract final class AddressBook {
         .put(addressChainsKey, addressChains(state.metadata).put(address, chain.index));
   }
 
+  /// The next unused index on the change chain: one past the highest change
+  /// address the wallet holds, generated or discovered (bead
+  /// libspiffy-zjyu). Change addresses are taken only for a transaction that
+  /// pays change, so the chain has no gaps for address discovery to stop at.
+  static int nextChangeIndex(WalletState state) {
+    final chains = addressChains(state.metadata);
+    final indices = addressIndices(state.metadata);
+    var next = 0;
+    chains.forEach((address, chain) {
+      if (chain != AddressChain.change.index) return;
+      final index = indices[address];
+      if (index != null && index >= next) next = index + 1;
+    });
+    return next;
+  }
+
   /// The chain [address] was derived on. Unknown addresses (and the root
   /// address) are receive-chain, matching every journal written before the
   /// chain was recorded.
@@ -215,7 +231,8 @@ abstract final class AddressBook {
 
   static void applyAddressGenerated(WalletStateBuilder state, AddressGeneratedEvent event) {
     state.addresses = state.addresses.put(event.address, event.label);
-    state.nextDerivationIndex = event.derivationIndex + 1;
+    // A change address is counted on its own chain ([nextChangeIndex]).
+    if (event.chain != AddressChain.change) state.nextDerivationIndex = event.derivationIndex + 1;
 
     // Store the derivation index and chain for key derivation during signing
     recordAddressDerivation(state, event.address, event.derivationIndex, chain: event.chain);
@@ -237,11 +254,11 @@ abstract final class AddressBook {
     // Store the derivation index and chain for key derivation during signing
     recordAddressDerivation(state, event.address, event.derivationIndex, chain: event.chain);
 
-    // Update next derivation index if this is higher. A delegated address
-    // does not: someone else issues that chain (a service holding the
-    // wallet's xpub), and the wallet's own receive and change addresses
-    // have nothing to skip past.
-    if (event.chain != AddressChain.delegated && event.derivationIndex >= state.nextDerivationIndex) {
+    // Update next derivation index if this is higher. Only a receive
+    // address does: someone else issues the delegated chain (a service
+    // holding the wallet's xpub), and the change chain counts on its own
+    // ([nextChangeIndex]).
+    if (event.chain == AddressChain.receive && event.derivationIndex >= state.nextDerivationIndex) {
       state.nextDerivationIndex = event.derivationIndex + 1;
     }
 

@@ -102,6 +102,15 @@ class _ScriptedWalletManager extends Actor {
         reservedByTxId: command.reservedByTxId,
         success: true,
       ));
+    } else if (command is GenerateAddressCommand) {
+      // The payment's change address (bead libspiffy-zjyu).
+      context.sender?.tell(AddressGeneratedResponse(
+        walletId: command.walletId,
+        address: 'n4VQ5YdHf7hLQ2gWQYYrcxoE5B7nWuDFNF',
+        derivationIndex: 0,
+        chain: AddressChain.change,
+        success: true,
+      ));
     } else if (command is SignTransactionCommand) {
       context.sender?.tell(TransactionSignedResponse(
         walletId: command.walletId,

@@ -63,7 +63,7 @@ void main() {
   late _RecordingWalletManager manager;
   late AggregateSigningClient client;
   late String root;
-  late String change2;
+  late String change0;
   late InMemoryWalletStorage storage;
 
   setUp(() async {
@@ -84,13 +84,13 @@ void main() {
         CreateWalletCommand(walletId: _walletId, walletName: 'client', mnemonic: _mnemonic));
     await setup.commandHandler(GenerateAddressCommand(walletId: _walletId, label: 'r1'));
     await setup.commandHandler(GenerateAddressCommand(
-        walletId: _walletId, label: 'c2', purpose: BitcoinWalletAggregate.changePurpose));
+        walletId: _walletId, label: 'c0', purpose: BitcoinWalletAggregate.changePurpose));
     root = setup.currentState.rootAddress!;
-    change2 = setup.currentState.addresses.keys.last;
+    change0 = setup.currentState.addresses.keys.last;
 
     storage = InMemoryWalletStorage();
     await storage.storeWallet(_walletId, 'client', rootAddress: root, networkType: 'testnet');
-    for (final (address, index, chain) in [(root, 0, AddressChain.receive), (change2, 2, AddressChain.change)]) {
+    for (final (address, index, chain) in [(root, 0, AddressChain.receive), (change0, 0, AddressChain.change)]) {
       await storage.upsertAddress(
         _walletId,
         AddressMetadata(
@@ -149,15 +149,15 @@ void main() {
     );
     await expectLater(client.publicKeyForAddress(_walletId, watched), throwsA(isA<AggregateSigningException>()));
     expect(manager.commandTypes, isEmpty, reason: 'nothing is asked of the aggregate');
-    expect((await client.pathForAddress(_walletId, change2)).toString(), 'm/1/2');
+    expect((await client.pathForAddress(_walletId, change0)).toString(), 'm/1/0');
     expect(await client.pathForAddress(_walletId, _externalAddress), isNull);
   });
 
   test('publicKeyForAddress asks the aggregate with SignInputCommand', () async {
-    final key = await client.publicKeyForAddress(_walletId, change2);
+    final key = await client.publicKeyForAddress(_walletId, change0);
 
     expect(hex.encode(dartsv.hash160(hex.decode(key.getEncoded(true)))),
-        dartsv.Address.fromBase58(change2).pubkeyHash160);
+        dartsv.Address.fromBase58(change0).pubkeyHash160);
     expect(manager.commandTypes, isNotEmpty);
     expect(manager.commandTypes, isNot(contains('SignMultisigTransactionCommand')),
         reason: 'the payment-channel multisig command is not a signing primitive for '
@@ -167,12 +167,12 @@ void main() {
 
   test('a plugin-style build signs every input through SignInputCommand', () async {
     final rootKey = await client.publicKeyForAddress(_walletId, root);
-    final changeKey = await client.publicKeyForAddress(_walletId, change2);
+    final changeKey = await client.publicKeyForAddress(_walletId, change0);
     manager.commandTypes.clear();
 
     final funded = [
       (txid: 'aa' * 32, vout: 1, address: root, key: rootKey, sats: BigInt.from(30000)),
-      (txid: 'bb' * 32, vout: 0, address: change2, key: changeKey, sats: BigInt.from(15000)),
+      (txid: 'bb' * 32, vout: 0, address: change0, key: changeKey, sats: BigInt.from(15000)),
     ];
 
     final tx = await client.buildWithSigner<dartsv.Transaction>(

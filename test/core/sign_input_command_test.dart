@@ -127,15 +127,15 @@ void main() {
     await setup.commandHandler(GenerateAddressCommand(walletId: walletId, label: 'r1'));
     final receive1 = setup.currentState.addresses.keys.last;
     await setup.commandHandler(GenerateAddressCommand(
-        walletId: walletId, label: 'c2', purpose: BitcoinWalletAggregate.changePurpose));
-    final change2 = setup.currentState.addresses.keys.last;
+        walletId: walletId, label: 'c0', purpose: BitcoinWalletAggregate.changePurpose));
+    final change0 = setup.currentState.addresses.keys.last;
     final root = setup.currentState.rootAddress!;
     final eventsBefore = store.allEvents.length;
 
     for (final (address, index, chain) in [
       (root, 0, AddressChain.receive),
       (receive1, 1, AddressChain.receive),
-      (change2, 2, AddressChain.change),
+      (change0, 0, AddressChain.change), // its own index (libspiffy-zjyu)
     ]) {
       final reply = await ask(signCommand(walletId, address, index: index, chain: chain));
       expect(reply.success, isTrue, reason: '$address: ${reply.error}');

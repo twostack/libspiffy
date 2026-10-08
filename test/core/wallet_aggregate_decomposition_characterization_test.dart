@@ -58,7 +58,7 @@ class _Wallet {
   late String root;
   late String receive1;
   late String receive1PubKey;
-  late String change2;
+  late String change0;
   late String rootPubKey;
 
   static Future<_Wallet> create() async {
@@ -75,7 +75,7 @@ class _Wallet {
       includePublicKey: true,
     )))
         .single as AddressGeneratedEvent;
-    wallet.change2 = a2.address;
+    wallet.change0 = a2.address;
     final hd = dartsv.HDPublicKey.fromXpub((await wallet.secureStorage.getString('wallet_hdpubkey_$_w'))!);
     wallet.rootPubKey = Bip32.derivePublicPath(hd, 'm/0/0').publicKey.toHex();
     expect(dartsv.SVPublicKey.fromHex(wallet.rootPubKey).toAddress(dartsv.NetworkType.TEST).toBase58(), wallet.root);
@@ -245,7 +245,7 @@ void main() {
       await wallet.receive(4, 7000, address: watchAddress);
       await expectBalances('watch-only receive (counted in the state balances)', _b(7000, 31000, 0));
 
-      final spend = _txHex([_key(2)], [(_p2pkh(_foreign), 1000), (_p2pkh(wallet.change2), 18000)]);
+      final spend = _txHex([_key(2)], [(_p2pkh(_foreign), 1000), (_p2pkh(wallet.change0), 18000)]);
       await wallet.handle(_outgoing(spend, [_key(2)]));
       await expectBalances('recorded spend with change', _b(7000, 29000, 0));
 
@@ -331,7 +331,7 @@ void main() {
       final wallet = await _Wallet.create();
       await wallet.receive(1, 3000);
       await wallet.receive(2, 40000, address: wallet.receive1);
-      await wallet.receive(3, 20000, address: wallet.change2);
+      await wallet.receive(3, 20000, address: wallet.change0);
       await wallet.receive(4, 90000,
           script: dartsv.P2PKLockBuilder(dartsv.SVPublicKey.fromHex(wallet.rootPubKey)).getScriptPubkey().toHex());
       await wallet.receive(5, 80000);
@@ -346,7 +346,7 @@ void main() {
           clientPubKeyHex: client,
           serverPubKeyHex: server,
           fundingAmountSats: sats,
-          changeAddressBase58: wallet.change2,
+          changeAddressBase58: wallet.change0,
         );
 
     test('selects spendable UTXOs largest first until amount and fee are covered, and reserves them', () async {
@@ -390,7 +390,7 @@ void main() {
           response.changeAmount, response.fee, response.totalInputSats, response.totalOutputSats],
         // The fee is 24, not 23, since bead libspiffy-zs4l: ARC's policy rate
         // rounded up, as every fee is — the funding used to round down.
-        ['50c13621fff0aa65a0e81dce0f54658df4f97c626c940f5b6c2e101938458b03', 1, 0, wallet.change2, 59976, 24, 90000, 89976],
+        ['6fc3d49296b02343c2b7d6f292dbc218c286099c72ca6ee464e97dde57fd4e35', 1, 0, wallet.change0, 59976, 24, 90000, 89976],
       );
       expect(response.spentUtxoKeys, [_key(4)]);
       expect(dartsv.Transaction.fromHex(response.fundingTxHex).id, response.fundingTxId);
@@ -419,7 +419,7 @@ void main() {
       final key1 = dartsv.SVPublicKey.fromHex(wallet.receive1PubKey);
       final foreignKey = dartsv.SVPrivateKey.fromHex('7a' * 32, dartsv.NetworkType.TEST).publicKey;
       await wallet.receive(1, 5000);
-      await wallet.receive(2, 6000, address: wallet.change2);
+      await wallet.receive(2, 6000, address: wallet.change0);
       await wallet.receive(3, 7000, script: dartsv.P2PKLockBuilder(key1).getScriptPubkey().toHex(), address: wallet.receive1);
       await wallet.receive(4, 8000,
           script: dartsv.P2MSLockBuilder([foreignKey, key1], 1, sorting: false).getScriptPubkey().toHex(),
@@ -437,7 +437,7 @@ void main() {
         await signedTxid(wallet, [_key(1), _key(3), _key(5)]), // mixed inputs
       ], [
         '03d11651c8f362b8ac34f58f0c01b6b0266626ae8995a49171f856239ce72157',
-        '51db33491a3de93dd15954093d54f4b0c867ad868f3455caccf225f5380f2a32',
+        'f9ba7c6c4afb978fbc2a074ee16044cdc90526721e60343bec1fdc49c2eb6c17',
         'e60c63c822e1a994efb3152d595315375a833fabbf27c11c1b0859d9f89a332e',
         'b637942b75ed865f6c7c9b09315f478649abd397b89f04a8bb4e2bce05f46e81',
         '1b6bc373eb57c1acc3e7dc7c83cca0af3ac40a940ba8d2e8b37c8a32794ff851',
@@ -479,7 +479,7 @@ void main() {
       const opReturn = '006a02cafe';
       final raw = _txHex([_key(1)], [
         (_p2pkh(_foreign), 1000),
-        (_p2pkh(wallet.change2), 2000),
+        (_p2pkh(wallet.change0), 2000),
         (dartsv.P2PKLockBuilder(key1).getScriptPubkey().toHex(), 3000),
         (dartsv.P2MSLockBuilder([foreignKey, key1], 1, sorting: false).getScriptPubkey().toHex(), 4000),
         (dartsv.P2MSLockBuilder([foreignKey, key1], 2, sorting: false).getScriptPubkey().toHex(), 5000),
@@ -497,7 +497,7 @@ void main() {
         'UTXOReceivedEvent',
       ]);
       expect([for (final e in events.whereType<UTXOReceivedEvent>()) (e.vout, e.address, e.satoshis, e.initialStatus)], [
-        (1, wallet.change2, 2000, UTXOStatus.pending),
+        (1, wallet.change0, 2000, UTXOStatus.pending),
         (2, wallet.receive1, 3000, UTXOStatus.pending),
         (3, wallet.receive1, 4000, UTXOStatus.pending),
         (6, wallet.root, 6000, UTXOStatus.pending),

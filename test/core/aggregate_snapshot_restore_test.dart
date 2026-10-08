@@ -18,6 +18,7 @@ library;
 import 'package:eventador/eventador.dart';
 import 'package:test/test.dart';
 
+import 'package:libspiffy/src/core/wallet/address_book.dart';
 import 'package:libspiffy/src/actors/invoice_messages.dart';
 import 'package:libspiffy/src/core/bitcoin_wallet_aggregate.dart';
 import 'package:libspiffy/src/core/channel_events.dart';
@@ -238,7 +239,10 @@ void main() {
         'mchange1': AddressChain.change.index,
         'mdiscovered7': AddressChain.change.index,
       });
-      expect(restored.currentState.nextDerivationIndex, 8);
+      // Each chain counts on its own (bead libspiffy-zjyu): the receive chain
+      // after mreceive1, the change chain after mdiscovered7.
+      expect(restored.currentState.nextDerivationIndex, 2);
+      expect(AddressBook.nextChangeIndex(restored.currentState), 8);
     });
   });
 

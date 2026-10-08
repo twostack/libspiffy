@@ -285,9 +285,6 @@ class WalletKeys {
     }
 
     // For HD and XPRIV wallets, derive new address
-    // Use next available derivation index
-    final derivationIndex = currentState.nextDerivationIndex;
-
     // Determine network type
     final networkType = NetworkName.toDartsv(currentState.networkType);
 
@@ -309,6 +306,13 @@ class WalletKeys {
     } else {
       chain = AddressChain.receive;
     }
+    // The change chain counts on its own (bead libspiffy-zjyu): each payment
+    // takes a fresh change address, and on the shared counter those would
+    // leave gaps on the receive chain that address discovery, which stops
+    // after a run of unused addresses on each chain, reads as its end.
+    final derivationIndex = chain == AddressChain.change
+        ? AddressBook.nextChangeIndex(currentState)
+        : currentState.nextDerivationIndex;
     final address = cryptoService.deriveAddress(hdPublicKey, derivationIndex, chain: chain, network: networkType);
 
     // Derive public key if requested

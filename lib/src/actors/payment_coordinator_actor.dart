@@ -24,6 +24,7 @@ import '../services/ancestor_chain_service.dart';
 import '../services/watch_only_funds.dart';
 import '../utils/beef.dart';
 import '../core/wallet_commands.dart';
+import '../core/wallet/address_book.dart' show AddressBook;
 import '../core/wallet_output_ownership.dart';
 import '../core/wallet/transaction_signer.dart' show WalletTransactionSigner;
 import '../core/wallet/transaction_size.dart';
@@ -365,6 +366,19 @@ class PaymentCoordinatorActor extends Actor {
       ancestorResult = null;
     }
 
+    // 3b. Change goes to an address no transaction has used: the caller's,
+    // or a fresh one on the wallet's change chain (bead libspiffy-zjyu).
+    // A plugin builds its own outputs and takes none.
+    var changeAddress = msg.changeAddress;
+    if (changeAddress == null && !isPluginTransaction && _paysChange(selectedUtxos, paymentOutputs, fee)) {
+      final fresh = await _changeAddressFor(msg.walletId, msg.invoiceId);
+      if (fresh.error != null) {
+        fail('No change address for the payment: ${fresh.error}');
+        return false;
+      }
+      changeAddress = fresh.address;
+    }
+
     // 4. Build payment transaction (with outputs if provided)
     // Returns (transaction, preSigned, witnessTx) — plugin-built transactions are already signed.
     final buildSw = Stopwatch()..start();
@@ -375,7 +389,7 @@ class PaymentCoordinatorActor extends Actor {
       paymentOutputs: paymentOutputs,
       fee: fee,
       rate: rate,
-      changeAddress: msg.changeAddress,
+      changeAddress: changeAddress,
       walletId: msg.walletId,
       signing: signing,
     );
@@ -433,9 +447,9 @@ class PaymentCoordinatorActor extends Actor {
 
     // 4c. Record the outgoing transaction in PENDING state
 
-    // CRITICAL: Use the actual change address (same logic as _buildPaymentTransaction)
-    // If no changeAddress was provided, we use the first UTXO's address as change destination
-    final actualChangeAddress = msg.changeAddress ?? selectedUtxos.firstOrNull?.address;
+    // The change address the transaction was built with (a plugin's
+    // transaction pays no change of ours).
+    final actualChangeAddress = changeAddress;
 
     // Get recipient addresses for recording
     final recipientAddresses = _getRecipientAddresses(msg.outputs, msg.addresses);
@@ -1265,6 +1279,47 @@ class PaymentCoordinatorActor extends Actor {
   /// (success or failure). A missing reply is a failure: the previous
   /// "no error within 2 s means reserved" convention treated a slow
   /// rejection as success and stalled every payment for the full 2 s.
+  /// Whether a transaction spending [selectedUtxos] to [paymentOutputs] at
+  /// [fee] has anything left over to pay back as change.
+  static bool _paysChange(List<BitcoinUtxo> selectedUtxos, List<_PaymentOutput> paymentOutputs, BigInt fee) {
+    final totalInput = selectedUtxos.fold<BigInt>(BigInt.zero, (sum, u) => sum + u.satoshis);
+    final totalOutput = paymentOutputs.fold<BigInt>(BigInt.zero, (sum, o) => sum + o.amount);
+    return totalInput - totalOutput - fee > BigInt.zero;
+  }
+
+  /// The change address of the payment of [invoiceId] (bead
+  /// libspiffy-zjyu): the one an earlier attempt at it took, else the next
+  /// address on the wallet's change chain. Paying an invoice again over the
+  /// same inputs must sign the same transaction, which is how the wallet
+  /// knows the payment again (a cancelled one re-activated, a rejected one
+  /// refused, bead libspiffy-4r0); a new change address would make it a
+  /// second payment of the same coins. A single-key wallet answers with its
+  /// one address.
+  Future<({String? address, String? error})> _changeAddressFor(String walletId, String invoiceId) async {
+    final label = 'change:$invoiceId';
+    final earlier = (await _storage.getAddressesByPurpose(walletId, AddressBook.changePurpose))
+        .where((a) => a.label == label)
+        .firstOrNull;
+    if (earlier != null) return (address: earlier.address, error: null);
+
+    final command = GenerateAddressCommand(
+      walletId: walletId,
+      label: label,
+      purpose: AddressBook.changePurpose,
+    );
+    final dynamic reply;
+    try {
+      reply = await _walletManager.ask<dynamic>(WalletCommandMessage(walletId, command), _reservationReplyTimeout);
+    } on TimeoutException {
+      return (address: null, error: 'the wallet did not answer within $_reservationReplyTimeout');
+    }
+    if (reply is AddressGeneratedResponse && reply.success) return (address: reply.address, error: null);
+    if (reply is AddressGeneratedResponse) return (address: null, error: reply.error ?? 'refused');
+    if (reply is FailureResponse) return (address: null, error: reply.error);
+    if (reply is Map && reply['error'] != null) return (address: null, error: '${reply['error']}');
+    return (address: null, error: 'unexpected reply ${reply.runtimeType}');
+  }
+
   Future<bool> _reserveUTXOs(String walletId, List<BitcoinUtxo> utxos, String reservationId) async {
     final receivers = <ActorRef>[];
     final futures = <Future<void>>[];

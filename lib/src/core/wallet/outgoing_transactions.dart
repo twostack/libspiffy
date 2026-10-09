@@ -598,6 +598,37 @@ class OutgoingTransactions {
     }
   }
 
+  /// Keeps the ancestors the settled BEEF of [RecordTransactionAncestorsCommand.txid]
+  /// carried (bead libspiffy-yiba). Only for a transaction this wallet
+  /// recorded, once: no event for any other, for no ancestors, or when they
+  /// are kept already.
+  static List<Event> recordAncestors(WalletState currentState, RecordTransactionAncestorsCommand command) {
+    if (!currentState.isCreated) {
+      throw StateError('Cannot record ancestors for non-existent wallet');
+    }
+    if (command.ancestors.isEmpty || !isRecorded(currentState, command.txid)) return const [];
+    final kept = currentState.metadata[WalletMetadataKeys.settledAncestors];
+    if (kept is Map && kept.containsKey(command.txid)) return const [];
+    return [
+      TransactionAncestorsRecordedEvent(
+        walletId: command.walletId,
+        txid: command.txid,
+        ancestors: command.ancestors,
+        version: currentState.version + 1,
+        timestamp: DateTime.now(),
+      ),
+    ];
+  }
+
+  static void applyAncestorsRecorded(WalletStateBuilder state, TransactionAncestorsRecordedEvent event) {
+    final kept = state.metadata[WalletMetadataKeys.settledAncestors];
+    final records = kept is Map ? frozenRecord(kept) : freezeMap(<String, dynamic>{});
+    state.metadata =
+        state.metadata.put(WalletMetadataKeys.settledAncestors, records.put(event.txid, event.ancestors.length));
+    state.version = event.version;
+    state.lastModified = event.timestamp;
+  }
+
   /// The network has the transaction ([ApplyDeferredSpendCommand]): the
   /// wallet's UTXOs it spends are spent and its outputs the wallet holds
   /// become available, as [confirm] does on a proof — from the aggregate's

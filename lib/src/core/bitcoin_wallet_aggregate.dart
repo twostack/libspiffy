@@ -382,6 +382,15 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
             success: true,
           ));
         }
+        // Answered also when nothing was journaled (not ours, or kept).
+        if (command is RecordTransactionAncestorsCommand) {
+          sender.tell(TransactionAncestorsRecordedResponse(
+            walletId: command.walletId,
+            txid: command.txid,
+            success: true,
+            journaled: events.isNotEmpty,
+          ));
+        }
         // Answered also when nothing was journaled (already watched or owned).
         if (command is AddWatchAddressCommand) {
           sender.tell(WatchAddressAddedResponse(
@@ -744,6 +753,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         return OutgoingTransactions.applyDeferredSpend(currentState, cmd);
       case final VoidUnsettledTransactionCommand cmd:
         return _deferred.voidUnsettled(currentState, cmd);
+      case final RecordTransactionAncestorsCommand cmd:
+        return OutgoingTransactions.recordAncestors(currentState, cmd);
       default:
         throw ArgumentError('Unknown command type: ${command.runtimeType}');
     }
@@ -846,6 +857,8 @@ class BitcoinWalletAggregate extends AggregateRoot<WalletState>
         DeferredPayments.applyCompleted(state, completed);
       case final TransactionVoidedEvent voided:
         DeferredPayments.applyVoided(state, voided);
+      case final TransactionAncestorsRecordedEvent recorded:
+        OutgoingTransactions.applyAncestorsRecorded(state, recorded);
       default:
         throw ArgumentError('Unknown event type: ${event.runtimeType}');
     }

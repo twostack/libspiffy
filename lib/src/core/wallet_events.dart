@@ -2717,6 +2717,56 @@ class DeferredTransactionFailedEvent extends WalletEvent {
       );
 }
 
+/// The ancestors of [txid], a transaction this wallet recorded, that the
+/// BEEF it was settled with carried (see [RecordTransactionAncestorsCommand]
+/// in wallet_commands.dart). Stored as a received BEEF's are
+/// ([TransactionImportedEvent.ancestors]): raw transactions in the
+/// txid-keyed ancestor store, BUMPs as merkle proofs.
+class TransactionAncestorsRecordedEvent extends WalletEvent {
+  static const String stableTypeName = 'wallet.transaction.ancestors_recorded';
+
+  @override
+  String get typeName => stableTypeName;
+
+  final String txid;
+  final List<BeefAncestor> ancestors;
+
+  TransactionAncestorsRecordedEvent({
+    required String walletId,
+    required this.txid,
+    required List<BeefAncestor> ancestors,
+    String? eventId,
+    DateTime? timestamp,
+    int? version,
+    Map<String, dynamic>? metadata,
+  })  : ancestors = frozenList(ancestors),
+        super(
+          walletId: walletId,
+          eventId: eventId,
+          timestamp: timestamp,
+          version: version,
+          metadata: metadata,
+        );
+
+  @override
+  Map<String, dynamic> getWalletEventData() => {
+        'txid': txid,
+        'ancestors': [for (final a in ancestors) a.toMap()],
+      };
+
+  static TransactionAncestorsRecordedEvent fromMap(Map<String, dynamic> map) => TransactionAncestorsRecordedEvent(
+        walletId: map['walletId'] as String,
+        txid: map['txid'] as String,
+        ancestors: [
+          for (final a in (map['ancestors'] as List<dynamic>)) BeefAncestor.fromMap(a as Map<dynamic, dynamic>),
+        ],
+        eventId: map['eventId'] as String?,
+        timestamp: _deferredDate(map['timestamp']),
+        version: map['version'] as int?,
+        metadata: map['metadata'] as Map<String, dynamic>?,
+      );
+}
+
 /// A transaction handed to this wallet can never be mined: [spentInput], an
 /// input of it, is already spent by [spentBy], which a merkle proof confirms.
 /// Its row is failed and its pending outputs are voided (see

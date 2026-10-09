@@ -1043,6 +1043,29 @@ class WalletSpendableUtxosResponse extends LocalMessage {
   dynamic get payload => this;
 }
 
+/// Answer to [RecordTransactionAncestorsCommand]: given also when nothing
+/// was journaled (the transaction is not one this wallet recorded, or its
+/// ancestors are kept already).
+class TransactionAncestorsRecordedResponse extends ActorResponse {
+  final String walletId;
+  final String txid;
+  @override
+  final bool success;
+
+  /// Whether a [TransactionAncestorsRecordedEvent] was journaled.
+  final bool journaled;
+  @override
+  final String? error;
+
+  TransactionAncestorsRecordedResponse({
+    required this.walletId,
+    required this.txid,
+    required this.success,
+    this.journaled = false,
+    this.error,
+  }) : super(metadata: {'walletId': walletId, 'txid': txid, 'success': success});
+}
+
 /// Reply of the wallet aggregate to AddWatchAddressCommand (bead
 /// libspiffy-p4kv).
 class WatchAddressAddedResponse extends ActorResponse {

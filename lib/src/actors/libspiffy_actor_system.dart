@@ -680,6 +680,9 @@ class LibSpiffyActorSystem {
         aliases: const ['DeferredSpendCompletedEvent']);
     EventRegistry.register<TransactionVoidedEvent>(TransactionVoidedEvent.stableTypeName, TransactionVoidedEvent.fromMap,
         aliases: const ['TransactionVoidedEvent']);
+    EventRegistry.register<TransactionAncestorsRecordedEvent>(
+        TransactionAncestorsRecordedEvent.stableTypeName, TransactionAncestorsRecordedEvent.fromMap,
+        aliases: const ['TransactionAncestorsRecordedEvent']);
 
     // INVOICE EVENTS
     EventRegistry.register<InvoiceCreatedEvent>(InvoiceCreatedEvent.stableTypeName, InvoiceCreatedEvent.fromMap,

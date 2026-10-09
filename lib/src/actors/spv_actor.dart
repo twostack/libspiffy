@@ -24,6 +24,7 @@ import '../core/wallet_commands.dart'
 import '../core/wallet_events.dart' show BeefAncestor;
 import '../models/bitcoin_transaction.dart' show BitcoinTransaction, TransactionStatus;
 import '../models/bitcoin_utxo.dart' show UTXOStatus;
+import '../spv/beef_ancestry.dart';
 import '../spv/merkle_proof_header_check.dart';
 import '../core/wallet_output_ownership.dart' show BareMultisigScript;
 
@@ -438,7 +439,7 @@ class SPVActor extends Actor {
         if (hasProof) {
           // This transaction has a proof - validate it directly via SPV
 
-          final bump = _bumpFor(beef, txIndex);
+          final bump = beef.bumpOf(txIndex);
           final BlockHeader blockHeader;
           try {
             blockHeader = await _getBlockHeader(bump.blockHeight);
@@ -497,7 +498,7 @@ class SPVActor extends Actor {
             }
           }
 
-          ancestors = _ancestorsToRetain(beef, txidHex, provenTxids);
+          ancestors = beef.ancestorsOf(txidHex, provenTxids);
         } else {
           // This transaction has NO proof (unconfirmed payment transaction)
           // Validate that all its ancestors (inputs) have valid merkle proofs
@@ -561,7 +562,7 @@ class SPVActor extends Actor {
               targetWalletId: walletId,
             );
           }
-          ancestors = _ancestorsToRetain(beef, txidHex, provenTxids);
+          ancestors = beef.ancestorsOf(txidHex, provenTxids);
         }
 
         // Step 2: Validate transaction structure and scripts
@@ -832,7 +833,7 @@ class SPVActor extends Actor {
       if (!beef.hasMerkle[i]) continue;
       final BUMP bump;
       try {
-        bump = _bumpFor(beef, i);
+        bump = beef.bumpOf(i);
       } catch (e) {
         _log.warning('BUMP of ${txids[i]} not retained: $e');
         continue;
@@ -1043,7 +1044,7 @@ class SPVActor extends Actor {
   /// that can carry on without this member catches both.
   Future<ProvenTransaction> _verifyProvenMember(BEEF beef, int index) async {
     final memberTxid = beef.calculateTxid(beef.txs[index]);
-    final bump = _bumpFor(beef, index);
+    final bump = beef.bumpOf(index);
     final blockHeader = await _getBlockHeader(bump.blockHeight);
     if (!await beef.validateTransactionWithBlockHeader(memberTxid, blockHeader)) {
       throw _ProofRejected('the BUMP of ${hex.encode(memberTxid)} does not match the header at '
@@ -1057,28 +1058,6 @@ class SPVActor extends Actor {
     );
   }
 
-  /// The BUMP proving the proven transaction at [txIndex].
-  ///
-  /// BRC-62 gives every proven transaction an explicit index into the BUMP
-  /// list (`beef.bumpIndex`, one entry per proven transaction in order).
-  /// BUMPs need not be listed in transaction order, and several
-  /// transactions of one block share a BUMP, so counting the proven
-  /// transactions before [txIndex] picked the wrong block's proof for
-  /// BEEFs not built by this library.
-  BUMP _bumpFor(BEEF beef, int txIndex) {
-    var ordinal = 0;
-    for (var i = 0; i < txIndex; i++) {
-      if (beef.hasMerkle[i]) ordinal++;
-    }
-    if (!beef.hasMerkle[txIndex] || ordinal >= beef.bumpIndex.length) {
-      throw StateError('Transaction $txIndex has no BUMP index in the BEEF');
-    }
-    final index = beef.bumpIndex[ordinal];
-    if (index < 0 || index >= beef.bumps.length) {
-      throw StateError('BUMP index $index of transaction $txIndex is out of range (${beef.bumps.length} BUMPs)');
-    }
-    return beef.bumps[index];
-  }
 
   /// BRC-62 ancestor coverage: every input of an unproven transaction must
   /// be spent from a transaction that either has a validated merkle proof
@@ -1112,52 +1091,6 @@ class SPVActor extends Actor {
     return visit(subjectTxid);
   }
 
-  /// The transactions of [beef] that an outgoing BEEF spending outputs of the
-  /// unproven [subjectTxid] must carry (bead libspiffy-zsh): every in-BEEF
-  /// ancestor reached by walking inputs back from the subject, stopping at
-  /// proven transactions ([provenTxids], BUMPs validated), each proven one
-  /// with its BUMP. In the BEEF's order; transactions of the BEEF that the
-  /// subject does not descend from are left out. Call after
-  /// [_checkAncestorCoverage] accepted the subject.
-  ///
-  /// We cannot fetch these again (no block scanning, no indexer, and ARC
-  /// knows only transactions it mined or we broadcast), so they are
-  /// journaled with the received transaction.
-  ///
-  /// Every BUMP the BEEF carries is kept, [provenTxids] or not (bead
-  /// libspiffy-fggl): a proof for a block whose header we have not synced
-  /// cannot be fetched again either, and the projection stores it
-  /// pendingHeader until the header arrives. Only [provenTxids] stops the
-  /// walk, so an ancestor we could not verify is still followed back.
-  List<BeefAncestor> _ancestorsToRetain(BEEF beef, String subjectTxid, Set<String> provenTxids) {
-    final indexByTxid = <String, int>{};
-    for (var i = 0; i < beef.txs.length; i++) {
-      indexByTxid.putIfAbsent(hex.encode(beef.calculateTxid(beef.txs[i])), () => i);
-    }
-
-    final needed = <String>{};
-    final pending = <String>[subjectTxid];
-    while (pending.isNotEmpty) {
-      final index = indexByTxid[pending.removeLast()];
-      if (index == null) continue;
-      final tx = dartsv.Transaction.fromHex(hex.encode(beef.txs[index]));
-      for (final input in tx.inputs) {
-        final parent = input.prevTxnId;
-        if (parent == subjectTxid || !indexByTxid.containsKey(parent) || !needed.add(parent)) continue;
-        if (!provenTxids.contains(parent)) pending.add(parent);
-      }
-    }
-
-    return [
-      for (final entry in indexByTxid.entries.toList()..sort((a, b) => a.value.compareTo(b.value)))
-        if (needed.contains(entry.key))
-          BeefAncestor(
-            txid: entry.key,
-            rawHex: hex.encode(beef.txs[entry.value]),
-            bumpHex: beef.hasMerkle[entry.value] ? _bumpFor(beef, entry.value).toHex() : '',
-          ),
-    ];
-  }
 
   ///validate that the transaction's inputs are spending properly from their corresponding UTXOs
   ///The BEEF should have all input/funding transactions available or this method will fail
@@ -2567,7 +2500,7 @@ class SPVActor extends Actor {
       String bumpProof = '';
       
       if (beef.hasMerkle[txIndex]) {
-        final bump = _bumpFor(beef, txIndex);
+        final bump = beef.bumpOf(txIndex);
         blockHeight = bump.blockHeight;
         // Serialize BUMP for storage
         bumpProof = hex.encode(bump.serialize());

@@ -88,8 +88,10 @@ const _sources = <String, String?>{
 /// .checked`, `.spends`, `.unchecked`, `CheckOutputSpendersMessage.utxoKeys`,
 /// `OutputSpendersResult.spends`, `.unchecked`), 176 with the coins a
 /// split names (5hnt: `.utxoKeys` of `SplitUTXOsToBenfordCommand` and
-/// `SplitUTXOsCommand`).
-const _expectedFields = 176;
+/// `SplitUTXOsCommand`), 178 with a settled BEEF's ancestry (yiba:
+/// `RecordTransactionAncestorsCommand.ancestors`,
+/// `TransactionAncestorsRecordedEvent.ancestors`).
+const _expectedFields = 178;
 
 final _classStart = RegExp(r'^(?:abstract |sealed )?class (\w+)', multiLine: true);
 final _field = RegExp(r'^  final ((?:List|Map|Set)<.*?>\??) (\w+);(?: *//.*)?$', multiLine: true);

@@ -25,6 +25,7 @@ import '../models/payment_channel.dart' show PaymentChannelRole, PaymentChannelS
 import '../models/wallet_balances.dart' show BalanceBucket, WalletBalances;
 import '../services/ancestor_chain_service.dart';
 import '../services/watch_only_funds.dart';
+import '../spv/beef_ancestry.dart';
 import '../storage/read_model_storage.dart';
 import '../utils/beef.dart';
 import 'aggregate_signing_client.dart';
@@ -2853,6 +2854,11 @@ class WalletCoordinatorActor extends Actor {
       return;
     }
 
+    // What the BEEF carries for the subject is kept before anything is
+    // broadcast, so a spend of its outputs right after the settlement
+    // finds it (bead libspiffy-yiba).
+    await _keepSettledAncestors(cmd.walletId, cmd.txid, beef);
+
     // Partition TXs into "already on chain (skip)" and "needs broadcast"
     int skipped = 0;
     final pending = <String, String>{}; // childTxid → txHex
@@ -2921,10 +2927,54 @@ class WalletCoordinatorActor extends Actor {
       final txHex = entryTx.value;
       _log.info('[settle] broadcasting txid=$childTxid '
           '(${(txHex.length / 2).toInt()} bytes)');
+      // With the BEEF: ARCActor reads each transaction's parents from it
+      // for the Extended Format, a counterparty's included (Arcade refuses
+      // a transaction it cannot extend, 460).
       _arcActor.tell(
-        wm.BroadcastTransactionMessage(cmd.walletId, txHex, childTxid),
+        wm.BroadcastTransactionMessage(cmd.walletId, txHex, childTxid, beefHex: cmd.beefHex),
         sender: context.self,
       );
+    }
+  }
+
+  /// Keeps the ancestors [beef] carries for [txid] when [txid] is a
+  /// transaction [walletId] recorded (bead libspiffy-yiba): the parents of
+  /// inputs the wallet does not own, a counterparty's transactions, back to
+  /// proven ones. Nothing else supplies them, and without them no outgoing
+  /// BEEF can spend [txid]'s outputs until [txid] is mined and proven.
+  /// Returns once the read model holds them; a failure is logged, and the
+  /// settlement goes on: the broadcast does not need them.
+  Future<void> _keepSettledAncestors(String walletId, String txid, BEEF beef) async {
+    final List<domain_events.BeefAncestor> ancestors;
+    try {
+      ancestors = beef.ancestorsOf(txid, beef.provenTxids);
+    } catch (e) {
+      _log.warning('[settle] the ancestry of $txid in its BEEF cannot be read; none kept: $e');
+      return;
+    }
+    if (ancestors.isEmpty) return;
+    try {
+      final applied = awaitProjectionApplied(
+        _walletProjection,
+        matches: (e) =>
+            e is domain_events.TransactionAncestorsRecordedEvent && e.walletId == walletId && e.txid == txid,
+        alreadyApplied: () async =>
+            (await _storage.getAncestorTransactionsBatch([for (final a in ancestors) a.txid])).length ==
+            ancestors.length,
+      );
+      final response = await _askWallet<wm.TransactionAncestorsRecordedResponse>(
+        wm.WalletCommandMessage(
+            walletId, domain.RecordTransactionAncestorsCommand(walletId: walletId, txid: txid, ancestors: ancestors)),
+        const Duration(seconds: 30),
+      );
+      if (!response.journaled) {
+        unawaited(applied);
+        return;
+      }
+      final reason = await applied;
+      if (reason != null) _log.warning('[settle] the ancestors of $txid are not in the read model yet: $reason');
+    } catch (e) {
+      _log.warning('[settle] the ancestors of $txid were not kept: $e');
     }
   }
 

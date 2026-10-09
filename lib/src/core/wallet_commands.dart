@@ -1611,6 +1611,33 @@ class VoidUnsettledTransactionCommand extends WalletCommand {
   String get commandType => 'VoidUnsettledTransactionCommand';
 }
 
+/// Keeps the ancestors of [txid], a transaction this wallet recorded, that
+/// the BEEF it was settled with carried (`SettleBEEFCommand`, bead
+/// libspiffy-yiba): the parents of inputs the wallet does not own, a
+/// counterparty's transactions it spends, back to proven ones with their
+/// BUMPs. Without them no outgoing BEEF can spend [txid]'s outputs before
+/// [txid] is mined and proven.
+///
+/// No event for a transaction the wallet did not record, for an empty
+/// list, or when its ancestors are already kept.
+class RecordTransactionAncestorsCommand extends WalletCommand {
+  final String txid;
+  final List<BeefAncestor> ancestors;
+
+  RecordTransactionAncestorsCommand({
+    required String walletId,
+    required this.txid,
+    required List<BeefAncestor> ancestors,
+    String? commandId,
+    DateTime? timestamp,
+    Map<String, dynamic>? metadata,
+  })  : ancestors = frozenList(ancestors),
+        super(walletId: walletId, commandId: commandId, timestamp: timestamp, metadata: metadata);
+
+  @override
+  String get commandType => 'RecordTransactionAncestorsCommand';
+}
+
 /// Cancels the outstanding deferred payment [txid] and releases its inputs.
 ///
 /// The aggregate refuses a payment that is not outstanding, or whose last

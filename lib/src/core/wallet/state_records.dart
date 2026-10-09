@@ -34,6 +34,10 @@ abstract final class WalletMetadataKeys {
   /// (`TransactionVoidedEvent`): an input already spent elsewhere.
   static const String voidedTransactions = 'voidedTransactions';
 
+  /// txid -> how many ancestors are kept for a transaction this wallet
+  /// recorded and settled with a BEEF (`TransactionAncestorsRecordedEvent`).
+  static const String settledAncestors = 'settledAncestors';
+
   /// address -> derivation index (signing key lookup).
   static const String addressIndices = 'address_indices';
 
@@ -98,6 +102,7 @@ abstract final class WalletMetadataKeys {
     deferredSpends,
     deferredHolds,
     voidedTransactions,
+    settledAncestors,
     addressIndices,
     addressChains,
     addressType42,

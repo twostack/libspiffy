@@ -86,6 +86,7 @@ class WalletProjection extends Projection<void> {
         DeferredSpendReclaimedEvent,
         DeferredSpendCompletedEvent,
         TransactionVoidedEvent,
+        TransactionAncestorsRecordedEvent,
       ];
   
   @override
@@ -210,6 +211,11 @@ class WalletProjection extends Projection<void> {
         return true;
       case final TransactionVoidedEvent voided:
         await _handleTransactionVoided(voided);
+        return true;
+      case final TransactionAncestorsRecordedEvent recorded:
+        // The ancestors a settled BEEF carried (bead libspiffy-yiba), kept
+        // as a received BEEF's are.
+        await _storeAncestors(recorded.txid, recorded.ancestors);
         return true;
       default:
         return false;
@@ -1349,7 +1355,7 @@ class WalletProjection extends Projection<void> {
       
       // The ancestors its BEEF carried, before the transaction that needs
       // them (bead zsh).
-      await _storeAncestors(event);
+      await _storeAncestors(event.txid, event.ancestors);
 
       await _storage.storeTransaction(event.walletId, transaction);
 
@@ -1379,8 +1385,9 @@ class WalletProjection extends Projection<void> {
     }
   }
   
-  /// Stores the ancestors a received BEEF carried for an unproven transaction
-  /// (bead libspiffy-zsh), so that AncestorChainService can build a BEEF
+  /// Stores the ancestors of [txid] a BEEF carried — one received for an
+  /// unproven transaction (bead libspiffy-zsh), or one this wallet settled
+  /// (bead libspiffy-yiba) — so that AncestorChainService can build a BEEF
   /// spending its outputs before it is mined, also after a rebuild from the
   /// journal.
   ///
@@ -1392,17 +1399,17 @@ class WalletProjection extends Projection<void> {
   /// stored header, else pendingHeader). An ancestor whose raw hex does not
   /// hash to its txid is skipped with a warning. Idempotent: the ancestor
   /// store ignores a txid it holds, and the same proof updates its own row.
-  Future<void> _storeAncestors(TransactionImportedEvent event) async {
-    for (final ancestor in event.ancestors) {
+  Future<void> _storeAncestors(String txid, List<BeefAncestor> ancestors) async {
+    for (final ancestor in ancestors) {
       final String parsedTxid;
       try {
         parsedTxid = dartsv.Transaction.fromHex(ancestor.rawHex).id;
       } catch (e) {
-        _log.warning('Ancestor ${ancestor.txid} of ${event.txid} does not parse; not stored: $e');
+        _log.warning('Ancestor ${ancestor.txid} of ${txid} does not parse; not stored: $e');
         continue;
       }
       if (parsedTxid != ancestor.txid) {
-        _log.warning('Ancestor ${ancestor.txid} of ${event.txid} hashes to $parsedTxid; not stored');
+        _log.warning('Ancestor ${ancestor.txid} of ${txid} hashes to $parsedTxid; not stored');
         continue;
       }
       await _storage.storeAncestorTransaction(ancestor.txid, ancestor.rawHex);

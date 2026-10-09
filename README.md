@@ -189,7 +189,7 @@ depends on Isar too:
 
 ```yaml
 dependencies:
-  libspiffy: ^4.7.0
+  libspiffy: ^5.0.0
   isar_community: ^3.3.2
   isar_community_flutter_libs: ^3.3.2 # Flutter apps only
 

@@ -664,7 +664,7 @@ void main() {
       addTearDown(adapter.dispose);
 
       List<Map<String, dynamic>> sent(String type) => emitted
-          .whereType<coord.ChannelP2PMessageToSendEvent>()
+          .whereType<coord.P2PMessageToSendEvent>()
           .where((e) => e.messageType == type)
           .map((e) => e.payload)
           .toList();

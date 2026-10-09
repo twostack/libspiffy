@@ -791,11 +791,9 @@ class WalletCoordinatorActor extends Actor {
       } else if (message is RejectChannelCommand) {
         _channelAdapter?.handleRejectRequest(message);
       }
-      // Inbound P2P, routed by message type (bead libspiffy-a2v3).
-      // ChannelP2PReceived is a P2PMessageReceived, so an app that already
-      // wraps everything its transport delivers in the channel-named class
-      // reaches the proof protocol too. Proof work is storage reads, a BEEF
-      // rebuild and a receive round trip, so it goes off the mailbox.
+      // Inbound P2P, routed by message type (bead libspiffy-a2v3). Proof
+      // work is storage reads, a BEEF rebuild and a receive round trip, so
+      // it goes off the mailbox.
       else if (message is P2PMessageReceived) {
         if (ProofP2PAdapter.handles(message.messageType)) {
           unawaited(_proofAdapter.handleP2PMessage(

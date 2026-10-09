@@ -418,7 +418,7 @@ Payment channels enable high-frequency, low-latency payments between two parties
 
 ### Host Responsibilities
 
-The coordinator does not know how to send network messages. When it needs to send a P2P protocol message to a peer, it emits `P2PMessageToSendEvent` (`ChannelP2PMessageToSendEvent` for a channel message). Your app must:
+The coordinator does not know how to send network messages. When it needs to send a P2P protocol message to a peer, it emits `P2PMessageToSendEvent`. Your app must:
 
 1. Listen for `P2PMessageToSendEvent` on the coordinator stream
 2. Transmit the `payload` to `toPeerId` via your P2P layer
@@ -468,7 +468,7 @@ final channel = await coordinator.ask(OpenChannelCommand(
 
 This initiates a multi-step protocol. The coordinator:
 1. Generates a key pair and address for the channel
-2. Emits a `ChannelP2PMessageToSendEvent` with the channel request (your app transmits it)
+2. Emits a `P2PMessageToSendEvent` with the channel request (your app transmits it)
 3. Waits for the server's acceptance (arrives via `P2PMessageReceived`)
 4. Builds the funding transaction
 5. Builds the refund transaction (safety net)
@@ -720,7 +720,7 @@ The tables below are the events the coordinator emits without a request, and the
 | `ChannelOpenedEvent` | A channel this node serves is open |
 | `ChannelPaymentEvent` | A payment received on a channel this node serves |
 | `ChannelClosedEvent` | A channel closed by the counterparty or the settlement timer |
-| `P2PMessageToSendEvent` | App must transmit this P2P message to a peer (`ChannelP2PMessageToSendEvent` for a channel message) |
+| `P2PMessageToSendEvent` | App must transmit this P2P message to a peer |
 
 ### Utility Events
 | Event | When Emitted |

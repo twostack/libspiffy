@@ -95,7 +95,7 @@ void main() {
         allOf(contains('building the funding transaction'), contains('policy')));
     expect(
         emitted
-            .whereType<coord.ChannelP2PMessageToSendEvent>()
+            .whereType<coord.P2PMessageToSendEvent>()
             .where((e) => e.messageType == 'channel_error' && e.toPeerId == 'server-peer'),
         hasLength(1),
         reason: 'the server is waiting for a refund that will not come');
@@ -255,7 +255,7 @@ void main() {
 
       expect(
           emitted
-              .whereType<coord.ChannelP2PMessageToSendEvent>()
+              .whereType<coord.P2PMessageToSendEvent>()
               .where((e) => e.messageType == 'refund_sign_request'),
           isEmpty);
       final errors = emitted.whereType<coord.ErrorEvent>().toList();
@@ -313,8 +313,8 @@ void main() {
       emitted.clear();
     }
 
-    List<coord.ChannelP2PMessageToSendEvent> channelErrors() => emitted
-        .whereType<coord.ChannelP2PMessageToSendEvent>()
+    List<coord.P2PMessageToSendEvent> channelErrors() => emitted
+        .whereType<coord.P2PMessageToSendEvent>()
         .where((e) => e.messageType == 'channel_error')
         .toList();
 
@@ -431,8 +431,8 @@ void main() {
       emitted.clear();
     }
 
-    List<coord.ChannelP2PMessageToSendEvent> sent(String type) => emitted
-        .whereType<coord.ChannelP2PMessageToSendEvent>()
+    List<coord.P2PMessageToSendEvent> sent(String type) => emitted
+        .whereType<coord.P2PMessageToSendEvent>()
         .where((e) => e.messageType == type)
         .toList();
 
@@ -542,7 +542,7 @@ void main() {
       ));
       await Future.delayed(const Duration(milliseconds: 100));
 
-      expect(emitted.whereType<coord.ChannelP2PMessageToSendEvent>(), isEmpty,
+      expect(emitted.whereType<coord.P2PMessageToSendEvent>(), isEmpty,
           reason: 'neither channel_open nor channel_error');
       final resent = emitted.whereType<coord.ChannelOpenResentEvent>();
       expect(resent, hasLength(1));
@@ -566,7 +566,7 @@ void main() {
       ));
       await Future.delayed(const Duration(milliseconds: 200));
 
-      expect(emitted.whereType<coord.ChannelP2PMessageToSendEvent>(), isEmpty);
+      expect(emitted.whereType<coord.P2PMessageToSendEvent>(), isEmpty);
       final resent = emitted.whereType<coord.ChannelOpenResentEvent>();
       expect(resent, hasLength(1));
       expect(resent.single.success, isFalse);
@@ -680,7 +680,7 @@ void main() {
 
       expect(
           emitted
-              .whereType<coord.ChannelP2PMessageToSendEvent>()
+              .whereType<coord.P2PMessageToSendEvent>()
               .where((e) => e.messageType == 'channel_error'),
           isEmpty,
           reason: 'a refund the network refused abandons no channel');

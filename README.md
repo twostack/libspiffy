@@ -1271,8 +1271,8 @@ await coordinator.ask(CloseChannelCommand(channelId: channel.channelId));
 ```
 
 Peer messages travel over the app's own transport: deliver what arrives as
-`ChannelP2PReceived`, and send what the coordinator emits as
-`ChannelP2PMessageToSendEvent`.
+`P2PMessageReceived`, and send what the coordinator emits as
+`P2PMessageToSendEvent`.
 
 **How the protocol protects each side.**
 

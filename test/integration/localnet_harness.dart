@@ -449,9 +449,9 @@ class LocalnetNode {
 
   /// What happened on this node, for failure messages.
   String trace() => events
-      .where((e) => e is ChannelP2PMessageToSendEvent || e is ErrorEvent)
+      .where((e) => e is P2PMessageToSendEvent || e is ErrorEvent)
       .map((e) => switch (e) {
-            ChannelP2PMessageToSendEvent m => 'sent ${m.messageType}',
+            P2PMessageToSendEvent m => 'sent ${m.messageType}',
             ErrorEvent m => 'error ${m.source}: ${m.message}',
             _ => '$e',
           })
@@ -483,11 +483,11 @@ var _printingLogs = false;
 /// decoded as a wire would carry them, in the order sent.
 void link(LocalnetNode from, LocalnetNode to) {
   from.wire(() => from.subs.add(from.system.coordinatorEvents!
-          .where((e) => e is ChannelP2PMessageToSendEvent)
-          .cast<ChannelP2PMessageToSendEvent>()
+          .where((e) => e is P2PMessageToSendEvent)
+          .cast<P2PMessageToSendEvent>()
           .listen((m) {
         if (!to.running || from.drop.contains(m.messageType)) return;
-        to.coordinator.tell(ChannelP2PReceived(
+        to.coordinator.tell(P2PMessageReceived(
           fromPeerId: from.peerId,
           messageType: m.messageType,
           payload: (jsonDecode(jsonEncode(m.payload)) as Map)

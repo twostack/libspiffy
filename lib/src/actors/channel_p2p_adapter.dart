@@ -1473,7 +1473,7 @@ class ChannelP2PAdapter {
   // ===========================================================================
 
   void _emitP2PMessage(String targetPeerId, String messageType, Map<String, dynamic> payload) {
-    _emitEvent(coord.ChannelP2PMessageToSendEvent(
+    _emitEvent(coord.P2PMessageToSendEvent(
       toPeerId: targetPeerId,
       messageType: messageType,
       payload: payload,

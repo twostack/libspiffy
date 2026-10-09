@@ -87,7 +87,7 @@ void main() {
   }
 
   List<Map<String, dynamic>> peerMessages(String type) => emitted
-      .whereType<coord.ChannelP2PMessageToSendEvent>()
+      .whereType<coord.P2PMessageToSendEvent>()
       .where((e) => e.messageType == type)
       .map((e) => e.payload)
       .toList();
@@ -195,7 +195,7 @@ void main() {
 
       final deadline = DateTime.now().add(const Duration(seconds: 5));
       while (hostEvents
-          .whereType<coord.ChannelP2PMessageToSendEvent>()
+          .whereType<coord.P2PMessageToSendEvent>()
           .where((e) => e.messageType == 'channel_error')
           .isEmpty) {
         if (DateTime.now().isAfter(deadline)) {

@@ -1379,10 +1379,6 @@ class RejectChannelCommand extends CoordinatorRequest<ChannelRejectedEvent> {
 /// coordinator routes it by [messageType] — `proof_request` and
 /// `proof_response` to the merkle-proof protocol (`ProofP2PAdapter`),
 /// everything else to the payment-channel protocol (`ChannelP2PAdapter`).
-///
-/// [ChannelP2PReceived] is the same thing under its original, channel-named
-/// class; it is kept so existing apps compile unchanged, and it is routed by
-/// [messageType] exactly like this one.
 class P2PMessageReceived implements Message {
   /// The peer that sent it, as the app names peers. The proof protocol
   /// compares this to the counterparty marker recorded on a transaction, so
@@ -1406,19 +1402,6 @@ class P2PMessageReceived implements Message {
   ActorRef? get replyTo => null;
   @override
   final DateTime timestamp = DateTime.now();
-}
-
-/// Incoming P2P message for a payment channel.
-///
-/// A [P2PMessageReceived] under its original name: the coordinator routes
-/// both by `messageType`, so an app that already wraps everything its
-/// transport delivers in this class also reaches the proof protocol.
-class ChannelP2PReceived extends P2PMessageReceived {
-  ChannelP2PReceived({
-    required super.fromPeerId,
-    required super.messageType,
-    required super.payload,
-  });
 }
 
 /// Ask the counterparty who handed us [txid] for a fresh merkle proof for its
@@ -3045,11 +3028,8 @@ class UnfinishedChannelsFoundEvent extends CoordinatorEvent {
 /// its own transport (bead libspiffy-a2v3).
 ///
 /// The library builds the payload and names the peer; carrying it is the
-/// app's job. [ChannelP2PMessageToSendEvent] is this event under its
-/// original, channel-named class, so an app that listens for the channel
-/// class keeps working; the merkle-proof protocol emits this base class with
-/// `messageType` `proof_request` / `proof_response`, so **an app that wants
-/// proof recovery must listen for [P2PMessageToSendEvent]**.
+/// app's job. The payment-channel protocol and the merkle-proof protocol
+/// (`messageType` `proof_request` / `proof_response`) both send through it.
 class P2PMessageToSendEvent extends CoordinatorEvent {
   @override
   String? get walletId => null;
@@ -3062,15 +3042,6 @@ class P2PMessageToSendEvent extends CoordinatorEvent {
     required this.messageType,
     required Map<String, dynamic> payload,
   })  : payload = frozenPlainMap(payload);
-}
-
-/// Outgoing P2P message that the app must transmit to the peer
-class ChannelP2PMessageToSendEvent extends P2PMessageToSendEvent {
-  ChannelP2PMessageToSendEvent({
-    required super.toPeerId,
-    required super.messageType,
-    required super.payload,
-  });
 }
 
 /// What became of a [RequestAncestorProofCommand] (bead libspiffy-a2v3).

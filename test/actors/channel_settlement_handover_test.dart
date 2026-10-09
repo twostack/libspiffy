@@ -61,8 +61,8 @@ void main() {
 
   Future<void> settle() => Future<void>.delayed(const Duration(milliseconds: 50));
 
-  List<coord.ChannelP2PMessageToSendEvent> sent(String type) =>
-      emitted.whereType<coord.ChannelP2PMessageToSendEvent>().where((m) => m.messageType == type).toList();
+  List<coord.P2PMessageToSendEvent> sent(String type) =>
+      emitted.whereType<coord.P2PMessageToSendEvent>().where((m) => m.messageType == type).toList();
 
   ChannelClosedEvent closed() => ChannelClosedEvent(
         channelId: _channelId,

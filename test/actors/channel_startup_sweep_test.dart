@@ -168,7 +168,7 @@ void main() {
 
     // A funding broadcast whose outcome was lost may already be in a
     // mempool, and BSV is first-seen-wins: re-driving it is the app's call.
-    expect(events.whereType<coord.ChannelP2PMessageToSendEvent>(), isEmpty,
+    expect(events.whereType<coord.P2PMessageToSendEvent>(), isEmpty,
         reason: 'the sweep must not talk to the counterparty');
     expect(events.whereType<coord.ChannelFundingRetriedEvent>(), isEmpty,
         reason: 'the sweep must not retry');

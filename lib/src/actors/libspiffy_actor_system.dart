@@ -254,7 +254,7 @@ class LibSpiffyActorSystem {
     // peers instead.
     void Function(CdnSyncResult result)? onHeaderSyncResult,
     // This node's own peer id on the transport that carries payment channel
-    // messages (ChannelP2PMessageToSendEvent / ChannelP2PReceived): sent as
+    // messages (P2PMessageToSendEvent / P2PMessageReceived): sent as
     // clientPeerId in channel_request and journaled with the channel
     // (libspiffy-36f). Empty when not given.
     String channelPeerId = '',

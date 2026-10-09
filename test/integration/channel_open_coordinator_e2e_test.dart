@@ -3,8 +3,8 @@
 ///
 /// Two complete LibSpiffyActorSystem instances (client Alice, server Bob) are
 /// wired together by a loopback "transport": every
-/// [ChannelP2PMessageToSendEvent] one coordinator emits is JSON round-tripped
-/// and delivered to the other coordinator as [ChannelP2PReceived]. Nothing
+/// [P2PMessageToSendEvent] one coordinator emits is JSON round-tripped
+/// and delivered to the other coordinator as [P2PMessageReceived]. Nothing
 /// below the coordinator is touched except funding Alice's wallet.
 ///
 /// Client open, hop by hop:
@@ -133,12 +133,12 @@ class _Node {
   /// What happened on this node, for failure messages.
   String trace() => events
       .where((e) =>
-          e is ChannelP2PMessageToSendEvent ||
+          e is P2PMessageToSendEvent ||
           e is ErrorEvent ||
           e is ChannelOpenedEvent ||
           e is ChannelRequestReceivedEvent)
       .map((e) => switch (e) {
-            ChannelP2PMessageToSendEvent m => 'sent ${m.messageType}',
+            P2PMessageToSendEvent m => 'sent ${m.messageType}',
             ErrorEvent m => 'error ${m.source}: ${m.message}',
             ChannelOpenedEvent m => 'opened ${m.channelId} (${m.walletId})',
             ChannelRequestReceivedEvent m => 'request ${m.channelId}',
@@ -224,8 +224,8 @@ void _link(_Node from, _Node to) {
   from.wire(() {
     var delivery = Future<void>.value();
     from.subs.add(from.stream
-        .where((e) => e is ChannelP2PMessageToSendEvent)
-        .cast<ChannelP2PMessageToSendEvent>()
+        .where((e) => e is P2PMessageToSendEvent)
+        .cast<P2PMessageToSendEvent>()
         .listen((m) {
       expect(m.toPeerId, to.peerId,
           reason: '${from.peerId} addressed ${m.messageType} to ${m.toPeerId}');
@@ -238,7 +238,7 @@ void _link(_Node from, _Node to) {
         // wire; tearDown stops one node while the other may still be
         // sending (it failed the test after it had passed).
         if (!to.running) return;
-        to.coordinator.tell(ChannelP2PReceived(
+        to.coordinator.tell(P2PMessageReceived(
           fromPeerId: from.peerId,
           messageType: m.messageType,
           payload: payload,
@@ -264,7 +264,7 @@ Future<void> _createWallet(_Node node, String walletId,
 
 /// The payload of the first [messageType] message [node] sent.
 Map<String, dynamic> _sentPayload(_Node node, String messageType) => node.events
-    .whereType<ChannelP2PMessageToSendEvent>()
+    .whereType<P2PMessageToSendEvent>()
     .firstWhere((m) => m.messageType == messageType)
     .payload;
 
@@ -518,7 +518,7 @@ class _RawClient {
       clientPub.toAddress(dartsv.NetworkType.TEST).toString();
 
   void _send(String type, Map<String, dynamic> payload) =>
-      server.coordinator.tell(ChannelP2PReceived(
+      server.coordinator.tell(P2PMessageReceived(
         fromPeerId: _alicePeer,
         messageType: type,
         payload:
@@ -526,7 +526,7 @@ class _RawClient {
       ));
 
   Future<Map<String, dynamic>> _sent(String type) => server
-      .next<ChannelP2PMessageToSendEvent>((m) =>
+      .next<P2PMessageToSendEvent>((m) =>
           m.messageType == type && m.payload['channelId'] == channelId)
       .then((m) => m.payload);
 
@@ -729,7 +729,7 @@ void main() {
 
     // Every step was exchanged, in protocol order, and nothing failed.
     List<String> sent(_Node n) => n.events
-        .whereType<ChannelP2PMessageToSendEvent>()
+        .whereType<P2PMessageToSendEvent>()
         .map((m) => m.messageType)
         .toList();
     expect(sent(alice),
@@ -976,7 +976,7 @@ void main() {
       expect(alice.events.whereType<ChannelOpenedEvent>(), isEmpty);
       expect(
           alice.events
-              .whereType<ChannelP2PMessageToSendEvent>()
+              .whereType<P2PMessageToSendEvent>()
               .map((m) => m.messageType),
           isNot(contains('channel_open')));
       expect(alice.arc.submitted, isEmpty,
@@ -1188,7 +1188,7 @@ void main() {
       expect(bob.events.whereType<ChannelOpenedEvent>(), isEmpty);
       expect(
           alice.events
-              .whereType<ChannelP2PMessageToSendEvent>()
+              .whereType<P2PMessageToSendEvent>()
               .map((m) => m.messageType),
           isNot(contains('channel_open')));
       final channelId =
@@ -1457,7 +1457,7 @@ void main() {
       final row = (await alice.system.walletStorage.getPaymentChannel(channelId))!;
       // The failed open told Bob its step was abandoned (libspiffy-kyw).
       final errorsBefore = alice.events
-          .whereType<ChannelP2PMessageToSendEvent>()
+          .whereType<P2PMessageToSendEvent>()
           .where((m) => m.messageType == 'channel_error')
           .length;
 
@@ -1497,7 +1497,7 @@ void main() {
       expect((await aliceOpened).walletId, aliceWalletId);
       expect(
           alice.events
-              .whereType<ChannelP2PMessageToSendEvent>()
+              .whereType<P2PMessageToSendEvent>()
               .where((m) => m.messageType == 'channel_open'),
           hasLength(1));
 
@@ -1514,7 +1514,7 @@ void main() {
           [1, 2]);
       expect(
           alice.events
-              .whereType<ChannelP2PMessageToSendEvent>()
+              .whereType<P2PMessageToSendEvent>()
               .where((m) => m.messageType == 'channel_error'),
           hasLength(errorsBefore),
           reason: 'a repair never tells the counterparty the channel failed');
@@ -1687,9 +1687,9 @@ void main() {
   /// open needs, and neither of them tells the counterparty the channel
   /// failed.
   group('libspiffy-1n3: repairing an open that did not finish', () {
-    List<ChannelP2PMessageToSendEvent> sent(_Node node, String type) => node
+    List<P2PMessageToSendEvent> sent(_Node node, String type) => node
         .events
-        .whereType<ChannelP2PMessageToSendEvent>()
+        .whereType<P2PMessageToSendEvent>()
         .where((m) => m.messageType == type)
         .toList();
 

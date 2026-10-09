@@ -47,8 +47,8 @@ final _log = Logger('ProofP2PAdapter');
 /// libspiffy owns no transport, exactly as with payment channels
 /// ([ChannelP2PAdapter]). Outbound messages are emitted as
 /// [P2PMessageToSendEvent]s for the app to deliver; inbound ones arrive as
-/// [P2PMessageReceived] (or [ChannelP2PReceived], its channel-named
-/// equivalent) and the coordinator routes them here by message type. No
+/// [P2PMessageReceived] and the coordinator routes them here by message
+/// type. No
 /// socket, no HTTP client, no peer address book.
 ///
 /// ## Identity

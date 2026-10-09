@@ -169,7 +169,6 @@ Pass a `CdnHeaderSyncConfig` for fine-grained control:
 final cdnConfig = CdnHeaderSyncConfig(
   baseUrl: 'https://your-cdn.com',
   network: 'testnet',
-  concurrentDownloads: 4,         // Parallel chunk downloads (default: 4)
   downloadTimeout: Duration(seconds: 30),
   validateProofOfWork: false,     // PoW check per header (default: false, slow)
   verifyCheckpoints: true,        // Verify manifest checkpoints (default: true)

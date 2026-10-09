@@ -24,7 +24,6 @@ import '../plugin/plugin_types.dart';
 import '../plugin/transaction_builder_plugin.dart';
 import '../storage/read_model_storage.dart';
 import '../storage/transaction_row_rules.dart';
-import '../storage/secure_storage.dart';
 import '../services/ancestor_chain_service.dart';
 import '../services/watch_only_funds.dart';
 import '../utils/beef.dart';
@@ -84,15 +83,13 @@ class PaymentCoordinatorActor extends Actor {
   /// coins would stay held for it. Null (tests) skips the check.
   final dartsv.NetworkType? _network;
 
-  /// [secureStorage] is no longer used: every signature is produced by the
-  /// wallet aggregate, which alone reads key material (audit A-H8).
+  /// Every signature is produced by the wallet aggregate, which alone reads
+  /// key material (audit A-H8).
   PaymentCoordinatorActor({
     required ActorRef walletManager,
     required ActorRef walletProjection,
     required ActorRef arcActor,
     required ReadModelStorage storage,
-    @Deprecated('Unused: signing is delegated to the wallet aggregate')
-    SecureStorage? secureStorage,
     Duration reservationReplyTimeout = const Duration(seconds: 10),
     Duration signingReplyTimeout = const Duration(seconds: 20),
     Duration feeRateReplyTimeout = const Duration(seconds: 30),

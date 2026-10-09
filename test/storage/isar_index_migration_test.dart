@@ -150,17 +150,6 @@ void main() {
         {'w1-t3', 'w1-t4', 'w1-t5', 'w2-t3', 'w2-t4', 'w2-t5'});
     // Every row written before the change is in the new indexes' ranges.
     expect(ranges, [2, 6, 6, 3, 6]);
-
-    // The former where clauses, kept deprecated for hosts, read the same rows.
-    // ignore: deprecated_member_use_from_same_package
-    expect(await isar.addressEntitys.where().walletIdEqualTo('w1').count(), 6);
-    // ignore: deprecated_member_use_from_same_package
-    expect(await isar.addressEntitys.where().walletIdNotEqualTo('w1').count(), 6);
-    // ignore: deprecated_member_use_from_same_package
-    expect(await isar.bitcoinTransactionEntitys.where().statusEqualTo(TransactionStatus.pending.name).count(), 6);
-    expect(
-        // ignore: deprecated_member_use_from_same_package
-        await isar.bitcoinTransactionEntitys.where().statusNotEqualTo(TransactionStatus.pending.name).count(), 6);
   });
 
   // Bead libspiffy-m8qu: an address row written before the delegated chain

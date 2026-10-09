@@ -61,7 +61,6 @@ void main() {
         walletProjection: projection,
         arcActor: arc,
         storage: storage,
-        secureStorage: InMemorySecureStorage(),
         reservationReplyTimeout: const Duration(milliseconds: 300),
       ),
     );
@@ -148,7 +147,6 @@ void main() {
             walletProjection: projection,
             arcActor: arc,
             storage: storage,
-            secureStorage: secureStorage,
             reservationReplyTimeout: const Duration(seconds: 2),
           ),
         );

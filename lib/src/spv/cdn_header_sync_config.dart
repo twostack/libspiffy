@@ -35,16 +35,6 @@ class CdnHeaderSyncConfig {
   /// downloaded headers are checked against.
   final String network;
 
-  /// Unused: chunks are downloaded one at a time.
-  ///
-  /// `CdnHeaderSyncService` validates and imports each chunk before it
-  /// fetches the next, because every chunk must link to the one before it
-  /// and the service holds one chunk (~8 MB) in memory at a time. Parallel
-  /// downloads would multiply that peak without speeding up validation, so
-  /// this value has never been read (audit SPV-16).
-  @Deprecated('Unused: CDN chunks are downloaded sequentially. Will be removed.')
-  final int concurrentDownloads;
-
   /// Timeout per chunk download
   final Duration downloadTimeout;
 
@@ -87,7 +77,6 @@ class CdnHeaderSyncConfig {
   const CdnHeaderSyncConfig({
     required this.baseUrl,
     required this.network,
-    this.concurrentDownloads = 4,
     this.downloadTimeout = const Duration(seconds: 30),
     this.validateProofOfWork = true,
     this.verifyCheckpoints = true,

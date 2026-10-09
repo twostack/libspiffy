@@ -12,7 +12,6 @@ import '../core/wallet/transaction_size.dart';
 import '../models/bitcoin_utxo.dart';
 import '../models/fee_rate.dart';
 import '../models/wallet_type.dart';
-import '../storage/secure_storage.dart';
 import '../services/watch_only_funds.dart';
 import '../storage/read_model_storage.dart';
 import '../utils/benford_distribution.dart';
@@ -65,13 +64,11 @@ class BenfordCoordinatorActor extends Actor {
   final Map<int, _PendingSplitReply> _pendingReplies = {};
   int _nextRequestId = 0;
 
-  /// [secureStorage] is no longer used: split transactions are signed by the
-  /// wallet aggregate, which alone reads key material (audit A-H8).
+  /// Split transactions are signed by the wallet aggregate, which alone
+  /// reads key material (audit A-H8).
   BenfordCoordinatorActor({
     required ActorRef walletManager,
     required ActorRef arcActor,
-    @Deprecated('Unused: signing is delegated to the wallet aggregate')
-    SecureStorage? secureStorage,
     required ReadModelStorage storage,
     Duration signingReplyTimeout = const Duration(seconds: 20),
     Duration walletReplyTimeout = const Duration(seconds: 30),

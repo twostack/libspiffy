@@ -1456,31 +1456,4 @@ String _encodeJson(Map<String, dynamic> map) {
 Map<String, dynamic> _decodeJson(String json) {
   if (json.isEmpty || json == '{}') return {};
   return Map<String, dynamic>.from(jsonDecode(json) as Map);
-} 
-
-/// The where clauses of the single-property indexes that audit S-16 turned
-/// into composite indexes, kept for hosts that query these collections
-/// directly. They use the new indexes' prefixes and return the same rows.
-extension AddressEntityFormerWhereClauses on QueryBuilder<AddressEntity, AddressEntity, QWhereClause> {
-  @Deprecated('Use walletIdEqualToAnyPurpose (the walletId index is now (walletId, purpose)).')
-  QueryBuilder<AddressEntity, AddressEntity, QAfterWhereClause> walletIdEqualTo(String walletId) =>
-      walletIdEqualToAnyPurpose(walletId);
-
-  @Deprecated('Use walletIdNotEqualToAnyPurpose (the walletId index is now (walletId, purpose)).')
-  QueryBuilder<AddressEntity, AddressEntity, QAfterWhereClause> walletIdNotEqualTo(String walletId) =>
-      walletIdNotEqualToAnyPurpose(walletId);
-}
-
-/// See [AddressEntityFormerWhereClauses].
-extension BitcoinTransactionEntityFormerWhereClauses
-    on QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QWhereClause> {
-  @Deprecated('Use statusEqualToAnyWalletId (the status index is now (status, walletId)).')
-  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterWhereClause> statusEqualTo(
-          String status) =>
-      statusEqualToAnyWalletId(status);
-
-  @Deprecated('Use statusNotEqualToAnyWalletId (the status index is now (status, walletId)).')
-  QueryBuilder<BitcoinTransactionEntity, BitcoinTransactionEntity, QAfterWhereClause> statusNotEqualTo(
-          String status) =>
-      statusNotEqualToAnyWalletId(status);
 }

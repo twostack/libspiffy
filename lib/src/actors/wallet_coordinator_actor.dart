@@ -401,11 +401,6 @@ class WalletCoordinatorActor extends Actor {
     required ActorRef benfordCoordinator,
     required ActorRef channelManager,
     required ActorRef walletProjection,
-    @Deprecated('Unused: import progress arrives on importNotifications, and '
-        'imports run through importWalletFromXpriv/importWalletFromWif. Kept '
-        'so existing callers still compile; will be removed in a future '
-        'release.')
-    ActorRef? importActor,
     required ReadModelStorage storage,
     Stream<ChannelEvent>? channelEvents,
     /// Events the wallet and invoice read models have applied

@@ -531,7 +531,6 @@ void main() {
         () => BenfordCoordinatorActor(
           walletManager: libspiffy.walletManager,
           arcActor: arcRef,
-          secureStorage: libspiffy.secureStorage,
           storage: libspiffy.walletStorage,
         ),
       );
@@ -612,7 +611,6 @@ void main() {
         () => BenfordCoordinatorActor(
           walletManager: libspiffy.walletManager,
           arcActor: arcRef,
-          secureStorage: libspiffy.secureStorage,
           storage: libspiffy.walletStorage,
         ),
       );
@@ -988,7 +986,6 @@ void main() {
         () => BenfordCoordinatorActor(
           walletManager: libspiffy.walletManager,
           arcActor: arcRef,
-          secureStorage: libspiffy.secureStorage,
           storage: libspiffy.walletStorage,
         ),
       );

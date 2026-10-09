@@ -976,7 +976,6 @@ class LibSpiffyActorSystem {
       benfordCoordinator: _benfordCoordinator!,
       channelManager: _channelManager!,
       walletProjection: _walletProjectionRef!,
-      importActor: _importActor,
       storage: _walletStorage,
       channelEvents: _channelEventBroadcaster.stream,
       readModelEvents: _readModelApplied.stream,
@@ -1297,21 +1296,6 @@ class LibSpiffyActorSystem {
   /// External components (like P2P adapters) can subscribe to this stream
   /// to receive payment channel events for protocol message translation.
   Stream<ChannelEvent> get channelEvents => _channelEventBroadcaster.stream;
-
-  /// Broadcast a channel event to external subscribers.
-  ///
-  /// Deprecated: the channel-event broadcaster is now fed exclusively by the
-  /// channel projection's `appliedEvents` stream (see the `_channelProjectionAppliedSub`
-  /// wiring in `_initializeProjections`). Calling this method out-of-band
-  /// would re-introduce the projection-race window (overnode_v2-8gh) by
-  /// surfacing channel events to consumers before the read model has been
-  /// updated. Retained for binary compatibility with external callers; should
-  /// not be invoked by libspiffy internals.
-  @Deprecated('Channel events are now broadcast post-projection-apply. '
-      'Do not call this directly from internal code.')
-  void broadcastChannelEvent(ChannelEvent event) {
-    _channelEventBroadcaster.add(event);
-  }
 
   /// Get reference to the SpiffyNode bridge (if connected)
   SpiffyNodeBridge? get spiffyNodeBridge => _spiffyNodeBridge;

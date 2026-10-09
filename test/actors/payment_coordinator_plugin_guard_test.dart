@@ -38,7 +38,6 @@ import 'package:libspiffy/src/plugin/plugin_registry.dart';
 import 'package:libspiffy/src/plugin/plugin_types.dart';
 import 'package:libspiffy/src/plugin/provisioned_transaction.dart';
 import 'package:libspiffy/src/plugin/transaction_builder_plugin.dart';
-import 'package:libspiffy/src/storage/in_memory_secure_storage.dart';
 import 'package:libspiffy/src/storage/read_model_storage.dart';
 import 'package:libspiffy/src/models/address_chain.dart';
 import '../mocks/policy_rate_arc.dart';
@@ -81,7 +80,6 @@ void main() {
         walletProjection: projection,
         arcActor: arc,
         storage: _PluginStorage(),
-        secureStorage: InMemorySecureStorage(),
         reservationReplyTimeout: const Duration(seconds: 2),
         signingReplyTimeout: const Duration(seconds: 5),
       ),
